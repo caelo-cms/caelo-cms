@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { HARD_MAX_BODY_BYTES } from "@caelo-cms/shared";
 import {
+  CADDY_GATEWAY_MAX_BODY_BYTES,
   type CaddyfileSpec,
   caddyTokenProblem,
   generateCaddyfile,
@@ -96,12 +98,27 @@ describe("Caddyfile upstreams (#707)", () => {
     expect(out).not.toContain("localhost");
     expect(out).not.toContain("127.0.0.1");
     expect(block(out, "admin.example.com")).toContain("reverse_proxy caelo-admin:5173");
-    expect(block(out, "example.com")).toContain(
-      "handle /api/* {\n    reverse_proxy caelo-gateway:8090\n",
+    expect(block(out, "example.com")).toMatch(
+      /handle \/api\/\* \{\n(?:.*\n)*? {4}reverse_proxy caelo-gateway:8090\n/,
     );
     // #1330 — the staging host goes to the staging gateway, every path.
     expect(block(out, "staging.example.com")).toContain("reverse_proxy caelo-staging-gateway:8091");
     expect(block(out, "staging.example.com")).not.toContain("caelo-gateway:8090");
+  });
+
+  it("caps request bodies bound for a gateway at the gateways' hard ceiling (#1339)", () => {
+    const cap = `request_body {\n    max_size ${HARD_MAX_BODY_BYTES}\n  }`;
+    expect(CADDY_GATEWAY_MAX_BODY_BYTES).toBe(HARD_MAX_BODY_BYTES);
+    // Inside the /api/* handler of the public vhost, before the proxy.
+    expect(block(out, "example.com")).toContain(
+      `handle /api/* {\n    request_body {\n      max_size ${HARD_MAX_BODY_BYTES}\n    }\n    reverse_proxy caelo-gateway:8090\n`,
+    );
+    // Every path of the staging vhost goes to the staging gateway.
+    expect(block(out, "staging.example.com")).toContain(
+      `${cap}\n  reverse_proxy caelo-staging-gateway:8091`,
+    );
+    // The admin's own uploads are not the gateways' to cap.
+    expect(block(out, "admin.example.com")).not.toContain("request_body");
   });
 
   it("does not route /admin/* on the public site (the admin routes from / on its own host)", () => {

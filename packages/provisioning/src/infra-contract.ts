@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 21;
+export const INFRA_CONTRACT_VERSION = 22;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -179,6 +179,14 @@ export const INFRA_CONTRACT_VERSION = 21;
 //       answered Cloud Run's 403) and the CLI-owned backends created with
 //       the `https` port name get `http` and their NEG: IAM and
 //       load-balancer writes the in-cloud upgrader may not make.
+//  22 — #1339: on `gcp` the gateway's Cloud Armor policy gets per-path
+//       rules (gateway-edge.ts): a tighter ban on the auth plugin's
+//       credential operations, a captcha throttle, the general ban limited
+//       to /api/ paths (it banned staging reviewers, whose pages share the
+//       policy since #1330) and the OWASP packs at sensitivity 1. Policy
+//       writes the in-cloud upgrader holds no compute rights for, so the
+//       converge applies them (gateway-armor.ts). Other providers have
+//       nothing to converge for it.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -207,6 +215,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   19: "the scheduler tick sent as a JSON request, because the admin refused every tick before (#1140)",
   20: "the staging gateway that serves the staged site behind the staging gate on every address: its service, service account and grants, the private staging bucket, and the staging host's own route (a second Firebase Hosting site, or a host rule and certificate on the load balancer); the live gateway no longer holds the staging gate key (#1330, #1331)",
   21: "the gateways' scale-out and connection pool kept inside the database connection budget, and on Google Cloud load-balancer installs the gateway open to visitors and the sign-in and staging routes repaired (#1463)",
+  22: "per-path Cloud Armor rules for the visitor and staging gateways on Google Cloud load-balancer installs: a tighter ban on sign-up, login and password reset, a captcha throttle, the general ban only on the visitor API, and fewer false positives from the OWASP rules (#1339)",
 };
 
 /**

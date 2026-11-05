@@ -80,8 +80,12 @@ describe("install client ↔ intake", () => {
     });
     const client = new BugIntakeClient({
       baseUrl: "https://bugs.test",
-      fetchImpl: ((url: string, init?: RequestInit) =>
-        handler(new Request(url, init))) as unknown as typeof fetch,
+      // Cloud Run's front end appends the caller's address (#1339).
+      fetchImpl: ((url: string, init?: RequestInit) => {
+        const req = new Request(url, init);
+        req.headers.append("x-forwarded-for", "203.0.113.9");
+        return handler(req);
+      }) as unknown as typeof fetch,
     });
 
     const early = await client.sendReport(identity, report);

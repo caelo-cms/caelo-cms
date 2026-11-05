@@ -21,6 +21,7 @@ import {
   stagedManifestKey,
 } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { listenForPublishedChanges } from "./published-changes.js";
 import {
   handleRequest,
   invalidateGatewaySettings,
@@ -203,5 +204,48 @@ describe("#1330 the staging gateway on real Postgres", () => {
       (tx) => tx`UPDATE staging_access SET cookie_enabled = true WHERE id = 1`,
     );
     await publish();
+  });
+});
+
+describe("#1339 E14 a: the staging gateway while no staging host is set", () => {
+  it("answers the fixed 404 on every path but /healthz, and from memory once the LISTEN holds", async () => {
+    await asSystem(
+      ADMIN_URL,
+      (tx) => tx`UPDATE staging_access SET staging_host = NULL WHERE id = 1`,
+    );
+    await publish();
+    const listening = await listenForPublishedChanges(gateway);
+    try {
+      // The first request reads the published state; the LISTEN makes it cacheable.
+      // Also the first one needs nothing of the request: no client address.
+      const first = await handleRequest(new Request("https://x.a.run.app/about/"));
+      expect(first.status).toBe(404);
+      expect(((await first.json()) as { error: { kind: string } }).error.kind).toBe("NotFound");
+      // From now on nothing reaches the database, and the request is not read:
+      // not even its client address (none given here, which would be a 503).
+      let reads = 0;
+      const counted = new Proxy(gateway, {
+        get(target, prop) {
+          if (prop === "withPublicTransaction") reads++;
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      setGatewayAdapter(counted);
+      for (const path of ["/about/", "/_caelo/staging-access?t=x", "/api/captcha/challenge"]) {
+        const r = await handleRequest(new Request(`https://staging.example.com${path}`));
+        expect(r.status).toBe(404);
+      }
+      expect(reads).toBe(0);
+      expect((await handleRequest(req("x.a.run.app", "/healthz"))).status).toBe(200);
+    } finally {
+      setGatewayAdapter(gateway);
+      await listening.unlisten();
+      await asSystem(
+        ADMIN_URL,
+        (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
+      );
+      await publish();
+    }
   });
 });

@@ -37,6 +37,7 @@ import * as awsx from "@pulumi/awsx";
 import * as pulumi from "@pulumi/pulumi";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
 import {
+  AWS_SERVICE_DATABASE_PASSWORDS,
   AWS_SERVICE_SECRETS,
   type AwsSecret,
   type AwsTaskService,
@@ -215,30 +216,19 @@ const db = new aws.rds.Instance(`${namePrefix}-pg`, {
   applyImmediately: env !== "production",
 });
 
-const adminDatabaseUrl = pulumi
-  .all([db.address, db.port, postgresPassword])
-  .apply(
-    ([host, port, pw]) => `postgresql://caelo_admin:${pw}@${host}:${port}/cms_admin?${RDS_TLS}`,
-  );
-const publicDatabaseUrl = pulumi
-  .all([db.address, db.port, publicRolePassword])
-  .apply(
-    ([host, port, pw]) => `postgresql://public_role:${pw}@${host}:${port}/cms_public?${RDS_TLS}`,
-  );
+// #1339 (epic #763 L5) — password-less, like on GCP: each task definition
+// (#749) sets the password as an ECS `secrets` entry from Secrets Manager
+// (AWS_SERVICE_DATABASE_PASSWORDS, exported as databasePasswordSecretsOut),
+// never inside the URL, so it shows up neither in the task's env nor in its
+// revision history (shared database-url.ts `<NAME>_PASSWORD`).
+const dbUrl = (role: string, database: string) =>
+  pulumi.interpolate`postgresql://${role}@${db.address}:${db.port}/${database}?${RDS_TLS}`;
+const adminDatabaseUrl = dbUrl("caelo_admin", "cms_admin");
+const publicDatabaseUrl = dbUrl("public_role", "cms_public");
 // #1329 — the admin's pool on the staging database, and the staging
 // gateway's only login (no task definition reads them before #749).
-const publicStagingAdminDatabaseUrl = pulumi
-  .all([db.address, db.port, postgresPassword])
-  .apply(
-    ([host, port, pw]) =>
-      `postgresql://caelo_admin:${pw}@${host}:${port}/cms_public_staging?${RDS_TLS}`,
-  );
-const publicStagingDatabaseUrl = pulumi
-  .all([db.address, db.port, publicStagingRolePassword])
-  .apply(
-    ([host, port, pw]) =>
-      `postgresql://public_staging_role:${pw}@${host}:${port}/cms_public_staging?${RDS_TLS}`,
-  );
+const publicStagingAdminDatabaseUrl = dbUrl("caelo_admin", "cms_public_staging");
+const publicStagingDatabaseUrl = dbUrl("public_staging_role", "cms_public_staging");
 
 // === 4. S3 buckets ===
 const mediaBucket = new aws.s3.BucketV2(`${namePrefix}-media`, {
@@ -585,6 +575,7 @@ const dnsRecordsRequired: DnsRecord[] = [
 ];
 
 const out: CloudAdapterOutputs = {
+  // Password-less — the passwords live only in Secrets Manager (#1339).
   adminDatabaseUrl: adminDatabaseUrl as unknown as string,
   publicDatabaseUrl: publicDatabaseUrl as unknown as string,
   publicStagingDatabaseUrl: publicStagingDatabaseUrl as unknown as string,
@@ -621,6 +612,17 @@ export const adminTaskRoleArnOut = taskRoles.admin.arn;
 export const gatewayTaskRoleArnOut = taskRoles.gateway.arn;
 // #1328 — the role the MCP-Auth-Proxy task definition will run as (#749).
 export const mcpAuthProxyTaskRoleArnOut = taskRoles["mcp-auth-proxy"].arn;
+// #1339 — per task definition (#749): the ECS `secrets` entries
+// (`{ name, valueFrom }`) that carry its database passwords.
+export const databasePasswordSecretsOut = Object.fromEntries(
+  Object.entries(AWS_SERVICE_DATABASE_PASSWORDS).map(([service, vars]) => [
+    service,
+    Object.entries(vars).map(([name, secretName]) => ({
+      name,
+      valueFrom: secretArns[secretName],
+    })),
+  ]),
+);
 // #1254 — the pool env the admin and gateway task definitions set.
 export const poolBudgetEnvOut = poolBudget.env;
 

@@ -30,7 +30,12 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { AWS_SERVICE_SECRETS, secretsReadPolicy } from "./aws-task-roles.js";
+import {
+  AWS_SERVICE_DATABASE_PASSWORDS,
+  AWS_SERVICE_SECRETS,
+  secretsReadPolicy,
+} from "./aws-task-roles.js";
+import { AZURE_SERVICE_DATABASE_SECRETS } from "./azure-secrets.js";
 import { generateDockerCompose } from "./compose.js";
 import {
   databaseUrls,
@@ -220,13 +225,35 @@ describe("azure: the gateway container app (#635)", () => {
     expect(stack("azure")).not.toMatch(/gateway_role:\$\{/);
   });
 
-  it("gives no container app an identity or Key Vault access (review finding)", () => {
-    // The vault uses RBAC authorisation: without a role assignment or a
-    // managed identity no container app can read any vault secret, so the
-    // gateway's only credential is the public_role URL in its env.
+  it("the gateway's identity reads public_role's password and no other secret (#1339, review finding)", () => {
+    // #1339 — the passwords left the URLs for Key Vault references. The vault
+    // uses RBAC authorisation, so an identity reads only the secrets it holds
+    // a role assignment on: one assignment per (reader, secret) from
+    // AZURE_SERVICE_DATABASE_SECRETS, scoped to the secret, never the vault.
     const src = stack("azure");
     expect(src).toContain("enableRbacAuthorization: true");
-    expect(src).not.toMatch(/RoleAssignment|accessPolicies|identity\s*:|keyVaultUrl|secretRef/);
+    expect(src).not.toMatch(/accessPolicies/);
+    expect(src.match(/new azure\.authorization\.RoleAssignment\(/g)).toHaveLength(1);
+    expect(src).toContain("scope: keyVaultSecrets[name].id,");
+    // An app resolves its Key Vault references at creation: grants first (#1429 review).
+    expect(src).toContain("{ dependsOn: [...(args.secrets?.grants ?? [])] }");
+    expect(src).toContain(
+      "for (const name of new Set(Object.values(AZURE_SERVICE_DATABASE_SECRETS[reader]))) {",
+    );
+    expect(AZURE_SERVICE_DATABASE_SECRETS.gateway).toEqual({
+      PUBLIC_DATABASE_PASSWORD: "public-role-password",
+    });
+    const start = src.indexOf('serviceName: "gateway"');
+    const block = src.slice(start, src.indexOf("});", start));
+    expect(block).toContain("secrets: gatewaySecretReader,");
+    // The proxy reads nothing (#1328).
+    const proxy = src.slice(src.indexOf('serviceName: "mcp-auth-proxy"'));
+    expect(proxy.slice(0, proxy.indexOf("});"))).not.toContain("secrets:");
+  });
+
+  it("puts no password into a database URL (#1339)", () => {
+    const src = stack("azure");
+    expect(src).not.toMatch(/postgresql:\/\/[a-z_]+:\$\{/);
   });
 });
 
@@ -263,5 +290,17 @@ describe("aws: the stack (#635)", () => {
       ],
     });
     expect(() => secretsReadPolicy([])).toThrow();
+  });
+
+  it("database passwords come from Secrets Manager, never inside a URL (#1339)", () => {
+    expect(stack("aws")).not.toMatch(/postgresql:\/\/[a-z_]+:\$\{/);
+    expect(AWS_SERVICE_DATABASE_PASSWORDS.gateway).toEqual({
+      PUBLIC_DATABASE_PASSWORD: "public-role-password",
+    });
+    for (const [service, vars] of Object.entries(AWS_SERVICE_DATABASE_PASSWORDS)) {
+      for (const secret of Object.values(vars)) {
+        expect(AWS_SERVICE_SECRETS[service as keyof typeof AWS_SERVICE_SECRETS]).toContain(secret);
+      }
+    }
   });
 });

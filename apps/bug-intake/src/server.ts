@@ -20,6 +20,8 @@ import {
   bugIntakeRegisterRequest,
   bugIntakeReport,
   bugIntakeStatusRequest,
+  ClientAddressError,
+  clientAddress,
 } from "@caelo-cms/shared";
 import { verifySignedRequest } from "./auth.js";
 import { GitHubError } from "./github.js";
@@ -49,9 +51,27 @@ function refuse(status: number, error: string, retryable: boolean): Response {
   return Response.json({ error, retryable }, { status });
 }
 
-function clientIp(req: Request): string {
-  // Cloud Run appends the caller's address as the last x-forwarded-for hop.
-  return req.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim() || "unknown";
+/**
+ * #1339 — the intake runs on Cloud Run with nothing in front: Cloud Run's
+ * front end appends the caller's address, the one X-Forwarded-For entry
+ * nobody can forge. The shared rule (@caelo-cms/shared client-address.ts)
+ * reads it, the same one the gateways use, instead of a rule of its own.
+ */
+export const BUG_INTAKE_TRUSTED_PROXY_HOPS = 1;
+
+/**
+ * The caller's address, or null when the request does not carry the entry
+ * Cloud Run always appends (it reached the service some other way). Such a
+ * request is refused instead of sharing one "unknown" bucket with every
+ * other such request.
+ */
+function clientIp(req: Request): string | null {
+  try {
+    return clientAddress(req, BUG_INTAKE_TRUSTED_PROXY_HOPS, null);
+  } catch (e) {
+    if (e instanceof ClientAddressError) return null;
+    throw e;
+  }
 }
 
 export function createIntakeHandler(deps: IntakeHandlerDeps): (req: Request) => Promise<Response> {
@@ -74,7 +94,9 @@ export function createIntakeHandler(deps: IntakeHandlerDeps): (req: Request) => 
     try {
       if (path === "/v1/installs") {
         // Per address first, so one noisy address cannot spend the global budget.
-        if (!registerLimiter.take(clientIp(req), now())) {
+        const ip = clientIp(req);
+        if (ip === null) return refuse(400, "The client address is unknown.", false);
+        if (!registerLimiter.take(ip, now())) {
           return refuse(429, "Too many registrations from this address.", true);
         }
         if (!deps.globalRegisterLimiter.take("*", now())) {

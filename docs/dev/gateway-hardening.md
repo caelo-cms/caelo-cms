@@ -2,6 +2,18 @@
 
 The cheap setup (gcp-firebase) has no load balancer and no WAF in front of the API gateway, and the gateway stays reachable on `*.run.app` (epic #763, decision E3). So every protection lives in the gateway and in the database itself. Where a provider has a WAF (gcp: Cloud Armor), it is an extra layer, never the only one. This page describes the gateway's own layers from #1326 (P1) and #1338 (P8).
 
+## A gateway whose feature is off (E14 a, #1339)
+
+Every public service is provisioned on every install at zero minimum instances, so one that nobody uses costs nothing. While its feature is off it answers the fixed 404 of a path that names no route (`{ ok: false, error: { kind: "NotFound", requestId } }`, no cookie), before it reads the request and before any database access:
+
+| Service | Off while | Still answers |
+|---|---|---|
+| live gateway | no active plugin serves an operation to visitors (`publicOperations`) | `/healthz`, `/api/_caelo/health` (the upgrade's check) |
+| staging gateway | no staging host is set (`published_staging_site.staging_host` is NULL) | `/healthz` |
+| MCP-Auth-Proxy | remote MCP is unavailable on the provider or not set up ([public-admin-boundary.md](./public-admin-boundary.md)) | its health check |
+
+The gateways know it from published state they hold in memory while the published-state LISTEN holds (below): after the admin's publish notification the next request reads the registry or the staging row once (behind the in-memory limiter), and every request after it is answered from memory. A read that failed, or that a newer notification overtook, decides nothing: the request takes the full pipeline (plugin-host `servesVisitorOperations`, api-gateway `featureOff`). So the Owner activating a visitor-facing plugin turns the live gateway on with no redeploy. Creating and removing the services from Settings → Updates (E14 b) comes later.
+
 ## Order of a visitor request
 
 `apps/api-gateway/src/server.ts` checks, in this order, and stops at the first refusal:
@@ -21,6 +33,24 @@ An invented slug or operation therefore never creates a rate-limit bucket, a req
 ### Why a per-operation budget
 
 On gcp-firebase the only `X-Forwarded-For` entry nobody can forge is the one Cloud Run appends, and that is a Google front-end proxy that changes per request (measured in #1325, [firebase-hosting-behaviour.md](./firebase-hosting-behaviour.md)). Per-client buckets there are close to one bucket per request. The per-operation budget is what bounds a flood from many addresses. It is per instance; Cloud Run runs at most `gatewayMaxInstances` of them.
+
+## The edge per provider (E3, #1339)
+
+No protection on this page depends on a WAF. Where a provider has one it is an extra layer; `packages/provisioning/src/public-service-shape.ts` is the per-provider table (E11), and `public-service-shape.test.ts` pins every stack, the CLI setup modules, the Compose file and the GCP cost table to it.
+
+- **gcp-firebase (the cheap setup):** no load balancer, no WAF. The gateways and the MCP-Auth-Proxy are publicly invokable on their run.app URLs (the Firebase rewrites need it), so everything here is the protection.
+- **gcp:** the gateway's Cloud Armor policy, shared by the staging gateway's backend, has per-path rules (`packages/provisioning/src/gateway-edge.ts`; the converge applies them to existing installs, infrastructure contract 22):
+
+  | Priority | Matches | Rule |
+  |---|---|---|
+  | 800 | `^/api/plugin/auth/(signup\|login\|request_password_reset\|reset_password)$` | ban an IP for 10 min above 30 a minute |
+  | 810 | `/api/captcha/challenge` | throttle (429) above 60 a minute |
+  | 1001 | any path containing `/api/` | ban an IP for 10 min above 100 a minute (replaces the old catch-all at 1000, which the converge deletes only after the new rules are in) |
+  | 2000, 2001 | OWASP sqli / xss, sensitivity 1 | deny (403) |
+
+  The general ban used to match every request; staged pages share the policy since #1330, so a reviewer who browsed a few of them was banned from staging. Sensitivity 1 keeps the OWASP packs from flagging ordinary comment and form text.
+- **self-hosted:** Caddy caps request bodies bound for a gateway at the gateways' hard ceiling (`HARD_MAX_BODY_BYTES`, 1 MiB) and has no rate limit of its own: stock Caddy has no `rate_limit` directive. Caddy hands the gateways the real client address (one trusted hop), so their per-client limits work there.
+- **aws, azure:** the database passwords are secret references (Secrets Manager entries for the task definitions of #749; Key Vault references through one identity per reader on azure), never part of a database URL. The rest of the shape comes with #749 / #750.
 
 ## Live origins
 

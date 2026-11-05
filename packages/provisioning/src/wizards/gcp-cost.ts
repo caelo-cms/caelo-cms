@@ -11,10 +11,12 @@
  * + AI calls + storage growth on top.
  */
 
+import { GATEWAY_ARMOR_BILLED_RULES } from "../gateway-edge.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   memoryQuantityMiB,
   parseSchedulerIntervalMinutes,
+  RUNTIME_SECRETS,
   SERVICE_CPU_IDLE,
 } from "../stack-contract.js";
 
@@ -124,6 +126,27 @@ export function alwaysOnAdminInstanceUsd(gib: number): number {
   return Math.round(perSecond * MONTH_SECONDS);
 }
 
+/**
+ * Cloud Armor Standard list prices, USD a month (cloud.google.com/armor/pricing,
+ * checked 2026-11-02): $0.006849315 per policy-hour and $0.001369863 per
+ * rule-hour, rounded; plus $0.75 per million requests on a global policy.
+ */
+export const CLOUD_ARMOR_POLICY_USD = 5;
+export const CLOUD_ARMOR_RULE_USD = 1;
+
+/**
+ * Secret Manager: $0.06 per active secret version a month, the first 6 per
+ * billing account free (cloud.google.com/secret-manager/pricing); access
+ * operations are cents at Caelo's volume.
+ */
+const SECRET_VERSION_USD = 0.06;
+const SECRET_FREE_VERSIONS = 6;
+
+/** What `count` secrets with one active version each cost a month. */
+export function secretManagerMonthlyUsd(count: number): number {
+  return Math.round(Math.max(0, count - SECRET_FREE_VERSIONS) * SECRET_VERSION_USD * 100) / 100;
+}
+
 /** The region the price table's list rates are for. */
 const PRICED_REGION = "europe-west1";
 
@@ -211,6 +234,16 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
           : `${inputs.gatewayMinInstances} min-instance${inputs.gatewayMinInstances > 1 ? "s" : ""}`,
     },
     {
+      // #1330 — the staging gateway serves the staged site behind the
+      // staging gate. Like every public service it is always provisioned at
+      // zero minimum instances with request-based CPU (E14 a of #763), and
+      // answers a fixed 404 while no staging host is set.
+      name: "Cloud Run staging gateway",
+      monthlyUsd: 0,
+      notes:
+        "scale-to-zero, request-based CPU; only the team's visits to staging wake it, mostly in the free tier",
+    },
+    {
       // #1328 — remote MCP's sign-in service, its own service on every
       // install (E14 a of #763): always provisioned, zero minimum instances,
       // CPU only during requests, so it costs nothing while nobody connects.
@@ -219,17 +252,18 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       notes:
         "scale-to-zero, request-based CPU; only external AI apps' sign-in and MCP calls wake it, mostly in the free tier",
     },
-    // v0.3.3 — LB / Cloud CDN / Cloud Armor lines apply only to the
-    // gcp variant. gcp-firebase has no LB (Firebase Hosting is the
-    // edge); no Cloud CDN line (Firebase Hosting has its own CDN
-    // included in free tier); no Cloud Armor (admin is gated by
-    // Cloud Run IAP, gateway by run.invoker IAM).
+    // Only the gcp variant has a load balancer, Cloud CDN and Cloud Armor.
+    // gcp-firebase has none of them (E3 of #763): Firebase Hosting is the
+    // edge with its own CDN, the admin is gated by IAP on Cloud Run, and the
+    // public services protect themselves without a WAF
+    // (docs/dev/gateway-hardening.md).
     ...(provider === "gcp"
       ? ([
           {
             name: "Load balancer + managed SSL cert",
             monthlyUsd: 18,
-            notes: "Global LB base fee + cert (free) — flat",
+            notes:
+              "Global LB base fee (up to 5 forwarding rules) + certificates (free) — flat; the staging host's route and certificate (#1330) add nothing",
           },
           {
             name: "Cloud CDN cache",
@@ -237,52 +271,61 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
             notes: "Free egress at edge cache hits",
           },
           {
-            name: "Cloud Armor WAF",
-            monthlyUsd: inputs.wafAdaptiveProtection ? 5 : 0,
-            notes: inputs.wafAdaptiveProtection
-              ? "Adaptive protection (ML-based bot mitigation)"
-              : "Free tier — rate limit + OWASP basic rules",
+            // #1339 — the gateway's policy (src/gateway-edge.ts): its rules
+            // plus the default rule, each billed; the staging gateway's
+            // backend shares it. Prices: CLOUD_ARMOR_POLICY_USD above.
+            name: "Cloud Armor policy (gateway + staging gateway)",
+            monthlyUsd:
+              CLOUD_ARMOR_POLICY_USD +
+              GATEWAY_ARMOR_BILLED_RULES * CLOUD_ARMOR_RULE_USD +
+              (inputs.wafAdaptiveProtection ? 5 : 0),
+            notes: `policy ($${CLOUD_ARMOR_POLICY_USD}) with ${GATEWAY_ARMOR_BILLED_RULES} rules ($${GATEWAY_ARMOR_BILLED_RULES * CLOUD_ARMOR_RULE_USD}): per-IP bans on credential operations and the visitor API, a captcha throttle, OWASP sqli/xss at sensitivity 1${inputs.wafAdaptiveProtection ? "; adaptive protection (ML-based bot mitigation) +$5" : ""}; an extra layer, the gateways rate-limit themselves; requests ~$0`,
           },
           {
             // #1328 — the MCP-Auth-Proxy's own backend (serverless NEG +
             // backend service, no extra LB fee: same URL map) with its own
             // Cloud Armor policy carrying the remote-MCP throttle
-            // (src/remote-mcp-edge.ts) and the default rule. Cloud Armor
-            // Standard: $0.006849315/policy-hour (~$5/mo) and
-            // $0.001369863/rule-hour (~$1/mo), plus $0.75 per million
-            // requests on a global policy — cloud.google.com/armor/pricing,
-            // checked 2026-11-02.
+            // (src/remote-mcp-edge.ts) and the default rule.
             name: "MCP-Auth-Proxy backend + Cloud Armor policy",
-            monthlyUsd: 7,
+            monthlyUsd: CLOUD_ARMOR_POLICY_USD + 2 * CLOUD_ARMOR_RULE_USD,
             notes:
               "own policy ($5) with 2 rules ($2): per-IP throttle for remote MCP clients; requests ~$0",
+          },
+          {
+            name: "Cloud Storage (static + media + staging)",
+            monthlyUsd: 1,
+            notes:
+              "~5 GB storage + low egress; the staging bucket holds two complete builds (#1330 A/B slots); growth roughly $0.02/GB",
+          },
+          {
+            name: "BigQuery edge log sink",
+            monthlyUsd: 0,
+            notes: "Free tier — pay only on >1 TB/mo query",
           },
         ] satisfies CostLine[])
       : ([
           {
-            name: "Firebase Hosting",
+            name: "Firebase Hosting (live + staging site)",
             monthlyUsd: 0,
-            notes: "Free tier: 10 GB storage + 360 MB/day egress",
+            notes:
+              "Free tier: 10 GB storage + 360 MB/day egress; the staging site (#1330) only rewrites to the staging gateway and stores nothing",
+          },
+          {
+            name: "Cloud Storage (media + staging)",
+            monthlyUsd: 1,
+            notes:
+              "~5 GB storage + low egress; static lives on Firebase; the private staging bucket holds two complete builds (#1330 A/B slots); growth roughly $0.02/GB",
+          },
+          {
+            name: "Cloud Logging (service logs, the edge log sink)",
+            monthlyUsd: 0,
+            notes: "Free tier: the first 50 GiB of logs a month",
           },
         ] satisfies CostLine[])),
     {
-      name:
-        provider === "gcp"
-          ? "Cloud Storage (static + media)"
-          : "Cloud Storage (media only — static lives on Firebase)",
-      monthlyUsd: 1,
-      notes: "~5 GB storage + low egress; growth roughly $0.02/GB",
-    },
-    {
       name: "Secret Manager (runtime secrets)",
-      monthlyUsd: 0.2,
-      notes:
-        "6 active versions free, then ~$0.06 each; the Google sign-in client (#914), the remote-MCP seal key (#806) and the staging database login's password (#1329; the staging database itself shares the Cloud SQL instance at no extra cost)",
-    },
-    {
-      name: "BigQuery edge log sink",
-      monthlyUsd: 0,
-      notes: "Free tier — pay only on >1 TB/mo query",
+      monthlyUsd: secretManagerMonthlyUsd(RUNTIME_SECRETS.length),
+      notes: `${RUNTIME_SECRETS.length} secrets, one active version each: 6 free, then $${SECRET_VERSION_USD} each (the database logins of the admin and both gateways, the Google sign-in client, the remote-MCP seal key, the staging gate key and three internal keys; the staging database shares the Cloud SQL instance at no extra cost)`,
     },
     {
       name: "Install state (ops bucket + Cloud KMS key)",
