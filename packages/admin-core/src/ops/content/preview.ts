@@ -107,6 +107,7 @@ import {
   resolveLinkPartition,
   resolvePageListOverlays,
 } from "../../lists/load.js";
+import { resolvePageShareImages } from "../../seo/share-image.js";
 import { loadSiteView, type SiteView } from "../../site-view.js";
 import { previewBreadcrumbs } from "./preview-breadcrumbs.js";
 import {
@@ -691,6 +692,14 @@ async function renderPreview(
         )
       ).get(pageId) ?? null)
     : canonicalOverride;
+  // #1452 — the image the build will ship: own, language default or site
+  // default. The preview keeps the /_caelo/media URL form so the admin
+  // resolver serves the bytes; the static generator rewrites it at deploy.
+  const shareImages = await resolvePageShareImages(
+    (fn) => reads.read(fn),
+    [{ pageId, ownAssetId: page.ownOgImageAssetId }],
+    renderScope,
+  );
   const headBlock = renderSeoHead({
     title: pageRow.title,
     metaDescription: page.seo?.metaDescription ?? "",
@@ -700,7 +709,7 @@ async function renderPreview(
         : canonical,
     noindex:
       (page.seo?.noindex ?? false) || (followUp !== null && pagination?.followUps === "noindex"),
-    ogImageUrl: page.ogImageUrl,
+    ogImageUrl: shareImages.get(pageId)?.url ?? null,
     organization,
     breadcrumbs: siteBaseUrl
       ? await previewBreadcrumbs(view, lists.breadcrumbTrail(), {

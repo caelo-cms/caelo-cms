@@ -25,6 +25,7 @@
     readonly title: string;
     readonly metaDescription: string;
     readonly ogImageUrl: string | null;
+    readonly ogImageSource: "page" | "language" | "site" | "none";
     readonly canonicalUrl: string | null;
     readonly noindex: boolean;
     readonly pending: readonly string[];
@@ -66,6 +67,18 @@
         : anyPending
           ? "Page SEO: changes not live yet"
           : "Page SEO",
+  );
+
+  /** #1452 — the image shown is not always the page's own. */
+  const ogImageOrigin = $derived(
+    seo === null
+      ? ""
+      : {
+          page: "This page's own image.",
+          language: "Default image of this page's language.",
+          site: "The site's default image.",
+          none: "",
+        }[seo.ogImageSource],
   );
 
   const rows = $derived(
@@ -182,8 +195,15 @@
             <dd class="mt-0.5 text-sm">
               {#if seo.ogImageUrl}
                 <img src={seo.ogImageUrl} alt="Social share preview" class="max-h-32 rounded border" />
+                <p class="mt-1 text-xs text-muted-foreground" data-testid="page-seo-og-source">
+                  {ogImageOrigin}
+                </p>
+              {:else if seo.ogImageSource === "none"}
+                <span class="text-muted-foreground italic">None. Links to this page show no image.</span>
               {:else}
-                <span class="text-muted-foreground italic">None</span>
+                <span class="text-destructive" data-testid="page-seo-og-missing">
+                  The image was deleted. A Stage stops until another one is chosen.
+                </span>
               {/if}
             </dd>
           </div>

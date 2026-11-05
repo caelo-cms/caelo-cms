@@ -55,6 +55,21 @@ export const listMediaUsagesTool = makeReadTool({
 
 type SeoPage = OpValue<typeof pagesSeoGetManyOp>["pages"][number];
 
+/** The image a page's links show in previews, in words the AI can act on. */
+function formatShareImage(image: SeoPage["shareImage"]): string {
+  if (image.source === "none") {
+    return "shareImage: none — bind a site default with set_theme_asset slot socialShare, or set this page's own with set_page_seo_many.";
+  }
+  const from = {
+    page: "this page's own",
+    language: "its language's default",
+    site: "site default (theme socialShare)",
+  }[image.source];
+  return image.url === null
+    ? `shareImage: ${from}, asset ${image.assetId} is deleted or has no variants — the next Stage stops on it. Bind another image.`
+    : `shareImage: ${from}, asset ${image.assetId}`;
+}
+
 function formatSeoPage(p: SeoPage): string {
   const seo = p.seo;
   const fields = seo
@@ -70,6 +85,7 @@ function formatSeoPage(p: SeoPage): string {
           : []),
       ]
     : ["No SEO row for this page yet — autofill_page_seo_many fills it before first publish."];
+  fields.push(formatShareImage(p.shareImage));
   const textHead = p.contentTextTruncated
     ? `contentText (the first ${p.contentText.length} of ${p.contentTextLength} characters — enough to write a description from):`
     : "contentText:";
@@ -98,14 +114,19 @@ const getPageSeoInput = z
 export const getPageSeoTool = makeReadTool({
   name: "get_page_seo",
   description:
-    "Read pages' stored SEO fields (meta description, OG image, canonical, noindex, sitemap, autofill/optimize times) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\n" +
+    "Read pages' stored SEO fields (meta description, own OG image, canonical, noindex, sitemap, autofill/optimize times), the `shareImage` each page really gets (own, language default or site default) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\n" +
     "USE FOR: reading before writing/optimizing descriptions — ALL pages in one call, then ONE `autofill_page_seo_many` (first description) or `bulk_optimize_seo`/`set_page_seo_many`.\n" +
     "DO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
   opName: "pages_seo.get_many",
   input: getPageSeoInput,
   buildOpInput: (input) => ({ pageIds: input.pageIds ?? [input.pageId] }),
-  format: (value) =>
-    (value as OpValue<typeof pagesSeoGetManyOp>).pages.map(formatSeoPage).join("\n\n"),
+  format: (value) => {
+    const v = value as OpValue<typeof pagesSeoGetManyOp>;
+    return [
+      ...v.pages.map(formatSeoPage),
+      ...v.shareImageWarnings.map((w) => `Share images may show the site default: ${w}`),
+    ].join("\n\n");
+  },
 });
 
 export const listStaleSeoPagesTool = makeListReadTool<

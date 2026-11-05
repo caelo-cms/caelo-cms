@@ -9,17 +9,17 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { buildMediaUrl, type ExecutionContext } from "@caelo-cms/shared";
+import type { ExecutionContext, ShareImageSource } from "@caelo-cms/shared";
 import { getQueryContext } from "./query.js";
-
-/** Renditions the SEO sheet shows the OG image in, smallest suitable first. */
-const OG_PREVIEW_VARIANTS = ["webp-400", "webp-800", "webp-1200", "webp-1600", "orig"] as const;
 
 /** One page's SEO as the editor shows it. */
 export interface PageSeoInfo {
   readonly title: string;
   readonly metaDescription: string;
+  /** The image the page really gets (#1452); null with a source = deleted asset. */
   readonly ogImageUrl: string | null;
+  /** Where that image comes from: the page, its language, the site, or nowhere. */
+  readonly ogImageSource: ShareImageSource;
   readonly canonicalUrl: string | null;
   readonly noindex: boolean;
   /** Pending fields: `title` plus the SEO fields the draft changed. */
@@ -56,19 +56,18 @@ export async function loadPageSeoInfo(
     return { error: "This page's SEO could not be read — reload the editor to try again." };
   }
   const seo = (r.value as { seo: SeoRow | null }).seo;
-  let ogImageUrl: string | null = null;
-  if (seo?.ogImageAssetId) {
-    const m = await execute(registry, adapter, ctx, "media.get", { assetId: seo.ogImageAssetId });
-    const asset = m.ok
-      ? (m.value as { asset: { slug: string; variants: { variant: string }[] } | null }).asset
-      : null;
-    // Only a rendition the pipeline made: small images, SVGs and animated
-    // GIFs have no webp-400, and the media route 404s an absent variant.
-    const variant = asset
-      ? OG_PREVIEW_VARIANTS.find((v) => asset.variants.some((x) => x.variant === v))
-      : undefined;
-    if (asset && variant) ogImageUrl = buildMediaUrl(asset.slug, variant);
+  const images = await execute(registry, adapter, ctx, "pages_seo.share_images", {
+    pageIds: [draft.id],
+  });
+  if (!images.ok) {
+    console.error("[edit] page share image read failed", {
+      pageId: draft.id,
+      error: images.error,
+    });
+    return { error: "This page's SEO could not be read — reload the editor to try again." };
   }
+  const image = (images.value as { images: { source: ShareImageSource; url: string | null }[] })
+    .images[0];
   const newPage = mainTitle === null;
   const pending = [
     ...(newPage || mainTitle !== draft.title ? ["title"] : []),
@@ -77,7 +76,8 @@ export async function loadPageSeoInfo(
   return {
     title: draft.title,
     metaDescription: seo?.metaDescription ?? "",
-    ogImageUrl,
+    ogImageUrl: image?.url ?? null,
+    ogImageSource: image?.source ?? "none",
     canonicalUrl: seo?.canonicalUrl ?? null,
     noindex: seo?.noindex ?? false,
     pending,

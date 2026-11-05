@@ -51,6 +51,16 @@ chrome variant (`src/chrome-ops.ts`), field by field from the list type
 content instance's local lists go through addresses; its chrome variant
 keeps rendering the current entries so an added entry shows up there.
 
+## Share images per language
+
+`set_locale_share_image` stores a language's default link-preview image
+in `settings` (`locale_share_images`), on the chat's branch like every
+write here. The plugin answers core's `share-images` composition point
+(`share_images`) with each page's language default; core's rule is the
+page's own image, then this, then the site default ([themes.md](../../../docs/themes.md)).
+A language without an image is absent from the answer, so its pages take
+the site default.
+
 ## Change handling
 
 Statuses (`translated | needs_update | missing | orphaned`) are computed

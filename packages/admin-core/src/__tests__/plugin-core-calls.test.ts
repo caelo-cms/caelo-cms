@@ -101,6 +101,7 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "pages_seo.apply_translation": { notBackground: "translate tools write one page's SEO" },
     // The staleness consumer reads each changed source's meta description.
     "pages_seo.get": { measured: ["pages_seo.get"] },
+    "media.get": { notBackground: "set_locale_share_image checks the image it is given" },
     "placement.fork_paths": { notBackground: "translate tools copy content of one placement" },
     "redirects.create": { notBackground: "variant tools create the redirect of a moved page" },
     "redirects.page_conflicts": {

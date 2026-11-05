@@ -67,6 +67,7 @@ import {
 } from "./list-source-resolution.js";
 import { pluginListSourcesRegistry } from "./list-sources.js";
 import { type PublicUrlContext, type PublicUrlPage, resolvePublicPageUrls } from "./public-urls.js";
+import { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
 
 type ContentVariantPages = Parameters<typeof resolveContentVariants>[0];
 type DeferralCandidates = Parameters<typeof resolveModuleDeferrals>[0];
@@ -120,6 +121,8 @@ export interface BuildPluginServices {
     pageIds: string[],
     urlContext: PublicUrlContext,
   ): Promise<CollectedContributions>;
+  /** #1452 — plugin default share images of pages without their own. */
+  resolveShareImages(pageIds: string[]): Promise<ResolvedShareImages>;
   resolvePublicPageUrls(
     pages: PublicUrlPage[],
     urlContext: PublicUrlContext,
@@ -154,6 +157,7 @@ export const localBuildPluginServices: BuildPluginServices = {
   resolveLinkVariants: (pageIds) => resolveLinkVariants(pageIds, MAIN_RENDER),
   collectContributions: (pageIds, urlContext) =>
     collectContributions(pageIds, { ...MAIN_RENDER, ...urlContext }),
+  resolveShareImages: (pageIds) => resolveShareImages(pageIds, MAIN_RENDER),
   resolvePublicPageUrls: (pages, urlContext) =>
     resolvePublicPageUrls(pages, urlContext, MAIN_RENDER),
   collectBuildAssets: (pageIds) => collectBuildAssets(pageIds, MAIN_RENDER),
@@ -193,6 +197,7 @@ export const BUILD_PLUGIN_METHODS = [
   "hasLinkResolveContributors",
   "resolveLinkVariants",
   "collectContributions",
+  "resolveShareImages",
   "resolvePublicPageUrls",
   "collectBuildAssets",
   "staticRenderPlugins",

@@ -37,7 +37,7 @@
     {
       key: "socialShare",
       label: "Social share image",
-      hint: "Default OG/Twitter card image. `{{theme_social_share_url}}` substitutes.",
+      hint: "Default image in link previews for every page without its own; goes live with Stage and Publish live. `{{theme_social_share_url}}` substitutes.",
     },
   ];
 
