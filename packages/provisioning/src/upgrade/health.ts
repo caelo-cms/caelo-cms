@@ -18,6 +18,12 @@
  *             either): it has no database, so it answers once it runs; under
  *             `/api/mcp/`, the prefix the gcp load balancer routes to it.
  *
+ * On `gcp` the public two are asked through the load balancer with the
+ * site's Host header on a connection to `admin.<domain>`
+ * (load-balancer-get.ts), so an install whose main domain has no record yet
+ * (the weeks before go-live, #1459) takes updates like any other. Their
+ * `run.app` URLs are no way in: ingress is load-balancer-only.
+ *
  * Both answer with no secrets and no raw database errors. The admin sits
  * behind IAP, so the probe signs an IAP credential as the install's MCP
  * service account (`caelo-mcp@`, mcp-iap.ts) exactly like the MCP shim does
@@ -44,6 +50,7 @@
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { mcpIapServiceAccountEmail } from "../gcp-names.js";
 import type { HttpFetch } from "../runtime-secrets.js";
+import type { LoadBalancerGet } from "./load-balancer-get.js";
 
 export type HealthOutcome =
   | { readonly ok: true; readonly detail: string }
@@ -186,10 +193,11 @@ export interface HealthTarget {
 }
 
 /**
- * The origins the probe calls. On gcp the admin's IAP lives on the load
+ * The origins the probe asks. On gcp the admin's IAP lives on the load
  * balancer (`admin.<domain>`), and the gateway's and the proxy's ingress is
- * load-balancer-only (`<domain>/api/*`, `<domain>/api/mcp/*`); on
- * gcp-firebase every `run.app` URL is reachable — the admin's through Cloud
+ * load-balancer-only (`<domain>/api/*`, `<domain>/api/mcp/*`, connected
+ * through the admin's name, see the module comment); on gcp-firebase every
+ * `run.app` URL is reachable — the admin's through Cloud
  * Run's own IAP, the others publicly.
  */
 export function healthOrigins(target: HealthTarget): {
@@ -219,6 +227,8 @@ export const IAM_PROPAGATION_WINDOW_MS = 7 * 60_000;
 export interface HealthProbeDeps {
   readonly run: GcloudRunner;
   readonly http: HttpFetch;
+  /** How `gcp` reaches the site's host through the load balancer (#1459). */
+  readonly loadBalancerGet: LoadBalancerGet;
   readonly sleep: Sleep;
   /**
    * Whether the converge step that ran just before changed the access the
@@ -347,13 +357,28 @@ export function createIapHealthProbe(target: HealthTarget, deps: HealthProbeDeps
   function gatewayRoutingHelp(): string {
     return target.provider === "gcp-firebase"
       ? `Requests to its run.app URL do not reach the Caelo gateway: its Cloud Run ingress likely refuses them. The gcp-firebase stack declares ingress "all"; upgrade's converge step sets it. Check it with: gcloud run services describe <gateway service> --region=<region> --project=${target.projectId} --format='value(metadata.annotations."run.googleapis.com/ingress")'`
-      : `Requests to ${origins.gateway}/api/ do not reach the Caelo gateway: the load balancer's URL map must route /api/* to the gateway backend. Check the install's load balancer, then re-run upgrade.`;
+      : `Requests to ${origins.gateway}/api/ through the load balancer do not reach the Caelo gateway: its URL map must route /api/* to the gateway backend, and the gateway service must admit allUsers as roles/run.invoker (upgrade's converge step grants it; Cloud Run answers 403 without it). Check them, then re-run upgrade.`;
   }
 
   async function get(url: string, headers: Record<string, string>) {
     try {
       const res = await deps.http(url, { method: "GET", headers });
       return { reached: true as const, status: res.status, text: await res.text() };
+    } catch (e) {
+      return { reached: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** A GET to a public service: on gcp through the load balancer (#1459). */
+  async function getPublic(origin: string, path: string) {
+    if (target.provider !== "gcp") return get(`${origin}${path}`, {});
+    try {
+      const res = await deps.loadBalancerGet({
+        connectHost: new URL(origins.admin).hostname,
+        hostHeader: new URL(origin).hostname,
+        path,
+      });
+      return { reached: true as const, status: res.status, text: res.text };
     } catch (e) {
       return { reached: false as const, error: e instanceof Error ? e.message : String(e) };
     }
@@ -385,7 +410,7 @@ export function createIapHealthProbe(target: HealthTarget, deps: HealthProbeDeps
         refusal: admin.status === 401 || admin.status === 403 ? "iap-refused" : "other",
       };
     }
-    const gateway = await get(`${origins.gateway}/api/_caelo/health`, {});
+    const gateway = await getPublic(origins.gateway, "/api/_caelo/health");
     if (!gateway.reached) {
       return {
         ok: false,
@@ -462,12 +487,12 @@ export function createIapHealthProbe(target: HealthTarget, deps: HealthProbeDeps
     if (!admin.reached) return { ok: false, error: `admin unreachable: ${admin.error}` };
     const a = evaluateAdminDeepHealth(admin.status, admin.text, expectedVersion);
     if (!a.ok) return a;
-    const gateway = await get(`${origins.gateway}/api/_caelo/health?deep=1`, {});
+    const gateway = await getPublic(origins.gateway, "/api/_caelo/health?deep=1");
     if (!gateway.reached) return { ok: false, error: `gateway unreachable: ${gateway.error}` };
     const g = evaluatePublicServiceDeepHealth("gateway", gateway.status, gateway.text);
     if (!g.ok) return g;
     // #1328 — the proxy holds no database login: healthy once it answers.
-    const proxy = await get(`${origins.mcpAuthProxy}${MCP_AUTH_PROXY_HEALTH_PATH}`, {});
+    const proxy = await getPublic(origins.mcpAuthProxy, MCP_AUTH_PROXY_HEALTH_PATH);
     if (!proxy.reached) return { ok: false, error: `MCP-Auth-Proxy unreachable: ${proxy.error}` };
     const p = evaluatePublicServiceDeepHealth("MCP-Auth-Proxy", proxy.status, proxy.text);
     return p.ok ? { ok: true, detail: `${a.detail}; ${g.detail}; ${p.detail}` } : p;

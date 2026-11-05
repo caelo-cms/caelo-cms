@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 20;
+export const INFRA_CONTRACT_VERSION = 21;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -169,6 +169,16 @@ export const INFRA_CONTRACT_VERSION = 20;
 //       forwarder. New service, account, bucket, IAM and edge resources the
 //       in-cloud upgrader may not create, and the app-roll rolls four
 //       services from now on.
+//  21 — #1463 and the plain-gcp repairs. The app-roll now brings the gateways
+//       to the connection budget (max instances, CAELO_DB_PUBLIC_POOL_MAX),
+//       but an in-cloud upgrader rolls with the code of the release it runs
+//       from, so without this bump an install would keep 100 gateway
+//       instances until the update after next; the converge job runs the
+//       target release's code. On `gcp` the gateway also gets its allUsers
+//       run.invoker (the stack never declared it, so every /api/ call
+//       answered Cloud Run's 403) and the CLI-owned backends created with
+//       the `https` port name get `http` and their NEG: IAM and
+//       load-balancer writes the in-cloud upgrader may not make.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -196,6 +206,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   18: "the scheduler tick that runs the admin's periodic work and plugin workers every few minutes: its service account, workflow and Cloud Scheduler job, and its IAP access (#1140)",
   19: "the scheduler tick sent as a JSON request, because the admin refused every tick before (#1140)",
   20: "the staging gateway that serves the staged site behind the staging gate on every address: its service, service account and grants, the private staging bucket, and the staging host's own route (a second Firebase Hosting site, or a host rule and certificate on the load balancer); the live gateway no longer holds the staging gate key (#1330, #1331)",
+  21: "the gateways' scale-out and connection pool kept inside the database connection budget, and on Google Cloud load-balancer installs the gateway open to visitors and the sign-in and staging routes repaired (#1463)",
 };
 
 /**

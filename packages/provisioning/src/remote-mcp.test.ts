@@ -793,7 +793,8 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     expect(planUrlMapPaths([], "acme.com", PROXY_BACKEND).ok).toBe(false);
   });
 
-  const policyJson = (rules: object[]) => ok(JSON.stringify({ rules }));
+  // As real gcloud prints it: a one-element list.
+  const policyJson = (rules: object[]) => ok(JSON.stringify([{ rules }]));
   const PROXY_POLICY = "caelo-production-mcp-auth-proxy-armor";
 
   it("#1328 — creates the proxy's own policy and its rule when missing", async () => {
@@ -925,6 +926,42 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     expect(bare.calls.find((c) => c.startsWith("compute backend-services update"))).toContain(
       `--security-policy=${PROXY_POLICY}`,
     );
+  });
+
+  it("creates the backend with the http port name a serverless NEG needs", async () => {
+    const missing = fakeGcloud({
+      "compute network-endpoint-groups describe": ok("caelo-production-mcp-auth-proxy-neg\n"),
+      "compute backend-services describe": fail("NOT_FOUND: was not found"),
+      "compute backend-services create": ok(JSON.stringify([{ selfLink: PROXY_BACKEND }])),
+    });
+    await ensureMcpAuthProxyBackend(
+      { projectId: "acme", region: "europe-west1", env: "production" },
+      missing,
+    );
+    expect(missing.calls.find((c) => c.startsWith("compute backend-services create"))).toContain(
+      "--protocol=HTTPS --port-name=http",
+    );
+  });
+
+  it("repairs a backend an earlier run left with the https port name, before add-backend", async () => {
+    const left = fakeGcloud({
+      "compute network-endpoint-groups describe": ok("caelo-production-mcp-auth-proxy-neg\n"),
+      "compute backend-services describe": ok(
+        JSON.stringify({ selfLink: PROXY_BACKEND, portName: "https", backends: [] }),
+      ),
+      "compute backend-services update": ok(),
+      "compute backend-services add-backend": ok(),
+    });
+    const r = await ensureMcpAuthProxyBackend(
+      { projectId: "acme", region: "europe-west1", env: "production" },
+      left,
+    );
+    expect(r.ok).toBe(true);
+    const writes = left.calls.filter((c) =>
+      /^compute backend-services (update|add-backend)/.test(c),
+    );
+    expect(writes[0]).toContain("--port-name=http");
+    expect(writes.at(-1)).toContain("add-backend");
   });
 
   it("#1328 — ensureRemoteMcpEdge: service, policy, backend, URL map, then the gateway rule; no-op on gcp-firebase", async () => {

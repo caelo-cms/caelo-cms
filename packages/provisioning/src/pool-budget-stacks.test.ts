@@ -9,6 +9,12 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  GATEWAY_POOL_MAX,
+  GATEWAY_ROLE_CONNECTION_LIMIT,
+  LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE,
+  STAGING_GATEWAY_ROLE_CONNECTION_LIMIT,
+} from "@caelo-cms/shared";
 import { COMPOSE_POOL_BUDGET } from "./compose.js";
 import {
   type BudgetProvider,
@@ -16,6 +22,8 @@ import {
   DEFAULT_GATEWAY_MAX_INSTANCES,
   DEFAULT_MAX_CONNECTIONS,
   DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
+  GATEWAY_MAX_INSTANCES_CEILING,
+  GATEWAY_POOL_ENV,
   stackPoolBudget,
 } from "./pool-budget-stack.js";
 
@@ -121,5 +129,28 @@ describe("stacks set the budget on their services", () => {
 
   it("self-hosted: the Compose budget is the default one (yaml: self-hosted-compose.test.ts)", () => {
     expect(COMPOSE_POOL_BUDGET.budget.adminPoolMax).toBe(EXPECTED["self-hosted"][0]);
+  });
+});
+
+describe("#1463 — what an upgrade applies to an existing install's gateways", () => {
+  const atCeiling = stackPoolBudget("gcp", {
+    maxConnections: DEFAULT_MAX_CONNECTIONS.gcp,
+    adminMaxInstances: DEFAULT_ADMIN_MAX_INSTANCES,
+    gatewayMaxInstances: GATEWAY_MAX_INSTANCES_CEILING.gateway,
+    stagingGatewayMaxInstances: GATEWAY_MAX_INSTANCES_CEILING["staging-gateway"],
+  });
+
+  it("is the budget the stacks deploy", () => {
+    expect(GATEWAY_POOL_ENV).toEqual(atCeiling.env.gateway);
+  });
+
+  it("stays inside what the database lets each gateway login hold", () => {
+    for (const [slug, limit] of [
+      ["gateway", GATEWAY_ROLE_CONNECTION_LIMIT],
+      ["staging-gateway", STAGING_GATEWAY_ROLE_CONNECTION_LIMIT],
+    ] as const) {
+      const perInstance = GATEWAY_POOL_MAX + LISTEN_CONNECTIONS_PER_GATEWAY_INSTANCE;
+      expect(GATEWAY_MAX_INSTANCES_CEILING[slug] * perInstance).toBeLessThanOrEqual(limit);
+    }
   });
 });

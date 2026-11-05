@@ -74,6 +74,7 @@ import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
 import { findServiceUrl, lookupFailure, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe, type HealthProbe } from "./upgrade/health.js";
 import { createReleaseImageForms, platformDigestsOf } from "./upgrade/image-forms.js";
+import { httpsLoadBalancerGet } from "./upgrade/load-balancer-get.js";
 import { recordRolledDigests } from "./upgrade/record-rolled.js";
 import {
   canonicalReleaseTag,
@@ -692,7 +693,13 @@ async function gcpHealthProbe(
         gatewayServiceUrl: urls.gateway as string,
         mcpAuthProxyServiceUrl: urls["mcp-auth-proxy"] as string,
       },
-      { run, http, sleep: realSleep, accessJustChanged: context.accessJustChanged },
+      {
+        run,
+        http,
+        loadBalancerGet: httpsLoadBalancerGet,
+        sleep: realSleep,
+        accessJustChanged: context.accessJustChanged,
+      },
     ),
   };
 }

@@ -221,11 +221,20 @@ function fakeInstall(events: string[], overrides: [RegExp, Answer][] = []) {
   return { run, calls };
 }
 
-/** Cloud SQL Admin API: every operation is done at once. */
+/**
+ * Cloud SQL Admin API: every operation is done at once. Firebase Hosting: the
+ * staging host's DNS already points at the staging site.
+ */
 const http: HttpFetch = async () => ({
   ok: true,
   status: 200,
-  text: async () => JSON.stringify({ name: "op-1", status: "DONE" }),
+  text: async () =>
+    JSON.stringify({
+      name: "op-1",
+      status: "DONE",
+      hostState: "HOST_ACTIVE",
+      ownershipState: "OWNERSHIP_ACTIVE",
+    }),
 });
 
 function recordingReporter() {
@@ -730,6 +739,71 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(
       events.some((e) => /services update caelo-production-admin.*CAELO_CONVERGE_JOB=/.test(e)),
     ).toBe(false);
+  });
+
+  it("#1463 — an existing install's gateways reach the budget in the revision that rolls their image", async () => {
+    const before = (json: string) => {
+      const svc = JSON.parse(json);
+      svc.spec.template.metadata.annotations["autoscaling.knative.dev/maxScale"] = "100";
+      return ok(JSON.stringify(svc));
+    };
+    const events: string[] = [];
+    const { deps } = upgradeDeps(events, {
+      overrides: [
+        [new RegExp(`describe ${GATEWAY} .*--format=json`), before(GATEWAY_JSON)],
+        [new RegExp(`describe ${STAGING} .*--format=json`), before(STAGING_JSON)],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const roll = (service: string) =>
+      events.find((e) => e.startsWith(`gcloud run services update ${service} `)) ?? "";
+    expect(roll(GATEWAY)).toContain("--image registry/gateway@");
+    expect(roll(GATEWAY)).toContain("--max-instances=10");
+    expect(roll(GATEWAY)).toContain("CAELO_DB_PUBLIC_POOL_MAX=2");
+    expect(roll(STAGING)).toContain("--image registry/gateway@");
+    expect(roll(STAGING)).toContain("--max-instances=1");
+    expect(roll(STAGING)).toContain("CAELO_DB_PUBLIC_POOL_MAX=2");
+    // Neither reaches the services the budget does not size this way.
+    expect(roll(ADMIN)).not.toContain("--max-instances");
+    expect(roll(PROXY)).not.toContain("CAELO_DB_PUBLIC_POOL_MAX");
+  });
+
+  it("#1455 — names the records and keeps the old route while the staging host's DNS has not moved", async () => {
+    const events: string[] = [];
+    const { deps, lines, recorded } = upgradeDeps(events, {
+      overrides: [
+        [/^beta run domain-mappings describe/, ok("staging.acme.com\n")],
+        // Nothing else keeps this converge incomplete.
+        [/^compute firewall-rules list/, ok("[]")],
+      ],
+    });
+    const notMoved: HttpFetch = async (url) => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify(
+          url.includes("/customDomains/")
+            ? {
+                hostState: "HOST_UNHOSTED",
+                requiredDnsUpdates: {
+                  desired: [
+                    {
+                      records: [
+                        { domainName: "staging.acme.com.", type: "A", rdata: "199.36.158.100" },
+                      ],
+                    },
+                  ],
+                },
+              }
+            : { name: "op-1", status: "DONE" },
+        ),
+    });
+    expect(await upgradeGcpInstall(TARGET, { ...deps, http: notMoved })).toBe(true);
+    expect(events.some((e) => e.includes("domain-mappings delete"))).toBe(false);
+    expect(lines.some((l) => l.includes("staging.acme.com  A  199.36.158.100"))).toBe(true);
+    expect(lines.some((l) => l.includes("keeps that route"))).toBe(true);
+    // The Owner's DNS change must not hold every later update back.
+    expect(recorded.contract).toEqual([TARGET.infraContractVersion]);
   });
 
   it("#883 review: an install without caelo-provisioner still records the contract; its admin keeps the terminal path", async () => {
@@ -1336,7 +1410,15 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
               gatewayServiceUrl: `https://${GATEWAY}-xyz.a.run.app`,
               mcpAuthProxyServiceUrl: `https://${PROXY}-xyz.a.run.app`,
             },
-            { run: deps.run, http: htmlGateway, sleep: noSleep, accessJustChanged: false },
+            {
+              run: deps.run,
+              http: htmlGateway,
+              loadBalancerGet: async () => {
+                throw new Error("gcp-firebase never uses the load balancer path");
+              },
+              sleep: noSleep,
+              accessJustChanged: false,
+            },
           ),
         }),
       }),

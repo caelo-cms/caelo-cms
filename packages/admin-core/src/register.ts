@@ -189,8 +189,13 @@ import {
 } from "./ops/content/pages.js";
 import { listRecentlyEditedPagesOp } from "./ops/content/pages-recently-edited.js";
 import { placeModuleOp } from "./ops/content/place-module.js";
+import {
+  contentInstancesRenderedOnManyOp,
+  forkPlacementPathsOp,
+} from "./ops/content/placement-fork-paths.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
 import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
+import { pageConflictsRedirectOp } from "./ops/content/redirect-page-conflicts.js";
 import { listSharedContentOp } from "./ops/content/shared-content.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
 import {
@@ -853,6 +858,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(deleteContentInstancesManyOp);
   registry.register(setPlacementContentOp);
   registry.register(forkPlacementContentOp);
+  registry.register(forkPlacementPathsOp);
+  registry.register(contentInstancesRenderedOnManyOp);
   registry.register(duplicatePageOp);
   registry.register(changeTemplateOp);
   registry.register(deletePageOp);
@@ -1115,6 +1122,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createRedirectOp);
   registry.register(listRedirectsOp);
   registry.register(lookupRedirectOp);
+  registry.register(pageConflictsRedirectOp);
   registry.register(deleteRedirectOp);
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);

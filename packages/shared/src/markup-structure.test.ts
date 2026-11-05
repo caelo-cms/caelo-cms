@@ -113,6 +113,14 @@ describe("templates and free regions", () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
+  it("stripMustache markTagPlaceholders marks values in a tag, keeps optional text (#1445)", () => {
+    const t = '<i class="s{{a}} {{#on}}x-{{{b}}}{{/on}}{{ ^off }}y{{ /off }}">{{c}}</i>';
+    expect(stripMustache(t, { keepOptionalAttributeText: true, markTagPlaceholders: true })).toBe(
+      '<i class="s\u001f x-\u001fy"></i>',
+    );
+    expect(stripMustache(t, { keepOptionalAttributeText: true })).toBe('<i class="s x-y"></i>');
+  });
+
   it("stripMustache markSections keeps sections between elements as markers (#1256)", () => {
     const t =
       '<ul class="x {{#on}}on{{/on}}">{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}{{^links}}<p>none</p>{{/links}}</ul>';

@@ -150,7 +150,7 @@ describe("the gcp-firebase edge: a second Hosting site", () => {
     expect(SITE.length).toBeLessThanOrEqual(30);
   });
 
-  it("creates the site, one `**` rewrite to the staging gateway, the custom domain; deletes the old mapping", async () => {
+  it("creates the site, one `**` rewrite to the staging gateway, the custom domain; keeps the old mapping while the DNS has not moved", async () => {
     const { run, calls } = fakeGcloud({
       ...adminWith(LIVE_SITE),
       "auth print-access-token": ok("tok\n"),
@@ -204,6 +204,7 @@ describe("the gcp-firebase edge: a second Hosting site", () => {
     expect(r.dnsRecords).toEqual([
       { name: "staging.acme.com", type: "A", value: "199.36.158.100" },
     ]);
+    expect(r.domainMappingKept).toBe(true);
     const version = requests.find((q) => q.method === "POST" && q.url.endsWith("/versions"));
     expect(JSON.parse(version?.body ?? "{}")).toEqual({
       config: {
@@ -224,9 +225,57 @@ describe("the gcp-firebase edge: a second Hosting site", () => {
           q.method === "POST" && q.url.includes("customDomains?customDomainId=staging.acme.com"),
       ),
     ).toBe(true);
-    // No second path to the staged files: the old mapping goes.
-    expect(calls).toContainEqual(expect.stringMatching(/^beta run domain-mappings delete /));
+    // #1455 — the mapping holds the host's certificate until the DNS moved.
+    expect(calls.some((c) => c.startsWith("beta run domain-mappings delete"))).toBe(false);
   });
+
+  it.each([
+    ["OWNERSHIP_ACTIVE", true],
+    // DNS moved, but Hosting does not serve the host yet.
+    ["OWNERSHIP_PENDING", false],
+  ])(
+    "#1455 — old mapping with DNS on the staging site, ownership %s",
+    async (ownershipState, gone) => {
+      const { run, calls } = fakeGcloud({
+        ...adminWith(LIVE_SITE),
+        "auth print-access-token": ok("tok\n"),
+        "beta run domain-mappings describe": ok("staging.acme.com\n"),
+        "beta run domain-mappings delete": ok(),
+      });
+      const http: HttpFetch = async (url) => ({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            ...(url.includes("/customDomains/") && !gone
+              ? {
+                  requiredDnsUpdates: {
+                    desired: [
+                      { records: [{ domainName: "staging.acme.com.", type: "TXT", rdata: "tok" }] },
+                    ],
+                  },
+                }
+              : {}),
+            name: `sites/${SITE}/versions/v1`,
+            hostState: "HOST_ACTIVE",
+            ownershipState,
+          }),
+      });
+      const r = await ensureStagingGatewayEdge(
+        {
+          provider: "gcp-firebase",
+          projectId: "acme",
+          region: "europe-west1",
+          env: "production",
+          domain: "acme.com",
+          stagingHost: "staging.acme.com",
+        },
+        { run, http },
+      );
+      expect(r.ok && r.domainMappingKept).toBe(!gone);
+      expect(calls.some((c) => c.startsWith("beta run domain-mappings delete"))).toBe(gone);
+    },
+  );
 
   it("waits for the records Firebase works out after the custom domain is created", async () => {
     const { run } = fakeGcloud({
@@ -375,6 +424,9 @@ describe("the gcp edge: the staging host's own rule on the load balancer", () =>
     expect(r.dnsRecords).toEqual([
       { name: "staging.acme.com", type: "A", value: "136.81.196.111" },
     ]);
+    expect(calls.find((c) => c.startsWith("compute backend-services create"))).toContain(
+      "--protocol=HTTPS --port-name=http",
+    );
     expect(calls.find((c) => c.startsWith("compute backend-services create"))).not.toContain(
       "--security-policy",
     );

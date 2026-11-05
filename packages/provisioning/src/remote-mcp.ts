@@ -44,6 +44,10 @@ import {
 } from "./remote-mcp-edge.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import {
+  repairServerlessBackendPort,
+  SERVERLESS_BACKEND_CREATE_FLAGS,
+} from "./serverless-backend.js";
+import {
   CLOUD_RUN_SLUGS,
   type CloudRunSlug,
   cloudRunServicePrefix,
@@ -565,7 +569,13 @@ async function describePolicyRules(
   if (!describe.ok) {
     return { ok: false, missing: isGcloudNotFound(describe.stderr), error: describe.stderr.trim() };
   }
-  const described = parseJson(describe.stdout) as { rules?: LiveArmorRule[] } | null;
+  // gcloud prints this one `describe` as a one-element list. Read as an
+  // object it has no rules, so a second run tried to create a rule that
+  // exists ("Cannot have rules with the same priorities").
+  const parsed = parseJson(describe.stdout);
+  const described = (Array.isArray(parsed) ? parsed[0] : parsed) as {
+    rules?: LiveArmorRule[];
+  } | null;
   if (!described)
     return { ok: false, missing: false, error: `describe ${policy}: output is not JSON` };
   return { ok: true, rules: described.rules ?? [] };
@@ -726,7 +736,12 @@ export async function ensureMcpAuthProxyBackend(
     project,
     "--format=json",
   ]);
-  let backendJson: { selfLink?: string; securityPolicy?: string; backends?: { group?: string }[] };
+  let backendJson: {
+    selfLink?: string;
+    securityPolicy?: string;
+    portName?: string;
+    backends?: { group?: string }[];
+  };
   if (!backend.ok) {
     if (!isGcloudNotFound(backend.stderr)) {
       return { ok: false, error: `describe ${names.backend}: ${backend.stderr.trim()}` };
@@ -739,7 +754,7 @@ export async function ensureMcpAuthProxyBackend(
       "--global",
       project,
       "--load-balancing-scheme=EXTERNAL_MANAGED",
-      "--protocol=HTTPS",
+      ...SERVERLESS_BACKEND_CREATE_FLAGS,
       "--format=json",
       "--quiet",
     ]);
@@ -751,6 +766,13 @@ export async function ensureMcpAuthProxyBackend(
   } else {
     backendJson = (parseJson(backend.stdout) ?? {}) as typeof backendJson;
   }
+  const port = await repairServerlessBackendPort(
+    run,
+    { name: names.backend, portName: backendJson.portName },
+    project,
+  );
+  if (port.error) return { ok: false, error: port.error };
+  if (port.repaired) done.push(`set ${names.backend}'s port name to http`);
   // `backend-services create` has no --security-policy: `update` attaches it,
   // here and on a backend an earlier run left without one.
   if (!backendJson.securityPolicy?.endsWith(`/securityPolicies/${names.policy}`)) {

@@ -137,6 +137,13 @@ export interface StripMustacheOptions {
    * `keepOptionalAttributeText` (in-tag sections must be dropped first).
    */
   readonly markSections?: boolean;
+  /**
+   * #1445 — with `keepOptionalAttributeText`: turn each value placeholder
+   * inside a tag into {@link PLACEHOLDER_MARK} instead of removing it, so
+   * `class="s{{group}}"` parses as the token `s\u001f` and a reader sees
+   * that the class is built from a field.
+   */
+  readonly markTagPlaceholders?: boolean;
 }
 
 /** The marker element {@link stripMustache} `markSections` emits. */
@@ -177,14 +184,17 @@ export function stripMustache(template: string, opts: StripMustacheOptions = {})
   const marked =
     opts.markSections && !opts.keepOptionalAttributeText
       ? markSections(markTagPlaceholders(base))
-      : base;
+      : opts.markTagPlaceholders
+        ? markTagPlaceholders(base)
+        : base;
   return stripDelimited(stripDelimited(marked, 3), 2);
 }
 
 /**
  * Replace every placeholder inside a tag (`{{x}}`, `{{{x}}}`) with
  * {@link PLACEHOLDER_MARK}. One linear scan, tags tracked as in
- * {@link dropInTagSections}; placeholders between elements are left for
+ * {@link dropInTagSections}; placeholders between elements and section
+ * tags (`{{#s}}`, left in a tag only when its body is kept) are left for
  * the strip.
  */
 function markTagPlaceholders(text: string): string {
@@ -197,7 +207,8 @@ function markTagPlaceholders(text: string): string {
       const end = text.indexOf("}}", i + 2);
       if (end < 0) break;
       const close = text.startsWith("}}}", end) ? end + 3 : end + 2;
-      out += inTag ? PLACEHOLDER_MARK : text.slice(i, close);
+      const section = /^\{\{\s*[#^/]/.test(text.slice(i, end));
+      out += inTag && !section ? PLACEHOLDER_MARK : text.slice(i, close);
       i = close;
       continue;
     }

@@ -21,7 +21,9 @@
  *   menu, puts every link into the DOM three times. Error when ONE module
  *   renders a list twice (one markup serves every width) or a page renders
  *   it three or more times; warning for two renders in different modules
- *   (header + footer). One site finding per list.
+ *   (header + footer). One site finding per list. A module's own list is
+ *   the content instance's (#1448): one module placed twice with an
+ *   instance each shows two lists, the same instance placed twice one.
  */
 
 import { truncateKeepingIds } from "@caelo-cms/shared";
@@ -170,9 +172,10 @@ export function repeatedRenderFindings(
     const error = twiceInOne.size > 0 || most >= REPEATED_RENDER_ERROR;
     const names = (ids: Iterable<string>) =>
       [...ids].map((id) => `"${byId.get(id)?.displayName ?? id}" (${id})`);
+    const [, , field, instance] = listKey.split(":");
     const what = listKey.startsWith("shared:")
       ? `shared list caelo:list/${listKey.slice("shared:".length)}`
-      : `local list \`${listKey.split(":")[2]}\``;
+      : `local list \`${field}\`${instance ? ` of content instance ${instance}` : ""}`;
     const inOne =
       twiceInOne.size > 0 ? ` ${list(names(twiceInOne))} render(s) it twice on its own.` : "";
     const paths = [...new Set(onPages.map((r) => r.path))];

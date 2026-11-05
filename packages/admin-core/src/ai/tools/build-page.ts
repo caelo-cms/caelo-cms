@@ -32,6 +32,7 @@ import {
 } from "./_module-js-contract.js";
 import { moduleWriteGuardSuffix } from "./_module-js-guard.js";
 import { pluginWriteHintsSuffix, storedModuleWrites } from "./_plugin-write-hints.js";
+import { redirectOnPageNote } from "./_redirect-on-page-note.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -428,11 +429,14 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     // What a Stage would refuse now, in this chat's view of the site — so
     // the AI fixes it before stage_changes, not after a failed build.
     const readiness = await stageReadinessSuffix(ctx, toolCtx);
+    const onRedirect = value.createdPage
+      ? await redirectOnPageNote(ctx, toolCtx, { pageIds: [value.pageId] })
+      : "";
     return {
       ok: true,
       content:
         `page ${value.pageId}${value.createdPage ? " created" : ""} — ${value.placements.length} module(s) placed (${mintedCount} minted, ${reusedCount} reused) in one transaction.\n` +
-        `${lines.join("\n")}${moduleNotes}${pluginHints}${extractedHint}${missingMetaHint}${ignoredHint}${reusedHint}${metaNote}${readiness}`,
+        `${lines.join("\n")}${moduleNotes}${pluginHints}${extractedHint}${missingMetaHint}${ignoredHint}${reusedHint}${metaNote}${readiness}${onRedirect}`,
       value,
     };
   },

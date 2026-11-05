@@ -13,6 +13,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { setPagesStatusManyToolInput } from "@caelo-cms/shared";
 import { describeError, toolError } from "./_describe-error.js";
+import { redirectOnPageNote } from "./_redirect-on-page-note.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -51,9 +52,13 @@ export const setPagesStatusManyTool: ToolDefinitionWithHandler<
       input.status === "published"
         ? " They reach the staging site only with the next Stage — call stage_changes when the work is ready for review."
         : " They stay on staging / live until the next Stage / Publish live rebuilds without them.";
+    const onRedirects =
+      input.status === "published"
+        ? await redirectOnPageNote(ctx, toolCtx, { pageIds: input.pageIds })
+        : "";
     return {
       ok: true,
-      content: `${v.updatedCount} page(s) set to ${input.status}.${next}${await stageReadinessSuffix(ctx, toolCtx)}`,
+      content: `${v.updatedCount} page(s) set to ${input.status}.${next}${await stageReadinessSuffix(ctx, toolCtx)}${onRedirects}`,
     };
   },
 };

@@ -95,25 +95,23 @@ function isRef(v: unknown): v is { moduleId: string; contentInstanceId: string }
 }
 
 /**
- * Every nested reference in `values` with its path: direct `module` /
- * `module-list` values, and the ones inside local list entries
+ * Visit every nested reference in `values` with its path: direct `module`
+ * / `module-list` values, and the ones inside local list entries
  * (`{ id, values, children }`) at any depth.
  */
-export function nestedRefPaths(values: Readonly<Record<string, unknown>>): Ref[] {
-  const out: Ref[] = [];
+function visitNestedRefs(
+  values: Readonly<Record<string, unknown>>,
+  visit: (path: string, ref: { moduleId: string; contentInstanceId: string }) => void,
+): void {
   const visitValue = (v: unknown, path: string) => {
     if (isRef(v)) {
-      out.push({ path, moduleId: v.moduleId, contentInstanceId: v.contentInstanceId });
+      visit(path, v);
       return;
     }
     if (!Array.isArray(v)) return;
     v.forEach((el, i) => {
       if (isRef(el)) {
-        out.push({
-          path: `${path}[${i}]`,
-          moduleId: el.moduleId,
-          contentInstanceId: el.contentInstanceId,
-        });
+        visit(`${path}[${i}]`, el);
         return;
       }
       visitEntry(el, path);
@@ -130,6 +128,31 @@ export function nestedRefPaths(values: Readonly<Record<string, unknown>>): Ref[]
     if (Array.isArray(e.children)) for (const c of e.children) visitEntry(c, field);
   };
   for (const [field, v] of Object.entries(values)) visitValue(v, field);
+}
+
+/** Every nested reference in `values` with its path ({@link visitNestedRefs}). */
+export function nestedRefPaths(values: Readonly<Record<string, unknown>>): Ref[] {
+  const out: Ref[] = [];
+  visitNestedRefs(values, (path, ref) => {
+    out.push({ path, moduleId: ref.moduleId, contentInstanceId: ref.contentInstanceId });
+  });
+  return out;
+}
+
+/**
+ * `values` with the references at the keys of `moved` pointing at the
+ * mapped instances. By path, not by id: a parent may list one instance
+ * twice, and moving one of those references must leave the other alone.
+ */
+export function rewriteNestedRefsAt(
+  values: Readonly<Record<string, unknown>>,
+  moved: ReadonlyMap<string, string>,
+): Record<string, unknown> {
+  const out = structuredClone(values) as Record<string, unknown>;
+  visitNestedRefs(out, (path, ref) => {
+    const id = moved.get(path);
+    if (id !== undefined) ref.contentInstanceId = id;
+  });
   return out;
 }
 

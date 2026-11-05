@@ -27,6 +27,8 @@
  *     timeout, in the same `services update`.
  *   - {@link planCpuIdle}: request-based CPU where the contract wants it
  *     (`SERVICE_CPU_IDLE`), in the same `services update`.
+ *   - {@link planMaxInstances} (#1463): a gateway's scale-out down to what
+ *     the connection budget allows, in the same `services update`.
  */
 
 import { isIpLiteral } from "@caelo-cms/shared";
@@ -1216,6 +1218,34 @@ export function planCpuIdle(live: boolean, desired: boolean): RollAdditionsPlan 
     ok: true,
     flags: ["--cpu-throttling"],
     changes: ["CPU: always allocated → only during requests"],
+  };
+}
+
+/**
+ * The most instances a described service may start: the revision template's
+ * `autoscaling.knative.dev/maxScale` annotation. Null without one, which is
+ * Cloud Run's default of 100.
+ */
+export function liveMaxInstances(serviceJson: string): number | null {
+  const svc = JSON.parse(serviceJson) as {
+    spec?: { template?: { metadata?: { annotations?: Record<string, string> } } };
+  };
+  const raw = svc.spec?.template?.metadata?.annotations?.["autoscaling.knative.dev/maxScale"];
+  return raw === undefined ? null : Number(raw);
+}
+
+/**
+ * `--max-instances=<ceiling>` when the service may start more instances than
+ * the connection budget has room for (#1463). Never raises the value: a roll
+ * cannot see the stack's `gatewayMaxInstances`, and a lower live value is the
+ * operator's. An unset or unreadable value counts as above the ceiling.
+ */
+export function planMaxInstances(live: number | null, ceiling: number): RollAdditionsPlan {
+  if (live !== null && live <= ceiling) return { ok: true, flags: [], changes: [] };
+  return {
+    ok: true,
+    flags: [`--max-instances=${ceiling}`],
+    changes: [`max instances: ${live ?? "(default 100)"} → ${ceiling}`],
   };
 }
 

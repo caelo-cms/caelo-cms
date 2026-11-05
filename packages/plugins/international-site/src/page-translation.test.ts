@@ -13,7 +13,6 @@ import { describe, expect, it } from "bun:test";
 import type { ListTypeDef, PluginAdminQuery } from "@caelo-cms/plugin-sdk";
 import type { LocaleRow } from "./index.js";
 import {
-  outcomeNextStep,
   type PreparedPageTranslation,
   pageSlotsOf,
   pageSourceFingerprint,
@@ -67,7 +66,7 @@ const MENU_FIELDS = [
 
 const CARD_FIELDS = [{ name: "card_title", kind: "text" }];
 
-function placements(opts: { nestedExclusive: boolean; nestedTitle: string }) {
+function placements(opts: { nestedTitle: string }) {
   return [
     {
       blockName: "main",
@@ -103,7 +102,6 @@ function placements(opts: { nestedExclusive: boolean; nestedTitle: string }) {
           moduleSlug: "card",
           fields: CARD_FIELDS,
           values: { card_title: opts.nestedTitle },
-          exclusive: opts.nestedExclusive,
         },
       ],
     },
@@ -112,10 +110,7 @@ function placements(opts: { nestedExclusive: boolean; nestedTitle: string }) {
 
 describe("page translation slots", () => {
   it("offers default texts, local list entries and nested content to the translator", () => {
-    const { slots } = pageSlotsOf(
-      placements({ nestedExclusive: true, nestedTitle: "Karte" }),
-      LIST_TYPES,
-    );
+    const { slots } = pageSlotsOf(placements({ nestedTitle: "Karte" }), LIST_TYPES);
     expect(slots).toEqual([
       {
         blockName: "main",
@@ -145,10 +140,7 @@ describe("page translation slots", () => {
   });
 
   it("writes defaults and list entries into the variant's own values, not the module", () => {
-    const { bases } = pageSlotsOf(
-      placements({ nestedExclusive: true, nestedTitle: "Karte" }),
-      LIST_TYPES,
-    );
+    const { bases } = pageSlotsOf(placements({ nestedTitle: "Karte" }), LIST_TYPES);
     const form = bases.get("main|0");
     const menu = bases.get("main|1");
     if (!form || !menu) throw new Error("missing bases");
@@ -208,12 +200,9 @@ describe("writePageTranslation", () => {
     is_default: false,
   };
 
-  function prepared(nestedExclusive: boolean): PreparedPageTranslation {
-    const source = pageSlotsOf(
-      placements({ nestedExclusive: true, nestedTitle: "Karte" }),
-      LIST_TYPES,
-    );
-    const variant = pageSlotsOf(placements({ nestedExclusive, nestedTitle: "Karte" }), LIST_TYPES);
+  function prepared(): PreparedPageTranslation {
+    const source = pageSlotsOf(placements({ nestedTitle: "Karte" }), LIST_TYPES);
+    const variant = pageSlotsOf(placements({ nestedTitle: "Karte" }), LIST_TYPES);
     return {
       variantPageId: "page-en",
       variantRowId: "v-en",
@@ -237,9 +226,18 @@ describe("writePageTranslation", () => {
 
   /**
    * A recording `cms`. `relisted` is what `list_for_page` returns after a
-   * fork (the variant's placements, bound to the fork's copies).
+   * fork (the variant's placements, bound to the copies). `renderedOn`
+   * says where an instance renders besides the variant page; `languages`
+   * holds the pages that are in a variant group.
    */
-  function deps(relisted?: ReturnType<typeof placements>) {
+  function deps(
+    opts: {
+      relisted?: ReturnType<typeof placements>;
+      renderedOn?: Record<string, string[]>;
+      languages?: Record<string, string>;
+      siteWide?: string[];
+    } = {},
+  ) {
     const calls: [string, unknown][] = [];
     const statuses: unknown[] = [];
     return {
@@ -247,6 +245,11 @@ describe("writePageTranslation", () => {
       statuses,
       deps: {
         q: {
+          list: async (_t: string, filter: { anyOf: { page_id: string[] } }) =>
+            filter.anyOf.page_id.flatMap((page_id) => {
+              const locale_code = opts.languages?.[page_id];
+              return locale_code ? [{ page_id, locale_code }] : [];
+            }),
           update: async (_t: string, _id: string, data: unknown) => {
             statuses.push(data);
           },
@@ -254,8 +257,17 @@ describe("writePageTranslation", () => {
         cms: {
           call: async <O>(op: string, input: unknown): Promise<O> => {
             calls.push([op, input]);
+            if (op === "content_instances.rendered_on_many") {
+              return {
+                instances: (input as { ids: string[] }).ids.map((id) => ({
+                  id,
+                  pageIds: ["page-en", ...(opts.renderedOn?.[id] ?? [])],
+                  siteWide: opts.siteWide?.includes(id) ?? false,
+                })),
+              } as O;
+            }
             if (op === "page_module_content.list_for_page") {
-              return { placements: relisted ?? [] } as O;
+              return { placements: opts.relisted ?? [] } as O;
             }
             if (op === "list_types.list") {
               return {
@@ -273,10 +285,14 @@ describe("writePageTranslation", () => {
     };
   }
 
+  /** The recorded calls that change something. */
+  const writes = (d: { calls: [string, unknown][] }) =>
+    d.calls.filter(([op]) => op === "page_module_content.set" || op === "placement.fork_paths");
+
   const ids = (p: PreparedPageTranslation) => [...buildSlotIndex(p.sourceSlots).keys()];
 
   it("writes nested content through the variant page's placement", async () => {
-    const p = prepared(true);
+    const p = prepared();
     const [form, , , card] = ids(p);
     const d = deps();
     const out = await writePageTranslation(d.deps, p, {
@@ -292,6 +308,7 @@ describe("writePageTranslation", () => {
       seo: "untranslated",
     });
     expect(d.calls).toEqual([
+      ["content_instances.rendered_on_many", { ids: ["ci-form", "ci-cards", "ci-card-1"] }],
       [
         "page_module_content.set",
         {
@@ -299,6 +316,7 @@ describe("writePageTranslation", () => {
           blockName: "main",
           position: 0,
           contentValues: { heading: "Jetzt testen", submit_label: "Request a demo" },
+          alsoChangesPages: [],
         },
       ],
       [
@@ -309,6 +327,7 @@ describe("writePageTranslation", () => {
           position: 2,
           nestedPath: "cards[0]",
           contentValues: { card_title: "Card" },
+          alsoChangesPages: [],
         },
       ],
     ]);
@@ -326,75 +345,146 @@ describe("writePageTranslation", () => {
     ]);
   });
 
-  it("#1309 — forks a placement whose nested content the source page renders, then writes the copy", async () => {
-    const p = prepared(false);
+  const at = { pageId: "page-en", blockName: "main", position: 2 };
+
+  it("#1453 — writes content other pages of the language share in place, naming them", async () => {
+    const p = prepared();
     const [, , , card] = ids(p);
-    const d = deps(placements({ nestedExclusive: true, nestedTitle: "Karte" }));
+    const d = deps({
+      renderedOn: { "ci-card-1": ["page-en-2"] },
+      languages: { "page-en-2": "en" },
+    });
     const out = await writePageTranslation(d.deps, p, {
       slots: [{ slot: card as string, values: { card_title: "Card" } }],
     });
-    const at = { pageId: "page-en", blockName: "main", position: 2 };
-    expect(d.calls.filter(([op]) => op !== "list_types.list")).toEqual([
-      ["placement.fork_content", at],
-      ["page_module_content.list_for_page", { pageId: "page-en" }],
+    expect(writes(d)).toEqual([
       [
         "page_module_content.set",
-        { ...at, nestedPath: "cards[0]", contentValues: { card_title: "Card" } },
+        {
+          ...at,
+          nestedPath: "cards[0]",
+          contentValues: { card_title: "Card" },
+          alsoChangesPages: ["page-en-2"],
+        },
       ],
     ]);
-    expect(out.sharedNested).toBeUndefined();
+    expect(out.slotsApplied).toBe(1);
     expect(d.statuses).toHaveLength(1);
   });
 
-  it("#1309 — a nested write refused as synced forks the placement and retries", async () => {
-    const p = prepared(true);
+  it("#1453 — copies only the instance the source language shares, then writes the copy", async () => {
+    const p = prepared();
     const [, , , card] = ids(p);
-    const d = deps(placements({ nestedExclusive: true, nestedTitle: "Karte" }));
-    let refused = false;
-    const call = d.deps.cms.call;
-    d.deps.cms.call = async <O>(op: string, input: unknown): Promise<O> => {
-      if (op === "page_module_content.set" && !refused) {
-        refused = true;
-        d.calls.push([op, input]);
-        throw new Error("placement at (main, 2) on page page-en is SYNCED to content_instance x");
-      }
-      return call<O>(op, input);
-    };
-    const out = await writePageTranslation(d.deps, p, {
+    const d = deps({
+      relisted: placements({ nestedTitle: "Karte" }),
+      // A page in no group is a page of the default language.
+      renderedOn: { "ci-card-1": ["page-de"] },
+    });
+    await writePageTranslation(d.deps, p, {
       slots: [{ slot: card as string, values: { card_title: "Card" } }],
     });
-    expect(d.calls.map(([op]) => op)).toEqual([
-      "page_module_content.set",
-      "placement.fork_content",
-      "list_types.list",
-      "page_module_content.list_for_page",
-      "page_module_content.set",
+    expect(writes(d)).toEqual([
+      [
+        "placement.fork_paths",
+        { ...at, root: false, nestedPaths: ["cards[0]"], alsoChangesPages: [] },
+      ],
+      [
+        "page_module_content.set",
+        {
+          ...at,
+          nestedPath: "cards[0]",
+          contentValues: { card_title: "Card" },
+          alsoChangesPages: [],
+        },
+      ],
     ]);
-    expect(out.slotsApplied).toBe(1);
+    // The bases are read back between the copy and the write.
+    expect(d.calls.map(([op]) => op).indexOf("page_module_content.list_for_page")).toBeGreaterThan(
+      d.calls.map(([op]) => op).indexOf("placement.fork_paths"),
+    );
   });
 
-  it("leaves nested content that renders elsewhere even after the fork untouched, and says what to do", async () => {
-    const p = prepared(false);
+  it("#1453 — a shared chain is copied from the placement down", async () => {
+    const p = prepared();
     const [, , , card] = ids(p);
-    // After the fork the instance is still shared (another page places it).
-    const d = deps(placements({ nestedExclusive: false, nestedTitle: "Karte" }));
-    const out = await writePageTranslation(d.deps, p, {
+    const d = deps({
+      relisted: placements({ nestedTitle: "Karte" }),
+      renderedOn: { "ci-cards": ["page-de"], "ci-card-1": ["page-de"] },
+      languages: { "page-de": "de" },
+    });
+    await writePageTranslation(d.deps, p, {
       slots: [{ slot: card as string, values: { card_title: "Card" } }],
     });
-    expect(d.calls.some(([op]) => op === "page_module_content.set")).toBe(false);
-    expect(out.sharedNested).toEqual(["main #2 > cards[0] (content instance ci-card-1)"]);
-    // Not up to date: part of the page is still in the source language.
-    expect(d.statuses).toEqual([]);
-    expect(outcomeNextStep(out)).toContain("create_content_instances");
+    expect(writes(d)[0]).toEqual([
+      "placement.fork_paths",
+      { ...at, root: true, nestedPaths: ["cards[0]"], alsoChangesPages: [] },
+    ]);
+  });
+
+  it("#1453 — content in chrome or a shared list counts as every language's", async () => {
+    const p = prepared();
+    const [, , , card] = ids(p);
+    const d = deps({ relisted: placements({ nestedTitle: "Karte" }), siteWide: ["ci-card-1"] });
+    await writePageTranslation(d.deps, p, {
+      slots: [{ slot: card as string, values: { card_title: "Card" } }],
+    });
+    expect(writes(d)[0]?.[0]).toBe("placement.fork_paths");
+  });
+
+  it("#1453 — asks where content renders in batches the op takes", async () => {
+    const big = placements({ nestedTitle: "Karte" }).map((pl) =>
+      pl.position !== 2
+        ? pl
+        : {
+            ...pl,
+            nested: Array.from({ length: 1001 }, (_, i) => ({
+              path: `cards[${i}]`,
+              contentInstanceId: `ci-card-${i}`,
+              moduleSlug: "card",
+              fields: CARD_FIELDS,
+              values: { card_title: `Karte ${i}` },
+            })),
+          },
+    );
+    const slots = pageSlotsOf(big, LIST_TYPES);
+    const p: PreparedPageTranslation = {
+      ...prepared(),
+      sourceSlots: slots.slots,
+      variantSlots: slots.slots,
+      sourceBases: slots.bases,
+      variantBases: slots.bases,
+      alignment: alignSlots(slots.slots, slots.slots),
+    };
+    const d = deps();
+    await writePageTranslation(d.deps, p, {
+      slots: ids(p)
+        .slice(3)
+        .map((slot) => ({ slot, values: { card_title: "Card" } })),
+    });
+    const reads = d.calls.filter(([op]) => op === "content_instances.rendered_on_many");
+    expect(reads.map(([, input]) => (input as { ids: string[] }).ids.length)).toEqual([1000, 2]);
+  });
+
+  it("#1453 — an answer that repeats the current text writes and asks nothing", async () => {
+    const p = prepared();
+    const [form, , , card] = ids(p);
+    const d = deps();
+    const out = await writePageTranslation(d.deps, p, {
+      slots: [
+        { slot: form as string, values: { submit_label: "Demo anfragen" } },
+        { slot: card as string, values: { card_title: "Karte" } },
+      ],
+    });
+    expect(d.calls).toEqual([]);
+    expect(out.slotsApplied).toBe(0);
+    // Still up to date: the translator confirmed the text.
+    expect(d.statuses).toHaveLength(1);
   });
 
   it("#1309 — writes each slot into its own section when the variant's sections are reordered", async () => {
-    const source = pageSlotsOf(
-      placements({ nestedExclusive: true, nestedTitle: "Karte" }),
-      LIST_TYPES,
-    );
+    const source = pageSlotsOf(placements({ nestedTitle: "Karte" }), LIST_TYPES);
     // The variant has the cards first and the form last.
-    const reordered = placements({ nestedExclusive: true, nestedTitle: "Karte" });
+    const reordered = placements({ nestedTitle: "Karte" });
     const [form, menu, cards] = reordered;
     if (!form || !menu || !cards) throw new Error("fixture");
     const variantPlacements = [
@@ -404,7 +494,7 @@ describe("writePageTranslation", () => {
     ];
     const variant = pageSlotsOf(variantPlacements, LIST_TYPES);
     const p: PreparedPageTranslation = {
-      ...prepared(true),
+      ...prepared(),
       variantSlots: variant.slots,
       variantBases: variant.bases,
       alignment: alignSlots(source.slots, variant.slots),
@@ -418,7 +508,7 @@ describe("writePageTranslation", () => {
         { slot: card as string, values: { card_title: "Card" } },
       ],
     });
-    expect(d.calls).toEqual([
+    expect(writes(d)).toEqual([
       [
         "page_module_content.set",
         {
@@ -426,6 +516,7 @@ describe("writePageTranslation", () => {
           blockName: "main",
           position: 2,
           contentValues: { heading: "Jetzt testen", submit_label: "Request a demo" },
+          alsoChangesPages: [],
         },
       ],
       [
@@ -436,6 +527,7 @@ describe("writePageTranslation", () => {
           position: 0,
           nestedPath: "cards[0]",
           contentValues: { card_title: "Card" },
+          alsoChangesPages: [],
         },
       ],
     ]);

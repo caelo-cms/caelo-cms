@@ -14,7 +14,9 @@
 
 import {
   computePoolBudget,
+  DB_PUBLIC_POOL_MAX_ENV,
   DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
+  GATEWAY_POOL_MAX,
   type PoolBudget,
   type PoolBudgetInput,
   poolBudgetEnv,
@@ -86,6 +88,29 @@ export const DEFAULT_MAX_CONNECTIONS: Readonly<Record<BudgetProvider, number>> =
  * 800 concurrent visitor requests at Cloud Run's default concurrency.
  */
 export const DEFAULT_GATEWAY_MAX_INSTANCES = 10;
+
+/**
+ * #1463 — the most instances each gateway may run, for what `upgrade` applies
+ * to an existing install. An upgrade reads no stack config, so this is a
+ * ceiling, not a target: the live value is lowered to it and never raised
+ * (app-roll.ts), which keeps a smaller `gatewayMaxInstances` an operator set.
+ * Above it the database refuses the gateway's connections (`public_role`'s
+ * CONNECTION LIMIT, pool-budget.ts).
+ */
+export const GATEWAY_MAX_INSTANCES_CEILING = {
+  gateway: DEFAULT_GATEWAY_MAX_INSTANCES,
+  "staging-gateway": DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
+} as const;
+
+/**
+ * #1463 — the pool env of one gateway instance, live or staging: what the
+ * stacks set from {@link stackPoolBudget} and `upgrade` sets on an install
+ * that has none. It does not depend on the scale-out, so a roll that cannot
+ * see stack config still sets the right value.
+ */
+export const GATEWAY_POOL_ENV: readonly { readonly name: string; readonly value: string }[] = [
+  { name: DB_PUBLIC_POOL_MAX_ENV, value: String(GATEWAY_POOL_MAX) },
+];
 
 /**
  * Admin instances a GCP or AWS stack lets start (`adminMaxInstances` knob).

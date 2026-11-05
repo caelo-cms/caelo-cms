@@ -22,7 +22,7 @@
 import type { ListTypeDef, PluginAdminQuery, PluginAi } from "@caelo-cms/plugin-sdk";
 import { applyStrings, type ChromeField, translatableStrings } from "./chrome.js";
 import type { LocaleRow, PageVariantRow } from "./index.js";
-import { basisOf } from "./stable-json.js";
+import { basisOf, stableJson } from "./stable-json.js";
 import {
   alignSlots,
   buildFullTranslationPrompt,
@@ -31,6 +31,7 @@ import {
   type ContentSlot,
   type GlossaryEntry,
   type SlotAlignment,
+  type SlotTarget,
   slotKeyOf,
   stripJsonFence,
   type TranslationResultPayload,
@@ -45,6 +46,9 @@ import {
   translationContractOf,
   translationJsonSchema,
 } from "./translation-contract.js";
+
+/** Ids of one bulk read: what `anyOf` and `rendered_on_many` take at most. */
+const READ_BATCH = 1000;
 
 /** What a page translation needs from the plugin. */
 export interface TranslationDeps {
@@ -79,15 +83,9 @@ export type TranslatedSeoOutcome = "filled" | "unchanged" | "marked_stale" | "un
 export const SEO_STALE_NEXT_STEP =
   "The variant is live and already had a meta description, so the new translation did not overwrite it (SEO fill-once rule). It is now flagged as stale SEO. If the operator wants the translated description, re-optimize it explicitly with bulk_optimize_seo (page-seo skill).";
 
-/** The next steps a written translation leaves the AI, or undefined. */
+/** The next step a written translation leaves the AI, or undefined. */
 export function outcomeNextStep(o: PageTranslationOutcome): string | undefined {
-  const steps = [
-    ...(o.seo === "marked_stale" ? [SEO_STALE_NEXT_STEP] : []),
-    ...(o.sharedNested && o.sharedNested.length > 0
-      ? [`${SHARED_NESTED_NEXT_STEP} Nested content: ${o.sharedNested.join("; ")}.`]
-      : []),
-  ];
-  return steps.length > 0 ? steps.join(" ") : undefined;
+  return o.seo === "marked_stale" ? SEO_STALE_NEXT_STEP : undefined;
 }
 
 /** Everything one page translation is built from, up to the prompt. */
@@ -120,18 +118,7 @@ export interface PageTranslationOutcome {
   slotsApplied: number;
   titleApplied: boolean;
   seo: TranslatedSeoOutcome;
-  /**
-   * Nested content left untranslated because another page still renders
-   * it after its placement was forked (the fork deep-copies nested
-   * content, so this is the exception): writing it would change that page
-   * too. Labels like `main #1 > cards[2] (content instance <id>)`.
-   */
-  sharedNested?: string[];
 }
-
-/** Told to the AI when nested content could not be translated in place. */
-export const SHARED_NESTED_NEXT_STEP =
-  "Some nested content of this page still renders on another page after its placement got its own copy, so it was not translated — writing it would change that page too. get_content_instance on each listed instance shows where it renders; give this page its own instance there (create_content_instances, then set_page_module_content_many on the placement's field) and run translate_variant again.";
 
 /** A module field as `page_module_content.list_for_page` returns it. */
 interface PageField extends ChromeField {
@@ -152,19 +139,18 @@ interface PlacementRead extends ContentRead {
   readonly nested: readonly (ContentRead & {
     readonly path: string;
     readonly contentInstanceId: string;
-    readonly exclusive: boolean;
   })[];
 }
 
 /**
  * What the write needs of one slot beyond its text: the stored values
- * the translation merges into, the fields (for defaults), and — for
- * nested content — the instance and whether only this page renders it.
+ * the translation merges into, the fields (for defaults), and the
+ * instance that holds them.
  */
 export interface SlotBase {
   readonly values: Readonly<Record<string, unknown>>;
   readonly fields: readonly PageField[];
-  readonly nested?: { readonly contentInstanceId: string; readonly exclusive: boolean };
+  readonly contentInstanceId: string;
 }
 
 /** A page's content as translation slots, with the bases to write them back. */
@@ -235,7 +221,11 @@ export function pageSlotsOf(
       values: slotTexts(p, listTypes),
     };
     slots.push(slot);
-    bases.set(slotKeyOf(slot), { values: p.values, fields: p.fields });
+    bases.set(slotKeyOf(slot), {
+      values: p.values,
+      fields: p.fields,
+      contentInstanceId: p.contentInstanceId,
+    });
     for (const n of p.nested) {
       const nested: ContentSlot = {
         blockName: p.blockName,
@@ -248,7 +238,7 @@ export function pageSlotsOf(
       bases.set(slotKeyOf(nested), {
         values: n.values,
         fields: n.fields,
-        nested: { contentInstanceId: n.contentInstanceId, exclusive: n.exclusive },
+        contentInstanceId: n.contentInstanceId,
       });
     }
   }
@@ -666,6 +656,113 @@ export function pageTranslationContract(p: PreparedPageTranslation): Translation
   });
 }
 
+/** One answered slot whose text differs from what the variant stores. */
+interface SlotChange {
+  readonly source: SlotBase;
+  readonly variant: ContentSlot;
+  readonly variantKey: string;
+  readonly strings: Readonly<Record<string, string>>;
+}
+
+/**
+ * Whether writing `strings` changes what `variant` renders. An answer
+ * that repeats the current text is no change: writing it would snapshot
+ * nothing, and copying content for it would end its sharing for nothing.
+ */
+function changesContent(
+  variant: SlotBase,
+  source: SlotBase,
+  strings: Readonly<Record<string, string>>,
+): boolean {
+  const next = translatedValues(variant, source, strings);
+  return (
+    stableJson(effectiveValues(variant.fields, next)) !==
+    stableJson(effectiveValues(variant.fields, variant.values))
+  );
+}
+
+/** The slots from a slot's placement down to the slot itself. */
+function chainOf(slot: ContentSlot): SlotTarget[] {
+  const at = { blockName: slot.blockName, position: slot.position };
+  const chain: SlotTarget[] = [at];
+  let path = "";
+  for (const step of slot.nestedPath?.split(">") ?? []) {
+    path = path === "" ? step : `${path}>${step}`;
+    chain.push({ ...at, nestedPath: path });
+  }
+  return chain;
+}
+
+/** The language of each page: its variant's, the default for a page in no group. */
+async function languagesOf(
+  deps: Pick<TranslationDeps, "q" | "locales">,
+  pageIds: readonly string[],
+): Promise<(pageId: string) => string | null> {
+  const defaultCode = [...deps.locales.values()].find((l) => l.is_default)?.code ?? null;
+  const byPage = new Map<string, string>();
+  for (let i = 0; i < pageIds.length; i += READ_BATCH) {
+    const rows = (await deps.q.list("page_variants", {
+      anyOf: { page_id: pageIds.slice(i, i + READ_BATCH) },
+      limit: READ_BATCH,
+    })) as unknown as PageVariantRow[];
+    for (const r of rows) byPage.set(r.page_id, r.locale_code);
+  }
+  return (pageId) => byPage.get(pageId) ?? defaultCode;
+}
+
+/**
+ * What a translation may change in place, and what it must copy.
+ *
+ * Pages of one language share content on purpose (a tool's data on two
+ * comparison pages), and a translation of that language belongs in the
+ * shared instance. Content another language renders, the source above all,
+ * must not change: it gets a copy. So the line runs between languages, not
+ * between pages (#1453). What renders in chrome or a shared list counts as
+ * every language's.
+ *
+ * @returns `copied`: the instances of the changed chains to copy;
+ *   `otherPages`: the pages of the target language those chains render on,
+ *   which core checks every in-place write against.
+ */
+async function sharingOf(
+  deps: TranslationDeps,
+  p: PreparedPageTranslation,
+  changes: readonly SlotChange[],
+): Promise<{ copied: ReadonlySet<string>; otherPages: readonly string[] }> {
+  const ids = new Set<string>();
+  for (const c of changes) {
+    for (const link of chainOf(c.variant)) {
+      const id = p.variantBases.get(slotKeyOf(link))?.contentInstanceId;
+      if (id !== undefined) ids.add(id);
+    }
+  }
+  if (ids.size === 0) return { copied: new Set(), otherPages: [] };
+  const instances: { id: string; pageIds: string[]; siteWide: boolean }[] = [];
+  const idList = [...ids];
+  for (let i = 0; i < idList.length; i += READ_BATCH) {
+    const read = await deps.cms.call<{ instances: typeof instances }>(
+      "content_instances.rendered_on_many",
+      { ids: idList.slice(i, i + READ_BATCH) },
+    );
+    instances.push(...read.instances);
+  }
+  const pages = [...new Set(instances.flatMap((i) => i.pageIds))].filter(
+    (id) => id !== p.variantPageId,
+  );
+  const languageOf = await languagesOf(deps, pages);
+  const target = p.targetLocale.code;
+  const copied = instances
+    .filter(
+      (i) =>
+        i.siteWide || i.pageIds.some((id) => id !== p.variantPageId && languageOf(id) !== target),
+    )
+    .map((i) => i.id);
+  return {
+    copied: new Set(copied),
+    otherPages: pages.filter((id) => languageOf(id) === target),
+  };
+}
+
 /**
  * Write a validated answer onto the DRAFT variant: merge translated
  * strings over the variant's current values, update the title, apply the
@@ -674,13 +771,15 @@ export function pageTranslationContract(p: PreparedPageTranslation): Translation
  *
  * Every slot is written where its ALIGNED variant slot sits (identity,
  * not position: a variant with its sections in another order gets each
- * text in its own section). A translation is by definition page-private,
- * so a placement whose content another page renders too is forked first:
- * a synced placement the answer writes, and every placement with answered
- * nested content that is not this page's alone — the content below a
- * placement shared with the source page renders on the source page, at
- * every depth (#1309). The fork deep-copies the nested content, so the
- * nested writes then land on the variant's own copies.
+ * text in its own section). Only slots whose text changes are written, so
+ * unchanged content keeps its instance whatever it is shared with.
+ *
+ * A write never changes what another language renders (#1309), and never
+ * ends sharing inside the target language (#1453): {@link sharingOf} draws
+ * that line, the instances on the far side of it are copied one by one
+ * (`placement.fork_paths`, with every instance above them that is on the
+ * far side too), and the writes land in the instances the variant holds
+ * then. Core refuses a write that reaches any page not named to it.
  */
 export async function writePageTranslation(
   deps: TranslationDeps,
@@ -690,114 +789,80 @@ export async function writePageTranslation(
   const { q, cms } = deps;
   const slotIndex = buildSlotIndex(p.sourceSlots);
   const variantOf = variantSlotsBySource(p.alignment);
-  let slotsApplied = 0;
-  const answered = payload.slots.flatMap((entry) => {
+  const changes = payload.slots.flatMap((entry): SlotChange[] => {
     const target = slotIndex.get(entry.slot);
     // validateStructuralLock already refused unknown ids.
     if (!target) return [];
     const key = slotKeyOf(target);
     // Full-mode 'added' slots have no variant counterpart: nothing to write.
     const variant = variantOf.get(key);
-    if (!variant) return [];
-    return [{ sourceKey: key, variant, variantKey: slotKeyOf(variant), strings: entry.values }];
+    const source = p.sourceBases.get(key);
+    if (!variant || !source) return [];
+    const variantKey = slotKeyOf(variant);
+    const current = p.variantBases.get(variantKey);
+    if (!current || !changesContent(current, source, entry.values)) return [];
+    return [{ source, variant, variantKey, strings: entry.values }];
   });
+
+  const { copied, otherPages } = await sharingOf(deps, p, changes);
+  const forks = new Map<string, { root: boolean; nestedPaths: Set<string>; slot: ContentSlot }>();
+  for (const c of changes) {
+    for (const link of chainOf(c.variant)) {
+      const id = p.variantBases.get(slotKeyOf(link))?.contentInstanceId;
+      if (id === undefined || !copied.has(id)) continue;
+      const key = `${link.blockName}|${link.position}`;
+      const fork = forks.get(key) ?? { root: false, nestedPaths: new Set(), slot: c.variant };
+      if (link.nestedPath === undefined) fork.root = true;
+      else fork.nestedPaths.add(link.nestedPath);
+      forks.set(key, fork);
+    }
+  }
   const placementOf = (v: ContentSlot) => ({
     pageId: p.variantPageId,
     blockName: v.blockName,
     position: v.position,
   });
-  // What the writes merge into. A fork rebinds the placement to fresh
-  // copies whose nested references differ from the prepared values, so
-  // after one the bases are read back BEFORE anything is written over
-  // them: writing the prepared root values onto the fork would point it
-  // back at the shared nested content it was forked to leave.
-  let bases = p.variantBases;
-  // List types do not change during the write: read them once, on the
-  // first re-read.
-  let listTypes: Map<string, ListTypeDef> | undefined;
-  const reread = async () => {
-    listTypes ??= await loadListTypes(deps);
-    bases = (await loadPageSlots(deps, p.variantPageId, listTypes)).bases;
-  };
-  const forked = new Set<string>();
-  const forkOnly = async (v: ContentSlot): Promise<boolean> => {
-    const at = placementOf(v);
-    if (forked.has(slotKeyOf(at))) return false;
-    await cms.call("placement.fork_content", at);
-    forked.add(slotKeyOf(at));
-    return true;
-  };
-  const fork = async (v: ContentSlot): Promise<void> => {
-    if (await forkOnly(v)) await reread();
-  };
-  const isSyncedRefusal = (e: unknown, v: ContentSlot): boolean =>
-    /synced/i.test((e as Error).message) && !forked.has(slotKeyOf(placementOf(v)));
-  // Every placement with shared answered nested content is forked up
-  // front, and the bases are re-read once for all of them.
-  let preForked = false;
-  for (const a of answered) {
-    if (a.variant.nestedPath === undefined) continue;
-    if (bases.get(a.variantKey)?.nested?.exclusive === false && (await forkOnly(a.variant))) {
-      preForked = true;
-    }
+  for (const fork of forks.values()) {
+    await cms.call("placement.fork_paths", {
+      ...placementOf(fork.slot),
+      root: fork.root,
+      nestedPaths: [...fork.nestedPaths],
+      alsoChangesPages: otherPages,
+    });
   }
-  if (preForked) await reread();
-  for (const a of answered.filter((x) => x.variant.nestedPath === undefined)) {
-    const source = p.sourceBases.get(a.sourceKey);
-    if (!bases.get(a.variantKey) || !source) continue;
-    const write = async () => {
-      const current = bases.get(a.variantKey);
-      if (!current) throw new Error(`placement ${a.variantKey} vanished from the variant`);
-      await cms.call("page_module_content.set", {
-        ...placementOf(a.variant),
-        contentValues: translatedValues(current, source, a.strings),
-      });
-    };
-    try {
-      await write();
-    } catch (e) {
-      if (!isSyncedRefusal(e, a.variant)) throw e;
-      // A synced placement is shared with other pages — fork, then write.
-      await fork(a.variant);
-      await write();
-    }
-    slotsApplied += 1;
+  // A copy changes the references in the values above it, so the bases
+  // are read back BEFORE anything is written over them: writing the
+  // prepared values would point the variant back at what it just left.
+  const bases =
+    forks.size === 0
+      ? p.variantBases
+      : (await loadPageSlots(deps, p.variantPageId, await loadListTypes(deps))).bases;
+  // Two slots can show one instance, and a write replaces its values: the
+  // slots' texts are merged per instance, or the later would undo the
+  // earlier.
+  const writes = new Map<string, { slot: ContentSlot; values: Record<string, unknown> }>();
+  for (const c of changes) {
+    const current = bases.get(c.variantKey);
+    if (!current) throw new Error(`slot ${c.variantKey} vanished from the variant`);
+    const earlier = writes.get(current.contentInstanceId);
+    writes.set(current.contentInstanceId, {
+      slot: earlier?.slot ?? c.variant,
+      values: translatedValues(
+        earlier ? { ...current, values: earlier.values } : current,
+        c.source,
+        c.strings,
+      ),
+    });
   }
-  const sharedNested: string[] = [];
-  for (const a of answered.filter((x) => x.variant.nestedPath !== undefined)) {
-    const source = p.sourceBases.get(a.sourceKey);
-    if (!bases.get(a.variantKey)?.nested || !source) continue;
-    const at = placementOf(a.variant);
-    const writeIfOwn = async (): Promise<boolean> => {
-      const current = bases.get(a.variantKey);
-      if (!current?.nested?.exclusive) return false;
-      await cms.call("page_module_content.set", {
-        ...at,
-        nestedPath: a.variant.nestedPath,
-        contentValues: translatedValues(current, source, a.strings),
-      });
-      return true;
-    };
-    let written: boolean;
-    try {
-      written = await writeIfOwn();
-    } catch (e) {
-      // Content only this page renders, below a placement marked synced:
-      // the write is refused until the placement is forked.
-      if (!isSyncedRefusal(e, a.variant)) throw e;
-      await fork(a.variant);
-      written = await writeIfOwn();
-    }
-    if (written) {
-      slotsApplied += 1;
-      continue;
-    }
-    // Still shared after the fork: writing it would change another page.
-    const instance = bases.get(a.variantKey)?.nested?.contentInstanceId;
-    sharedNested.push(
-      `${at.blockName} #${at.position} > ${a.variant.nestedPath}${instance ? ` (content instance ${instance})` : ""}`,
-    );
+  for (const { slot, values } of writes.values()) {
+    await cms.call("page_module_content.set", {
+      ...placementOf(slot),
+      ...(slot.nestedPath === undefined ? {} : { nestedPath: slot.nestedPath }),
+      contentValues: values,
+      alsoChangesPages: otherPages,
+    });
   }
+  const slotsApplied = changes.length;
   let titleApplied = false;
   const title = payload.title && payload.title !== p.variantTitle ? payload.title : undefined;
   const shortTitle =
@@ -820,24 +885,19 @@ export async function writePageTranslation(
     );
     seo = applied.outcome;
   }
-  // A page with shared nested content is not up to date: part of it is
-  // still in the source language.
-  if (sharedNested.length === 0) {
-    // The source this translation was made from: a source edit after the
-    // prepare step leaves the hash behind, so the variant reads as stale.
-    const sourceHash = await pageSourceFingerprint({
-      title: p.sourceTitle,
-      shortTitle: p.sourceShortTitle,
-      metaDescription: p.sourceMetaDescription,
-      slots: p.sourceSlots,
-    });
-    await q.update("page_variants", p.variantRowId, {
-      translation_status: "up_to_date",
-      source_hash: sourceHash,
-    });
-    return { mode: p.mode, slotsApplied, titleApplied, seo };
-  }
-  return { mode: p.mode, slotsApplied, titleApplied, seo, sharedNested };
+  // The source this translation was made from: a source edit after the
+  // prepare step leaves the hash behind, so the variant reads as stale.
+  const sourceHash = await pageSourceFingerprint({
+    title: p.sourceTitle,
+    shortTitle: p.sourceShortTitle,
+    metaDescription: p.sourceMetaDescription,
+    slots: p.sourceSlots,
+  });
+  await q.update("page_variants", p.variantRowId, {
+    translation_status: "up_to_date",
+    source_hash: sourceHash,
+  });
+  return { mode: p.mode, slotsApplied, titleApplied, seo };
 }
 
 /**

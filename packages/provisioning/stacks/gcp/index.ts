@@ -969,6 +969,25 @@ const gatewaySvc = deployGateways
     })
   : null;
 
+// Cloud Run checks a caller's identity whatever the ingress, and a visitor
+// has none: without this binding every /api/ call answers Cloud Run's 403.
+// Public only through the load balancer: the service's ingress closes its
+// run.app URL. The MCP-Auth-Proxy and the staging gateway are CLI-owned and
+// deployed with --allow-unauthenticated.
+if (gatewaySvc) {
+  new gcp.cloudrunv2.ServiceIamMember(
+    `${namePrefix}-data-gateway-public-invoker`,
+    {
+      project,
+      location: region,
+      name: gatewaySvc.name,
+      role: "roles/run.invoker",
+      member: "allUsers",
+    },
+    opts,
+  );
+}
+
 // =========================================================================
 // Tier 1 + Tier 2 + Tier 3 LB — single HTTPS LB serves three backends
 // =========================================================================
