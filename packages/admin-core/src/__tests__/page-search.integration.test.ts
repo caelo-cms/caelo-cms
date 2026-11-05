@@ -258,6 +258,28 @@ describe("#1269 — pages.search by word prefix", () => {
     const ids = (text: string) => [...text.matchAll(/,([0-9a-f-]{36}),/g)].map((m) => m[1]);
     expect(ids(second.content).some((id) => ids(first.content).includes(id))).toBe(false);
 
+    // A batch a chat's pending deletes emptied still names the cursor on.
+    const chat = await ok<{ chatSessionId: string; chatBranchId: string }>(
+      SYSTEM,
+      "chat.create_session",
+      { title: `${PFX}-tool-chat` },
+    );
+    const ai: ExecutionContext = {
+      actorId: SYSTEM.actorId,
+      actorKind: "ai",
+      requestId: `${PFX}-tool-ai`,
+      chatBranchId: chat.chatBranchId,
+      chatTaskId: chat.chatSessionId,
+    };
+    const oldest = await ok<{ pages: { id: string }[] }>(ai, "pages.list", { limit: 1 });
+    const oldestId = oldest.pages[0]?.id ?? "";
+    await ok(ai, "pages.delete", { pageId: oldestId, children: "move-up" });
+    const emptied = await listPagesTool.handler(ai, { limit: 1 }, {
+      registry,
+      adapter,
+    } as unknown as Parameters<typeof listPagesTool.handler>[2]);
+    expect(emptied.content).toContain("No visible page in this batch; call again with cursor:");
+
     const both = await tool({ search: "quokkaword", underPageId: found });
     expect(both.ok).toBe(false);
     expect(both.content).toContain("cannot be combined");

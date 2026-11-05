@@ -80,6 +80,8 @@ function emptyAnswer(input: ListPagesInput, nextCursor: string | null): string {
       ? `No match yet among the pages looked at for "${input.search}"; call again with cursor: ${nextCursor}`
       : `No page matches "${input.search}": the words must start words of a page's title or path (the last word names the page itself). Try fewer or other words, or list pages without search.`;
   }
+  // A batch the chat's pending deletes emptied: more pages may follow.
+  if (nextCursor) return `No visible page in this batch; call again with cursor: ${nextCursor}`;
   if (input.cursor) return "No more pages.";
   return "No pages on this site yet. Call build_page (pass page.templateId from list_templates; modules:[] for an empty shell) to create one.";
 }
@@ -87,7 +89,7 @@ function emptyAnswer(input: ListPagesInput, nextCursor: string | null): string {
 export const listPagesTool: ToolDefinitionWithHandler<ListPagesInput> = {
   name: "list_pages",
   description:
-    "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, short title (breadcrumb/navigation label), page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. To find a page, pass `search` with words of its title or path; without it, rows come one page of the site at a time (follow `next cursor`). Use for any page UUID/path; never ask the operator to paste a UUID.",
+    "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, short title (breadcrumb/navigation label), page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. To find a page, pass `search` with words of its title or path; without it, rows come one page of the site at a time (follow `next cursor` to browse a small site or a subtree, never to scan a large one). Use for any page UUID/path; never ask the operator to paste a UUID.",
   schema: listPagesInput,
   inputSchema: generateInputSchema(listPagesInput),
   handler: async (ctx, input, toolCtx) => {
