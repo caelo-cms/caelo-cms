@@ -59,9 +59,16 @@ function seedSecondPage(templateId: string): string {
         // The id is baked in by THIS template literal — escaping it
         // would hand the subprocess a variable name it has never heard
         // of, which is what the first version did.
-        return tx.unsafe(\`INSERT INTO pages (slug, title, template_id, status, current_path, page_type_confirmed)
+        const pages = await tx.unsafe(\`INSERT INTO pages (slug, title, template_id, status, current_path, page_type_confirmed)
           VALUES ('kontakt', 'Kontakt', '${templateId}'::uuid, 'published', '/kontakt', true)
           RETURNING id::text AS id\`);
+        // #730 — builds refuse a published page without a description, and
+        // this one is a fixture the AI never authored. It is also empty, so
+        // the AI rightly writes none for it; the green this scenario had on
+        // Sonnet 5 was the model inventing one.
+        await tx.unsafe(\`INSERT INTO pages_seo (page_id, meta_description)
+          VALUES ('\${pages[0].id}'::uuid, 'Seeded contact page of the live-edit scenario.')\`);
+        return pages;
       });
       console.log(rows[0].id);
       await sql.end();

@@ -310,12 +310,106 @@ function stripDanglingServerCalls(
     });
     if (kept.length === content.length) {
       out.push(msg);
-    } else if (kept.length > 0) {
+    } else if (kept.some(isSayingPart)) {
       out.push({ ...(msg as Record<string, unknown>), content: kept });
     }
-    // kept.length === 0 → drop the whole message.
+    // Nothing left to say → drop the whole message: a turn of bare thinking
+    // is rejected like an empty one.
   }
   return out;
+}
+
+/** A part of an assistant message that is more than reasoning or metadata. */
+function isSayingPart(part: unknown): boolean {
+  const type = (part as { type?: unknown } | null)?.type;
+  return type !== "reasoning" && type !== "custom";
+}
+
+/** What {@link settleDeferredServerCalls} changed. */
+export interface SettledServerCalls {
+  /** The same array, by identity, when nothing was stripped. */
+  messages: ChatMessageInput[];
+  strippedIds: string[];
+  /**
+   * The last assistant row's assembly after the strip, when that row changed
+   * and still exists: the caller stores it over the row's persisted one.
+   */
+  lastAssistantSdkMessages?: unknown[];
+}
+
+/**
+ * #1479 — drop the tool searches a continuation request cannot carry.
+ *
+ * A search paired with a client call in one response stays unanswered: the
+ * API delivers its result at the head of the next response, and accepts the
+ * unanswered `server_tool_use` only when that request ends at the tool_result
+ * boundary (#442). A user message with anything else in it — load_skill's
+ * text, a tool's image, a corrective nudge — makes the API validate the
+ * history as finished and answer 400, killing the turn (release gate run
+ * 42073895917 recorded both sides on one model). The text cannot go first
+ * either: tool_result blocks must lead that message, and it cannot go in the
+ * result next to tool references.
+ *
+ * So once anything follows the tool results, the search gives way: the model
+ * loses one search result, which it can repeat, and keeps content it could
+ * not get back (the skill's instructions, the screenshot). Holding that
+ * content back a step instead would have the model act without it.
+ *
+ * Runs before the request first carries the row, and the caller stores the
+ * stripped row, so this is not an edit of sent history: a later thinking
+ * block is signed over this very shape, where a strip at the next turn's
+ * replay would invalidate it (preserved thinking). Providers without
+ * deferred results never have a dangling call here.
+ */
+export function settleDeferredServerCalls(messages: ChatMessageInput[]): SettledServerCalls {
+  const calls = new Set<string>();
+  const answered = new Set<string>();
+  for (const m of messages) {
+    if (isPassthroughRow(m)) {
+      harvestSdkPairIds(m.sdkMessages ?? [], new Set(), answered, calls);
+    }
+  }
+  const dangling = new Set([...calls].filter((id) => !answered.has(id)));
+  if (dangling.size === 0) return { messages, strippedIds: [] };
+
+  const lastAssistant = messages.findLastIndex((m) => m.role === "assistant");
+  const atBoundary = messages.slice(lastAssistant + 1).every(isBareToolRow);
+  if (atBoundary) {
+    const stillDeferred = new Set<string>();
+    harvestSdkPairIds(
+      messages[lastAssistant]?.sdkMessages ?? [],
+      new Set(),
+      new Set(),
+      stillDeferred,
+    );
+    for (const id of stillDeferred) dangling.delete(id);
+  }
+  if (dangling.size === 0) return { messages, strippedIds: [] };
+
+  const strippedIds = [...dangling];
+  let lastAssistantSdkMessages: unknown[] | undefined;
+  const out: ChatMessageInput[] = [];
+  for (const [i, m] of messages.entries()) {
+    if (!isPassthroughRow(m) || m.role !== "assistant") {
+      out.push(m);
+      continue;
+    }
+    const sdkMessages = stripDanglingServerCalls(m.sdkMessages ?? [], dangling);
+    if (sdkMessages.length === 0) continue;
+    if (i === lastAssistant) lastAssistantSdkMessages = sdkMessages;
+    out.push({ ...m, sdkMessages });
+  }
+  return {
+    messages: out,
+    strippedIds,
+    ...(lastAssistantSdkMessages ? { lastAssistantSdkMessages } : {}),
+  };
+}
+
+/** A tool-result row with nothing after the result inside it. */
+function isBareToolRow(m: ChatMessageInput): boolean {
+  if (m.role !== "tool") return false;
+  return !(m.sdkMessages ?? []).some((msg) => (msg as { role?: unknown } | null)?.role === "user");
 }
 
 /**
