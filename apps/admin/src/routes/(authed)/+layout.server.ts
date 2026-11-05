@@ -58,8 +58,11 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 
   // P18 — block all non-/settings routes until the Owner decided how this
   // install gets its AI. Skip the check on routes the Owner needs to reach
-  // to fix the problem (anything under /settings) so we don't loop.
-  if (aiMode === "unset" && !pathExempt(url.pathname)) throw redirect(303, "/welcome/ai");
+  // to fix the problem (anything under /settings) so we don't loop. The
+  // pathname is read whatever the mode: that read is what reruns this load
+  // on every navigation, so an open tab follows a key saved in another one.
+  const exempt = pathExempt(url.pathname);
+  if (aiMode === "unset" && !exempt) throw redirect(303, "/welcome/ai");
 
   // Live "AI spend — last 7 days" readout for the top bar. Best-effort:
   // a failed read must never break the layout, so it degrades to null.

@@ -30,7 +30,16 @@ type ProviderName = (typeof PROVIDER_NAMES)[number];
 
 import { catalogSlots } from "../../ai/model-catalog.js";
 import { providerEnvKey } from "../../ai/provider-env.js";
-import { invalidateProviderCache } from "../../ai/provider-resolver.js";
+
+/**
+ * #1460 — serialises the writers of the AI mode for this transaction. Each
+ * one decides from the other's table (is there a key? is the mode on?), so
+ * without the lock a key saved while the mode is being chosen could commit
+ * next to the mode row, which would then hide a valid key.
+ */
+async function lockInstallAiMode(tx: TransactionRunner): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('caelo.install_ai_mode'))`);
+}
 
 const providerRow = z.object({
   id: z.string(),
@@ -117,7 +126,16 @@ export const setAiProvidersOp = defineOperation({
   database: "cms_admin",
   input: aiProvidersSetInput,
   output: z.object({ apiKeyChanged: z.boolean() }),
-  handler: async (ctx, input, tx) => {
+  handler: async (ctx, rawInput, tx) => {
+    await lockInstallAiMode(tx);
+    // #1460 — a key pasted on an install without one is the way out of the
+    // Power-MCP-only mode, and no further step may follow. Settings → AI
+    // only offers "Activate" once a key is stored, so the first save of a
+    // key arrives inactive; it activates here.
+    const input =
+      rawInput.apiKey !== undefined && (await isMcpOnly(tx))
+        ? { ...rawInput, isActive: true }
+        : rawInput;
     if (input.isActive) {
       // Only one active provider at a time — chat runtime instantiates
       // exactly one. Owner can flip between them.
@@ -171,10 +189,10 @@ export const setAiProvidersOp = defineOperation({
       `);
     }
 
-    // #1460 — a usable key ends the Power-MCP-only mode, in this transaction,
-    // so no further step exists. A save without one leaves it alone.
-    const usable = input.apiKey !== undefined || Boolean(providerEnvKey(input.name));
-    if (input.isActive && usable) await tx.execute(sql`DELETE FROM mcp_only_mode`);
+    // #1460 — an active provider with a usable key ends the Power-MCP-only
+    // mode, in this transaction. The key may be one stored earlier that this
+    // save only activates; a save with no key at all leaves the mode alone.
+    if (await anyUsableProvider(tx)) await tx.execute(sql`DELETE FROM mcp_only_mode`);
 
     // pg_notify so the in-process resolver TTL invalidates instantly
     // (cross-process LISTEN consumer is a P18 follow-up).
@@ -358,6 +376,7 @@ export const setMcpOnlyOp = defineOperation({
   output: z.object({ mode: z.literal("mcp_only") }),
   handler: async (ctx, input, tx) => {
     const operation = "ai_providers.set_mcp_only";
+    await lockInstallAiMode(tx);
     if (await anyUsableProvider(tx)) {
       return err({
         kind: "HandlerError",
@@ -367,7 +386,6 @@ export const setMcpOnlyOp = defineOperation({
       });
     }
     await tx.execute(sql`INSERT INTO mcp_only_mode (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
-    invalidateProviderCache();
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

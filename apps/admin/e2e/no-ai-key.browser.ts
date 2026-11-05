@@ -35,7 +35,12 @@ function fixture(op: "no-provider" | "restore" | "count-providers"): string {
         return String(rows[0].n);
       }
       await tx\`DELETE FROM mcp_only_mode\`;
-      await tx\`UPDATE ai_providers SET is_active = false\`;
+      // As on a fresh install: no key anywhere, so "Activate" is disabled.
+      await tx\`
+        UPDATE ai_providers
+           SET is_active = false, api_key_encrypted = NULL, api_key_iv = NULL,
+               api_key_kek_fp = NULL, api_key_set_at = NULL
+      \`;
       if (op === "restore") {
         await tx\`
           UPDATE ai_providers
@@ -231,8 +236,6 @@ test("a key under Settings → AI brings the composer back at once", async ({ pa
     .filter({ has: page.locator('input[value="anthropic"]') })
     .first();
   await form.locator('input[name="apiKey"]').fill("sk-ant-e2e-no-key-flow");
-  const active = form.locator('input[name="isActive"]');
-  if (await active.count()) await active.check();
   await form.getByRole("button", { name: "Save" }).click();
   await expect(page.getByTestId("ai-mcp-only-mode")).toHaveCount(0, { timeout: 60_000 });
 

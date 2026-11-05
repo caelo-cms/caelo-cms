@@ -14,9 +14,10 @@
  *      bridge returns structured error).
  *
  * #1460 — while the Owner runs the install without an AI key
- * (`mcp_only_mode`), no key resolves, the environment's included: the choice
- * decides what the install runs on, and each caller's "no provider" path
- * answers with the refusal of that mode.
+ * (`mcp_only_mode`), nothing resolves, neither the environment's key nor a
+ * provider this instance still has cached (another instance may have taken
+ * the choice): it is checked before the cache. Each caller's "no provider"
+ * path answers with the refusal of that mode.
  *
  * Cache: in-process Map keyed by (name, model, baseUrl, sha256(key)[0..8])
  * with 60s TTL so we don't re-decrypt on every chat turn. `pg_notify`
@@ -381,7 +382,6 @@ async function loadApiKey(
   d: ResolverDeps,
   name: ProviderName,
 ): Promise<{ apiKey: string; source: "db" | "env" } | null> {
-  if (await mcpOnlyChosen(d)) return null;
   const encrypted = await loadEncryptedKeyFromDb(d, name);
   if (encrypted) {
     try {
@@ -423,6 +423,7 @@ async function resolveProvider(
   if (!deps) {
     throw new Error("provider-resolver not configured — call configureProviderResolver() at boot");
   }
+  if (await mcpOnlyChosen(deps)) return null;
   // Test-only overrides (anthropic + NODE_ENV != production). Read once
   // per call so the unit test for AC #16 can flip env vars in-process.
   const effectiveModel = readModelOverride(name) ?? meta.model;
@@ -597,6 +598,7 @@ async function resolveActiveRowForModel(
   meta: { name: ProviderName; baseUrl?: string; maxOutputTokens?: number },
   modelId: string,
 ): Promise<ResolvedProvider | null> {
+  if (await mcpOnlyChosen(d)) return null;
   const cacheKey = `${meta.name}::${modelId}`;
   const now = Date.now();
   const cached = tierCache.get(cacheKey);
@@ -651,5 +653,6 @@ export async function getActiveProviderForPurpose(
  */
 export async function getImageProviderApiKey(name: "google" | "openai"): Promise<string | null> {
   if (!deps) throw new Error("provider-resolver not configured");
+  if (await mcpOnlyChosen(deps)) return null;
   return (await loadApiKey(deps, name))?.apiKey ?? null;
 }

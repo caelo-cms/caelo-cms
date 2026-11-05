@@ -208,6 +208,52 @@ describe("the stored choice", () => {
     expect((await getActiveProvider())?.providerName).toBe("anthropic");
   });
 
+  it("ends on the first save of a key, which Settings → AI sends inactive", async () => {
+    await chooseMcpOnly();
+    const r = await execute(registry, adapter, ownerCtx, "ai_providers.set", {
+      name: "anthropic",
+      displayName: "Anthropic",
+      config: { model: "claude-sonnet-4-6" },
+      isActive: false,
+      apiKey: "sk-ant-test",
+    });
+    expect(r.ok).toBe(true);
+    expect(await mode()).toBe("provider");
+    expect((await getActiveProvider())?.providerName).toBe("anthropic");
+  });
+
+  it("ends when a save activates a key stored earlier", async () => {
+    await storeKey("sk-ant-test");
+    await asSystem(async (tx) => {
+      await tx`UPDATE ai_providers SET is_active = false`;
+      await tx`INSERT INTO mcp_only_mode (id) VALUES (1)`;
+    });
+    await storeKey();
+    expect(await mode()).toBe("provider");
+  });
+
+  it("wins over a provider this instance has cached, as when another instance chose it", async () => {
+    await storeKey("sk-ant-test");
+    expect((await getActiveProvider())?.providerName).toBe("anthropic");
+    expect(await getActiveProviderForModel("claude-sonnet-4-6")).not.toBeNull();
+    await asSystem(async (tx) => {
+      await tx`INSERT INTO mcp_only_mode (id) VALUES (1)`;
+    });
+    expect(await getActiveProvider()).toBeNull();
+    expect(await getActiveProviderForModel("claude-sonnet-4-6")).toBeNull();
+  });
+
+  it("never leaves a key next to the mode when both are written at once", async () => {
+    for (let round = 0; round < 5; round += 1) {
+      await reset();
+      await Promise.all([
+        storeKey("sk-ant-test"),
+        execute(registry, adapter, ownerCtx, "ai_providers.set_mcp_only", {}),
+      ]);
+      expect(await mode()).toBe("provider");
+    }
+  });
+
   it("survives a save without a key", async () => {
     await chooseMcpOnly();
     await storeKey();
