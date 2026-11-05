@@ -48,6 +48,7 @@ const OP_TO_TOOL: Readonly<Record<string, string>> = {
   "content_instances.create": "create_content_instances",
   "content_instances.get": "get_content_instance",
   "content_instances.list": "list_content_instances",
+  "plugins.get_draft_rows": "get_plugin_draft_rows",
   "placement.set_content": "set_placement_content",
   "placement.fork_content": "fork_placement_content",
   "page_module_content.set_many": "set_page_module_content_many",

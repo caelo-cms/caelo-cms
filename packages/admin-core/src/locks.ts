@@ -316,9 +316,10 @@ export async function checkAndAcquireEntityLock(
  *
  * A conflict records the observation (the AI is now told about the change
  * and re-reads), so the retry with the fresh state passes — when the
- * refused op commits. A bulk op that aborts rolls it back; the re-read the
- * conflict message names records it then (issue #1260,
- * {@link observeDraftReads}). A permitted write records it too.
+ * refused op commits. A bulk op or a plugin's private-storage write aborts
+ * and rolls it back; the re-read the conflict message names records it then
+ * (issues #1260, #1387, {@link observeDraftReads}). A permitted write
+ * records it too.
  *
  * @returns the newer change by another chat, or null when the write may go.
  */
@@ -367,8 +368,7 @@ async function draftConflict(
 /**
  * Lock kinds a draft conflict can name: the kinds whose writes land in a
  * snapshot table ({@link snapshotTablesForLockKind}). Every other kind
- * writes live and can never be stale. `pluginRow` is left out: a plugin
- * row is read through the plugin's own tools, which record no reads yet.
+ * writes live and can never be stale.
  */
 export const DRAFT_READ_KINDS = [
   "module",
@@ -381,6 +381,7 @@ export const DRAFT_READ_KINDS = [
   "list",
   "listType",
   "pageType",
+  "pluginRow",
 ] as const satisfies readonly LockedEntityKind[];
 
 /** A lock kind a draft read can record ({@link DRAFT_READ_KINDS}). */
@@ -395,9 +396,9 @@ export type DraftReadKind = (typeof DRAFT_READ_KINDS)[number];
  * ({@link draftRereadHint}); that read runs in a transaction of its own and
  * commits, so the observation survives. The observation `draftConflict`
  * writes does not: a bulk write (`content_instances.set_values_many`, a
- * plugin's `apply_translations`) aborts as a whole on the first conflict,
- * and the abort rolls it back, so a chat whose re-read recorded nothing
- * conflicted forever.
+ * plugin's `apply_translations`) or a plugin's private-storage write aborts
+ * as a whole on the first conflict, and the abort rolls it back, so a chat
+ * whose re-read recorded nothing conflicted forever.
  *
  * Only for the caller's own draft chat (`chatTaskId`; a subagent counts as
  * its parent chat); a no-op elsewhere. An observation never moves back in
@@ -490,7 +491,7 @@ async function draftRereadHint(
     case "pageType":
       return `list_page_types({slug:${await slugOf("page_types")}})`;
     case "pluginRow":
-      return "the plugin tool that shows this record";
+      return `get_plugin_draft_rows({rowIds:["${entityId}"]})`;
     case "redirect":
     case "siteSettings":
     case "siteDefaults":
@@ -580,10 +581,7 @@ export async function entityWriteBlockedError(
       message:
         `Conflict: ${kind} '${label}' was changed in the shared draft by chat '${result.staleDraft.chatTitle}' (${result.staleDraft.changedAt}) after this chat last looked at it, so this write was NOT applied. ` +
         `Read it again with ${await draftRereadHint(tx, kind, entityId)} to get the current version, then redo your edit on top of it (do not resend the old content). ` +
-        // A plugin's own read tools record no reads (DRAFT_READ_KINDS).
-        (kind === "pluginRow"
-          ? ""
-          : "That read counts as having seen the change, so the redone write goes through."),
+        "That read counts as having seen the change, so the redone write goes through.",
       conflict: true,
     };
   }

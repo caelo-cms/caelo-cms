@@ -1179,6 +1179,19 @@ export default definePlugin<PluginContextTier1>({
   // No cms_public tables — visitor-facing data (the language selector)
   // renders from published variant groups at build time (#398).
   schema: {},
+  /** #1387 — translation settings and copy; no column here is personal or secret. */
+  aiReadableTables: [
+    "locales",
+    "page_variants",
+    "glossary",
+    "style_guides",
+    "settings",
+    "chrome_variants",
+    "list_value_translations",
+    "list_item_visibility",
+    "term_translations",
+    "page_prop_translations",
+  ],
   adminSchema: {
     locales: {
       code: "string",
