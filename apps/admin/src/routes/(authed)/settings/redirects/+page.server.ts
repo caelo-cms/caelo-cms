@@ -2,12 +2,26 @@
 
 import type { RedirectSyncTargetStatus } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
-import { redirectTargetIssue } from "@caelo-cms/shared";
+import { isExternalRedirectTarget, redirectTargetIssue } from "@caelo-cms/shared";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
-import { requirePermission } from "#lib/server/guards.js";
+import { requireApproverPermission, requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
+
+/** An external redirect the AI proposed (#1358), as the queue shows it. */
+interface Proposal {
+  readonly id: string;
+  readonly payload: {
+    readonly redirects?: readonly { fromPath: string; url: string; statusCode: number }[];
+  };
+}
+
+function messageOf(error: unknown, fallback: string): string {
+  return typeof error === "object" && error && "message" in error
+    ? String((error as { message: unknown }).message)
+    : fallback;
+}
 
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "content.read");
@@ -27,7 +41,15 @@ export const load: PageServerLoad = async ({ locals }) => {
     throw new Error(`redirects.sync_status failed: ${JSON.stringify(status.error)}`);
   }
   const syncTargets = (status.value as { targets: RedirectSyncTargetStatus[] }).targets;
-  return { redirects, syncTargets };
+  const pending = await execute(registry, adapter, locals.ctx, "redirects.list_pending", {});
+  if (!pending.ok) {
+    throw new Error(`redirects.list_pending failed: ${JSON.stringify(pending.error)}`);
+  }
+  return {
+    redirects,
+    syncTargets,
+    proposals: (pending.value as { proposals: Proposal[] }).proposals,
+  };
 };
 
 export const actions: Actions = {
@@ -43,6 +65,23 @@ export const actions: Actions = {
       statusCodeRaw === 302 || statusCodeRaw === 307 || statusCodeRaw === 308 ? statusCodeRaw : 301;
     if (!fromPath.startsWith("/")) {
       return fail(400, { error: "fromPath must start with /" });
+    }
+    // #1358 — a target on another domain: the same two ops as the AI's
+    // proposal, approved in one go by whoever may approve it.
+    if (isExternalRedirectTarget(toPath)) {
+      requireApproverPermission(locals, registry, "redirects.execute_proposal");
+      const proposed = await execute(registry, adapter, locals.ctx, "redirects.propose_external", {
+        redirects: [{ fromPath, url: toPath, statusCode }],
+      });
+      if (!proposed.ok) return fail(400, { error: messageOf(proposed.error, "create failed") });
+      const applied = await execute(registry, adapter, locals.ctx, "redirects.execute_proposal", {
+        proposalId: (proposed.value as { proposalId: string }).proposalId,
+      });
+      if (!applied.ok) return fail(400, { error: messageOf(applied.error, "create failed") });
+      return {
+        ok: true,
+        message: `Redirect ${fromPath} → ${toPath} created. ${(applied.value as { nextStep: string }).nextStep}`,
+      };
     }
     // Same rule as the op's schema, surfaced here so the form shows the
     // specific reason (e.g. a pasted full URL) instead of a generic 400.
@@ -77,6 +116,30 @@ export const actions: Actions = {
         ? `Redirect ${fromPath} → ${toPath} created, but the page "${page.pageTitle}" uses this URL. Once that page is published, visitors see it instead of the redirect. Remove the redirect or move the page.`
         : `Redirect ${fromPath} → ${toPath} created.`,
     };
+  },
+  approve: async ({ request, locals }) => {
+    requireApproverPermission(locals, getQueryContext().registry, "redirects.execute_proposal");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "redirects.execute_proposal", {
+      proposalId: String(form.get("proposalId") ?? ""),
+    });
+    if (!r.ok) return fail(400, { error: messageOf(r.error, "approve failed") });
+    return { ok: true, message: (r.value as { nextStep: string }).nextStep };
+  },
+  reject: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const { adapter, registry } = getQueryContext();
+    const reason = String(form.get("reason") ?? "").trim();
+    const r = await execute(registry, adapter, locals.ctx, "redirects.reject_proposal", {
+      proposalId: String(form.get("proposalId") ?? ""),
+      ...(reason ? { reason } : {}),
+    });
+    if (!r.ok) return fail(400, { error: messageOf(r.error, "reject failed") });
+    return { ok: true, message: "Proposal rejected." };
   },
   sync: async ({ request, locals }) => {
     requirePermission(locals, "content.write");

@@ -65,7 +65,7 @@ import {
   PhaseTimer,
   type PhaseTiming,
   pagedPath,
-  redirectTargetIssue,
+  servableRedirectTargetIssue,
   renderEveryPage,
   runBatched,
   STATIC_FILES_MANIFEST_FILE,
@@ -1391,9 +1391,10 @@ async function buildSite(
   // #657 — every format below writes `to_path` verbatim into a Location
   // header. A row stored before the op-level target validation existed
   // (`//host`, `/https://…`) would ship as an open redirect or a broken
-  // 301, so the build fails loudly and names the rows instead.
+  // 301, so the build fails loudly and names the rows instead. An approved
+  // external address (#1358) passes.
   const unsafeTargets = redirectRows.flatMap((r) => {
-    const issue = redirectTargetIssue(r.to_path);
+    const issue = servableRedirectTargetIssue(r.to_path);
     return issue ? [`${r.from_path} → ${issue}`] : [];
   });
   if (unsafeTargets.length > 0) {

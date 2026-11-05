@@ -339,6 +339,7 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   deploy_pending_actions: QUEUE,
   domain_pending_actions: QUEUE,
   static_file_pending_actions: QUEUE,
+  redirect_pending_actions: QUEUE,
   email_config_pending_actions: QUEUE,
   layout_pending_actions: QUEUE,
   mcp_token_pending_actions: QUEUE,

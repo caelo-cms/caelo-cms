@@ -28,10 +28,14 @@
  * canonical form, see `resolveCanonicalUrl`), and Hosting itself 301s
  * `/<path>` to `/<path>/`. Pointing the rule at the slash form saves
  * visitors and crawlers that second hop.
+ *
+ * External target (#1358): `location` takes an absolute URL. It also reads
+ * `:name` as a capture group, so a colon behind the host is percent-encoded.
  */
 
 import {
   buildRedirectPlan,
+  isExternalRedirectTarget,
   parseRedirectsFile,
   type RedirectPlan,
   type RedirectStatusCode,
@@ -47,6 +51,13 @@ export interface FirebaseRedirect {
 /** Escape a literal for an RE2 pattern. */
 function escapeRe2(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** The `location` of a rule; see the module comment for the colons. */
+function firebaseLocation(location: string): string {
+  if (!isExternalRedirectTarget(location)) return location;
+  const { origin } = new URL(location);
+  return `${origin}${location.slice(origin.length).replaceAll(":", "%3A")}`;
 }
 
 /**
@@ -93,7 +104,7 @@ export function firebaseRedirectsFromPlan(plan: RedirectPlan): FirebaseRedirect[
       r.matchPaths.length === 2
         ? `^${escapeRe2(r.fromPath)}/?$`
         : `^${r.matchPaths.map(escapeRe2).join("")}$`,
-    location: r.location,
+    location: firebaseLocation(r.location),
     statusCode: r.statusCode,
   }));
 }

@@ -9,6 +9,9 @@
    * #1157 — a save puts the table live on the hosting right away (no
    * build); the "Live on your hosting" card shows each target's state
    * and a push that failed, with "Try again now" for that target.
+   * #1358 — a target on another domain takes an approver's click: the
+   * queue shows what the AI proposed, and the form applies one directly
+   * for someone who may approve it.
    */
 
   import { confirmSubmit } from "#lib/confirm.svelte.js";
@@ -69,6 +72,38 @@
   {/if}
   {#if form?.ok}
     <Alert><AlertDescription>{form.message ?? "Saved."}</AlertDescription></Alert>
+  {/if}
+
+  {#if data.proposals.length > 0}
+    <Card data-testid="redirect-proposals">
+      <CardHeader>
+        <CardTitle class="text-base">Waiting for your decision</CardTitle>
+        <CardDescription>
+          Addresses the AI wants to send to another website. Nothing changes until you approve.
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-4">
+        {#each data.proposals as p (p.id)}
+          <div class="space-y-2 rounded-md border p-3" data-testid="redirect-proposal">
+            {#each p.payload.redirects ?? [] as r (r.fromPath)}
+              <p class="break-all font-mono text-sm">{r.fromPath} → {r.url} ({r.statusCode})</p>
+            {/each}
+            <div class="flex gap-2">
+              <form method="post" action="?/approve">
+                <input type="hidden" name="_csrf" value={data.csrfToken} />
+                <input type="hidden" name="proposalId" value={p.id} />
+                <Button type="submit" size="sm">Approve</Button>
+              </form>
+              <form method="post" action="?/reject">
+                <input type="hidden" name="_csrf" value={data.csrfToken} />
+                <input type="hidden" name="proposalId" value={p.id} />
+                <Button type="submit" size="sm" variant="outline">Reject</Button>
+              </form>
+            </div>
+          </div>
+        {/each}
+      </CardContent>
+    </Card>
   {/if}
 
   <Card data-testid="redirect-sync-status">
@@ -182,7 +217,11 @@
   <Card>
     <CardHeader>
       <CardTitle class="text-base">New redirect</CardTitle>
-      <CardDescription>Both paths must start with <code class="font-mono">/</code>.</CardDescription>
+      <CardDescription>
+        From is a path starting with <code class="font-mono">/</code>. To is a path, or a full
+        <code class="font-mono">https://</code> address on another website, which needs permission
+        to change site settings. Check that address: visitors land there under your domain's name.
+      </CardDescription>
     </CardHeader>
     <CardContent>
       <form method="post" action="?/create" class="grid gap-4 md:grid-cols-4">

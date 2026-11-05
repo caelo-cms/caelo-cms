@@ -292,3 +292,47 @@ describe("Front Door rules", () => {
     expect(() => frontDoorRedirectRules(planOf(rows))).toThrow(FrontDoorRuleLimitError);
   });
 });
+
+describe("external targets (#1358)", () => {
+  const plan = (location: string) => ({
+    redirects: [
+      {
+        fromPath: "/termin",
+        matchPaths: ["/termin", "/termin/"],
+        location,
+        statusCode: 302 as const,
+        preserveQuery: !/[?#]/.test(location),
+      },
+    ],
+    gone: [],
+    shadowedByBuild: [],
+  });
+
+  it("Caddy redirects to the absolute address and carries the visitor's query", () => {
+    const out = emitCaddyRedirects(plan("https://calendar.example/book"));
+    expect(out).toContain("\t/termin https://calendar.example/book{?query} 302");
+  });
+
+  it("a GCP rule sets host and path, and no httpsRedirect (refused on an https proxy)", () => {
+    expect(gcpRedirectPathRules(plan("https://calendar.example/book/ab12"))).toEqual([
+      {
+        paths: ["/termin", "/termin/"],
+        urlRedirect: {
+          hostRedirect: "calendar.example",
+          pathRedirect: "/book/ab12",
+          redirectResponseCode: "FOUND",
+          stripQuery: false,
+        },
+      },
+    ]);
+  });
+
+  it("a bare host still sets a path: else the load balancer keeps the request's", () => {
+    const rule = gcpRedirectPathRules(plan("https://calendar.example"))[0];
+    expect(rule?.urlRedirect?.pathRedirect).toBe("/");
+  });
+
+  it("Front Door refuses one instead of emitting a broken rule", () => {
+    expect(() => frontDoorRedirectRules(plan("https://calendar.example/"))).toThrow("#750");
+  });
+});

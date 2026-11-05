@@ -30,12 +30,17 @@
  *   `/`; the Location points there directly (the host would otherwise add
  *   a second hop). The visitor's query string is carried over unless the
  *   target has its own query or fragment.
+ * - **External targets** (#1358). An Owner-approved `https` address stays
+ *   exactly as approved: no trailing slash is added, and a chain ends there.
+ *   A same-site row pointing at a row with an external target collapses to
+ *   that address in one hop. The visitor's query string rides along under
+ *   the same rule as for a path.
  * - **410.** Rows with status 410 become `gone` entries. Layers that can
  *   answer a bare status (Caddy, CloudFront) send 410; the others answer
  *   the 404 a path without a file gets anyway.
  */
 
-import { redirectTargetIssue } from "./redirect-target.js";
+import { isExternalRedirectTarget, servableRedirectTargetIssue } from "./redirect-target.js";
 import { trimTrailingSlashes } from "./url.js";
 
 /** The redirect statuses the redirects table stores (besides 410). */
@@ -57,7 +62,7 @@ export interface PlannedRedirect {
   readonly fromPath: string;
   /** Every request path this entry answers, exactly (`/old`, `/old/`). */
   readonly matchPaths: readonly string[];
-  /** The Location header value (a same-site path, see module comment). */
+  /** The Location header value: a same-site path or an approved https URL. */
   readonly location: string;
   readonly statusCode: RedirectStatusCode;
   /** Append the request's query string to {@link location}. */
@@ -180,7 +185,7 @@ export function buildRedirectPlan(args: BuildRedirectPlanArgs): RedirectPlan {
 
 /**
  * The planned redirects whose Location is a same-site path the build does
- * not serve (#1157). Redirects reach the live site on save, pages only with
+ * not serve (#1157; an external address is the destination's business). Redirects reach the live site on save, pages only with
  * Publish live, so a redirect to a page that is still a draft answers 404 at
  * its target until that page is published. Callers report these; they are
  * not an error. Paths under `/api/` are answered by the gateway, not the
@@ -195,6 +200,7 @@ export function redirectsToUnservedPaths(
   servedFiles: ReadonlySet<string>,
 ): PlannedRedirect[] {
   return plan.redirects.filter((r) => {
+    if (isExternalRedirectTarget(r.location)) return false;
     const path = pathBeforeQuery(r.location);
     if (path === "/api" || path.startsWith("/api/")) return false;
     if (looksLikeFile(path)) return !servedFiles.has(path.slice(1));
@@ -239,7 +245,7 @@ function normaliseRows(rows: readonly RedirectTableRow[]): NormalisedRow[] {
       );
     }
     if (statusCode !== GONE_STATUS) {
-      const targetIssue = redirectTargetIssue(toPath);
+      const targetIssue = servableRedirectTargetIssue(toPath);
       if (targetIssue) throw new Error(`redirect-plan: the redirect for ${shown}: ${targetIssue}`);
     }
     const bare = stripTrailingSlash(fromPath);
@@ -269,7 +275,7 @@ function collapseChain(
   for (;;) {
     // A target with its own query or fragment is a different URL than the
     // path the next row matches; the chain ends there.
-    if (/[?#]/.test(target)) break;
+    if (/[?#]/.test(target) || isExternalRedirectTarget(target)) break;
     const next = live.get(stripTrailingSlash(target));
     if (!next || next.statusCode === GONE_STATUS) break;
     if (visited.includes(next.bare)) {
@@ -331,6 +337,7 @@ function servedByBuild(bare: string, servedFiles: ReadonlySet<string>): boolean 
  *  with an extension in its last segment) and URLs with a query or fragment
  *  stay as they are. */
 function locationFor(toPath: string, pageUrlStyle: RedirectPageUrlStyle): string {
+  if (isExternalRedirectTarget(toPath)) return toPath;
   if (pageUrlStyle !== "directory" || toPath.endsWith("/")) return toPath;
   if (/[?#]/.test(toPath) || looksLikeFile(toPath)) return toPath;
   return `${toPath}/`;

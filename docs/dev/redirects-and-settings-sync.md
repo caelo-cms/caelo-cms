@@ -39,7 +39,22 @@ So every clone passes through `withCurrentGatewayRewrite` (`packages/admin-core/
 
 What the sync reports, also in the AI tools' results (`bulk_create_redirects`, `bulk_delete_redirects`): per target whether the redirects are live, and which redirects point at a page the live build does not have. A redirect to a page that is still a draft answers 404 at its target until that page is published.
 
-Gates (CLAUDE.md §11.A) are unchanged. Creating or changing a redirect is routine: one `bulk_delete_redirects` call undoes it. An AI `redirects.delete_many` by `matches` that would delete 10 or more rows is refused (`AI_MATCHES_DELETE_LIMIT`). A move of 10 or more URLs is approval-gated (`move_pages`). `redirects.sync_provider` decides nothing (it pushes what was saved) and is human/system only.
+Gates (CLAUDE.md §11.A): creating or changing a redirect within the site is routine, one `bulk_delete_redirects` call undoes it. A target on another domain is gated ([below](#a-target-on-another-domain)). An AI `redirects.delete_many` by `matches` that would delete 10 or more rows is refused (`AI_MATCHES_DELETE_LIMIT`). A move of 10 or more URLs is approval-gated (`move_pages`). `redirects.sync_provider` decides nothing (it pushes what was saved) and is human/system only.
+
+## A target on another domain
+
+#1358. `to_path` may hold an `https` address, for short links on QR codes and letters, booking links and old subdomains. Such a row is an open redirect under the site's name, and its source address gets printed, so only one op writes it: `redirects.execute_proposal`, the Owner's click (`settings.write`) on `propose_external_redirect` or on the Settings → Redirects form, which runs the same two ops in one go. The routine ops still refuse anything but a same-site path (`redirectTargetIssue`), so no path around the click exists; serving layers accept both forms (`servableRedirectTargetIssue`). Code: `ops/redirects_pending.ts`, `packages/shared/src/redirect-target.ts`.
+
+The form (`externalRedirectTargetIssue`): `https` only, no credentials, no port, a public host name, and the URL's canonical spelling, so that dot segments, `%2e%2e`, an encoded host and the like are refused and the text on the card is where a browser lands. The host (`externalRedirectHostIssue`) must not be one of this install: site base URL, domains, staging host, `CAELO_SITE_URL`, `CAELO_ADMIN_URL`, `ORIGIN`. All of it is checked at propose, on the card and again at approval, because hosts change while a proposal waits. A from path a static file owns is refused, a rule that replaces another shows on the card, and approval refuses when the rule at that path changed after the proposal. `statusCode` defaults to 302: browsers keep a 301 after the rule is gone.
+
+An approved rule takes the ordinary sync, right after the commit, and the plan treats it like any row: the build wins over it, `redirects.page_conflicts` and `links/redirect-shadows-page` work unchanged, and `to_path` chains end at it. It is provider state, so no Publish live is involved; that is why the click sits at the save.
+
+| Provider | How it is served |
+|---|---|
+| `gcp-firebase` | `config.redirects[].location` holds the absolute URL. `location` reads `:name` as a capture group, so a colon behind the host goes out as `%3A`. On staging the gateway answers it from `buildRedirectPlan` with a `Location`. |
+| `gcp` | A `urlRedirect` path rule with `hostRedirect` and `pathRedirect` (without the latter the load balancer keeps the request's path), one rule and up to two predicates like any redirect, so it counts against the same URL-map quota (#751). `httpsRedirect` stays unset: the API refuses it on a TargetHttpsProxy, and the http URL map has upgraded the request by then. A target with `?query` or `#fragment` is refused at the proposal: the API stores one in `pathRedirect`, but what the load balancer answers has not been verified. |
+| self-hosted | The Caddy `map` value is the URL (`redir` takes an absolute target); `_redirects` carries it unchanged. |
+| `aws`, `azure` | Refused at the proposal until their publishers exist (#749, #750). `frontDoorRedirectRules` throws on one. The real publishers must lift this deliberately: CloudFront's value can carry a URL, a Front Door rule needs a `customHostname`. |
 
 ## A rule on a page's URL
 
@@ -59,7 +74,7 @@ What keeps the two apart:
 
 | Setting | Op(s) | Class | How it goes live | Approval (§11.A) |
 |---|---|---|---|---|
-| Redirects | `redirects.*` | provider | Sync on save (above) | AI `delete_many` by `matches` ≥10 rows refused; moves ≥10 URLs gated |
+| Redirects | `redirects.*` | provider | Sync on save (above) | A target on another domain gated (`propose_external_redirect`); AI `delete_many` by `matches` ≥10 rows refused; moves ≥10 URLs gated |
 | Staging access gate: modes, credentials, staging host | `staging_access.set` / `rotate_credentials` / `set_host` | provider / runtime | The gateway reads the projected row (`cms_public`) per request, so the save is live. A new host also needs DNS + a domain mapping. | Gated (`propose_set_staging_access`, `propose_rotate_staging_credentials`, `propose_set_staging_host`) |
 | Gateway: body cap, captcha provider, PoW prefix | `gateway.set_settings` | provider / runtime | Projected to the gateway on commit | Gated (`propose_set_gateway_settings`) |
 | Gateway cookie secret | `gateway.rotate_cookie_secret` | provider / runtime | Projected on commit | Gated (`propose_rotate_gateway_cookie_secret`) |

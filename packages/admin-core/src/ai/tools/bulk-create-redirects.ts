@@ -41,7 +41,7 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
               minLength: 1,
               maxLength: 500,
               description:
-                "Path on this site, single leading '/' (e.g. '/blog/new'); never a full URL or '//host' (external targets unsupported).",
+                "Path on this site, single leading '/' (e.g. '/blog/new'); never a full URL or '//host'. Another domain: `propose_external_redirect`.",
             },
             statusCode: { type: "integer", enum: [301, 302, 307, 308, 410], default: 301 },
           },

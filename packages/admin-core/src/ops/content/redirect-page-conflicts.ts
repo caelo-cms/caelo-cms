@@ -13,8 +13,8 @@
  * `pages.list` selects by id or path, and `redirects.from_path` is unique.
  */
 
-import { defineOperation, textArray } from "@caelo-cms/query-api";
-import { ok, redirectFromPathSpellings } from "@caelo-cms/shared";
+import { defineOperation, type TransactionRunner, textArray } from "@caelo-cms/query-api";
+import { type ExecutionContext, ok, redirectFromPathSpellings } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { listPagesOp } from "./pages.js";
@@ -36,6 +36,38 @@ const redirectPageConflictSchema = z.object({
 
 export type RedirectPageConflict = z.infer<typeof redirectPageConflictSchema>;
 
+type ConflictLookup = { pageIds?: string[]; paths?: string[] };
+
+/**
+ * The caller's pages behind these ids or paths, by every spelling a rule can
+ * hold for their URL (without the 404 page, whose own path is free for a
+ * rule). #1358 — also what a proposal asks, before its rule exists.
+ */
+export async function pagesByRedirectSpelling(
+  ctx: ExecutionContext,
+  input: ConflictLookup,
+  tx: TransactionRunner,
+) {
+  const listed = await listPagesOp.handler(
+    ctx,
+    {
+      includeDeleted: false,
+      ...(input.pageIds ? { pageIds: input.pageIds } : { paths: input.paths }),
+    },
+    tx,
+  );
+  if (!listed.ok) return listed;
+  const defaults = (await tx.execute(sql`
+    SELECT not_found_page_id::text AS id FROM site_defaults WHERE id = 1
+  `)) as unknown as { id: string | null }[];
+  const pages = listed.value.pages.filter((p) => p.id !== defaults[0]?.id);
+  return ok(
+    new Map(
+      pages.flatMap((p) => redirectFromPathSpellings(p.currentPath).map((s) => [s, p] as const)),
+    ),
+  );
+}
+
 export const pageConflictsRedirectOp = defineOperation({
   name: "redirects.page_conflicts",
   readScope: "request",
@@ -54,23 +86,9 @@ export const pageConflictsRedirectOp = defineOperation({
   output: z.object({ conflicts: z.array(redirectPageConflictSchema) }),
   handler: async (ctx, input, tx) => {
     if ((input.pageIds ?? input.paths ?? []).length === 0) return ok({ conflicts: [] });
-    const listed = await listPagesOp.handler(
-      ctx,
-      {
-        includeDeleted: false,
-        ...(input.pageIds ? { pageIds: input.pageIds } : { paths: input.paths }),
-      },
-      tx,
-    );
-    if (!listed.ok) return listed;
-    // The 404 page is served at /404.html, so its own path is free for a rule.
-    const defaults = (await tx.execute(sql`
-      SELECT not_found_page_id::text AS id FROM site_defaults WHERE id = 1
-    `)) as unknown as { id: string | null }[];
-    const pages = listed.value.pages.filter((p) => p.id !== defaults[0]?.id);
-    const bySpelling = new Map(
-      pages.flatMap((p) => redirectFromPathSpellings(p.currentPath).map((s) => [s, p] as const)),
-    );
+    const pages = await pagesByRedirectSpelling(ctx, input, tx);
+    if (!pages.ok) return pages;
+    const bySpelling = pages.value;
     if (bySpelling.size === 0) return ok({ conflicts: [] });
     const rows = (await tx.execute(sql`
       SELECT from_path, to_path, status_code FROM redirects

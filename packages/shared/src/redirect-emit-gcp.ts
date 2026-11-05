@@ -22,12 +22,20 @@
  * would turn linked URLs into 404s without anyone noticing. Going past the
  * quota is tracked in #751.
  *
+ * An external target (#1358) is the same rule with a `hostRedirect`, and
+ * costs the same budget. `pathRedirect` stays set: without it the load
+ * balancer keeps the request's path. `httpsRedirect` stays unset: the API
+ * refuses it on a TargetHttpsProxy, and the site's plain-http URL map
+ * upgrades to https before a request gets here, so the `Location` scheme is
+ * https already.
+ *
  * Rules this module owns are recognised by their `urlRedirect` (the stack's
  * own rules route to a service), so re-applying a plan replaces exactly the
  * previous plan's rules and keeps everything else in the path matcher.
  */
 
 import type { PlannedRedirect, RedirectPlan, RedirectStatusCode } from "./redirect-plan.js";
+import { isExternalRedirectTarget } from "./redirect-target.js";
 
 /** Path rules per path matcher (URL map quota, global external ALB). */
 export const GCP_URL_MAP_MAX_PATH_RULES = 1000;
@@ -54,6 +62,7 @@ export interface GcpPathRule {
   readonly paths: readonly string[];
   readonly service?: string;
   readonly urlRedirect?: {
+    readonly hostRedirect?: string;
     readonly pathRedirect?: string;
     readonly redirectResponseCode?: GcpRedirectResponseCode;
     readonly stripQuery?: boolean;
@@ -107,10 +116,12 @@ function toPathRule(r: PlannedRedirect): GcpPathRule {
       `redirect-emit-gcp: the redirect ${r.fromPath} → ${r.location} targets a URL with a query string or fragment, which a GCP URL-map redirect cannot carry. Point it at the page's path with bulk_create_redirects (upsert), then publish again.`,
     );
   }
+  const external = isExternalRedirectTarget(r.location) ? new URL(r.location) : null;
   return {
     paths: [...r.matchPaths],
     urlRedirect: {
-      pathRedirect: r.location,
+      ...(external ? { hostRedirect: external.hostname } : {}),
+      pathRedirect: external ? external.pathname : r.location,
       redirectResponseCode: RESPONSE_CODE[r.statusCode],
       // The visitor's query string rides along, like on every provider.
       stripQuery: false,

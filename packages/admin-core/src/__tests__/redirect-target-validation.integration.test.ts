@@ -154,7 +154,7 @@ describe("redirects.create — target validation (#657)", () => {
     if (r.ok) return;
     const msg = describeError(r.error);
     expect(msg).toContain("use its path '/pricing?plan=pro'");
-    expect(msg).toContain("external (other-domain) redirect targets are not supported");
+    expect(msg).toContain("propose_external_redirect");
   });
 
   it.each(["/", "/a/b?c=d#e"])("accepts the same-site target %p", async (toPath) => {
