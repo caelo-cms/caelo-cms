@@ -144,6 +144,24 @@ describe("failingAudits", () => {
 });
 
 describe("flagged elements", () => {
+  it("a failed checklist audit is a finding that names no element, not a crashed run", () => {
+    const latency: Audit = {
+      ...audit("render-blocking-insight", 0),
+      metricSavings: { LCP: 300 },
+      details: {
+        type: "checklist",
+        items: {
+          noRedirects: { label: "Avoids redirects", value: true },
+          serverResponseIsFast: { label: "Server responds quickly", value: true },
+          usesCompression: { label: "No compression applied", value: false },
+        },
+      },
+    };
+    const [finding] = failingAudits(lhr({ performance: 100, audits: [latency] }));
+    expect(finding?.id).toBe("render-blocking-insight");
+    expect(finding?.elements ?? []).toEqual([]);
+  });
+
   it("carry Lighthouse's node selector, snippet, label and explanation (first 5)", () => {
     const contrast: Audit = {
       ...audit("color-contrast", 0),

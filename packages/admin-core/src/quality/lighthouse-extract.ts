@@ -21,6 +21,12 @@ import {
 } from "./ratchet.js";
 import { scoringRun } from "./run-selection.js";
 
+/** An audit's details: `items` is an array, except on a `checklist`, which keys them by check. */
+interface AuditDetails {
+  readonly type?: string;
+  readonly items?: unknown;
+}
+
 /** The subset of a Lighthouse result this module reads. */
 export interface LhrLike {
   readonly requestedUrl?: string;
@@ -62,7 +68,7 @@ export interface LhrLike {
          *  (insights and opportunities). */
         readonly metricSavings?: Readonly<Record<string, number | undefined>>;
         /** Table/list details; `items[].node` describes a flagged element. */
-        readonly details?: { readonly type?: string; readonly items?: readonly unknown[] };
+        readonly details?: AuditDetails;
       }
     >
   >;
@@ -121,10 +127,12 @@ function resourceEntry(item: Record<string, unknown>): FlaggedElement | null {
  * network-dependency-tree insight then "flagged" two paragraphs of
  * Lighthouse's advice text and named nothing (e2e-livedit 2026-10).
  */
-function detailRows(
-  details: { readonly type?: string; readonly items?: readonly unknown[] } | undefined,
-): unknown[] {
-  const items = details?.items ?? [];
+function detailRows(details: AuditDetails | undefined): unknown[] {
+  // A `checklist` (document-latency-insight) keys its items by check: an
+  // object, and it names no element. Spread as rows it threw and took the
+  // whole run down, so a failed check read as "the page could not be
+  // audited" (gcp-firebase scratch install of v0.11.15, 2026-11-05).
+  const items = Array.isArray(details?.items) ? (details.items as readonly unknown[]) : [];
   if (details?.type !== "list") return [...items];
   return items.flatMap((entry) => {
     if (entry === null || typeof entry !== "object") return [];
@@ -141,9 +149,7 @@ function detailRows(
 }
 
 /** The elements (or console entries) an audit flagged, read from its details. */
-function flaggedElements(
-  details: { readonly type?: string; readonly items?: readonly unknown[] } | undefined,
-): FlaggedElement[] {
+function flaggedElements(details: AuditDetails | undefined): FlaggedElement[] {
   const out: FlaggedElement[] = [];
   const items = detailRows(details);
   for (const [index, item] of items.entries()) {
