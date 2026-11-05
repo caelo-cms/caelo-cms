@@ -227,6 +227,92 @@ describe("a write", () => {
   });
 });
 
+describe("a proposal that went stale", () => {
+  it("does not overwrite a change made after it was proposed", async () => {
+    const path = "/sf-test-stale.json";
+    const created = await run(SYSTEM, "static_files.set_many", { files: [{ ...IPS, path }] });
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const proposalId = await propose([{ ...IPS, path, body: '{"from":"proposal"}' }]);
+    const edit = await run(SYSTEM, "static_files.set_many", {
+      files: [{ ...IPS, path, body: '{"from":"owner"}' }],
+    });
+    if (!edit.ok) throw new Error(JSON.stringify(edit.error));
+    const r = await run(SYSTEM, "static_files.execute_proposal", { proposalId });
+    expect(message(r)).toContain("changed after this proposal");
+    const got = await run(AI, "static_files.get", { path });
+    expect(got.ok && (got.value as { body: string }).body).toBe('{"from":"owner"}');
+    await run(SYSTEM, "static_files.reject_proposal", { proposalId });
+    await run(SYSTEM, "static_files.delete_many", { paths: [path] });
+  });
+});
+
+describe("the snapshot revert", () => {
+  it("needs settings.write when the snapshot holds static files", async () => {
+    const written = await run(SYSTEM, "static_files.set_many", {
+      files: [{ ...IPS, path: "/sf-test-revert.json" }],
+    });
+    if (!written.ok) throw new Error(JSON.stringify(written.error));
+    const rows = (await asSystem(
+      (tx) => tx`
+        SELECT s.site_snapshot_id::text AS id FROM static_file_snapshots s
+        JOIN static_files f ON f.id = s.static_file_id
+        WHERE f.path = '/sf-test-revert.json'`,
+    )) as { id: string }[];
+    const r = await run(NO_ROLE, "snapshots.revert_site", { snapshotId: rows[0]?.id });
+    expect(message(r)).toContain("permission_denied");
+    await run(SYSTEM, "static_files.delete_many", { paths: ["/sf-test-revert.json"] });
+  });
+});
+
+describe("releaseState", () => {
+  const STAGED_OLD = "00000000-0000-4000-8000-000000000a01";
+  const STAGED_NEW = "00000000-0000-4000-8000-000000000a02";
+  const PUBLISH = "00000000-0000-4000-8000-000000000a03";
+  const ROLLBACK = "00000000-0000-4000-8000-000000000a04";
+  const ALL = [STAGED_OLD, STAGED_NEW, PUBLISH, ROLLBACK];
+
+  async function record(id: string, env: string, buildId: string, minutesAgo: number) {
+    await asSystem(async (tx) => {
+      const targets = (await tx`SELECT id FROM deploy_targets WHERE env = ${env} LIMIT 1`) as {
+        id: string;
+      }[];
+      const startedAt = new Date(Date.now() - minutesAgo * 60_000);
+      await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, build_id)
+               VALUES (${id}::uuid, ${targets[0]?.id}::uuid, ${SYSTEM.actorId}::uuid, 'succeeded',
+                       ${startedAt}, ${buildId})`;
+    });
+  }
+
+  async function stateOf(path: string): Promise<string | undefined> {
+    const r = await run(AI, "static_files.list", {});
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    return (r.value as { files: { path: string; releaseState: string }[] }).files.find(
+      (f) => f.path === path,
+    )?.releaseState;
+  }
+
+  it("follows the build served, also after a rollback to one from before the file", async () => {
+    await asSystem(async (tx) => {
+      await tx`DELETE FROM deploy_runs`;
+    });
+    await record(STAGED_OLD, "staging", STAGED_OLD, 600);
+    const path = "/sf-test-state.json";
+    const written = await run(SYSTEM, "static_files.set_many", { files: [{ ...IPS, path }] });
+    if (!written.ok) throw new Error(JSON.stringify(written.error));
+    expect(await stateOf(path)).toBe("not_staged");
+    await record(STAGED_NEW, "staging", STAGED_NEW, -1);
+    expect(await stateOf(path)).toBe("staged");
+    await record(PUBLISH, "production", STAGED_NEW, -2);
+    expect(await stateOf(path)).toBe("live");
+    await record(ROLLBACK, "production", STAGED_OLD, -3);
+    expect(await stateOf(path)).toBe("staged");
+    await asSystem(async (tx) => {
+      await tx`DELETE FROM deploy_runs WHERE id = ANY(${ALL}::uuid[])`;
+    });
+    await run(SYSTEM, "static_files.delete_many", { paths: [path] });
+  });
+});
+
 describe("the refusals", () => {
   it("names every problem of a proposal before anything costs a click", async () => {
     const r = await run(AI, "static_files.propose_set", {
@@ -239,7 +325,7 @@ describe("the refusals", () => {
         { ...IPS, path: "/script.txt", contentType: "application/json" },
       ],
     });
-    const text = message(r);
+    const text = JSON.stringify(r);
     for (const part of ["/api", "/_caelo", ".html", "robots.txt", "valid JSON", "/script.txt"]) {
       expect(text).toContain(part);
     }

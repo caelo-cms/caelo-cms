@@ -489,6 +489,9 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/role_pending.ts`,
   `${A}/ops/domains.ts`,
   `${A}/ops/domain_*.ts`,
+  // #1461 — an Owner-approved file store, no module or page reasoning.
+  `${A}/ops/static_files*.ts`,
+  `${A}/ai/tools/static-file-tools.ts`,
   `${A}/ops/gateway.ts`,
   `${A}/ops/staging_access.ts`,
   `${A}/ops/owner_settings_*.ts`,
@@ -498,6 +501,7 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   // #1375 — the MCP back-pressure gate answers HTTP before any AI turn runs.
   `${A}/mcp-back-pressure.ts`,
   `${A}/ops/credential_handoffs.ts`,
+  `${SHARED}/static-files.ts`,
   `${SHARED}/cloud-shell-install.ts`,
   `${SHARED}/auto-update.ts`,
   `${SHARED}/platform-updates.ts`,

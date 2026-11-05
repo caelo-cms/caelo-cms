@@ -170,6 +170,24 @@ export async function staticFileWriteProblems(
   return out;
 }
 
+/**
+ * The version each path holds now, null where it has no file. A proposal
+ * records this and its approval compares it, so an approved change never
+ * overwrites a change made after the AI read the file.
+ */
+export async function staticFileVersions(
+  tx: TransactionRunner,
+  paths: readonly string[],
+): Promise<Record<string, number | null>> {
+  const rows = await liveFiles(tx);
+  return Object.fromEntries(
+    paths.map((p) => {
+      const row = rows.find((r) => r.path === p);
+      return [p, row ? Number(row.version) : null];
+    }),
+  );
+}
+
 /** The paths of `paths` that have no file, as refusals. */
 export async function missingStaticFiles(
   tx: TransactionRunner,
@@ -223,30 +241,34 @@ const fileMetaSchema = z.object({
 });
 
 /**
- * When the builds that staging and the live site serve started. Publish live
- * copies the newest staged build, so what is live is the staged build that
- * came before the last production run. A display value: the deploy log
+ * When the builds that staging and the live site serve were started. A
+ * promote or a rollback records no build of its own: its run's `build_id`
+ * names the Stage run whose files it serves, so that run's start is what a
+ * file's last change is compared with. A display value: the deploy log
  * remains the record.
  */
 async function servedBuildTimes(
   tx: TransactionRunner,
 ): Promise<{ stagedFrom: string | null; liveFrom: string | null }> {
   const rows = (await tx.execute(sql`
-    WITH done AS (
-      SELECT t.env, r.started_at
+    WITH served AS (
+      SELECT DISTINCT ON (t.env) t.env, r.build_id
       FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
-      WHERE r.status = 'succeeded' AND r.build_kind = 'site' AND t.env IN ('staging', 'production')
-    ),
-    live AS (SELECT max(started_at) AS at FROM done WHERE env = 'production')
-    SELECT (SELECT max(started_at) FROM done WHERE env = 'staging') AS staged_from,
-           (SELECT max(d.started_at) FROM done d, live
-             WHERE d.env = 'staging' AND d.started_at < live.at) AS live_from
-  `)) as unknown as { staged_from: string | Date | null; live_from: string | Date | null }[];
-  const r = rows[0];
-  return {
-    stagedFrom: r?.staged_from ? iso(r.staged_from) : null,
-    liveFrom: r?.live_from ? iso(r.live_from) : null,
+      WHERE r.status = 'succeeded' AND r.build_kind = 'site' AND r.build_id IS NOT NULL
+        AND t.env IN ('staging', 'production')
+      ORDER BY t.env, r.started_at DESC
+    )
+    SELECT s.env, source.started_at
+    FROM served s
+    JOIN deploy_runs source ON source.id = CASE
+      WHEN s.build_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      THEN s.build_id::uuid END
+  `)) as unknown as { env: string; started_at: string | Date }[];
+  const from = (env: string): string | null => {
+    const r = rows.find((x) => x.env === env);
+    return r ? iso(r.started_at) : null;
   };
+  return { stagedFrom: from("staging"), liveFrom: from("production") };
 }
 
 function releaseState(
@@ -364,6 +386,9 @@ const setStaticFilesDefinition = defineOperation({
   output: setManyOutput,
   handler: async (ctx, input, tx) => {
     const op = "static_files.set_many";
+    // The site's file cap holds across parallel approvals only when they
+    // check and write one after another.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('static_files.set_many'))`);
     const problems = await staticFileWriteProblems(tx, input.files);
     if (problems.length > 0) {
       return {

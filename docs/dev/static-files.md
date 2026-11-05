@@ -26,9 +26,9 @@ Reads (`static_files.list`, `.get`, tools `list_static_files`, `get_static_file`
 
 ## How it goes live
 
-`static_files` is authoring state with snapshots and journal rows, but it has no branch column: every AI write is approved and applied with the approver's branch-free context, as an approved template update is, so there is nothing to overlay. The draft boundary is the build. The generator is the only reader that reaches a visitor, it runs at Stage, and production gets what a human Publish live copies from there. A Stage with no other pending change still builds, so `stage_changes` after an approval picks the file up. A site revert restores files that have a row in the snapshot it rewinds to.
+`static_files` is authoring state with snapshots and journal rows, but it has no branch column: every AI write is approved and applied with the approver's branch-free context, as an approved template update is, so there is nothing to overlay. The draft boundary is the build. The generator is the only reader that reaches a visitor, it runs at Stage, and production gets what a human Publish live copies from there. A Stage with no other pending change still builds, so `stage_changes` after an approval picks the file up. A site revert restores files that have a row in the snapshot it rewinds to. Such a revert needs `settings.write` too, though a revert otherwise needs only the content permission: it writes static files.
 
-`static_files.list` reports `releaseState` per file (`not_staged`, `staged`, `live`), read from the start times of the served builds. It is a display value; the deploy log is the record.
+`static_files.list` reports `releaseState` per file (`not_staged`, `staged`, `live`), compared against the Stage run each target serves (a promote's or rollback's `build_id` names it). It is a display value; the deploy log is the record.
 
 The build writes each file at its path, adds its type to `_content-types.json` and lists it in `_static-files.json`. A file is never in `routing-manifest.json`'s `pages`, so the quality check and the sitemap do not read it as a page.
 

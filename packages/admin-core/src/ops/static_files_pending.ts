@@ -43,6 +43,7 @@ import {
   setStaticFilesOp,
   staticFilesDeleteInput,
   staticFilesSetInput,
+  staticFileVersions,
   staticFileWriteProblems,
 } from "./static_files.js";
 
@@ -128,7 +129,18 @@ export const proposeSetStaticFilesOp = defineOperation({
       tx,
       input.files.map((f) => f.path),
     );
-    return queueProposal(tx, ctx, "set", input, setPreview(input.files, changes), op);
+    const versions = await staticFileVersions(
+      tx,
+      input.files.map((f) => f.path),
+    );
+    return queueProposal(
+      tx,
+      ctx,
+      "set",
+      input,
+      { ...setPreview(input.files, changes), versions },
+      op,
+    );
   },
 });
 
@@ -178,6 +190,7 @@ export const proposeDeleteStaticFilesOp = defineOperation({
     const preview = {
       summary: `delete ${paths.join(", ")}`,
       paths,
+      versions: await staticFileVersions(tx, paths),
       effect: "Stays on the live site until the next Stage and Publish live.",
     };
     return queueProposal(tx, ctx, "delete", { paths }, preview, op);
@@ -222,9 +235,14 @@ const executeDefinition = defineOperation({
   handler: async (ctx, input, tx) => {
     const op = "static_files.execute_proposal";
     const rows = (await tx.execute(sql`
-      SELECT kind, payload, status FROM static_file_pending_actions
+      SELECT kind, payload, preview, status FROM static_file_pending_actions
       WHERE id = ${input.proposalId}::uuid
-    `)) as unknown as { kind: ProposalKind; payload: unknown; status: string }[];
+    `)) as unknown as {
+      kind: ProposalKind;
+      payload: unknown;
+      preview: { versions: Record<string, number | null> };
+      status: string;
+    }[];
     const row = rows[0];
     if (!row) return err({ kind: "HandlerError", operation: op, message: "proposal not found" });
     if (row.status !== "pending") {
@@ -232,6 +250,16 @@ const executeDefinition = defineOperation({
         kind: "HandlerError",
         operation: op,
         message: `proposal is already ${row.status}`,
+      });
+    }
+    const proposed = Object.keys(row.preview.versions);
+    const now = await staticFileVersions(tx, proposed);
+    const changed = proposed.filter((p) => now[p] !== row.preview.versions[p]);
+    if (changed.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: op,
+        message: `${changed.join(", ")} changed after this proposal was made, so applying it would overwrite that change. Nothing was applied: reject it and propose again from the current file (get_static_file).`,
       });
     }
     let paths: string[];

@@ -48,8 +48,10 @@ import {
   IMMUTABLE_CACHE_CONTROL,
   isContentHashedPath,
   parseRedirectsFile,
+  parseStaticFilesManifest,
   type RedirectPlan,
   runBatched,
+  STATIC_FILES_MANIFEST_FILE,
   type StagedFileEntry,
 } from "@caelo-cms/shared";
 import {
@@ -647,12 +649,15 @@ async function gcsUploadOf(
   const build = await readBuildFiles(buildDir);
   // v0.2.85 — the per-key Content-Type sidecar of a build on disk.
   const contentTypes = await readContentTypeOverrides(buildDir);
+  // #1461 — as the streamed path: a static file's type may be all that changed.
+  const staticFiles = await readStaticFilePaths(buildDir);
   await runBatched([...build.built], PARALLEL_UPLOADS, async (f) => {
     const type = contentTypes[f.relativePath];
     await opened.put({
       relPath: f.relativePath,
       body: await readFile(f.absolutePath),
       ...(type ? { contentType: type } : {}),
+      ...(staticFiles.has(f.relativePath) ? { alwaysUpload: true } : {}),
     });
   });
   return opened;
@@ -878,6 +883,17 @@ async function uploadFile(
     // #891 — and an SVG is served as a download (gcsObjectMetadata).
     metadata: gcsObjectMetadata(args.contentType, args.sitePath),
   });
+}
+
+/** The static files of a build on disk. A build from before them has no sidecar. */
+async function readStaticFilePaths(buildDir: string): Promise<ReadonlySet<string>> {
+  const body = await readFile(join(buildDir, STATIC_FILES_MANIFEST_FILE), "utf8").catch(
+    (e: NodeJS.ErrnoException) => {
+      if (e.code === "ENOENT") return null;
+      throw e;
+    },
+  );
+  return new Set(body === null ? [] : parseStaticFilesManifest(body).map((f) => f.path));
 }
 
 async function readContentTypeOverrides(buildDir: string): Promise<Record<string, string>> {

@@ -125,6 +125,24 @@ describe("staticFileBodyIssue", () => {
   });
 });
 
+describe("the escaped-namespace check", () => {
+  it("takes a namespace without references, and an ampersand outside one", () => {
+    const body = '<a xmlns="urn:x" xmlns:b="urn:y"><b:c>1 &amp; 2</b:c></a>';
+    expect(staticFileBodyIssue("application/xml", body)).toBeNull();
+  });
+
+  it("finds spaces around the equals sign", () => {
+    const body = '<a xmlns:h = "http&#58;//x"/>';
+    expect(staticFileBodyIssue("text/xml", body)).toContain("run as a page");
+  });
+
+  it("stays fast on a body built to make it backtrack (CodeQL js/polynomial-redos)", () => {
+    const started = performance.now();
+    expect(staticFileBodyIssue("application/xml", "xmlns:".repeat(40_000))).toBeNull();
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
+
 describe("staticFileCollisions", () => {
   const none = { pagePaths: [], redirectFromPaths: [], filePaths: [] };
 

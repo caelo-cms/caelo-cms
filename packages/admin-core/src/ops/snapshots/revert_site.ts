@@ -25,6 +25,7 @@ import {
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { approverRefusal } from "../_approver-permission.js";
 import { recomputeCurrentPathsWithMoves } from "../content/current-path.js";
 import { applyPathMoveEffects } from "../content/path-moves.js";
 import { applyStaticFileState } from "../static_files.js";
@@ -152,6 +153,19 @@ export const revertSiteOp = defineOperation({
         });
       }
       throw e;
+    }
+
+    // A site revert needs only the content permission, but it would write
+    // static files, which only someone entitled to approve them may change.
+    if (staticFileStates.length > 0) {
+      const refusal = await approverRefusal(tx, ctx, "snapshots.revert_site", ["settings.write"]);
+      if (refusal) {
+        return err({
+          kind: "HandlerError",
+          operation: "snapshots.revert_site",
+          message: `${refusal} This snapshot changes static files.`,
+        });
+      }
     }
 
     // Validate every state payload up-front so a schema-mismatch fails the

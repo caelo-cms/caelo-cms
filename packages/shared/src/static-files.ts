@@ -185,8 +185,39 @@ export function staticFileByteLength(body: string): number {
 const ACTIVE_XML =
   /www\.w3\.org\/1999\/xhtml|www\.w3\.org\/2000\/svg|www\.w3\.org\/1998\/Math\/MathML|<\?xml-stylesheet|<!DOCTYPE|<!ENTITY/i;
 
-/** An `xmlns` value spelled with character references, which would hide the namespace. */
-const ESCAPED_NAMESPACE = /xmlns(?::[^\s=]+)?\s*=\s*(?:"[^"]*&|'[^']*&)/i;
+/**
+ * True when an `xmlns` value is spelled with character references, which
+ * would hide the namespace from {@link ACTIVE_XML}. A scan, not a regex: the
+ * body is up to the caller, and each step resumes where the last one stopped,
+ * so the cost stays linear in the body.
+ */
+function hasEscapedNamespace(body: string): boolean {
+  const lower = body.toLowerCase();
+  const isSpace = (c: string | undefined): boolean =>
+    c === " " || c === "\t" || c === "\n" || c === "\r";
+  let at = lower.indexOf("xmlns");
+  while (at !== -1) {
+    let i = at + "xmlns".length;
+    if (body[i] === ":") {
+      while (i < body.length && body[i] !== "=" && !isSpace(body[i])) i += 1;
+    }
+    while (isSpace(body[i])) i += 1;
+    if (body[i] === "=") {
+      i += 1;
+      while (isSpace(body[i])) i += 1;
+      const quote = body[i];
+      if (quote === '"' || quote === "'") {
+        const end = body.indexOf(quote, i + 1);
+        const stop = end === -1 ? body.length : end;
+        const amp = body.indexOf("&", i + 1);
+        if (amp !== -1 && amp < stop) return true;
+        i = stop;
+      }
+    }
+    at = lower.indexOf("xmlns", i);
+  }
+  return false;
+}
 
 /**
  * Why `body` cannot be served as `contentType`, or null. Checks the size,
@@ -207,7 +238,7 @@ export function staticFileBodyIssue(contentType: string, body: string): string |
     }
   }
   if (contentType === "application/xml" || contentType === "text/xml") {
-    if (ACTIVE_XML.test(body) || ESCAPED_NAMESPACE.test(body)) {
+    if (ACTIVE_XML.test(body) || hasEscapedNamespace(body)) {
       return "the XML carries a DOCTYPE, a stylesheet or an XHTML, SVG or MathML namespace, which a browser would run as a page. Send plain data XML, or build it as a page";
     }
   }
