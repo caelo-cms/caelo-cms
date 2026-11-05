@@ -237,7 +237,8 @@
         <div class="space-y-2">
           <Label for="statusCode">Status</Label>
           <Select id="statusCode" name="statusCode">
-            <option value="301" selected>301 (permanent)</option>
+            <option value="" selected>Automatic (301 on this site, 302 to another website)</option>
+            <option value="301">301 (permanent)</option>
             <option value="302">302 (temporary)</option>
             <option value="307">307 (preserve method)</option>
             <option value="308">308 (preserve method, permanent)</option>

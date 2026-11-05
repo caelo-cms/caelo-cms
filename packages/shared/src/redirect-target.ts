@@ -99,7 +99,8 @@ export function externalRedirectTargetIssue(url: string): string | null {
   if (parsed.port !== "") {
     return `${shown} names a port, which not every hosting can serve. Use an address on the standard https port.`;
   }
-  if (NON_PUBLIC_HOST.test(parsed.hostname)) {
+  // A final dot is the same host to DNS, and would pass every host comparison.
+  if (parsed.hostname.endsWith(".") || NON_PUBLIC_HOST.test(parsed.hostname)) {
     return `${shown} does not name a public host. Use a domain name; IP addresses and internal names are refused.`;
   }
   if (parsed.href !== url && parsed.href !== `${url}/`) {

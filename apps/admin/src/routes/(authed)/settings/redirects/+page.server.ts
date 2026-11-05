@@ -70,8 +70,11 @@ export const actions: Actions = {
     // proposal, approved in one go by whoever may approve it.
     if (isExternalRedirectTarget(toPath)) {
       requireApproverPermission(locals, registry, "redirects.execute_proposal");
+      // No choice made: the op's default (temporary) for an address that
+      // can change, not this form's permanent one for a page on the site.
+      const chosen = form.get("statusCode") ? { statusCode } : {};
       const proposed = await execute(registry, adapter, locals.ctx, "redirects.propose_external", {
-        redirects: [{ fromPath, url: toPath, statusCode }],
+        redirects: [{ fromPath, url: toPath, ...chosen }],
       });
       if (!proposed.ok) return fail(400, { error: messageOf(proposed.error, "create failed") });
       const applied = await execute(registry, adapter, locals.ctx, "redirects.execute_proposal", {

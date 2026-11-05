@@ -246,6 +246,16 @@ describe("an approved rule among the others", () => {
     expect((await rowsAt(`${PFX}-old`))[0]?.to_path).toBe("/changed");
   });
 
+  it("two approvals at once apply once", async () => {
+    const proposalId = await propose(`${PFX}-race`);
+    const results = await Promise.all([
+      run(SYSTEM, "redirects.execute_proposal", { proposalId }),
+      run(SYSTEM, "redirects.execute_proposal", { proposalId }),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(await rowsAt(`${PFX}-race`)).toHaveLength(1);
+  });
+
   it("a changed status alone also refuses the approval", async () => {
     await run(SYSTEM, "redirects.create", { fromPath: `${PFX}-st`, toPath: "/a", statusCode: 301 });
     const proposalId = await propose(`${PFX}-st`);

@@ -123,6 +123,7 @@ describe("externalRedirectTargetIssue (#1358)", () => {
     ["https://2130706433/", "public host"],
     ["https://[::1]/", "public host"],
     ["https://localhost/", "public host"],
+    ["https://site.example./", "public host"],
     ["https://intranet/", "public host"],
     ["https://db.internal/", "public host"],
     ["https://calendar.example/a/../b", "plain form"],

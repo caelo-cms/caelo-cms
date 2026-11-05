@@ -25,6 +25,7 @@
 import {
   defineOperation,
   handlerErrorFromDetails,
+  OperationAbortError,
   type TransactionRunner,
   textArray,
 } from "@caelo-cms/query-api";
@@ -172,11 +173,13 @@ async function externalRedirectProblems(
 async function currentTargets(
   tx: TransactionRunner,
   input: ExternalRedirectsInput,
+  lock = false,
 ): Promise<Record<string, string | null>> {
   const spellings = input.redirects.flatMap((r) => redirectFromPathSpellings(r.fromPath));
   const rows = (await tx.execute(sql`
     SELECT from_path, to_path, status_code FROM redirects
     WHERE from_path = ANY(${textArray(spellings)})
+    ${lock ? sql`FOR UPDATE` : sql``}
   `)) as unknown as { from_path: string; to_path: string; status_code: number }[];
   const byPath = new Map(rows.map((r) => [r.from_path, `${r.to_path} (${r.status_code})`]));
   return Object.fromEntries(
@@ -338,6 +341,7 @@ const executeDefinition = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT payload, preview, status FROM redirect_pending_actions
       WHERE id = ${input.proposalId}::uuid
+      FOR UPDATE
     `)) as unknown as {
       payload: unknown;
       preview: { current: Record<string, string | null> };
@@ -363,18 +367,18 @@ const executeDefinition = defineOperation({
         }),
       };
     }
-    // What the Owner saw is what gets replaced, or nothing is.
-    const now = await currentTargets(tx, payload);
+    // What the Owner saw is what gets replaced, or nothing is. The rows stay
+    // locked until the commit; a path that held none is guarded at the insert.
+    const now = await currentTargets(tx, payload, true);
+    const changedMessage = (paths: readonly string[]) => ({
+      kind: "HandlerError" as const,
+      operation: op,
+      message: `${paths.join(", ")} changed after this proposal was made, so applying it would overwrite that change. Nothing was applied: reject it and propose again (find_redirects shows the current rules).`,
+    });
     const changed = payload.redirects
       .map((r) => r.fromPath)
       .filter((p) => (now[p] ?? null) !== (row.preview.current[p] ?? null));
-    if (changed.length > 0) {
-      return err({
-        kind: "HandlerError",
-        operation: op,
-        message: `${changed.join(", ")} changed after this proposal was made, so applying it would overwrite that change. Nothing was applied: reject it and propose again (find_redirects shows the current rules).`,
-      });
-    }
+    if (changed.length > 0) return err(changedMessage(changed));
     for (const r of payload.redirects) {
       // A table imported with `/`-terminated URLs may hold the other
       // spelling; two rows for one address would stop every sync.
@@ -383,7 +387,10 @@ const executeDefinition = defineOperation({
         WHERE from_path = ANY(${textArray([...redirectFromPathSpellings(r.fromPath)])})
           AND from_path <> ${r.fromPath}
       `);
-      await tx.execute(sql`
+      // A rule written since the check at a path that was free has no row
+      // lock to wait on: the conflict counts as a change, and all rolls back.
+      const replaces = now[r.fromPath] != null;
+      const written = (await tx.execute(sql`
         INSERT INTO redirects (from_path, to_path, status_code, created_by)
         VALUES (${r.fromPath}, ${r.url}, ${r.statusCode}, ${ctx.actorId}::uuid)
         ON CONFLICT (from_path) DO UPDATE
@@ -391,7 +398,10 @@ const executeDefinition = defineOperation({
               status_code = EXCLUDED.status_code,
               created_by = EXCLUDED.created_by,
               created_at = now()
-      `);
+          WHERE ${replaces}
+        RETURNING 1 AS written
+      `)) as unknown as unknown[];
+      if (written.length === 0) throw new OperationAbortError(changedMessage([r.fromPath]));
     }
     await requestRedirectSync(tx, ctx);
     await tx.execute(sql`
