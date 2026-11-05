@@ -22,7 +22,8 @@
  *   - Firebase Hosting: version-config headers the publisher writes
  *     (admin-core static-publisher-firebase.ts).
  *   - GCP (`gcp` stack): the static backend bucket's custom response header
- *     carries nosniff; the CSP cannot be attached per file on that load
+ *     carries nosniff (and, written by Publish live, the live build's page
+ *     headers, #1454); the CSP cannot be attached per file on that load
  *     balancer (see `gcsObjectMetadata` in admin-core for why), so SVG
  *     objects are stored `Content-Disposition: attachment` instead and the
  *     converge backfills them (static-svg-gcp.ts).
@@ -43,6 +44,16 @@ import { NOSNIFF, SVG_DOCUMENT_CSP } from "@caelo-cms/shared";
 export const GCP_STATIC_RESPONSE_HEADERS: readonly string[] = [
   `X-Content-Type-Options: ${NOSNIFF}`,
 ];
+
+/**
+ * The list a converge writes: the stack's headers first, then whatever the
+ * bucket carries beside them. Those are the live build's page headers
+ * (#1454), which Publish live writes; the stack does not own them.
+ */
+export function withStaticResponseHeaders(live: readonly string[]): string[] {
+  const own = new Set(GCP_STATIC_RESPONSE_HEADERS);
+  return [...GCP_STATIC_RESPONSE_HEADERS, ...live.filter((h) => !own.has(h))];
+}
 
 // ===========================================================================
 // AWS — CloudFront

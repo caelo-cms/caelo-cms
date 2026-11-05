@@ -44,6 +44,7 @@ import {
   buildRedirectPlan,
   decideStagingAccess,
   goneStatusOnProvider,
+  isHtmlContentType,
   isRewritableContentType,
   isSafeStagedLocation,
   mediaSecurityHeaders,
@@ -547,6 +548,8 @@ async function serveFile(
   const headers = stagingHeaders({
     "Content-Type": entry.type,
     ...mediaSecurityHeaders(entry.type),
+    // #1454 — the headers Publish live ships with this build.
+    ...(isHtmlContentType(entry.type) ? build.manifest.securityHeaders : {}),
   });
   const rewrite =
     state.host !== null && served.buildOrigin !== null && isRewritableContentType(entry.type);

@@ -100,6 +100,11 @@ export const stagedManifestSchema = z.object({
     .refine((files) => Object.keys(files).every(isSafeStagedPath), {
       message: "every path must be a plain build-relative path",
     }),
+  /**
+   * #1454 — the headers of the build's pages (`SiteHeaderSet.headers`).
+   * Absent on a build staged before they existed.
+   */
+  securityHeaders: z.record(z.string(), z.string()).optional(),
 });
 
 export type StagedManifest = z.infer<typeof stagedManifestSchema>;
@@ -127,6 +132,11 @@ export function stagedKeysFor(requestPath: string): string[] | null {
   if (key === "") return ["index.html"];
   if (decoded.endsWith("/")) return [`${key}/index.html`];
   return [key, `${key}/index.html`];
+}
+
+/** True for an HTML document's Content-Type (#1454: the page headers go on these). */
+export function isHtmlContentType(contentType: string): boolean {
+  return contentType.trimStart().toLowerCase().startsWith("text/html");
 }
 
 function extensionOf(key: string): string {

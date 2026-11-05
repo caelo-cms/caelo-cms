@@ -50,6 +50,7 @@ import {
   type ComposeThemeAsset,
   collectListModuleRefs,
   composePageWithLayout,
+  composeSiteHeaders,
   createListRenderContext,
   FAVICON_VARIANT,
   fontUnresolvableMarker,
@@ -64,12 +65,18 @@ import {
   type PartTiming,
   PhaseTimer,
   type PhaseTiming,
+  type PluginCspSources,
   pagedPath,
+  pluginCspSourcesSchema,
   redirectTargetIssue,
   renderEveryPage,
   runBatched,
+  SECURITY_HEADERS_BUILD_FILE,
+  type SiteHeaderSet,
+  type SiteSecurityPolicy,
   STATIC_FILES_MANIFEST_FILE,
   type StaticFileContentType,
+  siteSecurityPolicySchema,
   staticFileCollisions,
   staticFileContentTypeHeader,
   type ThemeDocument,
@@ -115,6 +122,7 @@ import {
   parseModuleFields,
   resolveDeferredModules,
 } from "./page-batch.js";
+import { PageScripts } from "./page-scripts-pass.js";
 import {
   assertPaginationRenderable,
   followUpCollisionError,
@@ -123,6 +131,7 @@ import {
 import { BakeStore, type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { rewritePreviewFontUrls } from "./preview-font-urls.js";
 import { redirectFiles } from "./redirects-pass.js";
+import { CspScanner, readPreviousCspFacts } from "./security-headers-pass.js";
 import {
   buildRobotsTxtWithSitemap,
   prepareSeoPass,
@@ -213,6 +222,8 @@ export interface GenerateResult {
   readonly buildDir: string;
   /** #1271 — the generator process's peak resident memory over the build, in MiB. */
   readonly peakRssMb: number;
+  /** #1454 — the headers of this build's pages, also in its `_security-headers.json`. */
+  readonly securityHeaders: SiteHeaderSet;
   /**
    * Epic #724 — internal links whose target page exists but is not
    * published, so this build does not contain it. Per the #724 decision
@@ -981,11 +992,22 @@ async function buildSite(
   // like the page's own CSS and JS (minify-pass.ts) before anything uses
   // them, so inlined CSS ships minified too and each name hashes the
   // bytes served.
+  const builtAssets = await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id));
   const clientAssets = await Promise.all(
-    (await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id))).map(async (asset) =>
-      withAssetContent(asset, await minifyPluginAsset(asset)),
-    ),
+    builtAssets
+      .flatMap((asset) => (asset.kind === "csp" ? [] : [{ ...asset, kind: asset.kind }]))
+      .map(async (asset) => withAssetContent(asset, await minifyPluginAsset(asset))),
   );
+  // #1454 — what the build ships, for the CSP of its pages.
+  const csp = new CspScanner(seoSettings.siteBaseUrl);
+  for (const asset of builtAssets) {
+    if (asset.kind === "csp") csp.addPlugin(asset.pluginSlug, parsePluginCspSources(asset));
+  }
+  if (pagesToBuild !== null) {
+    const previous = await readPreviousCspFacts(outDir);
+    if (previous) csp.addPrevious(previous);
+  }
+  const pageScripts = new PageScripts(writeBuildFile);
   for (const asset of clientAssets) {
     await writeBuildFile(asset.relPath, asset.content);
     fileCount += 1;
@@ -1186,6 +1208,11 @@ async function buildSite(
     // pass that still rewrites inside them (media URLs, plugin assets).
     // esbuild's service minifies in parallel across the cores.
     await timer.measure(parts, "minify", () => minifyPageAssets(pages, minifyCache));
+    // #1454 — last: the scan reads what visitors get.
+    await timer.measure(parts, "page-scripts", () => pageScripts.externalize(pages));
+    await timer.measure(parts, "csp-scan", () => {
+      for (const p of pages) csp.scanPage(p.html, `/${p.relPath}`);
+    });
     await timer.measure(parts, "write", async () => {
       // v0.2.85 — per-key Content-Type sidecar: bare-slug pages
       // ('no-extension') cannot be typed from the extension.
@@ -1409,6 +1436,17 @@ async function buildSite(
   await writeBuildFile("_content-types.json", JSON.stringify(contentTypeOverrides, null, 2));
   fileCount += 1;
 
+  fileCount += pageScripts.fileCount;
+  // #1454 — every page is scanned now. `alwaysUpload`: a publisher's
+  // promote reads it from the build, also when it equals the live file.
+  const securityHeaders = composeSiteHeaders(await readSiteSecurityPolicy(tx), csp.facts());
+  const securityHeadersJson = JSON.stringify(securityHeaders, null, 2);
+  await writeBuildFile(SECURITY_HEADERS_BUILD_FILE, securityHeadersJson, undefined, {
+    alwaysUpload: true,
+  });
+  await writeFile(join(outDir, SECURITY_HEADERS_BUILD_FILE), securityHeadersJson, "utf8");
+  fileCount += 1;
+
   const assets = [...media.assets(), ...fontAssets];
   for (const file of redirectFiles({
     rows: redirectRows.map((r) => ({
@@ -1420,6 +1458,7 @@ async function buildSite(
     // Every file the build serves: what it wrote and what it references.
     servedFiles: new Set([...servedPaths, ...assets.map((a) => a.path)]),
     staticFiles: staticFileEntries,
+    securityHeaders,
   })) {
     await writeBuildFile(file.name, file.content);
     fileCount += 1;
@@ -1468,7 +1507,42 @@ async function buildSite(
     peakRssMb: Math.round(process.resourceUsage().maxRSS / 1024),
     unpublishedLinkTargets,
     truncatedLists,
+    securityHeaders,
   };
+}
+
+/** #1454 — a plugin's `csp-sources.json`, checked: it widens the site's CSP. */
+function parsePluginCspSources(asset: {
+  readonly pluginSlug: string;
+  readonly content: string;
+}): PluginCspSources {
+  let json: unknown;
+  try {
+    json = JSON.parse(asset.content);
+  } catch {
+    json = null;
+  }
+  const parsed = pluginCspSourcesSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new Error(
+      `static-generator: plugin "${asset.pluginSlug}" returned a csp-sources.json from buildAssets that is not valid, so the site's CSP cannot name what it loads. The plugin's code has to be fixed (a plugin release): ${parsed.error.message}`,
+    );
+  }
+  return parsed.data;
+}
+
+/** #1454 — the Owner's stored policy (a stored default, migration 0639; no fallback here). */
+async function readSiteSecurityPolicy(tx: TransactionRunner): Promise<SiteSecurityPolicy> {
+  const rows = (await tx.execute(sql`
+    SELECT security_headers FROM site_settings WHERE id = 1
+  `)) as unknown as { security_headers: unknown }[];
+  const parsed = siteSecurityPolicySchema.safeParse(rows[0]?.security_headers);
+  if (!parsed.success) {
+    throw new Error(
+      `static-generator: site_settings.security_headers is missing or not valid (${parsed.error.message}). Run the migrations, or set the policy again under Settings → Security headers, then rebuild.`,
+    );
+  }
+  return parsed.data;
 }
 
 /** #1461 — one row of `static_files` as the build ships it. */

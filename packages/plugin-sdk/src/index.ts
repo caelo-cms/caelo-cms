@@ -2208,6 +2208,11 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * once per build lets the plugin bake that configuration into the
    * file it ships.
    *
+   * The reserved name `csp-sources.json` is no file: it is JSON saying what
+   * the plugin's client code reaches at runtime (`origins` per kind,
+   * `inlineScripts` as exact text), so the site's CSP allows it. The build
+   * validates it, and the Owner sees it by plugin (`get_security_headers`).
+   *
    * @param args.pageIds every page in this build, so a plugin can bake
    *   per-page data into a lookup rather than fetching it at runtime.
    */

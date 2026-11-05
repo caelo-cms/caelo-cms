@@ -169,6 +169,8 @@ describe("gcp stack wiring (source)", () => {
     expect(urlMapRedirectsRoleId("production")).toBe("caelo_production_urlMapRedirects");
     expect(urlMapRedirectsRoleId("production")).toMatch(/^[A-Za-z0-9_.]{3,64}$/);
     expect([...URL_MAP_REDIRECTS_PERMISSIONS].sort()).toEqual([
+      "compute.backendBuckets.get",
+      "compute.backendBuckets.update",
       "compute.backendBuckets.use",
       "compute.backendServices.use",
       "compute.globalOperations.get",

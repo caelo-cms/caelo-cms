@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 22;
+export const INFRA_CONTRACT_VERSION = 23;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -187,6 +187,11 @@ export const INFRA_CONTRACT_VERSION = 22;
 //       writes the in-cloud upgrader holds no compute rights for, so the
 //       converge applies them (gateway-armor.ts). Other providers have
 //       nothing to converge for it.
+//  23 — #1454: on `gcp` the admin writes a build's page headers (CSP and the
+//       rest) to the static backend bucket at Publish live, so its
+//       `caeloUrlMapRedirects` role gains `compute.backendBuckets.get` and
+//       `.update`, a custom-role change the in-cloud upgrader may not make.
+//       Other providers have nothing to converge for it.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -216,6 +221,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   20: "the staging gateway that serves the staged site behind the staging gate on every address: its service, service account and grants, the private staging bucket, and the staging host's own route (a second Firebase Hosting site, or a host rule and certificate on the load balancer); the live gateway no longer holds the staging gate key (#1330, #1331)",
   21: "the gateways' scale-out and connection pool kept inside the database connection budget, and on Google Cloud load-balancer installs the gateway open to visitors and the sign-in and staging routes repaired (#1463)",
   22: "per-path Cloud Armor rules for the visitor and staging gateways on Google Cloud load-balancer installs: a tighter ban on sign-up, login and password reset, a captcha throttle, the general ban only on the visitor API, and fewer false positives from the OWASP rules (#1339)",
+  23: "the admin's permission on Google Cloud load-balancer installs to set the site's security headers on the static backend bucket at Publish live (#1454)",
 };
 
 /**

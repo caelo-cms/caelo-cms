@@ -334,6 +334,7 @@ export async function bakeTags(ctx: unknown): Promise<BakedTag[]> {
     const scoped = (s.paths?.length ?? 0) + (s.pageIds?.length ?? 0) + (s.templateIds?.length ?? 0);
     return {
       name: t.name,
+      vendor: t.vendor,
       category: t.category_key,
       src: t.script_src,
       inline: t.inline_snippet,

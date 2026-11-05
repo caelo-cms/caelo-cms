@@ -12,6 +12,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [propose-execute-pattern.md](./propose-execute-pattern.md) — the apply + audit engine behind human-approved (gated) AI tools, and how to gate a new domain (CLAUDE.md §11.A).
 - [dev/build-memory.md](./dev/build-memory.md) — how Stage and Publish live keep memory flat: page batches, media and fonts referenced by stored digest, streamed uploads, parity digests taken while writing (#1271).
 - [dev/redirects-and-settings-sync.md](./dev/redirects-and-settings-sync.md) — redirects sync to the hosting provider on save (no build), per provider; which global settings live at the provider and which go live with Publish live (#1157).
+- [dev/site-security-headers.md](./dev/site-security-headers.md) — the security headers of a site's pages (#1454): the CSP each build derives from what it ships, report-only first, the §11.A gate, how each host serves them, and what a real host still has to prove.
 - [dev/static-files.md](./dev/static-files.md) — small data files (JSON, TXT, CSV, XML) at a chosen path on the site's domain: the rules, the §11.A gate, and how each provider serves their Content-Type (#1461).
 - [internal-links.md](./internal-links.md) — internal links as page references: write-time canonicalisation, render-time resolution, and why a move rewrites no link (epic #724).
 - [lists.md](./lists.md) — lists, list types, page types and sources: the field system, template syntax, resolver, plugin translation hooks and the AI surface (epic #1107).

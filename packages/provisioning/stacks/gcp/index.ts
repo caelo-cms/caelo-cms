@@ -1052,7 +1052,8 @@ const staticBackendBucket = new gcp.compute.BackendBucket(
     cdnPolicy: { ...STATIC_CDN_POLICY },
     customResponseHeaders: [...GCP_STATIC_RESPONSE_HEADERS],
   },
-  opts,
+  // #1454 — Publish live adds the live build's page headers to the list.
+  { ...opts, ignoreChanges: ["customResponseHeaders"] },
 );
 
 // Tier 3 backend — gateway Cloud Run via serverless NEG

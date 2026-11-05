@@ -28,7 +28,7 @@ function runner(answer: (args: string[]) => GcloudResult) {
 }
 
 const PERMS =
-  "--permissions=compute.urlMaps.list,compute.urlMaps.get,compute.urlMaps.update,compute.backendBuckets.use,compute.backendServices.use,compute.globalOperations.get";
+  "--permissions=compute.urlMaps.list,compute.urlMaps.get,compute.urlMaps.update,compute.backendBuckets.get,compute.backendBuckets.update,compute.backendBuckets.use,compute.backendServices.use,compute.globalOperations.get";
 const BIND = [
   "projects",
   "add-iam-policy-binding",

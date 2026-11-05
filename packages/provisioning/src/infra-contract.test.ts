@@ -20,8 +20,9 @@ describe("infrastructure contract steps", () => {
     );
   });
 
-  it("is at 22: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7), quality-audit job (8), converge job (9), remote MCP (10), Google sign-in (11), project-level sign-in client (12), edge security headers (13), capture job (14), database verify-full TLS (15), MCP-Auth-Proxy (16), staging database (17), scheduler tick (18), scheduler tick as JSON (19), staging gateway (20), gateway budget and plain-gcp repairs (21), per-path Cloud Armor rules (22)", () => {
-    expect(INFRA_CONTRACT_VERSION).toBe(22);
+  it("is at 23: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7), quality-audit job (8), converge job (9), remote MCP (10), Google sign-in (11), project-level sign-in client (12), edge security headers (13), capture job (14), database verify-full TLS (15), MCP-Auth-Proxy (16), staging database (17), scheduler tick (18), scheduler tick as JSON (19), staging gateway (20), gateway budget and plain-gcp repairs (21), per-path Cloud Armor rules (22), site security headers on the backend bucket (23)", () => {
+    expect(INFRA_CONTRACT_VERSION).toBe(23);
+    expect(INFRA_CONTRACT_STEPS[23]).toContain("#1454");
     expect(INFRA_CONTRACT_STEPS[3]).toContain("#633");
     expect(INFRA_CONTRACT_STEPS[4]).toContain("#587");
     expect(INFRA_CONTRACT_STEPS[5]).toContain("#635");
@@ -52,6 +53,6 @@ describe("infrastructure contract steps", () => {
   });
 
   it("names a version a newer release added by number", () => {
-    expect(infraStepsText(22, 23)).toBe("infrastructure step 23 (see that release's notes)");
+    expect(infraStepsText(23, 24)).toBe("infrastructure step 24 (see that release's notes)");
   });
 });

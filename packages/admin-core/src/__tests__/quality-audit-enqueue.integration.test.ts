@@ -22,6 +22,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import {
+  composeSiteHeaders,
+  DEFAULT_SITE_SECURITY_POLICY,
+  EMPTY_CSP_FACTS,
+} from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
@@ -303,6 +308,7 @@ describe("a succeeded staging build always has its audit (#1319)", () => {
       override: null,
       phaseTimings: [],
       qualityAudit: null,
+      securityHeaders: composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS),
     });
     expect(await plannedAuditOf(runId)).toBeNull();
     const written = await auditsOf(runId);

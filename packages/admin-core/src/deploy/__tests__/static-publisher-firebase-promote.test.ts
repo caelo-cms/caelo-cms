@@ -34,6 +34,11 @@ import {
 import { FakeChannelLifetimes } from "../../__tests__/fixtures/firebase-channel-lifetime.js";
 import { setStagingBucketForTests } from "../staging-slots.js";
 
+/** The build's page headers, as the generator writes them on every build (#1454). */
+const SITE_HEADERS_FILE = JSON.stringify(
+  composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS),
+);
+
 const realGoogleAuthExports = { ...realGoogleAuth };
 
 mock.module("google-auth-library", () => ({
@@ -322,6 +327,7 @@ beforeEach(async () => {
     JSON.stringify({ version: 1, files: [] }),
     "utf8",
   );
+  await writeFile(join(buildDir, SECURITY_HEADERS_BUILD_FILE), SITE_HEADERS_FILE, "utf8");
   await writeAssetReferences(buildDir);
   await writeFile(
     join(buildDir, "routing-manifest.json"),
@@ -996,6 +1002,10 @@ describe("firebaseHostingPublisher — a build streamed into the version (#1271)
           files: [{ path: "p0.txt", contentType: "text/plain; charset=utf-8" }],
         }),
       ),
+    });
+    await upload.put({
+      relPath: SECURITY_HEADERS_BUILD_FILE,
+      body: Buffer.from(SITE_HEADERS_FILE),
     });
     await upload.put({ relPath: "robots.txt", body: Buffer.from("User-agent: *\nDisallow: /\n") });
     for (let i = 0; i < 600; i += 1) {

@@ -56,6 +56,7 @@ import {
   setTranslationModelOp,
   translationModelProblem,
 } from "./security/ai_providers.js";
+import { applySecurityHeadersProposal, SECURITY_HEADERS_NEXT_STEP } from "./security_headers.js";
 
 type Ctx = ExecutionContext;
 
@@ -436,6 +437,10 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
       const applied = await applyOwnerStagingProposal(ctx, tx, row.kind, row.payload);
       if ("error" in applied) return handlerError(op, applied.error);
       nextStep = applied.nextStep;
+    } else if (row.kind === "set_security_headers") {
+      const problem = await applySecurityHeadersProposal(ctx, tx, row.payload);
+      if (problem) return handlerError(op, problem);
+      nextStep = SECURITY_HEADERS_NEXT_STEP;
     } else if (row.kind === "set_mail_caps") {
       const problem = await applyMailCapsProposal(ctx, tx, row.payload);
       if (problem) return handlerError(op, problem);

@@ -214,13 +214,15 @@ function stagedServer(runId: string) {
   return Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: (req) =>
-      new URL(req.url).pathname === "/routing-manifest.json"
-        ? Response.json({ runId })
-        : new Response(
-            '<!doctype html><html><head><meta name="description" content="A page."></head><body></body></html>',
-            { headers: { "content-type": "text/html" } },
-          ),
+    fetch: (req) => {
+      const { pathname } = new URL(req.url);
+      if (pathname === "/routing-manifest.json") return Response.json({ runId });
+      if (pathname.startsWith("/_")) return new Response("not found", { status: 404 });
+      return new Response(
+        '<!doctype html><html><head><meta name="description" content="A page."></head><body></body></html>',
+        { headers: { "content-type": "text/html" } },
+      );
+    },
   });
 }
 

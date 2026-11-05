@@ -60,7 +60,7 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 | `static_files` (0625, approve on `/settings/static-files`, [dev/static-files.md](./dev/static-files.md)) | `propose_set`, `propose_delete` | `settings.write` |
 | `site_defaults` (SEO settings; approve on `/settings/seo`) | `propose_set_seo` | `roles.manage` |
 | `gateway` | `propose_rate_limit` | `settings.write` |
-| `owner_settings` (0235, 0241, 0244, 0251) | `propose_set_ai_budget`, `propose_set_ai_pricing`, `propose_set_gateway_settings`, `propose_set_translation_model`, `propose_set_plugin_ai_cost_cap`, `propose_rotate_gateway_cookie_secret`, `propose_set_staging_access`, `propose_rotate_staging_credentials`, `propose_set_staging_host` — one table, `kind` discriminator | `settings.write` |
+| `owner_settings` (0235, 0241, 0244, 0251) | `propose_set_ai_budget`, `propose_set_ai_pricing`, `propose_set_gateway_settings`, `propose_set_translation_model`, `propose_set_plugin_ai_cost_cap`, `propose_rotate_gateway_cookie_secret`, `propose_set_staging_access`, `propose_rotate_staging_credentials`, `propose_set_staging_host`, `propose_set_security_headers` (0639, [dev/site-security-headers.md](./dev/site-security-headers.md)) — one table, `kind` discriminator | `settings.write` |
 | `themes` (v0.11.0, #45; create reshaped by #112 — see [themes.md](./themes.md)) | `propose_create`, `propose_activate`, `propose_delete` | `roles.manage` |
 | `quality_audits` (#553 — accept findings, single or #727 bulk groups across pages; publish over a failed check) | `propose_accept`, `propose_publish_anyway` | `content.write` (accept) / `deploy.trigger` (publish anyway), checked inside `execute_proposal` |
 

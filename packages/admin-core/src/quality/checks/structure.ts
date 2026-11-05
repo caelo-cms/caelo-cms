@@ -92,7 +92,7 @@ import {
   scriptClassNames,
   unusedCssFindings,
 } from "./structure-css.js";
-import { moduleJsFindings } from "./structure-js.js";
+import { moduleJsFindings, readBundleFiles } from "./structure-js.js";
 import { manualListingFindings, type StructurePageIndex } from "./structure-listing.js";
 import { unconfirmedPageTypeFindings } from "./structure-page-type.js";
 import { frameModuleIds, heavyChromeFindings, repeatedRenderFindings } from "./structure-weight.js";
@@ -147,7 +147,8 @@ export function createStructureCheck(sources: StructureSources): SiteCheck {
         ...pageIndex.siteHosts,
         ...siteHostsOf([build.baseUrl, build.displayBaseUrl]),
       ]);
-      return structureFindings(pages, modules, layouts, { ...pageIndex, siteHosts });
+      const bundleFiles = await readBundleFiles(pages, build);
+      return structureFindings(pages, modules, layouts, { ...pageIndex, siteHosts }, bundleFiles);
     },
   };
 }
@@ -158,6 +159,7 @@ export function structureFindings(
   modules: readonly StructureModule[],
   layouts: readonly StructureLayout[],
   pageIndex: StructurePageIndex,
+  bundleFiles: ReadonlyMap<string, string> = new Map(),
 ): Finding[] {
   const analysis = analyseStructure(pages, modules);
   const byId = new Map(modules.map((m) => [m.id, m]));
@@ -171,7 +173,7 @@ export function structureFindings(
     ...navigationFindings(analysis.linkGroups, byId),
     ...manualListingFindings(analysis.listingGroups, pages, pageIndex, byId),
     ...unconfirmedPageTypeFindings(pageIndex),
-    ...moduleJsFindings(analysis, pages, modules, layouts),
+    ...moduleJsFindings(analysis, pages, modules, layouts, bundleFiles),
     ...weightFindings(pages, modules, layouts, pageIndex, analysis, byId),
   ];
   // Errors first (stable within a severity), so a cut keeps what blocks.

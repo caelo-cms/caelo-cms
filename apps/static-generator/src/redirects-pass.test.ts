@@ -7,8 +7,15 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { parseRedirectsFile } from "@caelo-cms/shared";
+import {
+  composeSiteHeaders,
+  DEFAULT_SITE_SECURITY_POLICY,
+  EMPTY_CSP_FACTS,
+  parseRedirectsFile,
+} from "@caelo-cms/shared";
 import { redirectFiles } from "./redirects-pass.js";
+
+const HEADERS = composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS);
 
 const ROWS = [
   { fromPath: "/old", toPath: "/about", statusCode: 301 },
@@ -20,6 +27,7 @@ describe("redirectFiles", () => {
     const files = new Map(
       redirectFiles({
         staticFiles: [],
+        securityHeaders: HEADERS,
         rows: ROWS,
         pageUrlStyle: "directory",
         servedFiles: new Set(["index.html", "about/index.html"]),
@@ -39,6 +47,7 @@ describe("redirectFiles", () => {
     expect(() =>
       redirectFiles({
         staticFiles: [],
+        securityHeaders: HEADERS,
         rows: [
           { fromPath: "/a", toPath: "/b", statusCode: 301 },
           { fromPath: "/b", toPath: "/a", statusCode: 301 },

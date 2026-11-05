@@ -261,6 +261,26 @@ describe("#1330 staging gateway: serving the staged build", () => {
     expect(png.headers.get("content-type")).toBe("image/png");
   });
 
+  it("sends the build's page headers on documents only (#1454)", async () => {
+    const securityHeaders = { "Referrer-Policy": "no-referrer", "X-Frame-Options": "SAMEORIGIN" };
+    const storage = memoryStorage({
+      ...FILES,
+      [stagedManifestKey(LOCATION)]: JSON.stringify({ ...MANIFEST, securityHeaders }),
+    });
+    const cookie = await sessionCookie();
+    const page = await handleStagingSiteRequest(
+      get("/", { cookie }),
+      deps({ storage, manifests: new ManifestCache() }),
+    );
+    expect(page.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(page.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+    const file = await handleStagingSiteRequest(
+      get("/_assets/logo.png", { cookie }),
+      deps({ storage, manifests: new ManifestCache() }),
+    );
+    expect(file.headers.get("referrer-policy")).toBeNull();
+  });
+
   it("marks every answer noindex and uncacheable by shared caches", async () => {
     const res = await admitted("/about/");
     expect(res.headers.get("x-robots-tag")).toBe("noindex");

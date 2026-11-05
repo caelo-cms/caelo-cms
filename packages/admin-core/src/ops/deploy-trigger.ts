@@ -66,6 +66,7 @@ import {
   PhaseTimer,
   phaseTimingSchema,
   type Result,
+  siteHeaderSetSchema,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
@@ -497,6 +498,8 @@ export const finishTriggerOp = defineOperation({
       phaseTimings: z.array(phaseTimingSchema),
       /** #1319 — what the audit log records as the Stage's audit request. */
       qualityAudit: stagingAuditRequestSchema.nullable(),
+      /** #1454 — the headers of this build's pages (`security_headers.get` reads them). */
+      securityHeaders: siteHeaderSetSchema,
     })
     .strict(),
   output: z.object({
@@ -581,6 +584,7 @@ export const finishTriggerOp = defineOperation({
           build_id = ${input.runId},
           publish_summary = ${jsonbParam(input.publishSummary)},
           site_url = ${input.buildOrigin},
+          security_headers = ${jsonbParam(input.securityHeaders)},
           lease_expires_at = NULL, planned_audit = NULL
       WHERE id = ${input.runId}::uuid
     `);
@@ -880,6 +884,7 @@ async function runTrigger(
       phaseTimings: timer.phases(),
       qualityAudit:
         plan.target.env === "staging" ? (input.qualityAudit ?? OUTSIDE_CHAT_AUDIT) : null,
+      securityHeaders: built.securityHeaders,
     });
     if (!finished.ok) return await fail(describeError(finished.error));
     // The audit row committed with the run; wake this instance's worker

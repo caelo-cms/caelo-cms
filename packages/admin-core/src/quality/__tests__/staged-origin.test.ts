@@ -6,7 +6,14 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { STAGING_PLUGIN_STUB_BODY, SVG_DOCUMENT_CSP } from "@caelo-cms/shared";
+import {
+  composeSiteHeaders,
+  DEFAULT_SITE_SECURITY_POLICY,
+  EMPTY_CSP_FACTS,
+  SECURITY_HEADERS_BUILD_FILE,
+  STAGING_PLUGIN_STUB_BODY,
+  SVG_DOCUMENT_CSP,
+} from "@caelo-cms/shared";
 import {
   localBuildSource,
   type StagedOrigin,
@@ -163,6 +170,27 @@ describe("serveStagedBuild over a local build", () => {
     const page = await fetch(`${origin.baseUrl}/about/`);
     expect(page.headers.get("content-security-policy")).toBeNull();
     expect(page.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  it("sends the build's page headers on documents, so the audit sees its CSP (#1454)", async () => {
+    const file = join(build, SECURITY_HEADERS_BUILD_FILE);
+    writeFileSync(
+      file,
+      JSON.stringify(composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS)),
+    );
+    const own = await serveStagedBuild(localBuildSource(build));
+    try {
+      const page = await fetch(`${own.baseUrl}/`);
+      expect(page.headers.get("content-security-policy-report-only")).toContain(
+        "script-src 'self'",
+      );
+      expect(page.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+      const logo = await fetch(`${own.baseUrl}/_assets/logo.0123456789abcdef.png`);
+      expect(logo.headers.get("content-security-policy-report-only")).toBeNull();
+    } finally {
+      await own.close();
+      rmSync(file);
+    }
   });
 
   it("is read-only and refuses escapes", async () => {

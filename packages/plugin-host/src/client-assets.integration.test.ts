@@ -19,6 +19,7 @@ import { SQL } from "bun";
 import {
   bootstrap,
   collectBuildAssets,
+  injectPluginAssets,
   MAIN_RENDER,
   type PluginHostInfra,
   resetPluginHost,
@@ -114,6 +115,17 @@ describe("collectBuildAssets", () => {
     expect(js?.content).toBe("/* pages: 1 */");
     expect(js?.relPath).toMatch(new RegExp(`^_caelo/plugin/${SLUG}/runtime\\.[0-9a-f]{12}\\.js$`));
     expect(js?.publicPath).toBe(`/${js?.relPath}`);
+  });
+
+  it("hands csp-sources.json to the build as data, and no page links it (#1454)", async () => {
+    await load(fixture({ "runtime.js": "x", "csp-sources.json": '{"inlineScripts":["a()"]}' }));
+    const assets = await collectBuildAssets(PAGE_IDS, MAIN_RENDER);
+    const csp = assets.find((a) => a.kind === "csp");
+    expect(csp?.content).toBe('{"inlineScripts":["a()"]}');
+    expect(csp?.relPath).toBe("");
+    const html = injectPluginAssets("<head></head><body></body>", assets, "linked");
+    expect(html).not.toContain("csp-sources");
+    expect(html).not.toContain("inlineScripts");
   });
 
   it("gives identical content the same name and changed content a new one", async () => {

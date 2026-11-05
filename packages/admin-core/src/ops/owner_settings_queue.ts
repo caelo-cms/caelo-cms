@@ -36,6 +36,7 @@ export const ownerSettingsKind = z.enum([
   "rotate_staging_credentials",
   "set_staging_host",
   "set_mail_caps",
+  "set_security_headers",
 ]);
 export type OwnerSettingsKind = z.infer<typeof ownerSettingsKind>;
 

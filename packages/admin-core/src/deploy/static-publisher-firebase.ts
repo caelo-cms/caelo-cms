@@ -45,8 +45,12 @@ import {
   IMMUTABLE_CACHE_CONTROL,
   NOSNIFF,
   PhaseTimer,
+  parseSiteHeaderSet,
   parseStaticFilesManifest,
   runBatched,
+  SECURITY_HEADERS_BUILD_FILE,
+  SITE_DOCUMENT_PATH_PATTERN,
+  type SiteHeaderSet,
   STATIC_FILES_MANIFEST_FILE,
   type StaticFileManifestEntry,
   SVG_DOCUMENT_CSP,
@@ -173,7 +177,8 @@ export const FIREBASE_SHORT_CACHE_PATH_PATTERN =
  * The {@link SECURITY_HEADER_ENTRIES} close the list (#891): every
  * response `nosniff`, every SVG the sandboxing CSP. Neither sets
  * Cache-Control or Content-Type, so they overlap the entries above
- * without two entries ever setting the same header.
+ * without two entries ever setting the same header. A build's page headers
+ * ride their own entry ({@link siteHeaderEntry}, #1454).
  */
 export const SECURITY_HEADER_ENTRIES = [
   {
@@ -250,6 +255,15 @@ export function withTargetRobotsHeader(
   return { ...config, headers };
 }
 
+/**
+ * #1454 — the entry with a build's page headers. It belongs to the build (a
+ * CSP names what that build ships), so a promote or rollback keeps it from
+ * the version it copies, and a version from before it simply has none.
+ */
+export function siteHeaderEntry(set: SiteHeaderSet): FirebaseHeaderEntry {
+  return { regex: SITE_DOCUMENT_PATH_PATTERN, headers: set.headers };
+}
+
 const SECURITY_HEADER_NAMES = new Set(
   SECURITY_HEADER_ENTRIES.flatMap((e) => Object.keys(e.headers).map((k) => k.toLowerCase())),
 );
@@ -263,7 +277,9 @@ const SECURITY_HEADER_NAMES = new Set(
  */
 export function withSecurityHeaders(config: FirebaseVersionConfig): FirebaseVersionConfig {
   const kept = (config.headers ?? []).filter(
-    (e) => !Object.keys(e.headers ?? {}).some((k) => SECURITY_HEADER_NAMES.has(k.toLowerCase())),
+    (e) =>
+      e.regex === SITE_DOCUMENT_PATH_PATTERN ||
+      !Object.keys(e.headers ?? {}).some((k) => SECURITY_HEADER_NAMES.has(k.toLowerCase())),
   );
   return { ...config, headers: [...kept, ...SECURITY_HEADER_ENTRIES] };
 }
@@ -658,6 +674,7 @@ class FirebaseBuildUpload implements BuildUpload {
   #redirectsFile: string | null = null;
   /** #1461 — the build's static files; their Content-Types ride the version config. */
   #staticFiles: readonly StaticFileManifestEntry[] | null = null;
+  #siteHeaders: SiteHeaderSet | null = null;
   #state: "open" | "finished" | "aborted" = "open";
   /** #1330 — a Stage's mirror into the staging slot it fills; null for other targets. */
   readonly #slot: GcsSlotSync | null;
@@ -703,6 +720,9 @@ class FirebaseBuildUpload implements BuildUpload {
       this.#redirectsFile = Buffer.from(file.body).toString("utf8");
     if (file.relPath === STATIC_FILES_MANIFEST_FILE) {
       this.#staticFiles = parseStaticFilesManifest(Buffer.from(file.body).toString("utf8"));
+    }
+    if (file.relPath === SECURITY_HEADERS_BUILD_FILE) {
+      this.#siteHeaders = parseSiteHeaderSet(Buffer.from(file.body).toString("utf8"));
     }
     const raw = Buffer.from(file.body);
     const { body, sha256 } = await gzipAndHashBytes(raw);
@@ -838,11 +858,17 @@ class FirebaseBuildUpload implements BuildUpload {
         `static-publisher-firebase: the build has no ${STATIC_FILES_MANIFEST_FILE}. The static generator writes it on every build; re-run the build instead of deploying a partial one.`,
       );
     }
+    if (this.#siteHeaders === null) {
+      throw new Error(
+        `static-publisher-firebase: the build has no ${SECURITY_HEADERS_BUILD_FILE}. The static generator writes it on every build; re-run the build instead of deploying a partial one.`,
+      );
+    }
     const served = new Set([...this.#paths, ...assets.map((a) => a.path)]);
     const config = siteConfig(
       target,
       firebaseRedirectsFromFile(this.#redirectsFile, target.pageUrlStyle ?? "directory", served),
       this.#staticFiles,
+      this.#siteHeaders,
     );
     // Config and status in one update, as firebase-tools finalizes.
     await firebaseFetch(
@@ -858,6 +884,7 @@ class FirebaseBuildUpload implements BuildUpload {
       ? await this.#slot.finish({
           runId: args.runId,
           pageUrlStyle: target.pageUrlStyle ?? "directory",
+          securityHeaders: this.#siteHeaders.headers,
         })
       : null;
     if (slot) timer.lap("staging-slot");
@@ -913,12 +940,17 @@ function siteConfig(
   target: DeployTarget,
   redirects: unknown,
   staticFiles: readonly StaticFileManifestEntry[],
+  siteHeaders: SiteHeaderSet,
 ): FirebaseVersionConfig {
   return withTargetRobotsHeader(
     {
       redirects,
       rewrites: [currentGatewayRewrite()],
-      headers: [...VERSION_CONFIG_HEADERS, ...staticFileHeaderEntries(staticFiles)],
+      headers: [
+        ...VERSION_CONFIG_HEADERS,
+        ...staticFileHeaderEntries(staticFiles),
+        siteHeaderEntry(siteHeaders),
+      ],
     },
     target.robotsDefault,
   );

@@ -21,6 +21,7 @@
     rotate_gateway_cookie_secret: "Rotate gateway cookie secret",
     set_staging_access: "Staging access",
     rotate_staging_credentials: "Rotate staging credentials",
+    set_security_headers: "Security headers",
   };
 </script>
 
