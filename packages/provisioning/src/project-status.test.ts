@@ -131,8 +131,8 @@ function project(world: World): { deps: ProjectStatusDeps; calls: string[][]; pr
       run,
       syncRun,
       resolves: async (r) => (world.resolving ?? []).includes(r.hostname),
-      ownerSetupState: async ({ adminUrl }) => {
-        probes.push(adminUrl);
+      ownerSetupState: async (target) => {
+        probes.push(target.provider);
         if (world.ownerSetup === "unknown") return { ok: false, error: "the admin is asleep" };
         return { ok: true, value: world.ownerSetup ?? "open" };
       },
@@ -320,6 +320,16 @@ describe("status --project: failed reads and this machine", () => {
     expect(() => readInstallJobStatus("b", run)).toThrow(/gcloud auth login/);
   });
 
+  it("a malformed pulumi-up step is an error, not an unprovisioned install", async () => {
+    const objects = {
+      [`${BUCKET}/install.json`]: INSTALL,
+      [`${BUCKET}/progress.json`]: { steps: { [`pulumi-up-${PROJECT}`]: "broken" } },
+    };
+    await expect(readProjectStatus(PROJECT, project({ objects }).deps)).rejects.toThrow(
+      /pulumi-up step/,
+    );
+  });
+
   it("a missing gcloud says to install it", () => {
     const e = Object.assign(new Error("spawn gcloud ENOENT"), { code: "ENOENT" });
     expect(projectStatusFailure(e)).toContain("Install the Google Cloud CLI");
@@ -368,7 +378,7 @@ describe("the handoff message", () => {
 });
 
 describe("readOwnerSetupState", () => {
-  const target = { projectId: PROJECT, adminUrl: "https://admin.acme.test" };
+  const target = { provider: "gcp", projectId: PROJECT, domain: "acme.test" } as const;
   const gcloudToken = async () => ok("access-token");
   const answering = (setup: () => Response) => {
     const urls: string[] = [];
@@ -403,6 +413,39 @@ describe("readOwnerSetupState", () => {
       () => new Response(null, { status: 303, headers: { location: "/maintenance" } }),
     );
     expect(elsewhere.ok).toBe(false);
+  });
+
+  it("sends its token only to the admin the install's domain names", async () => {
+    const { urls, doFetch } = answering(() => new Response("<form>"));
+    await readOwnerSetupState(target, { run: gcloudToken, fetch: doFetch });
+    expect(urls.filter((u) => !u.includes("iamcredentials"))).toEqual([
+      "https://admin.acme.test/setup",
+    ]);
+  });
+
+  it("takes the gcp-firebase address from Cloud Run, not from a checkpoint", async () => {
+    const { urls, doFetch } = answering(() => new Response("<form>"));
+    const run = async (args: string[]) => {
+      if (args[1] === "services" && args[2] === "describe") return ok("https://real.run.app\n");
+      if (args[1] === "services" && args[2] === "list") {
+        return ok("caelo-production-admin-abc\n");
+      }
+      return ok("access-token");
+    };
+    await readOwnerSetupState(
+      { provider: "gcp-firebase", projectId: PROJECT, region: "europe-west1" },
+      { run, fetch: doFetch },
+    );
+    expect(urls.at(-1)).toBe("https://real.run.app/setup");
+  });
+
+  it("turns a failed signing call into an answer, so the status still prints", async () => {
+    const doFetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const r = await readOwnerSetupState(target, { run: gcloudToken, fetch: doFetch });
+    expect(r.ok).toBe(false);
+    expect(r.ok ? "" : r.error).toContain("network down");
   });
 
   it("reports IAP's own refusal", async () => {

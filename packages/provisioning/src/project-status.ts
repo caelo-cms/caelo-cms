@@ -17,7 +17,7 @@
 import { log } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { z } from "zod";
-import type { AdminInternalResult } from "./admin-internal.js";
+import type { AdminInternalResult, GoogleAdminTarget } from "./admin-internal.js";
 import { readOwnerSetupState } from "./admin-internal-google.js";
 import {
   type DnsRecordGroups,
@@ -94,10 +94,9 @@ export interface ProjectStatusDeps {
   /** Whether public DNS answers the record with its value. */
   readonly resolves: (record: InstallDnsRecord) => Promise<boolean>;
   /** Whether the admin still offers Owner setup ({@link readOwnerSetupState}). */
-  readonly ownerSetupState: (target: {
-    readonly projectId: string;
-    readonly adminUrl: string;
-  }) => Promise<AdminInternalResult<"open" | "done">>;
+  readonly ownerSetupState: (
+    target: GoogleAdminTarget,
+  ) => Promise<AdminInternalResult<"open" | "done">>;
   /** Whether stdout is a terminal: the only place the setup link may go. */
   readonly isTerminal: boolean;
 }
@@ -134,9 +133,16 @@ export async function dnsRecordsToSet(
   return { ...groupDnsRecords(open, domain), total: unique.length };
 }
 
+/** Where {@link readOwnerSetupState} reaches the admin; null without a recorded region. */
+function adminTarget(install: InstallRecord): GoogleAdminTarget | null {
+  const { provider, projectId, domain, region } = install;
+  if (provider === "gcp") return { provider, projectId, domain };
+  return region ? { provider, projectId, region } : null;
+}
+
 async function readOwnerSetup(
   args: {
-    readonly projectId: string;
+    readonly install: InstallRecord;
     readonly adminUrl: string | null;
     readonly job: InstallJobView | null;
     readonly provisioned: boolean;
@@ -147,15 +153,15 @@ async function readOwnerSetup(
   if (unfinished || args.adminUrl === null) return { kind: "not-yet" };
   let link: string | null;
   try {
-    link = await readSetupLink(deps.run, args.projectId);
+    link = await readSetupLink(deps.run, args.install.projectId);
   } catch (e) {
     return { kind: "error", message: e instanceof Error ? e.message : String(e) };
   }
   if (link === null) return { kind: "no-link" };
-  const state = await deps.ownerSetupState({
-    projectId: args.projectId,
-    adminUrl: args.adminUrl,
-  });
+  const target = adminTarget(args.install);
+  const state: AdminInternalResult<"open" | "done"> = target
+    ? await deps.ownerSetupState(target)
+    : { ok: false, error: "install.json records no region" };
   if (state.ok && state.value === "done") return { kind: "done" };
   if (!deps.isTerminal) return { kind: "withheld" };
   return { kind: "link", link, unverified: state.ok ? null : state.error };
@@ -188,7 +194,7 @@ export async function readProjectStatus(
     install.domain,
     deps.resolves,
   );
-  const owner = await readOwnerSetup({ projectId, adminUrl, job, provisioned }, deps);
+  const owner = await readOwnerSetup({ install, adminUrl, job, provisioned }, deps);
   return { install, job, provisioned, adminUrl, dns, owner };
 }
 

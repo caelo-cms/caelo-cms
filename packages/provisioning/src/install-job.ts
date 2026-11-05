@@ -354,8 +354,15 @@ export function readRecordedStackOutputs(
       `${url} is not a checkpoint this CLI understands (${progress.error.message}). Re-run the installer to write it again.`,
     );
   }
-  const step = RecordedStepSchema.safeParse(progress.data.steps[`pulumi-up-${projectId}`] ?? {});
-  return step.success ? (step.data.outputs ?? {}) : {};
+  const raw = progress.data.steps[`pulumi-up-${projectId}`];
+  if (raw === undefined) return {};
+  const step = RecordedStepSchema.safeParse(raw);
+  if (!step.success) {
+    throw new Error(
+      `${url} records the pulumi-up step in a shape this CLI does not understand (${step.error.message}). Re-run the installer to write it again.`,
+    );
+  }
+  return step.data.outputs ?? {};
 }
 
 /** The stack's `dnsRecordsRequiredOut` from {@link readRecordedStackOutputs}. */

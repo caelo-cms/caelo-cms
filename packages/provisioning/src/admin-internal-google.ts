@@ -122,25 +122,29 @@ const SETUP_PROBE_TIMEOUT_MS = 30_000;
  * and no internal secret, so `status --project` can tell a used link from an
  * open one and changes nothing (#822).
  *
- * @param target.adminUrl the admin's origin (see the file comment, step 1)
+ * The admin's address comes from {@link adminUrl}, never from a recorded
+ * stack output: the request carries a token that passes the admin's IAP, so
+ * a checkpoint must not be able to choose where it goes.
  */
 export async function readOwnerSetupState(
-  target: { readonly projectId: string; readonly adminUrl: string },
+  target: GoogleAdminTarget,
   deps: Pick<AdminInternalDeps, "run" | "fetch" | "now"> = {},
 ): Promise<AdminInternalResult<"open" | "done">> {
   const run = deps.run ?? defaultGcloud;
   const doFetch = deps.fetch ?? fetch;
-  const iap = await signIapJwt(run, doFetch, target.projectId, target.adminUrl, deps.now);
-  if (!iap.ok) return iap;
+  const admin = await adminUrl(run, target);
+  if (!admin.ok) return admin;
   let res: Response;
   try {
-    res = await doFetch(`${target.adminUrl}/setup`, {
+    const iap = await signIapJwt(run, doFetch, target.projectId, admin.value, deps.now);
+    if (!iap.ok) return iap;
+    res = await doFetch(`${admin.value}/setup`, {
       headers: { authorization: `Bearer ${iap.value}` },
       redirect: "manual",
       signal: AbortSignal.timeout(SETUP_PROBE_TIMEOUT_MS),
     });
   } catch (e) {
-    return { ok: false, error: `reach the admin at ${target.adminUrl}: ${String(e)}` };
+    return { ok: false, error: `reach the admin at ${admin.value}: ${String(e)}` };
   }
   if (res.headers.get("x-goog-iap-generated-response") === "true") {
     return {
@@ -150,7 +154,7 @@ export async function readOwnerSetupState(
   }
   if (res.status === 200) return { ok: true, value: "open" };
   const location = res.headers.get("location") ?? "";
-  if (res.status === 303 && new URL(location, target.adminUrl).pathname === "/login") {
+  if (res.status === 303 && new URL(location, admin.value).pathname === "/login") {
     return { ok: true, value: "done" };
   }
   return { ok: false, error: `the admin answered /setup with HTTP ${res.status}` };
