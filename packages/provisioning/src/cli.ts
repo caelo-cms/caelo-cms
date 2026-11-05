@@ -1284,6 +1284,11 @@ const handlers: Record<string, () => Promise<void>> = {
 };
 
 async function lifecycleStatus(): Promise<void> {
+  if (process.argv.includes("--project")) {
+    const { projectStatusCommand } = await import("./project-status.js");
+    await projectStatusCommand(process.argv);
+    return;
+  }
   const { statusCommand } = await import("./lifecycle.js");
   await statusCommand();
 }

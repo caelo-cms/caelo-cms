@@ -20,6 +20,7 @@ import { CAELO_VERSION } from "@caelo-cms/shared";
 import { assertNoSecrets } from "./checkpoint-secrets.js";
 import {
   type InstallJobStatus,
+  isGcpProjectId,
   readInstallJobStatus,
   writeInstallJobStatus,
 } from "./install-job.js";
@@ -28,14 +29,13 @@ import { attachInstall } from "./state-attach.js";
 import { hasLocalPulumiState, opsBucketName, resolveBackend } from "./state-backend.js";
 import { realSyncGcloud, type SyncGcloud } from "./state-store.js";
 
-const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g");
 
 /** The `--project` value of `argv`, validated. */
 export function installJobProject(argv: readonly string[]): string {
   const i = argv.indexOf("--project");
   const value = i === -1 ? undefined : argv[i + 1];
-  if (!value || !PROJECT_ID.test(value)) {
+  if (!value || !isGcpProjectId(value)) {
     throw new Error("install-job needs --project <gcp-project-id>");
   }
   return value;
@@ -117,6 +117,7 @@ export async function installJobCommand(
     execution,
     state: "running",
     phase: "Starting",
+    ...(previous?.dnsRecords ? { dnsRecords: previous.dnsRecords } : {}),
     caeloVersion: CAELO_VERSION,
     startedAt: previous?.execution === execution ? previous.startedAt : now,
     updatedAt: now,
@@ -161,6 +162,7 @@ export async function installJobCommand(
     nonInteractive: true,
     setupLink: "secret",
     onPhase: (phase, detail) => record({ phase, detail }),
+    onDnsRecords: (dnsRecords) => record({ dnsRecords, detail: status.detail }),
   });
   record({ state: "succeeded", phase: "Done" });
 }

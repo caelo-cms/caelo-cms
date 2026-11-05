@@ -112,6 +112,54 @@ export async function callGoogleAdmin<T>(
   return answer.ok ? { ok: true, value: { answer: answer.value, adminUrl: admin.value } } : answer;
 }
 
+/** How long the admin may take to answer {@link readOwnerSetupState}: a cold start. */
+const SETUP_PROBE_TIMEOUT_MS = 30_000;
+
+/**
+ * Whether the admin still offers Owner setup, read the way the setup link's
+ * visitor sees it: `/setup`, through IAP, renders the form (200) or, once an
+ * Owner exists, redirects to `/login`. A plain GET that needs no setup token
+ * and no internal secret, so `status --project` can tell a used link from an
+ * open one and changes nothing (#822).
+ *
+ * The admin's address comes from {@link adminUrl}, never from a recorded
+ * stack output: the request carries a token that passes the admin's IAP, so
+ * a checkpoint must not be able to choose where it goes.
+ */
+export async function readOwnerSetupState(
+  target: GoogleAdminTarget,
+  deps: Pick<AdminInternalDeps, "run" | "fetch" | "now"> = {},
+): Promise<AdminInternalResult<"open" | "done">> {
+  const run = deps.run ?? defaultGcloud;
+  const doFetch = deps.fetch ?? fetch;
+  const admin = await adminUrl(run, target);
+  if (!admin.ok) return admin;
+  let res: Response;
+  try {
+    const iap = await signIapJwt(run, doFetch, target.projectId, admin.value, deps.now);
+    if (!iap.ok) return iap;
+    res = await doFetch(`${admin.value}/setup`, {
+      headers: { authorization: `Bearer ${iap.value}` },
+      redirect: "manual",
+      signal: AbortSignal.timeout(SETUP_PROBE_TIMEOUT_MS),
+    });
+  } catch (e) {
+    return { ok: false, error: `reach the admin at ${admin.value}: ${String(e)}` };
+  }
+  if (res.headers.get("x-goog-iap-generated-response") === "true") {
+    return {
+      ok: false,
+      error: `Google IAP refused the request (HTTP ${res.status}): ${mcpIapServiceAccountEmail(target.projectId)} is not allowed on the admin's IAP yet.`,
+    };
+  }
+  if (res.status === 200) return { ok: true, value: "open" };
+  const location = res.headers.get("location") ?? "";
+  if (res.status === 303 && new URL(location, admin.value).pathname === "/login") {
+    return { ok: true, value: "done" };
+  }
+  return { ok: false, error: `the admin answered /setup with HTTP ${res.status}` };
+}
+
 /** Where the admin answers behind IAP (see the file comment, step 1). */
 async function adminUrl(run: Run, target: GoogleAdminTarget): Promise<AdminInternalResult<string>> {
   if (target.provider === "gcp") return { ok: true, value: `https://admin.${target.domain}` };
