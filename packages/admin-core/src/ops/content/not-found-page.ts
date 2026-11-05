@@ -60,8 +60,14 @@ export const setNotFoundPageOp = defineOperation({
       }
       // The homepage serves "/"; as the 404 page it would vanish from the
       // root (the generator emits the 404 page only as /404.html).
-      const { homePageId } = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
-      if (homePageId === input.pageId || page.current_path === "/") {
+      // Main's home counts too, whatever a branch has pending to replace it.
+      const inChat = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
+      const onMain = await loadSiteDesignations(tx, null);
+      if (
+        inChat.homePageId === input.pageId ||
+        onMain.homePageId === input.pageId ||
+        page.current_path === "/"
+      ) {
         return err({
           kind: "HandlerError",
           operation: "pages.set_not_found_page",

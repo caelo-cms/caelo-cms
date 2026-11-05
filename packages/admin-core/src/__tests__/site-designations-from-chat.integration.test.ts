@@ -324,6 +324,21 @@ describe("set_not_found_page from a chat", () => {
     expect(b.ok).toBe(false);
   });
 
+  it("a pending replacement does not free main's 404 or home page for the other role", async () => {
+    const home = await mainWithHome();
+    const notFound = await page(SYS, "missing-main");
+    await op(SYS, "pages.set_not_found_page", { pageId: notFound });
+    const c = await chat("swap", "experiment");
+    await op(c.ctx, "pages.set_not_found_page", { pageId: await page(c.ctx, "missing-new") });
+    await op(c.ctx, "pages.set_home_page", { pageId: await page(c.ctx, "home-new") });
+
+    const a = await execute(registry, adapter, c.ctx, "pages.set_home_page", { pageId: notFound });
+    const b = await execute(registry, adapter, c.ctx, "pages.set_not_found_page", { pageId: home });
+    expect(a.ok).toBe(false);
+    expect(b.ok).toBe(false);
+    expect(await designations()).toMatchObject({ home, not_found: notFound });
+  });
+
   it("clearing the designation clears a pending one too", async () => {
     await mainWithHome();
     const c = await chat("nf-clear", "experiment");

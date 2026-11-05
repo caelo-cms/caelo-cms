@@ -76,8 +76,11 @@ export const setHomePageOp = defineOperation({
     }
     // 0284 (#802) — the 404 page ships only as /404.html; as the
     // homepage it would have to serve "/" too.
-    const { notFoundPageId } = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
-    if (notFoundPageId === input.pageId) {
+    // Main's 404 page counts too: a branch's pending replacement changes
+    // nothing on main until it merges, and main's build needs that page.
+    const inChat = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
+    const onMain = await loadSiteDesignations(tx, null);
+    if (inChat.notFoundPageId === input.pageId || onMain.notFoundPageId === input.pageId) {
       return err({
         kind: "HandlerError",
         operation: "pages.set_home_page",
