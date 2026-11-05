@@ -16,6 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { listPagesTool } from "../ai/tools/list-pages.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -230,5 +231,35 @@ describe("#1269 — pages.search by word prefix", () => {
     );
     expect(r.drift).toEqual({ missing: 0, extra: 0 });
     expect(r.rows).toBeGreaterThan(0);
+  });
+
+  it("list_pages searches with pages.search and pages through the site with a cursor", async () => {
+    const tool = (input: Parameters<typeof listPagesTool.handler>[1]) =>
+      listPagesTool.handler(SYSTEM, input, {
+        registry,
+        adapter,
+      } as unknown as Parameters<typeof listPagesTool.handler>[2]);
+    const found = await page(`${PFX}-tool-find`, "Quokkaword landing");
+    const hit = await tool({ search: "quokkaword lan" });
+    expect(hit.ok).toBe(true);
+    expect(hit.content).toContain(found);
+    expect(hit.content).toStartWith("pages[1]");
+
+    const miss = await tool({ search: "uokkaword" });
+    expect(miss.content).toContain('No page matches "uokkaword"');
+
+    // One page of the site at a time, continued by the cursor it names.
+    const first = await tool({ limit: 2 });
+    const cursor = /next cursor: (\S+)/.exec(first.content)?.[1];
+    expect(first.content).toStartWith("pages[2]");
+    expect(cursor).toBeDefined();
+    const second = await tool({ limit: 2, cursor });
+    expect(second.ok).toBe(true);
+    const ids = (text: string) => [...text.matchAll(/,([0-9a-f-]{36}),/g)].map((m) => m[1]);
+    expect(ids(second.content).some((id) => ids(first.content).includes(id))).toBe(false);
+
+    const both = await tool({ search: "quokkaword", underPageId: found });
+    expect(both.ok).toBe(false);
+    expect(both.content).toContain("cannot be combined");
   });
 });
