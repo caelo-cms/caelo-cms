@@ -14,7 +14,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError, toolError } from "./_describe-error.js";
-import { renderToonList, type ToonColumn } from "./_make-read-tool.js";
+import { renderToonList, rowsWithinCharCap, type ToonColumn } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 
@@ -102,23 +102,40 @@ export const listPagesTool: ToolDefinitionWithHandler<ListPagesInput> = {
     }
     const limit = input.limit ?? DEFAULT_LIMIT;
     const cursor = input.cursor ? { cursor: input.cursor } : {};
-    const [opName, opInput] =
+    const opName = input.search !== undefined ? "pages.search" : "pages.list";
+    const opInput = (n: number) =>
       input.search !== undefined
-        ? (["pages.search", { query: input.search, limit, ...cursor }] as const)
-        : ([
-            "pages.list",
-            {
-              limit,
-              ...cursor,
-              ...(input.underPageId ? { underPageId: input.underPageId } : {}),
-              ...(input.includeDeleted ? { includeDeleted: true } : {}),
-            },
-          ] as const);
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, opName, opInput);
+        ? { query: input.search, limit: n, ...cursor }
+        : {
+            limit: n,
+            ...cursor,
+            ...(input.underPageId ? { underPageId: input.underPageId } : {}),
+            ...(input.includeDeleted ? { includeDeleted: true } : {}),
+          };
+    const read = async (n: number) => {
+      const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, opName, opInput(n));
+      return r.ok
+        ? {
+            ok: true as const,
+            value: r.value as { pages: ListedPage[]; nextCursor: string | null },
+          }
+        : r;
+    };
+    let r = await read(limit);
     if (!r.ok) return toolError(r.error, `${opName} failed: ${describeError(r.error)}`);
-    const { pages, nextCursor } = r.value as { pages: ListedPage[]; nextCursor: string | null };
-    if (pages.length === 0) return { ok: true, content: emptyAnswer(input, nextCursor) };
-    // The op already cut this call's page: render every row of it.
+    if (r.value.pages.length === 0) {
+      return { ok: true, content: emptyAnswer(input, r.value.nextCursor) };
+    }
+    // The chat's context stays bounded: when the rows outgrow the list char
+    // cap, read the page again with exactly as many rows as fit, so its
+    // cursor continues right after the last row shown (it is opaque, the
+    // tool cannot shorten it itself).
+    const fit = rowsWithinCharCap(r.value.pages, columns);
+    if (fit < r.value.pages.length) {
+      r = await read(Math.max(1, fit));
+      if (!r.ok) return toolError(r.error, `${opName} failed: ${describeError(r.error)}`);
+    }
+    const { pages, nextCursor } = r.value;
     const rows = renderToonList("pages", pages, columns, { full: true });
     const next = nextCursor ? `\n# more exist; next cursor: ${nextCursor}` : "";
     return { ok: true, content: `${rows}${next}`, value: r.value };

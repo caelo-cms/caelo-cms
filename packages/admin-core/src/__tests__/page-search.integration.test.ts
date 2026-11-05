@@ -255,7 +255,12 @@ describe("#1269 — pages.search by word prefix", () => {
     expect(cursor).toBeDefined();
     const second = await tool({ limit: 2, cursor });
     expect(second.ok).toBe(true);
-    const ids = (text: string) => [...text.matchAll(/,([0-9a-f-]{36}),/g)].map((m) => m[1]);
+    // The id column (second) of each TOON row.
+    const ids = (text: string) =>
+      text
+        .split("\n")
+        .filter((l) => l.startsWith("  "))
+        .map((l) => l.trim().split(",")[1] ?? "");
     expect(ids(second.content).some((id) => ids(first.content).includes(id))).toBe(false);
 
     // A batch a chat's pending deletes emptied still names the cursor on.
@@ -279,6 +284,26 @@ describe("#1269 — pages.search by word prefix", () => {
       adapter,
     } as unknown as Parameters<typeof listPagesTool.handler>[2]);
     expect(emptied.content).toContain("No visible page in this batch; call again with cursor:");
+
+    // Long titles: a call stays under the list char cap, and its cursor
+    // continues right after the last row it showed (every page once).
+    const parent = await page(`${PFX}-long-parent`, "Long parent");
+    const children: string[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      children.push(await page(`${PFX}-long-${i}`, `${"Lengthy title ".repeat(14)}${i}`, parent));
+    }
+    const seen: string[] = [];
+    let next: string | undefined;
+    let calls = 0;
+    do {
+      const r = await tool({ underPageId: parent, limit: 200, ...(next ? { cursor: next } : {}) });
+      expect(r.content.length).toBeLessThan(7000);
+      seen.push(...ids(r.content));
+      next = /next cursor: (\S+)/.exec(r.content)?.[1];
+      calls += 1;
+    } while (next);
+    expect(calls).toBeGreaterThan(1);
+    expect([...seen].sort()).toEqual([...children].sort());
 
     const both = await tool({ search: "quokkaword", underPageId: found });
     expect(both.ok).toBe(false);
