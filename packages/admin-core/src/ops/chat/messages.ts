@@ -449,6 +449,9 @@ export const recordAiCallOp = defineOperation({
        *  cache-creation rate (~1.25x input). Defaults 0 so callers without
        *  cache-write data (image ops, mock providers) need not set it. */
       cacheCreationTokens: z.number().int().nonnegative().default(0),
+      /** #1477 — longest single prompt among the requests this row sums up.
+       *  Omitted = `inputTokens`, right for a one-request call. */
+      largestPromptTokens: z.number().int().nonnegative().optional(),
       costEstimateMicrocents: z.number().int().nonnegative().default(0),
       durationMs: z.number().int().nonnegative().default(0),
       succeeded: z.boolean().default(true),
@@ -491,6 +494,9 @@ export const recordAiCallOp = defineOperation({
         outputTokens: input.outputTokens,
         cachedTokens: input.cachedTokens,
         cacheCreationTokens: input.cacheCreationTokens,
+        ...(input.largestPromptTokens !== undefined
+          ? { largestPromptTokens: input.largestPromptTokens }
+          : {}),
         imageCount: input.imageCount,
       });
       costMicrocents = mapped.costMicrocents;

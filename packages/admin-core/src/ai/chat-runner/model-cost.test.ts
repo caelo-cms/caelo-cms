@@ -36,7 +36,7 @@ const ROWS: AiPricingRow[] = [
 
 describe("pickModelRates", () => {
   it("converts sonnet-5 microcents/1K to $3/$15 per MTok", () => {
-    expect(pickModelRates(ROWS, "anthropic", "claude-sonnet-5")).toEqual({
+    expect(pickModelRates(ROWS, "anthropic", "claude-sonnet-5")).toMatchObject({
       inputCostPerMTok: 3,
       outputCostPerMTok: 15,
     });

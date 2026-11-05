@@ -3,7 +3,12 @@
 import { describe, expect, it } from "bun:test";
 import { AI_DELEGATED_ERROR_PREFIX } from "@caelo-cms/plugin-sdk";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
-import { makePluginAi, pluginAiCompleteInput, pluginAiGenerateObjectInput } from "./plugin-ai.js";
+import {
+  makePluginAi,
+  objectFailureError,
+  pluginAiCompleteInput,
+  pluginAiGenerateObjectInput,
+} from "./plugin-ai.js";
 
 const base = { system: "s", messages: [{ role: "user", content: "hi" }] };
 
@@ -30,6 +35,16 @@ describe("ctx.ai.complete options (#593)", () => {
     expect(pluginAiCompleteInput.safeParse({ ...base, model: "claude-opus-5-5" }).success).toBe(
       false,
     );
+  });
+});
+
+describe("ctx.ai.generateObject failures a retry cannot fix (#1477)", () => {
+  it("says the model declined, and that repeating it will not help", () => {
+    expect(objectFailureError("refused", 16_000).message).toContain("gets the same answer");
+  });
+
+  it("names the token limit an answer was cut off at", () => {
+    expect(objectFailureError("truncated", 16_000).message).toContain("maxTokens 16000");
   });
 });
 

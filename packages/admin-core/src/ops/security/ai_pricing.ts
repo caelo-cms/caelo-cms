@@ -26,6 +26,8 @@ const pricingRow = z.object({
   outputMicrocents: z.number().int().nonnegative().nullable(),
   cachedMicrocents: z.number().int().nonnegative().nullable(),
   cacheCreationMicrocents: z.number().int().nonnegative().nullable(),
+  longPromptThresholdTokens: z.number().int().positive().nullable(),
+  longPromptMultiplier: z.number().int().min(2).nullable(),
   effectiveFrom: z.string(),
   validFrom: z.string().nullable(),
   validTo: z.string().nullable(),
@@ -51,7 +53,8 @@ export const listAiPricingOp = defineOperation({
       SELECT DISTINCT ON (provider, model, operation_type)
         provider, model, operation_type,
         input_microcents, output_microcents, cached_microcents,
-        cache_creation_microcents, effective_from, valid_from, valid_to
+        cache_creation_microcents, long_prompt_threshold_tokens, long_prompt_multiplier,
+        effective_from, valid_from, valid_to
       FROM ai_pricing
       WHERE effective_from <= now()
         AND (valid_from IS NULL OR valid_from <= now())
@@ -68,6 +71,8 @@ export const listAiPricingOp = defineOperation({
       output_microcents: bigint | string | number | null;
       cached_microcents: bigint | string | number | null;
       cache_creation_microcents: bigint | string | number | null;
+      long_prompt_threshold_tokens: number | null;
+      long_prompt_multiplier: number | null;
       effective_from: string | Date;
       valid_from: string | Date | null;
       valid_to: string | Date | null;
@@ -89,6 +94,8 @@ export const listAiPricingOp = defineOperation({
         outputMicrocents: toN(r.output_microcents),
         cachedMicrocents: toN(r.cached_microcents),
         cacheCreationMicrocents: toN(r.cache_creation_microcents),
+        longPromptThresholdTokens: r.long_prompt_threshold_tokens,
+        longPromptMultiplier: r.long_prompt_multiplier,
         effectiveFrom: toIso(r.effective_from),
         validFrom: r.valid_from === null ? null : toIso(r.valid_from),
         validTo: r.valid_to === null ? null : toIso(r.valid_to),
@@ -107,6 +114,8 @@ export const listAiPricingOp = defineOperation({
  * (cache WRITE rate, migration 0186) may stay NULL — the cost mapper then
  * bills cache writes at 1.25x the input rate. `validFrom` / `validTo` bound
  * the window the row is in force (NULL = open-ended); see pricing-cache.ts.
+ * `longPromptThresholdTokens` + `longPromptMultiplier` come as a pair: a
+ * request whose prompt is over the threshold pays the multiple on every rate.
  */
 export const aiPricingRowInput = z
   .object({
@@ -139,6 +148,20 @@ export const aiPricingRowInput = z
       .nullable()
       .optional()
       .describe("Cache-WRITE rate, microcents/1K tokens; null/omitted bills 1.25x input."),
+    longPromptThresholdTokens: z
+      .number()
+      .int()
+      .positive()
+      .nullable()
+      .optional()
+      .describe("Set when the provider charges more above a prompt length, else omit."),
+    longPromptMultiplier: z
+      .number()
+      .int()
+      .min(2)
+      .nullable()
+      .optional()
+      .describe("Factor on every rate above that threshold; set with it."),
     effectiveFrom: z.string().datetime().optional().describe("Omitted = now. Part of the row key."),
     validFrom: z
       .string()
@@ -157,6 +180,10 @@ export const aiPricingRowInput = z
   .refine((r) => !r.validFrom || !r.validTo || r.validFrom <= r.validTo, {
     message: "validFrom must not be after validTo",
     path: ["validTo"],
+  })
+  .refine((r) => (r.longPromptThresholdTokens == null) === (r.longPromptMultiplier == null), {
+    message: "longPromptThresholdTokens and longPromptMultiplier go together: set both or neither",
+    path: ["longPromptMultiplier"],
   });
 
 /**
@@ -186,11 +213,13 @@ export const setAiPricingOp = defineOperation({
     await tx.execute(sql`
       INSERT INTO ai_pricing
         (provider, model, operation_type, input_microcents, output_microcents, cached_microcents,
-         cache_creation_microcents, effective_from, valid_from, valid_to)
+         cache_creation_microcents, long_prompt_threshold_tokens, long_prompt_multiplier,
+         effective_from, valid_from, valid_to)
       VALUES
         (${input.provider}, ${input.model}, ${input.operationType},
          ${input.inputMicrocents}, ${input.outputMicrocents}, ${input.cachedMicrocents},
          ${input.cacheCreationMicrocents ?? null},
+         ${input.longPromptThresholdTokens ?? null}, ${input.longPromptMultiplier ?? null},
          ${ts}::timestamptz,
          ${input.validFrom ?? null}::timestamptz,
          ${input.validTo ?? null}::timestamptz)
@@ -199,6 +228,8 @@ export const setAiPricingOp = defineOperation({
             output_microcents = EXCLUDED.output_microcents,
             cached_microcents = EXCLUDED.cached_microcents,
             cache_creation_microcents = ${keepUnlessGiven(input.cacheCreationMicrocents, sql`ai_pricing.cache_creation_microcents`, sql`EXCLUDED.cache_creation_microcents`)},
+            long_prompt_threshold_tokens = ${keepUnlessGiven(input.longPromptThresholdTokens, sql`ai_pricing.long_prompt_threshold_tokens`, sql`EXCLUDED.long_prompt_threshold_tokens`)},
+            long_prompt_multiplier = ${keepUnlessGiven(input.longPromptMultiplier, sql`ai_pricing.long_prompt_multiplier`, sql`EXCLUDED.long_prompt_multiplier`)},
             valid_from = ${keepUnlessGiven(input.validFrom, sql`ai_pricing.valid_from`, sql`EXCLUDED.valid_from`)},
             valid_to = ${keepUnlessGiven(input.validTo, sql`ai_pricing.valid_to`, sql`EXCLUDED.valid_to`)}
     `);

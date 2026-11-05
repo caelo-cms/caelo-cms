@@ -75,7 +75,15 @@
               {#each data.rows as r}
                 <tr class="border-b">
                   <td class="py-2 pr-4">{r.provider}</td>
-                  <td class="py-2 pr-4 font-mono text-xs">{r.model}</td>
+                  <td class="py-2 pr-4">
+                    <span class="font-mono text-xs">{r.model}</span>
+                    {#if r.longPromptThresholdTokens !== null}
+                      <div class="text-xs text-muted-foreground">
+                        {r.longPromptMultiplier}x every rate above
+                        {r.longPromptThresholdTokens.toLocaleString("en-US")} prompt tokens
+                      </div>
+                    {/if}
+                  </td>
                   <td class="py-2 pr-4"><Badge variant="outline">{r.operationType}</Badge></td>
                   <td class="py-2 pr-4">
                     {r.operationType === "image"

@@ -18,6 +18,8 @@ export const load: PageServerLoad = async ({ locals }) => {
     inputMicrocents: number;
     outputMicrocents: number | null;
     cachedMicrocents: number | null;
+    longPromptThresholdTokens: number | null;
+    longPromptMultiplier: number | null;
     effectiveFrom: string;
   };
   const rows = r.ok ? ((r.value as { rows: Row[] }).rows ?? []) : [];

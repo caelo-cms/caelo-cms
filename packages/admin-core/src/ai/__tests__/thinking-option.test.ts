@@ -60,12 +60,15 @@ describe("resolveThinkingOption", () => {
 });
 
 describe("5.5 generation — opus-5 is adaptive, forced tool choice is dropped", () => {
-  it.each(["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"])(
-    "%s is adaptive",
-    (model) => {
-      expect(isAdaptiveModel(model)).toBe(true);
-    },
-  );
+  it.each([
+    "claude-opus-5",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-fable-5-1",
+    "claude-haiku-5-5",
+  ])("%s is adaptive", (model) => {
+    expect(isAdaptiveModel(model)).toBe(true);
+  });
 
   it.each(["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-mythos-5-1"])(
     "%s rejects forced tool choice",
@@ -74,12 +77,15 @@ describe("5.5 generation — opus-5 is adaptive, forced tool choice is dropped",
     },
   );
 
-  it.each(["claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-haiku-4-5"])(
-    "%s still accepts forced tool choice",
-    (model) => {
-      expect(rejectsForcedToolChoice(model)).toBe(false);
-    },
-  );
+  it.each([
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-haiku-4-5",
+    "claude-haiku-5-5",
+  ])("%s still accepts forced tool choice", (model) => {
+    expect(rejectsForcedToolChoice(model)).toBe(false);
+  });
 
   const baseInput = (overrides: Partial<GenerateInput> = {}): GenerateInput => ({
     systemPrompt: "s",
@@ -110,6 +116,16 @@ describe("5.5 generation — opus-5 is adaptive, forced tool choice is dropped",
       baseInput({ loop: loopWith({ messages, toolChoice: "required" }) }),
     );
     expect(await adapted.loop?.prepareStep(step)).toEqual({ messages });
+  });
+
+  it("Haiku 5.5 loses temperature, takes adaptive thinking, keeps a forced choice (#1477)", () => {
+    const adapted = adaptGenerateInput(
+      "claude-haiku-5-5",
+      baseInput({ temperature: 0, toolChoice: "required" }),
+    );
+    expect(adapted.temperature).toBeUndefined();
+    expect(adapted.toolChoice).toBe("required");
+    expect(resolveThinkingOption("claude-haiku-5-5", 4096)).toEqual({ type: "adaptive" });
   });
 
   it("leaves models that accept forced tool choice untouched", async () => {

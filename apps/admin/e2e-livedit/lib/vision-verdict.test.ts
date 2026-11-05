@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  DEFAULT_VISION_MODEL,
   fetchDesignRubricScores,
   fetchVisionVerdict,
   parseDesignRubricScores,
@@ -59,6 +60,51 @@ describe("parseDesignRubricScores", () => {
     expect(() => parseDesignRubricScores({ content: [{ type: "tool_use" }] })).toThrow(
       VisionVerdictSchemaError,
     );
+  });
+});
+
+describe("what Claude Haiku 5.5 accepts and answers (#1477)", () => {
+  const capture = () => {
+    const sent: Record<string, unknown>[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      sent.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return Response.json({
+        stop_reason: "end_turn",
+        content: [
+          { type: "thinking", thinking: "", signature: "s" },
+          { type: "text", text: '{"ok":true,"reason":"fine"}' },
+        ],
+      });
+    }) as typeof fetch;
+    return { sent, fetchImpl };
+  };
+
+  it("sends no sampling parameter and leaves room for thinking", async () => {
+    const { sent, fetchImpl } = capture();
+    const verdict = await fetchVisionVerdict({
+      apiKey: "k",
+      screenshotBase64: "AA==",
+      fetchImpl,
+    });
+    expect(verdict).toEqual({ ok: true, reason: "fine" });
+    const body = sent[0] as Record<string, unknown>;
+    expect(body.model).toBe(DEFAULT_VISION_MODEL);
+    expect(body).not.toHaveProperty("temperature");
+    expect(body).not.toHaveProperty("thinking");
+    expect(body.max_tokens as number).toBeGreaterThanOrEqual(1024);
+  });
+
+  it("names a refusal instead of a schema error", () => {
+    expect(() => parseVisionVerdict({ stop_reason: "refusal", content: [] })).toThrow(/declined/);
+  });
+
+  it("names thinking that used up the cap", () => {
+    expect(() =>
+      parseVisionVerdict({
+        stop_reason: "max_tokens",
+        content: [{ type: "thinking", thinking: "", signature: "s" }],
+      }),
+    ).toThrow(/max_tokens/);
   });
 });
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type Catalog,
@@ -110,6 +110,61 @@ describe("refreshCatalog", () => {
         expect(new RegExp(s.match).test(s.id)).toBe(true);
       }
     }
+  });
+});
+
+describe("pricing rows (#1477)", () => {
+  const migrationsDir = join(import.meta.dir, "../packages/migrations/migrations/cms_admin");
+  const priced = pricedModels(
+    readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql"))
+      .map((f) => readFileSync(join(migrationsDir, f), "utf8")),
+  );
+
+  it("every Anthropic model the catalog picks has one", () => {
+    const shipped = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "../packages/admin-core/src/ai/model-catalog.json"),
+        "utf8",
+      ),
+    ) as Catalog;
+    for (const s of shipped.providers.anthropic.slots) expect(priced.has(s.id)).toBe(true);
+  });
+
+  it("the Haiku installs still call keeps its row", () => {
+    expect(priced.has("claude-haiku-4-5")).toBe(true);
+  });
+});
+
+describe("Haiku 5.5's id (#1477)", () => {
+  it("moves the slot to the fixed id, which has no dated form, past a dated-only Haiku 4.5", () => {
+    const { changes } = refreshCatalog(catalog(), {
+      anthropic: [
+        { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
+        { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+      ],
+    });
+    expect(changes.filter((c) => c.role === "fast").map((c) => c.to)).toEqual(["claude-haiku-5-5"]);
+  });
+
+  it("tells the agent about prompt-length prices and the vision judge's own model id", () => {
+    const body = renderIssueBody({
+      changes: [
+        {
+          provider: "anthropic",
+          role: "fast",
+          from: "claude-haiku-4-5",
+          to: "claude-haiku-5-5",
+          label: "Claude Haiku 5.5",
+        },
+      ],
+      skipped: [],
+      unmatched: [],
+      priced: new Set(),
+      pricingExample: "0637_p_pricing_haiku_5_5.sql",
+    });
+    expect(body).toContain("long_prompt_threshold_tokens");
+    expect(body).toContain("DEFAULT_VISION_MODEL");
   });
 });
 

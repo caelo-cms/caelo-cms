@@ -75,6 +75,9 @@ export interface UsageAccumulator {
   totalCached: number;
   /** Cumulative Anthropic cache WRITE tokens (cache_creation) this turn. */
   totalCacheCreation?: number;
+  /** Longest single prompt (all input lanes of one step) this turn. Decides
+   *  prompt-length pricing, which applies per request, not per turn (#1477). */
+  largestPromptTokens?: number;
 }
 
 /**
@@ -921,6 +924,10 @@ export async function* streamProviderTurn(
         args.usage.totalCached += ev.cachedTokens;
         args.usage.totalCacheCreation =
           (args.usage.totalCacheCreation ?? 0) + (ev.cacheCreationTokens ?? 0);
+        args.usage.largestPromptTokens = Math.max(
+          args.usage.largestPromptTokens ?? 0,
+          ev.inputTokens,
+        );
         break;
       }
       case "done": {

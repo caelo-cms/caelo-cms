@@ -48,6 +48,8 @@ export interface AIProvider {
 export interface AIObjectCompletion extends Omit<AICompletion, "text"> {
   /** The schema-valid object, or `undefined` when none parsed. */
   readonly object: unknown | undefined;
+  /** Why no object came back when asking again is not the answer. */
+  readonly failure?: "refused" | "truncated";
 }
 
 /** What one completion produced, and on which provider/model. */

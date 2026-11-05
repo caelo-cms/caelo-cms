@@ -401,22 +401,23 @@ function buildSystemAndMessages(
 }
 
 /**
- * Claude 4.6+ models (Sonnet 5/5.5, Opus 4.6/4.7/4.8/5/5.5, Fable, Mythos)
+ * Claude 4.6+ models (Sonnet 5/5.5, Opus 4.6/4.7/4.8/5/5.5, Haiku 5.5, Fable, Mythos)
  * drop the pre-4.6 sampling/thinking knobs: they reject `budget_tokens` AND
  * `temperature` with a 400 and take adaptive thinking instead. Older
  * models still accept both. Centralised here so every param that these
  * models deprecate is gated on ONE predicate.
  */
 export function isAdaptiveModel(model: string): boolean {
-  return /sonnet-5|opus-5|opus-4-7|opus-4-8|opus-4-6|sonnet-4-6|fable|mythos/.test(model);
+  return /sonnet-5|opus-5|haiku-5|opus-4-7|opus-4-8|opus-4-6|sonnet-4-6|fable|mythos/.test(model);
 }
 
 /**
  * Sonnet 5.5, Opus 5.5, Fable 5.1 and Mythos 5.1 reject forced tool use
  * (`tool_choice` `any`/`tool`) with a 400. For them a `"required"` request is
  * sent as `auto` — the RECOVER re-run then relies on its nudge instead of
- * the API forcing a call. Review this list whenever a new Claude model lands
- * in `model-catalog.json`.
+ * the API forcing a call. Haiku 5.5 is NOT on the list: it accepts a forced
+ * choice, and its reply then starts with the tool call, without thinking.
+ * Review this list whenever a new Claude model lands in `model-catalog.json`.
  */
 export function rejectsForcedToolChoice(model: string): boolean {
   return /sonnet-5-5|opus-5-5|fable-5-1|mythos-5-1/.test(model);

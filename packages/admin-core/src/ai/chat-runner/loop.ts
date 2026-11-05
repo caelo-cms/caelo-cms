@@ -31,7 +31,7 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
-
+import { type LongPromptPricing, longPromptRateMultiplier } from "../long-prompt-pricing.js";
 import type {
   AIProvider,
   ChatMessageInput,
@@ -192,6 +192,8 @@ export interface ToolLoopArgs {
   costCapMicrocents: number | undefined;
   inputCost: number;
   outputCost: number;
+  /** Prompt-length pricing of the active model, undefined when it has none. */
+  longPrompt?: LongPromptPricing | undefined;
 }
 
 export async function* runToolLoop(
@@ -256,7 +258,7 @@ export async function* runToolLoop(
         args.usage.totalOut,
         args.inputCost,
         args.outputCost,
-      ),
+      ) * longPromptRateMultiplier(args.longPrompt, args.usage.largestPromptTokens ?? 0),
     );
 
   /**

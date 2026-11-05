@@ -27,6 +27,8 @@
  * call index i, capped at the largest context the provider window admits.
  */
 
+import { type LongPromptPricing, longPromptRateMultiplier } from "./long-prompt-pricing.js";
+
 /**
  * LEGACY (pre-#299) calls/page on the singular-op build path. Run #15 main
  * session: 36× add_module_to_page + 29× set_page_module_content + 9×
@@ -125,7 +127,7 @@ export interface ImportCostModelParams {
  * the exact unit `ai_pricing` stores (migration 0048). The tool resolves
  * these via `ai_pricing.list`; the model never hardcodes a dollar figure.
  */
-export interface ImportModelRates {
+export interface ImportModelRates extends LongPromptPricing {
   readonly inputMicrocentsPer1K: number;
   readonly outputMicrocentsPer1K: number;
   /** Cache-READ rate; null = provider prices no cache tier, so the low
@@ -239,7 +241,20 @@ export function estimateImportAiCost(
   const p = resolve(params);
   const calls = estimateImportCallCount(pages, params);
   const tokens = estimateImportTokens(calls, params);
-  const { lowUsd, highUsd } = priceImportTokens(tokens, rates, p.cachedFraction);
+  // #1477: the run's longest prompt decides, as it does when a turn is billed
+  // (the turn pays the long card once any of its requests is over the threshold).
+  const largestPrompt = Math.min(p.cap, p.base + p.slope * Math.max(0, calls - 1));
+  const tier = longPromptRateMultiplier(rates, largestPrompt);
+  const { lowUsd, highUsd } = priceImportTokens(
+    tokens,
+    {
+      inputMicrocentsPer1K: rates.inputMicrocentsPer1K * tier,
+      outputMicrocentsPer1K: rates.outputMicrocentsPer1K * tier,
+      cachedInputMicrocentsPer1K:
+        rates.cachedInputMicrocentsPer1K === null ? null : rates.cachedInputMicrocentsPer1K * tier,
+    },
+    p.cachedFraction,
+  );
   return {
     calls,
     inputTokens: tokens.inputTokens,

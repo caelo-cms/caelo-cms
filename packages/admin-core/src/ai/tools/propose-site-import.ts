@@ -159,6 +159,8 @@ async function priceScopeEstimate(
         inputMicrocents: number;
         outputMicrocents: number | null;
         cachedMicrocents: number | null;
+        longPromptThresholdTokens: number | null;
+        longPromptMultiplier: number | null;
       }>;
     }
   ).rows.filter((row) => row.operationType === "text" && row.provider === provider.name);
@@ -178,6 +180,8 @@ async function priceScopeEstimate(
     inputMicrocentsPer1K: row.inputMicrocents,
     outputMicrocentsPer1K: row.outputMicrocents,
     cachedInputMicrocentsPer1K: row.cachedMicrocents,
+    longPromptThresholdTokens: row.longPromptThresholdTokens,
+    longPromptMultiplier: row.longPromptMultiplier,
   };
   const est = estimateImportAiCost(scope.pages, rates);
   return {

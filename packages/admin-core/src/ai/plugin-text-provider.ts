@@ -79,6 +79,7 @@ export function makePluginTextProvider(): PluginHostAIProvider {
       });
       return {
         object: result.object,
+        ...(result.failure ? { failure: result.failure } : {}),
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
         // generateObject reports no prompt-cache split: a single-shot
