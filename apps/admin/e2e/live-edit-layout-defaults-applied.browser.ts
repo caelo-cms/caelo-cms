@@ -6,8 +6,8 @@
  * the type list; with `pageType` it resolves the type's default template
  * at create time (stored data — the type's `defaultTemplate` — never a
  * render-time substitute, CLAUDE.md §2). Supersedes the P6.7.6 check that
- * a missing templateId resolved from `site_defaults.default_template_id`,
- * which no longer exists.
+ * a missing templateId resolved from a stored site default, which no longer
+ * exists.
  */
 
 import { spawnSync } from "node:child_process";
