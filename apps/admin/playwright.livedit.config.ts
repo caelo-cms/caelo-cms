@@ -3,8 +3,8 @@
 /**
  * Real-AI end-to-end suite (issue #47).
  *
- * Drives the editor chat against the live Anthropic API (Opus 4.7,
- * temperature=0) to catch the regression classes the mock-AI suite at
+ * Drives the editor chat against the live Anthropic API (the model in
+ * `E2E_LIVEDIT_MODEL`) to catch the regression classes the mock-AI suite at
  * `e2e/` cannot — empty AI turns, orphan locks after Stage, missing
  * tool primers — and verifies the published result with one closing
  * LLM-vision verdict.
@@ -30,18 +30,18 @@ import { defineConfig } from "@playwright/test";
  * Model id for the livedit suite — pinned to the codebase's documented
  * default (`DEFAULT_MODEL.anthropic` in provider-resolver.ts), so the
  * suite exercises exactly the model the product actually ships. The
- * default moved to Sonnet 5 in #246 (with adaptive thinking); the suite
+ * default is Sonnet 5.5 (with adaptive thinking); the suite
  * follows so any scenario failure is a real bug — prompt regression,
  * missing primer, tool-schema drift, process bug — NOT a variance gap
  * between the test model and the shipped model.
  *
  * History: earlier this was Sonnet 4.6 (cost), which tripped four of
  * six scenarios on AI-variance (missing `<h1>`, missing `add_page`);
- * then Opus 4.7 (the prior default). If the green rate regresses on
- * Sonnet 5, rerun the 10× determinism check from
+ * then Opus 4.7, then Sonnet 5. If the green rate regresses on
+ * Sonnet 5.5, rerun the 10× determinism check from
  * `docs/internal/e2e-livedit.md` before assuming it's a product bug.
  */
-export const E2E_LIVEDIT_MODEL = "claude-sonnet-5";
+export const E2E_LIVEDIT_MODEL = "claude-sonnet-5-5";
 
 /**
  * The specs to run. CI sets `CAELO_LIVEDIT_SCENARIOS` to the comma-separated

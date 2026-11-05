@@ -75,8 +75,8 @@ describe("AI security review workflow YAML", () => {
     expect(hasDateComment).toBe(true);
   });
 
-  it("U6: claude-model is set to claude-sonnet-4-6 (not action default)", () => {
-    expect(workflow).toMatch(/claude-model:\s*claude-sonnet-4-6\b/);
+  it("U6: claude-model is set to claude-sonnet-5-5 (not action default)", () => {
+    expect(workflow).toMatch(/claude-model:\s*claude-sonnet-5-5\b/);
   });
 
   it("U7: claudecode-timeout is 15 minutes", () => {
