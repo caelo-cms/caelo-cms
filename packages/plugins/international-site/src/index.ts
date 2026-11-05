@@ -1864,11 +1864,21 @@ export default definePlugin<PluginContextTier1>({
         });
         linked = { ...linked, path: path.path };
       }
+      // #1447 — a move onto the URL takes any redirect rule there over, but a
+      // copy that needed no move (no locale prefix) lands next to the rule.
+      const { conflicts } = await cms.call<{
+        conflicts: { fromPath: string; toPath: string }[];
+      }>("redirects.page_conflicts", { pageIds: [duplicated.pageId] });
       return {
         pageId: duplicated.pageId,
         slug: newSlug,
         isLocaleRoot,
         ...linked,
+        ...(conflicts.length > 0
+          ? {
+              redirectOnThisUrl: `The redirect ${conflicts.map((c) => `${c.fromPath} -> ${c.toPath}`).join(", ")} sits on this URL. It answers there until a build ships the page; then the page wins and Stage reports the pair as an error. If the page stays here, remove it: bulk_delete_redirects({ fromPaths: ${JSON.stringify(conflicts.map((c) => c.fromPath))} }).`,
+            }
+          : {}),
         // #644 — the clone still carries the source language; name the
         // follow-up call with its exact argument so the id is not passed
         // under this result's `pageId` key.

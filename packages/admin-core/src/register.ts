@@ -500,6 +500,7 @@ import {
   deleteRedirectsManyOp,
   listRedirectsOp,
   lookupRedirectOp,
+  pageConflictsRedirectOp,
 } from "./ops/redirects.js";
 import {
   executeRoleProposalOp,
@@ -1114,6 +1115,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createRedirectOp);
   registry.register(listRedirectsOp);
   registry.register(lookupRedirectOp);
+  registry.register(pageConflictsRedirectOp);
   registry.register(deleteRedirectOp);
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);

@@ -12,6 +12,7 @@
  */
 
 import type { StagedPage } from "./check.js";
+import { pathKey } from "./links-analysis.js";
 
 /** Pages fetched at once — the staged origin may be a small loopback server. */
 export const PAGE_FETCH_CONCURRENCY = 6;
@@ -42,6 +43,16 @@ export interface FetchedPages {
   readonly errors: readonly PageFetchError[];
 }
 
+/**
+ * The path staging's redirects led `page` to, or null. The host's own hop to
+ * the slash form (`/about` to `/about/`) is the same page, not a redirect.
+ */
+function redirectedAway(page: PageToFetch, res: Response): string | null {
+  if (!res.redirected || res.url === "") return null;
+  const final = new URL(res.url).pathname;
+  return pathKey(final) === pathKey(new URL(page.url).pathname) ? null : final;
+}
+
 async function fetchOne(
   page: PageToFetch,
   fetcher: typeof fetch,
@@ -68,12 +79,14 @@ async function fetchOne(
         message: `${page.path} is ${html.length} bytes of HTML, more than the ${MAX_PAGE_BYTES} the checks read — shrink the page's inline content`,
       };
     }
+    const redirectedTo = redirectedAway(page, res);
     return {
       pageId: page.pageId,
       path: page.path,
       url: page.url,
       html,
       ...(page.notFoundPage ? { notFoundPage: true as const } : {}),
+      ...(redirectedTo !== null ? { redirectedTo } : {}),
     };
   } catch (e) {
     return {

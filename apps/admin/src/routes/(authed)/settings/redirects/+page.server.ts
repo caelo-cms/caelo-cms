@@ -62,7 +62,21 @@ export const actions: Actions = {
           : "create failed";
       return fail(400, { error: message });
     }
-    return { ok: true, message: `Redirect ${fromPath} → ${toPath} created.` };
+    // #1447 — a page at this URL is shown instead of the redirect once it is
+    // published; say so now rather than at the next Stage.
+    const onPages = await execute(registry, adapter, locals.ctx, "redirects.page_conflicts", {
+      paths: [fromPath],
+    });
+    if (!onPages.ok) {
+      throw new Error(`redirects.page_conflicts failed: ${JSON.stringify(onPages.error)}`);
+    }
+    const page = (onPages.value as { conflicts: { pageTitle: string }[] }).conflicts[0];
+    return {
+      ok: true,
+      message: page
+        ? `Redirect ${fromPath} → ${toPath} created, but the page "${page.pageTitle}" uses this URL. Published pages win over redirects, so visitors see the page. Remove the redirect or move the page.`
+        : `Redirect ${fromPath} → ${toPath} created.`,
+    };
   },
   sync: async ({ request, locals }) => {
     requirePermission(locals, "content.write");

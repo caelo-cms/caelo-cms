@@ -11,6 +11,7 @@ import {
   formatRedirectsFile,
   parseRedirectsFile,
   type RedirectTableRow,
+  redirectFromPathSpellings,
   redirectsToUnservedPaths,
 } from "./redirect-plan.js";
 
@@ -164,5 +165,16 @@ describe("redirectsToUnservedPaths (#1157)", () => {
   it("judges a chain by its final hop", () => {
     const p = plan([row("/x", "/y"), row("/y", "/live")], served);
     expect(redirectsToUnservedPaths(p, served)).toEqual([]);
+  });
+});
+
+describe("redirectFromPathSpellings", () => {
+  it("names both spellings of a path, from either one", () => {
+    expect(redirectFromPathSpellings("/old")).toEqual(["/old", "/old/"]);
+    expect(redirectFromPathSpellings("/old/")).toEqual(["/old", "/old/"]);
+  });
+
+  it("leaves the root alone", () => {
+    expect(redirectFromPathSpellings("/")).toEqual(["/"]);
   });
 });

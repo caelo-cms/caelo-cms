@@ -26,8 +26,8 @@
  * redirects are live state, like the paths they follow.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
+import { type ExecutionContext, redirectFromPathSpellings } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { requestRedirectSync } from "../../deploy/redirect-sync.js";
 import { createRedirectOp } from "../redirects.js";
@@ -82,14 +82,16 @@ export async function applyPathMoveEffects(
   // A page now lives at each new path: a redirect from there (e.g. left
   // by an earlier move away, now moved back) would shadow it — drop it
   // BEFORE collapsing chains, or "new → old" would collapse into a
-  // self-loop.
+  // self-loop. #1447 — both spellings: a row answers its path with and
+  // without the trailing slash, and an imported table stores `/old/`.
   const newPaths = new Set(real.map((m) => m.to));
   // #1254 — counted: only a move that changed redirect rows asks for a sync.
   let redirectRowsChanged = 0;
   for (const m of real) {
-    const gone = (await tx.execute(
-      sql`DELETE FROM redirects WHERE from_path = ${m.to} RETURNING 1 AS gone`,
-    )) as unknown as { gone: number }[];
+    const gone = (await tx.execute(sql`
+      DELETE FROM redirects WHERE from_path = ANY(${textArray(redirectFromPathSpellings(m.to))})
+      RETURNING 1 AS gone
+    `)) as unknown as { gone: number }[];
     redirectRowsChanged += gone.length;
   }
   // Collapse chains: X → old becomes X → new, so a visitor hops once.

@@ -296,6 +296,31 @@ describe("fetchStagedPages", () => {
     expect(r.errors[0]?.message).toContain("staging answered 404 for /gone");
   });
 
+  describe("a redirect on the page's own URL (#1447)", () => {
+    const answeredFrom = (url: string) => {
+      const res = new Response("<p>target</p>");
+      Object.defineProperty(res, "redirected", { value: true });
+      Object.defineProperty(res, "url", { value: url });
+      return (async () => res) as unknown as typeof fetch;
+    };
+
+    it("records where staging sent the page", async () => {
+      const r = await fetchStagedPages(
+        [{ pageId: P1, path: "/new", url: "http://s/new/" }],
+        answeredFrom("http://s/guides/old/"),
+      );
+      expect(r.pages[0]?.redirectedTo).toBe("/guides/old/");
+    });
+
+    it("does not count the host's hop to the slash form", async () => {
+      const r = await fetchStagedPages(
+        [{ pageId: P1, path: "/new", url: "http://s/new" }],
+        answeredFrom("http://s/new/"),
+      );
+      expect(r.pages[0]).not.toHaveProperty("redirectedTo");
+    });
+  });
+
   it("fetches at most six pages at once", async () => {
     let inFlight = 0;
     let peak = 0;

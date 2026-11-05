@@ -37,6 +37,11 @@ export interface StagedPage {
    * it on purpose.
    */
   readonly notFoundPage?: true;
+  /**
+   * #1447 — set when staging answered the page's own URL with a redirect to
+   * another path: `html` is then that target's document, not this page.
+   */
+  readonly redirectedTo?: string;
 }
 
 /** What the staged build answers for one path (see {@link StagedBuild}). */

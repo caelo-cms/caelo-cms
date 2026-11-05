@@ -20,6 +20,12 @@
  * - `links/redirect-loop` (error): the URL runs into a redirect cycle.
  * - `links/redirect-chain` (warning): the URL works only through the
  *   redirect table — link the final URL directly.
+ * - `links/redirect-shadows-page` (error, #1447): a redirect rule sits on a
+ *   page's URL, or staging really answered the page's URL with a redirect.
+ *   The first is a contradiction to settle: a build's page wins, so the rule
+ *   does nothing here, yet it answers on the live site until Publish live
+ *   and again whenever the page leaves the build. The second is the outage
+ *   itself, and the fetched HTML is not this page's.
  * - `links/orphan-page` (warning): no other page links to this one, the
  *   navigation included.
  * - `links/limit-reached` (info): the bounds below cut the check short;
@@ -56,6 +62,9 @@ import {
 import { MAX_FINDINGS_PER_CALL } from "./runner.js";
 
 export const LINKS_CHECK_ID = "links";
+
+/** A rule on a page's URL, or staging redirecting a page away (#1447). */
+export const REDIRECT_SHADOWS_PAGE = "links/redirect-shadows-page";
 
 /** One call may probe this long: hundreds of asset URLs over the network. */
 export const LINKS_CHECK_TIMEOUT_MS = 240_000;
@@ -201,6 +210,7 @@ export async function linkFindings(
     layouts: input.layouts,
   };
   const findings = [
+    ...redirectsOnPages(pages, redirects),
     ...linkProblems(occurrences, resolutions, ctx, input.reportedDraftLinks),
     ...orphanPages(pages, occurrences, resolutions),
   ];
@@ -392,6 +402,44 @@ function messageOf(ruleId: string, ref: string, r: Resolution): string {
   }
   const label = hops.length > 1 ? "Link through a redirect chain" : "Link through a redirect";
   return `${label}: ${ref} goes ${chain(hops)}. Link the final URL directly — every hop costs visitors a round-trip and crawlers link equity.`;
+}
+
+/**
+ * Rules on a page's URL, and pages staging answered with a redirect
+ * (#1447). One finding per page. The 404 page is left out: it is served at
+ * `/404.html`, so its own path is free for a rule.
+ */
+function redirectsOnPages(
+  pages: readonly StagedPage[],
+  redirects: ReadonlyMap<string, RedirectRow>,
+): Finding[] {
+  return pages.flatMap((page): Finding[] => {
+    if (page.notFoundPage) return [];
+    const rule = redirects.get(pathKey(page.path));
+    if (!rule && page.redirectedTo === undefined) return [];
+    const ruleText = rule ? `"${rule.fromPath}" → "${rule.toPath}" (${rule.statusCode})` : null;
+    const message =
+      page.redirectedTo !== undefined
+        ? `Redirect instead of this page: staging answers ${page.path} with a redirect to ${page.redirectedTo}, so visitors never reach it${ruleText ? ` (rule ${ruleText})` : ""}.`
+        : `Redirect on this page's URL: the rule ${ruleText} sits on ${page.path}. The staged page wins, so the rule does nothing here, but it still answers on the live site until Publish live and again whenever this page leaves the build.`;
+    return [
+      {
+        ruleId: REDIRECT_SHADOWS_PAGE,
+        severity: "error",
+        pageId: page.pageId,
+        message: clip(message),
+        fix: rule
+          ? {
+              tool: "bulk_delete_redirects",
+              hint: `if the page stays at this URL, delete the rule with fromPaths ["${rule.fromPath}"]; if the URL should redirect, set the page to draft (set_pages_status_many) or move it (move_pages)`,
+            }
+          : {
+              tool: "stage_changes",
+              hint: "no rule of the redirects table answers this URL, so the hosting is behind the table: Stage again; if it stays, check Settings → Redirects for a failed push",
+            },
+      },
+    ];
+  });
 }
 
 /** Pages no other page links to (homepage and 404 page excepted). */

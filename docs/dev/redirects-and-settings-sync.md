@@ -41,6 +41,18 @@ What the sync reports, also in the AI tools' results (`bulk_create_redirects`, `
 
 Gates (CLAUDE.md §11.A) are unchanged. Creating or changing a redirect is routine: one `bulk_delete_redirects` call undoes it. An AI `redirects.delete_many` by `matches` that would delete 10 or more rows is refused (`AI_MATCHES_DELETE_LIMIT`). A move of 10 or more URLs is approval-gated (`move_pages`). `redirects.sync_provider` decides nothing (it pushes what was saved) and is human/system only.
 
+## A rule on a page's URL
+
+A row of the table and a page can share a path, in either spelling: a row answers its path with and without the trailing slash (`redirectFromPathSpellings`), and a table imported from a CMS with `/`-terminated URLs stores `/old/`.
+
+**No provider lets the rule beat a page the build serves.** Every serving layer consumes `buildRedirectPlan`, which leaves such a row out against the files of the build that target serves (the Firebase version, the live bucket, `current/`, the staged manifest). So the rule answers only while no served build has the page: a page created or published on the draft stays behind its rule on staging until a Stage, and on the live site until Publish live. Then the page answers, and the rule does nothing until the page leaves the build. #1447 was reported as "hosting redirects win over the page"; the staging logs showed the sibling `/de/` page answering 404 in the same second as the `/en/` 301, and both answering 200 after the next Stage: neither page was in the staged build yet.
+
+What keeps the two apart:
+
+- **A move takes the rule over.** `applyPathMoveEffects` deletes the rule on the new URL, in both spellings, before it writes the old URL's 301. `move_pages` and slug changes need no warning: they leave no rule on a page. The row is gone at once, draft or not, because redirects are live state.
+- **Other writes say so.** A page that lands next to a rule without moving (`build_page`, `duplicate_page`, `create_variant` without a locale prefix) or goes to published (`set_pages_status_many`), a rule written onto a page's path (`bulk_create_redirects`, Settings → Redirects): the result names the rule, the page and the next step, read from `redirects.page_conflicts` (O(request): by the unique indexes on `redirects.from_path` and `pages.current_path`).
+- **A Stage reports what is left.** `links/redirect-shadows-page` is an error ([quality checks](../quality-checks.md)), computed in the `links` check, which already holds the staged pages and the table. It also reports a page staging really answered with a redirect (`StagedPage.redirectedTo`), which the plan should make impossible and which would otherwise pass: the fetched HTML is then the target's, and every other check reads that.
+
 ## Global settings: classification
 
 "Provider / runtime" settings are read where the site is served, so a save is the sync. "Rendered" settings are baked into the build. They are stored live (not on the chat's branch) and reach production only with the next Stage + Publish live: Publish live copies the staged build (#1330), and a staged build rendered for another origin than the live site's is refused with "Stage again". With #1154 nothing else builds production. Making them branch-aware draft state is #1158.
