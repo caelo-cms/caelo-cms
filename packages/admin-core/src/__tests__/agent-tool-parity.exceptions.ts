@@ -395,6 +395,10 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     reason:
       "plugin-owned moderation path: reached through the comments plugin's own tool when that plugin is active",
   },
+  "comment_archive.stats_many": {
+    kind: "internal",
+    reason: "the comments plugin's bake and signature read it during a build; no AI tool needs it",
+  },
   "telemetry.get": {
     kind: "internal",
     reason:

@@ -27,7 +27,7 @@ It does not run the generator. `main` holds staged, unpublished and live-written
 Within those files it replaces only **bake regions**: the markers the plugin pass writes around every bake (`apps/static-generator/src/bake-regions.ts`):
 
 ```html
-<!--caelo-bake:comments:<pageId>:1.1.0--><div data-caelo-plugin="comments" data-page-id="<pageId>" data-baked-at="2026-10-26T10:00:00.000Z">…</div><!--/caelo-bake:comments:<pageId>-->
+<!--caelo-bake:comments:<pageId>:1.2.0--><div data-caelo-plugin="comments" data-page-id="<pageId>" data-baked-at="2026-10-26T10:00:00.000Z">…</div><!--/caelo-bake:comments:<pageId>-->
 ```
 
 The plugin pass neutralises marker-shaped comments in the page HTML and in the plugin's output (`<!--caelo-bake:` → `<!-- caelo-bake:`), so only the pass itself opens or closes a region. The routing manifest names each page's file (`pages[].pageId`).
@@ -46,6 +46,17 @@ The result is a deploy run with `build_kind = 'plugin_data'` and `base_run_id` =
 Publish live of a Stage built before a plugin-data build, and a rollback, can take baked items out of the HTML again. Those items stay visible through the delta feed, because their region's `since` is older. `deploy.promote` (`rewindBakesToRun`) and `deploy.rollback` (`forgetAllBakes`) make those marks pending again, so the next tick re-bakes them.
 
 **No quality gate.** The #553 audit checks page structure before a human publishes it. A plugin-data build keeps the structure: the same plugin version renders the same markup into a region the audited build already carried, with more or fewer data rows. **No SEO gate.** No `<head>` changes.
+
+## A bake is a window, not the whole list
+
+A region is page weight, so a plugin with long lists bakes a bounded window and pages the rest. The comments plugin is the worked example (#1169):
+
+- **One axis.** `comment_archive.list_for_page` orders by `archived_at`, newest first, with `id` as the tie-break. The bake is the top of that order, `since` reads above it and `before` (a keyset cursor) reads below it, so nothing can fall between the feeds. A bake that overlaps the delta is harmless: the client dedupes by comment id. Both the admin's table and the published projection index `archived_at` per page.
+- **The window.** The bake holds the newest 50 comments. A longer thread adds a line, *Showing the newest 50 of 1234 comments.*, carrying the next page's cursor in `data-cursor`.
+- **What crawlers get.** They read no JS output, so they get those 50 comments and the count. Older comments are not in the HTML. The same goes for visitors without JavaScript.
+- **The client.** `packages/plugins/comments/src/runtime.ts`, shipped through `buildAssets`: on load it reads what came after the bake, and a *Show older comments* button reads one more page per click (`list_approved`, a declared public operation, 60 calls a minute). The file loads on every page and stops at once where no comments region exists. It does not use the plugin's Web Component, because nothing mounts those on a built page yet (#455).
+- **A bake far behind.** More new comments than one page (a new plugin version waits for the next Publish live) means the client reads the thread from the top instead of merging.
+- **Cursor precision.** The cursor carries Postgres' microseconds, so both sides must hold the same value: the projection publishes the comment timestamps as text, not through a `Date`.
 
 ## Declaring baked data (plugin SDK)
 

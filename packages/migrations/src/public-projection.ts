@@ -656,10 +656,16 @@ interface Snapshot {
 const COMMENT_COLUMNS =
   "id, public_row_id, page_id, parent_id, author_name, content, submitted_at, archived_at";
 
+/**
+ * The timestamps travel as text: the rows are written through JSON, a driver
+ * `Date` would cut them to milliseconds, and the thread's cursor (#1169) has
+ * to find the same microsecond on both sides.
+ */
 function commentQuery(where: SQL): SQL {
   return sql`
     SELECT id::text AS id, public_row_id::text AS public_row_id, page_id::text AS page_id,
-           parent_id::text AS parent_id, author_name, content, submitted_at, archived_at
+           parent_id::text AS parent_id, author_name, content,
+           submitted_at::text AS submitted_at, archived_at::text AS archived_at
     FROM comment_archive WHERE status = 'approved' AND ${where}
   `;
 }

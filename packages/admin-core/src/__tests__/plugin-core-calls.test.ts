@@ -73,6 +73,9 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
       pending:
         "FIXME(#1269) bakedData reads one page's archive per plugin-data build; not yet measured",
     },
+    "comment_archive.stats_many": {
+      notBackground: "the Stage and plugin-data builds read the bake's count and signature",
+    },
     "comment_archive.insert": {
       notBackground: "the moderate / ai_moderate tools write one archived comment each",
     },

@@ -5,7 +5,8 @@
  *
  * P12 PR2.5 — first AI-moderation user. Visitor submits → status='pending' →
  * AI classifies → Owner/AI flips to approved/rejected/spam. Static-render at
- * deploy bakes approved comments; deltas land via api.list({since}).
+ * deploy bakes the newest approved comments; `runtime.ts` adds what came
+ * after the bake and pages through the older ones (#1169).
  *
  * Schema (cms_public.plugin_comments.*):
  *   comments — page_id + parent_id (3-level threads) + author + status
@@ -33,8 +34,23 @@ import {
   PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
+import { THREAD_RUNTIME_JS } from "./runtime.js";
 
 const MAX_THREAD_DEPTH = 3;
+
+/**
+ * Comments in the bake and in one page of the visitor feed (#1169). A thread
+ * longer than this keeps its page light: the HTML carries the newest ones
+ * plus a line with the total, and the rest loads on demand. Crawlers read no
+ * JS output, so they get exactly that: these comments and the count.
+ */
+const THREAD_PAGE_SIZE = 50;
+
+/** The most rows `comment_archive.list_for_page` returns at once. */
+const MAX_ARCHIVE_READ = 500;
+
+/** The most pages `comment_archive.stats_many` answers at once. */
+const MAX_STATS_PAGES = 500;
 
 type ModerationDecision = "approved" | "rejected" | "spam";
 
@@ -98,9 +114,19 @@ const submitInput = z
   })
   .strict();
 
-/** The page whose approved thread a visitor reads (#1332). */
+/** Where the next page of a thread starts: `nextCursor` of the page before it. */
+const threadCursor = z
+  .object({ archivedAt: z.string().datetime({ precision: 6 }), id: z.string().uuid() })
+  .strict();
+type ThreadCursor = z.infer<typeof threadCursor>;
+
+/** The page whose approved thread a visitor reads (#1332), one page at a time. */
 const listApprovedInput = z
-  .object({ pageId: z.string().min(1).max(200), since: z.string().datetime().optional() })
+  .object({
+    pageId: z.string().min(1).max(200),
+    since: z.string().datetime().optional(),
+    before: threadCursor.optional(),
+  })
   .strict();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -114,23 +140,65 @@ interface ApprovedComment {
   submittedAt: string;
 }
 
-/** The approved comments of a page (both the admin and the gateway serve the op). */
+/** One page of a thread, newest approval first. */
+interface ThreadPage {
+  comments: ReadonlyArray<ApprovedComment>;
+  nextCursor: ThreadCursor | null;
+}
+
+/** A page of a page's approved comments (both the admin and the gateway serve the op). */
 async function approvedComments(
   ctx: PluginContextTier1,
   pageId: string,
-  since?: string,
-): Promise<ReadonlyArray<ApprovedComment>> {
-  if (!ctx.cms || !UUID_RE.test(pageId)) return [];
-  const r = await ctx.cms.call<
-    { pageId: string; status: "approved"; since?: string; limit: number },
-    { comments: ReadonlyArray<ApprovedComment> }
+  page: { limit: number; since?: string | undefined; before?: ThreadCursor | undefined },
+): Promise<ThreadPage> {
+  if (!ctx.cms || !UUID_RE.test(pageId)) return { comments: [], nextCursor: null };
+  return ctx.cms.call<
+    {
+      pageId: string;
+      status: "approved";
+      limit: number;
+      since?: string;
+      before?: ThreadCursor;
+    },
+    ThreadPage
   >("comment_archive.list_for_page", {
     pageId,
     status: "approved",
-    ...(since ? { since } : {}),
-    limit: 500,
+    limit: page.limit,
+    ...(page.since ? { since: page.since } : {}),
+    ...(page.before ? { before: page.before } : {}),
   });
-  return r.comments;
+}
+
+interface ThreadStats {
+  approved: number;
+  lastArchivedAt: string;
+}
+
+/** What the bake of a page depends on: any approval or removal changes it. */
+async function threadStats(
+  ctx: PluginContextTier1,
+  pageIds: ReadonlyArray<string>,
+): Promise<Map<string, ThreadStats>> {
+  if (!ctx.cms) {
+    throw new Error("comments: the cms_admin grant is required to read comments");
+  }
+  const out = new Map<string, ThreadStats>();
+  for (let i = 0; i < pageIds.length; i += MAX_STATS_PAGES) {
+    const r = await ctx.cms.call<
+      { pageIds: ReadonlyArray<string> },
+      { stats: ReadonlyArray<ThreadStats & { pageId: string }> }
+    >("comment_archive.stats_many", { pageIds: pageIds.slice(i, i + MAX_STATS_PAGES) });
+    for (const { pageId, approved, lastArchivedAt } of r.stats) {
+      out.set(pageId, { approved, lastArchivedAt });
+    }
+  }
+  return out;
+}
+
+function threadSignature(stats: ThreadStats | undefined): string {
+  return stats ? `${stats.approved}:${stats.lastArchivedAt}` : "0:0";
 }
 
 interface CommentRow {
@@ -219,7 +287,7 @@ function bakedPage(decision: ModerationDecision, pageId: string | null): { pageI
 
 export default definePlugin<PluginContextTier1>({
   slug: "comments",
-  version: "1.1.0",
+  version: "1.2.0",
   tier: 1,
   schema: {
     comments: {
@@ -252,7 +320,14 @@ export default definePlugin<PluginContextTier1>({
       writes: ["comments"],
     },
     // Reads the approved thread the admin publishes, no table of its own.
-    { name: "list_approved", kind: "read", captcha: "none", input: listApprovedInput },
+    // One call per page view plus one per "Show older comments" click.
+    {
+      name: "list_approved",
+      kind: "read",
+      captcha: "none",
+      input: listApprovedInput,
+      rateLimit: { max: 60, windowSeconds: 60 },
+    },
   ],
   /**
    * #1332 — new comments are an inbox: visitors post them and never read
@@ -288,11 +363,11 @@ export default definePlugin<PluginContextTier1>({
 
       // Enforce thread depth. A reply goes to an APPROVED comment of this
       // page (#1332): the inbox is visitor-written and not readable on the
-      // public side, so the chain is walked through the published thread.
+      // public side, so the chain is walked through the published thread:
+      // its newest comments, which is what a reply answers in practice.
       if (input.parentId) {
-        const byId = new Map(
-          (await approvedComments(ctx, input.pageId)).map((c) => [c.publicRowId, c]),
-        );
+        const recent = await approvedComments(ctx, input.pageId, { limit: MAX_ARCHIVE_READ });
+        const byId = new Map(recent.comments.map((c) => [c.publicRowId, c]));
         if (!byId.has(input.parentId)) {
           throw new PublicOperationError("submit: the comment you reply to is not on this page");
         }
@@ -325,11 +400,16 @@ export default definePlugin<PluginContextTier1>({
       // is now a write-only inbox; reads go through ctx.cms.call so a
       // public-DB compromise leaks at most pending submissions.
       const input = listApprovedInput.parse(args);
-      const comments = await approvedComments(ctx, input.pageId, input.since);
+      const page = await approvedComments(ctx, input.pageId, {
+        limit: THREAD_PAGE_SIZE,
+        since: input.since,
+        before: input.before,
+      });
       // Reshape to the legacy `CommentRow` shape so the Web Component +
       // tests don't need to know reads moved to cms_admin.
       return {
-        comments: comments.map((c) => ({
+        nextCursor: page.nextCursor,
+        comments: page.comments.map((c) => ({
           id: c.publicRowId,
           page_id: input.pageId,
           parent_id: "",
@@ -615,47 +695,22 @@ export default definePlugin<PluginContextTier1>({
     },
   ],
   /**
+   * The browser side of the bake: older comments on demand and what came
+   * after the bake (#1169). It loads on every page and stops at once where
+   * no comments region exists.
+   */
+  buildAssets: () => ({ "runtime.js": THREAD_RUNTIME_JS }),
+
+  /**
    * P13 perf-pass — batched signature for the whole build at once.
-   * The static-generator prefers this over `metaSignature` so a
-   * 1000-page site does ONE list query instead of 1000.
+   * The static-generator prefers this over `metaSignature` so a large
+   * site reads its comments in one query per {@link MAX_STATS_PAGES} pages.
+   * Both signatures throw: a swallowed read used to freeze the signature
+   * at one value, and a Publish live then reused a stale bake (#1169).
    */
   metaSignatureBatch: async (ctx, args) => {
-    // v0.2.18 / Fix D — approved comments are in cms_admin's
-    // comment_archive after moderation. Per-page batched signature
-    // reads from there so a 1000-page deploy still does ONE query
-    // per page bucket.
-    if (!("cms" in ctx) || !ctx.cms) return new Map();
-    const out = new Map<string, string>();
-    try {
-      // List for each requested page. comment_archive has its own
-      // (page_id, status) index, so per-page lookups are cheap even
-      // though we issue N. The single-bucket pattern below stays in
-      // cms_admin.
-      for (const pageId of args.pageIds) {
-        const r = await ctx.cms.call<
-          { pageId: string; status: string; limit: number },
-          {
-            comments: ReadonlyArray<{ id: string; submittedAt: string }>;
-          }
-        >("comment_archive.list_for_page", {
-          pageId,
-          status: "approved",
-          limit: 5000,
-        });
-        if (r.comments.length === 0) {
-          out.set(pageId, "0:0");
-        } else {
-          let max = r.comments[0]?.submittedAt ?? "0";
-          for (const c of r.comments) {
-            if (c.submittedAt > max) max = c.submittedAt;
-          }
-          out.set(pageId, `${r.comments.length}:${max}`);
-        }
-      }
-      return out;
-    } catch {
-      return out;
-    }
+    const stats = await threadStats(ctx, args.pageIds);
+    return new Map(args.pageIds.map((id) => [id, threadSignature(stats.get(id))]));
   },
 
   /**
@@ -664,32 +719,14 @@ export default definePlugin<PluginContextTier1>({
    * approving a new comment busts the stale bake even though the
    * page itself didn't change.
    */
-  metaSignature: async (ctx, args) => {
-    // v0.2.18 / Fix D — read from cms_admin's comment_archive.
-    if (!("cms" in ctx) || !ctx.cms) return "";
-    try {
-      const r = await ctx.cms.call<
-        { pageId: string; status: string; limit: number },
-        {
-          comments: ReadonlyArray<{ id: string; submittedAt: string }>;
-        }
-      >("comment_archive.list_for_page", {
-        pageId: args.pageId,
-        status: "approved",
-        limit: 1000,
-      });
-      let max = "0";
-      for (const c of r.comments) if (c.submittedAt > max) max = c.submittedAt;
-      return `${r.comments.length}:${max}`;
-    } catch {
-      return "";
-    }
-  },
+  metaSignature: async (ctx, args) =>
+    threadSignature((await threadStats(ctx, [args.pageId])).get(args.pageId)),
 
   /**
-   * P13 — staticRender bakes the approved-comments thread at deploy
-   * time. The Web Component picks up `data-baked-at` and only fetches
-   * deltas (rows added since the bake) on the client.
+   * P13 — staticRender bakes the newest {@link THREAD_PAGE_SIZE} approved
+   * comments at deploy time, newest approval first. A longer thread adds a
+   * line with the total and the cursor of the next page, which `runtime.ts`
+   * reads; the older comments are not in the HTML (#1169).
    */
   staticRender: async (ctx, args) => {
     // v0.2.18 / Fix D — bake from cms_admin's comment_archive. The
@@ -702,34 +739,31 @@ export default definePlugin<PluginContextTier1>({
     if (!("cms" in ctx) || !ctx.cms) {
       throw new Error("comments staticRender: the cms_admin grant is required to read comments");
     }
-    const r = await ctx.cms.call<
-      { pageId: string; status: string; limit: number },
-      {
-        comments: ReadonlyArray<{
-          id: string;
-          authorName: string;
-          content: string;
-          submittedAt: string;
-        }>;
-      }
-    >("comment_archive.list_for_page", {
-      pageId: args.pageId,
-      status: "approved",
-      limit: 200,
-    });
-    return r.comments
+    const page = await approvedComments(ctx, args.pageId, { limit: THREAD_PAGE_SIZE });
+    const articles = page.comments
       .map((c) => {
         const safeAuthor = escapeHtml(c.authorName);
         const safeContent = escapeHtml(c.content);
-        return `<article class="comment"><header>${safeAuthor} · ${new Date(c.submittedAt).toISOString()}</header><div class="body">${safeContent}</div></article>`;
+        return `<article class="comment" data-comment-id="${escapeHtml(c.publicRowId)}"><header>${safeAuthor} · ${new Date(c.submittedAt).toISOString()}</header><div class="body">${safeContent}</div></article>`;
       })
       .join("");
+    const thread = `<div data-comment-thread>${articles}</div>`;
+    if (!page.nextCursor) return thread;
+    const total = (await threadStats(ctx, [args.pageId])).get(args.pageId)?.approved;
+    if (total === undefined) {
+      throw new Error(`comments staticRender: no comment count for page ${args.pageId}`);
+    }
+    const cursor = escapeHtml(JSON.stringify(page.nextCursor));
+    return `${thread}<p data-older-comments data-cursor="${cursor}">Showing the newest ${page.comments.length} of ${total} comments.</p>`;
   },
 
   /**
    * Web Component `<caelo-comments>` — visitor-facing comments thread.
    * Server-renders approved comments at deploy via staticRender (P13);
    * client-side fetch refreshes after `since` for late comments.
+   *
+   * Nothing mounts it on a built page yet (#455); the baked thread's
+   * client today is `runtime.ts`, which the port has to merge with this.
    *
    * Attributes: page-id.
    */

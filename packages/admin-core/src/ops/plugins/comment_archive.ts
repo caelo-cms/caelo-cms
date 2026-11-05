@@ -18,6 +18,12 @@
  *                                   @caelo-cms/plugin-host (gateway-ops.ts)
  *                                   because the API gateway runs it too.
  *
+ *   comment_archive.stats_many    — #1169: how many approved comments
+ *                                   each page has and when the last one
+ *                                   was approved, in one read: the bake's
+ *                                   count line and the signature that
+ *                                   tells a build its bake went stale.
+ *
  *   comment_archive.post_team     — #1329: an admin user's own comment or
  *                                   reply, written straight as approved
  *                                   with the user as author. It never
@@ -27,7 +33,7 @@
  *                                   both public databases like a moderated
  *                                   comment.
  *
- * The first two run as the comments plugin's actor (or any system context).
+ * The read and insert ops run as the comments plugin's actor (or any system context).
  * Tier-1 plugin handlers reach them via `ctx.cms.call("comment_archive.*",
  * input)`.
  */
@@ -37,6 +43,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { jsonbParam } from "../../sql-helpers.js";
 
 const insertInput = z
   .object({
@@ -87,6 +94,48 @@ export const commentArchiveInsertOp = defineOperation({
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     return ok({ archiveId: rows[0]?.id ?? null });
+  },
+});
+
+/** The most pages one read answers; the plugin splits a build's list. */
+const MAX_STATS_PAGES = 500;
+
+const statsManyInput = z
+  .object({ pageIds: z.array(z.string().uuid()).min(1).max(MAX_STATS_PAGES) })
+  .strict();
+
+export const commentArchiveStatsManyOp = defineOperation({
+  name: "comment_archive.stats_many",
+  readScope: "request",
+  actorScope: ["human", "ai", "system", "plugin"],
+  database: "cms_admin",
+  input: statsManyInput,
+  output: z.object({
+    /** Pages without an approved comment are absent. */
+    stats: z.array(
+      z.object({
+        pageId: z.string(),
+        approved: z.number().int(),
+        lastArchivedAt: z.string(),
+      }),
+    ),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT page_id::text AS page_id, count(*)::int AS approved,
+             max(archived_at)::text AS last_archived_at
+      FROM comment_archive
+      WHERE page_id IN (SELECT jsonb_array_elements_text(${jsonbParam(input.pageIds)})::uuid)
+        AND status = 'approved'
+      GROUP BY page_id
+    `)) as unknown as { page_id: string; approved: number; last_archived_at: string }[];
+    return ok({
+      stats: rows.map((r) => ({
+        pageId: r.page_id,
+        approved: r.approved,
+        lastArchivedAt: r.last_archived_at,
+      })),
+    });
   },
 });
 
