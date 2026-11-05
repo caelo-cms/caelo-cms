@@ -25,7 +25,6 @@ import {
   MAIL_RECIPIENT_RE,
   MAIL_TEMPLATE_NAME_RE,
   MAIL_TOKEN_RE,
-  MAIL_UNSUBSCRIBE_TOKEN_RE,
   mailLinkPath,
   type PluginEmail,
 } from "@caelo-cms/plugin-sdk";
@@ -40,7 +39,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
-import { signMailUnsubscribeToken } from "./mail-link-token.js";
+import { signMailUnsubscribeToken, verifyMailUnsubscribeToken } from "./mail-link-token.js";
 
 /** The operation that writes one outbox row. */
 export const MAIL_QUEUE_OP = "plugin_mail.queue";
@@ -98,18 +97,24 @@ export function normaliseMailAddress(address: string): string {
 
 /**
  * The RFC 8058 headers of a mail whose unsubscribe link is `url`. The plugin
- * hands the link back, so it is checked to be this plugin's own, and the
- * parsed URL cannot carry a line break into a header.
+ * hands the link back, so it must be one the host made: the live origin, this
+ * plugin's path and a token the host signed. Otherwise a plugin could point
+ * mailbox providers, and the recipient's token, at another host. The parsed
+ * URL cannot carry a line break into a header.
  */
-function unsubscribeHeaders(plugin: LoadedPlugin, url: string): Record<string, string> {
+async function unsubscribeHeaders(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  url: string,
+): Promise<Record<string, string>> {
   const link = plugin.definition.mailUnsubscribe;
   const parsed = URL.canParse(url) ? new URL(url) : null;
-  const token = parsed?.searchParams.get("token") ?? "";
   if (
     !link ||
     !parsed ||
+    parsed.origin !== (await infra.mailLinkOrigin?.()) ||
     parsed.pathname !== mailLinkPath(plugin.slug, link.operation) ||
-    !MAIL_UNSUBSCRIBE_TOKEN_RE.test(token)
+    !(await verifyMailUnsubscribeToken(plugin, infra, parsed.searchParams.get("token")))
   ) {
     throw new Error(
       `ctx.email.send: unsubscribeUrl is not plugin "${plugin.slug}"'s own link — pass what ctx.email.unsubscribeLink returned`,
@@ -154,7 +159,7 @@ export function makePluginEmail(
       return transport.send(
         unsubscribeUrl === undefined
           ? mail
-          : { ...mail, headers: unsubscribeHeaders(plugin, unsubscribeUrl) },
+          : { ...mail, headers: await unsubscribeHeaders(plugin, infra, unsubscribeUrl) },
       );
     },
     unsubscribeLink: async ({ recipientId }) => {

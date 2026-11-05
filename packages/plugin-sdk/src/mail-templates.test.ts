@@ -215,6 +215,21 @@ describe("the unsubscribe link in the manifest (#1432)", () => {
     );
   });
 
+  it("refuses a template link to the same operation", () => {
+    expect(() =>
+      manifestFromDefinition({
+        ...mailer,
+        mailTemplates: {
+          confirm_it: {
+            subject: "Confirm",
+            body: ["Please confirm."],
+            link: { operation: "confirm", label: "Confirm", done: "Done." },
+          },
+        },
+      }),
+    ).toThrow("its own operation");
+  });
+
   it("refuses an operation that does not require the token", () => {
     const op = { ...confirmOp, input: z.object({ token: z.string().optional() }).strict() };
     expect(() => manifestFromDefinition({ ...mailer, publicOperations: [op] })).toThrow(

@@ -98,6 +98,15 @@ const fixture = definePlugin<PluginContextTier1>({
       }
       return { left: true };
     },
+    mail_with_link: async (ctx, args) => {
+      await ctx.email?.send({
+        to: "reader@t1432.test",
+        subject: "News",
+        html: "<p>News</p>",
+        unsubscribeUrl: (args as { url: string }).url,
+      });
+      return {};
+    },
     mail_one: async (ctx, args) => {
       const { recipientId } = args as { recipientId: string };
       const url = await ctx.email?.unsubscribeLink({ recipientId });
@@ -318,6 +327,31 @@ describe("the mail (#1432)", () => {
     await gatewayHost();
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.message).toContain("no base URL");
+    expect(sent).toEqual([]);
+  });
+});
+
+describe("a link a plugin altered (#1432)", () => {
+  it("never becomes a mail header: not on another host, not with an unsigned token", async () => {
+    const id = await addRecipient();
+    const url = await mailLink(id);
+    sent.length = 0;
+    resetDispatchOnlyHost();
+    await adminHost();
+    const attempts = [
+      url.replace(LIVE_HOST, "https://evil.example"),
+      url.replace(/_[A-Za-z0-9_-]{43}$/, `_${"A".repeat(43)}`),
+    ];
+    for (const altered of attempts) {
+      const r = await runPluginOperation({
+        invocation: { origin: "system", actorId: SYSTEM_ACTOR_ID },
+        pluginSlug: SLUG,
+        operationName: "mail_with_link",
+        args: { url: altered },
+      });
+      expect(r.ok).toBe(false);
+    }
+    await gatewayHost();
     expect(sent).toEqual([]);
   });
 });

@@ -392,18 +392,16 @@ export default definePlugin<PluginContextTier1>({
       const input = parsed.data;
       // The host already checked the signature, so a link stays good to
       // press again and for a subscriber who is gone: both are unsubscribed.
-      const unsubToken = mailUnsubscribeRecipient(input.token);
-      if (!unsubToken) throw new PublicOperationError("unsubscribe: invalid token");
-      const matches = await ctx.query.list<
+      const subscriberId = mailUnsubscribeRecipient(input.token);
+      if (!subscriberId) throw new PublicOperationError("unsubscribe: invalid token");
+      // Compare-and-swap, so that of two concurrent POSTs only the first
+      // sets the date; a gone subscriber swaps nothing and is still a success.
+      await ctx.query.compareAndSwap(
         "subscribers",
-        { id: string; unsubscribed_at: string | null }
-      >("subscribers", { unsub_token: unsubToken, limit: 1 });
-      const subscriber = matches[0];
-      if (subscriber && !subscriber.unsubscribed_at) {
-        await ctx.query.update("subscribers", subscriber.id, {
-          unsubscribed_at: new Date().toISOString(),
-        });
-      }
+        subscriberId,
+        { unsubscribed_at: null },
+        { unsubscribed_at: new Date().toISOString() },
+      );
       return { unsubscribed: true };
     },
     /**

@@ -34,7 +34,8 @@
  *     headers, signed by the host for that recipient. The links are made
  *     before a batch is claimed: a site without a base URL fails the tick
  *     with nothing claimed, instead of using up the run on mails that
- *     cannot go out. `unsub_token` is the id the signed token names.
+ *     cannot go out. The token names the `subscriberId` of the approval's
+ *     snapshot, which a rewritten public row cannot change.
  */
 
 import {
@@ -58,9 +59,7 @@ const runRecipient = z
   .object({
     subscriberId: z.string().uuid(),
     email: RECIPIENT,
-    // A UUID: the host signs it into the link, and a forged row of another
-    // shape is counted invalid at the approval rather than stopping a run.
-    unsubToken: z.string().uuid(),
+    unsubToken: z.string().min(1).max(200),
   })
   .strict();
 
@@ -323,7 +322,7 @@ export async function drainSends(
       }
       // Before the claim: without its links a batch must stay unclaimed.
       const links = await Promise.all(
-        batch.map((r) => email.unsubscribeLink({ recipientId: r.unsubToken })),
+        batch.map((r) => email.unsubscribeLink({ recipientId: r.subscriberId })),
       );
       // Claim before mailing: whoever advances the cursor owns the batch.
       const claimed = await admin.compareAndSwap(

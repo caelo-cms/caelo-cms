@@ -76,10 +76,6 @@ class FakeStore {
 
 const HOST = "https://www.example.com";
 
-function unsubUuid(i: number): string {
-  return `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
-}
-
 function harness(opts: { withAdmin?: boolean; baseUrl?: boolean } = {}) {
   const pub = new FakeStore();
   const priv = new FakeStore();
@@ -118,7 +114,7 @@ async function seed(
       email,
       email_hash: `h${i}`,
       confirm_token: `c${i}`,
-      unsub_token: unsubUuid(i),
+      unsub_token: `u${i}`,
       confirmed_at: "2026-01-01T00:00:00.000Z",
       unsubscribed_at: null,
     });
@@ -351,7 +347,8 @@ describe("_drain_sends (#635)", () => {
     await drainAll(h.ctx);
     expect(h.mails).toHaveLength(2);
     for (const [i, mail] of h.mails.entries()) {
-      const url = `${HOST}/api/_caelo/mail-link/newsletter/unsubscribe?token=${unsubUuid(i)}_sig`;
+      const subscriberId = h.pub.rows("subscribers")[i]?.id;
+      const url = `${HOST}/api/_caelo/mail-link/newsletter/unsubscribe?token=${subscriberId}_sig`;
       expect(mail.unsubscribeUrl).toBe(url);
       expect(mail.html).toContain(`<a href="${url}">Unsubscribe</a>`);
       expect(mail.html).not.toContain("/api/plugin/newsletter/unsubscribe");

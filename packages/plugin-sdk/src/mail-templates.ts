@@ -223,6 +223,16 @@ export function checkMailTemplates(
   }
   if (m.mailUnsubscribe) {
     const path = ["mailUnsubscribe"];
+    // The unsubscribe link wins on the page and takes only a signed token,
+    // so a template's link to the same operation could never work.
+    for (const [name, t] of Object.entries(templates)) {
+      if (t.link?.operation === m.mailUnsubscribe.operation) {
+        addIssue(
+          path,
+          `mail template "${name}" links to "${t.link.operation}", the unsubscribe operation: a template link needs its own operation`,
+        );
+      }
+    }
     const op = targetOf(m.mailUnsubscribe.operation, path, "the unsubscribe link");
     if (op && (op.required.length !== 1 || op.required[0] !== "token" || !("token" in op.props))) {
       addIssue(
