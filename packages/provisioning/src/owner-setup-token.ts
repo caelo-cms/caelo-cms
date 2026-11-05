@@ -120,5 +120,19 @@ export async function issueOwnerSetup(
   const link = ownerSetupLink(adminUrl, current.token);
   const linked = await storeSetupLink(run, target, link);
   if (!linked.ok) return linked;
+  // Two secrets, no transaction: a run at the same time may have written its
+  // own token in between, and then this link is not the one the admin accepts.
+  let latest: OwnerBootstrapToken | null;
+  try {
+    latest = await readOwnerBootstrapToken(run, target.projectId);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  if (latest?.token !== current.token) {
+    return {
+      ok: false,
+      error: `another run changed the Owner setup token at the same time (secret ${OWNER_BOOTSTRAP_TOKEN_SECRET}). Run this command again.`,
+    };
+  }
   return { ok: true, link, expiresAt: current.expiresAt, minted: kept === null };
 }

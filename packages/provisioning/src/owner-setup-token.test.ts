@@ -125,6 +125,20 @@ describe("issueOwnerSetup", () => {
     expect(r.link).not.toContain("a".repeat(64));
   });
 
+  it("says so when a run at the same time changed the token, instead of printing a dead link", async () => {
+    const gcp = secretManager({ "caelo-production-postgres-password": "x" });
+    const racing: GcloudRunner = async (args, opts) => {
+      const r = await gcp.run(args, opts);
+      if (args.includes("add") && args.includes(INSTALL_SETUP_LINK_SECRET)) {
+        gcp.secrets.set(OWNER_BOOTSTRAP_TOKEN_SECRET, stored(NOW + 20 * HOUR));
+      }
+      return r;
+    };
+    const r = await issueOwnerSetup(racing, TARGET, ADMIN, NOW);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("Run this command again");
+  });
+
   it("fails loudly when the admin cannot be given access, with no link stored", async () => {
     const gcp = secretManager(
       { "caelo-production-postgres-password": "x" },

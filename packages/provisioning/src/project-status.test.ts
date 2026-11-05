@@ -345,6 +345,13 @@ describe("status --project: Owner setup link", () => {
     ).toBeNull();
   });
 
+  it("an install with an Owner never reads the token, so a refused read cannot hide that", async () => {
+    const p = project({ ...finished, ownerSetup: "done" });
+    const s = await readProjectStatus(PROJECT, p.deps);
+    expect(s.owner.kind).toBe("done");
+    expect(p.calls.some((c) => c.includes(`--secret=${OWNER_BOOTSTRAP_TOKEN_SECRET}`))).toBe(false);
+  });
+
   it("an install with an Owner is done whatever became of its token", async () => {
     const out = await text({ ...finished, tokenExpiresAt: EXPIRED_ON, ownerSetup: "done" });
     expect(out).toContain("done.");

@@ -177,10 +177,8 @@ async function readOwnerSetup(
   const unfinished = args.job ? args.job.decision.kind !== "done" : !args.provisioned;
   if (unfinished || args.adminUrl === null) return { kind: "not-yet" };
   let link: string | null;
-  let token: OwnerBootstrapToken | null;
   try {
     link = await readSetupLink(deps.run, args.install.projectId);
-    token = await readOwnerBootstrapToken(deps.run, args.install.projectId);
   } catch (e) {
     return { kind: "error", message: e instanceof Error ? e.message : String(e) };
   }
@@ -190,6 +188,14 @@ async function readOwnerSetup(
     ? await deps.ownerSetupState(target)
     : { ok: false, error: "install.json records no region" };
   if (state.ok && state.value === "done") return { kind: "done" };
+  // Only now: an install with an Owner has no use for the token, so nothing
+  // about that secret may change what it reports.
+  let token: OwnerBootstrapToken | null;
+  try {
+    token = await readOwnerBootstrapToken(deps.run, args.install.projectId);
+  } catch (e) {
+    return { kind: "error", message: e instanceof Error ? e.message : String(e) };
+  }
   // A run of `setup-link` stopped between the two secrets leaves a new token
   // beside the old link: that link is not the one the admin accepts.
   if (token === null || !link.endsWith(`token=${token.token}`)) {
