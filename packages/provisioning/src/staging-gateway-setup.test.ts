@@ -244,10 +244,11 @@ describe("the gcp-firebase edge: a second Hosting site", () => {
       });
       if (init.method === "GET" && url.includes("/customDomains/staging.acme.com")) {
         domainReads++;
-        // Created by this run: the first reads carry no records yet.
+        // Not there yet, then created by this run: the first reads carry no records.
+        if (domainReads === 1) return json(404, {});
         return json(
           200,
-          domainReads < 3
+          domainReads < 4
             ? {}
             : {
                 requiredDnsUpdates: {

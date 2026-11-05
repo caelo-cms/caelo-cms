@@ -642,7 +642,8 @@ async function ensureFirebaseStagingSite(
   // 3. The staging host as its custom domain.
   const domainPath = `projects/${project}/sites/${site}/customDomains/${encodeURIComponent(t.stagingHost)}`;
   let domain = await call(domainPath);
-  if (domain.status === 404) {
+  const createdDomain = domain.status === 404;
+  if (createdDomain) {
     const created = await call(
       `projects/${project}/sites/${site}/customDomains?customDomainId=${encodeURIComponent(t.stagingHost)}`,
       "POST",
@@ -667,7 +668,7 @@ async function ensureFirebaseStagingSite(
   // v0.11.16, 2026-11-04).
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   let dnsRecords = firebaseDesiredRecords(domain.json);
-  for (let i = 0; dnsRecords.length === 0 && i < FIREBASE_DNS_POLLS; i++) {
+  for (let i = 0; createdDomain && dnsRecords.length === 0 && i < FIREBASE_DNS_POLLS; i++) {
     await sleep(FIREBASE_DNS_POLL_MS);
     const again = await call(domainPath);
     if (!again.ok) {
@@ -677,7 +678,7 @@ async function ensureFirebaseStagingSite(
     }
     dnsRecords = firebaseDesiredRecords(again.json);
   }
-  if (dnsRecords.length === 0) {
+  if (createdDomain && dnsRecords.length === 0) {
     return fail(
       `Firebase Hosting has not said which DNS records ${t.stagingHost} needs after ${(FIREBASE_DNS_POLLS * FIREBASE_DNS_POLL_MS) / 1000} s. Nothing is wrong with what was set up; re-run the installer to print them.`,
     );

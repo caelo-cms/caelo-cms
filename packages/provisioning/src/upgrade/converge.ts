@@ -468,7 +468,7 @@ export function startConverge(
         domain: install.domain,
         stagingHost: install.stagingHost,
       },
-      { run, ...(deps.http ? { http: deps.http } : {}) },
+      { ...runDeps, ...(deps.http ? { http: deps.http } : {}) },
     );
     for (const line of edge.done) r.info(`  ${line}`);
     if (edge.ok) {
