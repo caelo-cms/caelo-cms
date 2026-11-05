@@ -174,6 +174,29 @@ interface PreviewResult {
  * the link partition for the pages the page references, and the head
  * contributions (hreflang).
  */
+/** The editor toolbar's language place for `pageId`, and the operations it ran (#1255). */
+async function languageToolbar(
+  pageId: string,
+): Promise<{ calls: string[]; items: { label: string; detail?: string }[] }> {
+  const calls: string[] = [];
+  previewsRunning += 1;
+  try {
+    return await previewCalls.run(calls, async () => {
+      const r = await runPluginOperation({
+        invocation: renderInvocation({ chatBranchId: null, renderId: crypto.randomUUID() }),
+        pluginSlug: "international-site",
+        operationName: "editor_languages",
+        args: { pageId },
+      });
+      if (!r.ok) throw new Error(r.error.message);
+      const state = r.value as { items?: { label: string; detail?: string }[] };
+      return { calls: [...calls], items: state.items ?? [] };
+    });
+  } finally {
+    previewsRunning -= 1;
+  }
+}
+
 async function preview(
   pageId: string,
   referenced: string[],
@@ -293,6 +316,16 @@ describe("#1213 — international-site render hooks at scale", () => {
     expect(smallPreview.calls).not.toContain("plugin:pages.list");
   });
 
+  let smallToolbar: { calls: string[]; items: { label: string; detail?: string }[] } | null = null;
+
+  it("the editor's language place reads the page's variant group, not the site (#1255)", async () => {
+    const target = small[0];
+    if (!target) throw new Error("previous test did not run");
+    smallToolbar = await languageToolbar(target.de);
+    expect(smallToolbar.items.map((i) => i.label)).toEqual(["Deutsch", "English"]);
+    expect(smallToolbar.calls).not.toContain("plugin:pages.list");
+  });
+
   it("the same preview on a site of 1,600+ variants costs exactly as many calls", async () => {
     await seedGroups("b", BIG_GROUPS);
     const target = small[0];
@@ -302,6 +335,12 @@ describe("#1213 — international-site render hooks at scale", () => {
     expect(big.switcher).toEqual(smallPreview.switcher);
     expect(big.calls.length).toBe(smallPreview.calls.length);
     expect([...big.calls].sort()).toEqual([...smallPreview.calls].sort());
+    // The language place too: it used to read every variant row (in pages
+    // of 1000) and every page of the site on each editor load.
+    if (!smallToolbar) throw new Error("toolbar baseline did not run");
+    const bigToolbar = await languageToolbar(target.de);
+    expect(bigToolbar.items).toEqual(smallToolbar.items);
+    expect([...bigToolbar.calls].sort()).toEqual([...smallToolbar.calls].sort());
   });
 
   it("a worker tick while a preview renders is not the preview's cost", async () => {

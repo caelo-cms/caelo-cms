@@ -1688,17 +1688,20 @@ export default definePlugin<PluginContextTier1>({
       const { pageId } = z.object({ pageId: z.string().uuid() }).strict().parse(args);
       const q = adminQueryOf(ctx);
       const reg = await refreshLocaleCache(q, ctx);
-      const variants = (await listAll(q, "page_variants")) as PageVariantRow[];
-      const { pages } = await cmsOf(ctx).call<{ pages: { id: string; status: string }[] }>(
-        "pages.list",
-        {},
+      // #1255 — the shown page's variant group and its pages only: every
+      // editor load read every variant row and every page of the site.
+      const own = (await loadVariantsByPage(q, [pageId], ctx)).get(pageId);
+      const variants = own
+        ? ((await loadGroupMembers(q, [own.group_id], ctx)).get(own.group_id) ?? [own])
+        : [];
+      const statuses = await loadPageStatuses(
+        cmsOf(ctx),
+        [...new Set([pageId, ...variants.map((v) => v.page_id)])],
+        ctx,
       );
-      return languageToolbarState({
-        pageId,
-        locales: reg.rows,
-        variants,
-        pages: new Map(pages.map((p) => [p.id, p])),
-      });
+      const pages = new Map<string, { id: string; status: string }>();
+      for (const [id, status] of statuses) if (status !== null) pages.set(id, { id, status });
+      return languageToolbarState({ pageId, locales: reg.rows, variants, pages });
     },
 
     /** Link an existing page into a variant group. */

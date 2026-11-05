@@ -447,12 +447,6 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   },
 
   // ── gaps: the agent should be able to do this (follow-ups) ────────────
-  "pages.search": {
-    kind: "gap",
-    reason:
-      "the word-prefix page search (#1269) ships first for the editor; list_pages still lists every page and filters in the tool",
-    followUp: "#1269 — list_pages takes a search query and reads through pages.search",
-  },
   "media.set_focal_point": {
     kind: "gap",
     reason:
