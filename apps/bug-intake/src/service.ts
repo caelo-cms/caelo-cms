@@ -66,6 +66,7 @@
 import {
   type BugIntakeClusterInfo,
   type BugIntakeReport,
+  type BugReportCiRun,
   type BugReportKind,
   isNewerVersion,
   parseVersion,
@@ -130,6 +131,12 @@ const ISSUE_SYNC_INTERVAL_MS = 5 * 60_000;
 const MAX_INSTALL_HASHES = 10_000;
 /** #1416 — how many CI runs one issue lists; the newest stay. */
 const MAX_CI_RUNS = 5;
+
+/** The newest runs by run id: reports of a retried run can arrive late. */
+function newestCiRuns(runs: readonly BugReportCiRun[]): BugReportCiRun[] {
+  const id = (r: BugReportCiRun): number => Number(r.runUrl.split("/").at(-1));
+  return [...runs].sort((a, b) => id(a) - id(b)).slice(-MAX_CI_RUNS);
+}
 /**
  * Queued issues filed per request at most: after the daily reset the backlog
  * drains over the first few requests instead of stalling one of them.
@@ -327,7 +334,7 @@ export class IntakeService {
         !c.installHashes.includes(installHash) &&
         c.installHashes.length < MAX_INSTALL_HASHES;
       const isNewVersion = !c.versions.includes(report.caeloVersion);
-      if (isNewRun) c.ciRuns = [...c.ciRuns, ciRun].slice(-MAX_CI_RUNS);
+      if (isNewRun) c.ciRuns = newestCiRuns([...c.ciRuns, ciRun]);
       if (isNewInstall) c.installHashes.push(installHash);
       if (isNewVersion) c.versions.push(report.caeloVersion);
       if (!c.fingerprints.includes(report.fingerprint)) c.fingerprints.push(report.fingerprint);

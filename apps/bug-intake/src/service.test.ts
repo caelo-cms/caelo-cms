@@ -164,6 +164,24 @@ describe("IntakeService", () => {
     expect(body().match(/runs\/41651726318/g)).toHaveLength(1);
   });
 
+  it("#1416 keeps the newest runs by id, and a branch cannot break the issue", async () => {
+    const s = service();
+    const run = (id: number, branch = "main") => ({
+      runUrl: `https://github.com/caelo-cms/caelo-cms/actions/runs/${id}`,
+      branch,
+      commit: "a".repeat(40),
+    });
+    for (const id of [20, 21, 22, 23, 24]) await s.ingest(INSTALL_A, report({ ciRun: run(id) }));
+    // A late report of an older run does not push a newer one out.
+    await s.ingest(INSTALL_A, report({ ciRun: run(10) }));
+    await s.ingest(INSTALL_A, report({ ciRun: run(30, "feat/a|b`c") }));
+    const body = tracker.issues.get(100)?.body ?? "";
+    expect(body).not.toContain("runs/10)");
+    expect(body).not.toContain("runs/20)");
+    expect(body).toContain("runs/21)");
+    expect(body).toContain("`feat/a_b_c`");
+  });
+
   it("#1416 an install's issue has no CI row", async () => {
     await service().ingest(INSTALL_A, report());
     expect(tracker.issues.get(100)?.body).not.toContain("Filed by CI");

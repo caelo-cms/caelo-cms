@@ -83,6 +83,19 @@ describe("#1416 the CI run a report came from", () => {
     );
   });
 
+  it("a branch name git allows passes the contract", async () => {
+    const before = { ...process.env };
+    Object.assign(process.env, ci, { GITHUB_HEAD_REF: "fix/#1416+ci@v2" });
+    try {
+      expect((await buildIntakeReport(row)).ciRun?.branch).toBe("fix/#1416+ci@v2");
+    } finally {
+      for (const k of Object.keys(ci)) {
+        if (before[k] === undefined) delete process.env[k];
+        else process.env[k] = before[k];
+      }
+    }
+  });
+
   it("an install is not a CI run, even on a machine with GitHub variables", () => {
     expect(ciRunOfProcess({ ...ci, CAELO_E2E_FORWARD_BUGS: undefined })).toBeUndefined();
   });

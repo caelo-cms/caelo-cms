@@ -93,7 +93,8 @@ export type BugReportSeverity = z.infer<typeof bugReportSeverity>;
 export const bugReportCiRun = z
   .object({
     runUrl: z.string().regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+$/),
-    branch: z.string().regex(/^[\w./-]{1,200}$/),
+    /** Any git ref name: the intake neutralises it where it renders it. */
+    branch: z.string().min(1).max(255),
     commit: z.string().regex(/^[0-9a-f]{40}$/),
   })
   .strict();

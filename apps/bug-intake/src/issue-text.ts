@@ -55,9 +55,12 @@ function filedBy(c: ClusterRecord): string {
 /** #1416 — a row per reporter kind only when a CI run reported: an install's issue is unchanged. */
 function ciRunRows(c: ClusterRecord): Array<[string, string]> {
   if (c.ciRuns.length === 0) return [];
+  // A branch name may hold any of these; here it would break out of the code
+  // span or the table row of a public issue.
+  const safe = (branch: string): string => branch.replace(/[`|\s]/g, "_");
   const runs = c.ciRuns.map(
     (r) =>
-      `[run ${r.runUrl.split("/").at(-1)}](${r.runUrl}) on \`${r.branch}\`@\`${r.commit.slice(0, 9)}\``,
+      `[run ${r.runUrl.split("/").at(-1)}](${r.runUrl}) on \`${safe(r.branch)}\`@\`${r.commit.slice(0, 9)}\``,
   );
   return [["Filed by CI", runs.join("<br>")]];
 }
