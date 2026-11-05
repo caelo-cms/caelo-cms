@@ -305,11 +305,6 @@ export {
   type SelfCheckLine,
 } from "./security/google-sign-in/setup.js";
 export {
-  ensureOwnerBootstrapToken,
-  type OwnerBootstrapDeps,
-  type OwnerBootstrapGate,
-} from "./security/owner-bootstrap-secret.js";
-export {
   createIapVerifier,
   IAP_ASSERTION_HEADER,
   type IapKeyProvider,
@@ -337,6 +332,11 @@ export {
   refusedMembersMessage,
   type SyncRunReport,
 } from "./security/operator-access/run-report.js";
+export {
+  ensureOwnerBootstrapToken,
+  type OwnerBootstrapDeps,
+  type OwnerBootstrapGate,
+} from "./security/owner-bootstrap-secret.js";
 // #806 — Settings → MCP → Remote: availability and the broker's self-check.
 export {
   type RemoteMcpAvailability,

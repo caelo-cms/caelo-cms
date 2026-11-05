@@ -35,8 +35,13 @@ async function asSystem(fn: (tx: SQL) => Promise<unknown>): Promise<void> {
   }
 }
 
+const submit = actions.default;
+if (!submit) throw new Error("/setup has no default action");
+
+type RouteEvent = Parameters<typeof load>[0] & Parameters<NonNullable<typeof actions.default>>[0];
+
 /** The event `load` and the action read; both ignore the rest. */
-function event(): Parameters<typeof load>[0] & Parameters<typeof actions.default>[0] {
+function event(): RouteEvent {
   const body = new FormData();
   body.set("email", EMAIL);
   body.set("password", "harbor-violet-lantern-58");
@@ -45,7 +50,7 @@ function event(): Parameters<typeof load>[0] & Parameters<typeof actions.default
     locals: { ctx },
     url: new URL("https://admin.example.test/setup"),
     request: new Request("https://admin.example.test/setup", { method: "POST", body }),
-  } as unknown as Parameters<typeof load>[0] & Parameters<typeof actions.default>[0];
+  } as unknown as RouteEvent;
 }
 
 /** What a route threw: SvelteKit's `error()` and `redirect()` throw plain objects. */
@@ -90,7 +95,7 @@ describe("/setup on a cloud install without an Owner", () => {
   });
 
   it("refuses the form post too, and creates nobody", async () => {
-    const refused = await thrownBy(() => actions.default(event()));
+    const refused = await thrownBy(() => submit(event()));
     expect(refused.status).toBe(503);
     const sql = new SQL(ADMIN_URL as string);
     try {
@@ -122,7 +127,7 @@ describe("/setup on an install with an Owner", () => {
 
   it("goes to sign-in without touching the token: an existing install cannot start failing", async () => {
     expect((await thrownBy(() => load(event()))).location).toBe("/login");
-    expect((await thrownBy(() => actions.default(event()))).location).toBe("/login");
+    expect((await thrownBy(() => submit(event()))).location).toBe("/login");
   });
 });
 
