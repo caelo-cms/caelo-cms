@@ -228,6 +228,66 @@ describe("the gcp-firebase edge: a second Hosting site", () => {
     expect(calls).toContainEqual(expect.stringMatching(/^beta run domain-mappings delete /));
   });
 
+  it("waits for the records Firebase works out after the custom domain is created", async () => {
+    const { run } = fakeGcloud({
+      ...adminWith(LIVE_SITE),
+      "auth print-access-token": ok("tok\n"),
+      "beta run domain-mappings describe": fail("ERROR: Cannot find mapping [staging.acme.com]"),
+    });
+    let domainReads = 0;
+    const sleeps: number[] = [];
+    const http: HttpFetch = async (url, init) => {
+      const json = (status: number, body: unknown) => ({
+        ok: status < 400,
+        status,
+        text: async () => JSON.stringify(body),
+      });
+      if (init.method === "GET" && url.includes("/customDomains/staging.acme.com")) {
+        domainReads++;
+        // Not there yet, then created by this run: the first reads carry no records.
+        if (domainReads === 1) return json(404, {});
+        return json(
+          200,
+          domainReads < 4
+            ? {}
+            : {
+                requiredDnsUpdates: {
+                  desired: [
+                    {
+                      records: [
+                        { domainName: "staging.acme.com.", type: "CNAME", rdata: "stg.web.app." },
+                      ],
+                    },
+                  ],
+                },
+              },
+        );
+      }
+      if (url.includes("/channels/live/releases")) return json(404, {});
+      if (init.method === "POST" && url.includes("/versions")) {
+        return json(200, { name: `sites/${SITE}/versions/v1` });
+      }
+      return json(200, {});
+    };
+    const r = await ensureStagingGatewayEdge(
+      {
+        provider: "gcp-firebase",
+        projectId: "acme",
+        region: "europe-west1",
+        env: "production",
+        domain: "acme.com",
+        stagingHost: "staging.acme.com",
+      },
+      { run, http, sleep: async (ms) => void sleeps.push(ms) },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.dnsRecords).toEqual([
+      { name: "staging.acme.com", type: "CNAME", value: "stg.web.app." },
+    ]);
+    expect(sleeps).toHaveLength(2);
+  });
+
   it("a site already serving the rewrite is not released again", () => {
     const t = { env: "production", region: "europe-west1" };
     expect(isFirebaseStagingConfig(firebaseStagingSiteConfig(t), t)).toBe(true);
