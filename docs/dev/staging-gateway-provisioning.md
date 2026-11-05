@@ -11,7 +11,7 @@ Since #1330 / #1331 (epic #763, converge release 2, infrastructure contract 20),
 | self-hosted | Compose service `caelo-staging-gateway` (port 8091) | the admin's `output/staging`, mounted read-only at `/srv/staging` | Caddy: the staging host → `reverse_proxy caelo-staging-gateway:8091` for every path; Caddy serves no staging file itself |
 | aws, azure | none | none | refused honestly until #749 / #750 (`staging-domain enable` says so) |
 
-Nothing else leads to the staged files: no public bucket, no preview channel, no Cloud Run domain mapping (the converge deletes the old one, #650), and Caddy has no root for staging.
+Nothing else leads to the staged files: no public bucket, no preview channel, no Cloud Run domain mapping to the staging gateway, and Caddy has no root for staging. The old mapping (#650) stays on an install whose staging host still points at it, because it holds the host's certificate and Hosting can issue none before the DNS moves; it leads to the MCP-Auth-Proxy, which forwards nothing, so the host answers 404 until the records the update names are set. The first converge after Hosting reports the host and its ownership active deletes it (#1455).
 
 ## What the staging gateway may do
 

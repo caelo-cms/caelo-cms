@@ -1703,6 +1703,14 @@ const GCP_ONLY: readonly IamInvariant[] = [
     onFailure: "abort",
     why: "IAP forwards admin traffic to Cloud Run as its service agent",
   },
+  {
+    stackResource: "data-gateway-public-invoker",
+    role: "roles/run.invoker",
+    member: "allUsers",
+    target: { kind: "run-service", service: "gateway" },
+    onFailure: "abort",
+    why: "visitors reach the gateway through the load balancer without a Google identity; its load-balancer-only ingress is what closes the run.app URL",
+  },
 ];
 
 const GCP_FIREBASE_ONLY: readonly IamInvariant[] = [
