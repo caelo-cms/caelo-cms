@@ -29,6 +29,17 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0,
   reporter: [["list"]],
+  projects: [
+    { name: "main", testIgnore: "**/no-ai-key.browser.ts" },
+    // #1460 — takes the AI providers away from the whole install, so it
+    // runs alone, after everything else.
+    {
+      name: "no-ai-key",
+      testMatch: "**/no-ai-key.browser.ts",
+      dependencies: ["main"],
+      fullyParallel: false,
+    },
+  ],
   use: {
     baseURL: origin,
     trace: "retain-on-failure",

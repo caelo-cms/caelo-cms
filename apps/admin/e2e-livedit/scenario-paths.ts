@@ -213,6 +213,7 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${SHARED}/snapshots.ts`,
       `${SHARED}/subagents.ts`,
       `${SHARED}/skills.ts`,
+      `${SHARED}/install-ai-mode.ts`,
       `${SHARED}/index.ts`,
       // Plumbing every request and the publish path run through.
       `${SHARED}/{context,logger,result,cap-failures,untrusted-tool-result,run-batched,safe-keys}.ts`,

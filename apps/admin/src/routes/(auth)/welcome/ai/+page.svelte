@@ -2,11 +2,14 @@
   // SPDX-License-Identifier: MPL-2.0
 
   /**
-   * First-run AI wizard: pick a provider, paste a key, land in the
-   * chat. Deliberately two fields — everything else (models, output
-   * ceilings, env keys, local models) lives at /settings/ai, linked
-   * below for the operators who need it.
+   * First-run AI wizard: no key at all (the preselected option, #1460: the
+   * install works through a connected agent), or pick a provider, paste a
+   * key and land in the chat. Deliberately two fields — everything else
+   * (models, output ceilings, env keys, local models) lives at
+   * /settings/ai, linked below for the operators who need it.
    */
+
+  import { MCP_ONLY_LEAVES_OFF } from "@caelo-cms/shared";
 
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -46,18 +49,29 @@
     },
   ] as const;
 
-  let selected = $state(form?.provider ?? "anthropic");
-  const selectedProvider = $derived(providers.find((p) => p.name === selected) ?? providers[0]);
+  const MCP_ONLY = "mcp_only";
+  const options = [
+    {
+      name: MCP_ONLY,
+      label: "No AI key: use Caelo only through Power-MCP",
+      hint: `Your own AI agent, such as Claude Code, builds the site. ${MCP_ONLY_LEAVES_OFF}`,
+    },
+    ...providers,
+  ];
+
+  let selected = $state<string>(form?.provider ?? MCP_ONLY);
+  // null while the no-key option is selected: there is no key to ask for.
+  const selectedProvider = $derived(providers.find((p) => p.name === selected) ?? null);
 
   // The model list + default follow the selected provider. Changing the
   // provider radio resets `model` to that provider's default.
-  const models = $derived(modelsForProvider(selected));
-  let model = $state(defaultModelForProvider(form?.provider ?? "anthropic"));
+  const models = $derived(selectedProvider ? modelsForProvider(selectedProvider.name) : []);
+  let model = $state(defaultModelForProvider(providers.find((p) => p.name === form?.provider)?.name ?? "anthropic"));
 </script>
 
 <AuthPlate
   title="One last step"
-  description="Caelo works through an AI you talk to. Pick which AI powers your site and paste its API key — then you're in."
+  description="Caelo works through an AI. Bring your own agent with no key stored here, or pick the AI that powers your site and paste its API key."
 >
   {#if form?.error}
     <Alert variant="destructive">
@@ -67,8 +81,8 @@
   <form method="post" class="space-y-4">
     <input type="hidden" name="_csrf" value={data.csrfToken} />
     <fieldset class="space-y-2">
-      <legend class="text-sm font-medium">AI provider</legend>
-      {#each providers as p (p.name)}
+      <legend class="text-sm font-medium">How Caelo gets its AI</legend>
+      {#each options as p (p.name)}
         <label
           class="flex cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors
             {selected === p.name ? 'border-primary bg-accent' : 'hover:bg-accent/50'}"
@@ -80,7 +94,7 @@
             checked={selected === p.name}
             onchange={() => {
               selected = p.name;
-              model = defaultModelForProvider(p.name);
+              if (selectedProvider) model = defaultModelForProvider(selectedProvider.name);
             }}
             class="mt-1"
           />
@@ -91,36 +105,38 @@
         </label>
       {/each}
     </fieldset>
-    <div class="space-y-2">
-      <Label for="apiKey">API key</Label>
-      <Input
-        id="apiKey"
-        name="apiKey"
-        type="password"
-        required
-        autocomplete="off"
-        placeholder={selectedProvider.keyPrefix}
-      />
-      <p class="text-xs text-muted-foreground">
-        Get one at
-        <a
-          href={selectedProvider.keyUrl}
-          target="_blank"
-          rel="noreferrer"
-          class="underline underline-offset-2">{new URL(selectedProvider.keyUrl).hostname}</a
-        >. Stored encrypted, never shown again, switchable anytime.
-      </p>
-    </div>
-    <div class="space-y-2">
-      <Label for="model">Model</Label>
-      <Select id="model" name="model" bind:value={model}>
-        {#each models as m (m.id)}
-          <option value={m.id}>{m.label}</option>
-        {/each}
-      </Select>
-      <p class="text-xs text-muted-foreground">{MODEL_HELPER_TEXT}</p>
-    </div>
-    <Button type="submit" class="w-full">Save &amp; start</Button>
+    {#if selectedProvider}
+      <div class="space-y-2">
+        <Label for="apiKey">API key</Label>
+        <Input
+          id="apiKey"
+          name="apiKey"
+          type="password"
+          required
+          autocomplete="off"
+          placeholder={selectedProvider.keyPrefix}
+        />
+        <p class="text-xs text-muted-foreground">
+          Get one at
+          <a
+            href={selectedProvider.keyUrl}
+            target="_blank"
+            rel="noreferrer"
+            class="underline underline-offset-2">{new URL(selectedProvider.keyUrl).hostname}</a
+          >. Stored encrypted, never shown again, switchable anytime.
+        </p>
+      </div>
+      <div class="space-y-2">
+        <Label for="model">Model</Label>
+        <Select id="model" name="model" bind:value={model}>
+          {#each models as m (m.id)}
+            <option value={m.id}>{m.label}</option>
+          {/each}
+        </Select>
+        <p class="text-xs text-muted-foreground">{MODEL_HELPER_TEXT}</p>
+      </div>
+    {/if}
+    <Button type="submit" class="w-full">{selectedProvider ? "Save & start" : "Continue"}</Button>
   </form>
   <p class="text-center text-xs text-muted-foreground">
     Running a local model or using environment keys?

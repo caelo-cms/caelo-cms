@@ -13,6 +13,12 @@
  *      degraded-mode behaviour (chat stream emits SSE error; MCP
  *      bridge returns structured error).
  *
+ * #1460 — while the Owner runs the install without an AI key
+ * (`mcp_only_mode`), nothing resolves, neither the environment's key nor a
+ * provider this instance still has cached (another instance may have taken
+ * the choice): it is checked before the cache. Each caller's "no provider"
+ * path answers with the refusal of that mode.
+ *
  * Cache: in-process Map keyed by (name, model, baseUrl, sha256(key)[0..8])
  * with 60s TTL so we don't re-decrypt on every chat turn. `pg_notify`
  * from `ai_providers.set` / `clear_key` invalidates the per-name slot
@@ -348,6 +354,24 @@ async function loadProviderMeta(
   };
 }
 
+/** #1460 — whether the Owner chose to run this install without an AI key. */
+async function mcpOnlyChosen(d: ResolverDeps): Promise<boolean> {
+  const rows = (await withSystemTx(
+    d,
+    (tx) => tx`SELECT 1 FROM mcp_only_mode LIMIT 1`,
+  )) as unknown as unknown[];
+  return rows.length > 0;
+}
+
+/**
+ * #1460 — whether a missing provider is the Owner's choice, not a mistake.
+ * Read by the callers that word a refusal; `false` before the resolver is
+ * wired, when no provider resolves either.
+ */
+export async function isMcpOnlyInstall(): Promise<boolean> {
+  return deps ? mcpOnlyChosen(deps) : false;
+}
+
 /**
  * Load a provider's API key: DB-stored encrypted key first, then the
  * legacy env-var fallback. Extracted from `resolveProvider` (issue #306)
@@ -399,6 +423,7 @@ async function resolveProvider(
   if (!deps) {
     throw new Error("provider-resolver not configured — call configureProviderResolver() at boot");
   }
+  if (await mcpOnlyChosen(deps)) return null;
   // Test-only overrides (anthropic + NODE_ENV != production). Read once
   // per call so the unit test for AC #16 can flip env vars in-process.
   const effectiveModel = readModelOverride(name) ?? meta.model;
@@ -573,6 +598,7 @@ async function resolveActiveRowForModel(
   meta: { name: ProviderName; baseUrl?: string; maxOutputTokens?: number },
   modelId: string,
 ): Promise<ResolvedProvider | null> {
+  if (await mcpOnlyChosen(d)) return null;
   const cacheKey = `${meta.name}::${modelId}`;
   const now = Date.now();
   const cached = tierCache.get(cacheKey);
@@ -627,5 +653,6 @@ export async function getActiveProviderForPurpose(
  */
 export async function getImageProviderApiKey(name: "google" | "openai"): Promise<string | null> {
   if (!deps) throw new Error("provider-resolver not configured");
+  if (await mcpOnlyChosen(deps)) return null;
   return (await loadApiKey(deps, name))?.apiKey ?? null;
 }

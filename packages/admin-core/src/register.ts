@@ -533,10 +533,11 @@ import {
 } from "./ops/security/ai_memory.js";
 import { listAiPricingOp, setAiPricingOp } from "./ops/security/ai_pricing.js";
 import {
-  anyAiProviderConfiguredOp,
   clearAiProviderKeyOp,
+  getInstallAiModeOp,
   listAiProvidersOp,
   setAiProvidersOp,
+  setMcpOnlyOp,
   setTranslationModelOp,
 } from "./ops/security/ai_providers.js";
 import { auditByRequestIdOp } from "./ops/security/audit_by_request.js";
@@ -990,7 +991,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setAiProvidersOp);
   registry.register(setTranslationModelOp);
   registry.register(clearAiProviderKeyOp);
-  registry.register(anyAiProviderConfiguredOp);
+  registry.register(getInstallAiModeOp);
+  registry.register(setMcpOnlyOp);
   // v0.2.26 — ai_providers propose/execute pairs (set / clear_key).
   // AI proposes config + isActive; Owner pastes the apiKey inline at
   // approve time at /settings/ai/pending. Reuses the secret-at-approve

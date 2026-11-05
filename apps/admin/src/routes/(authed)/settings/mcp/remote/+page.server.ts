@@ -37,17 +37,20 @@ async function siteHostOf(locals: App.Locals, mcpPublicUrl: string): Promise<str
   return new URL((r.value as { siteBaseUrl: string | null }).siteBaseUrl ?? mcpPublicUrl).host;
 }
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, parent }) => {
   requirePermission(locals, "settings.read");
+  const { aiMode } = await parent();
   const availability = currentRemoteMcpAvailability();
   const client = availability.status === "available" ? await configuredClient(locals) : null;
   const siteHost =
     availability.status === "available"
       ? await siteHostOf(locals, availability.mcpPublicUrl)
       : null;
-  // #968 — only the addresses this user's role may use are offered.
+  // #968 — only the addresses this user's role may use are offered. #1460 —
+  // the chat address runs the install's own AI: not on offer without a key.
   const mayUse = {
-    chat: locals.user?.permissions.has(MCP_SURFACE_PERMISSION.chat) === true,
+    chat:
+      aiMode !== "mcp_only" && locals.user?.permissions.has(MCP_SURFACE_PERMISSION.chat) === true,
     admin: locals.user?.permissions.has(MCP_SURFACE_PERMISSION.admin) === true,
   };
   return { availability, client, siteHost, mayUse };

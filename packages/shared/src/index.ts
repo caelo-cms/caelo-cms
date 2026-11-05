@@ -35,6 +35,7 @@ export * from "./google-models.js";
 export * from "./google-oauth.js";
 export * from "./id-safe-truncate.js";
 export * from "./image-capabilities.js";
+export * from "./install-ai-mode.js";
 export * from "./interactions.js";
 export * from "./json-security-headers.js";
 export * from "./link-canonicalise.js";

@@ -42,6 +42,12 @@ const FIXTURE = (what: string) =>
 
 export const ALLOWED: readonly AllowedRule[] = [
   {
+    table: "public.ai_providers",
+    op: "ai_providers.*",
+    filter: "(is_active)",
+    reason: FIXED_SIZE("One row per supported AI provider, four today."),
+  },
+  {
     table: "public.deploy_targets",
     reason: FIXED_SIZE("One row per environment (dev / staging / production)."),
   },

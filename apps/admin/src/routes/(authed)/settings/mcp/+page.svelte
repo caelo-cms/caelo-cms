@@ -1,11 +1,13 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import CredentialHandoffs from "#lib/components/CredentialHandoffs.svelte";
+  import { CHAT_SURFACE_NEEDS_INSTALL_AI } from "@caelo-cms/shared";
   import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import McpClientSetup from "#lib/components/McpClientSetup.svelte";
   import McpRemoteAccess from "#lib/components/McpRemoteAccess.svelte";
   import McpRemoteConnections from "#lib/components/McpRemoteConnections.svelte";
+  import CopyLine from "#lib/components/updates/CopyLine.svelte";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
@@ -18,6 +20,7 @@
   import { Input } from "#lib/components/ui/input/index.js";
   import { Label } from "#lib/components/ui/label/index.js";
   import { Select } from "#lib/components/ui/select/index.js";
+  import { mcpAddCommand } from "#lib/mcp-command.js";
   import {
     Table,
     TableBody,
@@ -31,8 +34,20 @@
   // #968 — token access is for those who may mint tokens; anyone else sees
   // the section only while they still hold a token of their own (to revoke it).
   const showTokens = $derived(data.canWrite || data.tokens.length > 0);
+  // #1460 — this install runs without an AI key: the page leads with the
+  // token, and a chat token, which would run the install's own AI, is not on
+  // offer.
+  const mcpOnly = $derived(data.aiMode === "mcp_only");
   // #741 — "may use Caelo's AI" only exists for admin (Power-MCP) tokens.
-  let newScope = $state<"chat" | "admin">("chat");
+  let newScope = $state<"chat" | "admin">(data.aiMode === "mcp_only" ? "admin" : "chat");
+  const leadCommand = $derived(
+    mcpAddCommand("claude", {
+      scope: "admin",
+      adminUrl: data.adminUrl,
+      token: "<your token>",
+      iapServiceAccount: data.iapServiceAccount,
+    }),
+  );
 
   function fmtUsdMc(mc: number | null): string {
     if (mc === null) return "uncapped";
@@ -61,22 +76,7 @@
   );
 </script>
 
-<div class="space-y-6">
-  <div>
-    <h1 class="text-2xl font-semibold tracking-tight">MCP</h1>
-    <p class="text-sm text-muted-foreground">
-      Connect AI tools to this site over MCP. An AI tool either chats with this site's AI, or gets
-      full admin access and does the work itself: its changes land on a preview branch as an AI
-      actor, and approval-gated actions still wait for an Owner's click. Everything it does is
-      recorded under the person who connected it.
-    </p>
-  </div>
-
-  <McpRemoteAccess remote={data.remote} mayUse={data.mayUse} canWrite={data.canWrite} />
-
-  <!-- #971 — tokens minted by an approved AI proposal. -->
-  <CredentialHandoffs csrfToken={data.csrfToken} kind="mcp_token" refreshKey={form} />
-
+{#snippet notices()}
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {/if}
@@ -96,6 +96,115 @@
   {/if}
   {#if form && "remoteUpdated" in form}
     <Alert><AlertDescription>Remote connection updated.</AlertDescription></Alert>
+  {/if}
+{/snippet}
+
+{#snippet newTokenCard()}
+    <Card>
+      <CardHeader>
+        <CardTitle class="text-base">New token</CardTitle>
+        <CardDescription>
+          90-day expiry. Set a cap to bound the wallet impact of a leaked token; leave blank for the
+          site-wide budget surface to gate spend.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form method="post" action="?/create" class="grid gap-4 md:grid-cols-4">
+          <input type="hidden" name="_csrf" value={data.csrfToken} />
+          <div class="space-y-2">
+            <Label for="displayName">Name</Label>
+            <Input id="displayName" name="displayName" type="text" placeholder="claude-code" required />
+          </div>
+          <div class="space-y-2">
+            <Label for="scope">Scope</Label>
+            <Select id="scope" name="scope" bind:value={newScope}>
+              <option value="chat" disabled={mcpOnly}>chat — talk to Caelo's AI (caelo_chat)</option>
+              <option value="admin">admin — full tool catalogue (Power-MCP)</option>
+            </Select>
+          </div>
+          <div class="space-y-2">
+            <Label for="aiCostCapMicrocents">Cap (microcents)</Label>
+            <Input
+              id="aiCostCapMicrocents"
+              name="aiCostCapMicrocents"
+              type="number"
+              min="0"
+              placeholder="leave blank for uncapped"
+            />
+          </div>
+          <div class="flex items-end">
+            <Button type="submit">Create token</Button>
+          </div>
+          {#if mcpOnly}
+            <p class="text-xs text-muted-foreground md:col-span-4" data-testid="mcp-chat-scope-unavailable">
+              {CHAT_SURFACE_NEEDS_INSTALL_AI}
+            </p>
+          {:else if newScope === "admin"}
+            <div class="flex items-start gap-2 md:col-span-4">
+              <input
+                id="allowCaeloAi"
+                name="allowCaeloAi"
+                type="checkbox"
+                value="on"
+                class="mt-1 size-4 accent-primary"
+              />
+              <div class="space-y-1">
+                <Label for="allowCaeloAi">Agent may use Caelo's AI</Label>
+                <p class="text-xs text-muted-foreground">
+                  Off (recommended): the connected agent does all AI work on its own subscription —
+                  translations, module authoring, page extraction come back to it as work items, and
+                  image generation is unavailable (it uploads its own images). On: it may also run
+                  image generation and translations on this install's AI, billed here and limited by the
+                  cap above.
+                </p>
+              </div>
+            </div>
+          {/if}
+        </form>
+      </CardContent>
+    </Card>
+{/snippet}
+
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold tracking-tight">MCP</h1>
+    <p class="text-sm text-muted-foreground">
+      Connect AI tools to this site over MCP. An AI tool either chats with this site's AI, or gets
+      full admin access and does the work itself: its changes land on a preview branch as an AI
+      actor, and approval-gated actions still wait for an Owner's click. Everything it does is
+      recorded under the person who connected it.
+    </p>
+  </div>
+
+  {#if mcpOnly}
+    {@render notices()}
+    {#if data.visibility === "all"}
+      <section class="space-y-4" data-testid="mcp-only-lead">
+        <div>
+          <h2 class="text-lg font-semibold tracking-tight">Connect your agent</h2>
+          <p class="text-sm text-muted-foreground">
+            This install has no AI key, so your agent does the AI work on its own subscription. Create
+            a token below, then run this command with it in your terminal.
+          </p>
+        </div>
+        <CopyLine value={leadCommand} label="Command" testid="mcp-only-command" />
+        {@render newTokenCard()}
+      </section>
+    {/if}
+  {/if}
+
+  <McpRemoteAccess
+    remote={data.remote}
+    mayUse={data.mayUse}
+    canWrite={data.canWrite}
+    chatOff={mcpOnly}
+  />
+
+  <!-- #971 — tokens minted by an approved AI proposal. -->
+  <CredentialHandoffs csrfToken={data.csrfToken} kind="mcp_token" refreshKey={form} />
+
+  {#if !mcpOnly}
+    {@render notices()}
   {/if}
 
   <McpRemoteConnections
@@ -189,66 +298,8 @@
         </CardContent>
       </Card>
 
-      {#if data.visibility === "all"}
-        <Card>
-          <CardHeader>
-            <CardTitle class="text-base">New token</CardTitle>
-            <CardDescription>
-              90-day expiry. Set a cap to bound the wallet impact of a leaked token; leave blank for the
-              site-wide budget surface to gate spend.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form method="post" action="?/create" class="grid gap-4 md:grid-cols-4">
-              <input type="hidden" name="_csrf" value={data.csrfToken} />
-              <div class="space-y-2">
-                <Label for="displayName">Name</Label>
-                <Input id="displayName" name="displayName" type="text" placeholder="claude-code" required />
-              </div>
-              <div class="space-y-2">
-                <Label for="scope">Scope</Label>
-                <Select id="scope" name="scope" bind:value={newScope}>
-                  <option value="chat">chat — talk to Caelo's AI (caelo_chat)</option>
-                  <option value="admin">admin — full tool catalogue (Power-MCP)</option>
-                </Select>
-              </div>
-              <div class="space-y-2">
-                <Label for="aiCostCapMicrocents">Cap (microcents)</Label>
-                <Input
-                  id="aiCostCapMicrocents"
-                  name="aiCostCapMicrocents"
-                  type="number"
-                  min="0"
-                  placeholder="leave blank for uncapped"
-                />
-              </div>
-              <div class="flex items-end">
-                <Button type="submit">Create token</Button>
-              </div>
-              {#if newScope === "admin"}
-                <div class="flex items-start gap-2 md:col-span-4">
-                  <input
-                    id="allowCaeloAi"
-                    name="allowCaeloAi"
-                    type="checkbox"
-                    value="on"
-                    class="mt-1 size-4 accent-primary"
-                  />
-                  <div class="space-y-1">
-                    <Label for="allowCaeloAi">Agent may use Caelo's AI</Label>
-                    <p class="text-xs text-muted-foreground">
-                      Off (recommended): the connected agent does all AI work on its own subscription —
-                      translations, module authoring, page extraction come back to it as work items, and
-                      image generation is unavailable (it uploads its own images). On: it may also run
-                      image generation and translations on this install's AI, billed here and limited by the
-                      cap above.
-                    </p>
-                  </div>
-                </div>
-              {/if}
-            </form>
-          </CardContent>
-        </Card>
+      {#if data.visibility === "all" && !mcpOnly}
+        {@render newTokenCard()}
       {/if}
     </section>
   {/if}

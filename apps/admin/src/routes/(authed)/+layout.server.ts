@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo-cms/query-api";
-import { redirect } from "@sveltejs/kit";
+import type { InstallAiMode } from "@caelo-cms/shared";
+import { error, redirect } from "@sveltejs/kit";
 import { pluginNavLinks } from "#lib/plugin-panels.js";
 import { activePluginPanels } from "#lib/server/plugin-panels.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -28,6 +29,11 @@ import type { LayoutServerLoad } from "./$types";
  * chat. The full management surface stays at /settings/ai; the
  * wizard links to it. Once any provider is configured, this check
  * is a one-query no-op per request.
+ *
+ * #1460 — the Owner's stored choice to run without a key (Power-MCP only)
+ * counts as configured: no redirect. `aiMode` goes to every page so the chat
+ * panel and the settings pages follow it; the load runs on every navigation,
+ * so a key saved under Settings → AI reaches them at once.
  */
 
 const AI_REDIRECT_ALLOWED_PREFIXES = [
@@ -45,22 +51,23 @@ function pathExempt(pathname: string): boolean {
 export const load: LayoutServerLoad = async ({ locals, url }) => {
   if (!locals.user) throw redirect(303, "/login");
 
-  // P18 — block all non-/settings routes until an AI provider exists.
-  // Skip the check on routes the Owner needs to reach to fix the
-  // problem (anything under /settings) so we don't loop.
-  if (!pathExempt(url.pathname)) {
-    const { adapter, registry } = getQueryContext();
-    const r = await execute(registry, adapter, locals.ctx, "ai_providers.any_configured", {});
-    if (r.ok && !(r.value as { anyConfigured: boolean }).anyConfigured) {
-      throw redirect(303, "/welcome/ai");
-    }
-  }
+  const { adapter, registry } = getQueryContext();
+  const modeResult = await execute(registry, adapter, locals.ctx, "ai_providers.get_mode", {});
+  if (!modeResult.ok) throw error(500, "Could not read the AI mode (ai_providers.get_mode).");
+  const { mode: aiMode } = modeResult.value as { mode: InstallAiMode };
+
+  // P18 — block all non-/settings routes until the Owner decided how this
+  // install gets its AI. Skip the check on routes the Owner needs to reach
+  // to fix the problem (anything under /settings) so we don't loop. The
+  // pathname is read whatever the mode: that read is what reruns this load
+  // on every navigation, so an open tab follows a key saved in another one.
+  const exempt = pathExempt(url.pathname);
+  if (aiMode === "unset" && !exempt) throw redirect(303, "/welcome/ai");
 
   // Live "AI spend — last 7 days" readout for the top bar. Best-effort:
   // a failed read must never break the layout, so it degrades to null.
   let aiSpend7d: { display: string; costMicrocents: number; days: number } | null = null;
   try {
-    const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "ai_calls.spend_window", { days: 7 });
     if (r.ok) {
       const { costMicrocents, days } = r.value as { costMicrocents: number; days: number };
@@ -73,6 +80,7 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
 
   return {
     permissions: [...locals.user.permissions].sort(),
+    aiMode,
     aiSpend7d,
     // The admin pages active plugins declare, as far as this viewer may
     // open them. Read from the running host: an inactive plugin is not

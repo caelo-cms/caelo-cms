@@ -11,8 +11,14 @@
  * decisions. Reads are open to AI ("which provider is active?").
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
-import { aiProvidersClearKeyInput, aiProvidersSetInput, err, ok } from "@caelo-cms/shared";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import {
+  aiProvidersClearKeyInput,
+  aiProvidersSetInput,
+  err,
+  type InstallAiMode,
+  ok,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -24,6 +30,16 @@ type ProviderName = (typeof PROVIDER_NAMES)[number];
 
 import { catalogSlots } from "../../ai/model-catalog.js";
 import { providerEnvKey } from "../../ai/provider-env.js";
+
+/**
+ * #1460 — serialises the writers of the AI mode for this transaction. Each
+ * one decides from the other's table (is there a key? is the mode on?), so
+ * without the lock a key saved while the mode is being chosen could commit
+ * next to the mode row, which would then hide a valid key.
+ */
+async function lockInstallAiMode(tx: TransactionRunner): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('caelo.install_ai_mode'))`);
+}
 
 const providerRow = z.object({
   id: z.string(),
@@ -110,7 +126,16 @@ export const setAiProvidersOp = defineOperation({
   database: "cms_admin",
   input: aiProvidersSetInput,
   output: z.object({ apiKeyChanged: z.boolean() }),
-  handler: async (ctx, input, tx) => {
+  handler: async (ctx, rawInput, tx) => {
+    await lockInstallAiMode(tx);
+    // #1460 — a key pasted on an install without one is the way out of the
+    // Power-MCP-only mode, and no further step may follow. Settings → AI
+    // only offers "Activate" once a key is stored, so the first save of a
+    // key arrives inactive; it activates here.
+    const input =
+      rawInput.apiKey !== undefined && (await isMcpOnly(tx))
+        ? { ...rawInput, isActive: true }
+        : rawInput;
     if (input.isActive) {
       // Only one active provider at a time — chat runtime instantiates
       // exactly one. Owner can flip between them.
@@ -163,6 +188,11 @@ export const setAiProvidersOp = defineOperation({
               is_active    = EXCLUDED.is_active
       `);
     }
+
+    // #1460 — an active provider with a usable key ends the Power-MCP-only
+    // mode, in this transaction. The key may be one stored earlier that this
+    // save only activates; a save with no key at all leaves the mode alone.
+    if (await anyUsableProvider(tx)) await tx.execute(sql`DELETE FROM mcp_only_mode`);
 
     // pg_notify so the in-process resolver TTL invalidates instantly
     // (cross-process LISTEN consumer is a P18 follow-up).
@@ -293,25 +323,77 @@ export const setTranslationModelOp = defineOperation({
   },
 });
 
-export const anyAiProviderConfiguredOp = defineOperation({
-  name: "ai_providers.any_configured",
+/**
+ * Whether a provider the resolver can use exists: an active provider with a
+ * key (stored or in the environment), or, with no active row at all, the
+ * legacy Anthropic env key `getActiveProvider` falls back to.
+ */
+async function anyUsableProvider(tx: TransactionRunner): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT name, (api_key_encrypted IS NOT NULL) AS has_db_key
+    FROM ai_providers
+    WHERE is_active = true
+  `)) as unknown as { name: ProviderName; has_db_key: boolean }[];
+  if (rows.length === 0) return Boolean(providerEnvKey("anthropic"));
+  return rows.some((r) => r.has_db_key || Boolean(providerEnvKey(r.name)));
+}
+
+/** #1460 — whether the Owner chose to run this install without an AI key. */
+export async function isMcpOnly(tx: TransactionRunner): Promise<boolean> {
+  const rows = (await tx.execute(sql`SELECT 1 FROM mcp_only_mode LIMIT 1`)) as unknown as unknown[];
+  return rows.length > 0;
+}
+
+export const getInstallAiModeOp = defineOperation({
+  name: "ai_providers.get_mode",
   readScope: "request",
-  // Open read — the post-setup redirect logic (in +layout.server.ts)
-  // calls this for every authenticated request until it returns true.
+  // Open read: the first-run gate (+layout.server.ts) calls this on every
+  // navigation, and Live Edit and Settings follow what it says.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({}),
-  output: z.object({ anyConfigured: z.boolean() }),
+  input: z.object({}).strict(),
+  output: z.object({ mode: z.enum(["provider", "mcp_only", "unset"]) }),
   handler: async (_ctx, _input, tx) => {
-    // Configured = at least one active provider with a usable key
-    // (DB-stored OR matching env-var present).
-    const rows = (await tx.execute(sql`
-      SELECT name, (api_key_encrypted IS NOT NULL) AS has_db_key
-      FROM ai_providers
-      WHERE is_active = true
-    `)) as unknown as { name: ProviderName; has_db_key: boolean }[];
+    const mode: InstallAiMode = (await isMcpOnly(tx))
+      ? "mcp_only"
+      : (await anyUsableProvider(tx))
+        ? "provider"
+        : "unset";
+    return ok({ mode });
+  },
+});
 
-    const anyConfigured = rows.some((r) => r.has_db_key || Boolean(providerEnvKey(r.name)));
-    return ok({ anyConfigured });
+export const setMcpOnlyOp = defineOperation({
+  name: "ai_providers.set_mcp_only",
+  readScope: "request",
+  // Why human-only: whether this install runs an AI of its own is the
+  // Owner's decision at first run (/welcome/ai), and it turns the Live Edit
+  // chat off. An AI that runs has a key, so it never needs this call, and
+  // an external agent has no standing to decide it.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({ mode: z.literal("mcp_only") }),
+  handler: async (ctx, input, tx) => {
+    const operation = "ai_providers.set_mcp_only";
+    await lockInstallAiMode(tx);
+    if (await anyUsableProvider(tx)) {
+      return err({
+        kind: "HandlerError",
+        operation,
+        message:
+          "This install has a usable AI key, so it cannot run in Power-MCP-only mode. Remove the key under Settings → AI (/settings/ai) first.",
+      });
+    }
+    await tx.execute(sql`INSERT INTO mcp_only_mode (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation,
+      input,
+      succeeded: true,
+      resultSummary: "mode=mcp_only",
+    });
+    return ok({ mode: "mcp_only" as const });
   },
 });
