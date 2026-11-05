@@ -234,6 +234,8 @@ export const jobHandoverOp = defineOperation({
   input: z
     .object({
       requestId: z.string().uuid(),
+      /** The calling job's route: a job never moves the other job's request. */
+      route: z.enum(PLATFORM_UPDATE_ROUTES),
       /** The execution the request must still name (null: none). */
       from: z.string().min(1).max(200).nullable(),
       /** The execution that continues it; null releases it for the next run to adopt. */
@@ -247,7 +249,7 @@ export const jobHandoverOp = defineOperation({
     const rows = (await tx.execute(sql`
       UPDATE platform_update_requests
          SET execution = ${input.to}, started_at = now()
-       WHERE id = ${input.requestId}::uuid AND status = 'running'
+       WHERE id = ${input.requestId}::uuid AND status = 'running' AND route = ${input.route}
          AND execution IS NOT DISTINCT FROM ${input.from}
        RETURNING id
     `)) as unknown as { id: string }[];

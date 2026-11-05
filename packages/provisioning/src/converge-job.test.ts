@@ -671,7 +671,7 @@ describe("runConvergeJob — resume after a killed run", () => {
     expect(h.q.handovers).toEqual([{ from: null, to: "caelo-production-converge-run1" }]);
   });
 
-  it("a stage-1 hand-over whose new run cannot start ends the request with nothing changed", async () => {
+  it("a stage-1 hand-over whose new run cannot start ends the request with the site unchanged", async () => {
     const h = harness({ ownVersion: "0.10.53" });
     const deps = {
       ...h.deps,
@@ -680,7 +680,7 @@ describe("runConvergeJob — resume after a killed run", () => {
     const r = await runConvergeJob(deps);
     expect(r.status).toBe("failed");
     expect(h.q.ends[0]?.codes).toEqual(["handover"]);
-    expect(h.q.ends[0]?.reason).toStartWith("Nothing was changed");
+    expect(h.q.ends[0]?.reason).toStartWith("Nothing on the site was changed");
   });
 
   it("a finished converge whose end was never recorded is finished, not repeated", async () => {

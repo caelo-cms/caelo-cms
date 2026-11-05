@@ -230,7 +230,11 @@ describe("the app-roll route's two stages (#1029)", () => {
     );
     expect(claimed.ok && claimed.value.claimed.resume).toBe(true);
     const handed = await asUpdater<{ ok: boolean; value: { handedOver: boolean } }>((tx) =>
-      jobHandoverOp.handler(SYSTEM, { requestId: id, from: "upg-1", to: null }, tx),
+      jobHandoverOp.handler(
+        SYSTEM,
+        { requestId: id, route: "app_roll", from: "upg-1", to: null },
+        tx,
+      ),
     );
     expect(handed.ok && handed.value.handedOver).toBe(true);
     expect(await request(id)).toMatchObject({ status: "running", execution: null });
@@ -306,7 +310,11 @@ describe("the converge route (#819)", () => {
       execution: "conv-1",
     });
     const handed = await asUpdater<{ ok: boolean; value: { handedOver: boolean } }>((tx) =>
-      jobHandoverOp.handler(SYSTEM, { requestId: id, from: "conv-1", to: "conv-2" }, tx),
+      jobHandoverOp.handler(
+        SYSTEM,
+        { requestId: id, route: "converge", from: "conv-1", to: "conv-2" },
+        tx,
+      ),
     );
     expect(handed.ok && handed.value.handedOver).toBe(true);
     const row = (await admin(
@@ -351,6 +359,23 @@ describe("the converge route (#819)", () => {
     );
     expect(await createDbConvergeQueue(adapter).handover(id, "conv-1", "conv-9")).toBe(false);
     expect(await request(id)).toMatchObject({ execution: "conv-1" });
+  });
+
+  it("a job never moves the other job's request", async () => {
+    const roll = await addRequest("99.0.8", {
+      runningSince: new Date().toISOString(),
+      execution: "upg-1",
+    });
+    expect(await createDbConvergeQueue(adapter).handover(roll, "upg-1", "conv-9")).toBe(false);
+    expect(await request(roll)).toMatchObject({ execution: "upg-1" });
+    await admin((tx) => tx`DELETE FROM platform_update_requests`);
+    const conv = await addRequest("99.0.8", {
+      route: "converge",
+      runningSince: new Date().toISOString(),
+      execution: "conv-1",
+    });
+    expect(await createDbUpdateQueue(adapter).handover(conv, "conv-1", "upg-9")).toBe(false);
+    expect(await request(conv)).toMatchObject({ execution: "conv-1" });
   });
 
   it("the timeline accepts the converge phase", async () => {

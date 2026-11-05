@@ -433,7 +433,7 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
       badge: { label: "Interrupted", tone: "destructive" },
       sentence: `The update to v${active.targetVersion} stopped before it finished. Continue it: Caelo picks up where it stopped.`,
       detail:
-        "It keeps the backup it took before the update began, finishes what is left, tests the new version and goes back automatically if the test fails.",
+        "It checks where the update stopped before it changes anything, tests the new version and goes back automatically if the test fails.",
       action: {
         kind: "continue",
         version: active.targetVersion,

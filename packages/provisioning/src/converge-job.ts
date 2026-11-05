@@ -200,9 +200,9 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     request.id,
   );
   /** This run leaves the request to another (live) run: no end, no events. */
-  const leave = (message: string): UpgraderRunResult => {
-    log({ severity: "INFO", message, requestId: request.id });
-    return { exitCode: 0, requestId: request.id, status: null };
+  const leave = (message: string, failed = false): UpgraderRunResult => {
+    log({ severity: failed ? "ERROR" : "INFO", message, requestId: request.id });
+    return { exitCode: failed ? 1 : 0, requestId: request.id, status: null };
   };
   let releaseLock: (() => void) | null = null;
   const unlock = () => {
@@ -235,7 +235,7 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
 
   try {
     const adoption = await adoptClaim(claim, { ...deps, queue });
-    if (adoption.kind === "leave") return leave(adoption.message);
+    if (adoption.kind === "leave") return leave(adoption.message, adoption.failed);
     if (adoption.adopted) {
       r.phase("start");
       r.info(

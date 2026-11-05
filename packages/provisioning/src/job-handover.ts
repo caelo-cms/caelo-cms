@@ -85,13 +85,17 @@ export type Adoption =
       /** This run took a request another run started, or one no run names. */
       readonly adopted: boolean;
     }
-  /** Another run has it; this one ends without touching the request. */
-  | { readonly kind: "leave"; readonly message: string };
+  /**
+   * This run ends without touching the request. `failed`: it could not tell
+   * whether another run has it, so the job's run reports an error.
+   */
+  | { readonly kind: "leave"; readonly message: string; readonly failed?: boolean };
 
 /**
  * Decide whether this run may work on `claim`, adopting the request when
  * another run started it: only once that run has ended, because two runs
- * at once must never happen.
+ * at once must never happen. An error here never ends the request: nothing
+ * yet says this run owns it, and the run that does may be alive.
  */
 export async function adoptClaim(
   claim: JobClaim,
@@ -108,19 +112,27 @@ export async function adoptClaim(
       message: "an update request is running; only a Cloud Run execution may adopt it",
     };
   }
-  if (claim.execution) {
-    const live = await deps.executionState(claim.execution);
-    if (live === "running") {
+  try {
+    if (claim.execution) {
+      const live = await deps.executionState(claim.execution);
+      if (live === "running") {
+        return {
+          kind: "leave",
+          message: `execution ${claim.execution} is still installing; this run does nothing`,
+        };
+      }
+    }
+    if (!(await deps.queue.handover(claim.request.id, claim.execution, deps.execution))) {
       return {
         kind: "leave",
-        message: `execution ${claim.execution} is still installing; this run does nothing`,
+        message: "another run adopted the request first; this run does nothing",
       };
     }
-  }
-  if (!(await deps.queue.handover(claim.request.id, claim.execution, deps.execution))) {
+  } catch (e) {
     return {
       kind: "leave",
-      message: "another run adopted the request first; this run does nothing",
+      failed: true,
+      message: `could not tell whether run ${claim.execution ?? "(none)"} still has the request, so this run leaves it alone: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
   return { kind: "work", adopted: true };
@@ -209,8 +221,12 @@ export async function handOverToRelease(
   // released before the new run starts: it takes the lock itself.
   const locked = c.lock();
   if (locked) return c.stop(locked);
-  const pointed = await deps.pointJobAt(m.digests.ops);
-  c.unlock();
+  let pointed: Awaited<ReturnType<SelfHandoverDeps["pointJobAt"]>>;
+  try {
+    pointed = await deps.pointJobAt(m.digests.ops);
+  } finally {
+    c.unlock();
+  }
   if (!pointed.ok) {
     return c.stop({
       status: "failed",
@@ -229,7 +245,7 @@ export async function handOverToRelease(
     return c.stop({
       status: "failed",
       codes: ["handover"],
-      reason: `Nothing was changed: the ${noun} of ${m.version} could not be started (${started.error}). Try again in a moment.`,
+      reason: `Nothing on the site was changed: the ${noun} of ${m.version} is ready but could not be started (${started.error}). Try again in a moment.`,
     });
   }
   r.info(`The ${noun} of ${m.version} runs now (run ${started.execution}).`);

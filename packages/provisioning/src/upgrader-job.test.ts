@@ -288,7 +288,7 @@ function setup(
     imageSigned?: boolean;
     pointError?: string;
     startError?: string;
-    executionState?: "running" | "ended";
+    executionState?: "running" | "ended" | "unreadable";
   } = {},
 ) {
   const order: string[] = [];
@@ -327,7 +327,8 @@ function setup(
     },
     executionState: async (execution) => {
       order.push(`state of ${execution}`);
-      return opts.executionState ?? "ended";
+      if (opts.executionState === "unreadable") throw new Error("Cloud Run answered 503");
+      return opts.executionState === "running" ? "running" : "failed";
     },
     iam: fakeIam(order, opts.iamWithheld ?? {}, opts.iamError),
     fetchManifest: async (v) => {
@@ -1423,7 +1424,21 @@ describe("runUpgraderJob — stage 1 (#1029: the image of an earlier release)", 
     const { deps, q } = setup({ ...STAGE1, startError: "quota" });
     expect(await runUpgraderJob(deps)).toMatchObject({ status: "failed" });
     expect(q.end()?.codes).toEqual(["handover"]);
-    expect(q.end()?.reason).toContain("Nothing was changed");
+    // The job already moved, so "nothing was changed" would not be true.
+    expect(q.end()?.reason).toContain("Nothing on the site was changed");
+  });
+
+  it("a job update that throws still releases the lock", async () => {
+    const { deps, order, q } = setup(STAGE1);
+    const r = await runUpgraderJob({
+      ...deps,
+      pointJobAt: async () => {
+        throw new Error("gcloud vanished");
+      },
+    });
+    expect(r).toMatchObject({ status: "failed" });
+    expect(q.end()?.codes).toEqual(["internal"]);
+    expect(order).toContain("unlock");
   });
 
   it("a request that moved on before the release is left alone", async () => {
@@ -1523,6 +1538,18 @@ describe("runUpgraderJob — a run that died (#1029)", () => {
     expect(q.handovers).toEqual([]);
     expect(q.end()).toBeNull();
     expect(order.some((l) => /sql backups create/.test(l))).toBe(false);
+  });
+
+  it("regression: Cloud Run not answering never ends a run that may be alive", async () => {
+    const { deps, order, q } = setup({ claim: dead, executionState: "unreadable" });
+    expect(await runUpgraderJob(deps)).toEqual({
+      exitCode: 1,
+      requestId: "req-1",
+      status: null,
+    });
+    expect(q.end()).toBeNull();
+    expect(q.handovers).toEqual([]);
+    expect(order.some((l) => /run services/.test(l))).toBe(false);
   });
 
   it("adopts the request once Cloud Run says that run ended, and starts over from its checks", async () => {

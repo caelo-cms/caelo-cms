@@ -915,7 +915,7 @@ test("#819: a converge whose next run never started offers Continue, confirmed w
   await page.getByTestId("continue-update").click();
   let dialog = page.getByTestId("continue-dialog");
   await expect(dialog).toContainText(`Continue the update to v${LATEST}?`);
-  await expect(dialog).toContainText("backup");
+  await expect(dialog).toContainText("before it changes anything");
 
   // A wrong password is refused in the dialog; nothing is started.
   await dialog.getByTestId("continue-dialog-password").fill("not the password");

@@ -61,7 +61,7 @@ export {
 } from "./converge-job.js";
 export { convergeExecutionNameError, gcpConvergeDeps } from "./converge-job-gcp.js";
 export { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
-export type { JobClaim } from "./job-handover.js";
+export type { HandoverQueue, JobClaim } from "./job-handover.js";
 export {
   INFRA_CONTRACT_PATHS,
   isInfraContractPath,

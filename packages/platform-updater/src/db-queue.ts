@@ -9,7 +9,13 @@
  * claim, a failed run) with the message.
  */
 
-import type { AgentQueue, ConvergeQueue, JobClaim, UpgraderQueue } from "@caelo-cms/provisioning";
+import type {
+  AgentQueue,
+  ConvergeQueue,
+  HandoverQueue,
+  JobClaim,
+  UpgraderQueue,
+} from "@caelo-cms/provisioning";
 import {
   type DatabaseAdapter,
   execute,
@@ -47,9 +53,16 @@ export function createDbUpdateQueue(
   adapter: DatabaseAdapter,
   registry: OperationRegistry = upgraderRegistry(),
 ): UpgraderQueue {
-  const { claimConverge: _converge, ...shared } = createDbConvergeQueue(adapter, registry);
-  const claim = adoptingClaim(adapter, registry, "app_roll");
-  return { ...shared, claimUpgrade: claim };
+  const {
+    claim: _agentClaim,
+    heartbeat: _heartbeat,
+    ...shared
+  } = createDbAgentQueue(adapter, registry);
+  return {
+    ...shared,
+    claimUpgrade: adoptingClaim(adapter, registry, "app_roll"),
+    handover: routeHandover(adapter, registry, "app_roll"),
+  };
 }
 
 /** The claimed request as `platform_updates.job_claim` returns it. */
@@ -75,6 +88,24 @@ function opCaller(adapter: DatabaseAdapter, registry: OperationRegistry) {
     const r = await execute(registry, adapter, ctx(), op, input);
     if (!r.ok) throw new Error(`${op}: ${JSON.stringify(r.error)}`);
     return r.value as T;
+  };
+}
+
+/** A job's hand-over, bound to its route: it cannot move the other job's request. */
+function routeHandover(
+  adapter: DatabaseAdapter,
+  registry: OperationRegistry,
+  route: "app_roll" | "converge",
+): HandoverQueue["handover"] {
+  const call = opCaller(adapter, registry);
+  return async (requestId, from, to) => {
+    const r = await call<{ handedOver: boolean }>("platform_updates.job_handover", {
+      requestId,
+      route,
+      from,
+      to,
+    });
+    return r.handedOver;
   };
 }
 
@@ -106,7 +137,6 @@ export function createDbConvergeQueue(
   adapter: DatabaseAdapter,
   registry: OperationRegistry = upgraderRegistry(),
 ): ConvergeQueue {
-  const call = opCaller(adapter, registry);
   const {
     claim: _appRollClaim,
     heartbeat: _heartbeat,
@@ -115,14 +145,7 @@ export function createDbConvergeQueue(
   return {
     ...shared,
     claimConverge: adoptingClaim(adapter, registry, "converge"),
-    async handover(requestId, from, to) {
-      const r = await call<{ handedOver: boolean }>("platform_updates.job_handover", {
-        requestId,
-        from,
-        to,
-      });
-      return r.handedOver;
-    },
+    handover: routeHandover(adapter, registry, "converge"),
   };
 }
 
