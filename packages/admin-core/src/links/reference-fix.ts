@@ -32,7 +32,13 @@ export type ReferencePlace =
     }
   | { readonly kind: "layout-html"; readonly layoutId: string; readonly layoutName: string }
   | { readonly kind: "template-html"; readonly templateId: string; readonly templateName: string }
-  | { readonly kind: "plugin"; readonly pluginSlug: string; readonly label: string }
+  | {
+      readonly kind: "plugin";
+      readonly pluginSlug: string;
+      readonly label: string;
+      /** The place in an operator's words, when the plugin names one (#1240). */
+      readonly area?: string;
+    }
   /**
    * The definition of a module field (epic #1107): a `list` field's fixed
    * `list` or its `source` (query defaults, vocabulary).
@@ -259,6 +265,40 @@ export function fixFor(
         tool: "update_pages_many",
         hint: clip(`page ${place.pageId} ("${place.pagePath}"), ${where}: ${what}`),
       };
+  }
+}
+
+/**
+ * The place in an operator's words: `the header`, `a page section`. No
+ * module, field or list slugs — an operator who has never heard the word
+ * "module" reads this (CLAUDE.md §1A).
+ *
+ * @param blockOfChrome layout chrome module → its layout block.
+ */
+export function operatorArea(
+  place: ReferencePlace,
+  blockOfChrome: ReadonlyMap<string, string>,
+): string {
+  switch (place.kind) {
+    case "content":
+    case "module-html":
+    case "module-default":
+    case "module-field": {
+      const block = blockOfChrome.get(place.moduleId);
+      return block === undefined ? "a page section" : `the ${block}`;
+    }
+    case "layout-html":
+      return "the site layout";
+    case "template-html":
+      return "the page template";
+    case "plugin":
+      return place.area ?? place.label;
+    case "list":
+      return `the list "${place.listName}"`;
+    case "list-type":
+      return "a list's settings";
+    case "page":
+      return "the page's properties";
   }
 }
 

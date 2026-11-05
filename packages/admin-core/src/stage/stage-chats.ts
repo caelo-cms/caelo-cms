@@ -39,6 +39,7 @@ import type { DeployPluginProblem } from "../deploy/plugin-problems.js";
 import type { TruncatedListReport } from "../deploy/truncated-lists.js";
 import type { UnpublishedLinkTarget } from "../deploy/unpublished-links.js";
 import type { AffectedChat } from "../draft.js";
+import type { LinkNotice } from "../links/link-notice.js";
 import { STAGE_CHANGED_PREFIX } from "../ops/chat/publish.js";
 import type { StagedBy } from "../quality/chat-feedback.js";
 
@@ -71,7 +72,13 @@ export interface StagedChats {
   /** Provider-supplied preview URL (Firebase); absent elsewhere. */
   readonly previewUrl?: string;
   readonly mergedEntityCount: number;
+  /** #724 — the reference check's warnings over what this build rendered. */
   readonly linkWarnings: readonly string[];
+  /**
+   * #1240 — links on published pages to pages without a version in that
+   * language: staging renders them, Publish live refuses this Stage.
+   */
+  readonly linkNotice: LinkNotice | null;
   /**
    * One entry per merge: the shared draft's selected chats together, each
    * isolated chat on its own.
@@ -106,6 +113,8 @@ export interface StageFailure {
   readonly step: "select" | "classify" | "merge" | "deploy" | "finalize";
   readonly chatSessionId: string | null;
   readonly message: string;
+  /** What the AI reads instead, when `message` leaves out its next step. */
+  readonly aiMessage?: string;
   readonly error: QueryError;
 }
 
@@ -135,23 +144,6 @@ export function combineStageClassifications(
     },
     touchedPageIds: pages,
   };
-}
-
-/**
- * The link-integrity warnings of the final merged state. Each merge scans
- * main right after its own replay, so a link an earlier chat broke can be
- * fixed by a later chat's merge — only the LAST merge that changed anything
- * saw the state that is staged (a merge with nothing to replay leaves main
- * as it was and reports no scan).
- */
-export function finalLinkWarnings(
-  merges: readonly {
-    readonly entityCount: number;
-    readonly linkWarnings: readonly string[];
-  }[],
-): string[] {
-  const last = [...merges].reverse().find((m) => m.entityCount > 0);
-  return last ? [...last.linkWarnings] : [];
 }
 
 /**
@@ -270,7 +262,6 @@ export async function stageChatSessions(
     entityCount: number;
     mergedAt: string;
     mergedHeaderIds: string[];
-    linkWarnings: string[];
     alsoIncludes: AffectedChat[];
   }[] = [];
   for (const entry of classified) {
@@ -323,7 +314,6 @@ export async function stageChatSessions(
         entityCount: number;
         mergedAt: string;
         mergedHeaderIds: string[];
-        linkWarnings: string[];
         alsoIncludes?: AffectedChat[];
       };
       merged.push({ unit, ...v, alsoIncludes: v.alsoIncludes ?? [] });
@@ -379,13 +369,18 @@ export async function stageChatSessions(
     // failure is ALWAYS visible in stderr. finalize is deliberately NOT
     // called — every chat stays pending and Stage stays retryable.
     console.error("[stage] deploy.trigger failed", { chatSessionIds: ids, error: deployed.error });
+    // #1240 — a refusal that names its next step for the AI keeps that step
+    // out of what the operator reads.
+    const { error } = deployed;
+    const separated = error.kind === "HandlerError" && error.nextAction !== undefined;
     return {
       ok: false,
       error: {
         step: "deploy",
         chatSessionId: null,
-        message: `Staging build failed: ${describeError(deployed.error)}`,
-        error: deployed.error,
+        message: `Staging build failed: ${separated ? error.message : describeError(error)}`,
+        ...(separated ? { aiMessage: describeError(error) } : {}),
+        error,
       },
     };
   }
@@ -432,6 +427,8 @@ export async function stageChatSessions(
     previewUrl?: string;
     draftPages: DraftPagesSummary;
     unpublishedLinkTargets: UnpublishedLinkTarget[];
+    linkWarnings: string[];
+    linkNotice: LinkNotice | null;
     truncatedLists: TruncatedListReport[];
     pluginProblems: DeployPluginProblem[];
   };
@@ -459,7 +456,8 @@ export async function stageChatSessions(
       fileCount: summary.fileCount,
       ...(summary.previewUrl ? { previewUrl: summary.previewUrl } : {}),
       mergedEntityCount: merged.reduce((n, m) => n + m.entityCount, 0),
-      linkWarnings: finalLinkWarnings(merged),
+      linkWarnings: summary.linkWarnings,
+      linkNotice: summary.linkNotice,
       chats: merged.map((m) => ({
         chatSessionIds: m.unit.chatSessionIds,
         entityCount: m.entityCount,

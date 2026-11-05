@@ -37,8 +37,14 @@
  * gate at once and revoking closes it at once. An audit recorded under
  * older rules (CURRENT_GATE_RULES) is not trusted: it blocks until checked
  * again.
+ *
+ * #1240 — a build that links pages without a version in the linking page's
+ * language closes the gate on its own: a staging build renders those links
+ * into another language, and Publish live copies it as it is. So no audit
+ * result, acceptance or override opens it; only a new Stage does.
  */
 
+import type { LinkNotice } from "../links/link-notice.js";
 import type { CheckRuleProblem } from "./checks/evaluate.js";
 import {
   acceptedValueCovers,
@@ -101,7 +107,8 @@ export type GateState =
   | "missing"
   | "running"
   | "problems"
-  | "errored";
+  | "errored"
+  | "links";
 
 export interface OpenProblem {
   /** Null for a site-wide problem. */
@@ -122,6 +129,8 @@ export interface GateDecision {
   readonly message: string;
   /** "Publish anyway" is on offer (a failed audit, not yet overridden). */
   readonly canPublishAnyway: boolean;
+  /** #1240 — state `links`: what the staged build links, with its actions. */
+  readonly linkNotice?: LinkNotice;
 }
 
 /** Key helpers shared with the loaders. */
@@ -181,8 +190,24 @@ function describeProblem(p: OpenProblem): string {
  *
  * @param audit - the newest audit of the staging deploy run Publish would
  *   ship, or null when that run was never audited.
+ * @param linkNotice - the language links that run's build rendered (#1240).
  */
-export function decideGate(audit: GateAudit | null, acceptances: GateAcceptances): GateDecision {
+export function decideGate(
+  audit: GateAudit | null,
+  acceptances: GateAcceptances,
+  linkNotice: LinkNotice | null = null,
+): GateDecision {
+  if (linkNotice !== null) {
+    return {
+      open: false,
+      state: "links",
+      auditRunId: audit?.id ?? null,
+      openProblems: [],
+      canPublishAnyway: false,
+      message: `Publish live is blocked. ${linkNotice.operatorText}`,
+      linkNotice,
+    };
+  }
   if (audit === null || audit.status === "superseded") {
     return {
       open: false,

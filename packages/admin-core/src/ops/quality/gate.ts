@@ -31,6 +31,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { linkNoticeSchema } from "../../links/link-notice.js";
 import {
   type ChatAuditSummary,
   chatFeedbackFor,
@@ -55,9 +56,20 @@ type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
 const gateSchema = z.object({
   open: z.boolean(),
-  state: z.enum(["clean", "accepted", "overridden", "missing", "running", "problems", "errored"]),
+  state: z.enum([
+    "clean",
+    "accepted",
+    "overridden",
+    "missing",
+    "running",
+    "problems",
+    "errored",
+    "links",
+  ]),
   auditRunId: z.string().nullable(),
   message: z.string(),
+  /** #1240 — state `links`: the links that keep this build from going live. */
+  linkNotice: linkNoticeSchema.nullable(),
   canPublishAnyway: z.boolean(),
   openProblemCount: z.number().int(),
   /** #1207 — the open problems grouped by rule, largest groups first (at most 5). */
@@ -92,6 +104,7 @@ function gateView(
       state: g.state,
       auditRunId: g.auditRunId,
       message: g.message,
+      linkNotice: g.linkNotice ?? null,
       canPublishAnyway: g.canPublishAnyway,
       openProblemCount: g.openProblems.length,
       topProblems: topProblemGroups(groups),

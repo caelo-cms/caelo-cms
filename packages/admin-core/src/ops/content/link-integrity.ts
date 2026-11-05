@@ -11,23 +11,34 @@
  * resolver the render uses (links/reference-integrity.ts).
  *
  *   - {@link stageReferenceGate}: run by the Stage merge right after its
- *     replay, inside the merge transaction. A missing target (or a target
- *     without a same-language version) refuses the merge, so nothing
- *     reaches main; the static build would refuse it anyway, and here the
- *     refusal names every place and the tool that fixes it. Draft targets
- *     and legacy literal paths come back as warnings.
+ *     replay, inside the merge transaction. A missing target refuses the
+ *     merge, so nothing reaches main; the static build would refuse it
+ *     anyway, and here the refusal names every place and the tool that
+ *     fixes it. Draft targets, targets without a same-language version
+ *     (#1240) and legacy literal paths come back as warnings.
+ *   - {@link buildReferenceGate}: the same check where every build starts
+ *     (`deploy.start_trigger`). A merge can only see what it merges: a
+ *     page published in the panel changes the live row and leaves a chat
+ *     nothing to merge, and a rebuild merges nothing at all (#1240).
  *   - `links.check_references`: the read op behind the AI's `check_links`
  *     tool (chat and Power-MCP) and the Publish-live quality check
  *     (quality/checks/references.ts).
+ *   - `links.publish_notice`: what a publish click tells the operator.
  */
 
 import { hasLinkResolveContributors, resolveLinkVariants } from "@caelo-cms/plugin-host";
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { createSiteLinkIndex, err, normaliseLinkPath, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { loadLinkTargetLookup } from "../../links/canonicalise.js";
 import { type ActiveImportTargets, loadActiveImportTargets } from "../../links/import-targets.js";
+import {
+  buildLinkNotice,
+  type LinkNotice,
+  linkNoticeSchema,
+  type NoticePage,
+} from "../../links/link-notice.js";
 import { REFERENCE_PROBLEMS } from "../../links/reference-fix.js";
 import {
   type ReferenceCheckEnv,
@@ -191,23 +202,105 @@ export async function stageReferenceGate(
     throw e;
   }
   const blocking = issues.filter((i) => i.severity === "block");
+  if (blocking.length > 0) return { ok: false, message: refusalMessage(blocking) };
+  return { ok: true, warnings: stageWarnings(issues) };
+}
+
+/** The refusal of a site whose stored references point at nothing. */
+function refusalMessage(blocking: readonly ReferenceIssue[]): string {
+  const listed = blocking
+    .slice(0, STAGE_MESSAGE_ISSUES)
+    .map((i, n) => `(${n + 1}) ${i.message}`)
+    .join(" ");
+  const more =
+    blocking.length > STAGE_MESSAGE_ISSUES
+      ? ` …and ${blocking.length - STAGE_MESSAGE_ISSUES} more (check_links lists every one).`
+      : "";
+  return `Stage refused — ${blocking.length} stored reference(s) point at a page, file, list, vocabulary entry or module that does not exist, so the build would ship broken links or content: ${listed}${more} Fix each one with the tool it names, then Stage again.`;
+}
+
+/** A link with no same-language target on a published page (#1240). */
+function shipsAcrossLanguages(i: ReferenceIssue): boolean {
+  return i.problem === "variant-missing" && i.shipped;
+}
+
+/** Warnings besides the language links, which the link notice reports. */
+function stageWarnings(issues: readonly ReferenceIssue[]): string[] {
+  return issues
+    .filter((i) => !shipsAcrossLanguages(i))
+    .slice(0, STAGE_WARNINGS)
+    .map((i) => i.message);
+}
+
+/** The titles and paths a notice names, for the pages `issues` mention. */
+async function noticePages(
+  tx: TransactionRunner,
+  issues: readonly ReferenceIssue[],
+): Promise<Map<string, NoticePage>> {
+  const ids = [
+    ...new Set(
+      issues.flatMap((i) => (i.targetPageId ? [i.targetPageId, ...i.pageIds] : [...i.pageIds])),
+    ),
+  ];
+  if (ids.length === 0) return new Map();
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, title, current_path AS path FROM pages
+    WHERE id = ANY(${uuidArray(ids)}) AND deleted_at IS NULL
+  `)) as unknown as { id: string; title: string; path: string }[];
+  return new Map(rows.map((r) => [r.id, { title: r.title, path: r.path }]));
+}
+
+/** What a build learns from the check before it starts. */
+export type BuildReferenceGate =
+  | {
+      readonly ok: true;
+      readonly warnings: string[];
+      /** Staging: the language links this build renders; Publish live refuses them. */
+      readonly notice: LinkNotice | null;
+    }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * The check where a build starts, over the main line it renders. Every
+ * Stage and rebuild passes here, whatever it merged, so nothing the check
+ * can name reaches the generator's render gate.
+ *
+ * Production refuses only what the generator cannot render (a deleted
+ * target, a link with no same-language page). A draft target renders, and
+ * whether one may ship is the quality gate's decision: an Owner can accept it.
+ *
+ * Call inside a transaction, on the main line.
+ */
+export async function buildReferenceGate(
+  tx: TransactionRunner,
+  env: ReferenceCheckEnv,
+): Promise<BuildReferenceGate> {
+  let issues: ReferenceIssue[];
+  try {
+    issues = await checkReferences(tx, { branchId: null, env });
+  } catch (e) {
+    if (e instanceof ReferenceCheckUnavailable) return { ok: false, message: e.message };
+    throw e;
+  }
+  const blocking = issues.filter(
+    (i) => i.severity === "block" && i.problem !== "unpublished-target",
+  );
   if (blocking.length > 0) {
-    const listed = blocking
-      .slice(0, STAGE_MESSAGE_ISSUES)
-      .map((i, n) => `(${n + 1}) ${i.message}`)
-      .join(" ");
-    const more =
-      blocking.length > STAGE_MESSAGE_ISSUES
-        ? ` …and ${blocking.length - STAGE_MESSAGE_ISSUES} more (check_links lists every one).`
-        : "";
+    const language = blocking.filter(shipsAcrossLanguages);
+    const notice = buildLinkNotice(language, await noticePages(tx, language));
     return {
       ok: false,
-      message: `Stage refused — ${blocking.length} stored reference(s) point at a page, file, list, vocabulary entry or module that does not exist (or a page without a version in the page's language), so the build would ship broken links or content: ${listed}${more} Fix each one with the tool it names, then Stage again.`,
+      message:
+        notice !== null && language.length === blocking.length
+          ? notice.operatorText
+          : refusalMessage(blocking),
     };
   }
+  const language = issues.filter(shipsAcrossLanguages);
   return {
     ok: true,
-    warnings: issues.slice(0, STAGE_WARNINGS).map((i) => i.message),
+    warnings: stageWarnings(issues),
+    notice: buildLinkNotice(language, await noticePages(tx, language)),
   };
 }
 
@@ -229,6 +322,7 @@ const issueSchema = z.object({
   pageIds: z.array(z.string()),
   pagePaths: z.array(z.string()),
   shipped: z.boolean(),
+  area: z.string(),
   message: z.string(),
   fix: z.object({ tool: z.string(), hint: z.string() }),
 });
@@ -324,5 +418,40 @@ export const checkReferencesOp = defineOperation({
       })),
       truncated: matching.length > input.limit,
     });
+  },
+});
+
+export const publishNoticeOp = defineOperation({
+  name: "links.publish_notice",
+  // Why site-wide: a link check reads every link of the site by purpose. It
+  // is its own read, not part of pages.set_status(_many): those stay
+  // O(request), and a status write must not fail on a link check.
+  readScope: "site",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ pageIds: z.array(z.string().uuid()).min(1).max(5_000) }).strict(),
+  output: z.object({ notice: linkNoticeSchema.nullable() }),
+  handler: async (ctx, input, tx) => {
+    let issues: ReferenceIssue[];
+    try {
+      issues = await checkReferences(tx, {
+        branchId: ctx.chatBranchId ?? null,
+        env: "production",
+      });
+    } catch (e) {
+      if (e instanceof ReferenceCheckUnavailable) {
+        return err({
+          kind: "HandlerError",
+          operation: "links.publish_notice",
+          message: e.message,
+        });
+      }
+      throw e;
+    }
+    const published = new Set(input.pageIds);
+    const blocking = issues.filter(
+      (i) => i.severity === "block" && i.pageIds.some((id) => published.has(id)),
+    );
+    return ok({ notice: buildLinkNotice(blocking, await noticePages(tx, blocking)) });
   },
 });

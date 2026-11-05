@@ -107,6 +107,12 @@ export interface SourcePluginValue {
   readonly value: unknown;
   /** Present when the value is a module content-values object. */
   readonly fields: readonly SourceField[] | null;
+  /** #1240 — the place in an operator's words, when the plugin names one. */
+  readonly area: string | null;
+  /** #1240 — the page variant the value renders in (a language's own chrome). */
+  readonly variant: string | null;
+  /** #1240 — the layout it shows on, when not on every page of the variant. */
+  readonly layoutId: string | null;
 }
 
 /** A shared list (epic #1107) as the scope sees it. */
@@ -530,7 +536,15 @@ async function loadPluginValues(
         : loc.moduleId
           ? (modules.get(loc.moduleId)?.fields ?? null)
           : null;
-      out.push({ pluginSlug: set.pluginSlug, label: loc.label, value, fields });
+      out.push({
+        pluginSlug: set.pluginSlug,
+        label: loc.label,
+        value,
+        fields,
+        area: loc.area ?? null,
+        variant: loc.variant ?? null,
+        layoutId: loc.layoutId ?? null,
+      });
     }
   }
   return out;

@@ -164,7 +164,7 @@ afterAll(async () => {
 });
 
 describe("#724 F — reference integrity through plugin composition points", () => {
-  it("a German page linking a page without a German version is variant-missing and blocks", async () => {
+  it("a German page linking a page without a German version is variant-missing: a Stage warns, Publish live blocks", async () => {
     const about = await linkPage(`${PFX}-about`, "https://example.com/a");
     const en = await linkPage(`${PFX}-en`, `/${PFX}-about`);
     const de = await linkPage(`${PFX}-de`, `/${PFX}-about`);
@@ -172,8 +172,12 @@ describe("#724 F — reference integrity through plugin composition points", () 
     variants[en] = { variant: "en", group: `${PFX}-g-home` };
     variants[de] = { variant: "de", group: `${PFX}-g-home` };
 
-    const issues = await adapter.withAdminTransaction(SYS, (tx) =>
+    const atStage = await adapter.withAdminTransaction(SYS, (tx) =>
       checkReferences(tx, { branchId: null, env: "staging" }),
+    );
+    expect(atStage.find((i) => i.problem === "variant-missing")?.severity).toBe("warning");
+    const issues = await adapter.withAdminTransaction(SYS, (tx) =>
+      checkReferences(tx, { branchId: null, env: "production" }),
     );
     const v = issues.filter((i) => i.problem === "variant-missing");
     expect(v).toHaveLength(1);

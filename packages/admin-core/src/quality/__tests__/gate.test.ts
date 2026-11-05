@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import type { LinkNotice } from "../../links/link-notice.js";
 import {
   AUTO_FIX_COST_CAP_MICROCENTS,
   type ChatAuditSummary,
@@ -544,5 +545,37 @@ describe("chatFeedbackFor", () => {
     );
     expect(prompt).not.toContain("unused-javascript");
     expect(fixPromptFor(summary, [{ key: "nope" }])).toBeNull();
+  });
+});
+
+describe("a build that links across languages (#1240)", () => {
+  const notice: LinkNotice = {
+    targets: [],
+    linkingPages: [],
+    operatorText: "1 page linked from your English pages has no English version yet.",
+    aiText: "for the AI",
+    fixLabel: "Create English versions",
+    fixPrompt: "Create them.",
+  };
+
+  it("closes the gate whatever the audit says: a staged build goes live as it is", () => {
+    for (const status of ["passed", "skipped"] as const) {
+      const d = decideGate(audit({ status }), NONE, notice);
+      expect(d.open).toBe(false);
+      expect(d.state).toBe("links");
+      expect(d.linkNotice).toBe(notice);
+      expect(d.message).toContain("has no English version");
+    }
+  });
+
+  it("offers no publish anyway, also over a failed audit", () => {
+    const d = decideGate(audit({ status: "errored" }), NONE, notice);
+    expect(d.state).toBe("links");
+    expect(d.canPublishAnyway).toBe(false);
+  });
+
+  it("closes a gate with no audit too, and leaves a clean build alone", () => {
+    expect(decideGate(null, NONE, notice).state).toBe("links");
+    expect(decideGate(audit({ status: "passed" }), NONE, null).open).toBe(true);
   });
 });

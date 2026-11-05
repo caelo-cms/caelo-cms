@@ -89,12 +89,14 @@ export function linkSourcesFromOps(
     },
     async reportedDraftLinks() {
       // Every unpublished-target issue (warnings included: a draft page's
-      // own link is skipped too, it is not in the build). Past the op's
-      // limit the rest is simply not skipped — reported twice, never lost.
+      // own link is skipped too, it is not in the build), and every link
+      // with no same-language target: staging renders it to the target in
+      // its own language, which may be a draft (#1240). Past the op's limit
+      // the rest is simply not skipped — reported twice, never lost.
       const r = (await run("links.check_references", {
         for: "publish",
         includeWarnings: true,
-        problems: ["unpublished-target"],
+        problems: ["unpublished-target", "variant-missing"],
         limit: REPORTED_DRAFT_LINKS,
       })) as { issues: ReportedIssue[] };
       return r.issues.flatMap((i): ReportedDraftLink[] => {

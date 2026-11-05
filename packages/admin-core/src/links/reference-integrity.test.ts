@@ -302,7 +302,9 @@ describe("reference integrity policy (#724 decisions)", () => {
       [DE_HOME, { variant: "de", group: "home" }],
       [ABOUT, { variant: "en", group: "about" }],
     ]);
-    const issues = scan(m, "staging", variants);
+    // #1240 — reported by a Stage, blocked by Publish live.
+    expect(scan(m, "staging", variants)[0]?.severity).toBe("warning");
+    const issues = scan(m, "production", variants);
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({
       problem: "variant-missing",
@@ -311,6 +313,55 @@ describe("reference integrity policy (#724 decisions)", () => {
     });
     expect(issues[0]?.pageIds).toEqual([DE_HOME]);
     expect(issues[0]?.fix.hint).toContain("create_variant");
+  });
+});
+
+describe("reference integrity of a language's own plugin data (#1240)", () => {
+  const variants = new Map([
+    [HOME, { variant: "en", group: "home" }],
+    [DE_HOME, { variant: "de", group: "home" }],
+    [ABOUT, { variant: "en", group: "about" }],
+  ]);
+  const chrome = (variant: string | null, layoutId: string | null = null) =>
+    model({
+      plugins: [
+        {
+          pluginSlug: "international-site",
+          label: "de version of Footer",
+          area: "the footer",
+          value: { links: [{ href: `caelo:page/${ABOUT}` }] },
+          fields: null,
+          variant,
+          layoutId,
+        },
+      ],
+    });
+
+  it("checks it on that language's pages, in that language", () => {
+    const issues = scan(chrome("de"), "production", variants);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      problem: "variant-missing",
+      variant: "de",
+      severity: "block",
+      area: "the footer",
+    });
+    expect(issues[0]?.pageIds).toEqual([DE_HOME]);
+  });
+
+  it("without a language it resolves as stored, as before", () => {
+    expect(scan(chrome(null), "production", variants)).toEqual([]);
+  });
+
+  it("a language with no page renders it nowhere", () => {
+    expect(scan(chrome("fr"), "production", variants)).toEqual([]);
+  });
+
+  it("a layout's chrome counts only on the pages of that layout", () => {
+    expect(scan(chrome("de", LAYOUT), "production", variants)).toHaveLength(1);
+    expect(
+      scan(chrome("de", "00000000-0000-4000-8000-0000000000aa"), "production", variants),
+    ).toEqual([]);
   });
 });
 
@@ -385,6 +436,9 @@ describe("reference integrity places", () => {
             label: "German footer",
             value: { links: [{ href: `caelo:page/${GONE}` }] },
             fields: null,
+            area: null,
+            variant: null,
+            layoutId: null,
           },
         ],
       }),

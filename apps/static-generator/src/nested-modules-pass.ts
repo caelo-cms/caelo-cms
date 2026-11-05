@@ -19,6 +19,7 @@ import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import {
   type ComposeModuleFailure,
   collectNestedRefs,
+  isLinkFailureMarker,
   type NestedContentInstanceResource,
   type NestedModuleResource,
   type NestedRefValue,
@@ -195,7 +196,10 @@ const MAX_LISTED = 25;
 
 /** One composed page as the render-failure gate inspects it. */
 export interface RenderedPageForGate {
+  readonly pageId: string;
   readonly pageSlug: string;
+  readonly pageTitle: string;
+  readonly pagePath: string;
   readonly html: string;
   readonly moduleFailures: readonly ComposeModuleFailure[];
   /**
@@ -205,8 +209,44 @@ export interface RenderedPageForGate {
   readonly layoutLinkMarkers?: readonly string[];
 }
 
-/** One render failure, as the gate's error names it (page, module, field, reason). */
-export type RenderFailure = string;
+/**
+ * One render failure: the page, the place, the marker and, for a link, the
+ * page it points at. Structure, so the admin writes the operator's text from
+ * titles and paths (#1240); `line` is the failure with its technical names,
+ * for the AI and the log.
+ */
+export interface RenderFailure {
+  readonly pageId: string;
+  readonly pageTitle: string;
+  readonly pagePath: string;
+  /** The block it renders in; null for the layout's own HTML. */
+  readonly blockName: string | null;
+  readonly moduleSlug: string | null;
+  readonly field: string | null;
+  readonly reason: string;
+  readonly target: {
+    readonly pageId: string;
+    readonly title: string;
+    readonly path: string;
+  } | null;
+  readonly line: string;
+}
+
+/** Looks up a link failure's target page. */
+export type RenderTargetLookup = (pageId: string) => RenderFailure["target"];
+
+const TARGET_PAGE_RE = /^link-[a-z-]+:page\/([0-9a-f-]{36})/;
+
+/** The stopped build; {@link RenderFailureError.failures} says what stopped it. */
+export class RenderFailureError extends Error {
+  constructor(
+    message: string,
+    readonly failures: readonly RenderFailure[],
+  ) {
+    super(message);
+    this.name = "RenderFailureError";
+  }
+}
 
 /**
  * The render failures of one composed page: a module or nested module
@@ -216,26 +256,65 @@ export type RenderFailure = string;
  * taken per page as it is composed, so the gate holds the failures, not
  * the pages.
  */
-export function renderFailuresOf(page: RenderedPageForGate): RenderFailure[] {
+export function renderFailuresOf(
+  page: RenderedPageForGate,
+  targetOf: RenderTargetLookup = () => null,
+): RenderFailure[] {
   const lines: RenderFailure[] = [];
   let structured = 0;
+  const failure = (
+    place: Pick<RenderFailure, "blockName" | "moduleSlug" | "field">,
+    reason: string,
+    line: string,
+  ): RenderFailure => {
+    const targetId = isLinkFailureMarker(reason) ? TARGET_PAGE_RE.exec(reason)?.[1] : undefined;
+    return {
+      pageId: page.pageId,
+      pageTitle: page.pageTitle,
+      pagePath: page.pagePath,
+      ...place,
+      reason,
+      target: targetId === undefined ? null : targetOf(targetId),
+      line,
+    };
+  };
   for (const f of page.moduleFailures) {
     if (LOUD_RAW_MARKERS.some((p) => f.reason.startsWith(p))) continue;
     structured += 1;
     const field = f.field.length > 0 ? ` field "${f.field}"` : "";
     lines.push(
-      `page "${page.pageSlug}" module "${f.moduleSlug}" (block ${f.blockName})${field}: ${f.reason}`,
+      failure(
+        {
+          blockName: f.blockName,
+          moduleSlug: f.moduleSlug,
+          field: f.field.length > 0 ? f.field : null,
+        },
+        f.reason,
+        `page "${page.pageSlug}" module "${f.moduleSlug}" (block ${f.blockName})${field}: ${f.reason}`,
+      ),
     );
   }
   for (const marker of page.layoutLinkMarkers ?? []) {
     structured += 1;
-    lines.push(`page "${page.pageSlug}" layout HTML: ${marker}`);
+    lines.push(
+      failure(
+        { blockName: null, moduleSlug: null, field: null },
+        marker,
+        `page "${page.pageSlug}" layout HTML: ${marker}`,
+      ),
+    );
   }
   // Backstop for markers that did not come through the structured
   // channel (e.g. a marker comment stored inside module HTML).
   if (structured === 0) {
     for (const m of page.html.matchAll(MARKER_COMMENT_RE)) {
-      lines.push(`page "${page.pageSlug}": ${m[0]}`);
+      lines.push(
+        failure(
+          { blockName: null, moduleSlug: null, field: null },
+          m[0],
+          `page "${page.pageSlug}": ${m[0]}`,
+        ),
+      );
     }
   }
   return lines;
@@ -251,9 +330,12 @@ export function renderFailuresOf(page: RenderedPageForGate): RenderFailure[] {
  */
 export function assertNoRenderFailures(lines: readonly RenderFailure[]): void {
   if (lines.length === 0) return;
-  const listed = lines.slice(0, MAX_LISTED).join("; ");
+  const listed = lines
+    .slice(0, MAX_LISTED)
+    .map((l) => l.line)
+    .join("; ");
   const more = lines.length > MAX_LISTED ? `; …and ${lines.length - MAX_LISTED} more` : "";
-  throw new Error(
+  throw new RenderFailureError(
     `static-generator: ${lines.length} render failure(s) would ship as missing content — ${listed}${more}. ` +
       "Each names the page, the module and the field whose content could not be rendered. " +
       "Next step: open the page in the editor (the preview flags the same spots), then repair the field — " +
@@ -264,5 +346,6 @@ export function assertNoRenderFailures(lines: readonly RenderFailure[]): void {
       "a `link-ref-malformed:<text>` is a link written in a form no page or file matches — fix it the same way. " +
       "A `link-variant-missing:page/<id>:<variant>` is a link to a page with no version in this page's variant " +
       "(its language): give that page a version in it, or point the link at a page that has one.",
+    lines,
   );
 }

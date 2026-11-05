@@ -11,9 +11,9 @@
  * its target (rollout D). Literal paths that predate #724 are reported too.
  *
  * Policy (maintainer decisions on #724, `linkIssueSeverity`):
- *   - a missing target, or a target with no version in the rendering
- *     page's language, BLOCKS at Stage and at Publish live;
- *   - a draft target is a WARNING at Stage and BLOCKS Publish live /
+ *   - a missing target BLOCKS at Stage and at Publish live;
+ *   - a draft target, or a target with no version in the rendering page's
+ *     language (#1240), is a WARNING at Stage and BLOCKS Publish live /
  *     promote to production;
  *   - pre-#724 literal paths are WARNINGS (the link migration, rollout E,
  *     converts them). A literal that matches no page also fails the staged
@@ -60,6 +60,7 @@ import type { LinkTargets } from "./link-targets.js";
 import {
   fixFor,
   issueMessage,
+  operatorArea,
   type ReferenceFix,
   type ReferencePlace,
   type ReferenceProblem,
@@ -102,6 +103,8 @@ export interface ReferenceIssue {
   readonly pageIds: readonly string[];
   /** True when the place renders on at least one published page (or site-wide). */
   readonly shipped: boolean;
+  /** The place in an operator's words (`the header`), without technical names. */
+  readonly area: string;
   readonly message: string;
   readonly fix: ReferenceFix;
 }
@@ -542,9 +545,24 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
   // ── Plugin data named by the plugins' link-locations hook. ──
   model.plugins.forEach((pv, i) => {
     const key = `plugin:${pv.pluginSlug}:${i}`;
-    const acc = placeOf(key, { kind: "plugin", pluginSlug: pv.pluginSlug, label: pv.label });
-    // A plugin location names no page; its references resolve as stored.
-    acc.siteWide = true;
+    const acc = placeOf(key, {
+      kind: "plugin",
+      pluginSlug: pv.pluginSlug,
+      label: pv.label,
+      ...(pv.area === null ? {} : { area: pv.area }),
+    });
+    if (pv.variant === null) {
+      // A plugin location that names no variant belongs to no page; its
+      // references resolve as stored.
+      acc.siteWide = true;
+    } else {
+      // #1240 — a language's own chrome: checked per rendering page of
+      // that language, like the page's content the build renders with it.
+      const onLayout = pv.layoutId === null ? null : pagesByLayout.get(pv.layoutId);
+      for (const page of index.pagesInVariant(pv.variant)) {
+        if (livePage(page) && (onLayout === null || onLayout?.has(page))) acc.pages.add(page);
+      }
+    }
     if (pv.fields) {
       const values =
         pv.value !== null && typeof pv.value === "object" && !Array.isArray(pv.value)
@@ -675,6 +693,12 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     }
   }
 
+  const blockOfChrome = new Map<string, string>();
+  for (const l of model.layouts.values()) {
+    for (const block of l.blocks) {
+      for (const moduleId of block.moduleIds) blockOfChrome.set(moduleId, block.blockName);
+    }
+  }
   const out: ReferenceIssue[] = [];
   for (const i of issues.values()) {
     const acc = places.get(i.placeKey) as PlaceAcc;
@@ -694,6 +718,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
       place: acc.place,
       pageIds,
       shipped,
+      area: operatorArea(acc.place, blockOfChrome),
       message: issueMessage(
         i.problem,
         acc.place,

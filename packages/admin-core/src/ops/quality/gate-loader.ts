@@ -11,6 +11,7 @@
 
 import { type defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
+import { type LinkNotice, linkNoticeSchema } from "../../links/link-notice.js";
 import type { CheckRuleProblem } from "../../quality/checks/evaluate.js";
 import {
   checkKey,
@@ -133,7 +134,16 @@ export async function loadAcceptances(
 export async function publishGateForRun(tx: Tx, deployRunId: string): Promise<GateDecision> {
   const audit = await loadGateAudit(tx, deployRunId);
   const acceptances = await loadAcceptances(tx, audit?.pages.map((p) => p.pageId) ?? []);
-  return decideGate(audit, acceptances);
+  return decideGate(audit, acceptances, await loadRunLinkNotice(tx, deployRunId));
+}
+
+/** #1240 — the language links a run's build rendered, as the run recorded them. */
+async function loadRunLinkNotice(tx: Tx, deployRunId: string): Promise<LinkNotice | null> {
+  const rows = (await tx.execute(sql`
+    SELECT link_notice FROM deploy_runs WHERE id = ${deployRunId}::uuid
+  `)) as unknown as { link_notice: unknown }[];
+  const stored = rows[0]?.link_notice ?? null;
+  return stored === null ? null : linkNoticeSchema.parse(stored);
 }
 
 /** The newest succeeded deploy run of a target (what Publish would ship). */

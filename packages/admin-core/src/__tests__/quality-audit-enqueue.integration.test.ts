@@ -303,6 +303,7 @@ describe("a succeeded staging build always has its audit (#1319)", () => {
       override: null,
       phaseTimings: [],
       qualityAudit: null,
+      linkNotice: null,
     });
     expect(await plannedAuditOf(runId)).toBeNull();
     const written = await auditsOf(runId);

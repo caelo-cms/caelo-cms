@@ -39,6 +39,12 @@ export function linkEnvOfTarget(env: "dev" | "staging" | "production"): LinkRend
   return env === "dev" ? "preview" : env;
 }
 
+/** The link index of a build, which also names pages for its error reports. */
+export interface BuildLinkIndex extends SiteLinkIndex {
+  /** The page's title, or null when unknown. */
+  titleOf(pageId: string): string | null;
+}
+
 /**
  * Load the main-line link index for one build.
  *
@@ -51,12 +57,12 @@ export async function loadBuildLinkIndex(
   targetEnv: "dev" | "staging" | "production",
   pageUrlStyle: PageUrlStyle,
   plugins: BuildPluginServices,
-): Promise<SiteLinkIndex> {
+): Promise<BuildLinkIndex> {
   const pages = (await tx.execute(sql`
-    SELECT id::text AS id, current_path AS path, status
+    SELECT id::text AS id, current_path AS path, status, title
     FROM pages
     WHERE deleted_at IS NULL AND chat_branch_id IS NULL
-  `)) as unknown as LinkIndexPage[];
+  `)) as unknown as (LinkIndexPage & { readonly title: string })[];
   const media = (await tx.execute(sql`
     SELECT id::text AS id, slug FROM media_assets WHERE deleted_at IS NULL
   `)) as unknown as LinkIndexMedia[];
@@ -64,11 +70,15 @@ export async function loadBuildLinkIndex(
     pages.length > 0 && (await plugins.hasLinkResolveContributors())
       ? await plugins.resolveLinkVariants(pages.map((p) => p.id))
       : undefined;
-  return createSiteLinkIndex({
-    pages,
-    media,
-    env: linkEnvOfTarget(targetEnv),
-    pageUrlStyle,
-    ...(pageVariants ? { pageVariants } : {}),
-  });
+  const titles = new Map(pages.map((p) => [p.id, p.title]));
+  return {
+    ...createSiteLinkIndex({
+      pages,
+      media,
+      env: linkEnvOfTarget(targetEnv),
+      pageUrlStyle,
+      ...(pageVariants ? { pageVariants } : {}),
+    }),
+    titleOf: (pageId) => titles.get(pageId) ?? null,
+  };
 }
