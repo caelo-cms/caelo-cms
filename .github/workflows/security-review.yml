@@ -165,7 +165,7 @@ jobs:
           # Sonnet 4.6 is current-gen and materially cheaper than the action
           # default (opus-4-1) for diff-scoped review. Bump to an Opus model
           # if quality proves insufficient — one-line change.
-          claude-model: claude-sonnet-4-6
+          claude-model: claude-sonnet-5-5
           # Wall-clock ceiling on the analysis subprocess.
           claudecode-timeout: 15
           comment-pr: true
