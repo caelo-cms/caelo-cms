@@ -697,10 +697,26 @@ export const pluginLinkLocation = z
      */
     variant: linkResolvePageVariant.shape.variant.optional(),
     /**
-     * #1240 — with `variant`: the layout this value shows on, when it does
-     * not show on every page of the variant (one layout's footer).
+     * #1240 — with `variant`: what this value replaces on that variant's
+     * pages, when it does not show on all of them. A layout placement, or a
+     * shared content instance (its synced placements). Core then checks the
+     * value on exactly those pages, and the keys it carries no longer count
+     * from the source there, so the check agrees with the build. With a
+     * `moduleId`, a layout placement's whole module is replaced.
      */
-    layoutId: z.string().uuid().optional(),
+    replaces: z
+      .union([
+        z
+          .object({
+            layoutId: z.string().uuid(),
+            blockName: z.string().min(1),
+            /** Index within the block. */
+            position: z.number().int().nonnegative(),
+          })
+          .strict(),
+        z.object({ contentInstanceId: z.string().uuid() }).strict(),
+      ])
+      .optional(),
     moduleId: z.string().uuid().optional(),
     fields: z
       .array(z.object({ name: z.string().min(1), kind: z.string().min(1) }).strict())

@@ -111,8 +111,13 @@ export interface SourcePluginValue {
   readonly area: string | null;
   /** #1240 — the page variant the value renders in (a language's own chrome). */
   readonly variant: string | null;
-  /** #1240 — the layout it shows on, when not on every page of the variant. */
-  readonly layoutId: string | null;
+  /** #1240 — the placement it takes the place of on that variant's pages. */
+  readonly replaces:
+    | { readonly layoutId: string; readonly blockName: string; readonly position: number }
+    | { readonly contentInstanceId: string }
+    | null;
+  /** The module the location names; with a layout `replaces`, it replaces the source's. */
+  readonly moduleId?: string;
 }
 
 /** A shared list (epic #1107) as the scope sees it. */
@@ -543,7 +548,8 @@ async function loadPluginValues(
         fields,
         area: loc.area ?? null,
         variant: loc.variant ?? null,
-        layoutId: loc.layoutId ?? null,
+        replaces: loc.replaces ?? null,
+        ...(loc.moduleId ? { moduleId: loc.moduleId } : {}),
       });
     }
   }

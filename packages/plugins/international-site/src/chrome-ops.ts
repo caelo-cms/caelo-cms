@@ -112,8 +112,10 @@ export interface ChromeVariantRow {
 export interface ChromeTarget {
   readonly key: string;
   readonly kind: "layout" | "instance";
-  /** The layout a layout placement belongs to; null for shared content. */
-  readonly layoutId: string | null;
+  /** What a variant of this target takes the place of. */
+  readonly replaces:
+    | { readonly layoutId: string; readonly blockName: string; readonly position: number }
+    | { readonly contentInstanceId: string };
   /** Operator-facing: what it is and where it shows. */
   readonly label: string;
   /** The place in an operator's words, without slugs ("the header"). */
@@ -149,7 +151,7 @@ export async function loadChromeTargets(cms: ChromeCms): Promise<ChromeTarget[]>
     ...shared.layoutPlacements.map((p) => ({
       key: layoutTargetKey(p.layoutId, p.blockName, p.index),
       kind: "layout" as const,
-      layoutId: p.layoutId,
+      replaces: { layoutId: p.layoutId, blockName: p.blockName, position: p.index },
       label: `${p.moduleName} — site layout "${p.layoutSlug}", ${p.blockName} area`,
       area: `the ${p.blockName}`,
       fields: p.fields,
@@ -158,7 +160,7 @@ export async function loadChromeTargets(cms: ChromeCms): Promise<ChromeTarget[]>
     ...shared.sharedInstances.map((i) => ({
       key: instanceTargetKey(i.contentInstanceId),
       kind: "instance" as const,
-      layoutId: null,
+      replaces: { contentInstanceId: i.contentInstanceId },
       label: `${i.moduleName} — shared content${i.slug ? ` "${i.slug}"` : ""} on ${i.pageIds.length} page(s)`,
       area: `the shared section "${i.moduleName}"`,
       fields: i.fields,

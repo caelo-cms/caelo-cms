@@ -50,7 +50,7 @@ export async function chromeLinkLocations(
         ? {
             area: target.area.slice(0, 120),
             variant: v.locale_code,
-            ...(target.layoutId ? { layoutId: target.layoutId } : {}),
+            replaces: target.replaces,
           }
         : {}),
     });

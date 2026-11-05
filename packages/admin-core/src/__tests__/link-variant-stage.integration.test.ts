@@ -344,6 +344,28 @@ describe("#1240 — a language version linking pages without a version in that l
     ).not.toContain("block");
   });
 
+  it("a default the language's own chrome replaces no longer counts on its pages", async () => {
+    const header = `layout:${ids.layout}:header:0`;
+    const variantOf = (...items: ReturnType<typeof menuEntry>[]) => ({
+      variants: [{ targetKey: header, localeCode: "en", values: { menu: items } }],
+    });
+    // The English header drops Pricing: the German default still links it,
+    // and the page section still does, but the header no longer does here.
+    await intl("set_chrome_variants", variantOf(menuEntry(2, "Demo", `/${PFX}-demo`)));
+    try {
+      const issues = await adapter.withAdminTransaction(SYS, (tx) =>
+        checkReferences(tx, { branchId: null, env: "production" }),
+      );
+      const pricing = issues.filter((i) => i.targetPageId === ids.dePricing);
+      expect(pricing.map((i) => i.area)).toEqual(["a page section"]);
+    } finally {
+      await intl(
+        "set_chrome_variants",
+        variantOf(menuEntry(1, "Pricing", `/${PFX}-preise`), menuEntry(2, "Demo", `/${PFX}-demo`)),
+      );
+    }
+  });
+
   it("the Stage succeeds, renders the links for review and reports them", async () => {
     const staged = await stage("t1240 stage");
     const built = await sqlSystem(
