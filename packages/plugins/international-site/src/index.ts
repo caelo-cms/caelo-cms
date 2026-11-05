@@ -187,8 +187,11 @@ let prefixDefaultLocaleCache = false;
  *  switch. Absent row = off (the original bare-default behaviour). */
 const PREFIX_DEFAULT_LOCALE_KEY = "prefix_default_locale";
 
-/** `settings` row key of the per-language default share images (#1452). */
-const LOCALE_SHARE_IMAGES_KEY = "locale_share_images";
+/**
+ * `settings` row key prefix of the per-language default share images (#1452):
+ * one row per language, so setting two at once cannot lose either.
+ */
+const LOCALE_SHARE_IMAGE_KEY_PREFIX = "locale_share_image:";
 
 interface SettingRow {
   id: string;
@@ -549,22 +552,20 @@ async function loadPrefixDefaultLocaleSetting(
  * asset id. A row whose value is not the shape this plugin writes is schema
  * drift, and fails loudly (CLAUDE.md §2).
  */
-async function loadLocaleShareImages(
-  q: PluginAdminQuery,
-): Promise<{ images: Record<string, string>; rowId: string | null }> {
-  const rows = (await q.list("settings", {
-    key: LOCALE_SHARE_IMAGES_KEY,
-    limit: 1,
-  })) as unknown as SettingRow[];
-  const row = rows[0];
-  if (!row) return { images: {}, rowId: null };
-  const parsed = localeShareImagesValue.safeParse(row.value);
-  if (!parsed.success) {
-    throw new Error(
-      `international-site: setting "${LOCALE_SHARE_IMAGES_KEY}" holds ${JSON.stringify(row.value)}, expected {"images": {<locale>: <asset id>}}. Re-run set_locale_share_image to rewrite it.`,
-    );
+async function loadLocaleShareImages(q: PluginAdminQuery): Promise<Record<string, string>> {
+  const rows = (await listAll(q, "settings")) as unknown as (SettingRow & { key: string })[];
+  const images: Record<string, string> = {};
+  for (const row of rows) {
+    if (!row.key.startsWith(LOCALE_SHARE_IMAGE_KEY_PREFIX)) continue;
+    const parsed = localeShareImageValue.safeParse(row.value);
+    if (!parsed.success) {
+      throw new Error(
+        `international-site: setting "${row.key}" holds ${JSON.stringify(row.value)}, expected {"assetId": <uuid>}. Re-run set_locale_share_image to rewrite it.`,
+      );
+    }
+    images[row.key.slice(LOCALE_SHARE_IMAGE_KEY_PREFIX.length)] = parsed.data.assetId;
   }
-  return { images: parsed.data.images, rowId: row.id };
+  return images;
 }
 
 /**
@@ -716,7 +717,7 @@ const linkResolveArgs = z.object({ pageIds: z.array(z.string().uuid()) }).strict
 
 const shareImagesArgs = z.object({ pageIds: z.array(z.string().uuid()) }).strict();
 
-const localeShareImagesValue = z.object({ images: z.record(z.string(), z.string().uuid()) });
+const localeShareImageValue = z.object({ assetId: z.string().uuid() }).strict();
 
 const setLocaleShareImageArgs = z
   .object({ localeCode: z.string().min(2).max(35), mediaId: z.string().uuid().nullable() })
@@ -1685,7 +1686,7 @@ export default definePlugin<PluginContextTier1>({
         // Site-wide: the default locale is prefixed too (home stays at "/").
         prefixDefaultLocale: reg.prefixDefaultLocale,
         // #1452 — locale code → the language's default share image.
-        shareImages: (await loadLocaleShareImages(q)).images,
+        shareImages: await loadLocaleShareImages(q),
         groups: [...groups.entries()].map(([groupId, vs]) => ({ groupId, variants: vs })),
         // Pages without a variant row belong to the default locale and
         // have NO translations yet — the AI's to-do surface.
@@ -2242,19 +2243,22 @@ export default definePlugin<PluginContextTier1>({
         );
       }
       if (mediaId !== null) {
-        const { asset } = await cmsOf(ctx).call<{ asset: { id: string } | null }>("media.get", {
-          assetId: mediaId,
-        });
-        if (asset === null) {
-          throw new Error(`media asset ${mediaId} not found — take an id from find_media`);
-        }
+        const { issue } = await cmsOf(ctx).call<{ issue: string | null }>(
+          "pages_seo.check_share_image",
+          { assetId: mediaId },
+        );
+        if (issue !== null) throw new Error(issue);
       }
-      const stored = await loadLocaleShareImages(q);
-      const images = { ...stored.images };
-      if (mediaId === null) delete images[localeCode];
-      else images[localeCode] = mediaId;
-      if (stored.rowId) await q.update("settings", stored.rowId, { value: { images } });
-      else await q.insert("settings", { key: LOCALE_SHARE_IMAGES_KEY, value: { images } });
+      const key = `${LOCALE_SHARE_IMAGE_KEY_PREFIX}${localeCode}`;
+      const rows = (await q.list("settings", { key, limit: 1 })) as unknown as SettingRow[];
+      const row = rows[0];
+      if (mediaId === null) {
+        if (row) await q.delete("settings", row.id);
+      } else if (row) {
+        await q.update("settings", row.id, { value: { assetId: mediaId } });
+      } else {
+        await q.insert("settings", { key, value: { assetId: mediaId } });
+      }
       return {
         localeCode,
         mediaId,
@@ -2271,7 +2275,7 @@ export default definePlugin<PluginContextTier1>({
     share_images: async (ctx, args) => {
       const { pageIds } = shareImagesArgs.parse(args);
       const q = adminQueryOf(ctx);
-      const { images: byLocale } = await loadLocaleShareImages(q);
+      const byLocale = await loadLocaleShareImages(q);
       const images: Record<string, string> = {};
       if (Object.keys(byLocale).length === 0) return { images };
       const reg = await refreshLocaleCache(q, ctx);

@@ -127,7 +127,10 @@
               >
             {:else}
               <p class="text-sm text-muted-foreground" data-testid="seo-og-default">
-                {#if data.shareImage?.source === "language"}
+                {#if data.shareImage && data.shareImage.source !== "none" && data.shareImage.url === null}
+                  No own image, and the default image was deleted. A Stage stops until another one
+                  is chosen.
+                {:else if data.shareImage?.source === "language"}
                   No own image: links show this language's default image.
                 {:else if data.shareImage?.source === "site"}
                   No own image: links show the site's default image.

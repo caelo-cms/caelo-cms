@@ -54,7 +54,7 @@ keeps rendering the current entries so an added entry shows up there.
 ## Share images per language
 
 `set_locale_share_image` stores a language's default link-preview image
-in `settings` (`locale_share_images`), on the chat's branch like every
+in `settings` (one `locale_share_image:<code>` row per language), on the chat's branch like every
 write here. The plugin answers core's `share-images` composition point
 (`share_images`) with each page's language default; core's rule is the
 page's own image, then this, then the site default ([themes.md](../../../docs/themes.md)).

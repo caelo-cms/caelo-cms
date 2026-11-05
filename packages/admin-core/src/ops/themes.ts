@@ -58,6 +58,7 @@ import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import type { PipelineOutputVariant } from "../media/pipeline.js";
+import { shareImageAssetIssue } from "../seo/share-image.js";
 import { emitSnapshot, type SnapshotOpKind } from "../snapshots/index.js";
 import type { ThemeState } from "../snapshots/state.js";
 import {
@@ -836,6 +837,12 @@ async function bindThemeAsset(
         operation: "themes.set_asset",
         message: `media asset ${input.mediaId} is ${media.mime}, not an image — the favicon slot needs an image (ICO, PNG or SVG); pick an image row from find_media`,
       });
+    }
+    // #1452 — every page without its own image publishes this one.
+    if (input.slot === "socialShare") {
+      const issue = await shareImageAssetIssue(tx, input.mediaId);
+      if (issue)
+        return err({ kind: "HandlerError", operation: "themes.set_asset", message: issue });
     }
     if (favicon) await recordFaviconRendition(tx, { id: input.mediaId, ...media }, favicon);
   }

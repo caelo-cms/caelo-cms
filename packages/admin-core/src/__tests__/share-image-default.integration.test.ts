@@ -222,9 +222,7 @@ describe("#1452 — default share image", () => {
     const p = await page("site");
 
     const html = await buildHead(p, siteImage.assetId);
-    expect(html).toMatch(
-      new RegExp(`property="og:image" content="${BASE}/_assets/${siteImage.slug}`),
-    );
+    expect(html).toContain(`property="og:image" content="${BASE}/_assets/${siteImage.slug}`);
     expect(html).toContain('name="twitter:card" content="summary_large_image"');
 
     const read = await readSeo(p);
@@ -291,6 +289,30 @@ describe("#1452 — default share image", () => {
         mediaId: "0a7f3f2e-58d1-4c55-9a7a-3e6f0f0c1d2e",
       }),
     ).rejects.toThrow(/find_media/);
+  });
+
+  it("a default must be a publishable image: a reference image or a file is refused at once", async () => {
+    const reference = await image("reference");
+    await op("media.set_visibility", { assetId: reference.assetId, visibility: "reference" });
+    const bind = await execute(registry, adapter, SYS, "themes.set_asset", {
+      slot: "socialShare",
+      mediaId: reference.assetId,
+    });
+    expect(bind.ok).toBe(false);
+    if (!bind.ok) expect(JSON.stringify(bind.error)).toContain("reference image");
+    await expect(
+      intl("set_locale_share_image", { localeCode: "de", mediaId: reference.assetId }),
+    ).rejects.toThrow(/reference image/);
+  });
+
+  it("setting one language keeps the other's image", async () => {
+    await intl("set_locale_share_image", { localeCode: "de", mediaId: germanImage.assetId });
+    await intl("set_locale_share_image", { localeCode: "en", mediaId: ownImage.assetId });
+    expect(
+      (await intl<{ shareImages: Record<string, string> }>("intl_status", {})).shareImages,
+    ).toEqual({ de: germanImage.assetId, en: ownImage.assetId });
+    await intl("set_locale_share_image", { localeCode: "de", mediaId: null });
+    await intl("set_locale_share_image", { localeCode: "en", mediaId: null });
   });
 
   it("a default whose image was deleted is flagged on the reads and stops the build", async () => {

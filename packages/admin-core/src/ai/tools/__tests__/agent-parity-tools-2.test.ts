@@ -554,10 +554,12 @@ describe("content maintenance tools", () => {
           title: "Home",
           path: "/",
           seo: null,
+          shareImage: { source: "none", assetId: null, url: null },
           contentText: "Welcome",
           contentTextTruncated: false,
           contentTextLength: 7,
         })),
+        shareImageWarnings: [],
       }),
     });
     expect((await run(listMediaUsagesTool, { assetId: "x" }, h.toolCtx)).ok).toBe(false);
@@ -592,10 +594,12 @@ describe("content maintenance tools", () => {
                   pendingFields: ["metaDescription"],
                 }
               : null,
+          shareImage: { source: "none", assetId: null, url: null },
           contentText: i === 0 ? "Fast setup\nLive in minutes" : "Long text…",
           contentTextTruncated: i === 1,
           contentTextLength: i === 0 ? 26 : 4000,
         })),
+        shareImageWarnings: [],
       }),
     });
     const one = await run(getPageSeoTool, { pageId: U1 }, h.toolCtx);

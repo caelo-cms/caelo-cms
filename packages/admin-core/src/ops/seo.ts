@@ -57,7 +57,12 @@ import {
   peekPageSeo,
   sameSeo,
 } from "../seo/page-seo-write.js";
-import { type PageShareImage, resolvePageShareImages, type ShortRead } from "../seo/share-image.js";
+import {
+  type PageShareImage,
+  resolvePageShareImages,
+  type ShortRead,
+  shareImageAssetIssue,
+} from "../seo/share-image.js";
 import type { PageSeoState } from "../snapshots/state.js";
 import { loadPageContentTexts } from "./content/page-content-text.js";
 
@@ -182,6 +187,19 @@ export const pagesSeoShareImagesOp = defineReadOperation({
       warnings,
     });
   },
+});
+
+export const pagesSeoCheckShareImageOp = defineOperation({
+  name: "pages_seo.check_share_image",
+  readScope: "request",
+  // Why human-only: no AI tool needs it — set_theme_asset and the plugin's
+  // set_locale_share_image run this check themselves. #1452: it exists so a
+  // plugin learns only whether an asset can be a default, not the media row.
+  actorScope: ["human", "plugin", "system"],
+  database: "cms_admin",
+  input: z.object({ assetId: z.string().uuid() }).strict(),
+  output: z.object({ issue: z.string().nullable() }),
+  handler: async (_ctx, input, tx) => ok({ issue: await shareImageAssetIssue(tx, input.assetId) }),
 });
 
 export const pagesSeoGetManyOp = defineOperation({

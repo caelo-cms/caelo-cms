@@ -33,6 +33,30 @@ export interface PageShareImage {
 /** Runs a read in one short transaction (an op's `reads.read` / `tx.transaction`). */
 export type ShortRead = <T>(fn: (tx: TransactionRunner) => Promise<T>) => Promise<T>;
 
+/**
+ * Why an asset cannot be a default share image, or null when it can: the
+ * build publishes it on every page without its own, so one it refuses would
+ * stop every Stage. Written for the AI: it names the next step.
+ */
+export async function shareImageAssetIssue(
+  tx: TransactionRunner,
+  assetId: string,
+): Promise<string | null> {
+  const rows = (await tx.execute(sql`
+    SELECT mime, visibility FROM media_assets
+    WHERE id = ${assetId}::uuid AND deleted_at IS NULL LIMIT 1
+  `)) as unknown as { mime: string; visibility: string }[];
+  const asset = rows[0];
+  if (!asset) return `media asset ${assetId} not found — take an id from find_media`;
+  if (!asset.mime.startsWith("image/")) {
+    return `media asset ${assetId} is ${asset.mime}, not an image — pick an image row from find_media`;
+  }
+  if (asset.visibility === "reference") {
+    return `media asset ${assetId} is a reference image, which is never published — pick a library image, or mark this one with set_media_visibility_many`;
+  }
+  return null;
+}
+
 /** The media asset bound to the active theme's `socialShare` slot, or null. */
 async function loadSiteShareImageAssetId(tx: TransactionRunner): Promise<string | null> {
   const rows = (await tx.execute(sql`

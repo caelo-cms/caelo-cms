@@ -576,6 +576,7 @@ import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/secur
 import {
   pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
+  pagesSeoCheckShareImageOp,
   pagesSeoGetManyOp,
   pagesSeoGetOp,
   pagesSeoListStaleOp,
@@ -1462,6 +1463,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(pagesSeoGetOp);
   registry.register(pagesSeoGetManyOp);
   registry.register(pagesSeoShareImagesOp);
+  registry.register(pagesSeoCheckShareImageOp);
   registry.register(pagesSeoSetOp);
   // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
   registry.register(pagesSeoSetManyOp);

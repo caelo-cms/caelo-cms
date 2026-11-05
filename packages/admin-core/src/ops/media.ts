@@ -386,9 +386,7 @@ export const mediaListOp = defineOperation({
 export const mediaGetOp = defineOperation({
   name: "media.get",
   readScope: "request",
-  // #1452 — plugin actors read too: a language's default share image is
-  // checked against the library when it is set (§11: reads are open).
-  actorScope: ["human", "ai", "plugin", "system"],
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   // `assetId` accepts EITHER a UUID id or a meaningful slug: module HTML +
   // the admin media route now address assets by slug (`/_caelo/media/<slug>`),
