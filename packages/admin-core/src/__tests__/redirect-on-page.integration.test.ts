@@ -17,7 +17,7 @@ import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { duplicatePageTool } from "../ai/tools/duplicate-page.js";
 import { setPagesStatusManyTool } from "../ai/tools/set-pages-status-many.js";
-import type { RedirectPageConflict } from "../ops/redirect-page-conflicts.js";
+import type { RedirectPageConflict } from "../ops/content/redirect-page-conflicts.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;

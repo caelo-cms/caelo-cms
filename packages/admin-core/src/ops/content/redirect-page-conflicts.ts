@@ -17,7 +17,7 @@ import { defineOperation, textArray } from "@caelo-cms/query-api";
 import { ok, redirectFromPathSpellings } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { listPagesOp } from "./content/pages.js";
+import { listPagesOp } from "./pages.js";
 
 /** How many paths or pages one call takes. */
 const MAX_LOOKUPS = 500;

@@ -12,7 +12,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import type { RedirectPageConflict } from "../../ops/redirect-page-conflicts.js";
+import type { RedirectPageConflict } from "../../ops/content/redirect-page-conflicts.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolContext } from "./dispatch.js";
 
