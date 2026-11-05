@@ -54,6 +54,10 @@ describe("hasLanguageText", () => {
     expect(hasLanguageText("Lege einen Webhook an", terms)).toBe(true);
   });
 
+  it("recognises a term that holds a URL shape", () => {
+    expect(hasLanguageText("ASP.NET Core", neutralMatcher(["ASP.NET Core"]))).toBe(false);
+  });
+
   it("matches whole words only", () => {
     expect(hasLanguageText("Webhooks", terms)).toBe(true);
     expect(hasLanguageText("Recrawl", terms)).toBe(true);
@@ -137,6 +141,30 @@ describe("setNeutralTerms", () => {
     );
     expect(tables.neutral_terms).toHaveLength(MAX_NEUTRAL_TERMS);
   });
+
+  it("changes nothing when the call as a whole would pass the limit", async () => {
+    const full = Array.from({ length: MAX_NEUTRAL_TERMS }, (_, i) => ({
+      id: `n${i}`,
+      term: `t${i}`,
+      locale_code: "en",
+    }));
+    const tables = { neutral_terms: full };
+    await expect(setNeutralTerms(store(tables), "en", ["a", "b"], ["t0"])).rejects.toThrow(
+      /nothing was changed/,
+    );
+    expect(tables.neutral_terms).toHaveLength(MAX_NEUTRAL_TERMS);
+  });
+
+  it("removes every copy two parallel chats left behind", async () => {
+    const q = store({
+      neutral_terms: [
+        { id: "1", term: "Export", locale_code: "en" },
+        { id: "2", term: "export", locale_code: "en" },
+      ],
+    });
+    const r = await setNeutralTerms(q, "en", [], ["Export"]);
+    expect(r).toMatchObject({ removed: 1, terms: [] });
+  });
 });
 
 describe("translationGlossary", () => {
@@ -149,7 +177,7 @@ describe("translationGlossary", () => {
         { id: "4", term: "Crawl", locale_code: EVERY_LANGUAGE },
       ],
     });
-    const glossary = await translationGlossary(q, "en", "Der Webhook und der Export");
+    const glossary = await translationGlossary(q, "en", ["Der Webhook", "und der Export"]);
     expect(glossary.map((g) => g.term)).toEqual(["Webhook", "Export"]);
     expect(glossary[0]).toMatchObject({ translation: "Webhook" });
     expect(glossary[0]?.context).toContain("keep exactly as written");
@@ -162,7 +190,12 @@ describe("translationGlossary", () => {
       ],
       neutral_terms: [{ id: "1", term: "export", locale_code: EVERY_LANGUAGE }],
     });
-    const glossary = await translationGlossary(q, "en", "Der Export");
+    const glossary = await translationGlossary(q, "en", ["Der Export"]);
     expect(glossary).toEqual([{ term: "Export", translation: "Download", context: null }]);
+  });
+
+  it("needs a whole word: a term inside another word is not used", async () => {
+    const q = store({ neutral_terms: [{ id: "1", term: "API", locale_code: EVERY_LANGUAGE }] });
+    expect(await translationGlossary(q, "en", ["Das Kapital"])).toEqual([]);
   });
 });

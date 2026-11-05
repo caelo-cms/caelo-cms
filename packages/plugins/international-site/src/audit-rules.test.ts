@@ -412,6 +412,21 @@ describe("content in the right language", () => {
     expect(found.filter((f) => f.rule.startsWith("content-"))).toEqual([]);
   });
 
+  it("#1449 a neutral title, and a number in a literal or address, report nothing", () => {
+    const model = new BuildModel(
+      state({ neutralTerms: [{ id: "n1", term: "Alerts", locale_code: "*" }] }),
+    );
+    const found = pageFindings(model, [
+      facts(PRICES_DE, "/preise", "de", { title: "Alerts" }),
+      facts(PRICES_EN, "/en/pricing", "en", {
+        title: "Alerts",
+        texts: [t("1.234,56", HERO, "literal"), t("example.com/1.234,56")],
+      }),
+    ]);
+    expect(found.filter((f) => f.rule === "seo-untranslated")).toEqual([]);
+    expect(found.filter((f) => f.rule === "locale-format")).toEqual([]);
+  });
+
   it("#1449 still reports what no list covers", () => {
     const model = new BuildModel(
       state({

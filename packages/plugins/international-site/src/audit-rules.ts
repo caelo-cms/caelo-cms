@@ -40,6 +40,7 @@ import {
   neutralMatcher,
   normalizeTerm,
   termsFor,
+  withoutAddresses,
 } from "./neutral-terms.js";
 import type { GlossaryRow } from "./page-translation.js";
 
@@ -851,11 +852,16 @@ function contentLanguage(
     });
   }
 
-  const sameTitle = f.title !== null && f.title !== "" && f.title === source.title;
+  const sameTitle =
+    f.title !== null &&
+    f.title !== "" &&
+    f.title === source.title &&
+    hasLanguageText(f.title, neutral);
   const sameDescription =
     f.metaDescription !== null &&
     f.metaDescription !== "" &&
-    f.metaDescription === source.metaDescription;
+    f.metaDescription === source.metaDescription &&
+    hasLanguageText(f.metaDescription, neutral);
   if (sameTitle || sameDescription) {
     out.push({
       rule: "seo-untranslated",
@@ -937,7 +943,7 @@ function numberFormat(model: BuildModel, f: PluginAuditPageFacts): PluginAuditFi
   if (sep === null) return [];
   const wrong = sep === "." ? COMMA_DECIMAL : sep === "," ? POINT_DECIMAL : null;
   if (!wrong) return [];
-  const hit = f.texts.find((t) => wrong.test(t.text));
+  const hit = languageTexts(f).find((t) => wrong.test(withoutAddresses(t.text)));
   if (!hit) return [];
   return [
     {

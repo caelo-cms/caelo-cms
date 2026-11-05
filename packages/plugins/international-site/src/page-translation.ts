@@ -500,11 +500,14 @@ export async function preparePageTranslation(
   const alignment = alignSlots(sourceSlots, variantSlots);
 
   // Glossary + style guide for the TARGET locale.
-  const glossary = await translationGlossary(
-    q,
-    targetLocale.code,
-    JSON.stringify([sourceTitle, sourceShortTitle, sourceMetaDescription, sourceSlots]),
-  );
+  const glossary = await translationGlossary(q, targetLocale.code, [
+    sourceTitle,
+    sourceShortTitle,
+    sourceMetaDescription,
+    ...sourceSlots.flatMap((s) =>
+      Object.values(s.values).filter((v): v is string => typeof v === "string"),
+    ),
+  ]);
   const styleRows = (await q.list("style_guides", {
     locale_code: targetLocale.code,
     limit: 1,

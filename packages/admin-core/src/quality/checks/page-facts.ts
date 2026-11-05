@@ -56,8 +56,10 @@ interface Scope {
   readonly listItem: string | null;
   readonly pluginSlug: string | null;
   readonly invisible: boolean;
-  /** Inside a {@link LITERAL} element or `translate="no"`. */
-  readonly literal: boolean;
+  /** Inside a {@link LITERAL} element. */
+  readonly code: boolean;
+  /** The `translate` state: `no` holds until a descendant says `yes`. */
+  readonly noTranslate: boolean;
 }
 
 interface OpenLink {
@@ -169,7 +171,8 @@ export function extractPageFacts(
       listItem: null,
       pluginSlug: null,
       invisible: false,
-      literal: false,
+      code: false,
+      noTranslate: false,
     };
   const addText = (raw: string, scope: Scope, source: string) => {
     const text = collapse(raw);
@@ -183,7 +186,7 @@ export function extractPageFacts(
       moduleId: scope.moduleId,
       listItem: scope.listItem,
       pluginSlug: scope.pluginSlug,
-      source: scope.literal ? "literal" : source,
+      source: scope.code || scope.noTranslate ? "literal" : source,
     });
   };
   const parser = new Parser(
@@ -191,6 +194,7 @@ export function extractPageFacts(
       onopentag(name, attrs) {
         const parent = top();
         const moduleId = attrs["data-caelo-module-id"];
+        const translate = attrs.translate?.toLowerCase();
         const scope: Scope = {
           tag: name,
           moduleId: moduleId ?? parent.moduleId,
@@ -199,8 +203,8 @@ export function extractPageFacts(
             attrs["data-caelo-list-item"] ?? (moduleId === undefined ? parent.listItem : null),
           pluginSlug: attrs["data-caelo-plugin"] ?? parent.pluginSlug,
           invisible: parent.invisible || INVISIBLE.has(name),
-          literal:
-            parent.literal || LITERAL.has(name) || (attrs.translate ?? "").toLowerCase() === "no",
+          code: parent.code || LITERAL.has(name),
+          noTranslate: translate === "no" || (translate !== "yes" && parent.noTranslate),
         };
         stack.push(scope);
         if (name === "html" && attrs.lang !== undefined) lang = attrs.lang;

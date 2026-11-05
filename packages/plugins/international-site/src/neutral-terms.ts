@@ -49,7 +49,7 @@ const URL_SHAPED = new RegExp(
     "www\\.\\S+",
     "[^\\s@]+@[^\\s@]+\\.[^\\s@]+",
     "(?<![\\p{L}\\p{N}\\/.])\\/[^\\s]*",
-    "(?<![\\p{L}\\p{N}-])[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.[a-z]{2,10}(?![\\p{L}\\p{N}])",
+    "(?<![\\p{L}\\p{N}-])[a-z0-9-]+(?:\\.[a-z0-9-]+)*\\.[a-z]{2,10}(?![\\p{L}\\p{N}])(?:\\/\\S*)?",
   ].join("|"),
   "giu",
 );
@@ -85,9 +85,14 @@ export function neutralMatcher(terms: readonly string[]): RegExp | null {
  * @param neutral - from {@link neutralMatcher}
  */
 export function hasLanguageText(text: string, neutral: RegExp | null): boolean {
-  const addressesGone = text.replace(URL_SHAPED, " ");
-  const rest = neutral === null ? addressesGone : addressesGone.replace(neutral, " ");
-  return /\p{L}.*\p{L}.*\p{L}/u.test(rest);
+  // Terms first: a term can hold a URL shape ("ASP.NET Core").
+  const termsGone = neutral === null ? text : text.replace(neutral, " ");
+  return /\p{L}.*\p{L}.*\p{L}/u.test(withoutAddresses(termsGone));
+}
+
+/** A text with its URL-shaped tokens taken out. */
+export function withoutAddresses(text: string): string {
+  return text.replace(URL_SHAPED, " ");
 }
 
 /** The terms that hold for `localeCode`: its own and the every-language ones. */
@@ -99,7 +104,7 @@ export function termsFor(rows: readonly NeutralTermRow[], localeCode: string): s
 
 /**
  * The glossary a translation into `localeCode` is given: the language's
- * entries, plus each neutral term that occurs in `sourceText` as a term that
+ * entries, plus each neutral term that occurs in `sourceTexts` as a term that
  * stays as it is. That keeps a large list out of every prompt, and it means
  * delegated translations (work items) read neutral terms the same way. An
  * entry the operator pinned for that language wins over a neutral term.
@@ -107,7 +112,7 @@ export function termsFor(rows: readonly NeutralTermRow[], localeCode: string): s
 export async function translationGlossary(
   q: PluginAdminQuery,
   localeCode: string,
-  sourceText: string,
+  sourceTexts: readonly string[],
 ): Promise<GlossaryEntry[]> {
   const pinned = (await q.list("glossary", {
     locale_code: localeCode,
@@ -119,14 +124,20 @@ export async function translationGlossary(
     context: g.context,
   }));
   const taken = new Set(glossary.map((g) => g.term.toLowerCase()));
-  const haystack = sourceText.toLowerCase();
   const neutral = (await q.list("neutral_terms", {
     anyOf: { locale_code: [localeCode, EVERY_LANGUAGE] },
     limit: MAX_NEUTRAL_TERMS,
   })) as unknown as NeutralTermRow[];
+  const matcher = neutralMatcher(neutral.map((n) => n.term));
+  if (matcher === null) return glossary;
+  const used = new Set(
+    sourceTexts.flatMap((text) =>
+      [...text.matchAll(matcher)].map((m) => normalizeTerm(m[0]).toLowerCase()),
+    ),
+  );
   for (const { term } of neutral) {
     const key = term.toLowerCase();
-    if (taken.has(key) || !haystack.includes(key)) continue;
+    if (taken.has(key) || !used.has(key)) continue;
     taken.add(key);
     glossary.push({ term, translation: term, context: NEUTRAL_CONTEXT });
   }
@@ -144,7 +155,10 @@ export interface NeutralTermsResult {
 /**
  * Add and remove terms in one scope. A term already listed in the scope is
  * left alone, and removing one that is not listed changes nothing, so a
- * repeated call is harmless. With nothing to change it only reads.
+ * repeated call is harmless. With nothing to change it only reads. The limit
+ * is checked first, because each storage call commits on its own. Two chats
+ * adding one term at once can leave it twice: the matcher reads it once, and
+ * a removal takes every copy.
  *
  * @param scope - a language code, or {@link EVERY_LANGUAGE}
  * @throws when the site would hold more than {@link MAX_NEUTRAL_TERMS}
@@ -158,39 +172,33 @@ export async function setNeutralTerms(
   const rows = (await q.list("neutral_terms", {
     limit: MAX_NEUTRAL_TERMS,
   })) as unknown as NeutralTermRow[];
-  const inScope = new Map(
-    rows.filter((r) => r.locale_code === scope).map((r) => [r.term.toLowerCase(), r]),
+  const removing = new Set(remove.map((term) => normalizeTerm(term).toLowerCase()));
+  const inScope = rows.filter((r) => r.locale_code === scope);
+  const leaving = inScope.filter((r) => removing.has(r.term.toLowerCase()));
+  const staying = new Set(
+    inScope.filter((r) => !leaving.includes(r)).map((r) => r.term.toLowerCase()),
   );
-  let removed = 0;
-  for (const term of remove) {
-    const row = inScope.get(normalizeTerm(term).toLowerCase());
-    if (!row) continue;
-    await q.delete("neutral_terms", row.id);
-    inScope.delete(row.term.toLowerCase());
-    removed += 1;
-  }
   const fresh = new Map<string, string>();
   for (const raw of add) {
     const term = normalizeTerm(raw);
-    if (term !== "" && !inScope.has(term.toLowerCase())) fresh.set(term.toLowerCase(), term);
+    if (term !== "" && !staying.has(term.toLowerCase())) fresh.set(term.toLowerCase(), term);
   }
-  const total = rows.length - removed + fresh.size;
+  const total = rows.length - leaving.length + fresh.size;
   if (total > MAX_NEUTRAL_TERMS) {
     throw new Error(
-      `set_neutral_terms: the site would hold ${total} neutral terms, the limit is ${MAX_NEUTRAL_TERMS}. Remove terms no page uses first; nothing was added.`,
+      `set_neutral_terms: the site would hold ${total} neutral terms, the limit is ${MAX_NEUTRAL_TERMS}. Remove terms no page uses first; nothing was changed.`,
     );
   }
+  for (const row of leaving) await q.delete("neutral_terms", row.id);
   const added: NeutralTermRow[] = [];
   for (const term of fresh.values()) {
     const row = (await q.insert("neutral_terms", { term, locale_code: scope })) as { id: string };
     added.push({ id: row.id, term, locale_code: scope });
   }
-  const kept = rows.filter(
-    (r) => r.locale_code !== scope || inScope.get(r.term.toLowerCase())?.id === r.id,
-  );
+  const kept = rows.filter((r) => !leaving.includes(r));
   return {
     added: added.length,
-    removed,
+    removed: new Set(leaving.map((r) => r.term.toLowerCase())).size,
     terms: [...kept, ...added].map((r) => ({ term: r.term, localeCode: r.locale_code })),
   };
 }

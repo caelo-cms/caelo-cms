@@ -465,7 +465,7 @@ export async function prepareChromeTranslation(
   const glossary = await translationGlossary(
     deps.q,
     locale.code,
-    JSON.stringify([offered, offeredLists]),
+    [...offered, ...offeredLists].flatMap((t) => t.strings.map((s) => s.text)),
   );
   const style = (
     (await deps.q.list("style_guides", { locale_code: locale.code, limit: 1 })) as unknown as {

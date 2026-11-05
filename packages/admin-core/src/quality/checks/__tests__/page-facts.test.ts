@@ -132,6 +132,8 @@ describe("extractPageFacts", () => {
           <kbd>Strg</kbd><samp>Fehler</samp><var>name</var>
           <div translate="no"><b>Screaming Frog</b><img alt="Logo" /></div>
           <p translate="yes">Normaler Text</p>
+          <div translate="no"><span translate="yes">Jetzt kaufen</span></div>
+          <div translate="yes"><code>npm test</code></div>
         </body></html>`,
       ),
       HOSTS,
@@ -149,6 +151,8 @@ describe("extractPageFacts", () => {
       "Screaming Frog": "literal",
       Logo: "literal",
       "Normaler Text": "text",
+      "Jetzt kaufen": "text",
+      "npm test": "literal",
     });
   });
 
