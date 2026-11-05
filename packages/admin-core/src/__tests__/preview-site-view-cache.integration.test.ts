@@ -20,6 +20,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { execute } from "@caelo-cms/query-api";
+import { loadSiteView } from "../site-view.js";
 import { COST_SYSTEM, type CostSite, setupCostSite } from "./_preview-cost.js";
 
 let site: CostSite;
@@ -55,6 +56,24 @@ describe("preview site-view cache (#1212)", () => {
     ).toBe(false);
     expect(site.lastStatements().some((s) => /FROM entity_changes ec/.test(s))).toBe(true);
     expect(site.lastStatements().some((s) => /site_view_generation/.test(s))).toBe(false);
+  });
+
+  it("moves a fresh view's mark forward, so a check never re-reads what an earlier one passed (#1269)", async () => {
+    const view = (tx: Parameters<typeof loadSiteView>[0]) => loadSiteView(tx, null);
+    const first = await site.adapter.withAdminTransaction(COST_SYSTEM, view);
+    // Journal rows the view's filter reads and drops: snapshot header inserts.
+    await site.asSystem(async (tx) => {
+      await tx`INSERT INTO site_snapshots (actor_id, op_kind, description)
+               SELECT ${COST_SYSTEM.actorId}::uuid, 'pages.update', 'site-view mark ' || i
+                 FROM generate_series(1, 50) i`;
+    });
+    const second = await site.adapter.withAdminTransaction(COST_SYSTEM, view);
+    // Served from the cache (same rows), under the mark of the second check.
+    expect(second.pages).toBe(first.pages);
+    expect(second.mark.snapshot).not.toBe(first.mark.snapshot);
+    const third = await site.adapter.withAdminTransaction(COST_SYSTEM, view);
+    expect(third.pages).toBe(first.pages);
+    expect(third.mark.snapshot).not.toBe(first.mark.snapshot);
   });
 
   it("shows a raw write with no actor in the next preview", async () => {

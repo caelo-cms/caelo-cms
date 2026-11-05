@@ -130,6 +130,16 @@ async function writeProbeRow(): Promise<string> {
   return rowId;
 }
 
+/**
+ * Fresh statistics for the journal, as autovacuum keeps them in production:
+ * which index the planner takes depends on how large a share of the
+ * journal the asked kind is, and a test database's statistics are whatever
+ * an earlier run left (rows of truncated tests, or none of the flood).
+ */
+async function analyzeJournal(): Promise<void> {
+  await asSystem((tx) => tx`ANALYZE entity_changes`);
+}
+
 /** Removes the probe rows again (system may delete journal rows, as GC does). */
 async function dropProbeRows(): Promise<void> {
   await asSystem((tx) => tx`DELETE FROM entity_changes WHERE kind = ${PROBE_KIND}`);
@@ -577,6 +587,8 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
     // "module" here measured this file's database instead: the tests before
     // it write mostly modules, and for a kind that is most of the journal
     // the primary key reads about as much, so the planner may take it.)
+    // The statistics are refreshed after the flood for the same reason:
+    // the plan must follow this journal, not what an earlier run left.
     const filter = { kinds: [PROBE_KIND] };
     try {
       const { mark } = await adapter.withAdminTransaction(SYS, (tx) =>
@@ -588,6 +600,7 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
           SELECT gen_random_uuid(), ${`/${PFX}other-kind-`} || i, '/x', ${ACTOR}::uuid
             FROM generate_series(1, 4000) i`),
       );
+      await analyzeJournal();
       const buffers: number[] = [];
       const check = await adapter.withAdminTransaction(SYS, async (tx) => {
         await tx.execute(sql`SET LOCAL enable_seqscan = off`);
@@ -624,6 +637,7 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
             FROM generate_series(1, 4000) i`),
       );
       const probeId = await writeProbeRow();
+      await analyzeJournal();
       const buffers: number[] = [];
       const batch = await adapter.withAdminTransaction(SYS, async (tx) => {
         await tx.execute(sql`SET LOCAL enable_seqscan = off`);

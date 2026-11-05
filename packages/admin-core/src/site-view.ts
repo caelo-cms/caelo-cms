@@ -214,9 +214,17 @@ export async function loadSiteView(
   // is unseen by the mark and invalidates once).
   const { fresh, mark } = await checkJournalMark(tx, hit?.mark ?? null, filter);
   if (hit && fresh) {
+    // Still exact now, so it is the view a read at this mark would give:
+    // keep the new mark (#1269). The next check then costs what was written
+    // since this one, not everything since the view was read — the journal
+    // rows the filter reads and then drops (another kind's flood, every
+    // snapshot header a write inserts, other branches' writes) would
+    // otherwise pile up behind an old mark on every render. A mark that saw
+    // this transaction's own uncommitted writes is never stored.
+    const current = mark.dirty ? hit : { ...hit, mark };
     cache.delete(key);
-    cache.set(key, hit);
-    return hit;
+    cache.set(key, current);
+    return current;
   }
   const view = await readSiteView(tx, branchId, mark);
   // A read that saw its own transaction's uncommitted writes is not
