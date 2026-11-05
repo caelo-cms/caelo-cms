@@ -205,6 +205,43 @@ describe("ensureOperatorAccessSync", () => {
     );
   });
 
+  it("#1120 — on plain gcp the job addresses the backend by its numeric id", async () => {
+    const { run, calls } = freshInstall();
+    const withId: typeof run = async (args) =>
+      args.slice(0, 3).join(" ") === "compute backend-services describe"
+        ? ok("6948347336569833444\n")
+        : run(args);
+    const r = await ensureOperatorAccessSync(
+      {
+        ...target,
+        resource: { kind: "backend-services", service: "caelo-production-admin-backend-1a2b" },
+      },
+      { run: withId, sleep: async () => {} },
+    );
+    expect(r.ok).toBe(true);
+    const deploy = calls.find((c) => c.slice(0, 3).join(" ") === "run jobs deploy") ?? [];
+    expect(deploy.find((a) => a.startsWith("--set-env-vars="))).toContain(
+      "CAELO_OPERATOR_ACCESS_IAP_WEB=compute/services/6948347336569833444|",
+    );
+  });
+
+  it("#1120 — refuses a backend whose id cannot be read instead of deploying by name", async () => {
+    const { run, calls } = freshInstall();
+    const noId: typeof run = async (args) =>
+      args.slice(0, 3).join(" ") === "compute backend-services describe"
+        ? fail("PERMISSION_DENIED")
+        : run(args);
+    const r = await ensureOperatorAccessSync(
+      {
+        ...target,
+        resource: { kind: "backend-services", service: "caelo-production-admin-backend-1a2b" },
+      },
+      { run: noId, sleep: async () => {} },
+    );
+    expect(r.ok).toBe(false);
+    expect(calls.some((c) => c.slice(0, 3).join(" ") === "run jobs deploy")).toBe(false);
+  });
+
   it("#1140 — tells the job which service accounts keep IAP access (the scheduler tick)", async () => {
     const { run, calls } = freshInstall();
     await ensureOperatorAccessSync(
