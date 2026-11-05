@@ -128,11 +128,12 @@ export function templateClasses(html: string): Set<string> {
 
 /**
  * Can `built`, a class holding {@link PLACEHOLDER_MARK}, render as `cls`?
- * The text around the value must match, and the value must start and end
- * at a boundary: `s{{group}}` renders `s0`, `card--{{tone}}` renders
- * `card--dark`, but no value of `s{{group}}` is meant to spell `sidebar`.
- * A class that is only a value could be any class, so it proves nothing:
- * counting it would hide every dead rule of a module with one such class.
+ * All text around the values must match in order, and each value must
+ * start and end at a boundary: `s{{group}}` renders `s0`, `card--{{tone}}`
+ * renders `card--dark`, but no value of `s{{group}}` is meant to spell
+ * `sidebar`. A class with no fixed start or end could be any class, so it
+ * proves nothing: counting it would hide every dead rule of a module with
+ * one such class.
  */
 export function fitsBuiltClass(built: string, cls: string): boolean {
   const parts = built.split(PLACEHOLDER_MARK);
@@ -141,9 +142,21 @@ export function fitsBuiltClass(built: string, cls: string): boolean {
   if (head === "" && tail === "") return false;
   if (cls.length < head.length + tail.length) return false;
   if (!cls.startsWith(head) || !cls.endsWith(tail)) return false;
-  const value = cls.slice(head.length, cls.length - tail.length);
   const midWord = (a: string, b: string) => /[a-z]$/.test(a) && /^[a-z]/.test(b);
-  return !midWord(head, value) && !midWord(value, tail);
+  const end = cls.length - tail.length;
+  let at = head.length;
+  let before = head;
+  for (const text of parts.slice(1, -1)) {
+    if (text === "") continue;
+    const found = cls.indexOf(text, at);
+    if (found < 0 || found + text.length > end) return false;
+    const value = cls.slice(at, found);
+    if (midWord(before, value) || midWord(value, text)) return false;
+    at = found + text.length;
+    before = text;
+  }
+  const value = cls.slice(at, end);
+  return !midWord(before, value) && !midWord(value, tail);
 }
 
 /** Class-list methods whose string arguments are class names. */
@@ -207,8 +220,12 @@ export function scriptClassNames(scripts: readonly string[]): Set<string> {
 
 /** A class token; a hole of {@link staticText} is read as one more word character. */
 const CLASS_WORD = /^-?[_a-zA-Z][\w-]*$/;
-/** A `class` attribute in markup text; its closing quote may be past the end of the string. */
-const CLASS_ATTRIBUTE = /\bclass\s*=\s*(?:"([^"]*)|'([^']*))/gi;
+/**
+ * A `class` attribute in markup text, not the end of another attribute's
+ * name (`data-class`) or text inside its value. Its closing quote may be
+ * past the end of the string.
+ */
+const CLASS_ATTRIBUTE = /(?:^|\s)class\s*=\s*(?:"([^"]*)|'([^']*))/gi;
 /** Expressions that can hold markup text. */
 const STRING_NODES = new Set(["Literal", "TemplateLiteral", "BinaryExpression"]);
 /**
@@ -233,22 +250,25 @@ function staticText(root: unknown, scopes: JsScopes, visited = new Set<Node>()):
   const resolving = new Set<Node>();
   let nodesLeft = MAX_TEXT_NODES;
   let charsLeft = MAX_TEXT_CHARS;
+  const take = (text: string): string => {
+    if (text.length > charsLeft) return PLACEHOLDER_MARK;
+    charsLeft -= text.length;
+    return text;
+  };
   const read = (v: unknown): string => {
     if (!isNode(v) || nodesLeft <= 0) return PLACEHOLDER_MARK;
     nodesLeft--;
     visited.add(v);
     switch (v.type) {
-      case "Literal": {
-        if (typeof v.value !== "string" || v.value.length > charsLeft) return PLACEHOLDER_MARK;
-        charsLeft -= v.value.length;
-        return v.value;
-      }
+      case "Literal":
+        return typeof v.value === "string" ? take(v.value) : PLACEHOLDER_MARK;
       case "TemplateLiteral": {
         const quasis = v.quasis as { value: { cooked: string | null } }[];
         const expressions = v.expressions as unknown[];
         return quasis
           .map(
-            (q, i) => (q.value.cooked ?? "") + (i < expressions.length ? read(expressions[i]) : ""),
+            (q, i) =>
+              take(q.value.cooked ?? "") + (i < expressions.length ? read(expressions[i]) : ""),
           )
           .join("");
       }

@@ -397,6 +397,23 @@ describe("structure/unused-css", () => {
       expect(reported(".row-a{x:1}.row-b{x:1}", js)).toEqual(["row-b"]);
     });
 
+    it("an attribute that only ends in class, or holds it in its value, is no class", () => {
+      const js = [
+        "a.innerHTML = '<div data-class=\"ghost\"></div>';",
+        "b.innerHTML = '<div aria-label=\\'class=\"ghost\"\\'></div>';",
+      ].join("\n");
+      expect(reported(".ghost{x:1}", js)).toEqual(["ghost"]);
+    });
+
+    it("text in template literals counts toward the bound too", () => {
+      const big = "x".repeat(32 * 1024);
+      const chain = Array.from({ length: 40 }, (_, i) => `var a${i + 1} = a${i} + a${i};`);
+      const js = `var a0 = \`${big}\`;${chain.join("")}el.className = a40;`;
+      const started = performance.now();
+      expect(reported(".gone{x:1}", js)).toEqual(["gone"]);
+      expect(performance.now() - started).toBeLessThan(2000);
+    });
+
     it("variables that double their text cannot hang the audit", () => {
       const chain = Array.from({ length: 80 }, (_, i) => `var a${i + 1} = a${i} + a${i};`);
       const js = `var a0 = 'x';${chain.join("")}el.className = a80;`;
@@ -440,6 +457,17 @@ describe("structure/unused-css", () => {
     it("the field's text does not reach into an unrelated class", () => {
       // `s{{x}}` renders s0, s1; no field value spells .sidebar.
       expect(reported('<i class="s{{x}}"></i>', ".sidebar{x:1}.s1{x:1}")).toEqual(["sidebar"]);
+    });
+
+    it("every fixed part of a class with several fields must match, in order", () => {
+      const html = '<i class="card--{{tone}}-icon-{{size}}"></i>';
+      expect(
+        reported(html, ".card--dark-icon-l{x:1}.card--removed{x:1}.card--l-icon{x:1}"),
+      ).toEqual(["card--removed", "card--l-icon"]);
+    });
+
+    it("no fixed start or end proves nothing, whatever sits between two fields", () => {
+      expect(reported('<i class="{{a}}-{{b}}"></i>', ".dead-rule{x:1}")).toEqual(["dead-rule"]);
     });
 
     it("a class that is only a field could be anything, so it proves nothing", () => {
