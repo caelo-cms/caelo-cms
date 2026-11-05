@@ -60,7 +60,7 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
   // #1453 — international-site asks where the content it is about to write renders.
   {
     op: "content_instances.rendered_on_many",
-    ctx: "chat",
+    ctx: "system",
     plugins: ["international-site"],
     input: (r) => ({ ids: [r.instanceId] }),
   },

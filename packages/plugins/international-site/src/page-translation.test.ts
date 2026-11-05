@@ -431,6 +431,40 @@ describe("writePageTranslation", () => {
     expect(writes(d)[0]?.[0]).toBe("placement.fork_paths");
   });
 
+  it("#1453 — asks where content renders in batches the op takes", async () => {
+    const big = placements({ nestedTitle: "Karte" }).map((pl) =>
+      pl.position !== 2
+        ? pl
+        : {
+            ...pl,
+            nested: Array.from({ length: 1001 }, (_, i) => ({
+              path: `cards[${i}]`,
+              contentInstanceId: `ci-card-${i}`,
+              moduleSlug: "card",
+              fields: CARD_FIELDS,
+              values: { card_title: `Karte ${i}` },
+            })),
+          },
+    );
+    const slots = pageSlotsOf(big, LIST_TYPES);
+    const p: PreparedPageTranslation = {
+      ...prepared(),
+      sourceSlots: slots.slots,
+      variantSlots: slots.slots,
+      sourceBases: slots.bases,
+      variantBases: slots.bases,
+      alignment: alignSlots(slots.slots, slots.slots),
+    };
+    const d = deps();
+    await writePageTranslation(d.deps, p, {
+      slots: ids(p)
+        .slice(3)
+        .map((slot) => ({ slot, values: { card_title: "Card" } })),
+    });
+    const reads = d.calls.filter(([op]) => op === "content_instances.rendered_on_many");
+    expect(reads.map(([, input]) => (input as { ids: string[] }).ids.length)).toEqual([1000, 2]);
+  });
+
   it("#1453 — an answer that repeats the current text writes and asks nothing", async () => {
     const p = prepared();
     const [form, , , card] = ids(p);

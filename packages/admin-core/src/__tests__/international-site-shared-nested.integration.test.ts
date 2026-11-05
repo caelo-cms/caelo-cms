@@ -582,4 +582,101 @@ describe("#1453 — a translation update keeps shared instances of the target la
     expect(live.root).toBe(root);
     expect(idsOf(live)["items[0]>tool"]).toBe(tool);
   }, 60_000);
+
+  it("two slots showing one instance both land in it", async () => {
+    const tool = await instance(toolModule, { limits: "Limits", updated: "As of 1" });
+    const de = await pageWith(
+      await listOf([
+        await cardOf(
+          "Notiz A",
+          await instance(toolModule, { limits: "Erste", updated: "Stand A" }),
+        ),
+        await cardOf(
+          "Notiz B",
+          await instance(toolModule, { limits: "Zweite", updated: "Stand B" }),
+        ),
+      ]),
+    );
+    const en = await pageWith(
+      await listOf([await cardOf("Note A", tool), await cardOf("Note B", tool)]),
+    );
+    await linkEnglish(de, en);
+
+    await applyUpdate(en, (slot) => ({
+      [slot("Erste")]: { limits: "New limits" },
+      [slot("Zweite")]: { updated: "New date" },
+    }));
+
+    expect(await valuesOf(tool)).toEqual({ limits: "New limits", updated: "New date" });
+  }, 60_000);
+
+  it("copying one of two references to an instance leaves the other", async () => {
+    const shared = await cardOf(
+      "Notiz A",
+      await instance(toolModule, { limits: "Grenzen", updated: "Stand 1" }),
+    );
+    const de = await pageWith(
+      await listOf([
+        shared,
+        await cardOf("Notiz B", await instance(toolModule, { limits: "B", updated: "Stand 2" })),
+      ]),
+    );
+    const en = await pageWith(await listOf([shared, shared]));
+    await linkEnglish(de, en);
+
+    await applyUpdate(en, (slot) => ({ [slot("Notiz A")]: { card_note: "Note A" } }));
+
+    const ids = idsOf(await readPage(en));
+    expect(ids["items[0]"]).not.toBe(shared);
+    expect(ids["items[1]"]).toBe(shared);
+    expect(await valuesOf(shared)).toMatchObject({ card_note: "Notiz A" });
+    expect(await valuesOf(ids["items[0]"] as string)).toMatchObject({ card_note: "Note A" });
+  }, 60_000);
+
+  it("a refused parent rewrite rolls the whole fork back", async () => {
+    const tool = await instance(toolModule, { limits: "Grenzen", updated: "Stand 1" });
+    const card = await cardOf("Notiz", tool);
+    const page = await pageWith(await listOf([card]));
+    const chat = await core<{ chatSessionId: string; chatBranchId: string }>(
+      "chat.create_session",
+      { title: `${TAG} experiment`, isolation: "experiment" },
+    );
+    // A sibling task on the branch holds the card.
+    const holder: ExecutionContext = {
+      ...SYS,
+      chatBranchId: chat.chatBranchId,
+      chatTaskId: chat.chatSessionId,
+    };
+    const held = await execute(registry, adapter, holder, "content_instances.set_values", {
+      id: card,
+      values: await valuesOf(card),
+    });
+    if (!held.ok) throw new Error(JSON.stringify(held.error));
+    const countInstances = () =>
+      sqlSystem(async (tx) => {
+        const rows = (await tx.unsafe(
+          `SELECT count(*)::int AS n FROM content_instances WHERE module_id = '${toolModule}'`,
+        )) as { n: number }[];
+        return rows[0]?.n;
+      });
+    const before = await countInstances();
+
+    const refused = await execute(
+      registry,
+      adapter,
+      { ...holder, chatTaskId: crypto.randomUUID() },
+      "placement.fork_paths",
+      {
+        pageId: page,
+        blockName: "content",
+        position: 0,
+        root: false,
+        nestedPaths: ["items[0]>tool"],
+        alsoChangesPages: [],
+      },
+    );
+
+    expect(refused.ok).toBe(false);
+    expect(await countInstances()).toBe(before);
+  }, 60_000);
 });

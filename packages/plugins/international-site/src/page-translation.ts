@@ -47,8 +47,8 @@ import {
   translationJsonSchema,
 } from "./translation-contract.js";
 
-/** Rows of one `page_variants` read (`anyOf` takes at most 1000 values). */
-const PAGE_VARIANT_READ = 1000;
+/** Ids of one bulk read: what `anyOf` and `rendered_on_many` take at most. */
+const READ_BATCH = 1000;
 
 /** What a page translation needs from the plugin. */
 export interface TranslationDeps {
@@ -700,10 +700,10 @@ async function languagesOf(
 ): Promise<(pageId: string) => string | null> {
   const defaultCode = [...deps.locales.values()].find((l) => l.is_default)?.code ?? null;
   const byPage = new Map<string, string>();
-  for (let i = 0; i < pageIds.length; i += PAGE_VARIANT_READ) {
+  for (let i = 0; i < pageIds.length; i += READ_BATCH) {
     const rows = (await deps.q.list("page_variants", {
-      anyOf: { page_id: pageIds.slice(i, i + PAGE_VARIANT_READ) },
-      limit: PAGE_VARIANT_READ,
+      anyOf: { page_id: pageIds.slice(i, i + READ_BATCH) },
+      limit: READ_BATCH,
     })) as unknown as PageVariantRow[];
     for (const r of rows) byPage.set(r.page_id, r.locale_code);
   }
@@ -737,9 +737,15 @@ async function sharingOf(
     }
   }
   if (ids.size === 0) return { copied: new Set(), otherPages: [] };
-  const { instances } = await deps.cms.call<{
-    instances: { id: string; pageIds: string[]; siteWide: boolean }[];
-  }>("content_instances.rendered_on_many", { ids: [...ids] });
+  const instances: { id: string; pageIds: string[]; siteWide: boolean }[] = [];
+  const idList = [...ids];
+  for (let i = 0; i < idList.length; i += READ_BATCH) {
+    const read = await deps.cms.call<{ instances: typeof instances }>(
+      "content_instances.rendered_on_many",
+      { ids: idList.slice(i, i + READ_BATCH) },
+    );
+    instances.push(...read.instances);
+  }
   const pages = [...new Set(instances.flatMap((i) => i.pageIds))].filter(
     (id) => id !== p.variantPageId,
   );
@@ -831,13 +837,28 @@ export async function writePageTranslation(
     forks.size === 0
       ? p.variantBases
       : (await loadPageSlots(deps, p.variantPageId, await loadListTypes(deps))).bases;
+  // Two slots can show one instance, and a write replaces its values: the
+  // slots' texts are merged per instance, or the later would undo the
+  // earlier.
+  const writes = new Map<string, { slot: ContentSlot; values: Record<string, unknown> }>();
   for (const c of changes) {
     const current = bases.get(c.variantKey);
     if (!current) throw new Error(`slot ${c.variantKey} vanished from the variant`);
+    const earlier = writes.get(current.contentInstanceId);
+    writes.set(current.contentInstanceId, {
+      slot: earlier?.slot ?? c.variant,
+      values: translatedValues(
+        earlier ? { ...current, values: earlier.values } : current,
+        c.source,
+        c.strings,
+      ),
+    });
+  }
+  for (const { slot, values } of writes.values()) {
     await cms.call("page_module_content.set", {
-      ...placementOf(c.variant),
-      ...(c.variant.nestedPath === undefined ? {} : { nestedPath: c.variant.nestedPath }),
-      contentValues: translatedValues(current, c.source, c.strings),
+      ...placementOf(slot),
+      ...(slot.nestedPath === undefined ? {} : { nestedPath: slot.nestedPath }),
+      contentValues: values,
       alsoChangesPages: otherPages,
     });
   }

@@ -19,8 +19,8 @@
  * instead of trusting the caller's earlier read.
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
-import { err, ok, rewriteNestedRefs } from "@caelo-cms/shared";
+import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
+import { err, ok } from "@caelo-cms/shared";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
@@ -28,7 +28,7 @@ import { emitSnapshot, loadPageLayoutStateWithBranchOverlay } from "../../snapsh
 import { insertContentInstanceCopies, loadInstancesInView } from "./content-instance-clone.js";
 import { loadContentInstanceReach } from "./content-instance-reach.js";
 import { rebindPlacementToFork, setContentInstanceValuesOp } from "./content-instances.js";
-import { loadNestedContent } from "./page-content-tree.js";
+import { loadNestedContent, rewriteNestedRefsAt } from "./page-content-tree.js";
 
 /** Other pages a write may change. Bounded by the site size target (50k pages). */
 export const alsoChangesPagesSchema = z.array(z.string().uuid()).max(50_000);
@@ -58,8 +58,8 @@ export async function rendersBeyond(
 export const contentInstancesRenderedOnManyOp = defineOperation({
   name: "content_instances.rendered_on_many",
   readScope: "request",
-  // Why plugin + system only: a building block for a plugin that writes
-  // shared content. The AI reads the same through get_content_instance and
+  // Why system-only (plugins included): a building block for a plugin that
+  // writes shared content. The AI reads the same through get_content_instance and
   // list_content_instances, which carry the context to decide with.
   actorScope: ["plugin", "system"],
   database: "cms_admin",
@@ -118,14 +118,15 @@ const forkPathsInput = z
  * instance reached by several named paths gets one copy, so sharing
  * inside the tree is kept, as in a deep copy.
  *
- * A parent outside the named paths keeps its reference, also when it
- * lists the same instance: only the named chains move.
+ * Only the named references move: a parent outside the named paths keeps
+ * its reference, and so does a parent's other reference to the same
+ * instance.
  */
 export const forkPlacementPathsOp = defineOperation({
   name: "placement.fork_paths",
   readScope: "request",
-  // Why plugin + system only: which instances to copy is a decision the
-  // caller needs reach and language data for. The AI forks a placement
+  // Why system-only (plugins included): which instances to copy is a
+  // decision the caller needs reach and language data for. The AI forks a placement
   // whole through fork_placement_content, and edits a shared instance on
   // purpose through set_content_instance_values_many.
   actorScope: ["plugin", "system"],
@@ -166,14 +167,15 @@ export const forkPlacementPathsOp = defineOperation({
       );
     }
 
-    // The named chains as edges between instances: one instance reached
-    // twice is one node, so it is copied and rewritten once.
+    // The named chains as edges between instances, each edge the
+    // reference's path inside its parent: one instance reached twice is
+    // one node, so it is copied and rewritten once.
     const tree = await loadNestedContent(tx, branchId, input.pageId, [
       { key: "root", contentInstanceId: rootId, values: root.values },
     ]);
     const idAt = new Map((tree.get("root") ?? []).map((n) => [n.path, n.contentInstanceId]));
     const named = new Set(input.root ? [rootId] : []);
-    const childrenOf = new Map<string, Set<string>>();
+    const childrenOf = new Map<string, Map<string, string>>();
     for (const path of input.nestedPaths) {
       let parent = rootId;
       let prefix = "";
@@ -185,8 +187,8 @@ export const forkPlacementPathsOp = defineOperation({
             `no nested content at "${prefix}" of placement ${input.blockName}#${input.position} — page_module_content.list_for_page lists the nested paths`,
           );
         }
-        const children = childrenOf.get(parent) ?? new Set<string>();
-        children.add(id);
+        const children = childrenOf.get(parent) ?? new Map<string, string>();
+        children.set(step, id);
         childrenOf.set(parent, children);
         parent = id;
       }
@@ -205,13 +207,14 @@ export const forkPlacementPathsOp = defineOperation({
           `nested content instance ${id} is ${instance ? "deleted" : "missing"} but still referenced from a module field; remove or replace that reference before copying`,
         );
       }
-      const moved = new Set([...(childrenOf.get(id) ?? [])].filter((child) => copyOf.has(child)));
+      const moved = new Map(
+        [...(childrenOf.get(id) ?? [])].flatMap(([step, child]) => {
+          const childCopy = copyOf.get(child);
+          return childCopy === undefined ? [] : [[step, childCopy] as const];
+        }),
+      );
       const values =
-        moved.size === 0
-          ? instance.values
-          : rewriteNestedRefs(instance.values, (child) =>
-              moved.has(child) ? (copyOf.get(child) as string) : child,
-            );
+        moved.size === 0 ? instance.values : rewriteNestedRefsAt(instance.values, moved);
       const copy = copyOf.get(id);
       if (copy !== undefined) copies.push({ id: copy, moduleId: instance.moduleId, values });
       else if (moved.size > 0) rewrites.push({ id, values });
@@ -232,7 +235,8 @@ export const forkPlacementPathsOp = defineOperation({
     const snapshotEntities = await insertContentInstanceCopies(tx, ctx, copies);
     for (const r of rewrites) {
       const written = await setContentInstanceValuesOp.handler(ctx, r, tx);
-      if (!written.ok) return written;
+      // Rows are written by now: `return err` would commit them.
+      if (!written.ok) throw new OperationAbortError(written.error);
     }
     const boundId = copyOf.get(rootId) ?? rootId;
     const entities = input.root
