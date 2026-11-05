@@ -48,14 +48,6 @@ VALUES
    10000, 50000, 1000, 12500,
    100000, 5,
    '2026-01-01T00:00:00Z', NULL, NULL)
-ON CONFLICT (provider, model, operation_type, effective_from) DO UPDATE
-  SET input_microcents             = EXCLUDED.input_microcents,
-      output_microcents            = EXCLUDED.output_microcents,
-      cached_microcents            = EXCLUDED.cached_microcents,
-      cache_creation_microcents    = EXCLUDED.cache_creation_microcents,
-      long_prompt_threshold_tokens = EXCLUDED.long_prompt_threshold_tokens,
-      long_prompt_multiplier       = EXCLUDED.long_prompt_multiplier,
-      valid_from                   = EXCLUDED.valid_from,
-      valid_to                     = EXCLUDED.valid_to;
+ON CONFLICT (provider, model, operation_type, effective_from) DO NOTHING; -- an Owner's row stays
 
 COMMIT;

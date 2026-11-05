@@ -497,6 +497,44 @@ describe("Claude Haiku pricing (migration 0637, #1477)", () => {
     expect(half.ok).toBe(false);
   });
 
+  it("the proposal preview shows the long-prompt card the Owner approves", async () => {
+    const propose = async (extra: Record<string, unknown>, model: string) => {
+      const p = value<{
+        proposalId: string;
+        preview: { changes: Array<{ to: { longPrompt: string } }>; summary: string };
+      }>(
+        await execute(registry, adapter, AI, "owner_settings.propose_set_ai_pricing", {
+          rows: [
+            {
+              provider: "anthropic",
+              model,
+              operationType: "text",
+              inputMicrocents: 20_000,
+              outputMicrocents: 100_000,
+              cachedMicrocents: 2_000,
+              ...extra,
+            },
+          ],
+        }),
+      );
+      value(
+        await execute(registry, adapter, AI, "pending_proposals.cancel", {
+          proposalId: p.proposalId,
+        }),
+      );
+      return p.preview;
+    };
+    const explicit = await propose(
+      { longPromptThresholdTokens: 200_000, longPromptMultiplier: 2 },
+      "preview-new-model",
+    );
+    expect(explicit.changes[0]?.to.longPrompt).toBe("every rate x2 over 200000 prompt tokens");
+    expect(explicit.summary).toContain("x2 over 200000");
+    // Omitted on a tiered model: it carries over, so the preview says so.
+    const carried = await propose({}, "claude-haiku-5-5");
+    expect(carried.changes[0]?.to.longPrompt).toBe("every rate x5 over 100000 prompt tokens");
+  });
+
   it("a new rate from the Owner form, a new row, keeps the long-prompt card", async () => {
     // The form sends no effectiveFrom, so nothing conflicts and the row is new.
     const form = {

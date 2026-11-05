@@ -223,6 +223,8 @@ export const proposeSetAiPricingOp = defineOperation({
       outputMicrocents: number | null;
       cachedMicrocents: number | null;
       cacheCreationMicrocents?: number | null;
+      longPromptThresholdTokens?: number | null;
+      longPromptMultiplier?: number | null;
     }) =>
       r.operationType === "image"
         ? { perImage: `${usdExact(r.inputMicrocents)}/image` }
@@ -231,6 +233,10 @@ export const proposeSetAiPricingOp = defineOperation({
             output: perMTok(r.outputMicrocents),
             cacheRead: perMTok(r.cachedMicrocents),
             cacheWrite: perMTok(r.cacheCreationMicrocents),
+            longPrompt:
+              r.longPromptThresholdTokens == null
+                ? "none"
+                : `every rate x${r.longPromptMultiplier} over ${r.longPromptThresholdTokens} prompt tokens`,
           };
     const changes = input.rows.map((r) => {
       const cur = byKey.get(`${r.provider}/${r.model}/${r.operationType}`);
@@ -239,7 +245,16 @@ export const proposeSetAiPricingOp = defineOperation({
         model: r.model,
         operationType: r.operationType,
         from: cur ? rate(cur) : null,
-        to: rate(r),
+        // An omitted pair carries over on apply (ai_pricing.set), so show that.
+        to: rate(
+          r.longPromptThresholdTokens === undefined && cur
+            ? {
+                ...r,
+                longPromptThresholdTokens: cur.longPromptThresholdTokens,
+                longPromptMultiplier: cur.longPromptMultiplier,
+              }
+            : r,
+        ),
         effectiveFrom: r.effectiveFrom ?? "on approval",
         validFrom: r.validFrom ?? null,
         validTo: r.validTo ?? null,
@@ -248,7 +263,7 @@ export const proposeSetAiPricingOp = defineOperation({
     const summary = changes
       .map(
         (c) =>
-          `${c.provider}/${c.model} (${c.operationType}) ${"perImage" in c.to ? c.to.perImage : `input ${c.to.input}`}`,
+          `${c.provider}/${c.model} (${c.operationType}) ${"perImage" in c.to ? c.to.perImage : `input ${c.to.input}${c.to.longPrompt === "none" ? "" : `, ${c.to.longPrompt}`}`}`,
       )
       .join("; ");
     return queueProposal(
