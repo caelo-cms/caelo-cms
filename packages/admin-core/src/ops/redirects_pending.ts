@@ -165,16 +165,20 @@ async function externalRedirectProblems(
   return problems;
 }
 
-/** What each from path answers now, in every spelling: the change a click makes. */
+/**
+ * What each from path answers now, in every spelling, with its status: the
+ * change a click makes, and what must still hold when it is made.
+ */
 async function currentTargets(
   tx: TransactionRunner,
   input: ExternalRedirectsInput,
 ): Promise<Record<string, string | null>> {
   const spellings = input.redirects.flatMap((r) => redirectFromPathSpellings(r.fromPath));
   const rows = (await tx.execute(sql`
-    SELECT from_path, to_path FROM redirects WHERE from_path = ANY(${textArray(spellings)})
-  `)) as unknown as { from_path: string; to_path: string }[];
-  const byPath = new Map(rows.map((r) => [r.from_path, r.to_path]));
+    SELECT from_path, to_path, status_code FROM redirects
+    WHERE from_path = ANY(${textArray(spellings)})
+  `)) as unknown as { from_path: string; to_path: string; status_code: number }[];
+  const byPath = new Map(rows.map((r) => [r.from_path, `${r.to_path} (${r.status_code})`]));
   return Object.fromEntries(
     input.redirects.map((r) => [
       r.fromPath,

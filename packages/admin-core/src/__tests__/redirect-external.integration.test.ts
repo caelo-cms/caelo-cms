@@ -246,6 +246,14 @@ describe("an approved rule among the others", () => {
     expect((await rowsAt(`${PFX}-old`))[0]?.to_path).toBe("/changed");
   });
 
+  it("a changed status alone also refuses the approval", async () => {
+    await run(SYSTEM, "redirects.create", { fromPath: `${PFX}-st`, toPath: "/a", statusCode: 301 });
+    const proposalId = await propose(`${PFX}-st`);
+    await run(SYSTEM, "redirects.create", { fromPath: `${PFX}-st`, toPath: "/a", statusCode: 302 });
+    const stale = await run(SYSTEM, "redirects.execute_proposal", { proposalId });
+    expect(message(stale)).toContain("changed after this proposal");
+  });
+
   it("replaces the other spelling of the address, so the plan stays buildable", async () => {
     await run(SYSTEM, "redirects.create", { fromPath: `${PFX}-slash/`, toPath: "/x" });
     await run(SYSTEM, "redirects.execute_proposal", { proposalId: await propose(`${PFX}-slash`) });

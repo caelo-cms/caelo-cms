@@ -170,6 +170,8 @@ describe("externalRedirectProviderIssue (#1358)", () => {
     expect(externalRedirectProviderIssue("https://a.example/x", "gcp")).toBeNull();
     expect(externalRedirectProviderIssue("https://a.example/x?y=1", "gcp")).toContain("query");
     expect(externalRedirectProviderIssue("https://a.example/x#y", "gcp")).toContain("fragment");
+    expect(externalRedirectProviderIssue("https://a.example/x?", "gcp")).toContain("query");
+    expect(externalRedirectProviderIssue("https://a.example/x#", "gcp")).toContain("fragment");
   });
 
   it("refuses on aws and azure with the issue, and throws on an unknown provider", () => {

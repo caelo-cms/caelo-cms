@@ -148,8 +148,9 @@ export function externalRedirectProviderIssue(url: string, provider?: string): s
     case "gcp-firebase":
       return null;
     case "gcp": {
-      const { search, hash } = new URL(url);
-      return search === "" && hash === ""
+      // The literal characters, as the plan decides: `/book?` has an empty
+      // `URL.search`, and one row the emitter refuses stops the whole sync.
+      return !/[?#]/.test(url)
         ? null
         : `The GCP load balancer serves an external redirect without a query string or fragment. Use an address without '?…' and '#…', or a short link at the destination.`;
     }
