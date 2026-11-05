@@ -46,9 +46,7 @@ export const FK_EXEMPTIONS: readonly FkExemption[] = [
       "No operation deletes an actor: an actor is the identity audit rows, snapshots and proposals are attributed to, and deleting a user keeps it. The RI lookup on these columns never runs outside test fixtures, so ~100 indexes would cost every insert for nothing (#1291 decision).",
   },
   ...[
-    "cms_admin site_defaults(default_template_id) -> templates",
     "cms_admin site_defaults(default_layout_id) -> layouts",
-    "cms_admin site_defaults(default_page_type_id) -> page_types",
     "cms_admin site_defaults(home_page_id) -> pages",
     "cms_admin site_defaults(not_found_page_id) -> pages",
   ].map((key) => ({
