@@ -11,14 +11,8 @@
  * redirect without a serving layer in front.
  */
 
-import { defineOperation, textArray, uuidArray } from "@caelo-cms/query-api";
-import {
-  err,
-  ok,
-  redirectFromPathSpellings,
-  redirectTargetIssue,
-  redirectTargetPathSchema,
-} from "@caelo-cms/shared";
+import { defineOperation } from "@caelo-cms/query-api";
+import { err, ok, redirectTargetIssue, redirectTargetPathSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -204,86 +198,6 @@ export const lookupRedirectOp = defineOperation({
         createdBy: r.created_by,
         createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
       },
-    });
-  },
-});
-
-/** How many paths or pages one `redirects.page_conflicts` call takes. */
-const MAX_CONFLICT_LOOKUPS = 500;
-
-/** A redirect rule on the URL of a page (#1447). */
-export const redirectPageConflictSchema = z.object({
-  /** The stored from path, as `bulk_delete_redirects` takes it. */
-  fromPath: z.string(),
-  toPath: z.string(),
-  statusCode: z.number().int(),
-  pageId: z.string(),
-  pagePath: z.string(),
-  pageTitle: z.string(),
-  pageStatus: z.string(),
-});
-
-export type RedirectPageConflict = z.infer<typeof redirectPageConflictSchema>;
-
-/**
- * #1447 — redirect rules sitting on the URL of a page, by the pages or by the
- * paths just written. A rule never beats a page a build serves (the redirect
- * plan leaves it out on every provider), but until a Stage or Publish live
- * ships the page the rule answers the URL, and once the page is built the
- * rule does nothing. Write tools read this to say so at once; a Stage reports
- * what is left (`links/redirect-shadows-page`). O(request): both directions
- * walk the unique indexes of `redirects.from_path` and `pages.current_path`.
- */
-export const pageConflictsRedirectOp = defineOperation({
-  name: "redirects.page_conflicts",
-  readScope: "request",
-  actorScope: ["human", "ai", "plugin", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      pageIds: z.array(z.string().uuid()).max(MAX_CONFLICT_LOOKUPS).optional(),
-      paths: z.array(z.string().min(1).max(500)).max(MAX_CONFLICT_LOOKUPS).optional(),
-    })
-    .strict()
-    .refine(
-      (v) => Number(!!v.pageIds) + Number(!!v.paths) === 1,
-      "exactly one of pageIds / paths is required",
-    ),
-  output: z.object({ conflicts: z.array(redirectPageConflictSchema) }),
-  handler: async (ctx, input, tx) => {
-    const wanted = input.pageIds
-      ? sql`p.id = ANY(${uuidArray(input.pageIds)})`
-      : sql`p.current_path = ANY(${textArray(
-          (input.paths ?? []).map((p) => redirectFromPathSpellings(p)[0] as string),
-        )})`;
-    const rows = (await tx.execute(sql`
-      SELECT r.from_path, r.to_path, r.status_code,
-             p.id::text AS page_id, p.current_path, p.title, p.status
-      FROM pages p
-      JOIN redirects r ON r.from_path = p.current_path OR r.from_path = p.current_path || '/'
-      WHERE ${wanted}
-        AND p.deleted_at IS NULL
-        AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId ?? null}::uuid)
-      ORDER BY p.current_path, r.from_path
-    `)) as unknown as {
-      from_path: string;
-      to_path: string;
-      status_code: number;
-      page_id: string;
-      current_path: string;
-      title: string;
-      status: string;
-    }[];
-    return ok({
-      conflicts: rows.map((r) => ({
-        fromPath: r.from_path,
-        toPath: r.to_path,
-        statusCode: r.status_code,
-        pageId: r.page_id,
-        pagePath: r.current_path,
-        pageTitle: r.title,
-        pageStatus: r.status,
-      })),
     });
   },
 });

@@ -12,7 +12,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import type { RedirectPageConflict } from "../../ops/redirects.js";
+import type { RedirectPageConflict } from "../../ops/redirect-page-conflicts.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolContext } from "./dispatch.js";
 
@@ -46,17 +46,17 @@ export async function redirectOnPageNote(
   return `\n${"paths" in lookup ? describeRulesOnPages(conflicts) : describePagesOnRules(conflicts)}`;
 }
 
-/** The note after a page write. Exported for the unit tests. */
-export function describePagesOnRules(conflicts: readonly RedirectPageConflict[]): string {
+/** The note after a page write. */
+function describePagesOnRules(conflicts: readonly RedirectPageConflict[]): string {
   return (
     `A redirect rule sits on the URL of ${pagesOf(conflicts)}: ${rulesOf(conflicts)}. ` +
-    "The rule answers that URL until a Stage (on staging) or Publish live (on the live site) ships the page, so the page looks unreachable until then. Once a build serves the page, the page wins and the rule does nothing; Stage reports the pair as an error. " +
+    "The rule answers that URL until a build ships the page, so the page looks unreachable until then: a draft needs set_pages_status_many first, then a Stage for staging and Publish live for the live site. Once a build serves the page, the page wins and the rule does nothing; Stage reports the pair as an error. " +
     `Next step: if the page stays at this URL, ${deleteCall(conflicts)}; if the rule should keep the URL, give the page another slug (update_pages_many).`
   );
 }
 
-/** The note after a redirect write. Exported for the unit tests. */
-export function describeRulesOnPages(conflicts: readonly RedirectPageConflict[]): string {
+/** The note after a redirect write. */
+function describeRulesOnPages(conflicts: readonly RedirectPageConflict[]): string {
   return (
     `A redirect rule sits on the URL of ${pagesOf(conflicts)}: ${rulesOf(conflicts)}. ` +
     "A page wins over a rule: once a build serves the page, the rule does nothing, and Stage reports the pair as an error. " +

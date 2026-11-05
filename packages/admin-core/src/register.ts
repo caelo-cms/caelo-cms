@@ -493,6 +493,7 @@ import {
 import { getAuditOp, listAcceptancesOp, listAuditsOp } from "./ops/quality/read.js";
 import { recordAuditResultOp } from "./ops/quality/record-result.js";
 import { redirectSyncStatusOp, syncRedirectsProviderOp } from "./ops/redirect_sync.js";
+import { pageConflictsRedirectOp } from "./ops/redirect-page-conflicts.js";
 import {
   createRedirectOp,
   createRedirectsManyOp,
@@ -500,7 +501,6 @@ import {
   deleteRedirectsManyOp,
   listRedirectsOp,
   lookupRedirectOp,
-  pageConflictsRedirectOp,
 } from "./ops/redirects.js";
 import {
   executeRoleProposalOp,

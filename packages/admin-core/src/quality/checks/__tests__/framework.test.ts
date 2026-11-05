@@ -297,8 +297,8 @@ describe("fetchStagedPages", () => {
   });
 
   describe("a redirect on the page's own URL (#1447)", () => {
-    const answeredFrom = (url: string) => {
-      const res = new Response("<p>target</p>");
+    const answeredFrom = (url: string, status = 200) => {
+      const res = new Response("<p>target</p>", { status });
       Object.defineProperty(res, "redirected", { value: true });
       Object.defineProperty(res, "url", { value: url });
       return (async () => res) as unknown as typeof fetch;
@@ -310,6 +310,16 @@ describe("fetchStagedPages", () => {
         answeredFrom("http://s/guides/old/"),
       );
       expect(r.pages[0]?.redirectedTo).toBe("/guides/old/");
+    });
+
+    it("names the redirect when its target does not answer", async () => {
+      const r = await fetchStagedPages(
+        [{ pageId: P1, path: "/new", url: "http://s/new/" }],
+        answeredFrom("http://s/gone/", 404),
+      );
+      expect(r.pages).toEqual([]);
+      expect(r.errors[0]?.message).toContain("staging redirects /new to /gone/");
+      expect(r.errors[0]?.message).toContain("bulk_delete_redirects");
     });
 
     it("does not count the host's hop to the slash form", async () => {

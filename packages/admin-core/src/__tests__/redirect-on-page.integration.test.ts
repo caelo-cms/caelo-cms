@@ -17,7 +17,7 @@ import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { duplicatePageTool } from "../ai/tools/duplicate-page.js";
 import { setPagesStatusManyTool } from "../ai/tools/set-pages-status-many.js";
-import type { RedirectPageConflict } from "../ops/redirects.js";
+import type { RedirectPageConflict } from "../ops/redirect-page-conflicts.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -86,6 +86,7 @@ async function wipe(): Promise<void> {
   await q(async (tx) => {
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}-%`} OR to_path LIKE ${`%${PFX}-%`}`;
     await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}-%`}`;
+    await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${PFX}-%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${`${PFX}-%`})`;
     await tx`DELETE FROM templates WHERE slug LIKE ${`${PFX}-%`}`;
   });
@@ -147,6 +148,59 @@ describe("redirects.page_conflicts", () => {
     expect((await conflicts({ paths: [`${path}/`] })).map((c) => c.pageId)).toEqual([page]);
     expect(await conflicts({ pageIds: [clear] })).toEqual([]);
     expect(await conflicts({ paths: [`/${PFX}-nothing-here`] })).toEqual([]);
+  });
+
+  it("names both rows when both spellings are stored", async () => {
+    const page = await makePage("both");
+    await addRule(`/${PFX}-both`);
+    await addRule(`/${PFX}-both/`);
+    expect((await conflicts({ pageIds: [page] })).map((c) => c.fromPath)).toEqual([
+      `/${PFX}-both`,
+      `/${PFX}-both/`,
+    ]);
+  });
+
+  it("leaves the 404 page out: its own path is free for a rule", async () => {
+    const page = await makePage("notfound");
+    await addRule(`/${PFX}-notfound`);
+    const set = await execute(registry, adapter, SYSTEM, "pages.set_not_found_page", {
+      pageId: page,
+    });
+    if (!set.ok) throw new Error(JSON.stringify(set.error));
+    try {
+      expect(await conflicts({ pageIds: [page] })).toEqual([]);
+    } finally {
+      await q((tx) => tx`UPDATE site_defaults SET not_found_page_id = NULL WHERE id = 1`);
+    }
+  });
+
+  it("sees a chat's pending rename: the URL it is leaving, and the one it takes", async () => {
+    const page = await makePage("branch-old");
+    const session = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      title: `${PFX}-branch`,
+    });
+    if (!session.ok) throw new Error(JSON.stringify(session.error));
+    const { chatSessionId, chatBranchId } = session.value as {
+      chatSessionId: string;
+      chatBranchId: string;
+    };
+    const chat: ExecutionContext = { ...SYSTEM, chatBranchId, chatTaskId: chatSessionId };
+    const renamed = await execute(registry, adapter, chat, "pages.update", {
+      pageId: page,
+      slug: `${PFX}-branch-new`,
+    });
+    if (!renamed.ok) throw new Error(JSON.stringify(renamed.error));
+    await addRule(`/${PFX}-branch-old`);
+    await addRule(`/${PFX}-branch-new/`);
+
+    const forChat = async (input: unknown) => {
+      const r = await execute(registry, adapter, chat, "redirects.page_conflicts", input);
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      return (r.value as { conflicts: RedirectPageConflict[] }).conflicts.map((c) => c.fromPath);
+    };
+    expect(await forChat({ pageIds: [page] })).toEqual([`/${PFX}-branch-new/`]);
+    expect(await forChat({ paths: [`/${PFX}-branch-new`] })).toEqual([`/${PFX}-branch-new/`]);
+    expect(await forChat({ paths: [`/${PFX}-branch-old`] })).toEqual([]);
   });
 
   it("refuses a call naming neither or both", async () => {

@@ -1876,7 +1876,7 @@ export default definePlugin<PluginContextTier1>({
         ...linked,
         ...(conflicts.length > 0
           ? {
-              redirectOnThisUrl: `The redirect ${conflicts.map((c) => `${c.fromPath} -> ${c.toPath}`).join(", ")} sits on this URL. It answers there until a build ships the page; then the page wins and Stage reports the pair as an error. If the page stays here, remove it: bulk_delete_redirects({ fromPaths: ${JSON.stringify(conflicts.map((c) => c.fromPath))} }).`,
+              redirectOnThisUrl: `The redirect ${conflicts.map((c) => `${c.fromPath} -> ${c.toPath}`).join(", ")} sits on this URL. It answers there until the page is published and a build ships it; then the page wins and Stage reports the pair as an error. If the page stays here, remove it: bulk_delete_redirects({ fromPaths: ${JSON.stringify(conflicts.map((c) => c.fromPath))} }).`,
             }
           : {}),
         // #644 — the clone still carries the source language; name the

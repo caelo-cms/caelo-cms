@@ -64,7 +64,7 @@ import { MAX_FINDINGS_PER_CALL } from "./runner.js";
 export const LINKS_CHECK_ID = "links";
 
 /** A rule on a page's URL, or staging redirecting a page away (#1447). */
-export const REDIRECT_SHADOWS_PAGE = "links/redirect-shadows-page";
+const REDIRECT_SHADOWS_PAGE = "links/redirect-shadows-page";
 
 /** One call may probe this long: hundreds of asset URLs over the network. */
 export const LINKS_CHECK_TIMEOUT_MS = 240_000;
@@ -210,7 +210,7 @@ export async function linkFindings(
     layouts: input.layouts,
   };
   const findings = [
-    ...redirectsOnPages(pages, redirects),
+    ...redirectsOnPages(pages, input.redirects),
     ...linkProblems(occurrences, resolutions, ctx, input.reportedDraftLinks),
     ...orphanPages(pages, occurrences, resolutions),
   ];
@@ -411,32 +411,42 @@ function messageOf(ruleId: string, ref: string, r: Resolution): string {
  */
 function redirectsOnPages(
   pages: readonly StagedPage[],
-  redirects: ReadonlyMap<string, RedirectRow>,
+  redirects: readonly RedirectRow[],
 ): Finding[] {
+  // Every row per key: `/x` and `/x/` can both be stored, and deleting one
+  // would leave the same finding on the next Stage.
+  const rowsByKey = new Map<string, RedirectRow[]>();
+  for (const r of redirects) {
+    const key = pathKey(r.fromPath);
+    rowsByKey.set(key, [...(rowsByKey.get(key) ?? []), r]);
+  }
   return pages.flatMap((page): Finding[] => {
     if (page.notFoundPage) return [];
-    const rule = redirects.get(pathKey(page.path));
-    if (!rule && page.redirectedTo === undefined) return [];
-    const ruleText = rule ? `"${rule.fromPath}" → "${rule.toPath}" (${rule.statusCode})` : null;
+    const rules = rowsByKey.get(pathKey(page.path)) ?? [];
+    if (rules.length === 0 && page.redirectedTo === undefined) return [];
+    const ruleText = rules
+      .map((r) => `"${r.fromPath}" → "${r.toPath}" (${r.statusCode})`)
+      .join(", ");
     const message =
       page.redirectedTo !== undefined
-        ? `Redirect instead of this page: staging answers ${page.path} with a redirect to ${page.redirectedTo}, so visitors never reach it${ruleText ? ` (rule ${ruleText})` : ""}.`
-        : `Redirect on this page's URL: the rule ${ruleText} sits on ${page.path}. The staged page wins, so the rule does nothing here, but it still answers on the live site until Publish live and again whenever this page leaves the build.`;
+        ? `Redirect instead of this page: staging answers ${page.path} with a redirect to ${page.redirectedTo}, so visitors never reach it${ruleText ? ` (${ruleText})` : ""}.`
+        : `Redirect on this page's URL: ${ruleText} sits on ${page.path}. The staged page wins, so the rule does nothing here, but it still answers on the live site until Publish live and again whenever this page leaves the build.`;
     return [
       {
         ruleId: REDIRECT_SHADOWS_PAGE,
         severity: "error",
         pageId: page.pageId,
         message: clip(message),
-        fix: rule
-          ? {
-              tool: "bulk_delete_redirects",
-              hint: `if the page stays at this URL, delete the rule with fromPaths ["${rule.fromPath}"]; if the URL should redirect, set the page to draft (set_pages_status_many) or move it (move_pages)`,
-            }
-          : {
-              tool: "stage_changes",
-              hint: "no rule of the redirects table answers this URL, so the hosting is behind the table: Stage again; if it stays, check Settings → Redirects for a failed push",
-            },
+        fix:
+          rules.length > 0
+            ? {
+                tool: "bulk_delete_redirects",
+                hint: `if the page stays at this URL, delete the rule with fromPaths ${JSON.stringify(rules.map((r) => r.fromPath))}; if the URL should redirect, set the page to draft (set_pages_status_many) or move it (move_pages)`,
+              }
+            : {
+                tool: "stage_changes",
+                hint: "no rule of the redirects table answers this URL, so the hosting is behind the table: Stage again; if it stays, check Settings → Redirects for a failed push",
+              },
       },
     ];
   });

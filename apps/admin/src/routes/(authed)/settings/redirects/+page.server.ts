@@ -62,8 +62,8 @@ export const actions: Actions = {
           : "create failed";
       return fail(400, { error: message });
     }
-    // #1447 — a page at this URL is shown instead of the redirect once it is
-    // published; say so now rather than at the next Stage.
+    // #1447 — a page at this URL replaces the redirect once it is published
+    // (it may still be a draft); say so now rather than at the next Stage.
     const onPages = await execute(registry, adapter, locals.ctx, "redirects.page_conflicts", {
       paths: [fromPath],
     });
@@ -74,7 +74,7 @@ export const actions: Actions = {
     return {
       ok: true,
       message: page
-        ? `Redirect ${fromPath} → ${toPath} created, but the page "${page.pageTitle}" uses this URL. Published pages win over redirects, so visitors see the page. Remove the redirect or move the page.`
+        ? `Redirect ${fromPath} → ${toPath} created, but the page "${page.pageTitle}" uses this URL. Once that page is published, visitors see it instead of the redirect. Remove the redirect or move the page.`
         : `Redirect ${fromPath} → ${toPath} created.`,
     };
   },

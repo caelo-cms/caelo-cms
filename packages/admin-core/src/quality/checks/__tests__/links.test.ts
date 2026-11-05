@@ -700,6 +700,18 @@ describe("links/redirect-shadows-page (#1447)", () => {
     expect(findings[0]?.fix?.hint).toContain(`["${fromPath}"]`);
   });
 
+  it("names both rows when both spellings are stored, so one fix clears the finding", async () => {
+    const findings = await run(
+      [page(1, "/", ""), page(2, "/about", "")],
+      [
+        { fromPath: "/about", toPath: "/guides/old", statusCode: 301 },
+        { fromPath: "/about/", toPath: "/guides/old", statusCode: 301 },
+      ],
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.fix?.hint).toContain('["/about","/about/"]');
+  });
+
   it("is silent for a rule on a path no page uses", async () => {
     expect(
       await run([page(1, "/", "")], [{ fromPath: "/old", toPath: "/", statusCode: 301 }]),
