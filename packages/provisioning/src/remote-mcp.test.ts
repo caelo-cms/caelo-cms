@@ -909,9 +909,8 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     });
     const again = await ensureMcpAuthProxyBackend(target, present);
     expect(again).toEqual({ ok: true, backend: PROXY_BACKEND, done: [] });
-  });
 
-  it("attaches the policy to a backend an earlier run left without one", async () => {
+    // A backend an earlier run left without its policy gets it attached.
     const bare = fakeGcloud({
       "compute network-endpoint-groups describe": ok("caelo-production-mcp-auth-proxy-neg\n"),
       "compute backend-services describe": ok(
