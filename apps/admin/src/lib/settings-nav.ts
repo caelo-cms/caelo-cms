@@ -36,6 +36,7 @@ export type SettingsIcon =
   | "circle-arrow-up"
   | "coins"
   | "download"
+  | "file-text"
   | "gauge"
   | "globe"
   | "image"
@@ -206,6 +207,14 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
             permission: "settings.write",
           },
         ],
+      },
+      {
+        href: "/settings/static-files",
+        label: "Static files",
+        description: "Small data files at an address of your choice, like robots.txt.",
+        permission: "settings.write",
+        icon: "file-text",
+        keywords: ["json", "txt", "well-known", "verification", "ads.txt", "security.txt"],
       },
       {
         href: "/settings/dns",

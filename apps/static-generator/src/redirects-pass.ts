@@ -24,9 +24,11 @@ import {
   buildRedirectPlan,
   CADDY_REDIRECTS_FILE,
   emitCaddyRedirects,
+  emitCaddyStaticFileHeaders,
   formatRedirectsFile,
   type RedirectPageUrlStyle,
   type RedirectTableRow,
+  type StaticFileManifestEntry,
 } from "@caelo-cms/shared";
 
 /**
@@ -39,6 +41,8 @@ export function redirectFiles(args: {
   readonly pageUrlStyle: RedirectPageUrlStyle;
   /** Every path the build serves (#1271: known without reading the build directory). */
   readonly servedFiles: ReadonlySet<string>;
+  /** #1461 — their Content-Types travel in the Caddy snippet. */
+  readonly staticFiles: readonly StaticFileManifestEntry[];
 }): { name: string; content: string }[] {
   const table = formatRedirectsFile(args.rows);
   const plan = buildRedirectPlan({
@@ -49,6 +53,9 @@ export function redirectFiles(args: {
   return [
     { name: "_redirects", content: table },
     { name: "_redirects.cloudflare", content: table },
-    { name: CADDY_REDIRECTS_FILE, content: emitCaddyRedirects(plan) },
+    {
+      name: CADDY_REDIRECTS_FILE,
+      content: emitCaddyRedirects(plan) + emitCaddyStaticFileHeaders(args.staticFiles),
+    },
   ];
 }

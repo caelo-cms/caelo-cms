@@ -45,8 +45,11 @@ import { dirname, join, resolve, sep } from "node:path";
 import {
   CADDY_REDIRECTS_FILE,
   emitCaddyRedirects,
+  emitCaddyStaticFileHeaders,
   formatRedirectsFile,
   isSafeStagedPath,
+  parseStaticFilesManifest,
+  STATIC_FILES_MANIFEST_FILE,
   type StagedManifest,
 } from "@caelo-cms/shared";
 import { BUILD_INTERNAL_FILES } from "@caelo-cms/static-generator";
@@ -187,7 +190,16 @@ export const selfHostedStaticPublisher: StaticPublisher = {
       );
     }
     const sync = planRedirectSync(rows, target.pageUrlStyle ?? "directory", served);
-    const snippet = emitCaddyRedirects(sync.plan);
+    // #1461 — the snippet also carries the static files' Content-Types. A
+    // build from before static files has no sidecar and no such files.
+    const staticFiles = await readFile(join(currentDir, STATIC_FILES_MANIFEST_FILE), "utf8").then(
+      parseStaticFilesManifest,
+      (e: NodeJS.ErrnoException) => {
+        if (e.code === "ENOENT") return [];
+        throw e;
+      },
+    );
+    const snippet = emitCaddyRedirects(sync.plan) + emitCaddyStaticFileHeaders(staticFiles);
     const table = formatRedirectsFile(rows);
     const files: readonly (readonly [string, string])[] = [
       ["_redirects", table],

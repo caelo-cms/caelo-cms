@@ -513,7 +513,7 @@ class GcsBuildUpload implements BuildUpload {
     const contentType = file.contentType ?? contentTypeFor(file.relPath);
     const crc = crc32cBase64(body);
     this.#entries.set(file.relPath, { type: contentType, hash: crc });
-    if (this.#manifest?.files[file.relPath] === crc) {
+    if (!file.alwaysUpload && this.#manifest?.files[file.relPath] === crc) {
       // Identical to what's currently live (see the class comment).
       this.#skipped += 1;
       return;

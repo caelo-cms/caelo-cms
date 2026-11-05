@@ -89,6 +89,7 @@ export * from "./staged-site.js";
 export * from "./staging-gate.js";
 export * from "./staging-plugin-stub.js";
 export * from "./static-cache-policy.js";
+export * from "./static-files.js";
 export * from "./static-security-headers.js";
 export * from "./strip-cdata.js";
 export * from "./subagents.js";

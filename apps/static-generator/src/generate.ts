@@ -41,7 +41,7 @@ import {
   injectPluginAssets,
   withAssetContent,
 } from "@caelo-cms/plugin-host";
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   ComposeError,
@@ -53,6 +53,7 @@ import {
   createListRenderContext,
   FAVICON_VARIANT,
   fontUnresolvableMarker,
+  formatStaticFilesManifest,
   isRasterImageMime,
   LIST_QUERY_MAX_LIMIT,
   type ListRenderContext,
@@ -67,6 +68,10 @@ import {
   redirectTargetIssue,
   renderEveryPage,
   runBatched,
+  STATIC_FILES_MANIFEST_FILE,
+  type StaticFileContentType,
+  staticFileCollisions,
+  staticFileContentTypeHeader,
   type ThemeDocument,
   themeFaviconRendition,
   trimSlashes,
@@ -916,8 +921,9 @@ async function buildSite(
     relPath: string,
     content: string,
     contentType?: string,
+    options: { readonly alwaysUpload?: true } = {},
   ): Promise<void> => {
-    await output.write({ relPath, content, ...(contentType ? { contentType } : {}) });
+    await output.write({ relPath, content, ...(contentType ? { contentType } : {}), ...options });
     servedPaths.add(relPath);
   };
 
@@ -1307,6 +1313,33 @@ async function buildSite(
   );
   fileCount += 1;
 
+  // #1461 — the site's static data files, last among the served files so
+  // they are checked against everything the build wrote.
+  const staticFiles = await loadStaticFiles(tx);
+  assertStaticFilesFit(staticFiles, {
+    pagePaths: await loadAllPagePaths(tx, statusFilter),
+    redirectFromPaths: (
+      (await tx.execute(sql`
+        SELECT from_path FROM redirects WHERE from_path = ANY(${textArray(
+          staticFiles.flatMap((f) => [f.path, `${f.path}/`]),
+        )})
+      `)) as unknown as { from_path: string }[]
+    ).map((r) => r.from_path),
+    servedPaths,
+  });
+  for (const file of staticFiles) {
+    const relPath = file.path.slice(1);
+    contentTypeOverrides[relPath] = staticFileContentTypeHeader(file.content_type);
+    await writeBuildFile(relPath, file.body, contentTypeOverrides[relPath], { alwaysUpload: true });
+  }
+  fileCount += staticFiles.length;
+  const staticFileEntries = staticFiles.map((f) => ({
+    path: f.path.slice(1),
+    contentType: staticFileContentTypeHeader(f.content_type),
+  }));
+  await writeBuildFile(STATIC_FILES_MANIFEST_FILE, formatStaticFilesManifest(staticFileEntries));
+  fileCount += 1;
+
   const manifest = {
     target: target.name,
     env: target.env,
@@ -1386,6 +1419,7 @@ async function buildSite(
     pageUrlStyle,
     // Every file the build serves: what it wrote and what it references.
     servedFiles: new Set([...servedPaths, ...assets.map((a) => a.path)]),
+    staticFiles: staticFileEntries,
   })) {
     await writeBuildFile(file.name, file.content);
     fileCount += 1;
@@ -1435,6 +1469,59 @@ async function buildSite(
     unpublishedLinkTargets,
     truncatedLists,
   };
+}
+
+/** #1461 — one row of `static_files` as the build ships it. */
+interface StaticFileRow {
+  readonly path: string;
+  readonly content_type: StaticFileContentType;
+  readonly body: string;
+}
+
+/** #1461 — the site's static files. The table is capped, so this stays small. */
+async function loadStaticFiles(tx: TransactionRunner): Promise<StaticFileRow[]> {
+  return (await tx.execute(sql`
+    SELECT path, content_type, body FROM static_files WHERE deleted_at IS NULL ORDER BY path
+  `)) as unknown as StaticFileRow[];
+}
+
+/**
+ * #1461 — refuse a build in which a static file and something else want the
+ * same URL. The write ops check what they can see, but a page can reach the
+ * path later: a slug change, a merge from another chat's branch, a page
+ * below an extension-less file, a plugin's URL. Writing on would overwrite a
+ * page or serve a broken tree, so the build stops and names the way out.
+ *
+ * @throws with the next step when a file collides.
+ */
+export function assertStaticFilesFit(
+  files: readonly { readonly path: string }[],
+  site: {
+    readonly pagePaths: readonly string[];
+    readonly redirectFromPaths: readonly string[];
+    readonly servedPaths: ReadonlySet<string>;
+  },
+): void {
+  const problems = files.flatMap(({ path }) => {
+    const rel = path.slice(1);
+    const taken = [...site.servedPaths].some(
+      (s) => s === rel || s.startsWith(`${rel}/`) || rel.startsWith(`${s}/`),
+    );
+    return [
+      ...staticFileCollisions(path, {
+        pagePaths: site.pagePaths,
+        redirectFromPaths: site.redirectFromPaths,
+        filePaths: files.map((f) => f.path),
+      }),
+      ...(taken ? [`the build already writes a file at ${path}, or a folder there`] : []),
+    ];
+  });
+  if (problems.length > 0) {
+    throw new Error(
+      `static-generator: ${problems.length} static file conflict(s): ${[...new Set(problems)].join("; ")}. ` +
+        "Next step: change the page's address (AI tool: update_pages_many), delete the redirect (bulk_delete_redirects), or remove or move the file (propose_delete_static_files, Settings → Static files), then Stage again.",
+    );
+  }
 }
 
 /** #1257 — every page path of the build's env (the follow-up collision check). */

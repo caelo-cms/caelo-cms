@@ -148,6 +148,12 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                chat_session_id::text
           FROM domain_pending_actions WHERE status = 'pending'
         UNION ALL
+        -- #1461 — static files on the site's domain.
+        SELECT 'static_files', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'summary', 'static file'),
+               chat_session_id::text
+          FROM static_file_pending_actions WHERE status = 'pending'
+        UNION ALL
         -- v0.11.0 (#45) — themes primitive.
         SELECT 'themes', kind, id::text, proposed_by::text, created_at,
                COALESCE(preview->>'slug', preview->>'targetSlug',
@@ -249,6 +255,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'mcp_tokens' FROM mcp_token_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'templates' FROM template_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'domains' FROM domain_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'static_files' FROM static_file_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'themes' FROM theme_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'site_defaults' FROM site_defaults_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'owner_settings' FROM owner_settings_pending_actions WHERE status = 'pending'

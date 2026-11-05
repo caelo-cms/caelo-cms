@@ -37,6 +37,7 @@ const BASELINE_ROUTES = [
   "/settings/deployments",
   "/settings/quality",
   "/settings/domains",
+  "/settings/static-files",
   "/settings/costs",
   "/settings/ai",
   "/settings/updates",

@@ -138,6 +138,7 @@ interface SubprocessFile {
   /** base64 */
   body: string;
   contentType?: string;
+  alwaysUpload?: true;
 }
 /** #605 — the generator asks the admin's plugin host (build-services.ts). */
 interface SubprocessPluginCall {
@@ -373,6 +374,7 @@ async function runGeneratorProcess(
           relPath: file.relPath,
           body: Buffer.from(file.body, "base64"),
           ...(file.contentType ? { contentType: file.contentType } : {}),
+          ...(file.alwaysUpload ? { alwaysUpload: true } : {}),
         });
         reply = { kind: "file-ack", id: file.id, ok: true };
       } catch (e) {

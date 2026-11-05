@@ -11,7 +11,7 @@
  * field-by-field translation.
  */
 
-import type { ListItem, ListTypeDef, PageTypeDef } from "@caelo-cms/shared";
+import type { ListItem, ListTypeDef, PageTypeDef, StaticFileContentType } from "@caelo-cms/shared";
 
 export type StateSchemaVersion = 1;
 
@@ -168,6 +168,21 @@ export interface ContentInstanceState {
   readonly slug: string | null;
   readonly displayName: string | null;
   readonly values: Record<string, unknown>;
+  readonly version: number;
+  readonly deletedAt: string | null;
+}
+
+/**
+ * Issue #1461 — whole state of one `static_files` row. `path` never changes
+ * on a row (a rename is a delete plus a new path), so restoring a state can
+ * never collide with another row.
+ */
+export interface StaticFileState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly path: string;
+  readonly contentType: StaticFileContentType;
+  readonly body: string;
+  readonly purpose: string;
   readonly version: number;
   readonly deletedAt: string | null;
 }

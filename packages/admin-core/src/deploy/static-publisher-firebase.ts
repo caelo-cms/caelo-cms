@@ -45,7 +45,10 @@ import {
   IMMUTABLE_CACHE_CONTROL,
   NOSNIFF,
   PhaseTimer,
+  parseStaticFilesManifest,
   runBatched,
+  STATIC_FILES_MANIFEST_FILE,
+  type StaticFileManifestEntry,
   SVG_DOCUMENT_CSP,
   SVG_PATH_PATTERN,
 } from "@caelo-cms/shared";
@@ -653,6 +656,8 @@ class FirebaseBuildUpload implements BuildUpload {
   #uploadUrl: string | null = null;
   #uploaded = 0;
   #redirectsFile: string | null = null;
+  /** #1461 — the build's static files; their Content-Types ride the version config. */
+  #staticFiles: readonly StaticFileManifestEntry[] | null = null;
   #state: "open" | "finished" | "aborted" = "open";
   /** #1330 — a Stage's mirror into the staging slot it fills; null for other targets. */
   readonly #slot: GcsSlotSync | null;
@@ -696,6 +701,9 @@ class FirebaseBuildUpload implements BuildUpload {
     // The redirects ride the version config, built at finish().
     if (file.relPath === "_redirects")
       this.#redirectsFile = Buffer.from(file.body).toString("utf8");
+    if (file.relPath === STATIC_FILES_MANIFEST_FILE) {
+      this.#staticFiles = parseStaticFilesManifest(Buffer.from(file.body).toString("utf8"));
+    }
     const raw = Buffer.from(file.body);
     const { body, sha256 } = await gzipAndHashBytes(raw);
     // #1330 — the slot keeps the plain bytes; the gzip hash names them.
@@ -825,10 +833,16 @@ class FirebaseBuildUpload implements BuildUpload {
         "static-publisher-firebase: the build has no _redirects file. The static generator writes it on every build; re-run the build instead of deploying a partial one.",
       );
     }
+    if (this.#staticFiles === null) {
+      throw new Error(
+        `static-publisher-firebase: the build has no ${STATIC_FILES_MANIFEST_FILE}. The static generator writes it on every build; re-run the build instead of deploying a partial one.`,
+      );
+    }
     const served = new Set([...this.#paths, ...assets.map((a) => a.path)]);
     const config = siteConfig(
       target,
       firebaseRedirectsFromFile(this.#redirectsFile, target.pageUrlStyle ?? "directory", served),
+      this.#staticFiles,
     );
     // Config and status in one update, as firebase-tools finalizes.
     await firebaseFetch(
@@ -895,11 +909,34 @@ class FirebaseBuildUpload implements BuildUpload {
  * comments, ratings) would 404 against the static site (the v0.3.0 launch
  * blocker the v0.3.1 audit found).
  */
-function siteConfig(target: DeployTarget, redirects: unknown): FirebaseVersionConfig {
+function siteConfig(
+  target: DeployTarget,
+  redirects: unknown,
+  staticFiles: readonly StaticFileManifestEntry[],
+): FirebaseVersionConfig {
   return withTargetRobotsHeader(
-    { redirects, rewrites: [currentGatewayRewrite()], headers: VERSION_CONFIG_HEADERS },
+    {
+      redirects,
+      rewrites: [currentGatewayRewrite()],
+      headers: [...VERSION_CONFIG_HEADERS, ...staticFileHeaderEntries(staticFiles)],
+    },
     target.robotsDefault,
   );
+}
+
+/**
+ * #1461 — one Content-Type entry per static file. Hosting types a file by
+ * its name, which says nothing for `/.well-known/apple-app-site-association`
+ * and cannot tell `text/xml` from `application/xml`. The path rules refuse
+ * `.ico`, so no file meets the other Content-Type entry.
+ */
+export function staticFileHeaderEntries(
+  files: readonly StaticFileManifestEntry[],
+): { regex: string; headers: { "Content-Type": string } }[] {
+  return files.map((f) => ({
+    regex: `^/${f.path.replace(/[.+*?^$()[\]{}|\\]/g, "\\$&")}$`,
+    headers: { "Content-Type": f.contentType },
+  }));
 }
 
 /**
