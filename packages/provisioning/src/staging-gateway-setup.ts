@@ -11,8 +11,9 @@
  *   - `gcp-firebase` (E13 a): a second Firebase Hosting site with one `**`
  *     rewrite to the staging gateway, the staging host as that site's
  *     custom domain. The Cloud Run domain mapping that sent the staging
- *     host to the old gateway service (#650) is deleted: nothing may lead
- *     to the staged files but the gate.
+ *     host to the old gateway service (#650) is deleted once the host's DNS
+ *     points at the new site (#1455): nothing may lead to the staged files
+ *     but the gate.
  *   - `gcp`: the staging host gets its own host rule on the site's load
  *     balancer, routed in full to the staging gateway's serverless NEG and
  *     backend (the gateway's Cloud Armor policy as an extra layer, E3), and
@@ -33,13 +34,8 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  DB_PUBLIC_POOL_MAX_ENV,
-  DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
-  GATEWAY_POOL_MAX,
-  isIpLiteral,
-} from "@caelo-cms/shared";
-import { gcloud as defaultGcloud } from "./gcloud.js";
+import { DEFAULT_STAGING_GATEWAY_MAX_INSTANCES, isIpLiteral } from "@caelo-cms/shared";
+import { gcloud as defaultGcloud, isGcloudNotFound } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
   firebaseStagingSiteId,
@@ -50,11 +46,16 @@ import {
   stagingGatewayEdgeNames,
   stagingGatewayServiceAccountEmail,
 } from "./gcp-names.js";
+import { GATEWAY_POOL_ENV } from "./pool-budget-stack.js";
 import {
   type EnsureOutcome,
   ensureStagingGatewayServiceAccount,
   type HttpFetch,
 } from "./runtime-secrets.js";
+import {
+  repairServerlessBackendPort,
+  SERVERLESS_BACKEND_CREATE_FLAGS,
+} from "./serverless-backend.js";
 import {
   type CloudRunEnvVar,
   cloudRunServicePrefix,
@@ -87,7 +88,6 @@ export interface StagingDnsRecord {
   readonly value: string;
 }
 
-const NOT_FOUND = /NOT_FOUND|not found|cannot find|does not exist|could not be found|404/i;
 const ALREADY_EXISTS = /ALREADY_EXISTS|already exists|409/i;
 
 /** The `gcp` staging host's managed certificate: the edge's prefix plus six hex of the host's SHA-256. */
@@ -142,7 +142,7 @@ export function stagingGatewayDeployArgs(inputs: StagingGatewayServiceInputs): s
     ...env.flatMap((e) => ("value" in e ? [`${e.name}=${e.value}`] : [])),
     // The connection budget's share of one instance (pool-budget.ts): the
     // stacks set the same on the live gateway.
-    `${DB_PUBLIC_POOL_MAX_ENV}=${GATEWAY_POOL_MAX}`,
+    ...GATEWAY_POOL_ENV.map((e) => `${e.name}=${e.value}`),
   ];
   const secrets = env.flatMap((e) =>
     "valueSource" in e
@@ -269,7 +269,7 @@ async function ensureStagingBucket(
       "--format=value(name)",
     ]);
     if (described.ok) outcomes.push({ id, status: "present" });
-    else if (!NOT_FOUND.test(described.stderr)) {
+    else if (!isGcloudNotFound(described.stderr)) {
       return [{ id, status: "failed", error: described.stderr.trim() }];
     } else {
       const created = await run([
@@ -352,7 +352,7 @@ async function ensureService(
     `--project=${inputs.projectId}`,
     "--format=value(metadata.name)",
   ]);
-  if (!existing.ok && !NOT_FOUND.test(existing.stderr)) {
+  if (!existing.ok && !isGcloudNotFound(existing.stderr)) {
     return { id, status: "failed", error: existing.stderr.trim() };
   }
   if (!existing.ok) {
@@ -472,6 +472,11 @@ export type StagingEdgeResult =
       readonly done: string[];
       /** The records the staging host needs at the registrar (Settings → Updates shows them too). */
       readonly dnsRecords: StagingDnsRecord[];
+      /**
+       * #1455 — the host's DNS still points at its Cloud Run domain mapping,
+       * so the mapping stayed: see {@link settleStagingDomainMapping}.
+       */
+      readonly domainMappingKept: boolean;
     }
   | { readonly ok: false; readonly error: string; readonly done: string[] };
 
@@ -498,6 +503,9 @@ export async function ensureStagingGatewayEdge(
 // --- gcp-firebase ----------------------------------------------------------
 
 const FIREBASE_HOSTING_API = "https://firebasehosting.googleapis.com/v1beta1";
+/** How often, and how far apart, a new custom domain is re-read for its records. */
+const FIREBASE_DNS_POLLS = 12;
+const FIREBASE_DNS_POLL_MS = 5_000;
 
 /** The config of the staging site's only version: every path to the staging gateway. */
 export function firebaseStagingSiteConfig(t: Pick<StagingGatewayTarget, "env" | "region">): {
@@ -526,6 +534,18 @@ export function isFirebaseStagingConfig(
     redirects.length === 0 &&
     headers.length === 0
   );
+}
+
+/**
+ * Whether Hosting serves the host, in its own words: the check #1455 turns
+ * on, the same one Settings → Updates uses (`readStagingHostDns`). The DNS
+ * pointing at Hosting (`HOST_ACTIVE`, also for a CNAME to the site's `web.app`
+ * name: searchviu-website, 2026-11-05) is not enough while ownership is
+ * pending.
+ */
+function firebaseHostActive(customDomain: unknown): boolean {
+  const domain = customDomain as { hostState?: string; ownershipState?: string } | null;
+  return domain?.hostState === "HOST_ACTIVE" && domain.ownershipState === "OWNERSHIP_ACTIVE";
 }
 
 /** The DNS records a Firebase custom domain asks for (`requiredDnsUpdates.desired`). */
@@ -640,7 +660,8 @@ async function ensureFirebaseStagingSite(
   // 3. The staging host as its custom domain.
   const domainPath = `projects/${project}/sites/${site}/customDomains/${encodeURIComponent(t.stagingHost)}`;
   let domain = await call(domainPath);
-  if (domain.status === 404) {
+  const createdDomain = domain.status === 404;
+  if (createdDomain) {
     const created = await call(
       `projects/${project}/sites/${site}/customDomains?customDomainId=${encodeURIComponent(t.stagingHost)}`,
       "POST",
@@ -659,26 +680,64 @@ async function ensureFirebaseStagingSite(
       `read ${t.stagingHost} on ${site}: HTTP ${domain.status} ${domain.text.slice(0, 300)}`,
     );
   }
+  // Firebase works out the records a new custom domain needs a few seconds
+  // after it is created; read straight away, the list is empty and the
+  // install printed no record for the staging host (scratch install of
+  // v0.11.16, 2026-11-04).
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let dnsRecords = firebaseDesiredRecords(domain.json);
+  let hostActive = firebaseHostActive(domain.json);
+  for (let i = 0; !hostActive && dnsRecords.length === 0 && i < FIREBASE_DNS_POLLS; i++) {
+    await sleep(FIREBASE_DNS_POLL_MS);
+    const again = await call(domainPath);
+    if (!again.ok) {
+      return fail(
+        `read ${t.stagingHost} on ${site}: HTTP ${again.status} ${again.text.slice(0, 300)}`,
+      );
+    }
+    dnsRecords = firebaseDesiredRecords(again.json);
+    hostActive = firebaseHostActive(again.json);
+  }
+  if (!hostActive && dnsRecords.length === 0) {
+    return fail(
+      `Firebase Hosting has not said which DNS records ${t.stagingHost} needs after ${(FIREBASE_DNS_POLLS * FIREBASE_DNS_POLL_MS) / 1000} s. Nothing is wrong with what was set up; re-run the installer to print them.`,
+    );
+  }
 
   // 4. The old route: the Cloud Run domain mapping (#650) to the service
-  // that is now the MCP-Auth-Proxy. Nothing but the gate may lead to the
-  // staged files, and the proxy no longer forwards (#1331).
-  const mapping = await deleteStagingDomainMapping(t, run);
+  // that is now the MCP-Auth-Proxy.
+  const mapping = await settleStagingDomainMapping(t, hostActive, run);
   if (!mapping.ok) return fail(mapping.error);
-  if (mapping.deleted) done.push(`deleted the Cloud Run domain mapping of ${t.stagingHost}`);
+  if (mapping.outcome === "deleted") {
+    done.push(`deleted the Cloud Run domain mapping of ${t.stagingHost}`);
+  }
 
-  return { ok: true, done, dnsRecords: firebaseDesiredRecords(domain.json) };
+  return { ok: true, done, dnsRecords, domainMappingKept: mapping.outcome === "kept" };
 }
 
 /**
- * Delete the staging host's Cloud Run domain mapping (#650), if there is
- * one. Needs the gcloud `beta` component; without it the mapping is reported
- * as unknown rather than guessed away.
+ * The staging host's Cloud Run domain mapping (#650), if there is one: gone
+ * once the host's DNS points at Hosting, kept until then (#1455).
+ *
+ * While the host is still a CNAME to `ghs.googlehosted.com` the mapping holds
+ * its certificate, and Hosting can issue none, so deleting it turns the host
+ * into a TLS error (0.11.17 on searchviu-website). The mapping leads to the
+ * MCP-Auth-Proxy, which forwards nothing (#1331) and answers its fixed 404,
+ * so keeping it opens no way around the staging gate. It cannot be pointed at
+ * the staging gateway instead: Cloud Run refuses a second mapping of a host
+ * in the same region even with `--force-override`, delete + create drops the
+ * certificate, and create needs a verified owner of the domain, which the
+ * converge job's account is not (all tried on caelo-p0-tmp-1104, 2026-11-05).
+ * The next converge after the DNS change deletes it.
+ *
+ * Needs the gcloud `beta` component; without it the mapping is reported as
+ * unknown rather than guessed away.
  */
-async function deleteStagingDomainMapping(
+async function settleStagingDomainMapping(
   t: StagingGatewayTarget,
+  hostActive: boolean,
   run: GcloudRunner,
-): Promise<{ ok: true; deleted: boolean } | { ok: false; error: string }> {
+): Promise<{ ok: true; outcome: "none" | "kept" | "deleted" } | { ok: false; error: string }> {
   const scope = [`--domain=${t.stagingHost}`, `--region=${t.region}`, `--project=${t.projectId}`];
   const described = await run([
     "beta",
@@ -689,17 +748,18 @@ async function deleteStagingDomainMapping(
     "--format=value(metadata.name)",
   ]);
   if (!described.ok) {
-    if (/\bNOT_FOUND\b|not found|could not be found/i.test(described.stderr)) {
-      return { ok: true, deleted: false };
+    if (isGcloudNotFound(described.stderr)) {
+      return { ok: true, outcome: "none" };
     }
     return {
       ok: false,
       error: `read the Cloud Run domain mapping of ${t.stagingHost}: ${described.stderr.trim()}`,
     };
   }
+  if (!hostActive) return { ok: true, outcome: "kept" };
   const deleted = await run(["beta", "run", "domain-mappings", "delete", ...scope, "--quiet"]);
   return deleted.ok
-    ? { ok: true, deleted: true }
+    ? { ok: true, outcome: "deleted" }
     : {
         ok: false,
         error: `delete the Cloud Run domain mapping of ${t.stagingHost}: ${deleted.stderr.trim()}`,
@@ -814,7 +874,7 @@ async function ensureGcpEdge(
     "--format=value(name)",
   ]);
   if (!neg.ok) {
-    if (!NOT_FOUND.test(neg.stderr)) return fail(`describe ${names.neg}: ${neg.stderr.trim()}`);
+    if (!isGcloudNotFound(neg.stderr)) return fail(`describe ${names.neg}: ${neg.stderr.trim()}`);
     const created = await run([
       "compute",
       "network-endpoint-groups",
@@ -860,9 +920,14 @@ async function ensureGcpEdge(
     project,
     "--format=json",
   ]);
-  let backendJson: { selfLink?: string; backends?: { group?: string }[] } = {};
+  let backendJson: {
+    selfLink?: string;
+    securityPolicy?: string;
+    portName?: string;
+    backends?: { group?: string }[];
+  } = {};
   if (!backend.ok) {
-    if (!NOT_FOUND.test(backend.stderr)) {
+    if (!isGcloudNotFound(backend.stderr)) {
       return fail(`describe ${names.backend}: ${backend.stderr.trim()}`);
     }
     const created = await run([
@@ -873,17 +938,40 @@ async function ensureGcpEdge(
       "--global",
       project,
       "--load-balancing-scheme=EXTERNAL_MANAGED",
-      "--protocol=HTTPS",
-      `--security-policy=${policy}`,
+      ...SERVERLESS_BACKEND_CREATE_FLAGS,
       "--format=json",
       "--quiet",
     ]);
     if (!created.ok) return fail(`create ${names.backend}: ${created.stderr.trim()}`);
-    done.push(`created backend service ${names.backend} (Cloud Armor ${policy})`);
+    done.push(`created backend service ${names.backend}`);
     const parsed = safeJson(created.stdout);
     backendJson = ((Array.isArray(parsed) ? parsed[0] : parsed) ?? {}) as typeof backendJson;
   } else {
     backendJson = (safeJson(backend.stdout) ?? {}) as typeof backendJson;
+  }
+  const port = await repairServerlessBackendPort(
+    run,
+    { name: names.backend, portName: backendJson.portName },
+    project,
+  );
+  if (port.error) return fail(port.error);
+  if (port.repaired) done.push(`set ${names.backend}'s port name to http`);
+  // `backend-services create` has no --security-policy: `update` attaches it,
+  // here and on a backend an earlier run left without one. The URL map is
+  // only pointed at this backend afterwards, so it is never served unguarded.
+  if (!backendJson.securityPolicy?.endsWith(`/securityPolicies/${policy}`)) {
+    const set = await run([
+      "compute",
+      "backend-services",
+      "update",
+      names.backend,
+      "--global",
+      project,
+      `--security-policy=${policy}`,
+      "--quiet",
+    ]);
+    if (!set.ok) return fail(`attach ${policy} to ${names.backend}: ${set.stderr.trim()}`);
+    done.push(`attached Cloud Armor ${policy} to ${names.backend}`);
   }
   if (
     !(backendJson.backends ?? []).some((b) =>
@@ -922,7 +1010,7 @@ async function ensureGcpEdge(
     "--format=value(name)",
   ]);
   if (!cert.ok) {
-    if (!NOT_FOUND.test(cert.stderr)) return fail(`describe ${certName}: ${cert.stderr.trim()}`);
+    if (!isGcloudNotFound(cert.stderr)) return fail(`describe ${certName}: ${cert.stderr.trim()}`);
     const created = await run([
       "compute",
       "ssl-certificates",
@@ -1032,20 +1120,27 @@ async function ensureGcpEdge(
     "list",
     "--global",
     project,
-    `--filter=name~^${gcpNamePrefix(t.env)}`,
+    // EXTERNAL: the stack's other global address is the database's private
+    // range, and with two matches the install printed no record at all.
+    `--filter=name~^${gcpNamePrefix(t.env)} AND addressType=EXTERNAL`,
     "--format=value(address)",
   ]);
-  const ips = address.ok
-    ? address.stdout
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : [];
+  if (!address.ok) return fail(`list the load balancer's address: ${address.stderr.trim()}`);
+  const ips = address.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const [ip, ...others] = ips;
+  if (!ip || others.length > 0) {
+    return fail(
+      `expected one external address for ${t.stagingHost}, found ${ips.join(", ") || "none"}`,
+    );
+  }
   return {
     ok: true,
     done,
-    dnsRecords:
-      ips.length === 1 ? [{ name: t.stagingHost, type: "A", value: ips[0] as string }] : [],
+    dnsRecords: [{ name: t.stagingHost, type: "A", value: ip }],
+    domainMappingKept: false,
   };
 }
 

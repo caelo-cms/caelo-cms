@@ -118,6 +118,9 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "email_config",
   "layout_blocks",
   "layouts",
+  // Seed-bearing since 0611 (#1337): the Owner's caps on visitor mail.
+  // Tests that change them restore them (mail-outbox.integration.test.ts).
+  "mail_delivery_caps",
   // Seed-bearing since 0352 (epic #1107): the shipped list types.
   "list_types",
   "permissions",
@@ -391,6 +394,35 @@ async function assertSnapshotRefsExact(url: string): Promise<void> {
   }
 }
 
+async function assertPageSearchWordsExact(url: string): Promise<void> {
+  const sql = new SQL(url, { max: 1 });
+  try {
+    const drift = (await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx.unsafe(`
+        WITH expected AS (SELECT * FROM caelo_page_search_words_expected()),
+             maintained AS (
+               SELECT 'live'::text AS t, NULL::uuid AS chat_branch_id, NULL::uuid AS snapshot_row_id,
+                      word::text AS word, page_id FROM page_search_words
+               UNION ALL
+               SELECT 'draft', chat_branch_id, snapshot_row_id, word::text, page_id
+                 FROM draft_pending_page_words)
+        SELECT (SELECT count(*)::int FROM (SELECT * FROM expected EXCEPT SELECT * FROM maintained) d) AS missing,
+               (SELECT count(*)::int FROM (SELECT * FROM maintained EXCEPT SELECT * FROM expected) d) AS extra`);
+    })) as { missing: number; extra: number }[];
+    const d = drift[0];
+    if (d && (d.missing > 0 || d.extra > 0)) {
+      throw new Error(
+        `the page search words drifted from the pages and the draft head (#1269): ${d.missing} missing, ${d.extra} extra. ` +
+          "A write went past the triggers of migration 0612 " +
+          "(a disabled trigger, a write into the tables themselves); pages.rebuild_search_words repairs it.",
+      );
+    }
+  } finally {
+    await sql.end();
+  }
+}
+
 async function assertContentInstanceRefsExact(url: string): Promise<void> {
   const sql = new SQL(url, { max: 1 });
   try {
@@ -435,6 +467,7 @@ if (ADMIN_URL && PUBLIC_URL && RESET_OPTED_IN) {
       assertDraftHeadConsistent(ADMIN_URL),
       assertContentInstanceRefsExact(ADMIN_URL),
       assertSnapshotRefsExact(ADMIN_URL),
+      assertPageSearchWordsExact(ADMIN_URL),
     ]);
   });
 } else if (ADMIN_URL && PUBLIC_URL) {

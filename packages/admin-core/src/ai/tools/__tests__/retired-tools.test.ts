@@ -199,6 +199,8 @@ function recordingToolCtx(calls: { op: string; input: unknown }[]): ToolContext 
     runOperation: async (op: { name: string }, _ctx: unknown, input: unknown) => {
       // #1157 — the redirect tools read where the saved redirects are live.
       if (op.name === "redirects.sync_status") return ok({ targets: [] });
+      // #1447 — and whether a rule landed on a page's URL.
+      if (op.name === "redirects.page_conflicts") return ok({ conflicts: [] });
       calls.push({ op: op.name, input });
       return ok({ results: [{}], count: 1 });
     },

@@ -184,6 +184,11 @@ function world() {
               nested: [],
             })),
           } as O;
+        // No page content here is shared with another page.
+        case "content_instances.rendered_on_many":
+          return {
+            instances: (i.ids as string[]).map((id) => ({ id, pageIds: [], siteWide: false })),
+          } as O;
         case "pages.list_shared_content":
           return {
             layoutPlacements: [

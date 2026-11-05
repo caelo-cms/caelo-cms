@@ -452,6 +452,67 @@ describe("create_variant — the slug the caller cannot invent", () => {
     expect(path[0]?.current_path).toBe("/de");
   });
 
+  it("takes over a redirect rule stored with a trailing slash on the variant's URL (#1447)", async () => {
+    const sourceId = await seedPage("t395-rule-source");
+    await sqlSystem((tx) =>
+      tx.unsafe(
+        `INSERT INTO redirects (from_path, to_path, status_code, created_by)
+         VALUES ('/de/t395-rule/', '/t395-rule-target', 301, '${SYSTEM_ACTOR_ID}')`,
+      ),
+    );
+
+    const created = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: sourceId, localeCode: "de", slug: "t395-rule" },
+    });
+
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    expect((created.value as { path: string }).path).toBe("/de/t395-rule");
+    expect(created.value).not.toHaveProperty("redirectOnThisUrl");
+    const left = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          "SELECT 1 FROM redirects WHERE from_path = '/de/t395-rule/'",
+        )) as unknown[],
+    );
+    expect(left).toHaveLength(0);
+  });
+
+  it("names a rule a variant lands on without moving: its locale has no prefix (#1447)", async () => {
+    const sourceId = await seedPage("t395-rule-plain");
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `INSERT INTO "plugin_international_site"."locales" (code, display_name, url_strategy, is_default) VALUES ('fr', 'Francais', 'none', false)`,
+      );
+    });
+    await sqlSystem((tx) =>
+      tx.unsafe(
+        `INSERT INTO redirects (from_path, to_path, status_code, created_by)
+         VALUES ('/t395-rule-fr', '/t395-rule-target', 301, '${SYSTEM_ACTOR_ID}')`,
+      ),
+    );
+
+    const created = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: sourceId, localeCode: "fr", slug: "t395-rule-fr" },
+    });
+
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    expect((created.value as { redirectOnThisUrl?: string }).redirectOnThisUrl).toContain(
+      'bulk_delete_redirects({ fromPaths: ["/t395-rule-fr"] })',
+    );
+    await sqlAsPlugin(async (tx) => {
+      await tx.unsafe(
+        `DELETE FROM "plugin_international_site"."page_variants" WHERE locale_code = 'fr'`,
+      );
+      await tx.unsafe(`DELETE FROM "plugin_international_site"."locales" WHERE code = 'fr'`);
+    });
+  });
+
   it("requires a slug for an ordinary page; the source's own slug works (#690)", async () => {
     const aboutId = await seedPage("t395-lr-about");
 

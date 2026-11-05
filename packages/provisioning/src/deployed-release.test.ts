@@ -166,6 +166,37 @@ describe("checkDeployedRuntimeEnv", () => {
     expect(await checkDeployedRuntimeEnv({ ...FIREBASE, run })).toEqual({ ok: true });
   });
 
+  it("passes a re-run whose first up withheld the data gateway (gateway-bootstrap.ts)", async () => {
+    // The run stopped between the up without the gateway and the one with
+    // it: no gateway runs a release whose env could mismatch.
+    const { run, calls } = fakeGcloud({
+      "metadata.name~^caelo-production-admin": [ok("caelo-production-admin-abc\n")],
+      "metadata.name~^caelo-production-data-gateway": [ok("")],
+      "metadata.name~^caelo-production-gateway": [ok("caelo-production-gateway-def\n")],
+      "describe caelo-production-admin-abc": [adminOk],
+      "describe caelo-production-gateway-def": [proxyOk],
+    });
+    expect(await checkDeployedRuntimeEnv({ ...FIREBASE, run })).toEqual({ ok: true });
+    expect(calls.some((c) => c.join(" ").includes("describe caelo-production-data-gateway"))).toBe(
+      false,
+    );
+  });
+
+  it("passes a gcp re-run that stopped before the CLI created the MCP-Auth-Proxy", async () => {
+    // Scratch install of v0.11.16 (2026-11-04): the first run stopped after
+    // the up without gateways; only the admin exists.
+    const { run } = fakeGcloud({
+      "metadata.name~^caelo-production-admin": [ok("caelo-production-admin-abc\n")],
+      "metadata.name~^caelo-production-gateway": [ok("")],
+      "metadata.name~^caelo-production-mcp-auth-proxy": [ok("")],
+      "metadata.name~^caelo-production-staging-gateway": [ok("")],
+      "describe caelo-production-admin-abc": [adminOk],
+    });
+    expect(await checkDeployedRuntimeEnv({ ...FIREBASE, provider: "gcp", run })).toEqual({
+      ok: true,
+    });
+  });
+
   it("#1328 — stops a wizard re-run while the proxy is still the old gateway (database env)", async () => {
     const { run } = fakeGcloud({
       ...firebaseLists(),

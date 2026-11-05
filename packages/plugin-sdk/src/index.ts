@@ -39,6 +39,11 @@ import {
 } from "./editor-toolbar.js";
 import { checkPluginIndexes, type PluginIndexes, pluginIndexes } from "./indexes.js";
 import {
+  checkMailTemplates,
+  type PluginMailTemplates,
+  pluginMailTemplates,
+} from "./mail-templates.js";
+import {
   checkPublicSurface,
   type PluginRequirement,
   type PluginTableKinds,
@@ -71,6 +76,7 @@ export {
 export * from "./admin-panels.js";
 export * from "./editor-toolbar.js";
 export * from "./indexes.js";
+export * from "./mail-templates.js";
 export * from "./public-surface.js";
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
@@ -153,6 +159,8 @@ export const pluginCapability = z.enum([
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
 
+export { PLUGIN_CAPABILITY_INFO, type PluginCapabilityInfo } from "./capability-info.js";
+
 /**
  * Provenance is the trust axis (epic #380): who authored the plugin and
  * how it entered the system. `release-signed` = the manifest carries a
@@ -172,6 +180,18 @@ export const pluginWorkerSpec = z.object({
   cron: z.string().min(1).max(120),
   /** Operation name to dispatch on tick. Must exist in `operations`. */
   operationName: z.string().min(1).max(120),
+  /**
+   * #1333 — which public databases the worker's `ctx.query` works on.
+   * `"live"` (the default): cms_public only. `"each"`: the host runs the
+   * worker once per public database, live first, then the staging site's
+   * (cms_public_staging), each run's `ctx.query` bound to that one
+   * database and nothing else attached. For derived published rows a
+   * plugin recomputes from its own inbox (rating averages from votes):
+   * each environment's result comes from its own visitors only, so
+   * staging test data never reaches live, and nothing crosses into
+   * cms_admin.
+   */
+  publicDatabases: z.enum(["live", "each"]).optional(),
 });
 
 export type PluginWorkerSpec = z.infer<typeof pluginWorkerSpec>;
@@ -1102,6 +1122,8 @@ export const pluginManifest = z
     tableKinds: pluginTableKinds.optional(),
     /** See `PluginDefinition.requires` (#1332). */
     requires: z.array(pluginRequirement).max(4).optional(),
+    /** See `PluginDefinition.mailTemplates` (#1337). */
+    mailTemplates: pluginMailTemplates.optional(),
     /** See `PluginDefinition.visitorProjection` (#635). Each table must be
      *  in `adminSchema` and each column declared on it. */
     visitorProjection: z
@@ -1217,6 +1239,7 @@ export const pluginManifest = z
       ctx.addIssue({ code: "custom", path: ["indexes", ...path], message }),
     );
     checkPublicSurface(m, (path, message) => ctx.addIssue({ code: "custom", path, message }));
+    checkMailTemplates(m, (path, message) => ctx.addIssue({ code: "custom", path, message }));
     checkAdminPanels(m.adminPanels ?? [], m.operations, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["adminPanels", ...path], message }),
     );
@@ -1673,12 +1696,26 @@ export interface PluginCaptcha {
  * declare requestedCapabilities: ['email'] get this handle; others throw.
  */
 export interface PluginEmail {
+  /**
+   * Send a mail now. Admin side only (a campaign the Owner approved, sent
+   * by a worker); a visitor call has no transport and throws: it queues.
+   */
   send(args: {
     to: string;
     subject: string;
     html: string;
     replyTo?: string;
   }): Promise<{ messageId: string }>;
+  /**
+   * #1337 — queue one of the plugin's `mailTemplates` for `to`, with an
+   * optional token for its link. Works on both sides: the row lands in the
+   * outbox of the public database the call runs against, and the admin
+   * delivers it on its next scheduler tick, within its per-recipient and
+   * site-wide caps. Resolves once the row is stored, not when the mail is
+   * sent; the caller learns nothing about delivery (so a visitor learns
+   * nothing about an address either).
+   */
+  queue(args: { template: string; to: string; token?: string }): Promise<void>;
 }
 
 /**
@@ -2326,6 +2363,14 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly requires?: ReadonlyArray<PluginRequirement>;
   /**
+   * #1337 — the mails the plugin may queue with `ctx.email.queue`: subject,
+   * paragraphs and an optional confirmation link, all plain text. An
+   * outbox row names a template, a recipient and a token, nothing else;
+   * the admin renders and sends it. Needs `requires: ["email"]` and the
+   * `email` capability. See `./mail-templates.ts`.
+   */
+  readonly mailTemplates?: PluginMailTemplates;
+  /**
    * The visitor-readable projection of this plugin's private storage
    * (`adminSchema`): table → the columns the API gateway may read (`id`
    * is always included). Issue #635 — the gateway has no cms_admin login,
@@ -2609,6 +2654,7 @@ export function manifestFromDefinition(def: {
   readonly publicOperations?: ReadonlyArray<PublicOperationDef>;
   readonly tableKinds?: PluginTableKinds;
   readonly requires?: ReadonlyArray<PluginRequirement>;
+  readonly mailTemplates?: PluginMailTemplates;
   readonly visitorProjection?: Readonly<Record<string, ReadonlyArray<string>>>;
   readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
   readonly editorToolbar?: ReadonlyArray<PluginEditorToolbarItem>;
@@ -2637,6 +2683,9 @@ export function manifestFromDefinition(def: {
       ? { tableKinds: { ...def.tableKinds } }
       : {}),
     ...(def.requires && def.requires.length > 0 ? { requires: [...def.requires] } : {}),
+    ...(def.mailTemplates && Object.keys(def.mailTemplates).length > 0
+      ? { mailTemplates: structuredClone(def.mailTemplates) }
+      : {}),
     ...(def.visitorProjection && Object.keys(def.visitorProjection).length > 0
       ? {
           visitorProjection: Object.fromEntries(

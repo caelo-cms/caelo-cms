@@ -566,6 +566,30 @@ describe("verify_domains / verify_dns_records", () => {
     );
     expect(own.content).toContain(`TXT _acme-challenge.${P}-owned.invalid: pending`);
   });
+
+  it("#1455 — the staging host is the site's own, also when no domain row names it", async () => {
+    const host = `${P}-preview.invalid`;
+    const before = await sqlAdmin(
+      async (tx) => await tx`SELECT staging_host FROM staging_access WHERE id = 1`,
+    );
+    await sqlAdmin(async (tx) => {
+      await tx`UPDATE staging_access SET staging_host = ${host} WHERE id = 1`;
+    });
+    try {
+      const { ai } = await openChat("dns-staging");
+      const r = await dispatch(
+        "verify_dns_records",
+        { records: [{ hostname: host, type: "A", expectedValue: "192.0.2.1" }] },
+        ai,
+      );
+      expect(r.content).toContain(`A ${host}: pending`);
+    } finally {
+      const previous = (before as unknown as { staging_host: string | null }[])[0]?.staging_host;
+      await sqlAdmin(async (tx) => {
+        await tx`UPDATE staging_access SET staging_host = ${previous ?? null} WHERE id = 1`;
+      });
+    }
+  });
 });
 
 describe("send_test_email", () => {

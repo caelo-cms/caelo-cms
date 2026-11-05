@@ -103,8 +103,11 @@ export interface ListRender {
   readonly pageId: string;
   readonly path: string;
   /**
-   * The list: `shared:<listId>` for a shared list, `local:<moduleId>:<field>`
-   * for a module's local list (default or instance value).
+   * The list: `shared:<listId>` for a shared list,
+   * `local:<moduleId>:<field>` for a module field's default list,
+   * `local:<moduleId>:<field>:<contentInstanceId>` for the list a content
+   * instance stores: two placements with instances of their own show two
+   * lists, one module field or not (#1448).
    */
   readonly list: string;
   /** Renders on the page: the per-module counts summed. */
@@ -127,7 +130,9 @@ function stampList(stamp: string, moduleId: string): string | null {
   if (shared) return `shared:${shared[1]}`;
   const parts = stamp.split("/");
   if (parts[0] === "local" && parts.length === 3) return `local:${moduleId}:${parts[1]}`;
-  if (parts[0] === "instance" && parts.length === 4) return `local:${moduleId}:${parts[2]}`;
+  if (parts[0] === "instance" && parts.length === 4) {
+    return `local:${moduleId}:${parts[2]}:${parts[1]}`;
+  }
   return null;
 }
 
@@ -140,7 +145,7 @@ function stampList(stamp: string, moduleId: string): string | null {
  * the number of copies, whatever the list's depth.
  *
  * Per module, OUTERMOST roots add up (a module placed twice on a page
- * writes the list twice), while NESTED roots of one module count with
+ * with one content instance writes the list twice), while NESTED roots of one module count with
  * their highest: one card module repeated as ten entries of a module-list
  * is one design shown ten times, not one list copied ten times (and local
  * default entries share their stamps across those cards). Only lists

@@ -92,7 +92,6 @@ import {
   pageTranslationBasis,
   preparePageTranslation,
   SEO_STALE_NEXT_STEP,
-  SHARED_NESTED_NEXT_STEP,
   type StyleGuideRow,
   translateVariantPage,
 } from "./page-translation.js";
@@ -1864,11 +1863,21 @@ export default definePlugin<PluginContextTier1>({
         });
         linked = { ...linked, path: path.path };
       }
+      // #1447 — a move onto the URL takes any redirect rule there over, but a
+      // copy that needed no move (no locale prefix) lands next to the rule.
+      const { conflicts } = await cms.call<{
+        conflicts: { fromPath: string; toPath: string }[];
+      }>("redirects.page_conflicts", { pageIds: [duplicated.pageId] });
       return {
         pageId: duplicated.pageId,
         slug: newSlug,
         isLocaleRoot,
         ...linked,
+        ...(conflicts.length > 0
+          ? {
+              redirectOnThisUrl: `The redirect ${conflicts.map((c) => `${c.fromPath} -> ${c.toPath}`).join(", ")} sits on this URL. It answers there until the page is published and a build ships it; then the page wins and Stage reports the pair as an error. If the page stays here, remove it: bulk_delete_redirects({ fromPaths: ${JSON.stringify(conflicts.map((c) => c.fromPath))} }).`,
+            }
+          : {}),
         // #644 — the clone still carries the source language; name the
         // follow-up call with its exact argument so the id is not passed
         // under this result's `pageId` key.
@@ -2019,7 +2028,6 @@ export default definePlugin<PluginContextTier1>({
       const deps = await chromeDepsOf(ctx);
       const translated: string[] = [];
       const seoStale: string[] = [];
-      const sharedNested: string[] = [];
       const failed: Array<{ pageId: string; error: string }> = [];
       let paused = false;
       for (const row of stale) {
@@ -2027,8 +2035,6 @@ export default definePlugin<PluginContextTier1>({
           const r = await translateVariantPage(deps, aiOf(ctx), { variantPageId: row.page_id });
           translated.push(row.page_id);
           if (r.seo === "marked_stale") seoStale.push(row.page_id);
-          if (r.sharedNested)
-            sharedNested.push(...r.sharedNested.map((n) => `${row.page_id}: ${n}`));
         } catch (e) {
           const msg = (e as Error).message;
           if (msg.startsWith("PluginAiCapExceeded:")) {
@@ -2069,22 +2075,13 @@ export default definePlugin<PluginContextTier1>({
         remaining: stale.length - translated.length - failed.length,
         /** Live variants whose SEO was kept and flagged stale (#591). */
         seoStale,
-        /** Nested content left untranslated because another page still renders it. */
-        sharedNested,
         ...(paused
           ? {
               nextStep:
                 "The plugin's 24h AI budget is exhausted. Tell the operator; if they want the cap raised, propose_set_plugin_ai_cost_cap with the amount they name (the Owner approves), then re-run translate_all_stale.",
             }
-          : seoStale.length > 0 || sharedNested.length > 0
-            ? {
-                nextStep: [
-                  ...(seoStale.length > 0 ? [SEO_STALE_NEXT_STEP] : []),
-                  ...(sharedNested.length > 0
-                    ? [`${SHARED_NESTED_NEXT_STEP} Nested content: ${sharedNested.join("; ")}.`]
-                    : []),
-                ].join(" "),
-              }
+          : seoStale.length > 0
+            ? { nextStep: SEO_STALE_NEXT_STEP }
             : {}),
       };
     },

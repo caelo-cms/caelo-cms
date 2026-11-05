@@ -464,6 +464,9 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/platform_health.ts`,
   `${A}/email/**`,
   `${A}/ops/email_config*.ts`,
+  // The public mail outboxes' drain (#1337): system-only ops on the
+  // scheduler tick, which no chat reaches.
+  `${A}/ops/mail_outbox.ts`,
   `${A}/release-check-worker.ts`,
   `${A}/password.ts`,
   `${A}/csrf.ts`,
@@ -489,6 +492,8 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/gateway.ts`,
   `${A}/ops/staging_access.ts`,
   `${A}/ops/owner_settings_*.ts`,
+  // #1337 — the Owner's mail caps, an owner-settings proposal like the above.
+  `${A}/ops/mail_caps.ts`,
   `${A}/ops/mcp_*.ts`,
   // #1375 — the MCP back-pressure gate answers HTTP before any AI turn runs.
   `${A}/mcp-back-pressure.ts`,

@@ -113,21 +113,32 @@ async function pendingContentHistory(tx: SQL, moduleId: string): Promise<void> {
        WHERE ss.description LIKE '${RR_PREFIX}pending%'
          AND NOT EXISTS (SELECT 1 FROM content_instance_snapshots c WHERE c.site_snapshot_id = ss.id)),
     c AS (
-      INSERT INTO content_instance_snapshots (site_snapshot_id, content_instance_id, state)
-      SELECT header, ci,
+      INSERT INTO content_instance_snapshots (id, site_snapshot_id, content_instance_id, state)
+      SELECT ${stableId("'cis-' || header::text")}, header, ci,
              jsonb_build_object('schemaVersion', 1, 'moduleId', '${moduleId}', 'slug', null,
                                 'displayName', null, 'version', 2, 'deletedAt', null,
                                 'values', jsonb_build_object('heading', 'Rewritten ' || header::text,
                                                              'body', repeat('<p>Body text.</p>', 120)))
         FROM hp
       RETURNING 1)
-    INSERT INTO page_layout_snapshots (site_snapshot_id, page_id, state)
-    SELECT header, page_id,
+    INSERT INTO page_layout_snapshots (id, site_snapshot_id, page_id, state)
+    SELECT ${stableId("'pls-' || header::text")}, header, page_id,
            jsonb_build_object('schemaVersion', 1, 'blocks', jsonb_build_array(jsonb_build_object(
              'blockName', 'content', 'moduleIds', jsonb_build_array('${moduleId}'),
              'placements', jsonb_build_array(jsonb_build_object(
                'moduleId', '${moduleId}', 'contentInstanceId', ci::text, 'syncMode', 'unsynced')))))
       FROM hp`);
+}
+
+/**
+ * A uuid the same on every run, for the SQL expression `seed`. The bar
+ * compares buffer counts, and with `gen_random_uuid()` the ids decided
+ * which pages a keyset read lists (bulk rows share one `created_at`, so
+ * the id orders them), how their keys sat on the index leaves and which
+ * rows shared a heap page: 842–928 buffers on unchanged code (#1441).
+ */
+function stableId(seed: string): string {
+  return `overlay(overlay(md5(${seed}) placing '4' from 13) placing '8' from 17)::uuid`;
 }
 
 async function count(url: string, query: string): Promise<number> {
@@ -220,14 +231,14 @@ export async function growFixture(
     if (pagesNow < size.pages) {
       await tx.unsafe(`
         WITH p AS (
-          INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
-          SELECT '${RR_PREFIX}p-' || i, 'Page ' || i, 'Page ' || i, '${templateId}', '${pageTypeId}', true,
+          INSERT INTO pages (id, slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+          SELECT ${stableId("'page-' || i")}, '${RR_PREFIX}p-' || i, 'Page ' || i, 'Page ' || i, '${templateId}', '${pageTypeId}', true,
                  '/${RR_PREFIX}p-' || i, 'published'
             FROM generate_series(${pagesNow + 1}, ${size.pages}) i
           RETURNING id, title),
         ci AS (
-          INSERT INTO content_instances (module_id, "values")
-          SELECT '${moduleId}', jsonb_build_object('heading', p.title, 'body', '<p>Body</p>') FROM p
+          INSERT INTO content_instances (id, module_id, "values")
+          SELECT ${stableId("'ci-' || p.id::text")}, '${moduleId}', jsonb_build_object('heading', p.title, 'body', '<p>Body</p>') FROM p
           RETURNING id),
         pairs AS (
           SELECT p.id AS page_id, c.id AS ci_id
@@ -298,16 +309,16 @@ export async function growFixture(
                      WHERE NOT had OR (SELECT n FROM fresh) = 0),
              cnt AS (SELECT count(*) AS c FROM pg),
              h AS (
-               INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id,
+               INSERT INTO site_snapshots (id, actor_id, op_kind, description, chat_task_id, chat_branch_id,
                                            created_at, staged_at)
-               SELECT '${ACTOR}', 'pages.update', '${RR_PREFIX}${what}',
+               SELECT ${stableId(`'${what}-' || i`)}, '${ACTOR}', 'pages.update', '${RR_PREFIX}${what}',
                       (${chatArray})[${what === "pending" ? `1 + (i - 1) / ${perChat}` : `1 + i % ${chats.length}`}], '${first.branch}',
                       now() - ((${target} - i) || ' seconds')::interval - interval '2 days',
                       ${what === "staged" ? `now() - ((${target} - i) || ' seconds')::interval - interval '1 day'` : "NULL"}
                  FROM generate_series(${now + 1}, ${target}) i
                RETURNING id, created_at)
-        INSERT INTO page_snapshots (site_snapshot_id, page_id, state)
-        SELECT h.id, pg.id,
+        INSERT INTO page_snapshots (id, site_snapshot_id, page_id, state)
+        SELECT ${stableId("'ps-' || h.id::text")}, h.id, pg.id,
                jsonb_build_object('schemaVersion', 1, 'slug', pg.slug, 'title', pg.title || ' (h)',
                                   'shortTitle', pg.title, 'templateId', '${templateId}', 'status', 'published',
                                   'version', 1, 'deletedAt', null, 'parentPageId', null,
@@ -351,8 +362,8 @@ export async function growFixture(
           VALUES ('${ACTOR}', 'pages.update', '${RR_PREFIX}plugin-rows', '${first.branch}')
           RETURNING id)
         INSERT INTO plugin_row_snapshots (site_snapshot_id, plugin_id, schema_name, table_name, row_id, state)
-        SELECT h.id, '00000000-0000-4000-8000-000000001267', 'plugin_rr', 'rr_rows', gen_random_uuid(), '{}'::jsonb
-          FROM h, generate_series(${rowsNow + 1}, ${size.pluginRows})`);
+        SELECT h.id, '00000000-0000-4000-8000-000000001267', 'plugin_rr', 'rr_rows', ${stableId("'row-' || i")}, '{}'::jsonb
+          FROM h, generate_series(${rowsNow + 1}, ${size.pluginRows}) i`);
     }
     for (const t of HISTORY_TABLES) {
       await tx.unsafe(`ALTER TABLE ${t} ENABLE TRIGGER caelo_journal_insert`);
@@ -373,6 +384,11 @@ export async function growFixture(
       "plugin_row_snapshots",
       "chat_sessions",
       "draft_pending_entities",
+      // The page search's word tables (0612), filled by the pages' and the
+      // draft head's triggers during the bulk load: without statistics the
+      // planner takes them for empty and scans them whole.
+      "page_search_words",
+      "draft_pending_page_words",
     ]) {
       await tx.unsafe(`ANALYZE ${t}`);
     }
@@ -408,6 +424,15 @@ export async function growFixture(
   );
   const w = written[0];
   if (!w) throw new Error("rows-read fixture: write target missing");
+  // One page whose title no other page starts a word of, on every size:
+  // the page search for it is the same request on both fixtures.
+  await asSystem(url, (tx) =>
+    tx.unsafe(`
+      INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+      SELECT '${RR_PREFIX}search-target', 'Zebrafinch landing', 'Zebrafinch landing', '${templateId}',
+             '${pageTypeId}', true, '/${RR_PREFIX}search-target', 'published'
+       WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = '${RR_PREFIX}search-target')`),
+  );
 
   const refs = await asSystem(
     url,

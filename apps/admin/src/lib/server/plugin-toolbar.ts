@@ -21,7 +21,10 @@ import {
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import { type PluginEditorToolbarItem, pluginEditorToolbarState } from "@caelo-cms/plugin-sdk";
+import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import type { EditorToolbarSlot } from "#lib/plugin-toolbar.js";
+import { getQueryContext } from "./query.js";
 
 export type { EditorToolbarSlot };
 
@@ -67,14 +70,43 @@ export function toToolbarSlot(
 }
 
 /**
+ * `slots` with the page link of every entry whose page `openable` does not
+ * hold removed: such an entry is shown, but not offered to open (a plugin
+ * may name a page this chat deleted, or no page at all).
+ */
+export function withOpenablePages(
+  slots: readonly EditorToolbarSlot[],
+  openable: ReadonlySet<string>,
+): EditorToolbarSlot[] {
+  return slots.map((slot) =>
+    slot.state?.items
+      ? {
+          ...slot,
+          state: {
+            ...slot.state,
+            items: slot.state.items.map((entry) => {
+              if (entry.pageId === undefined || openable.has(entry.pageId)) return entry;
+              const { pageId: _gone, ...rest } = entry;
+              return rest;
+            }),
+          },
+        }
+      : slot,
+  );
+}
+
+/**
  * The editor toolbar slots for `pageId` in the chat on `chatBranchId`, for a
  * viewer holding `permissions`. Plugins in slug order, items in declaration
- * order, so the bar does not reshuffle between loads.
+ * order, so the bar does not reshuffle between loads. An entry links a page
+ * only when that page exists in the chat's view (`branchCtx`): looked up by
+ * the ids the entries name (#1269), not against the site's page list.
  */
 export async function loadEditorToolbar(opts: {
   readonly permissions: ReadonlySet<string>;
   readonly pageId: string;
   readonly chatBranchId: string;
+  readonly branchCtx: ExecutionContext;
 }): Promise<EditorToolbarSlot[]> {
   const declared = loadedPlugins
     .all()
@@ -99,5 +131,20 @@ export async function loadEditorToolbar(opts: {
       return toToolbarSlot(pluginSlug, item, call);
     }),
   );
-  return slots.filter((s): s is EditorToolbarSlot => s !== null);
+  const shown = slots.filter((s): s is EditorToolbarSlot => s !== null);
+  const named = [
+    ...new Set(shown.flatMap((s) => (s.state?.items ?? []).flatMap((e) => e.pageId ?? []))),
+  ];
+  if (named.length === 0) return shown;
+  const { adapter, registry } = getQueryContext();
+  const listed = await execute(registry, adapter, opts.branchCtx, "pages.list", {
+    pageIds: named,
+  });
+  if (!listed.ok) {
+    throw new Error(
+      `The pages the plugin places link to could not be checked: ${listed.error.kind}.`,
+    );
+  }
+  const openable = new Set((listed.value as { pages: { id: string }[] }).pages.map((p) => p.id));
+  return withOpenablePages(shown, openable);
 }

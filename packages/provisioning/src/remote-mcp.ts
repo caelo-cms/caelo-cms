@@ -32,7 +32,7 @@
  */
 
 import { GCP_MCP_AUTH_PROXY_PATHS } from "@caelo-cms/shared";
-import { gcloud as defaultGcloud } from "./gcloud.js";
+import { gcloud as defaultGcloud, isGcloudNotFound } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import { gcpNamePrefix, mcpAuthProxyEdgeNames } from "./gcp-names.js";
 import { ensureMcpAuthProxyServiceGcp } from "./mcp-auth-proxy-setup.js";
@@ -43,6 +43,10 @@ import {
   mcpArmorRuleFlags,
 } from "./remote-mcp-edge.js";
 import type { HttpFetch } from "./runtime-secrets.js";
+import {
+  repairServerlessBackendPort,
+  SERVERLESS_BACKEND_CREATE_FLAGS,
+} from "./serverless-backend.js";
 import {
   CLOUD_RUN_SLUGS,
   type CloudRunSlug,
@@ -563,15 +567,19 @@ async function describePolicyRules(
     "--format=json",
   ]);
   if (!describe.ok) {
-    return { ok: false, missing: NOT_FOUND.test(describe.stderr), error: describe.stderr.trim() };
+    return { ok: false, missing: isGcloudNotFound(describe.stderr), error: describe.stderr.trim() };
   }
-  const described = parseJson(describe.stdout) as { rules?: LiveArmorRule[] } | null;
+  // gcloud prints this one `describe` as a one-element list. Read as an
+  // object it has no rules, so a second run tried to create a rule that
+  // exists ("Cannot have rules with the same priorities").
+  const parsed = parseJson(describe.stdout);
+  const described = (Array.isArray(parsed) ? parsed[0] : parsed) as {
+    rules?: LiveArmorRule[];
+  } | null;
   if (!described)
     return { ok: false, missing: false, error: `describe ${policy}: output is not JSON` };
   return { ok: true, rules: described.rules ?? [] };
 }
-
-const NOT_FOUND = /NOT_FOUND|not found|was not found|does not exist/i;
 
 /**
  * #1328 — the MCP-Auth-Proxy's own Cloud Armor policy with the `/api/mcp/*`
@@ -703,7 +711,7 @@ export async function ensureMcpAuthProxyBackend(
     "--format=value(name)",
   ]);
   if (!neg.ok) {
-    if (!NOT_FOUND.test(neg.stderr))
+    if (!isGcloudNotFound(neg.stderr))
       return { ok: false, error: `describe ${names.neg}: ${neg.stderr.trim()}` };
     const created = await run([
       "compute",
@@ -728,9 +736,14 @@ export async function ensureMcpAuthProxyBackend(
     project,
     "--format=json",
   ]);
-  let backendJson: { selfLink?: string; securityPolicy?: string; backends?: { group?: string }[] };
+  let backendJson: {
+    selfLink?: string;
+    securityPolicy?: string;
+    portName?: string;
+    backends?: { group?: string }[];
+  };
   if (!backend.ok) {
-    if (!NOT_FOUND.test(backend.stderr)) {
+    if (!isGcloudNotFound(backend.stderr)) {
       return { ok: false, error: `describe ${names.backend}: ${backend.stderr.trim()}` };
     }
     const created = await run([
@@ -741,32 +754,40 @@ export async function ensureMcpAuthProxyBackend(
       "--global",
       project,
       "--load-balancing-scheme=EXTERNAL_MANAGED",
-      "--protocol=HTTPS",
-      `--security-policy=${names.policy}`,
+      ...SERVERLESS_BACKEND_CREATE_FLAGS,
       "--format=json",
       "--quiet",
     ]);
     if (!created.ok)
       return { ok: false, error: `create ${names.backend}: ${created.stderr.trim()}` };
-    done.push(`created backend service ${names.backend} (Cloud Armor ${names.policy})`);
+    done.push(`created backend service ${names.backend}`);
     const parsed = parseJson(created.stdout);
     backendJson = (Array.isArray(parsed) ? parsed[0] : parsed) ?? {};
   } else {
     backendJson = (parseJson(backend.stdout) ?? {}) as typeof backendJson;
-    if (!backendJson.securityPolicy?.endsWith(`/securityPolicies/${names.policy}`)) {
-      const set = await run([
-        "compute",
-        "backend-services",
-        "update",
-        names.backend,
-        "--global",
-        project,
-        `--security-policy=${names.policy}`,
-        "--quiet",
-      ]);
-      if (!set.ok) return { ok: false, error: `attach ${names.policy}: ${set.stderr.trim()}` };
-      done.push(`attached Cloud Armor ${names.policy} to ${names.backend}`);
-    }
+  }
+  const port = await repairServerlessBackendPort(
+    run,
+    { name: names.backend, portName: backendJson.portName },
+    project,
+  );
+  if (port.error) return { ok: false, error: port.error };
+  if (port.repaired) done.push(`set ${names.backend}'s port name to http`);
+  // `backend-services create` has no --security-policy: `update` attaches it,
+  // here and on a backend an earlier run left without one.
+  if (!backendJson.securityPolicy?.endsWith(`/securityPolicies/${names.policy}`)) {
+    const set = await run([
+      "compute",
+      "backend-services",
+      "update",
+      names.backend,
+      "--global",
+      project,
+      `--security-policy=${names.policy}`,
+      "--quiet",
+    ]);
+    if (!set.ok) return { ok: false, error: `attach ${names.policy}: ${set.stderr.trim()}` };
+    done.push(`attached Cloud Armor ${names.policy} to ${names.backend}`);
   }
   if (
     !(backendJson.backends ?? []).some((b) =>

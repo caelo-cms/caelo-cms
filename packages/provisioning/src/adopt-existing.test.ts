@@ -17,6 +17,7 @@ import {
   AdoptionError,
   adoptExistingResources,
   adoptionCandidates,
+  existingCandidates,
   formatAdopted,
 } from "./adopt-existing.js";
 import type { GcloudResult } from "./gcloud.js";
@@ -297,16 +298,17 @@ describe("adoptExistingResources — viu.one's installer re-run (#1079)", () => 
   });
 });
 
-describe("adoptionCandidates — only declared creates of an adoptable kind", () => {
-  const step = (over: Partial<PlannedStep> & Pick<PlannedStep, "type" | "name">): PlannedStep => ({
-    op: "create",
-    urn: `urn:pulumi:production::caelo-gcp::${over.type}::${over.name}`,
-    diffs: [],
-    replaceReasons: [],
-    inputs: {},
-    ...over,
-  });
+/** A planned create (or `over.op`) of `over.type` named `over.name`. */
+const step = (over: Partial<PlannedStep> & Pick<PlannedStep, "type" | "name">): PlannedStep => ({
+  op: "create",
+  urn: `urn:pulumi:production::caelo-gcp::${over.type}::${over.name}`,
+  diffs: [],
+  replaceReasons: [],
+  inputs: {},
+  ...over,
+});
 
+describe("adoptionCandidates — only declared creates of an adoptable kind", () => {
   it("leaves unknown and non-adoptable kinds, IAM members, updates and unnamed creates to Pulumi", () => {
     const steps = [
       step({ type: "gcp:storage/bucket:Bucket", name: "media", inputs: { name: "x-media" } }),
@@ -478,5 +480,30 @@ describe("stackGcpProviderUrn — what adopted resources are imported under", ()
         { type: "pulumi:providers:gcp", urn: `${PROVIDER_URN}-2` },
       ]),
     ).toThrow("holds 2 GCP providers");
+  });
+});
+
+describe("existingCandidates — every gcloud wording for a missing resource", () => {
+  // gcp-firebase scratch install of v0.11.15 (2026-11-04): Cloud Run says
+  // "Cannot find service [<name>]." with no NOT_FOUND code, and the probe read
+  // that as an unknown state and stopped a fresh install.
+  it("a Cloud Run service gcloud cannot find is a plain create, not a stop", async () => {
+    const candidates = adoptionCandidates(
+      [
+        step({
+          type: "gcp:cloudrunv2/service:Service",
+          name: "caelo-production-gateway",
+          inputs: { name: "caelo-production-gateway-aa7db32", location: "europe-west1" },
+        }),
+      ],
+      PROJECT,
+    );
+    const existing = await existingCandidates(candidates, async () =>
+      fail(
+        "ERROR: (gcloud.run.services.describe) Cannot find service [caelo-production-gateway-aa7db32]",
+      ),
+    );
+    expect(candidates).toHaveLength(1);
+    expect(existing).toEqual([]);
   });
 });

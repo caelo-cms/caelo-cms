@@ -58,7 +58,6 @@ import {
   dropPluginPublicSchemas,
   ensureDevSignedManifests,
   hostInstanceId,
-  loadedPlugins,
   type AIProvider as PluginHostAIProvider,
   type SnapshotEmitter,
   startChangeConsumers,
@@ -160,20 +159,21 @@ async function bootPluginHost(): Promise<void> {
   // makes the structural compat explicit (TS doesn't relate the two
   // ReadonlyArray<{kind: string, ...}> shapes nominally).
   const emitter = emitSnapshot as unknown as SnapshotEmitter;
-  // P12 review pass — read email_config and construct the transport.
-  // The plugin host's ctx.email.send falls back to a stderr stub when
-  // no transport is wired, so this is best-effort: a missing/broken
-  // config never blocks plugin host startup.
-  let emailTransport: ReturnType<typeof buildEmailTransport> | undefined;
-  try {
-    const r = await execute(registry, adapter, SYSTEM_CTX, "email_config.get", {});
-    if (r.ok) {
-      const cfg = (r.value as { config: EmailConfigRow }).config;
-      emailTransport = buildEmailTransport(cfg);
-    }
-  } catch {
-    // best-effort; ctx.email.send falls back to stderr stub
-  }
+  // #1337 — the transport behind an admin-side ctx.email.send (an approved
+  // newsletter campaign), built from email_config on every send so a
+  // configuration change takes effect without a restart. Without one the
+  // send fails with the setup step (the address never reaches a log).
+  const emailTransport = {
+    send: async (args: { to: string; subject: string; html: string; replyTo?: string }) => {
+      const r = await execute(registry, adapter, SYSTEM_CTX, "email_config.get", {});
+      if (!r.ok) throw new Error(`email_config.get: ${JSON.stringify(r.error)}`);
+      const transport = buildEmailTransport((r.value as { config: EmailConfigRow }).config);
+      if (!transport) {
+        throw new Error("no mail transport is set up — configure one at Settings → Email");
+      }
+      return transport.send(args);
+    },
+  };
   // Resolve packages/plugins by walking up from cwd — import.meta.url
   // is useless here because the built SvelteKit output relocates this
   // module to build/server/chunks/, while dev serves it from src/.
@@ -260,19 +260,6 @@ async function bootPluginHost(): Promise<void> {
   // part, and after the gateway projection, which must not wait on a
   // site-wide content conversion (nor on the editor rows it locks).
   await migrateLinksOnce();
-  // P12 review-pass #3 — startup warning if any loaded plugin declared
-  // the `email` capability but no transport is configured. These sends
-  // would fall through to the stderr stub silently otherwise.
-  if (!emailTransport) {
-    const emailUsers = loadedPlugins
-      .all()
-      .filter((p) => p.definition.requestedCapabilities?.includes("email"));
-    if (emailUsers.length > 0) {
-      console.warn(
-        `[hooks] email transport NOT configured — ${emailUsers.map((p) => p.slug).join(", ")} will log sends to stderr only. Configure at /settings/email.`,
-      );
-    }
-  }
 }
 
 // Epic #724 rollout E — the one-time data migration that turns existing

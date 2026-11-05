@@ -170,7 +170,8 @@ function filterSql(filter: JournalFilter, alias = "ec") {
  * transaction (a plugin's first rebuild, a build) made every consumer's
  * poll after every write re-read the journal since it began (#1392: 894 s
  * of the scale gate's database time, 42,000 buffers per read). Callers
- * keep the exact visibility test.
+ * keep the exact visibility test. Their kind filter applies inside each
+ * range through `(kind, xid)` (0602), so rows of other kinds cost nothing.
  */
 function unseenRows(cte: string, opts: { readonly withOwn?: boolean } = {}) {
   const c = sql.raw(cte);

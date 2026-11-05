@@ -5,8 +5,8 @@
  *
  * The snapshot holds what a visitor can reach: each public operation's
  * kind, captcha, rate limit, input JSON Schema and tables, each table's
- * kind and the privileges the visitor role gets from it, and the host
- * services the plugin requires. A change to any of it fails this test
+ * kind and the privileges the visitor role gets from it, the host
+ * services the plugin requires, and the mails it may queue (#1337). A change to any of it fails this test
  * until the snapshot is updated in the same PR (`bun test --update-snapshots`),
  * so a reviewer sees the new surface in the diff. Every such change is a
  * new manifest digest, which the Owner approves again (CLAUDE.md §2).
@@ -68,6 +68,8 @@ describe("shipped plugins' public surface (#1332)", () => {
           ]),
         ),
         requires: m.requires ?? [],
+        // #1337 — what a visitor's mail can say and link to.
+        mailTemplates: m.mailTemplates ?? {},
       };
       expect(surface).toMatchSnapshot();
     });

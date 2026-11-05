@@ -27,6 +27,7 @@ import {
   listCaeloUpdatesTool,
 } from "./caelo-updates.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
+import { checkEmailDomainTool } from "./check-email-domain.js";
 import { checkLinksTool } from "./check-links.js";
 import {
   getPageSeoTool,
@@ -148,6 +149,7 @@ import { patchPageModuleFieldsTool } from "./patch-page-module-fields.js";
 import {
   listPluginGrantsTool,
   listPluginInstallationsTool,
+  proposeApprovePluginReleaseTool,
   proposeRevokePluginCapabilityTool,
   rejectPluginTool,
   reloadPluginTool,
@@ -157,11 +159,13 @@ import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-d
 import {
   getAiBudgetsTool,
   getGatewaySettingsTool,
+  getMailCapsTool,
   listAiPricingTool,
   proposeRotateGatewayCookieSecretTool,
   proposeSetAiBudgetTool,
   proposeSetAiPricingTool,
   proposeSetGatewaySettingsTool,
+  proposeSetMailCapsTool,
   proposeSetPluginAiCostCapTool,
   proposeSetTranslationModelTool,
 } from "./propose-owner-settings.js";
@@ -582,6 +586,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listPluginGrantsTool);
   registry.register(listPluginInstallationsTool);
   registry.register(proposeRevokePluginCapabilityTool);
+  registry.register(proposeApprovePluginReleaseTool);
   registry.register(rejectPluginTool);
   registry.register(revalidatePluginTool);
   registry.register(reloadPluginTool);
@@ -620,6 +625,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetGatewaySettingsTool);
   registry.register(proposeSetTranslationModelTool);
   registry.register(proposeSetPluginAiCostCapTool);
+  registry.register(proposeSetMailCapsTool);
+  registry.register(getMailCapsTool);
   registry.register(proposeRotateGatewayCookieSecretTool);
   // Issue #650 — the protected staging domain's access gate.
   registry.register(getStagingAccessTool);
@@ -661,6 +668,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(cleanupImportRunTool);
   registry.register(resolveImportLinksTool);
   registry.register(sendTestEmailTool);
+  registry.register(checkEmailDomainTool);
   // Agent-tool parity, part 2: the operator dashboards and maintenance
   // reads/writes the exceptions file listed as gaps.
   registry.register(getAiSpendTool);

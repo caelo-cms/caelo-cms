@@ -477,10 +477,10 @@ export function startConverge(
   async function stagingEdge(): Promise<void> {
     // #1330 — route the staging host to the staging gateway and nowhere
     // else: gcp-firebase's second Hosting site (and the old Cloud Run domain
-    // mapping deleted), gcp's host rule, backend and certificate
-    // (staging-gateway-setup.ts). Only staging depends on it, so a failure
-    // warns; the records the staging host needs are printed (Settings →
-    // Updates shows them too).
+    // mapping deleted once the DNS moved, #1455), gcp's host rule, backend
+    // and certificate (staging-gateway-setup.ts). Only staging depends on
+    // it, so a failure warns; the records the staging host needs are printed
+    // (Settings → Updates shows them too, verify_dns_records checks them).
     const s = r.step(`Routing the staging host ${install.stagingHost} to the staging gateway...`);
     const edge = await ensureStagingGatewayEdge(
       {
@@ -491,7 +491,7 @@ export function startConverge(
         domain: install.domain,
         stagingHost: install.stagingHost,
       },
-      { run, ...(deps.http ? { http: deps.http } : {}) },
+      { ...runDeps, ...(deps.http ? { http: deps.http } : {}) },
     );
     for (const line of edge.done) r.info(`  ${line}`);
     if (edge.ok) {
@@ -501,6 +501,11 @@ export function startConverge(
           `  DNS for ${install.stagingHost} (add or change at your registrar if it differs; Settings → Updates shows the same):`,
         );
         for (const d of edge.dnsRecords) r.info(`    ${d.name}  ${d.type}  ${d.value}`);
+      }
+      if (edge.domainMappingKept) {
+        r.warn(
+          `${install.stagingHost} still points at its old Cloud Run route, so this update keeps that route and the address keeps its certificate. Once the services have rolled it answers 404 until the records above are set; then the staging site is back. The next update that changes the cloud setup removes the old route.`,
+        );
       }
       return;
     }

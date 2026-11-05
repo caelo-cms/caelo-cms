@@ -67,6 +67,7 @@ import {
   loadPageLayoutState,
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
+import type { PageLayoutState } from "../../snapshots/state.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { runEveryItem } from "../_bulk.js";
 import { decodeKeysetCursor, encodeKeysetCursor } from "../keyset-cursor.js";
@@ -1710,6 +1711,53 @@ export const setPlacementContentOp = defineOperation({
 // ─── placement.fork_content ──────────────────────────────────────────
 
 /**
+ * Bind a placement to its fork, unsynced.
+ *
+ * On a chat branch live page_modules stays as it is, so the rebinding
+ * exists only in the returned state: the branch-overlaid layout with this
+ * placement swapped to the new instance (the same shape
+ * placement.set_content emits).
+ *
+ * @returns the page layout state for the caller's snapshot.
+ */
+export async function rebindPlacementToFork(
+  tx: Tx,
+  ctx: { readonly chatBranchId?: string | null },
+  at: { readonly pageId: string; readonly blockName: string; readonly position: number },
+  overlaidLayout: PageLayoutState,
+  contentInstanceId: string,
+): Promise<PageLayoutState> {
+  if (ctx.chatBranchId) {
+    return {
+      schemaVersion: 1 as const,
+      blocks: overlaidLayout.blocks.map((b) =>
+        b.blockName !== at.blockName
+          ? b
+          : {
+              ...b,
+              placements: (b.placements ?? []).map((p, i) =>
+                i === at.position ? { ...p, contentInstanceId, syncMode: "unsynced" as const } : p,
+              ),
+            },
+      ),
+    };
+  }
+  await tx.execute(sql`
+    UPDATE page_modules
+    SET content_instance_id = ${contentInstanceId}::uuid,
+        sync_mode = 'unsynced'
+    WHERE page_id = ${at.pageId}::uuid
+      AND block_name = ${at.blockName}
+      AND position = ${at.position}
+  `);
+  await tx.execute(sql`
+    UPDATE pages SET updated_at = now(), version = version + 1
+    WHERE id = ${at.pageId}::uuid
+  `);
+  return loadPageLayoutState(tx, at.pageId);
+}
+
+/**
  * Duplicate the placement's current content_instance into a fresh
  * unsynced one. Use case: a synced placement diverges (operator wants
  * to edit this page's text without affecting the other pages bound to
@@ -1776,45 +1824,11 @@ export const forkPlacementContentOp = defineOperation({
       });
     }
 
-    if (!ctx.chatBranchId) {
-      await tx.execute(sql`
-        UPDATE page_modules
-        SET content_instance_id = ${newCiId}::uuid,
-            sync_mode = 'unsynced'
-        WHERE page_id = ${input.pageId}::uuid
-          AND block_name = ${input.blockName}
-          AND position = ${input.position}
-      `);
-      await tx.execute(sql`
-        UPDATE pages SET updated_at = now(), version = version + 1
-        WHERE id = ${input.pageId}::uuid
-      `);
-    }
-
+    const layoutState = await rebindPlacementToFork(tx, ctx, input, overlaidLayout, newCiId);
     // Emit a content_instance snapshot for every row the fork minted —
     // the root copy and its nested copies (#1126), so revert + audit see
     // the fork — plus a pageLayout snapshot reflecting the rebound
-    // placement. On a chat branch live page_modules stays as it is, so the
-    // rebinding exists only in this snapshot: the branch-overlaid layout
-    // with this placement swapped to the new, unsynced instance (the same
-    // shape placement.set_content emits).
-    const layoutState = ctx.chatBranchId
-      ? {
-          schemaVersion: 1 as const,
-          blocks: overlaidLayout.blocks.map((b) =>
-            b.blockName !== input.blockName
-              ? b
-              : {
-                  ...b,
-                  placements: (b.placements ?? []).map((p, i) =>
-                    i === input.position
-                      ? { ...p, contentInstanceId: newCiId, syncMode: "unsynced" as const }
-                      : p,
-                  ),
-                },
-          ),
-        }
-      : await loadPageLayoutState(tx, input.pageId);
+    // placement.
     await emitSnapshot(tx, {
       actorId: ctx.actorId,
       opKind: "placement.fork_content",

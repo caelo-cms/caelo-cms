@@ -100,3 +100,7 @@ config:
 # Optional config NOT declared above:
 #   caelo-gcp:image-admin / image-gateway — image tags for Cloud Run services.
 #     Default `<region>-docker.pkg.dev/<project>/caelo/<service>:latest`.
+#   caelo-gcp:deployGateways — "false" only on the installer's first `up` of an
+#     install whose gateway has never started: the stack then declares no
+#     gateway, URL map or HTTPS proxy until the migrations have isolated the
+#     gateway's database login (src/gateway-bootstrap.ts). Absent = "true".

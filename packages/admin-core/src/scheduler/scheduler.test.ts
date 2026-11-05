@@ -41,6 +41,7 @@ describe("coreScheduledTasks", () => {
       "core:projection-backstop": 0,
       "core:redirect-sync-retry": 0,
       "core:bug-forwarding-send": 0,
+      "core:mail-outbox": 0,
       "core:plugin-data-build": 300,
       "core:update-scheduler": 900,
       "core:release-check": 3600,

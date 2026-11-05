@@ -74,6 +74,7 @@ The admin's phases are measured in the admin, and the generator's phases (`gener
 
 - `packages/admin-core/src/__tests__/build-memory.integration.test.ts` stages 1k and 10k pages with media through the real generator, which streams into the Firebase publisher. It asserts:
   - both RSS peaks stay flat;
+  - the admin keeps less than 4 KB alive per added page. The admin is the test runner, so its resident set carries the runner's own history and garbage (53–128 MB of growth on unchanged code, #1441). The test collects fully every 40 ms and reads the live heap plus the buffers outside it, which moved by 12 MB over ten runs, where a buffer of every page's body reads 138 MB;
   - the 10k Stage sends no media byte;
   - the bytes the build ever had on disk (tmpfs on Cloud Run) stay below 1 KB per page, where the HTML alone is about 2.8 KB per page.
 - `packages/admin-core/src/__tests__/stage-memory-rich-pages.integration.test.ts` stages 220 and 440 pages of ~230 KB (`RICH_PAGES` overrides the sizes; keep both above `PAGE_BATCH`, or the comparison measures how full the first batch is). It asserts that the generator's peak grows by less than 100 MB between them, and that previewing every page in the admin keeps less than 24 MB of live heap.

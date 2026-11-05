@@ -102,6 +102,39 @@ async function createModule(slug: string, ctx: ExecutionContext = SYS): Promise<
   return v.moduleId;
 }
 
+/**
+ * Garbage collection until a batch comes back short, as the GC worker runs
+ * it (`more`): one batch is the oldest 10,000 rows, which on a journal other
+ * tests filled need not reach a row this test wrote.
+ */
+async function collectAllGarbage(opts: Parameters<typeof collectJournalGarbage>[1]) {
+  for (;;) {
+    const deleted = await adapter.withAdminTransaction(SYS, (tx) =>
+      collectJournalGarbage(tx, opts),
+    );
+    if (deleted < 10_000) return;
+  }
+}
+
+/** A journal kind no table writes: the cost tests' asked kind (#1269). */
+const PROBE_KIND = "t1269_probe";
+
+/** One journal row of {@link PROBE_KIND}, in a transaction of its own; returns its row id. */
+async function writeProbeRow(): Promise<string> {
+  const rowId = crypto.randomUUID();
+  await adapter.withAdminTransaction(SYS, (tx) =>
+    tx.execute(sql`
+      INSERT INTO entity_changes (xid, table_name, row_id, kind, op)
+      VALUES (pg_current_xact_id(), 't1269_probe', ${rowId}, ${PROBE_KIND}, 'insert')`),
+  );
+  return rowId;
+}
+
+/** Removes the probe rows again (system may delete journal rows, as GC does). */
+async function dropProbeRows(): Promise<void> {
+  await asSystem((tx) => tx`DELETE FROM entity_changes WHERE kind = ${PROBE_KIND}`);
+}
+
 async function chat(
   title: string,
   isolation?: "experiment",
@@ -535,6 +568,77 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
     }
   });
 
+  it("a stale mark's check reads only the kinds it asks for, not every row since (#1269)", async () => {
+    // The site view's check behind a plugin's rebuild: thousands of rows of
+    // a kind the reader does not ask for were written since its mark. The
+    // asked kind is one only this test writes: as in production, where the
+    // core kinds a reader asks for are a small share of a journal plugin
+    // rows flood, the planner then reads them by (kind, xid). (Asking for
+    // "module" here measured this file's database instead: the tests before
+    // it write mostly modules, and for a kind that is most of the journal
+    // the primary key reads about as much, so the planner may take it.)
+    const filter = { kinds: [PROBE_KIND] };
+    try {
+      const { mark } = await adapter.withAdminTransaction(SYS, (tx) =>
+        checkJournalMark(tx, null, filter),
+      );
+      await adapter.withAdminTransaction(SYS, (tx) =>
+        tx.execute(sql`
+          INSERT INTO redirects (id, from_path, to_path, created_by)
+          SELECT gen_random_uuid(), ${`/${PFX}other-kind-`} || i, '/x', ${ACTOR}::uuid
+            FROM generate_series(1, 4000) i`),
+      );
+      const buffers: number[] = [];
+      const check = await adapter.withAdminTransaction(SYS, async (tx) => {
+        await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+        return checkJournalMark(measuring(tx, buffers), mark, filter);
+      });
+      expect(check.fresh).toBe(true);
+      // Through the primary key the check walked the 4,000 redirect rows
+      // written since the mark; by (kind, xid) it reads the asked kind only.
+      expect(Math.max(...buffers)).toBeLessThan(30);
+
+      // A row of the asked kind after the mark still makes it stale.
+      await writeProbeRow();
+      const after = await adapter.withAdminTransaction(SYS, (tx) =>
+        checkJournalMark(tx, mark, filter),
+      );
+      expect(after.fresh).toBe(false);
+    } finally {
+      await dropProbeRows();
+    }
+  });
+
+  it("a consumer poll reads only the kinds it asks for, not every row since its cursor (#1269)", async () => {
+    // A consumer behind a plugin's rebuild: thousands of rows of another
+    // kind were written since its cursor. The asked kind is this test's own,
+    // a small share of the journal as in production (see the check above).
+    const name = `test:${crypto.randomUUID()}`;
+    const filter = { kinds: [PROBE_KIND] };
+    await adapter.withAdminTransaction(SYS, (tx) => registerConsumer(tx, name));
+    try {
+      await adapter.withAdminTransaction(SYS, (tx) =>
+        tx.execute(sql`
+          INSERT INTO redirects (id, from_path, to_path, created_by)
+          SELECT gen_random_uuid(), ${`/${PFX}poll-other-kind-`} || i, '/x', ${ACTOR}::uuid
+            FROM generate_series(1, 4000) i`),
+      );
+      const probeId = await writeProbeRow();
+      const buffers: number[] = [];
+      const batch = await adapter.withAdminTransaction(SYS, async (tx) => {
+        await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+        return pollChanges(measuring(tx, buffers), name, { filter, limit: 100 });
+      });
+      expect(batch.changes.map((c) => c.rowId)).toEqual([probeId]);
+      // Through the primary key the poll walked the 4,000 redirect rows
+      // written since the cursor; by (kind, xid) it reads the asked kind only.
+      expect(Math.max(...buffers)).toBeLessThan(30);
+    } finally {
+      await asSystem((tx) => tx`DELETE FROM change_consumers WHERE name = ${name}`);
+      await dropProbeRows();
+    }
+  });
+
   it("keeps the previous release's change signals written for one release, and trims the font log", async () => {
     const generation = async () =>
       (
@@ -570,16 +674,14 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
     // A change the consumer has not read yet, then a "weekend": GC runs
     // with the retention window behind every row.
     const moduleId = await createModule("gc-idle-consumer");
-    await adapter.withAdminTransaction(SYS, (tx) => collectJournalGarbage(tx, { retentionMs: 0 }));
+    await collectAllGarbage({ retentionMs: 0 });
     const idle = await adapter.withAdminTransaction(SYS, (tx) =>
       pollChanges(tx, name, { filter: { kinds: ["module"] }, limit: 100 }),
     );
     expect(idle.needsRebuild).toBe(false);
     expect(idle.changes.map((c) => c.rowId)).toContain(moduleId);
     // Undelivered for longer than the stall window: it no longer holds GC.
-    await adapter.withAdminTransaction(SYS, (tx) =>
-      collectJournalGarbage(tx, { retentionMs: 0, stalledConsumerMs: 0 }),
-    );
+    await collectAllGarbage({ retentionMs: 0, stalledConsumerMs: 0 });
     const stalled = await adapter.withAdminTransaction(SYS, (tx) =>
       pollChanges(tx, name, { filter: { kinds: ["module"] }, limit: 100 }),
     );
@@ -600,9 +702,7 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
     await createModule("gc-after-cursor");
     // GC with no retention and no stall window deletes the rows the cursor
     // has not read yet.
-    await adapter.withAdminTransaction(SYS, (tx) =>
-      collectJournalGarbage(tx, { retentionMs: 0, stalledConsumerMs: 0 }),
-    );
+    await collectAllGarbage({ retentionMs: 0, stalledConsumerMs: 0 });
     const behind = await adapter.withAdminTransaction(SYS, (tx) =>
       pollChanges(tx, name, { filter: { kinds: ["module"] }, limit: 10 }),
     );

@@ -196,9 +196,9 @@ function normaliseHost(hostname: string): string {
 
 /**
  * The hostnames this site owns, for the AI-actor allowlist below: every
- * registered domain, the host of `site_defaults.site_base_url`, and every
- * hostname the provisioner stored as a required record. A lookup must be
- * one of these or a subdomain of one (`_acme-challenge.<domain>`).
+ * registered domain, the host of `site_defaults.site_base_url`, the staging
+ * host, and every hostname the provisioner stored as a required record. A lookup
+ * must be one of these or a subdomain of one (`_acme-challenge.<domain>`).
  */
 async function siteOwnedHostnames(tx: TransactionRunner): Promise<Set<string>> {
   const owned = new Set<string>();
@@ -217,6 +217,10 @@ async function siteOwnedHostnames(tx: TransactionRunner): Promise<Set<string>> {
       // A malformed stored base URL owns nothing; the SEO settings surface it.
     }
   }
+  const staging = (await tx.execute(sql`
+    SELECT staging_host FROM staging_access WHERE id = 1
+  `)) as unknown as { staging_host: string | null }[];
+  if (staging[0]?.staging_host) owned.add(normaliseHost(staging[0].staging_host));
   const outputs = (await tx.execute(sql`
     SELECT outputs_json FROM provisioning_outputs
   `)) as unknown as { outputs_json: unknown }[];

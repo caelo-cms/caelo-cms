@@ -14,7 +14,9 @@
  * The reads run in three lanes, each step after the previous one:
  *   - toolbar: the change count, deploy state, "View live", the Stage
  *     list and the page's SEO;
- *   - picker: recently edited pages, the page list, the modules;
+ *   - picker: recently edited pages, the site's first pages, the root
+ *     page, the modules (the search box searches the rest on the server,
+ *     #1269 — the editor never reads every page);
  *   - banner: the other open chats, which grow with the draft and must not
  *     hold up the toolbar.
  * A load then holds at most three pooled connections, not ten.
@@ -82,9 +84,15 @@ export interface DeployState {
 
 /** The streamed parts of the Live Edit load. */
 export interface EditorStream {
-  readonly pages: Promise<Streamed<EditPage[]>>;
-  /** #1207 — what the page search offers before anything is typed. */
-  readonly recentPageIds: Promise<Streamed<string[]>>;
+  /**
+   * #1269 — one page of `pages.list` (the oldest pages, as it orders), and
+   * whether the site has more: what the search box lists before typing.
+   */
+  readonly firstPages: Promise<Streamed<{ pages: EditPage[]; more: boolean }>>;
+  /** #1207 — the pages changed last, newest first: what the search offers before typing. */
+  readonly recentPages: Promise<Streamed<EditPage[]>>;
+  /** #1269 — the page composed at "/" in the chat's view (null: none): the editor opens it once it exists. */
+  readonly rootPage: Promise<Streamed<{ pageId: string | null }>>;
   readonly modules: Promise<Streamed<ChatModule[]>>;
   /** P6.6 — the modules this chat changed, for the Diff panel. */
   readonly branchEditedModuleIds: Promise<Streamed<string[]>>;
@@ -109,8 +117,6 @@ export interface EditorStreamInput {
   readonly activePage: EditPage | null;
   /** The pages main has among the first-paint lookup, to find main's version. */
   readonly mainCandidates: readonly EditPage[];
-  /** The branch's whole page list, when first paint already had to read it. */
-  readonly branchPages: readonly EditPage[] | null;
 }
 
 /** Starts every streamed read of the Live Edit load; returns their promises. */
@@ -155,17 +161,36 @@ export function streamEditorParts(input: EditorStreamInput): EditorStream {
       : null,
   );
 
-  const recentPageIds = run(picker, "Recently edited pages", async () => {
+  const recentPages = run(picker, "Recently edited pages", async () => {
     const v = await read<{ pages: { pageId: string }[] }>(branchCtx, "pages.list_recently_edited", {
       limit: 8,
     });
-    return v.pages.map((p) => p.pageId);
+    const ids = v.pages.map((p) => p.pageId);
+    if (ids.length === 0) return [];
+    const listed = await read<{ pages: EditPage[] }>(branchCtx, "pages.list", { pageIds: ids });
+    const byId = new Map(listed.pages.map((p) => [p.id, toEditPage(p)]));
+    // Newest first, as edited; a page deleted since is skipped.
+    return ids.flatMap((id) => byId.get(id) ?? []);
   });
-  const pages = run(picker, "The page list", async () =>
-    input.branchPages
-      ? [...input.branchPages]
-      : (await read<{ pages: EditPage[] }>(branchCtx, "pages.list", {})).pages.map(toEditPage),
-  );
+  const firstPages = run(picker, "The page list", async () => {
+    const v = await read<{ pages: EditPage[]; nextCursor: string | null }>(
+      branchCtx,
+      "pages.list",
+      {
+        limit: FIRST_PAGES,
+      },
+    );
+    return { pages: v.pages.map(toEditPage), more: v.nextCursor !== null };
+  });
+  const rootPage = run(picker, "The home page", async () => {
+    const v = await read<{ defaults: { rootPageId: string | null } | null }>(
+      branchCtx,
+      "site_defaults.get",
+      {},
+    );
+    // No site defaults yet (an install before its first layout): nothing composes at "/".
+    return { pageId: v.defaults === null ? null : v.defaults.rootPageId };
+  });
   const modules = run(picker, "The modules", async () => {
     const v = await read<{ modules: ChatModule[] }>(branchCtx, "modules.list", {});
     return v.modules;
@@ -185,8 +210,9 @@ export function streamEditorParts(input: EditorStreamInput): EditorStream {
   });
 
   return {
-    pages,
-    recentPageIds,
+    firstPages,
+    recentPages,
+    rootPage,
     modules,
     branchEditedModuleIds,
     branchChangeCount,
@@ -197,6 +223,9 @@ export function streamEditorParts(input: EditorStreamInput): EditorStream {
     pageSeo,
   };
 }
+
+/** How many pages the search box lists before anything is typed. */
+const FIRST_PAGES = 50;
 
 /** Runs one op; a refusal throws with the op's operator-readable reason, and is logged. */
 async function read<T>(ctx: ExecutionContext, op: string, input: unknown): Promise<T> {

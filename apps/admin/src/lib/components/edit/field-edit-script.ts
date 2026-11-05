@@ -23,7 +23,8 @@ import { EDIT_OVERLAY_COLOR } from "./edit-affordances-script.js";
 export const FIELD_EDIT_SCRIPT = `
   var MARKER = /^caelo:f p=(\\S+) s=(\\d+) f=(\\S+)$/;
   var SHOW_COMMENT = 128;
-  // Page paths + titles for link-target suggestions, sent by the editor.
+  // Page paths + titles for link-target suggestions: the editor's answer
+  // to the link editor's last caelo:page-paths-query (#1269).
   var pagePaths = [];
 
   function follows(node, ref) {

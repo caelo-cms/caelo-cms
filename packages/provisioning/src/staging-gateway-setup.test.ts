@@ -150,7 +150,7 @@ describe("the gcp-firebase edge: a second Hosting site", () => {
     expect(SITE.length).toBeLessThanOrEqual(30);
   });
 
-  it("creates the site, one `**` rewrite to the staging gateway, the custom domain; deletes the old mapping", async () => {
+  it("creates the site, one `**` rewrite to the staging gateway, the custom domain; keeps the old mapping while the DNS has not moved", async () => {
     const { run, calls } = fakeGcloud({
       ...adminWith(LIVE_SITE),
       "auth print-access-token": ok("tok\n"),
@@ -204,6 +204,7 @@ describe("the gcp-firebase edge: a second Hosting site", () => {
     expect(r.dnsRecords).toEqual([
       { name: "staging.acme.com", type: "A", value: "199.36.158.100" },
     ]);
+    expect(r.domainMappingKept).toBe(true);
     const version = requests.find((q) => q.method === "POST" && q.url.endsWith("/versions"));
     expect(JSON.parse(version?.body ?? "{}")).toEqual({
       config: {
@@ -224,8 +225,116 @@ describe("the gcp-firebase edge: a second Hosting site", () => {
           q.method === "POST" && q.url.includes("customDomains?customDomainId=staging.acme.com"),
       ),
     ).toBe(true);
-    // No second path to the staged files: the old mapping goes.
-    expect(calls).toContainEqual(expect.stringMatching(/^beta run domain-mappings delete /));
+    // #1455 — the mapping holds the host's certificate until the DNS moved.
+    expect(calls.some((c) => c.startsWith("beta run domain-mappings delete"))).toBe(false);
+  });
+
+  it.each([
+    ["OWNERSHIP_ACTIVE", true],
+    // DNS moved, but Hosting does not serve the host yet.
+    ["OWNERSHIP_PENDING", false],
+  ])(
+    "#1455 — old mapping with DNS on the staging site, ownership %s",
+    async (ownershipState, gone) => {
+      const { run, calls } = fakeGcloud({
+        ...adminWith(LIVE_SITE),
+        "auth print-access-token": ok("tok\n"),
+        "beta run domain-mappings describe": ok("staging.acme.com\n"),
+        "beta run domain-mappings delete": ok(),
+      });
+      const http: HttpFetch = async (url) => ({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            ...(url.includes("/customDomains/") && !gone
+              ? {
+                  requiredDnsUpdates: {
+                    desired: [
+                      { records: [{ domainName: "staging.acme.com.", type: "TXT", rdata: "tok" }] },
+                    ],
+                  },
+                }
+              : {}),
+            name: `sites/${SITE}/versions/v1`,
+            hostState: "HOST_ACTIVE",
+            ownershipState,
+          }),
+      });
+      const r = await ensureStagingGatewayEdge(
+        {
+          provider: "gcp-firebase",
+          projectId: "acme",
+          region: "europe-west1",
+          env: "production",
+          domain: "acme.com",
+          stagingHost: "staging.acme.com",
+        },
+        { run, http },
+      );
+      expect(r.ok && r.domainMappingKept).toBe(!gone);
+      expect(calls.some((c) => c.startsWith("beta run domain-mappings delete"))).toBe(gone);
+    },
+  );
+
+  it("waits for the records Firebase works out after the custom domain is created", async () => {
+    const { run } = fakeGcloud({
+      ...adminWith(LIVE_SITE),
+      "auth print-access-token": ok("tok\n"),
+      "beta run domain-mappings describe": fail("ERROR: Cannot find mapping [staging.acme.com]"),
+    });
+    let domainReads = 0;
+    const sleeps: number[] = [];
+    const http: HttpFetch = async (url, init) => {
+      const json = (status: number, body: unknown) => ({
+        ok: status < 400,
+        status,
+        text: async () => JSON.stringify(body),
+      });
+      if (init.method === "GET" && url.includes("/customDomains/staging.acme.com")) {
+        domainReads++;
+        // Not there yet, then created by this run: the first reads carry no records.
+        if (domainReads === 1) return json(404, {});
+        return json(
+          200,
+          domainReads < 4
+            ? {}
+            : {
+                requiredDnsUpdates: {
+                  desired: [
+                    {
+                      records: [
+                        { domainName: "staging.acme.com.", type: "CNAME", rdata: "stg.web.app." },
+                      ],
+                    },
+                  ],
+                },
+              },
+        );
+      }
+      if (url.includes("/channels/live/releases")) return json(404, {});
+      if (init.method === "POST" && url.includes("/versions")) {
+        return json(200, { name: `sites/${SITE}/versions/v1` });
+      }
+      return json(200, {});
+    };
+    const r = await ensureStagingGatewayEdge(
+      {
+        provider: "gcp-firebase",
+        projectId: "acme",
+        region: "europe-west1",
+        env: "production",
+        domain: "acme.com",
+        stagingHost: "staging.acme.com",
+      },
+      { run, http, sleep: async (ms) => void sleeps.push(ms) },
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.dnsRecords).toEqual([
+      { name: "staging.acme.com", type: "CNAME", value: "stg.web.app." },
+    ]);
+    expect(sleeps).toHaveLength(2);
   });
 
   it("a site already serving the rewrite is not released again", () => {
@@ -278,6 +387,88 @@ describe("the gcp edge: the staging host's own rule on the load balancer", () =>
       ...map.pathMatchers,
       { name: "staging", defaultService: BACKEND },
     ]);
+  });
+
+  it("creates the backend, attaches Cloud Armor by update, and names the one external address", async () => {
+    const proxy = "caelo-production-https-proxy-1";
+    const { run, calls } = fakeGcloud({
+      "compute network-endpoint-groups describe": fail("NOT_FOUND: was not found"),
+      "compute network-endpoint-groups create": ok(),
+      "compute security-policies list": ok("caelo-production-waf-1\n"),
+      "compute backend-services describe": fail("NOT_FOUND: was not found"),
+      "compute backend-services create": ok(JSON.stringify([{ selfLink: BACKEND }])),
+      "compute backend-services update": ok(),
+      "compute backend-services add-backend": ok(),
+      "compute ssl-certificates describe": ok("{}"),
+      // Routed already: the REST update of the map has its own tests.
+      "compute url-maps list": ok(JSON.stringify([planStagingHostRule(map, t, BACKEND)])),
+      "compute target-https-proxies list": ok(
+        JSON.stringify([{ name: proxy, sslCertificates: [] }]),
+      ),
+      "compute target-https-proxies update": ok(),
+      "compute url-maps import": ok(),
+      "compute addresses list": ok("136.81.196.111\n"),
+    });
+    const r = await ensureStagingGatewayEdge(
+      {
+        provider: "gcp",
+        projectId: "acme",
+        region: "europe-west1",
+        env: "production",
+        domain: "acme.com",
+        stagingHost: "staging.acme.com",
+      },
+      { run },
+    );
+    if (!r.ok) throw new Error(r.error);
+    expect(r.dnsRecords).toEqual([
+      { name: "staging.acme.com", type: "A", value: "136.81.196.111" },
+    ]);
+    expect(calls.find((c) => c.startsWith("compute backend-services create"))).toContain(
+      "--protocol=HTTPS --port-name=http",
+    );
+    expect(calls.find((c) => c.startsWith("compute backend-services create"))).not.toContain(
+      "--security-policy",
+    );
+    expect(calls.find((c) => c.startsWith("compute backend-services update"))).toContain(
+      "--security-policy=",
+    );
+    expect(calls.find((c) => c.startsWith("compute addresses list"))).toContain(
+      "addressType=EXTERNAL",
+    );
+  });
+
+  it("attaches Cloud Armor to a backend an earlier run left without one", async () => {
+    const edge = (backendJson: unknown) =>
+      fakeGcloud({
+        "compute security-policies list": ok("caelo-production-waf-1\n"),
+        "compute backend-services describe": ok(JSON.stringify(backendJson)),
+        "compute ssl-certificates describe": ok("{}"),
+        "compute url-maps list": ok(JSON.stringify([planStagingHostRule(map, t, BACKEND)])),
+        "compute target-https-proxies list": ok(JSON.stringify([{ name: "proxy" }])),
+        "compute addresses list": ok("136.81.196.111\n"),
+      });
+    const target = {
+      provider: "gcp" as const,
+      projectId: "acme",
+      region: "europe-west1",
+      env: "production",
+      domain: "acme.com",
+      stagingHost: "staging.acme.com",
+    };
+    const bare = edge({ selfLink: BACKEND });
+    expect((await ensureStagingGatewayEdge(target, { run: bare.run })).ok).toBe(true);
+    expect(bare.calls.find((c) => c.startsWith("compute backend-services update"))).toContain(
+      "--security-policy=caelo-production-waf-1",
+    );
+
+    const guarded = edge({
+      selfLink: BACKEND,
+      securityPolicy:
+        "https://compute/projects/acme/global/securityPolicies/caelo-production-waf-1",
+    });
+    expect((await ensureStagingGatewayEdge(target, { run: guarded.run })).ok).toBe(true);
+    expect(guarded.calls.some((c) => c.startsWith("compute backend-services update"))).toBe(false);
   });
 
   it("is a no-op when the map already routes it, and moves a changed staging host", () => {

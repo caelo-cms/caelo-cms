@@ -364,6 +364,12 @@ export interface GatedToolSpec {
    * can hold every executor that returns a handoff to this declaration.
    */
   readonly producesCredential?: CredentialKind;
+  /**
+   * #1420 — an op that takes the tool's input and returns `{ preview }`: what
+   * the approval card shows instead of the call's arguments, for a decision
+   * the arguments do not explain. Written by the server, not by the AI.
+   */
+  readonly approvalPreviewOp?: string;
 }
 
 export interface ToolDefinitionWithHandler<I> {

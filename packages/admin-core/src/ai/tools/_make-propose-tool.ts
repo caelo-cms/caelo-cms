@@ -59,6 +59,8 @@ export interface MakeProposeToolArgs<I> {
    * standard "you never see it" contract. See GatedToolSpec.producesCredential.
    */
   readonly producesCredential?: CredentialKind;
+  /** What the approval card shows — see GatedToolSpec.approvalPreviewOp. */
+  readonly approvalPreviewOp?: string;
 }
 
 /**
@@ -94,6 +96,7 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
       pendingQueuePath: args.pendingQueuePath,
       ...(args.afterApply ? { afterApply: args.afterApply } : {}),
       ...(args.producesCredential ? { producesCredential: args.producesCredential } : {}),
+      ...(args.approvalPreviewOp ? { approvalPreviewOp: args.approvalPreviewOp } : {}),
     },
     // Fallback handler — NOT used on the gated (SDK-executed) path, kept so the
     // registered tool stays a valid ToolDefinitionWithHandler. If ever reached

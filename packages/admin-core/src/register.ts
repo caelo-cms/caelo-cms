@@ -170,6 +170,7 @@ import {
 } from "./ops/content/page-module-content.js";
 import { patchPageModuleFieldsOp } from "./ops/content/page-module-patch.js";
 import { movePagesManyOp, planPageMovesOp } from "./ops/content/page-moves.js";
+import { rebuildPageSearchWordsOp, searchPagesOp } from "./ops/content/page-search.js";
 import { listPageStatusesOp } from "./ops/content/page-statuses.js";
 import {
   changeTemplateOp,
@@ -188,8 +189,13 @@ import {
 } from "./ops/content/pages.js";
 import { listRecentlyEditedPagesOp } from "./ops/content/pages-recently-edited.js";
 import { placeModuleOp } from "./ops/content/place-module.js";
+import {
+  contentInstancesRenderedOnManyOp,
+  forkPlacementPathsOp,
+} from "./ops/content/placement-fork-paths.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
 import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
+import { pageConflictsRedirectOp } from "./ops/content/redirect-page-conflicts.js";
 import { listSharedContentOp } from "./ops/content/shared-content.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
 import {
@@ -257,7 +263,12 @@ import {
   setDomainTlsStatusOp,
   verifyDomainOp,
 } from "./ops/domains.js";
-import { getEmailConfigOp, sendTestEmailOp, setEmailConfigOp } from "./ops/email_config.js";
+import {
+  getEmailConfigOp,
+  senderDomainOp,
+  sendTestEmailOp,
+  setEmailConfigOp,
+} from "./ops/email_config.js";
 import {
   executeEmailConfigProposalOp,
   listPendingEmailConfigProposalsOp,
@@ -329,6 +340,13 @@ import {
 } from "./ops/links.js";
 import { resolveImportLinksOp } from "./ops/links-import.js";
 import { registerListOps } from "./ops/lists/index.js";
+import { getMailCapsOp, proposeSetMailCapsOp, setMailCapsOp } from "./ops/mail_caps.js";
+import {
+  claimMailOutboxOp,
+  completeMailOutboxOp,
+  finishMailDeliveriesOp,
+  reserveMailDeliveriesOp,
+} from "./ops/mail_outbox.js";
 import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
 import {
   executeMcpTokenProposalOp,
@@ -433,7 +451,6 @@ import {
 import { listPluginPendingActionsOp, rejectPluginProposalOp } from "./ops/plugins/pending_queue.js";
 import {
   activatePluginOp,
-  approvePluginCapabilitiesOp,
   disablePluginOp,
   getPluginOp,
   listPendingPluginsOp,
@@ -443,6 +460,12 @@ import {
   revalidatePluginOp,
   submitPluginOp,
 } from "./ops/plugins/registry.js";
+import {
+  approvePluginCapabilitiesOp,
+  listPluginApprovalsOp,
+  previewApproveReleaseOp,
+  proposeApproveReleaseOp,
+} from "./ops/plugins/release_approval.js";
 import { reloadPluginOp } from "./ops/plugins/reload.js";
 import { executeUninstallPluginOp, proposeUninstallPluginOp } from "./ops/plugins/uninstall.js";
 import {
@@ -774,6 +797,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectTemplateProposalOp);
   registry.register(listPendingTemplateProposalsOp);
   registry.register(listPagesOp);
+  registry.register(searchPagesOp);
   registry.register(getPageOp);
   registry.register(getPageWithModulesOp);
   registry.register(createPageOp);
@@ -821,6 +845,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // v0.12.0 — content_instances + placement binding ops.
   registry.register(listContentInstancesOp);
   registry.register(rebuildContentInstanceRefsOp);
+  registry.register(rebuildPageSearchWordsOp);
   registry.register(listModulePeersOp);
   registry.register(getContentInstanceOp);
   registry.register(createContentInstanceOp);
@@ -832,6 +857,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(deleteContentInstancesManyOp);
   registry.register(setPlacementContentOp);
   registry.register(forkPlacementContentOp);
+  registry.register(forkPlacementPathsOp);
+  registry.register(contentInstancesRenderedOnManyOp);
   registry.register(duplicatePageOp);
   registry.register(changeTemplateOp);
   registry.register(deletePageOp);
@@ -1094,6 +1121,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createRedirectOp);
   registry.register(listRedirectsOp);
   registry.register(lookupRedirectOp);
+  registry.register(pageConflictsRedirectOp);
   registry.register(deleteRedirectOp);
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);
@@ -1181,6 +1209,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);
   registry.register(sendTestEmailOp);
+  registry.register(senderDomainOp);
   // v0.2.25 — email_config propose/execute pair. AI proposes
   // transport+fromAddress+config-without-secrets; Owner supplies the
   // smtp password / resend apiKey / SES key inline at approve time
@@ -1329,6 +1358,14 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // #1140 — the scheduler tick's due-table (system only).
   registry.register(scheduledTasksClaimOp);
   registry.register(scheduledTasksFinishOp);
+  // #1337 — the public mail outboxes' drain (system-only).
+  registry.register(claimMailOutboxOp);
+  registry.register(completeMailOutboxOp);
+  registry.register(reserveMailDeliveriesOp);
+  registry.register(finishMailDeliveriesOp);
+  registry.register(getMailCapsOp);
+  registry.register(setMailCapsOp);
+  registry.register(proposeSetMailCapsOp);
   // #757 — the step-up for the actions above: the Owner's password, re-entered.
   registry.register(stepUpConfirmPasswordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the
@@ -1437,6 +1474,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(activatePluginOp);
   registry.register(disablePluginOp);
   registry.register(approvePluginCapabilitiesOp);
+  registry.register(listPluginApprovalsOp);
+  registry.register(previewApproveReleaseOp);
+  registry.register(proposeApproveReleaseOp);
   registry.register(rejectPluginOp);
   registry.register(revalidatePluginOp);
   registry.register(reloadPluginOp);

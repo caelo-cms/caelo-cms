@@ -10,6 +10,8 @@
  * - `propose_revoke_plugin_capability` (§11.A gated) — revoking a grant of
  *   the running version disables the plugin, and getting it back is a new
  *   Owner approval, so the operator approves the card.
+ * - `propose_approve_plugin_release` (§11.A gated) — a release that stopped
+ *   a plugin runs again on the operator's click on the card.
  * - `reject_plugin`, `revalidate_plugin` (routine) — both act only on a
  *   Tier 2 submission that is not running, and each undoes the other in one
  *   call. See the actorScope notes on `plugins.reject` / `plugins.revalidate`.
@@ -21,6 +23,7 @@ import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { proposeRevokeCapabilityInput } from "../../ops/plugins/capability_proposals.js";
 import { awaitingApprovalReason } from "../../ops/plugins/health.js";
+import { proposeApproveReleaseInput } from "../../ops/plugins/release_approval.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 import { makeListReadTool } from "./_make-read-tool.js";
@@ -67,6 +70,17 @@ export const proposeRevokePluginCapabilityTool = makeProposeTool({
   inputSchema: generateInputSchema(proposeRevokeCapabilityInput),
   summarize: (input, preview) =>
     `revoke ${input.capability} from plugin ${input.slug}${preview.disablesPlugin ? " (disables it)" : ""}`,
+});
+
+export const proposeApprovePluginReleaseTool = makeProposeTool({
+  toolName: "propose_approve_plugin_release",
+  opName: "plugins.propose_approve_release",
+  afterApply: "load-activated-plugin",
+  pendingQueuePath: "/settings/plugins/pending",
+  when: "Ask the operator to approve a plugin release that stopped it (health `awaiting_approval`), so the plugin runs again and Publish live is unblocked. Propose as soon as you find one; never send the operator to Settings instead. Take `manifestDigest` from `list_plugins`.",
+  schema: proposeApproveReleaseInput,
+  approvalPreviewOp: "plugins.preview_approve_release",
+  summarize: (input) => `approve the new release of plugin ${input.slug}`,
 });
 
 interface InstallationRow {
@@ -166,7 +180,7 @@ export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadIn
   name: "reload_plugin",
   description:
     "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow within seconds (`get_plugin`). " +
-    "Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`), nor health `awaiting_approval` (the Owner approves its capabilities at /settings/plugins).",
+    "Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`), nor health `awaiting_approval` (`propose_approve_plugin_release`).",
   schema: reloadInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.reload", input);
@@ -180,7 +194,7 @@ export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadIn
     }
     const h = (got.value as { plugin: { health: ReloadedHealth } | null }).plugin?.health;
     const now = h
-      ? `${h.state} (servers: ${h.servers.loaded} loaded, ${h.servers.failing} failing)${h.problem ? ` — ${h.problem.message}` : ""}${h.state === "awaiting_approval" ? ` — a reload cannot start it: ${awaitingApprovalReason(h)}; the Owner approves the release at /settings/plugins` : ""}`
+      ? `${h.state} (servers: ${h.servers.loaded} loaded, ${h.servers.failing} failing)${h.problem ? ` — ${h.problem.message}` : ""}${h.state === "awaiting_approval" ? ` — a reload cannot start it: ${awaitingApprovalReason(h)}; call propose_approve_plugin_release` : ""}`
       : "unknown";
     return {
       ok: true,

@@ -102,7 +102,7 @@ describe("the gateway's Cloud Armor rules (#1339)", () => {
   });
 });
 
-describe("ensureGatewayArmorRules (the converge, contract 21)", () => {
+describe("ensureGatewayArmorRules (the converge, contract 22)", () => {
   const target = { projectId: "acme", env: "production" };
 
   it("changes nothing when every rule is in place", async () => {

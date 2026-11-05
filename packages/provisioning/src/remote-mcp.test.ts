@@ -644,6 +644,8 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
 
   it("covers exactly the broker's paths; a traversal never borrows the MCP rule", async () => {
     // RE2 and JS agree on this pattern (anchors, alternation, classes only).
+    // Cloud Armor refuses capture groups (scratch install of v0.11.17).
+    expect(MCP_ARMOR_PATH_PATTERN).not.toMatch(/\((?!\?:)/);
     const re = new RegExp(MCP_ARMOR_PATH_PATTERN);
     for (const p of [
       "/api/mcp/chat",
@@ -791,7 +793,8 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     expect(planUrlMapPaths([], "acme.com", PROXY_BACKEND).ok).toBe(false);
   });
 
-  const policyJson = (rules: object[]) => ok(JSON.stringify({ rules }));
+  // As real gcloud prints it: a one-element list.
+  const policyJson = (rules: object[]) => ok(JSON.stringify([{ rules }]));
   const PROXY_POLICY = "caelo-production-mcp-auth-proxy-armor";
 
   it("#1328 — creates the proxy's own policy and its rule when missing", async () => {
@@ -870,6 +873,7 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
       "compute network-endpoint-groups create": ok(),
       "compute backend-services describe": fail("NOT_FOUND: was not found"),
       "compute backend-services create": ok(JSON.stringify([{ selfLink: PROXY_BACKEND }])),
+      "compute backend-services update": ok(),
       "compute backend-services add-backend": ok(),
     });
     const r = await ensureMcpAuthProxyBackend(target, missing);
@@ -877,7 +881,12 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     expect(missing.calls).toContain(
       "compute network-endpoint-groups create caelo-production-mcp-auth-proxy-neg --region=europe-west1 --project=acme --network-endpoint-type=serverless --cloud-run-service=caelo-production-mcp-auth-proxy --quiet",
     );
-    expect(missing.calls.find((c) => c.startsWith("compute backend-services create"))).toContain(
+    // `backend-services create` has no --security-policy flag (scratch
+    // install of v0.11.17, 2026-11-05): `update` attaches the policy.
+    expect(
+      missing.calls.find((c) => c.startsWith("compute backend-services create")),
+    ).not.toContain("--security-policy");
+    expect(missing.calls.find((c) => c.startsWith("compute backend-services update"))).toContain(
       `--security-policy=${PROXY_POLICY}`,
     );
     expect(
@@ -901,6 +910,58 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     });
     const again = await ensureMcpAuthProxyBackend(target, present);
     expect(again).toEqual({ ok: true, backend: PROXY_BACKEND, done: [] });
+
+    // A backend an earlier run left without its policy gets it attached.
+    const bare = fakeGcloud({
+      "compute network-endpoint-groups describe": ok("caelo-production-mcp-auth-proxy-neg\n"),
+      "compute backend-services describe": ok(
+        JSON.stringify({
+          selfLink: PROXY_BACKEND,
+          backends: [{ group: "x/networkEndpointGroups/caelo-production-mcp-auth-proxy-neg" }],
+        }),
+      ),
+      "compute backend-services update": ok(),
+    });
+    expect((await ensureMcpAuthProxyBackend(target, bare)).ok).toBe(true);
+    expect(bare.calls.find((c) => c.startsWith("compute backend-services update"))).toContain(
+      `--security-policy=${PROXY_POLICY}`,
+    );
+  });
+
+  it("creates the backend with the http port name a serverless NEG needs", async () => {
+    const missing = fakeGcloud({
+      "compute network-endpoint-groups describe": ok("caelo-production-mcp-auth-proxy-neg\n"),
+      "compute backend-services describe": fail("NOT_FOUND: was not found"),
+      "compute backend-services create": ok(JSON.stringify([{ selfLink: PROXY_BACKEND }])),
+    });
+    await ensureMcpAuthProxyBackend(
+      { projectId: "acme", region: "europe-west1", env: "production" },
+      missing,
+    );
+    expect(missing.calls.find((c) => c.startsWith("compute backend-services create"))).toContain(
+      "--protocol=HTTPS --port-name=http",
+    );
+  });
+
+  it("repairs a backend an earlier run left with the https port name, before add-backend", async () => {
+    const left = fakeGcloud({
+      "compute network-endpoint-groups describe": ok("caelo-production-mcp-auth-proxy-neg\n"),
+      "compute backend-services describe": ok(
+        JSON.stringify({ selfLink: PROXY_BACKEND, portName: "https", backends: [] }),
+      ),
+      "compute backend-services update": ok(),
+      "compute backend-services add-backend": ok(),
+    });
+    const r = await ensureMcpAuthProxyBackend(
+      { projectId: "acme", region: "europe-west1", env: "production" },
+      left,
+    );
+    expect(r.ok).toBe(true);
+    const writes = left.calls.filter((c) =>
+      /^compute backend-services (update|add-backend)/.test(c),
+    );
+    expect(writes[0]).toContain("--port-name=http");
+    expect(writes.at(-1)).toContain("add-backend");
   });
 
   it("#1328 — ensureRemoteMcpEdge: service, policy, backend, URL map, then the gateway rule; no-op on gcp-firebase", async () => {

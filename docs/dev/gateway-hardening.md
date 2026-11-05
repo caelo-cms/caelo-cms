@@ -39,7 +39,7 @@ On gcp-firebase the only `X-Forwarded-For` entry nobody can forge is the one Clo
 No protection on this page depends on a WAF. Where a provider has one it is an extra layer; `packages/provisioning/src/public-service-shape.ts` is the per-provider table (E11), and `public-service-shape.test.ts` pins every stack, the CLI setup modules, the Compose file and the GCP cost table to it.
 
 - **gcp-firebase (the cheap setup):** no load balancer, no WAF. The gateways and the MCP-Auth-Proxy are publicly invokable on their run.app URLs (the Firebase rewrites need it), so everything here is the protection.
-- **gcp:** the gateway's Cloud Armor policy, shared by the staging gateway's backend, has per-path rules (`packages/provisioning/src/gateway-edge.ts`; the converge applies them to existing installs, infrastructure contract 21):
+- **gcp:** the gateway's Cloud Armor policy, shared by the staging gateway's backend, has per-path rules (`packages/provisioning/src/gateway-edge.ts`; the converge applies them to existing installs, infrastructure contract 22):
 
   | Priority | Matches | Rule |
   |---|---|---|

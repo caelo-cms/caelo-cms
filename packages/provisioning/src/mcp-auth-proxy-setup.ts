@@ -30,7 +30,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gcloud as defaultGcloud } from "./gcloud.js";
+import { gcloud as defaultGcloud, isGcloudNotFound } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import { gcpSecretId, mcpAuthProxyServiceAccountEmail } from "./gcp-names.js";
 import { type EnsureOutcome, ensureMcpAuthProxyServiceAccount } from "./runtime-secrets.js";
@@ -81,10 +81,6 @@ export interface ReleaseServicesDeps {
   /** Waits between retries of a grant on the account created a moment ago. */
   readonly sleep?: Sleep;
 }
-
-// gcloud words a missing Cloud Run service "Cannot find service [<name>]."
-// with no NOT_FOUND code (searchVIU upgrade to v0.11.10, 2026-11-03).
-const NOT_FOUND = /NOT_FOUND|not found|cannot find|does not exist|could not be found/i;
 
 /** Ensure everything {@link ReleaseServicesTarget} needs; outcomes in order, failures included. */
 export async function ensureReleaseServices(
@@ -249,7 +245,7 @@ async function ensureDataGatewayService(
     "--format=value(metadata.name)",
   ]);
   if (existing.ok) return { id, status: "present" };
-  if (!NOT_FOUND.test(existing.stderr)) {
+  if (!isGcloudNotFound(existing.stderr)) {
     return { id, status: "failed", error: existing.stderr.trim() };
   }
   // The source: the service that was the gateway and becomes the proxy.
@@ -383,7 +379,7 @@ export async function ensureMcpAuthProxyServiceGcp(
     "--format=value(metadata.name)",
   ]);
   if (existing.ok) return { id, status: "present" };
-  if (!NOT_FOUND.test(existing.stderr)) {
+  if (!isGcloudNotFound(existing.stderr)) {
     return { id, status: "failed", error: existing.stderr.trim() };
   }
   const deployed = await run(gcpProxyDeployArgs(target));

@@ -224,6 +224,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "layouts.list_pending": PENDING_QUEUE,
   "email_config.list_pending": PENDING_QUEUE,
   "domains.list_pending": PENDING_QUEUE,
+  "plugins.list_approvals": {
+    kind: "covered",
+    by: ["list_plugins"],
+    note: "the admin's inbox read; `list_plugins` gives the AI the same state per plugin (health `awaiting_approval`)",
+  },
   "plugins.list_pending": PENDING_QUEUE,
   "plugins.list_pending_actions": PENDING_QUEUE,
   "imports.list_pending_proposals": PENDING_QUEUE,
@@ -440,6 +445,12 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   },
 
   // ── gaps: the agent should be able to do this (follow-ups) ────────────
+  "pages.search": {
+    kind: "gap",
+    reason:
+      "the word-prefix page search (#1269) ships first for the editor; list_pages still lists every page and filters in the tool",
+    followUp: "#1269 — list_pages takes a search query and reads through pages.search",
+  },
   "media.set_focal_point": {
     kind: "gap",
     reason:

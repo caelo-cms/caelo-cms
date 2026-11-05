@@ -107,6 +107,7 @@ import {
 import { gatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
 import { type IpHashKeys, ipHashKeys } from "./ip-hash-key.js";
+import { declaredMailLink, mailLinkPage, parseMailLinkPath } from "./mail-link.js";
 import { HARD_MAX_BODY_BYTES, readBodyWithCap } from "./middleware/body-cap.js";
 import { type CaptchaConfig, issuePowChallenge, verifyPowProof } from "./middleware/captcha.js";
 import { checkHoneypot } from "./middleware/honeypot.js";
@@ -785,6 +786,24 @@ async function visitorRequest(
     return errorResponse("NotFound", 404, requestId);
   }
 
+  // #1337 — the confirmation page of a plugin's mail link: fixed per
+  // declared link (the registry sync reads, nothing is written); the
+  // click's POST is an ordinary plugin call below.
+  const mailLink = req.method === "GET" ? parseMailLinkPath(url.pathname) : null;
+  if (mailLink) {
+    const address = requestClientAddress(req, conn, requestId);
+    if (!address.ok) return address.response;
+    const limited = memoryRateLimited(address.value, requestId);
+    if (limited) return limited;
+    await syncDispatchPlugins();
+    const link = declaredMailLink(
+      loadedPlugins.bySlug(mailLink.slug)?.definition.mailTemplates,
+      mailLink.operation,
+    );
+    if (!link) return errorResponse("NotFound", 404, requestId);
+    return mailLinkPage(mailLink, link, requestId);
+  }
+
   // ---- #1326: the input filter, before any database access ----
   const isCaptchaChallenge = req.method === "GET" && url.pathname === "/api/captcha/challenge";
   const pluginRoute = req.method === "POST" ? parsePluginPath(url.pathname) : null;
@@ -811,6 +830,9 @@ async function visitorRequest(
   if (!pluginRoute) return errorResponse("NotFound", 404, requestId);
   return pluginOperation(req, settings, client.value, pluginRoute, requestId);
 }
+
+/** How long a `Busy` (503) answer asks the client to wait (#1334). */
+const BUSY_RETRY_AFTER_SEC = 2;
 
 /** `GET /api/captcha/challenge`: a PoW challenge, bounded per client address. */
 async function captchaChallenge(
@@ -1108,7 +1130,11 @@ async function pluginOperation(
                   ? 403
                   : result.error.kind === "Rejected"
                     ? 422
-                    : 500;
+                    : // #1334 — at a bound the operation guards (concurrent
+                      // password hashes): a cheap 503, retried shortly.
+                      result.error.kind === "Busy"
+                      ? 503
+                      : 500;
     await logRow(
       {
         statusCode: status,
@@ -1123,6 +1149,7 @@ async function pluginOperation(
     return errorResponse(result.error.kind, status, requestId, {
       setCookies: cookies.setCookieHeaders(),
       log: `${slug}.${operationName}: ${result.error.message ?? "no message"}`,
+      ...(result.error.kind === "Busy" ? { retryAfterSec: BUSY_RETRY_AFTER_SEC } : {}),
     });
   }
   await logRow(

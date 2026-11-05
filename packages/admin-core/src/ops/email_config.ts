@@ -15,7 +15,8 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { buildEmailTransport } from "../email/transport.js";
+import { resendSenderDomain, SenderDomainError, senderDomainOf } from "../email/sender-domain.js";
+import { buildEmailTransport, emailDeliveryProblem } from "../email/transport.js";
 
 const transportEnum = z.enum(["none", "smtp", "resend", "ses"]);
 
@@ -127,6 +128,35 @@ export const setEmailConfigOp = defineOperation({
         operation: "email_config.set",
         message: "fromAddress is required for non-`none` transports",
       });
+    }
+    if (
+      emailDeliveryProblem({
+        transport: input.transport,
+        fromAddress: input.fromAddress,
+        config: input.config,
+      }) !== null
+    ) {
+      // #1337 / #1334 — a plugin that `requires: ["email"]` cannot be
+      // activated without a working transport; switching to one that cannot
+      // deliver (none, or the unimplemented smtp/ses) under a running one
+      // would leave its confirmation and reset mails queued forever
+      // (password accounts that can never be verified). §2: refuse and name
+      // the step instead of degrading silently.
+      const needing = (await tx.execute(sql`
+        SELECT slug FROM plugins
+        WHERE status = 'active'
+          AND jsonb_typeof(manifest_json -> 'requires') = 'array'
+          AND (manifest_json -> 'requires') ? 'email'
+        ORDER BY slug
+      `)) as unknown as { slug: string }[];
+      if (needing.length > 0) {
+        const slugs = needing.map((r) => `"${r.slug}"`).join(", ");
+        return err({
+          kind: "HandlerError",
+          operation: "email_config.set",
+          message: `the mail transport cannot be switched to one that does not deliver while ${slugs} ${needing.length === 1 ? "sends" : "send"} mail (sign-up confirmations, password resets): deactivate ${needing.length === 1 ? "it" : "them"} at Settings → Plugins first, or keep a transport configured`,
+        });
+      }
     }
     if (input.transport === "smtp") {
       const cfg = input.config as { host?: unknown; port?: unknown };
@@ -291,5 +321,83 @@ export const sendTestEmailOp = defineOperation({
       }),
     );
     return ok({ messageId, transport: row.transport });
+  },
+});
+
+const senderRecord = z.object({
+  purpose: z.string(),
+  type: z.string(),
+  name: z.string(),
+  value: z.string(),
+  priority: z.number().int().nullable(),
+  status: z.string(),
+});
+
+/**
+ * #1337 (E12) — the DNS records the mail provider needs for the sending
+ * domain and whether it found them (Settings → Email and the AI's
+ * `check_email_domain`). With `verify`, the provider is asked to check the
+ * records again first. Reads the stored config per call, like the test
+ * send, and reveals no credential.
+ */
+export const senderDomainOp = defineOperation({
+  name: "email_config.sender_domain",
+  readScope: "request",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ verify: z.boolean() }).strict(),
+  output: z.union([
+    z.object({
+      found: z.literal(true),
+      domain: z.string(),
+      status: z.string(),
+      verificationStarted: z.boolean(),
+      records: z.array(senderRecord),
+    }),
+    z.object({ found: z.literal(false), domain: z.string() }),
+  ]),
+  // The provider call runs with no transaction held (#1254).
+  transaction: "none",
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.transaction((t) =>
+      t.execute(sql`SELECT transport, from_address, config_json FROM email_config WHERE id = 1`),
+    )) as unknown as {
+      transport: "none" | "smtp" | "resend" | "ses";
+      from_address: string;
+      config_json: Record<string, unknown>;
+    }[];
+    const row = rows[0];
+    const fail = (message: string) =>
+      err({ kind: "HandlerError" as const, operation: "email_config.sender_domain", message });
+    if (!row || row.transport !== "resend") {
+      return fail(
+        `the sending domain's DNS records are read from the provider, and only the Resend transport is implemented (the current one is \`${row?.transport ?? "none"}\`): set up Resend first (propose_set_email_config)`,
+      );
+    }
+    const apiKey = (row.config_json as { apiKey?: unknown }).apiKey;
+    if (typeof apiKey !== "string" || apiKey.length === 0) {
+      return fail("the Resend transport has no API key — the Owner adds it at Settings → Email");
+    }
+    const domain = senderDomainOf(row.from_address);
+    if (!domain) return fail("the transport has no from-address — set one at Settings → Email");
+    try {
+      const status = await resendSenderDomain({ apiKey, domain, verify: input.verify });
+      if (input.verify) {
+        await tx.transaction((t) =>
+          recordAudit(t, {
+            actorId: ctx.actorId,
+            requestId: ctx.requestId,
+            operation: "email_config.sender_domain",
+            input: { verify: true, domain },
+            succeeded: true,
+            resultSummary: status.found ? `status=${status.status}` : "not found",
+          }),
+        );
+      }
+      return ok(status);
+    } catch (e) {
+      if (e instanceof SenderDomainError) return fail(e.message);
+      return fail(`could not reach Resend: ${(e as Error).message.slice(0, 200)}`);
+    }
   },
 });

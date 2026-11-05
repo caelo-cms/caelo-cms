@@ -14,9 +14,11 @@ import {
   liveContainerEnv,
   liveDatabaseHost,
   liveDirectVpc,
+  liveMaxInstances,
   liveServiceAccount,
   planContractEnv,
   planEnvUpdate,
+  planMaxInstances,
   planNoVpc,
   policyGrants,
   removeRetiredIamBindings,
@@ -849,7 +851,7 @@ describe("ensureStackInvariants", () => {
         ]),
       ],
       "run services get-iam-policy": [
-        policy([{ role: "roles/run.invoker", members: [IAP_AGENT] }]),
+        policy([{ role: "roles/run.invoker", members: [IAP_AGENT, "allUsers"] }]),
       ],
       "compute backend-buckets list": [ok("caelo-production-static-backend-9f8e7d6\n")],
       "compute firewall-rules list": [ok("[]")],
@@ -1143,5 +1145,30 @@ describe("liveDirectVpc / planNoVpc (#1328)", () => {
       changes: ["VPC egress (private ranges) → none"],
     });
     expect(planNoVpc(false)).toEqual({ ok: true, flags: [], changes: [] });
+  });
+});
+
+describe("planMaxInstances (#1463)", () => {
+  const described = (annotations: Record<string, string>) =>
+    JSON.stringify({ spec: { template: { metadata: { annotations } } } });
+
+  it("reads the revision template's scale-out, null when unset", () => {
+    expect(liveMaxInstances(described({ "autoscaling.knative.dev/maxScale": "100" }))).toBe(100);
+    expect(liveMaxInstances(described({}))).toBeNull();
+  });
+
+  it("lowers a value above the budget, an unset one included", () => {
+    expect(planMaxInstances(100, 10)).toEqual({
+      ok: true,
+      flags: ["--max-instances=10"],
+      changes: ["max instances: 100 → 10"],
+    });
+    expect(planMaxInstances(null, 10).flags).toEqual(["--max-instances=10"]);
+    expect(planMaxInstances(Number.NaN, 10).flags).toEqual(["--max-instances=10"]);
+  });
+
+  it("never raises what an operator lowered", () => {
+    expect(planMaxInstances(3, 10).flags).toEqual([]);
+    expect(planMaxInstances(10, 10).flags).toEqual([]);
   });
 });

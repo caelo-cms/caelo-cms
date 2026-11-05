@@ -32,7 +32,6 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
-  drainProjectionOnce,
   loadedVisitorProjections,
   publishProjectionOnce,
   registerAdminOps,
@@ -420,6 +419,22 @@ afterAll(async () => {
   await adminAdapter.close();
 });
 
+/**
+ * #1333 — votes are an inbox: each submit adds a row, and the recompute
+ * keeps a recognised visitor's newest. What a vote is linked to is the
+ * visitor id stored with it, oldest first.
+ */
+async function voteIds(pageId: string): Promise<Array<string | null>> {
+  const rows = await publicRows<{ page_id: string; visitor_id: string | null; created_at: string }>(
+    "ratings",
+    "ratings",
+  );
+  return rows
+    .filter((x) => x.page_id === pageId)
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    .map((x) => x.visitor_id);
+}
+
 describe("no consent decision yet (#677)", () => {
   it("sets no visitor cookie and hands the plugin no id", async () => {
     const r = await handleRequest(post(RATE, { pageId: "p-none", score: 4 }));
@@ -465,8 +480,9 @@ describe("rejected (#677)", () => {
       const r = await handleRequest(post(RATE, { pageId: "p-rejected", score }, [DECLINED]));
       await expectStatus(r, 200);
       expect(r.headers.getSetCookie()).toEqual([]);
-      expect(((await r.json()) as { data: { mode: string } }).data.mode).toBe("inserted");
+      expect(((await r.json()) as { data: { recorded: boolean } }).data.recorded).toBe(true);
     }
+    expect(await voteIds("p-rejected")).toEqual([null, null]);
   });
 });
 
@@ -497,15 +513,18 @@ describe("accepted, then withdrawn (#677)", () => {
     expectsOnlyTheConsentId(log.at(-1));
   });
 
-  it("recognises the visitor afterwards: no new cookie, their vote is updated", async () => {
+  it("recognises the visitor afterwards: no new cookie, both votes carry their id", async () => {
     const cookies = [ACCEPTED, sessionCookie(visitorCookie)];
     const first = await handleRequest(post(RATE, { pageId: "p-accepted", score: 3 }, cookies));
     await expectStatus(first, 200);
     expect(first.headers.getSetCookie()).toEqual([]);
-    expect(((await first.json()) as { data: { mode: string } }).data.mode).toBe("inserted");
     const second = await handleRequest(post(RATE, { pageId: "p-accepted", score: 1 }, cookies));
     await expectStatus(second, 200);
-    expect(((await second.json()) as { data: { mode: string } }).data.mode).toBe("updated");
+    // One visitor: the recompute counts the newest of the two (#1333).
+    const ids = await voteIds("p-accepted");
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBeNull();
+    expect(ids[1]).toBe(ids[0] as string);
   });
 
   it("hands the id only to the plugin that declared it, not to every plugin", async () => {
@@ -538,7 +557,7 @@ describe("accepted, then withdrawn (#677)", () => {
     );
     await expectStatus(vote, 200);
     expectsVisitorCookieExpired(vote);
-    expect(((await vote.json()) as { data: { mode: string } }).data.mode).toBe("inserted");
+    expect((await voteIds("p-accepted")).at(-1)).toBeNull();
   });
 });
 
@@ -802,18 +821,21 @@ describe("behind Firebase Hosting, which forwards only __session (#1343)", () =>
     const minted = browser.jar.get(SESSION_COOKIE_NAME);
     expect(minted).toBeDefined();
 
-    // The same id on every later call: the vote is found and updated.
+    // The same id on every later call: both votes carry it.
     const first = await browser.send(RATE, { pageId: "p-firebase", score: 2 }, ACCEPTED);
     await expectStatus(first, 200);
-    expect(((await first.json()) as { data: { mode: string } }).data.mode).toBe("inserted");
     const second = await browser.send(RATE, { pageId: "p-firebase", score: 4 }, ACCEPTED);
-    expect(((await second.json()) as { data: { mode: string } }).data.mode).toBe("updated");
+    await expectStatus(second, 200);
+    const ids = await voteIds("p-firebase");
+    expect(ids[0]).not.toBeNull();
+    expect(ids[1]).toBe(ids[0] as string);
     expect(browser.jar.get(SESSION_COOKIE_NAME)).toBe(minted);
 
     // Withdrawn in the banner: the record call carries the new decision.
     await expectStatus(await record(["necessary"], DECLINED), 200);
     expect(browser.jar.has(SESSION_COOKIE_NAME)).toBe(false);
     const after = await browser.send(RATE, { pageId: "p-firebase", score: 5 }, DECLINED);
-    expect(((await after.json()) as { data: { mode: string } }).data.mode).toBe("inserted");
+    await expectStatus(after, 200);
+    expect((await voteIds("p-firebase")).at(-1)).toBeNull();
   });
 });
