@@ -461,8 +461,10 @@ export const listPagesOp = defineOperation({
  * matches. The cost is the pages sharing those slugs, never a subtree.
  *
  * A pending row of a URL plugin can give a page a path that does not end
- * in its slug (a locale root serves at its prefix, #1411), so those pages
- * are candidates too; there are as many as the branch has such rows.
+ * in its slug (a locale root serves at its prefix, #1411). Those pages are
+ * composed here and only an exact match is returned: the caller's LIMIT
+ * runs before its path filter, so unrelated pages must not take its rows.
+ * That composition costs the branch's pending rows of URL plugins.
  */
 async function pagesNamedByLastSegment(
   tx: TransactionRunner,
@@ -487,7 +489,13 @@ async function pagesNamedByLastSegment(
      WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'page'
        AND d.slug = ANY(${textArray([...slugs])})
   `)) as unknown as { id: string }[];
-  return [...rows.map((r) => r.id), ...(await pendingUrlAnnotationPageIds(tx, branchId))];
+  const annotated = await pendingUrlAnnotationPageIds(tx, branchId);
+  const { tree } = await loadPageChains(tx, branchId, annotated);
+  const wanted = new Set(paths);
+  const composedThere = [...(await annotationDriftPaths(tx, tree, annotated, branchId))]
+    .filter(([, path]) => wanted.has(normalisedPath(path)))
+    .map(([id]) => id);
+  return [...rows.map((r) => r.id), ...composedThere];
 }
 
 /**

@@ -255,8 +255,11 @@ async function listed(ctx: ExecutionContext, pageId: string): Promise<string | u
 }
 
 /** The ids `pages.list({ paths })` finds for one path. */
-async function listedAt(ctx: ExecutionContext, path: string): Promise<string[]> {
-  const { pages } = await okOf<{ pages: { id: string }[] }>(ctx, "pages.list", { paths: [path] });
+async function listedAt(ctx: ExecutionContext, path: string, limit = 50): Promise<string[]> {
+  const { pages } = await okOf<{ pages: { id: string }[] }>(ctx, "pages.list", {
+    paths: [path],
+    limit,
+  });
   return pages.map((p) => p.id);
 }
 
@@ -343,6 +346,20 @@ describe("branch views of a URL a plugin changes without a page snapshot (#1411)
     expect(await listedAt(ctx, "/ca")).toEqual([pageId]);
     expect(await listedAt(systemCtx, "/ca")).toEqual([]);
     expect(await canonicalised(ctx, "/ca")).toBe(pageId);
+  });
+
+  // PR #1501 review — the query's LIMIT runs before the path filter, so
+  // other annotated pages of the branch must not use up its rows.
+  it("find a page by path past more annotated pages than the limit", async () => {
+    const first = await page("crowd-a");
+    const second = await page("crowd-b");
+    const target = await page("crowd-root");
+    const { ctx, invocation } = await chat();
+    await runPlugin("tag_page", { pageId: first, prefix: "ga" }, invocation);
+    await runPlugin("tag_page", { pageId: second, prefix: "gd" }, invocation);
+    await runPlugin("tag_root", { pageId: target, prefix: "cy" }, invocation);
+
+    expect(await listedAt(ctx, "/cy", 1)).toEqual([target]);
   });
 
   it("follow a pending removal of the row that gave a live page its URL", async () => {
