@@ -39,11 +39,13 @@ ADMIN_DATABASE_URL=$(pulumi stack output adminDatabaseUrlOut --show-secrets) \
   bunx cms-provision pulumi-output-sync --environment production
 ```
 
-The bootstrap-token URL surfaces as a Pulumi output:
+The stack outputs the setup address without a token: nothing brings a token to
+the admin on this provider yet, and `/setup` refuses until something does
+(issue #1483).
 
 ```bash
 pulumi stack output bootstrapUrlOut
-# → https://example.com/setup?token=<64-hex>
+# → https://example.com/setup
 ```
 
 Open that URL once CloudFront has issued the ACM cert (~10 minutes after DNS records propagate).

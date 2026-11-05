@@ -282,24 +282,6 @@ export function presentImageOverrides(
 }
 
 /**
- * One output of the install's stack, secrets included (the Automation API's
- * `pulumi stack output --show-secrets`). Read at the moment of use, never
- * checkpointed (#656). Needs the `pulumi` CLI and the stack's state.
- *
- * @returns the output's value, or undefined when the stack has no such output
- */
-export async function readStackOutput(inputs: {
-  installRoot: string;
-  backend: ResolvedBackend;
-  provider: "gcp" | "gcp-firebase";
-  name: string;
-}): Promise<unknown> {
-  const stack = await selectInstallStack(inputs.installRoot, inputs.backend, inputs.provider);
-  const outputs = await stack.outputs();
-  return outputs[inputs.name]?.value;
-}
-
-/**
  * The install's stack settings file with secrets settings that can't
  * contradict its state, or null when it is already fine (#696).
  *

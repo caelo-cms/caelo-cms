@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { OWNER_BOOTSTRAP_TOKEN_SECRET } from "@caelo-cms/shared";
 import { readOwnerSetupState } from "./admin-internal-google.js";
 import type { GcloudResult } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
@@ -26,6 +27,8 @@ import {
   projectStatusFailure,
   projectStatusLines,
   readProjectStatus,
+  setupLinkLines,
+  setupLinkRefusal,
 } from "./project-status.js";
 import { selfCommand } from "./self-command.js";
 import type { SyncGcloud } from "./state-store.js";
@@ -77,6 +80,11 @@ function job(patch: Partial<InstallJobStatus>): InstallJobStatus {
   };
 }
 
+/** "Now" of every test, and a token's expiry either side of it. */
+const NOW = Date.parse("2026-11-05T12:00:00.000Z");
+const VALID_UNTIL = "2026-11-06T10:30:00.000Z";
+const EXPIRED_ON = "2026-11-05T11:00:00.000Z";
+
 const ok = (stdout: string): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
 
@@ -85,6 +93,8 @@ interface World {
   /** Stderr of a refused `storage cat`. */
   denied?: string;
   setupLink?: string | null;
+  /** The stored token's expiry; null: no token stored. */
+  tokenExpiresAt?: string | null;
   linkDenied?: string;
   execution?: "running" | "gone";
   ownerSetup?: "open" | "done" | "unknown";
@@ -113,8 +123,14 @@ function project(world: World): { deps: ProjectStatusDeps; calls: string[][]; pr
   const run: GcloudRunner = async (args) => {
     calls.push(args);
     if (args[0] === "secrets") {
-      expect(args).toContain(`--secret=${INSTALL_SETUP_LINK_SECRET}`);
       if (world.linkDenied) return fail(world.linkDenied);
+      if (args.includes(`--secret=${OWNER_BOOTSTRAP_TOKEN_SECRET}`)) {
+        const expiresAt = world.tokenExpiresAt === undefined ? VALID_UNTIL : world.tokenExpiresAt;
+        return expiresAt
+          ? ok(JSON.stringify({ token: "a".repeat(64), expiresAt }))
+          : fail("NOT_FOUND: Secret not found");
+      }
+      expect(args).toContain(`--secret=${INSTALL_SETUP_LINK_SECRET}`);
       return world.setupLink ? ok(world.setupLink) : fail("NOT_FOUND: Secret not found");
     }
     if (args[0] === "run") {
@@ -137,6 +153,7 @@ function project(world: World): { deps: ProjectStatusDeps; calls: string[][]; pr
         return { ok: true, value: world.ownerSetup ?? "open" };
       },
       isTerminal: world.isTerminal ?? true,
+      now: () => NOW,
     },
   };
 }
@@ -293,12 +310,85 @@ describe("status --project: Owner setup link", () => {
     const out = await text({ ...finished, setupLink: null });
     expect(out).toContain("no link is stored");
     expect(out).toContain("https://admin.acme.test");
-    expect(out).toContain("--project-id acme-site");
+    expect(out).toContain("setup-link --project acme-site");
+  });
+
+  it("says until when the link works", async () => {
+    const out = await text(finished);
+    expect(out).toContain(VALID_UNTIL);
+    expect(out).toContain("setup-link --project acme-site");
+  });
+
+  it("does not show an expired link, and says what to run instead", async () => {
+    const out = await text({ ...finished, tokenExpiresAt: EXPIRED_ON });
+    expect(out).not.toContain(LINK);
+    expect(out).not.toContain("token=");
+    expect(out).toContain(`expired on ${EXPIRED_ON}`);
+    expect(out).toContain("setup-link --project acme-site");
+  });
+
+  it("does not show a link the admin has no token for (an install from before #1476)", async () => {
+    const out = await text({ ...finished, tokenExpiresAt: null });
+    expect(out).not.toContain(LINK);
+    expect(out).toContain("setup-link --project acme-site");
+  });
+
+  it("an install with an Owner is done whatever became of its token", async () => {
+    const out = await text({ ...finished, tokenExpiresAt: EXPIRED_ON, ownerSetup: "done" });
+    expect(out).toContain("done.");
+    expect(out).not.toContain("expired");
   });
 
   it("reports a refused secret read with what the account needs", async () => {
     const out = await text({ ...finished, linkDenied: "PERMISSION_DENIED: nope" });
     expect(out).toContain("secretmanager.versions.access");
+  });
+});
+
+describe("setup-link", () => {
+  const finished = {
+    objects: {
+      [`${BUCKET}/install.json`]: INSTALL,
+      [`${BUCKET}/progress.json`]: PROGRESS,
+      [`${BUCKET}/install-job.json`]: job({}),
+    },
+    setupLink: LINK,
+    tokenExpiresAt: EXPIRED_ON,
+  };
+  const refusal = async (world: World) =>
+    setupLinkRefusal(await readProjectStatus(PROJECT, project(world).deps));
+
+  it("goes on for an expired link and for no link", async () => {
+    expect(await refusal(finished)).toBeNull();
+    expect(await refusal({ ...finished, setupLink: null })).toBeNull();
+  });
+
+  it("issues nothing once an Owner exists", async () => {
+    expect(await refusal({ ...finished, ownerSetup: "done" })).toContain("no link is needed");
+  });
+
+  it("issues nothing before the install finished", async () => {
+    const running = {
+      ...finished,
+      objects: {
+        ...finished.objects,
+        [`${BUCKET}/install-job.json`]: job({ state: "running", phase: "Provisioning" }),
+      },
+      execution: "running" as const,
+    };
+    expect(await refusal(running)).toContain("has not finished");
+  });
+
+  it("does not take a refused read for a missing link", async () => {
+    expect(await refusal({ ...finished, linkDenied: "PERMISSION_DENIED: nope" })).toContain(
+      "secretmanager.versions.access",
+    );
+  });
+
+  it("keeps the link off a pipe", () => {
+    const issued = { link: LINK, expiresAt: VALID_UNTIL, minted: true };
+    expect(setupLinkLines(issued, true).join("\n")).toContain(LINK);
+    expect(setupLinkLines(issued, false).join("\n")).not.toContain("token=");
   });
 });
 

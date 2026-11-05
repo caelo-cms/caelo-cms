@@ -305,6 +305,11 @@ export {
   type SelfCheckLine,
 } from "./security/google-sign-in/setup.js";
 export {
+  ensureOwnerBootstrapToken,
+  type OwnerBootstrapDeps,
+  type OwnerBootstrapGate,
+} from "./security/owner-bootstrap-secret.js";
+export {
   createIapVerifier,
   IAP_ASSERTION_HEADER,
   type IapKeyProvider,

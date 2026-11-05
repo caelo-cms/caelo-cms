@@ -32,6 +32,8 @@
  *                                         a backup, restarts, health-checks.
  *   status                              — prints container health + cert
  *                                         expiry per domain.
+ *   setup-link --project <id>           — Google Cloud: a working Owner setup
+ *                                         link, from any signed-in terminal.
  *
  * Pulumi-driven cloud variants (GCP / AWS / Azure) land in P15 and
  * plug into the same CLI via `--provider <name>`.
@@ -1265,6 +1267,8 @@ const handlers: Record<string, () => Promise<void>> = {
   "admin-domain": adminDomain,
   "staging-domain": stagingDomain,
   "owner-reset": ownerReset,
+  // #1476 — a late Owner's new link.
+  "setup-link": async () => (await import("./project-status.js")).setupLinkCommand(process.argv),
   // #696 — Pulumi state in the install's own project.
   state: async () => (await import("./state-command.js")).stateCommand(process.argv),
   attach: async () => (await import("./state-command.js")).attachCommand(process.argv),

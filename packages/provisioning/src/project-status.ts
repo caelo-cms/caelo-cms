@@ -6,14 +6,19 @@
  * gone, and a reset Cloud Shell has no `~/.caelo-*` left, so this command
  * needs nothing but a signed-in gcloud identity: it reads the project
  * (install.json, install-job.json and progress.json in the ops bucket, the
- * Owner setup link in Secret Manager) and writes nothing, here or there.
+ * Owner setup link and token in Secret Manager) and writes nothing, here or
+ * there.
  *
  * The setup link is a secret (#656). It goes to a terminal only: with stdout
  * piped or redirected it stays unprinted, so it can't land in a CI log or a
  * file. Once Owner setup is done the command says so instead of showing a
- * used link.
+ * used link; a link past its 24 hours (#1476) is not shown either.
+ *
+ * `setup-link --project <id>` is the one command here that writes: what a
+ * late Owner runs for a new link ({@link setupLinkCommand}).
  */
 
+import type { OwnerBootstrapToken } from "@caelo-cms/shared";
 import { log } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { z } from "zod";
@@ -35,6 +40,12 @@ import {
   readSetupLink,
   recordedDnsRecords,
 } from "./install-job.js";
+import {
+  issueOwnerSetup,
+  type OwnerSetupIssued,
+  readOwnerBootstrapToken,
+} from "./owner-setup-token.js";
+import { selfCommand } from "./self-command.js";
 import { readProjectInstall } from "./state-attach.js";
 import { realSyncGcloud, type SyncGcloud } from "./state-store.js";
 import {
@@ -68,9 +79,20 @@ export type OwnerSetup =
   /** An Owner exists; the link is used. */
   | { readonly kind: "done" }
   /** Setup is open, or could not be checked ({@link unverified} says why). */
-  | { readonly kind: "link"; readonly link: string; readonly unverified: string | null }
+  | {
+      readonly kind: "link";
+      readonly link: string;
+      readonly expiresAt: string;
+      readonly unverified: string | null;
+    }
   /** A link exists, but stdout is not a terminal. */
-  | { readonly kind: "withheld" }
+  | { readonly kind: "withheld"; readonly expiresAt: string }
+  /**
+   * A link exists but cannot work: its token expired on {@link expiresAt}, or
+   * (null) the admin has no token for it, the case of an install that finished
+   * before #1476 and whose admin now refuses `/setup` until it has one.
+   */
+  | { readonly kind: "stale"; readonly expiresAt: string | null }
   /** No link in Secret Manager. */
   | { readonly kind: "no-link" }
   /** Reading the link failed; the message says what the account needs. */
@@ -99,6 +121,8 @@ export interface ProjectStatusDeps {
   ) => Promise<AdminInternalResult<"open" | "done">>;
   /** Whether stdout is a terminal: the only place the setup link may go. */
   readonly isTerminal: boolean;
+  /** The current time in ms. */
+  readonly now: () => number;
 }
 
 /** The admin's origin from the stack's outputs; null before the stack ran. */
@@ -152,8 +176,10 @@ async function readOwnerSetup(
   const unfinished = args.job ? args.job.decision.kind !== "done" : !args.provisioned;
   if (unfinished || args.adminUrl === null) return { kind: "not-yet" };
   let link: string | null;
+  let token: OwnerBootstrapToken | null;
   try {
     link = await readSetupLink(deps.run, args.install.projectId);
+    token = await readOwnerBootstrapToken(deps.run, args.install.projectId);
   } catch (e) {
     return { kind: "error", message: e instanceof Error ? e.message : String(e) };
   }
@@ -163,8 +189,17 @@ async function readOwnerSetup(
     ? await deps.ownerSetupState(target)
     : { ok: false, error: "install.json records no region" };
   if (state.ok && state.value === "done") return { kind: "done" };
-  if (!deps.isTerminal) return { kind: "withheld" };
-  return { kind: "link", link, unverified: state.ok ? null : state.error };
+  if (token === null) return { kind: "stale", expiresAt: null };
+  if (Date.parse(token.expiresAt) <= deps.now()) {
+    return { kind: "stale", expiresAt: token.expiresAt };
+  }
+  if (!deps.isTerminal) return { kind: "withheld", expiresAt: token.expiresAt };
+  return {
+    kind: "link",
+    link,
+    expiresAt: token.expiresAt,
+    unverified: state.ok ? null : state.error,
+  };
 }
 
 /**
@@ -227,7 +262,7 @@ function dnsLines(s: ProjectStatus): string[] {
 
 function ownerLines(s: ProjectStatus): string[] {
   const { owner, install, adminUrl } = s;
-  const command = installerCommand(install);
+  const newLink = selfCommand("setup-link", "--project", install.projectId);
   switch (owner.kind) {
     case "not-yet":
       return ["Owner setup: the link appears here when the install has finished."];
@@ -235,18 +270,22 @@ function ownerLines(s: ProjectStatus): string[] {
       return [`Owner setup: ${green("done.")} Sign in at ${cyan(adminUrl ?? "")}`];
     case "withheld":
       return [
-        `Owner setup: ${yellow("a link is stored, but it is a secret and only goes to a terminal.")} Run this command in your own terminal, without a pipe or redirect.`,
+        `Owner setup: ${yellow(`a link is stored, valid until ${owner.expiresAt}, but it is a secret and only goes to a terminal.`)} Run this command in your own terminal, without a pipe or redirect.`,
+      ];
+    case "stale":
+      return [
+        `Owner setup: ${yellow(owner.expiresAt ? `the stored link expired on ${owner.expiresAt}.` : "the stored link has no token the admin can use.")} Nobody can use it. Get a new one: ${newLink}`,
       ];
     case "no-link":
       return [
         `Owner setup: no link is stored in this project (${INSTALL_SETUP_LINK_SECRET}). If Owner setup is done, sign in at ${cyan(adminUrl ?? "")}`,
-        `  If it is not, this finishes the install and stores a link: ${command}`,
+        `  If it is not, this stores a link and prints it: ${newLink}`,
       ];
     case "error":
       return [`Owner setup: ${red(owner.message)}`];
     case "link":
       return [
-        `Owner setup: open this link in your browser, signed in as ${install.ownerEmail}. Do not share it.`,
+        `Owner setup: open this link in your browser, signed in as ${install.ownerEmail}. Do not share it. It works until ${owner.expiresAt}, then: ${newLink}`,
         `  ${bold(cyan(owner.link))}`,
         ...(owner.unverified === null
           ? []
@@ -280,6 +319,86 @@ export function projectStatusFailure(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** The real {@link ProjectStatusDeps}: the operator's gcloud, public DNS, this process. */
+function realProjectStatusDeps(): ProjectStatusDeps {
+  return {
+    run: gcloud,
+    syncRun: realSyncGcloud,
+    resolves: checkRecord,
+    ownerSetupState: (target) => readOwnerSetupState(target),
+    isTerminal: process.stdout.isTTY === true,
+    now: Date.now,
+  };
+}
+
+/**
+ * What `setup-link` does for an install in `status`: a line to print and stop
+ * on, or null to go on and issue a link. There is nothing to issue before the
+ * install finished or after an Owner exists, and a refused read must not
+ * read as "no link".
+ */
+export function setupLinkRefusal(status: ProjectStatus): string | null {
+  switch (status.owner.kind) {
+    case "not-yet":
+      return "The install has not finished. Its last step stores the Owner setup link.";
+    case "done":
+      return `Owner setup is done; no link is needed. Sign in at ${status.adminUrl ?? "the admin"}.`;
+    case "error":
+      return status.owner.message;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Lines of `setup-link`'s result. Holds the link only on a terminal, like
+ * {@link projectStatusLines}.
+ */
+export function setupLinkLines(issued: OwnerSetupIssued, isTerminal: boolean): string[] {
+  const state = issued.minted ? "A new link is stored" : "The current link still works";
+  return isTerminal
+    ? [
+        `${state}, until ${issued.expiresAt}. Open it in your browser. Do not share it.`,
+        `  ${bold(cyan(issued.link))}`,
+      ]
+    : [`${state}, until ${issued.expiresAt}. It is a secret and only goes to a terminal.`];
+}
+
+/**
+ * `setup-link --project <id>` (#1476): a working Owner setup link for an
+ * install without an Owner, from any signed-in terminal. Exit 1 when none
+ * could be given.
+ */
+export async function setupLinkCommand(argv: readonly string[]): Promise<void> {
+  const projectId = argv[argv.indexOf("--project") + 1] ?? "";
+  if (!argv.includes("--project") || !isGcpProjectId(projectId)) {
+    console.error("Usage: cms-provision setup-link --project <gcp-project-id>");
+    process.exit(2);
+  }
+  try {
+    const auth = await checkGcloudAuth();
+    if (!auth.ok) throw new Error(auth.error);
+    const deps = realProjectStatusDeps();
+    const status = await readProjectStatus(projectId, deps);
+    const refusal = setupLinkRefusal(status);
+    if (refusal !== null) {
+      console.log(refusal);
+      if (status.owner.kind !== "done") process.exitCode = 1;
+      return;
+    }
+    const { region } = status.install;
+    if (region === null || status.adminUrl === null) {
+      throw new Error(`install.json of ${projectId} records no region or admin URL.`);
+    }
+    const issued = await issueOwnerSetup(deps.run, { projectId, region }, status.adminUrl);
+    if (!issued.ok) throw new Error(issued.error);
+    for (const line of setupLinkLines(issued, deps.isTerminal)) console.log(line);
+  } catch (e) {
+    log.error(red(projectStatusFailure(e)));
+    process.exit(1);
+  }
+}
+
 /** `status --project <id>`: print where the install stands; exit 1 when part of it can't be read. */
 export async function projectStatusCommand(argv: readonly string[]): Promise<void> {
   const projectId = argv[argv.indexOf("--project") + 1] ?? "";
@@ -290,13 +409,7 @@ export async function projectStatusCommand(argv: readonly string[]): Promise<voi
   try {
     const auth = await checkGcloudAuth();
     if (!auth.ok) throw new Error(auth.error);
-    const status = await readProjectStatus(projectId, {
-      run: gcloud,
-      syncRun: realSyncGcloud,
-      resolves: checkRecord,
-      ownerSetupState: (target) => readOwnerSetupState(target),
-      isTerminal: process.stdout.isTTY === true,
-    });
+    const status = await readProjectStatus(projectId, realProjectStatusDeps());
     for (const line of projectStatusLines(status)) console.log(line);
     if (status.owner.kind === "error") process.exitCode = 1;
   } catch (e) {

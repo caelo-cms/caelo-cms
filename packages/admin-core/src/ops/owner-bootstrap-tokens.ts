@@ -7,9 +7,10 @@
  * "anyone who reaches the fresh install can claim it" hole.
  *
  * Ops:
- *  - `owner_bootstrap_tokens.insert` — system-only, hooks.server.ts calls
- *    this once at startup if it finds `.caelo/pending-token.json` left
- *    by the CLI (cms-provision init).
+ *  - `owner_bootstrap_tokens.insert` — system-only. Self-hosted: hooks.server.ts
+ *    calls this once at startup if it finds `.caelo/pending-token.json` left
+ *    by the CLI (cms-provision init). Cloud: `/setup` calls it with the token
+ *    the installer stored in the secret manager (security/owner-bootstrap-secret.ts).
  *  - `owner_bootstrap_tokens.any_issued` — whether /setup must ask for one.
  *
  * Redeeming a token is NOT an op of its own: `users.create_first_owner`
@@ -62,7 +63,8 @@ export const insertBootstrapTokenOp = defineOperation({
  * require ?token=. On a brand-new install where the CLI was never run
  * (e.g. `bun run dev` straight from a checkout), zero tokens exist and
  * /setup falls back to the unauthenticated path (developer ergonomics).
- * Once any token is issued, /setup hard-requires one.
+ * Once any token is issued, /setup hard-requires one. A cloud install never
+ * reads "none": /setup refuses before this op when its token can't be read.
  */
 export const anyBootstrapTokenIssuedOp = defineOperation({
   name: "owner_bootstrap_tokens.any_issued",
