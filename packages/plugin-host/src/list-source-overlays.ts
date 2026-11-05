@@ -46,6 +46,7 @@ import {
   askListResolve,
   listResolveContributors,
   mergeListOverlays,
+  type ResolvedListOverlays,
   reportListOverlayIssues,
 } from "./list-resolve.js";
 import { pluginListSourcesRegistry } from "./list-sources.js";
@@ -82,8 +83,10 @@ export function markedSourceEntries(
   entriesByName: Readonly<Record<string, readonly PluginSourceEntry[]>>,
 ): ListResolveSource[] {
   return sources.flatMap(({ name, label, fields }) => {
+    // An empty answer stays: "no entries left" and "did not answer" differ
+    // to whoever keeps per-entry data.
     const entries = entriesByName[name];
-    if (!entries || entries.length === 0) return [];
+    if (!entries) return [];
     return [
       {
         name,
@@ -115,19 +118,63 @@ function distinctEntries(
   return Object.fromEntries([...out].map(([name, m]) => [name, [...m.values()]]));
 }
 
-/** The value replacing `address` in `entries`, or why it may not. */
-function overlaidField(
-  address: string,
-  value: unknown,
-  markedByName: ReadonlyMap<string, ReadonlyMap<string, FieldDef>>,
-): { name: string; id: string; field: string } | { refused: string } {
-  const a = parseValueAddress(address);
-  if (a?.kind !== "pluginSource") return { refused: "not a list source value address" };
-  const field = markedByName.get(a.source)?.get(a.field);
-  if (!field) return { refused: "the source does not offer this field to an overlay" };
-  const bad = validateFieldValue({ ...field, required: false }, value, address);
-  if (bad.length > 0) return { refused: bad[0]?.message ?? "invalid value" };
-  return { name: a.source, id: a.itemId, field: a.field };
+/** What {@link acceptedSourceValues} found in the plugins' answers. */
+export interface AcceptedSourceValues {
+  /** variant → `<name>/<entryId>` → field → value. */
+  readonly byVariant: Map<string, Map<string, Record<string, unknown>>>;
+  readonly issues: ListOverlayIssue[];
+}
+
+/**
+ * Hold each plugin's answer to what was offered to THAT plugin: a field
+ * marked for another contributor is not its to set, whichever plugin the
+ * source trusted. A refused value keeps the source's text and is reported.
+ *
+ * @param answers the plugins' overlays.
+ * @param offered plugin slug → the sources it was asked about.
+ */
+export function acceptedSourceValues(
+  answers: ResolvedListOverlays,
+  offered: ReadonlyMap<string, readonly ListResolveSource[]>,
+): AcceptedSourceValues {
+  const byVariant = new Map<string, Map<string, Record<string, unknown>>>();
+  const issues: ListOverlayIssue[] = [];
+  for (const { slug, overlays } of answers.plugins) {
+    const sources = new Map((offered.get(slug) ?? []).map((src) => [src.name, src]));
+    for (const [variant, overlay] of Object.entries(overlays)) {
+      const values = byVariant.get(variant) ?? new Map<string, Record<string, unknown>>();
+      byVariant.set(variant, values);
+      for (const [address, value] of Object.entries(overlay.values)) {
+        const a = parseValueAddress(address);
+        const refuse = (reason: string) => issues.push({ variant, address, reason });
+        if (a?.kind !== "pluginSource") {
+          refuse("not a list source value address");
+          continue;
+        }
+        const source = sources.get(a.source);
+        const field = source?.fields.find((f) => f.name === a.field);
+        if (!source || !field) {
+          refuse("the source does not offer this field to this plugin");
+          continue;
+        }
+        if (!source.entries.some((e) => e.id === a.itemId)) {
+          refuse("no such list source entry");
+          continue;
+        }
+        const bad = validateFieldValue({ ...field, required: false }, value, address);
+        if (bad.length > 0) {
+          refuse(bad[0]?.message ?? "invalid value");
+          continue;
+        }
+        const key = `${a.source}/${a.itemId}`;
+        values.set(key, { ...values.get(key), [a.field]: value });
+      }
+      for (const address of overlay.hidden) {
+        issues.push({ variant, address, reason: "an entry of a list source cannot be hidden" });
+      }
+    }
+  }
+  return { byVariant, issues };
 }
 
 /**
@@ -143,7 +190,9 @@ export async function overlayListSources(
   if (resolved.size === 0) return resolved;
   const entries = distinctEntries(resolved);
   const asked = listResolveContributors().flatMap((lp) => {
-    const sources = markedSourceEntries(sourcesMarkedFor(lp.slug), entries);
+    const sources = markedSourceEntries(sourcesMarkedFor(lp.slug), entries).filter(
+      (src) => src.entries.length > 0,
+    );
     return sources.length > 0 ? [{ lp, sources }] : [];
   });
   if (asked.length === 0 || !hasLinkResolveContributors()) return resolved;
@@ -160,33 +209,9 @@ export async function overlayListSources(
     (slug) => ({ listIds: [], contentInstanceIds: [], pageIds: [], sources: sourcesOf.get(slug) }),
   );
 
-  const markedByName = new Map<string, Map<string, FieldDef>>();
-  for (const { sources } of asked) {
-    for (const s of sources) {
-      const fields = markedByName.get(s.name) ?? new Map<string, FieldDef>();
-      for (const f of s.fields) fields.set(f.name, f as FieldDef);
-      markedByName.set(s.name, fields);
-    }
-  }
-  const issues: ListOverlayIssue[] = [];
-  /** variant → `<name>/<entryId>` → field → value. */
-  const byVariant = new Map<string, Map<string, Record<string, unknown>>>();
-  for (const [variant, overlay] of mergeListOverlays(answers)) {
-    const values = new Map<string, Record<string, unknown>>();
-    for (const [address, value] of overlay.values) {
-      const hit = overlaidField(address, value, markedByName);
-      if ("refused" in hit) {
-        issues.push({ variant, address, reason: hit.refused });
-        continue;
-      }
-      const key = `${hit.name}/${hit.id}`;
-      values.set(key, { ...values.get(key), [hit.field]: value });
-    }
-    for (const address of overlay.hidden) {
-      issues.push({ variant, address, reason: "an entry of a list source cannot be hidden" });
-    }
-    byVariant.set(variant, values);
-  }
+  // Two plugins setting one address throw here, as in `list-resolve`.
+  mergeListOverlays(answers);
+  const { byVariant, issues } = acceptedSourceValues(answers, sourcesOf);
   if (issues.length > 0) await reportListOverlayIssues(answers, issues);
 
   const out = new Map<string, Record<string, PluginSourceEntry[]>>();

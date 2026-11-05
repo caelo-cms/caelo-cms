@@ -13,11 +13,16 @@
  * branch's text.
  */
 
-import { markedSourceEntries, sourceEntriesOf, sourcesMarkedFor } from "@caelo-cms/plugin-host";
+import {
+  loadedPlugins,
+  markedSourceEntries,
+  sourceEntriesOf,
+  sourcesMarkedFor,
+} from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
-import { branchOf } from "./_shared.js";
+import { branchOf, handlerError } from "./_shared.js";
 
 export const pluginSourceTextsOp = defineOperation({
   name: "lists.plugin_source_texts",
@@ -27,6 +32,9 @@ export const pluginSourceTextsOp = defineOperation({
   // to them. The AI reaches them through that plugin: intl_status and
   // translate_chrome show them, and consent_status shows their source.
   actorScope: ["plugin", "system"],
+  // Why detached: the source plugin answers here, and a sandboxed one
+  // cannot do that inside a held transaction (#1254).
+  transaction: "none",
   database: "cms_admin",
   input: z
     .object({
@@ -52,6 +60,20 @@ export const pluginSourceTextsOp = defineOperation({
     failed: z.array(z.string()),
   }),
   handler: async (ctx, input) => {
+    // A plugin asks for what is offered to itself, never to another one.
+    if (ctx.actorKind === "plugin") {
+      const asker = ctx.pluginId ? loadedPlugins.byId(ctx.pluginId)?.slug : undefined;
+      if (asker !== input.pluginSlug) {
+        return {
+          ok: false,
+          error: handlerError(
+            "lists.plugin_source_texts",
+            `a plugin reads only the texts offered to itself; pass pluginSlug "${asker ?? "unknown"}".`,
+            true,
+          ),
+        };
+      }
+    }
     const marked = sourcesMarkedFor(input.pluginSlug);
     if (marked.length === 0) return ok({ sources: [], failed: [] });
     const failed = new Set<string>();

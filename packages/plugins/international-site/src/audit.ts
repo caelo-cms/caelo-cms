@@ -83,15 +83,14 @@ export async function pluginTextsKeptAsIs(
     units.map((u) => u.address),
     {},
   )) as unknown as ValueTranslationRow[];
+  const unitByAddress = new Map(units.map((u) => [u.address, u]));
   const out = new Map<string, Set<string>>();
-  for (const u of units) {
-    for (const r of rows) {
-      if (r.address !== u.address || r.source_hash !== u.hash) continue;
-      if (r.value?.trim() !== u.text.trim()) continue;
-      const kept = out.get(r.locale_code) ?? new Set<string>();
-      kept.add(u.text.trim().toLowerCase());
-      out.set(r.locale_code, kept);
-    }
+  for (const r of rows) {
+    const u = unitByAddress.get(r.address);
+    if (!u || r.source_hash !== u.hash || r.value?.trim() !== u.text.trim()) continue;
+    const kept = out.get(r.locale_code) ?? new Set<string>();
+    kept.add(u.text.trim().toLowerCase());
+    out.set(r.locale_code, kept);
   }
   return out;
 }

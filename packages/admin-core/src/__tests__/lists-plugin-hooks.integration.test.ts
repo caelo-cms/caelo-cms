@@ -528,6 +528,8 @@ describe("list-resolve", () => {
             // Unmarked fields are what the entry means; an overlay cannot reach them.
             [at("code")]: "tracking",
             [at("on")]: false,
+            // An entry the source did not answer.
+            "source/t1114_badges/item/ghost/text": "Injected",
           },
           hidden: ["source/t1114_badges/item/marketing"],
         },
@@ -544,7 +546,7 @@ describe("list-resolve", () => {
     ]);
     const rows = await errors();
     expect(rows.length).toBe(1);
-    expect(rows[0]?.message).toContain("the render refused 3 overlay entries");
+    expect(rows[0]?.message).toContain("the render refused 4 overlay entries");
 
     const raw = await ok<{ sources: { name: string; entries: unknown[] }[] }>(
       "lists.plugin_source_texts",
