@@ -135,6 +135,9 @@ function world() {
               properties: {},
             })),
           } as O;
+        // No plugin offers this site a text (#1323).
+        case "lists.plugin_source_texts":
+          return { sources: [], failed: [] } as O;
         // Epic #1107 — the list reads behind translate_chrome; this site
         // has no shared lists, only the layout menu's local list.
         case "list_types.list":

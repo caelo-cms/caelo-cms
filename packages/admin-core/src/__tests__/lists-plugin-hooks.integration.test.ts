@@ -27,7 +27,7 @@ import {
   resetPluginHostSync,
   resolveListSources,
 } from "@caelo-cms/plugin-host";
-import { definePlugin } from "@caelo-cms/plugin-sdk";
+import { definePlugin, type ListResolveArgs } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
@@ -72,6 +72,9 @@ let restoreLang: (() => Promise<void>) | null = null;
 /** What the test plugin answers, set per test. */
 let sourceAnswer: (pageIds: string[]) => unknown = () => ({ sources: {} });
 let overlayAnswer: () => unknown = () => ({ overlays: {} });
+const listResolveCalls: ListResolveArgs[] = [];
+/** Offers a source field to the plugin answering `list-resolve` (#1323). */
+const MARKED = { "t1114-hooks": {} };
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -235,7 +238,8 @@ beforeAll(async () => {
               node: {
                 label: "Badge",
                 fields: [
-                  { name: "text", label: "Text", type: "text", required: true },
+                  { name: "text", label: "Text", type: "text", required: true, ext: MARKED },
+                  { name: "code", label: "Code", type: "text" },
                   { name: "on", label: "On", type: "boolean" },
                 ],
               },
@@ -255,7 +259,10 @@ beforeAll(async () => {
           operations: {
             badges: async (_ctx, args) => sourceAnswer((args as { pageIds: string[] }).pageIds),
             link_resolve: async () => ({ pages: { [pageId]: { variant: "xx", group: null } } }),
-            list_resolve: async () => overlayAnswer(),
+            list_resolve: async (_ctx, args) => {
+              listResolveCalls.push(args as ListResolveArgs);
+              return overlayAnswer();
+            },
           },
         }),
       },
@@ -502,6 +509,55 @@ describe("list-resolve", () => {
     expect(rows.length).toBe(1);
     expect(rows[0]?.message).toContain("list-resolve: the render refused 4 overlay entries");
     expect(rows[0]?.message).toContain(`list/${listId}/item/${GHOST}/label: no such list entry`);
+  });
+
+  it("#1323 — a source's marked field follows the variant; structure stays out of reach", async () => {
+    await sqlSystem((tx) => tx`DELETE FROM plugin_errors WHERE plugin_slug = ${PLUGIN}`);
+    const original = { text: "Werbung", code: "marketing", on: true };
+    sourceAnswer = (ids) => ({
+      sources: Object.fromEntries(
+        ids.map((id) => [id, { t1114_badges: [{ id: "marketing", values: original }] }]),
+      ),
+    });
+    const at = (f: string) => `source/t1114_badges/item/marketing/${f}`;
+    overlayAnswer = () => ({
+      overlays: {
+        xx: {
+          values: {
+            [at("text")]: "Advertising",
+            // Unmarked fields are what the entry means; an overlay cannot reach them.
+            [at("code")]: "tracking",
+            [at("on")]: false,
+          },
+          hidden: ["source/t1114_badges/item/marketing"],
+        },
+      },
+    });
+    listResolveCalls.length = 0;
+    const sources = await resolveListSources([pageId], MAIN_RENDER, "directory");
+    expect(sources.get(pageId)?.t1114_badges).toEqual([
+      { id: "marketing", values: { ...original, text: "Advertising" } },
+    ]);
+    // The asker saw only the marked value.
+    expect(listResolveCalls[0]?.scope?.sources?.[0]?.entries).toEqual([
+      { id: "marketing", values: { text: "Werbung" } },
+    ]);
+    const rows = await errors();
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.message).toContain("the render refused 3 overlay entries");
+
+    const raw = await ok<{ sources: { name: string; entries: unknown[] }[] }>(
+      "lists.plugin_source_texts",
+      { pluginSlug: PLUGIN, pageId },
+    );
+    expect(raw.sources.map((s) => s.name)).toEqual(["t1114_badges"]);
+    expect(raw.sources[0]?.entries).toEqual([{ id: "marketing", values: { text: "Werbung" } }]);
+    const notOffered = await ok<{ sources: unknown[] }>("lists.plugin_source_texts", {
+      pluginSlug: "another-plugin",
+      pageId,
+    });
+    expect(notOffered.sources).toEqual([]);
+    sourceAnswer = () => ({ sources: {} });
   });
 
   it("refuses an overlay for a variant the render does not have", async () => {

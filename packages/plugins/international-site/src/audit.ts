@@ -21,9 +21,15 @@ import {
 } from "./audit-rules.js";
 import { type ChromeDeps, loadChromeTargets, loadChromeVariants } from "./chrome-ops.js";
 import type { PageVariantRow } from "./index.js";
-import { listFindings, loadListTranslationState } from "./list-translation-ops.js";
+import { collectSources } from "./list-translation.js";
+import {
+  listFindings,
+  loadListTranslationState,
+  loadPluginSources,
+  type ValueTranslationRow,
+} from "./list-translation-ops.js";
 import type { GlossaryRow } from "./page-translation.js";
-import { listAll } from "./store-reads.js";
+import { listAll, listWhereAnyOf } from "./store-reads.js";
 
 /** Most findings one answer may carry (the SDK contract). */
 const MAX_FINDINGS_PER_ANSWER = 499;
@@ -51,6 +57,45 @@ const auditArgs = z
   })
   .strict();
 
+/**
+ * Per language, the plugin texts whose current translation reads the same
+ * as the source ("Marketing" is that in German and English). A translator
+ * decided that; comparing the page with its source cannot tell (#1323).
+ *
+ * @param pageId any page of the site.
+ */
+export async function pluginTextsKeptAsIs(
+  deps: ChromeDeps,
+  pageId: string | undefined,
+): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
+  const pluginSources = await loadPluginSources(deps.cms, pageId);
+  const { units } = collectSources({
+    listTypes: new Map(),
+    lists: [],
+    instances: [],
+    pageProps: [],
+    pluginSources,
+  });
+  const rows = (await listWhereAnyOf(
+    deps.q,
+    "list_value_translations",
+    "address",
+    units.map((u) => u.address),
+    {},
+  )) as unknown as ValueTranslationRow[];
+  const out = new Map<string, Set<string>>();
+  for (const u of units) {
+    for (const r of rows) {
+      if (r.address !== u.address || r.source_hash !== u.hash) continue;
+      if (r.value?.trim() !== u.text.trim()) continue;
+      const kept = out.get(r.locale_code) ?? new Set<string>();
+      kept.add(u.text.trim().toLowerCase());
+      out.set(r.locale_code, kept);
+    }
+  }
+  return out;
+}
+
 /** The plugin's data the rules read, for the staged pages. */
 export async function loadAuditState(
   deps: ChromeDeps,
@@ -70,6 +115,7 @@ export async function loadAuditState(
     loadChromeTargets(deps.cms),
   ]);
   const labels = new Map(targets.map((t) => [t.key, t.label]));
+  const sameOnPurpose = await pluginTextsKeptAsIs(deps, stagedPages[0]?.pageId);
   return {
     locales: deps.locales,
     variants,
@@ -77,6 +123,7 @@ export async function loadAuditState(
     siteHomePageId: defaults.defaults?.rootPageId ?? null,
     notFoundPageId: defaults.defaults?.notFoundPageId ?? null,
     glossary,
+    sameOnPurpose,
     chromeModuleIds: new Set([
       ...shared.layoutPlacements.map((p) => p.moduleId),
       ...shared.sharedInstances.map((i) => i.moduleId),

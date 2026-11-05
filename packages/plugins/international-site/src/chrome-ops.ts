@@ -447,6 +447,8 @@ export async function prepareChromeTranslation(
     label: t.label,
     strings: t.units.map((u) => ({ path: u.address, text: u.text })),
     units: t.units,
+    faithful: t.units.some((u) => u.faithful),
+    links: t.units.some((u) => u.link !== undefined),
   }));
   const base = {
     locale,

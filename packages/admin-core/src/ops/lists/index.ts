@@ -25,6 +25,7 @@ import {
   listPageTypesOp,
   upsertPageTypesManyOp,
 } from "./page-types.js";
+import { pluginSourceTextsOp } from "./plugin-source-texts.js";
 import { syncPluginListTypesOp } from "./plugin-types.js";
 import { previewListSourceOp } from "./preview-source.js";
 import { promoteLocalListOp } from "./promote-local.js";
@@ -43,6 +44,7 @@ export function registerListOps(registry: OperationRegistry): void {
   registry.register(deleteListsManyOp);
   registry.register(promoteLocalListOp);
   registry.register(previewListSourceOp);
+  registry.register(pluginSourceTextsOp);
   registry.register(listPageTypesOp);
   registry.register(getPageTypeOp);
   registry.register(upsertPageTypesManyOp);
@@ -60,6 +62,7 @@ export {
   listListTypesOp,
   listPageTypesOp,
   patchListItemsManyOp,
+  pluginSourceTextsOp,
   previewListSourceOp,
   promoteLocalListOp,
   upsertListsManyOp,

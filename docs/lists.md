@@ -570,7 +570,8 @@ provides five neutral hooks:
    value has a stable string address:
    `list/<listId>/item/<itemId>/<field>`,
    `instance/<contentInstanceId>/<field>/item/<itemId>/<itemField>`,
-   `page/<pageId>/props/<field>`, `list_type/<typeId>/node/<node>/<field>`.
+   `page/<pageId>/props/<field>`, `list_type/<typeId>/node/<node>/<field>`,
+   `source/<name>/item/<entryId>/<field>` (a plugin list source's entry).
 2. **Definition extensions**: a plugin manifest declares `listExt:
    { field?: JSONSchema, node?: JSONSchema }` (the safe subset tool
    schemas use; no grant — core never interprets it); values live under
@@ -582,6 +583,9 @@ provides five neutral hooks:
    inert data: a write that keeps them unchanged passes, one that adds or
    changes them is refused with "activate the plugin first";
    `list_types.list` / `get` name inert attributes in `inertExt`.
+   A plugin list source's node fields may carry another plugin's attribute
+   too, in the manifest (hook 3, #1323); core reads only whether it is
+   there.
 3. **Composition point `list-resolve`**: before a build (and per preview)
    the host asks every plugin that answers it for an overlay per output
    variant: `{ [variant]: { values: Record<address, unknown>; hidden: address[] } }`.
@@ -617,6 +621,19 @@ provides five neutral hooks:
    `plugin_errors` row per plugin (phase `render`, class `plugin`), shown
    in `list_plugins` / Settings → Plugins — never a reason to switch the
    plugin off (#1008).
+   **Plugin list source entries** (#1323,
+   `plugin-host/src/list-source-overlays.ts`) have no stored value and
+   belong to another plugin, so a contributor cannot read them. A source
+   offers a field to a contributor by marking it `ext.<contributorSlug>`.
+   `resolveListSources` then asks that contributor with
+   `scope.sources` (the marked fields' values only) and applies the
+   answer per page variant, by `source/<name>/item/<entryId>/<field>`, in
+   every render path. An answer can replace a marked field's value and
+   nothing else: no entry is added, removed or hidden, and a refused value
+   goes to `plugin_errors` like any other. Outside a render (tools, audit,
+   worker) the contributor reads the same values through
+   `lists.plugin_source_texts`, in its chat's view. A source with marked
+   fields promises one entry id means one entry on every page.
    **Plugin list types**: a manifest may ship `listTypes` (slugs start
    with `<pluginSlug>-`, grant `list_types`). The host stores them through
    `list_types.sync_plugin_types` (system-only; the same checks as

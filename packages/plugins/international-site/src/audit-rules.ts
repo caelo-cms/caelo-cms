@@ -62,6 +62,8 @@ export interface AuditState {
    */
   readonly notFoundPageId: string | null;
   readonly glossary: readonly GlossaryRow[];
+  /** Per language, plugin texts a translation deliberately keeps as they are (lower case). */
+  readonly sameOnPurpose: ReadonlyMap<string, ReadonlySet<string>>;
   /** Modules placed in a layout: their text is the site's chrome. */
   readonly chromeModuleIds: ReadonlySet<string>;
   readonly staleChrome: readonly StaleChrome[];
@@ -742,11 +744,12 @@ function contentLanguage(
   const locale = model.localeOf(f.pageId);
   const sourceLocale = model.localeOf(source.pageId);
   if (primary(locale) === primary(sourceLocale)) return out;
-  const kept = new Set(
-    model.state.glossary
+  const kept = new Set([
+    ...model.state.glossary
       .filter((g) => g.locale_code === locale && g.term.trim() === g.translation.trim())
       .map((g) => g.term.trim().toLowerCase()),
-  );
+    ...(model.state.sameOnPurpose.get(locale) ?? []),
+  ]);
   const sourceTexts = new Set(source.texts.filter((t) => t.source !== "alt").map((t) => t.text));
   const sourceAlts = new Set(source.texts.filter((t) => t.source === "alt").map((t) => t.text));
   const same = (t: PluginAuditPageFacts["texts"][number]) =>

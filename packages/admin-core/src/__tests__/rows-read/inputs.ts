@@ -73,6 +73,13 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     input: (r) => ({ pageId: r.pageId }),
   },
   { op: "lists.get", ctx: "chat", input: (r) => ({ id: r.listId }) },
+  // #1323 — international-site reads the texts other plugins offer it.
+  {
+    op: "lists.plugin_source_texts",
+    ctx: "system",
+    plugins: ["international-site"],
+    input: (r) => ({ pluginSlug: "international-site", pageId: r.pageId }),
+  },
   { op: "media.get", ctx: "system", input: (r) => ({ assetId: r.mediaId }) },
   {
     op: "site_defaults.get",

@@ -87,6 +87,7 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "links.canonicalise_values": { pending: INTL_1255 },
     "list_types.list": { measured: ["list_types.list"] },
     "lists.list": { pending: LIST_RESOLVE_1270 },
+    "lists.plugin_source_texts": { measured: ["lists.plugin_source_texts"] },
     "modules.list": { pending: LIST_RESOLVE_1270 },
     "page_module_content.list_for_page": { measured: ["page_module_content.list_for_page"] },
     "page_module_content.set": { notBackground: "translate tools write one page's content" },

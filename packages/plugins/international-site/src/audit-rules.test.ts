@@ -79,6 +79,7 @@ function state(overrides: Partial<AuditState> = {}): AuditState {
     siteHomePageId: HOME_DE,
     notFoundPageId: null,
     glossary: [],
+    sameOnPurpose: new Map(),
     chromeModuleIds: new Set([FOOTER]),
     staleChrome: [],
     ...overrides,
@@ -364,6 +365,20 @@ describe("content in the right language", () => {
     expect(mixed?.message).toContain('"Demo anfragen"');
     expect(found.find((f) => f.rule === "chrome-untranslated")?.message).toContain(FOOTER);
     expect(rulesOf(found)).toContainEqual(["alt-untranslated", PRICES_EN]);
+  });
+
+  it("a plugin text whose current translation reads like its source is not untranslated", () => {
+    const facts2 = [
+      facts(PRICES_DE, "/preise", "de", { texts: [t("Marketing", FOOTER)] }),
+      facts(PRICES_EN, "/en/pricing", "en", { texts: [t("Marketing", FOOTER)] }),
+    ];
+    const untranslated = pageFindings(new BuildModel(state()), facts2);
+    expect(rulesOf(untranslated).map((r) => r[0])).toContain("chrome-untranslated");
+    const kept = pageFindings(
+      new BuildModel(state({ sameOnPurpose: new Map([["en", new Set(["marketing"])]]) })),
+      facts2,
+    );
+    expect(rulesOf(kept).map((r) => r[0])).not.toContain("chrome-untranslated");
   });
 
   it("a term the glossary keeps as it is never counts as untranslated", () => {
