@@ -130,21 +130,34 @@ every text the page shows, read through `page_module_content.list_for_page`:
 - nested content (`module` / `module-list` values, also inside list
   entries), one slot per nested instance, at its path (`cards[2]`).
 
-The translation is written into the VARIANT's own values: a default
-becomes the variant's stored value, a list takes the source's entries
-with the variant's text, and nested content is written to the variant's
-own instance. `create_variant` copies nested content (pages.duplicate
-deep-copies it), so a new variant always owns it. A write never changes
-what another page renders (#1309): when an answered slot's content is
-not the variant's alone — a placement synced to the source's instance,
-or a variant whose nested references predate the deep copy, at any depth
-— the placement is forked first (`placement.fork_content` deep-copies
-its nested content) and the text lands on the copy. Core decides "alone"
-transitively (`page_module_content.list_for_page`'s `exclusive`): an
-instance is shared when another page places it or anything above it, or
-an instance outside the page lists it.
-Nested content another page still renders after the fork is left as it
-is and named in `sharedNested`.
+The translation is written into the content the variant shows: a
+default becomes a stored value, a list takes the source's entries with
+the variant's text. `create_variant` copies nested content
+(pages.duplicate deep-copies it), so a new variant owns its tree.
+
+A write never changes what another language renders, and never ends
+sharing inside the target language (#1309, #1453). The line runs between
+languages, not pages, because pages of one language share content on
+purpose: tool data on two English comparison pages stays one instance.
+
+- Only a slot whose text changes is written. An unchanged slot, omitted
+  or answered with the same text, keeps its instance, whatever it is
+  shared with.
+- A changed instance that renders only in the target language is written
+  in place, also when other pages show it. Those pages get the new text.
+- A changed instance another language renders (the source above all; a
+  page in no group is a page of the default language), or that renders
+  in layout chrome or a shared list, gets a copy for this page. So does
+  every instance above it on the way to the placement that another
+  language renders. An instance above it that only the target language
+  renders keeps its id and points at the copy.
+
+The plugin decides from `content_instances.rendered_on_many` and its own
+page languages; core has no language concept. `placement.fork_paths`
+copies exactly the named instances (unlike `placement.fork_content`,
+which copies the placement's whole tree), and both it and
+`page_module_content.set` take `alsoChangesPages`: a write that reaches a
+page not named there is refused.
 
 Slots pair by identity, not position: a placement is the k-th placement
 of its module in its block, nested content its placement plus its path

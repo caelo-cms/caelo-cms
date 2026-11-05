@@ -1413,11 +1413,7 @@ describe("#397 — context-aware translation", () => {
         { slot: "s5", values: fields({ card_title: "Quelloffen" }) },
       ],
     }));
-    const result = await op<{ slotsApplied: number; sharedNested?: string[] }>(
-      "translate_variant",
-      { variantPageId: variant.pageId },
-    );
-    expect(result.sharedNested).toBeUndefined();
+    await op("translate_variant", { variantPageId: variant.pageId });
     const prompt = aiCalls.at(-1);
     expect(prompt?.user).toContain("nested at items[0]>items[0]");
 

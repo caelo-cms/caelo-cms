@@ -30,6 +30,7 @@ import {
 import { runEveryItem } from "../_bulk.js";
 import { setContentInstanceValuesOp } from "./content-instances.js";
 import { loadNestedContent, placementFieldsOf } from "./page-content-tree.js";
+import { alsoChangesPagesSchema, rendersBeyond } from "./placement-fork-paths.js";
 
 /** A module field as `list_for_page` returns it (see page-content-tree.ts). */
 const placementFieldSchema = z.object({
@@ -122,6 +123,7 @@ async function resolveNestedTarget(
   pageId: string,
   rootId: string,
   path: string,
+  sharedAccepted: boolean,
 ): Promise<
   { ok: true; contentInstanceId: string } | { ok: false; message: string; fork: boolean }
 > {
@@ -150,7 +152,7 @@ async function resolveNestedTarget(
       fork: false,
     };
   }
-  if (!hit.exclusive) {
+  if (!hit.exclusive && !sharedAccepted) {
     return {
       ok: false,
       message: `the nested content at "${path}" is shared with another page; writing it would change that page too`,
@@ -191,6 +193,14 @@ export const setPageModuleContentOp = defineOperation({
        * it is refused when another page renders the same nested instance.
        */
       nestedPath: z.string().min(1).max(500).optional(),
+      /**
+       * #1453 — the caller writes content it knows to be shared: the
+       * other pages this write may change, by id. Present, it replaces
+       * the refusals of a synced placement and of shared nested content
+       * with one exact check: the write is refused when the content
+       * renders anywhere else. `[]` says "this page alone".
+       */
+      alsoChangesPages: alsoChangesPagesSchema.optional(),
     })
     .strict(),
   output: z.object({ pageModuleContentId: z.string() }),
@@ -235,7 +245,8 @@ export const setPageModuleContentOp = defineOperation({
       });
     }
 
-    if (placement.syncMode === "synced") {
+    const declaredPages = input.alsoChangesPages;
+    if (placement.syncMode === "synced" && declaredPages === undefined) {
       return err({
         kind: "HandlerError",
         operation: "page_module_content.set",
@@ -259,8 +270,9 @@ export const setPageModuleContentOp = defineOperation({
     }
 
     // Nested content: resolved from THIS placement's tree, written only
-    // when no other page renders it (plugins hold this op, never
-    // content_instances.set_values: a write stays bound to a page).
+    // when no other page renders it, or only pages the caller named
+    // (plugins hold this op, never content_instances.set_values: a write
+    // stays bound to pages it can name).
     let targetId = placement.contentInstanceId;
     if (input.nestedPath !== undefined) {
       const nested = await resolveNestedTarget(
@@ -269,6 +281,7 @@ export const setPageModuleContentOp = defineOperation({
         input.pageId,
         placement.contentInstanceId,
         input.nestedPath,
+        declaredPages !== undefined,
       );
       if (!nested.ok) {
         return err({
@@ -292,6 +305,21 @@ export const setPageModuleContentOp = defineOperation({
         });
       }
       targetId = nested.contentInstanceId;
+    }
+    if (declaredPages !== undefined) {
+      const beyond = await rendersBeyond(
+        tx,
+        ctx.chatBranchId ?? null,
+        [targetId],
+        [input.pageId, ...declaredPages],
+      );
+      if (beyond.length > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "page_module_content.set",
+          message: `${beyond.join("; ")} — nothing was written. Read where it renders again and name those pages, or give this page its own copy (fork_placement_content).`,
+        });
+      }
     }
 
     // Unsynced — write through to content_instances.set_values. The

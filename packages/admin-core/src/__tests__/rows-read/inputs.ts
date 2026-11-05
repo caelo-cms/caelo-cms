@@ -57,6 +57,13 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     plugins: ["international-site"],
     input: (r) => ({ id: r.instanceId }),
   },
+  // #1453 — international-site asks where the content it is about to write renders.
+  {
+    op: "content_instances.rendered_on_many",
+    ctx: "system",
+    plugins: ["international-site"],
+    input: (r) => ({ ids: [r.instanceId] }),
+  },
   // #1287 — international-site's translator reads every page through it;
   // its nested-content parents come from the reference index.
   {

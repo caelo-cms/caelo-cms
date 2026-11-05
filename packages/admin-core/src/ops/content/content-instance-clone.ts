@@ -31,7 +31,8 @@ import { sql } from "drizzle-orm";
 import { loadContentInstanceBranchStates, type SnapshotEntity } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
 
-interface InstanceInView {
+/** A content instance as the caller's branch sees it. */
+export interface InstanceInView {
   readonly moduleId: string;
   readonly values: Record<string, unknown>;
   readonly deleted: boolean;
@@ -46,7 +47,11 @@ export interface CloneActor {
 /** Bound on the nested tree walk; matches the renderer's recursion cap (8) with slack. */
 const MAX_NESTING_LEVELS = 16;
 
-async function loadInstancesInView(
+/**
+ * Content instances as the caller sees them: live rows visible on the
+ * branch, superseded by the branch's latest pending snapshot.
+ */
+export async function loadInstancesInView(
   tx: TransactionRunner,
   ids: readonly string[],
   chatBranchId: string | null,
@@ -167,39 +172,57 @@ export async function cloneContentInstancesDeep(
     if (!inst) throw new Error(`content copy: instance ${sourceId} was not loaded`);
     return { id, moduleId: inst.moduleId, values: rewriteNestedRefs(inst.values, remap) };
   });
-  const snapshotEntities: SnapshotEntity[] = [];
-  if (copies.length > 0) {
-    const inserted = (await tx.execute(sql`
-      INSERT INTO content_instances (id, module_id, slug, display_name, "values", updated_by, chat_branch_id)
-      VALUES ${sql.join(
-        copies.map(
-          (c) => sql`(
-            ${c.id}::uuid, ${c.moduleId}::uuid, NULL, NULL, ${jsonbParam(c.values)},
-            ${actor.actorId}::uuid, ${branchId}::uuid
-          )`,
-        ),
-        sql`, `,
-      )}
-      RETURNING id::text AS id, version
-    `)) as unknown as { id: string; version: number | string }[];
-    const versions = new Map(inserted.map((r) => [r.id, Number(r.version)]));
-    for (const c of copies) {
-      const version = versions.get(c.id);
-      if (version === undefined) throw new Error(`content copy: row ${c.id} was not inserted`);
-      snapshotEntities.push({
-        kind: "contentInstance",
-        entityId: c.id,
-        state: {
-          schemaVersion: 1,
-          moduleId: c.moduleId,
-          slug: null,
-          displayName: null,
-          values: c.values,
-          version,
-          deletedAt: null,
-        },
-      });
-    }
-  }
+  const snapshotEntities = await insertContentInstanceCopies(tx, actor, copies);
   return { ok: true, ids: rows.slice(0, sourceIds.length).map((r) => r.id), snapshotEntities };
+}
+
+/**
+ * Insert the rows of a content copy, with the caller's `chat_branch_id`
+ * like every branched create.
+ *
+ * @returns one `contentInstance` snapshot entity per row, for the caller's
+ *   `emitSnapshot`.
+ */
+export async function insertContentInstanceCopies(
+  tx: TransactionRunner,
+  actor: CloneActor,
+  copies: readonly {
+    readonly id: string;
+    readonly moduleId: string;
+    readonly values: Record<string, unknown>;
+  }[],
+): Promise<SnapshotEntity[]> {
+  if (copies.length === 0) return [];
+  const branchId = actor.chatBranchId ?? null;
+  const inserted = (await tx.execute(sql`
+    INSERT INTO content_instances (id, module_id, slug, display_name, "values", updated_by, chat_branch_id)
+    VALUES ${sql.join(
+      copies.map(
+        (c) => sql`(
+          ${c.id}::uuid, ${c.moduleId}::uuid, NULL, NULL, ${jsonbParam(c.values)},
+          ${actor.actorId}::uuid, ${branchId}::uuid
+        )`,
+      ),
+      sql`, `,
+    )}
+    RETURNING id::text AS id, version
+  `)) as unknown as { id: string; version: number | string }[];
+  const versions = new Map(inserted.map((r) => [r.id, Number(r.version)]));
+  return copies.map((c) => {
+    const version = versions.get(c.id);
+    if (version === undefined) throw new Error(`content copy: row ${c.id} was not inserted`);
+    return {
+      kind: "contentInstance",
+      entityId: c.id,
+      state: {
+        schemaVersion: 1,
+        moduleId: c.moduleId,
+        slug: null,
+        displayName: null,
+        values: c.values,
+        version,
+        deletedAt: null,
+      },
+    };
+  });
 }
