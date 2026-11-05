@@ -497,6 +497,9 @@ export async function ensureStagingGatewayEdge(
 // --- gcp-firebase ----------------------------------------------------------
 
 const FIREBASE_HOSTING_API = "https://firebasehosting.googleapis.com/v1beta1";
+/** How often, and how far apart, a new custom domain is re-read for its records. */
+const FIREBASE_DNS_POLLS = 12;
+const FIREBASE_DNS_POLL_MS = 5_000;
 
 /** The config of the staging site's only version: every path to the staging gateway. */
 export function firebaseStagingSiteConfig(t: Pick<StagingGatewayTarget, "env" | "region">): {
@@ -658,6 +661,27 @@ async function ensureFirebaseStagingSite(
       `read ${t.stagingHost} on ${site}: HTTP ${domain.status} ${domain.text.slice(0, 300)}`,
     );
   }
+  // Firebase works out the records a new custom domain needs a few seconds
+  // after it is created; read straight away, the list is empty and the
+  // install printed no record for the staging host (scratch install of
+  // v0.11.16, 2026-11-04).
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let dnsRecords = firebaseDesiredRecords(domain.json);
+  for (let i = 0; dnsRecords.length === 0 && i < FIREBASE_DNS_POLLS; i++) {
+    await sleep(FIREBASE_DNS_POLL_MS);
+    const again = await call(domainPath);
+    if (!again.ok) {
+      return fail(
+        `read ${t.stagingHost} on ${site}: HTTP ${again.status} ${again.text.slice(0, 300)}`,
+      );
+    }
+    dnsRecords = firebaseDesiredRecords(again.json);
+  }
+  if (dnsRecords.length === 0) {
+    return fail(
+      `Firebase Hosting has not said which DNS records ${t.stagingHost} needs after ${(FIREBASE_DNS_POLLS * FIREBASE_DNS_POLL_MS) / 1000} s. Nothing is wrong with what was set up; re-run the installer to print them.`,
+    );
+  }
 
   // 4. The old route: the Cloud Run domain mapping (#650) to the service
   // that is now the MCP-Auth-Proxy. Nothing but the gate may lead to the
@@ -666,7 +690,7 @@ async function ensureFirebaseStagingSite(
   if (!mapping.ok) return fail(mapping.error);
   if (mapping.deleted) done.push(`deleted the Cloud Run domain mapping of ${t.stagingHost}`);
 
-  return { ok: true, done, dnsRecords: firebaseDesiredRecords(domain.json) };
+  return { ok: true, done, dnsRecords };
 }
 
 /**
