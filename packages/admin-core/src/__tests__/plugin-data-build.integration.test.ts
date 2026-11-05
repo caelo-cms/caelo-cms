@@ -1015,6 +1015,15 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
       const before = await liveHome();
       const runsBefore = (await pluginDataRuns()).length;
       await approve("entry linking an unpublished page");
+      const markedAt = async () =>
+        (
+          await sqlSystem(
+            async (tx) =>
+              (await tx`SELECT last_marked_at::text AS at FROM plugin_data_stale_pages
+                        WHERE page_id = ${homeId}::uuid`) as { at: string }[],
+          )
+        )[0]?.at;
+      const queuedAt = await markedAt();
       const kept = await tick();
       expect(kept.outcome).toBe("unchanged");
       expect(kept.message).toContain(late.pageId);
@@ -1022,6 +1031,9 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
       expect(await liveHome()).toBe(before);
       expect((await pluginDataRuns()).length).toBe(runsBefore);
       expect(await pendingMarks()).toBe(1);
+      // Back of the queue: the batch takes the oldest marks, so a held-back
+      // mark must not keep newer ones out of it.
+      expect(await markedAt()).not.toBe(queuedAt);
 
       // A plugin that catches the error and renders on is no way around it.
       swallowLinkErrors = true;

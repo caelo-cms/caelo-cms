@@ -793,6 +793,8 @@ export const finishPluginDataTickOp = defineOperation({
       .object({
         bakedAt: z.string(),
         plugins: z.array(z.object({ id: z.string(), pages: z.array(z.string()) })),
+        /** #1495 — pages whose region was held back: pending, at the end of the queue. */
+        heldBack: z.array(z.object({ id: z.string(), pages: z.array(z.string()) })).default([]),
         /**
          * The run each target serves with this data: the plugin-data run
          * this tick published, or the live run its unchanged bake read.
@@ -814,6 +816,16 @@ export const finishPluginDataTickOp = defineOperation({
           UPDATE plugin_data_stale_pages
              SET baked_through = ${input.baked.bakedAt}::timestamptz,
                  last_run_id = ${input.runIds.at(-1) ?? null}
+           WHERE plugin_id = ${plugin.id}::uuid
+             AND page_id = ANY(${uuidArray(plugin.pages)})
+        `);
+      }
+      // The batch takes the oldest marks first: a held-back mark that kept
+      // its place could fill every later batch, and newer marks that can
+      // render would never be baked.
+      for (const plugin of input.baked.heldBack) {
+        await tx.execute(sql`
+          UPDATE plugin_data_stale_pages SET last_marked_at = clock_timestamp()
            WHERE plugin_id = ${plugin.id}::uuid
              AND page_id = ANY(${uuidArray(plugin.pages)})
         `);
@@ -894,6 +906,10 @@ async function runPluginDataBuild(
             plugins: plan.plugins.map((p) => ({
               id: p.id,
               pages: p.pages.filter((pageId) => !unknownLinks.has(`${p.slug}:${pageId}`)),
+            })),
+            heldBack: plan.plugins.map((p) => ({
+              id: p.id,
+              pages: p.pages.filter((pageId) => unknownLinks.has(`${p.slug}:${pageId}`)),
             })),
             targets: [...served].map(([targetId, liveRunId]) => ({ targetId, liveRunId })),
           }
