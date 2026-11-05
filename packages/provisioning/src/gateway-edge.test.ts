@@ -106,6 +106,20 @@ describe("the gateway's Cloud Armor rules (#1339)", () => {
 describe("ensureGatewayArmorRules (the converge, contract 22)", () => {
   const target = { projectId: "acme", env: "production" };
 
+  it("stops on a describe reply without rules instead of creating every rule again", async () => {
+    for (const reply of ["[]", "[null]", "{}"]) {
+      const calls: string[][] = [];
+      const run = async (args: string[]): Promise<GcloudResult> => {
+        calls.push(args);
+        if (args.includes("list")) return ok("caelo-production-waf-1a2b3c\n");
+        return ok(reply);
+      };
+      const r = await ensureGatewayArmorRules(target, { run });
+      expect(r.ok).toBe(false);
+      expect(calls.some((c) => c.includes("create"))).toBe(false);
+    }
+  });
+
   it("changes nothing when every rule is in place", async () => {
     const { run, calls } = fakeGcloud(gatewayArmorRuleArgs().map(live));
     const r = await ensureGatewayArmorRules(target, { run });

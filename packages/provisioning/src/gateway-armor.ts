@@ -87,8 +87,14 @@ export async function ensureGatewayArmorRules(
     const parsed = JSON.parse(describe.stdout) as unknown;
     const policyJson = (Array.isArray(parsed) ? parsed[0] : parsed) as
       | { rules?: LiveGatewayArmorRule[] }
+      | null
       | undefined;
-    live = policyJson?.rules ?? [];
+    // Every policy has at least its default rule, so a reply without rules is
+    // not an empty policy: read as one, every rule would be created again.
+    if (!Array.isArray(policyJson?.rules)) {
+      return { ok: false, error: `describe ${policy}: the reply names no rules`, done };
+    }
+    live = policyJson.rules;
   } catch {
     return { ok: false, error: `describe ${policy}: output is not JSON`, done };
   }
