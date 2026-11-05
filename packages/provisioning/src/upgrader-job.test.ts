@@ -3,9 +3,10 @@
 /**
  * The upgrader job (upgrader-job.ts) against fakes: an in-memory request
  * queue, a fake gcloud for a healthy gcp-firebase install, a fake signed
- * manifest and health probe. Checks the order (backup before migrations,
- * self-update last), what lands on the timeline, and how each failure ends
- * the request.
+ * manifest and health probe. Checks the two stages (#1029: stage 1 moves the
+ * job onto the target's image, stage 2 does everything else), the order
+ * (backup before migrations), what lands on the timeline, and how each
+ * failure ends the request.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -13,6 +14,7 @@ import type { StoredUpdatePolicy } from "@caelo-cms/shared";
 import type { GcloudResult } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import type { InstallMetadata } from "./install-state.js";
+import type { JobClaim } from "./job-handover.js";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
 import { StateLockHeldError } from "./state-store.js";
 import {
@@ -34,8 +36,8 @@ import {
   runUpgraderJob,
   type UpdateEnd,
   type UpdateFacts,
-  type UpdateQueue,
   type UpgraderJobDeps,
+  type UpgraderQueue,
 } from "./upgrader-job.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
@@ -206,12 +208,19 @@ function fakeGcloud(events: string[], overrides: [RegExp, Answer][] = []) {
 }
 
 /** An in-memory queue holding one pending request. */
-function memoryQueue(request: ClaimedUpdate | null) {
+function memoryQueue(request: ClaimedUpdate | null, over: Partial<JobClaim> = {}) {
   const events: { phase: string; level: string; message: string }[] = [];
   const facts: UpdateFacts[] = [];
+  const handovers: { from: string | null; to: string | null }[] = [];
+  let handedOver = true;
   let end: UpdateEnd | null = null;
-  const queue: UpdateQueue = {
-    claim: async () => request,
+  const queue: UpgraderQueue = {
+    claimUpgrade: async (execution) =>
+      request ? { request, resume: false, execution, ...over } : null,
+    handover: async (_id, from, to) => {
+      handovers.push({ from, to });
+      return handedOver;
+    },
     event: async (_id, phase, level, message) => {
       events.push({ phase, level, message });
     },
@@ -223,7 +232,16 @@ function memoryQueue(request: ClaimedUpdate | null) {
       return true;
     },
   };
-  return { queue, events, facts, end: () => end };
+  return {
+    queue,
+    events,
+    facts,
+    handovers,
+    refuseHandover: () => {
+      handedOver = false;
+    },
+    end: () => end,
+  };
 }
 
 function healthProbe(order: string[], deep: HealthOutcome): HealthProbe {
@@ -262,6 +280,15 @@ function setup(
     iamWithheld?: Record<string, readonly string[]>;
     /** A resource IAM cannot be asked about. */
     iamError?: string;
+    /** The release this image belongs to; default the target's (stage 2). */
+    ownVersion?: string;
+    /** The image this run executes; default the target's ops image. */
+    ownDigest?: string | null;
+    claim?: Partial<JobClaim>;
+    imageSigned?: boolean;
+    pointError?: string;
+    startError?: string;
+    executionState?: "running" | "ended";
   } = {},
 ) {
   const order: string[] = [];
@@ -272,7 +299,7 @@ function setup(
     policy: POLICY,
     ...opts.request,
   };
-  const q = memoryQueue(request);
+  const q = memoryQueue(request, opts.claim);
   const written: InstallMetadata[] = [];
   const deps: UpgraderJobDeps = {
     queue: q.queue,
@@ -282,6 +309,26 @@ function setup(
     region: "europe-west1",
     env: "production",
     execution: "caelo-production-upgrader-x1",
+    ownVersion: opts.ownVersion ?? request.targetVersion,
+    verifyImage: async (slug, digest) => {
+      order.push(`cosign ${slug}@${digest}`);
+      return opts.imageSigned ?? true;
+    },
+    ownImageDigest: async () => (opts.ownDigest === undefined ? D("c") : opts.ownDigest),
+    pointJobAt: async (digest) => {
+      order.push(`point job at ${digest}`);
+      return opts.pointError ? { ok: false, error: opts.pointError } : { ok: true };
+    },
+    startJob: async () => {
+      order.push("start job");
+      return opts.startError
+        ? { ok: false, error: opts.startError }
+        : { ok: true, execution: "caelo-production-upgrader-x2" };
+    },
+    executionState: async (execution) => {
+      order.push(`state of ${execution}`);
+      return opts.executionState ?? "ended";
+    },
     iam: fakeIam(order, opts.iamWithheld ?? {}, opts.iamError),
     fetchManifest: async (v) => {
       order.push(`manifest ${v}`);
@@ -371,7 +418,7 @@ describe("runUpgraderJob", () => {
     expect(r).toEqual({ exitCode: 0, requestId: null, status: null });
   });
 
-  it("happy path: verify, backup, migrate, roll, health, record, self-update — in that order", async () => {
+  it("happy path: verify, backup, migrate, roll, health, record — in that order", async () => {
     const { deps, order, q, written } = setup();
     const r = await runUpgraderJob(deps);
     expect(r).toEqual({ exitCode: 0, requestId: "req-1", status: "succeeded" });
@@ -380,14 +427,11 @@ describe("runUpgraderJob", () => {
     const migrate = step(order, /^migrate .*admin@sha256:a{64}/);
     const roll = step(order, /^gcloud run services update caelo-production-admin-aaa/);
     const deep = step(order, /^health deep/);
-    const self = step(
-      order,
-      /^gcloud run jobs update caelo-production-upgrader .*ops@sha256:c{64}/,
-    );
-    expect([manifest, backup, migrate, roll, deep, self].every((i) => i >= 0)).toBe(true);
-    expect(
-      manifest < backup && backup < migrate && migrate < roll && roll < deep && deep < self,
-    ).toBe(true);
+    expect([manifest, backup, migrate, roll, deep].every((i) => i >= 0)).toBe(true);
+    expect(manifest < backup && backup < migrate && migrate < roll && roll < deep).toBe(true);
+    // Stage 2 runs the target's image already: the job stays where it is.
+    expect(order.some((l) => /jobs update caelo-production-upgrader/.test(l))).toBe(false);
+    expect(order).not.toContain("start job");
     // Images come from the signed manifest, pinned by digest, from the fixed mirror.
     expect(
       order.some((l) =>
@@ -419,7 +463,6 @@ describe("runUpgraderJob", () => {
       "roll",
       "health",
       "record",
-      "self-update",
       "finish",
     ]);
   });
@@ -620,7 +663,7 @@ describe("runUpgraderJob", () => {
   it("retries recording the end, and fails the run when it cannot", async () => {
     const { deps, q } = setup();
     let calls = 0;
-    const flaky: UpdateQueue = {
+    const flaky: UpgraderQueue = {
       ...q.queue,
       finish: async (id, end) => {
         calls += 1;
@@ -634,7 +677,7 @@ describe("runUpgraderJob", () => {
     });
     expect(calls).toBe(3);
 
-    const dead: UpdateQueue = {
+    const dead: UpgraderQueue = {
       ...q.queue,
       finish: async () => {
         throw new Error("database gone");
@@ -1192,9 +1235,8 @@ describe("runUpgraderJob", () => {
     expect(q.end()?.codes).toEqual(["record"]);
     expect(q.end()?.reason).toContain("0.11.0 serves");
     expect(q.events.some((e) => e.phase === "record" && e.level === "error")).toBe(true);
-    // The new release keeps serving: no rollback, no self-update.
+    // The new release keeps serving: no rollback.
     expect(order.some((l) => /--to-revisions/.test(l))).toBe(false);
-    expect(order.some((l) => /jobs update caelo-production-upgrader/.test(l))).toBe(false);
   });
 
   it("a failed backup stops before migrations", async () => {
@@ -1228,14 +1270,6 @@ describe("runUpgraderJob", () => {
     expect(q.events.some((e) => e.phase === "rollback")).toBe(true);
   });
 
-  it("a failed self-update only warns", async () => {
-    const { deps, q } = setup({
-      gcloud: [[/^run jobs update caelo-production-upgrader/, fail("denied")]],
-    });
-    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
-    expect(q.events.some((e) => e.phase === "self-update" && e.level === "warn")).toBe(true);
-  });
-
   it("an unexpected throw ends the request as failed", async () => {
     const { deps, q } = setup();
     const r = await runUpgraderJob({
@@ -1246,5 +1280,278 @@ describe("runUpgraderJob", () => {
     });
     expect(r.status).toBe("failed");
     expect(q.end()?.reason).toContain("kaboom");
+  });
+});
+
+describe("runUpgraderJob — stage 1 (#1029: the image of an earlier release)", () => {
+  const STAGE1 = { ownVersion: "0.10.45", ownDigest: D("e") };
+  const WRITES =
+    /sql backups create|services update|^migrate|jobs update|run jobs execute|lock|point job/;
+
+  it("verifies, moves the job onto the target's image, releases the request, starts it", async () => {
+    const { deps, order, q, written } = setup(STAGE1);
+    const r = await runUpgraderJob(deps);
+    expect(r).toEqual({ exitCode: 0, requestId: "req-1", status: null });
+    const seq = ["manifest 0.11.0", `cosign ops@${D("c")}`, "lock", `point job at ${D("c")}`];
+    const at = [...seq, "unlock", "start job"].map((l) => order.indexOf(l));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    // Released to no run, from this one, before the next exists.
+    expect(q.handovers).toEqual([{ from: "caelo-production-upgrader-x1", to: null }]);
+    expect(q.end()).toBeNull();
+    expect(q.events.at(-1)?.message).toContain("caelo-production-upgrader-x2");
+    expect(q.facts).toContainEqual(expect.objectContaining({ opsDigest: D("c") }));
+    expect(written).toEqual([]);
+  });
+
+  it("assesses and rolls nothing: the serving images are not even read", async () => {
+    // The #1025 shape: the installed code's drift check would stop this.
+    const { deps, order } = setup({
+      ...STAGE1,
+      meta: { ...META, imageDigests: { admin: D("7"), gateway: D("8") } },
+    });
+    await runUpgraderJob(deps);
+    expect(order.some((l) => /run services|run revisions|sql |^migrate|health/.test(l))).toBe(
+      false,
+    );
+    expect(order).toContain("start job");
+  });
+
+  it("a bug in the installed assessment stays behind: only the gate of stage 1 applies", async () => {
+    // minFromVersion is the target's assessment, in the target's code.
+    const { deps, order } = setup({
+      ...STAGE1,
+      manifest: { ok: true, manifest: { ...MANIFEST, minFromVersion: "0.10.99" } },
+    });
+    await runUpgraderJob(deps);
+    expect(order).toContain("start job");
+  });
+
+  it("asks IAM only for the job's rights on itself", async () => {
+    const { deps, order } = setup(STAGE1);
+    await runUpgraderJob(deps);
+    const asked = order.filter((l) => l.startsWith("iam "));
+    expect(asked).toEqual([
+      "iam projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
+      "iam projects/acme",
+      "iam projects/acme/serviceAccounts/caelo-production-upgrader@acme.iam.gserviceaccount.com",
+    ]);
+  });
+
+  it("missing rights on itself end needs-Cloud-Shell; the job does not move", async () => {
+    const { deps, order, q } = setup({
+      ...STAGE1,
+      iamWithheld: { "projects/acme": ["run.jobs.run"] },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    expect(q.end()?.codes).toEqual(["iam-preflight"]);
+    expect(q.end()?.reason).toContain("run.jobs.run");
+    expect(order.some((l) => WRITES.test(l))).toBe(false);
+  });
+
+  it("adversarial: a request for an older signed release never moves the job", async () => {
+    const { deps, order, q } = setup({
+      ...STAGE1,
+      request: { targetVersion: "0.10.40" },
+      manifests: { "0.10.40": manifestOf("0.10.40", D("a"), D("b")) },
+    });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "refused" });
+    expect(q.end()?.codes).toEqual(["not-newer"]);
+    expect(order.some((l) => WRITES.test(l))).toBe(false);
+    expect(q.handovers).toEqual([]);
+  });
+
+  it("adversarial: a bad manifest signature never moves the job", async () => {
+    const { deps, order, q } = setup({
+      ...STAGE1,
+      manifest: { ok: false, error: { code: "signature", message: "bad identity" } },
+    });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "refused" });
+    expect(q.end()?.codes).toEqual(["signature"]);
+    expect(order.some((l) => WRITES.test(l))).toBe(false);
+  });
+
+  it("adversarial: an ops image without Caelo's signature never moves the job", async () => {
+    const { deps, order, q } = setup({ ...STAGE1, imageSigned: false });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "refused" });
+    expect(q.end()?.codes).toEqual(["signature"]);
+    expect(order.some((l) => WRITES.test(l))).toBe(false);
+  });
+
+  it("an automatic request the policy does not allow never moves the job", async () => {
+    const { deps, order, q } = setup({ ...STAGE1, request: { trigger: "auto" } });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "refused" });
+    expect(q.end()?.codes).toEqual(["policy"]);
+    expect(order.some((l) => WRITES.test(l))).toBe(false);
+  });
+
+  it("an infrastructure change stays with the converge job", async () => {
+    const { deps, order, q } = setup({ ...STAGE1, meta: { ...META, infraContractVersion: 1 } });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "needs_cloud_shell" });
+    expect(q.end()?.codes).toEqual(["infra-contract"]);
+    expect(order.some((l) => WRITES.test(l))).toBe(false);
+  });
+
+  it("the same release as install.json names still hands over: the records may be stale", async () => {
+    const { deps, order } = setup({ ...STAGE1, meta: { ...META, releaseVersion: "0.11.0" } });
+    await runUpgraderJob(deps);
+    expect(order).toContain("start job");
+  });
+
+  it("a job left ahead of the install by a failed update still moves to the target", async () => {
+    const { deps, order } = setup({ ...STAGE1, ownVersion: "0.12.0" });
+    await runUpgraderJob(deps);
+    expect(order).toContain(`point job at ${D("c")}`);
+  });
+
+  it("the state lock held: nothing moves, and it says so", async () => {
+    const { deps, order, q } = setup({ ...STAGE1, locked: true });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "failed" });
+    expect(q.end()?.codes).toEqual(["state-locked"]);
+    expect(order.some((l) => l.startsWith("point job"))).toBe(false);
+  });
+
+  it("a job that cannot be moved fails the request, and releases the lock", async () => {
+    const { deps, order, q } = setup({ ...STAGE1, pointError: "denied" });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "failed" });
+    expect(q.end()?.codes).toEqual(["handover"]);
+    expect(order).toContain("unlock");
+    expect(q.handovers).toEqual([]);
+  });
+
+  it("a stage 2 that cannot be started fails the request; nothing on the site changed", async () => {
+    const { deps, q } = setup({ ...STAGE1, startError: "quota" });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "failed" });
+    expect(q.end()?.codes).toEqual(["handover"]);
+    expect(q.end()?.reason).toContain("Nothing was changed");
+  });
+
+  it("a request that moved on before the release is left alone", async () => {
+    const { deps, order, q } = setup(STAGE1);
+    q.refuseHandover();
+    expect(await runUpgraderJob(deps)).toMatchObject({ exitCode: 0, status: null });
+    expect(order).not.toContain("start job");
+    expect(q.end()).toBeNull();
+  });
+
+  it("regression: a target image that reports another version cannot hand over for ever", async () => {
+    const { deps, order, q } = setup({ ownVersion: "0.10.45", ownDigest: D("c") });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "refused" });
+    expect(q.end()?.codes).toEqual(["ops-image"]);
+    expect(order).not.toContain("start job");
+  });
+});
+
+describe("runUpgraderJob — stage 2 (#1029: the target's own image)", () => {
+  it("takes over the request stage 1 released, then runs the whole update", async () => {
+    const { deps, order, q } = setup({ claim: { resume: true, execution: null } });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "succeeded" });
+    // Nobody was named, so there is no run to wait for.
+    expect(order.some((l) => l.startsWith("state of"))).toBe(false);
+    expect(q.handovers).toEqual([{ from: null, to: "caelo-production-upgrader-x1" }]);
+    expect(q.events.some((e) => e.message.includes("own upgrader took over"))).toBe(true);
+    expect(order.some((l) => /sql backups create/.test(l))).toBe(true);
+  });
+
+  it("stage 1 → hand-over → stage 2, end to end over one request", async () => {
+    let claim: JobClaim | null = null;
+    const first = setup({ ownVersion: "0.10.45", ownDigest: D("e") });
+    const request = (await first.deps.queue.claimUpgrade("caelo-production-upgrader-x1"))?.request;
+    const stage1 = await runUpgraderJob({
+      ...first.deps,
+      startJob: async () => {
+        claim = { request: request as ClaimedUpdate, resume: true, execution: null };
+        return { ok: true, execution: "caelo-production-upgrader-x2" };
+      },
+    });
+    expect(stage1.status).toBeNull();
+    expect(claim).not.toBeNull();
+
+    const second = setup({ claim: claim as unknown as JobClaim });
+    const stage2 = await runUpgraderJob({
+      ...second.deps,
+      execution: "caelo-production-upgrader-x2",
+    });
+    expect(stage2.status).toBe("succeeded");
+    expect(second.q.end()?.status).toBe("succeeded");
+    expect(second.written.at(-1)).toMatchObject({ releaseVersion: "0.11.0" });
+  });
+
+  it("adversarial: an image the manifest does not sign changes nothing", async () => {
+    const { deps, order, q, written } = setup({ ownDigest: D("9") });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "refused" });
+    expect(q.end()?.codes).toEqual(["ops-image"]);
+    expect(order.some((l) => /sql backups create|services update|^migrate|^lock/.test(l))).toBe(
+      false,
+    );
+    expect(written).toEqual([]);
+  });
+
+  it("an unreadable own image is refused, never assumed right", async () => {
+    const { deps, q } = setup({ ownDigest: null });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "refused" });
+    expect(q.end()?.codes).toEqual(["ops-image"]);
+  });
+
+  it("the platform form of the image, which Cloud Run records, is the signed image (#1025)", async () => {
+    const { deps } = setup({
+      ownDigest: P("c"),
+      manifest: {
+        ok: true,
+        manifest: {
+          ...MANIFEST,
+          platformDigests: { admin: P("a"), gateway: P("b"), ops: P("c") },
+        },
+      },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+  });
+
+  it("the policy is judged again here, from the policy this claim read", async () => {
+    const { deps, q } = setup({ request: { trigger: "auto" } });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "refused" });
+    expect(q.end()?.codes).toEqual(["policy"]);
+  });
+});
+
+describe("runUpgraderJob — a run that died (#1029)", () => {
+  const dead = { resume: true, execution: "caelo-production-upgrader-x0" };
+
+  it("waits while the named run lives; two runs at once never happen", async () => {
+    const { deps, order, q } = setup({ claim: dead, executionState: "running" });
+    expect(await runUpgraderJob(deps)).toMatchObject({ exitCode: 0, status: null });
+    expect(q.handovers).toEqual([]);
+    expect(q.end()).toBeNull();
+    expect(order.some((l) => /sql backups create/.test(l))).toBe(false);
+  });
+
+  it("adopts the request once Cloud Run says that run ended, and starts over from its checks", async () => {
+    const { deps, q } = setup({ claim: dead });
+    expect(await runUpgraderJob(deps)).toMatchObject({ status: "succeeded" });
+    expect(q.handovers).toEqual([
+      { from: "caelo-production-upgrader-x0", to: "caelo-production-upgrader-x1" },
+    ]);
+    expect(q.events.some((e) => e.message.startsWith("Continuing the update"))).toBe(true);
+  });
+
+  it("a stage 1 that died before it moved the job is continued by an earlier-release run", async () => {
+    const { deps, order } = setup({ claim: dead, ownVersion: "0.10.45", ownDigest: D("e") });
+    await runUpgraderJob(deps);
+    expect(order).toContain("start job");
+  });
+
+  it("two adopters: the loser does nothing", async () => {
+    const { deps, order, q } = setup({ claim: dead });
+    q.refuseHandover();
+    expect(await runUpgraderJob(deps)).toMatchObject({ exitCode: 0, status: null });
+    expect(order.some((l) => /run services/.test(l))).toBe(false);
+    expect(q.end()).toBeNull();
+  });
+
+  it("outside Cloud Run a running request is never adopted", async () => {
+    const { deps, q } = setup({ claim: { resume: true, execution: null } });
+    const r = await runUpgraderJob({ ...deps, execution: null });
+    expect(r).toMatchObject({ exitCode: 0, status: null });
+    expect(q.handovers).toEqual([]);
   });
 });

@@ -234,8 +234,8 @@ export type PrimaryAction =
   /** The log of an upgrader run that died without reporting back. */
   | { readonly kind: "logs"; readonly url: string }
   /**
-   * #819 — the password-confirmed Continue of a converge whose run died: the
-   * converge job starts again and resumes from its checkpoint.
+   * #819, #1029 — the password-confirmed Continue of an update whose run
+   * died: its job starts again and adopts the request.
    */
   | { readonly kind: "continue"; readonly version: string; readonly logsUrl: string }
   /** Ask GitHub for the newest release now. */
@@ -292,8 +292,8 @@ export interface UpdatePageInput {
   /** The request is `running` but its upgrader run is over (died without reporting); its log. */
   readonly deadRunLogsUrl: string | null;
   /**
-   * #819 — that dead run was a converge the viewer may continue: it resumes
-   * from its checkpoint instead of waiting for the stale cut-off.
+   * #819, #1029 — the viewer may continue that dead run instead of waiting
+   * for the stale cut-off.
    */
   readonly deadRunContinuable: boolean;
   /** The auto-update scheduler's last decision. */

@@ -192,7 +192,13 @@ function harness(
       calls.push(`verify ${slug} ${digest}`);
       return opts.imageSigned ?? true;
     },
-    ownImageDigest: async () => (opts.ownDigest === undefined ? D("c") : opts.ownDigest),
+    // Stage 1 runs an earlier release's image, stage 2 the manifest's.
+    ownImageDigest: async () =>
+      opts.ownDigest !== undefined
+        ? opts.ownDigest
+        : (opts.ownVersion ?? "0.11.0") === "0.11.0"
+          ? D("c")
+          : D("e"),
     pointJobAt: async (digest) => {
       calls.push(`point ${digest}`);
       return { ok: true };

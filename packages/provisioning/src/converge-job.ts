@@ -57,14 +57,19 @@ import {
   selfGrantPlan,
 } from "./converge-job-preflight.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
-import { decideInstallJob, type ExecutionState, type InstallJobRole } from "./install-job.js";
+import { decideInstallJob, type InstallJobRole } from "./install-job.js";
 import type { InstallMetadata } from "./install-state.js";
-import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
 import {
-  compareSemver,
-  type ReleaseManifest,
-  type ReleaseManifestResult,
-} from "./release-manifest.js";
+  adoptClaim,
+  type HandoverQueue,
+  handOverToRelease,
+  isStageOne,
+  type JobClaim,
+  ownImageProblem,
+  type SelfHandoverDeps,
+} from "./job-handover.js";
+import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
+import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
 import { StateLockHeldError } from "./state-store.js";
 import type { UpgradeCheckpoint } from "./upgrade/upgrade.js";
 import { assessUpgradeRequest } from "./upgrader-assess.js";
@@ -76,7 +81,6 @@ import {
   runIamPreflight,
 } from "./upgrader-iam-preflight.js";
 import {
-  type ClaimedUpdate,
   recordUpdateEnd,
   type UpdateEnd,
   type UpdateEndStatus,
@@ -86,30 +90,15 @@ import {
 import { type EventReporter, eventReporter, type JobLog } from "./upgrader-reporter.js";
 
 /** What the converge claim found. */
-export interface ConvergeClaim {
-  readonly request: ClaimedUpdate;
-  /**
-   * The request was already running: stage 1 handed it to this run, or a
-   * run that died left it. Fresh claims (pending → running) are false.
-   */
-  readonly resume: boolean;
-  /** The execution the request names now (after a fresh claim: this one). */
-  readonly execution: string | null;
-}
+export type ConvergeClaim = JobClaim;
 
 /** The converge job's view of the database (the platform_updater role). */
-export interface ConvergeQueue extends Omit<UpdateQueue, "claim"> {
+export interface ConvergeQueue extends Omit<UpdateQueue, "claim">, HandoverQueue {
   /**
    * End runs that died long ago (stale), then return the running converge
    * request, or claim the oldest pending one.
    */
   claimConverge(execution: string | null): Promise<ConvergeClaim | null>;
-  /**
-   * Point running request `requestId` at execution `to` — or at none
-   * (`null`: released for the next run to adopt) — only while it still
-   * names `from`. Resolves false when another run got there first.
-   */
-  handover(requestId: string, from: string | null, to: string | null): Promise<boolean>;
 }
 
 /** How stage 2's upgrade ended (upgrade/upgrade.ts, seen from the job). */
@@ -140,7 +129,7 @@ export type SecureDatabaseResult =
   | { readonly ok: true; readonly host: string }
   | { readonly ok: false; readonly error: string };
 
-export interface ConvergeJobDeps {
+export interface ConvergeJobDeps extends SelfHandoverDeps {
   readonly queue: ConvergeQueue;
   /**
    * #1373 — the install's database TLS step (#1338, cloudsql-tls.ts), and
@@ -167,29 +156,10 @@ export interface ConvergeJobDeps {
   ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }>;
   /** Waits between the IAM re-checks after a self-grant. */
   readonly sleep: (ms: number) => Promise<void>;
-  /** This Cloud Run execution; null outside Cloud Run. */
-  readonly execution: string | null;
-  /** The Caelo release this code belongs to (CAELO_VERSION of the image). */
-  readonly ownVersion: string;
   /** fetchVerifiedReleaseManifest against the fixed registry. */
   readonly fetchManifest: (version: string) => Promise<ReleaseManifestResult>;
   /** install.json as the ops bucket holds it NOW (null when absent) — never cached. */
   readonly readInstall: () => InstallMetadata | null;
-  /** Verify the cosign signature of the release image `slug@digest`. */
-  readonly verifyImage: (slug: "ops", digest: string) => Promise<boolean>;
-  /** The digest of the image this execution runs (from Cloud Run); null when unreadable. */
-  readonly ownImageDigest: () => Promise<string | null>;
-  /** Point this job at the ops image with `digest` (its identity, command and args stay). */
-  readonly pointJobAt: (
-    digest: string,
-  ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }>;
-  /** Start a new execution of this job; returns its name. */
-  readonly startJob: () => Promise<
-    | { readonly ok: true; readonly execution: string }
-    | { readonly ok: false; readonly error: string }
-  >;
-  /** Where an execution of this job stands (Cloud Run). */
-  readonly executionState: (execution: string) => Promise<ExecutionState>;
   /**
    * Take the install's state lock (#815); returns its release. Throws
    * StateLockHeldError when a live run holds it, any other error when it
@@ -264,21 +234,9 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     });
 
   try {
-    // A request another execution started: adopt it only once that one
-    // has ended — two converges at once must never happen.
-    if (claim.resume && claim.execution !== deps.execution) {
-      if (!deps.execution) {
-        return leave("a converge request is running; only a Cloud Run execution may adopt it");
-      }
-      if (claim.execution) {
-        const live = await deps.executionState(claim.execution);
-        if (live === "running") {
-          return leave(`execution ${claim.execution} is still installing; this run does nothing`);
-        }
-      }
-      if (!(await queue.handover(request.id, claim.execution, deps.execution))) {
-        return leave("another run adopted the request first; this run does nothing");
-      }
+    const adoption = await adoptClaim(claim, { ...deps, queue });
+    if (adoption.kind === "leave") return leave(adoption.message);
+    if (adoption.adopted) {
       r.phase("start");
       r.info(
         `Continuing the update to ${request.targetVersion} (run ${deps.execution}; the previous run${claim.execution ? ` ${claim.execution}` : ""} stopped before it finished).`,
@@ -358,7 +316,7 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     // stages ask; stage 2's list is the target release's own. A missing
     // role of the self-grant allowlist does not stop the run: stage 2
     // grants it once it has verified its own image and holds the lock.
-    const stage1 = compareSemver(deps.ownVersion, m.version) !== 0;
+    const stage1 = isStageOne(deps.ownVersion, m.version);
     const access = await askIam();
     if (access.kind === "error") {
       return stopWith(
@@ -410,48 +368,18 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     r.info(
       `This installer belongs to Caelo ${deps.ownVersion}; handing over to the installer of ${m.version} itself, so the cloud setup is changed by the release that needs it.`,
     );
-    if (!(await deps.verifyImage("ops", m.digests.ops))) {
-      return stopWith(
-        "refused",
-        ["signature"],
-        `The installer image of ${m.version} is not signed by Caelo's release workflow, so nothing was changed.`,
-      );
-    }
-    // Under the lock (the terminal `upgrade` redeploys this job too), and
-    // released before the new run starts: it takes the lock itself.
-    const locked = lockOrBlock(false);
-    if (locked) return stopWith(locked.status, locked.codes, locked.reason);
-    const pointed = await deps.pointJobAt(m.digests.ops);
-    unlock();
-    if (!pointed.ok) {
-      return stopWith(
-        "failed",
-        ["handover"],
-        `Nothing was changed: the installer of ${m.version} could not be prepared (${pointed.error}). Try again in a moment.`,
-      );
-    }
-    // Release the request BEFORE the new run exists: it adopts a request
-    // that names no run at once, while a run still named (this one, alive
-    // for a moment longer) would make it step back.
-    if (!(await queue.handover(request.id, deps.execution, null))) {
-      return leave("the request moved on before the hand-over; this run does nothing");
-    }
-    const started = await deps.startJob();
-    if (!started.ok) {
-      return stopWith(
-        "failed",
-        ["handover"],
-        `Nothing was changed: the installer of ${m.version} could not be started (${started.error}). Try again in a moment.`,
-      );
-    }
-    r.info(`The installer of ${m.version} runs now (run ${started.execution}).`);
-    await r.flush();
-    log({
-      severity: "INFO",
-      message: `handed over to ${started.execution}`,
+    return handOverToRelease(m, {
+      deps,
+      queue,
       requestId: request.id,
+      noun: "installer",
+      reporter: r,
+      log,
+      lock: () => lockOrBlock(false),
+      unlock,
+      stop: (b) => stopWith(b.status, b.codes, b.reason),
+      leave,
     });
-    return { exitCode: 0, requestId: request.id, status: null };
   }
 
   /** Stage 2: this image is the release's own installer; converge + roll. */
@@ -463,18 +391,8 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     toGrant: readonly InstallJobRole[],
   ): Promise<UpgraderRunResult> {
     const installId = judged.installId;
-    const own = await deps.ownImageDigest();
-    // Cloud Run records the linux/amd64 platform manifest it resolved, not
-    // the index the hand-over pinned (#1025), so an execution of the right
-    // image reads back as the platform form the manifest also signs.
-    const signedForms = [m.digests.ops, ...(m.platformDigests ? [m.platformDigests.ops] : [])];
-    if (own === null || !signedForms.includes(own)) {
-      return stopWith(
-        "refused",
-        ["ops-image"],
-        `Nothing was changed: this run's installer image (${own ?? "unknown"}) is not the one Caelo's release workflow signed for ${m.version} (${signedForms.join(" or ")}). Start the update again from Settings → Updates.`,
-      );
-    }
+    const wrongImage = ownImageProblem(m, await deps.ownImageDigest(), "installer");
+    if (wrongImage) return stopWith(wrongImage.status, wrongImage.codes, wrongImage.reason);
     // The checkpoint's run, if it is not this one, must have ended.
     const live =
       checkpoint && checkpoint.execution !== deps.execution

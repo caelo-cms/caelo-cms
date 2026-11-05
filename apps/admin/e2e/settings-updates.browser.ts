@@ -620,7 +620,7 @@ test("interrupted: a run refused before any change says so and never reads 'Fini
   await expect(page.getByTestId("last-attempt")).not.toContainText("Finished");
 });
 
-test("interrupted: a run that died without reporting back points at its log, not at Install", async ({
+test("#1029 interrupted: an app-roll whose run died offers Continue and its log, not Install", async ({
   page,
   baseURL,
 }) => {
@@ -638,16 +638,16 @@ test("interrupted: a run that died without reporting back points at its log, not
   await page.goto("/settings/updates");
   await expect(card(page)).toHaveAttribute("data-state", "interrupted");
   await expect(page.getByTestId("update-state-sentence")).toContainText(
-    `The update to v${LATEST} stopped without reporting back.`,
+    "picks up where it stopped",
   );
-  await expect(page.getByTestId("update-state-detail")).toContainText("within 90 minutes");
   const log = card(page).getByTestId("upgrader-log");
   await expect(log).toHaveAttribute(
     "href",
     "https://console.cloud.google.com/run/jobs/e2e-upgrader-ended",
   );
-  // Not "Installing" with a live timeline, and no second action next to the log.
-  await expectOnlyAction(page, "none");
+  // Not "Installing" with a live timeline: Continue is the one action, the
+  // log sits next to it.
+  await expectOnlyAction(page, "continue-update");
   await expect(card(page).getByTestId("cancel-update")).toHaveCount(0);
   await expect(card(page).getByTestId("update-state-badge")).toHaveText("Interrupted");
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });

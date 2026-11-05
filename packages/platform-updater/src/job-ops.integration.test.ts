@@ -12,7 +12,7 @@ import { DatabaseAdapter, SYSTEM_ACTOR_ID } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
-import { createDbConvergeQueue, createDbUpdateQueue } from "./db-queue.js";
+import { createDbAgentQueue, createDbConvergeQueue, createDbUpdateQueue } from "./db-queue.js";
 import { jobClaimOp, jobEventOp, jobFinishOp, jobHandoverOp, jobRecordOp } from "./ops.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -177,14 +177,13 @@ describe("createDbUpdateQueue", () => {
       (tx) => tx`UPDATE platform_update_requests SET auto_basis = 'patch' WHERE id = ${id}::uuid`,
     );
     const queue = createDbUpdateQueue(adapter);
-    const claimed = await queue.claim("exec-8");
+    const claimed = await queue.claimUpgrade("exec-8");
     expect(claimed).toMatchObject({
-      id,
-      targetVersion: "99.0.2",
-      trigger: "auto",
-      autoBasis: "patch",
+      request: { id, targetVersion: "99.0.2", trigger: "auto", autoBasis: "patch" },
+      resume: false,
+      execution: "exec-8",
     });
-    expect(claimed?.policy).toMatchObject({
+    expect(claimed?.request.policy).toMatchObject({
       soakHours: 24,
       securitySoakHours: 2,
       pausedUntil: null,
@@ -199,7 +198,73 @@ describe("createDbUpdateQueue", () => {
       pauseAutoUpdates: false,
     });
     expect(await request(id)).toMatchObject({ status: "succeeded" });
-    expect(await queue.claim(null)).toBeNull();
+    expect(await queue.claimUpgrade(null)).toBeNull();
+  });
+});
+
+describe("the app-roll route's two stages (#1029)", () => {
+  it("stage 1 claims, releases the request, and stage 2 adopts it", async () => {
+    const id = await addRequest("99.0.3");
+    const queue = createDbUpdateQueue(adapter);
+    const first = await queue.claimUpgrade("upg-1");
+    expect(first).toMatchObject({ request: { id }, resume: false, execution: "upg-1" });
+
+    expect(await queue.handover(id, "upg-1", null)).toBe(true);
+    const second = await queue.claimUpgrade("upg-2");
+    expect(second).toMatchObject({ request: { id }, resume: true, execution: null });
+    // The claim changed nothing: adopting is the job's own, checked step.
+    expect(await request(id)).toMatchObject({ status: "running", execution: null });
+    expect(await queue.handover(id, null, "upg-2")).toBe(true);
+    expect(await queue.handover(id, null, "upg-3")).toBe(false);
+    expect(await request(id)).toMatchObject({ status: "running", execution: "upg-2" });
+  });
+
+  it("the job's own database role may move an app-roll request between its runs", async () => {
+    const id = await addRequest("99.0.3", {
+      runningSince: new Date().toISOString(),
+      execution: "upg-1",
+    });
+    const claimed = await asUpdater<{ ok: boolean; value: { claimed: { resume: boolean } } }>(
+      (tx) =>
+        jobClaimOp.handler(SYSTEM, { execution: "upg-2", route: "app_roll", adopt: true }, tx),
+    );
+    expect(claimed.ok && claimed.value.claimed.resume).toBe(true);
+    const handed = await asUpdater<{ ok: boolean; value: { handedOver: boolean } }>((tx) =>
+      jobHandoverOp.handler(SYSTEM, { requestId: id, from: "upg-1", to: null }, tx),
+    );
+    expect(handed.ok && handed.value.handedOver).toBe(true);
+    expect(await request(id)).toMatchObject({ status: "running", execution: null });
+  });
+
+  it("the second stage claims with the policy as it stands now", async () => {
+    await addRequest("99.0.4");
+    const queue = createDbUpdateQueue(adapter);
+    const first = await queue.claimUpgrade("upg-1");
+    await admin(
+      (tx) =>
+        tx`UPDATE platform_update_policy SET paused = true, paused_at = now(), paused_reason = 'Owner' WHERE id = 1`,
+    );
+    const second = await queue.claimUpgrade("upg-2");
+    expect(first?.request.policy.paused).toBe(false);
+    expect(second?.request.policy.paused).toBe(true);
+  });
+
+  it("the agent's claim never adopts: it runs one request at a time", async () => {
+    const id = await addRequest("99.0.5", {
+      runningSince: new Date().toISOString(),
+      execution: "agent@h",
+    });
+    expect(await createDbAgentQueue(adapter).claim("agent@h")).toBeNull();
+    expect(await request(id)).toMatchObject({ status: "running", execution: "agent@h" });
+  });
+
+  it("the upgrader's claim never touches a running converge", async () => {
+    await addRequest("99.0.6", {
+      route: "converge",
+      runningSince: new Date().toISOString(),
+      execution: "conv-1",
+    });
+    expect(await createDbUpdateQueue(adapter).claimUpgrade("upg-1")).toBeNull();
   });
 });
 
@@ -213,7 +278,7 @@ describe("the converge route (#819)", () => {
 
     await admin((tx) => tx`DELETE FROM platform_update_requests`);
     const next = await addRequest("99.0.5", { route: "converge" });
-    expect(await createDbUpdateQueue(adapter).claim("upg-1")).toBeNull();
+    expect(await createDbUpdateQueue(adapter).claimUpgrade("upg-1")).toBeNull();
     const claimed = await convergeQueue.claimConverge("conv-1");
     expect(claimed).toMatchObject({
       request: { id: next, targetVersion: "99.0.5", trigger: "auto" },
@@ -274,13 +339,18 @@ describe("the converge route (#819)", () => {
     ]);
   });
 
-  it("never hands over an app-roll request or one that ended", async () => {
-    const roll = await addRequest("99.0.8", {
+  it("never hands over a request that ended", async () => {
+    const id = await addRequest("99.0.8", {
+      route: "converge",
       runningSince: new Date().toISOString(),
-      execution: "upg-1",
+      execution: "conv-1",
     });
-    expect(await createDbConvergeQueue(adapter).handover(roll, "upg-1", "conv-9")).toBe(false);
-    expect(await request(roll)).toMatchObject({ execution: "upg-1" });
+    await admin(
+      (tx) =>
+        tx`UPDATE platform_update_requests SET status = 'failed', finished_at = now() WHERE id = ${id}::uuid`,
+    );
+    expect(await createDbConvergeQueue(adapter).handover(id, "conv-1", "conv-9")).toBe(false);
+    expect(await request(id)).toMatchObject({ execution: "conv-1" });
   });
 
   it("the timeline accepts the converge phase", async () => {
