@@ -36,7 +36,8 @@ function fakeGcloud(rules: LiveGatewayArmorRule[], policies = ["caelo-production
   const run = async (args: string[]): Promise<GcloudResult> => {
     calls.push(args);
     if (args.includes("list")) return ok(`${policies.join("\n")}\n`);
-    if (args.includes("describe")) return ok(JSON.stringify({ rules }));
+    // As real gcloud prints it: `describe --format=json` is a one-element list.
+    if (args.includes("describe")) return ok(JSON.stringify([{ rules }]));
     return ok();
   };
   return { run, calls };

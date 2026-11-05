@@ -3,7 +3,7 @@
 /**
  * #1339 — bring the visitor gateway's Cloud Armor policy on an existing
  * `gcp` install to the rules of gateway-edge.ts (infrastructure contract
- * 21). The stack declares the same rules for new installs; the converge
+ * 22). The stack declares the same rules for new installs; the converge
  * runs this, because the in-cloud upgrader holds no compute rights.
  *
  * No step leaves the policy with less protection than before:
@@ -82,8 +82,13 @@ export async function ensureGatewayArmorRules(
   }
   let live: LiveGatewayArmorRule[];
   try {
-    live = ((JSON.parse(describe.stdout) as { rules?: LiveGatewayArmorRule[] }).rules ??
-      []) as LiveGatewayArmorRule[];
+    // `describe --format=json` prints a one-element list. Read as an object it
+    // has no rules, so every existing rule looked missing and `create` failed.
+    const parsed = JSON.parse(describe.stdout) as unknown;
+    const policyJson = (Array.isArray(parsed) ? parsed[0] : parsed) as
+      | { rules?: LiveGatewayArmorRule[] }
+      | undefined;
+    live = policyJson?.rules ?? [];
   } catch {
     return { ok: false, error: `describe ${policy}: output is not JSON`, done };
   }
