@@ -89,6 +89,7 @@ Every same-site URL a staged page references must be served by that build. Code:
 | `links/broken-asset` | error | An image (`src`, `srcset`, `og:image`), stylesheet, script, media or other file the build does not contain. |
 | `links/redirect-loop` | error | The URL runs into a cycle in the redirect table. |
 | `links/redirect-chain` | warning | The URL works only through the redirect table; the finding names the final URL to link. |
+| `links/redirect-shadows-page` | error | A redirect rule sits on a page's URL, in either spelling (`/x`, `/x/`), or staging answered the page's URL with a redirect. The finding names the rule and the page. The designated 404 page is left out: it is served at `/404.html`. See [Redirects and global settings](./dev/redirects-and-settings-sync.md#a-rule-on-a-pages-url). |
 | `links/orphan-page` | warning | No other page links here with `a` / `area` (navigation included). The homepage and the 404 page are exempt. |
 | `links/limit-reached` | info | A bound cut the check short; says what was not verified. |
 

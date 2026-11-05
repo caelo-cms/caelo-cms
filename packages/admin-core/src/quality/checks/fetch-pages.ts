@@ -12,6 +12,7 @@
  */
 
 import type { StagedPage } from "./check.js";
+import { pathKey } from "./links-analysis.js";
 
 /** Pages fetched at once — the staged origin may be a small loopback server. */
 export const PAGE_FETCH_CONCURRENCY = 6;
@@ -42,6 +43,16 @@ export interface FetchedPages {
   readonly errors: readonly PageFetchError[];
 }
 
+/**
+ * The path staging's redirects led `page` to, or null. The host's own hop to
+ * the slash form (`/about` to `/about/`) is the same page, not a redirect.
+ */
+function redirectedAway(page: PageToFetch, res: Response): string | null {
+  if (!res.redirected || res.url === "") return null;
+  const final = new URL(res.url).pathname;
+  return pathKey(final) === pathKey(new URL(page.url).pathname) ? null : final;
+}
+
 async function fetchOne(
   page: PageToFetch,
   fetcher: typeof fetch,
@@ -51,12 +62,16 @@ async function fetchOne(
       redirect: "follow",
       signal: AbortSignal.timeout(PAGE_FETCH_TIMEOUT_MS),
     });
+    const redirectedTo = redirectedAway(page, res);
     if (!res.ok) {
       return {
         pageId: page.pageId,
         url: page.url,
         code: "page-status",
-        message: `staging answered ${res.status} for ${page.path} — a published page the staged build does not serve; Stage again, and if it persists check the page's template and path`,
+        message:
+          redirectedTo !== null
+            ? `staging redirects ${page.path} to ${redirectedTo}, which answered ${res.status} — a redirect is answering this page's URL; find it with find_redirects and remove it with bulk_delete_redirects`
+            : `staging answered ${res.status} for ${page.path} — a published page the staged build does not serve; Stage again, and if it persists check the page's template and path`,
       };
     }
     const html = await res.text();
@@ -74,6 +89,7 @@ async function fetchOne(
       url: page.url,
       html,
       ...(page.notFoundPage ? { notFoundPage: true as const } : {}),
+      ...(redirectedTo !== null ? { redirectedTo } : {}),
     };
   } catch (e) {
     return {
