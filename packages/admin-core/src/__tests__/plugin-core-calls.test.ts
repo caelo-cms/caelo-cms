@@ -100,6 +100,9 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "pages_seo.get": { measured: ["pages_seo.get"] },
     "placement.fork_content": { notBackground: "translate tools fork one placement" },
     "redirects.create": { notBackground: "variant tools create the redirect of a moved page" },
+    "redirects.page_conflicts": {
+      notBackground: "create_variant, an AI tool, names a rule on the new page's URL",
+    },
     "site_defaults.get": { measured: ["site_defaults.get"] },
   },
 };
