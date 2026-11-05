@@ -42,6 +42,7 @@ import {
 } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe } from "./upgrade/health.js";
 import { createReleaseImageForms } from "./upgrade/image-forms.js";
+import { httpsLoadBalancerGet } from "./upgrade/load-balancer-get.js";
 import { type IamTester, restIamTester } from "./upgrader-iam-preflight.js";
 import type { UpdateQueue, UpgraderJobDeps } from "./upgrader-job.js";
 import type { JobLog } from "./upgrader-reporter.js";
@@ -152,7 +153,13 @@ export async function healthProbeFor(
         gatewayServiceUrl: urls.gateway as string,
         mcpAuthProxyServiceUrl: urls["mcp-auth-proxy"] as string,
       },
-      { run, http, sleep: realSleep, accessJustChanged: context.accessJustChanged },
+      {
+        run,
+        http,
+        loadBalancerGet: httpsLoadBalancerGet,
+        sleep: realSleep,
+        accessJustChanged: context.accessJustChanged,
+      },
     ),
   };
 }

@@ -617,6 +617,19 @@ describe("MCP-Auth-Proxy contract (#1328)", () => {
     }
   });
 
+  it("gcp: visitors reach the gateway without a Google identity", () => {
+    expect(
+      stackIamInvariants("gcp").find(
+        (i) => i.target.kind === "run-service" && i.target.service === "gateway",
+      ),
+    ).toMatchObject({
+      stackResource: "data-gateway-public-invoker",
+      role: "roles/run.invoker",
+      member: "allUsers",
+      onFailure: "abort",
+    });
+  });
+
   it("gcp-firebase: the data gateway is the rewrite target, the proxy public", () => {
     const inv = stackIamInvariants("gcp-firebase");
     const on = (service: string) =>

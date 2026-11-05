@@ -17,6 +17,12 @@
  * are allowed on top: a 10x larger index can be one B-tree level deeper,
  * which is the cost of an index lookup growing as log n, not as n.
  *
+ * The buffer counts must repeat, or the bar reads the layout of one run:
+ * the fixture derives its bulk ids from the row (`stableId`), so a listing
+ * names the same rows on the same index leaves and heap pages every time,
+ * and the job runs with autovacuum off (#1441). With both, an op's buffers
+ * repeat exactly or within a few percent, far from its bar.
+ *
  * Ops that do not meet it yet are on {@link ALLOWLIST}, each with the
  * issue that fixes it; the test fails when an allowlisted op meets the
  * bar, so the list only shrinks. It is empty once #1268, #1269 and #1270

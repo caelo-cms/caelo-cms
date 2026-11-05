@@ -12,8 +12,10 @@
  * - `structure/unused-css` (warning): layout or placed-module CSS for
  *   classes no staged page renders. A class still counts as used when the
  *   stylesheet owner's template CAN render it (an optional variant class,
- *   `{{#dark}}is-dark{{/dark}}`) or a module script adds or selects it
- *   ({@link scriptClassNames}). Platform classes (`caelo-*`) never count.
+ *   `{{#dark}}is-dark{{/dark}}`), a module script adds, selects or writes
+ *   it ({@link scriptClassNames}) or it fits a class a template or script
+ *   builds from a value (`s{{group}}`, {@link fitsBuiltClass}). Platform
+ *   classes (`caelo-*`) never count.
  * - `structure/page-specific-layout-css` (warning): layout CSS for classes
  *   several modules use but that appear on fewer than
  *   {@link PAGE_SPECIFIC_SHARE} of the layout's pages — product-page rules
@@ -28,11 +30,16 @@
  * grouping at-rules and skips everything else (`@keyframes`, `@font-face`).
  */
 
-import { parseMarkup, stripMustache, truncateKeepingIds } from "@caelo-cms/shared";
+import {
+  PLACEHOLDER_MARK,
+  parseMarkup,
+  stripMustache,
+  truncateKeepingIds,
+} from "@caelo-cms/shared";
 import { parseSync } from "oxc-parser";
 import type { Finding } from "./findings.js";
 import { analyseModuleJs } from "./module-js-analysis.js";
-import { isNode, type Node, nodes } from "./module-js-ast.js";
+import { isNode, JsScopes, type Node, nodes } from "./module-js-ast.js";
 import type { ClassUse, StructureModule } from "./structure-analysis.js";
 import { selectorClasses } from "./structure-analysis.js";
 
@@ -100,40 +107,98 @@ export function createRenderedFold(
   };
 }
 
-/** Every class a template can render, optional section classes included. */
+/**
+ * Every class a template can render, optional section classes included.
+ * A class built from a field keeps {@link PLACEHOLDER_MARK} where the value
+ * goes (`s{{group}}` → `s\u001f`).
+ */
 export function templateClasses(html: string): Set<string> {
   const out = new Set<string>();
   const walk = (n: { classes: readonly string[]; children: readonly unknown[] }) => {
     for (const c of n.classes) out.add(c);
     for (const c of n.children) walk(c as typeof n);
   };
-  for (const r of parseMarkup(stripMustache(html, { keepOptionalAttributeText: true }))) walk(r);
+  const markup = stripMustache(html, {
+    keepOptionalAttributeText: true,
+    markTagPlaceholders: true,
+  });
+  for (const r of parseMarkup(markup)) walk(r);
   return out;
+}
+
+/**
+ * Can `built`, a class holding {@link PLACEHOLDER_MARK}, render as `cls`?
+ * All text around the values must match in order, and each value must
+ * start and end at a boundary: `s{{group}}` renders `s0`, `card--{{tone}}`
+ * renders `card--dark`, but no value of `s{{group}}` is meant to spell
+ * `sidebar`. A class with no fixed start or end could be any class, so it
+ * proves nothing: counting it would hide every dead rule of a module with
+ * one such class.
+ */
+export function fitsBuiltClass(built: string, cls: string): boolean {
+  const parts = built.split(PLACEHOLDER_MARK);
+  const head = parts[0] ?? "";
+  const tail = parts[parts.length - 1] ?? "";
+  if (head === "" && tail === "") return false;
+  if (cls.length < head.length + tail.length) return false;
+  if (!cls.startsWith(head) || !cls.endsWith(tail)) return false;
+  const midWord = (a: string, b: string) => /[a-z]$/.test(a) && /^[a-z]/.test(b);
+  const end = cls.length - tail.length;
+  let at = head.length;
+  let before = head;
+  for (const text of parts.slice(1, -1)) {
+    if (text === "") continue;
+    const found = cls.indexOf(text, at);
+    if (found < 0 || found + text.length > end) return false;
+    const value = cls.slice(at, found);
+    if (midWord(before, value) || midWord(value, text)) return false;
+    at = found + text.length;
+    before = text;
+  }
+  const value = cls.slice(at, end);
+  return !midWord(before, value) && !midWord(value, tail);
 }
 
 /** Class-list methods whose string arguments are class names. */
 const CLASS_LIST_METHODS = new Set(["add", "remove", "toggle", "replace", "contains"]);
 
 /**
- * The class names module scripts reference, so a class a script adds or
- * selects is not reported as unused: classes in selector strings (the
- * module-JS analysis' hooks, `getElementsByClassName` included), string
- * arguments of `classList.add/remove/toggle/replace/contains`, strings
- * assigned to `className` and the value of `setAttribute("class", …)`.
- * Only literal strings count — a name a script assembles at runtime is
- * unknowable, and an unrelated identifier must not hide dead CSS.
+ * The class names module scripts reference, so a class a script adds,
+ * selects or writes is not reported as unused: classes in selector strings
+ * (the module-JS analysis' hooks, `getElementsByClassName` included), the
+ * arguments of `classList.add/remove/toggle/replace/contains`, what is
+ * assigned to `className`, the value of `setAttribute("class", …)` and the
+ * `class` attributes of markup in strings (`innerHTML`, a function that
+ * returns an SVG). What counts is the text the expression can evaluate to
+ * ({@link staticText}): literals, either branch of a conditional, a
+ * concatenation, a constant. A part only known at runtime stays a hole
+ * ({@link PLACEHOLDER_MARK}), so `'st-' + n` is a built class (see
+ * {@link fitsBuiltClass}) and a name wholly assembled at runtime stays
+ * unknown. A string that merely spells a class elsewhere counts for
+ * nothing: an unrelated identifier must not hide dead CSS.
  */
 export function scriptClassNames(scripts: readonly string[]): Set<string> {
   const out = new Set<string>();
-  const addWords = (text: string | null) => {
-    for (const w of (text ?? "").split(/\s+/)) if (/^-?[_a-zA-Z][\w-]*$/.test(w)) out.add(w);
+  const addWords = (text: string) => {
+    for (const w of text.split(/\s+/)) {
+      if (CLASS_WORD.test(w.replaceAll(PLACEHOLDER_MARK, "x"))) out.add(w);
+    }
   };
   for (const js of scripts) {
     if (js.trim().length === 0) continue;
     for (const hook of analyseModuleJs(js).hooks) if (hook.startsWith(".")) out.add(hook.slice(1));
     const parsed = parseSync("module.js", js, { sourceType: "script" });
     if (parsed.errors.some((e) => e.severity === "Error")) continue;
+    const scopes = new JsScopes(parsed.program as unknown as Node);
+    const inner = new Set<Node>();
+    const text = (v: unknown) => staticText(v, scopes);
     for (const n of nodes(parsed.program)) {
+      if (STRING_NODES.has(n.type) && !inner.has(n)) {
+        // The whole concatenation at once, so an attribute split by an
+        // expression (`'<b class="a ' + x + ' c">'`) reads as one.
+        const whole = staticText(n, scopes, inner);
+        for (const m of whole.matchAll(CLASS_ATTRIBUTE)) addWords(m[1] ?? m[2] ?? "");
+      }
       if (n.type === "CallExpression") {
         const callee = n.callee as Node;
         const args = n.arguments as unknown[];
@@ -143,15 +208,91 @@ export function scriptClassNames(scripts: readonly string[]): Set<string> {
           CLASS_LIST_METHODS.has(method) &&
           propertyName(callee.object) === "classList"
         )
-          for (const a of args) addWords(literalText(a));
-        if (method === "setAttribute" && literalText(args[0]) === "class")
-          addWords(literalText(args[1]));
+          for (const a of args) addWords(text(a));
+        if (method === "setAttribute" && literalText(args[0]) === "class") addWords(text(args[1]));
       }
       if (n.type === "AssignmentExpression" && propertyName(n.left) === "className")
-        addWords(literalText(n.right));
+        addWords(text(n.right));
     }
   }
   return out;
+}
+
+/** A class token; a hole of {@link staticText} is read as one more word character. */
+const CLASS_WORD = /^-?[_a-zA-Z][\w-]*$/;
+/**
+ * A `class` attribute in markup text, not the end of another attribute's
+ * name (`data-class`) or text inside its value. Its closing quote may be
+ * past the end of the string.
+ */
+const CLASS_ATTRIBUTE = /(?:^|\s)class\s*=\s*(?:"([^"]*)|'([^']*))/gi;
+/** Expressions that can hold markup text. */
+const STRING_NODES = new Set(["Literal", "TemplateLiteral", "BinaryExpression"]);
+/**
+ * What one {@link staticText} call may read. Variables make the expression
+ * a graph (`var b = a + a, c = b + b, …`), and module JS is untrusted input
+ * to the audit: without a bound that doubling hangs it. Past the bound a
+ * part reads as a hole, the same as a part only known at runtime.
+ */
+const MAX_TEXT_NODES = 4096;
+const MAX_TEXT_CHARS = 1 << 20;
+
+/**
+ * The text an expression can evaluate to, with {@link PLACEHOLDER_MARK}
+ * for each part only known at runtime. Both branches of a conditional are
+ * set apart by spaces, each a word of its own in a class list, and the
+ * conditional itself stays a hole for the text glued to it
+ * (`'card--' + (dark ? 'dark' : 'light')` builds `card--…`). A variable
+ * reads as its initial value. `visited` collects
+ * the nodes read, which the caller need not read on their own.
+ */
+function staticText(root: unknown, scopes: JsScopes, visited = new Set<Node>()): string {
+  const resolving = new Set<Node>();
+  let nodesLeft = MAX_TEXT_NODES;
+  let charsLeft = MAX_TEXT_CHARS;
+  const take = (text: string): string => {
+    if (text.length > charsLeft) return PLACEHOLDER_MARK;
+    charsLeft -= text.length;
+    return text;
+  };
+  const read = (v: unknown): string => {
+    if (!isNode(v) || nodesLeft <= 0) return PLACEHOLDER_MARK;
+    nodesLeft--;
+    visited.add(v);
+    switch (v.type) {
+      case "Literal":
+        return typeof v.value === "string" ? take(v.value) : PLACEHOLDER_MARK;
+      case "TemplateLiteral": {
+        const quasis = v.quasis as { value: { cooked: string | null } }[];
+        const expressions = v.expressions as unknown[];
+        return quasis
+          .map(
+            (q, i) =>
+              take(q.value.cooked ?? "") + (i < expressions.length ? read(expressions[i]) : ""),
+          )
+          .join("");
+      }
+      case "BinaryExpression":
+        return v.operator === "+" ? read(v.left) + read(v.right) : PLACEHOLDER_MARK;
+      case "ConditionalExpression":
+        return `${PLACEHOLDER_MARK} ${read(v.consequent)} ${read(v.alternate)} ${PLACEHOLDER_MARK}`;
+      case "LogicalExpression":
+        return `${PLACEHOLDER_MARK} ${read(v.left)} ${read(v.right)} ${PLACEHOLDER_MARK}`;
+      case "ParenthesizedExpression":
+        return read(v.expression);
+      case "Identifier": {
+        const decl = scopes.resolve(v);
+        if (decl?.type !== "VariableDeclarator" || resolving.has(decl)) return PLACEHOLDER_MARK;
+        resolving.add(decl);
+        const text = read(decl.init);
+        resolving.delete(decl);
+        return text;
+      }
+      default:
+        return PLACEHOLDER_MARK;
+    }
+  };
+  return read(root);
 }
 
 /** `x.name` / `x["name"]` → name; null for anything else. */
@@ -180,9 +321,19 @@ export function unusedCssFindings(
   rendered: RenderedClasses,
   scripts: ReadonlySet<string>,
 ): Finding[] {
+  const owners = [...layouts, ...placedModules];
+  // Across owners, as for rendered classes: layout CSS styles what modules render.
+  const built = [
+    ...new Set([...owners.flatMap((o) => [...templateClasses(o.html)]), ...scripts]),
+  ].filter((c) => c.includes(PLACEHOLDER_MARK));
   const dead = (css: string, own: ReadonlySet<string>) =>
     [...selectorClasses(css)].filter(
-      (c) => !c.startsWith("caelo-") && !rendered.all.has(c) && !own.has(c) && !scripts.has(c),
+      (c) =>
+        !c.startsWith("caelo-") &&
+        !rendered.all.has(c) &&
+        !own.has(c) &&
+        !scripts.has(c) &&
+        !built.some((b) => fitsBuiltClass(b, c)),
     );
   const findings: Finding[] = [];
   for (const l of layouts) {
