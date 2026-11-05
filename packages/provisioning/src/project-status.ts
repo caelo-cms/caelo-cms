@@ -89,8 +89,9 @@ export type OwnerSetup =
   | { readonly kind: "withheld"; readonly expiresAt: string }
   /**
    * A link exists but cannot work: its token expired on {@link expiresAt}, or
-   * (null) the admin has no token for it, the case of an install that finished
-   * before #1476 and whose admin now refuses `/setup` until it has one.
+   * (null) it does not carry the stored token. That is an install that finished
+   * before #1476, whose admin refuses `/setup` until it has a token, or a new
+   * token stored without its link by an interrupted run.
    */
   | { readonly kind: "stale"; readonly expiresAt: string | null }
   /** No link in Secret Manager. */
@@ -189,7 +190,11 @@ async function readOwnerSetup(
     ? await deps.ownerSetupState(target)
     : { ok: false, error: "install.json records no region" };
   if (state.ok && state.value === "done") return { kind: "done" };
-  if (token === null) return { kind: "stale", expiresAt: null };
+  // A run of `setup-link` stopped between the two secrets leaves a new token
+  // beside the old link: that link is not the one the admin accepts.
+  if (token === null || !link.endsWith(`token=${token.token}`)) {
+    return { kind: "stale", expiresAt: null };
+  }
   if (Date.parse(token.expiresAt) <= deps.now()) {
     return { kind: "stale", expiresAt: token.expiresAt };
   }

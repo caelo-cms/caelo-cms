@@ -36,7 +36,7 @@ import { handoffLines } from "./wizards/gcp-install-job.js";
 
 const PROJECT = "acme-site";
 const BUCKET = "gs://acme-site-caelo-ops/install";
-const LINK = "https://admin.acme.test/setup?token=abc123";
+const LINK = `https://admin.acme.test/setup?token=${"a".repeat(64)}`;
 const INSTALL = {
   installId: "gcp-acme-site",
   provider: "gcp",
@@ -331,6 +331,18 @@ describe("status --project: Owner setup link", () => {
     const out = await text({ ...finished, tokenExpiresAt: null });
     expect(out).not.toContain(LINK);
     expect(out).toContain("setup-link --project acme-site");
+  });
+
+  it("does not show a link that carries another token than the stored one", async () => {
+    const old = "https://admin.acme.test/setup?token=abc123";
+    const out = await text({ ...finished, setupLink: old });
+    expect(out).not.toContain(old);
+    expect(out).toContain("setup-link --project acme-site");
+    expect(
+      setupLinkRefusal(
+        await readProjectStatus(PROJECT, project({ ...finished, setupLink: old }).deps),
+      ),
+    ).toBeNull();
   });
 
   it("an install with an Owner is done whatever became of its token", async () => {
