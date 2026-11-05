@@ -22,7 +22,7 @@ const FIXTURE = `
       const payload = { files: [{ path: "/e2e-proposed.txt", contentType: "text/plain",
         body: "proposed text", purpose: "E2E proposal." }] };
       await tx\`INSERT INTO static_file_pending_actions (kind, proposed_by, payload, preview)
-        VALUES ('set', \${actor[0].id}, \${payload}, \${{ summary: "/e2e-proposed.txt" }})\`;
+        VALUES ('set', \${actor[0].id}, \${payload}, \${{ summary: "/e2e-proposed.txt", versions: { "/e2e-proposed.txt": null } }})\`;
     }
   });
   await sql.end();
