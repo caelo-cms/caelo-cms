@@ -166,6 +166,9 @@ export const listAiPricingTool = makeReadTool({
         (r) =>
           `${r.provider}/${r.model} (${r.operationType}): input=${r.inputMicrocents} output=${r.outputMicrocents ?? "null"} ` +
           `cacheRead=${r.cachedMicrocents ?? "null"} cacheWrite=${r.cacheCreationMicrocents ?? "null"} ` +
+          (r.longPromptThresholdTokens === null
+            ? ""
+            : `over ${r.longPromptThresholdTokens} prompt tokens every rate x${r.longPromptMultiplier} `) +
           `effectiveFrom=${r.effectiveFrom} window=${r.validFrom ?? "open"}..${r.validTo ?? "open"}`,
       )
       .join("\n");

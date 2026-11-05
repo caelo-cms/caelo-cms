@@ -18,6 +18,7 @@
  * text and per image for image ops (see migration 0048).
  */
 
+import { longPromptRateMultiplier } from "./long-prompt-pricing.js";
 import type { PricingRow } from "./pricing-cache.js";
 
 export interface AiCallCostInput {
@@ -30,6 +31,11 @@ export interface AiCallCostInput {
   /** Cache-WRITE tokens (`cache_creation_input_tokens`), billed at
    *  `cacheCreationMicrocents` (~1.25x the input rate). */
   cacheCreationTokens: number;
+  /** The longest single prompt among the requests this row sums up. Omitted =
+   *  `inputTokens`, which is exact for a one-request call and on the high side
+   *  for an aggregate, so a caller that sums requests can only overcount by
+   *  leaving it out. */
+  largestPromptTokens?: number;
   imageCount: number;
 }
 
@@ -56,6 +62,14 @@ export interface AiCallCost {
  * input rate is `inputTokens - cachedTokens - cacheCreationTokens`; failing
  * to subtract cacheCreationTokens would bill cache writes twice (once at the
  * input rate inside `billedInput`, once at the cache-write rate).
+ *
+ * Prompt-length pricing (#1477): a row with `longPromptThresholdTokens` bills
+ * every lane at its multiplier once the prompt is over the threshold. An
+ * `ai_calls` row of a chat turn sums all of the turn's requests, so the whole
+ * turn takes the higher card when ANY of its requests crossed the threshold.
+ * That can overcount a turn that started below it, by at most the multiplier.
+ * Pricing each request would need per-step rows; an overcount is the safe side
+ * of this trade because budget caps read this number.
  */
 export function computeAiCallCostMicrocents(
   pricing: PricingRow | null,
@@ -69,10 +83,12 @@ export function computeAiCallCostMicrocents(
   if (call.operationType === "image") {
     return { costMicrocents: pricing.inputMicrocents * call.imageCount, unpriced: false };
   }
-  const inRate = pricing.inputMicrocents;
-  const outRate = pricing.outputMicrocents ?? 0;
-  const cacheReadRate = pricing.cachedMicrocents ?? inRate;
-  const cacheCreationRate = pricing.cacheCreationMicrocents ?? inRate * 1.25;
+  const tier = longPromptRateMultiplier(pricing, call.largestPromptTokens ?? call.inputTokens);
+  const inRate = pricing.inputMicrocents * tier;
+  const outRate = (pricing.outputMicrocents ?? 0) * tier;
+  const cacheReadRate = (pricing.cachedMicrocents ?? pricing.inputMicrocents) * tier;
+  const cacheCreationRate =
+    (pricing.cacheCreationMicrocents ?? pricing.inputMicrocents * 1.25) * tier;
   const billedInput = Math.max(0, call.inputTokens - call.cachedTokens - call.cacheCreationTokens);
   const costMicrocents = Math.round(
     (billedInput * inRate) / 1000 +

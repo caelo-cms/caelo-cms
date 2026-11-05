@@ -12,7 +12,9 @@
 #    Anthropic capability predicates, SDK bump, tests) and assigns it to the
 #    Copilot coding agent, which opens the PR. Humans review and merge.
 #    While such an issue is open, later runs comment on it instead of opening
-#    another one.
+#    another one. An issue still open after a week fails the run: the agent
+#    did not get it done (#666 sat for three weeks of green runs because
+#    Copilot had no credits), so a human has to see it.
 #
 # Secrets:
 #   ANTHROPIC_API_KEY_E2E, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY —
@@ -90,6 +92,12 @@ jobs:
           if [ -n "$open" ]; then
             gh issue comment "$open" --body-file "$RUNNER_TEMP/issue.md"
             echo "Updated open issue #$open."
+            opened=$(gh issue view "$open" --json createdAt --jq .createdAt)
+            age_days=$(( ( $(date +%s) - $(date -d "$opened" +%s) ) / 86400 ))
+            if [ "$age_days" -ge 7 ]; then
+              echo "::error::Model catalog issue #$open has been open for $age_days days. The coding agent did not finish it: read its comments, then do the update or close the issue."
+              exit 1
+            fi
             exit 0
           fi
           url=$(gh issue create \

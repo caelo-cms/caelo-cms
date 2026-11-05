@@ -11,6 +11,12 @@
  * model's `{ ok, reason }` verdict. The scenario asserts
  * `verdict.ok === true`.
  *
+ * The request sends no sampling parameters: Claude Haiku 5.5 rejects non-default
+ * values, so `temperature: 0` would 400 every verdict. Its thinking is on by
+ * default and shares `max_tokens`, which is why the cap has room well beyond the
+ * short JSON answer and effort stays `low`: this is a classification, and a
+ * cap sized for the answer alone ends in a reply with no text.
+ *
  * Failure modes are all loud (CLAUDE.md §2 — no silent fallbacks).
  * One retry with 2s backoff on transient 5xx so a flaky Anthropic
  * edge doesn't waste the 3-min chat work the scenario already did.
@@ -24,9 +30,12 @@ import { z } from "zod";
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
 
-/** Default vision-judge model. Cheaper than Opus 4.7 — vision-only
- *  rubric check, not chat planning. Override via `model` arg in tests. */
-export const DEFAULT_VISION_MODEL = "claude-haiku-4-5-20251001";
+/** Default vision-judge model. Cheap: a vision-only rubric check, not chat
+ *  planning. Override via `model` arg in tests. */
+export const DEFAULT_VISION_MODEL = "claude-haiku-5-5";
+
+/** Thinking plus the JSON verdict; both rubrics answer in well under 200 tokens. */
+const VISION_MAX_TOKENS = 4096;
 
 /**
  * Zod schema for the verdict JSON the rubric prompt asks the model to
@@ -84,14 +93,14 @@ export class VisionVerdictSchemaError extends Error {
 
 /** Zod schema for the relevant subset of Anthropic's response shape. */
 const AnthropicMessagesResponseSchema = z.object({
-  content: z
-    .array(
-      z.union([
-        z.object({ type: z.literal("text"), text: z.string() }),
-        z.object({ type: z.string() }).passthrough(), // ignore non-text blocks
-      ]),
-    )
-    .min(1),
+  stop_reason: z.string().nullish(),
+  // Thinking blocks come before the text, so text is found by type, not position.
+  content: z.array(
+    z.union([
+      z.object({ type: z.literal("text"), text: z.string() }),
+      z.object({ type: z.string() }).passthrough(), // ignore non-text blocks
+    ]),
+  ),
 });
 
 /**
@@ -109,10 +118,16 @@ function extractResponseText(responseJson: unknown): string {
     .map((b) => b.text)
     .join("\n");
   if (text.length === 0) {
+    const stop = responseParse.data.stop_reason;
     const issue: z.ZodIssue = {
       code: "custom",
       path: ["content"],
-      message: "no text blocks in Anthropic response",
+      message:
+        stop === "refusal"
+          ? "the model declined the request (stop_reason refusal); this model has no server-side fallback, so check the screenshot and rubric instead of retrying"
+          : stop === "max_tokens"
+            ? `thinking used up max_tokens (${VISION_MAX_TOKENS}) before any answer; raise the cap`
+            : "no text blocks in Anthropic response",
     };
     throw new VisionVerdictSchemaError([issue], responseJson);
   }
@@ -205,11 +220,7 @@ const defaultSleep = (ms: number): Promise<void> =>
  * `VisionVerdictRequestError` on the second non-2xx. 4xx errors do not
  * retry — re-requesting with the same body cannot recover.
  */
-async function postVisionRequest(
-  opts: ExecuteOpts,
-  rubric: string,
-  maxTokens: number,
-): Promise<unknown> {
+async function postVisionRequest(opts: ExecuteOpts, rubric: string): Promise<unknown> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
   const model = opts.model ?? DEFAULT_VISION_MODEL;
@@ -217,8 +228,8 @@ async function postVisionRequest(
 
   const body = JSON.stringify({
     model,
-    max_tokens: maxTokens,
-    temperature: 0,
+    max_tokens: VISION_MAX_TOKENS,
+    output_config: { effort: "low" },
     messages: [
       {
         role: "user",
@@ -262,7 +273,7 @@ async function postVisionRequest(
 
 /** Issue ONE structural vision verdict request (see {@link VISION_RUBRIC}). */
 export async function fetchVisionVerdict(opts: ExecuteOpts): Promise<VisionVerdict> {
-  return parseVisionVerdict(await postVisionRequest(opts, opts.rubric ?? VISION_RUBRIC, 256));
+  return parseVisionVerdict(await postVisionRequest(opts, opts.rubric ?? VISION_RUBRIC));
 }
 
 /**
@@ -307,5 +318,5 @@ export function parseDesignRubricScores(responseJson: unknown): DesignRubricScor
 
 /** Issue ONE design-rubric request (see {@link DESIGN_RUBRIC}). */
 export async function fetchDesignRubricScores(opts: ExecuteOpts): Promise<DesignRubricScores> {
-  return parseDesignRubricScores(await postVisionRequest(opts, opts.rubric ?? DESIGN_RUBRIC, 300));
+  return parseDesignRubricScores(await postVisionRequest(opts, opts.rubric ?? DESIGN_RUBRIC));
 }

@@ -334,7 +334,8 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
         },
       ],
       jsonSchema: DESCRIBE_SCHEMA as unknown as Record<string, unknown>,
-      maxTokens: 4000,
+      // Thinking is on by default on the fast model and shares this cap.
+      maxTokens: 16_000,
     });
 
     // §7 — record the sub-call's cost/tokens (attributed to this chat).
@@ -349,6 +350,15 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
       }).catch(() => undefined);
     }
 
+    if (result.failure) {
+      return {
+        ok: false,
+        content:
+          result.failure === "refused"
+            ? `query_page_html(describe): the extraction model declined this request for ${page.url}, and asking again gets the same answer. Use \`keyword\`, \`cssSelector\` or \`xpath\` instead.`
+            : `query_page_html(describe): the answer for ${page.url} did not fit the extraction limit. Ask for less, or use \`keyword\`, \`cssSelector\` or \`xpath\`.`,
+      };
+    }
     const obj = result.object as { found: boolean; result: string } | undefined;
     if (!obj?.found || obj.result.trim().length === 0) {
       return {

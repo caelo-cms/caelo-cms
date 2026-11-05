@@ -30,6 +30,8 @@ describe("resolveMaxOutputTokensDefault (run #8 R1)", () => {
       "claude-opus-4-8",
       "claude-sonnet-4-6",
       "claude-fable-5",
+      "claude-opus-5-5", // regression: limits.ts kept its own list, without opus-5
+      "claude-haiku-5-5",
     ]) {
       expect(resolveMaxOutputTokensDefault(model)).toBe(MAX_OUTPUT_TOKENS_ADAPTIVE_DEFAULT);
     }

@@ -61,6 +61,13 @@ describe("model-catalog-refresh.yml", () => {
     expect(workflow).toContain('gh issue comment "$open"');
   });
 
+  it("fails the run when its issue stays open for a week (regression: #666 stalled on green runs)", () => {
+    expect(workflow).toContain('gh issue view "$open" --json createdAt');
+    expect(workflow).toMatch(
+      /if \[ "\$age_days" -ge 7 \]; then\s+echo "::error::[^\n]*\n\s+exit 1/,
+    );
+  });
+
   it("assigns the issue to the Copilot coding agent via the documented GraphQL path", () => {
     expect(workflow).toContain('select(.login == "copilot-swe-agent")');
     expect(workflow).toContain("replaceActorsForAssignable");

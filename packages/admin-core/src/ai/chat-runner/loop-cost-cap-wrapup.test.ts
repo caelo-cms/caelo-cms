@@ -21,6 +21,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
+import type { LongPromptPricing } from "../long-prompt-pricing.js";
 import type { AIProvider, ProviderEvent } from "../provider.js";
 import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
@@ -164,6 +165,7 @@ async function runLoop(
   provider: AIProvider,
   fixture: ReturnType<typeof buildFixtureQueryApi>,
   costCapMicrocents: number | undefined,
+  longPrompt?: LongPromptPricing,
 ): Promise<{ events: ClientEvent[]; result: ToolLoopResult }> {
   const ctx: ExecutionContext = { actorId: "op-1", actorKind: "human", requestId: "req-1" };
   const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };
@@ -197,6 +199,7 @@ async function runLoop(
     costCapMicrocents,
     inputCost: 15,
     outputCost: 75,
+    longPrompt,
   });
   const events: ClientEvent[] = [];
   for (;;) {
@@ -205,6 +208,30 @@ async function runLoop(
     events.push(step.value);
   }
 }
+
+describe("runToolLoop — prompt-length pricing in the live cost (#1477)", () => {
+  const checkpoints = (fixture: ReturnType<typeof buildFixtureQueryApi>) =>
+    fixture.appended.filter((m) => m.content.includes("Cost checkpoint")).length;
+
+  it("a prompt over the threshold counts at the multiple, so a cap trips on the real spend", async () => {
+    // 1M input at $15/MTok ≈ 1.5e9 µ¢ is 19% of the cap, 94% at five times the rate.
+    const fixture = buildFixtureQueryApi();
+    await runLoop(new TwoTurnToolProvider(), fixture, 8_000_000_000, {
+      longPromptThresholdTokens: 100_000,
+      longPromptMultiplier: 5,
+    });
+    expect(checkpoints(fixture)).toBe(1);
+  });
+
+  it("a prompt under the threshold stays on the normal rates", async () => {
+    const fixture = buildFixtureQueryApi();
+    await runLoop(new TwoTurnToolProvider(), fixture, 8_000_000_000, {
+      longPromptThresholdTokens: 2_000_000,
+      longPromptMultiplier: 5,
+    });
+    expect(checkpoints(fixture)).toBe(0);
+  });
+});
 
 describe("runToolLoop — cost-cap wrap-up nudge (#304)", () => {
   it("injects ONE system-origin wrap-up instruction at >=85% of the child cap", async () => {

@@ -449,6 +449,12 @@ export interface GenerateObjectResult {
    * provider/API error which is not repairable).
    */
   readonly object: unknown | undefined;
+  /**
+   * Why `object` is undefined when re-prompting is not the answer: the model
+   * declined (a safety refusal, which a retry of the same request repeats) or
+   * ran out of `maxTokens`. Absent for a plain schema miss.
+   */
+  readonly failure?: "refused" | "truncated";
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly model: string;

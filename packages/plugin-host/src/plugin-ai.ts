@@ -133,6 +133,7 @@ export function makePluginAi(
       const startedAt = Date.now();
       const result = await provider.generateObject(opts);
       await record(result, startedAt);
+      if (result.failure) throw objectFailureError(result.failure, opts.maxTokens);
       return {
         object: result.object,
         inputTokens: result.inputTokens,
@@ -192,6 +193,21 @@ async function assertWithinPluginCap(plugin: LoadedPlugin, infra: PluginHostInfr
 function capLookupUnavailable(slug: string): Error {
   return new Error(
     `PluginAiCapLookupUnavailable: cap-lookup for plugin '${slug}' has failed repeatedly; failing closed to protect the daily budget. Investigate /settings/costs.`,
+  );
+}
+
+/**
+ * The error for a structured call that no retry of the same request can fix.
+ * Thrown after the call is recorded: the provider has been paid either way.
+ */
+export function objectFailureError(
+  failure: "refused" | "truncated",
+  maxTokens: number | undefined,
+): Error {
+  return new Error(
+    failure === "refused"
+      ? "ctx.ai.generateObject: the model declined this request, and sending it again gets the same answer. Change the content, or choose another model for this purpose in Settings > AI."
+      : `ctx.ai.generateObject: the answer was cut off at the token limit (maxTokens ${maxTokens ?? "default"}). Send less in one call, or raise maxTokens.`,
   );
 }
 

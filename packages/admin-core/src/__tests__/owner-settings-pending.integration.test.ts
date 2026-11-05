@@ -416,6 +416,167 @@ describe("owner_settings — AI pricing", () => {
   });
 });
 
+describe("Claude Haiku pricing (migration 0637, #1477)", () => {
+  const seeded = async () =>
+    value<{
+      rows: {
+        provider: string;
+        model: string;
+        inputMicrocents: number;
+        outputMicrocents: number;
+        cachedMicrocents: number;
+        cacheCreationMicrocents: number;
+        longPromptThresholdTokens: number | null;
+        longPromptMultiplier: number | null;
+      }[];
+    }>(await execute(registry, adapter, AI, "ai_pricing.list", {})).rows;
+
+  it("carries Haiku 5.5's list prices and keeps Haiku 4.5 priced", async () => {
+    const rows = await seeded();
+    expect(rows.find((r) => r.model === "claude-haiku-5-5")).toMatchObject({
+      provider: "anthropic",
+      inputMicrocents: 10_000,
+      outputMicrocents: 50_000,
+      cachedMicrocents: 1_000,
+      cacheCreationMicrocents: 12_500,
+      longPromptThresholdTokens: 100_000,
+      longPromptMultiplier: 5,
+    });
+    // Existing installs call 4.5 until they take the release; ai_calls refers to it.
+    expect(rows.find((r) => r.model === "claude-haiku-4-5")).toMatchObject({
+      inputMicrocents: 100_000,
+      outputMicrocents: 500_000,
+      longPromptThresholdTokens: null,
+    });
+  });
+
+  it("records a long prompt at five times the short rate", async () => {
+    const record = async (inputTokens: number) =>
+      value<{ costMicrocents: number }>(
+        await execute(registry, adapter, OWNER, "chat.record_ai_call", {
+          provider: "anthropic",
+          model: "claude-haiku-5-5",
+          inputTokens,
+          outputTokens: 0,
+        }),
+      ).costMicrocents;
+    expect(await record(100_000)).toBe(1_000_000);
+    expect(await record(100_001)).toBe(5_000_050);
+  });
+
+  it("a save without the prompt-length fields keeps them; half a pair is refused", async () => {
+    const base = {
+      provider: PROVIDER,
+      model: "long",
+      operationType: "text" as const,
+      outputMicrocents: 1,
+      cachedMicrocents: null,
+      effectiveFrom: "2026-03-01T00:00:00Z",
+    };
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", {
+        ...base,
+        inputMicrocents: 10,
+        longPromptThresholdTokens: 1000,
+        longPromptMultiplier: 3,
+      }),
+    );
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", { ...base, inputMicrocents: 11 }),
+    );
+    expect((await seeded()).find((r) => r.model === "long")).toMatchObject({
+      inputMicrocents: 11,
+      longPromptThresholdTokens: 1000,
+      longPromptMultiplier: 3,
+    });
+    const half = await execute(registry, adapter, OWNER, "ai_pricing.set", {
+      ...base,
+      inputMicrocents: 12,
+      longPromptThresholdTokens: 1000,
+    });
+    expect(half.ok).toBe(false);
+  });
+
+  it("the proposal preview shows the long-prompt card the Owner approves", async () => {
+    const propose = async (extra: Record<string, unknown>, model: string) => {
+      const p = value<{
+        proposalId: string;
+        preview: { changes: Array<{ to: { longPrompt: string } }>; summary: string };
+      }>(
+        await execute(registry, adapter, AI, "owner_settings.propose_set_ai_pricing", {
+          rows: [
+            {
+              provider: "anthropic",
+              model,
+              operationType: "text",
+              inputMicrocents: 20_000,
+              outputMicrocents: 100_000,
+              cachedMicrocents: 2_000,
+              ...extra,
+            },
+          ],
+        }),
+      );
+      value(
+        await execute(registry, adapter, AI, "pending_proposals.cancel", {
+          proposalId: p.proposalId,
+        }),
+      );
+      return p.preview;
+    };
+    const explicit = await propose(
+      { longPromptThresholdTokens: 200_000, longPromptMultiplier: 2 },
+      "preview-new-model",
+    );
+    expect(explicit.changes[0]?.to.longPrompt).toBe("every rate x2 over 200000 prompt tokens");
+    expect(explicit.summary).toContain("x2 over 200000");
+    // Omitted on a tiered model: it carries over, so the preview says so.
+    const carried = await propose({}, "claude-haiku-5-5");
+    expect(carried.changes[0]?.to.longPrompt).toBe("every rate x5 over 100000 prompt tokens");
+  });
+
+  it("a new rate from the Owner form, a new row, keeps the long-prompt card", async () => {
+    // The form sends no effectiveFrom, so nothing conflicts and the row is new.
+    const form = {
+      provider: PROVIDER,
+      model: "long-new",
+      operationType: "text" as const,
+      outputMicrocents: 1,
+      cachedMicrocents: null,
+    };
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", {
+        ...form,
+        inputMicrocents: 10,
+        effectiveFrom: "2026-03-01T00:00:00Z",
+        longPromptThresholdTokens: 1000,
+        longPromptMultiplier: 3,
+      }),
+    );
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", { ...form, inputMicrocents: 11 }),
+    );
+    expect((await seeded()).find((r) => r.model === "long-new")).toMatchObject({
+      inputMicrocents: 11,
+      longPromptThresholdTokens: 1000,
+      longPromptMultiplier: 3,
+    });
+
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", {
+        ...form,
+        inputMicrocents: 12,
+        longPromptThresholdTokens: null,
+        longPromptMultiplier: null,
+      }),
+    );
+    expect((await seeded()).find((r) => r.model === "long-new")).toMatchObject({
+      inputMicrocents: 12,
+      longPromptThresholdTokens: null,
+    });
+  });
+});
+
 describe("owner_settings — gateway settings", () => {
   it("refuses the removed auto-redeploy fields and no-op patches at propose time", async () => {
     // #1154 — the automatic redeploy is gone; its knobs are not settings any more.

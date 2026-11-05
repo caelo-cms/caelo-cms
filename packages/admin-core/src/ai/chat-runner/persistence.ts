@@ -364,6 +364,7 @@ export async function recordAiCall(
     outputTokens: number;
     cachedTokens: number;
     cacheCreationTokens: number;
+    largestPromptTokens: number;
     durationMs: number;
     succeeded: boolean;
     parentChatSessionId: string | null | undefined;

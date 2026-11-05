@@ -891,8 +891,15 @@ export async function runSDKGenerateObject(args: {
         providerRequestId:
           err.response?.headers?.["request-id"] ?? err.response?.headers?.["x-request-id"] ?? null,
       });
+      const failure =
+        err.finishReason === "content-filter"
+          ? "refused"
+          : err.finishReason === "length"
+            ? "truncated"
+            : undefined;
       return {
         object: undefined,
+        ...(failure ? { failure } : {}),
         inputTokens: e.usage?.inputTokens ?? 0,
         outputTokens: e.usage?.outputTokens ?? 0,
         model: modelId,

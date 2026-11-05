@@ -20,8 +20,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
+import { longPromptRateMultiplier } from "../long-prompt-pricing.js";
 import { chatPluginInvocation } from "../plugin-invocation.js";
-
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
 import { attachGatedExecute, attachPluginGatedExecute } from "../tools/gated-tools.js";
@@ -601,6 +601,7 @@ async function* runSerializedChatTurn(
     costCapMicrocents: options.costCapMicrocents,
     inputCost,
     outputCost,
+    longPrompt: modelRates?.longPrompt,
   });
 
   if (aborted() && lastAssistantMessageId) {
@@ -619,6 +620,7 @@ async function* runSerializedChatTurn(
     outputTokens: usage.totalOut,
     cachedTokens: usage.totalCached,
     cacheCreationTokens: usage.totalCacheCreation ?? 0,
+    largestPromptTokens: usage.largestPromptTokens ?? 0,
     // P16 — canonical price comes from the ai_pricing table inside the op.
     durationMs: Date.now() - startedAt,
     succeeded: succeeded && stopReason !== "error" && !aborted(),
@@ -637,7 +639,8 @@ async function* runSerializedChatTurn(
   const usdCost =
     billed !== null
       ? billed.costMicrocents / 1e8
-      : finalUsdCost(usage.totalIn, usage.totalOut, inputCost, outputCost);
+      : finalUsdCost(usage.totalIn, usage.totalOut, inputCost, outputCost) *
+        longPromptRateMultiplier(modelRates?.longPrompt, usage.largestPromptTokens ?? 0);
 
   // Read the canonical 7-day total back now that this turn's row exists. One
   // SUM against ai_calls — cheaper by an order of magnitude than the

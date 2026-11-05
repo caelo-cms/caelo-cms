@@ -12,8 +12,9 @@
  */
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import type { LongPromptPricing } from "./long-prompt-pricing.js";
 
-export interface PricingRow {
+export interface PricingRow extends LongPromptPricing {
   inputMicrocents: number;
   outputMicrocents: number | null;
   /** Cache-READ (`cache_read_input_tokens`) rate per 1K tokens. */
@@ -76,6 +77,8 @@ export function pickPricingRow(
     outputMicrocents: best.outputMicrocents,
     cachedMicrocents: best.cachedMicrocents,
     cacheCreationMicrocents: best.cacheCreationMicrocents,
+    longPromptThresholdTokens: best.longPromptThresholdTokens ?? null,
+    longPromptMultiplier: best.longPromptMultiplier ?? null,
   };
 }
 
@@ -128,7 +131,7 @@ export async function lookupPricing(
   // and pricing windows are day-granular, so it cannot mis-window a call.
   const rows = (await tx.execute(sql`
     SELECT model, input_microcents, output_microcents, cached_microcents,
-           cache_creation_microcents,
+           cache_creation_microcents, long_prompt_threshold_tokens, long_prompt_multiplier,
            extract(epoch from effective_from) * 1000 AS effective_from_ms,
            extract(epoch from valid_from)      * 1000 AS valid_from_ms,
            extract(epoch from valid_to)        * 1000 AS valid_to_ms
@@ -142,6 +145,8 @@ export async function lookupPricing(
     output_microcents: bigint | string | number | null;
     cached_microcents: bigint | string | number | null;
     cache_creation_microcents: bigint | string | number | null;
+    long_prompt_threshold_tokens: number | null;
+    long_prompt_multiplier: number | null;
     effective_from_ms: bigint | string | number;
     valid_from_ms: bigint | string | number | null;
     valid_to_ms: bigint | string | number | null;
@@ -152,6 +157,8 @@ export async function lookupPricing(
     outputMicrocents: toN(r.output_microcents),
     cachedMicrocents: toN(r.cached_microcents),
     cacheCreationMicrocents: toN(r.cache_creation_microcents),
+    longPromptThresholdTokens: r.long_prompt_threshold_tokens,
+    longPromptMultiplier: r.long_prompt_multiplier,
     effectiveFromMs: toN(r.effective_from_ms) ?? 0,
     validFromMs: toN(r.valid_from_ms),
     validToMs: toN(r.valid_to_ms),

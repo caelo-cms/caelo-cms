@@ -13,6 +13,7 @@
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import type { LongPromptPricing } from "../long-prompt-pricing.js";
 import type { AIProvider } from "../provider.js";
 
 /** ai_pricing stores microcents per 1K tokens; USD per MTok = µ¢/1K ÷ 100_000
@@ -22,9 +23,11 @@ const MICROCENTS_PER_1K_TO_USD_PER_MTOK_DIVISOR = 100_000;
 export interface ModelCostPerMTok {
   readonly inputCostPerMTok: number;
   readonly outputCostPerMTok: number;
+  /** Prompt-length pricing; the two rates above are the short-prompt card. */
+  readonly longPrompt: LongPromptPricing;
 }
 
-export interface AiPricingRow {
+export interface AiPricingRow extends LongPromptPricing {
   readonly provider: string;
   readonly model: string;
   readonly operationType: "text" | "image";
@@ -51,6 +54,10 @@ export function pickModelRates(
   return {
     inputCostPerMTok: row.inputMicrocents / MICROCENTS_PER_1K_TO_USD_PER_MTOK_DIVISOR,
     outputCostPerMTok: row.outputMicrocents / MICROCENTS_PER_1K_TO_USD_PER_MTOK_DIVISOR,
+    longPrompt: {
+      longPromptThresholdTokens: row.longPromptThresholdTokens ?? null,
+      longPromptMultiplier: row.longPromptMultiplier ?? null,
+    },
   };
 }
 

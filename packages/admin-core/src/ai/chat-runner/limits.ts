@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { isAdaptiveModel } from "../providers/anthropic.js";
+
 /**
  * Token-budget + cost-tracking constants and helpers for the chat-runner.
  * Extracted verbatim from the pre-split `chat-runner.ts`.
@@ -19,7 +21,7 @@ export const MAX_OUTPUT_TOKENS_DEFAULT = 16384;
 
 /**
  * Run #8 R1 — default ceiling for adaptive-thinking-class Claude models
- * (Sonnet 5, Opus 4.6/4.7/4.8, Sonnet 4.6, Fable/Mythos). On these
+ * (see `isAdaptiveModel`). On these
  * models `max_tokens` bounds thinking + visible output TOGETHER, and
  * adaptive thinking on a hard migration turn can consume the whole
  * 16384 budget — run #8 saw two turns end with EMPTY content at exactly
@@ -30,14 +32,9 @@ export const MAX_OUTPUT_TOKENS_DEFAULT = 16384;
 export const MAX_OUTPUT_TOKENS_ADAPTIVE_DEFAULT = 32768;
 
 /**
- * Same model-class detection as `resolveThinkingOption` in the Anthropic
- * provider: models that take adaptive thinking (and therefore share the
- * output budget with it) get the higher default.
- */
-const ADAPTIVE_THINKING_MODEL = /sonnet-5|opus-4-6|opus-4-7|opus-4-8|sonnet-4-6|fable|mythos/;
-
-/**
- * Resolve the default per-call output-token ceiling for a model. The
+ * Resolve the default per-call output-token ceiling for a model: models that
+ * take adaptive thinking share the output budget with it, so they get the
+ * higher default. The
  * operator-configured `ai_providers.config.maxOutputTokens` (threaded via
  * `ChatRunnerOptions.maxOutputTokens`) always wins over this default;
  * `CAELO_MAX_OUTPUT_TOKENS_DEFAULT` overrides the built-in defaults for
@@ -51,9 +48,7 @@ export function resolveMaxOutputTokensDefault(model: string): number {
     // Pre-1.0 fail-loud: a garbage env value must not silently fall back.
     console.error("[chat-runner] invalid CAELO_MAX_OUTPUT_TOKENS_DEFAULT — ignoring", { envRaw });
   }
-  return ADAPTIVE_THINKING_MODEL.test(model)
-    ? MAX_OUTPUT_TOKENS_ADAPTIVE_DEFAULT
-    : MAX_OUTPUT_TOKENS_DEFAULT;
+  return isAdaptiveModel(model) ? MAX_OUTPUT_TOKENS_ADAPTIVE_DEFAULT : MAX_OUTPUT_TOKENS_DEFAULT;
 }
 
 /**

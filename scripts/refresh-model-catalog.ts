@@ -210,7 +210,7 @@ export function renderIssueBody(args: {
     const unpriced = args.changes.filter((c) => !args.priced.has(c.to));
     if (unpriced.length > 0) {
       tasks.push([
-        `Add ONE new migration \`packages/migrations/migrations/cms_admin/<next number>_p_pricing_<models>.sql\` with \`ai_pricing\` rows, following \`${args.pricingExample}\` (microcents per 1K tokens; cache write = 1.25x input for Anthropic, = input for providers that don't bill cache writes separately) for:`,
+        `Add ONE new migration \`packages/migrations/migrations/cms_admin/<next number>_p_pricing_<models>.sql\` with \`ai_pricing\` rows, following \`${args.pricingExample}\` (microcents per 1K tokens; cache write = 1.25x input for Anthropic, = input for providers that don't bill cache writes separately; when the page charges more above a prompt length, set \`long_prompt_threshold_tokens\` and \`long_prompt_multiplier\`, and if the higher card is not one multiple of every rate, stop and say so in the PR) for:`,
         ...unpriced.map(
           (c) => `   - \`${c.provider}\` / \`${c.to}\` — prices from ${DOCS[c.provider].pricing}`,
         ),
@@ -221,7 +221,7 @@ export function renderIssueBody(args: {
     }
     if (args.changes.some((c) => c.provider === "anthropic")) {
       tasks.push([
-        `Anthropic: read ${DOCS.anthropic.models} for each new Claude id and update the capability predicates in \`packages/admin-core/src/ai/providers/anthropic.ts\` — \`isAdaptiveModel\` (rejects \`temperature\` / \`budget_tokens\`) and \`rejectsForcedToolChoice\` (rejects \`tool_choice\` any/tool). Extend \`packages/admin-core/src/ai/__tests__/thinking-option.test.ts\` for the new ids.`,
+        `Anthropic: read ${DOCS.anthropic.models} for each new Claude id and update the capability predicates in \`packages/admin-core/src/ai/providers/anthropic.ts\` — \`isAdaptiveModel\` (rejects \`temperature\` / \`budget_tokens\`) and \`rejectsForcedToolChoice\` (rejects \`tool_choice\` any/tool). Extend \`packages/admin-core/src/ai/__tests__/thinking-option.test.ts\` for the new ids. If the \`fast\` slot moved, also update \`DEFAULT_VISION_MODEL\` in \`apps/admin/e2e-livedit/lib/vision-verdict.ts\`, which posts to the API directly.`,
       ]);
     }
     tasks.push(
