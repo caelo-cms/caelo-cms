@@ -14,8 +14,10 @@
  * with a conflict nothing clears.
  *
  * Scoped to what a conflict can be about: rows with a pending change on the
- * caller's branch, of a plugin running on this instance. A row outside that
- * is reported as having no pending change.
+ * caller's branch, of a plugin running on this instance. A pending row this
+ * read cannot show (plugin disabled or not loaded, table no longer declared)
+ * is listed as `unavailable`: it is not recorded as seen, so its conflict
+ * stands, and it never reads as "nothing pending".
  *
  * Values are shown only for a table the plugin lists in `aiReadableTables`,
  * reviewed by the Owner in its manifest, and only the columns it declares
@@ -30,7 +32,7 @@
  * Nothing here reaches a plugin: no handle, no credential, no write.
  */
 
-import { loadedPlugins } from "@caelo-cms/plugin-host";
+import { isPluginDisabled, loadedPlugins } from "@caelo-cms/plugin-host";
 import { privateReadColumns } from "@caelo-cms/plugin-sandbox";
 import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { err, getPluginDraftRowsToolInput, ok } from "@caelo-cms/shared";
@@ -77,7 +79,12 @@ export const getDraftRowsOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: getPluginDraftRowsToolInput,
-  output: z.object({ rows: z.array(draftRow), noPendingChange: z.array(z.string().uuid()) }),
+  output: z.object({
+    rows: z.array(draftRow),
+    noPendingChange: z.array(z.string().uuid()),
+    /** Pending, but this read cannot show it: not recorded as seen. */
+    unavailable: z.array(z.string().uuid()),
+  }),
   handler: async (ctx, input, tx) => {
     const operation = "plugins.get_draft_rows";
     if (!ctx.chatBranchId) {
@@ -90,8 +97,9 @@ export const getDraftRowsOp = defineOperation({
     const rowIds = [...new Set(input.rowIds)];
     // One head row per pending row and owner; the newest across owners is
     // the row's draft state (the order of every overlay, migration 0477).
+    // `entity_sub` is plugin/table: two tables may hold the same row id.
     const rows = (await tx.execute(sql`
-      SELECT DISTINCT ON (d.entity_id)
+      SELECT DISTINCT ON (d.entity_id, d.entity_sub)
              d.entity_id::text AS id, d.plugin_id::text AS plugin_id, d.table_name, prs.state,
              to_char(d.header_created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS changed_at,
              cs.title AS chat_title
@@ -101,12 +109,16 @@ export const getDraftRowsOp = defineOperation({
       WHERE d.chat_branch_id = ${ctx.chatBranchId}::uuid
         AND d.entity_kind = 'pluginRow'
         AND d.entity_id = ANY(${uuidArray(rowIds)})
-      ORDER BY d.entity_id, d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC
+      ORDER BY d.entity_id, d.entity_sub, d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC
     `)) as unknown as HeadRow[];
+    const unavailable = new Set<string>();
     const shown = rows.flatMap((r) => {
       const plugin = loadedPlugins.byId(r.plugin_id);
       const columns = plugin?.definition.adminSchema?.[r.table_name];
-      if (!plugin || !columns) return [];
+      if (!plugin || !columns || isPluginDisabled(plugin.slug)) {
+        unavailable.add(r.id);
+        return [];
+      }
       return [
         {
           id: r.id,
@@ -121,7 +133,11 @@ export const getDraftRowsOp = defineOperation({
         },
       ];
     });
-    const shownIds = new Set(shown.map((r) => r.id));
-    return ok({ rows: shown, noPendingChange: rowIds.filter((id) => !shownIds.has(id)) });
+    const pending = new Set(rows.map((r) => r.id));
+    return ok({
+      rows: shown,
+      noPendingChange: rowIds.filter((id) => !pending.has(id)),
+      unavailable: [...unavailable],
+    });
   },
 });

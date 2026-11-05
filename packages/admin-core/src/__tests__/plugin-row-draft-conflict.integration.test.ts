@@ -32,6 +32,7 @@ import {
   type PluginHostInfra,
   resetPluginHost,
   runPluginOperation,
+  setPluginDisabled,
 } from "@caelo-cms/plugin-host";
 import {
   definePlugin,
@@ -230,7 +231,11 @@ async function readRows(chat: Chat, rowIds: string[]) {
   expect(r.content).not.toContain("could not be recorded");
   // Plugin data may come from visitors: it reaches the AI marked as data (#635).
   expect(isUntrustedToolResult(r.content)).toBe(true);
-  return untrustedToolResultValue(r.content) as { rows: ShownRow[]; noPendingChange: string[] };
+  return untrustedToolResultValue(r.content) as {
+    rows: ShownRow[];
+    noPendingChange: string[];
+    unavailable: string[];
+  };
 }
 
 beforeAll(async () => {
@@ -446,11 +451,47 @@ describe("draft conflict on a plugin row (#1387)", () => {
     try {
       const seen = await readRows(b, [id]);
       expect(seen.rows).toEqual([]);
-      expect(seen.noPendingChange).toEqual([id]);
+      expect(seen.noPendingChange).toEqual([]);
+      expect(seen.unavailable).toEqual([id]);
     } finally {
       loadedPlugins.set(running);
     }
     conflictOf(await rename(b, id, "from-b"));
+  });
+
+  it("shows nothing of a disabled plugin that stays loaded, and clears nothing", async () => {
+    const id = await seedRow();
+    const a = await draftChat("disabled-a");
+    const b = await draftChat("disabled-b");
+    landed(await rename(a, id, "from-a"));
+
+    setPluginDisabled(SLUG, true);
+    try {
+      const seen = await readRows(b, [id]);
+      expect(seen.rows).toEqual([]);
+      expect(seen.unavailable).toEqual([id]);
+    } finally {
+      setPluginDisabled(SLUG, false);
+    }
+    conflictOf(await rename(b, id, "from-b"));
+  });
+
+  it("keeps rows of two tables with the same id apart", async () => {
+    const id = await seedRow();
+    const a = await draftChat("twins-a");
+    const b = await draftChat("twins-b");
+    await withSystemSql(async (tx) => {
+      const [p] = (await tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`) as {
+        id: string;
+      }[];
+      await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${p?.id}', true)`);
+      await tx.unsafe(`INSERT INTO "${SCHEMA}".recipients (id, email) VALUES ('${id}', 'x@y.z')`);
+    });
+    landed(await rename(a, id, "from-a"));
+    landed(await call(a.invocation, "set_recipient", { id, email: "n@y.z" }));
+
+    const seen = await readRows(b, [id]);
+    expect(seen.rows.map((r) => r.table).sort()).toEqual(["notes", "recipients"]);
   });
 
   it("refuses outside a chat, naming why", async () => {
