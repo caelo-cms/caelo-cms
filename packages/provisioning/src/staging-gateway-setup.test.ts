@@ -340,6 +340,52 @@ describe("the gcp edge: the staging host's own rule on the load balancer", () =>
     ]);
   });
 
+  it("creates the backend, attaches Cloud Armor by update, and names the one external address", async () => {
+    const proxy = "caelo-production-https-proxy-1";
+    const { run, calls } = fakeGcloud({
+      "compute network-endpoint-groups describe": fail("NOT_FOUND: was not found"),
+      "compute network-endpoint-groups create": ok(),
+      "compute security-policies list": ok("caelo-production-waf-1\n"),
+      "compute backend-services describe": fail("NOT_FOUND: was not found"),
+      "compute backend-services create": ok(JSON.stringify([{ selfLink: BACKEND }])),
+      "compute backend-services update": ok(),
+      "compute backend-services add-backend": ok(),
+      "compute ssl-certificates describe": ok("{}"),
+      // Routed already: the REST update of the map has its own tests.
+      "compute url-maps list": ok(JSON.stringify([planStagingHostRule(map, t, BACKEND)])),
+      "compute target-https-proxies list": ok(
+        JSON.stringify([{ name: proxy, sslCertificates: [] }]),
+      ),
+      "compute target-https-proxies update": ok(),
+      "compute url-maps import": ok(),
+      "compute addresses list": ok("136.81.196.111\n"),
+    });
+    const r = await ensureStagingGatewayEdge(
+      {
+        provider: "gcp",
+        projectId: "acme",
+        region: "europe-west1",
+        env: "production",
+        domain: "acme.com",
+        stagingHost: "staging.acme.com",
+      },
+      { run },
+    );
+    if (!r.ok) throw new Error(r.error);
+    expect(r.dnsRecords).toEqual([
+      { name: "staging.acme.com", type: "A", value: "136.81.196.111" },
+    ]);
+    expect(calls.find((c) => c.startsWith("compute backend-services create"))).not.toContain(
+      "--security-policy",
+    );
+    expect(calls.find((c) => c.startsWith("compute backend-services update"))).toContain(
+      "--security-policy=",
+    );
+    expect(calls.find((c) => c.startsWith("compute addresses list"))).toContain(
+      "addressType=EXTERNAL",
+    );
+  });
+
   it("is a no-op when the map already routes it, and moves a changed staging host", () => {
     const routed = planStagingHostRule(map, t, BACKEND);
     if (!routed) throw new Error("expected a plan");

@@ -884,7 +884,8 @@ async function ensureGcpEdge(
     project,
     "--format=json",
   ]);
-  let backendJson: { selfLink?: string; backends?: { group?: string }[] } = {};
+  let backendJson: { selfLink?: string; securityPolicy?: string; backends?: { group?: string }[] } =
+    {};
   if (!backend.ok) {
     if (!isGcloudNotFound(backend.stderr)) {
       return fail(`describe ${names.backend}: ${backend.stderr.trim()}`);
@@ -898,16 +899,32 @@ async function ensureGcpEdge(
       project,
       "--load-balancing-scheme=EXTERNAL_MANAGED",
       "--protocol=HTTPS",
-      `--security-policy=${policy}`,
       "--format=json",
       "--quiet",
     ]);
     if (!created.ok) return fail(`create ${names.backend}: ${created.stderr.trim()}`);
-    done.push(`created backend service ${names.backend} (Cloud Armor ${policy})`);
+    done.push(`created backend service ${names.backend}`);
     const parsed = safeJson(created.stdout);
     backendJson = ((Array.isArray(parsed) ? parsed[0] : parsed) ?? {}) as typeof backendJson;
   } else {
     backendJson = (safeJson(backend.stdout) ?? {}) as typeof backendJson;
+  }
+  // `backend-services create` has no --security-policy: `update` attaches it,
+  // here and on a backend an earlier run left without one. The URL map is
+  // only pointed at this backend afterwards, so it is never served unguarded.
+  if (!backendJson.securityPolicy?.endsWith(`/securityPolicies/${policy}`)) {
+    const set = await run([
+      "compute",
+      "backend-services",
+      "update",
+      names.backend,
+      "--global",
+      project,
+      `--security-policy=${policy}`,
+      "--quiet",
+    ]);
+    if (!set.ok) return fail(`attach ${policy} to ${names.backend}: ${set.stderr.trim()}`);
+    done.push(`attached Cloud Armor ${policy} to ${names.backend}`);
   }
   if (
     !(backendJson.backends ?? []).some((b) =>
@@ -1056,21 +1073,23 @@ async function ensureGcpEdge(
     "list",
     "--global",
     project,
-    `--filter=name~^${gcpNamePrefix(t.env)}`,
+    // EXTERNAL: the stack's other global address is the database's private
+    // range, and with two matches the install printed no record at all.
+    `--filter=name~^${gcpNamePrefix(t.env)} AND addressType=EXTERNAL`,
     "--format=value(address)",
   ]);
-  const ips = address.ok
-    ? address.stdout
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : [];
-  return {
-    ok: true,
-    done,
-    dnsRecords:
-      ips.length === 1 ? [{ name: t.stagingHost, type: "A", value: ips[0] as string }] : [],
-  };
+  if (!address.ok) return fail(`list the load balancer's address: ${address.stderr.trim()}`);
+  const ips = address.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const [ip, ...others] = ips;
+  if (!ip || others.length > 0) {
+    return fail(
+      `expected one external address for ${t.stagingHost}, found ${ips.join(", ") || "none"}`,
+    );
+  }
+  return { ok: true, done, dnsRecords: [{ name: t.stagingHost, type: "A", value: ip }] };
 }
 
 /** An OAuth access token as gcloud prints one: base64url-ish characters only. */

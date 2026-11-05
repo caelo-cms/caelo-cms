@@ -1162,7 +1162,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     );
     const backend = indexOf(
       events,
-      /^gcloud compute backend-services create caelo-production-mcp-auth-proxy-backend .*--security-policy=caelo-production-mcp-auth-proxy-armor/,
+      /^gcloud compute backend-services update caelo-production-mcp-auth-proxy-backend .*--security-policy=caelo-production-mcp-auth-proxy-armor/,
     );
     const retire = indexOf(
       events,
