@@ -1132,12 +1132,12 @@
     if (req.chatBranchId) params.set("branch", req.chatBranchId);
     const previewSrc = `/edit/preview/${req.pageId}${params.size > 0 ? `?${params}` : ""}`;
 
-    const uploadFailure = async (msg: string): Promise<void> => {
+    const uploadFailure = async (msg: string, refused = false): Promise<void> => {
       try {
         await fetch(`/content/chat/${session.id}/screenshot/${req.requestId}`, {
           method: "POST",
           headers: { "x-csrf-token": csrfToken, "content-type": "application/json" },
-          body: JSON.stringify({ errorMessage: msg }),
+          body: JSON.stringify({ errorMessage: msg, refused }),
         });
       } catch {
         // best effort — server-side will time out at 30s anyway
@@ -1181,7 +1181,10 @@
       if (req.selector) {
         const el = doc.querySelector(req.selector);
         if (el === null) {
-          await uploadFailure(`selector matched nothing in the rendered page: ${req.selector}`);
+          await uploadFailure(
+            `selector matched nothing in the rendered page: ${req.selector}`,
+            true,
+          );
           return;
         }
         captureTarget = el as HTMLElement;

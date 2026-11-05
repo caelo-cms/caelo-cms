@@ -49,6 +49,7 @@ export const setHomePageOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.set_home_page",
         message: "page not found or deleted — pass a live page id from list_pages",
+        refusal: true,
       });
     }
     // 0263 — the homepage serves at "/": it can neither sit under another

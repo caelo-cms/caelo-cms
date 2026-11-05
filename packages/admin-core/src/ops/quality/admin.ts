@@ -60,6 +60,7 @@ export const revokeAcceptancesOp = defineOperation({
         kind: "HandlerError",
         operation: "quality_acceptances.revoke_many",
         message: `${missing.length} acceptance(s) not found or already revoked (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}) — reload and choose again; nothing was revoked`,
+        refusal: true,
       });
     }
     const what = [...new Set(rows.map((r) => `${r.kind} ${r.what ?? ""}`.trim()))];

@@ -21,7 +21,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { type ExecutionContext, type ModuleField, slugifyModuleName } from "@caelo-cms/shared";
 import { moduleize } from "../moduleize.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolContext } from "./dispatch.js";
 
@@ -250,7 +250,7 @@ export async function mintModuleFromHtml(
     prepared.createInput,
   );
   if (!created.ok) {
-    return { ok: false, content: `modules.create failed: ${describeError(created.error)}` };
+    return toolError(created.error, `modules.create failed: ${describeError(created.error)}`);
   }
   return {
     ok: true,

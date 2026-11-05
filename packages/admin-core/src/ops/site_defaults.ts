@@ -178,6 +178,7 @@ export const setSiteDefaultsOp = defineOperation({
         kind: "HandlerError",
         operation: "site_defaults.set",
         message: "default layout not found or deleted",
+        refusal: true,
       });
     }
     // v0.5.16 — site_defaults.id is `int GENERATED ALWAYS AS IDENTITY`

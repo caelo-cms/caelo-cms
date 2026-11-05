@@ -125,6 +125,7 @@ export const proposeDomainRemoveOp = defineOperation({
         kind: "HandlerError",
         operation: "domains.propose_remove",
         message: `domain ${input.domainId} not found`,
+        refusal: true,
       });
     }
     const preview = {

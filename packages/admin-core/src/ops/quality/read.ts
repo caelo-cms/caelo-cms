@@ -261,6 +261,7 @@ export const getAuditOp = defineOperation({
           kind: "HandlerError",
           operation: "quality_audits.get",
           message: `audit run ${input.auditRunId} not found — call list_quality_audits for valid ids`,
+          refusal: true,
         });
       }
       return ok({ run: null, pages: [], checks: null, siteProblemAccepted: [] });

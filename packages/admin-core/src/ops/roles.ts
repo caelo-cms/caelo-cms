@@ -132,7 +132,12 @@ export const deleteRoleOp = defineOperation({
     `)) as unknown as { is_builtin: boolean }[];
     const target = rows[0];
     if (!target) {
-      return err({ kind: "HandlerError", operation: "roles.delete", message: "role not found" });
+      return err({
+        kind: "HandlerError",
+        operation: "roles.delete",
+        message: "role not found",
+        refusal: true,
+      });
     }
     if (target.is_builtin) {
       await recordAudit(tx, {

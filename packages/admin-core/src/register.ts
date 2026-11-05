@@ -67,6 +67,7 @@ import {
   appendChatMessageOp,
   cacheToolResultOp,
   claimToolCallRetryOp,
+  countToolRefusalsOp,
   finishToolCallRetryOp,
   lookupToolResultOp,
   markChatMessageInterruptedOp,
@@ -976,6 +977,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mcpGetChatApprovalStateOp);
   registry.register(setResponseMessagesOp);
   registry.register(cacheToolResultOp);
+  registry.register(countToolRefusalsOp);
   registry.register(lookupToolResultOp);
   registry.register(claimToolCallRetryOp);
   registry.register(finishToolCallRetryOp);

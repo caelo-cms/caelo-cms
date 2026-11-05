@@ -30,6 +30,7 @@ import type { ToolContext } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { toolImageMessage } from "./attachments.js";
 import { isE2eAutoApproveEnabled } from "./e2e-auto-approve.js";
+import { captureToolFailure } from "./tool-failure-capture.js";
 import { shrinkToolImage } from "./tool-image.js";
 import type {
   AccumulatedToolCall,
@@ -302,6 +303,8 @@ export async function dispatchToolCall(
     (cachedLookup.value as { cached: { ok: boolean; content: string } | null }).cached;
 
   let result: ToolDispatchResult;
+  // The failure as the tool wrote it, before the notices below are appended.
+  let failureReason = "";
   if (cachedHit) {
     result = {
       ok: cachedHit.ok,
@@ -476,6 +479,7 @@ export async function dispatchToolCall(
       );
       if (applied) result = { ...result, content: `${result.content}\n${applied}` };
     }
+    failureReason = result.content;
     // #1275 — a fixable failed write call is kept (its normalized
     // arguments ride the dedup row) and its result says how to patch it.
     // Decided after auto-recovery, on the FINAL result; plugin tools never
@@ -499,42 +503,22 @@ export async function dispatchToolCall(
     }
   }
 
-  // Auto-capture EVERY failed tool result into ai_bug_reports (source 'auto'),
-  // deduped per session by the op, so a genuine defect is never lost just
-  // because the model didn't file it via bug_report. This runs AFTER
-  // auto-recovery, so only a FINAL failure records. Best-effort — a failure to
-  // record must never break the tool flow — and we skip the bug_report tool
-  // itself so a broken bug channel can't recurse into filing about itself.
-  // #1091 — a guard refusal (`result.refusal`: the op said no as designed and
-  // named the next step, e.g. "still placed — remove it first") is the tool
-  // working, not a defect; filing it buried real reports under noise.
-  // A cached hit replays a result this call id already produced (and that
-  // dispatch already went through this capture); the cache keeps only
-  // ok + content, so a replayed refusal would otherwise be filed after all.
-  if (!cachedHit && shouldAutoCaptureToolFailure(call.name, result)) {
-    // Capture the tool INPUT alongside the failure so the detected-bug row is
-    // REPRODUCIBLE — the exact arguments that triggered the error. Serialized
-    // into `evidence` (already surfaced in the bugs UI + markdown export) and
-    // truncated under the op's 8000-char cap. Best-effort JSON — a
-    // non-serializable arg must never break the capture.
-    let toolInputEvidence: string | undefined;
-    try {
-      toolInputEvidence =
-        `Tool input (${call.name}):\n${JSON.stringify(call.arguments, null, 2)}`.slice(0, 7900);
-    } catch {
-      toolInputEvidence = undefined;
-    }
-    await execute(registry, adapter, aiCtxWithBranch, "ai_bug_reports.create", {
+  // Only a FINAL failure records: this runs after auto-recovery. A cached hit
+  // replays a result this call id already produced (and that dispatch already
+  // went through this capture); the cache keeps only ok + content, so a replay
+  // would lose the structure that says what kind of failure it is.
+  if (!cachedHit) {
+    await captureToolFailure({
+      registry,
+      adapter,
+      reportCtx: aiCtxWithBranch,
+      readCtx: humanCtx,
       chatSessionId: deps.chatSessionId,
-      title: `Tool ${call.name} returned an error`.slice(0, 200),
-      whatHappened: result.content.slice(0, 4000),
-      expected: "The tool call should succeed, or fail with a recoverable non-error result.",
-      suspectedTool: call.name,
-      evidence: toolInputEvidence,
-      severity: "degraded",
-      kind: "defect",
-      source: "auto",
-    }).catch(() => undefined);
+      toolName: call.name,
+      toolArguments: call.arguments,
+      result,
+      reason: failureReason,
+    });
   }
 
   // #1216 — shrink a returned image ONCE, before it is streamed, stored and
@@ -619,23 +603,6 @@ export async function dispatchToolCall(
       }),
     );
   }
-}
-
-/**
- * #1091 — whether a tool result is filed as an automatic bug report: every
- * final failure except the bug channel itself, a deliberate guard refusal
- * (`ToolResult.refusal`, set from `HandlerError.refusal` or by a tool-level
- * gate) and — #1364 — a failure kept for `retry_tool_call`
- * (`ToolResult.retryable`): the AI patches it next, and a patch that
- * cannot fix it ends in a failure that is filed.
- */
-export function shouldAutoCaptureToolFailure(
-  toolName: string,
-  result: Pick<ToolDispatchResult, "ok" | "refusal" | "retryable">,
-): boolean {
-  return (
-    !result.ok && toolName !== "bug_report" && result.refusal !== true && result.retryable !== true
-  );
 }
 
 /**
