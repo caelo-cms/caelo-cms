@@ -116,6 +116,7 @@ export const listAiPricingOp = defineOperation({
  * the window the row is in force (NULL = open-ended); see pricing-cache.ts.
  * `longPromptThresholdTokens` + `longPromptMultiplier` come as a pair: a
  * request whose prompt is over the threshold pays the multiple on every rate.
+ * Omitted, the pair carries over from the model's latest row; null clears it.
  */
 export const aiPricingRowInput = z
   .object({
@@ -181,10 +182,16 @@ export const aiPricingRowInput = z
     message: "validFrom must not be after validTo",
     path: ["validTo"],
   })
-  .refine((r) => (r.longPromptThresholdTokens == null) === (r.longPromptMultiplier == null), {
-    message: "longPromptThresholdTokens and longPromptMultiplier go together: set both or neither",
-    path: ["longPromptMultiplier"],
-  });
+  .refine(
+    (r) =>
+      r.longPromptMultiplier === r.longPromptThresholdTokens ||
+      (r.longPromptThresholdTokens != null && r.longPromptMultiplier != null),
+    {
+      message:
+        "longPromptThresholdTokens and longPromptMultiplier go together: set both or neither",
+      path: ["longPromptMultiplier"],
+    },
+  );
 
 /**
  * Updating an existing row (same key + effectiveFrom): a field the caller
@@ -194,6 +201,25 @@ export const aiPricingRowInput = z
  */
 function keepUnlessGiven(value: unknown, existing: SQL, incoming: SQL): SQL {
   return value === undefined ? existing : incoming;
+}
+
+/**
+ * A prompt-length field for the row being written. The Owner form never sends
+ * these fields and gets a fresh `effective_from`, so a corrected rate is a NEW
+ * row that supersedes the old one: without the carry-over it would silently
+ * drop the long-prompt card and every long prompt would read as a fifth of its
+ * cost from then on.
+ */
+function longPromptField(
+  input: z.infer<typeof aiPricingRowInput>,
+  value: number | null | undefined,
+  column: "long_prompt_threshold_tokens" | "long_prompt_multiplier",
+): SQL {
+  if (value !== undefined) return sql`${value}::integer`;
+  return sql`(SELECT p.${sql.identifier(column)} FROM ai_pricing p
+              WHERE p.provider = ${input.provider} AND p.model = ${input.model}
+                AND p.operation_type = ${input.operationType}
+              ORDER BY p.effective_from DESC LIMIT 1)`;
 }
 
 export const setAiPricingOp = defineOperation({
@@ -219,7 +245,8 @@ export const setAiPricingOp = defineOperation({
         (${input.provider}, ${input.model}, ${input.operationType},
          ${input.inputMicrocents}, ${input.outputMicrocents}, ${input.cachedMicrocents},
          ${input.cacheCreationMicrocents ?? null},
-         ${input.longPromptThresholdTokens ?? null}, ${input.longPromptMultiplier ?? null},
+         ${longPromptField(input, input.longPromptThresholdTokens, "long_prompt_threshold_tokens")},
+         ${longPromptField(input, input.longPromptMultiplier, "long_prompt_multiplier")},
          ${ts}::timestamptz,
          ${input.validFrom ?? null}::timestamptz,
          ${input.validTo ?? null}::timestamptz)

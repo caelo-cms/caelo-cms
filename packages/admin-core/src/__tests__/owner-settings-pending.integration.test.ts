@@ -496,6 +496,47 @@ describe("Claude Haiku pricing (migration 0637, #1477)", () => {
     });
     expect(half.ok).toBe(false);
   });
+
+  it("a new rate from the Owner form, a new row, keeps the long-prompt card", async () => {
+    // The form sends no effectiveFrom, so nothing conflicts and the row is new.
+    const form = {
+      provider: PROVIDER,
+      model: "long-new",
+      operationType: "text" as const,
+      outputMicrocents: 1,
+      cachedMicrocents: null,
+    };
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", {
+        ...form,
+        inputMicrocents: 10,
+        effectiveFrom: "2026-03-01T00:00:00Z",
+        longPromptThresholdTokens: 1000,
+        longPromptMultiplier: 3,
+      }),
+    );
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", { ...form, inputMicrocents: 11 }),
+    );
+    expect((await seeded()).find((r) => r.model === "long-new")).toMatchObject({
+      inputMicrocents: 11,
+      longPromptThresholdTokens: 1000,
+      longPromptMultiplier: 3,
+    });
+
+    value(
+      await execute(registry, adapter, OWNER, "ai_pricing.set", {
+        ...form,
+        inputMicrocents: 12,
+        longPromptThresholdTokens: null,
+        longPromptMultiplier: null,
+      }),
+    );
+    expect((await seeded()).find((r) => r.model === "long-new")).toMatchObject({
+      inputMicrocents: 12,
+      longPromptThresholdTokens: null,
+    });
+  });
 });
 
 describe("owner_settings — gateway settings", () => {
