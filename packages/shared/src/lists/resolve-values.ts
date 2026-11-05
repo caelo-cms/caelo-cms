@@ -82,6 +82,25 @@ export function emptyValueOf(field: FieldDef): ScopeValue {
   }
 }
 
+/** The dot paths of a link value ({@link linkValue}): `{{f.href}}`, `{{f.target}}`, `{{f.title}}`. */
+export const LINK_VALUE_KEYS = ["href", "target", "title"] as const;
+
+/**
+ * A module `link` field's stored value (a URL string or `{ href, target? }`)
+ * as a link; no value reads as an empty href. Null for anything else: a
+ * shape the field cannot render, which the engine reports.
+ */
+export function parseLinkFieldValue(
+  raw: unknown,
+): { readonly href: string; readonly target?: string } | null {
+  if (raw === undefined || raw === null) return { href: "" };
+  if (typeof raw === "string") return { href: raw };
+  if (typeof raw !== "object") return null;
+  const { href, target } = raw as { href?: unknown; target?: unknown };
+  if (typeof href !== "string") return null;
+  return typeof target === "string" ? { href, target } : { href };
+}
+
 /** Scope value of a link: bare = href, plus `href`, `target`, `title` (internal page title). */
 export function linkValue(
   v: { readonly href: string; readonly target?: string },

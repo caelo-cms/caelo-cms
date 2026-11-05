@@ -83,7 +83,7 @@ export function makeReadTool<I>(args: MakeReadToolArgs<I>): ToolDefinitionWithHa
 // ─── List mode: TOON output + filter / pagination / truncation ─────────
 
 /** Default page size when the model doesn't pass `limit`. */
-const LIST_DEFAULT_LIMIT = 50;
+export const LIST_DEFAULT_LIMIT = 50;
 /** Content char cap; `full: true` disables it. */
 const LIST_CHAR_CAP = 6000;
 

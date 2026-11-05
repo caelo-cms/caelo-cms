@@ -89,17 +89,25 @@ function holdsNeedle(needle: ContentInstanceNeedle, valuesText: string): boolean
  * Content instances whose values contain at least one of `needles`. The
  * match is a superset (an id needle matches the id wherever it appears);
  * callers confirm with an exact parse of `valuesText`.
+ *
+ * @param liveLimitPerId read at most this many live matches per `id`
+ *   needle, for a caller that needs examples rather than every instance
+ *   (a module nested in thousands of them). Only for `id` needles.
  */
 export async function findContentInstancesContaining(
   tx: TransactionRunner,
   chatBranchId: string | null | undefined,
   needles: readonly ContentInstanceNeedle[],
+  liveLimitPerId?: number,
 ): Promise<ContentInstanceRef[]> {
   if (needles.length === 0) return [];
+  const branchId = chatBranchId ?? null;
   return loadInstancesInView(
     tx,
-    chatBranchId ?? null,
-    needleFilterSql(needles),
+    branchId,
+    liveLimitPerId === undefined
+      ? needleFilterSql(needles)
+      : boundedIdFilterSql(needles, branchId, liveLimitPerId),
     { candidates: (branchId) => pendingNeedleCandidatesSql(branchId, needles) },
     (_moduleId, valuesText) => needles.some((n) => holdsNeedle(n, valuesText)),
   );
@@ -122,11 +130,40 @@ export function needleFilterSql(needles: readonly ContentInstanceNeedle[]): SQL 
                         WHERE ${sql.join(terms, sql` OR `)})`;
 }
 
-/** The live rows the caller sees that match `liveFilter` (see {@link loadInstancesInView}). */
-export function liveInstancesSql(branchId: string | null, liveFilter: SQL): SQL {
-  const visible = branchId
+/** Rows of `ci` the caller's branch can see. */
+function visibleInstanceSql(branchId: string | null): SQL {
+  return branchId
     ? sql`(ci.chat_branch_id IS NULL OR ci.chat_branch_id = ${branchId}::uuid)`
     : sql`ci.chat_branch_id IS NULL`;
+}
+
+/**
+ * {@link needleFilterSql} that stops after `limit` visible live instances
+ * per `id` needle. The visibility test sits inside the limit: a capped walk
+ * over rows the caller cannot see would report a used id as unused.
+ */
+function boundedIdFilterSql(
+  needles: readonly ContentInstanceNeedle[],
+  branchId: string | null,
+  limit: number,
+): SQL {
+  const ids = needles.flatMap((n) => (n.kind === "id" ? [n.id.toLowerCase()] : []));
+  return sql`ci.id IN (
+    SELECT hit.id
+      FROM unnest(${textArray(ids)}) AS needle(ref)
+     CROSS JOIN LATERAL (
+       SELECT ci.id
+         FROM content_instance_refs r
+         JOIN content_instances ci ON ci.id = r.content_instance_id
+        WHERE r.ref_kind = 'id' AND r.ref = needle.ref
+          AND ci.deleted_at IS NULL AND ${visibleInstanceSql(branchId)}
+        LIMIT ${limit}
+     ) hit)`;
+}
+
+/** The live rows the caller sees that match `liveFilter` (see {@link loadInstancesInView}). */
+export function liveInstancesSql(branchId: string | null, liveFilter: SQL): SQL {
+  const visible = visibleInstanceSql(branchId);
   return sql`
     SELECT ci.id::text AS id, ci.module_id::text AS module_id, ci."values"::text AS values_text
       FROM content_instances ci
