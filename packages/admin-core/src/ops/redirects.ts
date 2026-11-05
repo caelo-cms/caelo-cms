@@ -11,13 +11,29 @@
  * redirect without a serving layer in front.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import { err, ok, redirectTargetIssue, redirectTargetPathSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { requestRedirectSync } from "../deploy/redirect-sync.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
+
+/**
+ * #1461 — a static file owns its URL. The refusal for redirects that would
+ * start at one, or null. The build would leave such a row out silently.
+ */
+async function staticFileRedirectRefusal(
+  tx: TransactionRunner,
+  fromPaths: readonly string[],
+): Promise<string | null> {
+  const bare = fromPaths.map((p) => (p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p));
+  const rows = (await tx.execute(sql`
+    SELECT path FROM static_files WHERE path = ANY(${textArray(bare)}) AND deleted_at IS NULL
+  `)) as unknown as { path: string }[];
+  if (rows.length === 0) return null;
+  return `A static file is served at ${rows.map((r) => r.path).join(", ")}, so a redirect cannot start there. Choose another path, or remove the file first (propose_delete_static_files).`;
+}
 
 const redirectRow = z.object({
   id: z.string(),
@@ -68,6 +84,8 @@ export const createRedirectOp = defineOperation({
         message: "from_path and to_path must differ",
       });
     }
+    const taken = await staticFileRedirectRefusal(tx, [input.fromPath]);
+    if (taken) return err({ kind: "HandlerError", operation: "redirects.create", message: taken });
     // Upsert — if a redirect already exists from this path, replace
     // its target. Common during slug ping-pong (rename A→B then B→A).
     const rows = (await tx.execute(sql`
@@ -283,6 +301,13 @@ export const createRedirectsManyOp = defineOperation({
     skipped: z.number().int(),
   }),
   handler: async (ctx, input, tx) => {
+    const taken = await staticFileRedirectRefusal(
+      tx,
+      input.redirects.map((r) => r.fromPath),
+    );
+    if (taken) {
+      return err({ kind: "HandlerError", operation: "redirects.create_many", message: taken });
+    }
     let created = 0;
     let updated = 0;
     let skipped = 0;

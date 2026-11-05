@@ -27,9 +27,15 @@ export interface BuildFileWrite {
   readonly content: string | Uint8Array;
   /**
    * The Content-Type a provider must serve it with when its extension does
-   * not say (a bare-slug page in the `no-extension` URL style).
+   * not say (a bare-slug page in the `no-extension` URL style) or a static
+   * file declares it (#1461).
    */
   readonly contentType?: string;
+  /**
+   * Upload even when the bytes equal the live file's: the Content-Type may be
+   * what changed (#1461, a static file's type), and a hash cannot tell.
+   */
+  readonly alwaysUpload?: true;
 }
 
 /** Where the build's served files go. */
@@ -63,6 +69,7 @@ export interface StreamedFile {
   /** base64 of the bytes. */
   readonly body: string;
   readonly contentType?: string;
+  readonly alwaysUpload?: true;
 }
 
 /**
@@ -123,6 +130,7 @@ export class StreamOutput implements BuildOutput {
       relPath: file.relPath,
       body: bytes.toString("base64"),
       ...(file.contentType ? { contentType: file.contentType } : {}),
+      ...(file.alwaysUpload ? { alwaysUpload: true } : {}),
     });
     await done;
   }

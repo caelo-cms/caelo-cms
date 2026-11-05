@@ -20,12 +20,15 @@ import {
   parseAndUpgradePageLayoutState,
   parseAndUpgradePageState,
   parseAndUpgradePageTypeState,
+  parseAndUpgradeStaticFileState,
   parseAndUpgradeTemplateState,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { approverRefusal } from "../_approver-permission.js";
 import { recomputeCurrentPathsWithMoves } from "../content/current-path.js";
 import { applyPathMoveEffects } from "../content/path-moves.js";
+import { applyStaticFileState } from "../static_files.js";
 
 /**
  * Restores every entity that has a row under the target snapshot. Atomic
@@ -123,6 +126,46 @@ export const revertSiteOp = defineOperation({
         });
       }
       throw e;
+    }
+
+    // Issue #1461 — static files under the target.
+    let staticFileStates: {
+      kind: "staticFile";
+      entityId: string;
+      state: ReturnType<typeof parseAndUpgradeStaticFileState>;
+    }[];
+    try {
+      const rows = (await tx.execute(sql`
+        SELECT static_file_id::text AS entity_id, state FROM static_file_snapshots
+        WHERE site_snapshot_id = ${input.snapshotId}::uuid
+      `)) as unknown as Row[];
+      staticFileStates = rows.map((r) => ({
+        kind: "staticFile",
+        entityId: r.entity_id,
+        state: parseAndUpgradeStaticFileState(r.state),
+      }));
+    } catch (e) {
+      if (e instanceof SnapshotSchemaError) {
+        return err({
+          kind: "HandlerError",
+          operation: "snapshots.revert_site",
+          message: e.message,
+        });
+      }
+      throw e;
+    }
+
+    // A site revert needs only the content permission, but it would write
+    // static files, which only someone entitled to approve them may change.
+    if (staticFileStates.length > 0) {
+      const refusal = await approverRefusal(tx, ctx, "snapshots.revert_site", ["settings.write"]);
+      if (refusal) {
+        return err({
+          kind: "HandlerError",
+          operation: "snapshots.revert_site",
+          message: `${refusal} This snapshot changes static files.`,
+        });
+      }
     }
 
     // Validate every state payload up-front so a schema-mismatch fails the
@@ -346,7 +389,10 @@ export const revertSiteOp = defineOperation({
         state: l.state,
       })),
       ...listStates,
+      ...staticFileStates,
     ];
+    for (const f of staticFileStates)
+      await applyStaticFileState(tx, ctx.actorId, f.entityId, f.state);
     const result = await emitSnapshot(tx, {
       actorId: ctx.actorId,
       opKind: "snapshots.revert_site",

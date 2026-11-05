@@ -32,6 +32,7 @@ import type {
   PageModuleContentState,
   PageState,
   PageTypeState,
+  StaticFileState,
   TemplateState,
   ThemeState,
 } from "./state.js";
@@ -91,6 +92,8 @@ export type SnapshotOpKind =
   | "links.revert_migration"
   // Epic #1107 — lists, list types, page types (0354).
   | "list_types.upsert_many"
+  | "static_files.set_many"
+  | "static_files.delete_many"
   | "list_types.delete_many"
   | "lists.upsert_many"
   | "lists.patch_items_many"
@@ -115,6 +118,7 @@ export type SnapshotEntity =
       readonly state: PageModuleContentState;
     }
   | { readonly kind: "listType"; readonly entityId: string; readonly state: ListTypeState }
+  | { readonly kind: "staticFile"; readonly entityId: string; readonly state: StaticFileState }
   | { readonly kind: "list"; readonly entityId: string; readonly state: ListState }
   | { readonly kind: "pageType"; readonly entityId: string; readonly state: PageTypeState }
   | {
@@ -226,6 +230,12 @@ export async function emitSnapshot(
             ${entity.state.position},
             ${jsonbParam(stateJson)}
           )
+        `);
+        break;
+      case "staticFile":
+        await tx.execute(sql`
+          INSERT INTO static_file_snapshots (site_snapshot_id, static_file_id, state)
+          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${jsonbParam(stateJson)})
         `);
         break;
       case "listType":

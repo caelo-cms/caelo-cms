@@ -75,4 +75,6 @@ What keeps the two apart:
 | Default layout / template / page type | `site_defaults.set` | authoring only (defaults for new pages) | Nothing to publish | Routine, justified at the op |
 | Email, AI providers, budgets and pricing, MCP tokens, users and roles, skills, site memory, telemetry, bug forwarding, update policy | their own ops | admin only, never served to visitors | Nothing to publish | Per the §11.A table in CLAUDE.md |
 
+Static files (`static_files.*`, #1461) are not settings either: they are stored in Caelo and reach a site only as files of a Stage build, so a save changes nothing until a Stage and Publish live ([static-files.md](./static-files.md)).
+
 Themes, layouts, templates, content instances, lists and plugin rows are not global settings in this sense: they are already draft state that goes live with Stage + Publish live.

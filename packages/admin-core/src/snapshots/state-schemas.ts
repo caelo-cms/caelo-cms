@@ -22,6 +22,7 @@ import {
   listItemInputSchema,
   listTypeDefSchema,
   pageTypeDefSchema,
+  STATIC_FILE_CONTENT_TYPES,
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import type {
@@ -31,6 +32,7 @@ import type {
   PageLayoutState,
   PageState,
   PageTypeState,
+  StaticFileState,
   TemplateState,
 } from "./state.js";
 
@@ -199,6 +201,7 @@ export class SnapshotSchemaError extends Error {
       | "page"
       | "pageLayout"
       | "listType"
+      | "staticFile"
       | "list"
       | "pageType",
     readonly version: unknown,
@@ -259,6 +262,29 @@ export function parseAndUpgradePageLayoutState(raw: unknown): PageLayoutState {
     return r.data;
   }
   throw new SnapshotSchemaError("pageLayout", v, "no upgrade path from this version");
+}
+
+const staticFileStateV1 = z
+  .object({
+    schemaVersion: z.literal(1),
+    path: z.string().min(2),
+    contentType: z.enum(STATIC_FILE_CONTENT_TYPES),
+    body: z.string(),
+    purpose: z.string(),
+    version: z.number().int().positive(),
+    deletedAt: z.string().nullable(),
+  })
+  .strict();
+
+/** Issue #1461 — validate a static file snapshot state at the snapshot ↔ live-row boundary. */
+export function parseAndUpgradeStaticFileState(raw: unknown): StaticFileState {
+  const v = pickVersion(raw);
+  if (v === 1) {
+    const r = staticFileStateV1.safeParse(raw);
+    if (!r.success) throw new SnapshotSchemaError("staticFile", v, r.error.issues);
+    return r.data;
+  }
+  throw new SnapshotSchemaError("staticFile", v, "no upgrade path from this version");
 }
 
 /** Epic #1107 — validate a list type snapshot state at the snapshot ↔ live-row boundary. */

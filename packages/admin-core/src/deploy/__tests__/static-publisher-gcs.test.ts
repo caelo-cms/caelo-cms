@@ -301,6 +301,49 @@ describe("gcsStaticPublisher.publishStaging", () => {
     expect(meta.cacheControl).toContain("stale-while-revalidate");
   });
 
+  it("uploads a static file whose bytes match the live copy: its type may have changed (#1461)", async () => {
+    const body = "same bytes";
+    await mkdir(join(buildDir, ".well-known"), { recursive: true });
+    await writeFile(join(buildDir, ".well-known", "thing"), body, "utf8");
+    await writeFile(
+      join(buildDir, "_content-types.json"),
+      JSON.stringify({ ".well-known/thing": "application/json; charset=utf-8" }),
+      "utf8",
+    );
+    await writeFile(
+      join(buildDir, "_static-files.json"),
+      JSON.stringify({
+        version: 1,
+        files: [{ path: ".well-known/thing", contentType: "application/json; charset=utf-8" }],
+      }),
+      "utf8",
+    );
+    staticBucket.files.set("_state/last-build-manifest.json", {
+      ...makeFile(staticBucket, "_state/last-build-manifest.json"),
+      body: Buffer.from(
+        JSON.stringify({
+          buildId: "prev",
+          files: { ".well-known/thing": computeCrc32cBase64(Buffer.from(body, "utf8")) },
+          cachePolicyVersion: CACHE_POLICY_VERSION,
+        }),
+      ),
+    });
+    await staticBucket.file(".well-known/thing").save(Buffer.from(body), {
+      contentType: "text/plain; charset=utf-8",
+    });
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({
+      buildDir,
+      runId: "run-static",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
+    const meta = stagingBucket.files.get("run-static/.well-known/thing")?.metadata as {
+      contentType?: string;
+    };
+    expect(meta.contentType).toBe("application/json; charset=utf-8");
+  });
+
   it("skips uploads when CRC32C matches the live manifest", async () => {
     // Pre-seed the live manifest with the CRC of the about page.
     const aboutBody = "<html>about</html>";
