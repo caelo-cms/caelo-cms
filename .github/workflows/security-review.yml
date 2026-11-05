@@ -162,7 +162,7 @@ jobs:
       - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main (pinned 2026-02-11)
         with:
           claude-api-key: ${{ secrets.CLAUDE_SECURITY_REVIEW }}
-          # Sonnet 4.6 is current-gen and materially cheaper than the action
+          # Sonnet 5.5 is current-gen and materially cheaper than the action
           # default (opus-4-1) for diff-scoped review. Bump to an Opus model
           # if quality proves insufficient — one-line change.
           claude-model: claude-sonnet-5-5

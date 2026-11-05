@@ -10,8 +10,8 @@
 -- 0.1x 0224 assumed ($0.20).
 --
 -- Source: platform.claude.com/docs/en/about-claude/pricing, read 2026-11-05.
--- Values are microcents (1e-8 USD) PER 1K TOKENS. Rows an Owner has already
--- changed (ai_pricing.set) do not match the old values and stay as they are.
+-- Values are microcents (1e-8 USD) PER 1K TOKENS. Each update matches a seed
+-- row on all four rates, so a row an Owner changed (ai_pricing.set) stays.
 -- ai_calls rows keep the cost they were recorded with.
 
 BEGIN;
@@ -27,13 +27,19 @@ WHERE provider = 'anthropic'
   AND model = 'claude-sonnet-5'
   AND operation_type = 'text'
   AND input_microcents = 300000
-  AND output_microcents = 1500000;
+  AND output_microcents = 1500000
+  AND cached_microcents = 30000
+  AND cache_creation_microcents = 375000;
 
 UPDATE ai_pricing
 SET cached_microcents = 10000
 WHERE provider = 'anthropic'
   AND model = 'claude-sonnet-5-5'
   AND operation_type = 'text'
-  AND cached_microcents = 20000;
+  AND effective_from = '2026-01-01T00:00:00Z'
+  AND input_microcents = 200000
+  AND output_microcents = 1000000
+  AND cached_microcents = 20000
+  AND cache_creation_microcents = 250000;
 
 COMMIT;

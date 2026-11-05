@@ -20,13 +20,14 @@ interface PriceRow {
   readonly input_microcents: string | number;
   readonly output_microcents: string | number;
   readonly cached_microcents: string | number;
+  readonly cache_creation_microcents: string | number;
 }
 
 async function rates(model: string): Promise<PriceRow[]> {
   return sqlc.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
     return (await tx`
-      SELECT input_microcents, output_microcents, cached_microcents
+      SELECT input_microcents, output_microcents, cached_microcents, cache_creation_microcents
       FROM ai_pricing
       WHERE provider = 'anthropic' AND model = ${model} AND operation_type = 'text'`) as PriceRow[];
   });
@@ -46,6 +47,8 @@ describe("seeded Sonnet list prices", () => {
     for (const row of rows) {
       expect(Number(row.input_microcents)).toBe(200000);
       expect(Number(row.output_microcents)).toBe(1000000);
+      expect(Number(row.cached_microcents)).toBe(20000);
+      expect(Number(row.cache_creation_microcents)).toBe(250000);
     }
   });
 
@@ -55,6 +58,7 @@ describe("seeded Sonnet list prices", () => {
     for (const row of rows) {
       expect(Number(row.input_microcents)).toBe(200000);
       expect(Number(row.cached_microcents)).toBe(10000);
+      expect(Number(row.cache_creation_microcents)).toBe(250000);
     }
   });
 });

@@ -3,8 +3,8 @@
 /**
  * Real-AI end-to-end suite (issue #47).
  *
- * Drives the editor chat against the live Anthropic API (Opus 4.7,
- * temperature=0) to catch the regression classes the mock-AI suite at
+ * Drives the editor chat against the live Anthropic API (the model in
+ * `E2E_LIVEDIT_MODEL`) to catch the regression classes the mock-AI suite at
  * `e2e/` cannot — empty AI turns, orphan locks after Stage, missing
  * tool primers — and verifies the published result with one closing
  * LLM-vision verdict.
