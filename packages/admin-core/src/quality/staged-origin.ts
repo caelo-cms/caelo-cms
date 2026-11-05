@@ -20,12 +20,16 @@
  * - served like staging serves it: the publishers' Content-Type and
  *   Cache-Control policy (#555 immutable hashed assets, #571 .ico), the
  *   media security headers every staging origin sends (#891: nosniff, the
- *   SVG CSP) plus staging's `X-Robots-Tag: noindex`.
+ *   SVG CSP) plus staging's `X-Robots-Tag: noindex`;
+ * - compressed like the CDN in front of every staging and live host: an
+ *   uncompressed document fails Lighthouse's document-latency insight, and
+ *   would measure transfer costs no visitor pays.
  */
 
 import { readFile, realpath } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, sep } from "node:path";
+import { gzipSync } from "node:zlib";
 import {
   isPluginCallPath,
   mediaSecurityHeaders,
@@ -165,6 +169,23 @@ export interface StagedOrigin {
   close(): Promise<void>;
 }
 
+const COMPRESSIBLE_TYPE =
+  /^(?:text\/|application\/(?:json|javascript|xml|manifest\+json)|image\/svg\+xml)/i;
+
+/** The body and headers the CDN would send for `file` to this request. */
+function encoded(
+  file: StagedFile,
+  acceptEncoding: string | undefined,
+): { readonly body: Uint8Array; readonly headers: Record<string, string> } {
+  if (!COMPRESSIBLE_TYPE.test(file.contentType)) return { body: file.bytes, headers: {} };
+  const headers = { Vary: "Accept-Encoding" };
+  if (!/\bgzip\b/i.test(acceptEncoding ?? "")) return { body: file.bytes, headers };
+  return {
+    body: gzipSync(file.bytes),
+    headers: { ...headers, "Content-Encoding": "gzip" },
+  };
+}
+
 /** Serve `source` on 127.0.0.1 at a random port until `close()`. */
 export async function serveStagedBuild(source: StagedFileSource): Promise<StagedOrigin> {
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -194,14 +215,16 @@ export async function serveStagedBuild(source: StagedFileSource): Promise<Staged
     for (const key of keys) {
       const file = await source.read(key);
       if (!file) continue;
+      const { body, headers } = encoded(file, req.headers["accept-encoding"]);
       res.writeHead(200, {
         "Content-Type": file.contentType,
-        "Content-Length": String(file.bytes.byteLength),
+        "Content-Length": String(body.byteLength),
         "Cache-Control": cacheControlForContentType(file.contentType, key),
         ...mediaSecurityHeaders(file.contentType),
         "X-Robots-Tag": "noindex",
+        ...headers,
       });
-      res.end(req.method === "HEAD" ? undefined : file.bytes);
+      res.end(req.method === "HEAD" ? undefined : body);
       return;
     }
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }).end("not in this build");

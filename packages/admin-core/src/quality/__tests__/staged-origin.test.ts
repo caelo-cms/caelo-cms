@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { STAGING_PLUGIN_STUB_BODY, SVG_DOCUMENT_CSP } from "@caelo-cms/shared";
 import {
   localBuildSource,
@@ -98,6 +99,35 @@ describe("serveStagedBuild over a local build", () => {
     );
     expect(res.headers.get("x-robots-tag")).toBe("noindex");
     expect((await fetch(`${origin.baseUrl}/`)).status).toBe(200);
+  });
+
+  it("compresses text like the CDN does, and leaves binaries alone", async () => {
+    const raw = (path: string) =>
+      new Promise<{ encoding?: string; body: Buffer }>((resolve, reject) => {
+        const { hostname, port } = new URL(origin.baseUrl);
+        const req = request(
+          { hostname, port, path, headers: { "Accept-Encoding": "gzip, deflate, br" } },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on("data", (c: Buffer) => chunks.push(c));
+            res.on("end", () =>
+              resolve({
+                ...(res.headers["content-encoding"]
+                  ? { encoding: res.headers["content-encoding"] }
+                  : {}),
+                body: Buffer.concat(chunks),
+              }),
+            );
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+    const page = await raw("/about/");
+    expect(page.encoding).toBe("gzip");
+    expect(gunzipSync(page.body).toString()).toBe("<h1>about</h1>");
+    expect((await raw("/favicon.ico")).encoding).toBeUndefined();
+    expect((await raw("/_assets/logo.0123456789abcdef.png")).encoding).toBeUndefined();
   });
 
   it("serves .ico, content-hashed fonts (immutable) and no-extension pages", async () => {

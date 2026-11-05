@@ -209,7 +209,8 @@ function metricOfScoringRun(
 
 /** The `list` items of an insight's details (tables and nodes). */
 function listItems(run: LhrLike, auditId: string): readonly unknown[] {
-  return run.audits[auditId]?.details?.items ?? [];
+  const items = run.audits[auditId]?.details?.items;
+  return Array.isArray(items) ? (items as readonly unknown[]) : [];
 }
 
 /**
