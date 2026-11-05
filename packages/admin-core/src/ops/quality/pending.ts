@@ -9,6 +9,9 @@
  *                                          100 on pages — single items or
  *                                          #727 bulk groups (one problem
  *                                          across many pages, one click).
+ *                                          #1446: a finding that names only
+ *                                          shipped files is accepted for
+ *                                          each file, on every page.
  *                                          Any editor may approve.
  *   quality_audits.propose_publish_anyway  publish over a FAILED audit.
  *   quality_audits.execute_proposal        apply — human/system only.
@@ -41,6 +44,7 @@ import { describeError } from "../../ai/tools/_describe-error.js";
 import { recordAudit } from "../../audit.js";
 import { ruleIdSchema } from "../../quality/checks/findings.js";
 import { decideGate, SITE_WIDE_PATH } from "../../quality/gate.js";
+import { shippedResourcesOf } from "../../quality/platform-audits.js";
 import { auditScorePoints, type QualityProblem } from "../../quality/ratchet.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { requiresApproverPermission } from "../_approver-permission.js";
@@ -149,12 +153,14 @@ export const proposeAcceptInput = z
 type ProposeAcceptInput = z.infer<typeof proposeAcceptInput>;
 
 interface ResolvedItem {
-  /** Null only for a site-wide page-check rule. */
+  /** Null for a site-wide page-check rule or a shipped file. */
   readonly pageId: string | null;
   readonly pagePath: string;
   readonly kind: "finding" | "score" | "check";
   /** The Lighthouse audit id, or the page-check rule id. */
   readonly auditId: string | null;
+  /** #1446 — the shipped file an audit is accepted for, on every page. */
+  readonly resourcePath: string | null;
   readonly category: string | null;
   /** The accepted value in points: a category score, or a Lighthouse
    *  audit's score × 100. A worse measurement blocks again. */
@@ -175,48 +181,78 @@ function problemName(x: QualityProblem): string {
   }
 }
 
-/** The acceptance of one recorded problem on one page (or site-wide). */
+/**
+ * What accepting one recorded problem writes: its page's (or the site's)
+ * acceptance, or #1446 one acceptance per file when the finding is entirely
+ * about files Caelo or a plugin ships.
+ *
+ * @param pageUrl - the audited URL of the page; null for a site-wide problem
+ */
 function resolvedFromProblem(
   pageId: string | null,
   pagePath: string,
+  pageUrl: string | null,
   p: QualityProblem,
-): ResolvedItem {
+): ResolvedItem[] {
   switch (p.kind) {
     case "check_rule":
-      return {
-        pageId,
-        pagePath,
-        kind: "check",
-        auditId: p.ruleId,
-        category: null,
-        score: null,
-        count: p.count,
-        label: `${pagePath}: ${p.ruleId} — ${p.count} error(s) accepted (a new one blocks again)`,
-      };
+      return [
+        {
+          pageId,
+          pagePath,
+          kind: "check",
+          auditId: p.ruleId,
+          resourcePath: null,
+          category: null,
+          score: null,
+          count: p.count,
+          label: `${pagePath}: ${p.ruleId} — ${p.count} error(s) accepted (a new one blocks again)`,
+        },
+      ];
     case "failing_audit": {
       const points = auditScorePoints(p.score);
-      return {
-        pageId,
-        pagePath,
-        kind: "finding",
-        auditId: p.auditId,
-        category: null,
-        score: points,
-        count: null,
-        label: `${pagePath}: ${p.auditId} — ${p.title} (score ${points}; a worse score blocks again)`,
-      };
+      const files = pageUrl === null ? null : shippedResourcesOf(p.elements, pageUrl);
+      if (files !== null) {
+        return files.map((resourcePath) => ({
+          pageId: null,
+          pagePath: SITE_WIDE_PATH,
+          kind: "finding" as const,
+          auditId: p.auditId,
+          resourcePath,
+          category: null,
+          score: points,
+          count: null,
+          label: `${p.auditId} for ${resourcePath} — ${p.title}: every page that loads this file, until the file changes (a worse score blocks again)`,
+        }));
+      }
+      return [
+        {
+          pageId,
+          pagePath,
+          kind: "finding",
+          auditId: p.auditId,
+          resourcePath: null,
+          category: null,
+          score: points,
+          count: null,
+          label: `${pagePath}: ${p.auditId} — ${p.title} (score ${points}; a worse score blocks again)`,
+        },
+      ];
     }
     case "score_below_baseline":
-      return {
-        pageId,
-        pagePath,
-        kind: "score",
-        auditId: null,
-        category: p.category,
-        score: p.score,
-        count: null,
-        label: `${pagePath}: ${p.category} score ${p.score} accepted (target 100; a lower score blocks again)`,
-      };
+      return [
+        {
+          pageId,
+          pagePath,
+          kind: "score",
+          auditId: null,
+          resourcePath: null,
+          category: p.category,
+          score: p.score,
+          count: null,
+          label: `${pagePath}: ${p.category} score ${p.score} accepted (target 100; a lower score blocks again)`,
+        },
+      ];
   }
 }
 
@@ -225,14 +261,14 @@ function resolveCheckItem(
   pagePath: string,
   problems: readonly QualityProblem[],
   ruleId: string,
-): ResolvedItem | { message: string } {
+): ResolvedItem[] | { message: string } {
   const p = problems.find((x) => x.kind === "check_rule" && x.ruleId === ruleId);
   if (p?.kind !== "check_rule") {
     return {
       message: `'${ruleId}' is not a problem ${pageId === null ? "site-wide" : `on ${pagePath}`} in this audit — its problems: ${problems.map(problemName).join(", ") || "none"}`,
     };
   }
-  return resolvedFromProblem(pageId, pagePath, p);
+  return resolvedFromProblem(pageId, pagePath, null, p);
 }
 
 /**
@@ -245,10 +281,10 @@ async function resolveItems(
   input: ProposeAcceptInput,
 ): Promise<{ ok: true; items: ResolvedItem[]; lines: string[] } | { ok: false; message: string }> {
   const rows = (await tx.execute(sql`
-    SELECT qp.page_id::text AS page_id, p.current_path, qp.problems
+    SELECT qp.page_id::text AS page_id, p.current_path, qp.url, qp.problems
     FROM quality_audit_pages qp JOIN pages p ON p.id = qp.page_id AND p.deleted_at IS NULL
     WHERE qp.audit_run_id = ${input.auditRunId}::uuid
-  `)) as unknown as { page_id: string; current_path: string; problems: unknown }[];
+  `)) as unknown as { page_id: string; current_path: string; url: string; problems: unknown }[];
   const siteRows = (await tx.execute(sql`
     SELECT COALESCE(checks->'siteProblems', '[]'::jsonb) AS site_problems
     FROM quality_audit_runs WHERE id = ${input.auditRunId}::uuid
@@ -266,7 +302,7 @@ async function resolveItems(
     if ("ruleId" in item && item.pagePath === undefined) {
       const r = resolveCheckItem(null, SITE_WIDE_PATH, siteProblems, item.ruleId);
       if ("message" in r) return { ok: false, message: r.message };
-      resolved.push(r);
+      resolved.push(...r);
       continue;
     }
     const pagePath = item.pagePath as string;
@@ -281,7 +317,7 @@ async function resolveItems(
     if ("ruleId" in item) {
       const r = resolveCheckItem(page.page_id, page.current_path, problems, item.ruleId);
       if ("message" in r) return { ok: false, message: r.message };
-      resolved.push(r);
+      resolved.push(...r);
     } else if ("auditId" in item) {
       const p = problems.find((x) => x.kind === "failing_audit" && x.auditId === item.auditId);
       if (p?.kind !== "failing_audit") {
@@ -290,7 +326,7 @@ async function resolveItems(
           message: `'${item.auditId}' is not a problem on ${page.current_path} in this audit — its problems: ${problems.map(problemName).join(", ") || "none"}`,
         };
       }
-      resolved.push(resolvedFromProblem(page.page_id, page.current_path, p));
+      resolved.push(...resolvedFromProblem(page.page_id, page.current_path, page.url, p));
     } else {
       const p = problems.find(
         (x) => x.kind === "score_below_baseline" && x.category === item.category,
@@ -301,7 +337,7 @@ async function resolveItems(
           message: `the ${item.category} score is not below 100 on ${page.current_path} in this audit — nothing to accept`,
         };
       }
-      resolved.push(resolvedFromProblem(page.page_id, page.current_path, p));
+      resolved.push(...resolvedFromProblem(page.page_id, page.current_path, null, p));
     }
   }
   const lines = resolved.map((i) => i.label);
@@ -309,19 +345,33 @@ async function resolveItems(
     const r = await resolveGroup(tx, input.auditRunId, group);
     if (!r.ok) return r;
     resolved.push(...r.items);
-    const sample = r.items.slice(0, 5).map((i) => i.pagePath);
-    const more = r.items.length > 5 ? `, +${r.items.length - 5} more` : "";
-    lines.push(`${groupName(group)} on ${r.items.length} page(s): ${sample.join(", ")}${more}`);
+    const onPages = r.items.filter((i) => i.resourcePath === null);
+    if (onPages.length > 0) {
+      const sample = onPages.slice(0, 5).map((i) => i.pagePath);
+      const more = onPages.length > 5 ? `, +${onPages.length - 5} more` : "";
+      lines.push(`${groupName(group)} on ${onPages.length} page(s): ${sample.join(", ")}${more}`);
+    }
+    lines.push(...r.items.filter((i) => i.resourcePath !== null).map((i) => i.label));
   }
-  return { ok: true, items: dedupeItems(resolved), lines };
+  return { ok: true, items: dedupeItems(resolved), lines: [...new Set(lines)] };
 }
 
-/** One acceptance per page + kind + id: an item and a group naming the
- *  same finding accept it once. */
+/**
+ * One acceptance per page + kind + id + file: an item and a group naming
+ * the same finding accept it once. Several pages can flag one shipped file
+ * at different scores; its acceptance takes the worst, so that accepting
+ * the file does not leave one of those pages blocked.
+ */
 function dedupeItems(items: readonly ResolvedItem[]): ResolvedItem[] {
   const seen = new Map<string, ResolvedItem>();
   for (const i of items) {
-    seen.set(`${i.pageId ?? "site"}|${i.kind}|${i.auditId ?? i.category ?? ""}`, i);
+    const key = `${i.pageId ?? "site"}|${i.kind}|${i.auditId ?? i.category ?? ""}|${i.resourcePath ?? ""}`;
+    const earlier = seen.get(key);
+    const score =
+      i.resourcePath !== null && earlier?.score != null && i.score !== null
+        ? Math.min(earlier.score, i.score)
+        : i.score;
+    seen.set(key, { ...i, score });
   }
   return [...seen.values()];
 }
@@ -360,6 +410,7 @@ async function resolveGroup(
   const open = decideGate(audit, acceptances).openProblems.filter((o) =>
     groupMatches(group, o.problem),
   );
+  const urlOf = new Map(audit.pages.map((p) => [p.pageId, p.pageUrl]));
   if (open.length === 0) {
     return {
       ok: false,
@@ -384,7 +435,14 @@ async function resolveGroup(
     ok: true,
     items: open
       .filter((o) => picked === null || picked.has(o.pagePath))
-      .map((o) => resolvedFromProblem(o.pageId, o.pagePath, o.problem)),
+      .flatMap((o) =>
+        resolvedFromProblem(
+          o.pageId,
+          o.pagePath,
+          o.pageId === null ? null : (urlOf.get(o.pageId) ?? null),
+          o.problem,
+        ),
+      ),
   };
 }
 
@@ -436,6 +494,21 @@ const proposeOutput = z.object({
   preview: z.record(z.string(), z.unknown()),
 });
 
+/** What the approval card says the decision reaches. */
+function acceptanceNote(items: readonly ResolvedItem[]): string {
+  const onFiles = items.some((i) => i.resourcePath !== null);
+  const onPages = items.some((i) => i.resourcePath === null);
+  return [
+    onPages ? "Applies only to these pages; the same finding on another page still blocks." : "",
+    onFiles
+      ? "A file Caelo or a plugin ships is accepted for that check on every page that loads it, until the file changes; anything else a page's finding names still blocks."
+      : "",
+    "A worse value than accepted blocks again; every acceptance stays listed (and revocable) under Settings → Quality.",
+  ]
+    .filter((sentence) => sentence.length > 0)
+    .join(" ");
+}
+
 export const proposeAcceptOp = defineOperation({
   name: "quality_audits.propose_accept",
   readScope: "request",
@@ -465,7 +538,7 @@ export const proposeAcceptOp = defineOperation({
       reason: input.reason,
       accepts: r.lines,
       acceptanceCount: r.items.length,
-      note: "Applies only to these pages; the same finding on another page still blocks. A worse value than accepted blocks again; every acceptance stays listed (and revocable) under Settings → Quality.",
+      note: acceptanceNote(r.items),
     };
     return queueProposal(
       tx,
@@ -530,8 +603,10 @@ export const proposePublishAnywayOp = defineOperation({
 /**
  * Write the acceptances of a confirmed proposal as `ctx` (the human), in
  * one statement pair however many pages a bulk decision covers: the live
- * acceptance of each page + kind + id is revoked (kept as history) and
- * replaced by the new one with the value measured now.
+ * acceptance of each page + kind + id (+ file, #1446) is revoked (kept as
+ * history) and replaced by the new one with the value measured now. A
+ * shipped file's acceptance never rises that way: the pages it already
+ * covers are not the ones measured now, so it keeps the worse value.
  */
 async function applyAcceptances(
   tx: Tx,
@@ -542,35 +617,55 @@ async function applyAcceptances(
   // audit superseded, between the card and the click.
   const r = await resolveItems(tx, input);
   if (!r.ok) return r;
-  const rows = jsonbParam(
-    r.items.map((i) => ({
-      page_id: i.pageId,
-      kind: i.kind,
-      audit_id: i.auditId,
-      category: i.category,
-      score: i.score,
-      count: i.count,
-    })),
-  );
-  const recordset = sql`jsonb_to_recordset(${rows}) AS r(page_id uuid, kind text, audit_id text, category text, score integer, count integer)`;
-  await tx.execute(sql`
+  const rowsOf = (items: readonly ResolvedItem[]) =>
+    jsonbParam(
+      items.map((i) => ({
+        page_id: i.pageId,
+        kind: i.kind,
+        audit_id: i.auditId,
+        resource_path: i.resourcePath,
+        category: i.category,
+        score: i.score,
+        count: i.count,
+      })),
+    );
+  const recordset = (rows: ReturnType<typeof rowsOf>) =>
+    sql`jsonb_to_recordset(${rows}) AS r(page_id uuid, kind text, audit_id text, resource_path text, category text, score integer, count integer)`;
+  const replaced = (await tx.execute(sql`
     UPDATE quality_acceptances a
        SET revoked_at = now(), revoked_by = ${ctx.actorId}::uuid
-      FROM ${recordset}
+      FROM ${recordset(rowsOf(r.items))}
      WHERE a.revoked_at IS NULL AND a.kind = r.kind
        AND a.page_id IS NOT DISTINCT FROM r.page_id
        AND a.audit_id IS NOT DISTINCT FROM r.audit_id
+       AND a.resource_path IS NOT DISTINCT FROM r.resource_path
        AND a.category IS NOT DISTINCT FROM r.category
-  `);
+    RETURNING a.audit_id, a.resource_path, a.accepted_score
+  `)) as unknown as {
+    audit_id: string | null;
+    resource_path: string | null;
+    accepted_score: number | null;
+  }[];
+  const heldBefore = new Map(
+    replaced.flatMap((row) =>
+      row.resource_path !== null && row.accepted_score !== null
+        ? [[`${row.audit_id}|${row.resource_path}`, Number(row.accepted_score)] as const]
+        : [],
+    ),
+  );
+  const toWrite = r.items.map((i) => {
+    const held = heldBefore.get(`${i.auditId}|${i.resourcePath}`);
+    return held !== undefined && i.score !== null ? { ...i, score: Math.min(held, i.score) } : i;
+  });
   const inserted = (await tx.execute(sql`
     INSERT INTO quality_acceptances
-      (page_id, kind, audit_id, category, accepted_score, accepted_count, reason, accepted_by,
-       audit_run_id)
-    SELECT r.page_id, r.kind, r.audit_id, r.category,
+      (page_id, kind, audit_id, resource_path, category, accepted_score, accepted_count, reason,
+       accepted_by, audit_run_id)
+    SELECT r.page_id, r.kind, r.audit_id, r.resource_path, r.category,
            CASE WHEN r.kind = 'check' THEN NULL ELSE r.score END,
            CASE WHEN r.kind = 'check' THEN r.count ELSE NULL END,
            ${input.reason}, ${ctx.actorId}::uuid, ${input.auditRunId}::uuid
-      FROM ${recordset}
+      FROM ${recordset(rowsOf(toWrite))}
     RETURNING id
   `)) as unknown as { id: string }[];
   return { ok: true, accepted: inserted.length };
