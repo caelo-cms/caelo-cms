@@ -329,8 +329,11 @@ async function bakeTarget(args: {
       } catch (e) {
         // A failing render fails the build (CLAUDE.md §2): an empty region
         // would remove the published items from the page. The refused link
-        // below is no failure: that region stays as published.
+        // below is no failure: that region stays as published. Which error
+        // this is cannot be told across the sandbox, and failing the build
+        // would stop every other plugin's bake, so it is logged instead.
         if (liveUrls.unknownPageIds.size === 0) throw e;
+        console.error(`[plugin-data] ${key} threw while held back`, e);
       }
       if (liveUrls.unknownPageIds.size > 0) unknownLinks.set(key, [...liveUrls.unknownPageIds]);
       else renders.set(key, html);
