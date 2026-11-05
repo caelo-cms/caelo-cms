@@ -19,14 +19,14 @@ import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 import { branchOf } from "./_shared.js";
 
-const OP = "lists.plugin_source_texts";
-
 export const pluginSourceTextsOp = defineOperation({
-  name: OP,
+  name: "lists.plugin_source_texts",
   readScope: "request",
-  // Why plugin: this is the read a translating plugin has of another
-  // plugin's visitor-facing texts; it holds no other way to them.
-  actorScope: ["human", "ai", "plugin", "system"],
+  // Why system-only (+plugin): this is the read a translating plugin has
+  // of another plugin's visitor-facing texts, and it holds no other way
+  // to them. The AI reaches them through that plugin: intl_status and
+  // translate_chrome show them, and consent_status shows their source.
+  actorScope: ["plugin", "system"],
   database: "cms_admin",
   input: z
     .object({
