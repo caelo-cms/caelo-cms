@@ -386,6 +386,39 @@ describe("the gcp edge: the staging host's own rule on the load balancer", () =>
     );
   });
 
+  it("attaches Cloud Armor to a backend an earlier run left without one", async () => {
+    const edge = (backendJson: unknown) =>
+      fakeGcloud({
+        "compute security-policies list": ok("caelo-production-waf-1\n"),
+        "compute backend-services describe": ok(JSON.stringify(backendJson)),
+        "compute ssl-certificates describe": ok("{}"),
+        "compute url-maps list": ok(JSON.stringify([planStagingHostRule(map, t, BACKEND)])),
+        "compute target-https-proxies list": ok(JSON.stringify([{ name: "proxy" }])),
+        "compute addresses list": ok("136.81.196.111\n"),
+      });
+    const target = {
+      provider: "gcp" as const,
+      projectId: "acme",
+      region: "europe-west1",
+      env: "production",
+      domain: "acme.com",
+      stagingHost: "staging.acme.com",
+    };
+    const bare = edge({ selfLink: BACKEND });
+    expect((await ensureStagingGatewayEdge(target, { run: bare.run })).ok).toBe(true);
+    expect(bare.calls.find((c) => c.startsWith("compute backend-services update"))).toContain(
+      "--security-policy=caelo-production-waf-1",
+    );
+
+    const guarded = edge({
+      selfLink: BACKEND,
+      securityPolicy:
+        "https://compute/projects/acme/global/securityPolicies/caelo-production-waf-1",
+    });
+    expect((await ensureStagingGatewayEdge(target, { run: guarded.run })).ok).toBe(true);
+    expect(guarded.calls.some((c) => c.startsWith("compute backend-services update"))).toBe(false);
+  });
+
   it("is a no-op when the map already routes it, and moves a changed staging host", () => {
     const routed = planStagingHostRule(map, t, BACKEND);
     if (!routed) throw new Error("expected a plan");

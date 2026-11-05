@@ -911,6 +911,23 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     expect(again).toEqual({ ok: true, backend: PROXY_BACKEND, done: [] });
   });
 
+  it("attaches the policy to a backend an earlier run left without one", async () => {
+    const bare = fakeGcloud({
+      "compute network-endpoint-groups describe": ok("caelo-production-mcp-auth-proxy-neg\n"),
+      "compute backend-services describe": ok(
+        JSON.stringify({
+          selfLink: PROXY_BACKEND,
+          backends: [{ group: "x/networkEndpointGroups/caelo-production-mcp-auth-proxy-neg" }],
+        }),
+      ),
+      "compute backend-services update": ok(),
+    });
+    expect((await ensureMcpAuthProxyBackend(target, bare)).ok).toBe(true);
+    expect(bare.calls.find((c) => c.startsWith("compute backend-services update"))).toContain(
+      `--security-policy=${PROXY_POLICY}`,
+    );
+  });
+
   it("#1328 — ensureRemoteMcpEdge: service, policy, backend, URL map, then the gateway rule; no-op on gcp-firebase", async () => {
     expect(
       await ensureRemoteMcpEdge({
