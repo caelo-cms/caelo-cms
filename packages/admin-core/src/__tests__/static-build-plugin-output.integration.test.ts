@@ -25,6 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import commentsPlugin from "@caelo-cms/plugin-comments";
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
@@ -91,6 +92,9 @@ async function cleanup(): Promise<void> {
   const ourModules = `SELECT id FROM modules WHERE slug LIKE '${PFX}%' OR slug = 'consent-placeholder'`;
   await sqlSystem(async (tx) => {
     // Site data first: plugin actors wrote some of it (variants, redirects).
+    await tx.unsafe(
+      `DELETE FROM comment_archive WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE '${PFX}%')`,
+    );
     await tx.unsafe("DELETE FROM quality_audit_runs");
     await tx.unsafe("DELETE FROM deploy_runs");
     await tx.unsafe(
@@ -106,7 +110,7 @@ async function cleanup(): Promise<void> {
       `DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE '${PFX}%')`,
     );
     await tx.unsafe(`DELETE FROM templates WHERE slug LIKE '${PFX}%'`);
-    for (const slug of ["international-site", "consent-manager"]) {
+    for (const slug of ["international-site", "consent-manager", "comments"]) {
       await tx.unsafe(`DROP SCHEMA IF EXISTS "plugin_${slug.replace("-", "_")}" CASCADE`);
       await tx.unsafe(
         `DELETE FROM static_bakes WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${slug}')`,
@@ -122,7 +126,7 @@ async function cleanup(): Promise<void> {
   });
   for (const url of [PUBLIC_URL, STAGING_URL] as string[]) {
     await sqlSystem(async (tx) => {
-      for (const slug of ["international_site", "consent_manager"]) {
+      for (const slug of ["international_site", "consent_manager", "comments"]) {
         await tx.unsafe(`DROP SCHEMA IF EXISTS "plugin_${slug}" CASCADE`);
       }
     }, url);
@@ -208,7 +212,11 @@ beforeAll(async () => {
     infra: { adapter, registry, stagingAdapter },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
-    testPlugins: [{ definition: intlPlugin }, { definition: consentPlugin }],
+    testPlugins: [
+      { definition: intlPlugin },
+      { definition: consentPlugin },
+      { definition: commentsPlugin },
+    ],
   });
   if (report.failed.length > 0) throw new Error(JSON.stringify(report.failed));
 
@@ -269,11 +277,24 @@ beforeAll(async () => {
       `${PFX}switch-${pageId.slice(0, 8)}`,
       switcherPlaceholder(pageId),
     );
+    const comments = await module(
+      `${PFX}comments-${pageId.slice(0, 8)}`,
+      `<div data-caelo-plugin="comments" data-page-id="${pageId}"><!-- loads here --></div>`,
+    );
     await op(SYS, "pages.set_modules", {
       pageId,
-      blocks: [{ blockName: "content", moduleIds: [switcherList, placeholder, banner, video] }],
+      blocks: [
+        { blockName: "content", moduleIds: [switcherList, placeholder, banner, video, comments] },
+      ],
     });
   }
+  // #1169 — a thread longer than the bake on one page, a short one on the other.
+  await sqlSystem(async (tx) => {
+    await tx`
+      INSERT INTO comment_archive (public_row_id, page_id, author_name, content, status, submitted_at)
+      SELECT gen_random_uuid(), ${aboutId}::uuid, 'Reader ' || n, 'Thread', 'approved', now()
+      FROM generate_series(1, 60) n`;
+  });
 
   await pluginOp("international-site", "set_locales", {
     locales: [
@@ -331,6 +352,33 @@ afterAll(async () => {
   await rm(testRoot, { recursive: true, force: true });
   await adapter.close();
   await stagingAdapter.close();
+});
+
+describe("a comment thread on the published page (#1169)", () => {
+  it("bakes the window with its count and links the client before the consent runtime", () => {
+    const html = published("t605-about/index.html");
+    expect([...html.matchAll(/<article /g)]).toHaveLength(50);
+    expect(html).toContain("Showing the newest 50 of 60 comments.");
+    expect(html).toMatch(/data-caelo-plugin="comments"[^>]*data-baked-at="/);
+
+    // Both deferred, comments first: why its client waits for DOMContentLoaded.
+    const scripts = [...html.matchAll(/<script defer src="([^"]+)" data-caelo-plugin="([^"]+)"/g)];
+    const slugs = scripts.map((m) => m[2]);
+    expect(slugs.indexOf("comments")).toBeGreaterThanOrEqual(0);
+    expect(slugs.indexOf("comments")).toBeLessThan(slugs.indexOf("consent-manager"));
+  });
+
+  it("publishes the client it links, and it asks the visitor feed", () => {
+    const html = published("t605-about/index.html");
+    const src = /<script defer src="\/([^"]+)" data-caelo-plugin="comments"/.exec(html)?.[1];
+    if (!src) throw new Error("no comments script linked");
+    expect(published(src)).toContain("/api/plugin/comments/list_approved");
+  });
+
+  it("links the client on a page without comments too, where it stops at once", () => {
+    const home = published("index.html");
+    expect(home).toContain('data-caelo-plugin="comments"');
+  });
 });
 
 describe("#605 — the published site carries every plugin's output", () => {

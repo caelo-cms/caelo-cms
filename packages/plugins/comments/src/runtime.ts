@@ -16,10 +16,19 @@
  *                            longer than the bake; `data-cursor` holds the
  *                            position of the next page as JSON
  *
+ * It starts at DOMContentLoaded, not when the file runs. Assets load in
+ * plugin-slug order, so a consent provider's runtime can come after this
+ * one, and a read before it would go out without the visitor's decision:
+ * the gateway takes that as "no decision" and drops the visitor id. Every
+ * deferred script has run by DOMContentLoaded, whichever plugins are active,
+ * so nothing here names a plugin or waits for one that may not exist.
+ *
  * On load it asks for what was approved after the bake (`since` =
  * `data-baked-at`, CMS_REQUIREMENTS §6.1) and puts that on top. A button
  * then reads older pages on demand, so a long thread costs a visitor who
- * never asks for it one small request. More new comments than one page
+ * never asks for it one small request. The button stays shut until that
+ * first read settled: it can replace the thread and its cursor, and a page
+ * read from the old cursor would skip what lies between. More new comments than one page
  * means the bake is far behind (it waits for the next Publish live after a
  * new plugin version), so the thread is read from the top instead of merged.
  * The same path fills a placeholder nothing baked into.
@@ -97,15 +106,14 @@ export const THREAD_RUNTIME_JS = `(function () {
         dropLine();
         return;
       }
-      if (button) {
-        button.disabled = false;
-        return;
+      if (!button) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Show older comments";
+        button.addEventListener("click", showOlder);
+        region.appendChild(button);
       }
-      button = document.createElement("button");
-      button.type = "button";
-      button.textContent = "Show older comments";
-      button.addEventListener("click", showOlder);
-      region.appendChild(button);
+      button.disabled = false;
     }
 
     function add(comments, onTop) {
@@ -145,17 +153,31 @@ export const THREAD_RUNTIME_JS = `(function () {
     }
 
     syncButton();
+    if (button) button.disabled = true;
     var first = bakedAt
       ? read({ pageId: pageId, since: bakedAt }).then(function (page) {
           if (page.nextCursor) return readFromTop();
           add(page.comments, true);
         })
       : readFromTop();
-    first.then(syncButton).catch(function (e) {
-      console.warn("comments: could not read new comments", e);
-    });
+    first
+      .catch(function (e) {
+        console.warn("comments: could not read new comments", e);
+      })
+      .then(syncButton);
   }
 
-  regions.forEach(mount);
+  var started = false;
+  function start() {
+    if (started) return;
+    started = true;
+    regions.forEach(mount);
+  }
+  if (document.readyState === "complete") {
+    start();
+  } else {
+    document.addEventListener("DOMContentLoaded", start);
+    window.addEventListener("load", start);
+  }
 })();
 `;

@@ -46,9 +46,6 @@ const MAX_THREAD_DEPTH = 3;
  */
 const THREAD_PAGE_SIZE = 50;
 
-/** The most rows `comment_archive.list_for_page` returns at once. */
-const MAX_ARCHIVE_READ = 500;
-
 /** The most pages `comment_archive.stats_many` answers at once. */
 const MAX_STATS_PAGES = 500;
 
@@ -150,7 +147,12 @@ interface ThreadPage {
 async function approvedComments(
   ctx: PluginContextTier1,
   pageId: string,
-  page: { limit: number; since?: string | undefined; before?: ThreadCursor | undefined },
+  page: {
+    limit: number;
+    since?: string | undefined;
+    before?: ThreadCursor | undefined;
+    commentId?: string | undefined;
+  },
 ): Promise<ThreadPage> {
   if (!ctx.cms || !UUID_RE.test(pageId)) return { comments: [], nextCursor: null };
   return ctx.cms.call<
@@ -160,6 +162,7 @@ async function approvedComments(
       limit: number;
       since?: string;
       before?: ThreadCursor;
+      commentId?: string;
     },
     ThreadPage
   >("comment_archive.list_for_page", {
@@ -168,12 +171,25 @@ async function approvedComments(
     limit: page.limit,
     ...(page.since ? { since: page.since } : {}),
     ...(page.before ? { before: page.before } : {}),
+    ...(page.commentId ? { commentId: page.commentId } : {}),
   });
+}
+
+/** One approved comment of a page by either of its ids, or null. */
+async function approvedComment(
+  ctx: PluginContextTier1,
+  pageId: string,
+  commentId: string,
+): Promise<ApprovedComment | null> {
+  if (!UUID_RE.test(commentId)) return null;
+  const page = await approvedComments(ctx, pageId, { limit: 1, commentId });
+  return page.comments[0] ?? null;
 }
 
 interface ThreadStats {
   approved: number;
   lastArchivedAt: string;
+  fingerprint: string;
 }
 
 /** What the bake of a page depends on: any approval or removal changes it. */
@@ -190,15 +206,13 @@ async function threadStats(
       { pageIds: ReadonlyArray<string> },
       { stats: ReadonlyArray<ThreadStats & { pageId: string }> }
     >("comment_archive.stats_many", { pageIds: pageIds.slice(i, i + MAX_STATS_PAGES) });
-    for (const { pageId, approved, lastArchivedAt } of r.stats) {
-      out.set(pageId, { approved, lastArchivedAt });
-    }
+    for (const { pageId, ...stats } of r.stats) out.set(pageId, stats);
   }
   return out;
 }
 
 function threadSignature(stats: ThreadStats | undefined): string {
-  return stats ? `${stats.approved}:${stats.lastArchivedAt}` : "0:0";
+  return stats ? `${stats.approved}:${stats.lastArchivedAt}:${stats.fingerprint}` : "0:0";
 }
 
 interface CommentRow {
@@ -363,20 +377,23 @@ export default definePlugin<PluginContextTier1>({
 
       // Enforce thread depth. A reply goes to an APPROVED comment of this
       // page (#1332): the inbox is visitor-written and not readable on the
-      // public side, so the chain is walked through the published thread:
-      // its newest comments, which is what a reply answers in practice.
+      // public side, so the chain is walked through the published thread,
+      // one ancestor by id per step: any window of the thread can cut the
+      // chain and pass a reply the cap should stop (#1169). A chain that
+      // cannot be read to its root is refused, never taken for complete.
       if (input.parentId) {
-        const recent = await approvedComments(ctx, input.pageId, { limit: MAX_ARCHIVE_READ });
-        const byId = new Map(recent.comments.map((c) => [c.publicRowId, c]));
-        if (!byId.has(input.parentId)) {
-          throw new PublicOperationError("submit: the comment you reply to is not on this page");
-        }
         let depth = 1;
         let cursor: string | null = input.parentId;
         while (cursor && depth <= MAX_THREAD_DEPTH) {
-          const parent = byId.get(cursor);
-          if (!parent) break;
-          cursor = parent.parentId;
+          const ancestor: ApprovedComment | null = await approvedComment(ctx, input.pageId, cursor);
+          if (!ancestor) {
+            throw new PublicOperationError(
+              depth === 1
+                ? "submit: the comment you reply to is not on this page"
+                : "submit: this thread is no longer complete, so it takes no more replies",
+            );
+          }
+          cursor = ancestor.parentId;
           depth += 1;
         }
         if (depth > MAX_THREAD_DEPTH) {

@@ -157,13 +157,25 @@ interface Visit {
   ids: () => string[];
   button: () => El | undefined;
   settle: () => Promise<void>;
+  /** Everything a click on the page's button would do; a disabled one does nothing. */
+  click: () => void;
+  /** The browser finishing the deferred scripts. */
+  domReady: () => void;
 }
 
 /** Run the shipped `runtime.js` over `region`, its reads served by `rows`. */
 async function visit(
   region: El,
   rows: readonly Row[],
-  opts: { failReads?: () => boolean; consentDecision?: string } = {},
+  opts: {
+    failReads?: () => boolean;
+    consentDecision?: string;
+    /** Stay before DOMContentLoaded until the test calls `domReady`. */
+    holdDomReady?: boolean;
+    /** Answers wait for this, in call order, while it is set. */
+    gate?: { release: Promise<void> } | undefined;
+    window?: Record<string, unknown>;
+  } = {},
 ): Promise<Visit & { headers: Record<string, string>[] }> {
   const calls: Record<string, unknown>[] = [];
   const headers: Record<string, string>[] = [];
@@ -179,12 +191,25 @@ async function visit(
     if (opts.failReads?.()) throw new Error("offline");
     const args = JSON.parse(init.body) as Record<string, unknown>;
     calls.push(args);
+    if (opts.gate) await opts.gate.release;
     const data = await list(contextOver(rows), args);
     return { json: async () => ({ ok: true, data }) };
   };
+  // A deferred script runs after parsing and before DOMContentLoaded.
+  const ready: (() => void)[] = [];
   const doc = {
+    readyState: "interactive",
     querySelectorAll: () => [region],
     createElement: (tag: string) => new El(tag),
+    addEventListener: (event: string, fn: () => void) => {
+      if (event === "DOMContentLoaded") ready.push(fn);
+    },
+  };
+  const win = opts.window ?? {
+    ...(opts.consentDecision
+      ? { caeloConsent: { decisionHeader: () => opts.consentDecision } }
+      : {}),
+    addEventListener: () => undefined,
   };
   const assets = plugin.buildAssets?.({} as PluginContextTier1, { pageIds: [] }) as Record<
     string,
@@ -192,26 +217,34 @@ async function visit(
   >;
   new Function("document", "window", "fetch", "console", assets["runtime.js"] as string)(
     doc,
-    opts.consentDecision ? { caeloConsent: { decisionHeader: () => opts.consentDecision } } : {},
+    win,
     fetchStub,
     { warn: (...args: unknown[]) => warnings.push(args) },
   );
   const settle = async () => {
     for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 0));
   };
+  const domReady = () => {
+    for (const fn of ready.splice(0)) fn();
+  };
+  if (!opts.holdDomReady) domReady();
   await settle();
   const ids = () =>
     (region.querySelector("[data-comment-thread]") as El).children.map(
       (c) => c.getAttribute("data-comment-id") as string,
     );
   const button = () => region.children.find((c) => c.tag === "button");
-  return { region, warnings, calls, headers, ids, button, settle };
+  const click = () => {
+    const b = button();
+    if (b && !b.disabled) b.listener?.();
+  };
+  return { region, warnings, calls, headers, ids, button, settle, click, domReady };
 }
 
 async function clickUntilGone(v: Visit): Promise<number> {
   let clicks = 0;
-  for (let button = v.button(); button; button = v.button()) {
-    button.listener?.();
+  while (v.button()) {
+    v.click();
     await v.settle();
     clicks += 1;
     if (clicks > 100) throw new Error("the button never went away");
@@ -292,13 +325,65 @@ describe("the baked thread in the browser (#1169)", () => {
       failReads: () => offline,
     });
     offline = true;
-    v.button()?.listener?.();
+    v.click();
     await v.settle();
     expect(v.warnings).toHaveLength(1);
     expect(v.button()?.disabled).toBe(false);
     offline = false;
     await clickUntilGone(v);
     expect(v.ids()).toHaveLength(70);
+  });
+
+  it("keeps the button shut until the first read settled, so no page skips comments", async () => {
+    const baked = range(1, 180);
+    const all = range(1, 400);
+    const bakedAt = baked[179]?.archivedAt ?? "";
+    const { promise: release, resolve: open } = Promise.withResolvers<void>();
+    const v = await visit(regionFrom(await bake(baked), bakedAt), all, { gate: { release } });
+    expect(v.button()?.disabled).toBe(true);
+    v.click();
+    await v.settle();
+    expect(v.calls).toEqual([{ pageId: PAGE_ID, since: bakedAt }]);
+    open();
+    await v.settle();
+    expect(v.button()?.disabled).toBe(false);
+    await clickUntilGone(v);
+    expect(v.ids()).toEqual([...all].reverse().map((r) => r.publicRowId));
+  });
+
+  it("opens the button when the first read fails: the bake's cursor is still good", async () => {
+    const rows = range(1, 70);
+    let offline = true;
+    const v = await visit(regionFrom(await bake(rows), BAKED_AT), rows, {
+      failReads: () => offline,
+    });
+    expect(v.warnings).toHaveLength(1);
+    expect(v.button()?.disabled).toBe(false);
+    offline = false;
+    await clickUntilGone(v);
+    expect(v.ids()).toHaveLength(70);
+  });
+
+  it("reads nothing before the deferred scripts ran, so a consent provider after it is seen", async () => {
+    // `comments` sorts before `consent-manager`, so this file runs first.
+    const rows = range(1, 3);
+    const win: Record<string, unknown> = { addEventListener: () => undefined };
+    const v = await visit(regionFrom(await bake(rows), BAKED_AT), rows, {
+      holdDomReady: true,
+      window: win,
+    });
+    expect(v.calls).toEqual([]);
+    win.caeloConsent = { decisionHeader: () => "v=1; granted=analytics" };
+    v.domReady();
+    await v.settle();
+    expect(v.headers[0]?.["x-caelo-consent"]).toBe("v=1; granted=analytics");
+  });
+
+  it("works on a site without a consent provider: no header, and the read still goes out", async () => {
+    const rows = range(1, 3);
+    const v = await visit(regionFrom(await bake(rows), BAKED_AT), rows);
+    expect(v.calls).toHaveLength(1);
+    expect(v.headers[0]?.["x-caelo-consent"]).toBeUndefined();
   });
 
   it("states the visitor's consent decision on its reads", async () => {

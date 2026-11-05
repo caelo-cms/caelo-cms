@@ -117,23 +117,36 @@ export const commentArchiveStatsManyOp = defineOperation({
         pageId: z.string(),
         approved: z.number().int(),
         lastArchivedAt: z.string(),
+        /**
+         * Which comments these are, in one order-independent value. Count
+         * and newest instant alone stay put when one comment replaces
+         * another below the newest.
+         */
+        fingerprint: z.string(),
       }),
     ),
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT page_id::text AS page_id, count(*)::int AS approved,
-             max(archived_at)::text AS last_archived_at
+             max(archived_at)::text AS last_archived_at,
+             sum(hashtextextended(id::text, 0)::numeric)::text AS fingerprint
       FROM comment_archive
       WHERE page_id IN (SELECT jsonb_array_elements_text(${jsonbParam(input.pageIds)})::uuid)
         AND status = 'approved'
       GROUP BY page_id
-    `)) as unknown as { page_id: string; approved: number; last_archived_at: string }[];
+    `)) as unknown as {
+      page_id: string;
+      approved: number;
+      last_archived_at: string;
+      fingerprint: string;
+    }[];
     return ok({
       stats: rows.map((r) => ({
         pageId: r.page_id,
         approved: r.approved,
         lastArchivedAt: r.last_archived_at,
+        fingerprint: r.fingerprint,
       })),
     });
   },

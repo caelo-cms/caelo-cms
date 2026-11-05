@@ -213,6 +213,97 @@ describe("a thread longer than the bake (#1169)", () => {
   });
 });
 
+describe("a reply's depth (#1169)", () => {
+  const ROOT = "aaaaaaaa-0000-4000-8000-000000000001";
+  const CHILD = "aaaaaaaa-0000-4000-8000-000000000002";
+  const GRANDCHILD = "aaaaaaaa-0000-4000-8000-000000000003";
+  const ORPHAN = "aaaaaaaa-0000-4000-8000-000000000004";
+  const GONE = "aaaaaaaa-0000-4000-8000-000000000005";
+  const TEAM_REPLY = "aaaaaaaa-0000-4000-8000-000000000006";
+  const inserted: unknown[] = [];
+
+  /** `submit` as the gateway runs it: the thread read from the published copy. */
+  function submitReply(parentId: string) {
+    const op = commentsPlugin.operations.submit;
+    if (!op) throw new Error("submit missing");
+    const ctx = {
+      ...gatewayCtx(),
+      query: {
+        insert: async (_table: string, row: unknown) => {
+          inserted.push(row);
+          return { id: "new" };
+        },
+      },
+    } as unknown as PluginContextTier1;
+    return Promise.resolve(op(ctx, { pageId, parentId, authorName: "Eve", content: "Reply" }));
+  }
+
+  beforeAll(async () => {
+    await admin(async (tx) => {
+      const old = "2020-01-01 00:00:00+00";
+      await tx`
+        INSERT INTO comment_archive
+          (public_row_id, page_id, parent_id, author_name, content, status, submitted_at, archived_at)
+        VALUES
+          (${ROOT}::uuid, ${pageId}::uuid, NULL, 'Root', 'r', 'approved', ${old}::timestamptz, ${old}::timestamptz),
+          (${CHILD}::uuid, ${pageId}::uuid, ${ROOT}::uuid, 'Child', 'c', 'approved', ${old}::timestamptz, ${old}::timestamptz),
+          (${ORPHAN}::uuid, ${pageId}::uuid, ${GONE}::uuid, 'Orphan', 'o', 'approved', ${old}::timestamptz, ${old}::timestamptz)`;
+      // More approvals than any window of the thread holds.
+      await tx`
+        INSERT INTO comment_archive
+          (public_row_id, page_id, author_name, content, status, submitted_at, archived_at)
+        SELECT gen_random_uuid(), ${pageId}::uuid, 'Filler', 'f', 'approved', now(), now()
+        FROM generate_series(1, 520)`;
+      await tx`
+        INSERT INTO comment_archive
+          (public_row_id, page_id, parent_id, author_name, content, status, submitted_at)
+        VALUES (${GRANDCHILD}::uuid, ${pageId}::uuid, ${CHILD}::uuid, 'Grandchild', 'g', 'approved', now())`;
+      // A team reply names its parent by archive id (comment_archive.post_team).
+      await tx`
+        INSERT INTO comment_archive
+          (public_row_id, page_id, parent_id, author_name, content, status, submitted_at)
+        SELECT ${TEAM_REPLY}::uuid, ${pageId}::uuid, id, 'Team', 't', 'approved', now()
+        FROM comment_archive WHERE public_row_id = ${CHILD}::uuid`;
+    });
+    await drainProjectionOnce(adapter, staging);
+  });
+
+  afterAll(async () => {
+    await admin(async (tx) => {
+      await tx`DELETE FROM comment_archive
+               WHERE page_id = ${pageId}::uuid
+                 AND (author_name = 'Filler' OR parent_id IS NOT NULL OR public_row_id = ${ROOT}::uuid)`;
+    });
+    await drainProjectionOnce(adapter, staging);
+  });
+
+  it("refuses a level past the cap, even with its ancestors far below the newest comments", async () => {
+    await expect(submitReply(GRANDCHILD)).rejects.toThrow("thread depth exceeds 3");
+    expect(inserted).toEqual([]);
+  });
+
+  it("walks a team reply's parent, which is named by archive id", async () => {
+    await expect(submitReply(TEAM_REPLY)).rejects.toThrow("thread depth exceeds 3");
+    expect(inserted).toEqual([]);
+  });
+
+  it("accepts a reply to a comment older than every window", async () => {
+    await expect(submitReply(CHILD)).resolves.toMatchObject({ status: "pending" });
+    await expect(submitReply(ROOT)).resolves.toMatchObject({ status: "pending" });
+  });
+
+  it("refuses a chain it cannot read to its root", async () => {
+    await expect(submitReply(ORPHAN)).rejects.toThrow("thread");
+  });
+
+  it("refuses a parent that is not on this page, and a malformed one", async () => {
+    await expect(submitReply("bbbbbbbb-0000-4000-8000-000000000000")).rejects.toThrow(
+      "not on this page",
+    );
+    await expect(submitReply("not-a-uuid")).rejects.toThrow("not on this page");
+  });
+});
+
 describe("the bake's signature (#1169)", () => {
   it("counts the whole thread, and moves on an approval and a removal", async () => {
     const before = await signature();
@@ -221,6 +312,30 @@ describe("the bake's signature (#1169)", () => {
     const after = await signature();
     expect(after).toStartWith(`${THREAD_LENGTH + 1}:`);
     await dropComment("Moved");
+    expect(await signature()).toBe(before);
+  });
+
+  it("moves when one comment replaces another under the same count and newest instant", async () => {
+    const before = await signature();
+    await admin(async (tx) => {
+      await tx`UPDATE comment_archive SET status = 'rejected'
+               WHERE page_id = ${pageId}::uuid AND author_name = 'Author 1'`;
+      await tx`
+        INSERT INTO comment_archive
+          (public_row_id, page_id, author_name, content, status, submitted_at, archived_at)
+        SELECT gen_random_uuid(), ${pageId}::uuid, 'Swapped in', 's', 'approved',
+               archived_at, archived_at
+        FROM comment_archive WHERE page_id = ${pageId}::uuid AND author_name = 'Author 2'`;
+    });
+    const after = await signature();
+    expect(after.split(":").slice(0, 1)).toEqual(before.split(":").slice(0, 1));
+    expect(after).not.toBe(before);
+    await admin(async (tx) => {
+      await tx`DELETE FROM comment_archive
+               WHERE page_id = ${pageId}::uuid AND author_name = 'Swapped in'`;
+      await tx`UPDATE comment_archive SET status = 'approved'
+               WHERE page_id = ${pageId}::uuid AND author_name = 'Author 1'`;
+    });
     expect(await signature()).toBe(before);
   });
 
