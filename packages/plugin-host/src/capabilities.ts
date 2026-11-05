@@ -30,7 +30,7 @@ import type {
   PublicOperationDef,
 } from "@caelo-cms/plugin-sdk";
 import { type DatabaseAdapter, execute } from "@caelo-cms/query-api";
-import type { LiveBuildUrls } from "@caelo-cms/shared";
+import { LIVE_BUILD_REFUSAL, type LiveBuildUrls } from "@caelo-cms/shared";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
 import {
   hostSystemActorId,
@@ -721,9 +721,12 @@ function makePluginCms(
         ),
       );
       if (!r.ok) {
-        throw new Error(
-          `ctx.cms.call("${opName}") failed: ${r.error.kind}${"message" in r.error ? `: ${(r.error as { message: string }).message}` : ""}`,
+        const reason = "message" in r.error ? (r.error as { message: string }).message : "";
+        const failure = new Error(
+          `ctx.cms.call("${opName}") failed: ${r.error.kind}${reason ? `: ${reason}` : ""}`,
         );
+        if (reason.startsWith(LIVE_BUILD_REFUSAL)) liveUrls?.refusals.add(failure);
+        throw failure;
       }
       return r.value as Output;
     },

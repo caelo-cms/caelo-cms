@@ -22,6 +22,7 @@ import {
 } from "@caelo-cms/query-api";
 import {
   err,
+  LIVE_BUILD_REFUSAL,
   type LiveBuildUrls,
   ok,
   PAGE_URL_STYLES,
@@ -144,7 +145,7 @@ function answerFromLiveBuild(
     return err({
       kind: "HandlerError",
       operation: "pages.resolve_public_urls",
-      message: `the live build ships no page with id ${[...live.unknownPageIds].join(", ")}, so this render cannot link it. The region keeps its published output until the next Publish live.`,
+      message: `${LIVE_BUILD_REFUSAL} the live build ships no page with id ${[...live.unknownPageIds].join(", ")}, so this render cannot link it. The region keeps its published output until the next Publish live.`,
     });
   }
   return ok({ urls });

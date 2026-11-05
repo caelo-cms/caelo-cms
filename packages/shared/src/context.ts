@@ -22,7 +22,17 @@ export interface LiveBuildUrls {
   readonly urls: ReadonlyMap<string, string>;
   /** Filled as the render asks for pages the live build does not ship. */
   readonly unknownPageIds: Set<string>;
+  /**
+   * The errors the host threw for those refusals. Identity tells a refusal
+   * from any other error the render throws: `ctx.cms` runs in the host's
+   * process (the sandbox has no `ctx.cms`), and plugin code has no handle
+   * on this set.
+   */
+  readonly refusals: WeakSet<Error>;
 }
+
+/** Starts the message of a {@link LiveBuildUrls} refusal; the host marks those errors by it. */
+export const LIVE_BUILD_REFUSAL = "LiveBuildPageRefused:";
 
 export interface ExecutionContext {
   readonly actorId: string;
