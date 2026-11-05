@@ -28,7 +28,7 @@ The admin **publishes** exactly that into `cms_public` and, since #1329, into it
 
 | Section | Source (`cms_admin`) | Published to | Kind |
 |---|---|---|---|
-| `settings` | `site_settings` (gateway columns; each environment its own cookie secret) | `published_gateway_settings` | immediate |
+| `settings` | `site_settings` (gateway columns; each environment its own cookie secret and mail link key) | `published_gateway_settings` | immediate |
 | `staging` | `staging_access` | `published_staging_access` | immediate |
 | `rate_limits` | `plugin_rate_limit_overrides`, `rate_limit_profiles` | `published_rate_limits` (profile already resolved) | immediate |
 | `comments` | `comment_archive`, approved rows (moderated comments and team posts) | `published_comments` | immediate |
@@ -77,6 +77,8 @@ The admin reads `gateway_plugin_op_events` for one thing: hints for the plugin-d
 ### The mail outbox (#1337)
 
 Each public database has a `mail_outbox` (cms_public migration 0610): the visitor role may insert a row naming a declared mail template of an active plugin, one recipient and one token, and nothing more. The admin drains it on its scheduler tick and sends the mail with the transport configured in cms_admin, which the public side never holds. Text, link and link host come from the plugin's manifest and cms_admin; per-recipient and site-wide caps count a cms_admin ledger; mail from the staging database goes only to cms_admin users. Details: [mail-outbox.md](./mail-outbox.md).
+
+The key that signs unsubscribe links (#1432) is created and held in cms_admin and published one way with the gateway settings, each environment its own. Details: [mail-outbox.md](./mail-outbox.md).
 
 Plugin op records from visitor calls go to `gateway_plugin_op_events`. They never go to `audit_events`: the public side must not be able to forge entries in the admin's audit trail.
 

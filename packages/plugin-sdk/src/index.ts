@@ -40,7 +40,9 @@ import {
 import { checkPluginIndexes, type PluginIndexes, pluginIndexes } from "./indexes.js";
 import {
   checkMailTemplates,
+  mailUnsubscribeLink,
   type PluginMailTemplates,
+  type PluginMailUnsubscribe,
   pluginMailTemplates,
 } from "./mail-templates.js";
 import {
@@ -1124,6 +1126,8 @@ export const pluginManifest = z
     requires: z.array(pluginRequirement).max(4).optional(),
     /** See `PluginDefinition.mailTemplates` (#1337). */
     mailTemplates: pluginMailTemplates.optional(),
+    /** See `PluginDefinition.mailUnsubscribe` (#1432). */
+    mailUnsubscribe: mailUnsubscribeLink.optional(),
     /** See `PluginDefinition.visitorProjection` (#635). Each table must be
      *  in `adminSchema` and each column declared on it. */
     visitorProjection: z
@@ -1705,7 +1709,23 @@ export interface PluginEmail {
     subject: string;
     html: string;
     replyTo?: string;
+    /**
+     * #1432 — this recipient's `unsubscribeLink`. The host sends it as the
+     * mail's `List-Unsubscribe` and `List-Unsubscribe-Post` headers
+     * (RFC 8058); the footer link in `html` stays the plugin's.
+     */
+    unsubscribeUrl?: string;
   }): Promise<{ messageId: string }>;
+  /**
+   * #1432 — the absolute unsubscribe link of one recipient of a mail sent
+   * with `send`: the live site's host, the gateway's mail-link page and a
+   * token the host signs for this plugin, its `mailUnsubscribe` operation
+   * and `recipientId` (a UUID the operation can find the recipient by,
+   * returned by `mailUnsubscribeRecipient`). The token does not expire.
+   * Admin side only. Throws when the site has no base URL, so ask for the
+   * links before claiming a batch: a mail without one must not go out.
+   */
+  unsubscribeLink(args: { recipientId: string }): Promise<string>;
   /**
    * #1337 — queue one of the plugin's `mailTemplates` for `to`, with an
    * optional token for its link. Works on both sides: the row lands in the
@@ -2371,6 +2391,15 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly mailTemplates?: PluginMailTemplates;
   /**
+   * #1432 — the unsubscribe link of the mail this plugin sends itself with
+   * `ctx.email.send`: a public write operation whose only required input
+   * is `token`. The host signs the token per recipient
+   * (`ctx.email.unsubscribeLink`) and accepts the operation only with a
+   * token it signed; a mail client's one-click POST (RFC 8058) reaches it
+   * without a proof-of-work, on that signature. See `./mail-templates.ts`.
+   */
+  readonly mailUnsubscribe?: PluginMailUnsubscribe;
+  /**
    * The visitor-readable projection of this plugin's private storage
    * (`adminSchema`): table → the columns the API gateway may read (`id`
    * is always included). Issue #635 — the gateway has no cms_admin login,
@@ -2655,6 +2684,7 @@ export function manifestFromDefinition(def: {
   readonly tableKinds?: PluginTableKinds;
   readonly requires?: ReadonlyArray<PluginRequirement>;
   readonly mailTemplates?: PluginMailTemplates;
+  readonly mailUnsubscribe?: PluginMailUnsubscribe;
   readonly visitorProjection?: Readonly<Record<string, ReadonlyArray<string>>>;
   readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
   readonly editorToolbar?: ReadonlyArray<PluginEditorToolbarItem>;
@@ -2686,6 +2716,7 @@ export function manifestFromDefinition(def: {
     ...(def.mailTemplates && Object.keys(def.mailTemplates).length > 0
       ? { mailTemplates: structuredClone(def.mailTemplates) }
       : {}),
+    ...(def.mailUnsubscribe ? { mailUnsubscribe: { ...def.mailUnsubscribe } } : {}),
     ...(def.visitorProjection && Object.keys(def.visitorProjection).length > 0
       ? {
           visitorProjection: Object.fromEntries(

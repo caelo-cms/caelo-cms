@@ -249,6 +249,27 @@ export const reserveMailDeliveriesOp = defineOperation({
   },
 });
 
+export const mailLinkConfigOp = defineOperation({
+  name: "public_mail_deliveries.link_config",
+  readScope: "request",
+  // Why system-only: the plugin host asks on a plugin's behalf for the host
+  // and the signing key of mail the admin sends (#1432); a plugin only ever
+  // gets the finished link.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({ origin: z.string().nullable(), key: z.string().nullable() }),
+  handler: async (_ctx, _input, tx) => {
+    const rows = (await tx.execute(
+      sql`SELECT mail_link_key FROM site_settings WHERE id = 1`,
+    )) as unknown as { mail_link_key: string | null }[];
+    return ok({
+      origin: await linkOriginOf(tx, "live"),
+      key: rows[0]?.mail_link_key ?? null,
+    });
+  },
+});
+
 /**
  * The origin an environment's mail links point at, from cms_admin, never
  * from an outbox row: live the site's base URL, staging the staging host.

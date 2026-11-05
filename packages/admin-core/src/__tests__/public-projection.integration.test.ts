@@ -162,7 +162,7 @@ describe("drain (#635)", () => {
     expect(after).toEqual([]);
   });
 
-  it("publishes only the four gateway columns of site_settings, plus the live origins (#1326)", async () => {
+  it("publishes only the gateway columns of site_settings, plus the live origins (#1326)", async () => {
     const cols = (await pub(
       async (tx) =>
         await tx`
@@ -177,6 +177,8 @@ describe("drain (#635)", () => {
       "captcha_pow_target_prefix",
       // Derived from the base URL and the public domains, never the staging host.
       "live_origins",
+      // #1432 — held in cms_admin; a one-way copy for checking mail links.
+      "mail_link_key",
     ]);
   });
 });

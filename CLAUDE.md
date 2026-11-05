@@ -154,7 +154,7 @@ Landed in P6.5. Conventions any session touching admin UI should follow:
 
 - **Secrets never in code or `.env` files committed to git.** Always via the provider-appropriate secrets manager, even in dev (use a local Vault/Doppler/MinIO-hosted fake).
 - **Input validation before the Query API, not inside it.** The Validator enforces shape; handlers trust their inputs.
-- **Public writes require CAPTCHA/PoW, rate limits, and honeypots.** No exceptions — AI-authored plugin endpoints must honour this.
+- **Public writes require CAPTCHA/PoW, rate limits, and honeypots.** No exceptions — AI-authored plugin endpoints must honour this. One named exception: the RFC 8058 one-click unsubscribe POST (`POST /api/_caelo/mail-link/<slug>/<op>`) to a plugin's declared `mailUnsubscribe` operation is proved by a host-signed token instead of CAPTCHA/PoW, on that route only. Browser calls to the same operation keep proof-of-work.
 - **All AI actions and DB ops pass through the audit log.** Logging is not optional; a code path that skips it is a bug.
 - **Dependency review on every PR.** New deps justified in the PR description. Enforced mechanically by CodeQL static analysis (merge-blocking), the dependency-review workflow (high-severity vulns + license allow-list), and repo secret scanning + push protection — see [`docs/dev/codeql.md`](./docs/dev/codeql.md).
 

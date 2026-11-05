@@ -49,6 +49,7 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
       "subject": "Confirm your e-mail address",
     },
   },
+  "mailUnsubscribe": null,
   "publicOperations": [
     {
       "captcha": "required",
@@ -338,6 +339,7 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
 exports[`shipped plugins' public surface (#1332) comments: matches the reviewed surface 1`] = `
 {
   "mailTemplates": {},
+  "mailUnsubscribe": null,
   "publicOperations": [
     {
       "captcha": "required",
@@ -450,6 +452,7 @@ exports[`shipped plugins' public surface (#1332) comments: matches the reviewed 
 exports[`shipped plugins' public surface (#1332) consent-manager: matches the reviewed surface 1`] = `
 {
   "mailTemplates": {},
+  "mailUnsubscribe": null,
   "publicOperations": [
     {
       "captcha": "none",
@@ -511,6 +514,7 @@ exports[`shipped plugins' public surface (#1332) consent-manager: matches the re
 exports[`shipped plugins' public surface (#1332) forms: matches the reviewed surface 1`] = `
 {
   "mailTemplates": {},
+  "mailUnsubscribe": null,
   "publicOperations": [
     {
       "captcha": "required",
@@ -616,6 +620,7 @@ exports[`shipped plugins' public surface (#1332) forms: matches the reviewed sur
 exports[`shipped plugins' public surface (#1332) international-site: matches the reviewed surface 1`] = `
 {
   "mailTemplates": {},
+  "mailUnsubscribe": null,
   "publicOperations": [],
   "requires": [],
   "tables": {},
@@ -637,6 +642,11 @@ exports[`shipped plugins' public surface (#1332) newsletter: matches the reviewe
       },
       "subject": "Confirm your newsletter subscription",
     },
+  },
+  "mailUnsubscribe": {
+    "done": "You are unsubscribed and will get no more of this newsletter.",
+    "label": "Unsubscribe",
+    "operation": "unsubscribe",
   },
   "publicOperations": [
     {
@@ -760,6 +770,7 @@ exports[`shipped plugins' public surface (#1332) newsletter: matches the reviewe
 exports[`shipped plugins' public surface (#1332) ratings: matches the reviewed surface 1`] = `
 {
   "mailTemplates": {},
+  "mailUnsubscribe": null,
   "publicOperations": [
     {
       "captcha": "required",

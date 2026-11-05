@@ -37,6 +37,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { bakedDataPageIds, bakedDataTrigger } from "./baked-data-pages.js";
 import { type ExternalApproval, operatorHasPermission } from "./external-authorization.js";
+import { refuseMailUnsubscribeCall } from "./mail-link-token.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
 import { refusePublicCall, VISITOR_MESSAGE_MAX, visitorSafeResult } from "./public-contract.js";
@@ -207,6 +208,15 @@ export interface PluginHostInfra {
   /** P12 PR1.3 — optional outbound email transport. When omitted,
    *  ctx.email.send falls back to a no-op stderr stub. */
   readonly emailTransport?: EmailTransport;
+  /**
+   * #1432 — what unsubscribe links need. Admin side: the live origin (null
+   * without a base URL) and the key, from cms_admin. Gateway: the key as the
+   * admin published it, and no origin, because a gateway only checks links.
+   */
+  readonly mailLinks?: () => Promise<{
+    readonly origin: string | null;
+    readonly key: string | null;
+  }>;
   /** Takes the chat lock for a plugin row written on a branch. Required
    *  for any chat-origin private-storage write; admin-core supplies it
    *  (it owns chat locks). A branch write without it fails loudly. */
@@ -221,6 +231,8 @@ export interface EmailTransport {
     subject: string;
     html: string;
     replyTo?: string;
+    /** Extra mail headers; only the host sets them (#1432, mail-queue.ts). */
+    headers?: Readonly<Record<string, string>>;
   }): Promise<{ messageId: string }>;
 }
 
@@ -290,6 +302,12 @@ export interface VisitorDispatchContext {
   readonly sessionToken: string | null;
   /** The gateway's captcha verdict for this request; `ctx.captcha.requireProof` answers from it. */
   readonly captcha: VisitorCaptchaVerdict;
+  /**
+   * #1432 — a mail client's one-click POST (RFC 8058). It cannot solve a
+   * proof-of-work, so the host-signed token takes the proof's place; only
+   * the plugin's `mailUnsubscribe` operation can be reached this way.
+   */
+  readonly mailOneClick?: boolean;
   readonly sessionMutation?: {
     current:
       | { kind: "none" }
@@ -612,9 +630,32 @@ async function runPluginOperationNow(
         },
       };
     }
+    // #1432 — the unsubscribe operation takes only a token the host signed,
+    // on every route. Checked here so that no entry point can skip it, and
+    // first because a one-click call has no proof of its own.
+    const unsubscribes = plugin.definition.mailUnsubscribe?.operation === opts.operationName;
+    if (opts.visitorContext.mailOneClick && !unsubscribes) {
+      return {
+        ok: false,
+        error: {
+          kind: "OperationNotPublic",
+          message: `operation "${opts.operationName}" of plugin "${opts.pluginSlug}" is not the plugin's mailUnsubscribe link`,
+        },
+      };
+    }
+    const unsigned = unsubscribes
+      ? await refuseMailUnsubscribeCall(plugin, cachedInfra, args)
+      : null;
+    if (unsigned) return { ok: false, error: unsigned };
     // #1332 — the declared contract runs before the handler: the captcha
     // the operation requires, then the visitor's input against its schema.
-    const refused = refusePublicCall(publicOperation, opts.visitorContext.captcha, args);
+    const refused = refusePublicCall(
+      publicOperation,
+      opts.visitorContext.mailOneClick
+        ? { enforced: false, proofVerified: false }
+        : opts.visitorContext.captcha,
+      args,
+    );
     if (!refused.ok) return { ok: false, error: refused.error };
     args = refused.args;
   }

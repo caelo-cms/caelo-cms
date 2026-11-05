@@ -40,6 +40,7 @@ import {
   defineComponent,
   definePlugin,
   isAiDelegated,
+  mailUnsubscribeRecipient,
   type PluginContextTier1,
   PublicOperationError,
   z,
@@ -104,7 +105,10 @@ const subscribeInput = z
   })
   .strict();
 
-/** A confirm or unsubscribe link's token (#1332). */
+/**
+ * A confirm or unsubscribe link's token (#1332). An unsubscribe token is
+ * longer than a confirm token but fits: 80 characters (#1432).
+ */
 const tokenInput = z
   .object({
     token: z
@@ -245,6 +249,17 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   /**
+   * #1432 — the unsubscribe link of a campaign mail. The host signs the
+   * token per subscriber and refuses any other, so opening the page changes
+   * nothing, its button works, and a mail client's one-click POST (RFC 8058)
+   * works without a proof-of-work.
+   */
+  mailUnsubscribe: {
+    operation: "unsubscribe",
+    label: "Unsubscribe",
+    done: "You are unsubscribed and will get no more of this newsletter.",
+  },
+  /**
    * #1332 — subscribers are visitor state: a visitor's own confirm and
    * unsubscribe links find their row by token. Campaigns and the per-
    * recipient send log are the admin's; no visitor reaches them.
@@ -375,14 +390,18 @@ export default definePlugin<PluginContextTier1>({
       const parsed = tokenInput.safeParse(args);
       if (!parsed.success) throw new PublicOperationError("unsubscribe: invalid token");
       const input = parsed.data;
-      const matches = await ctx.query.list<"subscribers", { id: string }>("subscribers", {
-        unsub_token: input.token,
-        limit: 1,
-      });
-      if (!matches[0]) throw new PublicOperationError("unsubscribe: invalid token");
-      await ctx.query.update("subscribers", matches[0].id, {
-        unsubscribed_at: new Date().toISOString(),
-      });
+      // The host already checked the signature, so a link stays good to
+      // press again and for a subscriber who is gone: both are unsubscribed.
+      const subscriberId = mailUnsubscribeRecipient(input.token);
+      if (!subscriberId) throw new PublicOperationError("unsubscribe: invalid token");
+      // Compare-and-swap, so that of two concurrent POSTs only the first
+      // sets the date; a gone subscriber swaps nothing and is still a success.
+      await ctx.query.compareAndSwap(
+        "subscribers",
+        subscriberId,
+        { unsubscribed_at: null },
+        { unsubscribed_at: new Date().toISOString() },
+      );
       return { unsubscribed: true };
     },
     /**

@@ -8,7 +8,12 @@
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
 import { manifestFromDefinition } from "./index.js";
-import { MAIL_RECIPIENT_RE, MAIL_TOKEN_RE, mailLinkPath } from "./mail-templates.js";
+import {
+  MAIL_RECIPIENT_RE,
+  MAIL_TOKEN_RE,
+  mailLinkPath,
+  mailUnsubscribeRecipient,
+} from "./mail-templates.js";
 
 const base = {
   slug: "mailer",
@@ -170,5 +175,81 @@ describe("outbox row shapes", () => {
 
   it("links go to the gateway's confirmation page", () => {
     expect(mailLinkPath("newsletter", "confirm")).toBe("/api/_caelo/mail-link/newsletter/confirm");
+  });
+});
+
+describe("the unsubscribe link in the manifest (#1432)", () => {
+  const link = { operation: "confirm", label: "Unsubscribe", done: "Out." };
+  const mailer = {
+    ...base,
+    requires: ["email" as const],
+    requestedCapabilities: ["email" as const],
+    publicOperations: [confirmOp],
+    mailUnsubscribe: link,
+  };
+
+  it("keeps a link whose operation requires only the token", () => {
+    expect(manifestFromDefinition(mailer).mailUnsubscribe).toEqual(link);
+  });
+
+  it("needs the mail transport like a template", () => {
+    expect(() => manifestFromDefinition({ ...mailer, requires: [] })).toThrow("requires");
+    expect(() => manifestFromDefinition({ ...mailer, requestedCapabilities: [] })).toThrow(
+      "capability",
+    );
+  });
+
+  it("must target a public write operation", () => {
+    expect(() =>
+      manifestFromDefinition({ ...mailer, mailUnsubscribe: { ...link, operation: "other" } }),
+    ).toThrow("public write operation");
+  });
+
+  it("refuses an operation one-click could not call: a second required field", () => {
+    const op = {
+      ...confirmOp,
+      input: z.object({ token: z.string(), reason: z.string() }).strict(),
+    };
+    expect(() => manifestFromDefinition({ ...mailer, publicOperations: [op] })).toThrow(
+      "nothing else",
+    );
+  });
+
+  it("refuses a template link to the same operation", () => {
+    expect(() =>
+      manifestFromDefinition({
+        ...mailer,
+        mailTemplates: {
+          confirm_it: {
+            subject: "Confirm",
+            body: ["Please confirm."],
+            link: { operation: "confirm", label: "Confirm", done: "Done." },
+          },
+        },
+      }),
+    ).toThrow("its own operation");
+  });
+
+  it("refuses an operation that does not require the token", () => {
+    const op = { ...confirmOp, input: z.object({ token: z.string().optional() }).strict() };
+    expect(() => manifestFromDefinition({ ...mailer, publicOperations: [op] })).toThrow(
+      "nothing else",
+    );
+  });
+});
+
+describe("mailUnsubscribeRecipient (#1432)", () => {
+  const uuid = "12345678-1234-4234-8234-123456789abc";
+
+  it("reads the recipient of a token of the signed shape, which fits the mail link charset", () => {
+    const token = `${uuid}_${"a".repeat(43)}`;
+    expect(mailUnsubscribeRecipient(token)).toBe(uuid);
+    expect(MAIL_TOKEN_RE.test(token)).toBe(true);
+  });
+
+  it("is null for anything else", () => {
+    for (const bad of [uuid, `${uuid}_short`, `${uuid}_${"a".repeat(44)}`, ""]) {
+      expect(mailUnsubscribeRecipient(bad)).toBeNull();
+    }
   });
 });

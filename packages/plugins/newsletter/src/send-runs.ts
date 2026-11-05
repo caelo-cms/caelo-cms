@@ -29,9 +29,21 @@
  *     is gone or unsubscribed is skipped. `sends` rows are an outcome log
  *     the worker writes; a `pending` row there is not a queue entry and is
  *     marked failed (forged, or left over from before #635).
+ *   - Every mail carries the recipient's unsubscribe link (#1432), absolute
+ *     on the live site's host, in the footer and in the `List-Unsubscribe`
+ *     headers, signed by the host for that recipient. The links are made
+ *     before a batch is claimed: a site without a base URL fails the tick
+ *     with nothing claimed, instead of using up the run on mails that
+ *     cannot go out. The token names the `subscriberId` of the approval's
+ *     snapshot, which a rewritten public row cannot change.
  */
 
-import { type PluginContextTier1, type PluginQuery, z } from "@caelo-cms/plugin-sdk";
+import {
+  type PluginContextTier1,
+  type PluginEmail,
+  type PluginQuery,
+  z,
+} from "@caelo-cms/plugin-sdk";
 
 /** Most emails one worker tick sends, across all runs. */
 export const SENDS_PER_TICK = 10;
@@ -135,8 +147,21 @@ export function eligibleRecipients(
   return { recipients, invalid };
 }
 
-function unsubscribeFooter(unsubToken: string): string {
-  return `<hr/><p style="font-size:12px"><a href="/api/plugin/newsletter/unsubscribe?token=${encodeURIComponent(unsubToken)}">Unsubscribe</a></p>`;
+/** The footer of a mail; the link is the host's, so it needs no escaping. */
+function unsubscribeFooter(url: string): string {
+  return `<hr/><p style="font-size:12px"><a href="${url}">Unsubscribe</a></p>`;
+}
+
+/**
+ * `html` with root-relative `href` and `src` values on `origin`: a mail
+ * has no host of its own, so `/pricing` would open nothing. Only adds the
+ * host the links already mean; `//host/x` is a full address and stays.
+ */
+function withAbsoluteLinks(html: string, origin: string): string {
+  return html.replace(
+    /(\s(?:href|src)\s*=\s*["']?)\/(?!\/)/gi,
+    (_match, attribute: string) => `${attribute}${origin}/`,
+  );
 }
 
 /** Mark stray `pending` rows of the public `sends` log failed: never a queue. */
@@ -224,17 +249,23 @@ async function logSend(
 }
 
 /** Mail one claimed recipient; true when it went out. */
-async function deliver(ctx: PluginContextTier1, run: SendRun, r: RunRecipient): Promise<boolean> {
+async function deliver(
+  ctx: PluginContextTier1,
+  email: PluginEmail,
+  run: SendRun,
+  r: RunRecipient,
+  unsubscribeUrl: string,
+): Promise<boolean> {
   if (!(await stillSubscribed(ctx, r))) {
     await logSend(ctx, run, r, { status: "failed", error: "unsubscribed before the send" });
     return false;
   }
   try {
-    if (!ctx.email) throw new Error("no email transport configured");
-    await ctx.email.send({
+    await email.send({
       to: r.email,
       subject: run.subject,
-      html: `${run.body_html}${unsubscribeFooter(r.unsubToken)}`,
+      html: `${withAbsoluteLinks(run.body_html, new URL(unsubscribeUrl).origin)}${unsubscribeFooter(unsubscribeUrl)}`,
+      unsubscribeUrl,
     });
   } catch (e) {
     await logSend(ctx, run, r, { status: "failed", error: (e as Error).message });
@@ -252,6 +283,8 @@ export async function drainSends(
   ctx: PluginContextTier1,
 ): Promise<{ sent: number; attempted: number; superseded: number; quarantined: number }> {
   const admin = adminQueryOf(ctx);
+  const email = ctx.email;
+  if (!email) throw new Error("newsletter: the email capability is not attached");
   const quarantined = await quarantineStraySends(ctx);
   const rows = await admin.list("send_runs", {
     status: "approved",
@@ -287,6 +320,10 @@ export async function drainSends(
       if (cursor === 0) {
         await ctx.query.update("campaigns", run.campaign_id, { status: "sending" });
       }
+      // Before the claim: without its links a batch must stay unclaimed.
+      const links = await Promise.all(
+        batch.map((r) => email.unsubscribeLink({ recipientId: r.subscriberId })),
+      );
       // Claim before mailing: whoever advances the cursor owns the batch.
       const claimed = await admin.compareAndSwap(
         "send_progress",
@@ -295,10 +332,10 @@ export async function drainSends(
         { cursor: next },
       );
       if (!claimed) continue;
-      for (const r of batch) {
+      for (const [i, r] of batch.entries()) {
         budget -= 1;
         attempted += 1;
-        if (await deliver(ctx, run, r)) sent += 1;
+        if (await deliver(ctx, email, run, r, links[i] as string)) sent += 1;
       }
     }
     // Also reached by a tick after a crash between the last claim and here.

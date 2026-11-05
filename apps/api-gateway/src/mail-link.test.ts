@@ -8,7 +8,13 @@
 
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { declaredMailLink, mailLinkPage, parseMailLinkPath } from "./mail-link.js";
+import {
+  declaredMailLink,
+  isOneClickBody,
+  mailLinkOf,
+  mailLinkPage,
+  parseMailLinkPath,
+} from "./mail-link.js";
 
 const templates = {
   confirm_subscription: {
@@ -102,5 +108,43 @@ describe("the page", () => {
     expect(script).toContain('"x-caelo-consent"');
     expect(script).toContain("headers:consent()");
     expect(html).not.toContain("<form method=");
+  });
+});
+
+describe("the unsubscribe link and RFC 8058's body (#1432)", () => {
+  const form = "application/x-www-form-urlencoded";
+  const bytes = (s: string) => new Response(s).arrayBuffer();
+
+  it("serves the page for a plugin's unsubscribe link as for a template link", () => {
+    const mailUnsubscribe = { operation: "unsubscribe", label: "Unsubscribe", done: "Out." };
+    expect(mailLinkOf({ mailUnsubscribe }, "unsubscribe")).toEqual(mailUnsubscribe);
+    expect(mailLinkOf({ mailTemplates: templates }, "confirm")?.label).toContain("Confirm");
+    expect(mailLinkOf({ mailUnsubscribe }, "confirm")).toBeUndefined();
+    expect(mailLinkOf(undefined, "unsubscribe")).toBeUndefined();
+  });
+
+  it("takes the field in both form encodings", async () => {
+    expect(await isOneClickBody(form, await bytes("List-Unsubscribe=One-Click"))).toBe(true);
+    expect(
+      await isOneClickBody(`${form}; charset=utf-8`, await bytes("List-Unsubscribe=One-Click")),
+    ).toBe(true);
+    const multipart = new Response(
+      (() => {
+        const f = new FormData();
+        f.set("List-Unsubscribe", "One-Click");
+        return f;
+      })(),
+    );
+    expect(
+      await isOneClickBody(multipart.headers.get("content-type"), await multipart.arrayBuffer()),
+    ).toBe(true);
+  });
+
+  it("refuses anything else", async () => {
+    expect(await isOneClickBody(form, await bytes("List-Unsubscribe=No"))).toBe(false);
+    expect(await isOneClickBody(form, await bytes(""))).toBe(false);
+    expect(await isOneClickBody(null, await bytes("List-Unsubscribe=One-Click"))).toBe(false);
+    expect(await isOneClickBody("application/json", await bytes("{}"))).toBe(false);
+    expect(await isOneClickBody("multipart/form-data", await bytes("not multipart"))).toBe(false);
   });
 });

@@ -58,6 +58,8 @@ Published rows are written by the admin only: by the plugin's own operations in 
 
 A plugin mails visitors only through `mailTemplates` (#1337): a subject, plain-text paragraphs and at most one link to one of its public write operations, which the visitor confirms on the gateway's confirmation page. A visitor operation queues one with `ctx.email.queue({ template, to, token })`; the admin sends it. The row in the outbox chooses the template, the recipient and a token, never text or a host, and the admin caps the mails per recipient and site (Owner settings, Settings → Email). See [dev/mail-outbox.md](./dev/mail-outbox.md). The templates are part of the public-surface snapshot below.
 
+Mail a plugin sends itself with `ctx.email.send` (an approved campaign) declares its unsubscribe link as `mailUnsubscribe` (#1432): a public write operation that requires `token` and nothing else. The host signs the token per recipient and refuses that operation without one, on every route; a mail client's one-click POST (RFC 8058) reaches it without a proof-of-work on that signature. It is in the snapshot too. See [dev/mail-outbox.md](./dev/mail-outbox.md).
+
 ## Approval is bound to the manifest
 
 The Owner's approval of a shipped plugin records the digest of its whole manifest (`plugins.approved_manifest_digest`). A release that changes the manifest, including any of the above, stops the plugin in the admin and the gateway until the Owner clicks "Approve this release" at Settings → Plugins. Publish live refuses while it waits, and Settings → Plugins and Settings → Updates say so. A changed public surface is pinned by `packages/plugin-host/src/public-surface.test.ts`, whose snapshot shows every change in review.

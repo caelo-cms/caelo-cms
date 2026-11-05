@@ -52,7 +52,7 @@ function makeResendTransport(cfg: EmailConfigRow): EmailTransport {
     return makeUnimplementedTransport("resend (missing apiKey)");
   }
   return {
-    send: async ({ to, subject, html, replyTo }) => {
+    send: async ({ to, subject, html, replyTo, headers }) => {
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
@@ -65,6 +65,7 @@ function makeResendTransport(cfg: EmailConfigRow): EmailTransport {
           subject,
           html,
           ...(replyTo ? { reply_to: replyTo } : {}),
+          ...(headers ? { headers } : {}),
         }),
       });
       if (!res.ok) {

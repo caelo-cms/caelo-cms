@@ -24,10 +24,19 @@
  * decision (`x-caelo-consent`, read from the banner's cookie), so
  * confirming a mail never reads as a withdrawn consent to the gateway. The script and style are fixed; the CSP allows exactly their
  * hashes and requests to this origin.
+ *
+ * #1432 — one more route shares the path: the one-click unsubscribe of
+ * RFC 8058, `POST …/<slug>/<operation>?token=…` with the form body
+ * `List-Unsubscribe=One-Click`. A mail client sends it when the recipient
+ * clicks its own unsubscribe button, as a server-to-server call: no cookie,
+ * no Origin, no JSON, no proof-of-work. It is served only for a plugin's
+ * declared `mailUnsubscribe` operation, and a token the host signed is what
+ * admits it (plugin-host mail-link-token.ts). The body is required, so that
+ * nothing but a client following the `List-Unsubscribe-Post` header gets in.
  */
 
 import { createHash } from "node:crypto";
-import type { PluginMailTemplates } from "@caelo-cms/plugin-sdk";
+import type { PluginDefinition, PluginMailTemplates } from "@caelo-cms/plugin-sdk";
 
 const MAIL_LINK_PATH_RE =
   /^\/api\/_caelo\/mail-link\/([a-z][a-z0-9-]{0,54})\/([a-z_][a-z0-9_]{0,119})$/;
@@ -47,6 +56,43 @@ export function declaredMailLink(
     if (t.link?.operation === operation) return t.link;
   }
   return undefined;
+}
+
+/**
+ * The link the confirmation page serves for `operation`: a template's, or
+ * the plugin's unsubscribe link.
+ */
+export function mailLinkOf(
+  definition: Pick<PluginDefinition, "mailTemplates" | "mailUnsubscribe"> | undefined,
+  operation: string,
+): ReturnType<typeof declaredMailLink> {
+  const unsubscribe = definition?.mailUnsubscribe;
+  if (unsubscribe?.operation === operation) return unsubscribe;
+  return declaredMailLink(definition?.mailTemplates, operation);
+}
+
+/** The largest one-click body read: RFC 8058 sends one short field. */
+export const MAIL_ONE_CLICK_MAX_BYTES = 4096;
+
+/**
+ * Whether a POST's body is RFC 8058's: the field `List-Unsubscribe` with the
+ * value `One-Click`, as multipart or url-encoded form data (the RFC allows
+ * both).
+ */
+export async function isOneClickBody(
+  contentType: string | null,
+  body: ArrayBuffer,
+): Promise<boolean> {
+  const mime = contentType?.split(";")[0]?.trim().toLowerCase();
+  if (mime !== "application/x-www-form-urlencoded" && mime !== "multipart/form-data") return false;
+  try {
+    const form = await new Response(body, {
+      headers: { "Content-Type": contentType as string },
+    }).formData();
+    return form.get("List-Unsubscribe") === "One-Click";
+  } catch {
+    return false;
+  }
 }
 
 function escapeHtml(s: string): string {
