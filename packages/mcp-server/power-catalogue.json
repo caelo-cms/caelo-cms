@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.11.20",
   "tools": [
     {
       "name": "read_content",
@@ -7254,7 +7254,7 @@
         "type": "object",
         "properties": {
           "records": {
-            "description": "Omit (usual) = every record the installer stored as required (site/admin A|CNAME, certificate TXT); result names each record's purpose -> tell the operator what to add/fix at the registrar. Explicit records only on the site's own domains (registered, base-URL host, installer records, their subdomains).",
+            "description": "Omit (usual) = every record the install requires (site/admin A|CNAME, certificate TXT, staging host); result names each record's purpose -> tell the operator what to add/fix at the registrar. Explicit records only on the site's own domains (registered, base-URL host, installer records, their subdomains).",
             "minItems": 1,
             "maxItems": 50,
             "type": "array",
