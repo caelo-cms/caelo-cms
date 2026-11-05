@@ -13,84 +13,29 @@
  *
  *   token = <recipient UUID> "_" base64url(HMAC-SHA256(key, scope))
  *
- * The key is one row per public database (`mail_link_keys`, cms_public
- * migration 0632), so the admin signs and the gateway checks without a
- * secret in either's environment. It lives there rather than beside the
- * gateway's cookie secret because it must outlive every rotation of that
- * secret: the links in sent mail do not expire. The gateway can read it, so
- * a compromised public side could forge a token, which lets it do what it
- * could do anyway: mark a row of its own database unsubscribed. The admin
- * reads the key from that side and uses it for this token only, so a
- * replaced key could not make the admin sign anything else.
+ * The admin creates and holds the key in cms_admin (`site_settings`,
+ * migration 0635) and signs with it; each environment has its own. It
+ * publishes that key one way into `published_gateway_settings`, and the
+ * gateway checks with the published copy, so the admin never reads it from
+ * the public side. It is not the cookie secret because that rotates and the
+ * links in sent mail do not expire. A compromised public side can read its
+ * copy and forge a token, which lets it do what it could do anyway: mark a
+ * row of its own database unsubscribed.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { MAIL_UNSUBSCRIBE_TOKEN_RE } from "@caelo-cms/plugin-sdk";
-import {
-  defineOperation,
-  execute,
-  type OperationDefinition,
-  type OperationRegistry,
-} from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
-import { z } from "zod";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 
-const MAIL_LINK_KEY_OP = "plugin_mail.link_key";
-
-const linkKeyOp = defineOperation({
-  name: MAIL_LINK_KEY_OP,
-  readScope: "request",
-  // Why plugin-only: the host reads the key on a plugin's behalf, to sign
-  // or check that plugin's token; no other actor has a use for it.
-  actorScope: ["plugin"],
-  database: "cms_public",
-  input: z.object({}).strict(),
-  output: z.object({ key: z.string().regex(/^[0-9a-f]{64}$/) }),
-  handler: async (_ctx, _input, tx) => {
-    const rows = (await tx.execute(
-      sql`SELECT encode(key, 'hex') AS key FROM mail_link_keys WHERE id = 1`,
-    )) as unknown as { key: string }[];
-    const key = rows[0]?.key;
-    if (!key) {
-      return err({
-        kind: "HandlerError",
-        operation: MAIL_LINK_KEY_OP,
-        message: `${MAIL_LINK_KEY_OP}: mail_link_keys has no key; run the cms_public migrations (0632 seeds it)`,
-      });
-    }
-    return ok({ key });
-  },
-});
-
-function registerLinkKeyOp(registry: OperationRegistry): void {
-  if (!registry.has(MAIL_LINK_KEY_OP)) {
-    registry.register(linkKeyOp as unknown as OperationDefinition<unknown, unknown>);
-  }
-}
-
-/** The key of the public database `infra.adapter` reaches: one primary-key read, not cached. */
-async function linkKey(plugin: LoadedPlugin, infra: PluginHostInfra): Promise<Buffer> {
-  registerLinkKeyOp(infra.registry);
-  const r = await execute(
-    infra.registry,
-    infra.adapter,
-    {
-      actorId: plugin.pluginActorId,
-      actorKind: "plugin",
-      pluginId: plugin.pluginId,
-      requestId: `plugin-${plugin.slug}-mail-link`,
-    },
-    MAIL_LINK_KEY_OP,
-    {},
-  );
-  if (!r.ok) {
+/** This side's key (cms_admin, or the gateway's published copy), or a loud error. */
+async function linkKey(infra: PluginHostInfra): Promise<Buffer> {
+  const key = (await infra.mailLinks?.())?.key;
+  if (!key || !/^[0-9a-f]{64}$/.test(key)) {
     throw new Error(
-      `mail link key: ${"message" in r.error ? String(r.error.message) : r.error.kind}`,
+      "mail link key: no valid signing key here; run the database migrations (cms_admin 0635 creates it, the run publishes it)",
     );
   }
-  return Buffer.from((r.value as { key: string }).key, "hex");
+  return Buffer.from(key, "hex");
 }
 
 /** The signature of a token: what it is for and whom, under the key. */
@@ -111,7 +56,7 @@ export async function signMailUnsubscribeToken(
   infra: PluginHostInfra,
   recipientId: string,
 ): Promise<string> {
-  const token = `${recipientId}_${signature(await linkKey(plugin, infra), plugin, recipientId)}`;
+  const token = `${recipientId}_${signature(await linkKey(infra), plugin, recipientId)}`;
   if (!MAIL_UNSUBSCRIBE_TOKEN_RE.test(token)) {
     throw new Error("ctx.email.unsubscribeLink: recipientId must be a lower-case UUID");
   }
@@ -129,7 +74,7 @@ export async function verifyMailUnsubscribeToken(
 ): Promise<boolean> {
   if (typeof token !== "string" || !MAIL_UNSUBSCRIBE_TOKEN_RE.test(token)) return false;
   const given = Buffer.from(token.slice(37));
-  const expected = Buffer.from(signature(await linkKey(plugin, infra), plugin, token.slice(0, 36)));
+  const expected = Buffer.from(signature(await linkKey(infra), plugin, token.slice(0, 36)));
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
 

@@ -214,17 +214,17 @@ async function bootPluginHost(): Promise<void> {
       siteMediaBytes: (storageKey: string) => getMediaStorage().get(storageKey),
       emitSnapshot: emitter,
       emailTransport,
-      // #1432 — the host of the unsubscribe link in mail the admin sends.
-      mailLinkOrigin: async () => {
+      // #1432 — the host and signing key of unsubscribe links, from cms_admin.
+      mailLinks: async () => {
         const r = await execute(
           registry,
           adapter,
           SYSTEM_CTX,
-          "public_mail_deliveries.link_origin",
+          "public_mail_deliveries.link_config",
           {},
         );
-        if (!r.ok) throw new Error(`mail link origin: ${JSON.stringify(r.error)}`);
-        return (r.value as { origin: string | null }).origin;
+        if (!r.ok) throw new Error(`mail link config: ${JSON.stringify(r.error)}`);
+        return r.value as { origin: string | null; key: string | null };
       },
       lockPluginRow,
     },

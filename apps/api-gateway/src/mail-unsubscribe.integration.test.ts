@@ -34,6 +34,7 @@ import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
 import {
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
+  gatewayMailLinks,
   handleRequest,
   invalidateGatewaySettings,
   setGatewayAdapter,
@@ -187,12 +188,28 @@ async function mailLink(recipientId: string): Promise<string> {
   return (r.value as { url: string }).url;
 }
 
+/** The key where the admin holds it: cms_admin, never the public side. */
+async function adminKey(): Promise<string | null> {
+  const db = new SQL(ADMIN_URL as string);
+  try {
+    return await db.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const rows = (await tx`SELECT mail_link_key FROM site_settings WHERE id = 1`) as {
+        mail_link_key: string | null;
+      }[];
+      return rows[0]?.mail_link_key ?? null;
+    });
+  } finally {
+    await db.end();
+  }
+}
+
 async function adminHost(origin: string | null = LIVE_HOST): Promise<void> {
   const report = await bootstrap({
     infra: {
       adapter: adminAdapter,
       registry: new OperationRegistry(),
-      mailLinkOrigin: async () => origin,
+      mailLinks: async () => ({ origin, key: await adminKey() }),
       emailTransport: {
         send: async (m) => {
           sent.push(m);
@@ -210,7 +227,11 @@ async function adminHost(origin: string | null = LIVE_HOST): Promise<void> {
 async function gatewayHost(): Promise<void> {
   resetPluginHost();
   const report = await bootstrapDispatchOnly({
-    infra: { adapter: gatewayAdapter, registry: new OperationRegistry() },
+    infra: {
+      adapter: gatewayAdapter,
+      registry: new OperationRegistry(),
+      mailLinks: gatewayMailLinks,
+    },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [{ definition: fixture }],
@@ -490,26 +511,63 @@ describe("the page's own route (#1432)", () => {
   });
 });
 
-describe("mail_link_keys (#1432)", () => {
-  it("the gateways read the key and cannot change it; each database has its own", async () => {
+describe("the signing key (#1432)", () => {
+  it("flows one way: each database has its environment's own copy, read-only for its gateway", async () => {
+    const admin = new SQL(ADMIN_URL as string);
     const live = new SQL(PUBLIC_URL as string);
     const staging = new SQL(STAGING_URL as string);
     try {
+      const held = await admin.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return (
+          (await tx`SELECT mail_link_key, mail_link_staging_key FROM site_settings WHERE id = 1`) as {
+            mail_link_key: string;
+            mail_link_staging_key: string;
+          }[]
+        )[0];
+      });
       const keyOf = async (db: SQL) =>
-        ((await db`SELECT encode(key, 'hex') AS key FROM mail_link_keys`) as { key: string }[])[0]
-          ?.key;
-      const liveKey = await keyOf(live);
-      const stagingKey = await keyOf(staging);
-      expect(liveKey).toMatch(/^[0-9a-f]{64}$/);
-      expect(stagingKey).toMatch(/^[0-9a-f]{64}$/);
-      expect(liveKey).not.toBe(stagingKey);
+        (
+          (await db`SELECT mail_link_key FROM published_gateway_settings`) as {
+            mail_link_key: string;
+          }[]
+        )[0]?.mail_link_key;
+      expect(held?.mail_link_key).toMatch(/^[0-9a-f]{64}$/);
+      expect(held?.mail_link_staging_key).toMatch(/^[0-9a-f]{64}$/);
+      expect(held?.mail_link_key).not.toBe(held?.mail_link_staging_key as string);
+      expect(await keyOf(live)).toBe(held?.mail_link_key as string);
+      expect(await keyOf(staging)).toBe(held?.mail_link_staging_key as string);
       for (const db of [live, staging]) {
-        await expect(db`UPDATE mail_link_keys SET key = key`).rejects.toThrow(/permission denied/);
-        await expect(db`DELETE FROM mail_link_keys`).rejects.toThrow(/permission denied/);
+        await expect(db`UPDATE published_gateway_settings SET mail_link_key = 'x'`).rejects.toThrow(
+          /permission denied/,
+        );
       }
     } finally {
+      await admin.end();
       await live.end();
       await staging.end();
     }
+  });
+
+  it("is what a sent link was signed with: a link fails once the gateway holds another key", async () => {
+    const id = await addRecipient();
+    const url = await mailLink(id);
+    resetPluginHost();
+    resetDispatchOnlyHost();
+    const report = await bootstrapDispatchOnly({
+      infra: {
+        adapter: gatewayAdapter,
+        registry: new OperationRegistry(),
+        mailLinks: async () => ({ origin: null, key: "0".repeat(64) }),
+      },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: fixture }],
+    });
+    expect(report.failed).toEqual([]);
+    expect((await oneClick(url)).status).toBe(404);
+    expect(await unsubscribedAt(id)).toBeNull();
+    resetDispatchOnlyHost();
+    await gatewayHost();
   });
 });

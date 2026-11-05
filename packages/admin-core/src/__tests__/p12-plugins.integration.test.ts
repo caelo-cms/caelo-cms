@@ -186,7 +186,7 @@ async function bootstrapAll(): Promise<void> {
           return { messageId: `test-${transportSent.length}` };
         },
       },
-      mailLinkOrigin: async () => "https://www.example.com",
+      mailLinks: async () => ({ origin: "https://www.example.com", key: "ab".repeat(32) }),
     },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,

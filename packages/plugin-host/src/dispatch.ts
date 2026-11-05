@@ -208,9 +208,15 @@ export interface PluginHostInfra {
   /** P12 PR1.3 — optional outbound email transport. When omitted,
    *  ctx.email.send falls back to a no-op stderr stub. */
   readonly emailTransport?: EmailTransport;
-  /** #1432 — the live site's origin for the links of `ctx.email.send` mail,
-   *  from cms_admin; null when no base URL is set. Admin side only. */
-  readonly mailLinkOrigin?: () => Promise<string | null>;
+  /**
+   * #1432 — what unsubscribe links need. Admin side: the live origin (null
+   * without a base URL) and the key, from cms_admin. Gateway: the key as the
+   * admin published it, and no origin, because a gateway only checks links.
+   */
+  readonly mailLinks?: () => Promise<{
+    readonly origin: string | null;
+    readonly key: string | null;
+  }>;
   /** Takes the chat lock for a plugin row written on a branch. Required
    *  for any chat-origin private-storage write; admin-core supplies it
    *  (it owns chat locks). A branch write without it fails loudly. */

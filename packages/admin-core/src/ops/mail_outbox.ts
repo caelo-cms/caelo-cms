@@ -249,16 +249,25 @@ export const reserveMailDeliveriesOp = defineOperation({
   },
 });
 
-export const mailLinkOriginOp = defineOperation({
-  name: "public_mail_deliveries.link_origin",
+export const mailLinkConfigOp = defineOperation({
+  name: "public_mail_deliveries.link_config",
   readScope: "request",
   // Why system-only: the plugin host asks on a plugin's behalf for the host
-  // of mail the admin sends (#1432); a plugin gets the finished link.
+  // and the signing key of mail the admin sends (#1432); a plugin only ever
+  // gets the finished link.
   actorScope: ["system"],
   database: "cms_admin",
   input: z.object({}).strict(),
-  output: z.object({ origin: z.string().nullable() }),
-  handler: async (_ctx, _input, tx) => ok({ origin: await linkOriginOf(tx, "live") }),
+  output: z.object({ origin: z.string().nullable(), key: z.string().nullable() }),
+  handler: async (_ctx, _input, tx) => {
+    const rows = (await tx.execute(
+      sql`SELECT mail_link_key FROM site_settings WHERE id = 1`,
+    )) as unknown as { mail_link_key: string | null }[];
+    return ok({
+      origin: await linkOriginOf(tx, "live"),
+      key: rows[0]?.mail_link_key ?? null,
+    });
+  },
 });
 
 /**

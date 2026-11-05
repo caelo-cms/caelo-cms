@@ -184,6 +184,8 @@ interface GatewaySettings {
    * from; null when the admin that published the row predates the column.
    */
   liveOrigins: readonly string[] | null;
+  /** #1432 — the admin's published key for unsubscribe links; null before it published one. */
+  mailLinkKey: string | null;
 }
 
 // Cached while the LISTEN on the admin's publish notifications is
@@ -199,7 +201,7 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
     published: await sectionPublished(tx, "settings"),
     rows: (await tx.execute(sql`
       SELECT cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix,
-             live_origins
+             live_origins, mail_link_key
       FROM published_gateway_settings WHERE id = 1
     `)) as unknown as {
       cookie_secret: string | null;
@@ -207,6 +209,7 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
       captcha_provider: "off" | "pow" | "turnstile" | "hcaptcha";
       captcha_pow_target_prefix: string;
       live_origins: string[] | null;
+      mail_link_key: string | null;
     }[],
   }));
   const row = rows[0];
@@ -228,6 +231,7 @@ async function loadSettings(adapter: DatabaseAdapter): Promise<GatewaySettings> 
       powTargetPrefix: row?.captcha_pow_target_prefix ?? "000fff",
     },
     liveOrigins: row.live_origins,
+    mailLinkKey: row.mail_link_key,
   };
   if (mayCacheRead(startedAt)) cachedSettings = settings;
   return settings;
@@ -458,6 +462,15 @@ export function setGatewayAdapter(adapter: DatabaseAdapter): void {
   cachedAdapter = adapter;
   sweepGatewayStateIfDue = gatewayStateGc(adapter);
   addressHashKeys = ipHashKeys(adapter);
+}
+
+/**
+ * What the plugin host needs to check an unsubscribe link here: the key as
+ * the admin published it. No origin, because a gateway never makes a link.
+ */
+export async function gatewayMailLinks(): Promise<{ origin: null; key: string | null }> {
+  if (!cachedAdapter) throw new Error("gateway not bootstrapped");
+  return { origin: null, key: (await loadSettings(cachedAdapter)).mailLinkKey };
 }
 
 /**
@@ -1291,7 +1304,7 @@ if (import.meta.main) {
   // Dispatch-only: verify what this image ships, attach what the admin's
   // registry marks active, write nothing (#613).
   const report = await bootstrapDispatchOnly({
-    infra: { adapter, registry },
+    infra: { adapter, registry, mailLinks: gatewayMailLinks },
     pluginsRoot: PLUGINS_ROOT,
     systemActorId: SYSTEM_ACTOR_ID,
   });

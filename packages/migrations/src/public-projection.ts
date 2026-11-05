@@ -669,7 +669,7 @@ async function readSettings(tx: ProjectionTx): Promise<SettingsRows> {
     tx,
     sql`SELECT gateway_cookie_secret, gateway_staging_cookie_secret,
                gateway_max_body_bytes AS max_body_bytes, captcha_provider,
-               captcha_pow_target_prefix
+               captcha_pow_target_prefix, mail_link_key, mail_link_staging_key
         FROM site_settings WHERE id = 1`,
   )) as unknown as {
     gateway_cookie_secret: string | null;
@@ -677,6 +677,8 @@ async function readSettings(tx: ProjectionTx): Promise<SettingsRows> {
     max_body_bytes: number;
     captcha_provider: string;
     captcha_pow_target_prefix: string;
+    mail_link_key: string | null;
+    mail_link_staging_key: string | null;
   }[];
   const stagingHost = (
     (await rows(tx, sql`SELECT staging_host FROM staging_access WHERE id = 1`))[0] as
@@ -699,7 +701,11 @@ async function readSettings(tx: ProjectionTx): Promise<SettingsRows> {
   const row = found[0];
   // A secret not set up yet leaves the section unpublished (the gateway
   // answers ProjectionNotPublished), never a shared or empty one.
-  const of = (secret: string | null | undefined, allowed: readonly string[]): Row[] =>
+  const of = (
+    secret: string | null | undefined,
+    allowed: readonly string[],
+    mailLinkKey: string | null | undefined,
+  ): Row[] =>
     row && secret
       ? [
           {
@@ -708,14 +714,19 @@ async function readSettings(tx: ProjectionTx): Promise<SettingsRows> {
             captcha_provider: row.captcha_provider,
             captcha_pow_target_prefix: row.captcha_pow_target_prefix,
             live_origins: allowed,
+            mail_link_key: mailLinkKey ?? null,
           },
         ]
       : [];
   return {
-    live: of(row?.gateway_cookie_secret, origins),
+    live: of(row?.gateway_cookie_secret, origins, row?.mail_link_key),
     // #1330 — the staging gateway takes plugin posts only from the staging
     // site's own pages; a live page must never write into staging data.
-    staging: of(row?.gateway_staging_cookie_secret, stagingSiteOrigins(stagingHost)),
+    staging: of(
+      row?.gateway_staging_cookie_secret,
+      stagingSiteOrigins(stagingHost),
+      row?.mail_link_staging_key,
+    ),
   };
 }
 
@@ -874,8 +885,8 @@ async function writeSnapshot(
     await replaceAll(
       tx,
       "published_gateway_settings",
-      "cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix, live_origins",
-      "cookie_secret text, max_body_bytes int, captcha_provider text, captcha_pow_target_prefix text, live_origins text[]",
+      "cookie_secret, max_body_bytes, captcha_provider, captcha_pow_target_prefix, live_origins, mail_link_key",
+      "cookie_secret text, max_body_bytes int, captcha_provider text, captcha_pow_target_prefix text, live_origins text[], mail_link_key text",
       settings,
     );
     sections.push("settings");

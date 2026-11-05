@@ -112,7 +112,7 @@ async function unsubscribeHeaders(
   if (
     !link ||
     !parsed ||
-    parsed.origin !== (await infra.mailLinkOrigin?.()) ||
+    parsed.origin !== (await infra.mailLinks?.())?.origin ||
     parsed.pathname !== mailLinkPath(plugin.slug, link.operation) ||
     !(await verifyMailUnsubscribeToken(plugin, infra, parsed.searchParams.get("token")))
   ) {
@@ -171,12 +171,12 @@ export function makePluginEmail(
       }
       // A visitor call never mints a link: the mail that carries one is
       // sent by the admin, and the gateway has no cms_admin to find the host.
-      if (publicSide || !infra.mailLinkOrigin) {
+      if (publicSide || !infra.mailLinks) {
         throw new Error(
           `ctx.email.unsubscribeLink: plugin "${plugin.slug}" can only make an unsubscribe link on the admin side`,
         );
       }
-      const origin = await infra.mailLinkOrigin();
+      const { origin } = await infra.mailLinks();
       if (!origin) {
         throw new Error(
           "ctx.email.unsubscribeLink: the site has no base URL, so a mail cannot carry a working unsubscribe link — set it at Settings → SEO (propose_set_site_seo), then retry",
