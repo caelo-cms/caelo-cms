@@ -30,7 +30,7 @@ const SERVICES: readonly PublicService[] = ["gateway", "staging-gateway", "mcp-a
 /** The `cloudRunService({ serviceName: "<name>", … })` call of a GCP stack. */
 function cloudRunBlock(source: string, name: string): string | null {
   const m = new RegExp(
-    `cloudRunService\\(\\{\\s*serviceName: "${name}",([\\s\\S]*?)\\n\\}\\);`,
+    `cloudRunService\\(\\{\\s*serviceName: "${name}",([\\s\\S]*?)\\n\\s*\\}\\)`,
   ).exec(source);
   return m?.[1] ?? null;
 }
@@ -66,7 +66,7 @@ describe("E11: one public-service shape for every provider", () => {
         const anyWaf = SERVICES.some((s) => PUBLIC_SERVICE_SHAPE[provider][s].waf !== "none");
         if (anyWaf) {
           expect(source).toContain("new gcp.compute.SecurityPolicy(");
-          expect(source).toMatch(/gatewayBackendService[\s\S]*?securityPolicy: wafPolicy\.id/);
+          expect(source).toMatch(/function gatewayBackend\([\s\S]*?securityPolicy: wafPolicy\.id/);
         } else {
           // E3: the cheap setup has no load balancer and no WAF.
           expect(source).not.toContain("SecurityPolicy");
