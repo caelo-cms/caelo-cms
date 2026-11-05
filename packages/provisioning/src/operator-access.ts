@@ -146,7 +146,10 @@ export function iapWebPath(resource: IapResource, backendServiceId?: string): st
   if (resource.kind === "cloud-run") {
     return `cloud_run-${resource.region}/services/${resource.service}`;
   }
-  return `compute/services/${backendServiceId ?? resource.service}`;
+  if (!backendServiceId) {
+    throw new Error(`${resource.service}: an IAP backend is addressed by its numeric id`);
+  }
+  return `compute/services/${backendServiceId}`;
 }
 
 /** Create the custom role, or bring an existing / soft-deleted one to spec. */
@@ -267,6 +270,29 @@ export async function ensureOperatorAccessSync(
   const customRole = customRoleName(projectId, OPERATOR_ACCESS_ROLE.roleId);
   const jobName = operatorAccessJobName(env);
   const done: string[] = [];
+
+  // Before any write: the steps below revoke the old access path, so an
+  // unreadable id must not leave the install without a replacement job.
+  let backendServiceId: string | undefined;
+  if (target.resource.kind === "backend-services") {
+    const described = await run([
+      "compute",
+      "backend-services",
+      "describe",
+      target.resource.service,
+      "--global",
+      project,
+      "--format=value(id)",
+    ]);
+    backendServiceId = described.stdout.trim();
+    if (!described.ok || !/^\d+$/.test(backendServiceId)) {
+      return {
+        ok: false,
+        done,
+        error: `read the id of ${target.resource.service}: ${described.stderr.trim() || "no numeric id"}`,
+      };
+    }
+  }
   const fail = (step: string, r: GcloudResult): OperatorAccessSyncResult => ({
     ok: false,
     done,
@@ -432,26 +458,6 @@ export async function ensureOperatorAccessSync(
 
   // 6. The job: the admin image with another entry point, the job's own SA,
   //    and its whole input as env the admin cannot override.
-  let backendServiceId: string | undefined;
-  if (target.resource.kind === "backend-services") {
-    const described = await run([
-      "compute",
-      "backend-services",
-      "describe",
-      target.resource.service,
-      "--global",
-      project,
-      "--format=value(id)",
-    ]);
-    backendServiceId = described.stdout.trim();
-    if (!described.ok || !/^\d+$/.test(backendServiceId)) {
-      return {
-        ok: false,
-        done,
-        error: `read the id of ${target.resource.service}: ${described.stderr.trim() || "no numeric id"}`,
-      };
-    }
-  }
   const envVars = [
     `CAELO_OPERATOR_ACCESS_IAP_WEB=${iapWebPath(target.resource, backendServiceId)}`,
     `CAELO_MCP_IAP_SERVICE_ACCOUNT=${mcpSa}`,

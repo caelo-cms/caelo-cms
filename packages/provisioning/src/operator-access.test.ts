@@ -15,6 +15,7 @@ import { withIamAuthFlag } from "./cloudsql-iam-user.js";
 import type { GcloudResult } from "./gcloud.js";
 import {
   ensureOperatorAccessSync,
+  iapWebPath,
   installIapAllowlist,
   OPERATOR_ACCESS_PROJECT_IAP_ROLE,
   OPERATOR_ACCESS_ROLE,
@@ -225,6 +226,10 @@ describe("ensureOperatorAccessSync", () => {
     );
   });
 
+  it("#1120 — iapWebPath refuses a backend without its numeric id", () => {
+    expect(() => iapWebPath({ kind: "backend-services", service: "b" })).toThrow("numeric id");
+  });
+
   it("#1120 — refuses a backend whose id cannot be read instead of deploying by name", async () => {
     const { run, calls } = freshInstall();
     const noId: typeof run = async (args) =>
@@ -239,7 +244,8 @@ describe("ensureOperatorAccessSync", () => {
       { run: noId, sleep: async () => {} },
     );
     expect(r.ok).toBe(false);
-    expect(calls.some((c) => c.slice(0, 3).join(" ") === "run jobs deploy")).toBe(false);
+    // It stops before anything is written, the revoke of the old path included.
+    expect(calls).toEqual([]);
   });
 
   it("#1140 — tells the job which service accounts keep IAP access (the scheduler tick)", async () => {
