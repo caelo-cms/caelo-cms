@@ -196,6 +196,54 @@ describe("structure/repeated-render", () => {
     expect(err.map((x) => x.severity)).toEqual(["error"]);
   });
 
+  describe("#1448 a module's own list is the content instance's", () => {
+    const FACTS = mod(4, "split", { html: '<section class="split"></section>' });
+    const INSTANCE_A = "00000000-0000-4000-9000-00000000000a";
+    const INSTANCE_B = "00000000-0000-4000-9000-00000000000b";
+    const INSTANCE_C = "00000000-0000-4000-9000-00000000000c";
+    const ITEM = (n: number) => `00000000-0000-4000-9000-00000000020${n}`;
+    const facts = (instance: string, ...items: number[]) =>
+      `<ul>${items.map((n) => `<li data-caelo-list-item="instance/${instance}/facts/${ITEM(n)}">F${n}</li>`).join("")}</ul>`;
+
+    it("two or three placements with their own instances are no repeated list", () => {
+      const two = root(FACTS, facts(INSTANCE_A, 1, 2)) + root(FACTS, facts(INSTANCE_B, 3, 4, 5));
+      expect(only("repeated-render", findings([page(1, "/", two)], [FACTS]))).toEqual([]);
+      const three = two + root(FACTS, facts(INSTANCE_C, 6));
+      expect(only("repeated-render", findings([page(1, "/", three)], [FACTS]))).toEqual([]);
+    });
+
+    it("one instance placed twice is the same list written twice", () => {
+      const html = root(FACTS, facts(INSTANCE_A, 1, 2)) + root(FACTS, facts(INSTANCE_A, 1, 2));
+      const f = only("repeated-render", findings([page(1, "/", html)], [FACTS]));
+      expect(f.map((x) => x.severity)).toEqual(["warning"]);
+      expect(f[0]?.message).toContain("local list `facts`");
+      expect(f[0]?.message).toContain(INSTANCE_A);
+    });
+
+    it("one instance placed three times blocks; another instance on the page does not count", () => {
+      const a = root(FACTS, facts(INSTANCE_A, 1));
+      const html = a + a + root(FACTS, facts(INSTANCE_B, 2)) + a;
+      const f = only("repeated-render", findings([page(1, "/", html)], [FACTS]));
+      expect(f.map((x) => x.severity)).toEqual(["error"]);
+      expect(f[0]?.message).toContain("rendered 3 times");
+    });
+
+    it("one root writing an instance's list twice stays an error", () => {
+      const html = root(FACTS, facts(INSTANCE_A, 1, 2) + facts(INSTANCE_A, 1, 2));
+      const f = only("repeated-render", findings([page(1, "/", html)], [FACTS]));
+      expect(f.map((x) => x.severity)).toEqual(["error"]);
+      expect(f[0]?.message).toContain("render(s) it twice on its own");
+    });
+
+    it("a field default list has no instance: two placements write the same entries", () => {
+      const defaults = `<ul><li data-caelo-list-item="local/facts/${ITEM(1)}">F</li></ul>`;
+      const html = root(FACTS, defaults) + root(FACTS, defaults);
+      const f = only("repeated-render", findings([page(1, "/", html)], [FACTS]));
+      expect(f.map((x) => x.severity)).toEqual(["warning"]);
+      expect(f[0]?.message).toContain("local list `facts`");
+    });
+  });
+
   it("a list rendered once per page is silent", () => {
     const html = root(HEADER, menu(), "header");
     expect(
@@ -288,6 +336,124 @@ describe("structure/unused-css", () => {
     // an unrelated string that happens to spell a class name is not.
     expect(f[1]?.message).toContain(".legacy-quote");
     expect(f[1]?.message).not.toMatch(/is-dark|is-open|is-ready|caelo-hidden/);
+  });
+
+  /** The classes an unused-css message names. */
+  const named = (message: string | undefined) =>
+    [...(message ?? "").matchAll(/\.([a-zA-Z0-9_-]+)(?=[,\s])/g)].map((x) => x[1]);
+
+  describe("#1445 classes the module's JS writes", () => {
+    /** The classes of `css` reported for a module with this `js`. */
+    const reported = (css: string, js: string) => {
+      const m = mod(3, "fx", { html: '<section class="fx"></section>', css, js });
+      return named(only("unused-css", findings([page(1, "/", root(m, ""))], [m]))[0]?.message);
+    };
+
+    it("markup in a string literal, escaped quotes and single quotes alike", () => {
+      const js = String.raw`
+        function MEADOW(){return "<svg viewBox=\"0 0 9 9\"><g class=\"u-root u-body\"><path class='u-ear'/></g></svg>"}
+        document.body.insertAdjacentHTML("beforeend", MEADOW());`;
+      expect(reported(".u-root{x:1}.u-body{x:1}.u-ear{x:1}.u-dead{x:1}", js)).toEqual(["u-dead"]);
+    });
+
+    it("innerHTML templates: a template literal and a concatenation, around an expression", () => {
+      const js = [
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: JS source under test.
+        'el.innerHTML = `<div class="tr-sum ${x} tr-scroll">${y}</div>`;',
+        "out.innerHTML = '<span class=\"iss ' + sev + ' tr-tab\">' + n + '</span>';",
+      ].join("\n");
+      expect(
+        reported(".tr-sum{x:1}.tr-scroll{x:1}.iss{x:1}.tr-tab{x:1}.tr-agents{x:1}", js),
+      ).toEqual(["tr-agents"]);
+    });
+
+    it("a conditional picks the class, in className and inside markup", () => {
+      const js = [
+        'li.className = i + 1 < n ? "done" : (i < n ? "now" : "");',
+        "el.innerHTML = '<b class=\"' + (ok ? 'good' : 'bad') + '\"></b>';",
+        "el.setAttribute('class', on && 'lit');",
+        "el.classList.add(on ? 'open' : 'shut');",
+      ].join("\n");
+      expect(
+        reported(
+          ".done{x:1}.now{x:1}.good{x:1}.bad{x:1}.lit{x:1}.open{x:1}.shut{x:1}.gone{x:1}",
+          js,
+        ),
+      ).toEqual(["gone"]);
+    });
+
+    it("a conditional glued to a prefix builds the class", () => {
+      const js = "el.className = 'card--' + (dark ? 'dark' : 'light');";
+      expect(reported(".card--dark{x:1}.card--light{x:1}.tile{x:1}", js)).toEqual(["tile"]);
+    });
+
+    it("a constant holding the class", () => {
+      const js = "const OPEN = 'is-open'; function f(el){ el.classList.add(OPEN); }";
+      expect(reported(".is-open{x:1}.is-shut{x:1}", js)).toEqual(["is-shut"]);
+    });
+
+    it("a constant declared first and used inside markup", () => {
+      const js = "const C = 'row-a'; el.innerHTML = '<b class=\"' + C + '\"></b>';";
+      expect(reported(".row-a{x:1}.row-b{x:1}", js)).toEqual(["row-b"]);
+    });
+
+    it("variables that double their text cannot hang the audit", () => {
+      const chain = Array.from({ length: 80 }, (_, i) => `var a${i + 1} = a${i} + a${i};`);
+      const js = `var a0 = 'x';${chain.join("")}el.className = a80;`;
+      expect(reported(".gone{x:1}", js)).toEqual(["gone"]);
+    });
+
+    it("a class a script glues from a prefix counts like one a template glues", () => {
+      expect(reported(".st-0{x:1}.other{x:1}", "el.className = 'st-' + n;")).toEqual(["other"]);
+    });
+
+    it("text that only spells the class proves nothing", () => {
+      const js = [
+        "// the .ghost card used to be here",
+        "var name = 'ghost';",
+        "console.log('class ghost was removed', name);",
+        "var doc = '<p>ghost</p>';",
+      ].join("\n");
+      expect(reported(".ghost{x:1}", js)).toEqual(["ghost"]);
+    });
+  });
+
+  describe("#1445 classes built from a field", () => {
+    const reported = (html: string, css: string) => {
+      const m = mod(3, "stat", { html, css });
+      return named(only("unused-css", findings([page(1, "/", root(m, ""))], [m]))[0]?.message);
+    };
+
+    it('class="s{{field}}": a value no placement uses yet is still a value of the field', () => {
+      const html = '<i class="st s{{status_group}}"></i>';
+      expect(reported(html, ".st{x:1}.s0{x:1}.s2{x:1}")).toEqual([]);
+    });
+
+    it("a prefix or a suffix with a separator, also inside a section", () => {
+      const html =
+        '<i class="card--{{tone}} {{#on}}size-{{size}}{{/on}}"></i>{{#rows}}<b class="{{kind}}-row"></b>{{/rows}}';
+      expect(reported(html, ".card--dark{x:1}.size-l{x:1}.warn-row{x:1}.card{x:1}")).toEqual([
+        "card",
+      ]);
+    });
+
+    it("the field's text does not reach into an unrelated class", () => {
+      // `s{{x}}` renders s0, s1; no field value spells .sidebar.
+      expect(reported('<i class="s{{x}}"></i>', ".sidebar{x:1}.s1{x:1}")).toEqual(["sidebar"]);
+    });
+
+    it("a class that is only a field could be anything, so it proves nothing", () => {
+      expect(reported('<i class="{{variant}}"></i>', ".legacy{x:1}")).toEqual(["legacy"]);
+    });
+
+    it("layout css for a class a placed module builds from a field", () => {
+      const m = mod(3, "stat", { html: '<i class="tone-{{tone}}"></i>' });
+      const f = only(
+        "unused-css",
+        findings([page(1, "/", root(m, ""))], [m], [layout(".tone-red{x:1}.old-hero{x:1}")]),
+      );
+      expect(f.map((x) => named(x.message))).toEqual([["old-hero"]]);
+    });
   });
 
   it("unplaced modules ship no CSS and are not reported", () => {
