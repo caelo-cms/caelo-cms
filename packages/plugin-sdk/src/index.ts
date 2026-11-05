@@ -1111,6 +1111,11 @@ export const pluginManifest = z
     adminSchema: pluginSchemaMap.optional(),
     /** #1292 — see `PluginDefinition.indexes`. */
     indexes: pluginIndexes.optional(),
+    /** #1387 — see `PluginDefinition.aiReadableTables`. */
+    aiReadableTables: z
+      .array(z.string().regex(/^[a-z_][a-z0-9_]*$/))
+      .max(64)
+      .optional(),
     /** Operation names. Bodies live in source — the manifest just lists names. */
     operations: z.array(z.string().min(1).max(120)).min(1),
     component: pluginComponent.optional(),
@@ -1242,6 +1247,15 @@ export const pluginManifest = z
     checkPluginIndexes(m, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["indexes", ...path], message }),
     );
+    for (const [i, table] of (m.aiReadableTables ?? []).entries()) {
+      if (!m.adminSchema?.[table]) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["aiReadableTables", i],
+          message: `aiReadableTables names "${table}", which adminSchema does not declare`,
+        });
+      }
+    }
     checkPublicSurface(m, (path, message) => ctx.addIssue({ code: "custom", path, message }));
     checkMailTemplates(m, (path, message) => ctx.addIssue({ code: "custom", path, message }));
     checkAdminPanels(m.adminPanels ?? [], m.operations, (path, message) =>
@@ -2158,6 +2172,18 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   /** #389 — see `pluginManifest.adminSchema`. */
   readonly adminSchema?: PluginSchemaMap;
   /**
+   * #1387 — the `adminSchema` tables whose values the host may show the AI
+   * when a chat re-reads a row another chat changed (`get_plugin_draft_rows`).
+   * List a table only when every column is fine for the AI to read: a table
+   * left out stays hidden, and the AI sees only who changed which row and
+   * when. Part of the manifest, so the Owner reviews it at approval. Leave
+   * out anything like recipient lists or tokens.
+   *
+   * @example
+   * aiReadableTables: ["glossary", "style_guides"],
+   */
+  readonly aiReadableTables?: ReadonlyArray<string>;
+  /**
    * #1292 — the indexes the plugin's reads need, per zone and table
    * (`indexes.schema` for `schema`, `indexes.adminSchema` for
    * `adminSchema`). `id`, `ref:` columns and the host's branch column are
@@ -2657,6 +2683,7 @@ export function manifestFromDefinition(def: {
   readonly tier: 1 | 2;
   readonly schema: PluginSchemaMap;
   readonly adminSchema?: PluginSchemaMap;
+  readonly aiReadableTables?: ReadonlyArray<string>;
   readonly indexes?: PluginIndexes;
   readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
   readonly contributes?: ReadonlyArray<ContributionKind>;
@@ -2698,6 +2725,9 @@ export function manifestFromDefinition(def: {
     tier: def.tier,
     schema: def.schema,
     ...(def.adminSchema ? { adminSchema: def.adminSchema } : {}),
+    ...(def.aiReadableTables && def.aiReadableTables.length > 0
+      ? { aiReadableTables: [...def.aiReadableTables] }
+      : {}),
     ...(def.indexes && (def.indexes.schema || def.indexes.adminSchema)
       ? { indexes: def.indexes }
       : {}),

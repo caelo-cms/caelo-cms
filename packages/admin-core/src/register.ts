@@ -441,6 +441,7 @@ import {
   proposeRevokePluginCapabilityOp,
 } from "./ops/plugins/capability_proposals.js";
 import { commentArchiveInsertOp, commentArchivePostTeamOp } from "./ops/plugins/comment_archive.js";
+import { getDraftRowsOp } from "./ops/plugins/draft-rows.js";
 import {
   approvePluginInstallationOp,
   finalizePluginInstallationOp,
@@ -985,6 +986,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #262 — pre-run foreign-lock visibility for the chat runner.
   registry.register(listForeignLocksOp);
   registry.register(observeDraftReadsOp);
+  registry.register(getDraftRowsOp);
   // issue #620 — Open changes overview + lock-takeover notices.
   registry.register(listOpenChangesOp);
   registry.register(drainTakeoverNoticesOp);
