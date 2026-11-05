@@ -22,9 +22,11 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
+import { readStagingHostDns } from "../../deploy/staging-host-dns.js";
 import { describeError, toolError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 import { hostingStatusSection } from "./domain-hosting-status.js";
 
 const MAX_DOMAINS = 20;
@@ -141,7 +143,7 @@ const verifyDnsRecordsInput = z
       .max(MAX_RECORDS)
       .optional()
       .describe(
-        "Omit (usual) = every record the installer stored as required (site/admin A|CNAME, certificate TXT); result names each record's purpose -> tell the operator what to add/fix at the registrar. Explicit records only on the site's own domains (registered, base-URL host, installer records, their subdomains).",
+        "Omit (usual) = every record the install requires (site/admin A|CNAME, certificate TXT, staging host); result names each record's purpose -> tell the operator what to add/fix at the registrar. Explicit records only on the site's own domains (registered, base-URL host, installer records, their subdomains).",
       ),
     environment: z
       .enum(["dev", "staging", "production"])
@@ -159,6 +161,62 @@ interface RequiredRecord {
   readonly purpose: string;
 }
 
+function recordKey(r: { hostname: string; type: string; expectedValue: string }): string {
+  return `${r.hostname}|${r.type}|${r.expectedValue}`;
+}
+
+/**
+ * The records the staging host needs right now (`readStagingHostDns`, what
+ * Settings → Updates shows), or a line saying why there is nothing to check.
+ * Empty on a host whose DNS already points at the staging site.
+ *
+ * @param read - {@link readStagingHostDns}, replaced in tests
+ */
+export async function stagingHostRecords(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  read: typeof readStagingHostDns = readStagingHostDns,
+): Promise<{
+  records: (z.infer<typeof dnsRecordInput> & { purpose: string })[];
+  note: string | null;
+}> {
+  const access = await execute(toolCtx.registry, toolCtx.adapter, ctx, "staging_access.get", {});
+  if (!access.ok) {
+    return {
+      records: [],
+      note: `Staging host: could not read it — ${describeError(access.error)}`,
+    };
+  }
+  const url = (access.value as { stagingUrl: string | null }).stagingUrl;
+  if (!url) return { records: [], note: null };
+  const siteUrl = process.env.CAELO_SITE_URL;
+  const dns = await read(new URL(url).host, siteUrl ? new URL(siteUrl).host : "");
+  switch (dns.kind) {
+    case "records":
+      return {
+        records: dns.records.map((r) => ({
+          hostname: r.name,
+          type: r.type as z.infer<typeof dnsRecordInput>["type"],
+          expectedValue: r.value,
+          purpose: "staging host",
+        })),
+        note: null,
+      };
+    case "same-as-site":
+      return {
+        records: [],
+        note: `Staging host ${dns.host}: needs the same address as ${dns.sameAs}.`,
+      };
+    case "unavailable":
+      return {
+        records: [],
+        note: `Staging host ${dns.host}: its records could not be read — ${dns.reason}.`,
+      };
+    case "unsupported":
+      return { records: [], note: null };
+  }
+}
+
 export const verifyDnsRecordsTool: ToolDefinitionWithHandler<VerifyDnsRecordsInput> = {
   name: "verify_dns_records",
   description:
@@ -168,6 +226,8 @@ export const verifyDnsRecordsTool: ToolDefinitionWithHandler<VerifyDnsRecordsInp
   schema: verifyDnsRecordsInput,
   handler: async (ctx, input, toolCtx) => {
     let records: (z.infer<typeof dnsRecordInput> & { purpose?: string })[];
+    /** What the staging host needs when no record can say it (see below). */
+    let stagingNote: string | null = null;
     if (input.records) {
       records = input.records;
     } else {
@@ -189,7 +249,7 @@ export const verifyDnsRecordsTool: ToolDefinitionWithHandler<VerifyDnsRecordsInp
       records = [];
       for (const row of rows) {
         for (const rec of row.dnsRecordsRequired) {
-          const key = `${rec.hostname}|${rec.type}|${rec.value}`;
+          const key = recordKey({ ...rec, expectedValue: rec.value });
           if (seen.has(key)) continue;
           seen.add(key);
           records.push({
@@ -200,7 +260,13 @@ export const verifyDnsRecordsTool: ToolDefinitionWithHandler<VerifyDnsRecordsInp
           });
         }
       }
+      // #1455 — the staging host's records are not stack outputs: on
+      // gcp-firebase Hosting works them out when an update adds the host.
+      const staging = await stagingHostRecords(ctx, toolCtx);
+      records.push(...staging.records.filter((r) => !seen.has(recordKey(r))));
+      stagingNote = staging.note;
       if (records.length === 0) {
+        if (stagingNote) return { ok: true, content: stagingNote };
         return {
           ok: true,
           content:
@@ -237,6 +303,7 @@ export const verifyDnsRecordsTool: ToolDefinitionWithHandler<VerifyDnsRecordsInp
             : `expected ${rec.expectedValue}${v.message ? ` — ${v.message}` : ""}`;
       lines.push(`${label}: ${v.status} ${detail}`);
     }
+    if (stagingNote) lines.push(stagingNote);
     return { ok: failures < records.length, content: lines.join("\n") };
   },
 };

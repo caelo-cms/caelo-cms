@@ -26,7 +26,11 @@ import { deleteMediaManyTool } from "../delete-media-many.js";
 import { deleteModulesManyTool } from "../delete-modules-many.js";
 import { deployStagingTool } from "../deploy-staging.js";
 import { type ToolContext, ToolRegistry, type ToolResult } from "../dispatch.js";
-import { verifyDnsRecordsTool, verifyDomainsTool } from "../dns-verification.js";
+import {
+  stagingHostRecords,
+  verifyDnsRecordsTool,
+  verifyDomainsTool,
+} from "../dns-verification.js";
 import { acceptImportPagesTool, cleanupImportRunTool } from "../import-run-actions.js";
 import { sendTestEmailTool } from "../send-test-email.js";
 
@@ -200,6 +204,45 @@ describe("verify_domains / verify_dns_records", () => {
       { hostname: "_acme.example.com", type: "TXT", expectedValue: "tok" },
     ]);
     expect(r.content).toContain("TXT _acme.example.com (certificate): pending");
+  });
+
+  it("#1455 — verify_dns_records knows the staging host's records on gcp-firebase", async () => {
+    const h = harness({
+      "staging_access.get": () => ({ stagingUrl: "https://preview.example.com/" }),
+    });
+    const staging = await stagingHostRecords(AI, h.toolCtx, async (host) => ({
+      kind: "records",
+      host,
+      active: false,
+      records: [{ name: host, type: "A", value: "199.36.158.100" }],
+    }));
+    expect(staging).toEqual({
+      records: [
+        {
+          hostname: "preview.example.com",
+          type: "A",
+          expectedValue: "199.36.158.100",
+          purpose: "staging host",
+        },
+      ],
+      note: null,
+    });
+  });
+
+  it("#1455 — verify_dns_records says what a staging host needs when no record can", async () => {
+    const h = harness({
+      "provisioning_outputs.get": () => ({ rows: [] }),
+      "staging_access.get": () => ({ stagingUrl: "https://staging.example.com/" }),
+    });
+    const provider = process.env.CAELO_PROVIDER;
+    process.env.CAELO_PROVIDER = "gcp";
+    try {
+      const r = await run(verifyDnsRecordsTool, {}, h.toolCtx);
+      expect(r.content).toContain("Staging host staging.example.com: needs the same address as");
+    } finally {
+      if (provider === undefined) delete process.env.CAELO_PROVIDER;
+      else process.env.CAELO_PROVIDER = provider;
+    }
   });
 
   it("verify_dns_records reports a mismatch with both values", async () => {

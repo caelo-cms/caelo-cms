@@ -58,7 +58,9 @@ The staging database added two reserves: the staging gateway (3 connections at o
 
 An install whose operator set `adminMaxInstances` to 5 explicitly gets the formula's refusal at the next `pulumi preview`, naming the connections it needs.
 
-On the GCP stacks the pool env sits next to the env contract, like the remote-MCP identity env. It is derived from stack config that an upgrade roll cannot see, so `upgrade` never sets it. A roll never removes a var the contract does not own, so an install keeps its pool sizes across app releases. A new budget reaches an existing install with the next converge (`pulumi up`).
+On the GCP stacks the pool env sits next to the env contract, like the remote-MCP identity env. The admin's pool sizes derive from stack config that an upgrade roll cannot see, so `upgrade` never sets them: a roll never removes a var the contract does not own, and an install keeps its admin pools across app releases.
+
+The gateways are different (#1463). `upgrade` runs no `pulumi up`, so an install from before the budget kept 100 gateway instances and no pool env against `public_role`'s limit of 30, and bursts failed with `too many connections for role "public_role"`. Their values depend on no stack config, so the app-roll sets them in the revision that rolls the image (`GATEWAY_POOL_ENV`, `GATEWAY_MAX_INSTANCES_CEILING` in provisioning `pool-budget-stack.ts`): `CAELO_DB_PUBLIC_POOL_MAX=2`, and max instances lowered to 10 (staging 1), never raised, so a smaller `gatewayMaxInstances` stays. Contract 21 makes every install take this roll once from a release that has the code.
 
 ## Why the pool is not just raised
 

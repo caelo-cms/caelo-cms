@@ -32,6 +32,7 @@ import {
   stagingGatewayServiceAccountEmail,
 } from "../gcp-names.js";
 import type { ImageDigests } from "../install-state.js";
+import { GATEWAY_MAX_INSTANCES_CEILING, GATEWAY_POOL_ENV } from "../pool-budget-stack.js";
 import {
   adminMediaVolume,
   CLOUD_RUN_SLUGS,
@@ -54,11 +55,13 @@ import {
   liveContainerMemory,
   liveCpuIdle,
   liveDirectVpc,
+  liveMaxInstances,
   liveTimeoutSeconds,
   liveVolumes,
   planAdminMemory,
   planContractEnv,
   planCpuIdle,
+  planMaxInstances,
   planMediaVolume,
   planNoVpc,
   planRequestTimeout,
@@ -142,6 +145,8 @@ export interface ServicePlan {
   readonly liveCpuIdle: boolean;
   /** Whether the service egresses into the install's VPC now. */
   readonly liveDirectVpc: boolean;
+  /** Most instances the service may start now (null = Cloud Run's default). */
+  readonly liveMaxInstances: number | null;
 }
 
 /** A service plan plus the changes its roll applies. */
@@ -151,7 +156,9 @@ export interface RollPlan extends ServicePlan {
   /**
    * #553 — e.g. `--memory=2Gi` when the admin runs below the stack default;
    * #806 — `--timeout=3600` when the gateway runs below its contract timeout;
-   * `--cpu-throttling` when the contract wants request-based CPU.
+   * `--cpu-throttling` when the contract wants request-based CPU;
+   * #1463 — `--max-instances=10` when a gateway may start more instances than
+   * the connection budget has room for.
    */
   readonly resourceFlags: readonly string[];
   readonly resourceChanges: readonly string[];
@@ -250,6 +257,7 @@ export async function planAppRoll(
       liveTimeout: liveTimeoutSeconds(json),
       liveCpuIdle: liveCpuIdle(json),
       liveDirectVpc: liveDirectVpc(json),
+      liveMaxInstances: liveMaxInstances(json),
     });
   }
   const env = planEnv(install, services, {});
@@ -320,16 +328,24 @@ export async function planAppRoll(
     // leaves the VPC in the same revision that drops its database env.
     const vpc = SERVICE_VPC_EGRESS[s.slug] ? null : planNoVpc(s.liveDirectVpc);
     const vpcFlags = vpc?.ok ? vpc.flags : [];
+    // #1463 — every gateway instance holds three of its login's connections,
+    // so the scale-out rides the roll with the pool env (planEnv below).
+    const scale =
+      s.slug === "gateway" || s.slug === "staging-gateway"
+        ? planMaxInstances(s.liveMaxInstances, GATEWAY_MAX_INSTANCES_CEILING[s.slug])
+        : null;
+    const scaleFlags = scale?.ok ? scale.flags : [];
     return {
       ...s,
       envFlags: env.services[s.slug].flags,
       envChanges: env.services[s.slug].changes,
-      resourceFlags: [...memoryFlags, ...timeoutFlags, ...cpuFlags, ...vpcFlags],
+      resourceFlags: [...memoryFlags, ...timeoutFlags, ...cpuFlags, ...vpcFlags, ...scaleFlags],
       resourceChanges: [
         ...memoryFlags.map((f) => `${s.liveMemory ?? "(default)"} → ${f}`),
         ...(timeout?.ok ? timeout.changes : []),
         ...(cpu.ok ? cpu.changes : []),
         ...(vpc?.ok ? vpc.changes : []),
+        ...(scale?.ok ? scale.changes : []),
       ],
       volumeFlags: [...(s.slug === "admin" ? media.flags : []), ...secretFiles[s.slug].flags],
       volumeChanges: [...(s.slug === "admin" ? media.changes : []), ...secretFiles[s.slug].changes],
@@ -370,6 +386,14 @@ function planEnv(
   const deployed = Object.fromEntries(
     services.map((s) => [s.slug, { serviceName: s.serviceName, liveEnv: s.liveEnv }]),
   ) as Record<RollSlug, DeployedService>;
+  // #1463 — the gateways' pool env is the stacks', outside the contract: it
+  // used to reach an install only through `pulumi up`, so an install from
+  // before the budget never got it.
+  const extraEnv = {
+    ...adjust.extraEnv,
+    gateway: [...(adjust.extraEnv?.gateway ?? []), ...GATEWAY_POOL_ENV],
+    "staging-gateway": [...(adjust.extraEnv?.["staging-gateway"] ?? []), ...GATEWAY_POOL_ENV],
+  };
   return planContractEnv(
     {
       provider: install.provider,
@@ -382,7 +406,7 @@ function planEnv(
     deployed,
     {
       leaveUntouched: adjust.leaveUntouched ?? [],
-      ...(adjust.extraEnv ? { extraEnv: adjust.extraEnv } : {}),
+      extraEnv,
       ...(adjust.databaseHost ? { databaseHost: adjust.databaseHost } : {}),
     },
   );

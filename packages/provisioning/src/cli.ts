@@ -1654,6 +1654,11 @@ async function serveStagingHost(
         .join("\n")}`,
     );
   }
+  if (edge.domainMappingKept) {
+    console.log(
+      `${host} still points at its old Cloud Run route, which stays until those records are set; the next upgrade removes it.`,
+    );
+  }
   console.log(
     `Protected staging site: https://${host}/ (its certificate is issued once the records resolve)`,
   );

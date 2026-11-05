@@ -11,6 +11,7 @@ import {
   healthOrigins,
   IAM_PROPAGATION_WINDOW_MS,
 } from "./health.js";
+import type { LoadBalancerGet, LoadBalancerRequest } from "./load-balancer-get.js";
 
 const migrations = (adminPending = 0, publicPending = 0) => ({
   admin: { head: "0262_tool_approval_branch.sql", pending: adminPending },
@@ -313,11 +314,75 @@ describe("createIapHealthProbe", () => {
     }
     const lb = createIapHealthProbe(
       { ...FIREBASE, provider: "gcp" },
-      { run: gcloudOk, http: net.http, sleep: async () => {}, accessJustChanged: false },
+      {
+        run: gcloudOk,
+        http: net.http,
+        loadBalancerGet: async () => ({ status: 404, text: "<!DOCTYPE html>" }),
+        sleep: async () => {},
+        accessJustChanged: false,
+      },
     );
     const viaLb = await lb.baseline();
     if (!viaLb.ok) expect(viaLb.error).toContain("route /api/* to the gateway backend");
     expect(viaLb.ok).toBe(false);
+  });
+
+  describe("#1459 — gcp reaches the public services through the load balancer", () => {
+    const GCP: HealthTarget = { ...FIREBASE, provider: "gcp" };
+    const healthyGcp = (loadBalancerGet: LoadBalancerGet) => {
+      const net = network({
+        admin: () => [200, adminBody()],
+        // Nothing resolves the site's domain before go-live.
+        gateway: () => {
+          throw new Error("getaddrinfo ENOTFOUND acme.com");
+        },
+      });
+      return createIapHealthProbe(GCP, {
+        run: gcloudOk,
+        http: net.http,
+        loadBalancerGet,
+        sleep: async () => {},
+        accessJustChanged: false,
+        attempts: 1,
+      });
+    };
+
+    it("passes with no record on the main domain, connecting through the admin's name", async () => {
+      const asked: LoadBalancerRequest[] = [];
+      const probe = healthyGcp(async (req) => {
+        asked.push(req);
+        return { status: 200, text: JSON.stringify({ ok: true }) };
+      });
+      expect((await probe.baseline()).ok).toBe(true);
+      expect((await probe.deep({ version: "0.11.0" })).ok).toBe(true);
+      expect(asked).toEqual([
+        { connectHost: "admin.acme.com", hostHeader: "acme.com", path: "/api/_caelo/health" },
+        {
+          connectHost: "admin.acme.com",
+          hostHeader: "acme.com",
+          path: "/api/_caelo/health?deep=1",
+        },
+        { connectHost: "admin.acme.com", hostHeader: "acme.com", path: "/api/mcp/health" },
+      ]);
+    });
+
+    it("still stops on a gateway that does not answer", async () => {
+      const probe = healthyGcp(async () => {
+        throw new Error("socket hang up");
+      });
+      expect(await probe.baseline()).toEqual({
+        ok: false,
+        error: "gateway unreachable at https://acme.com: socket hang up",
+      });
+      expect((await probe.deep({ version: "0.11.0" })).ok).toBe(false);
+    });
+
+    it("names the missing invoker when Cloud Run answers its own 403", async () => {
+      const probe = healthyGcp(async () => ({ status: 403, text: "<html>403 Forbidden</html>" }));
+      const r = await probe.baseline();
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain("roles/run.invoker");
+    });
   });
 
   describe("#734 — a refused signJwt right after converge granted it", () => {

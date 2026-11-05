@@ -279,6 +279,7 @@ describe("gcp stack — the first up declares no gateway (Pulumi mocks)", () => 
   // map goes with it, because the stack ignores its path rules after creation.
   const GATEWAY_CHAIN = [
     `${SERVICE}::caelo-production-gateway`,
+    "gcp:cloudrunv2/serviceIamMember:ServiceIamMember::caelo-production-data-gateway-public-invoker",
     "gcp:compute/regionNetworkEndpointGroup:RegionNetworkEndpointGroup::caelo-production-gateway-neg",
     "gcp:compute/backendService:BackendService::caelo-production-gateway-backend",
     "gcp:compute/uRLMap:URLMap::caelo-production-url-map",

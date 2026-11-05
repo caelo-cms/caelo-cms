@@ -33,7 +33,7 @@
  * slows down instead of locking everyone out. Below the threshold the
  * rule's action is `allow`, which ends evaluation: the OWASP packs and the
  * general ban do not run for these paths. Abuse stays bounded by the
- * gateway's max instances (100) and by IAP, which rejects every request
+ * proxy's max instances and by IAP, which rejects every request
  * without a valid token of an allowlisted user before it reaches the admin.
  */
 
