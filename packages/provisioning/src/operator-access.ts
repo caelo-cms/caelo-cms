@@ -136,11 +136,20 @@ export const OPERATOR_ACCESS_DB_ROLE = "operator_access_reader";
 /** Where the admin image ships the job's entry point. */
 const SYNC_JOB_SCRIPT = "/app/packages/admin-core/src/security/operator-access/sync-job.ts";
 
-/** The `iap_web` path of an IAP resource, as the IAP REST API names it. */
-export function iapWebPath(resource: IapResource): string {
-  return resource.kind === "cloud-run"
-    ? `cloud_run-${resource.region}/services/${resource.service}`
-    : `compute/services/${resource.service}`;
+/**
+ * The `iap_web` path of an IAP resource, as the IAP REST API names it. A
+ * backend service goes by its numeric id: IAM on the job's account is
+ * evaluated there, and addressed by name `:iapSettings` answers 403 even with
+ * the role bound, so the sync failed every hour on plain gcp (#1120).
+ */
+export function iapWebPath(resource: IapResource, backendServiceId?: string): string {
+  if (resource.kind === "cloud-run") {
+    return `cloud_run-${resource.region}/services/${resource.service}`;
+  }
+  if (!backendServiceId) {
+    throw new Error(`${resource.service}: an IAP backend is addressed by its numeric id`);
+  }
+  return `compute/services/${backendServiceId}`;
 }
 
 /** Create the custom role, or bring an existing / soft-deleted one to spec. */
@@ -261,6 +270,29 @@ export async function ensureOperatorAccessSync(
   const customRole = customRoleName(projectId, OPERATOR_ACCESS_ROLE.roleId);
   const jobName = operatorAccessJobName(env);
   const done: string[] = [];
+
+  // Before any write: the steps below revoke the old access path, so an
+  // unreadable id must not leave the install without a replacement job.
+  let backendServiceId: string | undefined;
+  if (target.resource.kind === "backend-services") {
+    const described = await run([
+      "compute",
+      "backend-services",
+      "describe",
+      target.resource.service,
+      "--global",
+      project,
+      "--format=value(id)",
+    ]);
+    backendServiceId = described.stdout.trim();
+    if (!described.ok || !/^\d+$/.test(backendServiceId)) {
+      return {
+        ok: false,
+        done,
+        error: `read the id of ${target.resource.service}: ${described.stderr.trim() || "no numeric id"}`,
+      };
+    }
+  }
   const fail = (step: string, r: GcloudResult): OperatorAccessSyncResult => ({
     ok: false,
     done,
@@ -427,7 +459,7 @@ export async function ensureOperatorAccessSync(
   // 6. The job: the admin image with another entry point, the job's own SA,
   //    and its whole input as env the admin cannot override.
   const envVars = [
-    `CAELO_OPERATOR_ACCESS_IAP_WEB=${iapWebPath(target.resource)}`,
+    `CAELO_OPERATOR_ACCESS_IAP_WEB=${iapWebPath(target.resource, backendServiceId)}`,
     `CAELO_MCP_IAP_SERVICE_ACCOUNT=${mcpSa}`,
     `CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=${installIapAllowlist(target.ownerEmail).join(",")}`,
     `CAELO_OPERATOR_ACCESS_DB_HOST=${target.databaseHost}`,

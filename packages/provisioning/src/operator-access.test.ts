@@ -15,6 +15,7 @@ import { withIamAuthFlag } from "./cloudsql-iam-user.js";
 import type { GcloudResult } from "./gcloud.js";
 import {
   ensureOperatorAccessSync,
+  iapWebPath,
   installIapAllowlist,
   OPERATOR_ACCESS_PROJECT_IAP_ROLE,
   OPERATOR_ACCESS_ROLE,
@@ -203,6 +204,48 @@ describe("ensureOperatorAccessSync", () => {
     expect(deploy).toContain(
       "--set-env-vars=^|^CAELO_OPERATOR_ACCESS_IAP_WEB=cloud_run-europe-west1/services/caelo-production-admin-abc|CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@p.iam.gserviceaccount.com|CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=user:owner@x.com|CAELO_OPERATOR_ACCESS_DB_HOST=db1.p-label.europe-west1.sql-psa.goog|CAELO_OPERATOR_OAUTH_CLIENT_SECRET=projects/p/secrets/caelo-production-operator-oauth-client",
     );
+  });
+
+  it("#1120 — on plain gcp the job addresses the backend by its numeric id", async () => {
+    const { run, calls } = freshInstall();
+    const withId: typeof run = async (args) =>
+      args.slice(0, 3).join(" ") === "compute backend-services describe"
+        ? ok("6948347336569833444\n")
+        : run(args);
+    const r = await ensureOperatorAccessSync(
+      {
+        ...target,
+        resource: { kind: "backend-services", service: "caelo-production-admin-backend-1a2b" },
+      },
+      { run: withId, sleep: async () => {} },
+    );
+    expect(r.ok).toBe(true);
+    const deploy = calls.find((c) => c.slice(0, 3).join(" ") === "run jobs deploy") ?? [];
+    expect(deploy.find((a) => a.startsWith("--set-env-vars="))).toContain(
+      "CAELO_OPERATOR_ACCESS_IAP_WEB=compute/services/6948347336569833444|",
+    );
+  });
+
+  it("#1120 — iapWebPath refuses a backend without its numeric id", () => {
+    expect(() => iapWebPath({ kind: "backend-services", service: "b" })).toThrow("numeric id");
+  });
+
+  it("#1120 — refuses a backend whose id cannot be read instead of deploying by name", async () => {
+    const { run, calls } = freshInstall();
+    const noId: typeof run = async (args) =>
+      args.slice(0, 3).join(" ") === "compute backend-services describe"
+        ? fail("PERMISSION_DENIED")
+        : run(args);
+    const r = await ensureOperatorAccessSync(
+      {
+        ...target,
+        resource: { kind: "backend-services", service: "caelo-production-admin-backend-1a2b" },
+      },
+      { run: noId, sleep: async () => {} },
+    );
+    expect(r.ok).toBe(false);
+    // It stops before anything is written, the revoke of the old path included.
+    expect(calls).toEqual([]);
   });
 
   it("#1140 — tells the job which service accounts keep IAP access (the scheduler tick)", async () => {
