@@ -2302,6 +2302,13 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * contributions themselves stay pure. Name of an operation in
    * `operations` taking `{pageIds: string[]}` and returning
    * `{annotations: Record<pageId, Record<string, unknown>>}`.
+   *
+   * #1411 — a row that gives one page its URL names it in a `page_id`
+   * column: a chat's pending row is how core knows that page's URL may
+   * differ on the chat's branch before anything is published. The URL of
+   * a page depends on its own rows; a change that moves pages without
+   * naming them is a site-wide URL setting and goes through
+   * `propose_url_migration`.
    */
   readonly urlAnnotationsOperation?: string;
   /** #391 — see `pluginManifest.contributes`. */

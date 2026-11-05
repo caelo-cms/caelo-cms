@@ -108,6 +108,7 @@ import {
   resolvePageListOverlays,
 } from "../../lists/load.js";
 import { loadSiteView, type SiteView } from "../../site-view.js";
+import { pendingUrlAnnotationPageIds } from "./branch-url-drift.js";
 import { previewBreadcrumbs } from "./preview-breadcrumbs.js";
 import {
   expandNestedResources,
@@ -273,10 +274,11 @@ async function renderPreview(
   // 1. The site view, and the page when its id is known.
   const first = await reads.read(async (tx) => {
     const view = await loadSiteView(tx, chatBranchId);
-    return { view, page: input.pageId ? await loadPage(tx, input.pageId) : null };
+    const annotated = await pendingUrlAnnotationPageIds(tx, chatBranchId);
+    return { view, annotated, page: input.pageId ? await loadPage(tx, input.pageId) : null };
   });
   const view = first.view;
-  const driftPaths = await siteViewDriftPaths(view, renderScope);
+  const driftPaths = await siteViewDriftPaths(view, renderScope, first.annotated);
   let page: PreviewPageBundle;
   let requestedPage = input.pageNumber ?? 1;
   if (first.page) {

@@ -55,6 +55,7 @@ import type { PageState } from "../../snapshots/state.js";
 import { buildPatchSet, buildWhere, jsonbParam } from "../../sql-helpers.js";
 import { decodeKeysetCursor, encodeKeysetCursor } from "../keyset-cursor.js";
 import { createRedirectOp } from "../redirects.js";
+import { annotationDriftPaths, pendingUrlAnnotationPageIds } from "./branch-url-drift.js";
 import { cloneContentInstancesDeep } from "./content-instance-clone.js";
 import {
   composePaths,
@@ -488,10 +489,10 @@ async function pagesNamedByLastSegment(
 /**
  * 0263 — the tree half of pages.list for the returned pages: depth, and —
  * under a chat branch — the chat's view of every path its pending renames
- * / moves change (the live `current_path` of a main page only moves at
- * publish). Reads those pages' ancestor chains, never the whole tree
- * (#1269). Deleted rows (includeDeleted) keep depth 1: they are not part
- * of the live tree.
+ * / moves or plugin rows change (the live `current_path` of a main page
+ * only moves at publish). Reads those pages' ancestor chains, never the
+ * whole tree (#1269). Deleted rows (includeDeleted) keep depth 1: they are
+ * not part of the live tree.
  */
 async function withTreeView(
   tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
@@ -499,15 +500,25 @@ async function withTreeView(
   pages: z.infer<typeof pageRowSchema>[],
   only: PageSelection | null = null,
 ): Promise<z.infer<typeof pageListRowSchema>[]> {
+  const branchId = ctx.chatBranchId ?? null;
   const { tree, drifted } = await loadPageChains(
     tx,
-    ctx.chatBranchId ?? null,
+    branchId,
     pages.map((p) => p.id),
   );
-  const branchPaths =
-    ctx.chatBranchId && drifted.size > 0
-      ? await composePaths(tx, tree, [...drifted], renderScopeOf(ctx, tx))
-      : new Map<string, string>();
+  const branchPaths = new Map<string, string>();
+  if (branchId !== null) {
+    const ids = pages.map((p) => p.id);
+    const annotated = await pendingUrlAnnotationPageIds(tx, branchId, ids);
+    const moved =
+      drifted.size > 0 ? await composePaths(tx, tree, [...drifted], renderScopeOf(ctx, tx)) : [];
+    for (const [id, path] of [
+      ...(await annotationDriftPaths(tx, tree, annotated, branchId)),
+      ...moved,
+    ]) {
+      branchPaths.set(id, path);
+    }
+  }
   const out = pages.map((p) => ({
     ...p,
     currentPath: branchPaths.get(p.id) ?? p.currentPath,

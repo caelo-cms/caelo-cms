@@ -334,6 +334,16 @@ export function decodePagePath(path: string): DecodedPagePath {
 // ---------------------------------------------------------------------------
 
 /**
+ * The running plugins that annotate pages for URL composition. Their rows
+ * are the only plugin data that can change a page's URL.
+ */
+export function urlAnnotationPluginSlugs(): string[] {
+  return [...urlContributionsRegistry.annotationOps().keys()].filter(
+    (slug) => !isPluginDisabled(slug),
+  );
+}
+
+/**
  * Ask every contributing plugin for its URL annotations on the given
  * pages. Loud (no-fallbacks): a registered annotation op that fails
  * throws — composing URLs with silently-missing annotations would

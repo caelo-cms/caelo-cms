@@ -22,8 +22,8 @@
  *
  * Only core rows are cached. Plugin answers about the site (the
  * `link-resolve` partition, list overlays, URL annotations of a pending
- * move) are asked per render: plugin data changes without moving the
- * counter.
+ * move or plugin row) are asked per render: plugin data changes without
+ * moving the counter.
  *
  * The rows are the same for every actor: the tables read here have one
  * policy for every authenticated session.
