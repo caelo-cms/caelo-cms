@@ -740,31 +740,32 @@ export async function ensureMcpAuthProxyBackend(
       project,
       "--load-balancing-scheme=EXTERNAL_MANAGED",
       "--protocol=HTTPS",
-      `--security-policy=${names.policy}`,
       "--format=json",
       "--quiet",
     ]);
     if (!created.ok)
       return { ok: false, error: `create ${names.backend}: ${created.stderr.trim()}` };
-    done.push(`created backend service ${names.backend} (Cloud Armor ${names.policy})`);
+    done.push(`created backend service ${names.backend}`);
     const parsed = parseJson(created.stdout);
     backendJson = (Array.isArray(parsed) ? parsed[0] : parsed) ?? {};
   } else {
     backendJson = (parseJson(backend.stdout) ?? {}) as typeof backendJson;
-    if (!backendJson.securityPolicy?.endsWith(`/securityPolicies/${names.policy}`)) {
-      const set = await run([
-        "compute",
-        "backend-services",
-        "update",
-        names.backend,
-        "--global",
-        project,
-        `--security-policy=${names.policy}`,
-        "--quiet",
-      ]);
-      if (!set.ok) return { ok: false, error: `attach ${names.policy}: ${set.stderr.trim()}` };
-      done.push(`attached Cloud Armor ${names.policy} to ${names.backend}`);
-    }
+  }
+  // `backend-services create` has no --security-policy: `update` attaches it,
+  // here and on a backend an earlier run left without one.
+  if (!backendJson.securityPolicy?.endsWith(`/securityPolicies/${names.policy}`)) {
+    const set = await run([
+      "compute",
+      "backend-services",
+      "update",
+      names.backend,
+      "--global",
+      project,
+      `--security-policy=${names.policy}`,
+      "--quiet",
+    ]);
+    if (!set.ok) return { ok: false, error: `attach ${names.policy}: ${set.stderr.trim()}` };
+    done.push(`attached Cloud Armor ${names.policy} to ${names.backend}`);
   }
   if (
     !(backendJson.backends ?? []).some((b) =>

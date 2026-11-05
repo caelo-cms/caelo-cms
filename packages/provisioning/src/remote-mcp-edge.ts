@@ -51,7 +51,7 @@
  * The dotted metadata aliases (`/.well-known/…`, `oauth/.well-known/…`) are
  * one-off GETs per connection and stay under the general rules.
  */
-export const MCP_ARMOR_PATH_PATTERN = "^/api/mcp/(chat|admin|oauth/[a-z-]+(/[a-z-]+)?)$";
+export const MCP_ARMOR_PATH_PATTERN = "^/api/mcp/(?:chat|admin|oauth/[a-z-]+(?:/[a-z-]+)?)$";
 
 /** The general per-IP ban rule and the OWASP rule packs the MCP rule must precede. */
 export const GENERAL_RATE_LIMIT_PRIORITY = 1000;
