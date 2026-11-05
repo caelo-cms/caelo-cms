@@ -90,24 +90,25 @@ function holdsNeedle(needle: ContentInstanceNeedle, valuesText: string): boolean
  * match is a superset (an id needle matches the id wherever it appears);
  * callers confirm with an exact parse of `valuesText`.
  *
- * @param liveLimitPerId read at most this many live matches per `id`
- *   needle, for a caller that needs examples rather than every instance
- *   (a module nested in thousands of them). Only for `id` needles.
+ * @param liveLimitPerModuleNeedle for `id` needles that are module ids: read
+ *   at most this many live matches per module, for a caller that names
+ *   parents rather than listing every instance (a module nested in
+ *   thousands). Only matches that can survive count towards it.
  */
 export async function findContentInstancesContaining(
   tx: TransactionRunner,
   chatBranchId: string | null | undefined,
   needles: readonly ContentInstanceNeedle[],
-  liveLimitPerId?: number,
+  liveLimitPerModuleNeedle?: number,
 ): Promise<ContentInstanceRef[]> {
   if (needles.length === 0) return [];
   const branchId = chatBranchId ?? null;
   return loadInstancesInView(
     tx,
     branchId,
-    liveLimitPerId === undefined
+    liveLimitPerModuleNeedle === undefined
       ? needleFilterSql(needles)
-      : boundedIdFilterSql(needles, branchId, liveLimitPerId),
+      : boundedModuleNeedleFilterSql(needles, branchId, liveLimitPerModuleNeedle),
     { candidates: (branchId) => pendingNeedleCandidatesSql(branchId, needles) },
     (_moduleId, valuesText) => needles.some((n) => holdsNeedle(n, valuesText)),
   );
@@ -138,16 +139,33 @@ function visibleInstanceSql(branchId: string | null): SQL {
 }
 
 /**
- * {@link needleFilterSql} that stops after `limit` visible live instances
- * per `id` needle. The visibility test sits inside the limit: a capped walk
- * over rows the caller cannot see would report a used id as unused.
+ * {@link needleFilterSql} for module-id needles that stops after `limit`
+ * instances per module. Everything that would drop an instance later sits
+ * inside the limit, or a sample of dropped rows would report a nested module
+ * as unplaced while a surviving parent exists: visibility, the parent being
+ * another module that is not deleted, live or on this branch, and no pending
+ * state of the instance (those are read through the pending candidates).
  */
-function boundedIdFilterSql(
+function boundedModuleNeedleFilterSql(
   needles: readonly ContentInstanceNeedle[],
   branchId: string | null,
   limit: number,
 ): SQL {
   const ids = needles.flatMap((n) => (n.kind === "id" ? [n.id.toLowerCase()] : []));
+  const notPending = branchId
+    ? sql`AND (SELECT true FROM draft_pending_entities h
+                WHERE h.chat_branch_id = ${branchId}::uuid
+                  AND h.entity_kind = 'contentInstance' AND h.entity_id = ci.id
+                LIMIT 1) IS NULL
+          AND NOT COALESCE((
+            SELECT (ms.state->>'deletedAt') IS NOT NULL
+              FROM draft_pending_entities h
+              JOIN module_snapshots ms ON ms.id = h.snapshot_row_id
+             WHERE h.chat_branch_id = ${branchId}::uuid
+               AND h.entity_kind = 'module' AND h.entity_id = ci.module_id
+             ORDER BY h.header_created_at DESC, h.row_created_at DESC, h.snapshot_row_id DESC
+             LIMIT 1), false)`
+    : sql``;
   return sql`ci.id IN (
     SELECT hit.id
       FROM unnest(${textArray(ids)}) AS needle(ref)
@@ -155,8 +173,9 @@ function boundedIdFilterSql(
        SELECT ci.id
          FROM content_instance_refs r
          JOIN content_instances ci ON ci.id = r.content_instance_id
-        WHERE r.ref_kind = 'id' AND r.ref = needle.ref
-          AND ci.deleted_at IS NULL AND ${visibleInstanceSql(branchId)}
+         JOIN modules parent ON parent.id = ci.module_id AND parent.deleted_at IS NULL
+        WHERE r.ref_kind = 'id' AND r.ref = needle.ref AND ci.module_id::text <> needle.ref
+          AND ci.deleted_at IS NULL AND ${visibleInstanceSql(branchId)} ${notPending}
         LIMIT ${limit}
      ) hit)`;
 }

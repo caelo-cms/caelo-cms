@@ -1339,7 +1339,12 @@ function createPageContext(
     pageId,
     resolveField,
     siteTextScope,
-    linkScope: (link) => linkValue(link, data),
+    linkScope: (link) => {
+      // `{{f.title}}` shows the target's title: its edit must rebuild this page.
+      const ref = link.href.length > 0 ? parseLinkRef(link.href) : null;
+      if (ref?.kind === "page") depPages.add(ref.pageId);
+      return linkValue(link, data);
+    },
     breadcrumbTrail: () => trail,
     pageScope: () => {
       if (pageScopeMemo === undefined) {

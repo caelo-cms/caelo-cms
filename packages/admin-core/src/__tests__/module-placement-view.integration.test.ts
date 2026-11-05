@@ -284,6 +284,41 @@ describe("#1424 one placement view", () => {
     expect(del.content).toContain("still placed");
   });
 
+  it("a nesting parent past a sample of dead ones still counts", async () => {
+    const child = await createModule("sampled-child");
+    const { contentInstanceId } = await op<{ contentInstanceId: string }>(
+      SYS,
+      "content_instances.create",
+      { moduleId: child, displayName: "Child", purpose: "test", values: { heading: "N" } },
+    );
+    const nest = async (slug: string, instances: number): Promise<string> => {
+      const { moduleId } = await op<{ moduleId: string }>(SYS, "modules.create", {
+        slug: `${P}-${slug}`,
+        displayName: `${P} ${slug}`,
+        html: "<div>{{>slot}}</div>",
+        fields: [{ name: "slot", kind: "module", label: "Slot" }],
+      });
+      for (let i = 0; i < instances; i += 1) {
+        await op(SYS, "content_instances.create", {
+          moduleId,
+          displayName: `${slug} ${i}`,
+          purpose: "test",
+          values: { slot: { moduleId: child, contentInstanceId } },
+        });
+      }
+      return moduleId;
+    };
+    // More instances than a usage read samples, all of a parent that is gone
+    // for this chat; the one living parent comes last.
+    const deletedParent = await nest("dead-parent", 22);
+    await nest("living-parent", 1);
+    const chat = await openChat("sampled");
+    await op(chat, "modules.delete_many", { moduleIds: [deletedParent] });
+    expect(await catalogRow(chat, child)).toContain(`nested in ${P}-living-parent`);
+    await op(SYS, "modules.delete_many", { moduleIds: [deletedParent] });
+    expect(await catalogRow(chat, child)).toContain(`nested in ${P}-living-parent`);
+  });
+
   it("stops counting at the cap and says so", async () => {
     const moduleId = await createModule("capped");
     const pageId = await createPage("capped");
