@@ -29,33 +29,35 @@ export type AttachResult =
 /** Install ids are `<provider>-<slug>` (install-state.ts deriveInstallId). */
 const INSTALL_ID = /^[a-z0-9][a-z0-9-]{0,80}$/;
 
+/** The install record in a project's ops bucket, checked. */
+export type ProjectInstallRecord =
+  | {
+      readonly ok: true;
+      readonly installId: string;
+      readonly domain: string;
+      /** install.json exactly as the bucket held it. */
+      readonly text: string;
+    }
+  | { readonly ok: false; readonly error: string };
+
 /**
- * Attach the install in `projectId` to this machine.
- *
- * @param deps.run gcloud runner (tests pass a fake bucket)
- * @param deps.rootFor `~/.caelo-<id>` for an install id
- * @param deps.hasLocalState whether a dir holds a local Pulumi stack
+ * Read and check `gs://<project>-caelo-ops/install/install.json`, touching
+ * nothing on this machine: shared by `attach` and `status --project`, which
+ * has to work with no local install directory at all (#822).
  */
-export function attachInstall(
-  projectId: string,
-  deps: {
-    run: SyncGcloud;
-    rootFor: (installId: string) => string;
-    hasLocalState: (root: string) => boolean;
-  },
-): AttachResult {
+export function readProjectInstall(projectId: string, run: SyncGcloud): ProjectInstallRecord {
   const bucket = opsBucketName(projectId);
   let text: string | null;
   try {
     // Peek: the directory to mirror into isn't known (or checked) yet.
-    text = new GcsStateStore(bucket, "/nonexistent", deps.run).peek("install.json");
+    text = new GcsStateStore(bucket, "/nonexistent", run).peek("install.json");
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
   if (text === null) {
     return {
       ok: false,
-      error: `gs://${bucket} holds no install.json. If this install's state is still on the machine that installed it, run \`${selfCommand("state", "migrate")}\` there first.`,
+      error: `gs://${bucket} holds no install.json. Check the project id. If this install's state is still on the machine that installed it, run \`${selfCommand("state", "migrate")}\` there first.`,
     };
   }
   let remote: {
@@ -95,6 +97,34 @@ export function attachInstall(
     };
   }
 
+  return {
+    ok: true,
+    installId,
+    domain: typeof remote.domain === "string" ? remote.domain : installId,
+    text,
+  };
+}
+
+/**
+ * Attach the install in `projectId` to this machine.
+ *
+ * @param deps.run gcloud runner (tests pass a fake bucket)
+ * @param deps.rootFor `~/.caelo-<id>` for an install id
+ * @param deps.hasLocalState whether a dir holds a local Pulumi stack
+ */
+export function attachInstall(
+  projectId: string,
+  deps: {
+    run: SyncGcloud;
+    rootFor: (installId: string) => string;
+    hasLocalState: (root: string) => boolean;
+  },
+): AttachResult {
+  const bucket = opsBucketName(projectId);
+  const record = readProjectInstall(projectId, deps.run);
+  if (!record.ok) return record;
+  const { installId, domain, text } = record;
+
   const root = deps.rootFor(installId);
   const localText = new LocalStateStore(root).read("install.json");
   // Local Pulumi state blocks the attach whether or not an install.json
@@ -126,7 +156,7 @@ export function attachInstall(
   return {
     ok: true,
     installId,
-    domain: typeof remote.domain === "string" ? remote.domain : installId,
+    domain,
     status,
   };
 }

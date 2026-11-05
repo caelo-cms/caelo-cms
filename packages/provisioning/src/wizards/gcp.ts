@@ -80,12 +80,7 @@ import {
   upgraderServiceAccountEmail,
 } from "../gcp-names.js";
 import { INFRA_CONTRACT_VERSION } from "../infra-contract.js";
-import {
-  INSTALL_JOB_NAME,
-  INSTALL_JOB_ROLES,
-  INSTALL_SETUP_LINK_SECRET,
-  storeSetupLink,
-} from "../install-job.js";
+import { INSTALL_JOB_NAME, INSTALL_JOB_ROLES, storeSetupLink } from "../install-job.js";
 import {
   adoptStateBackend,
   ensureInstallDir,
@@ -349,6 +344,8 @@ export interface GcpConvergeOpts {
   readonly setupLink: "print" | "secret";
   /** Called as each step starts — the install job records it in the bucket. */
   readonly onPhase?: (phase: string, detail?: string) => void;
+  /** Called with DNS records the stack's outputs don't carry (the staging host's, #822). */
+  readonly onDnsRecords?: (records: InstallDnsRecord[]) => void;
 }
 
 /**
@@ -578,6 +575,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     domain,
     installStagingHost(meta),
     imageDigests,
+    opts.onDnsRecords ?? (() => {}),
   );
 
   // === 11.3. The quality-audit job: parallel Lighthouse runs (#875) ===
@@ -1610,6 +1608,7 @@ async function stepStagingGateway(
   domain: string,
   stagingHost: string,
   imageDigests: ImageDigests,
+  onDnsRecords: (records: InstallDnsRecord[]) => void,
 ): Promise<boolean> {
   const s = spinner();
   s.start(`Setting up the staging gateway behind the staging gate (${stagingHost})...`);
@@ -1634,6 +1633,14 @@ async function stepStagingGateway(
   if (edge.dnsRecords.length > 0) {
     log.info(`  DNS for ${stagingHost} (Settings → Updates shows the same):`);
     for (const d of edge.dnsRecords) log.info(`    ${d.name}  ${d.type}  ${d.value}`);
+    onDnsRecords(
+      edge.dnsRecords.map((d) => ({
+        hostname: d.name,
+        type: d.type,
+        value: d.value,
+        purpose: `Protected staging site (${stagingHost})`,
+      })),
+    );
   }
   return true;
 }
@@ -2596,7 +2603,7 @@ async function stepFinalize(installId: string, setupLink: "print" | "secret"): P
   const setupLinkLine =
     setupLink === "print"
       ? `     ${cyan(String(bootstrapUrl))}`
-      : `     ${dim(`(shown in your Cloud Shell terminal; or: gcloud secrets versions access latest --secret=${INSTALL_SETUP_LINK_SECRET} --project=${meta.projectId})`)}`;
+      : `     ${dim(`(shown in your Cloud Shell terminal; or, from any terminal: ${selfCommand("status", "--project", meta.projectId)})`)}`;
 
   // Both providers report their records in `dnsRecordsRequiredOut`; the
   // summary lists them in two groups so the main-domain records that take a

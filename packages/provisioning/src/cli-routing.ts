@@ -88,8 +88,9 @@ export const CLI_COMMANDS: readonly CliCommandDoc[] = [
   },
   {
     name: "status",
-    args: "[--install <id|domain|all>]",
-    summary: "Show the install's health and its estimated monthly cost.",
+    args: "[--install <id|domain|all>] [--project <gcp-project-id>]",
+    summary:
+      "Show the install's health and its estimated monthly cost. With --project, show from any terminal signed in to gcloud where an install in that project stands: phase, DNS records still to set, admin URL and Owner setup link.",
   },
   {
     name: "upgrade",

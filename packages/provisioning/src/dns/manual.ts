@@ -101,7 +101,10 @@ function recordKey(r: DnsRecord): string {
   return `${r.type}:${r.hostname}`;
 }
 
-async function checkRecord(record: DnsRecord): Promise<boolean> {
+/** Whether public DNS answers `record` with its value right now. */
+export async function checkRecord(
+  record: Pick<DnsRecord, "hostname" | "value"> & { readonly type: string },
+): Promise<boolean> {
   try {
     if (record.type === "A") {
       const result = await dns.resolve4(record.hostname);

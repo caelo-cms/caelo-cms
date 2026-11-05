@@ -13,7 +13,7 @@
 import { CAELO_VERSION } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
-import { formatDnsRecordGroups, groupDnsRecords, type InstallDnsRecord } from "../dns/groups.js";
+import { formatDnsRecordGroups, groupDnsRecords } from "../dns/groups.js";
 import { activeAccount, gcloud } from "../gcloud.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { realSleep } from "../gcloud-retry.js";
@@ -30,7 +30,9 @@ import {
   opsImageRef,
   readExecutionLogs,
   readInstallJobStatus,
+  readRecordedStackOutputs,
   readSetupLink,
+  recordedDnsRecords,
   startInstallJob,
   storeInstallSecretValue,
 } from "../install-job.js";
@@ -178,20 +180,35 @@ function logsHint(projectId: string, region: string): string {
   return `gcloud run jobs executions list --job=${INSTALL_JOB_NAME} --region=${region} --project=${projectId}`;
 }
 
-/** Print that closing the tab is fine; exit 130 on Ctrl-C with the re-attach hint. */
-function announceDetachable(projectId: string, execution: string): void {
+/**
+ * What the terminal says before it hands the install to the job (#822): the
+ * tab may close, and the one command that shows where the install stands
+ * from any terminal.
+ */
+export function handoffLines(projectId: string): string[] {
+  return [
+    bold(yellow("You may close this tab now.")),
+    "The install keeps running in your Google Cloud project. To see where it stands",
+    "(phase, DNS records, admin URL, Owner setup link), run this in any terminal",
+    "signed in to gcloud:",
+    "",
+    `  ${bold(cyan(selfCommand("status", "--project", projectId)))}`,
+  ];
+}
+
+/** Print {@link handoffLines}, highlighted. */
+function announceHandoff(projectId: string): void {
+  note(handoffLines(projectId).join("\n"), "The install runs on its own from here");
+}
+
+/** Name the job being followed; exit 130 on Ctrl-C with the way back. */
+function announceFollowing(projectId: string, execution: string): void {
   log.info(
-    [
-      `The install runs in your project as Cloud Run job ${bold(INSTALL_JOB_NAME)} (execution ${dim(execution)}).`,
-      dim(
-        "Closing this tab, Ctrl-C or Cloud Shell's idle timeout does not stop it. To follow it again, re-open the",
-      ),
-      dim(`"Open in Cloud Shell" link (or re-run the same command) and pick project ${projectId}.`),
-    ].join("\n"),
+    `The install runs in your project as Cloud Run job ${bold(INSTALL_JOB_NAME)} (execution ${dim(execution)}).`,
   );
   process.once("SIGINT", () => {
     process.stdout.write(
-      `\nStopped following. The install keeps running in ${projectId}; re-run to attach again.\n`,
+      `\nStopped following. The install keeps running in ${projectId}; to see where it stands: ${selfCommand("status", "--project", projectId)}\n`,
     );
     process.exit(130);
   });
@@ -201,7 +218,7 @@ function announceDetachable(projectId: string, execution: string): void {
 async function followToTheEnd(meta: InstallMetadata, execution: string): Promise<void> {
   const projectId = meta.projectId ?? "";
   const region = meta.region ?? "";
-  announceDetachable(projectId, execution);
+  announceFollowing(projectId, execution);
   const outcome = await tailInstallJob({ projectId, region, execution });
   if (outcome.kind === "succeeded") {
     await showResult(meta);
@@ -234,21 +251,7 @@ async function showResult(meta: InstallMetadata): Promise<void> {
   // The records from the stack's outputs, as the pulumi-up step recorded
   // them — not from the log, which a re-run after the install no longer shows.
   // Uncached: this process may hold progress.json from before the job ran.
-  const progressText = new GcsStateStore(
-    opsBucketName(projectId),
-    installRoot(meta.installId),
-    realSyncGcloud,
-  ).peek("progress.json");
-  const progress = progressText
-    ? (JSON.parse(progressText) as { steps?: Record<string, unknown> })
-    : {};
-  const pulumiUp = progress.steps?.[`pulumi-up-${projectId}`] as
-    | { outputs?: Record<string, unknown> }
-    | undefined;
-  const outputs = pulumiUp?.outputs ?? {};
-  const records = Array.isArray(outputs.dnsRecordsRequiredOut)
-    ? (outputs.dnsRecordsRequiredOut as InstallDnsRecord[])
-    : [];
+  const records = recordedDnsRecords(readRecordedStackOutputs(projectId, realSyncGcloud));
   const dnsLines =
     records.length > 0
       ? [
@@ -295,6 +298,7 @@ export async function launchInstallJob(opts: {
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
   const decision = await decide(gcloud, realSyncGcloud, { projectId, region });
   if (decision.kind === "attach") {
+    announceHandoff(projectId);
     await followToTheEnd(meta, decision.status.execution);
     return;
   }
@@ -345,8 +349,10 @@ export async function launchInstallJob(opts: {
     const now = await decide(gcloud, realSyncGcloud, { projectId, region });
     if (now.kind !== "start") {
       release();
-      if (now.kind === "attach") await followToTheEnd(meta, now.status.execution);
-      else await showResult(meta);
+      if (now.kind === "attach") {
+        announceHandoff(projectId);
+        await followToTheEnd(meta, now.status.execution);
+      } else await showResult(meta);
       return;
     }
     // Automatic DNS in the job (dns/cloudflare.ts) when this shell has a
@@ -369,6 +375,7 @@ export async function launchInstallJob(opts: {
         `DNS: the job sets the records through Cloudflare (token stored in Secret Manager as ${INSTALL_CLOUDFLARE_TOKEN_SECRET}).`,
       );
     }
+    announceHandoff(projectId);
     const started = await startInstallJob(gcloud, {
       projectId,
       region,
@@ -460,6 +467,7 @@ export async function prepareJobModeInstall(opts: {
   if (!meta.region) return { kind: "existing", meta };
   const decision = await decide(gcloud, realSyncGcloud, { projectId, region: meta.region });
   if (decision.kind === "attach") {
+    announceHandoff(projectId);
     await followToTheEnd(meta, decision.status.execution);
     return { kind: "handled" };
   }
@@ -470,37 +478,74 @@ export async function prepareJobModeInstall(opts: {
   return { kind: "existing", meta };
 }
 
+/** The command that follows or resumes the install in `meta`'s project, on any machine. */
+export function installerCommand(meta: Pick<InstallMetadata, "provider" | "projectId">): string {
+  return selfCommand(
+    "--provider",
+    meta.provider,
+    "--install-job",
+    "--project-id",
+    meta.projectId ?? "<gcp-project-id>",
+  );
+}
+
+/** How the install job stands: what the bucket records and what that means. */
+export interface InstallJobView {
+  readonly status: InstallJobStatus;
+  readonly decision: InstallJobDecision;
+}
+
 /**
- * `status`'s view of the install job: what the bucket records and, for a
- * run that claims to be running, whether its execution still is. Empty
- * when the install never used the job.
+ * What the bucket records about the install job and, for a run that claims
+ * to be running, whether its execution still is. Null when the install
+ * never used the job.
  */
-export async function installJobStatusLines(
-  meta: InstallMetadata,
-  deps: { run: GcloudRunner; syncRun: SyncGcloud } = { run: gcloud, syncRun: realSyncGcloud },
-): Promise<string[]> {
-  if (!meta.projectId || !meta.region) return [];
+export async function readInstallJobView(
+  meta: Pick<InstallMetadata, "projectId" | "region">,
+  deps: { run: GcloudRunner; syncRun: SyncGcloud },
+): Promise<InstallJobView | null> {
+  if (!meta.projectId || !meta.region) return null;
   const status = readInstallJobStatus(opsBucketName(meta.projectId), deps.syncRun);
-  if (!status) return [];
-  const decision = decideInstallJob(
-    status,
+  if (!status) return null;
+  const live =
     status.state === "running"
       ? await describeExecution(deps.run, {
           projectId: meta.projectId,
           region: meta.region,
           execution: status.execution,
         })
-      : null,
-  );
-  const head = `Install job: ${status.state} — ${status.phase} ${dim(`(v${status.caeloVersion}, execution ${status.execution}, updated ${status.updatedAt})`)}`;
-  const lines = [head];
+      : null;
+  return { status, decision: decideInstallJob(status, live) };
+}
+
+/** {@link InstallJobView} as `status` prints it, with the command that goes on from there. */
+export function installJobViewLines(
+  view: InstallJobView,
+  meta: Pick<InstallMetadata, "provider" | "projectId">,
+): string[] {
+  const { status, decision } = view;
+  const lines = [
+    `Install job: ${status.state} — ${status.phase} ${dim(`(v${status.caeloVersion}, execution ${status.execution}, updated ${status.updatedAt})`)}`,
+  ];
   if (status.detail) lines.push(`  ${status.detail}`);
   if (decision.kind === "attach") {
-    lines.push(`  Follow it: re-run the installer for project ${meta.projectId} (it attaches).`);
+    lines.push(`  Follow it live: ${installerCommand(meta)}`);
   } else if (decision.kind === "start") {
     lines.push(
-      `  Not finished (${decision.why}). Re-run the installer for project ${meta.projectId}; it resumes where this run stopped.`,
+      `  Not finished (${decision.why}). Resume it where this run stopped: ${installerCommand(meta)}`,
     );
   }
   return lines;
+}
+
+/**
+ * `status`'s view of the install job as text. Empty when the install never
+ * used the job.
+ */
+export async function installJobStatusLines(
+  meta: InstallMetadata,
+  deps: { run: GcloudRunner; syncRun: SyncGcloud } = { run: gcloud, syncRun: realSyncGcloud },
+): Promise<string[]> {
+  const view = await readInstallJobView(meta, deps);
+  return view ? installJobViewLines(view, meta) : [];
 }

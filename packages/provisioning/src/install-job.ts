@@ -28,15 +28,20 @@
  * The Owner setup link is a secret (#656): it never reaches the bucket or
  * the job's logs. The job stores it in Secret Manager
  * ({@link INSTALL_SETUP_LINK_SECRET}); the operator's terminal reads it there.
+ *
+ * All of this is readable from the project alone, so `status --project`
+ * (project-status.ts, #822) shows the install on any machine signed in to
+ * gcloud, after the terminal that started it is gone.
  */
 
 import { z } from "zod";
 import { assertNoSecrets } from "./checkpoint-secrets.js";
+import type { InstallDnsRecord } from "./dns/groups.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
 import { createInstallSecret } from "./runtime-secrets.js";
-import { OPS_INSTALL_PREFIX } from "./state-backend.js";
-import type { SyncGcloud } from "./state-store.js";
+import { OPS_INSTALL_PREFIX, opsBucketName } from "./state-backend.js";
+import { GcsStateStore, type SyncGcloud } from "./state-store.js";
 import { IMAGE_DIGEST } from "./upgrade/release-images.js";
 
 /** Name of the Cloud Run job that runs the install. */
@@ -99,6 +104,20 @@ export function opsImageRef(digest: string): string {
   return `${OPS_IMAGE_REPOSITORY}@${digest}`;
 }
 
+const GCP_PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
+/** Whether `value` has the shape of a Google Cloud project id. */
+export function isGcpProjectId(value: string): boolean {
+  return GCP_PROJECT_ID.test(value);
+}
+
+const DnsRecordSchema = z.object({
+  hostname: z.string().min(1),
+  type: z.string().min(1),
+  value: z.string().min(1),
+  purpose: z.string().optional(),
+});
+
 /** What `install/install-job.json` records. */
 export const InstallJobStatusSchema = z.object({
   statusVersion: z.literal(1),
@@ -110,6 +129,12 @@ export const InstallJobStatusSchema = z.object({
   phase: z.string(),
   /** Extra context for the phase (the DNS records to set, a failure reason). */
   detail: z.string().optional(),
+  /**
+   * DNS records the job found out about that are not in the stack's outputs
+   * (the staging host's, #822), so `status --project` lists them on any
+   * machine. Not secret: anyone can read them from public DNS once set.
+   */
+  dnsRecords: z.array(DnsRecordSchema).optional(),
   /** Caelo release the job's image belongs to. */
   caeloVersion: z.string(),
   startedAt: z.string(),
@@ -134,7 +159,9 @@ export function readJobStatusDoc<T>(url: string, schema: z.ZodType<T>, run: Sync
   const r = run(["storage", "cat", url]);
   if (!r.ok) {
     if (NOT_FOUND.test(r.stderr)) return null;
-    throw new Error(`Could not read ${url}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}`);
+    throw new Error(
+      `Could not read ${url}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}. Check that you are signed in (gcloud auth login) as an account with access to the install's ops bucket.`,
+    );
   }
   let json: unknown;
   try {
@@ -285,7 +312,7 @@ export async function describeExecution(
   if (!r.ok) {
     if (NOT_FOUND.test(r.stderr)) return "missing";
     throw new Error(
-      `Could not read execution ${target.execution}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}`,
+      `Could not read execution ${target.execution}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}. Your gcloud account needs run.executions.get on ${target.projectId} (e.g. roles/run.viewer or project Owner).`,
     );
   }
   const d = JSON.parse(r.stdout || "{}") as ExecutionDescription;
@@ -294,6 +321,54 @@ export async function describeExecution(
   return (s.succeededCount ?? 0) >= 1 && !s.failedCount && !s.cancelledCount
     ? "succeeded"
     : "failed";
+}
+
+const RecordedProgressSchema = z.object({ steps: z.record(z.string(), z.unknown()) });
+const RecordedStepSchema = z.object({ outputs: z.record(z.string(), z.unknown()).optional() });
+
+/**
+ * The stack's outputs as the `pulumi-up` step recorded them in the ops
+ * bucket's progress.json — current, never cached (the job writes it), and
+ * without touching this machine's install directory. Empty before that step
+ * finished.
+ *
+ * @throws when the bucket can't be read or progress.json is malformed
+ */
+export function readRecordedStackOutputs(
+  projectId: string,
+  run: SyncGcloud,
+): Record<string, unknown> {
+  const bucket = opsBucketName(projectId);
+  const text = new GcsStateStore(bucket, "/nonexistent", run).peek("progress.json");
+  if (text === null) return {};
+  const url = `gs://${bucket}/${OPS_INSTALL_PREFIX}/progress.json`;
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`${url} is not valid JSON. Re-run the installer to write it again.`);
+  }
+  const progress = RecordedProgressSchema.safeParse(json);
+  if (!progress.success) {
+    throw new Error(
+      `${url} is not a checkpoint this CLI understands (${progress.error.message}). Re-run the installer to write it again.`,
+    );
+  }
+  const step = RecordedStepSchema.safeParse(progress.data.steps[`pulumi-up-${projectId}`] ?? {});
+  return step.success ? (step.data.outputs ?? {}) : {};
+}
+
+/** The stack's `dnsRecordsRequiredOut` from {@link readRecordedStackOutputs}. */
+export function recordedDnsRecords(outputs: Record<string, unknown>): InstallDnsRecord[] {
+  const raw = outputs.dnsRecordsRequiredOut;
+  if (raw === undefined) return [];
+  const records = z.array(DnsRecordSchema).safeParse(raw);
+  if (!records.success) {
+    throw new Error(
+      `The recorded stack output dnsRecordsRequiredOut is malformed (${records.error.message}). Re-run the installer to refresh it.`,
+    );
+  }
+  return records.data;
 }
 
 /** What the launcher does with an install that may already have a job. */
