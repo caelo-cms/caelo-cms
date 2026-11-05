@@ -30,6 +30,7 @@ import {
   IMMUTABLE_CACHE_CONTROL,
   isContentHashedPath,
 } from "./static-cache-policy.js";
+import { STATIC_FILE_CONTENT_TYPES } from "./static-files.js";
 
 /** The two cloud slots a Stage alternates between. */
 export const STAGING_SLOTS = ["a", "b"] as const;
@@ -163,6 +164,8 @@ export function contentTypeFor(key: string): string {
       return "font/woff";
     case ".txt":
       return "text/plain; charset=utf-8";
+    case ".csv":
+      return "text/csv; charset=utf-8";
     case ".xml":
       return "application/xml; charset=utf-8";
     default:
@@ -188,6 +191,16 @@ export function cacheControlForContentType(contentType: string, key: string): st
     return "public, max-age=60";
   }
   if (key === "robots.txt" || key === "sitemap.xml") {
+    return "public, max-age=300";
+  }
+  // #1461 — a static file keeps its URL when its text changes, so it must
+  // not linger like an asset. `_…` paths are the build's own.
+  if (
+    !key.startsWith("_") &&
+    (STATIC_FILE_CONTENT_TYPES as readonly string[]).includes(
+      contentType.split(";")[0]?.trim() ?? "",
+    )
+  ) {
     return "public, max-age=300";
   }
   return "public, max-age=3600";

@@ -16,17 +16,24 @@
  *   2. ProviderResolver (`getActiveProvider()`) — reads the active row
  *      in `ai_providers`, decrypts the stored key, falls back to the
  *      legacy `process.env[envNameFor(name)]` when no DB key is set.
- *   3. null → emits SSE error pointing the Owner at /settings/ai.
+ *   3. null → emits SSE error pointing the Owner at /settings/ai; on an
+ *      install the Owner runs without a key (#1460) the error names that
+ *      state (`code: "no_install_ai"`) instead.
  */
 
 import {
   getActiveProvider,
+  isMcpOnlyInstall,
   readAgentStopEpoch,
   resolveTestProvider,
   runChatTurn,
   subscribeLiveTopics,
 } from "@caelo-cms/admin-core";
-import { type LiveTopic, pluginPreviewSelectionSchema } from "@caelo-cms/shared";
+import {
+  type LiveTopic,
+  noInstallAiRefusal,
+  pluginPreviewSelectionSchema,
+} from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -156,10 +163,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     const resolved = await getActiveProvider();
     if (!resolved) {
       return new Response(
-        `data: ${JSON.stringify({
-          kind: "error",
-          message: "AI provider not configured — visit /settings/ai to set up an API key.",
-        })}\n\ndata: ${JSON.stringify({ kind: "done" })}\n\n`,
+        `data: ${JSON.stringify(
+          (await isMcpOnlyInstall())
+            ? { kind: "error", code: "no_install_ai", message: noInstallAiRefusal("The chat") }
+            : {
+                kind: "error",
+                message: "AI provider not configured — visit /settings/ai to set up an API key.",
+              },
+        )}\n\ndata: ${JSON.stringify({ kind: "done" })}\n\n`,
         { headers: { "content-type": "text/event-stream" } },
       );
     }

@@ -53,7 +53,7 @@
   import { persistPreviewCookies } from "#lib/components/edit/preview-cookie-jar.js";
   import { StreamedValue } from "#lib/components/edit/streamed-value.svelte.js";
   import { pageToFollow } from "#lib/components/edit/streamed-read.js";
-  import { Button } from "#lib/components/ui/button/index.js";
+  import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
   import {
     DropdownMenu,
     DropdownMenuContent,
@@ -910,21 +910,36 @@
             <div class="h-10 rounded-md border-2 border-dashed border-muted-foreground/20"></div>
           </div>
         </div>
-        <div class="space-y-2 text-center">
-          <p class="text-lg font-semibold">Chat and build your page</p>
-          <p class="text-sm text-muted-foreground">
-            {!activePage && knownPages.size === 0
-              ? "Describe what you want in the chat — your page appears right here."
-              : "Tell the chat which page to open — or pick one in the top bar."}
-          </p>
-        </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onclick={() => window.dispatchEvent(new CustomEvent("caelo:focus-chat"))}
-        >
-          Write your first prompt
-        </Button>
+        {#if data.aiMode === "mcp_only"}
+          <!-- #1460 — no chat to write into: pages come from the connected agent. -->
+          <div class="space-y-2 text-center" data-testid="edit-empty-no-ai-key">
+            <p class="text-lg font-semibold">Build your page with your agent</p>
+            <p class="text-sm text-muted-foreground">
+              {!activePage && knownPages.size === 0
+                ? "What your connected agent builds appears right here."
+                : "Pick a page in the top bar."}
+            </p>
+          </div>
+          <a href="/settings/mcp" class={buttonVariants({ variant: "outline", size: "sm" })}>
+            Connect your agent
+          </a>
+        {:else}
+          <div class="space-y-2 text-center">
+            <p class="text-lg font-semibold">Chat and build your page</p>
+            <p class="text-sm text-muted-foreground">
+              {!activePage && knownPages.size === 0
+                ? "Describe what you want in the chat — your page appears right here."
+                : "Tell the chat which page to open — or pick one in the top bar."}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={() => window.dispatchEvent(new CustomEvent("caelo:focus-chat"))}
+          >
+            Write your first prompt
+          </Button>
+        {/if}
       </div>
     {/if}
   </div>

@@ -140,7 +140,11 @@ async function priceScopeEstimate(
   });
   const provider = toolCtx.provider;
   if (!provider) {
-    return unpriced("no AI provider attached to this tool context — cannot resolve rates");
+    return unpriced(
+      toolCtx.aiDelegated
+        ? "the AI work of this import is yours, so it costs the install nothing"
+        : "no AI provider attached to this tool context — cannot resolve rates",
+    );
   }
   const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "ai_pricing.list", {});
   if (!r.ok) {

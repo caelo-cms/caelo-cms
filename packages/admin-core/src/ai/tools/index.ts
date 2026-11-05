@@ -258,6 +258,12 @@ import {
   listRolesTool,
   listUsersTool,
 } from "./state-read-tools.js";
+import {
+  getStaticFileTool,
+  listStaticFilesTool,
+  proposeDeleteStaticFilesTool,
+  proposeSetStaticFilesTool,
+} from "./static-file-tools.js";
 import { submitPluginTool } from "./submit-plugin.js";
 import { submitResultTool } from "./submit-result.js";
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
@@ -633,6 +639,11 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetStagingAccessTool);
   registry.register(proposeRotateStagingCredentialsTool);
   registry.register(proposeSetStagingHostTool);
+  // Issue #1461 — static files on the site's domain.
+  registry.register(listStaticFilesTool);
+  registry.register(getStaticFileTool);
+  registry.register(proposeSetStaticFilesTool);
+  registry.register(proposeDeleteStaticFilesTool);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);
   // v0.11.0 — themes primitive (#45). Routine + the §11.A propose

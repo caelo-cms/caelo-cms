@@ -66,6 +66,8 @@ const OP_TO_TOOL: Readonly<Record<string, string>> = {
   "site_defaults.set": "set_site_defaults",
   "redirects.create_many": "bulk_create_redirects",
   "redirects.list": "find_redirects",
+  "static_files.list": "list_static_files",
+  "static_files.get": "get_static_file",
   "media.list": "find_media",
   "plugins.list": "list_plugins",
 };

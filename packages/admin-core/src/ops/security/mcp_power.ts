@@ -996,8 +996,14 @@ export const mcpGetApprovalOutcomeOp = defineOperation({
  * its context so a work item or an `AiDelegated:` answer is expected, not a
  * surprise. Depends on the token, so it is appended here rather than baked
  * into the static "power-mcp" prompt variant.
+ *
+ * @param opts.noInstallAi the install has no AI key at all (#1460), so the
+ *   agent must not offer image generation, and no token setting changes that
  */
-export function aiWorkContract(allowCaeloAi: boolean): string {
+export function aiWorkContract(
+  allowCaeloAi: boolean,
+  opts: { readonly noInstallAi?: boolean } = {},
+): string {
   const workItems =
     "Some tools return a work item instead of doing AI work themselves: " +
     '`{ "workItem": { "kind": "ai_work_item", "task", "instructions": { "system", "user" }, "responseFormat", "apply": { "tool", "args", "resultArg" } } }` ' +
@@ -1005,6 +1011,19 @@ export function aiWorkContract(allowCaeloAi: boolean): string {
     "then call `apply.tool` with `apply.args` plus your answer at `apply.resultArg` — a top-level argument name, or a path into apply.args such as `items[0].result`. " +
     "Batch work items of the same bulk tool into one call by concatenating their `items` arrays (apply_translations takes up to 100). " +
     "A work item without `apply` (a summary) is for you and your operator only.";
+  if (opts.noInstallAi) {
+    return (
+      "## AI work on this connection\n\n" +
+      "This install runs without an AI key: the Owner chose to work through connected agents only, so all AI work happens in YOUR model, on your subscription, and the install has no AI of its own. " +
+      "The Live Edit chat is off, and caelo_chat refuses. Stage, quality checks and the operator's Publish live work as usual, and approval cards appear in Live Edit for the operator to click. " +
+      "Tools whose AI part you can do hand it back to you: translations (translate_variant / translate_all_stale / translate_chrome → apply_translations), " +
+      "comment moderation, form summaries, newsletter drafts. add_module needs your parametrised HTML plus explicit `fields[]` (no server-side moduleize). " +
+      "query_page_html in describe mode returns the HTML for you to extract from. Do not offer generate_image / edit_image: they cannot run here. " +
+      "Create images yourself and upload them with caelo_upload_images. A tool answering `AiDelegated:` or `NoInstallAi:` names what to do instead. " +
+      "If the operator wants the chat or generated images, the way is an AI key under Settings → AI (/settings/ai), which ends this mode at once.\n\n" +
+      workItems
+    );
+  }
   return allowCaeloAi
     ? "## AI work on this connection\n\n" +
         "You do the reasoning; this token additionally lets you run AI work on the install's own AI (image generation, translation runs), " +
@@ -1089,7 +1108,10 @@ export async function powerGetContext(
     "power-mcp",
   );
   const systemContext = withUnavailableToolsNote(
-    [...chunks.map((c) => c.body), aiWorkContract(principal.allowCaeloAi)].join("\n\n"),
+    [
+      ...chunks.map((c) => c.body),
+      aiWorkContract(principal.allowCaeloAi, { noInstallAi: principal.noInstallAi }),
+    ].join("\n\n"),
     POWER_MCP_EXCLUDED_TOOLS,
   );
 
@@ -1100,6 +1122,7 @@ export async function powerGetContext(
     execute(registry, adapter, humanCtx, "themes.get_active", {}),
   ]);
   const statusLine = buildStatusLine({
+    noInstallAi: principal.noInstallAi,
     layoutsValue: layoutsR.ok ? layoutsR.value : null,
     templatesValue: templatesR.ok ? templatesR.value : null,
     siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,

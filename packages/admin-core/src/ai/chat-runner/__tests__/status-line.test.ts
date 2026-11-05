@@ -20,6 +20,12 @@ const COMPLETE = {
 };
 
 describe("buildStatusLine", () => {
+  it("#1460 — names an install without an AI key as the Owner's choice, not a gap", () => {
+    const line = buildStatusLine({ ...COMPLETE, noInstallAi: true });
+    expect(line).toContain("[Site status — install AI]");
+    expect(line).toContain("not a gap to fix");
+  });
+
   it("returns undefined when the foundation is complete", () => {
     expect(buildStatusLine(COMPLETE)).toBeUndefined();
   });

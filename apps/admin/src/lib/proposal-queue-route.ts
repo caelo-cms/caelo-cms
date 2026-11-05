@@ -18,6 +18,8 @@ const QUEUE_ROUTE_OVERRIDES: Readonly<Record<string, string>> = {
   // Site SEO proposals are approved on the SEO settings page, which exposes
   // the same `?/approve` + `?/reject` actions.
   site_defaults: "/settings/seo",
+  // #1461 — static files decide on their own page.
+  static_files: "/settings/static-files",
   // needsApproval tool calls (pending_proposals.list domain `tool_approvals`).
   tool_approvals: "/settings/tool-approvals/pending",
   // #684 — these two decide on their feature page, which exposes

@@ -11,6 +11,7 @@
   import { enhance } from "$app/forms";
   import { CircleCheck, CircleX } from "lucide-svelte";
   import RemoteMcpClientSetup from "#lib/components/RemoteMcpClientSetup.svelte";
+  import { CHAT_SURFACE_NEEDS_INSTALL_AI } from "@caelo-cms/shared";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
@@ -147,9 +148,18 @@
           {/if}
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent class="space-y-3">
+        {#if data.aiMode === "mcp_only"}
+          <p class="text-sm text-muted-foreground" data-testid="mcp-chat-unavailable">
+            {CHAT_SURFACE_NEEDS_INSTALL_AI}
+          </p>
+        {/if}
         {#if data.siteHost && (data.mayUse.chat || data.mayUse.admin)}
           <RemoteMcpClientSetup urls={a.urls} siteHost={data.siteHost} mayUse={data.mayUse} />
+        {:else if data.aiMode === "mcp_only"}
+          <p class="text-sm" data-testid="remote-mcp-no-surface">
+            Your role may not use full admin access; ask an Owner under Settings → Users.
+          </p>
         {:else}
           <p class="text-sm" data-testid="remote-mcp-no-surface">
             Your role may not use remote MCP. Chatting with the site's AI needs content.write; ask an

@@ -27,6 +27,7 @@ export {
   parseAndUpgradePageLayoutState,
   parseAndUpgradePageState,
   parseAndUpgradePageTypeState,
+  parseAndUpgradeStaticFileState,
   parseAndUpgradeTemplateState,
   SnapshotSchemaError,
 } from "./state-schemas.js";

@@ -43,6 +43,7 @@ import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 import type { Permission } from "../../permissions.js";
 import { iapVerifier } from "../../security/iap-assertion.js";
 import type { McpAgentRef } from "../chat/mcp-agent.js";
+import { isMcpOnly } from "./ai_providers.js";
 import type { McpRemoteCredential, McpRemoteSurface } from "./mcp_credential.js";
 import type { McpTokenScope } from "./mcp_tokens.js";
 
@@ -52,8 +53,14 @@ export interface McpPrincipal {
   /** Token scope, or the remote connection's surface. */
   readonly scope: McpTokenScope;
   readonly aiCostCapMicrocents: number | null;
-  /** #741 — the agent may spend the install's own AI (Power-MCP only). */
+  /**
+   * #741 — the agent may spend the install's own AI (Power-MCP only). Always
+   * false while the install runs without an AI key (#1460), whatever the
+   * credential stores, so every path below treats the call as AI-delegated.
+   */
   readonly allowCaeloAi: boolean;
+  /** #1460 — the Owner runs this install without an AI key. */
+  readonly noInstallAi: boolean;
   /** Names the external agent in the operator's UI (token label / client + email). */
   readonly displayName: string;
   readonly via:
@@ -412,11 +419,13 @@ export async function resolveRemoteMcpPrincipal(
                  OR client_label IS DISTINCT FROM COALESCE(${label ?? null}, client_label))
         `);
       }
+      const noInstallAi = await isMcpOnly(tx);
       return ok({
         actorId: user.id,
         scope: surface,
         aiCostCapMicrocents: toCap(row.ai_cost_cap_microcents),
-        allowCaeloAi: row.allow_caelo_ai === true,
+        allowCaeloAi: row.allow_caelo_ai === true && !noInstallAi,
+        noInstallAi,
         displayName: `${describeMcpClient(clientKey)} · ${user.email}`,
         via: {
           kind: "remote",

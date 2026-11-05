@@ -43,6 +43,7 @@ export const JOURNAL_KINDS = [
   "media_crop",
   "font",
   "redirect",
+  "static_file",
   "domain",
   "site_defaults",
   "site_settings",
@@ -142,6 +143,7 @@ export const JOURNALED_TABLES: Readonly<Record<string, JournaledTable>> = {
   media_crops: row("media_crop", "id", ["id"], { parent: "asset_id" }),
   font_assets: row("font", "id", ["id"]),
   redirects: row("redirect", "id", ["id"]),
+  static_files: row("static_file", "id", ["id"]),
   domains: row("domain", "id", ["id"]),
   site_defaults: row("site_defaults", "id", ["id"]),
   site_settings: row("site_settings", "id", ["id"]),
@@ -166,6 +168,7 @@ export const JOURNALED_TABLES: Readonly<Record<string, JournaledTable>> = {
   list_type_snapshots: snapshot("list_type", "list_type_id"),
   page_type_snapshots: snapshot("page_type", "page_type_id"),
   theme_snapshots: snapshot("theme", "theme_id"),
+  static_file_snapshots: snapshot("static_file", "static_file_id"),
   plugin_row_snapshots: snapshot("plugin_row", "row_id", {
     parent: "table_name",
     plugin: "plugin_id",
@@ -263,6 +266,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   plugin_rate_limit_proposals: QUEUE,
 
   ai_providers: "Owner AI configuration; read per call, nothing is derived from it",
+  mcp_only_mode:
+    "#1460: the Owner's choice to run without an AI key; read per call, nothing is derived from it",
   ai_budgets: "Owner AI budgets; read per call, nothing is derived from it",
   ai_pricing: "Owner AI pricing; read per call, nothing is derived from it",
   email_config: "Owner email configuration; read per send",
@@ -333,6 +338,7 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   ai_providers_pending_actions: QUEUE,
   deploy_pending_actions: QUEUE,
   domain_pending_actions: QUEUE,
+  static_file_pending_actions: QUEUE,
   email_config_pending_actions: QUEUE,
   layout_pending_actions: QUEUE,
   mcp_token_pending_actions: QUEUE,

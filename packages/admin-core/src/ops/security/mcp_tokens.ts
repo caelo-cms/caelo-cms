@@ -18,8 +18,10 @@ import { defineOperation, execute, type OperationRegistry } from "@caelo-cms/que
 import {
   CAELO_VERSION,
   CHAT_MAX_ATTACHMENTS,
+  CHAT_SURFACE_NEEDS_INSTALL_AI,
   chatAttachmentSchema,
   err,
+  noInstallAiRefusal,
   ok,
   type Result,
   truncateKeepingIds,
@@ -31,6 +33,7 @@ import type { AIProvider } from "../../ai/provider.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 import { isOpenCard, type TurnApprovalStatus } from "../chat/turn-approval-state.js";
+import { isMcpOnly } from "./ai_providers.js";
 import {
   exactlyOneMcpCredential,
   type McpCredentialInput,
@@ -186,6 +189,14 @@ export const createMcpTokenOp = defineOperation({
     const { plaintext: plaintextToken, hash: tokenHash } = await mintMcpTokenSecret();
 
     const scope = input.scope ?? "chat";
+    // #1460 — a chat token runs the install's own AI, which this mode has not.
+    if (scope === "chat" && (await isMcpOnly(tx))) {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp_tokens.create",
+        message: `${CHAT_SURFACE_NEEDS_INSTALL_AI} Mint this token with scope 'admin'.`,
+      });
+    }
     // The setting only exists on the Power-MCP surface; a chat token always
     // runs Caelo's own agent, so storing true there would mean nothing.
     if (input.allowCaeloAi === true && scope !== "admin") {
@@ -317,6 +328,8 @@ export async function resolveMcpToken(
       aiCostCapMicrocents: number | null;
       /** #741 — the token's agent may spend the install's AI (Power-MCP only). */
       allowCaeloAi: boolean;
+      /** #1460 — the Owner runs this install without an AI key. */
+      noInstallAi: boolean;
     },
     McpTokenFailure
   >
@@ -342,7 +355,8 @@ export async function resolveMcpToken(
                ) AS user_can_write,
                (t.last_used_at IS NULL
                  OR t.last_used_at < now() - ${LAST_USED_STALE_SECONDS}::int * interval '1 second')
-                 AS last_used_stale
+                 AS last_used_stale,
+               EXISTS (SELECT 1 FROM mcp_only_mode) AS no_install_ai
         FROM mcp_tokens t
         LEFT JOIN users u ON u.id = t.actor_id
         WHERE t.token_hash = ${tokenHash}
@@ -359,6 +373,7 @@ export async function resolveMcpToken(
         user_has_role: boolean;
         user_can_write: boolean;
         last_used_stale: boolean;
+        no_install_ai: boolean;
       }>;
       const r = rows[0];
       if (!r) return err("not_found" as const);
@@ -393,7 +408,9 @@ export async function resolveMcpToken(
         displayName: r.display_name,
         scope: r.scope,
         aiCostCapMicrocents: cap,
-        allowCaeloAi: r.allow_caelo_ai === true,
+        // #1460 — without an AI key nothing can run on the install's AI.
+        allowCaeloAi: r.allow_caelo_ai === true && !r.no_install_ai,
+        noInstallAi: r.no_install_ai,
       });
     },
   );
@@ -505,6 +522,21 @@ export const mcpSendChatOp = defineOperation({
       });
     }
     const { adapter, registry, resolveProvider } = bridgeOpts;
+    const auth = await resolveMcpPrincipal(adapter, input, {
+      surface: "chat",
+      operation: "mcp.send_chat",
+    });
+    if (!auth.ok) {
+      return err({ kind: "HandlerError", operation: "mcp.send_chat", message: auth.message });
+    }
+    const { actorId, aiCostCapMicrocents, noInstallAi } = auth.principal;
+    if (noInstallAi) {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp.send_chat",
+        message: noInstallAiRefusal("caelo_chat"),
+      });
+    }
     const provider = await resolveProvider();
     if (!provider) {
       return err({
@@ -514,14 +546,6 @@ export const mcpSendChatOp = defineOperation({
           "AI provider not configured — visit /settings/ai to set up an API key, then retry.",
       });
     }
-    const auth = await resolveMcpPrincipal(adapter, input, {
-      surface: "chat",
-      operation: "mcp.send_chat",
-    });
-    if (!auth.ok) {
-      return err({ kind: "HandlerError", operation: "mcp.send_chat", message: auth.message });
-    }
-    const { actorId, aiCostCapMicrocents } = auth.principal;
 
     // Fresh requestId per turn — MCP clients echo it back so the operator
     // can click through to /settings/audit/<id> for the full trail.
@@ -856,6 +880,7 @@ export async function resolveMcpPrincipal(
       scope: t.scope,
       aiCostCapMicrocents: t.aiCostCapMicrocents,
       allowCaeloAi: t.allowCaeloAi,
+      noInstallAi: t.noInstallAi,
       displayName: t.displayName,
       via: { kind: "token", tokenId: t.tokenId },
     },

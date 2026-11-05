@@ -317,6 +317,11 @@ beforeEach(async () => {
   await writeFile(join(buildDir, "sitemap.xml"), "<urlset></urlset>", "utf8");
   await writeFile(join(buildDir, "robots.txt"), "User-agent: *\nDisallow: /\n", "utf8");
   await writeFile(join(buildDir, "_redirects"), "# generated\n/de / 301\n", "utf8");
+  await writeFile(
+    join(buildDir, "_static-files.json"),
+    JSON.stringify({ version: 1, files: [] }),
+    "utf8",
+  );
   await writeAssetReferences(buildDir);
   await writeFile(
     join(buildDir, "routing-manifest.json"),
@@ -983,6 +988,15 @@ describe("firebaseHostingPublisher — a build streamed into the version (#1271)
       target: STAGING,
     });
     await upload.put({ relPath: "_redirects", body: Buffer.from("# generated\n/old / 301\n") });
+    await upload.put({
+      relPath: "_static-files.json",
+      body: Buffer.from(
+        JSON.stringify({
+          version: 1,
+          files: [{ path: "p0.txt", contentType: "text/plain; charset=utf-8" }],
+        }),
+      ),
+    });
     await upload.put({ relPath: "robots.txt", body: Buffer.from("User-agent: *\nDisallow: /\n") });
     for (let i = 0; i < 600; i += 1) {
       await upload.put({ relPath: `p${i}/index.html`, body: Buffer.from(`<p>page ${i}</p>`) });
@@ -996,7 +1010,9 @@ describe("firebaseHostingPublisher — a build streamed into the version (#1271)
     });
     const version = fake.versions.get(summary.location.split("/").pop() ?? "");
     expect(version?.status).toBe("FINALIZED");
-    expect(Object.keys(version?.files ?? {})).toHaveLength(602);
+    expect(Object.keys(version?.files ?? {})).toHaveLength(603);
+    // #1461 — a static file's Content-Type rides the config too.
+    expect(JSON.stringify(version?.config)).toContain("text/plain; charset=utf-8");
     expect(fake.populateCalls).toBeGreaterThanOrEqual(3);
     expect(fake.fileBody(version!, "/p599/index.html")).toBe("<p>page 599</p>");
     // The redirects ride the config set at finalize.

@@ -299,8 +299,13 @@ export interface BuildUploadFile {
   /** Build-relative, `/`-separated — the served path. */
   readonly relPath: string;
   readonly body: Uint8Array;
-  /** Set when the extension does not say (a bare-slug page). */
+  /** Set when the extension does not say (a bare-slug page) or a static file declares it. */
   readonly contentType?: string;
+  /**
+   * Upload even when the bytes equal the live file's: the Content-Type may be
+   * what changed (#1461, a static file's type), and a hash cannot tell.
+   */
+  readonly alwaysUpload?: true;
 }
 
 /** A build being put into the provider as it is written (#1271). */

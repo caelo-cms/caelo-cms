@@ -16,6 +16,14 @@
  * serves the staged site itself (staging/site.ts); admitted `/api/*`
  * requests take the routes above against its own database.
  *
+ * While its feature is off it answers the fixed 404 of an unknown path
+ * before it reads anything of the request and before any database access
+ * (epic #763 E14 a, {@link featureOff}): the live gateway while no active
+ * plugin serves an operation to visitors, the staging gateway while no
+ * staging host is set. Every install provisions both at zero minimum
+ * instances, so an off gateway costs nothing and exposes nothing but
+ * `/healthz` and the upgrade's health check.
+ *
  * Before anything reaches the database (#1326 — the cheap setup has no WAF
  * in front, E3, so the gateway must shed junk itself): a path that names no
  * route is a 404; every visitor route takes a token from the per-client
@@ -74,9 +82,11 @@ import {
   ensureDevSignedManifests,
   hostInfra,
   loadedPlugins,
+  markDispatchRegistryStale,
   pluginDeclaresConsentPurpose,
   registerGatewayOperations,
   runPluginOperation,
+  servesVisitorOperations,
   syncDispatchPlugins,
   unpublishedRegistryError,
   VISITOR_ID_PURPOSE,
@@ -284,7 +294,46 @@ export function invalidateGatewaySettings(): void {
   cachedSettings = null;
   cachedStagingState = null;
   cachedRedirects = null;
+  visitorApiOff = null;
+  markDispatchRegistryStale();
   invalidateVisitorConsentRule();
+}
+
+// ---------------------------------------------------------------------------
+// Epic #763 E14 a — a gateway whose feature is off answers the fixed 404.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether no active plugin serves an operation to visitors, as of the last
+ * registry sync made since the admin's last publish notification; null when
+ * that is not known. Dropped with every other published-state cache.
+ */
+let visitorApiOff: boolean | null = null;
+
+/**
+ * Learn whether the visitor API is off: one registry sync (a read of the
+ * projection), cached until the next publish notification. A sync that
+ * failed or was overtaken by a notification leaves it unknown, and the
+ * request takes the full pipeline (which answers the registry's own 503).
+ */
+async function learnVisitorApiOff(): Promise<boolean> {
+  const startedAt = publishedCacheGeneration();
+  await syncDispatchPlugins();
+  const serves = servesVisitorOperations();
+  if (serves === null) return false;
+  if (mayCacheRead(startedAt)) visitorApiOff = !serves;
+  return !serves;
+}
+
+/**
+ * Whether this gateway's feature is known to be off without touching the
+ * database: the cached answer, valid only while the published-state LISTEN
+ * holds (published-changes.ts). The staging gateway's own feature (a
+ * staging host) is checked on its state in {@link stagingRequest}; its
+ * `/api/*` follows the staging registry like the live one.
+ */
+function featureOff(): boolean {
+  return visitorApiOff === true && publishedCacheUsable();
 }
 
 // ---------------------------------------------------------------------------
@@ -692,9 +741,9 @@ async function stagingRequest(
     return errorResponse("ServiceUnavailable", 503, requestId, { log: "gateway not bootstrapped" });
   }
   const adapter = cachedAdapter;
-  // The allowlist and the failure budget match the address the rate limits bucket by.
-  const client = requestClientAddress(req, conn, requestId);
-  if (!client.ok) return client.response;
+  // The published state first: E14 a — with no staging host set the staging
+  // site is off, the fixed 404 before anything of the request is read (from
+  // memory while the LISTEN holds, else one read of the projection row).
   let state: StagingSiteState;
   try {
     state = await loadStagingSiteState(adapter);
@@ -712,6 +761,10 @@ async function stagingRequest(
       },
     });
   }
+  if (state.host === null) return errorResponse("NotFound", 404, requestId);
+  // The allowlist and the failure budget match the address the rate limits bucket by.
+  const client = requestClientAddress(req, conn, requestId);
+  if (!client.ok) return client.response;
   return handleStagingSiteRequest(req, {
     state,
     clientIp: client.value,
@@ -745,6 +798,16 @@ async function visitorRequest(
       client = rateLimitAddress(address.value);
     }
     return gatewayHealth(url, cachedAdapter, { client, requestId });
+  }
+
+  // ---- E14 a: no visitor plugin active, the fixed 404 before anything of
+  // the request is read. Known from memory while the LISTEN holds; not
+  // known yet (the first request after a publish or boot, or the LISTEN is
+  // down): one registry read decides, shared by concurrent requests and at
+  // most one per SYNC_TTL_MS (plugin-host syncDispatchPlugins). ----
+  if (featureOff()) return errorResponse("NotFound", 404, requestId);
+  if (cachedAdapter && (await learnVisitorApiOff())) {
+    return errorResponse("NotFound", 404, requestId);
   }
 
   // #1337 — the confirmation page of a plugin's mail link: fixed per

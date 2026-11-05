@@ -205,6 +205,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     by: ["site_memory_propose"],
     note: "site memory is loaded into every turn's system prompt (persistence.loadMemory); changes go through site_memory_propose",
   },
+  "static_files.list_pending": PENDING_QUEUE,
   "users.list_pending": PENDING_QUEUE,
   // #970 — the sync job's per-run report. The AI sees it where it acts: every
   // approved user change folds the run's refused members into the tool
@@ -344,9 +345,10 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "publish dialog read; publishing a chat is the operator's review step",
   },
-  "ai_providers.any_configured": {
+  "ai_providers.get_mode": {
     kind: "internal",
-    reason: "layout guard for the 'set up AI' onboarding; an AI that is running is configured",
+    reason:
+      "first-run gate and Live Edit state; an AI that is running has a key, and an external agent learns the mode from caelo_get_context",
   },
   "notifications.aggregate": { kind: "internal", reason: "AppShell bell badge count" },
   "media.get_processing_status": {

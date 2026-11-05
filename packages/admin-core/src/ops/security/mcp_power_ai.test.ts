@@ -45,6 +45,17 @@ describe("powerToolCatalogue AI note", () => {
 });
 
 describe("aiWorkContract", () => {
+  it("#1460 — on an install without an AI key it says so, whatever the token stores", () => {
+    for (const allow of [true, false]) {
+      const text = aiWorkContract(allow, { noInstallAi: true });
+      expect(text).toContain("## AI work on this connection");
+      expect(text).toContain("This install runs without an AI key");
+      expect(text).toContain("Do not offer generate_image");
+      expect(text).toContain("/settings/ai");
+      expect(text).not.toContain("cost cap");
+    }
+  });
+
   it("describes the work-item protocol in both modes", () => {
     for (const allow of [true, false]) {
       const text = aiWorkContract(allow);

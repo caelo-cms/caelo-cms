@@ -15,6 +15,7 @@
   import { Label } from "#lib/components/ui/label/index.js";
   import { Select } from "#lib/components/ui/select/index.js";
   import { GOOGLE_IMAGE_MODELS, MODEL_HELPER_TEXT, modelsForProvider } from "#lib/ai-models.js";
+  import { MCP_ONLY_LEAVES_OFF } from "@caelo-cms/shared";
 
   let { data, form } = $props();
 </script>
@@ -34,6 +35,17 @@
       <a class="underline" href="/settings/costs">Cost dashboard →</a>
     </div>
   </div>
+
+  {#if data.aiMode === "mcp_only"}
+    <Alert data-testid="ai-mcp-only-mode">
+      <AlertDescription>
+        <strong>No AI key: this install runs through Power-MCP only.</strong>
+        {MCP_ONLY_LEAVES_OFF} To leave this mode, pick a provider below, paste an API key and click
+        Save. The chat works at once. Connected agents are set up under
+        <a class="underline" href="/settings/mcp">Settings → MCP</a>.
+      </AlertDescription>
+    </Alert>
+  {/if}
 
   {#if data.firstRun}
     <Alert>

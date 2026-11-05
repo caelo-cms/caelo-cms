@@ -258,6 +258,38 @@ describe("bug intake HTTP", () => {
     expect(await errorOf(res)).toMatchObject({ retryable: true });
   });
 
+  it("keys registrations by the address Cloud Run appended, not one the caller wrote (#1339)", async () => {
+    handler = createIntakeHandler({
+      service: new IntakeService({
+        store,
+        tracker,
+        matcher: { match: async () => null },
+        issueThresholdInstalls: 1,
+        maxNewIssuesPerDay: 100,
+        maxNewSuggestionsPerDay: 100,
+        issuesPaused: false,
+      }),
+      store,
+      now: () => NOW,
+      registerLimiter: new RateLimiter(2, 60 * 60_000),
+      globalRegisterLimiter: new RateLimiter(100, 60 * 60_000),
+    });
+    // A forged first entry does not buy a fresh bucket: the last one counts.
+    for (const forged of ["10.0.0.1", "10.0.0.2"]) {
+      expect((await register(keys.publicKey, `${forged}, 203.0.113.50`)).status).toBe(204);
+    }
+    const res = await register(keys.publicKey, "10.0.0.3, 203.0.113.50");
+    expect(res.status).toBe(429);
+    expect((await errorOf(res)).error).toBe("Too many registrations from this address.");
+  });
+
+  it("refuses a registration without the address Cloud Run appends", async () => {
+    const res = await handler(
+      new Request("https://bugs.test/v1/installs", { method: "POST", body: "{}" }),
+    );
+    expect(res.status).toBe(400);
+  });
+
   it("refuses oversized bodies before parsing", async () => {
     const res = await handler(
       new Request("https://bugs.test/v1/installs", { method: "POST", body: "x".repeat(70_000) }),

@@ -57,7 +57,7 @@ type ToolResult = { ok: boolean; content: string; refusal?: true };
  */
 export const AI_DELEGATED_IMAGE_ERROR =
   "AiDelegated: this token does not let you spend the install's image model. Create the image yourself (your own image tool or a stock photo), " +
-  'upload it with caelo_upload_images, and reference the returned media id/url. The Owner can allow Caelo-side image generation for this token at /settings/mcp ("may use Caelo\'s AI").';
+  'upload it with caelo_upload_images, and reference the returned media id/url. On an install with an AI key, the Owner can allow Caelo-side image generation for this token at /settings/mcp ("may use Caelo\'s AI").';
 
 /**
  * Pick the image-capable provider (an active OpenAI/Google provider with

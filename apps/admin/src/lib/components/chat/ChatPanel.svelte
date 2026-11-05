@@ -206,6 +206,10 @@
    */
   let hydrated = $state(false);
   let composerEl = $state<HTMLTextAreaElement | null>(null);
+  // #1460 — the Owner runs this install without an AI key: the composer gives
+  // way to a notice, and nothing here starts a turn. Approval cards stay,
+  // they are how a connected agent's gated tools get their human click.
+  const installAiOff = $derived((page.data as { aiMode?: string }).aiMode === "mcp_only");
 
   // The /edit canvas empty state ("Chat and build your page") is one
   // big button; clicking it lands the operator here, cursor ready.
@@ -733,7 +737,9 @@
     })();
   });
 
-  const qualityOffer = $derived(openQualityOffer(qualityStatus.status));
+  // #1460 — a fix round is a turn of this chat's AI; with no AI key there is
+  // none to offer (the connected agent reads the same audit).
+  const qualityOffer = $derived(installAiOff ? null : openQualityOffer(qualityStatus.status));
   /** The audit whose offer the operator is acting on (its card is busy meanwhile). */
   let qualityOfferActing = $state<string | null>(null);
   /**
@@ -1791,6 +1797,7 @@
     // (not when it ends: a fix turn runs for minutes).
     onStarted?: () => void,
   ): Promise<boolean> {
+    if (installAiOff && !resume) return false;
     if (streaming || (uploadingImages && !resume && overrideText === undefined)) return false;
     if (
       !resume &&
@@ -2958,6 +2965,20 @@
             </ul>
           </div>
         {/if}
+        {#if installAiOff}
+          <div
+            class="space-y-1 rounded-md border bg-muted/40 p-3 text-sm"
+            data-testid="chat-no-ai-key-notice"
+          >
+            <p class="font-medium">This install has no AI key, so the chat is off.</p>
+            <p class="text-muted-foreground">
+              <a class="underline underline-offset-2" href="/settings/ai">Store a key under Settings → AI</a>
+              to chat here, or work through your connected agent
+              (<a class="underline underline-offset-2" href="/settings/mcp">Settings → MCP</a>). Preview,
+              Stage and Publish live keep working.
+            </p>
+          </div>
+        {:else}
         <form
           onsubmit={(e) => {
             e.preventDefault();
@@ -3208,6 +3229,7 @@
             {/if}
           </div>
         </form>
+        {/if}
       </CardContent>
     </Card>
 

@@ -43,6 +43,28 @@ export const AWS_SERVICE_SECRETS: Readonly<Record<AwsTaskService, readonly AwsSe
 };
 
 /**
+ * #1339 (epic #763 L5) — the database password env vars each task
+ * definition sets as ECS `secrets` (Secrets Manager references), and the
+ * secret each comes from. The URLs carry no password (shared
+ * database-url.ts: `<NAME>_URL` + `<NAME>_PASSWORD`). Every secret named
+ * here is one the service may read ({@link AWS_SERVICE_SECRETS}, asserted by
+ * a test). ECS resolves `secrets` with the task's execution role, so the
+ * task definitions of #749 get one execution role per service, scoped like
+ * its task role.
+ */
+export const AWS_SERVICE_DATABASE_PASSWORDS: Readonly<
+  Record<AwsTaskService, Readonly<Record<string, AwsSecret>>>
+> = {
+  admin: {
+    ADMIN_DATABASE_PASSWORD: "postgres-password",
+    PUBLIC_ADMIN_DATABASE_PASSWORD: "postgres-password",
+    PUBLIC_STAGING_ADMIN_DATABASE_PASSWORD: "postgres-password",
+  },
+  gateway: { PUBLIC_DATABASE_PASSWORD: "public-role-password" },
+  "mcp-auth-proxy": {},
+};
+
+/**
  * The IAM policy document letting a task role read exactly `secretArns`.
  *
  * @throws on an empty list: a policy with no resource is malformed, and a

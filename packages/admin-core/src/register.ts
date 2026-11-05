@@ -534,10 +534,11 @@ import {
 } from "./ops/security/ai_memory.js";
 import { listAiPricingOp, setAiPricingOp } from "./ops/security/ai_pricing.js";
 import {
-  anyAiProviderConfiguredOp,
   clearAiProviderKeyOp,
+  getInstallAiModeOp,
   listAiProvidersOp,
   setAiProvidersOp,
+  setMcpOnlyOp,
   setTranslationModelOp,
 } from "./ops/security/ai_providers.js";
 import { auditByRequestIdOp } from "./ops/security/audit_by_request.js";
@@ -632,6 +633,21 @@ import {
   setStagingAccessOp,
   setStagingHostOp,
 } from "./ops/staging_access.js";
+import {
+  deleteStaticFilesOp,
+  getStaticFileOp,
+  listStaticFilesOp,
+  setStaticFilesOp,
+} from "./ops/static_files.js";
+import {
+  executeStaticFileProposalOp,
+  listPendingStaticFileProposalsOp,
+  previewDeleteStaticFilesOp,
+  previewSetStaticFilesOp,
+  proposeDeleteStaticFilesOp,
+  proposeSetStaticFilesOp,
+  rejectStaticFileProposalOp,
+} from "./ops/static_files_pending.js";
 import { stepUpConfirmPasswordOp } from "./ops/step-up.js";
 import {
   aggregateAiCallsForSessionOp,
@@ -991,7 +1007,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setAiProvidersOp);
   registry.register(setTranslationModelOp);
   registry.register(clearAiProviderKeyOp);
-  registry.register(anyAiProviderConfiguredOp);
+  registry.register(getInstallAiModeOp);
+  registry.register(setMcpOnlyOp);
   // v0.2.26 — ai_providers propose/execute pairs (set / clear_key).
   // AI proposes config + isActive; Owner pastes the apiKey inline at
   // approve time at /settings/ai/pending. Reuses the secret-at-approve
@@ -1254,6 +1271,18 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeDomainProposalOp);
   registry.register(rejectDomainProposalOp);
   registry.register(listPendingDomainProposalsOp);
+  // Issue #1461 — static files on the site's domain, gated (§11.A).
+  registry.register(listStaticFilesOp);
+  registry.register(getStaticFileOp);
+  registry.register(setStaticFilesOp);
+  registry.register(deleteStaticFilesOp);
+  registry.register(proposeSetStaticFilesOp);
+  registry.register(previewSetStaticFilesOp);
+  registry.register(proposeDeleteStaticFilesOp);
+  registry.register(previewDeleteStaticFilesOp);
+  registry.register(executeStaticFileProposalOp);
+  registry.register(rejectStaticFileProposalOp);
+  registry.register(listPendingStaticFileProposalsOp);
   // P14 — Site Import Wizard.
   registry.register(listImportRunsOp);
   registry.register(getImportRunOp);

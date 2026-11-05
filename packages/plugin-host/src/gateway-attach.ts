@@ -128,6 +128,18 @@ let state: {
   syncedAt: number;
   inFlight: Promise<void> | null;
   lastError: string | null;
+  /**
+   * Bumped by {@link markDispatchRegistryStale}. A sync that started under
+   * an older generation read a registry the admin has since republished, so
+   * it does not count as current (syncedAt stays 0).
+   */
+  generation: number;
+  /**
+   * Active plugins the last sync could not attach (a missing actor row, an
+   * artifact or approval read that failed). While any exist, whether the
+   * gateway serves visitors is not known ({@link servesVisitorOperations}).
+   */
+  unattached: number;
 } | null = null;
 
 /**
@@ -164,7 +176,15 @@ export async function bootstrapDispatchOnly(opts: DispatchOnlyBootstrapOpts): Pr
     }
   }
 
-  state = { opts, verified, syncedAt: 0, inFlight: null, lastError: null };
+  state = {
+    opts,
+    verified,
+    syncedAt: 0,
+    inFlight: null,
+    lastError: null,
+    generation: 0,
+    unattached: 0,
+  };
   await syncDispatchPlugins({ force: true });
   if (state.lastError) failed.push({ slug: "<registry>", reason: state.lastError });
   return {
@@ -216,10 +236,11 @@ export async function syncDispatchPlugins(opts: { force?: boolean } = {}): Promi
   const s = state;
   if (!s) return;
   if (s.inFlight) return s.inFlight;
-  if (!opts.force && Date.now() - s.syncedAt < SYNC_TTL_MS) return;
+  if (!opts.force && s.syncedAt > 0 && Date.now() - s.syncedAt < SYNC_TTL_MS) return;
+  const startedUnder = s.generation;
   s.inFlight = (async () => {
     try {
-      await reconcile(s.opts, s.verified, await readRegistry(s.opts));
+      s.unattached = await reconcile(s.opts, s.verified, await readRegistry(s.opts));
       s.lastError = null;
       setUnpublishedRegistry(null);
     } catch (e) {
@@ -229,11 +250,41 @@ export async function syncDispatchPlugins(opts: { force?: boolean } = {}): Promi
       s.lastError = (e as Error).message;
       console.error(`[plugin-host] gateway registry sync failed: ${s.lastError}`);
     } finally {
-      s.syncedAt = Date.now();
+      s.syncedAt = s.generation === startedUnder ? Date.now() : 0;
       s.inFlight = null;
     }
   })();
   return s.inFlight;
+}
+
+/**
+ * The admin republished the registry (its NOTIFY reached the gateway,
+ * api-gateway published-changes.ts): the next {@link syncDispatchPlugins}
+ * reads it again, whatever the TTL says, and a sync already in flight no
+ * longer counts as current.
+ */
+export function markDispatchRegistryStale(): void {
+  if (!state) return;
+  state.generation += 1;
+  state.syncedAt = 0;
+}
+
+/**
+ * Epic #763 E14 a — whether an attached plugin serves at least one
+ * operation to visitors (`publicOperations`), from the last sync that is
+ * still current. null when that is not known: the host is not
+ * bootstrapped, the last read failed (a database blip, an unpublished
+ * registry), an active plugin could not be attached (it may serve
+ * visitors once the next sync attaches it) or the registry changed since.
+ * The gateway answers its fixed 404 only on `false`, never on a guess, so
+ * an unknown state keeps the TTL retry of the full pipeline.
+ */
+export function servesVisitorOperations(): boolean | null {
+  const s = state;
+  if (!s || s.syncedAt === 0 || s.lastError !== null || s.inFlight || s.unattached > 0) {
+    return null;
+  }
+  return loadedPlugins.all().some((p) => (p.definition.publicOperations ?? []).length > 0);
 }
 
 async function readRegistry(opts: DispatchOnlyBootstrapOpts): Promise<RegistryRow[]> {
@@ -242,11 +293,13 @@ async function readRegistry(opts: DispatchOnlyBootstrapOpts): Promise<RegistryRo
   return readPublishedRegistry(opts.infra, opts.systemActorId);
 }
 
+/** Attach the active rows; returns how many could not be attached because of an error. */
 async function reconcile(
   opts: DispatchOnlyBootstrapOpts,
   verified: ReadonlyMap<string, VerifiedRelease>,
   rows: readonly RegistryRow[],
-): Promise<void> {
+): Promise<number> {
+  let unattached = 0;
   const active = new Map(rows.map((r) => [r.slug, r]));
   for (const p of loadedPlugins.all()) {
     const row = active.get(p.slug);
@@ -268,6 +321,7 @@ async function reconcile(
     if (loadedPlugins.bySlug(row.slug)) continue;
     if (!row.actor_id) {
       console.error(`[plugin-host] ${row.slug} is active but has no actor row; not attached`);
+      unattached++;
       continue;
     }
     try {
@@ -278,8 +332,10 @@ async function reconcile(
       if (plugin) loadedPlugins.set(plugin);
     } catch (e) {
       console.error(`[plugin-host] ${row.slug} not attached: ${(e as Error).message}`);
+      unattached++;
     }
   }
+  return unattached;
 }
 
 /**

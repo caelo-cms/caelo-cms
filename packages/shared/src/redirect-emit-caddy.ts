@@ -20,6 +20,7 @@
  */
 
 import type { RedirectPlan } from "./redirect-plan.js";
+import type { StaticFileManifestEntry } from "./static-files.js";
 import { trimTrailingSlashes } from "./url.js";
 
 /** The file name the generator writes the snippet to, at the build root. */
@@ -100,4 +101,21 @@ function assertCaddySafe(fromPath: string, location: string): void {
       );
     }
   }
+}
+
+/**
+ * #1461 — the static files' Content-Types, appended to the redirects
+ * snippet: the one file a public site block imports from its build, reloaded
+ * by the Caddy container when it changes, so no Caddyfile changes. Caddy
+ * types a file by its name, which says nothing for an extension-less path
+ * and cannot tell `text/xml` from `application/xml`. The paths passed the
+ * path rules, so none holds a Caddyfile character.
+ */
+export function emitCaddyStaticFileHeaders(files: readonly StaticFileManifestEntry[]): string {
+  return files
+    .map(
+      (f, i) =>
+        `@caelo_static_${i} path /${f.path}\nheader @caelo_static_${i} Content-Type "${f.contentType}"\n`,
+    )
+    .join("");
 }

@@ -358,7 +358,10 @@ jobs:
           docker logs gw-smoke
           test -n "${ok}" || { echo "::error::the gateway did not answer its deep health check"; exit 1; }
           curl -fsS http://localhost:8090/healthz
-          curl -fsS http://localhost:8090/api/captcha/challenge >/dev/null
+          # E14 a (#1339) — no visitor-facing plugin is active on a freshly
+          # migrated database, so every visitor route is the fixed 404.
+          status="$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:8090/api/captcha/challenge)"
+          test "${status}" = "404" || { echo "::error::expected the fixed 404 while no visitor plugin is active, got ${status}"; exit 1; }
           if docker logs gw-smoke 2>&1 | grep -q "FAILED to load"; then
             echo "::error::a plugin failed to load in the gateway"; exit 1
           fi

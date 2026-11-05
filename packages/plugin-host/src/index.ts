@@ -106,8 +106,10 @@ export { resolvePreviewFonts } from "./font-preview.js";
 export {
   bootstrapDispatchOnly,
   type DispatchOnlyBootstrapOpts,
+  markDispatchRegistryStale,
   resetDispatchOnlyHost,
   SYNC_TTL_MS,
+  servesVisitorOperations,
   syncDispatchPlugins,
 } from "./gateway-attach.js";
 export {

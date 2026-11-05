@@ -19,6 +19,7 @@ describe("redirectFiles", () => {
   it("gives the table dump twice and a Caddy snippet planned against the served files", () => {
     const files = new Map(
       redirectFiles({
+        staticFiles: [],
         rows: ROWS,
         pageUrlStyle: "directory",
         servedFiles: new Set(["index.html", "about/index.html"]),
@@ -37,6 +38,7 @@ describe("redirectFiles", () => {
   it("fails the build on a row no host can serve", () => {
     expect(() =>
       redirectFiles({
+        staticFiles: [],
         rows: [
           { fromPath: "/a", toPath: "/b", statusCode: 301 },
           { fromPath: "/b", toPath: "/a", statusCode: 301 },

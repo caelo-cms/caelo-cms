@@ -40,6 +40,7 @@ export {
   getActiveProvider,
   getProviderByName,
   invalidateProviderCache,
+  isMcpOnlyInstall,
   knownProviderNames,
   type ProviderKeyHealth,
 } from "./ai/provider-resolver.js";

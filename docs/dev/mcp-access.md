@@ -69,9 +69,21 @@ Migration 0339 keeps existing rows with `client_key IS NULL`. The first app whos
 
 The MCP-Auth-Proxy fixes an app's key at sign-in and carries it in the sealed refresh token. A refresh never recomputes it, so rotating the seal key cannot turn a revoked DCR app into a new, active connection.
 
+## No AI key: Power-MCP only (#1460)
+
+An install works fully without an AI key of its own: an external agent with an admin-scope token does the reasoning and the AI work on its own subscription. This is a stored choice of the Owner, not an absent provider row read as a mode (CLAUDE.md §2).
+
+- **The state.** One row in `mcp_only_mode` (migration 0620) means the Owner chose it. `ai_providers.get_mode` reads `mcp_only`, `provider` or `unset` (`InstallAiMode`, `packages/shared/src/install-ai-mode.ts`). The first-run wizard (`/welcome/ai`) preselects this option and writes it with `ai_providers.set_mcp_only` (human-only, audited, refused while a usable key exists); no provider row is written. The table is exempt from the change journal, like `ai_providers`.
+- **How it ends.** `ai_providers.set` removes the row in its own transaction once an active provider has a usable key, and a key pasted in this mode activates its provider, so a key under Settings → AI ends the mode with no further step and no restart. Removing the last key does not switch the mode on: the install goes back to `unset`, and the wizard asks again.
+- **The resolver is the gate.** While the row exists nothing resolves, neither the environment's key nor a provider cached on another instance (checked before the cache in `provider-resolver.ts`). So every caller's "no provider" path holds, and the callers that word a refusal ask `isMcpOnlyInstall()`.
+- **MCP.** Both credential paths read the row with the principal: `principal.noInstallAi` is true and `principal.allowCaeloAi` is false whatever the token or connection stores. Every call is therefore AI-delegated (#741): work items for the agent where they exist, `AiDelegated:` otherwise. `caelo_get_context` says so in `## AI work on this connection` and in the status line.
+- **The chat surface is off.** A chat token cannot be minted or proposed (`mcp_tokens.create`, `mcp_tokens.propose_create`), `mcp.send_chat` refuses with `NoInstallAi:`, and Settings → MCP and its Remote page offer only the admin surface and say why. Chat tokens and connections from before keep their rows and work again once a key is stored.
+- **Live Edit.** The composer gives way to a notice with links to Settings → AI and Settings → MCP, and `ChatPanel` starts no turn (no first-run welcome, no quality fix offer). The stream endpoint refuses with `code: "no_install_ai"`. Preview, Stage, Publish live and approval cards are untouched: the cards are how an agent's gated tools get their human click.
+- **Every caller has a defined result.** `scripts/install-ai-callers.test.ts` pins the inventory of the resolver's callers with what each does here, and no background worker is among them, so nothing logs on a timer for a state the Owner chose. Plugin AI on a human path (a panel's "let the AI decide") refuses with `NoInstallAi:`, which names both ways forward.
+
 ## Settings → MCP
 
-The page is state-aware:
+On an install without an AI key the page leads with creating a token and the `claude mcp add` command (see above). Otherwise it is state-aware:
 
 1. **Connect AI tools by URL.** Not available: why, and that tokens are the path. Needs upgrade: the provisioner step. Off: "Set up remote MCP" (Owner) or "ask an Owner". On: "Remote MCP is on" and, for each address this person may use, what it does, who may use it, the URL and a suggested connector name (`Caelo viu.one (Chat)`, `Caelo viu.one (Admin)`) so two connectors in one AI tool stay apart. It never offers "set up" once remote MCP is on. Settings → MCP → Remote has the step-by-step setup per AI tool.
 2. **Connected apps.** Grouped by person, one row per app and address: status (who revoked it, when), last used, cap, revoke/restore. Owners also get "Block all apps".

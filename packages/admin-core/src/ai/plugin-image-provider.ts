@@ -2,6 +2,7 @@
 
 import type { PluginHostInfra } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
+import { noInstallAiRefusal } from "@caelo-cms/shared";
 import sharp from "sharp";
 import {
   imageCapabilities,
@@ -10,7 +11,7 @@ import {
   settleImageCostMicrocents,
 } from "./image-models.js";
 import { makeImageProvider } from "./image-provider.js";
-import { getImageProviderApiKey } from "./provider-resolver.js";
+import { getImageProviderApiKey, isMcpOnlyInstall } from "./provider-resolver.js";
 
 export function makePluginImageProvider(
   infra: Pick<PluginHostInfra, "adapter" | "registry">,
@@ -22,6 +23,7 @@ export function makePluginImageProvider(
   };
   return {
     async describe() {
+      if (await isMcpOnlyInstall()) throw new Error(noInstallAiRefusal("Image generation"));
       const result = await execute(infra.registry, infra.adapter, system, "ai_providers.list", {});
       if (!result.ok) throw new Error("PluginImageConfigurationUnavailable");
       const google = (

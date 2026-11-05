@@ -30,6 +30,14 @@
  * run in CI) — issue #566 shipped a `try_files` nested inside
  * `file_server { }`, which Caddy 2.11 refuses, so no vhost came up.
  *
+ * Request bodies bound for a gateway (`/api/*` on public vhosts, every path
+ * on staging vhosts) are capped at {@link CADDY_GATEWAY_MAX_BODY_BYTES}
+ * (#1339). Caddy does no rate limiting: stock Caddy has no `rate_limit`
+ * directive (it needs a custom build with a third-party module), so the
+ * gateways' own per-client and per-operation limits are the rate limit on
+ * self-hosted, where Caddy hands them the real client address (one trusted
+ * hop) — the same layers that carry the WAF-less gcp-firebase setup (E3).
+ *
  * Staging vhosts force `X-Robots-Tag: noindex`. Caddy serves no staging
  * file itself (#1330): the staging gateway mounts the staged builds
  * read-only, and Caddy has no other path to them, so nothing reaches a
@@ -69,10 +77,19 @@
 import {
   CONTENT_HASHED_PATH_PATTERN,
   caddyRedirectsImport,
+  HARD_MAX_BODY_BYTES,
   IMMUTABLE_CACHE_CONTROL,
   NOSNIFF,
   SVG_DOCUMENT_CSP,
 } from "@caelo-cms/shared";
+
+/**
+ * #1339 (epic #763 L5) — the largest request body Caddy passes to a
+ * gateway: the gateways' own hard ceiling ({@link HARD_MAX_BODY_BYTES}), so
+ * a larger body is refused at the edge (413) before it is streamed into the
+ * Compose network. The gateways keep their own, smaller per-route caps.
+ */
+export const CADDY_GATEWAY_MAX_BODY_BYTES = HARD_MAX_BODY_BYTES;
 
 export interface CaddyDomainSpec {
   readonly hostname: string;
@@ -249,6 +266,9 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
   header X-Content-Type-Options "${NOSNIFF}"
   @svg path *.svg
   header @svg Content-Security-Policy "${SVG_DOCUMENT_CSP}"
+  request_body {
+    max_size ${CADDY_GATEWAY_MAX_BODY_BYTES}
+  }
   reverse_proxy ${spec.stagingGatewayUpstream}
 }
 `;
@@ -272,6 +292,9 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
   @svg path *.svg
   header @svg Content-Security-Policy "${SVG_DOCUMENT_CSP}"
   handle /api/* {
+    request_body {
+      max_size ${CADDY_GATEWAY_MAX_BODY_BYTES}
+    }
     reverse_proxy ${spec.gatewayUpstream}
   }
   handle {
