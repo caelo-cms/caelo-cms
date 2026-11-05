@@ -27,7 +27,7 @@
  */
 
 import type { ListResolveScope } from "@caelo-cms/plugin-sdk";
-import type { ListOverlayIssue } from "@caelo-cms/shared";
+import type { ListOverlayIssue, LiveBuildUrls, PageUrlStyle } from "@caelo-cms/shared";
 import { collectBuildAssets, type PluginClientAsset } from "./client-assets.js";
 import {
   hasContentVariantContributors,
@@ -177,6 +177,34 @@ export const localBuildPluginServices: BuildPluginServices = {
       pageUrlStyle: urlContext.pageUrlStyle,
     })) ?? "",
 };
+
+/**
+ * #1495 — re-render one bake region for a plugin-data build, on what the
+ * live build was published with. Not a {@link BuildPluginServices} method:
+ * the generator renders main for a human's release, this renders into the
+ * release that is live, so the two must not share a URL source.
+ */
+export async function renderPluginOnLiveBuild(
+  pluginSlug: string,
+  pageId: string,
+  live: {
+    readonly pageUrlStyle: PageUrlStyle;
+    /** The origin the live build recorded; null for a build that recorded none. */
+    readonly siteBaseUrl: string | null;
+    readonly liveUrls: LiveBuildUrls;
+  },
+): Promise<string> {
+  const scope = live.siteBaseUrl ? { ...MAIN_RENDER, siteBaseUrl: live.siteBaseUrl } : MAIN_RENDER;
+  return (
+    (await runPluginStaticRender({
+      invocation: renderInvocation(scope),
+      pluginSlug,
+      pageId,
+      pageUrlStyle: live.pageUrlStyle,
+      liveUrls: live.liveUrls,
+    })) ?? ""
+  );
+}
 
 /** The method names a build may call — the RPC's whole surface. */
 export const BUILD_PLUGIN_METHODS = [

@@ -14,8 +14,20 @@
  */
 
 import { resolvePublicPageUrls } from "@caelo-cms/plugin-host";
-import { defineOperation, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
-import { err, ok, PAGE_URL_STYLES, type PageUrlStyle } from "@caelo-cms/shared";
+import {
+  defineOperation,
+  type QueryError,
+  type TransactionRunner,
+  uuidArray,
+} from "@caelo-cms/query-api";
+import {
+  err,
+  type LiveBuildUrls,
+  ok,
+  PAGE_URL_STYLES,
+  type PageUrlStyle,
+  type Result,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { pageSeoViewSql } from "../../seo/page-seo.js";
@@ -52,6 +64,10 @@ export const resolvePublicUrlsOp = defineOperation({
     .strict(),
   output: z.object({ urls: z.record(z.string(), z.string()) }),
   handler: async (ctx, input, tx) => {
+    // #1495 — a plugin-data build republishes into the live build, so it
+    // links what that build shipped. main holds origins, paths and
+    // canonicals nobody published.
+    if (ctx.renderLiveUrls) return answerFromLiveBuild(ctx.renderLiveUrls, input.pageIds);
     // #650 — a plugin's call inside a static build gets the build's origin
     // (a Stage with its own staging host renders that host into the
     // canonical); the stored base URL would point its hreflang and
@@ -108,6 +124,31 @@ export const resolvePublicUrlsOp = defineOperation({
     return ok({ urls: Object.fromEntries(urls) });
   },
 });
+
+/**
+ * The URLs the live build shipped. A page it does not ship is recorded on
+ * `live`, which holds the whole region back even when the plugin catches
+ * this error and renders on.
+ */
+function answerFromLiveBuild(
+  live: LiveBuildUrls,
+  pageIds: readonly string[],
+): Result<{ urls: Record<string, string> }, QueryError> {
+  const urls: Record<string, string> = {};
+  for (const id of pageIds) {
+    const url = live.urls.get(id);
+    if (url === undefined) live.unknownPageIds.add(id);
+    else urls[id] = url;
+  }
+  if (live.unknownPageIds.size > 0) {
+    return err({
+      kind: "HandlerError",
+      operation: "pages.resolve_public_urls",
+      message: `the live build ships no page with id ${[...live.unknownPageIds].join(", ")}, so this render cannot link it. The region keeps its published output until the next Publish live.`,
+    });
+  }
+  return ok({ urls });
+}
 
 /** `site_defaults.site_base_url`, or null while it is unset (#551). */
 async function storedSiteBaseUrl(tx: TransactionRunner): Promise<string | null> {

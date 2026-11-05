@@ -30,6 +30,7 @@ import type {
   PublicOperationDef,
 } from "@caelo-cms/plugin-sdk";
 import { type DatabaseAdapter, execute } from "@caelo-cms/query-api";
+import type { LiveBuildUrls } from "@caelo-cms/shared";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
 import {
   hostSystemActorId,
@@ -64,6 +65,11 @@ export interface MakePluginContextOpts {
    * site's derived rows from the staging site's own visitors.
    */
   readonly publicTarget?: "live" | "staging";
+  /**
+   * #1495 — a plugin-data build's render: page URLs come from the live
+   * build. Kept off `invocation`, which is handed to plugin code.
+   */
+  readonly liveUrls?: LiveBuildUrls;
 }
 
 /**
@@ -184,7 +190,7 @@ export async function makePluginContext(
     return tier1;
   }
   if (requested.has("cms_admin")) {
-    tier1.cms = makePluginCms(plugin, infra, invocation);
+    tier1.cms = makePluginCms(plugin, infra, invocation, opts.liveUrls);
   }
   if (requested.has("cms_admin_schema")) {
     tier1.adminQuery = makePluginAdminQuery(plugin, infra, invocation);
@@ -684,6 +690,7 @@ function makePluginCms(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
   invocation: PluginInvocation,
+  liveUrls?: LiveBuildUrls,
 ): PluginCms {
   const branch = invocation.chatBranchId
     ? {
@@ -707,6 +714,7 @@ function makePluginCms(
             ...(invocation.origin === "render" && invocation.siteBaseUrl
               ? { renderSiteBaseUrl: invocation.siteBaseUrl }
               : {}),
+            ...(liveUrls ? { renderLiveUrls: liveUrls } : {}),
           },
           opName,
           input as unknown,

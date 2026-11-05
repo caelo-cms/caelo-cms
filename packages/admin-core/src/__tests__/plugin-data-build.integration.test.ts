@@ -20,7 +20,10 @@
  *     schedule nothing; a declared visitor trigger does;
  *   - Publish live of a Stage older than a plugin-data build makes its
  *     bakes pending again, and re-baking data the HTML already carries
- *     publishes nothing.
+ *     publishes nothing;
+ *   - #1495: a region's page links come from the live build, never from a
+ *     base URL or path nobody published; a link the live build cannot
+ *     answer keeps the region as published and its mark pending.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -34,7 +37,7 @@ import {
   runPluginOperation,
   syncPluginHost,
 } from "@caelo-cms/plugin-host";
-import { definePlugin, z } from "@caelo-cms/plugin-sdk";
+import { definePlugin, type PluginContextTier1, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { CADDY_REDIRECTS_FILE, type ExecutionContext } from "@caelo-cms/shared";
 import {
@@ -72,16 +75,23 @@ const MOD_WIDGET = "t1155-widget";
 const HOME_SLUG = "home";
 const ABOUT_SLUG = "t1155-about";
 const SECRET_SLUG = "t1155-unpublished";
+const MOVED_SLUG = "t1155-moved";
+const LATE_SLUG = "t1155-late";
 const UNKNOWN_PAGE = "11550000-0000-4000-8000-000000000001";
 const GHOST = "t1155-ghost";
 
 /** What the fixture plugin bakes; the test appends as "approvals" happen. */
 const entries: string[] = ["first entry"];
+/** #1495 — pages the fixture links under its entries, through core's URL builder. */
+let linkedPages: string[] = [];
+/** #1495 — the fixture renders on when core cannot name a link. */
+let swallowLinkErrors = false;
 
 const guestbook = definePlugin({
   slug: PLUGIN,
   version: "0.1.0",
   tier: 1,
+  requestedCapabilities: ["cms_admin"],
   schema: {},
   publicOperations: [
     {
@@ -110,7 +120,24 @@ const guestbook = definePlugin({
     vote: async (_ctx, args) => ({ pageId: (args as { pageId: string }).pageId }),
     noop: async (_ctx, args) => ({ pageId: (args as { pageId: string }).pageId }),
   },
-  staticRender: async () => entries.map((e) => `<p class="entry">${e}</p>`).join(""),
+  staticRender: async (ctx, { pageUrlStyle }) => {
+    const html = entries.map((e) => `<p class="entry">${e}</p>`).join("");
+    if (linkedPages.length === 0) return html;
+    const cms = (ctx as PluginContextTier1).cms;
+    if (!cms) throw new Error("the fixture needs its cms_admin grant");
+    try {
+      const { urls } = await cms.call<unknown, { urls: Record<string, string> }>(
+        "pages.resolve_public_urls",
+        { pageIds: linkedPages, pageUrlStyle },
+      );
+      return `${html}${Object.values(urls)
+        .map((u) => `<a href="${u}">linked</a>`)
+        .join("")}`;
+    } catch (e) {
+      if (swallowLinkErrors) return html;
+      throw e;
+    }
+  },
   // The build's bake cache key: without it a Stage would reuse its first bake.
   metaSignature: async () => String(entries.length),
   bakedData: {
@@ -160,7 +187,7 @@ async function asGateway(fn: (tx: Bun.SQL) => Promise<unknown>): Promise<void> {
 async function wipe(): Promise<void> {
   resetPluginHost();
   resetPluginHostSync();
-  const slugs = [HOME_SLUG, ABOUT_SLUG, SECRET_SLUG];
+  const slugs = [HOME_SLUG, ABOUT_SLUG, SECRET_SLUG, MOVED_SLUG, LATE_SLUG];
   await sqlSystem(async (tx) => {
     await tx`DELETE FROM quality_audit_runs`;
     await tx`DELETE FROM plugin_data_stale_pages`;
@@ -900,5 +927,119 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     expect(await pending()).toEqual(marks);
     expect((await tick()).outcome).toBe("built");
     expect(await pending()).toEqual([]);
+  });
+
+  describe("#1495 — a tick publishes no URL a human did not publish", () => {
+    const LIVE_ORIGIN = "https://example.com";
+    const liveHome = async (): Promise<string> => {
+      const dir = join(productionDir(), "current");
+      return readFile(join(dir, await homeOutputPath(dir)), "utf8");
+    };
+    const pageIdOf = async (slug: string): Promise<string> => {
+      const rows = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT id::text AS id FROM pages WHERE slug = ${slug} AND deleted_at IS NULL`) as {
+            id: string;
+          }[],
+      );
+      if (!rows[0]) throw new Error(`no page ${slug}`);
+      return rows[0].id;
+    };
+    const setStoredBaseUrl = (url: string) =>
+      sqlSystem((tx) => tx`UPDATE site_defaults SET site_base_url = ${url} WHERE id = 1`);
+    const lastMessage = async (): Promise<string> => {
+      const rows = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT last_message FROM plugin_data_build_state WHERE id = 1`) as {
+            last_message: string | null;
+          }[],
+      );
+      return rows[0]?.last_message ?? "";
+    };
+
+    it("links with the published origin after the stored base URL changed", async () => {
+      const aboutId = await pageIdOf(ABOUT_SLUG);
+      linkedPages = [aboutId];
+      await stageAndPublish();
+      await approve("linked entry");
+      expect((await tick()).outcome).toBe("built");
+      expect(await liveHome()).toContain(`href="${LIVE_ORIGIN}/${ABOUT_SLUG}/"`);
+
+      // A saved setting is draft state until a Publish live (#1158).
+      await setStoredBaseUrl("https://not-published.example");
+      try {
+        await approve("entry after the setting changed");
+        expect((await tick()).outcome).toBe("built");
+        const html = await liveHome();
+        expect(html).toContain("entry after the setting changed");
+        expect(html).toContain(`href="${LIVE_ORIGIN}/${ABOUT_SLUG}/"`);
+        expect(html).not.toContain("not-published.example");
+      } finally {
+        await setStoredBaseUrl(LIVE_ORIGIN);
+      }
+    });
+
+    it("links the published path of a page moved and staged but not published", async () => {
+      await ok("pages.update", { pageId: await pageIdOf(ABOUT_SLUG), slug: MOVED_SLUG });
+      const staged = await ok<{ runId: string }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      await markAudited(staged.runId);
+      await approve("entry after the move was staged");
+      expect((await tick()).outcome).toBe("built");
+      const html = await liveHome();
+      expect(html).toContain("entry after the move was staged");
+      expect(html).toContain(`href="${LIVE_ORIGIN}/${ABOUT_SLUG}/"`);
+      expect(html).not.toContain(MOVED_SLUG);
+    });
+
+    it("keeps the region and the mark while a link names a page the live build lacks", async () => {
+      const { templateId } = (
+        await sqlSystem(
+          async (tx) =>
+            (await tx`SELECT id::text AS "templateId" FROM templates WHERE slug = ${TPL_SLUG}`) as {
+              templateId: string;
+            }[],
+        )
+      )[0] as { templateId: string };
+      const late = await ok<{ pageId: string }>("pages.create", {
+        slug: LATE_SLUG,
+        title: "Late",
+        templateId,
+      });
+      await ok("pages.update", { pageId: late.pageId, status: "published" });
+      await ok("pages_seo.autofill", { pageId: late.pageId, metaDescription: "Late." });
+      linkedPages = [...linkedPages, late.pageId];
+
+      const before = await liveHome();
+      const runsBefore = (await pluginDataRuns()).length;
+      await approve("entry linking an unpublished page");
+      const kept = await tick();
+      expect(kept.outcome).toBe("unchanged");
+      expect(kept.message).toContain(late.pageId);
+      expect(await lastMessage()).toContain(late.pageId);
+      expect(await liveHome()).toBe(before);
+      expect((await pluginDataRuns()).length).toBe(runsBefore);
+      expect(await pendingMarks()).toBe(1);
+
+      // A plugin that catches the error and renders on is no way around it.
+      swallowLinkErrors = true;
+      const swallowed = await tick();
+      expect(swallowed.outcome).toBe("unchanged");
+      expect(await liveHome()).toBe(before);
+      expect(await pendingMarks()).toBe(1);
+      swallowLinkErrors = false;
+
+      // A Publish live ships the page; the next tick clears the mark.
+      await stageAndPublish();
+      await tick();
+      expect(await pendingMarks()).toBe(0);
+      const html = await liveHome();
+      expect(html).toContain("entry linking an unpublished page");
+      expect(html).toContain(`href="${LIVE_ORIGIN}/${MOVED_SLUG}/"`);
+      expect(html).toContain(`href="${LIVE_ORIGIN}/${LATE_SLUG}/"`);
+      linkedPages = [];
+    });
   });
 });
