@@ -42,10 +42,18 @@ interface Proposal {
   createdAt: string;
 }
 
+/**
+ * The refusal to show. The path, type and body rules run in the op's input
+ * schema, so a refused save is `ValidationFailed` with `issues`, not a
+ * `message`: without reading them the Owner saw only the fallback.
+ */
 function messageOf(error: unknown, fallback: string): string {
-  return typeof error === "object" && error && "message" in error
-    ? String((error as { message: unknown }).message)
-    : fallback;
+  const { message, issues } = (error ?? {}) as {
+    message?: unknown;
+    issues?: readonly { message: string }[];
+  };
+  if (typeof message === "string" && message.length > 0) return message;
+  return issues?.map((issue) => issue.message).join("; ") || fallback;
 }
 
 export const load: PageServerLoad = async ({ locals, url }) => {
