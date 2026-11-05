@@ -55,6 +55,8 @@ describe("the gateway's Cloud Armor rules (#1339)", () => {
   });
 
   it("bans a credential-op flood harder than the plugin's own limits, and only those paths", () => {
+    // Cloud Armor refuses capture groups (scratch install of v0.11.17).
+    expect(CREDENTIAL_PATH_PATTERN).not.toMatch(/\((?!\?:)/);
     const re = new RegExp(CREDENTIAL_PATH_PATTERN);
     for (const op of ["signup", "login", "request_password_reset", "reset_password"]) {
       expect(re.test(`/api/plugin/auth/${op}`)).toBe(true);

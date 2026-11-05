@@ -88,7 +88,7 @@ export type GatewayArmorRule = ArmorRateRule | ArmorDenyRule;
  * (Cloud Armor's `matches`).
  */
 export const CREDENTIAL_PATH_PATTERN =
-  "^/api/plugin/auth/(signup|login|request_password_reset|reset_password)$";
+  "^/api/plugin/auth/(?:signup|login|request_password_reset|reset_password)$";
 
 /** Priority of Cloud Armor's default rule (it allows; every policy has one). */
 export const DEFAULT_RULE_PRIORITY = 2147483647;
