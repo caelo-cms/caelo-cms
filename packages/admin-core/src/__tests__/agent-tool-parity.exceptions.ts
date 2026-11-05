@@ -289,6 +289,10 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "chat-runner persists the SDK response.messages (CLAUDE.md §12)",
   },
+  "chat.count_tool_refusals": {
+    kind: "internal",
+    reason: "chat-runner's automatic bug capture: a refusal that keeps repeating (#1484)",
+  },
   "chat.cache_tool_result": {
     kind: "internal",
     reason: "tool-call idempotency cache (chat-runner + mcp.execute_tool)",

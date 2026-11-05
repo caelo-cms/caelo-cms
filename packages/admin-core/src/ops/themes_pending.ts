@@ -238,6 +238,7 @@ export const proposeActivateThemeOp = defineOperation({
         kind: "HandlerError",
         operation: "themes.propose_activate",
         message: `theme ${input.themeId} not found`,
+        refusal: true,
       });
     }
     if (target.is_active) {
@@ -289,6 +290,7 @@ export const proposeDeleteThemeOp = defineOperation({
         kind: "HandlerError",
         operation: "themes.propose_delete",
         message: `theme ${input.themeId} not found`,
+        refusal: true,
       });
     }
     if (target.is_active) {

@@ -51,6 +51,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { StreamOutput } from "./build-output.js";
+import { BuildRefusal } from "./build-refusal.js";
 import { type DeployTarget, generateSite } from "./generate.js";
 import type { MediaDelivery } from "./media-pass.js";
 import { installServingGuard } from "./serving-guard.js";
@@ -203,6 +204,6 @@ main()
   .then(() => process.exit(0))
   .catch((e: unknown) => {
     const message = e instanceof Error ? e.message : String(e);
-    emit({ kind: "error", message });
+    emit({ kind: "error", message, ...(e instanceof BuildRefusal ? { refusal: true } : {}) });
     process.exit(1);
   });

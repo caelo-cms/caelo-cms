@@ -18,7 +18,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { shouldAutoCaptureToolFailure } from "../ai/chat-runner/tool-dispatch.js";
+import { shouldAutoCaptureToolFailure } from "../ai/chat-runner/tool-failure-capture.js";
 import { buildPageTool } from "../ai/tools/build-page.js";
 import { createContentInstancesTool } from "../ai/tools/create-content-instances.js";
 import { deleteContentInstancesTool } from "../ai/tools/delete-content-instances.js";
@@ -210,7 +210,7 @@ describe("#1091 — guard refusals are marked and not auto-captured", () => {
 });
 
 describe("#1091 — real failures stay captured", () => {
-  it("a reference to a module that does not exist carries no refusal", async () => {
+  it("a reference to a module that does not exist names its input: expected since #1484", async () => {
     const t = await tool("create_content_instances", {
       items: [
         {
@@ -227,7 +227,10 @@ describe("#1091 — real failures stay captured", () => {
     expect(t.ok).toBe(false);
     expect(t.content).toContain("does not exist");
     expect(t.refusal).toBeUndefined();
-    expect(shouldAutoCaptureToolFailure("create_content_instances", t)).toBe(true);
+    // Not a guard, but the same answer as an id not in view (#1425): the
+    // failure names the input path, so the AI fixes that value.
+    expect(t.errors?.length).toBeGreaterThan(0);
+    expect(shouldAutoCaptureToolFailure("create_content_instances", t)).toBe(false);
   });
 
   it("delete_modules_many with only unknown ids is a failure, not a refusal", async () => {

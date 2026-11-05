@@ -87,6 +87,19 @@ export const bugReportSeverity = z.enum(["blocking", "degraded", "cosmetic"]);
 export type BugReportSeverity = z.infer<typeof bugReportSeverity>;
 
 /**
+ * #1416 — the CI run a report came from. Reports from the real-AI suite are
+ * forwarded on purpose, and without this they read like a user install's.
+ */
+export const bugReportCiRun = z
+  .object({
+    runUrl: z.string().regex(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+$/),
+    branch: z.string().regex(/^[\w./-]{1,200}$/),
+    commit: z.string().regex(/^[0-9a-f]{40}$/),
+  })
+  .strict();
+export type BugReportCiRun = z.infer<typeof bugReportCiRun>;
+
+/**
  * `POST /v1/reports` — one redacted bug report (signed).
  *
  * `kind` is optional on the wire only for the contract rule above; parsing
@@ -111,6 +124,8 @@ export const bugIntakeReport = z
     whatHappened: z.string().min(1).max(BUG_INTAKE_LIMITS.whatHappened),
     expected: z.string().min(1).max(BUG_INTAKE_LIMITS.expected),
     evidence: z.string().max(BUG_INTAKE_LIMITS.evidence).nullable(),
+    /** Set only by a CI run: such a report is counted apart from installs (#1416). */
+    ciRun: bugReportCiRun.optional(),
   })
   .strict()
   .superRefine((r, ctx) => {

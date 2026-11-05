@@ -14,14 +14,14 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { describeError, toolError } from "../tools/_describe-error.js";
-import type { ToolContext } from "../tools/dispatch.js";
+import { describeError, forwardRefusal, toolError } from "../tools/_describe-error.js";
+import type { ToolContext, ToolResult } from "../tools/dispatch.js";
 import { CONTENT_ENTITY_KINDS, CONTENT_TARGETS, type ContentTarget } from "./registry.js";
 
 /** The bodies of one row, or the tool-result text explaining why there are none. */
 export type ContentRowRead =
   | { readonly ok: true; readonly bodies: Record<string, string> }
-  | { readonly ok: false; readonly content: string };
+  | (ToolResult & { readonly ok: false });
 
 /** The get op's raw outcome: the row's bodies, null for "no such row", or the error. */
 async function fetchBodies(
@@ -38,7 +38,7 @@ async function fetchBodies(
 }
 
 function isNotFound(error: unknown): boolean {
-  return /not found/i.test(describeError(error));
+  return forwardRefusal(error).refusal === true || /not found/i.test(describeError(error));
 }
 
 /**
@@ -66,6 +66,7 @@ export async function readContentRow(
       return {
         ok: false,
         content: `${entityId} is a ${kind}, not a ${target.entityKind} — call again with entityKind:"${kind}".`,
+        refusal: true,
       };
     }
   }
@@ -83,6 +84,7 @@ export async function readContentRow(
         `${entityId} is a page, not a ${target.entityKind} — pages have no source body to read here. ` +
         `Read its text (with its SEO fields) with get_page_seo({pageIds:["${entityId}"]}), how it looks with screenshot_page / inspect_page_render; ` +
         "read_content reads the html/css/js of a module, template or layout.",
+      refusal: true,
     };
   }
   return {
@@ -90,5 +92,6 @@ export async function readContentRow(
     content:
       `no ${target.entityKind} with id ${entityId} (nor a ${CONTENT_ENTITY_KINDS.filter((k) => k !== target.entityKind).join(" or ")} or page with it). ` +
       "Take the id from list_modules / list_templates / list_layouts.",
+    refusal: true,
   };
 }

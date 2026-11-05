@@ -19,7 +19,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { FieldDef, ListTypeDef, NodeDef } from "@caelo-cms/shared";
 import type { z } from "zod";
-import { describeError, forwardRefusal } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** Configuration of {@link makeOpTool}. */
@@ -55,13 +55,7 @@ export function makeOpTool<I>(args: MakeOpToolArgs<I>): ToolDefinitionWithHandle
     ...(args.draftReads ? { draftReads: args.draftReads } : {}),
     handler: async (ctx, input, toolCtx) => {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, input);
-      if (!r.ok) {
-        return {
-          ok: false,
-          content: `${args.name} failed: ${describeError(r.error)}`,
-          ...forwardRefusal(r.error),
-        };
-      }
+      if (!r.ok) return toolError(r.error, `${args.name} failed: ${describeError(r.error)}`);
       return { ok: true, content: args.format(r.value, input), value: r.value };
     },
   };

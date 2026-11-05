@@ -48,6 +48,7 @@ export const setNotFoundPageOp = defineOperation({
           kind: "HandlerError",
           operation: "pages.set_not_found_page",
           message: "page not found or deleted — pass a live page id from list_pages",
+          refusal: true,
         });
       }
       // The homepage serves "/"; as the 404 page it would vanish from the
@@ -63,6 +64,7 @@ export const setNotFoundPageOp = defineOperation({
           operation: "pages.set_not_found_page",
           message:
             "this page is the homepage and serves at '/', so it cannot also be the 404 page — build a separate page for unknown URLs (build_page, e.g. title 'Page not found' with a link back home) and designate that one",
+          refusal: true,
         });
       }
     }

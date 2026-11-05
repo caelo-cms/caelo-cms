@@ -142,6 +142,33 @@ describe("IntakeService", () => {
     expect(tracker.issues.get(100)?.body).toContain("| Installs reporting it | 2 |");
   });
 
+  it("#1416 an issue from a CI run names it and does not count it as an install", async () => {
+    const svc = service(2);
+    const ciRun = {
+      runUrl: "https://github.com/caelo-cms/caelo-cms/actions/runs/41651726318",
+      branch: "fix/tool-refs",
+      commit: "f8c546deb".padEnd(40, "0"),
+    };
+    await svc.ingest(INSTALL_A, report({ ciRun }));
+    const body = () => tracker.issues.get(100)?.body ?? "";
+    expect(tracker.calls.create).toBe(1);
+    expect(body()).toContain(
+      `| Filed by CI | [run 41651726318](${ciRun.runUrl}) on \`fix/tool-refs\`@\`f8c546deb\` |`,
+    );
+    expect(body()).toContain("| Installs reporting it | 0 |");
+
+    // The same run again adds nothing; a real install is counted as before.
+    await svc.ingest(INSTALL_A, report({ ciRun }));
+    await svc.ingest(INSTALL_B, report());
+    expect(body()).toContain("| Installs reporting it | 1 |");
+    expect(body().match(/runs\/41651726318/g)).toHaveLength(1);
+  });
+
+  it("#1416 an install's issue has no CI row", async () => {
+    await service().ingest(INSTALL_A, report());
+    expect(tracker.issues.get(100)?.body).not.toContain("Filed by CI");
+  });
+
   it("waits for the configured number of installs before filing", async () => {
     const s = service(2);
     expect((await s.ingest(INSTALL_A, report())).issueUrl).toBeNull();

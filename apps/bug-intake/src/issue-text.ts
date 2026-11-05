@@ -52,6 +52,16 @@ function filedBy(c: ClusterRecord): string {
     : "the AI, via `bug_report`";
 }
 
+/** #1416 — a row per reporter kind only when a CI run reported: an install's issue is unchanged. */
+function ciRunRows(c: ClusterRecord): Array<[string, string]> {
+  if (c.ciRuns.length === 0) return [];
+  const runs = c.ciRuns.map(
+    (r) =>
+      `[run ${r.runUrl.split("/").at(-1)}](${r.runUrl}) on \`${r.branch}\`@\`${r.commit.slice(0, 9)}\``,
+  );
+  return [["Filed by CI", runs.join("<br>")]];
+}
+
 export function issueBody(c: ClusterRecord): string {
   const suggestion = c.kind === "suggestion";
   const rows: Array<[string, string]> = [
@@ -60,6 +70,7 @@ export function issueBody(c: ClusterRecord): string {
     suggestion
       ? ["Blocked the task", c.blockedTask ? "yes" : "no"]
       : ["Severity", `${c.severity}${c.blockedTask ? " (blocked the task)" : ""}`],
+    ...ciRunRows(c),
     ["Installs reporting it", String(c.installHashes.length)],
     ["Reports", String(c.occurrences)],
     ["Caelo versions", c.versions.map((v) => `\`${v}\``).join(", ")],

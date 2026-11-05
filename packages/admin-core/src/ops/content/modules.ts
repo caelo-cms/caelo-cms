@@ -317,6 +317,7 @@ export const getModuleOp = withHumanisedLinks(
           kind: "HandlerError",
           operation: "modules.get",
           message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
+          refusal: true,
         });
       }
       return ok({ module: rowToModule(row) });
@@ -621,6 +622,7 @@ export const updateModuleOp = defineOperation({
         kind: "HandlerError",
         operation: "modules.update",
         message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids); add_module creates a new one.`,
+        refusal: true,
       });
     }
 
@@ -940,6 +942,7 @@ export const deleteModuleOp = defineOperation({
         kind: "HandlerError",
         operation: "modules.delete",
         message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
+        refusal: true,
       });
     }
     await recordAudit(tx, {

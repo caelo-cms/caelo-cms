@@ -128,6 +128,8 @@ export interface IntakeServiceDeps {
 const ISSUE_SYNC_INTERVAL_MS = 5 * 60_000;
 /** Cap on stored install hashes per cluster; beyond it the count shows as "N+". */
 const MAX_INSTALL_HASHES = 10_000;
+/** #1416 — how many CI runs one issue lists; the newest stay. */
+const MAX_CI_RUNS = 5;
 /**
  * Queued issues filed per request at most: after the daily reset the backlog
  * drains over the first few requests instead of stalling one of them.
@@ -276,6 +278,7 @@ export class IntakeService {
       blockedTask: report.blockedTask,
       fingerprints: [report.fingerprint],
       installHashes: [],
+      ciRuns: [],
       occurrences: 0,
       versions: [],
       firstSeen: now,
@@ -315,10 +318,16 @@ export class IntakeService {
     report: BugIntakeReport,
   ): Promise<BugIntakeClusterInfo> {
     await this.#syncIssue(clusterId);
-    const { cluster, isNewInstall, isNewVersion } = await this.#update(clusterId, (c) => {
+    const { cluster, isNewReporter, isNewVersion } = await this.#update(clusterId, (c) => {
+      const { ciRun } = report;
+      // #1416 — a CI run is not an install, whatever install id it signs with.
+      const isNewRun = ciRun !== undefined && !c.ciRuns.some((r) => r.runUrl === ciRun.runUrl);
       const isNewInstall =
-        !c.installHashes.includes(installHash) && c.installHashes.length < MAX_INSTALL_HASHES;
+        ciRun === undefined &&
+        !c.installHashes.includes(installHash) &&
+        c.installHashes.length < MAX_INSTALL_HASHES;
       const isNewVersion = !c.versions.includes(report.caeloVersion);
+      if (isNewRun) c.ciRuns = [...c.ciRuns, ciRun].slice(-MAX_CI_RUNS);
       if (isNewInstall) c.installHashes.push(installHash);
       if (isNewVersion) c.versions.push(report.caeloVersion);
       if (!c.fingerprints.includes(report.fingerprint)) c.fingerprints.push(report.fingerprint);
@@ -334,7 +343,7 @@ export class IntakeService {
       c.blockedTask ||= report.blockedTask;
       c.occurrences += 1;
       c.lastSeen = this.#d.now().toISOString();
-      return { isNewInstall, isNewVersion };
+      return { isNewReporter: isNewInstall || isNewRun, isNewVersion };
     });
 
     let current = cluster;
@@ -369,10 +378,15 @@ export class IntakeService {
     }
 
     if (current.issueNumber === null) {
-      if (current.installHashes.length >= this.#d.issueThresholdInstalls) {
+      // A CI report files at once: its issue says it is a CI run, and it must
+      // not take a threshold of real installs to see a defect the suite hit.
+      if (
+        current.installHashes.length >= this.#d.issueThresholdInstalls ||
+        current.ciRuns.length > 0
+      ) {
         current = await this.#fileIssue(current);
       }
-    } else if (writable && (isNewInstall || isNewVersion)) {
+    } else if (writable && (isNewReporter || isNewVersion)) {
       await this.#d.tracker.updateIssue(current.issueNumber, { body: issueBody(current) });
       const due = INSTALL_MILESTONES.filter(
         (m) => current.installHashes.length >= m && !current.milestonesCommented.includes(m),
