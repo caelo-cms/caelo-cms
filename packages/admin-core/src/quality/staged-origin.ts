@@ -172,6 +172,16 @@ export interface StagedOrigin {
 const COMPRESSIBLE_TYPE =
   /^(?:text\/|application\/(?:json|javascript|xml|manifest\+json)|image\/svg\+xml)/i;
 
+/** Whether `Accept-Encoding` names gzip with a quality above zero (`gzip;q=0` refuses it). */
+function acceptsGzip(acceptEncoding: string | undefined): boolean {
+  return (acceptEncoding ?? "").split(",").some((entry) => {
+    const [coding, ...params] = entry.split(";").map((part) => part.trim().toLowerCase());
+    if (coding !== "gzip") return false;
+    const q = params.find((param) => param.startsWith("q="));
+    return q === undefined || Number(q.slice(2)) > 0;
+  });
+}
+
 /** The body and headers the CDN would send for `file` to this request. */
 function encoded(
   file: StagedFile,
@@ -179,7 +189,7 @@ function encoded(
 ): { readonly body: Uint8Array; readonly headers: Record<string, string> } {
   if (!COMPRESSIBLE_TYPE.test(file.contentType)) return { body: file.bytes, headers: {} };
   const headers = { Vary: "Accept-Encoding" };
-  if (!/\bgzip\b/i.test(acceptEncoding ?? "")) return { body: file.bytes, headers };
+  if (!acceptsGzip(acceptEncoding)) return { body: file.bytes, headers };
   return {
     body: gzipSync(file.bytes),
     headers: { ...headers, "Content-Encoding": "gzip" },

@@ -102,11 +102,11 @@ describe("serveStagedBuild over a local build", () => {
   });
 
   it("compresses text like the CDN does, and leaves binaries alone", async () => {
-    const raw = (path: string) =>
+    const raw = (path: string, acceptEncoding = "gzip, deflate, br") =>
       new Promise<{ encoding?: string; body: Buffer }>((resolve, reject) => {
         const { hostname, port } = new URL(origin.baseUrl);
         const req = request(
-          { hostname, port, path, headers: { "Accept-Encoding": "gzip, deflate, br" } },
+          { hostname, port, path, headers: { "Accept-Encoding": acceptEncoding } },
           (res) => {
             const chunks: Buffer[] = [];
             res.on("data", (c: Buffer) => chunks.push(c));
@@ -126,6 +126,8 @@ describe("serveStagedBuild over a local build", () => {
     const page = await raw("/about/");
     expect(page.encoding).toBe("gzip");
     expect(gunzipSync(page.body).toString()).toBe("<h1>about</h1>");
+    expect((await raw("/about/", "gzip;q=0, br")).encoding).toBeUndefined();
+    expect((await raw("/about/", "br, GZIP;q=0.5")).encoding).toBe("gzip");
     expect((await raw("/favicon.ico")).encoding).toBeUndefined();
     expect((await raw("/_assets/logo.0123456789abcdef.png")).encoding).toBeUndefined();
   });
