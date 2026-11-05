@@ -584,7 +584,7 @@ export const listQualityAcceptancesTool = makeListReadTool<
   name: "list_quality_acceptances",
   description:
     "List accepted quality findings, category scores <100 and page-check rules. Check before asking the operator to decide something again. " +
-    "An acceptance applies ONLY to its page (`site-wide` = site-wide page-check rule, or, with `resource`, one audit for one file Caelo or a plugin ships, on every page loading it until the file changes). It records the accepted value — `score`: category score; `finding`: audit score in points (acceptedScore); `check`: up to acceptedCount errors of its rule (auditId = rule id); a worse value blocks again. `filter` searches audit/rule id, reason, page path, file.",
+    "An acceptance applies ONLY to its page (`site-wide` = site-wide page-check rule, or, with `resource`, one audit for one file Caelo or a plugin ships (`/_caelo/plugin/…`, `/_app/immutable/…`), on every page loading it until the file changes). It records the accepted value — `score`: category score; `finding`: audit score in points (acceptedScore); `check`: up to acceptedCount errors of its rule (auditId = rule id); a worse value blocks again. `filter` searches audit/rule id, reason, page path, file.",
   opName: "quality_acceptances.list",
   input: listAcceptancesInput,
   buildOpInput: (input) => ({

@@ -48,7 +48,7 @@ UPDATE skills
    SET body = replace(
      body,
      'a worse value blocks again. It applies only to its pages. Check `list_quality_acceptances` first',
-     'a worse value blocks again. It applies only to its pages, except that a finding naming only files Caelo or a plugin ships (`/_caelo/plugin/…`) is accepted for that check and file on every page loading it, until the file changes. Check `list_quality_acceptances` first'
+     'a worse value blocks again. It applies only to its pages, except that a finding naming only files Caelo or a plugin ships (hashed `/_caelo/plugin/…` or `/_app/immutable/…` on the site''s own origin) is accepted for that check and file on every page loading it, until the file changes. Check `list_quality_acceptances` first'
    )
  WHERE slug = 'fix-quality-findings'
    AND body LIKE '%a worse value blocks again. It applies only to its pages. Check `list_quality_acceptances` first%';
