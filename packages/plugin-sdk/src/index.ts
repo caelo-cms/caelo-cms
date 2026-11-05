@@ -814,7 +814,11 @@ export interface PluginAuditPageFacts {
     readonly moduleId: string | null;
     readonly listItem: string | null;
     readonly pluginSlug: string | null;
-    /** `text` for a text run, else the attribute (`alt`, `placeholder`, …). */
+    /**
+     * `text` for a text run, else the attribute (`alt`, `placeholder`, …);
+     * `literal` for either inside `code`, `pre`, `kbd`, `samp`, `var` or
+     * `translate="no"`: visible, but not language.
+     */
     readonly source: string;
   }[];
   readonly truncated: boolean;

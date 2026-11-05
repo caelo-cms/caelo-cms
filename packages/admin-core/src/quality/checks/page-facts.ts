@@ -32,6 +32,13 @@ export const MAX_FACT_TEXT_LENGTH = 300;
 /** Elements whose content is never visible text. */
 const INVISIBLE = new Set(["script", "style", "noscript", "template", "head"]);
 
+/**
+ * Elements whose text is a literal, not language: code, commands and what a
+ * visitor types. It reads the same in every language, so a plugin that
+ * judges language must be able to leave it out.
+ */
+const LITERAL = new Set(["code", "pre", "kbd", "samp", "var"]);
+
 /** Attributes whose value a visitor reads (or a screen reader announces). */
 const VISIBLE_ATTRS = ["alt", "placeholder", "aria-label", "title"] as const;
 
@@ -49,6 +56,8 @@ interface Scope {
   readonly listItem: string | null;
   readonly pluginSlug: string | null;
   readonly invisible: boolean;
+  /** Inside a {@link LITERAL} element or `translate="no"`. */
+  readonly literal: boolean;
 }
 
 interface OpenLink {
@@ -160,6 +169,7 @@ export function extractPageFacts(
       listItem: null,
       pluginSlug: null,
       invisible: false,
+      literal: false,
     };
   const addText = (raw: string, scope: Scope, source: string) => {
     const text = collapse(raw);
@@ -173,7 +183,7 @@ export function extractPageFacts(
       moduleId: scope.moduleId,
       listItem: scope.listItem,
       pluginSlug: scope.pluginSlug,
-      source,
+      source: scope.literal ? "literal" : source,
     });
   };
   const parser = new Parser(
@@ -189,6 +199,8 @@ export function extractPageFacts(
             attrs["data-caelo-list-item"] ?? (moduleId === undefined ? parent.listItem : null),
           pluginSlug: attrs["data-caelo-plugin"] ?? parent.pluginSlug,
           invisible: parent.invisible || INVISIBLE.has(name),
+          literal:
+            parent.literal || LITERAL.has(name) || (attrs.translate ?? "").toLowerCase() === "no",
         };
         stack.push(scope);
         if (name === "html" && attrs.lang !== undefined) lang = attrs.lang;

@@ -22,6 +22,7 @@
 import type { ListTypeDef, PluginAdminQuery, PluginAi } from "@caelo-cms/plugin-sdk";
 import { applyStrings, type ChromeField, translatableStrings } from "./chrome.js";
 import type { LocaleRow, PageVariantRow } from "./index.js";
+import { translationGlossary } from "./neutral-terms.js";
 import { basisOf, stableJson } from "./stable-json.js";
 import {
   alignSlots,
@@ -499,15 +500,11 @@ export async function preparePageTranslation(
   const alignment = alignSlots(sourceSlots, variantSlots);
 
   // Glossary + style guide for the TARGET locale.
-  const glossaryRows = (await q.list("glossary", {
-    locale_code: targetLocale.code,
-    limit: 500,
-  })) as unknown as GlossaryRow[];
-  const glossary: GlossaryEntry[] = glossaryRows.map((g) => ({
-    term: g.term,
-    translation: g.translation,
-    context: g.context,
-  }));
+  const glossary = await translationGlossary(
+    q,
+    targetLocale.code,
+    JSON.stringify([sourceTitle, sourceShortTitle, sourceMetaDescription, sourceSlots]),
+  );
   const styleRows = (await q.list("style_guides", {
     locale_code: targetLocale.code,
     limit: 1,

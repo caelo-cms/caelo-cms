@@ -123,6 +123,35 @@ describe("extractPageFacts", () => {
     expect(parseSitemapAlternates(null, HOSTS)).toBe("no-sitemap");
   });
 
+  it("#1449 marks code, typed text and translate=no as literal, attributes included", () => {
+    const f = extractPageFacts(
+      page(
+        `<html><body>
+          <p>Lege die Datei <code>robots.txt</code> an</p>
+          <pre><span>curl -X POST</span></pre>
+          <kbd>Strg</kbd><samp>Fehler</samp><var>name</var>
+          <div translate="no"><b>Screaming Frog</b><img alt="Logo" /></div>
+          <p translate="yes">Normaler Text</p>
+        </body></html>`,
+      ),
+      HOSTS,
+      "no-sitemap",
+    );
+    const sources = Object.fromEntries(f.texts.map((t) => [t.text, t.source]));
+    expect(sources).toMatchObject({
+      "Lege die Datei": "text",
+      "robots.txt": "literal",
+      an: "text",
+      "curl -X POST": "literal",
+      Strg: "literal",
+      Fehler: "literal",
+      name: "literal",
+      "Screaming Frog": "literal",
+      Logo: "literal",
+      "Normaler Text": "text",
+    });
+  });
+
   it("cuts long pages and says so", () => {
     const links = Array.from(
       { length: MAX_FACT_LINKS + 5 },
