@@ -22,16 +22,13 @@ interface PriceRow {
   readonly cached_microcents: string | number;
 }
 
-async function currentRate(model: string): Promise<PriceRow | undefined> {
+async function rates(model: string): Promise<PriceRow[]> {
   return sqlc.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-    const rows = (await tx`
+    return (await tx`
       SELECT input_microcents, output_microcents, cached_microcents
       FROM ai_pricing
-      WHERE provider = 'anthropic' AND model = ${model} AND operation_type = 'text'
-      ORDER BY effective_from DESC
-      LIMIT 1`) as PriceRow[];
-    return rows[0];
+      WHERE provider = 'anthropic' AND model = ${model} AND operation_type = 'text'`) as PriceRow[];
   });
 }
 
@@ -43,16 +40,21 @@ describe("seeded Sonnet list prices", () => {
     await sqlc.close();
   });
 
-  it("Sonnet 5 stays at $2 / $10 after the cancelled increase", async () => {
-    const rate = await currentRate("claude-sonnet-5");
-    expect(Number(rate?.input_microcents)).toBe(200000);
-    expect(Number(rate?.output_microcents)).toBe(1000000);
-    expect(Number(rate?.cached_microcents)).toBe(20000);
+  it("no Sonnet 5 row carries the cancelled $3 / $15, the undated seed row included", async () => {
+    const rows = await rates("claude-sonnet-5");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(Number(row.input_microcents)).toBe(200000);
+      expect(Number(row.output_microcents)).toBe(1000000);
+    }
   });
 
   it("Sonnet 5.5 cache hits cost half of Sonnet 5's", async () => {
-    const rate = await currentRate("claude-sonnet-5-5");
-    expect(Number(rate?.input_microcents)).toBe(200000);
-    expect(Number(rate?.cached_microcents)).toBe(10000);
+    const rows = await rates("claude-sonnet-5-5");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(Number(row.input_microcents)).toBe(200000);
+      expect(Number(row.cached_microcents)).toBe(10000);
+    }
   });
 });

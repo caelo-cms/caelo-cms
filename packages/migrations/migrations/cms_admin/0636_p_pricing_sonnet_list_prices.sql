@@ -5,6 +5,7 @@
 -- Claude Sonnet 5: 0186 scheduled $3/$15 from 2026-09-01 after the
 -- introductory $2/$10. Anthropic cancelled that increase: $2/$10 is the
 -- standard price. Every Sonnet 5 call since then was costed about 50% high.
+-- That covers the dated 2026-09-01 row and 0155's undated row at the same rate.
 -- Claude Sonnet 5.5: cache hits are 0.05x input ($0.10 per MTok), not the
 -- 0.1x 0224 assumed ($0.20).
 --
@@ -25,7 +26,6 @@ SET input_microcents = 200000,
 WHERE provider = 'anthropic'
   AND model = 'claude-sonnet-5'
   AND operation_type = 'text'
-  AND effective_from = '2026-09-01T00:00:00Z'
   AND input_microcents = 300000
   AND output_microcents = 1500000;
 
