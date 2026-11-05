@@ -81,11 +81,12 @@ const plugin = definePlugin({
       const { pageIds } = args as { pageIds: string[] };
       const tags = await handles(ctx).q.list("tags", { limit: 1000 });
       const byPage = new Map(tags.map((t) => [String(t.page_id), String(t.prefix)]));
+      const roots = new Set(tags.filter((t) => t.note === "root").map((t) => String(t.page_id)));
       return {
         annotations: Object.fromEntries(
           pageIds.map((id) => {
             const prefix = byPage.get(id);
-            return [id, prefix ? { prefix } : {}];
+            return [id, prefix ? { prefix, isLocaleRoot: roots.has(id) } : {}];
           }),
         ),
       };
@@ -94,6 +95,13 @@ const plugin = definePlugin({
       const { q, cms } = handles(ctx);
       const a = args as { pageId: string; prefix: string };
       await q.insert("tags", { page_id: a.pageId, prefix: a.prefix });
+      return cms.call("pages.refresh_current_path", { pageId: a.pageId });
+    },
+    /** A locale root: serves at its prefix, so its path drops its slug. */
+    tag_root: async (ctx, args) => {
+      const { q, cms } = handles(ctx);
+      const a = args as { pageId: string; prefix: string };
+      await q.insert("tags", { page_id: a.pageId, prefix: a.prefix, note: "root" });
       return cms.call("pages.refresh_current_path", { pageId: a.pageId });
     },
     tag_page_quietly: async (ctx, args) => {
@@ -322,6 +330,19 @@ describe("branch views of a URL a plugin changes without a page snapshot (#1411)
     expect(await canonicalised(systemCtx, branch)).toBeNull();
     expect(await listed(systemCtx, pageId)).toBe(live);
     expect(await previewPath(systemCtx, pageId)).toBe(live);
+  });
+
+  // PR #1501 review — the composed path of a locale root does not end in
+  // the page's slug, so a lookup by path must not start from the slug.
+  it("find a page by a branch path that does not end in its slug", async () => {
+    const pageId = await page("startseite");
+    const { ctx, invocation } = await chat();
+    await runPlugin("tag_root", { pageId, prefix: "ca" }, invocation);
+
+    expect(await listed(ctx, pageId)).toBe("/ca");
+    expect(await listedAt(ctx, "/ca")).toEqual([pageId]);
+    expect(await listedAt(systemCtx, "/ca")).toEqual([]);
+    expect(await canonicalised(ctx, "/ca")).toBe(pageId);
   });
 
   it("follow a pending removal of the row that gave a live page its URL", async () => {

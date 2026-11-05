@@ -459,6 +459,10 @@ export const listPagesOp = defineOperation({
  * slugs for "/"). A URL-space root keeps its path when renamed, so the
  * stored path finds it. The caller keeps those whose composed path
  * matches. The cost is the pages sharing those slugs, never a subtree.
+ *
+ * A pending row of a URL plugin can give a page a path that does not end
+ * in its slug (a locale root serves at its prefix, #1411), so those pages
+ * are candidates too; there are as many as the branch has such rows.
  */
 async function pagesNamedByLastSegment(
   tx: TransactionRunner,
@@ -483,7 +487,7 @@ async function pagesNamedByLastSegment(
      WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'page'
        AND d.slug = ANY(${textArray([...slugs])})
   `)) as unknown as { id: string }[];
-  return rows.map((r) => r.id);
+  return [...rows.map((r) => r.id), ...(await pendingUrlAnnotationPageIds(tx, branchId))];
 }
 
 /**
