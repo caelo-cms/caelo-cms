@@ -239,6 +239,8 @@ describe("verify_domains / verify_dns_records", () => {
     try {
       const r = await run(verifyDnsRecordsTool, {}, h.toolCtx);
       expect(r.content).toContain("Staging host staging.example.com: needs the same address as");
+      const live = await run(verifyDnsRecordsTool, { environment: "production" }, h.toolCtx);
+      expect(live.content).not.toContain("Staging host");
     } finally {
       if (provider === undefined) delete process.env.CAELO_PROVIDER;
       else process.env.CAELO_PROVIDER = provider;

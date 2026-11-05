@@ -537,12 +537,15 @@ export function isFirebaseStagingConfig(
 }
 
 /**
- * Whether the host's DNS points at Hosting, in Hosting's own words: the check
- * #1455 turns on. It is `HOST_ACTIVE` also when the host is a CNAME to the
- * site's `web.app` name (searchviu-website, 2026-11-05).
+ * Whether Hosting serves the host, in its own words: the check #1455 turns
+ * on, the same one Settings → Updates uses (`readStagingHostDns`). The DNS
+ * pointing at Hosting (`HOST_ACTIVE`, also for a CNAME to the site's `web.app`
+ * name: searchviu-website, 2026-11-05) is not enough while ownership is
+ * pending.
  */
 function firebaseHostActive(customDomain: unknown): boolean {
-  return (customDomain as { hostState?: string } | null)?.hostState === "HOST_ACTIVE";
+  const domain = customDomain as { hostState?: string; ownershipState?: string } | null;
+  return domain?.hostState === "HOST_ACTIVE" && domain.ownershipState === "OWNERSHIP_ACTIVE";
 }
 
 /** The DNS records a Firebase custom domain asks for (`requiredDnsUpdates.desired`). */

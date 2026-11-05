@@ -262,9 +262,11 @@ export const verifyDnsRecordsTool: ToolDefinitionWithHandler<VerifyDnsRecordsInp
       }
       // #1455 — the staging host's records are not stack outputs: on
       // gcp-firebase Hosting works them out when an update adds the host.
-      const staging = await stagingHostRecords(ctx, toolCtx);
-      records.push(...staging.records.filter((r) => !seen.has(recordKey(r))));
-      stagingNote = staging.note;
+      if (!input.environment || input.environment === "staging") {
+        const staging = await stagingHostRecords(ctx, toolCtx);
+        records.push(...staging.records.filter((r) => !seen.has(recordKey(r))));
+        stagingNote = staging.note;
+      }
       if (records.length === 0) {
         if (stagingNote) return { ok: true, content: stagingNote };
         return {

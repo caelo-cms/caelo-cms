@@ -228,7 +228,13 @@ function fakeInstall(events: string[], overrides: [RegExp, Answer][] = []) {
 const http: HttpFetch = async () => ({
   ok: true,
   status: 200,
-  text: async () => JSON.stringify({ name: "op-1", status: "DONE", hostState: "HOST_ACTIVE" }),
+  text: async () =>
+    JSON.stringify({
+      name: "op-1",
+      status: "DONE",
+      hostState: "HOST_ACTIVE",
+      ownershipState: "OWNERSHIP_ACTIVE",
+    }),
 });
 
 function recordingReporter() {
@@ -1404,7 +1410,15 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
               gatewayServiceUrl: `https://${GATEWAY}-xyz.a.run.app`,
               mcpAuthProxyServiceUrl: `https://${PROXY}-xyz.a.run.app`,
             },
-            { run: deps.run, http: htmlGateway, sleep: noSleep, accessJustChanged: false },
+            {
+              run: deps.run,
+              http: htmlGateway,
+              loadBalancerGet: async () => {
+                throw new Error("gcp-firebase never uses the load balancer path");
+              },
+              sleep: noSleep,
+              accessJustChanged: false,
+            },
           ),
         }),
       }),

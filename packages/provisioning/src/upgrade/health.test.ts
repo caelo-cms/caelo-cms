@@ -7,6 +7,7 @@ import {
   createIapHealthProbe,
   evaluateAdminDeepHealth,
   evaluatePublicServiceDeepHealth,
+  type HealthProbeDeps,
   type HealthTarget,
   healthOrigins,
   IAM_PROPAGATION_WINDOW_MS,
@@ -110,6 +111,15 @@ const FIREBASE: HealthTarget = {
   mcpAuthProxyServiceUrl: "https://caelo-production-gateway-bbb-xyz.a.run.app",
 };
 
+/** A gcp-firebase probe: its public services need no load balancer path. */
+const firebaseProbe = (deps: Omit<HealthProbeDeps, "loadBalancerGet">) =>
+  createIapHealthProbe(FIREBASE, {
+    ...deps,
+    loadBalancerGet: async () => {
+      throw new Error("gcp-firebase never uses the load balancer path");
+    },
+  });
+
 describe("healthOrigins", () => {
   it("uses the load balancer hosts on gcp", () => {
     expect(healthOrigins({ ...FIREBASE, provider: "gcp" })).toEqual({
@@ -162,7 +172,7 @@ describe("createIapHealthProbe", () => {
       admin: () => [200, adminBody()],
       gateway: () => [200, JSON.stringify({ ok: true })],
     });
-    const probe = createIapHealthProbe(FIREBASE, {
+    const probe = firebaseProbe({
       run: gcloudOk,
       http: net.http,
       sleep: async () => {},
@@ -203,7 +213,7 @@ describe("createIapHealthProbe", () => {
 
   it("#1328 — fails the deep check while the MCP-Auth-Proxy is unhealthy or does not answer", async () => {
     const deepWith = (proxy: () => [number, string]) =>
-      createIapHealthProbe(FIREBASE, {
+      firebaseProbe({
         run: gcloudOk,
         http: network({
           admin: () => [200, adminBody()],
@@ -235,7 +245,7 @@ describe("createIapHealthProbe", () => {
       },
       gateway: () => [200, JSON.stringify({ ok: true })],
     });
-    const probe = createIapHealthProbe(FIREBASE, {
+    const probe = firebaseProbe({
       run: gcloudOk,
       http: net.http,
       sleep: async () => {},
@@ -249,7 +259,7 @@ describe("createIapHealthProbe", () => {
       admin: () => [503, adminBody({ ok: false, migrations: migrations(1) })],
       gateway: () => [200, "{}"],
     });
-    const failing = createIapHealthProbe(FIREBASE, {
+    const failing = firebaseProbe({
       run: gcloudOk,
       http: stuck.http,
       sleep: async () => {},
@@ -266,7 +276,7 @@ describe("createIapHealthProbe", () => {
       admin: () => [200, "<html>Sign in with Google</html>"],
       gateway: () => [404, "{}"],
     });
-    const probe = createIapHealthProbe(FIREBASE, {
+    const probe = firebaseProbe({
       run: gcloudOk,
       http: net.http,
       sleep: async () => {},
@@ -283,7 +293,7 @@ describe("createIapHealthProbe", () => {
       admin: () => [200, JSON.stringify({ ok: true, version: "0.10.43" })],
       gateway: () => [404, '{"ok":false}'],
     });
-    const probe = createIapHealthProbe(FIREBASE, {
+    const probe = firebaseProbe({
       run: gcloudOk,
       http: net.http,
       sleep: async () => {},
@@ -300,7 +310,7 @@ describe("createIapHealthProbe", () => {
       admin: () => [200, JSON.stringify({ ok: true, version: "0.10.20" })],
       gateway: () => [404, "<!DOCTYPE html><html><title>Error 404 (Not Found)!!1</title>"],
     });
-    const probe = createIapHealthProbe(FIREBASE, {
+    const probe = firebaseProbe({
       run: gcloudOk,
       http: net.http,
       sleep: async () => {},
@@ -411,7 +421,7 @@ describe("createIapHealthProbe", () => {
       const net = propagating(4);
       const slept: number[] = [];
       const waits: string[] = [];
-      const probe = createIapHealthProbe(FIREBASE, {
+      const probe = firebaseProbe({
         run: gcloudOk,
         http: net.http,
         sleep: async (ms) => {
@@ -432,7 +442,7 @@ describe("createIapHealthProbe", () => {
     it("gives up after the propagation window: the grant exists, re-run in a few minutes", async () => {
       const net = propagating(Number.POSITIVE_INFINITY);
       let slept = 0;
-      const probe = createIapHealthProbe(FIREBASE, {
+      const probe = firebaseProbe({
         run: gcloudOk,
         http: net.http,
         sleep: async (ms) => {
@@ -452,7 +462,7 @@ describe("createIapHealthProbe", () => {
     it("fails at once when nothing was just granted: the grant is missing", async () => {
       const net = propagating(Number.POSITIVE_INFINITY);
       let slept = 0;
-      const probe = createIapHealthProbe(FIREBASE, {
+      const probe = firebaseProbe({
         run: gcloudOk,
         http: net.http,
         sleep: async (ms) => {
@@ -475,7 +485,7 @@ describe("createIapHealthProbe", () => {
         throw new Error("ENOTFOUND");
       };
       let slept = 0;
-      const probe = createIapHealthProbe(FIREBASE, {
+      const probe = firebaseProbe({
         run: gcloudOk,
         http,
         sleep: async (ms) => {
@@ -492,7 +502,7 @@ describe("createIapHealthProbe", () => {
     const http: HttpFetch = async () => {
       throw new Error("ECONNRESET");
     };
-    const probe = createIapHealthProbe(FIREBASE, {
+    const probe = firebaseProbe({
       run: gcloudOk,
       http,
       sleep: async () => {},

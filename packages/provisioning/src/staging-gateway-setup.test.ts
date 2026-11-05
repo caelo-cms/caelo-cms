@@ -229,33 +229,53 @@ describe("the gcp-firebase edge: a second Hosting site", () => {
     expect(calls.some((c) => c.startsWith("beta run domain-mappings delete"))).toBe(false);
   });
 
-  it("#1455 — deletes the old mapping once the host's DNS points at the staging site", async () => {
-    const { run, calls } = fakeGcloud({
-      ...adminWith(LIVE_SITE),
-      "auth print-access-token": ok("tok\n"),
-      "beta run domain-mappings describe": ok("staging.acme.com\n"),
-      "beta run domain-mappings delete": ok(),
-    });
-    const http: HttpFetch = async () => ({
-      ok: true,
-      status: 200,
-      text: async () =>
-        JSON.stringify({ name: `sites/${SITE}/versions/v1`, hostState: "HOST_ACTIVE" }),
-    });
-    const r = await ensureStagingGatewayEdge(
-      {
-        provider: "gcp-firebase",
-        projectId: "acme",
-        region: "europe-west1",
-        env: "production",
-        domain: "acme.com",
-        stagingHost: "staging.acme.com",
-      },
-      { run, http },
-    );
-    expect(r.ok && r.domainMappingKept).toBe(false);
-    expect(calls).toContainEqual(expect.stringMatching(/^beta run domain-mappings delete /));
-  });
+  it.each([
+    ["OWNERSHIP_ACTIVE", true],
+    // DNS moved, but Hosting does not serve the host yet.
+    ["OWNERSHIP_PENDING", false],
+  ])(
+    "#1455 — old mapping with DNS on the staging site, ownership %s",
+    async (ownershipState, gone) => {
+      const { run, calls } = fakeGcloud({
+        ...adminWith(LIVE_SITE),
+        "auth print-access-token": ok("tok\n"),
+        "beta run domain-mappings describe": ok("staging.acme.com\n"),
+        "beta run domain-mappings delete": ok(),
+      });
+      const http: HttpFetch = async (url) => ({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            ...(url.includes("/customDomains/") && !gone
+              ? {
+                  requiredDnsUpdates: {
+                    desired: [
+                      { records: [{ domainName: "staging.acme.com.", type: "TXT", rdata: "tok" }] },
+                    ],
+                  },
+                }
+              : {}),
+            name: `sites/${SITE}/versions/v1`,
+            hostState: "HOST_ACTIVE",
+            ownershipState,
+          }),
+      });
+      const r = await ensureStagingGatewayEdge(
+        {
+          provider: "gcp-firebase",
+          projectId: "acme",
+          region: "europe-west1",
+          env: "production",
+          domain: "acme.com",
+          stagingHost: "staging.acme.com",
+        },
+        { run, http },
+      );
+      expect(r.ok && r.domainMappingKept).toBe(!gone);
+      expect(calls.some((c) => c.startsWith("beta run domain-mappings delete"))).toBe(gone);
+    },
+  );
 
   it("waits for the records Firebase works out after the custom domain is created", async () => {
     const { run } = fakeGcloud({
