@@ -78,10 +78,13 @@ export const moduleImpactOp = defineOperation({
       .slice()
       .sort((a, b) => a.slug.localeCompare(b.slug) || a.blockName.localeCompare(b.blockName))
       .slice(0, IMPACT_PLACEMENT_CAP);
-    const templates = (await tx.execute(sql`
-      SELECT id::text AS id, slug FROM templates
-       WHERE id = ANY(${uuidArray([...new Set(listed.map((r) => r.templateId))])})
-    `)) as unknown as { id: string; slug: string }[];
+    const templates =
+      listed.length === 0
+        ? []
+        : ((await tx.execute(sql`
+            SELECT id::text AS id, slug FROM templates
+             WHERE id = ANY(${uuidArray([...new Set(listed.map((r) => r.templateId))])})
+          `)) as unknown as { id: string; slug: string }[]);
     const templateSlug = new Map(templates.map((t) => [t.id, t.slug]));
 
     const affectedPages = listed.map((r) => ({

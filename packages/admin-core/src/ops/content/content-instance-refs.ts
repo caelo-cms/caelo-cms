@@ -151,7 +151,10 @@ function boundedModuleNeedleFilterSql(
   branchId: string | null,
   limit: number,
 ): SQL {
-  const ids = needles.flatMap((n) => (n.kind === "id" ? [n.id.toLowerCase()] : []));
+  const ids = needles.flatMap((n) => {
+    if (n.kind !== "id") throw new Error("a bounded instance read takes module-id needles only");
+    return [n.id.toLowerCase()];
+  });
   const notPending = branchId
     ? sql`AND (SELECT true FROM draft_pending_entities h
                 WHERE h.chat_branch_id = ${branchId}::uuid

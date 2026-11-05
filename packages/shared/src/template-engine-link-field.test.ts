@@ -45,6 +45,11 @@ describe("#1433 top-level link field", () => {
     );
   });
 
+  it("an object with an empty href is no value, never [object Object]", () => {
+    expect(render("{{primary_cta}}", { href: "" }).html).toBe("{{primary_cta}}");
+    expect(render("{{{primary_cta}}}", { href: "" }).html).toBe("{{{primary_cta}}}");
+  });
+
   it("a string value reads the same", () => {
     const r = render("{{primary_cta}}|{{primary_cta.href}}|{{primary_cta.target}}", "/p");
     expect(r.html).toBe("/p|/p|");

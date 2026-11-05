@@ -429,8 +429,14 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   // a triple tag must not stringify the object either.
   for (const f of input.fields) {
     if (f.kind !== "link") continue;
-    const link = parseLinkFieldValue(view[f.name.toLowerCase()]);
-    if (link !== null && link.href.length > 0) view[f.name.toLowerCase()] = link.href;
+    const lower = f.name.toLowerCase();
+    const value = view[lower];
+    if (typeof value !== "object" || value === null) continue;
+    const link = parseLinkFieldValue(value);
+    if (link === null) continue;
+    // An object with no href is no value: it stays raw like any empty field.
+    if (link.href.length > 0) view[lower] = link.href;
+    else delete view[lower];
   }
 
   // v0.11.1 (issue #76) — pre-populate four theme-asset substitutions
