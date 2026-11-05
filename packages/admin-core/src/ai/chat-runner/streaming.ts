@@ -46,6 +46,7 @@ import type { ToolRegistry } from "../tools/index.js";
 import { estimateTextTokens, isPromptTooLongError } from "./compaction.js";
 import { buildContextSplitEstimate } from "./context-split.js";
 import { EventQueue, PumpQuiescence } from "./event-queue.js";
+import { settleDeferredServerCalls } from "./history-repair.js";
 import { resolveFirstEventTimeoutMs } from "./limits.js";
 import { appendLoopTrace, fingerprintMessages, hashOf, loopTracePath } from "./loop-trace.js";
 import { persistAssistantTurn, setResponseMessages } from "./persistence.js";
@@ -654,6 +655,36 @@ export async function* streamProviderTurn(
     history.messages.push({ role: "tool", content, sdkMessages: messages });
   };
 
+  /**
+   * #1479 — run after everything that appends to the history between steps,
+   * so it sees the request as it will go out. The SDK keeps the dropped
+   * search as pending, which only ever makes it ask the stop condition; the
+   * policy still stops on a step that did not end in tool calls.
+   */
+  const settleServerCalls = async (): Promise<void> => {
+    const settled = settleDeferredServerCalls(history.messages);
+    if (settled.strippedIds.length === 0) return;
+    history.messages = settled.messages;
+    console.error("[chat-runner] deferred-search-dropped", {
+      chatSessionId: args.chatSessionId,
+      step: args.stepCounter.value,
+      strippedIds: settled.strippedIds,
+    });
+    const messageId = result.lastAssistantMessageId;
+    if (!messageId || !settled.lastAssistantSdkMessages) return;
+    const stamped = await setResponseMessages(registry, adapter, humanCtx, {
+      messageId,
+      responseMessages: settled.lastAssistantSdkMessages,
+    });
+    if (!stamped) {
+      // The next turn's replay strip still heals the row, loudly.
+      console.error("[chat-runner] failed to store the settled step", {
+        chatSessionId: args.chatSessionId,
+        messageId,
+      });
+    }
+  };
+
   /** Per-step persistence + history append — the SDK awaits this. */
   const onStepFinish = async (info: {
     stepIndex: number;
@@ -986,6 +1017,7 @@ export async function* streamProviderTurn(
               return args.forceToolChoiceFirstStep ? { toolChoice: "required" } : undefined;
             }
             await policy.prepareStep({ stepIndex, steps });
+            await settleServerCalls();
             // Always override continuation steps with the current history:
             // one canonical lane (Option-C recomposition) for images,
             // nudges, and compaction alike — and byte-stable request

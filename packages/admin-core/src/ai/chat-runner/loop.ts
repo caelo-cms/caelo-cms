@@ -492,7 +492,8 @@ export async function* runToolLoop(
       // (the offer_choices class) must end the turn with the pairing
       // complete, not hand the model a continuation to answer its own
       // question. A deferred tool-search continuation is unaffected: the
-      // deferring step always stops on tool_use ("tool-calls").
+      // deferring step always stops on tool_use ("tool-calls"), and a search
+      // dropped at the next request (#1479) must not keep the run alive.
       if (last && last.finishReason !== "tool-calls") return true;
       return false;
     },
