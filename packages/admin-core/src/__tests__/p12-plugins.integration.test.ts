@@ -154,6 +154,11 @@ async function pluginScopedAdminQuery<T>(
 
 /** What the admin-side transport sent (a campaign's per-recipient mails). */
 const transportSent: string[] = [];
+const transportMails: Array<{
+  to: string;
+  html: string;
+  headers?: Readonly<Record<string, string>>;
+}> = [];
 
 /** The token of the newest mail of `template` in the live outbox (#1337). */
 async function queuedToken(template: string): Promise<string> {
@@ -175,11 +180,13 @@ async function bootstrapAll(): Promise<void> {
       registry,
       // #1337 — an admin-side send (the campaign drain) needs a transport.
       emailTransport: {
-        send: async ({ to }) => {
+        send: async ({ to, html, headers }) => {
           transportSent.push(to);
+          transportMails.push({ to, html, headers });
           return { messageId: `test-${transportSent.length}` };
         },
       },
+      mailLinkOrigin: async () => "https://www.example.com",
     },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
@@ -402,7 +409,7 @@ describe("Newsletter plugin", () => {
     await pluginScopedQuery<unknown>(
       "newsletter",
       sql`INSERT INTO plugin_newsletter.subscribers (email, email_hash, confirm_token, unsub_token, confirmed_at)
-          VALUES ('bob@example.com', 'h', 'c', 'u', now())`,
+          VALUES ('bob@example.com', 'h', 'c', ${crypto.randomUUID()}, now())`,
     );
     await pluginScopedQuery<unknown>(
       "newsletter",
@@ -429,7 +436,7 @@ describe("Newsletter plugin", () => {
     await pluginScopedQuery<unknown>(
       "newsletter",
       sql`INSERT INTO plugin_newsletter.subscribers (email, email_hash, confirm_token, unsub_token, confirmed_at)
-          VALUES ('victim@example.com', 'h2', 'c2', 'u2', now())`,
+          VALUES ('victim@example.com', 'h2', 'c2', ${crypto.randomUUID()}, now())`,
     );
     await pluginScopedQuery<unknown>(
       "newsletter",
@@ -510,7 +517,7 @@ async function seedDraftWithOneSubscriber(slug: string): Promise<string> {
   await pluginScopedQuery<unknown>(
     "newsletter",
     sql`INSERT INTO plugin_newsletter.subscribers (email, email_hash, confirm_token, unsub_token, confirmed_at)
-        VALUES (${`${slug}@example.com`}, ${slug}, ${`c-${slug}`}, ${`u-${slug}`}, now())`,
+        VALUES (${`${slug}@example.com`}, ${slug}, ${`c-${slug}`}, ${crypto.randomUUID()}, now())`,
   );
   await pluginScopedQuery<unknown>(
     "newsletter",
@@ -526,6 +533,69 @@ async function seedDraftWithOneSubscriber(slug: string): Promise<string> {
 }
 
 describe("Newsletter send — the chat path is bound to the panel's permission", () => {
+  it("a campaign mail's link is absolute, and its token unsubscribes that subscriber only (#1432)", async () => {
+    await bootstrapAll();
+    const slug = `unsub-${Date.now()}`;
+    const campaignId = await seedDraftWithOneSubscriber(slug);
+    const invocation = {
+      origin: "system",
+      actorId: "00000000-0000-0000-0000-000000000000",
+    } as const;
+    const send = await runPluginOperation({
+      invocation,
+      pluginSlug: "newsletter",
+      operationName: "send_campaign",
+      args: await approvalFor(campaignId),
+    });
+    if (!send.ok) throw new Error(JSON.stringify(send.error));
+    const drain = await runPluginOperation({
+      invocation,
+      pluginSlug: "newsletter",
+      operationName: "_drain_sends",
+      args: {},
+    });
+    if (!drain.ok) throw new Error(JSON.stringify(drain.error));
+    const mail = transportMails.find((m) => m.to === `${slug}@example.com`);
+    const href = /href="([^"]+)">Unsubscribe/.exec(mail?.html ?? "")?.[1] ?? "";
+    expect(href).toStartWith(
+      "https://www.example.com/api/_caelo/mail-link/newsletter/unsubscribe?token=",
+    );
+    expect(mail?.headers).toEqual({
+      "List-Unsubscribe": `<${href}>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    });
+    const unsubscribedAt = async () =>
+      (
+        await pluginScopedQuery<{ unsubscribed_at: string | null }>(
+          "newsletter",
+          sql`SELECT unsubscribed_at FROM plugin_newsletter.subscribers WHERE email = ${`${slug}@example.com`}`,
+        )
+      )[0]?.unsubscribed_at;
+    const visit = (token: string) =>
+      runPluginOperation({
+        invocation: { origin: "visitor", actorId: "00000000-0000-0000-0000-000000000000" },
+        pluginSlug: "newsletter",
+        operationName: "unsubscribe",
+        args: { token },
+        visitorContext: {
+          visitorId: null,
+          sessionToken: null,
+          captcha: { enforced: true, proofVerified: true },
+        },
+      });
+    const token = new URL(href).searchParams.get("token") as string;
+    // The raw per-subscriber id, the shape the broken link carried, is no proof.
+    const forged = await visit(token.slice(0, 36));
+    expect(forged.ok).toBe(false);
+    expect(await unsubscribedAt()).toBeNull();
+    expect((await visit(token)).ok).toBe(true);
+    const first = await unsubscribedAt();
+    expect(first).not.toBeNull();
+    // Pressing the link again keeps the first date.
+    expect((await visit(token)).ok).toBe(true);
+    expect(await unsubscribedAt()).toEqual(first);
+  });
+
   it("a chat call for an editor is refused; for an Owner it queues", async () => {
     await bootstrapAll();
     const campaignId = await seedDraftWithOneSubscriber(`perm-${Date.now()}`);

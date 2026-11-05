@@ -187,6 +187,7 @@ export {
   pluginFailedHereReason,
   pluginRunsHere,
 } from "./local-availability.js";
+export { verifyMailUnsubscribeToken } from "./mail-link-token.js";
 export {
   activeDependentsOf,
   dependentsMessage,

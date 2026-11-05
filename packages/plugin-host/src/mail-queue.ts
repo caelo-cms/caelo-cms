@@ -14,6 +14,10 @@
  *
  * Nothing about delivery comes back: a visitor's operation cannot tell
  * whether the mail went out, so it cannot tell a visitor either.
+ *
+ * `unsubscribeLink` (#1432, admin side) is the link of a recipient of mail
+ * sent with `send`: `send` turns it into the RFC 8058 headers, so a plugin
+ * never writes a mail header itself.
  */
 
 import {
@@ -21,6 +25,8 @@ import {
   MAIL_RECIPIENT_RE,
   MAIL_TEMPLATE_NAME_RE,
   MAIL_TOKEN_RE,
+  MAIL_UNSUBSCRIBE_TOKEN_RE,
+  mailLinkPath,
   type PluginEmail,
 } from "@caelo-cms/plugin-sdk";
 import {
@@ -34,6 +40,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import { signMailUnsubscribeToken } from "./mail-link-token.js";
 
 /** The operation that writes one outbox row. */
 export const MAIL_QUEUE_OP = "plugin_mail.queue";
@@ -90,6 +97,31 @@ export function normaliseMailAddress(address: string): string {
 }
 
 /**
+ * The RFC 8058 headers of a mail whose unsubscribe link is `url`. The plugin
+ * hands the link back, so it is checked to be this plugin's own, and the
+ * parsed URL cannot carry a line break into a header.
+ */
+function unsubscribeHeaders(plugin: LoadedPlugin, url: string): Record<string, string> {
+  const link = plugin.definition.mailUnsubscribe;
+  const parsed = URL.canParse(url) ? new URL(url) : null;
+  const token = parsed?.searchParams.get("token") ?? "";
+  if (
+    !link ||
+    !parsed ||
+    parsed.pathname !== mailLinkPath(plugin.slug, link.operation) ||
+    !MAIL_UNSUBSCRIBE_TOKEN_RE.test(token)
+  ) {
+    throw new Error(
+      `ctx.email.send: unsubscribeUrl is not plugin "${plugin.slug}"'s own link — pass what ctx.email.unsubscribeLink returned`,
+    );
+  }
+  return {
+    "List-Unsubscribe": `<${parsed.href}>`,
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+  };
+}
+
+/**
  * The `ctx.email` handle of one call. `publicAdapter` is the adapter whose
  * public database the call's outbox row goes to (the gateway's own; the
  * admin's live one).
@@ -118,7 +150,35 @@ export function makePluginEmail(
           `ctx.email.send: no mail transport is set up — configure one at Settings → Email (or propose_set_email_config), then retry`,
         );
       }
-      return transport.send(args);
+      const { unsubscribeUrl, ...mail } = args;
+      return transport.send(
+        unsubscribeUrl === undefined
+          ? mail
+          : { ...mail, headers: unsubscribeHeaders(plugin, unsubscribeUrl) },
+      );
+    },
+    unsubscribeLink: async ({ recipientId }) => {
+      const link = plugin.definition.mailUnsubscribe;
+      if (!link) {
+        throw new Error(
+          `ctx.email.unsubscribeLink: plugin "${plugin.slug}" declares no mailUnsubscribe link`,
+        );
+      }
+      // A visitor call never mints a link: the mail that carries one is
+      // sent by the admin, and the gateway has no cms_admin to find the host.
+      if (publicSide || !infra.mailLinkOrigin) {
+        throw new Error(
+          `ctx.email.unsubscribeLink: plugin "${plugin.slug}" can only make an unsubscribe link on the admin side`,
+        );
+      }
+      const origin = await infra.mailLinkOrigin();
+      if (!origin) {
+        throw new Error(
+          "ctx.email.unsubscribeLink: the site has no base URL, so a mail cannot carry a working unsubscribe link — set it at Settings → SEO (propose_set_site_seo), then retry",
+        );
+      }
+      const token = await signMailUnsubscribeToken(plugin, infra, recipientId);
+      return `${origin}${mailLinkPath(plugin.slug, link.operation)}?token=${token}`;
     },
     queue: async ({ template, to, token }) => {
       if (!Object.hasOwn(templates, template)) {

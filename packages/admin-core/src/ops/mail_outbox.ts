@@ -249,6 +249,18 @@ export const reserveMailDeliveriesOp = defineOperation({
   },
 });
 
+export const mailLinkOriginOp = defineOperation({
+  name: "public_mail_deliveries.link_origin",
+  readScope: "request",
+  // Why system-only: the plugin host asks on a plugin's behalf for the host
+  // of mail the admin sends (#1432); a plugin gets the finished link.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({ origin: z.string().nullable() }),
+  handler: async (_ctx, _input, tx) => ok({ origin: await linkOriginOf(tx, "live") }),
+});
+
 /**
  * The origin an environment's mail links point at, from cms_admin, never
  * from an outbox row: live the site's base URL, staging the staging host.

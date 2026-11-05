@@ -25,6 +25,13 @@
  * never changes anything, so a mail scanner that opens links confirms
  * nothing.
  *
+ * Mail the Owner approved and the admin sends directly (a newsletter
+ * campaign) is not a template. Its unsubscribe link is declared on its own
+ * (`mailUnsubscribe`, #1432): the host signs a token per recipient, puts it
+ * in the footer link and in the `List-Unsubscribe` headers, and a recipient
+ * leaves with the page's button or with their mail client's one-click POST
+ * (RFC 8058). See docs/dev/mail-outbox.md.
+ *
  * @example
  * ```ts
  * definePlugin({
@@ -97,6 +104,38 @@ export const mailTemplateLink = z
   })
   .strict();
 
+/**
+ * #1432 — the unsubscribe link of the mail a plugin sends itself. The same
+ * page as a template link, but never with fields: a mail client's one-click
+ * POST sends the token and nothing else.
+ */
+export const mailUnsubscribeLink = z
+  .object({
+    /** A public `write` operation of the plugin whose only required input is `token`. */
+    operation: z.string().regex(/^[a-z_][a-z0-9_]{0,119}$/),
+    /** The button on the page. */
+    label: z.string().min(1).max(80),
+    /** What the page says once the operation succeeded. */
+    done: z.string().min(1).max(200),
+  })
+  .strict();
+
+/** The unsubscribe link of the mail a plugin sends itself. */
+export type PluginMailUnsubscribe = z.infer<typeof mailUnsubscribeLink>;
+
+/** A signed unsubscribe token: the recipient's UUID, `_`, its signature. */
+export const MAIL_UNSUBSCRIBE_TOKEN_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_[A-Za-z0-9_-]{43}$/;
+
+/**
+ * The recipient id a signed unsubscribe token names, or null when `token`
+ * has another shape. Parses only: the host checked the signature before
+ * the plugin's operation runs.
+ */
+export function mailUnsubscribeRecipient(token: string): string | null {
+  return MAIL_UNSUBSCRIBE_TOKEN_RE.test(token) ? token.slice(0, 36) : null;
+}
+
 /** One mail a plugin may queue. Plain text only; the admin renders it. */
 export const pluginMailTemplate = z
   .object({
@@ -119,13 +158,16 @@ export const pluginMailTemplates = z
 export type PluginMailTemplates = z.infer<typeof pluginMailTemplates>;
 
 /**
- * The manifest checks of the mail templates: a plugin that queues mail
- * says it needs a transport, and every link targets one of its public
- * write operations that takes the token and each declared field.
+ * The manifest checks of a plugin's mail: a plugin that queues mail says it
+ * needs a transport, and every link targets one of its public write
+ * operations that takes the token and each declared field. An unsubscribe
+ * link's operation requires nothing but the token, because a mail client's
+ * one-click POST has nothing else to send.
  */
 export function checkMailTemplates(
   m: {
     readonly mailTemplates?: PluginMailTemplates;
+    readonly mailUnsubscribe?: PluginMailUnsubscribe;
     readonly requires?: ReadonlyArray<string>;
     readonly requestedCapabilities?: ReadonlyArray<string>;
     readonly publicOperations?: ReadonlyArray<{
@@ -137,36 +179,56 @@ export function checkMailTemplates(
   addIssue: (path: (string | number)[], message: string) => void,
 ): void {
   const templates = m.mailTemplates ?? {};
-  if (Object.keys(templates).length === 0) return;
+  const hasTemplates = Object.keys(templates).length > 0;
+  if (!hasTemplates && !m.mailUnsubscribe) return;
+  const field = hasTemplates ? "mailTemplates" : "mailUnsubscribe";
+  const what = hasTemplates ? "mail templates" : "an unsubscribe link";
   if (!(m.requires ?? []).includes("email")) {
-    addIssue(["mailTemplates"], 'a plugin with mail templates must declare requires: ["email"]');
+    addIssue([field], `a plugin with ${what} must declare requires: ["email"]`);
   }
   if (!(m.requestedCapabilities ?? []).includes("email")) {
-    addIssue(["mailTemplates"], 'a plugin with mail templates must request the "email" capability');
+    addIssue([field], `a plugin with ${what} must request the "email" capability`);
   }
-  for (const [name, t] of Object.entries(templates)) {
-    if (!t.link) continue;
-    const op = (m.publicOperations ?? []).find((o) => o.name === t.link?.operation);
+  /** The link's public write operation, with what its input requires. */
+  const targetOf = (operation: string, path: (string | number)[], link: string) => {
+    const op = (m.publicOperations ?? []).find((o) => o.name === operation);
     if (op?.kind !== "write") {
       addIssue(
-        ["mailTemplates", name, "link", "operation"],
-        `the link of mail template "${name}" must target a public write operation; "${t.link.operation}" is none`,
+        [...path, "operation"],
+        `${link} must target a public write operation; "${operation}" is none`,
       );
-      continue;
+      return null;
     }
     const props = (op.inputJsonSchema.properties ?? {}) as Record<string, unknown>;
-    const required = new Set(
-      Array.isArray(op.inputJsonSchema.required) ? (op.inputJsonSchema.required as string[]) : [],
-    );
+    const required = Array.isArray(op.inputJsonSchema.required)
+      ? (op.inputJsonSchema.required as string[])
+      : [];
+    return { name: op.name, props, required };
+  };
+  for (const [name, t] of Object.entries(templates)) {
+    if (!t.link) continue;
+    const path = ["mailTemplates", name, "link"];
+    const op = targetOf(t.link.operation, path, `the link of mail template "${name}"`);
+    if (!op) continue;
     for (const key of ["token", ...(t.link.fields ?? []).map((f) => f.name)]) {
       // Required, not only accepted: an operation whose token were optional
       // could be called from the page without the mail's proof.
-      if (!(key in props) || !required.has(key)) {
+      if (!(key in op.props) || !op.required.includes(key)) {
         addIssue(
-          ["mailTemplates", name, "link"],
+          path,
           `public operation "${op.name}" does not require "${key}", which the link of mail template "${name}" sends`,
         );
       }
+    }
+  }
+  if (m.mailUnsubscribe) {
+    const path = ["mailUnsubscribe"];
+    const op = targetOf(m.mailUnsubscribe.operation, path, "the unsubscribe link");
+    if (op && (op.required.length !== 1 || op.required[0] !== "token" || !("token" in op.props))) {
+      addIssue(
+        path,
+        `public operation "${op.name}" must require "token" and nothing else: a mail client's one-click POST sends only the token`,
+      );
     }
   }
 }

@@ -56,6 +56,7 @@ import {
 import {
   bootstrap as bootstrapPluginHost,
   dropPluginPublicSchemas,
+  type EmailTransport,
   ensureDevSignedManifests,
   hostInstanceId,
   type AIProvider as PluginHostAIProvider,
@@ -164,7 +165,7 @@ async function bootPluginHost(): Promise<void> {
   // configuration change takes effect without a restart. Without one the
   // send fails with the setup step (the address never reaches a log).
   const emailTransport = {
-    send: async (args: { to: string; subject: string; html: string; replyTo?: string }) => {
+    send: async (args: Parameters<EmailTransport["send"]>[0]) => {
       const r = await execute(registry, adapter, SYSTEM_CTX, "email_config.get", {});
       if (!r.ok) throw new Error(`email_config.get: ${JSON.stringify(r.error)}`);
       const transport = buildEmailTransport((r.value as { config: EmailConfigRow }).config);
@@ -213,6 +214,18 @@ async function bootPluginHost(): Promise<void> {
       siteMediaBytes: (storageKey: string) => getMediaStorage().get(storageKey),
       emitSnapshot: emitter,
       emailTransport,
+      // #1432 — the host of the unsubscribe link in mail the admin sends.
+      mailLinkOrigin: async () => {
+        const r = await execute(
+          registry,
+          adapter,
+          SYSTEM_CTX,
+          "public_mail_deliveries.link_origin",
+          {},
+        );
+        if (!r.ok) throw new Error(`mail link origin: ${JSON.stringify(r.error)}`);
+        return (r.value as { origin: string | null }).origin;
+      },
       lockPluginRow,
     },
     pluginsRoot,

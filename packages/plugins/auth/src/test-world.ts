@@ -74,6 +74,9 @@ export function world(seed: Partial<Record<string, Row[]>> = {}) {
       send: async () => {
         throw new Error("a visitor call queues, never sends");
       },
+      unsubscribeLink: async () => {
+        throw new Error("auth mail carries no unsubscribe link");
+      },
       queue: async (m: QueuedMail) => {
         state.mails.push(m);
       },

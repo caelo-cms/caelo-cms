@@ -5,6 +5,8 @@
  *
  * Routes:
  *   POST /api/plugin/<slug>/<operation>     JSON body → JSON response
+ *   GET  /api/_caelo/mail-link/<slug>/<op>  confirmation page of a mail link
+ *   POST /api/_caelo/mail-link/<slug>/<op>  one-click unsubscribe (RFC 8058)
  *   GET  /api/captcha/challenge             PoW challenge envelope
  *   GET  /healthz                           liveness probe
  *   GET  /api/_caelo/health[?deep=1]        upgrade health check (health.ts)
@@ -65,10 +67,12 @@
  * gateway-ops.ts).
  */
 
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import {
   bootstrapDispatchOnly,
   ensureDevSignedManifests,
+  hostInfra,
   loadedPlugins,
   pluginDeclaresConsentPurpose,
   registerGatewayOperations,
@@ -76,6 +80,7 @@ import {
   syncDispatchPlugins,
   unpublishedRegistryError,
   VISITOR_ID_PURPOSE,
+  verifyMailUnsubscribeToken,
 } from "@caelo-cms/plugin-host";
 import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
@@ -97,7 +102,13 @@ import {
 import { gatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
 import { type IpHashKeys, ipHashKeys } from "./ip-hash-key.js";
-import { declaredMailLink, mailLinkPage, parseMailLinkPath } from "./mail-link.js";
+import {
+  isOneClickBody,
+  MAIL_ONE_CLICK_MAX_BYTES,
+  mailLinkOf,
+  mailLinkPage,
+  parseMailLinkPath,
+} from "./mail-link.js";
 import { HARD_MAX_BODY_BYTES, readBodyWithCap } from "./middleware/body-cap.js";
 import { type CaptchaConfig, issuePowChallenge, verifyPowProof } from "./middleware/captcha.js";
 import { checkHoneypot } from "./middleware/honeypot.js";
@@ -733,10 +744,7 @@ async function visitorRequest(
     const limited = memoryRateLimited(address.value, requestId);
     if (limited) return limited;
     await syncDispatchPlugins();
-    const link = declaredMailLink(
-      loadedPlugins.bySlug(mailLink.slug)?.definition.mailTemplates,
-      mailLink.operation,
-    );
+    const link = mailLinkOf(loadedPlugins.bySlug(mailLink.slug)?.definition, mailLink.operation);
     if (!link) return errorResponse("NotFound", 404, requestId);
     return mailLinkPage(mailLink, link, requestId);
   }
@@ -744,7 +752,8 @@ async function visitorRequest(
   // ---- #1326: the input filter, before any database access ----
   const isCaptchaChallenge = req.method === "GET" && url.pathname === "/api/captcha/challenge";
   const pluginRoute = req.method === "POST" ? parsePluginPath(url.pathname) : null;
-  if (!isCaptchaChallenge && !pluginRoute) {
+  const oneClick = req.method === "POST" ? parseMailLinkPath(url.pathname) : null;
+  if (!isCaptchaChallenge && !pluginRoute && !oneClick) {
     return errorResponse("NotFound", 404, requestId);
   }
   const client = requestClientAddress(req, conn, requestId);
@@ -756,6 +765,7 @@ async function visitorRequest(
     return errorResponse("ServiceUnavailable", 503, requestId, { log: "gateway not bootstrapped" });
   }
   const adapter = cachedAdapter;
+  if (oneClick) return mailOneClick(req, url, oneClick, requestId);
   let settings: GatewaySettings;
   try {
     settings = await loadSettings(adapter);
@@ -831,6 +841,146 @@ async function servedToVisitors(
     Object.hasOwn(plugin.definition.operations, operation) &&
     publicOperationOf(plugin.definition.publicOperations, operation) !== undefined;
   return served ? "served" : "unknown";
+}
+
+/**
+ * The HTTP status of a refused plugin operation. The kind says who refused
+ * and why; the detail stays in the log.
+ */
+function pluginErrorStatus(kind: string): number {
+  switch (kind) {
+    case "PluginNotFound":
+    // A caller probing for an admin-only operation learns only that this
+    // path serves nothing: the 404 does not confirm the operation exists.
+    case "OperationNotPublic":
+      return 404;
+    case "PluginDisabled":
+    case "ProjectionNotPublished":
+    // #1334 — at a bound the operation guards (concurrent password hashes):
+    // a cheap 503, retried shortly.
+    case "Busy":
+      return 503;
+    case "OperationNotDeclared":
+    // #1332 — refused by the operation's declared contract, or by the
+    // plugin; the detail (Zod issues, the plugin's words) stays in the log
+    // like every other error (#1346).
+    case "InvalidInput":
+      return 400;
+    case "CaptchaRequired":
+      return 403;
+    case "Rejected":
+      return 422;
+    default:
+      return 500;
+  }
+}
+
+/**
+ * `POST /api/_caelo/mail-link/<slug>/<operation>`: a mail client's one-click
+ * unsubscribe (RFC 8058, mail-link.ts). A signed token stands where a
+ * browser call has its Origin and proof-of-work, so it is checked before
+ * anything is written, and junk costs one key read behind the per-client
+ * limiter. The budget is per recipient, not per address: a mailbox provider
+ * posts for all its users from few addresses, and one recipient's token
+ * cannot exhaust another's. No cookie is read or set.
+ */
+async function mailOneClick(
+  req: Request,
+  url: URL,
+  route: { readonly slug: string; readonly operation: string },
+  requestId: string,
+): Promise<Response> {
+  const adapter = cachedAdapter as DatabaseAdapter;
+  const { slug, operation } = route;
+  const served = await servedToVisitors(slug, operation);
+  if (served === "unpublished") {
+    return errorResponse("ProjectionNotPublished", 503, requestId, {
+      log: unpublishedRegistryError()?.message ?? "plugin registry not published",
+    });
+  }
+  const plugin = loadedPlugins.bySlug(slug);
+  if (
+    served === "unknown" ||
+    !plugin ||
+    plugin.definition.mailUnsubscribe?.operation !== operation
+  ) {
+    return errorResponse("NotFound", 404, requestId);
+  }
+  const opLimited = operationRateLimited(`${slug}.${operation}`, requestId);
+  if (opLimited) return opLimited;
+  await sweepGatewayStateIfDue?.();
+
+  const start = performance.now();
+  const logRow = (
+    row: Omit<
+      RequestLogRow,
+      | "pluginSlug"
+      | "operation"
+      | "durationMs"
+      | "bodyBytes"
+      | "wasHoneypotCaught"
+      | "captchaPassed"
+    >,
+    bodyBytes: number,
+  ) =>
+    recordRequest({
+      pluginSlug: slug,
+      operation,
+      durationMs: Math.round(performance.now() - start),
+      bodyBytes,
+      wasHoneypotCaught: false,
+      captchaPassed: false,
+      ...row,
+    });
+
+  const cap = await readBodyWithCap(req, MAIL_ONE_CLICK_MAX_BYTES);
+  if (!cap.ok) return errorResponse("PayloadTooLarge", 413, requestId);
+  if (!(await isOneClickBody(req.headers.get("content-type"), cap.body))) {
+    return errorResponse("BadRequest", 400, requestId);
+  }
+  const token = url.searchParams.get("token");
+  if (!(await verifyMailUnsubscribeToken(plugin, hostInfra(), token))) {
+    await logRow({ statusCode: 404, wasRateLimited: false, errorKind: "NotFound" }, cap.bytes);
+    return errorResponse("NotFound", 404, requestId);
+  }
+
+  const spec = await resolveRateLimitSpec(adapter, slug, operation, plugin);
+  const rl = await consumeRateLimit(adapter, {
+    key: `gateway-mail-one-click:${slug}:${operation}:${createHash("sha256")
+      .update(token as string)
+      .digest("hex")}`,
+    spec,
+  });
+  if (!rl.allowed) {
+    await logRow({ statusCode: 429, wasRateLimited: true, errorKind: "RateLimited" }, cap.bytes);
+    return errorResponse("RateLimited", 429, requestId, { retryAfterSec: rl.retryAfterSec });
+  }
+
+  const result = await runPluginOperation({
+    pluginSlug: slug,
+    operationName: operation,
+    args: { token },
+    invocation: { origin: "visitor", actorId: ANONYMOUS_VISITOR_ACTOR },
+    visitorContext: {
+      visitorId: null,
+      sessionToken: null,
+      captcha: { enforced: true, proofVerified: false },
+      mailOneClick: true,
+    },
+  });
+  if (!result.ok) {
+    const status = pluginErrorStatus(result.error.kind);
+    await logRow(
+      { statusCode: status, wasRateLimited: false, errorKind: result.error.kind },
+      cap.bytes,
+    );
+    return errorResponse(result.error.kind, status, requestId, {
+      log: `${slug}.${operation}: ${result.error.message ?? "no message"}`,
+      ...(result.error.kind === "Busy" ? { retryAfterSec: BUSY_RETRY_AFTER_SEC } : {}),
+    });
+  }
+  await logRow({ statusCode: 200, wasRateLimited: false }, cap.bytes);
+  return jsonResponse({ ok: true });
 }
 
 /** `POST /api/plugin/<slug>/<operation>` (pipeline in the file comment). */
@@ -1046,32 +1196,7 @@ async function pluginOperation(
   }
 
   if (!result.ok) {
-    const status =
-      result.error.kind === "PluginNotFound"
-        ? 404
-        : result.error.kind === "PluginDisabled" || result.error.kind === "ProjectionNotPublished"
-          ? 503
-          : result.error.kind === "OperationNotDeclared"
-            ? 400
-            : // A caller probing for an admin-only operation learns only
-              // that this path serves nothing — the 404 does not confirm
-              // that the operation exists.
-              result.error.kind === "OperationNotPublic"
-              ? 404
-              : // #1332 — refused by the operation's declared contract, or
-                // by the plugin; the detail (Zod issues, the plugin's words)
-                // stays in the log like every other error (#1346).
-                result.error.kind === "InvalidInput"
-                ? 400
-                : result.error.kind === "CaptchaRequired"
-                  ? 403
-                  : result.error.kind === "Rejected"
-                    ? 422
-                    : // #1334 — at a bound the operation guards (concurrent
-                      // password hashes): a cheap 503, retried shortly.
-                      result.error.kind === "Busy"
-                      ? 503
-                      : 500;
+    const status = pluginErrorStatus(result.error.kind);
     await logRow(
       {
         statusCode: status,

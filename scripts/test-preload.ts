@@ -177,6 +177,8 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
  */
 export const PUBLIC_PRESERVE: ReadonlySet<string> = new Set([
   "__drizzle_migrations",
+  // Seed-bearing since 0632 (#1432): the key that signs unsubscribe links.
+  "mail_link_keys",
   "rls_sentinel",
 ]);
 

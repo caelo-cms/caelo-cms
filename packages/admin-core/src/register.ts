@@ -340,6 +340,7 @@ import {
   claimMailOutboxOp,
   completeMailOutboxOp,
   finishMailDeliveriesOp,
+  mailLinkOriginOp,
   reserveMailDeliveriesOp,
 } from "./ops/mail_outbox.js";
 import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
@@ -1354,6 +1355,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(claimMailOutboxOp);
   registry.register(completeMailOutboxOp);
   registry.register(reserveMailDeliveriesOp);
+  registry.register(mailLinkOriginOp);
   registry.register(finishMailDeliveriesOp);
   registry.register(getMailCapsOp);
   registry.register(setMailCapsOp);

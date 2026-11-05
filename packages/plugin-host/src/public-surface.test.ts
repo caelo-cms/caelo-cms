@@ -70,6 +70,8 @@ describe("shipped plugins' public surface (#1332)", () => {
         requires: m.requires ?? [],
         // #1337 — what a visitor's mail can say and link to.
         mailTemplates: m.mailTemplates ?? {},
+        // #1432 — an operation one-click reaches without a proof-of-work.
+        mailUnsubscribe: m.mailUnsubscribe ?? null,
       };
       expect(surface).toMatchSnapshot();
     });

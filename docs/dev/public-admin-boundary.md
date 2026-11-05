@@ -78,6 +78,8 @@ The admin reads `gateway_plugin_op_events` for one thing: hints for the plugin-d
 
 Each public database has a `mail_outbox` (cms_public migration 0610): the visitor role may insert a row naming a declared mail template of an active plugin, one recipient and one token, and nothing more. The admin drains it on its scheduler tick and sends the mail with the transport configured in cms_admin, which the public side never holds. Text, link and link host come from the plugin's manifest and cms_admin; per-recipient and site-wide caps count a cms_admin ledger; mail from the staging database goes only to cms_admin users. Details: [mail-outbox.md](./mail-outbox.md).
 
+The key that signs unsubscribe links (`mail_link_keys`, #1432) also lives in each public database, read-only for both roles. It is the one secret the admin reads from that side, and it signs nothing but those tokens, whose worst case is an unsubscribe the public side could write itself.
+
 Plugin op records from visitor calls go to `gateway_plugin_op_events`. They never go to `audit_events`: the public side must not be able to forge entries in the admin's audit trail.
 
 `public_role` may insert an op event only for a plugin listed in `published_plugins` (the active plugins the admin published), and only when the slug before the `.` in `operation` is that plugin's slug (cms_public migration 0300). A reader must still validate every row: a stale projection can list a plugin that `cms_admin` has since disabled or removed.

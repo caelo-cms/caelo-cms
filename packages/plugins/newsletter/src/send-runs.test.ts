@@ -74,18 +74,28 @@ class FakeStore {
   }
 }
 
-function harness(opts: { withAdmin?: boolean } = {}) {
+const HOST = "https://www.example.com";
+
+function unsubUuid(i: number): string {
+  return `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+}
+
+function harness(opts: { withAdmin?: boolean; baseUrl?: boolean } = {}) {
   const pub = new FakeStore();
   const priv = new FakeStore();
-  const mails: Array<{ to: string; subject: string; html: string }> = [];
+  const mails: Array<{ to: string; subject: string; html: string; unsubscribeUrl?: string }> = [];
   const ctx = {
     invocation: { origin: "approved", actorId: "11111111-1111-4111-8111-111111111111" },
     query: pub.handle(),
     ...(opts.withAdmin === false ? {} : { adminQuery: priv.handle() }),
     email: {
-      send: async (m: { to: string; subject: string; html: string }) => {
+      send: async (m: (typeof mails)[number]) => {
         mails.push(m);
         return { messageId: `m-${mails.length}` };
+      },
+      unsubscribeLink: async ({ recipientId }: { recipientId: string }) => {
+        if (opts.baseUrl === false) throw new Error("the site has no base URL");
+        return `${HOST}/api/_caelo/mail-link/newsletter/unsubscribe?token=${recipientId}_sig`;
       },
     },
   } as unknown as PluginContextTier1;
@@ -108,7 +118,7 @@ async function seed(
       email,
       email_hash: `h${i}`,
       confirm_token: `c${i}`,
-      unsub_token: `u${i}`,
+      unsub_token: unsubUuid(i),
       confirmed_at: "2026-01-01T00:00:00.000Z",
       unsubscribed_at: null,
     });
@@ -332,5 +342,45 @@ describe("_drain_sends (#635)", () => {
     expect(h.mails).toEqual([]);
     expect(h.priv.rows("send_runs")[0]).toMatchObject({ status: "done" });
     expect(h.pub.rows("campaigns")[0]).toMatchObject({ status: "sent" });
+  });
+
+  it("every mail links its recipient absolutely, in the footer and the headers (#1432)", async () => {
+    const h = harness();
+    const id = await seed(h, ["a@example.com", "b@example.com"]);
+    await op(h.ctx, "send_campaign", await approval(h.ctx, id));
+    await drainAll(h.ctx);
+    expect(h.mails).toHaveLength(2);
+    for (const [i, mail] of h.mails.entries()) {
+      const url = `${HOST}/api/_caelo/mail-link/newsletter/unsubscribe?token=${unsubUuid(i)}_sig`;
+      expect(mail.unsubscribeUrl).toBe(url);
+      expect(mail.html).toContain(`<a href="${url}">Unsubscribe</a>`);
+      expect(mail.html).not.toContain("/api/plugin/newsletter/unsubscribe");
+    }
+  });
+
+  it("puts root-relative links of the approved body on the site's host (#1432)", async () => {
+    const h = harness();
+    const id = await seed(h, ["a@example.com"], {
+      subject: "Sale",
+      body_html:
+        '<a href="/pricing">Prices</a><img src=\'/logo.png\'><a href="//cdn.example/x">x</a><a href="https://a.example/b">y</a><p>href="/not-an-attribute"</p>',
+    });
+    await op(h.ctx, "send_campaign", await approval(h.ctx, id));
+    await drainAll(h.ctx);
+    const html = h.mails[0]?.html ?? "";
+    expect(html).toContain(`<a href="${HOST}/pricing">`);
+    expect(html).toContain(`<img src='${HOST}/logo.png'>`);
+    expect(html).toContain('<a href="//cdn.example/x">');
+    expect(html).toContain('<a href="https://a.example/b">');
+    expect(html).toContain('<p>href="/not-an-attribute"</p>');
+  });
+
+  it("without a base URL the tick fails loudly and claims nothing, so no recipient is lost (#1432)", async () => {
+    const h = harness({ baseUrl: false });
+    const id = await seed(h, ["a@example.com"]);
+    await op(h.ctx, "send_campaign", await approval(h.ctx, id));
+    await expect(op(h.ctx, "_drain_sends")).rejects.toThrow("no base URL");
+    expect(h.mails).toEqual([]);
+    expect(h.priv.rows("send_progress")[0]?.cursor ?? 0).toBe(0);
   });
 });
