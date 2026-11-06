@@ -391,6 +391,91 @@ describe("an Owner's direct production build ships only checked rendering", () =
   });
 });
 
+describe("#1497 site settings that render count as rendering", () => {
+  async function setSetting(assignment: string): Promise<void> {
+    await withSql((tx) => tx.unsafe(`UPDATE site_defaults SET ${assignment} WHERE id = 1`));
+  }
+
+  it("a language, JSON-LD, sitemap or CDN change after the Stage refuses the build", async () => {
+    const before = await withSql(
+      (tx) =>
+        tx`SELECT site_language, organization_json::text AS org, sitemap_enabled FROM site_defaults WHERE id = 1`,
+    );
+    const { site_language, org, sitemap_enabled } = (
+      before as unknown as { site_language: string; org: string; sitemap_enabled: boolean }[]
+    )[0] as { site_language: string; org: string; sitemap_enabled: boolean };
+    for (const [change, reason, restore] of [
+      ["site_language = 'fr'", "site setting: site language", `site_language = '${site_language}'`],
+      [
+        `organization_json = '{"name":"Other"}'`,
+        "site setting: Organization JSON-LD",
+        `organization_json = '${org}'`,
+      ],
+      [
+        `sitemap_enabled = ${!sitemap_enabled}`,
+        "site setting: sitemap",
+        `sitemap_enabled = ${sitemap_enabled}`,
+      ],
+      [
+        "media_cdn_copy_enabled = true",
+        "site setting: media CDN copy",
+        "media_cdn_copy_enabled = false",
+      ],
+    ] as const) {
+      await setSetting(change);
+      const r = await buildProduction(OWNER);
+      expect(r.ok).toBe(false);
+      expect(r.message).toContain(reason);
+      expect(r.message).toContain("Stage again");
+      await setSetting(restore);
+    }
+    expect(await buildProduction(OWNER)).toEqual({ ok: true, message: "" });
+  });
+
+  it("a home or 404 change after the Stage refuses the build", async () => {
+    await op(SYS, "pages.set_not_found_page", { pageId: draftPageId });
+    const r = await buildProduction(OWNER);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("site setting: 404 page");
+    await op(SYS, "pages.set_not_found_page", { pageId: null });
+  });
+
+  it("a setting that renders nothing forces no Stage", async () => {
+    await op(SYS, "site_defaults.set_identity", {
+      siteName: `${PFX}renamed`,
+      sitePurpose: "A purpose that is never rendered.",
+    });
+    await setSetting("media_cdn_usage_threshold = media_cdn_usage_threshold + 1");
+    expect(await buildProduction(OWNER)).toEqual({ ok: true, message: "" });
+    await setSetting("media_cdn_usage_threshold = media_cdn_usage_threshold - 1");
+  });
+
+  it("a Stage from before settings were recorded refuses once and says why", async () => {
+    await stage();
+    await audit(fakeLighthouse([]));
+    await withSql(
+      (tx) => tx`
+        UPDATE deploy_runs
+           SET render_fingerprint = (
+             SELECT jsonb_object_agg(key, value) FROM jsonb_each(render_fingerprint)
+              WHERE key NOT LIKE 'setting:%'
+           )
+         WHERE id = (SELECT id FROM deploy_runs WHERE render_fingerprint IS NOT NULL
+                       AND target_id = (SELECT id FROM deploy_targets WHERE name = 'staging')
+                     ORDER BY started_at DESC LIMIT 1)
+      `,
+    );
+    const r = await buildProduction(OWNER);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain("before this Caelo version recorded site settings");
+    expect(r.message).toContain("Publish live is not affected");
+    expect(r.message).not.toContain("site setting:");
+    await stage();
+    await audit(fakeLighthouse([]));
+    expect(await buildProduction(OWNER)).toEqual({ ok: true, message: "" });
+  });
+});
+
 describe("the quality view: Owner revoke (#727: no baselines)", () => {
   it("records accepted values and lets only the Owner revoke them — in bulk", async () => {
     // Accept the current problems (an editor's in-chat card).

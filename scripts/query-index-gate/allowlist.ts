@@ -52,6 +52,14 @@ export const ALLOWED: readonly AllowedRule[] = [
     reason: FIXED_SIZE("One row per environment (dev / staging / production)."),
   },
   {
+    table: "public.site_defaults",
+    op: "imports.*",
+    filter: "((p.id = home_page_id) OR (p.id = pending_home_page_id))",
+    reason: FIXED_SIZE(
+      "site_defaults holds exactly one row (singleton table); the import lookups match a page against its home and pending home designations (#1497).",
+    ),
+  },
+  {
     table: "public.genesis_drafts",
     reason: FIXED_SIZE(
       "The design-direction drafts of one Site Genesis run: a few variants per scope, replaced by the next run (#149).",

@@ -11,7 +11,8 @@
  *
  *   - main changed since that Stage in a way its check did not see
  *     (render-fingerprint.ts: module code, templates, layouts, theme,
- *     plugins, pages going live) → refused: Stage again;
+ *     plugins, site settings that render, pages going live) → refused:
+ *     Stage again;
  *   - the gate of the current staged build is open → build;
  *   - the quality check FAILED (no result) → only with an explicit
  *     "publish anyway" by a human holding deploy.trigger. The override is

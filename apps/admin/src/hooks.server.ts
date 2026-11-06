@@ -323,7 +323,8 @@ async function migrateLinksOnce(): Promise<void> {
 // admin boot we INSERT the row via owner_bootstrap_tokens.insert and
 // delete the staging file so a redeploy doesn't double-insert. Failure
 // is non-fatal: a missing/corrupt file just leaves /setup in dev-mode
-// (no token required).
+// (no token required). Self-hosted only: a cloud install's token comes from
+// its secret manager when /setup opens (security/owner-bootstrap-secret.ts).
 let pendingTokenInserted = false;
 async function consumePendingBootstrapToken(): Promise<void> {
   if (pendingTokenInserted) return;

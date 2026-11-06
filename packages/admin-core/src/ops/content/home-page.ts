@@ -15,6 +15,12 @@
  * new home composes to "/", the previous one back to its slug shape —
  * both recomputed here, #390), so it needs no propose/execute gate
  * (§11.A: one tool call undoes it).
+ *
+ * The designation is not draft state yet (#1158): a chat's call on a main
+ * page moves the pointer and main's stored paths at once, and the next
+ * Stage, from any chat, carries both. A page only a branch holds cannot be
+ * main's root yet, so its designation waits in `pending_home_page_id` and
+ * goes live with the page (`claimPendingDesignations`, migration 0657).
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -23,7 +29,8 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
-import { recomputeCurrentPaths, renderScopeOf } from "./current-path.js";
+import { loadSiteDesignations } from "./compose-paths.js";
+import { recomputeOwnedCurrentPaths } from "./current-path.js";
 import { loadPageTree } from "./page-tree.js";
 
 export const setHomePageOp = defineOperation({
@@ -40,11 +47,12 @@ export const setHomePageOp = defineOperation({
     // designated in the same session.
     const branchFilter = branchVisibilityFilter(ctx);
     const pageRows = (await tx.execute(sql`
-      SELECT 1 AS found FROM pages
+      SELECT chat_branch_id::text AS owner FROM pages
       WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL ${branchFilter}
       LIMIT 1
-    `)) as unknown as { found: number }[];
-    if (!pageRows[0]) {
+    `)) as unknown as { owner: string | null }[];
+    const page = pageRows[0];
+    if (!page) {
       return err({
         kind: "HandlerError",
         operation: "pages.set_home_page",
@@ -69,12 +77,11 @@ export const setHomePageOp = defineOperation({
     }
     // 0284 (#802) — the 404 page ships only as /404.html; as the
     // homepage it would have to serve "/" too.
-    const notFoundRows = (await tx.execute(sql`
-      SELECT 1 AS is_not_found FROM site_defaults
-      WHERE id = 1 AND not_found_page_id = ${input.pageId}::uuid
-      LIMIT 1
-    `)) as unknown as { is_not_found: number }[];
-    if (notFoundRows.length > 0) {
+    // Main's 404 page counts too: a branch's pending replacement changes
+    // nothing on main until it merges, and main's build needs that page.
+    const inChat = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
+    const onMain = await loadSiteDesignations(tx, null);
+    if (inChat.notFoundPageId === input.pageId || onMain.notFoundPageId === input.pageId) {
       return err({
         kind: "HandlerError",
         operation: "pages.set_home_page",
@@ -82,17 +89,24 @@ export const setHomePageOp = defineOperation({
           "this page is the site's 404 page (shown for unknown URLs), so it cannot also be the homepage — designate another page as the homepage, or first designate a different 404 page (set_not_found_page)",
       });
     }
-    // Capture the previous designation BEFORE the flip — its page's
-    // composed path changes back from "/" to its slug shape (#390).
+    // Capture the previous designations BEFORE the flip — their pages'
+    // composed paths change back from "/" to their slug shape (#390).
     const prevRows = (await tx.execute(sql`
-      SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1
-    `)) as unknown as { home_page_id: string | null }[];
-    const previousHomeId = prevRows[0]?.home_page_id ?? null;
+      SELECT home_page_id::text AS home, pending_home_page_id::text AS pending
+      FROM site_defaults WHERE id = 1
+    `)) as unknown as { home: string | null; pending: string | null }[];
+    const previous = [prevRows[0]?.home, prevRows[0]?.pending].filter(
+      (id): id is string => typeof id === "string" && id !== input.pageId,
+    );
     // Fail loudly if the singleton row is missing (no silent no-op
     // UPDATE — CLAUDE.md §2 no-fallbacks). RETURNING confirms the write.
     const updated = (await tx.execute(sql`
       UPDATE site_defaults
-         SET home_page_id = ${input.pageId}::uuid,
+         SET ${
+           page.owner === null
+             ? sql`home_page_id = ${input.pageId}::uuid, pending_home_page_id = NULL`
+             : sql`pending_home_page_id = ${input.pageId}::uuid`
+         },
              updated_at = now()
        WHERE id = 1
        RETURNING id
@@ -123,12 +137,11 @@ export const setHomePageOp = defineOperation({
       SELECT id::text AS id FROM pages
       WHERE current_path = '/' AND deleted_at IS NULL AND id != ${input.pageId}::uuid
     `)) as unknown as { id: string }[];
-    const affected = [
+    await recomputeOwnedCurrentPaths(ctx, tx, [
       ...rootHolders.map((r) => r.id),
-      ...(previousHomeId && previousHomeId !== input.pageId ? [previousHomeId] : []),
+      ...previous,
       input.pageId,
-    ];
-    await recomputeCurrentPaths(tx, affected, renderScopeOf(ctx, tx));
+    ]);
     return ok({ pageId: input.pageId });
   },
 });

@@ -33,7 +33,6 @@ import {
   operatorAccessJobName,
 } from "./gcp-names.js";
 import { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
-import { describeExecution } from "./install-job.js";
 import {
   type InstallMetadata,
   installRoot,
@@ -41,6 +40,7 @@ import {
   readMetadata,
   recordInfraContractVersion,
 } from "./install-state.js";
+import { jobExecutionNameError, selfHandoverDeps } from "./job-handover-gcp.js";
 import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
 import { installIapAllowlist } from "./operator-access.js";
 import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
@@ -55,31 +55,6 @@ import { releaseImageRef, verifyCosignAll } from "./upgrade/release-images.js";
 import { upgradeGcpInstallOutcome } from "./upgrade/upgrade.js";
 import { gcloudIamTester, healthProbeFor, type UpgraderPlacement } from "./upgrader-gcp.js";
 import type { JobLog } from "./upgrader-reporter.js";
-
-const DIGEST = /@(sha256:[0-9a-f]{64})/;
-
-/**
- * The image digest an execution of the converge job runs, from its Cloud
- * Run description (the execution's task template names the image it was
- * started with). Null when it cannot be read or names no digest.
- */
-export function executionImageDigest(describeJson: string): string | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(describeJson);
-  } catch {
-    return null;
-  }
-  // gcloud prints the v1 resource (spec.template.spec.containers); the v2
-  // shape (template.containers) is accepted too. The first container is it.
-  const p = parsed as {
-    spec?: { template?: { spec?: { containers?: { image?: string }[] } } };
-    template?: { containers?: { image?: string }[] };
-  };
-  const image =
-    p.spec?.template?.spec?.containers?.[0]?.image ?? p.template?.containers?.[0]?.image ?? "";
-  return DIGEST.exec(image)?.[1] ?? null;
-}
 
 /** The operator-access job's env var listing the install's fixed IAP members. */
 const STATIC_MEMBERS_ENV = "CAELO_OPERATOR_ACCESS_STATIC_MEMBERS";
@@ -182,27 +157,9 @@ export function deployedSiteMismatch(
   return null;
 }
 
-/**
- * Why `CLOUD_RUN_EXECUTION` cannot name a run of the converge job, or null
- * when it can. The name keys the state lock's holder and the hand-over
- * between the job's two stages, so a value that names another job's run
- * (or is not a Cloud Run name at all) stops the job before it acts
- * (#883 review). Cloud Run sets it and rejects user values for it; this is
- * the second line.
- */
+/** Why `CLOUD_RUN_EXECUTION` cannot name a run of the converge job, or null when it can. */
 export function convergeExecutionNameError(execution: string | null): string | null {
-  if (execution === null) return null;
-  const prefix = `${convergeJobName(GCP_STACK_ENV)}-`;
-  if (!/^[a-z0-9-]{1,63}$/.test(execution) || !execution.startsWith(prefix)) {
-    return `CLOUD_RUN_EXECUTION is "${execution.slice(0, 80)}", not a run of ${convergeJobName(GCP_STACK_ENV)}`;
-  }
-  return null;
-}
-
-/** The new execution's name from `gcloud run jobs execute --async`. */
-export function startedExecutionName(stdout: string, stderr: string): string | null {
-  const name = stdout.trim().split(/\s+/)[0] || /Execution \[([^\]]+)\]/.exec(stderr)?.[1] || "";
-  return /^[a-z0-9-]+$/.test(name) ? name : null;
+  return jobExecutionNameError(convergeJobName(GCP_STACK_ENV), execution);
 }
 
 /**
@@ -238,9 +195,8 @@ export function gcpConvergeDeps(
   const run: GcloudRunner = gcloud;
   const http = fetch as unknown as HttpFetch;
   const { projectId, region } = placement;
-  const bucket = opsBucketName(projectId);
-  const job = convergeJobName(GCP_STACK_ENV);
   const location = [`--region=${region}`, `--project=${projectId}`];
+  const bucket = opsBucketName(projectId);
   // Peeks only (uncached); the upgrade writes through install-state.ts.
   const store = new GcsStateStore(bucket, mkdtempSync(join(tmpdir(), "caelo-converge-")));
 
@@ -398,7 +354,12 @@ export function gcpConvergeDeps(
         : { ok: false, error: r.stderr.trim() || `gcloud exited ${r.exitCode}` };
     },
     sleep: realSleep,
-    execution: placement.execution,
+    ...selfHandoverDeps(run, {
+      job: convergeJobName(GCP_STACK_ENV),
+      projectId,
+      region,
+      execution: placement.execution,
+    }),
     ownVersion: CAELO_VERSION,
     // The default deps: the fixed registry and signer, never overridden.
     fetchManifest: (version) => fetchVerifiedReleaseManifest(version),
@@ -406,57 +367,6 @@ export function gcpConvergeDeps(
       const text = store.peek("install.json");
       return text === null ? null : (JSON.parse(text) as InstallMetadata);
     },
-    verifyImage: (slug, digest) => verifyCosignAll([{ slug, digest }]),
-    ownImageDigest: async () => {
-      if (!placement.execution) return null;
-      const r = await run([
-        "run",
-        "jobs",
-        "executions",
-        "describe",
-        placement.execution,
-        ...location,
-        "--format=json",
-      ]);
-      return r.ok ? executionImageDigest(r.stdout) : null;
-    },
-    pointJobAt: async (digest) => {
-      // Only the image changes: the identity, command and args stay what
-      // converge-job-setup.ts deployed.
-      const update = await run([
-        "run",
-        "jobs",
-        "update",
-        job,
-        `--image=${releaseImageRef("ops", digest)}`,
-        ...location,
-        "--quiet",
-      ]);
-      return update.ok
-        ? { ok: true }
-        : { ok: false, error: `update ${job}: ${update.stderr.trim()}` };
-    },
-    startJob: async () => {
-      const exec = await run([
-        "run",
-        "jobs",
-        "execute",
-        job,
-        ...location,
-        "--async",
-        "--format=value(metadata.name)",
-      ]);
-      if (!exec.ok) return { ok: false, error: `start ${job}: ${exec.stderr.trim()}` };
-      const execution = startedExecutionName(exec.stdout, exec.stderr);
-      if (!execution) {
-        return {
-          ok: false,
-          error: `${job} started but gcloud did not name the execution (${exec.stderr.trim()})`,
-        };
-      }
-      return { ok: true, execution };
-    },
-    executionState: (execution) => describeExecution(run, { projectId, region, execution }),
     // #815 — the lock names this execution; a later run breaks it once
     // Cloud Run says this one has ended (killed at its task timeout).
     lockState: (onBreak) =>

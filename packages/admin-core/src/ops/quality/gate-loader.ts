@@ -18,6 +18,7 @@ import {
   findingKey,
   type GateAudit,
   type GateDecision,
+  resourceKey,
   scoreKey,
 } from "../../quality/gate.js";
 import type { QualityCategory, QualityProblem } from "../../quality/ratchet.js";
@@ -55,14 +56,14 @@ async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null>
   const run = runs[0];
   if (!run) return null;
   const pages = (await tx.execute(sql`
-    SELECT qp.page_id::text AS page_id, p.current_path, qp.problems
+    SELECT qp.page_id::text AS page_id, p.current_path, qp.url, qp.problems
     FROM quality_audit_pages qp
     -- Deliberately NOT filtered on deleted_at: the staged build is frozen
     -- and still contains a page deleted after its audit, problems and all.
     JOIN pages p ON p.id = qp.page_id
     WHERE qp.audit_run_id = ${run.id}::uuid
     ORDER BY (p.current_path = '/') DESC, p.current_path
-  `)) as unknown as { page_id: string; current_path: string; problems: unknown }[];
+  `)) as unknown as { page_id: string; current_path: string; url: string; problems: unknown }[];
   return {
     id: run.id,
     status: run.status,
@@ -76,6 +77,7 @@ async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null>
     pages: pages.map((p) => ({
       pageId: p.page_id,
       pagePath: p.current_path,
+      pageUrl: p.url,
       problems: p.problems as QualityProblem[],
     })),
     siteProblems: run.site_problems as CheckRuleProblem[],
@@ -83,8 +85,9 @@ async function loadGateAuditWhere(tx: Tx, where: SQL): Promise<GateAudit | null>
 }
 
 /**
- * Live acceptances of the given pages plus the site-wide (page-less)
- * findings-check acceptances, keyed for `decideGate`.
+ * Live acceptances of the given pages plus the page-less ones (site-wide
+ * findings-check rules, and audits accepted for a shipped file, #1446),
+ * keyed for `decideGate`.
  */
 export async function loadAcceptances(
   tx: Tx,
@@ -93,15 +96,18 @@ export async function loadAcceptances(
   findings: Map<string, number | null>;
   scores: Map<string, number>;
   checks: Map<string, number>;
+  resources: Map<string, number>;
 }> {
   const findings = new Map<string, number | null>();
   const scores = new Map<string, number>();
   const checks = new Map<string, number>();
+  const resources = new Map<string, number>();
   const rows = (await tx.execute(sql`
-    SELECT page_id::text AS page_id, kind, audit_id, category, accepted_score, accepted_count
+    SELECT page_id::text AS page_id, kind, audit_id, category, accepted_score, accepted_count,
+           resource_path
     FROM quality_acceptances
     WHERE revoked_at IS NULL
-      AND (page_id = ANY(${uuidArray(pageIds)}) OR (page_id IS NULL AND kind = 'check'))
+      AND (page_id = ANY(${uuidArray(pageIds)}) OR page_id IS NULL)
   `)) as unknown as {
     page_id: string | null;
     kind: "finding" | "score" | "check";
@@ -109,10 +115,15 @@ export async function loadAcceptances(
     category: QualityCategory | null;
     accepted_score: number | null;
     accepted_count: number | null;
+    resource_path: string | null;
   }[];
   for (const r of rows) {
     if (r.kind === "check" && r.audit_id && r.accepted_count !== null) {
       checks.set(checkKey(r.page_id, r.audit_id), r.accepted_count);
+      continue;
+    }
+    if (r.resource_path !== null && r.audit_id && r.accepted_score !== null) {
+      resources.set(resourceKey(r.audit_id, r.resource_path), Number(r.accepted_score));
       continue;
     }
     if (r.page_id === null) continue;
@@ -126,7 +137,7 @@ export async function loadAcceptances(
       scores.set(scoreKey(r.page_id, r.category), Number(r.accepted_score));
     }
   }
-  return { findings, scores, checks };
+  return { findings, scores, checks, resources };
 }
 
 /** The gate decision for publishing `deployRunId`. */

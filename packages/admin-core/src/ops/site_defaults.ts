@@ -13,12 +13,11 @@
  * a defaults change is "future templates that omit the layout resolve
  * to the new default" — existing templates retain their pinned
  * `layout_id`, so changing site_defaults can't break already-published
- * content. The write is
- * also fully snapshot-revertable (audit row + the prior values are
- * recoverable from `audit_events`). The propose/execute gate (§11.A)
- * is overkill for first-run config where there's no published surface
- * to protect; AI proceeds directly + the operator sees the change in
- * the chat transcript and can revert if wrong.
+ * content. No snapshot exists for these writes: one more call undoes
+ * them, and the prior value is in the audit row (`audit_events`). The
+ * propose/execute gate (§11.A) is overkill for first-run config where
+ * there's no published surface to protect; AI proceeds directly + the
+ * operator sees the change in the chat transcript and can set it back.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -28,7 +27,7 @@ import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { loadCompositionRootPageId } from "./content/compose-paths.js";
+import { loadCompositionRootPageId, loadSiteDesignations } from "./content/compose-paths.js";
 
 const siteDefaultsRow = z.object({
   defaultLayoutId: z.string(),
@@ -87,8 +86,6 @@ export const getSiteDefaultsOp = defineOperation({
       SELECT
         sd.default_layout_id::text   AS default_layout_id,
         l.slug                        AS default_layout_slug,
-        sd.home_page_id::text         AS home_page_id,
-        sd.not_found_page_id::text    AS not_found_page_id,
         sd.site_name                  AS site_name,
         sd.site_purpose               AS site_purpose,
         sd.design_brief               AS design_brief,
@@ -101,8 +98,6 @@ export const getSiteDefaultsOp = defineOperation({
     `)) as unknown as {
       default_layout_id: string;
       default_layout_slug: string;
-      home_page_id: string | null;
-      not_found_page_id: string | null;
       site_name: string | null;
       site_purpose: string | null;
       design_brief: unknown;
@@ -111,18 +106,16 @@ export const getSiteDefaultsOp = defineOperation({
     }[];
     const r = rows[0];
     if (!r) return ok({ defaults: null });
-    const rootPageId = await loadCompositionRootPageId(
-      tx,
-      ctx.chatBranchId ?? null,
-      r.home_page_id,
-    );
+    const chatBranchId = ctx.chatBranchId ?? null;
+    const { homePageId, notFoundPageId } = await loadSiteDesignations(tx, chatBranchId);
+    const rootPageId = await loadCompositionRootPageId(tx, chatBranchId, homePageId);
     return ok({
       defaults: {
         defaultLayoutId: r.default_layout_id,
         defaultLayoutSlug: r.default_layout_slug,
-        homePageId: r.home_page_id,
+        homePageId,
         rootPageId,
-        notFoundPageId: r.not_found_page_id,
+        notFoundPageId,
         siteName: r.site_name,
         sitePurpose: r.site_purpose,
         designBrief: parseDesignBrief(r.design_brief),
@@ -137,7 +130,7 @@ export const setSiteDefaultsOp = defineOperation({
   name: "site_defaults.set",
   readScope: "request",
   // AI-writable per §11.A reasoning above (existing content unaffected;
-  // change is snapshot-revertable; first-run UX requires it).
+  // one more call undoes it; first-run UX requires it).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -236,8 +229,8 @@ export const setSiteIdentityOp = defineOperation({
   readScope: "request",
   // AI-callable per §1A — the AI infers identity from the operator's
   // chat and writes it directly, same as `set_theme_tokens` and the
-  // other routine writes. Snapshot-revertable via audit log if the
-  // AI guesses badly.
+  // other routine writes. If the AI guesses badly one more call sets it
+  // back; the prior value is in the audit log.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

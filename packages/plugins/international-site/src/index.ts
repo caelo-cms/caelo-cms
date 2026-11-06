@@ -81,6 +81,7 @@ import {
   reconcileListTranslations,
   setListItemVisibility,
 } from "./list-translation-ops.js";
+import { EVERY_LANGUAGE, setNeutralTerms } from "./neutral-terms.js";
 import {
   adoptedAfterSourceMetaFill,
   currentSourceFingerprint,
@@ -1113,6 +1114,14 @@ const MCP_TRANSLATE_CHROME =
 const MCP_REATTACH =
   " Over the Power-MCP, when the install's AI is not available to you, the approved run switches the entry back but does not translate it: then call translate_chrome for that language, translate its workItem yourself and send it back via apply_translations.";
 
+const setNeutralTermsArgs = z
+  .object({
+    add: z.array(z.string().min(1).max(200)).max(200).optional(),
+    remove: z.array(z.string().min(1).max(200)).max(200).optional(),
+    localeCode: z.string().min(2).max(35).optional(),
+  })
+  .strict();
+
 const translateVariantArgs = z
   .object({
     variantPageId: z.string().min(1),
@@ -1222,6 +1231,14 @@ export default definePlugin<PluginContextTier1>({
       context: "text",
       created_at: "timestamp",
     },
+    // #1449 — terms that stay as they are: in one language, or in every
+    // language (`locale_code` "*"). Read by the language checks and by
+    // every translation.
+    neutral_terms: {
+      term: "string",
+      locale_code: "string",
+      created_at: "timestamp",
+    },
     style_guides: {
       locale_code: "string",
       body: "text",
@@ -1304,6 +1321,7 @@ export default definePlugin<PluginContextTier1>({
         ["locale_code", "id"],
       ],
       glossary: [["locale_code", "term"]],
+      neutral_terms: [["locale_code", "term"]],
       style_guides: [["locale_code"]],
       settings: [["key"]],
       list_value_translations: [["locale_code", "address"]],
@@ -2140,6 +2158,26 @@ export default definePlugin<PluginContextTier1>({
       return { glossaryId: row.id, updated: false };
     },
 
+    /** #1449 — add to and remove from the language-neutral terms. */
+    set_neutral_terms: async (ctx, args) => {
+      const input = setNeutralTermsArgs.parse(args);
+      const q = adminQueryOf(ctx);
+      if (input.localeCode !== undefined) {
+        const reg = await refreshLocaleCache(q, ctx);
+        if (!reg.byCode.has(input.localeCode)) {
+          throw new Error(
+            `locale "${input.localeCode}" is not registered — omit localeCode for every language, or call set_locales first`,
+          );
+        }
+      }
+      return setNeutralTerms(
+        q,
+        input.localeCode ?? EVERY_LANGUAGE,
+        input.add ?? [],
+        input.remove ?? [],
+      );
+    },
+
     /** #397 — set (replace) the style guide for a target locale. */
     set_style_guide: async (ctx, args) => {
       const { localeCode, body } = args as { localeCode: string; body: string };
@@ -2661,6 +2699,38 @@ export default definePlugin<PluginContextTier1>({
       },
     },
     {
+      name: "set_neutral_terms",
+      description:
+        "Keep terms as they are, unmeasured and untranslated: technical terms, brand and product names that are correct unchanged ('Webhook', 'Crawl'). The language checks stop reporting text made of them, and every translation keeps them verbatim. Omit localeCode for every language. " +
+        "Prefer this over set_glossary_term with a word as its own translation. NOT for a word that needs translating elsewhere ('Start' -> 'Home'): translate that one, or pin it with set_glossary_term. Code and addresses need no entry: <code>, <pre>, <kbd> and URL-shaped text are never measured. " +
+        "Pass several terms in one call. With neither add nor remove it lists the terms.",
+      operationName: "set_neutral_terms",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          add: {
+            type: "array",
+            maxItems: 200,
+            items: { type: "string", minLength: 1, maxLength: 200 },
+          },
+          remove: {
+            type: "array",
+            maxItems: 200,
+            items: { type: "string", minLength: 1, maxLength: 200 },
+          },
+          localeCode: {
+            type: "string",
+            minLength: 2,
+            maxLength: 35,
+            description: "Only this language. Omit = every language.",
+          },
+        },
+      },
+    },
+    {
       name: "set_style_guide",
       description:
         "Set the tone/style instructions applied to every translation into a locale (formality like du/Sie, register, phrasing conventions). Replaces the previous guide for that locale. " +
@@ -2767,7 +2837,7 @@ export default definePlugin<PluginContextTier1>({
         "4. The result stays a DRAFT. Summarise what was translated and let the operator review before publishing.",
         "5. When intl_status shows stale variants (source pages changed after translation), prefer ONE translate_all_stale call over repeated translate_variant calls.",
         "",
-        "When the operator corrects a translated word ('we say Kasse, not Checkout') or names brand terms, persist it with set_glossary_term so every future translation uses it. Tone preferences ('use informal du') go to set_style_guide. Apply the correction to already-translated pages by re-running translate_variant afterwards.",
+        "When the operator corrects a translated word ('we say Kasse, not Checkout') persist it with set_glossary_term so every future translation uses it. A brand or technical term that stays as it is goes on set_neutral_terms. Tone preferences ('use informal du') go to set_style_guide. Apply the correction to already-translated pages by re-running translate_variant afterwards.",
       ].join("\n"),
       autoEngagementHints: {
         keywords: ["translate", "translation", "übersetze", "übersetzen", "language", "sprache"],
@@ -2824,7 +2894,7 @@ export default definePlugin<PluginContextTier1>({
         "",
         "Page language and text:",
         "- html-lang-mismatch: the page is in the wrong language group, or not in one; fix the group (link_page_variants).",
-        "- content-wrong-language / content-mixed-language / alt-untranslated / seo-untranslated: run translate_variant on the version. It translates every placement, the texts modules show from their field defaults (buttons, form labels, menu entries) and nested content. If its result names nested content another page still renders, follow its next step. A brand or product name that is the same in every language belongs in the glossary with itself as the translation (set_glossary_term) — then it is no finding.",
+        "- content-wrong-language / content-mixed-language / alt-untranslated / seo-untranslated: run translate_variant on the version. It translates every placement, the texts modules show from their field defaults (buttons, form labels, menu entries) and nested content. If its result names nested content another page still renders, follow its next step. A technical term, brand or product name that is correct unchanged goes on the language-neutral list (set_neutral_terms) — then it is no finding. Code and addresses need no entry: <code>, <pre>, <kbd> and URL-shaped text are never measured.",
         "- chrome-untranslated / chrome-translation-stale: translate_chrome for that language.",
         "- translation-stale: one translate_all_stale call.",
         "- glossary-violation: translate_variant again (the glossary is part of every call).",

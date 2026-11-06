@@ -61,7 +61,7 @@ describe("initDelegatesToWizard", () => {
 describe("CLI_COMMANDS / cliUsage", () => {
   it("prints the usage line operators already know, built from the catalogue", () => {
     expect(cliUsage().split("\n")[0]).toBe(
-      "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r> [--scheduler-interval-minutes 1-15]] [--local|--install-job] | <init|up|migrate|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|owner-reset|state migrate|attach|pulumi-output-sync|version> [options]",
+      "Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r> [--scheduler-interval-minutes 1-15]] [--local|--install-job] | <init|up|migrate|status|upgrade|backup|restore|rotate-secret|truncate|destroy|regenerate-caddy|admin-domain|staging-domain|owner-reset|setup-link|state migrate|attach|pulumi-output-sync|version> [options]",
     );
   });
 

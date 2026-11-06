@@ -45,11 +45,13 @@ CAELO_ADMIN_URL=https://example.com \
   bunx cms-provision pulumi-output-sync --environment production
 ```
 
-The bootstrap-token URL is a Pulumi output:
+The stack outputs the setup address without a token: nothing brings a token to
+the admin on this provider yet, and `/setup` refuses until something does
+(issue #1483).
 
 ```bash
 pulumi stack output bootstrapUrlOut
-# → https://example.com/setup?token=<64-hex>
+# → https://example.com/setup
 ```
 
 `dnsRecordsRequiredOut` lists the two records the primary domain needs: a CNAME to the Front Door endpoint (`frontDoorEndpointHostNameOut`) and the `_dnsauth.<domain>` TXT record that validates the domain for Front Door's managed certificate. An apex domain needs a registrar that supports CNAME flattening / ALIAS records, or Azure DNS.

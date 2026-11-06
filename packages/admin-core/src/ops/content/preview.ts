@@ -70,6 +70,7 @@ import {
   fontUnresolvableMarker,
   type ImageVariantInfo,
   injectSeoIntoHead,
+  isFieldPathMarker,
   isListFailureMarker,
   linkMarkersOf,
   listThemeCssVarNames,
@@ -504,6 +505,7 @@ async function renderPreview(
     // Epic #1107 — an unbound / deleted / malformed list of a page module
     // or of the chrome: loud on the missing-content surface too.
     const pageListMarkers: string[] = [];
+    const fieldPathMarkers: string[] = [];
     for (const m of modRows) {
       const key = `${m.block_name}#${m.position}`;
       const binding = placementBindings.get(key);
@@ -532,6 +534,7 @@ async function renderPreview(
       htmlByRow.set(m, html);
       pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
       pageListMarkers.push(...result.missingSlots.filter(isListFailureMarker));
+      fieldPathMarkers.push(...result.missingSlots.filter(isFieldPathMarker));
       // Every module the recursion touched gets its CSS/JS staged (the
       // composer dedupes by moduleId, issue #158) through a virtual
       // "__nested__" block below; their HTML is already inline.
@@ -625,7 +628,7 @@ async function renderPreview(
       layoutSlug: pageRow.layout_slug,
       linkResolver,
     });
-    return { lists, composed, pageLinkMarkers, pageListMarkers };
+    return { lists, composed, pageLinkMarkers, pageListMarkers, fieldPathMarkers };
   };
   let body = await renderBody();
   const firstPagination = body.lists.pagination();
@@ -638,7 +641,7 @@ async function renderPreview(
   } else if (firstPagination?.pagerEarly && firstPagination.pageCount > 1) {
     body = await renderBody({ page: 1, pageCount: firstPagination.pageCount });
   }
-  const { lists, composed, pageLinkMarkers, pageListMarkers } = body;
+  const { lists, composed, pageLinkMarkers, pageListMarkers, fieldPathMarkers } = body;
   const pagination = lists.pagination();
   // Epic #1107 — overlay entries this render refused are the plugin's
   // fault: the stored value rendered, and the plugin's error channel
@@ -785,6 +788,11 @@ async function renderPreview(
         // #1257 — a paginated page without a pager strands its entries.
         ...paginationMarkers(pagination),
         ...composed.moduleFailures.map((f) => f.reason).filter(isListFailureMarker),
+      ]),
+      // #1433 — what would stop the Stage shows here first.
+      ...new Set([
+        ...fieldPathMarkers,
+        ...composed.moduleFailures.map((f) => f.reason).filter(isFieldPathMarker),
       ]),
     ],
     pluginFailures: pluginFailureSink.failures().map((f) => ({ slug: f.slug, reason: f.reason })),

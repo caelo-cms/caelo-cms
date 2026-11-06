@@ -54,7 +54,7 @@
   const latestRequest = $derived(data.latest.request);
   let confirmOpen = $state(false);
   let cancelOpen = $state(false);
-  /** #819 — "Continue" for a converge whose run died. */
+  /** #819, #1029 — "Continue" for an update whose run died. */
   let continueOpen = $state(false);
   /** #868 — "Skip this time" for a scheduled automatic install. */
   let skipOpen = $state(false);
@@ -415,7 +415,7 @@
             bind:open={continueOpen}
             formId="continue-update-form"
             title={`Continue the update to v${action.version}?`}
-            description="Caelo starts its installer again. It keeps the backup it took before the update began, finishes what is left, tests the new version and goes back automatically if the test fails."
+            description="Caelo starts its installer again. It checks where the update stopped before it changes anything, tests the new version and goes back automatically if the test fails."
             submitLabel="Continue the update"
             error={stepUpError?.action === "continueUpdate" ? stepUpError.error : null}
             testid="continue-dialog"

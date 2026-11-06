@@ -15,7 +15,10 @@
  *   - an edit to a nested, placement-less instance made in a chat
  *     reaches the build after Stage's merge (chat.merge_to_main);
  *   - a broken nested ref fails the build, naming page, module and field,
- *     before any page file is written.
+ *     before any page file is written;
+ *   - #1433: a top-level `link` field's paths render the same in the
+ *     preview and the build, and a path stored before the write refusal
+ *     existed stops the build instead of shipping `{{…}}`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -26,7 +29,7 @@ import { join } from "node:path";
 import { registerAdminOps } from "@caelo-cms/admin-core";
 import { localBuildPluginServices } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, isFieldPathMarker } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { generateSite, pageOutputPath } from "./generate.js";
 
@@ -368,5 +371,88 @@ describe("static build renders nested modules", () => {
       `module "${gridSlug}" (block content) field "plans[1]": content-instance-missing:${gone.contentInstanceId}`,
     );
     expect(existsSync(await pageFile(broken.pageId, buildDir))).toBe(false);
+  });
+});
+
+describe("#1433 a top-level link field in preview and build", () => {
+  async function ctaPage(
+    slug: string,
+    html: string,
+    href: string,
+  ): Promise<{ pageId: string; moduleId: string }> {
+    const r = await execute(registry, adapter, SYSTEM, "pages.build_page", {
+      page: { slug, title: `${PFX} ${slug}`, templateId },
+      modules: [
+        {
+          blockName: "content",
+          displayName: `${PFX} ${slug} Hero`,
+          description: "Hero with one call to action.",
+          kind: "hero",
+          html,
+          fields: [{ name: "primary_cta", kind: "link", label: "Primary CTA" }],
+          content: { source: "inline", values: { primary_cta: { href } } },
+        },
+      ],
+    });
+    if (!r.ok) throw new Error(`build_page failed: ${JSON.stringify(r.error)}`);
+    const rows = await asSystem(
+      (tx) => tx`SELECT id::text AS id FROM modules WHERE display_name = ${`${PFX} ${slug} Hero`}`,
+    );
+    const moduleId = (rows as { id: string }[])[0]?.id;
+    if (!moduleId) throw new Error("placed module missing");
+    return { pageId: (r.value as { pageId: string }).pageId, moduleId };
+  }
+
+  const HTML = '<div><a class="cta" href="{{primary_cta.href}}">{{primary_cta}}</a></div>';
+  const EXTERNAL = "https://example.com/pricing";
+
+  it("renders the same anchor in the preview and in the built file", async () => {
+    const { pageId } = await ctaPage(`${PFX}-cta`, HTML, EXTERNAL);
+    const expected = `<a class="cta" href="${EXTERNAL}">${EXTERNAL}</a>`;
+
+    const preview = await execute(registry, adapter, SYSTEM, "pages.render_preview", { pageId });
+    if (!preview.ok) throw new Error(JSON.stringify(preview.error));
+    const rendered = preview.value as { html: string; missingSlots: string[] };
+    expect(rendered.html).toContain(expected);
+    expect(rendered.missingSlots.filter(isFieldPathMarker)).toEqual([]);
+
+    const { run, buildDir } = build(pageId, `${PFX}-cta`);
+    await run;
+    expect(await readFile(await pageFile(pageId, buildDir), "utf8")).toContain(expected);
+  });
+
+  it("reads an internal link's page title in both", async () => {
+    const target = `/${PFX}-pricing`;
+    const { pageId } = await ctaPage(
+      `${PFX}-cta-title`,
+      "<div><b>{{primary_cta.title}}</b></div>",
+      target,
+    );
+    const expected = `<b>${PFX} Pricing</b>`;
+    const preview = await execute(registry, adapter, SYSTEM, "pages.render_preview", { pageId });
+    if (!preview.ok) throw new Error(JSON.stringify(preview.error));
+    const body = (preview.value as { html: string }).html;
+    expect(body).toContain(expected);
+    const { run, buildDir } = build(pageId, `${PFX}-cta-title`);
+    await run;
+    expect(await readFile(await pageFile(pageId, buildDir), "utf8")).toContain(expected);
+  });
+
+  it("a stored path no value answers shows in the preview and stops the build", async () => {
+    const { pageId, moduleId } = await ctaPage(`${PFX}-cta-bad`, HTML, EXTERNAL);
+    // The write tools refuse this now; a module stored before that has it.
+    await asSystem(
+      (tx) =>
+        tx`UPDATE modules SET html = '<a href="{{primary_cta.label}}">x</a>' WHERE id = ${moduleId}::uuid`,
+    );
+    const preview = await execute(registry, adapter, SYSTEM, "pages.render_preview", { pageId });
+    if (!preview.ok) throw new Error(JSON.stringify(preview.error));
+    expect((preview.value as { missingSlots: string[] }).missingSlots).toContain(
+      "field-path-unknown:primary_cta.label",
+    );
+
+    const { run, buildDir } = build(pageId, `${PFX}-cta-bad`);
+    await expect(run).rejects.toThrow("field-path-unknown:primary_cta.label");
+    expect(existsSync(await pageFile(pageId, buildDir))).toBe(false);
   });
 });

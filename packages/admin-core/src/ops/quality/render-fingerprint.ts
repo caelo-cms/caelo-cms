@@ -6,9 +6,10 @@
  *
  * A Stage records the RENDER FINGERPRINT of main at the moment its build
  * starts: one hash per rendering-relevant entity (module code, templates,
- * layouts with their chrome modules, the active theme, active plugins, and
- * each live page's template). A direct production build (Ops "Trigger
- * build", Owner-initiated) bakes main as it is NOW, so the gate
+ * layouts with their chrome modules, the active theme, active plugins, the
+ * site settings that render into pages, and each live page's template). A
+ * direct production build (Ops "Trigger build", Owner-initiated) bakes main
+ * as it is NOW, so the gate
  * compares the two: any audit-worthy difference — the same rules a chat
  * Stage is classified by (`classifyStageChanges`) — means production would
  * ship unchecked rendering, and the build has to go through a Stage.
@@ -30,6 +31,49 @@ type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 /** `<kind>:<id>` → md5 of what renders. Stored on staging deploy runs. */
 export const renderFingerprintSchema = z.record(z.string(), z.string());
 export type RenderFingerprint = z.infer<typeof renderFingerprintSchema>;
+
+/**
+ * The `site_defaults` columns that reach a page or a build file, by the
+ * classification in docs/dev/redirects-and-settings-sync.md. Everything
+ * else on the row is authoring state (site name, purpose, design brief,
+ * default layout), which renders nothing and must not force a Stage. The
+ * usage threshold only counts while the CDN copy is on. A pending home or
+ * 404 page is not here: it changes nothing on main until its page merges,
+ * and that merge moves it to the pointer.
+ */
+const RENDERED_SITE_SETTINGS = {
+  site_base_url: { label: "site base URL", value: sql`sd.site_base_url` },
+  sitemap_enabled: { label: "sitemap", value: sql`sd.sitemap_enabled::text` },
+  organization_json: { label: "Organization JSON-LD", value: sql`sd.organization_json::text` },
+  site_language: { label: "site language", value: sql`sd.site_language` },
+  media_cdn_copy_enabled: {
+    label: "media CDN copy",
+    value: sql`sd.media_cdn_copy_enabled::text`,
+  },
+  media_cdn_usage_threshold: {
+    label: "media CDN threshold",
+    value: sql`CASE WHEN sd.media_cdn_copy_enabled THEN sd.media_cdn_usage_threshold::text END`,
+  },
+  home_page_id: { label: "home page", value: sql`sd.home_page_id::text` },
+  not_found_page_id: { label: "404 page", value: sql`sd.not_found_page_id::text` },
+} as const;
+
+type RenderedSiteSetting = keyof typeof RENDERED_SITE_SETTINGS;
+
+function isRenderedSiteSetting(id: string): id is RenderedSiteSetting {
+  return Object.hasOwn(RENDERED_SITE_SETTINGS, id);
+}
+
+/** One `setting:<column>` row per rendered setting. */
+function renderedSettingRows() {
+  return sql.join(
+    Object.entries(RENDERED_SITE_SETTINGS).map(
+      ([column, setting]) =>
+        sql`SELECT ${`setting:${column}`} AS k, md5(COALESCE(${setting.value}, '')) AS h FROM site_defaults sd WHERE sd.id = 1`,
+    ),
+    sql` UNION ALL `,
+  );
+}
 
 /** The render fingerprint of main right now (one query). */
 export async function computeRenderFingerprint(tx: Tx): Promise<RenderFingerprint> {
@@ -60,6 +104,8 @@ export async function computeRenderFingerprint(tx: Tx): Promise<RenderFingerprin
     SELECT 'page:' || p.id, md5(p.template_id::text)
     FROM pages p
     WHERE p.status = 'published' AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
+    UNION ALL
+    ${renderedSettingRows()}
   `)) as unknown as { k: string; h: string }[];
   const out: RenderFingerprint = {};
   for (const r of rows) out[r.k] = r.h;
@@ -91,7 +137,8 @@ function diffFingerprints(before: RenderFingerprint, now: RenderFingerprint): Fi
 }
 
 async function labels(tx: Tx, diffs: readonly FingerprintDiff[]): Promise<Map<string, string>> {
-  const ids = [...new Set(diffs.map((d) => d.id))];
+  // A setting's id is its column name, labelled by RENDERED_SITE_SETTINGS.
+  const ids = [...new Set(diffs.filter((d) => d.kind !== "setting").map((d) => d.id))];
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, display_name AS label FROM modules WHERE id = ANY(${uuidArray(ids)})
     UNION ALL SELECT id::text, display_name FROM templates WHERE id = ANY(${uuidArray(ids)})
@@ -133,6 +180,15 @@ function toStageChanges(
           out.push({ entity: "pluginConfig", entityId: d.id, label: `plugin ${label}` });
         }
         break;
+      case "setting":
+        if (isRenderedSiteSetting(d.id)) {
+          out.push({
+            entity: "siteSetting",
+            entityId: d.id,
+            label: RENDERED_SITE_SETTINGS[d.id].label,
+          });
+        }
+        break;
       case "page":
         out.push({
           entity: "page",
@@ -150,6 +206,10 @@ function toStageChanges(
   }
   return out;
 }
+
+/** Why a Stage from before the settings fingerprint refuses once. */
+const SETTINGS_NOT_RECORDED =
+  "the last Stage was made before this Caelo version recorded site settings, so it cannot show they were checked. Nothing is wrong with the site, and Publish live is not affected: one new Stage records them";
 
 export interface UncheckedRendering {
   /** True when main differs from the checked Stage in a way the Stage
@@ -179,13 +239,21 @@ export async function uncheckedRenderingSince(
       pageIds: [],
     };
   }
-  const diffs = diffFingerprints(staged, await computeRenderFingerprint(tx));
-  if (diffs.length === 0) return { auditNeeded: false, reasons: [], pageIds: [] };
+  const allDiffs = diffFingerprints(staged, await computeRenderFingerprint(tx));
+  // A Stage made before settings were recorded has none of their keys. They
+  // would all read as "added" although nobody changed them, so say what is
+  // really true: that Stage cannot vouch for them, and one Stage fixes it.
+  const predatesSettings = !Object.keys(staged).some((k) => k.startsWith("setting:"));
+  const diffs = predatesSettings ? allDiffs.filter((d) => d.kind !== "setting") : allDiffs;
+  if (diffs.length === 0 && !predatesSettings) {
+    return { auditNeeded: false, reasons: [], pageIds: [] };
+  }
   const changes = toStageChanges(diffs, await labels(tx, diffs));
   const classification = classifyStageChanges(changes);
+  const reasons = classification.reasons.map((r) => `${r.rule.replace("_", " ")}: ${r.label}`);
   return {
-    auditNeeded: classification.auditNeeded,
-    reasons: classification.reasons.map((r) => `${r.rule.replace("_", " ")}: ${r.label}`),
+    auditNeeded: predatesSettings || classification.auditNeeded,
+    reasons: predatesSettings ? [SETTINGS_NOT_RECORDED, ...reasons] : reasons,
     pageIds: await touchedPageIds(tx, changes),
   };
 }

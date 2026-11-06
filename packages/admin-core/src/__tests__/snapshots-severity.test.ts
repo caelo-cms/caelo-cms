@@ -79,4 +79,32 @@ describe("defaultTemplateBlockIsHeader", () => {
     expect(defaultTemplateBlockIsHeader("t", "footer")).toBe(false);
     expect(defaultTemplateBlockIsHeader("t", "sidebar")).toBe(false);
   });
+
+  it("#1424 — a layout holding the module is high whatever its page rows say", () => {
+    const r = classifySeverity({
+      affectedPages: [],
+      layouts: ["site-default"],
+      templateBlockIsHeader: () => false,
+    });
+    expect(r.severity).toBe("high");
+    expect(r.reasons.join()).toContain("site-default");
+  });
+
+  it("#1424 — a nesting parent is medium, a capped list says so", () => {
+    expect(
+      classifySeverity({
+        affectedPages: [],
+        nestedIn: ["pricing-grid"],
+        templateBlockIsHeader: () => false,
+      }).severity,
+    ).toBe("medium");
+    const page = { pageId: "p", templateId: "t", blockName: "content" };
+    expect(
+      classifySeverity({
+        affectedPages: [page, page],
+        capped: true,
+        templateBlockIsHeader: () => false,
+      }).reasons,
+    ).toContain("affects 2+ pages");
+  });
 });

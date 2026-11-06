@@ -1212,7 +1212,8 @@ async function resolveImportPageRef(
             -- An undesignated "home" page serves at the root, not /home.
             OR (ip.proposed_slug = 'home' AND p.current_path = '/')
             OR (ip.proposed_slug = 'home'
-                AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
+                AND EXISTS (SELECT 1 FROM site_defaults sd
+                             WHERE p.id IN (sd.home_page_id, sd.pending_home_page_id)))
           )
         LIMIT 1
       `)) as unknown as Array<{ id: string }>;
@@ -1229,7 +1230,8 @@ async function resolveImportPageRef(
       ON p.current_path = '/' || ip.proposed_slug
       OR (ip.proposed_slug = 'home' AND p.current_path = '/')
       OR (ip.proposed_slug = 'home'
-          AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
+          AND EXISTS (SELECT 1 FROM site_defaults sd
+                       WHERE p.id IN (sd.home_page_id, sd.pending_home_page_id)))
     WHERE p.id = ${inputId}::uuid AND p.deleted_at IS NULL
     ORDER BY ip.created_at DESC
     LIMIT 1

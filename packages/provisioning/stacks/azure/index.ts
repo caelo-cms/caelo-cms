@@ -46,7 +46,6 @@ import {
   type AzureDatabaseSecret,
   type AzureSecretReader,
 } from "../../dist/azure-secrets.js";
-import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import {
   DEFAULT_MAX_CONNECTIONS,
   DEFAULT_STAGING_GATEWAY_MAX_INSTANCES,
@@ -681,10 +680,7 @@ const _runnerApp = containerApp({
   databaseEnv: adminDatabaseEnv,
   secrets: adminSecretReader,
 });
-// === 7. Bootstrap token ===
-const tokenInfo = generateBootstrapToken();
-
-// === 8. CloudAdapterOutputs ===
+// === 7. CloudAdapterOutputs ===
 const dnsRecordsRequired = pulumi
   .all([frontDoorEndpoint.hostName, siteDomain.validationProperties])
   .apply(([endpointHostName, validation]) =>
@@ -703,8 +699,9 @@ const out: CloudAdapterOutputs = {
   mediaStorageUrl:
     pulumi.interpolate`https://${storage.name}.blob.core.windows.net/media` as unknown as string,
   mediaCdnBaseUrl: pulumi.interpolate`https://${domain}/media` as unknown as string,
-  bootstrapUrl:
-    pulumi.interpolate`https://${domain}/setup?token=${tokenInfo.token}` as unknown as string,
+  // No token: nothing would bring it to the admin, and /setup refuses until
+  // something does (#1483, #1476).
+  bootstrapUrl: `https://${domain}/setup`,
   dnsRecordsRequired: dnsRecordsRequired as unknown as DnsRecord[],
   edgeLogSinkUrl: pulumi.interpolate`loganalytics://${logWorkspace.name}` as unknown as string,
   provider: "azure",
@@ -725,4 +722,3 @@ export const pgServerFqdnOut = pgServer.fullyQualifiedDomainName;
 export const storageAccountNameOut = storage.name;
 export const adminContainerAppFqdnOut = adminApp.configuration.apply((c) => c?.ingress?.fqdn);
 export const frontDoorEndpointHostNameOut = frontDoorEndpoint.hostName;
-export const bootstrapTokenExpiresAtOut = tokenInfo.expiresAt;

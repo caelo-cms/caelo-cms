@@ -17,6 +17,7 @@ import { defineOperation, type TransactionRunner, textArray } from "@caelo-cms/q
 import { type ExecutionContext, ok, redirectFromPathSpellings } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { loadSiteDesignations } from "./compose-paths.js";
 import { listPagesOp } from "./pages.js";
 
 /** How many paths or pages one call takes. */
@@ -57,10 +58,9 @@ export async function pagesByRedirectSpelling(
     tx,
   );
   if (!listed.ok) return listed;
-  const defaults = (await tx.execute(sql`
-    SELECT not_found_page_id::text AS id FROM site_defaults WHERE id = 1
-  `)) as unknown as { id: string | null }[];
-  const pages = listed.value.pages.filter((p) => p.id !== defaults[0]?.id);
+  // The 404 page is served at /404.html, so its own path is free for a rule.
+  const { notFoundPageId } = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
+  const pages = listed.value.pages.filter((p) => p.id !== notFoundPageId);
   return ok(
     new Map(
       pages.flatMap((p) => redirectFromPathSpellings(p.currentPath).map((s) => [s, p] as const)),

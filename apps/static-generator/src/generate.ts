@@ -1347,6 +1347,9 @@ async function buildSite(
     runId,
     builtAt: new Date().toISOString(),
     pageCount: pageRows.length,
+    // #1495 — with each page's `url`: what a plugin-data build links, so a
+    // later tick never takes an origin or a path from cms_admin.
+    siteBaseUrl: seoSettings.siteBaseUrl,
     // #1155 — `pageId` lets a plugin-data build find a page's file in the
     // build that is live, without reading the (possibly unpublished)
     // current page paths from cms_admin.
@@ -1356,6 +1359,7 @@ async function buildSite(
         pageId: p.page_id,
         slug: p.slug,
         path: p.current_path,
+        url: seo.publicUrl(p.page_id),
         outputPath: outputPathOf(p),
         // #1257 — the files of pages 2… of a paginated overview.
         ...(followUps ? { followUpOutputPaths: followUps } : {}),

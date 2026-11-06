@@ -34,6 +34,14 @@
 
 import type { PluginAuditFinding, PluginAuditPageFacts } from "@caelo-cms/plugin-sdk";
 import type { LocaleRow, PageVariantRow } from "./index.js";
+import {
+  hasLanguageText,
+  type NeutralTermRow,
+  neutralMatcher,
+  normalizeTerm,
+  termsFor,
+  withoutAddresses,
+} from "./neutral-terms.js";
 import type { GlossaryRow } from "./page-translation.js";
 
 /** A page of the staged build. */
@@ -62,6 +70,8 @@ export interface AuditState {
    */
   readonly notFoundPageId: string | null;
   readonly glossary: readonly GlossaryRow[];
+  /** #1449 — terms that read the same in a language, or in every language. */
+  readonly neutralTerms: readonly NeutralTermRow[];
   /** Modules placed in a layout: their text is the site's chrome. */
   readonly chromeModuleIds: ReadonlySet<string>;
   readonly staleChrome: readonly StaleChrome[];
@@ -95,6 +105,8 @@ export class BuildModel {
   readonly membersOf = new Map<string, PageVariantRow[]>();
   /** {@link languageNames} per locale code, computed once per model. */
   readonly languageNameCache = new Map<string, ReadonlySet<string>>();
+  /** {@link neutralIn} per locale code, computed once per model. */
+  readonly neutralCache = new Map<string, RegExp | null>();
 
   constructor(readonly state: AuditState) {
     const def = [...state.locales.values()].find((l) => l.is_default);
@@ -726,11 +738,28 @@ function languageLinks(model: BuildModel, f: PluginAuditPageFacts): PluginAuditF
   return out;
 }
 
-/** Text a visitor reads that can be compared across languages. */
-function comparable(text: string): boolean {
-  if (!/\p{L}.*\p{L}.*\p{L}/u.test(text)) return false;
-  if (/^(https?:|mailto:|tel:|\/)/i.test(text) || /^\S+@\S+$/.test(text)) return false;
-  return true;
+/**
+ * The matcher of what reads the same in `locale`: its neutral terms, and
+ * its glossary entries that translate a term as itself.
+ */
+function neutralIn(model: BuildModel, locale: string): RegExp | null {
+  const cached = model.neutralCache.get(locale);
+  if (cached !== undefined) return cached;
+  const matcher = neutralMatcher([
+    ...termsFor(model.state.neutralTerms, locale),
+    ...model.state.glossary
+      .filter(
+        (g) => g.locale_code === locale && normalizeTerm(g.term) === normalizeTerm(g.translation),
+      )
+      .map((g) => g.term),
+  ]);
+  model.neutralCache.set(locale, matcher);
+  return matcher;
+}
+
+/** A page's texts that are language: its literal runs are not (#1449). */
+function languageTexts(f: PluginAuditPageFacts): PluginAuditPageFacts["texts"] {
+  return f.texts.filter((t) => t.source !== "literal");
 }
 
 function contentLanguage(
@@ -742,17 +771,14 @@ function contentLanguage(
   const locale = model.localeOf(f.pageId);
   const sourceLocale = model.localeOf(source.pageId);
   if (primary(locale) === primary(sourceLocale)) return out;
-  const kept = new Set(
-    model.state.glossary
-      .filter((g) => g.locale_code === locale && g.term.trim() === g.translation.trim())
-      .map((g) => g.term.trim().toLowerCase()),
-  );
-  const sourceTexts = new Set(source.texts.filter((t) => t.source !== "alt").map((t) => t.text));
-  const sourceAlts = new Set(source.texts.filter((t) => t.source === "alt").map((t) => t.text));
-  const same = (t: PluginAuditPageFacts["texts"][number]) =>
-    comparable(t.text) && !kept.has(t.text.toLowerCase());
+  const neutral = neutralIn(model, locale);
+  const texts = languageTexts(f);
+  const fromSource = languageTexts(source);
+  const sourceTexts = new Set(fromSource.filter((t) => t.source !== "alt").map((t) => t.text));
+  const sourceAlts = new Set(fromSource.filter((t) => t.source === "alt").map((t) => t.text));
+  const same = (t: PluginAuditPageFacts["texts"][number]) => hasLanguageText(t.text, neutral);
 
-  const body = f.texts.filter(
+  const body = texts.filter(
     (t) => t.source !== "alt" && !(t.moduleId && model.state.chromeModuleIds.has(t.moduleId)),
   );
   const identical = body.filter((t) => same(t) && sourceTexts.has(t.text));
@@ -787,12 +813,12 @@ function contentLanguage(
       message: `Untranslated text: the ${model.displayName(locale)} version still shows ${model.displayName(sourceLocale)} text: ${examples(identical)}${ms.length > 0 ? ` (module ${ms.slice(0, MAX_EXAMPLES).join(", ")})` : ""}.`,
       fix: {
         tool: "translate_variant",
-        hint: "Run translate_variant on this version; if the text is a brand or product name that stays the same in every language, add it to the glossary with itself as translation (set_glossary_term).",
+        hint: "Run translate_variant on this version. A technical term, brand or product name that is correct unchanged goes on the language-neutral list (set_neutral_terms); text that is code or an address belongs in a <code> element.",
       },
     });
   }
 
-  const chrome = f.texts.filter(
+  const chrome = texts.filter(
     (t) =>
       t.source !== "alt" &&
       t.moduleId !== null &&
@@ -812,7 +838,7 @@ function contentLanguage(
     });
   }
 
-  const alts = f.texts.filter((t) => t.source === "alt" && same(t) && sourceAlts.has(t.text));
+  const alts = texts.filter((t) => t.source === "alt" && same(t) && sourceAlts.has(t.text));
   if (alts.length > 0) {
     out.push({
       rule: "alt-untranslated",
@@ -826,11 +852,16 @@ function contentLanguage(
     });
   }
 
-  const sameTitle = f.title !== null && f.title !== "" && f.title === source.title;
+  const sameTitle =
+    f.title !== null &&
+    f.title !== "" &&
+    f.title === source.title &&
+    hasLanguageText(f.title, neutral);
   const sameDescription =
     f.metaDescription !== null &&
     f.metaDescription !== "" &&
-    f.metaDescription === source.metaDescription;
+    f.metaDescription === source.metaDescription &&
+    hasLanguageText(f.metaDescription, neutral);
   if (sameTitle || sameDescription) {
     out.push({
       rule: "seo-untranslated",
@@ -856,7 +887,9 @@ function contentLanguage(
 function glossary(model: BuildModel, f: PluginAuditPageFacts): PluginAuditFinding[] {
   const locale = model.localeOf(f.pageId);
   if (locale === model.defaultLocale.code) return [];
-  const text = f.texts.map((t) => t.text).join(" \n ");
+  const text = languageTexts(f)
+    .map((t) => t.text)
+    .join(" \n ");
   const hits = model.state.glossary.filter((g) => {
     if (g.locale_code !== locale) return false;
     const term = g.term.trim();
@@ -910,7 +943,7 @@ function numberFormat(model: BuildModel, f: PluginAuditPageFacts): PluginAuditFi
   if (sep === null) return [];
   const wrong = sep === "." ? COMMA_DECIMAL : sep === "," ? POINT_DECIMAL : null;
   if (!wrong) return [];
-  const hit = f.texts.find((t) => wrong.test(t.text));
+  const hit = languageTexts(f).find((t) => wrong.test(withoutAddresses(t.text)));
   if (!hit) return [];
   return [
     {
