@@ -14,6 +14,7 @@ import {
   ensureUpgraderJob,
   UPGRADER_FORBIDDEN_ROLES,
   UPGRADER_OPS_LIST_ROLE,
+  UPGRADER_RUN_ROLE,
   UPGRADER_SQL_BACKUP_ROLE,
   type UpgraderSetupTarget,
 } from "./upgrader-setup.js";
@@ -124,6 +125,22 @@ describe("ensureUpgraderJob", () => {
       /\.(setIamPolicy|restoreBackup|update|delete|create)$/.test(p),
     );
     expect(writes).toEqual(["cloudsql.backupRuns.create"]);
+  });
+
+  it("#1029: the upgrader's job can move and start itself, and only ever as itself", async () => {
+    // What the hand-over uses, no more: no overrides anywhere, and actAs on
+    // no account of a privileged job, so the upgrader cannot put its job,
+    // or any other, under another identity.
+    expect(UPGRADER_RUN_ROLE.permissions).toContain("run.jobs.update");
+    expect(UPGRADER_RUN_ROLE.permissions).toContain("run.jobs.run");
+    expect(UPGRADER_RUN_ROLE.permissions).not.toContain("run.jobs.runWithOverrides");
+    expect(UPGRADER_RUN_ROLE.permissions.some((p) => p.endsWith(".setIamPolicy"))).toBe(false);
+    const { run, calls } = fakeGcloud();
+    expect((await ensureUpgraderJob(TARGET, { run, sleep: async () => {} })).ok).toBe(true);
+    const actAs = grants(calls).filter((g) => g.role === "roles/iam.serviceAccountUser");
+    expect(actAs.length).toBeGreaterThan(0);
+    expect(actAs.some((g) => g.where.includes("caelo-production-upgrader@"))).toBe(true);
+    for (const g of actAs) expect(g.where).not.toContain("caelo-provisioner");
   });
 
   it("the admin may start the job without overrides and read it — nothing else", async () => {

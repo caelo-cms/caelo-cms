@@ -71,7 +71,12 @@ export interface CloudAdapterOutputs {
   readonly mediaStorageUrl: string;
   /** Public-facing URL the admin reaches for media reads. */
   readonly mediaCdnBaseUrl: string;
-  /** Bootstrap-token URL — operator opens this once after `pulumi up`. */
+  /**
+   * The admin's `/setup` address, without a token: the Pulumi program runs on
+   * every `up`, so a token minted there would change each time and sit in the
+   * state. Self-hosted's stack still adds one; on Google Cloud the installer
+   * does (owner-setup-token.ts).
+   */
   readonly bootstrapUrl: string;
   /** DNS records consumed by the admin's DNS-guidance page. */
   readonly dnsRecordsRequired: ReadonlyArray<DnsRecord>;

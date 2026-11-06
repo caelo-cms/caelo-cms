@@ -42,7 +42,6 @@ import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
-import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import {
   firebaseStagingSiteId,
   gatewayServiceAccountId,
@@ -1312,8 +1311,6 @@ const dnsRecords: pulumi.Output<DnsRecord[]> = pulumi
     return out;
   });
 
-const tokenInfo = generateBootstrapToken();
-
 // Cast pulumi.Output<string> values to plain `string` to satisfy the
 // shared CloudAdapterOutputs shape. Pulumi serialises Outputs to
 // plain strings in stack outputs at runtime; the cast bridges the
@@ -1327,8 +1324,10 @@ const out: CloudAdapterOutputs = {
   // Firebase Hosting serves media via its own CDN; we proxy through
   // the Firebase site's apex domain for canonical URLs.
   mediaCdnBaseUrl: `https://${domain}/media` as unknown as string,
-  bootstrapUrl:
-    pulumi.interpolate`https://${adminDomain}/setup?token=${tokenInfo.token}` as unknown as string,
+  // No token: the installer mints it at the end of the install and adds it to
+  // the link (src/owner-setup-token.ts, #1476). Minted here, it would change
+  // on every `pulumi up` and sit in the stack's state.
+  bootstrapUrl: `https://${adminDomain}/setup`,
   dnsRecordsRequired: dnsRecords as unknown as DnsRecord[],
   // #1339 — no BigQuery export here (that dataset was never created):
   // the services' request logs stay in Cloud Logging, the cross-cutting
@@ -1353,4 +1352,3 @@ export const gatewayCloudRunUrlOut = gatewaySvc?.uri;
 export const mcpAuthProxyCloudRunUrlOut = mcpAuthProxySvc.uri;
 export const adminDomainOut = adminDomain;
 export const firebaseSiteIdOut = firebaseSiteId;
-export const bootstrapTokenExpiresAtOut = tokenInfo.expiresAt;

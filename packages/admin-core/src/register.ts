@@ -67,6 +67,7 @@ import {
   appendChatMessageOp,
   cacheToolResultOp,
   claimToolCallRetryOp,
+  countToolRefusalsOp,
   finishToolCallRetryOp,
   lookupToolResultOp,
   markChatMessageInterruptedOp,
@@ -445,6 +446,7 @@ import {
   commentArchivePostTeamOp,
   commentArchiveStatsManyOp,
 } from "./ops/plugins/comment_archive.js";
+import { getDraftRowsOp } from "./ops/plugins/draft-rows.js";
 import {
   approvePluginInstallationOp,
   finalizePluginInstallationOp,
@@ -979,6 +981,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mcpGetChatApprovalStateOp);
   registry.register(setResponseMessagesOp);
   registry.register(cacheToolResultOp);
+  registry.register(countToolRefusalsOp);
   registry.register(lookupToolResultOp);
   registry.register(claimToolCallRetryOp);
   registry.register(finishToolCallRetryOp);
@@ -989,6 +992,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #262 — pre-run foreign-lock visibility for the chat runner.
   registry.register(listForeignLocksOp);
   registry.register(observeDraftReadsOp);
+  registry.register(getDraftRowsOp);
   // issue #620 — Open changes overview + lock-takeover notices.
   registry.register(listOpenChangesOp);
   registry.register(drainTakeoverNoticesOp);

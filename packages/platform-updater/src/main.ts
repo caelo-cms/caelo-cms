@@ -10,8 +10,9 @@
  * an override must not be able to point the job at another registry,
  * signer or install). Where it runs comes from the metadata server; what it
  * installs from the signed release manifest. The one env var read,
- * CLOUD_RUN_EXECUTION, names the execution for the timeline and for the
- * state lock's lease (#815).
+ * CLOUD_RUN_EXECUTION, names the execution for the timeline, the state
+ * lock's lease (#815) and the hand-over between the job's stages (#1029); it
+ * must name a run of the upgrader job or the job stops.
  *
  * The database connection uses Cloud SQL IAM authentication as the job's
  * service account, a member of the `platform_updater` role (migration 0267).
@@ -25,6 +26,7 @@ import {
   type JobLog,
   runUpgraderJob,
   upgraderDatabaseHost,
+  upgraderExecutionNameError,
 } from "@caelo-cms/provisioning";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { cloudSqlIamDatabaseUrls } from "@caelo-cms/shared";
@@ -68,6 +70,8 @@ export async function jobPlacement(): Promise<{
 
 async function main(): Promise<void> {
   const { projectId, region, email, execution } = await jobPlacement();
+  const badExecution = upgraderExecutionNameError(execution);
+  if (badExecution) throw new Error(`refused to run: ${badExecution}`);
   const host = await upgraderDatabaseHost({ projectId, region });
   const db = tokenRefreshingQueue({
     fetchToken: accessToken,

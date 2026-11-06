@@ -150,6 +150,12 @@ export const CLI_COMMANDS: readonly CliCommandDoc[] = [
       "Print a one-time password-reset link for a locked-out Owner on installs whose admin cannot send email.",
   },
   {
+    name: "setup-link",
+    args: "--project <gcp-project-id>",
+    summary:
+      "Print a working Owner setup link for an install that has no Owner yet, from any terminal signed in to gcloud. A link lasts 24 hours; this replaces an expired one.",
+  },
+  {
     name: "state migrate",
     args: "[--install <id|domain>] [--to remote|local] [--dry-run] [--yes]",
     summary: "Move the install's Pulumi state into (or out of) the install's own cloud project.",

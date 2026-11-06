@@ -90,7 +90,12 @@ export async function executePageMoves(
     for (const c of changes) {
       const base = await loadPageStateWithBranchOverlay(tx, c.pageId, ctx.chatBranchId);
       if (!base) {
-        return err({ kind: "HandlerError", operation: OP, message: `page ${c.pageId} not found` });
+        return err({
+          kind: "HandlerError",
+          operation: OP,
+          message: `page ${c.pageId} not found`,
+          refusal: true,
+        });
       }
       const { pendingRedirects: _prev, ...rest } = base;
       entities.push({

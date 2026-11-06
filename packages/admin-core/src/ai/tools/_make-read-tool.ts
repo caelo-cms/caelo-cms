@@ -83,7 +83,7 @@ export function makeReadTool<I>(args: MakeReadToolArgs<I>): ToolDefinitionWithHa
 // ─── List mode: TOON output + filter / pagination / truncation ─────────
 
 /** Default page size when the model doesn't pass `limit`. */
-const LIST_DEFAULT_LIMIT = 50;
+export const LIST_DEFAULT_LIMIT = 50;
 /** Content char cap; `full: true` disables it. */
 const LIST_CHAR_CAP = 6000;
 
@@ -164,6 +164,19 @@ export function renderToonList<R>(
 export interface ServerPage {
   readonly offset: number;
   readonly more: boolean;
+}
+
+/**
+ * How many of `rows`, from the first, fit the list char cap as TOON lines —
+ * for a tool that pages by an opaque cursor and so must ask its op for
+ * exactly that many rows to continue right after the last one shown.
+ */
+export function rowsWithinCharCap<R>(
+  rows: readonly R[],
+  columns: readonly ToonColumn<R>[],
+): number {
+  const lines = rows.map((r) => columns.map((c) => toonCell(c.value(r))).join(","));
+  return capChars(lines, false).length;
 }
 
 /** Whole rows up to the char cap (all of them when `full`). */

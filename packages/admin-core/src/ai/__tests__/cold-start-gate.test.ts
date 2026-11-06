@@ -22,7 +22,7 @@ import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../register.js";
-import { shouldAutoCaptureToolFailure } from "../chat-runner/tool-dispatch.js";
+import { shouldAutoCaptureToolFailure } from "../chat-runner/tool-failure-capture.js";
 import { TYPOGRAPHY_COMPOSITION_HINTS } from "../theme-guidance.js";
 import { checkColdStartGate } from "../tools/_cold-start-gate.js";
 import type { ToolContext } from "../tools/dispatch.js";

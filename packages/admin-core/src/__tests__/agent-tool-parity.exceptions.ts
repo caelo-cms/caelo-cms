@@ -289,6 +289,10 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "chat-runner persists the SDK response.messages (CLAUDE.md §12)",
   },
+  "chat.count_tool_refusals": {
+    kind: "internal",
+    reason: "chat-runner's automatic bug capture: a refusal that keeps repeating (#1484)",
+  },
   "chat.cache_tool_result": {
     kind: "internal",
     reason: "tool-call idempotency cache (chat-runner + mcp.execute_tool)",
@@ -451,12 +455,6 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   },
 
   // ── gaps: the agent should be able to do this (follow-ups) ────────────
-  "pages.search": {
-    kind: "gap",
-    reason:
-      "the word-prefix page search (#1269) ships first for the editor; list_pages still lists every page and filters in the tool",
-    followUp: "#1269 — list_pages takes a search query and reads through pages.search",
-  },
   "media.set_focal_point": {
     kind: "gap",
     reason:

@@ -175,7 +175,9 @@ function isUuid(id: string): boolean {
  * and a placeholder can be legitimate copy (documentation showing the
  * template syntax), so they are reported by the editor's missing-content
  * surface and do not stop a deploy. `plugin-list-unavailable` is refused
- * separately, with plugin-specific guidance (assertNoPluginMarkers).
+ * separately, with plugin-specific guidance (assertNoPluginMarkers). A
+ * dotted path into a field that exists (`field-path-unknown:`,
+ * `field-value-empty:`, #1433) is no copy and stays a failure.
  */
 const LOUD_RAW_MARKERS = [
   "field-not-declared:",
@@ -259,6 +261,9 @@ export function assertNoRenderFailures(lines: readonly RenderFailure[]): void {
       "Next step: open the page in the editor (the preview flags the same spots), then repair the field — " +
       "AI: get_content_instance on the module's content, then set_content_instance_values_many with a valid " +
       "{ moduleId, contentInstanceId } reference or without the broken item — and Stage again. " +
+      "A `field-path-unknown:<path>` is a placeholder its field cannot answer: a `link` field has {{f}}, {{f.href}}, {{f.target}} and {{f.title}}, " +
+      "so fix the module HTML with update_modules_many (a link's label is a text field of its own). " +
+      "A `field-value-empty:<path>` is a link field with no value: set it, or wrap the markup in {{#f}}…{{/f}}. " +
       "A `link-target-missing:page/<id>` (or `media/<id>`) is a link to a page (image) that was deleted: " +
       "set the link to an existing page's path from list_pages (or an existing image from find_media) or remove it; " +
       "a `link-ref-malformed:<text>` is a link written in a form no page or file matches — fix it the same way. " +

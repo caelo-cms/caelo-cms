@@ -11,7 +11,9 @@
  * - module html/css/js created or changed;
  * - layout, template or theme changes;
  * - new pages (created, or published for the first time);
- * - plugin configuration that renders on pages.
+ * - plugin configuration that renders on pages;
+ * - site settings that render into pages. These are not on a branch, so
+ *   only a direct production build compares them (render-fingerprint.ts).
  *
  * Skip when it only changes what pages say or where things sit:
  * - field values (headlines, text, links) — content instances;
@@ -48,7 +50,8 @@ export type StageChange =
   | { readonly entity: "placement"; readonly entityId: string; readonly label: string }
   | { readonly entity: "content"; readonly entityId: string; readonly label: string }
   | { readonly entity: "list"; readonly entityId: string; readonly label: string }
-  | { readonly entity: "pluginConfig"; readonly entityId: string; readonly label: string };
+  | { readonly entity: "pluginConfig"; readonly entityId: string; readonly label: string }
+  | { readonly entity: "siteSetting"; readonly entityId: string; readonly label: string };
 
 /** Why a Stage is (or is not) audited — one entry per deciding change. */
 export interface ClassificationReason {
@@ -59,6 +62,7 @@ export interface ClassificationReason {
     | "theme"
     | "new_page"
     | "plugin_config"
+    | "site_setting"
     | "first_stage"
     | "plugin_activation"
     | "no_chat_context"
@@ -92,6 +96,8 @@ function ruleFor(change: StageChange): ClassificationReason["rule"] | null {
       return change.change === "created" || change.change === "published" ? "new_page" : null;
     case "pluginConfig":
       return "plugin_config";
+    case "siteSetting":
+      return "site_setting";
     case "placement":
     case "content":
     case "list":

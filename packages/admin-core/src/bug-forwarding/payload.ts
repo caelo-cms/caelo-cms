@@ -10,6 +10,7 @@
 import {
   BUG_INTAKE_PROTOCOL_VERSION,
   type BugIntakeReport,
+  type BugReportCiRun,
   bugIntakeReport,
   computeBugFingerprint,
   redactBugReportFields,
@@ -43,6 +44,28 @@ export interface ForwardableBugReport {
 export const UNKNOWN_FILING_VERSION = "unknown";
 
 /**
+ * #1416 — the CI run this process serves, when it forwards reports for one
+ * (the real-AI workflow sets `CAELO_E2E_FORWARD_BUGS=1`); undefined on an
+ * install. A run that forwards without saying which run it is would pass for
+ * a user install, so missing GitHub variables fail loudly.
+ */
+export function ciRunOfProcess(env: NodeJS.ProcessEnv = process.env): BugReportCiRun | undefined {
+  if (env.CAELO_E2E_FORWARD_BUGS !== "1") return undefined;
+  const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA } = env;
+  const branch = env.GITHUB_HEAD_REF || env.GITHUB_REF_NAME;
+  if (!GITHUB_SERVER_URL || !GITHUB_REPOSITORY || !GITHUB_RUN_ID || !GITHUB_SHA || !branch) {
+    throw new Error(
+      "CAELO_E2E_FORWARD_BUGS=1 outside a GitHub Actions run: it needs GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SHA and a branch. Unset it for a local run.",
+    );
+  }
+  return {
+    runUrl: `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`,
+    branch,
+    commit: GITHUB_SHA,
+  };
+}
+
+/**
  * Build the redacted, schema-checked intake payload for one report. Rows
  * filed before migration 0330 have no stored fingerprint; it is computed
  * here from the same fields, so they forward like any other row. The
@@ -65,6 +88,7 @@ export async function buildIntakeReport(row: ForwardableBugReport): Promise<BugI
     expected: row.expected,
     evidence: row.evidence,
   });
+  const ciRun = ciRunOfProcess();
   return bugIntakeReport.parse({
     protocolVersion: BUG_INTAKE_PROTOCOL_VERSION,
     reportId: row.id,
@@ -78,5 +102,6 @@ export async function buildIntakeReport(row: ForwardableBugReport): Promise<BugI
     blockedTask: row.blockedTask,
     suspectedTool: row.suspectedTool,
     ...redacted,
+    ...(ciRun ? { ciRun } : {}),
   });
 }

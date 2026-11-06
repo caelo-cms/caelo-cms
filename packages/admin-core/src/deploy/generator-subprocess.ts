@@ -129,6 +129,8 @@ export type GeneratorDone = z.infer<typeof subprocessDoneSchema>;
 interface SubprocessError {
   kind: "error";
   message: string;
+  /** #1484 — the generator refused the site's content, it did not fail. */
+  refusal?: true;
 }
 /** #1271 — one served file the generator streams to the upload. */
 interface SubprocessFile {
@@ -242,7 +244,16 @@ function pluginCallChannel(adapter: DatabaseAdapter, ctx: ExecutionContext): Plu
 /** The outcome of {@link runGenerator}. */
 export type GeneratorOutcome =
   | { readonly ok: true; readonly result: GeneratorDone }
-  | { readonly ok: false; readonly message: string; readonly stderr: string };
+  | {
+      readonly ok: false;
+      readonly message: string;
+      readonly stderr: string;
+      /**
+       * #1484 — the build refused the site's content (`BuildRefusal`):
+       * `message` names what to fix. Absent on every other failure.
+       */
+      readonly refusal?: true;
+    };
 
 /**
  * Spawn the generator CLI and stream its JSON-line stdout. Progress lands
@@ -436,7 +447,12 @@ async function runGeneratorProcess(
       } else if (finalEvent && finalEvent.kind === "done") {
         finish({ ok: true, result: finalEvent });
       } else if (finalEvent && finalEvent.kind === "error") {
-        finish({ ok: false, message: finalEvent.message, stderr });
+        finish({
+          ok: false,
+          message: finalEvent.message,
+          stderr,
+          ...(finalEvent.refusal === true ? { refusal: true as const } : {}),
+        });
       } else {
         finish({
           ok: false,

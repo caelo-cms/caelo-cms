@@ -21,9 +21,9 @@
  *   - #819: a release that changes the cloud setup installs the same way —
  *     same button, same password, same timeline — but `install` hands it
  *     to the converge job (admin-core update-route.ts picks the job from
- *     the release manifest and the last attempt). A converge whose run died
- *     is offered "Continue" (`continueUpdate`), which starts the job again; it
- *     resumes from its checkpoint. Cloud Shell stays only for installs
+ *     the release manifest and the last attempt). An update whose run died
+ *     is offered "Continue" (`continueUpdate`), which starts its job again; it
+ *     adopts the request (#1029 for the upgrader). Cloud Shell stays only for installs
  *     without the converge job (break-glass); #817's release check predicts
  *     that route before the click.
  *
@@ -156,7 +156,7 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
   const convergeJob = converge.ok && converge.trigger !== null;
   // A run that died (out of memory, timeout) never writes its end; Cloud
   // Run knows. Say so instead of showing "Installing" until the next run
-  // ends it. Each route asks its own job. A converge whose stage-2 run
+  // ends it. Each route asks its own job. An update whose stage-2 run
   // never started names no execution at all; it counts as dead once the
   // job has no live run (lib/update-dead-run.ts), and may be continued.
   let deadRun: { logsUrl: string; continuable: boolean } | null = null;
@@ -172,6 +172,7 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
       deadRun = deadRunOf(active, run.run, {
         canInstall,
         logsUrl: "https://console.cloud.google.com/run/jobs",
+        jobsAdopt: !selfHosted,
       });
     }
   }
@@ -332,41 +333,50 @@ export const actions: Actions = {
   },
 
   /**
-   * #819 — continue a converge whose run died: the Owner's password, then
-   * the converge job is started again and resumes from its checkpoint.
+   * #819, #1029 — continue an update whose run died: the Owner's password,
+   * then the job of the request's route is started again and adopts it.
    */
   continueUpdate: async ({ request, locals, cookies }) => {
     requirePermission(locals, "platform.update");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const converge = convergeTrigger(updatesEnv(cookies));
-    if (!converge.ok) return fail(500, { error: `${converge.error} ${converge.nextStep}` });
-    if (!converge.trigger) {
+    const env = updatesEnv(cookies);
+    if (updatesProvider(env) === "self-hosted") {
       return fail(400, {
         error:
-          "This install has no converge job to continue the update with; run the upgrade from a terminal as this page shows.",
+          "The update agent on the server cannot continue an update. Run the upgrade command this page shows.",
+      });
+    }
+    const converge = convergeTrigger(env);
+    if (!converge.ok) return fail(500, { error: `${converge.error} ${converge.nextStep}` });
+    const upgrader = upgraderTrigger(env, () => readAgent(locals.ctx));
+    if (!upgrader.ok) return fail(500, { error: `${upgrader.error} ${upgrader.nextStep}` });
+    const { adapter, registry } = getQueryContext();
+    const requestId = String(form.get("requestId") ?? "");
+    const last = await execute(registry, adapter, locals.ctx, "platform_updates.get", {
+      requestId,
+    });
+    if (!last.ok) return opFailure(last.error, "Could not read the update.");
+    const route = (last.value as { request: PlatformUpdateRequest | null }).request?.route;
+    const trigger = route === "converge" ? converge.trigger : upgrader.trigger;
+    if (!trigger) {
+      return fail(400, {
+        error:
+          "This install has no job to continue the update with; run the upgrade from a terminal as this page shows.",
       });
     }
     const check = await confirmStepUp(locals, cookies, form, "platform_update", "continueUpdate");
     if (!check.ok) return check.failure;
-    const { adapter, registry } = getQueryContext();
-    const requestId = String(form.get("requestId") ?? "");
     const r = await execute(registry, adapter, locals.ctx, "platform_updates.continue", {
       requestId,
       sessionHash: check.sessionHash,
     });
     if (!r.ok) return opFailure(r.error, "Could not continue the update.");
     const version = (r.value as { targetVersion: string }).targetVersion;
-    const started = await startUpgraderFor(
-      registry,
-      adapter,
-      locals.ctx,
-      requestId,
-      converge.trigger,
-    );
+    const started = await startUpgraderFor(registry, adapter, locals.ctx, requestId, trigger);
     if (!started.ok) {
       return fail(502, {
-        error: `The converge job could not be started: ${started.error} ${started.nextStep}`,
+        error: `The ${route === "converge" ? "converge job" : "upgrader"} could not be started: ${started.error} ${started.nextStep}`,
       });
     }
     return { ok: `Continuing the update to v${version} — follow along below.` };

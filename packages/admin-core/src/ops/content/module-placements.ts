@@ -3,9 +3,13 @@
 /**
  * Where is a module still placed — as the CALLER sees the site?
  *
- * The in-use guard behind `modules.delete` for AI actors. "Placed" means
- * referenced by a live layout (site chrome) or by a page that is not
- * deleted, using the caller's chat-branch view of each page's layout:
+ * The one answer behind the in-use guard of `modules.delete` for AI actors,
+ * the usage column of `list_modules` (`modules.list_usage`) and the blast
+ * radius of `get_module_impact` (#1424): an AI that reads "unplaced" here
+ * and deletes must never lose a placement the guard would have seen.
+ * "Placed" means referenced by a live layout (site chrome) or by a page
+ * that is not deleted, using the caller's chat-branch view of each page's
+ * layout:
  *
  *   - a page this chat re-laid-out (`pages.set_modules` on a branch writes
  *     a `page_layout_snapshot`, never the live `page_modules` rows) counts
@@ -31,14 +35,18 @@
  * Batched: one query per source for the whole id list, so a 200-module
  * `modules.delete_many` on a migration branch with hundreds of branched
  * pages stays a handful of round-trips.
+ *
+ * Bounded for hot paths: `list_modules` runs on every catalog read, and a
+ * product hero sits on every product page, so `limitPerModule` stops each
+ * module's walk after that many placements ({@link usageOfModules}). Only
+ * the unbounded callers (the delete guard, content-instance reach) pay for
+ * all of a module's placements.
  */
 
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { headOverlaySql, pendingRefCandidatesSql } from "../../draft.js";
 import { loadBranchedModuleStates } from "../../snapshots/load.js";
-import type { PageLayoutState } from "../../snapshots/state.js";
 import { findContentInstancesContaining, idNeedles } from "./content-instance-refs.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 
@@ -58,13 +66,120 @@ export interface ModulePagePlacement {
   readonly title: string;
 }
 
+/** One placement of a module, as the caller's branch sees it. */
+export interface ModulePlacementRow {
+  readonly moduleId: string;
+  readonly pageId: string;
+  readonly path: string;
+  readonly title: string;
+  readonly slug: string;
+  readonly templateId: string;
+  readonly blockName: string;
+}
+
 /**
- * The pages that place each of `moduleIds` as `branchId` sees them: live
- * `page_modules`, with every page the branch re-laid-out (pending
- * `page_layout_snapshots`) read from that snapshot instead and pages the
- * branch deleted dropped — the view the preview renders. Shared by the
- * delete guard and content-instance reach (#627) so both follow the
- * branch the same way. Every requested id is present (empty when unplaced).
+ * The placements of each of `moduleIds` as `branchId` sees them, in one
+ * statement: live `page_modules` of the pages the branch has no pending
+ * layout for, plus the blocks of the branch's newest pending layouts, minus
+ * the pages the branch deleted — the view the preview renders.
+ *
+ * Every step walks an index from the named module, never the draft: a
+ * pending layout is reached through its reference row (migration 0592) and
+ * the head row beside it, and it counts only when no newer head row of the
+ * page exists, so a state another chat has since replaced is ignored. The
+ * worst case is a walk over the module's own placements.
+ *
+ * @param limitPerModule stop each module's walk after this many rows, in no
+ *   particular order. Without it, every placement of every module.
+ */
+export async function placementRowsOfModules(
+  tx: TransactionRunner,
+  branchId: string | null,
+  moduleIds: readonly string[],
+  limitPerModule?: number,
+): Promise<ModulePlacementRow[]> {
+  if (moduleIds.length === 0) return [];
+  const limit = limitPerModule === undefined ? sql`` : sql`LIMIT ${limitPerModule}`;
+  const visible = branchId
+    ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
+    : sql`p.chat_branch_id IS NULL`;
+  // The head probes are scalar subqueries on purpose: as NOT EXISTS the
+  // planner may hash them, which reads the whole draft's head to answer for
+  // a few pages. The pending arm goes first: with a limit it is what stops
+  // the walk, while live rows superseded by pending layouts yield nothing.
+  const placed = branchId
+    ? sql`
+        SELECT d.entity_id AS page_id, block.value->>'blockName' AS block_name
+          FROM page_layout_snapshot_refs r
+          JOIN draft_pending_entities d ON d.snapshot_row_id = r.snapshot_row_id
+          JOIN page_layout_snapshots es ON es.id = d.snapshot_row_id
+         CROSS JOIN LATERAL jsonb_array_elements(es.state->'blocks') AS block(value)
+         CROSS JOIN LATERAL jsonb_array_elements_text(block.value->'moduleIds') AS placed(id)
+         WHERE r.ref_kind = 'id' AND r.ref = m.id::text
+           AND d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'pageLayout'
+           AND placed.id = m.id::text
+           AND (SELECT true FROM draft_pending_entities h
+                 WHERE h.chat_branch_id = d.chat_branch_id
+                   AND h.entity_kind = d.entity_kind AND h.entity_id = d.entity_id
+                   AND (h.header_created_at, h.row_created_at, h.snapshot_row_id)
+                     > (d.header_created_at, d.row_created_at, d.snapshot_row_id)
+                 LIMIT 1) IS NULL
+        UNION ALL
+        SELECT pm.page_id, pm.block_name
+          FROM page_modules pm
+         WHERE pm.module_id = m.id
+           AND (SELECT true FROM draft_pending_entities h
+                 WHERE h.chat_branch_id = ${branchId}::uuid
+                   AND h.entity_kind = 'pageLayout' AND h.entity_id = pm.page_id
+                 LIMIT 1) IS NULL`
+    : sql`SELECT pm.page_id, pm.block_name FROM page_modules pm WHERE pm.module_id = m.id`;
+  const notDeletedOnBranch = branchId
+    ? sql`AND NOT COALESCE((
+        SELECT (ps.state->>'deletedAt') IS NOT NULL
+          FROM draft_pending_entities h
+          JOIN page_snapshots ps ON ps.id = h.snapshot_row_id
+         WHERE h.chat_branch_id = ${branchId}::uuid
+           AND h.entity_kind = 'page' AND h.entity_id = x.page_id
+         ORDER BY h.header_created_at DESC, h.row_created_at DESC, h.snapshot_row_id DESC
+         LIMIT 1), false)`
+    : sql``;
+  const rows = (await tx.execute(sql`
+    SELECT m.id::text AS module_id, y.page_id::text AS page_id, y.block_name,
+           y.path, y.title, y.slug, y.template_id::text AS template_id
+      FROM unnest(${uuidArray(moduleIds)}) AS m(id)
+     CROSS JOIN LATERAL (
+       SELECT x.page_id, x.block_name, p.current_path AS path, p.title, p.slug, p.template_id
+         FROM (${placed}) x
+         JOIN pages p ON p.id = x.page_id
+        WHERE p.deleted_at IS NULL AND ${visible} ${notDeletedOnBranch}
+        ${limit}
+     ) y
+  `)) as unknown as {
+    module_id: string;
+    page_id: string;
+    block_name: string;
+    path: string;
+    title: string;
+    slug: string;
+    template_id: string;
+  }[];
+  return rows.map((r) => ({
+    moduleId: r.module_id,
+    pageId: r.page_id,
+    path: r.path,
+    title: r.title,
+    slug: r.slug,
+    templateId: r.template_id,
+    blockName: r.block_name,
+  }));
+}
+
+/**
+ * The pages that place each of `moduleIds` as `branchId` sees them
+ * ({@link placementRowsOfModules}, one row per page, sorted by path).
+ * Shared by the delete guard and content-instance reach (#627) so both
+ * follow the branch the same way. Every requested id is present (empty when
+ * unplaced).
  */
 export async function findModulePagePlacements(
   tx: TransactionRunner,
@@ -74,94 +189,11 @@ export async function findModulePagePlacements(
   const pagesByModule = new Map<string, Map<string, ModulePagePlacement>>();
   for (const id of moduleIds) pagesByModule.set(id, new Map());
   if (moduleIds.length === 0) return new Map();
-
-  // Live page placements on pages visible to the caller.
-  const visible = branchId
-    ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
-    : sql`p.chat_branch_id IS NULL`;
-  const liveRows = (await tx.execute(sql`
-    SELECT DISTINCT pm.module_id::text AS module_id, p.id::text AS page_id,
-           p.current_path AS path, p.title
-      FROM page_modules pm
-      JOIN pages p ON p.id = pm.page_id
-     WHERE pm.module_id = ANY(${uuidArray(moduleIds)})
-       AND p.deleted_at IS NULL AND ${visible}
-  `)) as unknown as { module_id: string; page_id: string; path: string; title: string }[];
-
-  // Branched page layouts + page states of the pages that may place a
-  // requested module: the pages of the live rows (a pending layout or
-  // delete supersedes them) and the pages whose pending layout references
-  // one (the snapshot reference table, 0592) — never every pending page of
-  // the draft. Empty for callers without a branch.
-  const branchedLayouts = new Map<string, PageLayoutState>();
-  const branchedDeletedPages = new Set<string>();
-  if (branchId) {
-    const pendingPages = (await tx.execute(
-      pendingRefCandidatesSql({ kind: "pageLayout", branchId, ids: moduleIds }),
-    )) as unknown as { entity_id: string }[];
-    const pageIds = [
-      ...new Set([...liveRows.map((r) => r.page_id), ...pendingPages.map((r) => r.entity_id)]),
-    ];
-    if (pageIds.length > 0) {
-      const layoutRows = (await tx.execute(
-        headOverlaySql({
-          kind: "pageLayout",
-          table: "page_layout_snapshots",
-          branchId,
-          ids: pageIds,
-        }),
-      )) as unknown as { entity_id: string; state: unknown }[];
-      for (const r of layoutRows) branchedLayouts.set(r.entity_id, r.state as PageLayoutState);
-      const pageRows = (await tx.execute(
-        headOverlaySql({
-          kind: "page",
-          table: "page_snapshots",
-          branchId,
-          ids: pageIds,
-          columns: sql`(es.state->>'deletedAt') IS NOT NULL AS deleted`,
-        }),
-      )) as unknown as { entity_id: string; deleted: boolean }[];
-      for (const r of pageRows) {
-        if (r.deleted) branchedDeletedPages.add(r.entity_id);
-      }
-    }
-  }
-
-  for (const r of liveRows) {
-    // A branched layout for this page supersedes its live rows.
-    if (branchedLayouts.has(r.page_id) || branchedDeletedPages.has(r.page_id)) continue;
+  for (const r of await placementRowsOfModules(tx, branchId, moduleIds)) {
     pagesByModule
-      .get(r.module_id)
-      ?.set(r.page_id, { pageId: r.page_id, path: r.path, title: r.title });
+      .get(r.moduleId)
+      ?.set(r.pageId, { pageId: r.pageId, path: r.path, title: r.title });
   }
-
-  // Branched layouts that (still) place a requested module.
-  const wanted = new Set(moduleIds);
-  const branchedHits: { moduleId: string; pageId: string }[] = [];
-  for (const [pageId, layout] of branchedLayouts) {
-    if (branchedDeletedPages.has(pageId)) continue;
-    for (const block of layout.blocks) {
-      for (const moduleId of block.moduleIds) {
-        if (wanted.has(moduleId)) branchedHits.push({ moduleId, pageId });
-      }
-    }
-  }
-  if (branchedHits.length > 0) {
-    const pageIds = [...new Set(branchedHits.map((h) => h.pageId))];
-    const pageRows = (await tx.execute(sql`
-      SELECT id::text AS id, current_path AS path, title FROM pages
-       WHERE id = ANY(${uuidArray(pageIds)}) AND deleted_at IS NULL
-    `)) as unknown as { id: string; path: string; title: string }[];
-    const pageById = new Map(pageRows.map((r) => [r.id, r]));
-    for (const h of branchedHits) {
-      const page = pageById.get(h.pageId);
-      if (page === undefined) continue;
-      pagesByModule
-        .get(h.moduleId)
-        ?.set(page.id, { pageId: page.id, path: page.path, title: page.title });
-    }
-  }
-
   const out = new Map<string, ModulePagePlacement[]>();
   for (const [moduleId, pages] of pagesByModule) {
     out.set(
@@ -173,17 +205,18 @@ export async function findModulePagePlacements(
 }
 
 /**
- * Resolve the placements of `moduleIds` as `ctx` sees the site. Modules
- * with no placement map to empty lists (every requested id is present).
+ * Layouts and parent modules that hold each of `moduleIds`:
+ * {@link ModulePlacements} without the pages. Every requested id is present.
+ *
+ * @param nestedLimitPerModule read at most this many nesting instances per
+ *   module, for a caller that names parents rather than counting them.
  */
-export async function findModulePlacements(
+export async function findModuleHolders(
   tx: TransactionRunner,
-  ctx: Pick<ExecutionContext, "chatBranchId">,
+  branchId: string | null,
   moduleIds: readonly string[],
-): Promise<Map<string, ModulePlacements>> {
-  if (moduleIds.length === 0) return new Map();
-  const branchId = ctx.chatBranchId ?? null;
-  const pagesByModule = await findModulePagePlacements(tx, branchId, moduleIds);
+  nestedLimitPerModule?: number,
+): Promise<Map<string, Pick<ModulePlacements, "layouts" | "nestedIn">>> {
   const layoutsByModule = new Map<string, Set<string>>();
   for (const id of moduleIds) layoutsByModule.set(id, new Set());
 
@@ -197,7 +230,12 @@ export async function findModulePlacements(
 
   // Nested references from content instances (live + this branch's view).
   const nestedByModule = new Map<string, Set<string>>();
-  const nesting = await findContentInstancesContaining(tx, branchId, idNeedles(moduleIds));
+  const nesting = await findContentInstancesContaining(
+    tx,
+    branchId,
+    idNeedles(moduleIds),
+    nestedLimitPerModule,
+  );
   const parentIds = new Set<string>();
   for (const ref of nesting) {
     for (const id of moduleIds) {
@@ -222,10 +260,9 @@ export async function findModulePlacements(
     }
   }
 
-  const out = new Map<string, ModulePlacements>();
+  const out = new Map<string, Pick<ModulePlacements, "layouts" | "nestedIn">>();
   for (const id of moduleIds) {
     out.set(id, {
-      pages: [...new Set((pagesByModule.get(id) ?? []).map((p) => p.path))].sort(),
       layouts: [...(layoutsByModule.get(id) ?? [])].sort(),
       // A parent that is itself deleted no longer renders the child.
       nestedIn: [...(nestedByModule.get(id) ?? [])]
@@ -237,6 +274,95 @@ export async function findModulePlacements(
     });
   }
   return out;
+}
+
+/**
+ * Resolve the placements of `moduleIds` as `ctx` sees the site. Modules
+ * with no placement map to empty lists (every requested id is present).
+ */
+export async function findModulePlacements(
+  tx: TransactionRunner,
+  ctx: Pick<ExecutionContext, "chatBranchId">,
+  moduleIds: readonly string[],
+): Promise<Map<string, ModulePlacements>> {
+  if (moduleIds.length === 0) return new Map();
+  const branchId = ctx.chatBranchId ?? null;
+  const pagesByModule = await findModulePagePlacements(tx, branchId, moduleIds);
+  const holders = await findModuleHolders(tx, branchId, moduleIds);
+  const out = new Map<string, ModulePlacements>();
+  for (const id of moduleIds) {
+    out.set(id, {
+      pages: [...new Set((pagesByModule.get(id) ?? []).map((p) => p.path))].sort(),
+      layouts: holders.get(id)?.layouts ?? [],
+      nestedIn: holders.get(id)?.nestedIn ?? [],
+    });
+  }
+  return out;
+}
+
+/** Most ids one `modules.list_usage` call takes (`list_modules` splits a longer catalog). */
+export const MAX_USAGE_MODULES = 1000;
+
+/** How many page placements a usage row counts before it says "100+". */
+export const MODULE_USAGE_COUNT_CAP = 100;
+
+/** Sample pages per module in a usage row. */
+const USAGE_SAMPLE_PATHS = 3;
+
+/** Nesting instances per module a usage row reads: enough to name parents. */
+const USAGE_NESTED_INSTANCES = 20;
+
+/** What the catalog says about where one module is used ({@link usageOfModules}). */
+export interface ModuleUsage {
+  readonly moduleId: string;
+  /** Page placements, at most {@link MODULE_USAGE_COUNT_CAP}. */
+  readonly placementCount: number;
+  /** More page placements exist than `placementCount`. */
+  readonly placementCountCapped: boolean;
+  /** Sample page paths, sorted. */
+  readonly samplePaths: readonly string[];
+  readonly layouts: readonly string[];
+  /** Slugs of parent modules (a sample when many instances nest the module). */
+  readonly nestedIn: readonly string[];
+}
+
+/** One module's usage is "unplaced": no page, layout or parent — what the delete guard concludes. */
+export function isUnplaced(u: ModuleUsage | undefined): boolean {
+  return (
+    u === undefined || (u.placementCount === 0 && u.layouts.length === 0 && u.nestedIn.length === 0)
+  );
+}
+
+/**
+ * The usage signal of the catalog: the view of {@link findModulePlacements}
+ * bounded per module, so a read costs the modules named however many pages
+ * place them. Every requested id is present.
+ */
+export async function usageOfModules(
+  tx: TransactionRunner,
+  ctx: Pick<ExecutionContext, "chatBranchId">,
+  moduleIds: readonly string[],
+): Promise<ModuleUsage[]> {
+  const branchId = ctx.chatBranchId ?? null;
+  const rows = await placementRowsOfModules(tx, branchId, moduleIds, MODULE_USAGE_COUNT_CAP + 1);
+  const holders = await findModuleHolders(tx, branchId, moduleIds, USAGE_NESTED_INSTANCES);
+  const byModule = new Map<string, ModulePlacementRow[]>();
+  for (const r of rows) {
+    const list = byModule.get(r.moduleId) ?? [];
+    list.push(r);
+    byModule.set(r.moduleId, list);
+  }
+  return moduleIds.map((moduleId) => {
+    const placed = byModule.get(moduleId) ?? [];
+    return {
+      moduleId,
+      placementCount: Math.min(placed.length, MODULE_USAGE_COUNT_CAP),
+      placementCountCapped: placed.length > MODULE_USAGE_COUNT_CAP,
+      samplePaths: [...new Set(placed.map((p) => p.path))].sort().slice(0, USAGE_SAMPLE_PATHS),
+      layouts: holders.get(moduleId)?.layouts ?? [],
+      nestedIn: holders.get(moduleId)?.nestedIn ?? [],
+    };
+  });
 }
 
 /** True when the module is placed anywhere the caller can see. */

@@ -51,6 +51,7 @@ import {
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import {
+  claimPendingDesignations,
   composeLivePathsBeforePluginMerge,
   refreshLivePathsAfterMerge,
 } from "../content/current-path.js";
@@ -733,6 +734,10 @@ export async function mergeWindowToMain(
         SELECT id::text AS id FROM pages WHERE chat_branch_id = ${window.branchId}::uuid
       `)) as unknown as { id: string }[]
     ).map((r) => r.id),
+  );
+  await claimPendingDesignations(
+    tx,
+    entities.flatMap((e) => (e.kind === "page" && !e.state.deletedAt ? [e.entityId] : [])),
   );
   for (const e of entities) {
     if (e.kind === "pageModuleContent") {

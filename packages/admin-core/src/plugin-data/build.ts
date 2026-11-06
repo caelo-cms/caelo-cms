@@ -23,6 +23,13 @@
  * page, module, template, theme, SEO, redirect or settings change a human
  * did not publish.
  *
+ * #1495 — the re-rendered regions hold to that too. Their page links come
+ * from the live build's routing manifest (`siteBaseUrl`, `pages[].url`),
+ * not from the stored settings or page rows, which hold what nobody
+ * published. A region that asks for a page the live build does not ship
+ * keeps its published output and its mark stays pending: the tick's
+ * message names the page, and the next Publish live ships both.
+ *
  * Further limits, each refusing rather than guessing:
  *   - a region is refreshed only when the running plugin version rendered
  *     it, and only while the running Caelo version rendered the live
@@ -74,7 +81,7 @@
 
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { bakedDataPlugin, localBuildPluginServices } from "@caelo-cms/plugin-host";
+import { bakedDataPlugin, renderPluginOnLiveBuild } from "@caelo-cms/plugin-host";
 import {
   defineOperation,
   defineStepwiseOperation,
@@ -88,6 +95,7 @@ import {
   CAELO_VERSION,
   type ExecutionContext,
   err,
+  type LiveBuildUrls,
   ok,
   PhaseTimer,
   phaseTimingSchema,
@@ -187,12 +195,18 @@ interface TargetBake {
   readonly notLive: number;
   /** Regions left alone: another plugin version rendered them. */
   readonly versionMismatch: string[];
+  /** `slug:pageId` of regions left alone → the pages the live build lacks (#1495). */
+  readonly unknownLinks: ReadonlyMap<string, readonly string[]>;
 }
 
 const routingManifestSchema = z.object({
+  /** #1495 — the origin the build rendered for. */
+  siteBaseUrl: z.string().min(1).optional(),
   pages: z.array(
     z.object({
       pageId: z.string().uuid().optional(),
+      /** #1495 — the public URL the build gave the page. */
+      url: z.string().min(1).optional(),
       outputPath: z.string().min(1),
       /** #1257 — the files of pages 2… of a paginated overview. */
       followUpOutputPaths: z.array(z.string().min(1)).optional(),
@@ -227,10 +241,8 @@ async function bakeTarget(args: {
   live: LiveBuildRef;
   plugins: readonly RenderablePlugin[];
   bakedAt: string;
-  /** The live site's origin: re-rendered regions link pages on it (#650). */
-  siteBaseUrl: string;
 }): Promise<TargetBake> {
-  const { publisher, target, live, plugins, bakedAt, siteBaseUrl } = args;
+  const { publisher, target, live, plugins, bakedAt } = args;
   const manifestRaw = (
     await publisher.readLiveFiles({ target, live, paths: ["routing-manifest.json"] })
   ).get("routing-manifest.json");
@@ -256,8 +268,10 @@ async function bakeTarget(args: {
   // Every file a page ships: its own and, for a paginated overview, the
   // follow-up pages, which carry the same bake regions (#1257).
   const pathOf = new Map<string, readonly string[]>();
+  const publishedUrls = new Map<string, string>();
   for (const p of manifest.data.pages) {
     if (p.pageId) pathOf.set(p.pageId, [p.outputPath, ...(p.followUpOutputPaths ?? [])]);
+    if (p.pageId && p.url) publishedUrls.set(p.pageId, p.url);
   }
   if (pathOf.size === 0 && manifest.data.pages.length > 0) {
     throw new BlockedError(
@@ -287,6 +301,7 @@ async function bakeTarget(args: {
   // Render each wanted (plugin, page) once, only where a region exists.
   const renders = new Map<string, string>();
   const versionMismatch = new Set<string>();
+  const unknownLinks = new Map<string, readonly string[]>();
   for (const [path, wanted] of wantedByPath) {
     const body = files.get(path);
     if (!body) {
@@ -295,22 +310,28 @@ async function bakeTarget(args: {
     }
     for (const region of findBakeRegions(body.toString("utf8"))) {
       const key = `${region.slug}:${region.pageId}`;
-      if (!wanted.has(key) || renders.has(key)) continue;
+      if (!wanted.has(key) || renders.has(key) || unknownLinks.has(key)) continue;
       const plugin = bySlug.get(region.slug);
       if (!plugin) continue;
       if (region.version !== plugin.version) {
         versionMismatch.add(`${region.slug}@${region.version}`);
         continue;
       }
+      // One per render: a page unknown to one region must not hold back the next.
+      const liveUrls: LiveBuildUrls = {
+        urls: publishedUrls,
+        unknownPageIds: new Set(),
+        refusals: new WeakSet(),
+      };
       // A failing render fails the build (CLAUDE.md §2): an empty region
       // would remove the published items from the page.
-      renders.set(
-        key,
-        await localBuildPluginServices.staticRender(region.slug, region.pageId, {
-          siteBaseUrl,
-          pageUrlStyle: target.pageUrlStyle ?? "directory",
-        }),
-      );
+      const html = await renderPluginOnLiveBuild(region.slug, region.pageId, {
+        pageUrlStyle: target.pageUrlStyle ?? "directory",
+        siteBaseUrl: manifest.data.siteBaseUrl ?? null,
+        liveUrls,
+      });
+      if (html === null) unknownLinks.set(key, [...liveUrls.unknownPageIds]);
+      else renders.set(key, html);
     }
   }
 
@@ -351,6 +372,7 @@ async function bakeTarget(args: {
     bakedPages: baked.size,
     notLive,
     versionMismatch: [...versionMismatch].sort(),
+    unknownLinks,
   };
 }
 
@@ -437,8 +459,6 @@ const pluginDataPlan = z.discriminatedUnion("kind", [
     kind: z.literal("bake"),
     /** The bake's `data-baked-at` (see the start step). */
     bakedAt: z.string(),
-    /** The site base URL the live builds were published for. */
-    siteBaseUrl: z.string(),
     plugins: z.array(
       z.object({
         id: z.string(),
@@ -524,16 +544,6 @@ export const startPluginDataOp = defineOperation({
       FROM deploy_targets WHERE env = 'production' ORDER BY is_default DESC, name
     `)) as unknown as TargetRow[];
     if (targets.length === 0) return done("blocked", "no production deploy target is configured");
-    const base = (await tx.execute(sql`
-      SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
-    `)) as unknown as { site_base_url: string | null }[];
-    const siteBaseUrl = base[0]?.site_base_url;
-    if (!siteBaseUrl) {
-      return done(
-        "blocked",
-        "the site base URL is not configured, so the re-rendered regions cannot link pages (Settings → SEO)",
-      );
-    }
 
     // #1008 — re-render only plugins that run; their marks wait otherwise.
     const problems = new Map((await activePluginProblems(tx)).map((p) => [p.slug, p.reason]));
@@ -615,7 +625,6 @@ export const startPluginDataOp = defineOperation({
     return ok({
       kind: "bake" as const,
       bakedAt: iso(dataAsOf),
-      siteBaseUrl,
       plugins,
       targets: live,
       waitingNote,
@@ -782,6 +791,8 @@ export const finishPluginDataTickOp = defineOperation({
       .object({
         bakedAt: z.string(),
         plugins: z.array(z.object({ id: z.string(), pages: z.array(z.string()) })),
+        /** #1495 — pages whose region was held back: pending, at the end of the queue. */
+        heldBack: z.array(z.object({ id: z.string(), pages: z.array(z.string()) })).default([]),
         /**
          * The run each target serves with this data: the plugin-data run
          * this tick published, or the live run its unchanged bake read.
@@ -803,6 +814,16 @@ export const finishPluginDataTickOp = defineOperation({
           UPDATE plugin_data_stale_pages
              SET baked_through = ${input.baked.bakedAt}::timestamptz,
                  last_run_id = ${input.runIds.at(-1) ?? null}
+           WHERE plugin_id = ${plugin.id}::uuid
+             AND page_id = ANY(${uuidArray(plugin.pages)})
+        `);
+      }
+      // The batch takes the oldest marks first: a held-back mark that kept
+      // its place could fill every later batch, and newer marks that can
+      // render would never be baked.
+      for (const plugin of input.baked.heldBack) {
+        await tx.execute(sql`
+          UPDATE plugin_data_stale_pages SET last_marked_at = clock_timestamp()
            WHERE plugin_id = ${plugin.id}::uuid
              AND page_id = ANY(${uuidArray(plugin.pages)})
         `);
@@ -862,6 +883,8 @@ async function runPluginDataBuild(
   const tally = { pendingPlugins: plan.pendingPlugins, marks: plan.marks };
   /** The run each target serves once this tick is done (see finish_plugin_data_tick). */
   const served = new Map(plan.targets.map((t) => [t.target.id, t.liveRunId]));
+  /** Regions held back on any target (#1495): `slug:pageId` → the pages missing there. */
+  const unknownLinks = new Map<string, readonly string[]>();
   const finishTick = async (
     outcome: "unchanged" | "built" | "blocked" | "failed",
     message: string | null,
@@ -876,7 +899,16 @@ async function runPluginDataBuild(
       baked: baked
         ? {
             bakedAt: plan.bakedAt,
-            plugins: plan.plugins.map((p) => ({ id: p.id, pages: p.pages })),
+            // A held-back region does not carry the data: its mark stays
+            // pending, so the Publish live that ships the page bakes it.
+            plugins: plan.plugins.map((p) => ({
+              id: p.id,
+              pages: p.pages.filter((pageId) => !unknownLinks.has(`${p.slug}:${pageId}`)),
+            })),
+            heldBack: plan.plugins.map((p) => ({
+              id: p.id,
+              pages: p.pages.filter((pageId) => unknownLinks.has(`${p.slug}:${pageId}`)),
+            })),
             targets: [...served].map(([targetId, liveRunId]) => ({ targetId, liveRunId })),
           }
         : null,
@@ -923,7 +955,6 @@ async function runPluginDataBuild(
         live,
         plugins: renderable,
         bakedAt: plan.bakedAt,
-        siteBaseUrl: plan.siteBaseUrl,
       });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -939,6 +970,7 @@ async function runPluginDataBuild(
         `On "${t.target.name}" ${bake.versionMismatch.join(", ")} rendered the live regions; the running version's markup goes live with the next Publish live.`,
       );
     }
+    for (const [key, pageIds] of bake.unknownLinks) unknownLinks.set(key, pageIds);
     if (bake.files.size === 0) continue;
 
     const runId = randomUUID();
@@ -1057,6 +1089,12 @@ async function runPluginDataBuild(
     changedFiles += bake.files.size;
   }
 
+  if (unknownLinks.size > 0) {
+    const missing = [...new Set([...unknownLinks.values()].flat())].sort();
+    const note = `${unknownLinks.size} plugin region(s) keep their published output: they link ${missing.length} page(s) the live build does not ship (${missing.slice(0, 10).join(", ")}). They are baked after the next Publish live.`;
+    console.warn(`[plugin-data] ${note}`);
+    notes.push(note);
+  }
   const message = [plan.waitingNote, ...notes].filter((m): m is string => m !== null).join(" ");
   const outcome = runIds.length > 0 ? "built" : "unchanged";
   const recorded = await finishTick(outcome, message.length > 0 ? message : null, runIds, true);

@@ -28,7 +28,11 @@ import { type ExecutionContext, isScreenshotTargetNotRendered } from "@caelo-cms
 import { z } from "zod";
 import { previewSourceFromQueryApi } from "../../capture/preview-source.js";
 import { capturePreviewScreenshot } from "../preview-screenshot.js";
-import { awaitScreenshot, type ScreenshotViewportSource } from "../screenshot-orchestrator.js";
+import {
+  awaitScreenshot,
+  ScreenshotRefused,
+  type ScreenshotViewportSource,
+} from "../screenshot-orchestrator.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { takePreviewScreenshotBudget } from "./_preview-screenshot-budget.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
@@ -337,6 +341,13 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
       // backend, not a page problem. The server renderer runs scripts.
       if (isScreenshotTargetNotRendered(message)) {
         return captureServerSide(ctx, input, chatBranchId, toolCtx, "not-rendered-in-browser");
+      }
+      if (e instanceof ScreenshotRefused) {
+        return {
+          ok: false,
+          content: `${screenshotFailureContent(message)}. query_page_html shows which selectors exist on the page.`,
+          refusal: true,
+        };
       }
       return {
         ok: false,
