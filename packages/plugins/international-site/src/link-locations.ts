@@ -44,6 +44,15 @@ export async function chromeLinkLocations(
       rowId: v.id,
       column: "values",
       label: label.slice(0, 300),
+      // #1240 — this chrome renders in its language only, so core checks
+      // its links against that language; orphaned chrome renders nowhere.
+      ...(target
+        ? {
+            area: target.area.slice(0, 120),
+            variant: v.locale_code,
+            replaces: target.replaces,
+          }
+        : {}),
     });
     if (v.module_id) {
       locations.push({

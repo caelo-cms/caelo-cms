@@ -36,7 +36,7 @@ import {
   MODULE_FIELD_KINDS,
   type ModuleFieldKind,
 } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { headOverlaySql } from "../draft.js";
 import { loadPagesInView } from "../lists/pages-view.js";
 import { loadListEntities } from "../lists/store.js";
@@ -107,6 +107,17 @@ export interface SourcePluginValue {
   readonly value: unknown;
   /** Present when the value is a module content-values object. */
   readonly fields: readonly SourceField[] | null;
+  /** #1240 — the place in an operator's words, when the plugin names one. */
+  readonly area: string | null;
+  /** #1240 — the page variant the value renders in (a language's own chrome). */
+  readonly variant: string | null;
+  /** #1240 — the placement it takes the place of on that variant's pages. */
+  readonly replaces:
+    | { readonly layoutId: string; readonly blockName: string; readonly position: number }
+    | { readonly contentInstanceId: string }
+    | null;
+  /** The module the location names; with a layout `replaces`, it replaces the source's. */
+  readonly moduleId?: string;
 }
 
 /** A shared list (epic #1107) as the scope sees it. */
@@ -169,6 +180,39 @@ function asRecord(raw: unknown): Record<string, unknown> {
   return raw !== null && typeof raw === "object" && !Array.isArray(raw)
     ? (raw as Record<string, unknown>)
     : {};
+}
+
+/**
+ * The shortest top-level text value {@link linkBearingValuesSql} replaces.
+ * Shorter values (ids, flags, labels, refs) stay as stored.
+ */
+const LINK_FREE_TEXT_MIN_LENGTH = 64;
+/** What a long text value without a link becomes in the check's model. */
+const LINK_FREE_TEXT = "text";
+
+/**
+ * #1240 — a content instance's values as the check needs them. Every link
+ * form the check finds contains a `/`: a `caelo:page|media|list|term/…`
+ * reference (well-formed or not), a `/path`, an `http(s)://` URL, an HTML
+ * attribute holding one of those. A long text value without one (a body
+ * of copy, most richtext) can carry no finding, so it is replaced by a
+ * short non-empty text in the query: the value stays truthy for the
+ * sections and dispatched partials the scan renders, and the site's copy
+ * never enters the admin's memory. Text with a `{{` stays, for safety.
+ * Without this, the check held every page's copy at once (#1271's bar:
+ * ~5 KB per page of the build-memory fixture).
+ */
+function linkBearingValuesSql(values: SQL): SQL {
+  return sql`CASE WHEN jsonb_typeof(${values}) = 'object' THEN COALESCE((
+      SELECT jsonb_object_agg(e.key, CASE
+        WHEN jsonb_typeof(e.value) = 'string'
+         AND length(e.value #>> '{}') >= ${LINK_FREE_TEXT_MIN_LENGTH}
+         AND strpos(e.value #>> '{}', '/') = 0
+         AND strpos(e.value #>> '{}', '{{') = 0
+        THEN to_jsonb(${LINK_FREE_TEXT}::text)
+        ELSE e.value END)
+      FROM jsonb_each(${values}) e), '{}'::jsonb)
+    ELSE ${values} END`;
 }
 
 /** Live rows visible to the scope (`chat_branch_id` tagged tables). */
@@ -279,7 +323,8 @@ export async function loadReferenceSources(
   );
 
   const instanceRows = (await tx.execute(sql`
-    SELECT ci.id::text AS id, ci.module_id::text AS module_id, ci."values" AS values
+    SELECT ci.id::text AS id, ci.module_id::text AS module_id,
+           ${linkBearingValuesSql(sql`ci."values"`)} AS values
     FROM content_instances ci WHERE ci.deleted_at IS NULL AND ${visible("ci", branchId)}
   `)) as unknown as { id: string; module_id: string; values: unknown }[];
   const instances = new Map<string, SourceInstance>(
@@ -530,7 +575,16 @@ async function loadPluginValues(
         : loc.moduleId
           ? (modules.get(loc.moduleId)?.fields ?? null)
           : null;
-      out.push({ pluginSlug: set.pluginSlug, label: loc.label, value, fields });
+      out.push({
+        pluginSlug: set.pluginSlug,
+        label: loc.label,
+        value,
+        fields,
+        area: loc.area ?? null,
+        variant: loc.variant ?? null,
+        replaces: loc.replaces ?? null,
+        ...(loc.moduleId ? { moduleId: loc.moduleId } : {}),
+      });
     }
   }
   return out;

@@ -1072,10 +1072,12 @@ export async function mergeWindowToMain(
 
   // Epic #724 (rollout F) — reference integrity of the merged state: runs
   // AFTER the replay wrote it to the live tables. A link to a deleted page
-  // (or one without a same-language version) refuses the merge — thrown so
-  // the whole replay rolls back and nothing reaches main; the static build
-  // would refuse it anyway, and this names every place and its fixing tool.
-  // Draft targets and legacy literal paths are Stage warnings.
+  // refuses the merge — thrown so the whole replay rolls back and nothing
+  // reaches main; the static build would refuse it anyway, and this names
+  // every place and its fixing tool. Draft targets, targets without a
+  // same-language version and legacy literal paths are Stage warnings. A
+  // merge with nothing to replay returns earlier: `deploy.start_trigger`
+  // runs the same check on every build (#1240).
   const gate = await stageReferenceGate(tx, window.branchId, {
     pluginRowsMerged: pluginRowRows.length > 0,
   });

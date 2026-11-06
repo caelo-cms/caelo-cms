@@ -21,7 +21,7 @@
  *
  * Rules:
  *   - `references/missing-target`      (error)
- *   - `references/variant-missing`     (error)
+ *   - `references/variant-missing`     (error) — also closes the gate on its own (#1240)
  *   - `references/unpublished-target`  (error)
  *   - `references/missing-list`        (error) — a bound shared list was deleted (epic #1107)
  *   - `references/missing-term`        (error) — a page term / query term whose entry is gone

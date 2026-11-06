@@ -36,12 +36,19 @@ export const getPublishGateTool = makeReadTool<Record<string, never>>({
   format: (value) => {
     const v = value as {
       deployRunId: string | null;
-      gate: { open: boolean; state: string; message: string; auditRunId: string | null } | null;
+      gate: {
+        open: boolean;
+        state: string;
+        message: string;
+        auditRunId: string | null;
+        linkNotice: { aiText: string } | null;
+      } | null;
     };
     if (!v.deployRunId || !v.gate) return "Nothing is staged yet — Stage first.";
     if (v.gate.open) {
       return `Publish live is open (${v.gate.state}).${v.gate.message ? ` ${v.gate.message}` : ""}`;
     }
+    if (v.gate.linkNotice) return `Publish live is BLOCKED (links): ${v.gate.linkNotice.aiText}`;
     const pending = v.gate.state === "running" || v.gate.state === "queued";
     return `Publish live is BLOCKED (${v.gate.state}, audit ${v.gate.auditRunId ?? "none"}): ${v.gate.message}${pending ? ` ${AUDIT_PENDING_NEXT_STEP}` : ""}`;
   },

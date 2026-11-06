@@ -29,6 +29,7 @@
   import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
   import { Popover, PopoverContent, PopoverTrigger } from "#lib/components/ui/popover/index.js";
   import { cn } from "#lib/utils.js";
+  import LinkNoticeBanner from "#lib/components/LinkNoticeBanner.svelte";
   import { askInChat } from "./ask-in-chat.js";
   import StageRunProgress from "./StageRunProgress.svelte";
   import {
@@ -77,6 +78,7 @@
     branchChangeCount = 0,
     csrfToken,
     chatSessionId,
+    chatBranchId,
     activePageId = null,
     sessionPublished = false,
     sessionLastStagedAt = null,
@@ -96,6 +98,8 @@
     branchChangeCount?: number;
     csrfToken: string;
     chatSessionId: string;
+    /** The chat's branch: a status change on a link notice belongs to it. */
+    chatBranchId: string;
     activePageId?: string | null;
     sessionPublished?: boolean;
     /**
@@ -530,7 +534,21 @@
 {#snippet qualityGateControls()}
   {#if gate && !gate.open}
     <div class="space-y-2" data-testid="quality-gate-status" data-state={gate.state}>
-      <p class="text-xs">{qualityBlockReason(gate)}</p>
+      {#if gate.linkNotice}
+        <!-- #1240 — the same list and actions as the publish click. -->
+        <LinkNoticeBanner
+          notice={gate.linkNotice}
+          {csrfToken}
+          draftAction="?/setPagesToDraft"
+          chat={{ sessionId: chatSessionId, branchId: chatBranchId }}
+          onFix={(prompt) => {
+            stagingMenuOpen = false;
+            askInChat(prompt);
+          }}
+        />
+      {:else}
+        <p class="text-xs">{qualityBlockReason(gate)}</p>
+      {/if}
       <div class="flex flex-wrap gap-2">
         {#if gate.state === "problems"}
           <Button

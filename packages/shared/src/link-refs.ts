@@ -49,7 +49,10 @@
  * wherever the link lives (module HTML, rich text, link fields, link
  * lists, nav-menu sets, chrome). A target with no sibling in that
  * variant is a loud failure (`link-variant-missing:page/<id>:<variant>`),
- * never a silent link into another language.
+ * never a silent link into another language. One staged exception
+ * (maintainer decision on #1240): a staging build links the target in its
+ * own language so the staged site stays clickable for review; every such
+ * link is reported, and production refuses it.
  *
  * Seams for the later rollout steps:
  *   - E (data migration): {@link mapLinkRefsDeep} / the canonicaliser's
@@ -346,8 +349,17 @@ export type LinkResolution =
    * variant (a German page linking to a page that has no German
    * version). Not rendered — linking into another variant instead is
    * exactly the silent fallback CLAUDE.md §2 forbids.
+   *
+   * The one exception is `staged` (#1240), set only in a staging build:
+   * the link goes to the target in its own language so the staged site
+   * stays clickable. It is no silent fallback: staging is not public, the
+   * build reports every such link, and that report blocks Publish live.
    */
-  | { readonly status: "no-variant"; readonly variant: string };
+  | {
+      readonly status: "no-variant";
+      readonly variant: string;
+      readonly staged: { readonly url: string; readonly pageId: string } | null;
+    };
 
 /**
  * Turns references into URLs for ONE rendering page. Synchronous: the
@@ -443,6 +455,7 @@ export function resolveLinkRefsInHtml(
       return raw;
     }
     if (r.status === "no-variant") {
+      if (r.staged !== null) return r.staged.url;
       missing.push(`${LINK_VARIANT_MISSING}:${linkRefTargetKey(ref)}:${r.variant}`);
       return raw;
     }
@@ -456,14 +469,17 @@ export function resolveLinkRefsInHtml(
  * everywhere; an unpublished one is a warning at Stage and blocks
  * Publish live / promote. The editor preview shows drafts, so nothing
  * there is an issue beyond a missing target. A target without a sibling
- * in the rendering page's variant counts as missing: there is no page
- * the link could go to.
+ * in the rendering page's variant is handled like a draft target
+ * (maintainer decision on #1240, revising #724): the operator may publish
+ * a language version first and translate its targets right after, so a
+ * Stage reports it and Publish live blocks. The preview keeps flagging it.
  */
 export function linkIssueSeverity(
   env: LinkRenderEnv,
   status: LinkResolution["status"],
 ): "block" | "warning" | null {
-  if (status === "missing" || status === "no-variant") return "block";
+  if (status === "missing") return "block";
+  if (status === "no-variant") return env === "staging" ? "warning" : "block";
   if (status === "unpublished") {
     if (env === "production") return "block";
     if (env === "staging") return "warning";
@@ -538,6 +554,11 @@ export interface SiteLinkIndex {
    * {@link RecordingLinkResolver}.
    */
   forPage(renderingPageId: string | null): RecordingLinkResolver;
+  /**
+   * The pages rendered in `variant`: where a stored value that belongs to
+   * one variant, not to a page, shows (a language's own chrome).
+   */
+  pagesInVariant(variant: string): readonly string[];
   /** The page's public path (no style applied), or null when unknown. */
   pathOf(pageId: string): string | null;
 }
@@ -607,7 +628,17 @@ export function createSiteLinkIndex(input: SiteLinkIndexInput): SiteLinkIndex {
     if (!pages.has(ref.pageId)) return { status: "missing" };
     const pageId = pageInVariant(ref.pageId, variant);
     const page = pageId === null ? undefined : pages.get(pageId);
-    if (pageId === null || !page) return { status: "no-variant", variant: variant as string };
+    if (pageId === null || !page) {
+      const referenced = pages.get(ref.pageId);
+      return {
+        status: "no-variant",
+        variant: variant as string,
+        staged:
+          input.env === "staging" && referenced
+            ? { url: pageRefUrl(ref, referenced.path, input.pageUrlStyle), pageId: ref.pageId }
+            : null,
+      };
+    }
     const url = pageRefUrl(ref, page.path, input.pageUrlStyle);
     if (input.env !== "preview" && page.status !== "published") {
       return { status: "unpublished", url, pageId };
@@ -617,6 +648,8 @@ export function createSiteLinkIndex(input: SiteLinkIndexInput): SiteLinkIndex {
   return {
     env: input.env,
     pathOf: (pageId) => pages.get(pageId)?.path ?? null,
+    pagesInVariant: (variant) =>
+      [...variants].flatMap(([id, v]) => (v.variant === variant && pages.has(id) ? [id] : [])),
     forPage: (renderingPageId) => {
       const observed: ObservedLinkResolution[] = [];
       const variant =

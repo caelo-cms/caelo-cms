@@ -309,6 +309,7 @@ describe("a succeeded staging build always has its audit (#1319)", () => {
       phaseTimings: [],
       qualityAudit: null,
       securityHeaders: composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS),
+      linkNotice: null,
     });
     expect(await plannedAuditOf(runId)).toBeNull();
     const written = await auditsOf(runId);

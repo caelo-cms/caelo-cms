@@ -29,6 +29,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { resolveBuildContentVariants } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { lockPluginRow } from "../locks.js";
+import { checkReferences } from "../ops/content/link-integrity.js";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
@@ -523,6 +524,38 @@ describe("#592 — menus and footer per language", () => {
     ).rejects.toThrow(/t592-nowhere/);
     expect(await readRows()).toEqual(before);
   }, 60_000);
+});
+
+describe("#1240 — the link check agrees with what the render shows per language", () => {
+  it("a shared instance's German version counts only on the German pages that place it", async () => {
+    const rows = await sqlSystem(
+      (tx) => tx`SELECT id::text AS id FROM content_instances WHERE slug = ${`${PFX}-cta-shared`}`,
+    );
+    const ci = (rows as { id: string }[])[0]?.id;
+    await op("set_chrome_variants", {
+      variants: [
+        {
+          targetKey: `instance:${ci}`,
+          localeCode: "de",
+          values: { cta_label: "Allein", cta_href: `caelo:page/${ids.enSolo}` },
+        },
+      ],
+    });
+    // The render: the same instance sits on the English and the German
+    // pricing page, and the German "about" page does not place it.
+    const marker = `link-variant-missing:page/${ids.enSolo}:de`;
+    expect((await preview(ids.dePreise)).missingSlots).toContain(marker);
+
+    const issues = await adapter.withAdminTransaction(SYS_CTX, (tx) =>
+      checkReferences(tx, { branchId: null, env: "production" }),
+    );
+    const shared = issues.filter(
+      (i) => i.targetPageId === ids.enSolo && i.area.includes("shared section"),
+    );
+    expect(shared).toHaveLength(1);
+    expect(shared[0]?.pageIds).toEqual([ids.dePreise]);
+    expect(shared[0]?.pageIds).not.toContain(ids.deUeber);
+  });
 });
 
 describe("#1196 — chrome translation plans against the chat's draft", () => {

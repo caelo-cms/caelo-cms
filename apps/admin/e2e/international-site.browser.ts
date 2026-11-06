@@ -562,6 +562,119 @@ test("the editor toolbar shows the page's language; its popover opens the other 
   }
 });
 
+test("#1240 — publishing a language version with an untranslated link target: the click warns, Publish live shows the list, back to draft", async ({
+  page,
+}) => {
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("dev-owner@example.com");
+  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+
+  await page.goto("/settings/plugins");
+  const activate = page.getByTestId("activate-international-site");
+  if ((await activate.count()) > 0) {
+    await activate.click();
+    await expect(page.getByTestId("activate-international-site")).toHaveCount(0, {
+      timeout: 30_000,
+    });
+  }
+
+  const s = seed();
+  let runId = "";
+  try {
+    // The German footer links a page that exists in English only.
+    runBunInline(
+      pluginScopedSql(`
+        const P = process.env.PFX;
+        const tpl = await tx\`SELECT id FROM templates WHERE slug = \${P + "-tpl"}\`;
+        const solo = (await tx\`INSERT INTO pages (slug, short_title, title, template_id, status, current_path, page_type_confirmed)
+          VALUES (\${P + "-solo"}, 'Solo', 'Solo page', \${tpl[0].id}, 'published', \${"/" + P + "-solo"}, true) RETURNING id\`)[0].id;
+        await tx\`UPDATE pages SET status = 'draft' WHERE id = \${process.env.DE_PAGE}::uuid\`;
+        const plug = await tx\`SELECT id FROM plugins WHERE slug = 'international-site'\`;
+        await tx.unsafe(\`SET LOCAL caelo.plugin_id = '\${plug[0].id}'\`);
+        const g = crypto.randomUUID();
+        await tx.unsafe(\`INSERT INTO plugin_international_site.page_variants (group_id, page_id, locale_code, translation_status)
+          VALUES ('\${g}', '\${solo}', 'en', 'source')\`);
+        const values = JSON.stringify({ tagline: "Mit Sorgfalt gemacht", nav: [{ id: "00000000-0000-4000-9000-000000000001", node: "link", values: { label: "Solo", link: { href: "caelo:page/" + solo } } }] });
+        await tx\`UPDATE plugin_international_site.chrome_variants SET values = (\${values}::text)::jsonb WHERE locale_code = 'de'\`;
+        return null;
+      `),
+      { PFX, DE_PAGE: s.dePageId },
+    );
+
+    await page.goto(`/edit?page=${s.dePageId}`);
+    const toggle = page.getByTestId("page-status-toggle").getByRole("button");
+    await expect(toggle).toHaveText("Draft", { timeout: 15_000 });
+    await toggle.click();
+
+    // The click tells the operator at once, in their words.
+    const notice = page.getByTestId("link-notice");
+    await expect(notice).toContainText("Solo page", { timeout: 15_000 });
+    await expect(notice).toContainText("no German version");
+    await expect(notice).toContainText("the footer");
+    await expect(notice).not.toContainText("caelo:page");
+    await expect(toggle).toHaveText("Published");
+
+    // The list goes into the composer for the operator to send.
+    await page.getByTestId("link-notice-fix").click();
+    await expect(page.getByTestId("chat-composer")).toHaveValue(/Create German versions/);
+
+    // The Stage of that state (the build runs in the admin-core suite,
+    // link-variant-stage.integration.test.ts): Publish live is refused with
+    // the same list and the same two actions.
+    runId = runBunInline(
+      pluginScopedSql(`
+        const target = (await tx\`SELECT id FROM deploy_targets WHERE name = 'staging'\`)[0];
+        const notice = JSON.stringify({
+          targets: [{ pageId: process.env.DE_PAGE, title: "Solo page", path: "/solo", problem: "variant-missing", variant: "de", areas: ["the footer"], linkedFrom: ["/de"] }],
+          linkingPages: [{ id: process.env.DE_PAGE, path: "/de" }],
+          operatorText: "1 page linked from your German pages has no German version yet: Solo page (/solo), linked from the footer of /de.",
+          aiText: "for the AI",
+          fixLabel: "Create German versions",
+          fixPrompt: "Create German versions of these pages.",
+        });
+        const owner = (await tx\`SELECT id FROM users WHERE email = 'dev-owner@example.com'\`)[0];
+        const run = (await tx\`INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id, link_notice)
+          VALUES (\${target.id}, \${owner.id}, 'succeeded', now(), now(), 'e2e-1240', (\${notice}::text)::jsonb)
+          RETURNING id::text AS id\`)[0];
+        return run.id;
+      `),
+      { DE_PAGE: s.dePageId },
+    ).replace(/"/g, "");
+    await page.goto(`/edit?page=${s.dePageId}`);
+    const switchAnyway = page.getByRole("button", { name: "Switch anyway" });
+    await switchAnyway
+      .waitFor({ state: "visible", timeout: 3_000 })
+      .then(() => switchAnyway.click())
+      .catch(() => undefined);
+    await expect(toggle).toHaveText("Published", { timeout: 15_000 });
+    await page.getByTestId("staging-menu").click();
+    const gate = page.getByTestId("quality-gate-status");
+    await expect(gate).toHaveAttribute("data-state", "links", { timeout: 15_000 });
+    const refused = gate.getByTestId("link-notice");
+    await expect(refused).toContainText("Solo page");
+    await expect(refused.getByTestId("link-notice-fix")).toHaveText("Create German versions");
+
+    // Back to draft: the page leaves the next Stage.
+    await refused.getByTestId("link-notice-back-to-draft").click();
+    await expect(page.getByTestId("page-status-toggle").getByRole("button")).toHaveText("Draft", {
+      timeout: 15_000,
+    });
+  } finally {
+    if (runId) {
+      runBunInline(
+        pluginScopedSql(`
+          await tx\`DELETE FROM deploy_runs WHERE id = \${process.env.RUN_ID}::uuid\`;
+          return null;
+        `),
+        { RUN_ID: runId },
+      );
+    }
+    cleanupChrome();
+  }
+});
+
 test("#690 — a nested page's German variant nests under the German parent, reusing the slug", async ({
   context,
   page,

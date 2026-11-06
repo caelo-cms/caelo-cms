@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { combineStageClassifications, finalLinkWarnings } from "./stage-chats.js";
+import { combineStageClassifications } from "./stage-chats.js";
 
 describe("combineStageClassifications (issue #620 multi-chat Stage)", () => {
   it("audits when any chat needs it and keeps every reason, skip and page once", () => {
@@ -37,24 +37,5 @@ describe("combineStageClassifications (issue #620 multi-chat Stage)", () => {
     ]);
     expect(combined.classification.auditNeeded).toBe(false);
     expect(combined.touchedPageIds).toEqual([]);
-  });
-});
-
-describe("finalLinkWarnings (PR #622 review)", () => {
-  it("reports the last merge that changed anything — earlier warnings may be fixed by later merges", () => {
-    expect(
-      finalLinkWarnings([
-        { entityCount: 2, linkWarnings: ["/pricing"] },
-        { entityCount: 1, linkWarnings: [] },
-        { entityCount: 0, linkWarnings: [] },
-      ]),
-    ).toEqual([]);
-    expect(
-      finalLinkWarnings([
-        { entityCount: 1, linkWarnings: [] },
-        { entityCount: 1, linkWarnings: ["/gone"] },
-      ]),
-    ).toEqual(["/gone"]);
-    expect(finalLinkWarnings([{ entityCount: 0, linkWarnings: [] }])).toEqual([]);
   });
 });

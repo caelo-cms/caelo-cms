@@ -60,6 +60,7 @@
         unpublishedLinkWarning?: string | null;
         truncatedListWarning?: string | null;
         pluginProblemWarning?: string | null;
+        linkNoticeWarning?: string | null;
       };
       // Run #9 R10 — say what is NOT in the staged build. Staging ships
       // published pages only; a success toast that hides "your 92 draft
@@ -93,6 +94,11 @@
       if (typeof s.pluginProblemWarning === "string") {
         toast.warning("Staged without an active plugin.", {
           description: [s.pluginProblemWarning, description].filter(Boolean).join(" — "),
+        });
+      } else if (typeof s.linkNoticeWarning === "string") {
+        // #1240 — staged and reviewable, but Publish live will refuse it.
+        toast.warning("Staged, with links to fix before Publish live.", {
+          description: [s.linkNoticeWarning, description].filter(Boolean).join(" — "),
         });
       } else {
         toast.success("Staged.", { description });

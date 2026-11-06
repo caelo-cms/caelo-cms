@@ -722,6 +722,41 @@ export const pluginLinkLocation = z
     column: z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/),
     /** Operator-facing: what this is ("German footer — layout main"). */
     label: z.string().min(1).max(300),
+    /**
+     * #1240 — where the value shows, in an operator's words ("the header",
+     * "the cookie banner"): what a link notice calls the place. Omitted:
+     * the `label`.
+     */
+    area: z.string().min(1).max(120).optional(),
+    /**
+     * #1240 — the page variant this value renders in (a language's own
+     * footer), in the `link-resolve` point's tokens. Core then checks its
+     * links per rendering page of that variant, like a page's own content.
+     * Omitted: the value belongs to no variant and its links resolve as
+     * stored.
+     */
+    variant: linkResolvePageVariant.shape.variant.optional(),
+    /**
+     * #1240 — with `variant`: what this value replaces on that variant's
+     * pages, when it does not show on all of them. A layout placement, or a
+     * shared content instance (its synced placements). Core then checks the
+     * value on exactly those pages, and the keys it carries no longer count
+     * from the source there, so the check agrees with the build. With a
+     * `moduleId`, a layout placement's whole module is replaced.
+     */
+    replaces: z
+      .union([
+        z
+          .object({
+            layoutId: z.string().uuid(),
+            blockName: z.string().min(1),
+            /** Index within the block. */
+            position: z.number().int().nonnegative(),
+          })
+          .strict(),
+        z.object({ contentInstanceId: z.string().uuid() }).strict(),
+      ])
+      .optional(),
     moduleId: z.string().uuid().optional(),
     fields: z
       .array(z.object({ name: z.string().min(1), kind: z.string().min(1) }).strict())

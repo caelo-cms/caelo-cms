@@ -54,6 +54,7 @@ import { StreamOutput } from "./build-output.js";
 import { BuildRefusal } from "./build-refusal.js";
 import { type DeployTarget, generateSite } from "./generate.js";
 import type { MediaDelivery } from "./media-pass.js";
+import { RenderFailureError } from "./nested-modules-pass.js";
 import { installServingGuard } from "./serving-guard.js";
 
 interface CliInput {
@@ -204,6 +205,13 @@ main()
   .then(() => process.exit(0))
   .catch((e: unknown) => {
     const message = e instanceof Error ? e.message : String(e);
-    emit({ kind: "error", message, ...(e instanceof BuildRefusal ? { refusal: true } : {}) });
+    // #1240 — the render gate's failures cross as structure: the admin
+    // builds the operator's text from them.
+    emit({
+      kind: "error",
+      message,
+      ...(e instanceof RenderFailureError ? { renderFailures: e.failures } : {}),
+      ...(e instanceof BuildRefusal ? { refusal: true } : {}),
+    });
     process.exit(1);
   });

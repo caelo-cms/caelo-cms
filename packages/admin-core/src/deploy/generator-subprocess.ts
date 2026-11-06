@@ -42,7 +42,9 @@ import {
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { z } from "zod";
 import { SYSTEM_ACTOR_ID } from "../audit.js";
+import { crossVariantLinkSchema } from "../links/link-notice.js";
 import { ProgressThrottle } from "./progress-throttle.js";
+import { type RenderFailure, renderFailureSchema } from "./render-failures.js";
 import type { BuildUpload } from "./static-publisher.js";
 import { truncatedListSchema } from "./truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "./unpublished-links.js";
@@ -120,6 +122,8 @@ const subprocessDoneSchema = z.object({
   /** #1271 — the generator's peak resident memory over the build, in MiB. */
   peakRssMb: z.number().int().nonnegative(),
   unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
+  /** #1240 — links rendered into another language (a Stage's report). */
+  crossVariantLinks: z.array(crossVariantLinkSchema),
   /** #1257 — page lists cut at the query cap (a Stage warning). */
   truncatedLists: z.array(truncatedListSchema),
   /** #1454 — the headers of the build's pages. */
@@ -132,6 +136,8 @@ export type GeneratorDone = z.infer<typeof subprocessDoneSchema>;
 interface SubprocessError {
   kind: "error";
   message: string;
+  /** #1240 — set when the render gate stopped the build. */
+  renderFailures?: unknown;
   /** #1484 — the generator refused the site's content, it did not fail. */
   refusal?: true;
 }
@@ -251,6 +257,8 @@ export type GeneratorOutcome =
       readonly ok: false;
       readonly message: string;
       readonly stderr: string;
+      /** #1240 — what the render gate refused; absent for any other failure. */
+      readonly renderFailures?: readonly RenderFailure[];
       /**
        * #1484 — the build refused the site's content (`BuildRefusal`):
        * `message` names what to fix. Absent on every other failure.
@@ -450,10 +458,12 @@ async function runGeneratorProcess(
       } else if (finalEvent && finalEvent.kind === "done") {
         finish({ ok: true, result: finalEvent });
       } else if (finalEvent && finalEvent.kind === "error") {
+        const failures = z.array(renderFailureSchema).safeParse(finalEvent.renderFailures);
         finish({
           ok: false,
           message: finalEvent.message,
           stderr,
+          ...(failures.success ? { renderFailures: failures.data } : {}),
           ...(finalEvent.refusal === true ? { refusal: true as const } : {}),
         });
       } else {
