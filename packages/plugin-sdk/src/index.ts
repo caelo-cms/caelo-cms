@@ -2269,7 +2269,10 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * Returns `{ "runtime.js": "…", "runtime.css": "…" }`. `.js` files
    * are linked (deferred) before `</body>`, `.css` files go before
    * `</head>`: a stylesheet up to 2 KB is inlined as `<style>` so it does
-   * not block first paint (#1124), a larger one is linked. The host
+   * not block first paint (#1124), a larger one is linked. Files run in
+   * plugin-slug order, so a runtime that reads what another plugin's runtime
+   * sets on `window` (the consent decision) starts at DOMContentLoaded,
+   * when every deferred file has run. The host
    * hashes each file's content into its name so a CDN can cache it
    * forever and a changed file still lands.
    *

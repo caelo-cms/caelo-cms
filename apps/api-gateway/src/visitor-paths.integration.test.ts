@@ -276,6 +276,48 @@ describe("comments list_approved through the gateway (#634)", () => {
     expect(comments.map((c) => c.author_name)).toEqual(["Ada"]);
   });
 
+  it("pages a long thread with the cursor it hands out, and refuses a forged one (#1169)", async () => {
+    await asAdmin(async (tx) => {
+      await tx`
+        INSERT INTO comment_archive (public_row_id, page_id, author_name, content, status, submitted_at)
+        SELECT gen_random_uuid(), ${pageId}::uuid, 'Reader', 'A long thread', 'approved', now()
+        FROM generate_series(1, 55)`;
+    });
+    await publish();
+    interface Page {
+      data: { comments: { author_name: string }[]; nextCursor: unknown };
+    }
+    const first = await handleRequest(post("/api/plugin/comments/list_approved", { pageId }));
+    await expectStatus(first, 200);
+    const top = ((await first.json()) as Page).data;
+    expect(top.comments).toHaveLength(50);
+    expect(top.nextCursor).not.toBeNull();
+
+    const second = await handleRequest(
+      post("/api/plugin/comments/list_approved", { pageId, before: top.nextCursor }),
+    );
+    await expectStatus(second, 200);
+    const rest = ((await second.json()) as Page).data;
+    expect(rest.comments.map((c) => c.author_name).sort()).toEqual([
+      "Ada",
+      ...Array.from({ length: 5 }, () => "Reader"),
+    ]);
+    expect(rest.nextCursor).toBeNull();
+
+    const forged = await handleRequest(
+      post("/api/plugin/comments/list_approved", {
+        pageId,
+        before: { archivedAt: "'; DROP TABLE published_comments; --", id: pageId },
+      }),
+    );
+    await expectStatus(forged, 400);
+
+    await asAdmin(async (tx) => {
+      await tx`DELETE FROM comment_archive WHERE author_name = 'Reader' AND page_id = ${pageId}::uuid`;
+    });
+    await publish();
+  });
+
   it("a moderation in the admin reaches the gateway through the outbox", async () => {
     await asAdmin(async (tx) => {
       await tx`
@@ -286,7 +328,8 @@ describe("comments list_approved through the gateway (#634)", () => {
     const r = await handleRequest(post("/api/plugin/comments/list_approved", { pageId }));
     const comments = ((await r.json()) as { data: { comments: { author_name: string }[] } }).data
       .comments;
-    expect(comments.map((c) => c.author_name)).toEqual(["Ada", "Grace"]);
+    // Newest approval first (#1169).
+    expect(comments.map((c) => c.author_name)).toEqual(["Grace", "Ada"]);
     await asAdmin(async (tx) => {
       await tx`DELETE FROM comment_archive WHERE author_name = 'Grace' AND page_id = ${pageId}::uuid`;
     });

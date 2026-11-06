@@ -199,6 +199,12 @@ Each bake is wrapped in markers (`<!--caelo-bake:<slug>:<pageId>:<version>-->`
 in the page are neutralised at build time, so only the plugin pass can open or
 close a bake region.
 
+A plugin may bake a bounded window of a long list (page weight is a blocking
+quality check) when every item stays reachable: comments bake the newest 50
+and state the total in the HTML, and the client pages through the older ones
+with a declared public read (#1169). Crawlers and visitors without JavaScript
+get that window and the count.
+
 **An approved item between two publishes (#1155).** Visitor data (comments,
 ratings, …) is a plugin topic, handled on the platform level for every plugin
 the same way:
