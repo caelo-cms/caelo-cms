@@ -14,9 +14,10 @@
  * All three must agree on which page `/about` is, so all three derive it
  * through {@link linkTargetPagesOf}. Branch view: under a chat branch the
  * chat sees main plus its own created pages, with its pending page edits
- * (rename, move, status, delete) overlaid — the same view `pages.list`
- * gives the chat, so a link the chat writes to a page it just renamed
- * resolves to that page.
+ * (rename, move, status, delete) overlaid, and the URLs its pending plugin
+ * rows give a page (#1411, `branch-url-drift.ts`) — the same view
+ * `pages.list` gives the chat, so a link the chat writes to a page it just
+ * renamed resolves to that page.
  *
  * The preview reads the rows through its cached site view (#1212) and
  * asks the plugins for a pending move's path while it holds no
@@ -38,8 +39,13 @@ import {
 import { sql } from "drizzle-orm";
 import { headOverlaySql } from "../draft.js";
 import { loadPageRows, type PageRows } from "../lists/pages-view.js";
+import {
+  annotationDriftOf,
+  annotationDriftPaths,
+  pendingUrlAnnotationPageIds,
+} from "../ops/content/branch-url-drift.js";
 import { composePaths, composePathsOutsideTransaction } from "../ops/content/compose-paths.js";
-import { driftIdsBetween, pageTreeOf } from "../ops/content/page-tree.js";
+import { driftIdsBetween, loadPageChains, pageTreeOf } from "../ops/content/page-tree.js";
 import type { SiteView } from "../site-view.js";
 
 /** A page as link canonicalisation and humanising need it. */
@@ -56,7 +62,8 @@ export interface LinkTargets {
 /**
  * The link-target pages of `rows`: live (non-deleted) rows with the
  * branch's pending title / status / delete applied, at their stored path
- * or, for a page a pending rename or move changes, at `driftPaths`.
+ * or, for a page a pending rename, move or plugin row changes, at
+ * `driftPaths`.
  */
 export function linkTargetPagesOf(
   { rows, pending }: PageRows,
@@ -80,9 +87,9 @@ export function linkTargetPagesOf(
 /**
  * Load the link targets visible to `chatBranchId` (null = main).
  *
- * Two small queries plus, only when the branch has pending renames or
- * moves, one path composition for the drifted pages — the same shape
- * `pages.list` uses for its branch view.
+ * Two small queries plus, only when the branch has pending renames,
+ * moves or rows of a URL plugin, one path composition for those pages —
+ * the same shape `pages.list` uses for its branch view.
  */
 export async function loadLinkTargets(
   tx: TransactionRunner,
@@ -101,14 +108,19 @@ async function loadLinkTargetPages(
   chatBranchId: string | null,
 ): Promise<LinkTargetPage[]> {
   const pageRows = await loadPageRows(tx, chatBranchId);
+  const annotated = await pendingUrlAnnotationPageIds(tx, chatBranchId);
   let driftPaths: ReadonlyMap<string, string> = new Map();
-  if (chatBranchId && pageRows.pending.size > 0) {
+  if (chatBranchId && (pageRows.pending.size > 0 || annotated.length > 0)) {
     // A rename or move changes the path of the page and everything below
-    // it, recomposed from the branch's tree.
+    // it, recomposed from the branch's tree; a plugin row changes the
+    // path of the page it names.
     const live = pageRows.rows.filter((r) => r.deleted_at === null);
     const tree = pageTreeOf(live, pageRows.pending);
     const drifted = driftIdsBetween(tree, pageTreeOf(live, new Map()));
-    if (drifted.length > 0) driftPaths = await composePaths(tx, tree, drifted, { chatBranchId });
+    driftPaths = new Map([
+      ...(await annotationDriftPaths(tx, tree, annotated, chatBranchId)),
+      ...(await composePaths(tx, tree, drifted, { chatBranchId })),
+    ]);
   }
   return linkTargetPagesOf(pageRows, driftPaths);
 }
@@ -121,7 +133,8 @@ async function loadLinkTargetPages(
  * A page's stored `current_path` is its branch path unless the page or a
  * page above it has a pending rename or move on the branch (a pending
  * slug or parent that differs from the live row): only then is the path
- * composed, through the full branch view. A pending delete hides the
+ * composed, through the full branch view. A page a pending row of a URL
+ * plugin names is composed on its own (#1411). A pending delete hides the
  * page; a page the caller cannot see, or a deleted medium, stays raw.
  */
 export async function loadHumaniseLookup(
@@ -171,12 +184,29 @@ export async function loadHumaniseLookup(
         for (const h of heads) if (h.deleted) deleted.add(h.entity_id);
       }
       for (const r of rows) if (!deleted.has(r.id)) paths.set(r.id, r.current_path);
+      if (chatBranchId) {
+        for (const [id, path] of await namedAnnotationDrift(tx, chatBranchId, [...paths.keys()])) {
+          paths.set(id, path);
+        }
+      }
     }
   }
   return {
     pagePath: (id) => paths.get(id) ?? null,
     mediaSlug: (id) => slugs.get(id) ?? null,
   };
+}
+
+/** {@link annotationDriftPaths} for pages named by id: reads their chains only. */
+async function namedAnnotationDrift(
+  tx: TransactionRunner,
+  branchId: string,
+  pageIds: readonly string[],
+): Promise<Map<string, string>> {
+  const annotated = await pendingUrlAnnotationPageIds(tx, branchId, pageIds);
+  if (annotated.length === 0) return new Map();
+  const { tree } = await loadPageChains(tx, branchId, annotated);
+  return annotationDriftPaths(tx, tree, annotated, branchId);
 }
 
 /**
@@ -217,22 +247,28 @@ async function chainHasPendingMove(
 }
 
 /**
- * Issue #1212 — the paths a branch's pending renames and moves give its
- * pages, composed from the site view's tree. Asks the URL plugins for
- * their annotations, so call it with no transaction held. Empty when
- * nothing drifted (no plugin call then).
+ * Issue #1212 — the paths a branch's pending renames, moves and plugin
+ * rows give its pages, composed from the site view's tree. Asks the URL
+ * plugins for their annotations, so call it with no transaction held.
+ * Empty when nothing drifted (no plugin call then).
+ *
+ * @param annotated {@link pendingUrlAnnotationPageIds} of the view's
+ *   branch. Read per render, not kept in the view: plugin rows change
+ *   without moving the view's journal mark (see `site-view.ts`).
  */
 export async function siteViewDriftPaths(
   view: SiteView,
   renderScope: RenderScope,
+  annotated: readonly string[],
 ): Promise<ReadonlyMap<string, string>> {
-  if (view.driftedIds.length === 0) return new Map();
-  return composePathsOutsideTransaction(
-    view.tree,
-    view.driftedIds,
-    view.settings.homePageId,
-    renderScope,
-  );
+  const home = view.settings.homePageId;
+  const moved = await composePathsOutsideTransaction(view.tree, view.driftedIds, home, renderScope);
+  if (annotated.length === 0) return moved;
+  const branchPaths = await composePathsOutsideTransaction(view.tree, annotated, home, renderScope);
+  const livePaths = await composePathsOutsideTransaction(view.tree, annotated, home, {
+    chatBranchId: null,
+  });
+  return new Map([...annotationDriftOf(branchPaths, livePaths), ...moved]);
 }
 
 /**
