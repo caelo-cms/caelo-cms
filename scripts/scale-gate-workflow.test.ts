@@ -15,6 +15,8 @@
  *     before the admin starts, and the load samples its CPU, drives the
  *     scheduler tick and waits for the plugins' change consumers.
  * W7 (#1390): the fixture activates every plugin in packages/plugins/.
+ * W8 (#1269): Postgres logs the plans of slow statements (auto_explain,
+ *     JSON, actual rows + buffers) and the report reads them back.
  */
 import { describe, expect, it } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -29,6 +31,7 @@ import {
   parseCpuStat,
   summariseCpu,
 } from "./scale-gate/observe.ts";
+import { groupSlowPlans, parseLoggedPlans, renderPlan } from "./scale-gate/plans.ts";
 import { SHIPPED_PLUGIN_SLUGS } from "./scale-gate/plugins.ts";
 import {
   countNewMatches,
@@ -80,7 +83,13 @@ describe("scale-gate.yml", () => {
       "max_connections=100",
       "deadlock_timeout=100ms",
       "log_lock_waits=on",
-      "shared_preload_libraries=pg_stat_statements",
+      "shared_preload_libraries=pg_stat_statements,auto_explain",
+      // #1269: the slow statements' plans, read back by plans.ts (JSON).
+      "auto_explain.log_min_duration=2s",
+      "auto_explain.log_analyze=on",
+      "auto_explain.log_buffers=on",
+      "auto_explain.log_timing=off",
+      "auto_explain.log_format=json",
     ]) {
       expect(runs).toContain(flag);
     }
@@ -271,5 +280,64 @@ describe("scale-gate first paint (#1268)", () => {
     await expect(readFirstPaint(new Response("<html>", { status: 200 }))).rejects.toThrow(
       "without </html>",
     );
+  });
+});
+
+describe("scale-gate slow plans (#1269)", () => {
+  const prefix = "2026-11-06 10:00:00.000 UTC [42] ";
+  const entry = (ms: number, query: string, plan: object) =>
+    [
+      `${prefix}LOG:  duration: ${ms} ms  plan:`,
+      ...JSON.stringify({ "Query Text": query, Plan: plan }, null, 2)
+        .split("\n")
+        .map((l) => `\t${l}`),
+    ].join("\n");
+  const scan = {
+    "Node Type": "Index Scan",
+    "Index Name": "entity_changes_kind_xid_idx",
+    "Relation Name": "entity_changes",
+    "Actual Rows": 3,
+    "Actual Loops": 1,
+    "Shared Hit Blocks": 13000,
+    "Shared Read Blocks": 700,
+    "Index Cond": "(kind = ANY ($1))",
+    Filter: "(op <> 'insert'::text)",
+    "Rows Removed by Filter": 99000,
+  };
+
+  it("reads JSON plans out of the log between other lines, skipping a cut one", () => {
+    const log = [
+      `${prefix}LOG:  checkpoint starting: time`,
+      entry(8123.5, "SELECT 1\n  FROM entity_changes", { "Node Type": "Limit", Plans: [scan] }),
+      `${prefix}LOG:  process 7 still waiting for ShareLock`,
+      `${prefix}LOG:  duration: 3000 ms  plan:`,
+      '\t{ "Query Text": "cut',
+      entry(2500, "SELECT 1 FROM entity_changes", scan),
+    ].join("\n");
+    const plans = parseLoggedPlans(log);
+    expect(plans.map((p) => [p.durationMs, p.query])).toEqual([
+      [8123.5, "SELECT 1 FROM entity_changes"],
+      [2500, "SELECT 1 FROM entity_changes"],
+    ]);
+  });
+
+  it("groups by statement and keeps the slowest plan, rendered with rows and buffers", () => {
+    const log = [
+      entry(2500, "SELECT a", scan),
+      entry(9000, "SELECT a", { "Node Type": "Limit", Plans: [scan] }),
+      entry(4000, "SELECT b", scan),
+    ].join("\n");
+    const groups = groupSlowPlans(parseLoggedPlans(log), 10);
+    expect(groups.map((g) => [g.query, g.count, g.totalMs, g.maxMs])).toEqual([
+      ["SELECT a", 2, 11500, 9000],
+      ["SELECT b", 1, 4000, 4000],
+    ]);
+    expect(groups[0]?.plan.split("\n")).toEqual([
+      "Limit (rows=? loops=? buffers=0)",
+      "  Index Scan using entity_changes_kind_xid_idx on entity_changes (rows=3 loops=1 buffers=13700 (read 700) removed by filter=99000)",
+      "      Index Cond: (kind = ANY ($1))",
+      "      Filter: (op <> 'insert'::text)",
+    ]);
+    expect(renderPlan(scan)).toStartWith("Index Scan using");
   });
 });
