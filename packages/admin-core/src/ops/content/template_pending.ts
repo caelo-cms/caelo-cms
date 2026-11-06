@@ -55,6 +55,7 @@ export const proposeTemplateUpdateOp = defineOperation({
         kind: "HandlerError",
         operation: "templates.propose_update",
         message: `template ${input.templateId} not found or deleted`,
+        refusal: true,
       });
     }
     const changedFields = (
@@ -108,6 +109,7 @@ export const proposeTemplateDeleteOp = defineOperation({
         kind: "HandlerError",
         operation: "templates.propose_delete",
         message: `template ${input.templateId} not found or already deleted`,
+        refusal: true,
       });
     }
     // Sample bound pages so the Owner sees what fails first.

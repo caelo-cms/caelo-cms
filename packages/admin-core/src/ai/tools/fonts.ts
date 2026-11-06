@@ -8,7 +8,7 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { fontFindInput, fontRef, fontResolveInput } from "@caelo-cms/shared";
 import { z } from "zod";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { makeReadTool } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -26,7 +26,7 @@ export const findFontsTool: ToolDefinitionWithHandler<z.infer<typeof fontFindInp
   schema: fontFindInput,
   async handler(ctx, input, toolCtx) {
     const result = await execute(toolCtx.registry, toolCtx.adapter, ctx, "fonts.find", input);
-    if (!result.ok) return { ok: false, content: describeError(result.error) };
+    if (!result.ok) return toolError(result.error, describeError(result.error));
     return {
       ok: true,
       content: compact({ installed: result.value, catalog: await fontCatalog(input.query) }),
@@ -67,7 +67,7 @@ export const acquireFontTool: ToolDefinitionWithHandler<z.infer<typeof acquireFo
       );
       return result.ok
         ? { ok: true, content: compact(result.value) }
-        : { ok: false, content: describeError(result.error) };
+        : toolError(result.error, describeError(result.error));
     } catch (e) {
       return { ok: false, content: e instanceof Error ? e.message : "Font acquisition failed" };
     }

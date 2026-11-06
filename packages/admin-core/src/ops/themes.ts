@@ -391,6 +391,7 @@ export const updateThemeTokensOp = defineOperation({
         message: input.themeSlug
           ? `theme '${input.themeSlug}' not found — call list_themes to see what's available`
           : "no active theme — call list_themes; an Owner must activate one via propose_activate_theme",
+        refusal: true,
       });
     }
 
@@ -641,6 +642,7 @@ export const updateThemeMetaOp = defineOperation({
         message: input.themeSlug
           ? `theme '${input.themeSlug}' not found — call list_themes to see what's available`
           : "no active theme — an Owner must activate one via propose_activate_theme",
+        refusal: true,
       });
     }
 
@@ -801,6 +803,7 @@ async function bindThemeAsset(
       kind: "HandlerError",
       operation: "themes.set_asset",
       message: "target theme not found",
+      refusal: true,
     });
   }
   if (ctx.chatBranchId) {
@@ -827,6 +830,7 @@ async function bindThemeAsset(
         kind: "HandlerError",
         operation: "themes.set_asset",
         message: `media asset ${input.mediaId} not found — upload one via /api/media/upload first`,
+        refusal: true,
       });
     }
     // The favicon is emitted as `<link rel="icon" type="<mime>">` in every
@@ -921,6 +925,7 @@ export const duplicateThemeOp = defineOperation({
         kind: "HandlerError",
         operation: "themes.duplicate",
         message: `source theme '${input.sourceSlug}' not found`,
+        refusal: true,
       });
     }
     // Slug uniqueness pre-check.
@@ -1047,6 +1052,7 @@ export const importThemeOp = defineOperation({
         kind: "HandlerError",
         operation: "themes.import",
         message: `theme '${input.themeSlug}' not found — mint a new theme via propose_create_theme first, then import into it.`,
+        refusal: true,
       });
     }
 
@@ -1111,6 +1117,7 @@ export const exportThemeDtcgOp = defineOperation({
         kind: "HandlerError",
         operation: "themes.export_dtcg",
         message: `theme '${input.themeSlug}' not found`,
+        refusal: true,
       });
     }
     const body = exportDtcg({ tokens: target.tokens });
@@ -1170,6 +1177,7 @@ export const listThemeHistoryOp = defineOperation({
         message: input.themeSlug
           ? `theme '${input.themeSlug}' not found`
           : "no active theme — call list_themes",
+        refusal: true,
       });
     }
     const rows = (await tx.execute(sql`

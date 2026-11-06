@@ -30,6 +30,7 @@ import type { PluginChange, PluginChangeKind, PluginInvocation } from "@caelo-cm
 import {
   beginConsumerRebuild,
   type ChangeBatch,
+  checkJournalMark,
   claimConsumer,
   commitChanges,
   consumerClaimExpiresInMs,
@@ -40,6 +41,7 @@ import {
   execute,
   finishConsumerRebuild,
   type JournalChange,
+  type JournalCheck,
   type JournalFilter,
   type ListenHandle,
   type OperationDefinition,
@@ -322,7 +324,71 @@ const cursorStateOp = defineOperation({
   },
 });
 
-const OPS = [claimOp, releaseOp, pollOp, commitOp, beginRebuildOp, finishRebuildOp, cursorStateOp];
+/**
+ * `plugin_changes.check_mark` — #1269: is an answer the host cached for a
+ * plugin still what the plugin would answer now, as far as the plugin's
+ * own declared tables reach; and the mark to keep with a fresh answer.
+ */
+const checkMarkOp = defineOperation({
+  name: "plugin_changes.check_mark",
+  // Why human-only: only the host checks the answers it caches for plugins.
+  actorScope: SYSTEM_ONLY,
+  readScope: "request",
+  database: "cms_admin",
+  input: z
+    .object({
+      mark: z
+        .object({ snapshot: z.string().min(1).max(100_000), ownXid: z.string().nullable() })
+        .strict()
+        .nullable(),
+      filter: journalFilterSchema.extend({
+        columns: z
+          .record(z.string().regex(/^[a-z_]{1,40}$/), z.array(z.string().max(63)).max(64))
+          .optional(),
+        branchOnlyKinds: z
+          .array(z.string().regex(/^[a-z_]{1,40}$/))
+          .max(8)
+          .optional(),
+        kindOps: z
+          .record(
+            z.string().regex(/^[a-z_]{1,40}$/),
+            z.array(z.enum(["insert", "update", "delete", "truncate"])).max(4),
+          )
+          .optional(),
+        unscopedOps: z
+          .array(z.enum(["insert", "update", "delete", "truncate"]))
+          .max(4)
+          .optional(),
+      }),
+    })
+    .strict(),
+  output: z.custom<JournalCheck>(),
+  handler: async (_ctx, input, tx) => ok(await checkJournalMark(tx, input.mark, input.filter)),
+});
+
+/** {@link checkMarkOp} through the Query API, as the system. */
+export async function checkPluginJournalMark(
+  adapter: DatabaseAdapter,
+  registry: OperationRegistry,
+  mark: { readonly snapshot: string; readonly ownXid: string | null } | null,
+  filter: JournalFilter,
+): Promise<JournalCheck> {
+  return run<JournalCheck>(adapter, registry, checkMarkOp.name, {
+    mark: mark ? { snapshot: mark.snapshot, ownXid: mark.ownXid } : null,
+    filter,
+  });
+}
+
+const OPS = [
+  claimOp,
+  releaseOp,
+  pollOp,
+  commitOp,
+  beginRebuildOp,
+  finishRebuildOp,
+  cursorStateOp,
+  checkMarkOp,
+];
 
 /** Register the `plugin_changes.*` operations (idempotent). */
 export function registerPluginChangeOps(registry: OperationRegistry): void {

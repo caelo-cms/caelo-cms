@@ -513,13 +513,19 @@ describe("history tools", () => {
         affectedPages: [
           { pageId: U2, pageSlug: "home", templateId: U1, templateSlug: "t", blockName: "hero" },
         ],
+        affectedPagesCapped: true,
+        layouts: ["site-default"],
+        nestedIn: ["pricing-grid"],
         severity: "high",
         reasons: ["header"],
       }),
     });
     const r = await run(getModuleImpactTool, { moduleId: U1 }, h.toolCtx);
     expect(r.content).toContain("severity high");
+    expect(r.content).toContain("1+ page placement(s)");
     expect(r.content).toContain("home (template t, block hero)");
+    expect(r.content).toContain("site chrome of layout(s): site-default");
+    expect(r.content).toContain("nested in module(s): pricing-grid");
   });
 
   it("list_unpublished_changes uses the session from the tool context", async () => {

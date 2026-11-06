@@ -331,6 +331,8 @@ export default definePlugin<PluginContextTier1>({
     },
   },
 
+  /** #1387 — the site's cookie declaration; no column here is personal or secret. */
+  aiReadableTables: ["categories", "settings", "module_guards", "tags"],
   adminSchema: {
     categories: {
       key: "string",

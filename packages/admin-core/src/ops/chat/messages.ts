@@ -309,6 +309,38 @@ export const cacheToolResultOp = defineOperation({
 });
 
 /**
+ * #1484 — how many times this chat got the same failed answer from a tool:
+ * the signal that an expected refusal is not being acted on. Reads the rows
+ * `chat.cache_tool_result` wrote. Matches on the start of the text because a
+ * kept call's cached text ends in a notice with its own call id.
+ */
+export const countToolRefusalsOp = defineOperation({
+  name: "chat.count_tool_refusals",
+  readScope: "request",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      toolName: z.string().min(1),
+      reason: z.string().min(1),
+    })
+    .strict(),
+  output: z.object({ count: z.number().int().nonnegative() }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT count(*)::int AS count
+      FROM chat_tool_results
+      WHERE chat_session_id = ${input.chatSessionId}::uuid
+        AND tool_name = ${input.toolName}
+        AND NOT result_ok
+        AND starts_with(result_content, ${input.reason})
+    `)) as unknown as Array<{ count: number }>;
+    return ok({ count: rows[0]?.count ?? 0 });
+  },
+});
+
+/**
  * #1275 — claim a kept call for one retry. Atomic: of two parallel
  * retries of the same id exactly one gets the arguments; the other is
  * told the call is already being retried. Only the actor the call was

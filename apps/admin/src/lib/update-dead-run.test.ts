@@ -3,7 +3,11 @@
 import { describe, expect, it } from "bun:test";
 import { type ActiveRequest, deadRunOf, type LatestRun } from "./update-dead-run.js";
 
-const OPTS = { canInstall: true, logsUrl: "https://console.cloud.google.com/run/jobs" };
+const OPTS = {
+  canInstall: true,
+  logsUrl: "https://console.cloud.google.com/run/jobs",
+  jobsAdopt: true,
+};
 const run = (execution: string, state: LatestRun["state"]): LatestRun => ({
   execution,
   state,
@@ -43,14 +47,28 @@ describe("deadRunOf", () => {
     expect(deadRunOf(converge(null), run("c-2", "running"), OPTS)).toBeNull();
   });
 
-  it("only the Owner may continue, and an app-roll run is never continued", () => {
+  it("only the Owner may continue", () => {
     expect(
       deadRunOf(converge("c-1"), run("c-1", "failed"), { ...OPTS, canInstall: false })?.continuable,
     ).toBe(false);
+  });
+
+  it("#1029: an app-roll between its stages or with a dead run continues like a converge", () => {
     const roll: ActiveRequest = { status: "running", route: "app_roll", execution: "u-1" };
-    expect(deadRunOf(roll, run("u-1", "failed"), OPTS)?.continuable).toBe(false);
-    // An app-roll request always names its execution once claimed.
-    expect(deadRunOf({ ...roll, execution: null }, null, OPTS)).toBeNull();
+    expect(deadRunOf(roll, run("u-1", "failed"), OPTS)?.continuable).toBe(true);
+    expect(deadRunOf({ ...roll, execution: null }, run("u-1", "succeeded"), OPTS)).toEqual({
+      logsUrl: "https://logs/u-1",
+      continuable: true,
+    });
+    // Stage 2 is starting: its run is the latest and it lives.
+    expect(deadRunOf({ ...roll, execution: null }, run("u-2", "running"), OPTS)).toBeNull();
+  });
+
+  it("the self-hosted agent adopts nothing: its dead run is never continued", () => {
+    const opts = { ...OPTS, jobsAdopt: false };
+    const roll: ActiveRequest = { status: "running", route: "app_roll", execution: "agent@h" };
+    expect(deadRunOf(roll, run("agent@h", "failed"), opts)?.continuable).toBe(false);
+    expect(deadRunOf({ ...roll, execution: null }, null, opts)).toBeNull();
   });
 
   it("nothing is dead unless the request is running", () => {

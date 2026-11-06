@@ -16,7 +16,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isIpLiteral } from "@caelo-cms/shared";
+import { CAELO_VERSION, isIpLiteral } from "@caelo-cms/shared";
 import {
   ensureCloudSqlVerifyFull,
   liveDatabaseUrls,
@@ -25,8 +25,9 @@ import {
 import { findSqlInstance } from "./gateway-credentials.js";
 import { gcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
-import { GCP_STACK_ENV } from "./gcp-names.js";
+import { GCP_STACK_ENV, upgraderJobName } from "./gcp-names.js";
 import type { InstallMetadata } from "./install-state.js";
+import { jobExecutionNameError, selfHandoverDeps } from "./job-handover-gcp.js";
 import { readAdminConfig, runMigrationsViaCloudRunJob } from "./migration-runner.js";
 import { fetchVerifiedReleaseManifest } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
@@ -44,7 +45,7 @@ import { createIapHealthProbe } from "./upgrade/health.js";
 import { createReleaseImageForms } from "./upgrade/image-forms.js";
 import { httpsLoadBalancerGet } from "./upgrade/load-balancer-get.js";
 import { type IamTester, restIamTester } from "./upgrader-iam-preflight.js";
-import type { UpdateQueue, UpgraderJobDeps } from "./upgrader-job.js";
+import type { UpgraderJobDeps, UpgraderQueue } from "./upgrader-job.js";
 import type { JobLog } from "./upgrader-reporter.js";
 import { UPGRADER_TASK_TIMEOUT_MINUTES } from "./upgrader-setup.js";
 
@@ -53,6 +54,11 @@ export interface UpgraderPlacement {
   readonly projectId: string;
   readonly region: string;
   readonly execution: string | null;
+}
+
+/** Why `CLOUD_RUN_EXECUTION` cannot name a run of the upgrader job, or null when it can. */
+export function upgraderExecutionNameError(execution: string | null): string | null {
+  return jobExecutionNameError(upgraderJobName(GCP_STACK_ENV), execution);
 }
 
 /**
@@ -182,7 +188,7 @@ export function gcloudIamTester(run: GcloudRunner, http: HttpFetch): IamTester {
 /** Every dependency of {@link runUpgraderJob} except the database and the log. */
 export function gcpUpgraderDeps(
   placement: UpgraderPlacement,
-  queue: UpdateQueue,
+  queue: UpgraderQueue,
   log: JobLog,
 ): UpgraderJobDeps {
   const run: GcloudRunner = gcloud;
@@ -199,7 +205,15 @@ export function gcpUpgraderDeps(
     projectId: placement.projectId,
     region: placement.region,
     env: GCP_STACK_ENV,
-    execution: placement.execution,
+    // #1029 — stage 1 moves this job onto the target's image, with the
+    // rights on itself it has always had for that (upgrader-setup.ts).
+    ...selfHandoverDeps(run, {
+      job: upgraderJobName(GCP_STACK_ENV),
+      projectId: placement.projectId,
+      region: placement.region,
+      execution: placement.execution,
+    }),
+    ownVersion: CAELO_VERSION,
     // #818 — the IAM self-check asks as the job's own account (gcloud's
     // token from the metadata server), so it sees exactly the job's grants.
     iam: gcloudIamTester(run, http),

@@ -46,6 +46,7 @@ import {
   recordedImageDigests,
   recordImageDigests,
 } from "../install-state.js";
+import { issueOwnerSetup } from "../owner-setup-token.js";
 import { fetchVerifiedReleaseManifest } from "../release-manifest.js";
 import { selfCommand } from "../self-command.js";
 import { attachInstall } from "../state-attach.js";
@@ -248,6 +249,14 @@ async function showResult(meta: InstallMetadata): Promise<void> {
     process.exit(1);
   }
   const adminBase = new URL(link).origin;
+  // #1476 — this run may come days after the install: a link past its 24 hours
+  // is replaced here instead of being shown again.
+  if (!meta.region) throw new Error(`install.json of ${meta.installId} records no region.`);
+  const issued = await issueOwnerSetup(gcloud, { projectId, region: meta.region }, adminBase);
+  if (!issued.ok) {
+    cancel(`Could not store the Owner setup link: ${issued.error}`);
+    process.exit(1);
+  }
   // The records from the stack's outputs, as the pulumi-up step recorded
   // them — not from the log, which a re-run after the install no longer shows.
   // Uncached: this process may hold progress.json from before the job ran.
@@ -269,7 +278,7 @@ async function showResult(meta: InstallMetadata): Promise<void> {
       "",
       bold("Next steps:"),
       `  1. Owner setup — open in your browser (sign in with ${meta.ownerEmail}):`,
-      `     ${cyan(link)}`,
+      `     ${cyan(issued.link)}  ${dim(`(valid until ${issued.expiresAt})`)}`,
       `  2. AI provider — visit ${cyan(`${adminBase}/settings/ai`)} and paste your Anthropic API key.`,
       `  3. Set the go-live DNS records above once your new site is published`,
       `     (the admin lists them too, at ${cyan(`${adminBase}/settings/domains`)}).`,

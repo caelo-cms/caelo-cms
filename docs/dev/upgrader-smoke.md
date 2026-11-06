@@ -16,7 +16,7 @@ against a fake gcloud cannot catch either class of bug (CLAUDE.md §4,
 §6). The smoke install runs the real thing: the upgrader job's image and
 service account, its IAM self-check, the Cloud SQL backup, the migration
 job on Direct VPC egress, the roll, the deep health check through IAP, and
-the self-update.
+the hand-over to the target's ops image that starts it all (#1029).
 
 ## The decision: no side channel
 
@@ -41,8 +41,8 @@ So the smoke test never starts an update. It is split in two:
   admin + gateway digests;
 - the revisions serving traffic run exactly those images, and both
   services are `Ready` (the images booted on Cloud Run);
-- the upgrader job runs R's ops image (its self-update, the last step of
-  an in-app update).
+- the upgrader job runs R's ops image (stage 1 of an in-app update moved
+  it there, #1029).
 
 The trade-off, stated plainly: a release's own upgrader run happens
 after it is published, not before. What blocks is the chain — release

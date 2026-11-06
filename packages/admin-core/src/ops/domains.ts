@@ -194,6 +194,7 @@ export const verifyDomainOp = defineOperation({
         kind: "HandlerError",
         operation: "domains.verify",
         message: "domain not found",
+        refusal: true,
       });
     }
     const dns = await import("node:dns/promises");

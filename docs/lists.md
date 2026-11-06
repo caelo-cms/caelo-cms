@@ -175,9 +175,8 @@ live, never by the AI), `page_terms(page_id, list_id, item_id)` — draft
 state of the page, part of the page snapshot.
 
 **Every page has a chosen page type (#1276).** There is no stored default
-type or template (`site_defaults` keeps only the default layout; 0444
-relaxed `default_page_type_id` / `default_template_id` for the previous
-image, the next release drops them). Each create path —
+type or template (`site_defaults` keeps only the default layout). Each
+create path —
 `pages.create` / `build_page`, `pages.duplicate` / `duplicate_page`,
 `imports.accept_page(s)` / `accept_import_pages`, the admin "New page"
 form and the import panel's Accept — names `pageType`; `templateId` is
@@ -507,7 +506,7 @@ inside itself.
 | `{{#kids}}` inside an entry | iterate that entry's children (name from `children.name`) |
 | `{{#items}}` inside a source node | iterate the generated entries |
 | `{{>recurse}}` | inside a children section of a recursive type: render the current entry's children with the enclosing section's block (bounded by `max_depth`) |
-| `{{x.y}}` | dot access into compound values (`link`, `media`, `date`, `icon`, `props`, `page`) |
+| `{{x.y}}` | dot access into compound values (`link`, `media`, `date`, `icon`, `props`, `page`); a module field of kind `link` reads the same outside any list (`{{cta}}`, `{{cta.href}}`, `{{cta.target}}`, `{{cta.title}}`, #1433) |
 | `{{>f}}` inside an entry | render the entry's `module` field |
 | `{{#is_<node>}}` | true when the entry's node kind is `<node>` |
 | `id node index depth first last` | system values (`index` 0-based, `depth` 1-based) |
@@ -521,6 +520,16 @@ entries outwards, then the module's fields. A key found nowhere stays raw
 and pushes `field-not-declared:<f>.<key>` (`<f>` = the module field the
 outermost section iterates). A declared but empty entry field is empty,
 never looked up further out.
+
+A dotted path whose head exists and whose rest does not (`{{link.nope}}`,
+`{{cta.label}}` on a `link` field, `{{title.text}}` on a text field) stays
+raw too, but it is no copy: it pushes `field-path-unknown:<path>`, a path
+into a `link` field with no value pushes `field-value-empty:<path>`, and a
+`link` value of no link shape `field-value-malformed:<field>` (#1433). All
+three show in the preview's missing list and stop a Stage, unlike
+`field-not-declared`, because an unknown `{{name}}` can be literal copy.
+`modules.create` and `modules.update` refuse the first kind at write, with
+the form that works; inside a list section only the render knows the keys.
 
 Details the table leaves open:
 

@@ -21,6 +21,7 @@ import {
   BUG_REPORT_KIND_BEFORE_1192,
   type BugClusterStatus,
   type BugIntakeReport,
+  type BugReportCiRun,
   type BugReportKind,
   type BugReportSeverity,
 } from "@caelo-cms/shared";
@@ -42,6 +43,8 @@ export interface ClusterRecord {
   fingerprints: string[];
   /** SHA-256 of each reporting install id (the intake never lists raw ids). */
   installHashes: string[];
+  /** #1416 — the CI runs that reported it, newest last; never counted as installs. */
+  ciRuns: BugReportCiRun[];
   occurrences: number;
   versions: string[];
   firstSeen: string;

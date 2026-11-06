@@ -17,6 +17,7 @@ import {
   captureBackendFromEnv,
   setCaptureBackendForTests,
 } from "../../../capture/capture-backend.js";
+import { shouldAutoCaptureToolFailure } from "../../chat-runner/tool-failure-capture.js";
 import {
   PREVIEW_SCREENSHOT_TOKEN_HEADER,
   verifyPreviewScreenshotToken,
@@ -347,6 +348,32 @@ describe("operator-browser path (SSE) + fallback", () => {
     expect(result.ok).toBe(false);
     expect(result.content).toBe("screenshot_page failed: html2canvas exploded");
     expect(recorded).toHaveLength(0);
+    // #1484 — a capture that broke is a defect; it stays filed.
+    expect(shouldAutoCaptureToolFailure("screenshot_page", result)).toBe(true);
+  });
+
+  it("#1484 a selector that matches nothing is a refusal, not a bug (#1450, #1451)", async () => {
+    installFakeScreenshotter([]);
+    const events: Array<{ kind: string; requestId: string }> = [];
+    const pending = screenshotPageTool.handler(
+      aiCtx,
+      { pageId: PAGE_ID, selector: "[data-lp-js]" },
+      toolCtx({
+        pushClientEvent: (e) => events.push(e as { kind: string; requestId: string }),
+        operatorBrowserAttached: true,
+      }),
+    );
+    failScreenshot(
+      events[0]?.requestId ?? "",
+      "selector matched nothing in the rendered page: [data-lp-js]",
+      { refused: true },
+    );
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    expect(result.content).toContain("selector matched nothing");
+    expect(result.content).toContain("query_page_html");
+    expect(result.refusal).toBe(true);
+    expect(shouldAutoCaptureToolFailure("screenshot_page", result)).toBe(false);
   });
 });
 

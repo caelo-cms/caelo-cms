@@ -47,6 +47,11 @@
  * converge route needs the Owner's `autoConverge` (#864) on top of
  * everything an automatic install needs; the scheduler queues one only
  * then, and the job re-checks it here against the policy it claimed.
+ *
+ * Stage 1 of the upgrader job (#1029) asks {@link assessHandover}, not this:
+ * it only decides whether the job may move onto the target's ops image.
+ * This full assessment then runs in the TARGET's code, so a fix to it reaches
+ * the installs that need it.
  */
 
 import {
@@ -130,8 +135,8 @@ const stop = (
   ...(manifest ? { manifest } : {}),
 });
 
-/** Decide what the job does with a request. See the file comment for the matrix. */
-export function assessUpgradeRequest(input: {
+/** What {@link assessUpgradeRequest} decides from. */
+export interface AssessmentInput {
   readonly request: {
     readonly targetVersion: string;
     readonly trigger: PlatformUpdateTrigger;
@@ -149,52 +154,123 @@ export function assessUpgradeRequest(input: {
    * contract bump is installed, not handed to Cloud Shell. Default `app_roll`.
    */
   readonly route?: "app_roll" | "converge";
-}): RequestDecision {
+}
+
+/** Why the manifest cannot be used, as a stop; the first rows of the matrix. */
+function manifestStop(
+  e: Extract<ReleaseManifestResult, { ok: false }>["error"],
+  target: string,
+  by: string,
+): RequestDecision {
+  switch (e.code) {
+    case "registry":
+      // Only an outage is worth retrying: a manifest the registry says
+      // does not exist (404 / other 4xx) never appears, so retrying would
+      // loop on "try again later" forever.
+      if (e.transient) {
+        return stop(
+          "failed",
+          "registry",
+          `Could not reach the Caelo release registry to verify v${target} (${e.message}). Nothing was changed; try again later.`,
+        );
+      }
+      return stop(
+        "refused",
+        "manifest-missing",
+        `v${target} has no signed release manifest in the Caelo release registry, so it cannot be verified and will not be installed. Nothing was changed; retrying will not help. (${e.message})`,
+      );
+    case "schema":
+      return stop(
+        "needs_cloud_shell",
+        "manifest-unreadable",
+        `This upgrader is too old to read the release information of v${target}. Install it once ${by}; afterwards the admin can install updates again. (${e.message})`,
+      );
+    default:
+      return stop(
+        "refused",
+        "signature",
+        `The release information of v${target} is not signed by Caelo's release workflow, so it was not installed. Nothing was changed. (${e.message})`,
+      );
+  }
+}
+
+function versionUnknownStop(by: string, manifest: ReleaseManifest): RequestDecision {
+  return stop(
+    "needs_cloud_shell",
+    "install-version-unknown",
+    `This install has not recorded which Caelo release it runs yet. Upgrade it once ${by}; that records it, and the admin can install updates from then on.`,
+    manifest,
+  );
+}
+
+function olderStop(target: string, installed: string, manifest: ReleaseManifest): RequestDecision {
+  return stop(
+    "refused",
+    "not-newer",
+    `v${target} is not newer than the installed v${installed}; Caelo never installs an older release over a newer one.`,
+    manifest,
+  );
+}
+
+function infraChangeStop(
+  target: string,
+  installed: number,
+  required: number,
+  manifest: ReleaseManifest,
+): RequestDecision {
+  return stop(
+    "needs_cloud_shell",
+    "infra-contract",
+    `v${target} changes this install's cloud setup (infrastructure contract ${installed} → ${required}: ${infraStepsText(installed, required)}). The upgrader may not change cloud permissions, so Caelo installs this release with its converge job: start it again from Settings → Updates. On an install without the converge job, install it once with your own Google account in Cloud Shell.`,
+    manifest,
+  );
+}
+
+/**
+ * Stage 1 of the upgrader job (#1029): may this job move onto the target's
+ * ops image? Moving changes nothing on the site, so this is deliberately
+ * only what must hold before ANY of the target's code runs as the job's
+ * account, and everything else waits for {@link assessUpgradeRequest} in
+ * the target's code. Whatever this checks cannot be fixed forward.
+ *
+ *   - The manifest verified, so the digest comes from Caelo's signature.
+ *   - The target is not older than install.json's release. This is the
+ *     line that keeps a compromised admin from pointing the job at an
+ *     older signed release; the request row is untrusted. The same release
+ *     passes: install.json may be stale, and the target's code sorts it out.
+ *   - No infrastructure change: the upgrader job cannot install it.
+ *   - An automatic request is judged in full. Nobody asked for it, so the
+ *     job does not move unless the policy allows the install; a bug here
+ *     costs an automatic run, and the Owner's click still gets through.
+ *
+ * @returns `proceed` when stage 1 may hand over, with the verified manifest
+ */
+export function assessHandover(input: AssessmentInput): RequestDecision {
   const { request, installed } = input;
   const by = manualRun(input.manualPath ?? "cloud-shell");
   const target = request.targetVersion;
-  if (!input.manifest.ok) {
-    const e = input.manifest.error;
-    switch (e.code) {
-      case "registry":
-        // Only an outage is worth retrying: a manifest the registry says
-        // does not exist (404 / other 4xx) never appears, so retrying would
-        // loop on "try again later" forever.
-        if (e.transient) {
-          return stop(
-            "failed",
-            "registry",
-            `Could not reach the Caelo release registry to verify v${target} (${e.message}). Nothing was changed; try again later.`,
-          );
-        }
-        return stop(
-          "refused",
-          "manifest-missing",
-          `v${target} has no signed release manifest in the Caelo release registry, so it cannot be verified and will not be installed. Nothing was changed; retrying will not help. (${e.message})`,
-        );
-      case "schema":
-        return stop(
-          "needs_cloud_shell",
-          "manifest-unreadable",
-          `This upgrader is too old to read the release information of v${target}. Install it once ${by}; afterwards the admin can install updates again. (${e.message})`,
-        );
-      default:
-        return stop(
-          "refused",
-          "signature",
-          `The release information of v${target} is not signed by Caelo's release workflow, so it was not installed. Nothing was changed. (${e.message})`,
-        );
-    }
-  }
+  if (!input.manifest.ok) return manifestStop(input.manifest.error, target, by);
   const manifest = input.manifest.manifest;
-  if (installed.version === null) {
-    return stop(
-      "needs_cloud_shell",
-      "install-version-unknown",
-      `This install has not recorded which Caelo release it runs yet. Upgrade it once ${by}; that records it, and the admin can install updates from then on.`,
-      manifest,
-    );
+  if (installed.version === null) return versionUnknownStop(by, manifest);
+  if (compareSemver(target, installed.version) < 0) {
+    return olderStop(target, installed.version, manifest);
   }
+  const contract = installed.infraContractVersion ?? manifest.infraContractVersion;
+  if (needsConverge({ infraContractVersion: contract }, manifest.infraContractVersion)) {
+    return infraChangeStop(target, contract, manifest.infraContractVersion, manifest);
+  }
+  if (request.trigger === "auto") return assessUpgradeRequest(input);
+  return { kind: "proceed", manifest, warnings: [] };
+}
+
+/** Decide what the job does with a request. See the file comment for the matrix. */
+export function assessUpgradeRequest(input: AssessmentInput): RequestDecision {
+  const { request, installed } = input;
+  const by = manualRun(input.manualPath ?? "cloud-shell");
+  const target = request.targetVersion;
+  if (!input.manifest.ok) return manifestStop(input.manifest.error, target, by);
+  const manifest = input.manifest.manifest;
+  if (installed.version === null) return versionUnknownStop(by, manifest);
   const order = compareSemver(target, installed.version);
   if (order === 0) {
     // Reached after a run that rolled but could not record it (#860): the
@@ -206,14 +282,7 @@ export function assessUpgradeRequest(input: {
       manifest,
     );
   }
-  if (order < 0) {
-    return stop(
-      "refused",
-      "not-newer",
-      `v${target} is not newer than the installed v${installed.version}; Caelo never installs an older release over a newer one.`,
-      manifest,
-    );
-  }
+  if (order < 0) return olderStop(target, installed.version, manifest);
   if (compareSemver(installed.version, manifest.minFromVersion) < 0) {
     return stop(
       "refused",
@@ -229,12 +298,7 @@ export function assessUpgradeRequest(input: {
     installed.infraContractVersion !== null &&
     needsConverge({ infraContractVersion }, manifest.infraContractVersion);
   if (infraChange && !converge) {
-    return stop(
-      "needs_cloud_shell",
-      "infra-contract",
-      `v${target} changes this install's cloud setup (infrastructure contract ${infraContractVersion} → ${manifest.infraContractVersion}: ${infraStepsText(infraContractVersion, manifest.infraContractVersion)}). The upgrader may not change cloud permissions, so Caelo installs this release with its converge job: start it again from Settings → Updates. On an install without the converge job, install it once with your own Google account in Cloud Shell.`,
-      manifest,
-    );
+    return infraChangeStop(target, infraContractVersion, manifest.infraContractVersion, manifest);
   }
   if (converge && request.trigger === "auto" && !input.policy.autoConverge) {
     return stop(

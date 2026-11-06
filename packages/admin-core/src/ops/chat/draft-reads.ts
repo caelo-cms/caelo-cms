@@ -6,11 +6,12 @@
  *
  * The AI's read tools (`read_content`, `get_content_instance`,
  * `inspect_page_render`, `get_theme`, `get_list`, `list_list_types`,
- * `list_page_types`) call it after a successful read through the dispatcher
- * (`ToolDefinitionWithHandler.draftReads`). That read is what a draft
- * conflict asks for ("read it again with …", `locks.ts`), and only a read
- * recorded here clears the conflict: the observation the refused write
- * itself records is rolled back when a bulk write aborts.
+ * `list_page_types`, `get_plugin_draft_rows`) call it after a successful
+ * read through the dispatcher (`ToolDefinitionWithHandler.draftReads`). That
+ * read is what a draft conflict asks for ("read it again with …",
+ * `locks.ts`), and only a read recorded here clears the conflict: the
+ * observation the refused write itself records is rolled back when a bulk
+ * write or a plugin's private-storage write aborts.
  *
  * Recording sits at the tool, not inside the get ops, on purpose: write
  * tools and the chat runner read the same ops internally (a design guard

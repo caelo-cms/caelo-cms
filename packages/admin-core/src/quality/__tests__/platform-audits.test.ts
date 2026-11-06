@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { findingOwner } from "../platform-audits.js";
+import { TRUNCATED_ELEMENTS_PREFIX, TRUNCATED_ELEMENTS_SUFFIX } from "../lighthouse-extract.js";
+import { findingOwner, shippedResourcePath, shippedResourcesOf } from "../platform-audits.js";
 
 const PAGE = "https://staging.example.com/about/";
 
@@ -97,5 +98,51 @@ describe("findingOwner (#667)", () => {
   it("has no opinion on ordinary site findings", () => {
     expect(findingOwner("image-alt", [], PAGE)).toBeNull();
     expect(findingOwner("color-contrast", [{ url: "https://cdn.example.net/x" }], PAGE)).toBeNull();
+  });
+});
+
+describe("#1446 shippedResourcesOf", () => {
+  const PAGE = "https://staging.example.test/de/ratgeber";
+  const RUNTIME = "/_caelo/plugin/consent-manager/runtime.84de0a18c461.js";
+
+  it("names the shipped file, by path, however the URL is written", () => {
+    expect(
+      shippedResourcesOf(
+        [{ url: `https://staging.example.test${RUNTIME}?v=1` }, { url: RUNTIME }],
+        PAGE,
+      ),
+    ).toEqual([RUNTIME]);
+    expect(shippedResourcePath("/_app/immutable/chunks/abc.js", PAGE)).toBe(
+      "/_app/immutable/chunks/abc.js",
+    );
+  });
+
+  it("refuses a file whose name carries no content hash", () => {
+    expect(shippedResourcePath("/_caelo/plugin/consent-manager/runtime.js", PAGE)).toBeNull();
+  });
+
+  it("refuses what the site chose: media and fonts are hashed but not shipped", () => {
+    expect(shippedResourcePath("/_assets/hero.0123456789abcdef.png", PAGE)).toBeNull();
+    expect(shippedResourcePath("/_assets/fonts/inter/0123456789abcdef.woff2", PAGE)).toBeNull();
+  });
+
+  it("refuses another origin and an unparsable page URL", () => {
+    expect(shippedResourcePath(`https://cdn.example.org${RUNTIME}`, PAGE)).toBeNull();
+    expect(shippedResourcePath(RUNTIME, "not a url")).toBeNull();
+  });
+
+  it("answers null when the finding names anything but shipped files", () => {
+    expect(shippedResourcesOf(undefined, PAGE)).toBeNull();
+    expect(shippedResourcesOf([], PAGE)).toBeNull();
+    // A DOM element, a console message or a reason is about the page.
+    expect(shippedResourcesOf([{ url: RUNTIME }, { selector: "img" }], PAGE)).toBeNull();
+    expect(shippedResourcesOf([{ url: RUNTIME, explanation: "TypeError" }], PAGE)).toBeNull();
+    // Part of the evidence was dropped: never decide from a sample.
+    expect(
+      shippedResourcesOf(
+        [{ url: RUNTIME }, { label: `${TRUNCATED_ELEMENTS_PREFIX}2${TRUNCATED_ELEMENTS_SUFFIX}` }],
+        PAGE,
+      ),
+    ).toBeNull();
   });
 });

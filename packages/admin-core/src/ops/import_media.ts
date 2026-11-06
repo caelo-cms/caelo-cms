@@ -463,6 +463,7 @@ export const listPageAssetsOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.list_page_assets",
         message: "import run not found — list runs with imports.list for valid ids",
+        refusal: true,
       });
     }
 

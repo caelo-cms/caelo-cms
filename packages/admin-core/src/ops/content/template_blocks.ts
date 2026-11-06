@@ -31,6 +31,7 @@ export const setTemplateBlocksOp = defineOperation({
         kind: "HandlerError",
         operation: "template_blocks.set",
         message: "template not found",
+        refusal: true,
       });
     }
 

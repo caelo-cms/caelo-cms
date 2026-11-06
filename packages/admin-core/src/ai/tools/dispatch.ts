@@ -276,7 +276,8 @@ export interface ToolResult {
    * #1091 — the call failed because the tool refused it as designed: an
    * operation guard said no (`HandlerError.refusal` — still placed, still
    * referenced, type not allowed) and `content` names the fix. The
-   * chat-runner does not file these as bugs. Deliberately NOT set for
+   * chat-runner does not file these as bugs (`tool-failure-capture.ts`
+   * decides, from this and the fields below). Deliberately NOT set for
    * arguments the tool's schema rejects: a malformed call can be our
    * defect (schema drift, encoding damage, a misleading description —
    * CLAUDE.md §4), so those stay captured.

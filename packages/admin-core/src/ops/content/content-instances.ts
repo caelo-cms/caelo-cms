@@ -812,6 +812,7 @@ export const getContentInstanceOp = withHumanisedLinks(
           kind: "HandlerError",
           operation: "content_instances.get",
           message: "content_instance not found",
+          refusal: true,
         });
       }
       // Run #8 R3 — overlay the caller-branch snapshot state. Branched
@@ -890,6 +891,7 @@ export const createContentInstanceOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.create",
         message: `module ${input.moduleId} not found`,
+        refusal: true,
       });
     }
 
@@ -1154,6 +1156,7 @@ export const setContentInstanceValuesOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.set_values",
         message: "content_instance not found",
+        refusal: true,
       });
     }
     if (input.expectedVersion !== undefined && prev.version !== input.expectedVersion) {
@@ -1352,6 +1355,7 @@ export const deleteContentInstanceOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.delete",
         message: "content_instance not found",
+        refusal: true,
       });
     }
     if (target.deletedAt !== null) {
@@ -1618,6 +1622,7 @@ export const setPlacementContentOp = defineOperation({
         kind: "HandlerError",
         operation: "placement.set_content",
         message: "content_instance not found or deleted",
+        refusal: true,
       });
     }
     if (ci.module_id !== placement.moduleId) {

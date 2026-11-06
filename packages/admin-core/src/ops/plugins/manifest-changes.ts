@@ -26,6 +26,7 @@ type NotCompared = "slug" | "version" | "tier";
 const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>> = {
   schema: "Public data tables",
   adminSchema: "Private data tables",
+  aiReadableTables: "Private data the AI may read",
   indexes: "Database indexes",
   operations: "Internal operations",
   component: "Web component",

@@ -123,12 +123,52 @@ export type PreflightOutcome<C extends AccessCheck = AccessCheck> =
 /** The object the `install/` probes name. It is never written: every probe fails its precondition. */
 export const PREFLIGHT_PROBE_OBJECT = ".caelo-iam-preflight";
 
+const UPGRADER_MOVE_NEED = "move the upgrader itself onto the release it installs";
+const UPGRADER_MOVE_PERMISSIONS = ["run.jobs.get", "run.jobs.update"];
+
+/**
+ * What stage 1 of an upgrader run needs (#1029): the upgrader job's own
+ * rights on itself. The rest of {@link upgraderAccessChecks} is the target
+ * release's list, asked in its own code. The state lock's bucket grants
+ * are not here: a lock that cannot be taken stops the hand-over anyway.
+ */
+export function upgraderHandoverChecks(target: {
+  readonly projectId: string;
+  readonly region: string;
+  readonly env: string;
+}): AccessCheck[] {
+  const { projectId, region, env } = target;
+  return [
+    {
+      need: UPGRADER_MOVE_NEED,
+      resource: { kind: "run-job", projectId, region, name: upgraderJobName(env) },
+      permissions: UPGRADER_MOVE_PERMISSIONS,
+    },
+    {
+      // On the project, like the app-roll's own check of these two: that is
+      // where caeloUpgraderRun is bound.
+      need: "start the upgrader on that release, and see which image a run executes and whether it ended",
+      resource: { kind: "project", projectId },
+      permissions: ["run.jobs.run", "run.executions.get"],
+    },
+    {
+      need: "keep the upgrader job running as its own service account after it moves onto a release",
+      resource: {
+        kind: "service-account",
+        projectId,
+        email: upgraderServiceAccountEmail(projectId, env),
+      },
+      permissions: ["iam.serviceAccounts.actAs"],
+    },
+  ];
+}
+
 /**
  * Every permission an upgrader run needs after its decision, grouped by
  * what it is for (upgrade/app-roll.ts, migration-runner.ts, backup.ts,
- * health.ts, state-store.ts, the self-update in upgrader-job.ts). Keep in
- * step with the grants in upgrader-setup.ts: a permission listed here that
- * setup does not grant stops every update.
+ * health.ts, state-store.ts). Keep in step with the grants in
+ * upgrader-setup.ts: a permission listed here that setup does not grant
+ * stops every update.
  */
 export function upgraderAccessChecks(target: {
   readonly projectId: string;
@@ -212,7 +252,7 @@ export function upgraderAccessChecks(target: {
       permissions: ["iam.serviceAccounts.actAs"],
     },
     {
-      need: "keep the upgrader job running as its own service account after it updates itself",
+      need: "keep the upgrader job running as its own service account after it moves onto a release",
       resource: sa(upgraderServiceAccountEmail(projectId, env)),
       permissions: ["iam.serviceAccounts.actAs"],
     },
@@ -222,9 +262,9 @@ export function upgraderAccessChecks(target: {
       permissions: ["iam.serviceAccounts.signJwt"],
     },
     {
-      need: "move the upgrader itself onto the new release",
+      need: UPGRADER_MOVE_NEED,
       resource: { kind: "run-job", projectId, region, name: upgraderJobName(env) },
-      permissions: ["run.jobs.get", "run.jobs.update"],
+      permissions: UPGRADER_MOVE_PERMISSIONS,
     },
     {
       need: "list the install's ops bucket (every write there lists it first)",
