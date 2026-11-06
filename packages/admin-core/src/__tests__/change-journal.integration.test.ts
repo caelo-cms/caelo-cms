@@ -643,8 +643,8 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
         return checkJournalMark(measuring(tx, buffers), mark, filter);
       });
       expect(check.fresh).toBe(true);
-      // Under (kind, xid) the check read the 4,000 inserts and dropped
-      // them; under (kind, op, xid) it reads the counted operation only.
+      // Through (kind, xid) the check read the 4,000 inserts and dropped
+      // them; through the non-insert partial index (0650) it reads none.
       expect(Math.max(...buffers)).toBeLessThan(30);
       await writeProbeRow("update");
       const after = await adapter.withAdminTransaction(SYS, (tx) =>
