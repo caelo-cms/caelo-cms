@@ -52,7 +52,9 @@ test.describe("Static files (#1461)", () => {
     await page.getByLabel("Why it exists").fill("E2E.");
     await page.getByLabel("Content").fill("{}");
     await page.getByRole("button", { name: "Save file" }).click();
-    await expect(page.getByText(/reserved/)).toBeVisible();
+    // The page's alert, not the layout's error toast that repeats it: both
+    // carry the reason, so an unscoped match finds two once the toast is in.
+    await expect(page.getByRole("alert").getByText(/reserved/)).toBeVisible();
 
     await page.getByLabel("Address").fill("/e2e-ips.json");
     await page.getByLabel("Why it exists").fill("E2E.");

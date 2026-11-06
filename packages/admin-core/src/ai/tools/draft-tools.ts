@@ -192,7 +192,7 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     if (!staged.ok) {
       return toolError(
         staged.error.error,
-        `Stage failed (${staged.error.step}): ${staged.error.message}`,
+        `Stage failed (${staged.error.step}): ${staged.error.aiMessage ?? staged.error.message}`,
       );
     }
     const v = staged.value;
@@ -207,7 +207,9 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     // #1008 — built while an active plugin did not run: staging lacks its
     // output and Publish live refuses this Stage; the operator must hear it.
     const pluginNote = describeStagedPluginProblems(v.pluginProblems);
-    const drafts = `${draftNote ? ` ${draftNote}` : ""}${unpublishedNote ? ` ${unpublishedNote}` : ""}${truncatedNote ? ` ${truncatedNote}` : ""}${pluginNote ? ` ${pluginNote} Tell the operator.` : ""}`;
+    // #1240 — staged, reviewable, and refused by Publish live until fixed.
+    const linkNote = v.linkNotice?.aiText;
+    const drafts = `${draftNote ? ` ${draftNote}` : ""}${unpublishedNote ? ` ${unpublishedNote}` : ""}${linkNote ? ` ${linkNote}` : ""}${truncatedNote ? ` ${truncatedNote}` : ""}${pluginNote ? ` ${pluginNote} Tell the operator.` : ""}`;
     if (v.mergedEntityCount === 0) {
       return {
         ok: true,

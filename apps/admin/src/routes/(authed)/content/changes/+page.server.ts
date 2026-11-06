@@ -124,6 +124,7 @@ export const actions: Actions = {
       unpublishedLinkWarning,
       truncatedListWarning,
       pluginProblemWarning,
+      linkNoticeWarning,
     } = await describeStagedBuild(locals.ctx, staged.value, null);
     return {
       staged: {
@@ -141,6 +142,7 @@ export const actions: Actions = {
         unpublishedLinkWarning,
         truncatedListWarning,
         pluginProblemWarning,
+        linkNoticeWarning,
       },
     };
   },

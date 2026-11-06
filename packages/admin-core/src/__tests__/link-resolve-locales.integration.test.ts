@@ -12,8 +12,9 @@
  * GERMAN pages, identically in the editor preview (which live-edit
  * renders through) and in the static build; the English page keeps its
  * English links. A link to a page without a German version is flagged in
- * the preview (`link-variant-missing:page/<id>:de`) and refuses the
- * build — never shipped as a link into English.
+ * the preview (`link-variant-missing:page/<id>:de`) and refuses a
+ * production build — never shipped as a link into English. A staging build
+ * renders it for review and reports it (#1240).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -186,11 +187,11 @@ async function setMenuModule(items: { label: string; href: string }[]): Promise<
 
 const unstamp = (html: string) => html.replace(/ data-caelo-list-item="[^"]*"/g, "");
 
-function stagingTarget(): DeployTarget {
+function buildTarget(env: "staging" | "production"): DeployTarget {
   return {
     id: "00000000-0000-0000-0000-0000000000d4",
-    name: "staging",
-    env: "staging",
+    name: env,
+    env,
     outDir: "out",
     baseUrl: "https://example.com",
     robotsDefault: "noindex",
@@ -198,8 +199,12 @@ function stagingTarget(): DeployTarget {
   };
 }
 
-/** Run a staging build of `pageIds`; returns the build dir. */
-async function build(pageIds: string[], runId: string): Promise<string> {
+/** Run a build of `pageIds`; returns the build dir. */
+async function build(
+  pageIds: string[],
+  runId: string,
+  env: "staging" | "production" = "staging",
+): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), "caelo-link-resolve-"));
   buildRoots.push(root);
   await adapter.withAdminTransaction(SYS_CTX, (tx) =>
@@ -207,7 +212,7 @@ async function build(pageIds: string[], runId: string): Promise<string> {
       publishAt: new Date().toISOString(),
       tx,
       plugins: localBuildPluginServices,
-      target: stagingTarget(),
+      target: buildTarget(env),
       runId,
       repoRoot: root,
       changedPageIds: pageIds,
@@ -390,7 +395,7 @@ describe("#724 D — internal links go to the rendering page's language", () => 
     expectEnglishLinks(await readFile(join(dir, pageOutputPath(`/${PFX}-links`)), "utf8"));
   }, 120_000);
 
-  it("a link to a page with no German version is flagged in the preview and refuses the build", async () => {
+  it("a link to a page with no German version is flagged in the preview and refuses a production build", async () => {
     await setNav([
       { label: "About", href: `/${PFX}-about` },
       { label: "Solo", href: `/${PFX}-solo` },
@@ -406,7 +411,13 @@ describe("#724 D — internal links go to the rendering page's language", () => 
       expect(en.missingSlots.filter((m) => m.startsWith("link-"))).toEqual([]);
       expect(en.html).toContain(`<li><a href="/${PFX}-solo/">Solo</a></li>`);
 
-      await expect(build([ids.deLinks], `${PFX}-run2`)).rejects.toThrow(marker);
+      await expect(build([ids.deLinks], `${PFX}-run2`, "production")).rejects.toThrow(marker);
+      // #1240 — a staging build links the target in its own language, so the
+      // staged site stays clickable; Stage reports it, Publish live refuses.
+      const staged = await build([ids.deLinks], `${PFX}-run3`);
+      expect(await readFile(join(staged, pageOutputPath(`/de/${PFX}-verweise`)), "utf8")).toContain(
+        `href="/${PFX}-solo/"`,
+      );
     } finally {
       await setNav([{ label: "About", href: `/${PFX}-about` }]);
     }

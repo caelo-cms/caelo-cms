@@ -22,6 +22,7 @@
   import { type ActionResult, applyAction, deserialize, enhance } from "$app/forms";
   import { goto, refreshAll } from "$app/navigation";
   import { page } from "$app/state";
+  import type { LinkNotice } from "@caelo-cms/admin-core";
   import { ArrowLeft, Ellipsis, GitCompareArrows } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
   import { onMount, untrack } from "svelte";
@@ -38,6 +39,8 @@
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
   import Overlay from "#lib/components/edit/Overlay.svelte";
   import MediaPicker from "#lib/components/MediaPicker.svelte";
+  import LinkNoticeBanner from "#lib/components/LinkNoticeBanner.svelte";
+  import { askInChat } from "#lib/components/edit/ask-in-chat.js";
   import StageDeployButton from "#lib/components/edit/StageDeployButton.svelte";
   import {
     type FieldEdit,
@@ -72,6 +75,9 @@
   } from "#lib/components/ui/dialog/index.js";
 
   let { data } = $props();
+  const publishClickNotice = $derived(
+    (page.form as { linkNotice?: LinkNotice | null } | null)?.linkNotice ?? null,
+  );
   let activePageId = $state(data.activePageId ?? "");
 
   // #1268 — the parts of the load that stream in after first paint. Each
@@ -830,6 +836,7 @@
             branchChangeCount={pendingChanges}
             csrfToken={data.csrfToken}
             chatSessionId={data.activeChat.id}
+            chatBranchId={data.activeChat.chatBranchId}
             sessionPublished={!!data.activeChat.publishedAt}
             sessionLastStagedAt={data.activeChat.lastStagedAt ?? null}
             {activePageId}
@@ -875,6 +882,20 @@
       </DropdownMenuContent>
     </DropdownMenu>
   </header>
+  {#if publishClickNotice}
+    <!-- #1240 — what the publish click just found, with the two ways out. -->
+    <div class="shrink-0 border-b border-border bg-background px-3 py-2">
+      <LinkNoticeBanner
+        notice={publishClickNotice}
+        csrfToken={data.csrfToken}
+        draftAction="?/setPagesToDraft"
+        chat={data.activeChat
+          ? { sessionId: data.activeChat.id, branchId: data.activeChat.chatBranchId }
+          : null}
+        onFix={askInChat}
+      />
+    </div>
+  {/if}
 
   <div class={pluginPreviewUrl ? "flex min-h-0 flex-1 flex-col md:flex-row" : "contents"}>
   <!-- Full-bleed iframe -->

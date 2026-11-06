@@ -5,12 +5,15 @@ import type { ComposeModuleFailure } from "@caelo-cms/shared";
 import {
   assertNoRenderFailures,
   type RenderedPageForGate,
+  RenderFailureError,
   renderFailuresOf,
 } from "./nested-modules-pass.js";
 
 /** The gate as the build runs it: failures taken per page, refused together (#1271). */
 function gate(pages: RenderedPageForGate[]): void {
-  assertNoRenderFailures(pages.flatMap(renderFailuresOf));
+  assertNoRenderFailures(
+    pages.flatMap((p) => renderFailuresOf({ pageId: "p", pageTitle: "T", pagePath: "/t", ...p })),
+  );
 }
 
 function failure(reason: string, field = ""): ComposeModuleFailure {
@@ -105,5 +108,49 @@ describe("assertNoRenderFailures / renderFailuresOf", () => {
         },
       ]),
     ).toThrow('page "faq": <!-- caelo:missing reason=module-list-malformed items[0] -->');
+  });
+
+  it("hands the failures over as structure, with the linked page by title (#1240)", () => {
+    const target = "12004070-0000-4000-8000-000000000001";
+    const page: RenderedPageForGate = {
+      pageId: "p",
+      pageSlug: "home-en",
+      pageTitle: "Home",
+      pagePath: "/en",
+      html: "<p></p>",
+      moduleFailures: [failure(`link-variant-missing:page/${target}:en`)],
+    };
+    const failures = renderFailuresOf(page, (pageId) => ({
+      pageId,
+      title: "Pricing",
+      path: "/preise",
+    }));
+    expect(failures[0]).toMatchObject({
+      pageId: "p",
+      pageTitle: "Home",
+      pagePath: "/en",
+      reason: `link-variant-missing:page/${target}:en`,
+      target: { pageId: target, title: "Pricing", path: "/preise" },
+    });
+    let thrown: unknown;
+    try {
+      assertNoRenderFailures(failures);
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(RenderFailureError);
+    expect((thrown as RenderFailureError).failures).toBe(failures);
+  });
+
+  it("knows no target for a failure that is not a page link", () => {
+    const failures = renderFailuresOf({
+      pageId: "p",
+      pageSlug: "home",
+      pageTitle: "Home",
+      pagePath: "/",
+      html: "<p></p>",
+      moduleFailures: [failure("module-missing:cards[0]")],
+    });
+    expect(failures[0]?.target).toBeNull();
   });
 });

@@ -22,6 +22,12 @@ import {
 } from "#lib/server/edit-active-page.js";
 import { streamEditorParts } from "#lib/server/edit-streamed.js";
 import { requirePermission, requireUser } from "#lib/server/guards.js";
+import {
+  BACK_TO_DRAFT_MESSAGE,
+  pageIdsOf,
+  publishLinkNotice,
+  setPagesToDraft,
+} from "#lib/server/link-notice.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
 import { loadEditorToolbar } from "#lib/server/plugin-toolbar.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
@@ -671,11 +677,34 @@ export const actions: Actions = {
     // `ok` string is picked up by the (authed) layout's $effect to fire
     // a toast; pageId + status are returned so per-route consumers
     // could read them off `form` if needed.
-    return {
-      ok: status === "published" ? "Page published." : "Page set to draft.",
-      pageId,
-      status,
-    };
+    // #1240 — publishing is when a link problem starts to count: say so at
+    // the click, not minutes later at the Stage. The status stands either way.
+    if (status === "published") {
+      const { notice, checkFailed } = await publishLinkNotice(ctx, [pageId]);
+      return {
+        ok: checkFailed
+          ? `Page published, but its links could not be checked: ${checkFailed}`
+          : "Page published.",
+        pageId,
+        status,
+        linkNotice: notice,
+      };
+    }
+    return { ok: "Page set to draft.", pageId, status };
+  },
+  /** #1240 — "Back to draft" on a link notice: the pages carrying the links. */
+  setPagesToDraft: async ({ request, locals }) => {
+    requirePermission(locals, "content.write");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const chatBranchId = String(form.get("chatBranchId") ?? "");
+    const chatSessionId = String(form.get("chatSessionId") ?? "");
+    const ctx: ExecutionContext = chatBranchId
+      ? { ...locals.ctx, chatBranchId, ...(chatSessionId ? { chatTaskId: chatSessionId } : {}) }
+      : locals.ctx;
+    const failed = await setPagesToDraft(ctx, pageIdsOf(form));
+    if (failed) return fail(500, { error: `Could not update status: ${failed}` });
+    return { ok: BACK_TO_DRAFT_MESSAGE };
   },
   /**
    * #917 / #918 — in-place edits from the preview iframe: one or more
@@ -805,6 +834,7 @@ export const actions: Actions = {
       unpublishedLinkWarning,
       truncatedListWarning,
       pluginProblemWarning,
+      linkNoticeWarning,
     } = await describeStagedBuild(locals.ctx, summary, pageId || null);
 
     return {
@@ -821,6 +851,7 @@ export const actions: Actions = {
         unpublishedLinkWarning,
         truncatedListWarning,
         pluginProblemWarning,
+        linkNoticeWarning,
         // Issue #620 — other chats' changes to the same things rode along.
         alsoIncludes: summary.alsoIncludes.map((a) => a.title),
       },

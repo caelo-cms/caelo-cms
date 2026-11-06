@@ -5,6 +5,12 @@ import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import {
+  BACK_TO_DRAFT_MESSAGE,
+  pageIdsOf,
+  publishLinkNotice,
+  setPagesToDraft,
+} from "#lib/server/link-notice.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { openStagingHref, stagingOriginForAdmin } from "#lib/server/staging-link.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -217,9 +223,23 @@ export const actions: Actions = {
       }
       published += (r.value as { updatedCount: number }).updatedCount;
     }
+    // #1240 — publishing is when a link problem starts to count.
+    const { notice, checkFailed } = await publishLinkNotice(locals.ctx, draftIds);
     return {
-      ok: `Published ${published} draft page(s). Stage next to rebuild the staging preview.`,
+      ok: checkFailed
+        ? `Published ${published} draft page(s), but their links could not be checked: ${checkFailed}`
+        : `Published ${published} draft page(s). Stage next to rebuild the staging preview.`,
+      linkNotice: notice,
     };
+  },
+  /** #1240 — "Back to draft" on a link notice: the pages carrying the links. */
+  setPagesToDraft: async ({ request, locals }) => {
+    requirePermission(locals, "content.write");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const failed = await setPagesToDraft(locals.ctx, pageIdsOf(form));
+    if (failed) return fail(500, { error: `Could not update status: ${failed}` });
+    return { ok: BACK_TO_DRAFT_MESSAGE };
   },
   confirmPublish: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");
@@ -233,7 +253,9 @@ export const actions: Actions = {
       toTarget: "production",
     });
     if (!promote.ok) {
-      return fail(500, { error: "Promotion to production failed." });
+      // #1240 — the refusal names what to fix; a generic line hid it.
+      console.error("[confirmPublish] deploy.promote failed", { error: promote.error });
+      return fail(500, { error: `Publish live failed: ${describeError(promote.error)}` });
     }
     return {
       published: {

@@ -11,11 +11,31 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { setPagesStatusManyToolInput } from "@caelo-cms/shared";
+import { type ExecutionContext, setPagesStatusManyToolInput } from "@caelo-cms/shared";
+import type { LinkNotice } from "../../links/link-notice.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { redirectOnPageNote } from "./_redirect-on-page-note.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
+
+/**
+ * The links of the pages just published that would stop Publish live, or
+ * "" when there are none. The status change stands either way.
+ */
+async function publishLinkNote(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  input: { readonly pageIds: readonly string[] },
+): Promise<string> {
+  const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "links.publish_notice", {
+    pageIds: input.pageIds,
+  });
+  if (!r.ok) {
+    return ` The link check of these pages could not run (${describeError(r.error)}); call check_links.`;
+  }
+  const { notice } = r.value as { notice: LinkNotice | null };
+  return notice ? ` ${notice.aiText}` : "";
+}
 
 export const setPagesStatusManyTool: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").SetPagesStatusManyToolInput
@@ -56,9 +76,12 @@ export const setPagesStatusManyTool: ToolDefinitionWithHandler<
       input.status === "published"
         ? await redirectOnPageNote(ctx, toolCtx, { pageIds: input.pageIds })
         : "";
+    // #1240 — publishing is when a link problem starts to count: say so at
+    // the click, not minutes later at the Stage.
+    const links = input.status === "published" ? await publishLinkNote(ctx, toolCtx, input) : "";
     return {
       ok: true,
-      content: `${v.updatedCount} page(s) set to ${input.status}.${next}${await stageReadinessSuffix(ctx, toolCtx)}${onRedirects}`,
+      content: `${v.updatedCount} page(s) set to ${input.status}.${next}${links}${await stageReadinessSuffix(ctx, toolCtx)}${onRedirects}`,
     };
   },
 };

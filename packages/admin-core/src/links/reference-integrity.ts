@@ -11,9 +11,9 @@
  * its target (rollout D). Literal paths that predate #724 are reported too.
  *
  * Policy (maintainer decisions on #724, `linkIssueSeverity`):
- *   - a missing target, or a target with no version in the rendering
- *     page's language, BLOCKS at Stage and at Publish live;
- *   - a draft target is a WARNING at Stage and BLOCKS Publish live /
+ *   - a missing target BLOCKS at Stage and at Publish live;
+ *   - a draft target, or a target with no version in the rendering page's
+ *     language (#1240), is a WARNING at Stage and BLOCKS Publish live /
  *     promote to production;
  *   - pre-#724 literal paths are WARNINGS (the link migration, rollout E,
  *     converts them). A literal that matches no page also fails the staged
@@ -60,6 +60,7 @@ import type { LinkTargets } from "./link-targets.js";
 import {
   fixFor,
   issueMessage,
+  operatorArea,
   type ReferenceFix,
   type ReferencePlace,
   type ReferenceProblem,
@@ -72,7 +73,12 @@ import {
   type FoundTermRef,
   walkEntries,
 } from "./reference-lists.js";
-import type { ReferenceSourceModel, SourceField, SourceListType } from "./reference-sources.js";
+import type {
+  ReferenceSourceModel,
+  SourceField,
+  SourceListType,
+  SourcePluginValue,
+} from "./reference-sources.js";
 
 export type { ReferenceFix, ReferencePlace, ReferenceProblem } from "./reference-fix.js";
 
@@ -102,6 +108,8 @@ export interface ReferenceIssue {
   readonly pageIds: readonly string[];
   /** True when the place renders on at least one published page (or site-wide). */
   readonly shipped: boolean;
+  /** The place in an operator's words (`the header`), without technical names. */
+  readonly area: string;
   readonly message: string;
   readonly fix: ReferenceFix;
 }
@@ -160,6 +168,24 @@ interface IssueAcc {
   readonly where: string;
   readonly placeKey: string;
   readonly pages: Set<string>;
+}
+
+/**
+ * What a language's own chrome does to the source on one page (#1240).
+ * The build swaps the source for it (`applyContentVariants`), so the keys it
+ * carries stop rendering from the source there.
+ */
+interface ChromeOverride {
+  readonly keys: ReadonlySet<string>;
+  /** Its own module, which takes the source module's place. */
+  readonly ownModule: string | null;
+}
+
+/** The identity of what an override replaces. */
+function overrideKeyOf(replaces: NonNullable<SourcePluginValue["replaces"]>): string {
+  return "layoutId" in replaces
+    ? `layout:${replaces.layoutId}:${replaces.blockName}:${replaces.position}`
+    : `instance:${replaces.contentInstanceId}`;
 }
 
 /** A list reference to resolve (see reference-lists.ts). */
@@ -342,11 +368,78 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     pages: Set<string>;
     nested: boolean;
     synced: boolean;
+    /** What a language's own chrome would replace here. */
+    overrideKey?: string;
   };
   const nestedQueue: Unit[] = [];
+
+  // ── Templates and layouts: which live pages show which. ──
+  const pagesByTemplate = new Map<string, Set<string>>();
+  for (const [pageId, templateId] of model.pageTemplates) {
+    if (!livePage(pageId)) continue;
+    const set = pagesByTemplate.get(templateId) ?? new Set<string>();
+    set.add(pageId);
+    pagesByTemplate.set(templateId, set);
+  }
+  const pagesByLayout = new Map<string, Set<string>>();
+  for (const [templateId, pages] of pagesByTemplate) {
+    const layoutId = model.templates.get(templateId)?.layoutId;
+    if (!layoutId) continue;
+    const set = pagesByLayout.get(layoutId) ?? new Set<string>();
+    for (const p of pages) set.add(p);
+    pagesByLayout.set(layoutId, set);
+  }
+
+  // ── A language's own chrome: where it renders, and what it replaces. ──
+  const syncedPages = new Map<string, Set<string>>();
+  for (const pl of model.placements) {
+    if (pl.contentInstanceId === null || pl.syncMode !== "synced") continue;
+    const set = syncedPages.get(pl.contentInstanceId) ?? new Set<string>();
+    set.add(pl.pageId);
+    syncedPages.set(pl.contentInstanceId, set);
+  }
+  /**
+   * The pages a plugin value of a variant renders on. The build applies a
+   * variant to a page's own placements (`resolveChromeVariants`), so a
+   * shared instance's variant shows where a page of that language places
+   * that same instance, synced; no sibling mapping is involved.
+   */
+  const renderingPagesOf = (pv: SourcePluginValue): string[] => {
+    if (pv.variant === null) return [];
+    const inVariant = index.pagesInVariant(pv.variant).filter(livePage);
+    const { replaces } = pv;
+    if (replaces === null) return inVariant;
+    const shownOn =
+      "layoutId" in replaces
+        ? pagesByLayout.get(replaces.layoutId)
+        : syncedPages.get(replaces.contentInstanceId);
+    return inVariant.filter((p) => shownOn?.has(p) === true);
+  };
+  const overrides = new Map<string, Map<string, ChromeOverride>>();
+  for (const pv of model.plugins) {
+    if (pv.replaces === null) continue;
+    const key = overrideKeyOf(pv.replaces);
+    const byPage = overrides.get(key) ?? new Map<string, ChromeOverride>();
+    const value = pv.value;
+    const keys = new Set(
+      value !== null && typeof value === "object" && !Array.isArray(value)
+        ? Object.keys(value)
+        : [],
+    );
+    const ownModule = "layoutId" in pv.replaces ? (pv.moduleId ?? null) : null;
+    for (const page of renderingPagesOf(pv)) byPage.set(page, { keys, ownModule });
+    overrides.set(key, byPage);
+  }
+
   const renderUnit = (u: Unit) => {
     const m = model.modules.get(u.moduleId);
     if (!m) return;
+    const replaced = u.overrideKey === undefined ? undefined : overrides.get(u.overrideKey);
+    /** The unit's pages that still show `field` from the source. */
+    const showing = (field: string): Set<string> =>
+      replaced === undefined
+        ? u.pages
+        : new Set([...u.pages].filter((p) => replaced.get(p)?.keys.has(field) !== true));
     moduleHtml(m.id, u.pages);
     const inst = u.instanceId ? model.instances.get(u.instanceId) : undefined;
     // Only the nested modules the template dispatches render (the
@@ -373,6 +466,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
       .map((name) => ({ name, kind: "text" }));
     for (const field of [...m.fields, ...undeclared]) {
       if (NESTED_KINDS.has(field.kind)) continue;
+      const pages = showing(field.name);
       const asUrl = use.urlNames.has(field.name.toLowerCase());
       const has = inst !== undefined && Object.hasOwn(inst.values, field.name);
       const value = has ? inst.values[field.name] : field.default;
@@ -386,14 +480,16 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
           field: field.name,
           nested: u.nested,
         });
-        for (const p of u.pages) acc.pages.add(p);
+        for (const p of pages) acc.pages.add(p);
         if (u.synced) acc.synced = true;
         addSlot(key, { kind: "field-value", field, value, asUrl }, "value");
       } else {
-        moduleDefault(m.id, field, u.pages);
+        moduleDefault(m.id, field, pages);
       }
     }
-    for (const lf of listFieldsOf(m.fields)) renderListField(m.id, m.name, lf, inst, u);
+    for (const lf of listFieldsOf(m.fields)) {
+      renderListField(m.id, m.name, lf, inst, { ...u, pages: showing(lf.name) });
+    }
   };
 
   /**
@@ -464,18 +560,13 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
       pages: new Set([pl.pageId]),
       nested: false,
       synced: pl.syncMode === "synced",
+      ...(pl.contentInstanceId !== null && pl.syncMode === "synced"
+        ? { overrideKey: overrideKeyOf({ contentInstanceId: pl.contentInstanceId }) }
+        : {}),
     });
   }
 
   // ── Templates and layouts of live pages, with the layout chrome. ──
-  const pagesByTemplate = new Map<string, Set<string>>();
-  for (const [pageId, templateId] of model.pageTemplates) {
-    if (!livePage(pageId)) continue;
-    const set = pagesByTemplate.get(templateId) ?? new Set<string>();
-    set.add(pageId);
-    pagesByTemplate.set(templateId, set);
-  }
-  const pagesByLayout = new Map<string, Set<string>>();
   for (const [templateId, pages] of pagesByTemplate) {
     const t = model.templates.get(templateId);
     if (!t) continue;
@@ -483,11 +574,6 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     const acc = placeOf(key, { kind: "template-html", templateId: t.id, templateName: t.name });
     for (const p of pages) acc.pages.add(p);
     addSlot(key, { kind: "html", value: t.html, where: "html" }, "html");
-    if (t.layoutId) {
-      const set = pagesByLayout.get(t.layoutId) ?? new Set<string>();
-      for (const p of pages) set.add(p);
-      pagesByLayout.set(t.layoutId, set);
-    }
   }
   for (const [layoutId, pages] of pagesByLayout) {
     const l = model.layouts.get(layoutId);
@@ -497,10 +583,30 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     for (const p of pages) acc.pages.add(p);
     addSlot(key, { kind: "html", value: l.html, where: "html" }, "html");
     for (const block of l.blocks) {
-      for (const moduleId of block.moduleIds) {
+      block.moduleIds.forEach((moduleId, position) => {
+        const slot = { layoutId, blockName: block.blockName, position };
+        const overrideKey = overrideKeyOf(slot);
+        // Which module each page shows here: the source's, or the one a
+        // language's own chrome puts in its place (the build's module swap).
+        const shown = new Map<string, Set<string>>();
+        for (const page of pages) {
+          const shownModule = overrides.get(overrideKey)?.get(page)?.ownModule ?? moduleId;
+          const set = shown.get(shownModule) ?? new Set<string>();
+          set.add(page);
+          shown.set(shownModule, set);
+        }
         // Layout placements have no content instance: defaults render.
-        renderUnit({ moduleId, instanceId: null, pages, nested: false, synced: false });
-      }
+        for (const [module, onPages] of shown) {
+          renderUnit({
+            moduleId: module,
+            instanceId: null,
+            pages: onPages,
+            nested: false,
+            synced: false,
+            overrideKey,
+          });
+        }
+      });
     }
   }
 
@@ -542,9 +648,21 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
   // ── Plugin data named by the plugins' link-locations hook. ──
   model.plugins.forEach((pv, i) => {
     const key = `plugin:${pv.pluginSlug}:${i}`;
-    const acc = placeOf(key, { kind: "plugin", pluginSlug: pv.pluginSlug, label: pv.label });
-    // A plugin location names no page; its references resolve as stored.
-    acc.siteWide = true;
+    const acc = placeOf(key, {
+      kind: "plugin",
+      pluginSlug: pv.pluginSlug,
+      label: pv.label,
+      ...(pv.area === null ? {} : { area: pv.area }),
+    });
+    if (pv.variant === null) {
+      // A plugin location that names no variant belongs to no page; its
+      // references resolve as stored.
+      acc.siteWide = true;
+    } else {
+      // #1240 — a language's own chrome: checked per rendering page of
+      // that language, like the page's content the build renders with it.
+      for (const page of renderingPagesOf(pv)) acc.pages.add(page);
+    }
     if (pv.fields) {
       const values =
         pv.value !== null && typeof pv.value === "object" && !Array.isArray(pv.value)
@@ -675,6 +793,17 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     }
   }
 
+  const blockOfChrome = new Map<string, string>();
+  for (const l of model.layouts.values()) {
+    for (const block of l.blocks) {
+      for (const moduleId of block.moduleIds) blockOfChrome.set(moduleId, block.blockName);
+    }
+  }
+  for (const pv of model.plugins) {
+    if (pv.moduleId && pv.replaces && "layoutId" in pv.replaces) {
+      blockOfChrome.set(pv.moduleId, pv.replaces.blockName);
+    }
+  }
   const out: ReferenceIssue[] = [];
   for (const i of issues.values()) {
     const acc = places.get(i.placeKey) as PlaceAcc;
@@ -694,6 +823,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
       place: acc.place,
       pageIds,
       shipped,
+      area: operatorArea(acc.place, blockOfChrome),
       message: issueMessage(
         i.problem,
         acc.place,

@@ -115,6 +115,7 @@ export {
   type EmailConfigRow,
   emailDeliveryProblem,
 } from "./email/transport.js";
+export type { LinkNotice } from "./links/link-notice.js";
 // #1215 — live-refresh topics instead of editor timer polling.
 export {
   type EntityChangeListener,

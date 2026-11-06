@@ -10,7 +10,12 @@ import {
 import { referenceFindings } from "../quality/checks/references.js";
 import type { LinkTargets } from "./link-targets.js";
 import { type ReferenceCheckEnv, scanReferenceIntegrity } from "./reference-integrity.js";
-import type { ReferenceSourceModel, SourceListType, SourceModule } from "./reference-sources.js";
+import type {
+  ReferenceSourceModel,
+  SourceListType,
+  SourceModule,
+  SourcePluginValue,
+} from "./reference-sources.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const HOME = id(1);
@@ -302,7 +307,9 @@ describe("reference integrity policy (#724 decisions)", () => {
       [DE_HOME, { variant: "de", group: "home" }],
       [ABOUT, { variant: "en", group: "about" }],
     ]);
-    const issues = scan(m, "staging", variants);
+    // #1240 — reported by a Stage, blocked by Publish live.
+    expect(scan(m, "staging", variants)[0]?.severity).toBe("warning");
+    const issues = scan(m, "production", variants);
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({
       problem: "variant-missing",
@@ -311,6 +318,199 @@ describe("reference integrity policy (#724 decisions)", () => {
     });
     expect(issues[0]?.pageIds).toEqual([DE_HOME]);
     expect(issues[0]?.fix.hint).toContain("create_variant");
+  });
+});
+
+describe("reference integrity of a language's own plugin data (#1240)", () => {
+  const variants = new Map([
+    [HOME, { variant: "en", group: "home" }],
+    [DE_HOME, { variant: "de", group: "home" }],
+    [ABOUT, { variant: "en", group: "about" }],
+  ]);
+  const chrome = (variant: string | null, replaces: SourcePluginValue["replaces"] = null) =>
+    model({
+      plugins: [
+        {
+          pluginSlug: "international-site",
+          label: "de version of Footer",
+          area: "the footer",
+          value: { links: [{ href: `caelo:page/${ABOUT}` }] },
+          fields: null,
+          variant,
+          replaces,
+        },
+      ],
+    });
+
+  it("checks it on that language's pages, in that language", () => {
+    const issues = scan(chrome("de"), "production", variants);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      problem: "variant-missing",
+      variant: "de",
+      severity: "block",
+      area: "the footer",
+    });
+    expect(issues[0]?.pageIds).toEqual([DE_HOME]);
+  });
+
+  it("without a language it resolves as stored, as before", () => {
+    expect(scan(chrome(null), "production", variants)).toEqual([]);
+  });
+
+  it("a language with no page renders it nowhere", () => {
+    expect(scan(chrome("fr"), "production", variants)).toEqual([]);
+  });
+
+  it("a layout's chrome counts only on the pages of that layout", () => {
+    const slot = { blockName: "footer", position: 0 };
+    expect(scan(chrome("de", { layoutId: LAYOUT, ...slot }), "production", variants)).toHaveLength(
+      1,
+    );
+    expect(
+      scan(
+        chrome("de", { layoutId: "00000000-0000-4000-8000-0000000000aa", ...slot }),
+        "production",
+        variants,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("a language's own chrome replaces the source where it renders (#1240)", () => {
+  // DRAFT is a German page too, so the language has a published page
+  // (DE_HOME) and a draft one, and a place can show on just one of them.
+  const variants = new Map([
+    [HOME, { variant: "en", group: "home" }],
+    [DE_HOME, { variant: "de", group: "home" }],
+    [DRAFT, { variant: "de", group: "soon" }],
+    [ABOUT, { variant: "en", group: "about" }],
+  ]);
+  const about = `caelo:page/${ABOUT}`;
+  const fields: SourceModule["fields"] = [{ name: "cta", kind: "url" }];
+  const pluginValue = (
+    value: unknown,
+    replaces: SourcePluginValue["replaces"],
+    variant = "de",
+  ): SourcePluginValue => ({
+    pluginSlug: "international-site",
+    label: "de version",
+    area: "the shared section",
+    value,
+    fields,
+    variant,
+    replaces,
+  });
+  const languageIssues = (m: ReferenceSourceModel) =>
+    scan(m, "production", variants).filter((i) => i.problem === "variant-missing");
+
+  describe("shared content", () => {
+    const m = mod(1, '<a href="{{cta}}">x</a>', fields);
+    const ci = id(201);
+    const shared = (syncMode: "synced" | "unsynced"): Partial<ReferenceSourceModel> => ({
+      modules: new Map([[m.id, m]]),
+      instances: new Map([[ci, { id: ci, moduleId: m.id, values: { cta: "https://x.test/" } }]]),
+      placements: [HOME, DRAFT].map((pageId) => ({
+        pageId,
+        blockName: "content",
+        moduleId: m.id,
+        contentInstanceId: ci,
+        syncMode,
+      })),
+      plugins: [pluginValue({ cta: about }, { contentInstanceId: ci })],
+    });
+
+    it("counts only on the pages of that language that place the instance", () => {
+      // Codex on #1506: placed only on a German draft, the variant shipped
+      // nowhere, yet a published German page elsewhere made it block.
+      const issues = languageIssues(model(shared("synced")));
+      expect(issues).toHaveLength(1);
+      expect(issues[0]?.pageIds).toEqual([DRAFT]);
+      expect(issues[0]).toMatchObject({ severity: "warning", shipped: false });
+    });
+
+    it("renders nowhere on an unsynced placement: the build applies it to synced ones only", () => {
+      expect(languageIssues(model(shared("unsynced")))).toEqual([]);
+    });
+
+    it("the instance's own value no longer counts on those pages", () => {
+      const over = shared("synced");
+      const issues = languageIssues(
+        model({
+          ...over,
+          instances: new Map([[ci, { id: ci, moduleId: m.id, values: { cta: about } }]]),
+          plugins: [pluginValue({ cta: "https://x.test/" }, { contentInstanceId: ci })],
+        }),
+      );
+      expect(issues).toEqual([]);
+    });
+  });
+
+  describe("layout chrome", () => {
+    const header = mod(2, '<a href="{{cta}}">x</a>', [
+      { name: "cta", kind: "url", default: about },
+    ]);
+    const slot = { layoutId: LAYOUT, blockName: "header", position: 0 };
+    const layouts = new Map([
+      [
+        LAYOUT,
+        {
+          id: LAYOUT,
+          name: "Main",
+          html: "<body></body>",
+          blocks: [{ blockName: "header", moduleIds: [header.id] }],
+        },
+      ],
+    ]);
+    const base = { modules: new Map([[header.id, header]]), layouts };
+
+    it("a default the variant replaces does not count on that language's pages", () => {
+      const issues = languageIssues(
+        model({ ...base, plugins: [pluginValue({ cta: "https://x.test/" }, slot)] }),
+      );
+      expect(issues).toEqual([]);
+    });
+
+    it("a default the variant leaves out still renders, so it still counts", () => {
+      const issues = languageIssues(model({ ...base, plugins: [pluginValue({}, slot)] }));
+      expect(issues.map((i) => i.place.kind)).toEqual(["module-default"]);
+      expect(issues[0]?.pageIds).toEqual([DE_HOME, DRAFT].sort());
+    });
+
+    it("the source's default still counts for a language with no chrome of its own", () => {
+      const issues = languageIssues(
+        model({ ...base, plugins: [pluginValue({ cta: "https://x.test/" }, slot, "fr")] }),
+      );
+      expect(issues.map((i) => i.place.kind)).toEqual(["module-default"]);
+    });
+
+    it("the language's own module replaces the source, and its links count instead", () => {
+      const source = mod(3, `<a href="${about}">source</a>`);
+      const own = mod(4, `<a href="${about}">own</a>`);
+      const issues = languageIssues(
+        model({
+          modules: new Map([
+            [source.id, source],
+            [own.id, own],
+          ]),
+          layouts: new Map([
+            [
+              LAYOUT,
+              {
+                id: LAYOUT,
+                name: "Main",
+                html: "<body></body>",
+                blocks: [{ blockName: "header", moduleIds: [source.id] }],
+              },
+            ],
+          ]),
+          plugins: [{ ...pluginValue({}, slot), moduleId: own.id }],
+        }),
+      );
+      expect(issues.map((i) => i.place)).toEqual([
+        { kind: "module-html", moduleId: own.id, moduleName: own.name },
+      ]);
+    });
   });
 });
 
@@ -385,6 +585,9 @@ describe("reference integrity places", () => {
             label: "German footer",
             value: { links: [{ href: `caelo:page/${GONE}` }] },
             fields: null,
+            area: null,
+            variant: null,
+            replaces: null,
           },
         ],
       }),

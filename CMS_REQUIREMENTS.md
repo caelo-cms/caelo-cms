@@ -326,6 +326,11 @@ spec demanded of core i18n and remain non-negotiable:
   `noindex` placeholder pages. Google must never find untranslated content under a locale
   URL. (This is the §2-invariant "no fallbacks" applied to i18n — it survives the move
   into the plugin unchanged.)
+- **Links stay in their language.** A page links only to pages in its own language, and a
+  link whose target has no version in that language never reaches production. Publishing
+  such a page warns, Stage reports it (the staging build links the target in its own
+  language so the staged site stays clickable for review), and Publish live refuses until
+  the target has a version or the link changes (#1240).
 - **Context-aware translation — never sentence-by-sentence.** New translations (Mode 1)
   receive the full source page, target-locale context, site glossary, and tone guide.
   Updates (Mode 2) receive the full current source, the full existing translation, and a

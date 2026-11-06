@@ -47,6 +47,7 @@ interface TriggerResult {
   readonly fileCount: number;
   readonly durationMs: number;
   readonly previewUrl?: string;
+  linkNotice: { aiText: string } | null;
 }
 
 export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = {
@@ -105,10 +106,12 @@ export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = 
     }
     const v = r.value as TriggerResult;
     const preview = v.previewUrl ? ` Preview: ${v.previewUrl}.` : "";
+    // #1240 — this build is reviewable, and Publish live refuses it.
+    const links = v.linkNotice ? ` ${v.linkNotice.aiText}` : "";
     return {
       ok: true,
       content:
-        `Staging "${v.targetName}" rebuilt (run ${v.runId}): ${v.pageCount} page(s), ${v.fileCount} file(s) in ${Math.round(v.durationMs / 1000)}s.${preview} ` +
+        `Staging "${v.targetName}" rebuilt (run ${v.runId}): ${v.pageCount} page(s), ${v.fileCount} file(s) in ${Math.round(v.durationMs / 1000)}s.${preview}${links} ` +
         "Only published content is included. To go live, call propose_deploy_promote.",
       value: v,
     };

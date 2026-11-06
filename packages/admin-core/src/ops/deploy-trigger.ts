@@ -102,6 +102,7 @@ import {
   reconcilePluginsForBuild,
 } from "../deploy/plugin-problems.js";
 import { markRedirectsBehind } from "../deploy/redirect-sync.js";
+import { describeRenderFailures } from "../deploy/render-failures.js";
 import { liveSiteOrigin, readStagingHost, stagingGateSecret } from "../deploy/staging-domain.js";
 import {
   releaseStagingPublication,
@@ -119,11 +120,18 @@ import {
   verifyStagedBuildServed,
   verifyStagingGatewayServes,
 } from "../deploy/verify-staged-serve.js";
+import {
+  type LinkNotice,
+  linkNoticeSchema,
+  linksTheCheckMissed,
+  withBuiltLinks,
+} from "../links/link-notice.js";
 import { loadedVisitorProjections } from "../public-projection.js";
 import { kickQualityAuditWorker } from "../quality/audit-worker.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
+import { buildReferenceGate } from "./content/link-integrity.js";
 import {
   effectiveOutDir,
   logRunTimings,
@@ -229,6 +237,14 @@ const triggerOutput = z.object({
    * A Stage warning; Publish live blocks on them (rollout F).
    */
   unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
+  /** #724 — the reference check's warnings over what this build rendered. */
+  linkWarnings: z.array(z.string()),
+  /**
+   * #1240 — links on published pages to pages without a version in that
+   * language. A Stage warning; recorded on the run, and Publish live
+   * refuses this build.
+   */
+  linkNotice: linkNoticeSchema.nullable(),
   /**
    * #1257 — page lists cut at the query cap: more pages match than they
    * show. A Stage warning; paginating the list fixes it.
@@ -256,6 +272,9 @@ const startPlan = z.object({
    */
   buildOrigin: z.string().nullable(),
   pluginProblems: z.array(deployPluginProblem),
+  /** #1240 — what the reference check said before this build started. */
+  linkWarnings: z.array(z.string()),
+  linkNotice: linkNoticeSchema.nullable(),
   /** #553 — the publish-anyway decision a production build carries. */
   override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
 });
@@ -355,6 +374,29 @@ export const startTriggerOp = defineOperation({
           refusal: true,
         });
       }
+    }
+    // #1240 — every build, whatever it merged: a page published in the panel
+    // leaves a Stage nothing to merge, and a rebuild merges nothing at all, so
+    // the merge's gate alone let them reach the generator's render gate.
+    let linkWarnings: string[] = [];
+    let linkNotice: LinkNotice | null = null;
+    if (target.env === "staging" || target.env === "production") {
+      const links = await buildReferenceGate(tx, target.env);
+      if (!links.ok) {
+        await recordBlockedRun(tx, ctx, {
+          targetId: target.id,
+          startedAt,
+          message: `Blocked, links: ${links.message}`,
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: links.message,
+          refusal: true,
+        });
+      }
+      linkWarnings = links.warnings;
+      linkNotice = links.notice;
     }
     // #1008 — a site built without an active plugin lacks what it adds. A
     // Stage records and reports it; production refuses (no override: the
@@ -477,6 +519,8 @@ export const startTriggerOp = defineOperation({
       publishAt: await deployRunStartedAt(tx, input.runId),
       buildOrigin,
       pluginProblems,
+      linkWarnings,
+      linkNotice,
       override,
     });
   },
@@ -507,6 +551,8 @@ export const finishTriggerOp = defineOperation({
       phaseTimings: z.array(phaseTimingSchema),
       /** #1319 — what the audit log records as the Stage's audit request. */
       qualityAudit: stagingAuditRequestSchema.nullable(),
+      /** #1240 — the language links this build rendered; null: none. */
+      linkNotice: linkNoticeSchema.nullable(),
     })
     .strict(),
   output: z.object({
@@ -591,6 +637,7 @@ export const finishTriggerOp = defineOperation({
           build_id = ${input.runId},
           publish_summary = ${jsonbParam(input.publishSummary)},
           site_url = ${input.buildOrigin},
+          link_notice = ${input.linkNotice === null ? sql`NULL` : jsonbParam(input.linkNotice)},
           lease_expires_at = NULL, planned_audit = NULL
       WHERE id = ${input.runId}::uuid
     `);
@@ -623,6 +670,29 @@ export const finishTriggerOp = defineOperation({
 });
 
 type TriggerOutput = z.infer<typeof triggerOutput>;
+
+/**
+ * #1240 — the reference check and the build disagreed about a link. Filed
+ * into the bug intake (#901), because the check exists so that this cannot
+ * happen; a failure to file must not change the build's own outcome.
+ */
+async function reportGateDisagreement(
+  steps: OperationSteps,
+  sys: ExecutionContext,
+  whatHappened: string,
+): Promise<void> {
+  const r = await execute(steps.registry, steps.adapter, sys, "ai_bug_reports.create", {
+    title: "The link check and the build disagreed about a link",
+    whatHappened: whatHappened.slice(0, 4000),
+    expected:
+      "The reference check before a build reports every link the build cannot render, in the same language view.",
+    suspectedTool: "deploy.trigger",
+    severity: "degraded",
+    kind: "defect",
+    source: "auto",
+  });
+  if (!r.ok) console.error("[deploy] could not file the link disagreement", { error: r.error });
+}
 
 /** The body of deploy.trigger (see the module comment). */
 async function runTrigger(
@@ -780,6 +850,19 @@ async function runTrigger(
     if (subprocess.ok) timer.include("generator", subprocess.result.phases);
     timer.lap("generator");
     if (!subprocess.ok) {
+      // #1240 — a render failure carries its structure: it reaches a person
+      // in their words, and a link among them is a Caelo fault.
+      if (subprocess.renderFailures && subprocess.renderFailures.length > 0) {
+        const text = describeRenderFailures(subprocess.renderFailures);
+        if (text.caeloFault) await reportGateDisagreement(steps, sys, text.ai);
+        await fail(subprocess.message, text.operator);
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: text.operator,
+          nextAction: { tool: "check_links", reason: text.ai },
+        });
+      }
       const tail = subprocess.stderr ? `\n${subprocess.stderr.slice(-500)}` : "";
       // v0.2.77 — the stderr tail rides in the error so the operator's
       // toast carries the real reason, not just "exited 1".
@@ -791,6 +874,17 @@ async function runTrigger(
       );
     }
     const built = subprocess.result;
+    // #1240 — the build is the truth about its own files: Publish live
+    // refuses what it rendered, and a link the check missed is a Caelo bug.
+    const missedLinks = linksTheCheckMissed(plan.linkNotice, built.crossVariantLinks);
+    const linkNotice = withBuiltLinks(plan.linkNotice, missedLinks);
+    if (missedLinks.length > 0) {
+      await reportGateDisagreement(
+        steps,
+        sys,
+        `The staging build rendered links the reference check did not report: ${JSON.stringify(missedLinks.slice(0, 10))}`,
+      );
+    }
     // #1211 — a publisher that serves `current/` (self-hosted) is serving
     // this build already: the generator mirrored it and could not be
     // stopped while it did. A stop from here on cannot unpublish it, so the
@@ -897,6 +991,7 @@ async function runTrigger(
       phaseTimings: timer.phases(),
       qualityAudit:
         plan.target.env === "staging" ? (input.qualityAudit ?? OUTSIDE_CHAT_AUDIT) : null,
+      linkNotice,
     });
     if (!finished.ok) return await fail(describeError(finished.error));
     // The audit row committed with the run; wake this instance's worker
@@ -939,6 +1034,8 @@ async function runTrigger(
       ...(previewUrl ? { previewUrl } : {}),
       draftPages: (finished.value as { draftPages: z.infer<typeof draftPagesSummary> }).draftPages,
       unpublishedLinkTargets: built.unpublishedLinkTargets,
+      linkWarnings: plan.linkWarnings,
+      linkNotice,
       truncatedLists: built.truncatedLists,
       pluginProblems: plan.pluginProblems,
     });

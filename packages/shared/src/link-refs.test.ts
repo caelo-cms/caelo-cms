@@ -552,7 +552,7 @@ const EN_SOLO = "c1111111-1111-4111-8111-111111111111";
 const EN_HOME = "d1111111-1111-4111-8111-111111111111";
 const DE_HOME = "d2222222-2222-4222-8222-222222222222";
 
-function variantIndex(env: "preview" | "staging" = "staging") {
+function variantIndex(env: "preview" | "staging" | "production" = "staging") {
   return createSiteLinkIndex({
     env,
     pageUrlStyle: "directory",
@@ -634,13 +634,47 @@ describe("page variants (link-resolve) — links go to the rendering page's vari
     const missing: string[] = [];
     const out = resolveLinkRefsInHtml(
       `<a href="caelo:page/${EN_SOLO}">Solo</a>`,
-      variantIndex().forPage(DE_HOME),
+      variantIndex("production").forPage(DE_HOME),
       missing,
     );
     expect(out).toBe(`<a href="caelo:page/${EN_SOLO}">Solo</a>`);
     expect(missing).toEqual([`link-variant-missing:page/${EN_SOLO}:de`]);
     expect(linkIssueSeverity("preview", "no-variant")).toBe("block");
-    expect(linkIssueSeverity("staging", "no-variant")).toBe("block");
+    expect(linkIssueSeverity("staging", "no-variant")).toBe("warning");
+    expect(linkIssueSeverity("production", "no-variant")).toBe("block");
+  });
+
+  it("a staging build links the target in its own language and reports it (#1240)", () => {
+    const missing: string[] = [];
+    const resolver = variantIndex("staging").forPage(DE_HOME);
+    const out = resolveLinkRefsInHtml(
+      `<a href="caelo:page/${EN_SOLO}#team">Solo</a>`,
+      resolver,
+      missing,
+    );
+    expect(out).toBe('<a href="/solo/#team">Solo</a>');
+    expect(missing).toEqual([]);
+    expect(resolver.observed[0]?.resolution).toEqual({
+      status: "no-variant",
+      variant: "de",
+      staged: { url: "/solo/#team", pageId: EN_SOLO },
+    });
+  });
+
+  it("the editor preview keeps flagging it: only a staging build links across (#1240)", () => {
+    for (const env of ["preview", "production"] as const) {
+      expect(variantIndex(env).forPage(DE_HOME).resolve(pageRef(EN_SOLO))).toEqual({
+        status: "no-variant",
+        variant: "de",
+        staged: null,
+      });
+    }
+  });
+
+  it("names the pages of a variant", () => {
+    expect(variantIndex().pagesInVariant("de")).toContain(DE_HOME);
+    expect(variantIndex().pagesInVariant("de")).not.toContain(EN_SOLO);
+    expect(variantIndex().pagesInVariant("fr")).toEqual([]);
   });
 
   it("maps nothing for a page no plugin has an opinion about, or a render outside a page", () => {
@@ -713,7 +747,7 @@ describe("page variants (link-resolve) — links go to the rendering page's vari
       templateCss: "",
       blocks: [],
       lists,
-      linkResolver: variantIndex().forPage(DE_ABOUT),
+      linkResolver: variantIndex("production").forPage(DE_ABOUT),
     });
     expect(unstamp(out.html)).toContain('<a href="/de/ueber/">About</a>');
     expect(out.moduleFailures).toEqual([

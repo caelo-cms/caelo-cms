@@ -223,6 +223,13 @@ export interface GenerateResult {
    */
   readonly unpublishedLinkTargets: readonly UnpublishedLinkTarget[];
   /**
+   * #1240 — links a staging build rendered into another language, because
+   * the target has no version in the linking page's. The build is the truth
+   * about its own files: Publish live refuses a Stage that has any. Always
+   * empty outside staging (a production build refuses such a link).
+   */
+  readonly crossVariantLinks: readonly CrossVariantLink[];
+  /**
    * #1257 — page lists cut at the query cap (50): the overview shows 50
    * of more matches. A warning at Stage; paginating the list fixes it.
    */
@@ -237,6 +244,17 @@ export interface UnpublishedLinkTarget {
   /** The page the link renders to (after the page-variant mapping) and its URL. */
   readonly targetPageId: string;
   readonly targetUrl: string;
+}
+
+/** One link rendered to a page in another language. */
+export interface CrossVariantLink {
+  /** The page carrying the link. */
+  readonly pageId: string;
+  readonly pagePath: string;
+  /** The page the link renders to, its URL, and the language it lacks. */
+  readonly targetPageId: string;
+  readonly targetUrl: string;
+  readonly variant: string;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -957,6 +975,7 @@ async function buildSite(
       : null;
   const renderDeps = new Map<string, ListRenderDeps>();
   const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
+  const crossVariantLinks: CrossVariantLink[] = [];
   // #1257 — paginated overviews: their follow-up files, and lists cut at the cap.
   const followUpOutputPaths = new Map<string, string[]>();
   const truncatedLists: TruncatedListReport[] = [];
@@ -1068,6 +1087,7 @@ async function buildSite(
 
     renderDeps.set(page.page_id, mergeListRenderDeps(renders.map((r) => r.lists.deps())));
     const seenTargets = new Set<string>();
+    const seenCrossVariant = new Set<string>();
     renders.forEach(({ composed, lists, linkResolver }, index) => {
       const n = index + 1;
       listOverlays?.noteIssues(lists.overlayIssues());
@@ -1091,15 +1111,39 @@ async function buildSite(
       // Collected for every page of the build, then refused with all of
       // them named (assertNoRenderFailures).
       renderFailures.push(
-        ...renderFailuresOf({
-          pageSlug: n === 1 ? page.slug : `${page.slug} (page ${n})`,
-          html: composed.html,
-          moduleFailures: composed.moduleFailures,
-          // #724 — a reference in the layout's own HTML that did not resolve.
-          layoutLinkMarkers: linkMarkersOf(composed.missingSlots),
-        }),
+        ...renderFailuresOf(
+          {
+            pageId: page.page_id,
+            pageSlug: n === 1 ? page.slug : `${page.slug} (page ${n})`,
+            pageTitle: page.title,
+            pagePath: page.current_path,
+            html: composed.html,
+            moduleFailures: composed.moduleFailures,
+            // #724 — a reference in the layout's own HTML that did not resolve.
+            layoutLinkMarkers: linkMarkersOf(composed.missingSlots),
+          },
+          (pageId) => {
+            const path = linkIndex.pathOf(pageId);
+            return path === null
+              ? null
+              : { pageId, path, title: linkIndex.titleOf(pageId) ?? path };
+          },
+        ),
       );
       for (const o of linkResolver.observed) {
+        if (o.resolution.status === "no-variant" && o.resolution.staged !== null) {
+          const { pageId: targetPageId, url: targetUrl } = o.resolution.staged;
+          if (seenCrossVariant.has(targetPageId)) continue;
+          seenCrossVariant.add(targetPageId);
+          crossVariantLinks.push({
+            pageId: page.page_id,
+            pagePath: page.current_path,
+            targetPageId,
+            targetUrl,
+            variant: o.resolution.variant,
+          });
+          continue;
+        }
         if (o.resolution.status !== "unpublished") continue;
         // The page the link renders to — the referenced page, or its
         // sibling in this page's variant (link-resolve point).
@@ -1474,6 +1518,7 @@ async function buildSite(
     // maxRSS is in KiB on Linux and macOS alike under Bun.
     peakRssMb: Math.round(process.resourceUsage().maxRSS / 1024),
     unpublishedLinkTargets,
+    crossVariantLinks,
     truncatedLists,
   };
 }

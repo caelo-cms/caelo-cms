@@ -4,6 +4,7 @@
   import { pageCreateSchema } from "@caelo-cms/shared";
   import { FileText } from "lucide-svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
+  import LinkNoticeBanner from "#lib/components/LinkNoticeBanner.svelte";
   import StateDot from "#lib/components/StateDot.svelte";
   import { pageStatusMark } from "#lib/components/state-dot.js";
   import { bindZodForm } from "#lib/forms/zod-bind.svelte.js";
@@ -72,6 +73,13 @@
     <Alert variant="destructive">
       <AlertDescription>{form.error}</AlertDescription>
     </Alert>
+  {/if}
+  {#if form?.linkNotice}
+    <LinkNoticeBanner
+      notice={form.linkNotice}
+      csrfToken={data.csrfToken}
+      draftAction="?/setPagesToDraft"
+    />
   {/if}
   {#if form?.published}
     <Alert>

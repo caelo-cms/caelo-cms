@@ -44,7 +44,7 @@ export const checkLinksTool = makeReadTool<Input>({
   name: "check_links",
   description:
     "Check internal links (to own pages/media) in your draft, wherever stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms/properties, plugin data. Each problem names the page, storage place and fixing tool.\n" +
-    "Severity: BLOCK Stage + Publish = links to deleted pages/media, links without a page in the linking page's language, refs to a deleted list, removed term or deleted module in a list entry. BLOCK Publish (Stage warning) = links to unpublished pages. Warning = old plain-path links.\n" +
+    "Severity: BLOCK Stage + Publish = links to deleted pages/media, refs to a deleted list, removed term or deleted module in a list entry. BLOCK Publish (Stage warning) = links to unpublished pages, links without a page in the linking page's language. Warning = old plain-path links.\n" +
     "USE FOR: before `stage_changes` after deleting/unpublishing/translating pages; a Stage refused for links; operator asks about broken links.\n" +
     "DO NOT USE FOR: external links or the built site (`get_quality_audit` checks the staged build).",
   opName: "links.check_references",
