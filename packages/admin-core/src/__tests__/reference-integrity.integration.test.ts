@@ -269,6 +269,58 @@ describe("reference integrity — covered surfaces", () => {
   });
 });
 
+describe("reference integrity — long copy stays out of the model (#1240, #1271)", () => {
+  it("still reports a link in long text and a nested module a long text section shows", async () => {
+    const gone = await promoPage(SYS, `${PFX}-copy-gone`, "published", "https://example.com/c");
+    // Long, link-free copy: the check models it as a short text, which
+    // must keep the section around the nested cards rendering.
+    const intro = "Copy about crawling, rendering and indexing. ".repeat(10);
+    const body = `<p>${"Long richtext copy. ".repeat(10)}<a href="/${PFX}-copy-gone">gone</a></p>`;
+    await run(SYS, "pages.build_page", {
+      page: { slug: `${PFX}-copy`, title: "copy", templateId, status: "published" },
+      modules: [
+        {
+          ref: "card",
+          displayName: "RIF Copy Card",
+          html: `<a href="{{card_href}}">card</a>`,
+          fields: [{ name: "card_href", kind: "link", label: "Card" }],
+          content: { source: "inline", values: { card_href: `/${PFX}-copy-gone` } },
+        },
+        {
+          blockName: "content",
+          displayName: "RIF Copy",
+          html: "<section>{{#intro}}<p>{{intro}}</p><div>{{#cards}}_{{/cards}}</div>{{/intro}}<div>{{{body}}}</div></section>",
+          fields: [
+            { name: "intro", kind: "text", label: "Intro" },
+            { name: "body", kind: "richtext", label: "Body" },
+            { name: "cards", kind: "module-list", label: "Cards" },
+          ],
+          content: { source: "inline", values: { intro, body, cards: [{ $ref: "card" }] } },
+        },
+      ],
+    });
+    await run(SYS, "pages.delete", { pageId: gone.pageId });
+
+    const issues = await adapter.withAdminTransaction(SYS, (tx) =>
+      checkReferences(tx, { branchId: null, env: "production" }),
+    );
+    const mine = issues.filter(
+      (i) => i.problem === "missing-target" && i.place.kind === "content" && i.severity === "block",
+    );
+    const fields = mine.map((i) => ({
+      field: (i.place as { field: string }).field,
+      nested: (i.place as { nested: boolean }).nested,
+    }));
+    expect(fields).toContainEqual({ field: "body", nested: false });
+    expect(fields).toContainEqual({ field: "card_href", nested: true });
+    expect(issues.some((i) => (i.place as { field?: string }).field === "intro")).toBe(false);
+
+    await admin(async (tx) => {
+      await tx`UPDATE pages SET deleted_at = now() WHERE slug = ${`${PFX}-copy`}`;
+    });
+  });
+});
+
 describe("reference integrity — Stage gate", () => {
   it("a missing target refuses the Stage merge, nothing reaches main; fixing the link lets it through", async () => {
     const target = await promoPage(SYS, `${PFX}-t2`, "published", "https://example.com/y");
