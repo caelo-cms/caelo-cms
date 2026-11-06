@@ -87,6 +87,17 @@ describe("assertNoRenderFailures / renderFailuresOf", () => {
     ).not.toThrow();
   });
 
+  it("refuses a dotted path into a field that exists: it is no copy (#1433)", () => {
+    const page = (reason: string) => ({
+      pageSlug: "home",
+      html: '<a href="{{cta.label}}">x</a>',
+      moduleFailures: [failure(reason)],
+    });
+    expect(() => gate([page("field-path-unknown:cta.label")])).toThrow("cta.label");
+    expect(() => gate([page("field-value-empty:cta.href")])).toThrow("cta.href");
+    expect(() => gate([page("field-value-malformed:cta")])).toThrow("field-value-malformed:cta");
+  });
+
   it("catches a marker comment that bypassed the structured channel", () => {
     expect(() =>
       gate([

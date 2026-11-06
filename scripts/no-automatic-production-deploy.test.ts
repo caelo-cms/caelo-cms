@@ -146,6 +146,12 @@ describe("no automatic caller starts a production build (#1154)", () => {
       /\bpublishLiveBuild\b/,
       /\bpublishStaging\b/,
       DEPLOY_CALL,
+      // #1495 — neither do its regions take a URL from main: stored settings
+      // and page rows hold what nobody published.
+      /\bsite_defaults\b/,
+      /\bcurrent_path\b/,
+      /\bcanonical_url\b/,
+      /\blocalBuildPluginServices\b/,
     ]) {
       expect(forbidden.test(build)).toBe(false);
     }

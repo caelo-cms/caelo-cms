@@ -166,7 +166,7 @@ async function redeemBootstrapToken(
     return {
       summary: "bootstrap-token-rejected",
       message:
-        "Bootstrap token invalid, expired, or already used. Open the latest /setup?token=<…> link from the install output; a token works once and expires 24 hours after it was issued.",
+        "Bootstrap token invalid, expired, or already used. Open the latest /setup?token=<…> link from the install output; a token works once and expires 24 hours after it was issued. On Google Cloud, `bunx @caelo-cms/provisioning setup-link --project <project-id>` prints the current one.",
     };
   }
   return null;

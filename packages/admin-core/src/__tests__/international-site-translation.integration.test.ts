@@ -284,6 +284,7 @@ describe("#397 — context-aware translation", () => {
       context: "greeting",
     });
     await op("set_style_guide", { localeCode: "de", body: "Use informal du." });
+    await op("set_neutral_terms", { add: ["Hello", "Zeppelin"] });
 
     const variant = await op<{ pageId: string }>("create_variant", {
       sourcePageId: sourceId,
@@ -336,6 +337,10 @@ describe("#397 — context-aware translation", () => {
     expect(prompt?.system).toContain("STRUCTURAL LOCK");
     expect(prompt?.system).toContain('"world" → "Welt" (greeting)');
     expect(prompt?.system).toContain("Use informal du.");
+    // #1449 — a neutral term the page uses stays as it is; the rest of the
+    // list stays out of the prompt.
+    expect(prompt?.system).toContain('"Hello" → "Hello" (language-neutral');
+    expect(prompt?.system).not.toContain("Zeppelin");
     expect(prompt?.user).toContain("Title: Pricing");
     expect(prompt?.user).toContain("Short title: Pricing");
     expect(prompt?.user).toContain("<p>Hello <b>world</b></p>");

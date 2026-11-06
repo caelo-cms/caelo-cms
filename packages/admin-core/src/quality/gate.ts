@@ -42,10 +42,21 @@
  * language closes the gate on its own: a staging build renders those links
  * into another language, and Publish live copies it as it is. So no audit
  * result, acceptance or override opens it; only a new Stage does.
+ *
+ * #1446 — the same decision holds across pages when it is about a file
+ * Caelo or a plugin ships (platform-audits.ts). The audit samples different
+ * pages on each Stage, so an acceptance per page came back on every Stage
+ * for a file the operator had already decided on. An acceptance of an audit
+ * for such a file covers that audit for that file on every page, until the
+ * content hash in its name changes. It covers a page's finding only when
+ * the finding names nothing but accepted files, at a value no worse than
+ * accepted: anything else on the page is the page's own problem and blocks.
+ * Page scores are not part of this: a category below 100 stays per page.
  */
 
 import type { LinkNotice } from "../links/link-notice.js";
 import type { CheckRuleProblem } from "./checks/evaluate.js";
+import { shippedResourcesOf } from "./platform-audits.js";
 import {
   acceptedValueCovers,
   isPerformanceNoisy,
@@ -83,6 +94,8 @@ export interface GateAudit {
   readonly pages: readonly {
     readonly pageId: string;
     readonly pagePath: string;
+    /** The audited URL: decides which flagged files are the site's own. */
+    readonly pageUrl: string;
     readonly problems: readonly QualityProblem[];
   }[];
   /** #727 — site-wide findings-check problems (no page). */
@@ -98,6 +111,9 @@ export interface GateAcceptances {
   readonly scores: ReadonlyMap<string, number>;
   /** #727 — `${pageId or "site"}|${ruleId}` → accepted error count. */
   readonly checks: ReadonlyMap<string, number>;
+  /** #1446 — `${auditId}|${resourcePath}` → the audit score accepted for a
+   *  file Caelo or a plugin ships, on every page that loads it. */
+  readonly resources: ReadonlyMap<string, number>;
 }
 
 export type GateState =
@@ -145,18 +161,48 @@ export function checkKey(pageId: string | null, ruleId: string): string {
   return `${pageId ?? "site"}|${ruleId}`;
 }
 
+/** #1446 — key of an acceptance of an audit for one shipped file. */
+export function resourceKey(auditId: string, resourcePath: string): string {
+  return `${auditId}|${resourcePath}`;
+}
+
 /** What an open problem is listed as when it has no page. */
 export const SITE_WIDE_PATH = "site-wide";
 
 /**
- * True when an editor's live acceptance on this page covers the problem:
- * the accepted value is not worse than what was measured (ratchet.ts —
- * Performance values within ACCEPTED_PERFORMANCE_TOLERANCE of it).
+ * #1446 — whether acceptances for shipped files cover this finding: it
+ * names shipped files only, each one accepted for this audit at a value no
+ * worse than measured.
+ */
+function isAcceptedForResources(
+  problem: Extract<QualityProblem, { kind: "failing_audit" }>,
+  pageUrl: string,
+  acceptances: GateAcceptances,
+): boolean {
+  const paths = shippedResourcesOf(problem.elements, pageUrl);
+  if (paths === null) return false;
+  return paths.every((path) => {
+    const accepted = acceptances.resources.get(resourceKey(problem.auditId, path));
+    return (
+      accepted !== undefined &&
+      acceptedValueCovers(problemValue(problem), accepted, isPerformanceNoisy(problem))
+    );
+  });
+}
+
+/**
+ * True when an editor's live acceptance covers the problem: on this page,
+ * or for the shipped files the finding names (#1446). The accepted value is
+ * not worse than what was measured (ratchet.ts — Performance values within
+ * ACCEPTED_PERFORMANCE_TOLERANCE of it).
+ *
+ * @param pageUrl - the audited URL of the page; null with a null `pageId`
  */
 export function isProblemAccepted(
   pageId: string | null,
   problem: QualityProblem,
   acceptances: GateAcceptances,
+  pageUrl: string | null,
 ): boolean {
   if (problem.kind === "check_rule") {
     // The per-rule ratchet: accepted up to a count of errors; one more blocks.
@@ -168,10 +214,19 @@ export function isProblemAccepted(
     problem.kind === "failing_audit"
       ? acceptances.findings.get(findingKey(pageId, problem.auditId))
       : acceptances.scores.get(scoreKey(pageId, problem.category));
-  if (accepted === undefined) return false;
   // A finding accepted before values were recorded covers it as recorded.
   if (accepted === null) return true;
-  return acceptedValueCovers(problemValue(problem), accepted, isPerformanceNoisy(problem));
+  if (
+    accepted !== undefined &&
+    acceptedValueCovers(problemValue(problem), accepted, isPerformanceNoisy(problem))
+  ) {
+    return true;
+  }
+  return (
+    problem.kind === "failing_audit" &&
+    pageUrl !== null &&
+    isAcceptedForResources(problem, pageUrl, acceptances)
+  );
 }
 
 function describeProblem(p: OpenProblem): string {
@@ -278,13 +333,13 @@ export function decideGate(
       const openProblems: OpenProblem[] = [];
       for (const page of audit.pages) {
         for (const problem of page.problems) {
-          if (!isProblemAccepted(page.pageId, problem, acceptances)) {
+          if (!isProblemAccepted(page.pageId, problem, acceptances, page.pageUrl)) {
             openProblems.push({ pageId: page.pageId, pagePath: page.pagePath, problem });
           }
         }
       }
       for (const problem of audit.siteProblems) {
-        if (!isProblemAccepted(null, problem, acceptances)) {
+        if (!isProblemAccepted(null, problem, acceptances, null)) {
           openProblems.push({ pageId: null, pagePath: SITE_WIDE_PATH, problem });
         }
       }

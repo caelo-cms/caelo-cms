@@ -139,11 +139,47 @@ interface PendingRootState {
   readonly deletedAt?: string | null;
 }
 
-async function loadDesignatedHomePageId(tx: TransactionRunner): Promise<string | null> {
+/** The site's home and 404 pages as one branch sees them. */
+export interface SiteDesignations {
+  readonly homePageId: string | null;
+  readonly notFoundPageId: string | null;
+}
+
+/**
+ * The home and 404 pages `chatBranchId` (null = main) sees. The
+ * `site_defaults` pointers name main pages only, so main's build and every
+ * other branch keep working; a designation of a page only this branch
+ * holds waits in `pending_*` until the merge that takes the page live
+ * (`claimPendingDesignations` in current-path.ts). The join keeps another
+ * branch's pending page, or a deleted one, out of this view.
+ */
+export async function loadSiteDesignations(
+  tx: TransactionRunner,
+  chatBranchId: string | null,
+): Promise<SiteDesignations> {
   const rows = (await tx.execute(sql`
-    SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
-  `)) as unknown as { home_page_id: string | null }[];
-  return rows[0]?.home_page_id ?? null;
+    SELECT sd.home_page_id::text AS home_page_id,
+           sd.not_found_page_id::text AS not_found_page_id,
+           ph.id::text AS pending_home,
+           pn.id::text AS pending_not_found
+    FROM site_defaults sd
+    LEFT JOIN pages ph ON ph.id = sd.pending_home_page_id
+      AND ph.deleted_at IS NULL AND ph.chat_branch_id = ${chatBranchId}::uuid
+    LEFT JOIN pages pn ON pn.id = sd.pending_not_found_page_id
+      AND pn.deleted_at IS NULL AND pn.chat_branch_id = ${chatBranchId}::uuid
+    WHERE sd.id = 1
+    LIMIT 1
+  `)) as unknown as {
+    home_page_id: string | null;
+    not_found_page_id: string | null;
+    pending_home: string | null;
+    pending_not_found: string | null;
+  }[];
+  const r = rows[0];
+  return {
+    homePageId: r?.pending_home ?? r?.home_page_id ?? null,
+    notFoundPageId: r?.pending_not_found ?? r?.not_found_page_id ?? null,
+  };
 }
 
 /** One render id per (operation transaction, branch) — see {@link renderScopeOf}. */
@@ -204,7 +240,7 @@ export async function composePathsDetailed(
 ): Promise<Map<string, ComposedPath>> {
   const ids = composableIds(tree, pageIds);
   if (ids.length === 0) return new Map();
-  const designated = await loadDesignatedHomePageId(tx);
+  const designated = (await loadSiteDesignations(tx, annotationScope.chatBranchId)).homePageId;
   const annotations = await collectUrlAnnotations(ids, annotationScope, view);
   return composePathsFrom(tree, ids, designated, annotations, view);
 }
@@ -218,7 +254,9 @@ function composableIds(tree: PageTree, pageIds: ReadonlyArray<string>): string[]
  * Issue #1212 — {@link composePaths} for a caller that holds no
  * transaction: the designated home page is already known (the preview's
  * site view carries it), and the plugin annotations are asked here, with
- * no database connection held while the plugins answer.
+ * no database connection held while the plugins answer. A merge uses it
+ * too: its tree is main's, so main's designation applies while the plugin
+ * view is the branch's.
  */
 export async function composePathsOutsideTransaction(
   tree: PageTree,

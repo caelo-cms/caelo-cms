@@ -482,6 +482,8 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/security/**`,
   `${A}/ops/step-up.ts`,
   `${A}/ops/owner-bootstrap-tokens.ts`,
+  // #1476 — the Owner setup token the installer hands the admin: install-time.
+  `${SHARED}/owner-setup-token.ts`,
   `${A}/ops/provisioning_outputs.ts`,
   `${A}/ops/auth.ts`,
   `${A}/ops/users.ts`,

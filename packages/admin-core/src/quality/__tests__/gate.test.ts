@@ -19,15 +19,17 @@ import {
   findingKey,
   type GateAcceptances,
   type GateAudit,
+  resourceKey,
   scoreKey,
 } from "../gate.js";
 import { groupOpenProblems, type ProblemGroup } from "../problem-groups.js";
-import { ACCEPTED_PERFORMANCE_TOLERANCE } from "../ratchet.js";
+import { ACCEPTED_PERFORMANCE_TOLERANCE, type QualityProblem } from "../ratchet.js";
 
 const NONE: GateAcceptances = {
   findings: new Map(),
   scores: new Map(),
   checks: new Map(),
+  resources: new Map(),
 };
 
 function accepting(over: Partial<GateAcceptances>): GateAcceptances {
@@ -52,6 +54,7 @@ const problems: GateAudit["pages"] = [
   {
     pageId: "p-about",
     pagePath: "/about",
+    pageUrl: "https://staging.example.test/about",
     problems: [
       {
         kind: "failing_audit",
@@ -125,6 +128,7 @@ describe("decideGate", () => {
       {
         pageId: "p-about",
         pagePath: "/about",
+        pageUrl: "https://staging.example.test/about",
         problems: [
           {
             kind: "failing_audit",
@@ -163,6 +167,7 @@ describe("decideGate", () => {
       {
         pageId: "p",
         pagePath: "/",
+        pageUrl: "https://staging.example.test/",
         problems: [{ kind: "score_below_baseline", category: "performance", score, baseline: 100 }],
       },
     ];
@@ -181,6 +186,7 @@ describe("decideGate", () => {
       {
         pageId: "p",
         pagePath: "/",
+        pageUrl: "https://staging.example.test/",
         problems: [
           { kind: "score_below_baseline", category: "accessibility", score: 89, baseline: 100 },
         ],
@@ -199,6 +205,7 @@ describe("decideGate", () => {
       {
         pageId: "p",
         pagePath: "/",
+        pageUrl: "https://staging.example.test/",
         problems: [
           {
             kind: "check_rule",
@@ -577,5 +584,85 @@ describe("a build that links across languages (#1240)", () => {
   it("closes a gate with no audit too, and leaves a clean build alone", () => {
     expect(decideGate(null, NONE, notice).state).toBe("links");
     expect(decideGate(audit({ status: "passed" }), NONE, null).open).toBe(true);
+  });
+});
+
+describe("#1446 acceptance of a shipped file", () => {
+  const RUNTIME = "/_caelo/plugin/consent-manager/runtime.84de0a18c461.js";
+  const OTHER = "/_caelo/plugin/analytics/tracker.0123456789ab.js";
+  const ORIGIN = "https://staging.example.test";
+  const finding = (
+    urls: readonly string[],
+    score = 0.5,
+  ): Extract<QualityProblem, { kind: "failing_audit" }> => ({
+    kind: "failing_audit",
+    auditId: "unminified-javascript",
+    title: "Minify JavaScript",
+    score,
+    categories: ["performance"],
+    elements: urls.map((url) => ({ url })),
+  });
+  const onPage = (problem: QualityProblem, path = "/de/vergleich") => ({
+    pageId: `id-${path}`,
+    pagePath: path,
+    pageUrl: `${ORIGIN}${path}`,
+    problems: [problem],
+  });
+  const accepted = (...paths: string[]) =>
+    accepting({
+      resources: new Map(paths.map((p) => [resourceKey("unminified-javascript", p), 50])),
+    });
+  const decide = (problem: QualityProblem, acceptances: GateAcceptances) =>
+    decideGate(audit({ status: "problems", pages: [onPage(problem)] }), acceptances);
+
+  it("holds on a page the accepting audit never measured", () => {
+    expect(decide(finding([`${ORIGIN}${RUNTIME}`]), accepted(RUNTIME)).state).toBe("accepted");
+  });
+
+  it("does not hold for another audit of the same file", () => {
+    const other = { ...finding([`${ORIGIN}${RUNTIME}`]), auditId: "unused-javascript" };
+    expect(decide(other, accepted(RUNTIME)).open).toBe(false);
+  });
+
+  it("ends when the file changes (its hash is in the name)", () => {
+    const changed = `${ORIGIN}/_caelo/plugin/consent-manager/runtime.ffffffffffff.js`;
+    expect(decide(finding([changed]), accepted(RUNTIME)).open).toBe(false);
+  });
+
+  it("blocks again at a worse value than accepted", () => {
+    const worse: QualityProblem = { ...finding([`${ORIGIN}${RUNTIME}`], 0), categories: ["seo"] };
+    expect(decide(worse, accepted(RUNTIME)).open).toBe(false);
+  });
+
+  it("lets a Performance value within the noise tolerance through, as on a page", () => {
+    expect(decide(finding([`${ORIGIN}${RUNTIME}`], 0.48), accepted(RUNTIME)).open).toBe(true);
+    expect(decide(finding([`${ORIGIN}${RUNTIME}`], 0.47), accepted(RUNTIME)).open).toBe(false);
+  });
+
+  it("does not swallow the page's own file in the same finding", () => {
+    const mixed = finding([`${ORIGIN}${RUNTIME}`, `${ORIGIN}/_assets/hero.0123456789abcdef.js`]);
+    expect(decide(mixed, accepted(RUNTIME)).open).toBe(false);
+  });
+
+  it("needs every shipped file of the finding accepted", () => {
+    const both = finding([`${ORIGIN}${RUNTIME}`, `${ORIGIN}${OTHER}`]);
+    expect(decide(both, accepted(RUNTIME)).open).toBe(false);
+    expect(decide(both, accepted(RUNTIME, OTHER)).open).toBe(true);
+  });
+
+  it("does not hold for a same-named file on another origin", () => {
+    expect(decide(finding([`https://cdn.example.org${RUNTIME}`]), accepted(RUNTIME)).open).toBe(
+      false,
+    );
+  });
+
+  it("does not cover the page's score", () => {
+    const score: QualityProblem = {
+      kind: "score_below_baseline",
+      category: "performance",
+      score: 97,
+      baseline: 100,
+    };
+    expect(decide(score, accepted(RUNTIME)).open).toBe(false);
   });
 });

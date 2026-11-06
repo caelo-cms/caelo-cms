@@ -63,8 +63,8 @@ const claimOutput = z.object({
       autoBasis: z.enum(AUTO_UPDATE_BASES).nullable(),
       policy: policySchema,
       /**
-       * The request was already running (converge route only): a stage-1
-       * run handed it over, or a run that died left it to be continued.
+       * The request was already running (only when the claim adopts): a
+       * stage-1 run handed it over, or a run that died left it to be continued.
        */
       resume: z.boolean(),
       /** The execution the request names now. */
@@ -85,6 +85,12 @@ export const jobClaimOp = defineOperation({
       execution: z.string().min(1).max(200).nullable(),
       /** Which job claims (#819). Default `app_roll`: the upgrader job and the agent. */
       route: z.enum(PLATFORM_UPDATE_ROUTES).default("app_roll"),
+      /**
+       * Return a running request of the route for this run to continue,
+       * unchanged. The two-stage Cloud Run jobs do (#819, #1029); the
+       * self-hosted agent runs one request at a time and does not.
+       */
+      adopt: z.boolean().default(false),
     })
     .strict(),
   output: claimOutput,
@@ -121,20 +127,19 @@ export const jobClaimOp = defineOperation({
       auto_basis: AutoUpdateBasis | null;
       execution: string | null;
     };
-    // #819 — the converge job continues the converge request that is still
-    // running (handed over by its stage 1, or left by a run that died); it
-    // decides itself, from Cloud Run and the state lock, whether it may.
+    // #819, #1029 — a two-stage job continues its route's request that is
+    // still running (handed over by its stage 1, or left by a run that
+    // died); it decides itself, from Cloud Run, whether it may.
     // The row is not changed here: platform_updates.job_handover does that.
-    const running =
-      input.route === "converge"
-        ? ((await tx.execute(sql`
+    const running = input.adopt
+      ? ((await tx.execute(sql`
             SELECT id::text AS id, target_version, trigger, auto_basis, execution
               FROM platform_update_requests
-             WHERE status = 'running' AND route = 'converge'
+             WHERE status = 'running' AND route = ${input.route}
              ORDER BY requested_at
              LIMIT 1
           `)) as unknown as Row[])
-        : [];
+      : [];
     const resumed = running[0];
     const claimed = resumed
       ? []
@@ -220,8 +225,8 @@ export const jobClaimOp = defineOperation({
 export const jobHandoverOp = defineOperation({
   name: "platform_updates.job_handover",
   readScope: "request",
-  // Why system-only: the converge job (#819) points its running request at
-  // the execution that continues it — stage 1 releases it for its stage 2,
+  // Why system-only: an update job (#819, #1029) points its running request
+  // at the execution that continues it — stage 1 releases it for its stage 2,
   // which adopts it, as does a run continuing a request whose run died.
   // Never the admin's to move.
   actorScope: ["system"],
@@ -229,6 +234,8 @@ export const jobHandoverOp = defineOperation({
   input: z
     .object({
       requestId: z.string().uuid(),
+      /** The calling job's route: a job never moves the other job's request. */
+      route: z.enum(PLATFORM_UPDATE_ROUTES),
       /** The execution the request must still name (null: none). */
       from: z.string().min(1).max(200).nullable(),
       /** The execution that continues it; null releases it for the next run to adopt. */
@@ -242,7 +249,7 @@ export const jobHandoverOp = defineOperation({
     const rows = (await tx.execute(sql`
       UPDATE platform_update_requests
          SET execution = ${input.to}, started_at = now()
-       WHERE id = ${input.requestId}::uuid AND status = 'running' AND route = 'converge'
+       WHERE id = ${input.requestId}::uuid AND status = 'running' AND route = ${input.route}
          AND execution IS NOT DISTINCT FROM ${input.from}
        RETURNING id
     `)) as unknown as { id: string }[];

@@ -55,6 +55,7 @@ import type { PageState } from "../../snapshots/state.js";
 import { buildPatchSet, buildWhere, jsonbParam } from "../../sql-helpers.js";
 import { decodeKeysetCursor, encodeKeysetCursor } from "../keyset-cursor.js";
 import { createRedirectOp } from "../redirects.js";
+import { loadSiteDesignations } from "./compose-paths.js";
 import { cloneContentInstancesDeep } from "./content-instance-clone.js";
 import {
   composePaths,
@@ -818,15 +819,9 @@ export const getPageWithModulesOp = withHumanisedLinks(
       }
       // 0184 — is this page the designated homepage (site root)?
       // 0284 (#802) — or the designated 404 page?
-      const designationRows = (await tx.execute(sql`
-      SELECT (home_page_id = ${input.pageId}::uuid) AS is_home,
-             (not_found_page_id = ${input.pageId}::uuid) AS is_not_found
-      FROM site_defaults
-      WHERE id = 1
-      LIMIT 1
-    `)) as unknown as { is_home: boolean | null; is_not_found: boolean | null }[];
-      const isHomePage = designationRows[0]?.is_home === true;
-      const isNotFoundPage = designationRows[0]?.is_not_found === true;
+      const designations = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
+      const isHomePage = designations.homePageId === input.pageId;
+      const isNotFoundPage = designations.notFoundPageId === input.pageId;
       const bound = await loadTypeBound(tx, ctx, [pageRow]);
       return ok({
         page: {
@@ -1000,10 +995,7 @@ export const createPageOp = defineOperation({
     // caller soft-deleted on its OWN branch no longer occupies its
     // slug/URL, so the slug can be reclaimed (2b).
     const pageDupNamespace = ctx.chatBranchId ?? "00000000-0000-0000-0000-000000000000";
-    const homeRows = (await tx.execute(sql`
-      SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
-    `)) as unknown as { home_page_id: string | null }[];
-    const homePageId = homeRows[0]?.home_page_id ?? null;
+    const { homePageId } = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
     const candidates = (await tx.execute(sql`
       SELECT id::text AS id, slug, (parent_page_id IS NOT NULL) AS nested FROM pages
       WHERE deleted_at IS NULL

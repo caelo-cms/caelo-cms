@@ -7,8 +7,8 @@
  *                                    (routed to the upgrader or, for a
  *                                    cloud-setup change, the converge job, #819)
  *   platform_updates.cancel          …and withdraws it before the job ran
- *   platform_updates.continue        …or continues a converge whose run died
- *                                    (#819; the converge job resumes it)
+ *   platform_updates.continue        …or continues an update whose run died
+ *                                    (#819, #1029; the job adopts the request)
  *   platform_updates.record_trigger  the admin notes whether it could start
  *                                    the upgrader job
  *   platform_updates.supersede_stale at admin boot: closes requests that
@@ -445,7 +445,7 @@ export const platformUpdatesContinueOp = defineOperation({
   actorScope: ["human"],
   database: "cms_admin",
   input: z.object({ requestId: z.string().uuid(), sessionHash: sessionHashSchema }).strict(),
-  output: z.object({ targetVersion: z.string() }),
+  output: z.object({ targetVersion: z.string(), route: z.enum(PLATFORM_UPDATE_ROUTES) }),
   handler: async (ctx, input, tx) => {
     const op = "platform_updates.continue";
     const refusal = await guardedActionRefusal(tx, ctx, {
@@ -455,18 +455,19 @@ export const platformUpdatesContinueOp = defineOperation({
       purpose: "platform_update",
     });
     if (refusal) return handlerError(op, refusal);
-    // Only a converge (#819) can be continued: its job resumes from the
-    // checkpoint in the ops bucket. A dead app-roll run is ended by the
-    // next request (endStaleRuns) and simply tried again.
+    // Either job adopts its route's running request once its run has ended
+    // (#819, #1029): the converge job resumes from its checkpoint, the
+    // upgrader starts over from its checks. The page offers this only on
+    // installs with those jobs; the self-hosted agent adopts nothing.
     const rows = (await tx.execute(sql`
-      SELECT target_version FROM platform_update_requests
-       WHERE id = ${input.requestId}::uuid AND status = 'running' AND route = 'converge'
-    `)) as unknown as { target_version: string }[];
+      SELECT target_version, route FROM platform_update_requests
+       WHERE id = ${input.requestId}::uuid AND status = 'running'
+    `)) as unknown as { target_version: string; route: PlatformUpdateRequest["route"] }[];
     const row = rows[0];
     if (!row) {
       return handlerError(
         op,
-        "Only an update that Caelo's converge job was installing, and that is still marked as running, can be continued. Reload the page: it shows what to do instead.",
+        "Only an update that is still marked as running can be continued. Reload the page: it shows what to do instead.",
       );
     }
     await appendEvent(
@@ -484,7 +485,7 @@ export const platformUpdatesContinueOp = defineOperation({
       entityId: input.requestId,
       resultSummary: `continue the update to ${row.target_version}`,
     });
-    return ok({ targetVersion: row.target_version });
+    return ok({ targetVersion: row.target_version, route: row.route });
   },
 });
 

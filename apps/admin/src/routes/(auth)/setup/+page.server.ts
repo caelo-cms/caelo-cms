@@ -1,10 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { ensureOwnerBootstrapToken } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { error, fail, redirect } from "@sveltejs/kit";
 import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
+
+/**
+ * #1476 — on a cloud install the token lives in the provider's secret manager;
+ * bring it into the database before anything reads the gate. Throws the
+ * refusal, so a token the admin cannot read never reads as "none was issued".
+ * Only for an install without an Owner: one with an Owner redirected already.
+ */
+async function requireCloudBootstrapToken(requestId: string): Promise<void> {
+  const { adapter, registry } = getQueryContext();
+  const gate = await ensureOwnerBootstrapToken({
+    provider: process.env.CAELO_PROVIDER,
+    adapter,
+    registry,
+    requestId,
+  });
+  if (!gate.ok) throw error(503, gate.message);
+}
 
 export const load: PageServerLoad = async ({ locals, url }) => {
   const { adapter, registry } = getQueryContext();
@@ -15,11 +33,14 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   if (!setup.ok) throw error(500, `users.is_setup_complete failed: ${setup.error.kind}`);
   if ((setup.value as { complete: boolean }).complete) throw redirect(303, "/login");
 
+  await requireCloudBootstrapToken(locals.ctx.requestId);
+
   // P14 — bootstrap-token gate.
   // If any token has ever been issued (cms-provision was run), /setup
   // hard-requires ?token=<…>. If none was ever issued (raw `bun run dev`
-  // checkout), fall back to the unauthenticated path so contributors can
-  // still spin up locally without minting a token first.
+  // checkout; a cloud install never gets here without one), fall back to the
+  // unauthenticated path so contributors can still spin up locally without
+  // minting a token first.
   const issued = await execute(
     registry,
     adapter,
@@ -53,6 +74,7 @@ export const actions: Actions = {
     if ((setup.value as { complete: boolean }).complete) {
       throw redirect(303, "/login");
     }
+    await requireCloudBootstrapToken(locals.ctx.requestId);
 
     const form = await request.formData();
     const email = String(form.get("email") ?? "").trim();

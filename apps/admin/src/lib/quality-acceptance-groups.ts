@@ -11,11 +11,14 @@
 /** One acceptance row as `quality_acceptances.list` returns it. */
 export interface AcceptanceRow {
   readonly id: string;
-  /** Null for a site-wide page-check acceptance (a finding with no page). */
+  /** Null for a site-wide page-check acceptance (a finding with no page) or
+   *  an audit accepted for a shipped file. */
   readonly pageId: string | null;
   readonly pagePath: string;
   readonly kind: "finding" | "score" | "check";
   readonly auditId: string | null;
+  /** #1446 — the shipped file an audit is accepted for, on every page. */
+  readonly resourcePath: string | null;
   readonly category: string | null;
   readonly acceptedScore: number | null;
   readonly acceptedCount: number | null;
@@ -28,7 +31,8 @@ export interface AcceptanceRow {
 export interface AcceptanceGroup {
   /**
    * Stable key: `check:<rule>`, `check-site:<rule>` (site-wide),
-   * `finding:<audit>` or `score:<category>`.
+   * `finding:<audit>`, `finding-file:<audit>|<file>` (site-wide) or
+   * `score:<category>`.
    */
   readonly key: string;
   /** What was accepted, as the operator reads it. */
@@ -65,7 +69,13 @@ function keyOf(row: AcceptanceRow): { key: string; label: string; siteWide: bool
   }
   const id = row.auditId ?? "";
   if (row.kind === "finding") {
-    return { key: `finding:${id}`, label: `Lighthouse ${id}`, siteWide: false };
+    return row.resourcePath === null
+      ? { key: `finding:${id}`, label: `Lighthouse ${id}`, siteWide: false }
+      : {
+          key: `finding-file:${id}|${row.resourcePath}`,
+          label: `Lighthouse ${id} for ${row.resourcePath}`,
+          siteWide: true,
+        };
   }
   return row.pageId === null
     ? { key: `check-site:${id}`, label: id, siteWide: true }
