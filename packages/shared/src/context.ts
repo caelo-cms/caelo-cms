@@ -12,6 +12,28 @@
 
 export type ActorKind = "human" | "ai" | "plugin" | "system";
 
+/**
+ * #1495 — the public page URLs of the build that is live, for a plugin
+ * render that republishes into it (a plugin-data build). Host-side only:
+ * it never crosses into plugin code.
+ */
+export interface LiveBuildUrls {
+  /** pageId → the URL the live build shipped (its routing manifest). */
+  readonly urls: ReadonlyMap<string, string>;
+  /** Filled as the render asks for pages the live build does not ship. */
+  readonly unknownPageIds: Set<string>;
+  /**
+   * The errors the host threw for those refusals. Identity tells a refusal
+   * from any other error the render throws: `ctx.cms` runs in the host's
+   * process (the sandbox has no `ctx.cms`), and plugin code has no handle
+   * on this set.
+   */
+  readonly refusals: WeakSet<Error>;
+}
+
+/** Starts the message of a {@link LiveBuildUrls} refusal; the host marks those errors by it. */
+export const LIVE_BUILD_REFUSAL = "LiveBuildPageRefused:";
+
 export interface ExecutionContext {
   readonly actorId: string;
   readonly actorKind: ActorKind;
@@ -45,6 +67,12 @@ export interface ExecutionContext {
    * the render invocation only.
    */
   readonly renderSiteBaseUrl?: string;
+  /**
+   * #1495 — set on a plugin-data build's render: `pages.resolve_public_urls`
+   * answers from these URLs instead of main, because a tick publishes
+   * nothing a human did not. Set by the plugin host only.
+   */
+  readonly renderLiveUrls?: LiveBuildUrls;
   /**
    * P10.5: parent attribution for subagent invocations. When the
    * `spawn_subagent` tool calls runChatTurn for the child, it carries
