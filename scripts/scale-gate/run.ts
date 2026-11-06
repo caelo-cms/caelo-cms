@@ -49,6 +49,7 @@ import {
   type TickTaskRun,
   topStatements,
 } from "./observe.ts";
+import { groupSlowPlans, parseLoggedPlans, type SlowPlanGroup } from "./plans.ts";
 import { CHANGE_CONSUMER_SLUGS, SHIPPED_PLUGIN_SLUGS } from "./plugins.ts";
 
 /** The measurement classes and their p95 targets (ms), issue #1267. */
@@ -99,6 +100,15 @@ export interface ScaleGateReport {
   readonly dbStatements: {
     readonly settle: readonly StatementCost[] | null;
     readonly load: readonly StatementCost[] | null;
+  };
+  /**
+   * #1269 — the plans of the statements over `auto_explain`'s
+   * `log_min_duration`, per phase, grouped by text (`plans.ts`); null
+   * without `--pg-log`. Why the heaviest statements cost what they cost.
+   */
+  readonly slowPlans: {
+    readonly settle: readonly SlowPlanGroup[] | null;
+    readonly load: readonly SlowPlanGroup[] | null;
   };
   /** #1390 — the shipped plugins and what went wrong in their background work. */
   readonly plugins: {
@@ -207,6 +217,39 @@ export function countNewMatches(path: string | null, fromByte: number, pattern: 
   return text.split("\n").filter((line) => pattern.test(line)).length;
 }
 
+/** The slow-statement plans `path` gained between two byte offsets (to the end without `toByte`). */
+function slowPlansBetween(
+  path: string | null,
+  fromByte: number,
+  toByte?: number,
+): SlowPlanGroup[] | null {
+  if (!path) return null;
+  const text = readFileSync(path).subarray(fromByte, toByte).toString("utf8");
+  return groupSlowPlans(parseLoggedPlans(text), 10);
+}
+
+/** Markdown for one phase's slow plans: one collapsed block per statement. */
+function slowPlanLines(phase: string, groups: readonly SlowPlanGroup[] | null): string[] {
+  if (groups === null) return [];
+  if (groups.length === 0) return ["", `Slow statement plans while ${phase}: none logged.`];
+  return [
+    "",
+    `Slow statement plans while ${phase} (auto_explain, slowest occurrence each):`,
+    ...groups.flatMap((g) => [
+      "",
+      `<details><summary>${g.count} × max ${g.maxMs} ms (total ${g.totalMs} ms): ${markdownCell(g.query.slice(0, 160)).replace(/</g, "&lt;")}</summary>`,
+      "",
+      "```",
+      g.query,
+      "",
+      g.plan,
+      "```",
+      "",
+      "</details>",
+    ]),
+  ];
+}
+
 function sizeOf(path: string | null): number {
   if (!path) return 0;
   try {
@@ -291,6 +334,8 @@ export function reportTable(r: ScaleGateReport): string {
     ...cpuLines,
     ...statementLines("settling the plugins", r.dbStatements.settle),
     ...statementLines("the load", r.dbStatements.load),
+    ...slowPlanLines("settling the plugins", r.slowPlans.settle),
+    ...slowPlanLines("the load", r.slowPlans.load),
     ...pluginLines,
     "",
     `Variants created: ${r.variantsCreated}. Pool-acquire timeouts: ${r.poolAcquireTimeouts}. Lock waits > 100 ms: ${r.lockWaitsOver100ms}. Overall: ${r.pass ? "pass" : "FAIL"}.`,
@@ -572,6 +617,7 @@ async function main(): Promise<void> {
   const pluginLogStart = sizeOf(adminLog);
   await assertPluginsRunning(baseUrl, fixture, timeoutMs);
   if (pgContainer) await resetStatementStats(pgContainer);
+  const pgSettleStart = sizeOf(pgLog);
   const settled = settleConsumers ? await settle(adminDbUrl, settleTimeoutS) : null;
   const settleStatements = pgContainer ? await topStatements(pgContainer, 15) : null;
   if (settled) {
@@ -757,6 +803,10 @@ async function main(): Promise<void> {
     lockWaitsOver100ms,
     dbCpu,
     dbStatements: { settle: settleStatements, load: loadStatements },
+    slowPlans: {
+      settle: slowPlansBetween(pgLog, pgSettleStart, pgLogStart),
+      load: slowPlansBetween(pgLog, pgLogStart),
+    },
     plugins: {
       expected: SHIPPED_PLUGIN_SLUGS,
       settleSeconds: settled?.seconds ?? null,
