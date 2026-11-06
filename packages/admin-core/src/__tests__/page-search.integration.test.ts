@@ -16,6 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { listPagesTool } from "../ai/tools/list-pages.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -230,5 +231,82 @@ describe("#1269 — pages.search by word prefix", () => {
     );
     expect(r.drift).toEqual({ missing: 0, extra: 0 });
     expect(r.rows).toBeGreaterThan(0);
+  });
+
+  it("list_pages searches with pages.search and pages through the site with a cursor", async () => {
+    const tool = (input: Parameters<typeof listPagesTool.handler>[1]) =>
+      listPagesTool.handler(SYSTEM, input, {
+        registry,
+        adapter,
+      } as unknown as Parameters<typeof listPagesTool.handler>[2]);
+    const found = await page(`${PFX}-tool-find`, "Quokkaword landing");
+    const hit = await tool({ search: "quokkaword lan" });
+    expect(hit.ok).toBe(true);
+    expect(hit.content).toContain(found);
+    expect(hit.content).toStartWith("pages[1]");
+
+    const miss = await tool({ search: "uokkaword" });
+    expect(miss.content).toContain('No page matches "uokkaword"');
+
+    // One page of the site at a time, continued by the cursor it names.
+    const first = await tool({ limit: 2 });
+    const cursor = /next cursor: (\S+)/.exec(first.content)?.[1];
+    expect(first.content).toStartWith("pages[2]");
+    expect(cursor).toBeDefined();
+    const second = await tool({ limit: 2, cursor });
+    expect(second.ok).toBe(true);
+    // The id column (second) of each TOON row.
+    const ids = (text: string) =>
+      text
+        .split("\n")
+        .filter((l) => l.startsWith("  "))
+        .map((l) => l.trim().split(",")[1] ?? "");
+    expect(ids(second.content).some((id) => ids(first.content).includes(id))).toBe(false);
+
+    // A batch a chat's pending deletes emptied still names the cursor on.
+    const chat = await ok<{ chatSessionId: string; chatBranchId: string }>(
+      SYSTEM,
+      "chat.create_session",
+      { title: `${PFX}-tool-chat` },
+    );
+    const ai: ExecutionContext = {
+      actorId: SYSTEM.actorId,
+      actorKind: "ai",
+      requestId: `${PFX}-tool-ai`,
+      chatBranchId: chat.chatBranchId,
+      chatTaskId: chat.chatSessionId,
+    };
+    const oldest = await ok<{ pages: { id: string }[] }>(ai, "pages.list", { limit: 1 });
+    const oldestId = oldest.pages[0]?.id ?? "";
+    await ok(ai, "pages.delete", { pageId: oldestId, children: "move-up" });
+    const emptied = await listPagesTool.handler(ai, { limit: 1 }, {
+      registry,
+      adapter,
+    } as unknown as Parameters<typeof listPagesTool.handler>[2]);
+    expect(emptied.content).toContain("No visible page in this batch; call again with cursor:");
+
+    // Long titles: a call stays under the list char cap, and its cursor
+    // continues right after the last row it showed (every page once).
+    const parent = await page(`${PFX}-long-parent`, "Long parent");
+    const children: string[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      children.push(await page(`${PFX}-long-${i}`, `${"Lengthy title ".repeat(14)}${i}`, parent));
+    }
+    const seen: string[] = [];
+    let next: string | undefined;
+    let calls = 0;
+    do {
+      const r = await tool({ underPageId: parent, limit: 200, ...(next ? { cursor: next } : {}) });
+      expect(r.content.length).toBeLessThan(7000);
+      seen.push(...ids(r.content));
+      next = /next cursor: (\S+)/.exec(r.content)?.[1];
+      calls += 1;
+    } while (next);
+    expect(calls).toBeGreaterThan(1);
+    expect([...seen].sort()).toEqual([...children].sort());
+
+    const both = await tool({ search: "quokkaword", underPageId: found });
+    expect(both.ok).toBe(false);
+    expect(both.content).toContain("cannot be combined");
   });
 });

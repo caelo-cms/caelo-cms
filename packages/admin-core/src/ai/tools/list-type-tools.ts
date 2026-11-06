@@ -13,7 +13,7 @@ import type { ListTypeDef } from "@caelo-cms/shared";
 import { LIST_TYPE_ROLES } from "@caelo-cms/shared";
 import { z } from "zod";
 import { deleteListTypesManyOp, upsertListTypesManyOp } from "../../ops/lists/list-types.js";
-import { describeError } from "./_describe-error.js";
+import { describeError, toolError } from "./_describe-error.js";
 import { idOf, idsOf } from "./_draft-reads.js";
 import { describeListType, makeOpTool } from "./_list-tool-kit.js";
 import { UPSERT_LIST_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
@@ -72,7 +72,7 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
         slug: input.slug,
       });
       if (!r.ok) {
-        return { ok: false, content: `list_list_types: ${describeError(r.error)}` };
+        return toolError(r.error, `list_list_types: ${describeError(r.error)}`);
       }
       const v = r.value as {
         listType: ListTypeRow;
@@ -96,7 +96,7 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
       counts: true,
     });
     if (!r.ok) {
-      return { ok: false, content: `list_list_types: ${describeError(r.error)}` };
+      return toolError(r.error, `list_list_types: ${describeError(r.error)}`);
     }
     const rows = (r.value as { listTypes: ListTypeRow[] }).listTypes;
     if (rows.length === 0) {

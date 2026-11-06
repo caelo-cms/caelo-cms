@@ -297,9 +297,11 @@ async function renderPreview(
   // chat's view of the site in the publish target's URL style, so a link
   // in the iframe navigates to the path `path` looks up. The list
   // overlays come later (#1223), once the page's modules are known.
+  // #1269 — kept per branch while the plugin's declared data is unchanged.
   const pageVariants = await resolveLinkPartition(
     view.pages.map((p) => p.id),
     renderScope,
+    { keep: true },
   );
   const baseListData = listRenderDataOf(view, pageVariants ? { pageVariants } : {});
   const linkResolver = previewLinkIndexOf({

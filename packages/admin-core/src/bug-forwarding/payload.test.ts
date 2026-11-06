@@ -7,7 +7,12 @@
 
 import { describe, expect, it } from "bun:test";
 import { CAELO_VERSION } from "@caelo-cms/shared";
-import { buildIntakeReport, type ForwardableBugReport, UNKNOWN_FILING_VERSION } from "./payload.js";
+import {
+  buildIntakeReport,
+  ciRunOfProcess,
+  type ForwardableBugReport,
+  UNKNOWN_FILING_VERSION,
+} from "./payload.js";
 
 const row: ForwardableBugReport = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -50,5 +55,52 @@ describe("buildIntakeReport kind (#1192)", () => {
       "a suggestion has no severity",
     );
     await expect(buildIntakeReport({ ...row, kind: "idea" })).rejects.toThrow();
+  });
+});
+
+describe("#1416 the CI run a report came from", () => {
+  const ci = {
+    CAELO_E2E_FORWARD_BUGS: "1",
+    GITHUB_SERVER_URL: "https://github.com",
+    GITHUB_REPOSITORY: "caelo-cms/caelo-cms",
+    GITHUB_RUN_ID: "41651726318",
+    GITHUB_SHA: "f8c546deb".padEnd(40, "0"),
+    GITHUB_HEAD_REF: "fix/tool-refs",
+    GITHUB_REF_NAME: "1398/merge",
+  };
+
+  it("names the run, the head branch and the commit", () => {
+    expect(ciRunOfProcess(ci)).toEqual({
+      runUrl: "https://github.com/caelo-cms/caelo-cms/actions/runs/41651726318",
+      branch: "fix/tool-refs",
+      commit: ci.GITHUB_SHA,
+    });
+  });
+
+  it("uses the ref name outside a pull request", () => {
+    expect(ciRunOfProcess({ ...ci, GITHUB_HEAD_REF: "", GITHUB_REF_NAME: "main" })?.branch).toBe(
+      "main",
+    );
+  });
+
+  it("a branch name git allows passes the contract", async () => {
+    const before = { ...process.env };
+    Object.assign(process.env, ci, { GITHUB_HEAD_REF: "fix/#1416+ci@v2" });
+    try {
+      expect((await buildIntakeReport(row)).ciRun?.branch).toBe("fix/#1416+ci@v2");
+    } finally {
+      for (const k of Object.keys(ci)) {
+        if (before[k] === undefined) delete process.env[k];
+        else process.env[k] = before[k];
+      }
+    }
+  });
+
+  it("an install is not a CI run, even on a machine with GitHub variables", () => {
+    expect(ciRunOfProcess({ ...ci, CAELO_E2E_FORWARD_BUGS: undefined })).toBeUndefined();
+  });
+
+  it("forwarding without saying which run fails loudly", () => {
+    expect(() => ciRunOfProcess({ CAELO_E2E_FORWARD_BUGS: "1" })).toThrow("GITHUB_RUN_ID");
   });
 });

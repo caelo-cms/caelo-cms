@@ -536,7 +536,12 @@ export const deleteUserOp = defineOperation({
     `)) as unknown as { is_first_owner: boolean; deleted_at: Date | null }[];
     const target = rows[0];
     if (!target) {
-      return err({ kind: "HandlerError", operation: "users.delete", message: "user not found" });
+      return err({
+        kind: "HandlerError",
+        operation: "users.delete",
+        message: "user not found",
+        refusal: true,
+      });
     }
     if (target.is_first_owner) {
       await recordAudit(tx, {
@@ -631,6 +636,7 @@ export const changePasswordOp = defineOperation({
         kind: "HandlerError",
         operation: "users.change_password",
         message: "user not found",
+        refusal: true,
       });
     }
 
@@ -722,6 +728,7 @@ export const adminSetPasswordOp = defineOperation({
         kind: "HandlerError",
         operation: "users.admin_set_password",
         message: "user not found",
+        refusal: true,
       });
     }
 

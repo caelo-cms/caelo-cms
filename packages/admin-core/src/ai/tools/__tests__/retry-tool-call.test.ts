@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { shouldAutoCaptureToolFailure } from "../../chat-runner/tool-dispatch.js";
+import { shouldAutoCaptureToolFailure } from "../../chat-runner/tool-failure-capture.js";
 import { keptCallArgs, keptCallNotice, withKeptCallNotice } from "../_retry-keep.js";
 import { applyRetryPatch } from "../_retry-patch.js";
 import type { ToolResult } from "../dispatch.js";

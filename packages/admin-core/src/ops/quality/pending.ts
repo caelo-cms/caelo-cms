@@ -507,6 +507,7 @@ export const proposePublishAnywayOp = defineOperation({
         message: run
           ? `audit ${input.auditRunId} did not fail (it is '${run.status}'): publish anyway is only for a failed quality check — fix or accept problems instead`
           : `audit ${input.auditRunId} not found — call quality_audits.gate_status for the current one`,
+        refusal: true,
       });
     }
     const preview = {

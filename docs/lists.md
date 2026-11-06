@@ -175,9 +175,8 @@ live, never by the AI), `page_terms(page_id, list_id, item_id)` — draft
 state of the page, part of the page snapshot.
 
 **Every page has a chosen page type (#1276).** There is no stored default
-type or template (`site_defaults` keeps only the default layout; 0444
-relaxed `default_page_type_id` / `default_template_id` for the previous
-image, the next release drops them). Each create path —
+type or template (`site_defaults` keeps only the default layout). Each
+create path —
 `pages.create` / `build_page`, `pages.duplicate` / `duplicate_page`,
 `imports.accept_page(s)` / `accept_import_pages`, the admin "New page"
 form and the import panel's Accept — names `pageType`; `templateId` is

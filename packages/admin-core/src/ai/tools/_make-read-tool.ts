@@ -166,6 +166,19 @@ export interface ServerPage {
   readonly more: boolean;
 }
 
+/**
+ * How many of `rows`, from the first, fit the list char cap as TOON lines —
+ * for a tool that pages by an opaque cursor and so must ask its op for
+ * exactly that many rows to continue right after the last one shown.
+ */
+export function rowsWithinCharCap<R>(
+  rows: readonly R[],
+  columns: readonly ToonColumn<R>[],
+): number {
+  const lines = rows.map((r) => columns.map((c) => toonCell(c.value(r))).join(","));
+  return capChars(lines, false).length;
+}
+
 /** Whole rows up to the char cap (all of them when `full`). */
 function capChars(lines: readonly string[], full: boolean | undefined): string[] {
   const kept: string[] = [];

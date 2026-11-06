@@ -107,13 +107,17 @@ export async function resolveListPluginInputs(
 /**
  * The `link-resolve` partition of `pageIds`; undefined when no plugin
  * contributes (or no page is asked). Call it with no transaction held.
+ * `keep` (#1269) serves a plugin's kept answers when nothing they derive
+ * from changed — the editor preview, which asks about the whole site on
+ * every render; a build reads once and needs none.
  */
 export async function resolveLinkPartition(
   pageIds: readonly string[],
   scope: RenderScope,
+  opts: { readonly keep?: boolean } = {},
 ): Promise<ResolvedLinkVariants | undefined> {
   return pageIds.length > 0 && hasLinkResolveContributors()
-    ? await resolveLinkVariants(pageIds, scope)
+    ? await resolveLinkVariants(pageIds, scope, opts)
     : undefined;
 }
 
