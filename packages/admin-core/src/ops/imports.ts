@@ -424,6 +424,7 @@ export const listImportPagesOp = defineOperation({
         operation: "imports.list_pages",
         message:
           "import run not found — pass the runId returned by propose_site_import's approval (imports.list shows every run for humans)",
+        refusal: true,
       });
     }
     // Status priority mirrors the run report: an accepted link wins over a
@@ -1146,6 +1147,7 @@ export const setRunDesignTokensOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.set_run_design_tokens",
         message: "import run not found",
+        refusal: true,
       });
     }
     return ok({});
@@ -1210,7 +1212,8 @@ async function resolveImportPageRef(
             -- An undesignated "home" page serves at the root, not /home.
             OR (ip.proposed_slug = 'home' AND p.current_path = '/')
             OR (ip.proposed_slug = 'home'
-                AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
+                AND EXISTS (SELECT 1 FROM site_defaults sd
+                             WHERE p.id IN (sd.home_page_id, sd.pending_home_page_id)))
           )
         LIMIT 1
       `)) as unknown as Array<{ id: string }>;
@@ -1227,7 +1230,8 @@ async function resolveImportPageRef(
       ON p.current_path = '/' || ip.proposed_slug
       OR (ip.proposed_slug = 'home' AND p.current_path = '/')
       OR (ip.proposed_slug = 'home'
-          AND EXISTS (SELECT 1 FROM site_defaults sd WHERE sd.home_page_id = p.id))
+          AND EXISTS (SELECT 1 FROM site_defaults sd
+                       WHERE p.id IN (sd.home_page_id, sd.pending_home_page_id)))
     WHERE p.id = ${inputId}::uuid AND p.deleted_at IS NULL
     ORDER BY ip.created_at DESC
     LIMIT 1
@@ -2131,6 +2135,7 @@ export const detectImportBoilerplateOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.detect_boilerplate",
         message: "import run not found",
+        refusal: true,
       });
     }
 
@@ -2331,6 +2336,7 @@ export const getImportRunReportOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.get_run_report",
         message: "import run not found",
+        refusal: true,
       });
     }
     const pages = (await tx.execute(sql`
@@ -2597,6 +2603,7 @@ export const setCostCeilingOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.set_cost_ceiling",
         message: "import run not found — pass a valid runId (list runs with imports.list)",
+        refusal: true,
       });
     }
     await recordAudit(tx, {
@@ -2723,6 +2730,7 @@ export const getRunCostOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.get_run_cost",
         message: "import run not found — pass a valid runId (list runs with imports.list)",
+        refusal: true,
       });
     }
 
@@ -3006,6 +3014,7 @@ export const getRunCalibrationOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.get_run_calibration",
         message: "import run not found — pass a valid runId (list runs with imports.list)",
+        refusal: true,
       });
     }
     const chatSessionId = run.chat_session_id;

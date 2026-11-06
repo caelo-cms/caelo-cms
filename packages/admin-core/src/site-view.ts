@@ -40,6 +40,7 @@ import type { ListRenderBase } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { loadPageRows, type PageInView, type PageRows, pagesInViewOf } from "./lists/pages-view.js";
 import { type ListEntityView, loadListEntities } from "./lists/store.js";
+import { loadSiteDesignations } from "./ops/content/compose-paths.js";
 import { driftIdsBetween, type PageTree, pageTreeOf } from "./ops/content/page-tree.js";
 
 /** The `site_defaults` columns a render reads. */
@@ -142,14 +143,13 @@ export async function readSiteView(
   }[];
   const settingsRows = (await tx.execute(sql`
     SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
-           site_language, home_page_id::text AS home_page_id
+           site_language
     FROM site_defaults WHERE id = 1
   `)) as unknown as {
     site_base_url: string | null;
     sitemap_enabled: boolean;
     organization_json: string | null;
     site_language: string | null;
-    home_page_id: string | null;
   }[];
   const s = settingsRows[0];
   if (!s) {
@@ -157,6 +157,7 @@ export async function readSiteView(
       "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
     );
   }
+  const { homePageId } = await loadSiteDesignations(tx, branchId);
 
   return {
     branchId,
@@ -176,7 +177,7 @@ export async function readSiteView(
       })),
       media: mediaRows.map((m) => ({ id: m.id, alt: m.alt, width: m.width, height: m.height })),
       siteLanguage: s.site_language,
-      homePageId: s.home_page_id,
+      homePageId,
     },
     canonicalOverrides: new Map(seoRows.map((r) => [r.page_id, r.canonical_url || null])),
     media: mediaRows.map((m) => ({ id: m.id, slug: m.slug })),
@@ -185,7 +186,7 @@ export async function readSiteView(
       sitemapEnabled: s.sitemap_enabled,
       organizationJson: s.organization_json,
       siteLanguage: s.site_language,
-      homePageId: s.home_page_id,
+      homePageId,
     },
   };
 }
@@ -214,9 +215,17 @@ export async function loadSiteView(
   // is unseen by the mark and invalidates once).
   const { fresh, mark } = await checkJournalMark(tx, hit?.mark ?? null, filter);
   if (hit && fresh) {
+    // Still exact now, so it is the view a read at this mark would give:
+    // keep the new mark (#1269). The next check then costs what was written
+    // since this one, not everything since the view was read — the journal
+    // rows the filter reads and then drops (another kind's flood, every
+    // snapshot header a write inserts, other branches' writes) would
+    // otherwise pile up behind an old mark on every render. A mark that saw
+    // this transaction's own uncommitted writes is never stored.
+    const current = mark.dirty ? hit : { ...hit, mark };
     cache.delete(key);
-    cache.set(key, hit);
-    return hit;
+    cache.set(key, current);
+    return current;
   }
   const view = await readSiteView(tx, branchId, mark);
   // A read that saw its own transaction's uncommitted writes is not

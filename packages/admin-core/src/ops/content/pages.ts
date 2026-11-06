@@ -56,6 +56,7 @@ import { buildPatchSet, buildWhere, jsonbParam } from "../../sql-helpers.js";
 import { decodeKeysetCursor, encodeKeysetCursor } from "../keyset-cursor.js";
 import { createRedirectOp } from "../redirects.js";
 import { annotationDriftPaths, pendingUrlAnnotationPageIds } from "./branch-url-drift.js";
+import { loadSiteDesignations } from "./compose-paths.js";
 import { cloneContentInstancesDeep } from "./content-instance-clone.js";
 import {
   composePaths,
@@ -584,7 +585,12 @@ export const getPageOp = defineOperation({
     `)) as unknown as RawPageRow[];
     const row = rows[0];
     if (!row) {
-      return err({ kind: "HandlerError", operation: "pages.get", message: "page not found" });
+      return err({
+        kind: "HandlerError",
+        operation: "pages.get",
+        message: "page not found",
+        refusal: true,
+      });
     }
     const bound = await loadTypeBound(tx, ctx, [row]);
     return ok({ page: rowToPage(row, bound.get(row.id)) });
@@ -623,6 +629,7 @@ export const getPageWithModulesOp = withHumanisedLinks(
           kind: "HandlerError",
           operation: "pages.get_with_modules",
           message: "page not found",
+          refusal: true,
         });
       }
       // Composer needs to see deleted-module references too — otherwise an
@@ -835,15 +842,9 @@ export const getPageWithModulesOp = withHumanisedLinks(
       }
       // 0184 — is this page the designated homepage (site root)?
       // 0284 (#802) — or the designated 404 page?
-      const designationRows = (await tx.execute(sql`
-      SELECT (home_page_id = ${input.pageId}::uuid) AS is_home,
-             (not_found_page_id = ${input.pageId}::uuid) AS is_not_found
-      FROM site_defaults
-      WHERE id = 1
-      LIMIT 1
-    `)) as unknown as { is_home: boolean | null; is_not_found: boolean | null }[];
-      const isHomePage = designationRows[0]?.is_home === true;
-      const isNotFoundPage = designationRows[0]?.is_not_found === true;
+      const designations = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
+      const isHomePage = designations.homePageId === input.pageId;
+      const isNotFoundPage = designations.notFoundPageId === input.pageId;
       const bound = await loadTypeBound(tx, ctx, [pageRow]);
       return ok({
         page: {
@@ -938,6 +939,7 @@ export const createPageOp = defineOperation({
               "fetch valid templateId values; the one you passed does not match a live template",
             autoExecute: true,
           },
+          refusal: true,
         });
       }
     }
@@ -1016,10 +1018,7 @@ export const createPageOp = defineOperation({
     // caller soft-deleted on its OWN branch no longer occupies its
     // slug/URL, so the slug can be reclaimed (2b).
     const pageDupNamespace = ctx.chatBranchId ?? "00000000-0000-0000-0000-000000000000";
-    const homeRows = (await tx.execute(sql`
-      SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
-    `)) as unknown as { home_page_id: string | null }[];
-    const homePageId = homeRows[0]?.home_page_id ?? null;
+    const { homePageId } = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
     const candidates = (await tx.execute(sql`
       SELECT id::text AS id, slug, (parent_page_id IS NOT NULL) AS nested FROM pages
       WHERE deleted_at IS NULL
@@ -1244,6 +1243,7 @@ export const updatePageOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.update",
         message: "page not found",
+        refusal: true,
       });
     }
     const currentVersion =
@@ -1275,6 +1275,7 @@ export const updatePageOp = defineOperation({
           kind: "HandlerError",
           operation: "pages.update",
           message: "template not found or deleted",
+          refusal: true,
         });
       }
     }
@@ -1298,7 +1299,12 @@ export const updatePageOp = defineOperation({
       ? await loadPageStateWithBranchOverlay(tx, input.pageId, ctx.chatBranchId)
       : await loadPageState(tx, input.pageId);
     if (!typeBase) {
-      return err({ kind: "HandlerError", operation: "pages.update", message: "page not found" });
+      return err({
+        kind: "HandlerError",
+        operation: "pages.update",
+        message: "page not found",
+        refusal: true,
+      });
     }
     const typeBound = await nextTypeBound(tx, ctx, input, typeBase);
     if (!typeBound.ok) {
@@ -1551,6 +1557,7 @@ export const setPageStatusOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.set_status",
         message: "page not found",
+        refusal: true,
       });
     }
 
@@ -1677,6 +1684,7 @@ export const setPageModulesOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.set_modules",
         message: "page not found",
+        refusal: true,
       });
     }
     const currentVersion =
@@ -2029,6 +2037,7 @@ async function deletePageHandler(
       kind: "HandlerError",
       operation: "pages.delete",
       message: "page not found",
+      refusal: true,
     });
   }
   if (target.deleted_at !== null) {
@@ -2326,6 +2335,7 @@ export const duplicatePageOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.duplicate",
         message: "source page not found",
+        refusal: true,
       });
     }
     const targetTemplateId = input.targetTemplateId ?? sourceState.templateId;
@@ -2339,6 +2349,7 @@ export const duplicatePageOp = defineOperation({
           kind: "HandlerError",
           operation: "pages.duplicate",
           message: "target template not found or deleted",
+          refusal: true,
         });
       }
     }
@@ -2546,6 +2557,7 @@ export const changeTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.change_template",
         message: "page not found",
+        refusal: true,
       });
     }
     const currentVersion =
@@ -2569,6 +2581,7 @@ export const changeTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.change_template",
         message: "new template not found or deleted",
+        refusal: true,
       });
     }
     // Epic #1107 — the page keeps its type when the type allows the new
@@ -2580,6 +2593,7 @@ export const changeTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.change_template",
         message: "page not found",
+        refusal: true,
       });
     }
     const typeBound = await nextTypeBound(
@@ -2615,6 +2629,7 @@ export const changeTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.change_template",
         message: `orphan disposition block "${input.orphanDisposition.blockName}" does not exist on the new template`,
+        refusal: true,
       });
     }
 

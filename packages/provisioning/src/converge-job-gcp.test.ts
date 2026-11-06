@@ -2,8 +2,7 @@
 
 /**
  * The parts of the converge job's Google Cloud wiring (#819) that parse
- * what gcloud says — which image an execution runs, which execution a
- * hand-over started — and its checkpoint document in the ops bucket.
+ * what gcloud says, and its checkpoint document in the ops bucket.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -17,48 +16,10 @@ import {
   convergeExecutionNameError,
   deployedOwnerMismatch,
   deployedSiteMismatch,
-  executionImageDigest,
-  startedExecutionName,
 } from "./converge-job-gcp.js";
 import type { GcloudResult } from "./gcloud.js";
 import type { SyncGcloud } from "./state-store.js";
 import { installStateCondition } from "./upgrader-setup.js";
-
-const D = `sha256:${"c".repeat(64)}`;
-const OPS = `europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/ops@${D}`;
-
-describe("executionImageDigest", () => {
-  it("reads the digest from gcloud's v1 execution (and the v2 shape)", () => {
-    const v1 = { spec: { template: { spec: { containers: [{ image: OPS }] } } } };
-    expect(executionImageDigest(JSON.stringify(v1))).toBe(D);
-    expect(
-      executionImageDigest(JSON.stringify({ template: { containers: [{ image: OPS }] } })),
-    ).toBe(D);
-  });
-
-  it("is null for a tag, no container or unreadable output — never a guess", () => {
-    const tag = { spec: { template: { spec: { containers: [{ image: "x/ops:0.11.0" }] } } } };
-    expect(executionImageDigest(JSON.stringify(tag))).toBeNull();
-    expect(executionImageDigest("{}")).toBeNull();
-    expect(executionImageDigest("not json")).toBeNull();
-  });
-});
-
-describe("startedExecutionName", () => {
-  it("takes the name gcloud prints, or the one it announces on stderr", () => {
-    expect(startedExecutionName("caelo-production-converge-x7k2p\n", "")).toBe(
-      "caelo-production-converge-x7k2p",
-    );
-    expect(
-      startedExecutionName(
-        "",
-        "Execution [caelo-production-converge-q1w2e] has successfully started",
-      ),
-    ).toBe("caelo-production-converge-q1w2e");
-    expect(startedExecutionName("", "")).toBeNull();
-    expect(startedExecutionName("Bad Name; rm -rf", "")).toBeNull();
-  });
-});
 
 describe("the converge checkpoint", () => {
   const BUCKET = "acme-caelo-ops";

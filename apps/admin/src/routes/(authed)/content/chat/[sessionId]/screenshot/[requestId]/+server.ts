@@ -44,6 +44,9 @@ interface UploadBody {
    *  Promise to a rejection so the AI's tool result is a clean
    *  failure. Mutually exclusive with `base64`. */
   errorMessage?: string;
+  /** #1484 — the page lacks what the call asked for (no element matches its
+   *  selector): the tool's answer, not a capture failure. */
+  refused?: boolean;
   /** 2026-07 — capture geometry (canvas + page dimensions) so the
    *  tool result can state crop-vs-full-page as a fact instead of
    *  leaving it to vision judgment (run B4 selector-crop doubt). */
@@ -113,7 +116,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   const body = (await request.json()) as UploadBody;
 
   if (typeof body.errorMessage === "string" && body.errorMessage.length > 0) {
-    const matched = failScreenshot(requestId, body.errorMessage);
+    const matched = failScreenshot(requestId, body.errorMessage, {
+      refused: body.refused === true,
+    });
     if (!matched) {
       // Either the SSE landed on a different instance, the request
       // expired (30s timeout already fired), OR this is a duplicate

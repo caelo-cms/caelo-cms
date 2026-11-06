@@ -53,6 +53,7 @@ export const proposeRevertSiteOp = defineOperation({
         kind: "HandlerError",
         operation: "snapshots.propose_revert_site",
         message: `snapshot ${input.snapshotId} not found`,
+        refusal: true,
       });
     }
     const counts = await countSnapshotEntities(tx, input.snapshotId);
@@ -101,6 +102,7 @@ export const proposeRevertPageOp = defineOperation({
         kind: "HandlerError",
         operation: "snapshots.propose_revert_page",
         message: `snapshot ${input.snapshotId} not found`,
+        refusal: true,
       });
     }
     const pageMeta = await loadPageMeta(tx, input.pageId);
@@ -149,6 +151,7 @@ export const proposeRevertTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "snapshots.propose_revert_template",
         message: `snapshot ${input.snapshotId} not found`,
+        refusal: true,
       });
     }
     const tmpl = (await tx.execute(sql`
@@ -204,6 +207,7 @@ export const proposeRevertModuleOp = defineOperation({
         kind: "HandlerError",
         operation: "snapshots.propose_revert_module",
         message: `snapshot ${input.snapshotId} not found`,
+        refusal: true,
       });
     }
     const mod = (await tx.execute(sql`

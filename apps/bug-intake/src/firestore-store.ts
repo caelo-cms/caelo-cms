@@ -123,7 +123,9 @@ const POOL_BUILD_PAGE = 100;
 
 /** A cluster as stored; one written before #1192 gets its kind by the contract rule. */
 function readCluster(data: Record<string, unknown>): ClusterRecord {
-  return { ...(data as unknown as ClusterRecord), kind: storedKind(data.kind) };
+  // A record stored before #1416 has no CI runs: none were told apart yet.
+  const ciRuns = (data.ciRuns ?? []) as ClusterRecord["ciRuns"];
+  return { ...(data as unknown as ClusterRecord), kind: storedKind(data.kind), ciRuns };
 }
 
 /** A pool's entries as stored; entries written before #1192 are defects. */

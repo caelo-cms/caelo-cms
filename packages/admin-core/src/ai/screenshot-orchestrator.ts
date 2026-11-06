@@ -78,7 +78,7 @@ export interface ScreenshotImage {
 
 interface PendingCapture {
   resolve: (image: ScreenshotImage) => void;
-  reject: (reason: string) => void;
+  reject: (reason: string | ScreenshotRefused) => void;
   /** When the entry expires + auto-rejects so the Map doesn't leak. */
   timeoutHandle: ReturnType<typeof setTimeout>;
 }
@@ -123,15 +123,31 @@ export function deliverScreenshot(requestId: string, image: ScreenshotImage): bo
 }
 
 /**
+ * #1484 — the browser captured nothing because the call asked for something
+ * the page does not have (a selector that matches no element): an answer to
+ * the call, not a capture failure.
+ */
+export class ScreenshotRefused extends Error {
+  override readonly name = "ScreenshotRefused";
+}
+
+/**
  * Reject a pending screenshot (operator's browser reported an error
  * or aborted). Called from the upload endpoint's failure path.
+ *
+ * @param options.refused - the page does not have what the call asked for
+ *   ({@link ScreenshotRefused}); every other failure stays a plain rejection.
  */
-export function failScreenshot(requestId: string, reason: string): boolean {
+export function failScreenshot(
+  requestId: string,
+  reason: string,
+  options: { readonly refused?: boolean } = {},
+): boolean {
   const entry = pending.get(requestId);
   if (!entry) return false;
   clearTimeout(entry.timeoutHandle);
   pending.delete(requestId);
-  entry.reject(reason);
+  entry.reject(options.refused ? new ScreenshotRefused(reason) : reason);
   return true;
 }
 

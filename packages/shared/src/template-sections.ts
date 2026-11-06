@@ -4,7 +4,8 @@
  * Section pass of the template engine (`template-engine.ts`): every
  * `{{#name}}…{{/name}}` and `{{^name}}…{{/name}}`, list iteration with
  * entry scopes, `{{>recurse}}`, `{{>f}}` for an entry's embedded module,
- * dot access and `{{page.*}}` (epic #1107, `docs/lists.md` §8).
+ * dot access, a module `link` field's `{{f.href}}` and `{{page.*}}`
+ * (epic #1107, `docs/lists.md` §8).
  *
  * The template is tokenized ONCE and sections are matched with one stack
  * per name, so a children loop may repeat inside itself
@@ -22,6 +23,7 @@
  */
 
 import type { ListFieldSpec, ListHolder, ListPageContext } from "./lists/resolve.js";
+import { LINK_VALUE_KEYS, linkValue, parseLinkFieldValue } from "./lists/resolve-values.js";
 import type { ScopeEntry, ScopeValue } from "./lists/scope.js";
 
 /** A field as the section pass needs it (subset of `TemplateField`). */
@@ -230,6 +232,35 @@ class SectionRenderer {
     return v;
   }
 
+  /**
+   * A module field of kind `link` as a scope value, the shape a link in a
+   * list entry has (#1433): `undefined` when `head` is no such field, a
+   * `failed` value when its stored value is no link.
+   */
+  private moduleLink(head: string): ScopeValue | undefined {
+    const field = this.env.fields.get(head);
+    if (field?.kind !== "link") return undefined;
+    const raw = Object.hasOwn(this.env.values, head) ? this.env.values[head] : field.default;
+    const link = parseLinkFieldValue(raw);
+    if (link === null) return { kind: "failed", marker: `field-value-malformed:${head}` };
+    return this.env.lists?.linkScope(link) ?? linkValue(link, null);
+  }
+
+  /** `name` (`f` or `f.key`) read from a module `link` field; `undefined` when it is none. */
+  private linkPath(name: string): ScopeValue | { missing: true } | undefined {
+    const [head, ...path] = name.toLowerCase().split(".");
+    const root = this.moduleLink(head as string);
+    if (root === undefined || root.kind !== "record" || path.length === 0) return root;
+    const key = path.length === 1 ? (path[0] as string) : "";
+    return root.get(key) ?? { missing: true };
+  }
+
+  /** True when `name`'s head is a module `link` field with no value. */
+  private linkUnset(name: string): boolean {
+    const v = this.moduleLink((name.split(".")[0] as string).toLowerCase());
+    return v?.kind === "record" && !v.present;
+  }
+
   private isModuleLevel(name: string): boolean {
     const lower = name.toLowerCase();
     return (
@@ -242,6 +273,22 @@ class SectionRenderer {
     return field.length > 0 ? `field-not-declared:${field}.${name}` : `field-not-declared:${name}`;
   }
 
+  /**
+   * The marker of a dotted path whose head exists and whose rest does not.
+   * Unlike an unknown `{{name}}`, which can be literal copy, this is a
+   * broken placeholder, so its marker stops a Stage (#1433). `page.*` and
+   * `site_text.*` keep theirs.
+   */
+  private unknownPath(name: string, st: RenderState): string {
+    if (isContextHead(name)) {
+      return this.env.lists === undefined
+        ? `list-context-unavailable:${contextHead(name)}`
+        : this.notDeclared(name, st);
+    }
+    const field = this.listField(st);
+    return `field-path-unknown:${field.length > 0 ? `${field}.` : ""}${name}`;
+  }
+
   // ── Plain tags ──
 
   private tag(t: Token, st: RenderState): string {
@@ -252,23 +299,25 @@ class SectionRenderer {
       return this.env.mkSentinel(st.dot);
     }
     const dotted = t.name.includes(".");
-    if (st.chain.length === 0 && !dotted) return source;
-    const v = this.lookup(t.name, st);
+    const linkField = this.env.fields.get(t.name.toLowerCase())?.kind === "link";
+    if (st.chain.length === 0 && !dotted && !linkField) return source;
+    const entryValue = this.lookup(t.name, st);
+    const v = entryValue ?? this.linkPath(t.name);
     if (v === undefined) {
       if (dotted) {
         const head = t.name.slice(0, t.name.indexOf("."));
-        if (st.chain.length === 0 && !this.isModuleLevel(head)) return source;
+        if (this.isModuleLevel(head)) return this.raw(source, this.unknownPath(t.name, st));
+        if (st.chain.length === 0) return source;
         return this.raw(source, this.notDeclared(t.name, st));
       }
       if (this.isModuleLevel(t.name)) return source;
       return this.raw(source, this.notDeclared(t.name, st));
     }
-    if ("missing" in v) {
-      const marker =
-        isContextHead(t.name) && this.env.lists === undefined
-          ? `list-context-unavailable:${contextHead(t.name)}`
-          : this.notDeclared(t.name, st);
-      return this.raw(source, marker);
+    if ("missing" in v) return this.raw(source, this.unknownPath(t.name, st));
+    if (entryValue === undefined && this.linkUnset(t.name)) {
+      // A bare `{{f}}` with no value stays raw like any declared field; a
+      // path into it is a broken link in the page, so it stops a Stage.
+      return dotted ? this.raw(source, `field-value-empty:${t.name}`) : source;
     }
     return this.valueText(v, source, t.name, st);
   }
@@ -331,15 +380,9 @@ class SectionRenderer {
 
   private section(t: Token, block: Frame["block"], source: string, st: RenderState): string {
     const inverted = t.sigil === "^";
-    const v = this.lookup(t.name, st);
+    const v = this.lookup(t.name, st) ?? (t.name.includes(".") ? this.linkPath(t.name) : undefined);
     if (v !== undefined) {
-      if ("missing" in v) {
-        const marker =
-          isContextHead(t.name) && this.env.lists === undefined
-            ? `list-context-unavailable:${contextHead(t.name)}`
-            : this.notDeclared(t.name, st);
-        return this.raw(source, marker);
-      }
+      if ("missing" in v) return this.raw(source, this.unknownPath(t.name, st));
       return this.scopeSection(v, t.name, inverted, block, source, st);
     }
     if (t.name.includes(".")) return this.raw(source, this.notDeclared(t.name, st));
@@ -420,9 +463,15 @@ class SectionRenderer {
     // value, dropped when empty — never a kind-mismatch, which used to
     // silently drop real scalar content. `{{.}}` / `{{item}}` inside it
     // read the scalar. An empty conditional is intentional, not missing.
-    const present = isPresentSectionValue(raw);
+    const link = field.kind === "link" ? this.moduleLink(name) : undefined;
+    if (link?.kind === "failed") return this.raw(source, link.marker);
+    const present = link?.kind === "record" ? link.present : isPresentSectionValue(raw);
     if (present === inverted) return "";
-    const dot = present ? scalarSectionString(raw) : "";
+    const dot = !present
+      ? ""
+      : link?.kind === "record"
+        ? (link.text ?? "")
+        : scalarSectionString(raw);
     return this.body(block, st, dot.length > 0 ? dot : st.dot);
   }
 
@@ -473,6 +522,73 @@ function scalarSectionString(raw: unknown): string {
   if (typeof raw === "string") return raw;
   if (typeof raw === "number" || typeof raw === "boolean") return String(raw);
   return "";
+}
+
+/** A dotted placeholder a module's fields cannot answer ({@link fieldPathProblems}). */
+export interface FieldPathProblem {
+  /** The tag as written, e.g. `{{primary_cta.label}}`. */
+  readonly tag: string;
+  readonly field: string;
+  readonly kind: string;
+}
+
+/**
+ * The dotted placeholders in `html` whose head is a field of this module
+ * and whose path that field cannot answer: every path into a field other
+ * than `link`, and a `link` path past {@link LINK_VALUE_KEYS}. The inside of
+ * a list section is skipped: its keys belong to the entries, which only the
+ * render knows. Read at write time so a broken placeholder is refused where
+ * it is authored, instead of surfacing at the Stage.
+ */
+export function fieldPathProblems(
+  html: string,
+  fields: readonly { readonly name: string; readonly kind?: string }[],
+): FieldPathProblem[] {
+  const byName = new Map(fields.map((f) => [f.name, f.kind ?? "text"]));
+  const tokens = tokenize(html);
+  const pairs = matchSections(tokens);
+  const out: FieldPathProblem[] = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i] as Token;
+    const close = pairs.get(i);
+    if (close !== undefined) {
+      // A section over no field of this module (a plugin list source,
+      // `page.terms.*`) opens entries too.
+      const kind = byName.get((t.name.split(".")[0] as string).toLowerCase());
+      if (kind === undefined || (ENTRY_SCOPE_KINDS.has(kind) && !t.name.includes("."))) {
+        i = close;
+        continue;
+      }
+    }
+    if (t.sigil === "/" || t.sigil === ">" || !t.name.includes(".") || isContextHead(t.name)) {
+      continue;
+    }
+    const [head, ...path] = t.name.toLowerCase().split(".") as [string, ...string[]];
+    const kind = byName.get(head);
+    if (kind === undefined) continue;
+    const linkPath =
+      path.length === 1 && (LINK_VALUE_KEYS as readonly string[]).includes(path[0] as string);
+    if (kind === "link" && linkPath) continue;
+    out.push({ tag: html.slice(t.start, t.end), field: head, kind });
+  }
+  return out;
+}
+
+/** The field kinds whose section opens entries, with keys of their own. */
+const ENTRY_SCOPE_KINDS: ReadonlySet<string> = new Set(["list", "module-list"]);
+
+/** What the author does about `problems` (non-empty): names the forms that work. */
+export function describeFieldPathProblems(problems: readonly FieldPathProblem[]): string {
+  const lines = problems.map(({ tag, field, kind }) => {
+    if (kind === "link") {
+      return `${tag}: \`${field}\` is a link field with the paths href, target and title. Use {{${field}}} or {{${field}.href}} for the URL; text beside the link, like its label, is a text field of its own (\`${field}_label\`).`;
+    }
+    if (ENTRY_SCOPE_KINDS.has(kind)) {
+      return `${tag}: \`${field}\` is a ${kind} field. Iterate it with {{#${field}}}…{{/${field}}} and use the entry's keys inside.`;
+    }
+    return `${tag}: \`${field}\` is a ${kind} field and has no paths. Use {{${field}}}.`;
+  });
+  return `Placeholder(s) this module's fields cannot answer, nothing was saved. ${lines.join(" ")}`;
 }
 
 /** The attribute a rendered list entry's root element carries (`docs/lists.md` §13). */

@@ -20,7 +20,7 @@ import {
 } from "../content-edit/registry.js";
 import { contentSha, renderWithLineNumbers } from "../content-edit/text-ops.js";
 import { storedModuleFields } from "./_module-field-defaults.js";
-import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
 const readContentInput = z
   .object({
@@ -83,9 +83,9 @@ async function readOne(
   input: ReadContentInput,
   toolCtx: ToolContext,
   target: ContentTarget,
-): Promise<{ ok: boolean; content: string; value?: unknown }> {
+): Promise<ToolResult> {
   const row = await readContentRow(ctx, toolCtx, target, input.entityId);
-  if (!row.ok) return { ok: false, content: row.content };
+  if (!row.ok) return row;
   const bodies = row.bodies;
   const isModule = input.entityKind === "module";
   const fieldSchema = isModule ? await storedModuleFields(ctx, toolCtx, input.entityId) : null;
@@ -106,6 +106,7 @@ async function readOne(
       return {
         ok: false,
         content: `unknown field "${input.field}" for ${input.entityKind}. Valid fields: ${[...target.fields, ...(isModule ? [FIELDS_BODY] : [])].join(", ")}.`,
+        refusal: true,
       };
     }
     const body = bodies[input.field] ?? "";

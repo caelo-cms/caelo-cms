@@ -19,8 +19,13 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
+import {
+  isUnplaced,
+  MAX_USAGE_MODULES,
+  type ModuleUsage,
+} from "../../ops/content/module-placements.js";
 import { describeError, toolError } from "./_describe-error.js";
-import { listParamsSchema, renderToonList } from "./_make-read-tool.js";
+import { LIST_DEFAULT_LIMIT, listParamsSchema, renderToonList } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listModulesInput = z
@@ -96,10 +101,29 @@ export function catalogField(f: CatalogFieldMeta, listSlug: ListSlugLookup = (re
   return `${f.name}:${f.kind} allowed=${allowed}`;
 }
 
+/**
+ * The `placements` cell: `unplaced` is what the delete guard concludes, so
+ * pages, layouts and parent modules all count. Rows past the shown page are
+ * rendered too and dropped by `renderToonList`.
+ */
+function placementsCell(u: ModuleUsage | undefined): string {
+  if (isUnplaced(u) || u === undefined) return "unplaced";
+  const parts: string[] = [];
+  if (u.placementCount > 0) {
+    const samples = u.samplePaths.join("|");
+    parts.push(
+      `${u.placementCount}${u.placementCountCapped ? "+" : ""}${samples ? ` (${samples})` : ""}`,
+    );
+  }
+  if (u.layouts.length > 0) parts.push(`layout ${u.layouts.join("|")}`);
+  if (u.nestedIn.length > 0) parts.push(`nested in ${u.nestedIn.join("|")}`);
+  return parts.join(" + ");
+}
+
 export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
   name: "list_modules",
   description:
-    "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placement usage.\n" +
+    "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placements as this chat sees the site (`unplaced` = no page, layout or parent module).\n" +
     "USE FOR: a reuse candidate before placing/creating (prefer `add_module` with `moduleId` over a near-duplicate); the accepted child types before filling a `module`/`module-list` field.\n" +
     "Fields column: `blocks:module-list allowed=faq/cta` -> child `type` must be one of them (`allowed=any` = unrestricted). " +
     "`nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)` | `… paginate(per_page=50 follow_ups=index)` = overview of every match over follow-up pages.",
@@ -112,27 +136,6 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
     if (!listed.ok) {
       return toolError(listed.error, `modules.list failed: ${describeError(listed.error)}`);
     }
-    const usageRes = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      ctx,
-      "modules.list_usage",
-      {},
-    );
-    if (!usageRes.ok) {
-      return toolError(
-        usageRes.error,
-        `modules.list_usage failed: ${describeError(usageRes.error)}`,
-      );
-    }
-    const usage = new Map(
-      (
-        usageRes.value as {
-          usage: { moduleId: string; placementCount: number; sampleSlugs: string[] }[];
-        }
-      ).usage.map((u) => [u.moduleId, u]),
-    );
-
     const all = (listed.value as { modules: (ModuleMeta & Record<string, unknown>)[] }).modules;
     // Shared list fields name a list by reference; show its slug, which is
     // what list_lists / get_list / patch_list_items_many take.
@@ -157,6 +160,26 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
         s.toLowerCase().includes(needle),
       );
     });
+
+    // Usage of the rows this call shows: a catalog read costs its page,
+    // however many modules the site has or pages place them.
+    const offset = input.offset ?? 0;
+    const shown = input.full
+      ? matches.slice(offset)
+      : matches.slice(offset, offset + (input.limit ?? LIST_DEFAULT_LIMIT));
+    const usage = new Map<string, ModuleUsage>();
+    for (let i = 0; i < shown.length; i += MAX_USAGE_MODULES) {
+      const usageRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.list_usage", {
+        moduleIds: shown.slice(i, i + MAX_USAGE_MODULES).map((m) => m.id),
+      });
+      if (!usageRes.ok) {
+        return toolError(
+          usageRes.error,
+          `modules.list_usage failed: ${describeError(usageRes.error)}`,
+        );
+      }
+      for (const u of (usageRes.value as { usage: ModuleUsage[] }).usage) usage.set(u.moduleId, u);
+    }
 
     if (matches.length === 0) {
       const filterNote =
@@ -190,15 +213,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
         },
         {
           key: "placements",
-          value: (m) => {
-            const u = usage.get(m.id);
-            if (!u || u.placementCount === 0) return "unplaced";
-            const samples = u.sampleSlugs
-              .slice(0, 3)
-              .map((s) => `/${s}`)
-              .join("|");
-            return `${u.placementCount}${samples ? ` (${samples})` : ""}`;
-          },
+          value: (m) => placementsCell(usage.get(m.id)),
         },
       ],
       // The metadata pre-filter above already applied `filter`; don't
@@ -208,7 +223,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
     // Metadata-only payload for programmatic follow-ups (retry paths,
     // future manifest tooling) — bodies stay out by design.
     const value = {
-      modules: matches.map((m) => ({
+      modules: shown.map((m) => ({
         id: m.id,
         slug: m.slug,
         displayName: m.displayName,
@@ -229,8 +244,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
               }
             : {}),
         })),
-        placementCount: usage.get(m.id)?.placementCount ?? 0,
-        sampleSlugs: usage.get(m.id)?.sampleSlugs ?? [],
+        usage: usage.get(m.id),
       })),
     };
     return {

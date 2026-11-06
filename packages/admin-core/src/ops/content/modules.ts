@@ -14,8 +14,10 @@ import {
 } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
+  describeFieldPathProblems,
   type ExecutionContext,
   err,
+  fieldPathProblems,
   type ModuleField,
   moduleCreateSchema,
   moduleFieldSchema,
@@ -52,7 +54,9 @@ import {
   describePlacements,
   findModulePlacements,
   isPlaced,
+  MAX_USAGE_MODULES,
   type ModulePlacements,
+  usageOfModules,
 } from "./module-placements.js";
 
 const moduleRowSchema = z.object({
@@ -169,72 +173,39 @@ async function overlayBranchEdits(
  * so the AI sees "this header is on every product page" rather than
  * three coincidences.
  *
- * Returns one row per module that has at least one placement:
- *   - placementCount: total live placements on undeleted pages
- *   - sampleSlugs: top-3 page slugs (alphabetic for determinism)
- *
- * Modules with zero placements are omitted; the formatter renders
- * them as "unplaced". Branch isolation matches modules.list — main
- * + the caller's own branched pages.
+ * #1424 — the same view as the delete guard (`module-placements.ts`): a
+ * placement this chat made and has not staged counts, one it removed does
+ * not, and layouts and parent modules count too. A call costs the modules
+ * it names, however many pages place them: `placementCount` stops at
+ * `MODULE_USAGE_COUNT_CAP` and `placementCountCapped` says so. One row per
+ * requested id; no page, layout or parent is what "unplaced" means.
  */
 export const listModulesUsageOp = defineOperation({
   name: "modules.list_usage",
   readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({}),
+  input: z.object({ moduleIds: z.array(z.string().uuid()).min(1).max(MAX_USAGE_MODULES) }).strict(),
   output: z.object({
     usage: z.array(
       z.object({
         moduleId: z.string(),
         placementCount: z.number().int().nonnegative(),
-        sampleSlugs: z.array(z.string()),
+        placementCountCapped: z.boolean(),
+        samplePaths: z.array(z.string()),
+        layouts: z.array(z.string()),
+        nestedIn: z.array(z.string()),
       }),
     ),
   }),
-  handler: async (ctx, _input, tx) => {
-    // Branch filter on pages — chats see their own branched pages'
-    // placements alongside main; system actors see main only.
-    const branchFilter = ctx.chatBranchId
-      ? sql` AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)`
-      : sql` AND p.chat_branch_id IS NULL`;
-    const rows = (await tx.execute(sql`
-      SELECT
-        pm.module_id::text AS module_id,
-        COUNT(*)::int AS placement_count,
-        (
-          SELECT array_agg(DISTINCT p2.slug ORDER BY p2.slug ASC)
-          FROM (
-            SELECT DISTINCT p3.slug
-            FROM page_modules pm3
-            JOIN pages p3 ON p3.id = pm3.page_id AND p3.deleted_at IS NULL
-            WHERE pm3.module_id = pm.module_id
-            ${
-              ctx.chatBranchId
-                ? sql`AND (p3.chat_branch_id IS NULL OR p3.chat_branch_id = ${ctx.chatBranchId}::uuid)`
-                : sql`AND p3.chat_branch_id IS NULL`
-            }
-            ORDER BY p3.slug ASC
-            LIMIT 3
-          ) p2
-        ) AS sample_slugs
-      FROM page_modules pm
-      JOIN pages p ON p.id = pm.page_id AND p.deleted_at IS NULL
-      WHERE 1=1 ${branchFilter}
-      GROUP BY pm.module_id
-    `)) as unknown as {
-      module_id: string;
-      placement_count: number | string;
-      sample_slugs: string[] | null;
-    }[];
+  handler: async (ctx, input, tx) => {
+    const usage = await usageOfModules(tx, ctx, [...new Set(input.moduleIds)]);
     return ok({
-      usage: rows.map((r) => ({
-        moduleId: r.module_id,
-        placementCount:
-          typeof r.placement_count === "string"
-            ? Number.parseInt(r.placement_count, 10)
-            : r.placement_count,
-        sampleSlugs: Array.isArray(r.sample_slugs) ? r.sample_slugs : [],
+      usage: usage.map((u) => ({
+        ...u,
+        samplePaths: [...u.samplePaths],
+        layouts: [...u.layouts],
+        nestedIn: [...u.nestedIn],
       })),
     });
   },
@@ -317,6 +288,7 @@ export const getModuleOp = withHumanisedLinks(
           kind: "HandlerError",
           operation: "modules.get",
           message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
+          refusal: true,
         });
       }
       return ok({ module: rowToModule(row) });
@@ -403,6 +375,25 @@ export const createModuleOp = defineOperation({
           message: extractorRefusalMessage(validation.message),
         });
       }
+    }
+    // #1433 — a path its field cannot answer is refused here, where it is
+    // authored: it would render as literal `{{…}}` and stop the Stage.
+    const createPathProblems = fieldPathProblems(candidateHtml, candidateFields);
+    if (createPathProblems.length > 0) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "modules.create",
+        input,
+        succeeded: false,
+        resultSummary: `field-paths: ${createPathProblems.length} problem(s)`,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "modules.create",
+        message: describeFieldPathProblems(createPathProblems),
+        refusal: true,
+      });
     }
     // Unwrap any XHTML-style CDATA guards the model emitted around inline
     // <style>/<script> — they survive the byte-preserving compose path and
@@ -621,6 +612,7 @@ export const updateModuleOp = defineOperation({
         kind: "HandlerError",
         operation: "modules.update",
         message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids); add_module creates a new one.`,
+        refusal: true,
       });
     }
 
@@ -689,6 +681,31 @@ export const updateModuleOp = defineOperation({
       extractedFields = input.fields ?? extractedMutable;
       extractedSurfacedToCaller =
         input.fields && input.fields.length > 0 ? undefined : extractedMutable;
+    }
+    // #1433 — see modules.create. Only a write that changes the HTML or the
+    // fields answers for them: renaming a module is not the moment to refuse.
+    if (input.html !== undefined || input.fields !== undefined) {
+      const pathProblems = fieldPathProblems(
+        extractedHtml ?? (branchBase ? branchBase.html : prev.html),
+        extractedFields ?? input.fields ?? prevFields,
+      );
+      if (pathProblems.length > 0) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "modules.update",
+          input,
+          succeeded: false,
+          entityId: input.moduleId,
+          resultSummary: `field-paths: ${pathProblems.length} problem(s)`,
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "modules.update",
+          message: describeFieldPathProblems(pathProblems),
+          refusal: true,
+        });
+      }
     }
     // Unwrap XHTML-style CDATA guards (see modules.create) — guarded on
     // `undefined` because an update may leave html untouched.
@@ -940,6 +957,7 @@ export const deleteModuleOp = defineOperation({
         kind: "HandlerError",
         operation: "modules.delete",
         message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
+        refusal: true,
       });
     }
     await recordAudit(tx, {

@@ -261,6 +261,7 @@ export const getAuditOp = defineOperation({
           kind: "HandlerError",
           operation: "quality_audits.get",
           message: `audit run ${input.auditRunId} not found — call list_quality_audits for valid ids`,
+          refusal: true,
         });
       }
       return ok({ run: null, pages: [], checks: null, siteProblemAccepted: [] });
@@ -314,7 +315,7 @@ export const getAuditOp = defineOperation({
           r.metrics === null ? null : (r.metrics as z.infer<typeof performanceMetricsSchema>),
         problems: r.problems as z.infer<typeof problemSchema>[],
         problemAccepted: (r.problems as QualityProblem[]).map((p) =>
-          isProblemAccepted(r.page_id, p, acceptances),
+          isProblemAccepted(r.page_id, p, acceptances, r.url),
         ),
         checkFindings: r.check_findings as z.infer<typeof findingSchema>[],
         errorCode: r.error_code,
@@ -322,7 +323,7 @@ export const getAuditOp = defineOperation({
       })),
       checks,
       siteProblemAccepted: (checks?.siteProblems ?? []).map((p) =>
-        isProblemAccepted(null, p, acceptances),
+        isProblemAccepted(null, p, acceptances, null),
       ),
     });
   },
@@ -330,7 +331,8 @@ export const getAuditOp = defineOperation({
 
 const acceptanceSchema = z.object({
   id: z.string(),
-  /** Null for a site-wide page-check acceptance (#727). */
+  /** Null for a site-wide page-check acceptance (#727) or an audit accepted
+   *  for a shipped file (#1446). */
   pageId: z.string().nullable(),
   pageTitle: z.string(),
   /** The page's path, or "site-wide". */
@@ -339,6 +341,9 @@ const acceptanceSchema = z.object({
   kind: z.enum(["finding", "score", "check"]),
   /** The Lighthouse audit id, or the page-check rule id. */
   auditId: z.string().nullable(),
+  /** #1446 — the shipped file an audit is accepted for, on every page that
+   *  loads it; the content hash in the name ends it when the file changes. */
+  resourcePath: z.string().nullable(),
   category: categorySchema.nullable(),
   acceptedScore: z.number().int().nullable(),
   acceptedCount: z.number().int().nullable(),
@@ -359,7 +364,7 @@ export const listAcceptancesOp = defineOperation({
   input: z
     .object({
       pageId: z.string().uuid().optional(),
-      /** Substring of the Lighthouse audit id / rule id, the reason, or the page path. */
+      /** Substring of the Lighthouse audit id / rule id, the reason, the page path, or the file. */
       query: z.string().max(200).optional(),
       includeRevoked: z.boolean().default(false),
       limit: z.number().int().min(1).max(500).default(100),
@@ -373,12 +378,12 @@ export const listAcceptancesOp = defineOperation({
     if (input.query && input.query.length > 0) {
       const like = `%${input.query}%`;
       filters.push(
-        sql` AND (a.audit_id ILIKE ${like} OR a.reason ILIKE ${like} OR p.current_path ILIKE ${like})`,
+        sql` AND (a.audit_id ILIKE ${like} OR a.reason ILIKE ${like} OR p.current_path ILIKE ${like} OR a.resource_path ILIKE ${like})`,
       );
     }
     const rows = (await tx.execute(sql`
       SELECT a.id::text AS id, a.page_id::text AS page_id, p.title, p.current_path, a.kind,
-             a.audit_id, a.category, a.accepted_score, a.accepted_count, a.reason,
+             a.audit_id, a.resource_path, a.category, a.accepted_score, a.accepted_count, a.reason,
              a.accepted_by::text AS accepted_by, a.accepted_at, a.audit_run_id::text AS audit_run_id, a.revoked_at
       FROM quality_acceptances a
       LEFT JOIN pages p ON p.id = a.page_id
@@ -392,6 +397,7 @@ export const listAcceptancesOp = defineOperation({
       current_path: string | null;
       kind: "finding" | "score" | "check";
       audit_id: string | null;
+      resource_path: string | null;
       category: z.infer<typeof categorySchema> | null;
       accepted_score: number | null;
       accepted_count: number | null;
@@ -409,6 +415,7 @@ export const listAcceptancesOp = defineOperation({
         pagePath: r.current_path ?? SITE_WIDE_PATH,
         kind: r.kind,
         auditId: r.audit_id,
+        resourcePath: r.resource_path,
         category: r.category,
         acceptedScore: r.accepted_score,
         acceptedCount: r.accepted_count === null ? null : Number(r.accepted_count),

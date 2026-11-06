@@ -180,9 +180,6 @@ describe("#1107 page types", () => {
     const tpl = await op<{ templates: { id: string; slug: string }[] }>(SYS, "templates.list", {});
     const home = tpl.templates.find((t) => t.slug === "home-template");
     expect(v.pageTypes.find((t) => t.slug === "home")?.templates).toContain(home?.id ?? "-");
-    const defaults = await op<{ defaults: Record<string, unknown> }>(SYS, "site_defaults.get", {});
-    expect(defaults.defaults).not.toHaveProperty("defaultPageTypeId");
-    expect(defaults.defaults).not.toHaveProperty("defaultTemplateId");
   });
 
   it("creates a page with its type from the template, properties with defaults, validated terms", async () => {

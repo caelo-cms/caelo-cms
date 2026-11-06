@@ -9,16 +9,43 @@
  * `runWithOverrides` — so it cannot pass arguments, env or another image
  * (upgrader-setup.ts). The job runs as its own service account, which may
  * deploy Cloud Run revisions, run the migration job and back up Cloud SQL,
- * but cannot change IAM, service accounts or secrets. One run:
+ * but cannot change IAM, service accounts or secrets.
  *
- *   1. claim the oldest pending request (ending a run that died mid-way);
+ * One job, two stages (#1029, the converge job's shape, job-handover.ts),
+ * told apart by the release this code belongs to:
+ *
+ * Stage 1 — the job still runs the ops image of an earlier release:
+ *
+ *   a. claim the request (adopting one whose run ended, or that a stage 1
+ *      released and no run took);
+ *   b. read install.json, fetch the target's manifest from the FIXED
+ *      registry, verify its signature, and refuse an older release
+ *      (upgrader-assess.ts `assessHandover`);
+ *   c. ask IAM for the job's rights on itself, verify the target's ops image
+ *      with cosign, point this job at it BY DIGEST under the state lock,
+ *      release the request and start a new execution.
+ *
+ *   It decides nothing else on purpose. Every step below runs in the
+ *   TARGET's code, so a bug in the assessment or the roll reaches only
+ *   installs that do not have the fix yet, and the release with the fix
+ *   repairs them by being installed (#1025 could not; #1470 had to raise
+ *   the infrastructure contract only to get its code to run).
+ *
+ *   A stage 2 that refuses or fails leaves the job on the target's image.
+ *   That is safe: it is signed, stage 1 only ever moves onto a release not
+ *   older than install.json's, and the next update moves the job again.
+ *
+ * Stage 2 — the job runs the target release's own image; one run:
+ *
+ *   1. claim or adopt the request, with the policy as it stands now;
  *   2. read what the install runs from install.json in its ops bucket; when
  *      it names other images than the ones serving, judge against the
  *      serving release if a signed release manifest names both its images,
  *      else stop (upgrader-records.ts, #860);
  *   3. fetch the release manifest from the FIXED registry and verify its
  *      signature (release-manifest.ts) — no registry, identity or digest
- *      ever comes from the request, the env or argv;
+ *      ever comes from the request, the env or argv — and check that the
+ *      image this run executes is the one that manifest signs;
  *   4. decide (upgrader-assess.ts): refuse a bad signature, a downgrade, a
  *      release below its minFromVersion, an automatic run the policy does
  *      not allow; hand an infrastructure change back (the admin routes
@@ -39,8 +66,13 @@
  *      with the new admin image, admin then gateway, deep health check,
  *      traffic back onto the previous revisions on any failure;
  *   7. record the new digests + version in install.json (a failed write
- *      ends the run as failed, never as succeeded);
- *   8. move this job onto the release's own ops image, last.
+ *      ends the run as failed, never as succeeded).
+ *
+ * A run that dies leaves its request `running`. Starting the job again (the
+ * page's "Continue") adopts it once Cloud Run says that run has ended; the
+ * new run starts over from step 1, which is safe because each step reads
+ * what the last one left. There is no checkpoint: a roll killed half-way
+ * rolls nothing back by itself, and step 2 then reports the mixed install.
  *
  * Every step is narrated into `platform_update_events` (upgrader-reporter.ts).
  * All side effects come in through {@link UpgraderJobDeps}, so the whole
@@ -56,8 +88,17 @@ import type {
   StoredUpdatePolicy,
 } from "@caelo-cms/shared";
 import type { GcloudRunner, Sleep } from "./gcloud-retry.js";
-import { upgraderJobName } from "./gcp-names.js";
 import type { InstallMetadata } from "./install-state.js";
+import {
+  adoptClaim,
+  type HandoverBlocked,
+  type HandoverQueue,
+  handOverToRelease,
+  isStageOne,
+  type JobClaim,
+  ownImageProblem,
+  type SelfHandoverDeps,
+} from "./job-handover.js";
 import {
   manifestServiceImages,
   type ReleaseManifest,
@@ -86,8 +127,7 @@ import {
 } from "./upgrade/gcp-lookup.js";
 import type { HealthProbe } from "./upgrade/health.js";
 import { platformDigestsOf, type ReleaseImageForms } from "./upgrade/image-forms.js";
-import { releaseImageRef } from "./upgrade/release-images.js";
-import { assessUpgradeRequest, type RefusalCode } from "./upgrader-assess.js";
+import { assessHandover, assessUpgradeRequest, type RefusalCode } from "./upgrader-assess.js";
 import {
   type IamTester,
   preflightErrorReason,
@@ -95,6 +135,7 @@ import {
   runIamPreflight,
   UPGRADER_PREFLIGHT_VOICE,
   upgraderAccessChecks,
+  upgraderHandoverChecks,
 } from "./upgrader-iam-preflight.js";
 import {
   findServingRelease,
@@ -159,8 +200,20 @@ export interface UpdateQueue {
   finish(requestId: string, end: UpdateEnd): Promise<boolean>;
 }
 
-export interface UpgraderJobDeps {
-  readonly queue: UpdateQueue;
+/**
+ * The upgrader job's view of the database: {@link UpdateQueue} (which the
+ * self-hosted agent drives as it is), plus what the two stages need.
+ */
+export interface UpgraderQueue extends Omit<UpdateQueue, "claim">, HandoverQueue {
+  /**
+   * End runs that died long ago, then return the running `app_roll`
+   * request, or claim the oldest pending one, with the policy as it stands.
+   */
+  claimUpgrade(execution: string | null): Promise<JobClaim | null>;
+}
+
+export interface UpgraderJobDeps extends SelfHandoverDeps {
+  readonly queue: UpgraderQueue;
   readonly run: GcloudRunner;
   readonly sleep?: Sleep;
   /** From the metadata server — never from env or argv. */
@@ -168,8 +221,6 @@ export interface UpgraderJobDeps {
   readonly region: string;
   /** Pulumi stack name (`production`). */
   readonly env: string;
-  /** This Cloud Run execution, for the log link; null outside Cloud Run. */
-  readonly execution: string | null;
   /**
    * Asks IAM which permissions the job's own account holds (#818), for the
    * self-check right after the decision. Never the action itself.
@@ -217,11 +268,7 @@ export interface UpgraderRunResult {
 }
 
 /** Why the run cannot go on: how its request ends. */
-interface Blocked {
-  readonly status: UpdateEndStatus;
-  readonly codes: readonly string[];
-  readonly reason: string;
-}
+type Blocked = HandoverBlocked;
 
 type LockOutcome = { readonly ok: true } | ({ readonly ok: false } & Blocked);
 
@@ -242,37 +289,44 @@ const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve,
 /** Run the job once. Never throws; see the file comment for the sequence. */
 export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRunResult> {
   const { queue, log } = deps;
-  let claimed: ClaimedUpdate | null;
+  let claim: JobClaim | null;
   try {
-    claimed = await queue.claim(deps.execution);
+    claim = await queue.claimUpgrade(deps.execution);
   } catch (e) {
     log({ severity: "ERROR", message: `could not read update requests: ${errorText(e)}` });
     return { exitCode: 1, requestId: null, status: null };
   }
-  if (!claimed) {
+  if (!claim) {
     log({ severity: "INFO", message: "no pending update request; nothing to do" });
     return { exitCode: 0, requestId: null, status: null };
   }
-  const request = claimed;
+  const { request } = claim;
   const r = eventReporter(
     (phase, level, message) => queue.event(request.id, phase, level, message),
     log,
     request.id,
   );
+  /** This run leaves the request to another (live) run: no end, no events. */
+  const leave = (message: string, failed = false): UpgraderRunResult => {
+    log({ severity: failed ? "ERROR" : "INFO", message, requestId: request.id });
+    return { exitCode: failed ? 1 : 0, requestId: request.id, status: null };
+  };
   let releaseLock: (() => void) | null = null;
+  const unlock = () => {
+    if (!releaseLock) return;
+    try {
+      releaseLock();
+    } catch (e) {
+      r.warn(errorText(e));
+    }
+    releaseLock = null;
+  };
   const finish = async (end: UpdateEnd): Promise<UpgraderRunResult> => {
     r.phase("finish");
     if (end.status === "succeeded") r.success(`Caelo ${request.targetVersion} is installed.`);
     else r.error(end.reason ?? end.status);
     await r.flush();
-    if (releaseLock) {
-      try {
-        releaseLock();
-      } catch (e) {
-        r.warn(errorText(e));
-      }
-      releaseLock = null;
-    }
+    unlock();
     const recorded = await recordUpdateEnd(queue, request.id, end, log, deps.sleep);
     const failed = end.status === "failed" || end.status === "rolled_back" || !recorded;
     return { exitCode: failed ? 1 : 0, requestId: request.id, status: end.status };
@@ -291,10 +345,20 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     });
 
   try {
+    const adoption = await adoptClaim(claim, { ...deps, queue });
+    if (adoption.kind === "leave") return leave(adoption.message, adoption.failed);
     r.phase("start");
-    r.info(
-      `Upgrader started${deps.execution ? ` (run ${deps.execution})` : ""}: installing Caelo ${request.targetVersion}.`,
-    );
+    if (!adoption.adopted) {
+      r.info(
+        `Upgrader started${deps.execution ? ` (run ${deps.execution})` : ""}: installing Caelo ${request.targetVersion}.`,
+      );
+    } else if (claim.execution === null) {
+      r.info(`Caelo ${deps.ownVersion}'s own upgrader took over (run ${deps.execution}).`);
+    } else {
+      r.info(
+        `Continuing the update to ${request.targetVersion} (run ${deps.execution}; the previous run ${claim.execution} stopped before it finished).`,
+      );
+    }
 
     // #815 — the state lock is taken only right before the first write
     // (lockBeforeWrite below), never before the decision: any lock problem
@@ -347,6 +411,13 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       ...read,
       provider: read.provider,
     };
+
+    // #1029 — this image is an earlier release's: the target's own does the
+    // rest. Nothing below this line runs in the code being replaced.
+    if (isStageOne(deps.ownVersion, request.targetVersion)) {
+      return await handOverToTarget(meta, lockBeforeWrite);
+    }
+
     /** The corrected records (#860), when install.json is stale; written under the lock. */
     let heal: InstallMetadata | null = null;
 
@@ -446,6 +517,14 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
 
     // 3 + 4. The signed manifest decides.
     const manifest = await deps.fetchManifest(request.targetVersion);
+    if (manifest.ok) {
+      const wrongImage = ownImageProblem(
+        manifest.manifest,
+        await deps.ownImageDigest(),
+        "upgrader",
+      );
+      if (wrongImage) return stopWith(wrongImage.status, wrongImage.codes, wrongImage.reason);
+    }
     const decision = assessUpgradeRequest({
       request,
       manifest,
@@ -538,7 +617,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     for (const w of planned.plan.warnings) r.warn(w);
 
     // Decided, planned: the backup (or the records correction) is the first
-    // write. Held through the roll, install.json and the self-update.
+    // write. Held through the roll and install.json.
     const blocked = lockAndHeal();
     if (blocked) return stopWith(blocked.status, blocked.codes, blocked.reason);
 
@@ -644,25 +723,6 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       );
     }
 
-    // 8. Self-update, last: the next run uses this release's upgrader.
-    r.phase("self-update");
-    const job = upgraderJobName(deps.env);
-    const self = await deps.run([
-      "run",
-      "jobs",
-      "update",
-      job,
-      `--image=${releaseImageRef("ops", m.digests.ops)}`,
-      `--region=${deps.region}`,
-      `--project=${deps.projectId}`,
-      "--quiet",
-    ]);
-    if (self.ok) r.info(`The upgrader itself now runs ${m.version}.`);
-    else {
-      r.warn(
-        `The upgrader could not update itself (${self.stderr.trim().slice(0, 300)}); the next update still works, with this run's upgrader.`,
-      );
-    }
     return finish({ status: "succeeded", reason: null, codes: [], pauseAutoUpdates: false });
   } catch (e) {
     return stopWith(
@@ -670,6 +730,70 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       ["internal"],
       `The upgrader stopped unexpectedly: ${errorText(e)}. If the site misbehaves, check Settings → Updates and the job's log.`,
     );
+  }
+
+  /** Stage 1: hand the request to the target release's own signed upgrader. */
+  async function handOverToTarget(
+    meta: InstallMetadata,
+    lock: () => LockOutcome,
+  ): Promise<UpgraderRunResult> {
+    const manifest = await deps.fetchManifest(request.targetVersion);
+    const decision = assessHandover({
+      request,
+      manifest,
+      installed: {
+        version: meta.releaseVersion ?? null,
+        infraContractVersion: meta.infraContractVersion ?? 0,
+      },
+      policy: request.policy,
+      now: deps.now(),
+    });
+    if (decision.manifest) {
+      r.success(
+        `Release information of ${decision.manifest.version} verified: signed by Caelo's release workflow.`,
+      );
+      await recordFacts(queue, request.id, decision.manifest, meta);
+    }
+    r.phase("assess");
+    if (decision.kind === "stop") {
+      return stopWith(decision.status, decision.codes, decision.reason);
+    }
+    const access = await runIamPreflight(
+      upgraderHandoverChecks({ projectId: deps.projectId, region: deps.region, env: deps.env }),
+      deps.iam,
+    );
+    if (access.kind === "missing") {
+      return stopWith(
+        "needs_cloud_shell",
+        ["iam-preflight"],
+        preflightMissingReason(access.missing, UPGRADER_PREFLIGHT_VOICE),
+      );
+    }
+    if (access.kind === "error") {
+      return stopWith(
+        "failed",
+        ["iam-preflight"],
+        preflightErrorReason(access.errors, UPGRADER_PREFLIGHT_VOICE),
+      );
+    }
+    r.info(
+      `This upgrader belongs to Caelo ${deps.ownVersion}; handing over to the upgrader of ${decision.manifest.version} itself, so the update is checked and installed by the release that carries it.`,
+    );
+    return handOverToRelease(decision.manifest, {
+      deps,
+      queue,
+      requestId: request.id,
+      noun: "upgrader",
+      reporter: r,
+      log,
+      lock: () => {
+        const locked = lock();
+        return locked.ok ? null : locked;
+      },
+      unlock,
+      stop: (b) => stopWith(b.status, b.codes, b.reason),
+      leave,
+    });
   }
 }
 
@@ -794,7 +918,7 @@ async function templateDigests(
 }
 
 async function recordFacts(
-  queue: UpdateQueue,
+  queue: Pick<UpdateQueue, "record">,
   requestId: string,
   m: ReleaseManifest,
   meta: InstallMetadata,

@@ -12,7 +12,7 @@ import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../../register.js";
-import { shouldAutoCaptureToolFailure } from "../../chat-runner/tool-dispatch.js";
+import { shouldAutoCaptureToolFailure } from "../../chat-runner/tool-failure-capture.js";
 import { LIVE_INSPECT_BUDGET_ENV_VAR, takeExternalFetchBudget } from "../_external-fetch-budget.js";
 import { deployStagingTool } from "../deploy-staging.js";
 import type { ToolContext, ToolResult } from "../dispatch.js";

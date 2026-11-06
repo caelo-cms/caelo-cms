@@ -177,6 +177,7 @@ export const getTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "templates.get",
         message: "template not found",
+        refusal: true,
       });
     }
     const blocks = (await tx.execute(sql`
@@ -190,6 +191,7 @@ export const getTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "templates.get",
         message: "template not found",
+        refusal: true,
       });
     }
     return ok({ template });
@@ -334,6 +336,7 @@ export const createTemplateOp = defineOperation({
             reason: "fetch valid layoutId values; the one you passed does not match a live layout",
             autoExecute: true,
           },
+          refusal: true,
         });
       }
     }
@@ -491,6 +494,7 @@ export const updateTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "templates.update",
         message: "template not found",
+        refusal: true,
       });
     }
     if (input.layoutId !== undefined) {
@@ -502,6 +506,7 @@ export const updateTemplateOp = defineOperation({
           kind: "HandlerError",
           operation: "templates.update",
           message: "layout not found or deleted",
+          refusal: true,
         });
       }
     }
@@ -697,6 +702,7 @@ export const setTemplateLayoutOp = defineOperation({
         kind: "HandlerError",
         operation: "templates.set_layout",
         message: "template not found",
+        refusal: true,
       });
     }
     const layoutOk = (await tx.execute(sql`
@@ -707,6 +713,7 @@ export const setTemplateLayoutOp = defineOperation({
         kind: "HandlerError",
         operation: "templates.set_layout",
         message: "layout not found or deleted",
+        refusal: true,
       });
     }
     await tx.execute(sql`
@@ -787,6 +794,7 @@ export const deleteTemplateOp = defineOperation({
         kind: "HandlerError",
         operation: "templates.delete",
         message: "template not found",
+        refusal: true,
       });
     }
     if (target.deleted_at !== null) {

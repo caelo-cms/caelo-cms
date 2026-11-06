@@ -9,7 +9,12 @@
 import { describe, expect, it } from "bun:test";
 import type { StoredUpdatePolicy } from "@caelo-cms/shared";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
-import { assessUpgradeRequest, type InstalledState } from "./upgrader-assess.js";
+import {
+  type AssessmentInput,
+  assessHandover,
+  assessUpgradeRequest,
+  type InstalledState,
+} from "./upgrader-assess.js";
 
 const D = (c: string) => `sha256:${c.repeat(64)}`;
 
@@ -414,5 +419,74 @@ describe("assessUpgradeRequest — the converge route (#819)", () => {
     });
     expect(code(d)).toBe("needs_cloud_shell/infra-contract");
     expect(d.kind === "stop" ? d.reason : "").toContain("converge job");
+  });
+});
+
+describe("assessHandover (#1029: stage 1, only what must hold before the target's code runs)", () => {
+  const input = (over: Partial<AssessmentInput> = {}): AssessmentInput => ({
+    request: { targetVersion: "0.11.0", trigger: "manual" },
+    manifest: { ok: true, manifest: MANIFEST },
+    installed: { version: "0.10.50", infraContractVersion: 2 },
+    policy: POLICY,
+    now: new Date("2026-10-13T12:00:00Z"),
+    ...over,
+  });
+
+  it("proceeds with the verified manifest", () => {
+    const d = assessHandover(input());
+    expect(d).toEqual({ kind: "proceed", manifest: MANIFEST, warnings: [] });
+  });
+
+  it("leaves everything else to the target's code", () => {
+    const tooFar = { ...MANIFEST, minFromVersion: "0.10.99" };
+    expect(assessHandover(input({ manifest: { ok: true, manifest: tooFar } })).kind).toBe(
+      "proceed",
+    );
+    const destructive = {
+      ...MANIFEST,
+      migrations: { ...MANIFEST.migrations, contract: true },
+    };
+    expect(assessHandover(input({ manifest: { ok: true, manifest: destructive } })).kind).toBe(
+      "proceed",
+    );
+  });
+
+  it("the same release passes: install.json may be the stale side", () => {
+    expect(
+      assessHandover(input({ installed: { version: "0.11.0", infraContractVersion: 2 } })).kind,
+    ).toBe("proceed");
+  });
+
+  it("refuses a release older than install.json's, for any trigger", () => {
+    const d = assessHandover(input({ installed: { version: "0.11.1", infraContractVersion: 2 } }));
+    expect(d).toMatchObject({ kind: "stop", status: "refused", codes: ["not-newer"] });
+  });
+
+  it("refuses what the manifest does not vouch for", () => {
+    const bad = (code: "signature" | "schema") =>
+      assessHandover(input({ manifest: { ok: false, error: { code, message: "x" } } }));
+    expect(bad("signature")).toMatchObject({ status: "refused", codes: ["signature"] });
+    expect(bad("schema")).toMatchObject({
+      status: "needs_cloud_shell",
+      codes: ["manifest-unreadable"],
+    });
+  });
+
+  it("stops when the install does not know what it runs", () => {
+    const d = assessHandover(input({ installed: { version: null, infraContractVersion: 2 } }));
+    expect(d).toMatchObject({ codes: ["install-version-unknown"] });
+  });
+
+  it("an infrastructure change is not this job's", () => {
+    const d = assessHandover(input({ installed: { version: "0.10.50", infraContractVersion: 1 } }));
+    expect(d).toMatchObject({ status: "needs_cloud_shell", codes: ["infra-contract"] });
+  });
+
+  it("an automatic request is judged in full: nobody asked for it", () => {
+    const auto = input({
+      request: { targetVersion: "0.11.0", trigger: "auto" },
+      policy: { ...POLICY, mode: "notify" },
+    });
+    expect(assessHandover(auto)).toMatchObject({ kind: "stop", codes: ["policy"] });
   });
 });

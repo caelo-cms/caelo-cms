@@ -38,6 +38,7 @@ import {
   loadListTranslationState,
   writeListTranslations,
 } from "./list-translation-ops.js";
+import { translationGlossary } from "./neutral-terms.js";
 import { basisOf } from "./stable-json.js";
 import { listAll } from "./store-reads.js";
 import {
@@ -461,13 +462,11 @@ export async function prepareChromeTranslation(
     return { ...base, glossary: [], styleGuide: null, prompt: null };
   }
 
-  const glossary = (
-    (await deps.q.list("glossary", { locale_code: locale.code, limit: 500 })) as unknown as {
-      term: string;
-      translation: string;
-      context: string | null;
-    }[]
-  ).map((g): GlossaryEntry => ({ term: g.term, translation: g.translation, context: g.context }));
+  const glossary = await translationGlossary(
+    deps.q,
+    locale.code,
+    [...offered, ...offeredLists].flatMap((t) => t.strings.map((s) => s.text)),
+  );
   const style = (
     (await deps.q.list("style_guides", { locale_code: locale.code, limit: 1 })) as unknown as {
       body: string;

@@ -273,6 +273,7 @@ export const selectGenesisDraftOp = defineOperation({
         kind: "HandlerError",
         operation: "genesis.select_draft",
         message: "draft not found — call genesis.list_drafts for current draft ids",
+        refusal: true,
       });
     }
     if (row.status === "discarded") {
@@ -350,6 +351,7 @@ export const renderDesignDraftOp = defineOperation({
         kind: "HandlerError",
         operation: "genesis.render_draft",
         message: "draft not found or discarded — call genesis.list_drafts for current draft ids",
+        refusal: true,
       });
     }
     if (draft.format === "document") {

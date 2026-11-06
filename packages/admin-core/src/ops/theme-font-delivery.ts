@@ -94,6 +94,7 @@ export const themeFontDeliveryOp = defineOperation({
         message: input.themeSlug
           ? `theme '${input.themeSlug}' not found — call list_themes`
           : "no active theme — call list_themes",
+        refusal: true,
       });
     }
     let faces: ReturnType<typeof collectPinnedFaces>;

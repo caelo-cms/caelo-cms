@@ -12,6 +12,7 @@ function row(over: Partial<AcceptanceRow>): AcceptanceRow {
     id: "a",
     pageId: "p0",
     pagePath: "/",
+    resourcePath: null,
     kind: "check",
     auditId: "seo-check/description-missing",
     category: null,
@@ -61,5 +62,33 @@ describe("groupLiveAcceptances (#727 bulk review)", () => {
     expect(acceptedValue(row({ acceptedCount: 3 }))).toBe("up to 3 error(s)");
     expect(acceptedValue(row({ kind: "score", acceptedScore: 88 }))).toBe("score 88");
     expect(acceptedValue(row({ kind: "finding", acceptedScore: null }))).toBe("as recorded");
+  });
+
+  it("keeps an audit accepted for a shipped file a site-wide decision of its own (#1446)", () => {
+    const file = row({
+      id: "f1",
+      pageId: null,
+      pagePath: "site-wide",
+      kind: "finding",
+      auditId: "unminified-javascript",
+      resourcePath: "/_caelo/plugin/consent-manager/runtime.84de0a18c461.js",
+      acceptedScore: 50,
+      acceptedCount: null,
+    });
+    const onPage = row({
+      id: "f2",
+      kind: "finding",
+      auditId: "unminified-javascript",
+      acceptedScore: 50,
+      acceptedCount: null,
+    });
+    const groups = groupLiveAcceptances([file, onPage]);
+    expect(groups.map((g) => [g.siteWide, g.rows.length])).toEqual(
+      expect.arrayContaining([
+        [true, 1],
+        [false, 1],
+      ]),
+    );
+    expect(groups.find((g) => g.siteWide)?.label).toContain("runtime.84de0a18c461.js");
   });
 });

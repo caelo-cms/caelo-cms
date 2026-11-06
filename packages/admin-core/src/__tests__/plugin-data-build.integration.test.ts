@@ -20,7 +20,10 @@
  *     schedule nothing; a declared visitor trigger does;
  *   - Publish live of a Stage older than a plugin-data build makes its
  *     bakes pending again, and re-baking data the HTML already carries
- *     publishes nothing.
+ *     publishes nothing;
+ *   - #1495: a region's page links come from the live build, never from a
+ *     base URL or path nobody published; a link the live build cannot
+ *     answer keeps the region as published and its mark pending.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -34,7 +37,7 @@ import {
   runPluginOperation,
   syncPluginHost,
 } from "@caelo-cms/plugin-host";
-import { definePlugin, z } from "@caelo-cms/plugin-sdk";
+import { definePlugin, type PluginContextTier1, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { CADDY_REDIRECTS_FILE, type ExecutionContext } from "@caelo-cms/shared";
 import {
@@ -72,16 +75,28 @@ const MOD_WIDGET = "t1155-widget";
 const HOME_SLUG = "home";
 const ABOUT_SLUG = "t1155-about";
 const SECRET_SLUG = "t1155-unpublished";
+const MOVED_SLUG = "t1155-moved";
+const LATE_SLUG = "t1155-late";
+const ROTATE_SLUG = "t1155-rotate";
+const ROTATE_TARGET_SLUG = "t1155-rotate-target";
+const MOD_ROTATE = "t1155-rotate-widget";
 const UNKNOWN_PAGE = "11550000-0000-4000-8000-000000000001";
 const GHOST = "t1155-ghost";
 
 /** What the fixture plugin bakes; the test appends as "approvals" happen. */
 const entries: string[] = ["first entry"];
+/** #1495 — pages the fixture links under its entries, through core's URL builder. */
+let linkedPages: string[] = [];
+/** #1495 — only this page's region links; null: every region. */
+let linkingPage: string | null = null;
+/** #1495 — what the fixture does when core cannot name a link. */
+let onLinkError: "throw" | "render-on" | "fail-otherwise" = "throw";
 
 const guestbook = definePlugin({
   slug: PLUGIN,
   version: "0.1.0",
   tier: 1,
+  requestedCapabilities: ["cms_admin"],
   schema: {},
   publicOperations: [
     {
@@ -110,7 +125,25 @@ const guestbook = definePlugin({
     vote: async (_ctx, args) => ({ pageId: (args as { pageId: string }).pageId }),
     noop: async (_ctx, args) => ({ pageId: (args as { pageId: string }).pageId }),
   },
-  staticRender: async () => entries.map((e) => `<p class="entry">${e}</p>`).join(""),
+  staticRender: async (ctx, { pageId, pageUrlStyle }) => {
+    const html = entries.map((e) => `<p class="entry">${e}</p>`).join("");
+    if (linkedPages.length === 0 || (linkingPage !== null && linkingPage !== pageId)) return html;
+    const cms = (ctx as PluginContextTier1).cms;
+    if (!cms) throw new Error("the fixture needs its cms_admin grant");
+    try {
+      const { urls } = await cms.call<unknown, { urls: Record<string, string> }>(
+        "pages.resolve_public_urls",
+        { pageIds: linkedPages, pageUrlStyle },
+      );
+      return `${html}${Object.values(urls)
+        .map((u) => `<a href="${u}">linked</a>`)
+        .join("")}`;
+    } catch (e) {
+      if (onLinkError === "render-on") return html;
+      if (onLinkError === "fail-otherwise") throw new Error("t1495 unrelated render failure");
+      throw e;
+    }
+  },
   // The build's bake cache key: without it a Stage would reuse its first bake.
   metaSignature: async () => String(entries.length),
   bakedData: {
@@ -160,7 +193,15 @@ async function asGateway(fn: (tx: Bun.SQL) => Promise<unknown>): Promise<void> {
 async function wipe(): Promise<void> {
   resetPluginHost();
   resetPluginHostSync();
-  const slugs = [HOME_SLUG, ABOUT_SLUG, SECRET_SLUG];
+  const slugs = [
+    HOME_SLUG,
+    ABOUT_SLUG,
+    SECRET_SLUG,
+    MOVED_SLUG,
+    LATE_SLUG,
+    ROTATE_SLUG,
+    ROTATE_TARGET_SLUG,
+  ];
   await sqlSystem(async (tx) => {
     await tx`DELETE FROM quality_audit_runs`;
     await tx`DELETE FROM plugin_data_stale_pages`;
@@ -170,7 +211,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(slugs)})`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(slugs)})`;
     await tx`DELETE FROM pages WHERE slug IN ${tx(slugs)}`;
-    await tx`DELETE FROM modules WHERE slug IN (${MOD_TEXT}, ${MOD_WIDGET})`;
+    await tx`DELETE FROM modules WHERE slug IN (${MOD_TEXT}, ${MOD_WIDGET}, ${MOD_ROTATE})`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
     await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
     await tx`DELETE FROM plugin_runtime WHERE plugin_slug = ${PLUGIN}`;
@@ -218,15 +259,21 @@ async function stageAndPublish(): Promise<{ id: string; buildId: string }> {
   return { id: promoted.toRunId, buildId: rows[0]?.build_id ?? "" };
 }
 
-async function tick() {
-  return runPluginDataBuildIfDue({ adapter, registry, minIntervalSeconds: 0, repoRoot: testRoot });
+async function tick(maxMarks?: number) {
+  return runPluginDataBuildIfDue({
+    adapter,
+    registry,
+    minIntervalSeconds: 0,
+    repoRoot: testRoot,
+    ...(maxMarks ? { maxMarks } : {}),
+  });
 }
 
-async function approve(text: string): Promise<void> {
+async function approve(text: string, pageId = homeId): Promise<void> {
   const r = await runPluginOperation({
     pluginSlug: PLUGIN,
     operationName: "approve",
-    args: { pageId: homeId, text },
+    args: { pageId, text },
     invocation: { origin: "owner-panel", actorId: SYSTEM_ACTOR_ID },
   });
   if (!r.ok) throw new Error(JSON.stringify(r.error));
@@ -900,5 +947,207 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     expect(await pending()).toEqual(marks);
     expect((await tick()).outcome).toBe("built");
     expect(await pending()).toEqual([]);
+  });
+
+  describe("#1495 — a tick publishes no URL a human did not publish", () => {
+    const LIVE_ORIGIN = "https://example.com";
+    const liveHome = async (): Promise<string> => {
+      const dir = join(productionDir(), "current");
+      return readFile(join(dir, await homeOutputPath(dir)), "utf8");
+    };
+    const pageIdOf = async (slug: string): Promise<string> => {
+      const rows = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT id::text AS id FROM pages WHERE slug = ${slug} AND deleted_at IS NULL`) as {
+            id: string;
+          }[],
+      );
+      if (!rows[0]) throw new Error(`no page ${slug}`);
+      return rows[0].id;
+    };
+    const setStoredBaseUrl = (url: string) =>
+      sqlSystem((tx) => tx`UPDATE site_defaults SET site_base_url = ${url} WHERE id = 1`);
+    const renderErrors = () =>
+      sqlSystem(
+        async (tx) =>
+          (await tx`SELECT message FROM plugin_errors
+                    WHERE plugin_slug = ${PLUGIN} AND phase = 'render'`) as { message: string }[],
+      );
+    const lastMessage = async (): Promise<string> => {
+      const rows = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT last_message FROM plugin_data_build_state WHERE id = 1`) as {
+            last_message: string | null;
+          }[],
+      );
+      return rows[0]?.last_message ?? "";
+    };
+
+    it("links with the published origin after the stored base URL changed", async () => {
+      const aboutId = await pageIdOf(ABOUT_SLUG);
+      linkedPages = [aboutId];
+      await stageAndPublish();
+      await approve("linked entry");
+      expect((await tick()).outcome).toBe("built");
+      expect(await liveHome()).toContain(`href="${LIVE_ORIGIN}/${ABOUT_SLUG}/"`);
+
+      // A saved setting is draft state until a Publish live (#1158).
+      await setStoredBaseUrl("https://not-published.example");
+      try {
+        await approve("entry after the setting changed");
+        expect((await tick()).outcome).toBe("built");
+        const html = await liveHome();
+        expect(html).toContain("entry after the setting changed");
+        expect(html).toContain(`href="${LIVE_ORIGIN}/${ABOUT_SLUG}/"`);
+        expect(html).not.toContain("not-published.example");
+      } finally {
+        await setStoredBaseUrl(LIVE_ORIGIN);
+      }
+    });
+
+    it("links the published path of a page moved and staged but not published", async () => {
+      await ok("pages.update", { pageId: await pageIdOf(ABOUT_SLUG), slug: MOVED_SLUG });
+      const staged = await ok<{ runId: string }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      await markAudited(staged.runId);
+      await approve("entry after the move was staged");
+      expect((await tick()).outcome).toBe("built");
+      const html = await liveHome();
+      expect(html).toContain("entry after the move was staged");
+      expect(html).toContain(`href="${LIVE_ORIGIN}/${ABOUT_SLUG}/"`);
+      expect(html).not.toContain(MOVED_SLUG);
+    });
+
+    it("keeps the region and the mark while a link names a page the live build lacks", async () => {
+      const { templateId } = (
+        await sqlSystem(
+          async (tx) =>
+            (await tx`SELECT id::text AS "templateId" FROM templates WHERE slug = ${TPL_SLUG}`) as {
+              templateId: string;
+            }[],
+        )
+      )[0] as { templateId: string };
+      const late = await ok<{ pageId: string }>("pages.create", {
+        slug: LATE_SLUG,
+        title: "Late",
+        templateId,
+      });
+      await ok("pages.update", { pageId: late.pageId, status: "published" });
+      await ok("pages_seo.autofill", { pageId: late.pageId, metaDescription: "Late." });
+      linkedPages = [...linkedPages, late.pageId];
+
+      const before = await liveHome();
+      const runsBefore = (await pluginDataRuns()).length;
+      await approve("entry linking an unpublished page");
+      const markedAt = async () =>
+        (
+          await sqlSystem(
+            async (tx) =>
+              (await tx`SELECT last_marked_at::text AS at FROM plugin_data_stale_pages
+                        WHERE page_id = ${homeId}::uuid`) as { at: string }[],
+          )
+        )[0]?.at;
+      const queuedAt = await markedAt();
+      const kept = await tick();
+      expect(kept.outcome).toBe("unchanged");
+      expect(kept.message).toContain(late.pageId);
+      expect(await lastMessage()).toContain(late.pageId);
+      expect(await liveHome()).toBe(before);
+      expect((await pluginDataRuns()).length).toBe(runsBefore);
+      expect(await pendingMarks()).toBe(1);
+      // Back of the queue: the batch takes the oldest marks, so a held-back
+      // mark must not keep newer ones out of it.
+      expect(await markedAt()).not.toBe(queuedAt);
+
+      // A plain refusal is no plugin failure: nothing lands in plugin health.
+      expect(await renderErrors()).toEqual([]);
+
+      // A plugin that catches the error and renders on is no way around it.
+      onLinkError = "render-on";
+      const swallowed = await tick();
+      expect(swallowed.outcome).toBe("unchanged");
+      expect(await liveHome()).toBe(before);
+      expect(await pendingMarks()).toBe(1);
+
+      // Another error after the refusal is the plugin's own failure: plugin
+      // health shows it, and the tick still finishes for everyone else.
+      onLinkError = "fail-otherwise";
+      const failing = await tick();
+      expect(failing.outcome).toBe("unchanged");
+      expect(await liveHome()).toBe(before);
+      expect(await pendingMarks()).toBe(1);
+      const errors = await renderErrors();
+      expect(errors.length).toBe(1);
+      expect(errors[0]?.message).toContain("t1495 unrelated render failure");
+      onLinkError = "throw";
+
+      // A Publish live ships the page; the next tick clears the mark.
+      await stageAndPublish();
+      await tick();
+      expect(await pendingMarks()).toBe(0);
+      const html = await liveHome();
+      expect(html).toContain("entry linking an unpublished page");
+      expect(html).toContain(`href="${LIVE_ORIGIN}/${MOVED_SLUG}/"`);
+      expect(html).toContain(`href="${LIVE_ORIGIN}/${LATE_SLUG}/"`);
+      linkedPages = [];
+    });
+
+    it("a held-back mark does not keep newer marks out of a full batch", async () => {
+      const { templateId } = (
+        await sqlSystem(
+          async (tx) =>
+            (await tx`SELECT id::text AS "templateId" FROM templates WHERE slug = ${TPL_SLUG}`) as {
+              templateId: string;
+            }[],
+        )
+      )[0] as { templateId: string };
+      const page = await ok<{ pageId: string }>("pages.create", {
+        slug: ROTATE_SLUG,
+        title: "Rotate",
+        templateId,
+      });
+      const widget = await ok<{ moduleId: string }>("modules.create", {
+        slug: MOD_ROTATE,
+        displayName: "Guestbook two",
+        html: `<section><div data-caelo-plugin="${PLUGIN}" data-page-id="${page.pageId}"></div></section>`,
+        fields: [],
+      });
+      await ok("pages.set_modules", {
+        pageId: page.pageId,
+        blocks: [{ blockName: "content", moduleIds: [widget.moduleId] }],
+      });
+      await ok("pages.update", { pageId: page.pageId, status: "published" });
+      await ok("pages_seo.autofill", { pageId: page.pageId, metaDescription: "Rotate." });
+      await stageAndPublish();
+      expect((await tick()).outcome).not.toBe("failed");
+
+      const target = await ok<{ pageId: string }>("pages.create", {
+        slug: ROTATE_TARGET_SLUG,
+        title: "Not live",
+        templateId,
+      });
+      await ok("pages.update", { pageId: target.pageId, status: "published" });
+      await ok("pages_seo.autofill", { pageId: target.pageId, metaDescription: "Not live." });
+      linkedPages = [target.pageId];
+      linkingPage = homeId;
+
+      // The batch holds one mark, and the oldest is the one that cannot bake.
+      await approve("held back in a full batch");
+      await approve("waiting behind it", page.pageId);
+      expect((await tick(1)).outcome).toBe("unchanged");
+      expect(await pendingMarks()).toBe(2);
+      expect((await tick(1)).outcome).toBe("built");
+      expect(await pendingMarks()).toBe(1);
+      const dir = join(productionDir(), "current");
+      const manifest = JSON.parse(await readFile(join(dir, "routing-manifest.json"), "utf8")) as {
+        pages: { pageId?: string; outputPath: string }[];
+      };
+      const path = manifest.pages.find((p) => p.pageId === page.pageId)?.outputPath ?? "";
+      expect(await readFile(join(dir, path), "utf8")).toContain("waiting behind it");
+      linkedPages = [];
+      linkingPage = null;
+    });
   });
 });

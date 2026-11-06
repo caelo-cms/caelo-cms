@@ -138,6 +138,7 @@ export const proposeUserSetRolesOp = defineOperation({
         kind: "HandlerError",
         operation: "users.propose_set_roles",
         message: `user ${input.userId} not found or deleted`,
+        refusal: true,
       });
     }
     if (u.is_first_owner && !input.roleNames.includes("owner")) {
@@ -205,6 +206,7 @@ export const proposeUserDeleteOp = defineOperation({
         kind: "HandlerError",
         operation: "users.propose_delete",
         message: `user ${input.userId} not found or already deleted`,
+        refusal: true,
       });
     }
     if (u.is_first_owner) {

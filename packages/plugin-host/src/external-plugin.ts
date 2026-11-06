@@ -86,6 +86,8 @@ export function externalPluginDefinition(opts: {
     adminSchema: manifest.adminSchema,
     // #1292 — reviewed manifest data: the broker refuses reads no index covers.
     ...(manifest.indexes ? { indexes: manifest.indexes } : {}),
+    // #1387 — reviewed manifest data: what the host may show the AI of a row.
+    ...(manifest.aiReadableTables ? { aiReadableTables: manifest.aiReadableTables } : {}),
     requestedCapabilities: manifest.requestedCapabilities,
     tools: manifest.tools,
     skills: manifest.skills,

@@ -66,6 +66,24 @@ describe("actual Deno plugin execution", () => {
       "denied",
     );
   });
+  it("has no ctx.cms even with the grant and a host handle, so core calls stay in-process", async () => {
+    // #1495 relies on this: pages.resolve_public_urls cannot be reached from
+    // the sandbox, so a live-build refusal never crosses it as a string.
+    const granted = {
+      ...context,
+      cms: {
+        call: async () => {
+          throw new Error("the sandbox reached the host's ctx.cms");
+        },
+      },
+    };
+    expect(
+      await invoke("return typeof ctx.cms;", {
+        manifest: { ...manifest, requestedCapabilities: ["cms_admin"] },
+        context: granted as PluginContext,
+      }),
+    ).toBe("undefined");
+  });
   it("rejects forbidden imports and their re-export spelling before loading", async () => {
     await expect(invoke("", { source: 'export { readFileSync } from "node:fs";' })).rejects.toThrow(
       "SandboxSourceRejected",

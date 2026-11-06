@@ -126,15 +126,17 @@ export const getSnapshotTool = makeReadTool({
 export const getModuleImpactTool = makeReadTool({
   name: "get_module_impact",
   description:
-    "Blast radius of editing one module: every live page placing it + severity and reasons. " +
+    "Blast radius of editing one module, as this chat sees the site: pages placing it, layouts and parent modules holding it, severity and reasons. " +
     "Use BEFORE editing a possibly shared module (header, footer, CTA) to tell the operator what else changes, or to pick `fork_placement_content` instead.",
   opName: "snapshots.module_impact",
   input: z.object({ moduleId: uuid }).strict(),
   format: (value) => {
     const v = value as OpValue<typeof moduleImpactOp>;
     const lines = [
-      `severity ${v.severity}: ${v.reasons.join("; ") || "no notable reasons"} — ${v.affectedPages.length} page placement(s)`,
+      `severity ${v.severity}: ${v.reasons.join("; ") || "no notable reasons"} — ${v.affectedPages.length}${v.affectedPagesCapped ? "+" : ""} page placement(s)`,
     ];
+    if (v.layouts.length > 0) lines.push(`site chrome of layout(s): ${v.layouts.join(", ")}`);
+    if (v.nestedIn.length > 0) lines.push(`nested in module(s): ${v.nestedIn.join(", ")}`);
     for (const p of v.affectedPages.slice(0, 50)) {
       lines.push(`${p.pageSlug} (template ${p.templateSlug}, block ${p.blockName})`);
     }

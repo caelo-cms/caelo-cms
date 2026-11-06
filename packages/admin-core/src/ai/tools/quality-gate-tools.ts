@@ -104,7 +104,7 @@ export const acceptQualityFindingsTool = makeProposeTool<AcceptInput>({
     "- Target = 100 per Lighthouse category + zero findings; 90 is NOT acceptable on its own. Fix what is fixable (metrics: `get_quality_audit`; never run Lighthouse yourself).\n" +
     "- On your own only after explaining WHY it cannot be fixed (third-party embed, brand colour the operator confirmed, Caelo platform issue reported via `bug_report`); phrase it as the operator's choice, never your recommendation.\n" +
     "- Check `list_quality_acceptances` first; never ask twice. Every group of one decision -> ONE call.\n" +
-    "- Accepts the value measured now (score, audit score, error count): worse blocks again, better tightens it. Applies ONLY to its pages.\n" +
+    "- Accepts the value measured now (score, audit score, error count): worse blocks again, better tightens it. Applies ONLY to its pages, except: a finding that names only files Caelo or a plugin ships (hashed `/_caelo/plugin/…` or `/_app/immutable/…` on the site's own origin) is accepted for that audit and file on EVERY page loading it, until the file changes; those rows keep their value.\n" +
     "- Once approved it counts at once — Publish live opens without a new Stage. Do NOT call `stage_changes` to 'pick it up': a Stage with nothing new re-runs the whole check and can start another fix round.",
   schema: proposeAcceptInput,
   inputSchema: z.toJSONSchema(proposeAcceptInput) as Record<string, unknown>,

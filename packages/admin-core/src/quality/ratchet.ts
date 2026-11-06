@@ -13,6 +13,7 @@
  * - No grandfathering. There is no per-page baseline any more (the
  *   `quality_baselines` ratchet of #553 let existing debt pass): a problem
  *   blocks until it is fixed or an editor accepts it on its page.
+ *   (#1446: a finding about shipped files is accepted per file, gate.ts.)
  * - An acceptance records the VALUE it accepted (a category score, an
  *   audit's score, a check rule's error count). A measurement worse than
  *   that value blocks again; a better one tightens the acceptance (it only

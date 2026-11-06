@@ -33,6 +33,7 @@ import {
   joinHeldTransaction,
   type OperationRegistry,
 } from "@caelo-cms/query-api";
+import type { LiveBuildUrls } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { bakedDataPageIds, bakedDataTrigger } from "./baked-data-pages.js";
@@ -273,6 +274,8 @@ interface MakeContextOpts {
   readonly publicOperation?: PublicOperationDef;
   /** #1333 — see `MakePluginContextOpts.publicTarget`. */
   readonly publicTarget?: "live" | "staging";
+  /** #1495 — see `MakePluginContextOpts.liveUrls`. */
+  readonly liveUrls?: LiveBuildUrls;
 }
 
 /**
@@ -1061,6 +1064,8 @@ export async function runPluginStaticRender(opts: {
   pageId: string;
   pageUrlStyle: PageUrlStyle;
   invocation: PluginInvocation;
+  /** #1495 — a plugin-data build: page URLs come from the live build. */
+  liveUrls?: LiveBuildUrls;
 }): Promise<string | null> {
   const plugin = loadedPlugins.bySlug(opts.pluginSlug);
   if (!plugin) return null;
@@ -1070,7 +1075,12 @@ export async function runPluginStaticRender(opts: {
     throw new Error("plugin host not bootstrapped");
   }
   assertInvocationConsistent(opts.invocation, undefined);
-  const ctx = await makeContext({ plugin, infra: cachedInfra, invocation: opts.invocation });
+  const ctx = await makeContext({
+    plugin,
+    infra: cachedInfra,
+    invocation: opts.invocation,
+    ...(opts.liveUrls ? { liveUrls: opts.liveUrls } : {}),
+  });
   const out = await render(ctx as PluginContext, {
     pageId: opts.pageId,
     pageUrlStyle: opts.pageUrlStyle,

@@ -17,6 +17,7 @@ import { defineOperation, textArray } from "@caelo-cms/query-api";
 import { ok, redirectFromPathSpellings } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { loadSiteDesignations } from "./compose-paths.js";
 import { listPagesOp } from "./pages.js";
 
 /** How many paths or pages one call takes. */
@@ -64,10 +65,8 @@ export const pageConflictsRedirectOp = defineOperation({
     );
     if (!listed.ok) return listed;
     // The 404 page is served at /404.html, so its own path is free for a rule.
-    const defaults = (await tx.execute(sql`
-      SELECT not_found_page_id::text AS id FROM site_defaults WHERE id = 1
-    `)) as unknown as { id: string | null }[];
-    const pages = listed.value.pages.filter((p) => p.id !== defaults[0]?.id);
+    const { notFoundPageId } = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
+    const pages = listed.value.pages.filter((p) => p.id !== notFoundPageId);
     const bySpelling = new Map(
       pages.flatMap((p) => redirectFromPathSpellings(p.currentPath).map((s) => [s, p] as const)),
     );

@@ -134,6 +134,7 @@ export const proposeRoleUpdatePermissionsOp = defineOperation({
         kind: "HandlerError",
         operation: "roles.propose_update_permissions",
         message: `role ${input.roleId} not found`,
+        refusal: true,
       });
     }
     if (r.is_builtin && r.name === "owner") {
@@ -202,6 +203,7 @@ export const proposeRoleDeleteOp = defineOperation({
         kind: "HandlerError",
         operation: "roles.propose_delete",
         message: `role ${input.roleId} not found`,
+        refusal: true,
       });
     }
     if (r.is_builtin) {
