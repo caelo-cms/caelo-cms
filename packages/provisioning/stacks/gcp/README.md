@@ -62,11 +62,14 @@ CAELO_INTERNAL_SECRET=$(gcloud secrets versions access latest \
   bunx cms-provision pulumi-output-sync --environment production
 ```
 
-The bootstrap-token URL is a Pulumi output:
+The stack outputs the setup address without a token. The installer mints the
+Owner setup token at the end of the install, stores it in Secret Manager for the
+admin, and prints the link (`src/owner-setup-token.ts`). A plain `pulumi up` has
+no token: `/setup` refuses until there is one. Get the link, or a new one after
+its 24 hours:
 
 ```bash
-pulumi stack output bootstrapUrlOut
-# → https://example.com/setup?token=<64-hex>
+bunx @caelo-cms/provisioning setup-link --project <gcp-project-id>
 ```
 
 Open after the domain's and the admin's DNS A records point at the load balancer IP and the managed certificate is active.

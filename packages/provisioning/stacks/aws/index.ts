@@ -43,7 +43,6 @@ import {
   type AwsTaskService,
   secretsReadPolicy,
 } from "../../dist/aws-task-roles.js";
-import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import {
   DEFAULT_ADMIN_MAX_INSTANCES,
   DEFAULT_GATEWAY_MAX_INSTANCES,
@@ -555,10 +554,7 @@ new aws.iam.RolePolicyAttachment(`${namePrefix}-exec-managed`, {
   policyArn: "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
 });
 
-// === 9. Bootstrap token ===
-const tokenInfo = generateBootstrapToken();
-
-// === 10. Outputs (CloudAdapterOutputs shape) ===
+// === 9. Outputs (CloudAdapterOutputs shape) ===
 const dnsRecordsRequired: DnsRecord[] = [
   {
     hostname: domain,
@@ -582,8 +578,9 @@ const out: CloudAdapterOutputs = {
   mediaStorageUrl: pulumi.interpolate`s3://${mediaBucket.bucket}` as unknown as string,
   mediaCdnBaseUrl:
     pulumi.interpolate`https://${distribution.domainName}/media` as unknown as string,
-  bootstrapUrl:
-    pulumi.interpolate`https://${domain}/setup?token=${tokenInfo.token}` as unknown as string,
+  // No token: nothing would bring it to the admin, and /setup refuses until
+  // something does (#1483, #1476).
+  bootstrapUrl: `https://${domain}/setup`,
   dnsRecordsRequired,
   edgeLogSinkUrl:
     pulumi.interpolate`cloudwatch://us-east-1/${edgeLogGroup.name}` as unknown as string,
@@ -630,7 +627,6 @@ export const poolBudgetEnvOut = poolBudget.env;
 // CSRF/cookie secrets, Anthropic key) are stored in Pulumi's encrypted
 // state via `pulumi.secret(...)`. Operators retrieve via
 // `pulumi stack output --show-secrets`.
-export const bootstrapTokenExpiresAtOut = tokenInfo.expiresAt;
 
 /** A KeyValueStore's id: the last segment of its ARN. */
 function kvsIdFromArn(arn: string): string {
