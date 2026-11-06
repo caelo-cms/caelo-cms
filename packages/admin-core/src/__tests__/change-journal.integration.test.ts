@@ -196,6 +196,7 @@ function measuring(tx: TransactionRunner, buffers: number[]): TransactionRunner 
           "QUERY PLAN": [{ Plan: { "Shared Hit Blocks": number; "Shared Read Blocks": number } }];
         }[];
         const top = plan[0]?.["QUERY PLAN"][0]?.Plan;
+        console.log("PLAN", JSON.stringify(plan[0]?.["QUERY PLAN"][0]?.Plan));
         buffers.push((top?.["Shared Hit Blocks"] ?? 0) + (top?.["Shared Read Blocks"] ?? 0));
         return target.execute(q);
       };
@@ -685,6 +686,121 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
       await asSystem((tx) => tx`DELETE FROM change_consumers WHERE name = ${name}`);
       await dropProbeRows();
     }
+  });
+
+  describe("on a journal the planner sees as large, without forcing the index (#1269)", () => {
+    // The scale gate's freshness check read the whole journal three times
+    // per call (17,600 buffers over 328,000 rows): the snapshot bounds came
+    // from a CTE column the planner could not see, so it assumed a third of
+    // the journal past xmax, and under the check's EXISTS (planned for its
+    // first match) a sequential scan looked cheapest. A fresh check has no
+    // match. The tests above force the index (enable_seqscan off) and so
+    // could not see the plan the planner chooses; these do not.
+    const FLOOD_KIND = "t1269_flood";
+    // As in the gate: groups of kinds by their ops, a branch, unscoped ops.
+    const filter = {
+      kinds: [PROBE_KIND, "t1269_probe_ops"],
+      kindOps: { t1269_probe_ops: ["update" as const, "delete" as const] },
+      branchId: crypto.randomUUID(),
+      unscopedOps: ["update" as const, "delete" as const, "truncate" as const],
+    };
+
+    /** 40,000 rows of a kind nobody asks for, in 200 transactions, then fresh statistics. */
+    async function flood(): Promise<void> {
+      for (let t = 0; t < 200; t++) {
+        await adapter.withAdminTransaction(SYS, (tx) =>
+          tx.execute(sql`
+            INSERT INTO entity_changes (xid, table_name, row_id, kind, op)
+            SELECT pg_current_xact_id(), 't1269_flood', ${`${t}-`} || i, ${FLOOD_KIND}, 'update'
+              FROM generate_series(1, 200) i`),
+        );
+      }
+      await analyzeJournal();
+    }
+
+    async function dropFlood(): Promise<void> {
+      await asSystem((tx) => tx`DELETE FROM entity_changes WHERE kind = ${FLOOD_KIND}`);
+      await dropProbeRows();
+    }
+
+    it("a fresh check reads by index, past xmax and through a long writer in flight at its mark", async () => {
+      let release!: () => void;
+      const released = new Promise<void>((r) => {
+        release = r;
+      });
+      let wrote!: () => void;
+      const hasWritten = new Promise<void>((r) => {
+        wrote = r;
+      });
+      let long: Promise<void> | null = null;
+      try {
+        await flood();
+        // A plugin's long rebuild: 20,000 rows of a kind the reader does not
+        // ask for, still in flight when the mark is taken.
+        long = adapter.withAdminTransaction(SYS, async (tx) => {
+          await tx.execute(sql`
+            INSERT INTO entity_changes (xid, table_name, row_id, kind, op)
+            SELECT pg_current_xact_id(), 't1269_flood', 'long-' || i, ${FLOOD_KIND}, 'update'
+              FROM generate_series(1, 20000) i`);
+          wrote();
+          await released;
+        });
+        await hasWritten;
+        // A later transaction commits first, so the long one is in the
+        // mark's xip list (the newest in-flight xid lies at its xmax).
+        await adapter.withAdminTransaction(SYS, (tx) =>
+          tx.execute(sql`
+            INSERT INTO entity_changes (xid, table_name, row_id, kind, op)
+            VALUES (pg_current_xact_id(), 't1269_flood', 'after-long', ${FLOOD_KIND}, 'update')`),
+        );
+        const { mark } = await otherAdapter.withAdminTransaction(SYS, (tx) =>
+          checkJournalMark(tx, null, filter),
+        );
+        expect(mark.snapshot.split(":")[2]).not.toBe("");
+        release();
+        await long;
+        await flood();
+        const buffers: number[] = [];
+        const check = await otherAdapter.withAdminTransaction(SYS, (tx) =>
+          checkJournalMark(measuring(tx, buffers), mark, filter),
+        );
+        expect(check.fresh).toBe(true);
+        // A sequential scan, or the primary key over the long writer's xid,
+        // reads tens of thousands of flood rows (hundreds of buffers).
+        expect(Math.max(...buffers)).toBeLessThan(30);
+        await writeProbeRow();
+        const after = await otherAdapter.withAdminTransaction(SYS, (tx) =>
+          checkJournalMark(tx, mark, filter),
+        );
+        expect(after.fresh).toBe(false);
+      } finally {
+        release();
+        await long;
+        await dropFlood();
+      }
+    });
+
+    it("a consumer poll with nothing new for it reads by index", async () => {
+      const name = `test:${crypto.randomUUID()}`;
+      await adapter.withAdminTransaction(SYS, (tx) => registerConsumer(tx, name));
+      try {
+        await flood();
+        const buffers: number[] = [];
+        const batch = await adapter.withAdminTransaction(SYS, (tx) =>
+          pollChanges(measuring(tx, buffers), name, { filter, limit: 100 }),
+        );
+        expect(batch.changes).toEqual([]);
+        expect(Math.max(...buffers)).toBeLessThan(30);
+        const probeId = await writeProbeRow();
+        const next = await adapter.withAdminTransaction(SYS, (tx) =>
+          pollChanges(tx, name, { filter, limit: 100 }),
+        );
+        expect(next.changes.map((c) => c.rowId)).toEqual([probeId]);
+      } finally {
+        await asSystem((tx) => tx`DELETE FROM change_consumers WHERE name = ${name}`);
+        await dropFlood();
+      }
+    });
   });
 
   it("keeps the previous release's change signals written for one release, and trims the font log", async () => {
