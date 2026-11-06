@@ -26,7 +26,12 @@ import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { composePaths, renderScopeOf } from "./compose-paths.js";
+import {
+  composePaths,
+  composePathsOutsideTransaction,
+  loadSiteDesignations,
+  renderScopeOf,
+} from "./compose-paths.js";
 import {
   ancestorIdsOf,
   descendantIdsOf,
@@ -76,7 +81,8 @@ async function writeCurrentPaths(
  * - a branch scope persists only rows that branch created — a main
  *   row's live path must not move before publish. The merge recomputes
  *   main-line paths once the branch's rows are live
- *   ({@link refreshLivePathsAfterMerge}).
+ *   ({@link refreshLivePathsAfterMerge}). The home designation is the one
+ *   input that is not on a branch: {@link recomputeOwnedCurrentPaths}.
  *
  * @returns the composed path per page (given pages and their
  *   descendants), persisted or not, plus the previous stored path of
@@ -88,6 +94,78 @@ export async function recomputeCurrentPaths(
   scope: RenderScope,
 ): Promise<Map<string, string>> {
   return (await recomputeCurrentPathsWithMoves(tx, pageIds, scope)).paths;
+}
+
+/**
+ * Recompute `pageIds` each in the namespace that owns its row, not the
+ * caller's. For the home designation, which is global: every page at "/"
+ * depends on it, so a chat's `set_home_page` must move main's rows too.
+ * `current_path` on main is not public by itself, it reaches visitors
+ * through a Stage and Publish live, and nothing else would ever recompute
+ * these rows: a designation carries no pending change for a merge to replay.
+ */
+export async function recomputeOwnedCurrentPaths(
+  ctx: ExecutionContext,
+  tx: TransactionRunner,
+  pageIds: ReadonlyArray<string>,
+): Promise<void> {
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, chat_branch_id::text AS owner FROM pages
+    WHERE id = ANY(${uuidArray(pageIds)}) AND deleted_at IS NULL
+  `)) as unknown as { id: string; owner: string | null }[];
+  const byOwner = new Map<string | null, string[]>();
+  for (const r of rows) byOwner.set(r.owner, [...(byOwner.get(r.owner) ?? []), r.id]);
+  for (const [owner, ids] of byOwner) {
+    const scope =
+      owner === (ctx.chatBranchId ?? null) ? renderScopeOf(ctx, tx) : { chatBranchId: owner };
+    await recomputeCurrentPaths(tx, ids, scope);
+  }
+}
+
+/**
+ * Take a pending home / 404 designation live with its page:
+ * `mergingPageIds` are the pages a merge is about to write to main. Runs
+ * BEFORE the replay: a new home already holds "/" in its branch's
+ * namespace, so the old home has to leave "/" before the page's row joins
+ * main, or the `current_path` unique index refuses the merge. No 301s, the
+ * same as `pages.set_home_page` on main: the root changes page, no URL is
+ * retired.
+ */
+export async function claimPendingDesignations(
+  tx: TransactionRunner,
+  mergingPageIds: ReadonlyArray<string>,
+): Promise<void> {
+  if (mergingPageIds.length === 0) return;
+  const rows = (await tx.execute(sql`
+    SELECT pending_home_page_id::text AS home, pending_not_found_page_id::text AS not_found
+    FROM site_defaults WHERE id = 1
+  `)) as unknown as { home: string | null; not_found: string | null }[];
+  const home = rows[0]?.home ?? null;
+  const notFound = rows[0]?.not_found ?? null;
+  if (home !== null && mergingPageIds.includes(home)) {
+    await tx.execute(sql`
+      UPDATE site_defaults
+         SET home_page_id = ${home}::uuid, pending_home_page_id = NULL, updated_at = now()
+       WHERE id = 1
+    `);
+    const holders = (await tx.execute(sql`
+      SELECT id::text AS id FROM pages
+      WHERE current_path = '/' AND chat_branch_id IS NULL AND deleted_at IS NULL
+    `)) as unknown as { id: string }[];
+    await recomputeCurrentPaths(
+      tx,
+      holders.map((r) => r.id),
+      { chatBranchId: null },
+    );
+  }
+  if (notFound !== null && mergingPageIds.includes(notFound)) {
+    await tx.execute(sql`
+      UPDATE site_defaults
+         SET not_found_page_id = ${notFound}::uuid, pending_not_found_page_id = NULL,
+             updated_at = now()
+       WHERE id = 1
+    `);
+  }
 }
 
 /** A persisted path change: where the page was, and where it is now. */
@@ -383,7 +461,8 @@ export async function refreshLivePathsAfterMerge(
     // URL-setting change; its move waits for the approved URL migration,
     // which also writes the 301s.
     const all = [...tree.byId.keys()];
-    const withMerge = await composePaths(tx, tree, all, { chatBranchId });
+    const { homePageId } = await loadSiteDesignations(tx, null);
+    const withMerge = await composePathsOutsideTransaction(tree, all, homePageId, { chatBranchId });
     const withoutMerge = opts.preMergePaths;
     const caused = new Set([
       ...replayed,

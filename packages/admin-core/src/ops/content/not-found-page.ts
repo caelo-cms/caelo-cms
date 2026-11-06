@@ -14,6 +14,12 @@
  * visitors see on a broken link"), so it is AI-settable
  * (`human + ai + system`). One call undoes it (designate another page or
  * pass `pageId: null`), so it needs no propose/execute gate (§11.A).
+ *
+ * A page only a branch holds is not part of any other chat's build, and the
+ * build refuses a 404 page it does not have. So that designation waits in
+ * `pending_not_found_page_id` and goes live with the page
+ * (`claimPendingDesignations`, migration 0657); until then the site keeps
+ * its current 404 page.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -22,6 +28,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
+import { loadSiteDesignations } from "./compose-paths.js";
 
 export const setNotFoundPageOp = defineOperation({
   name: "pages.set_not_found_page",
@@ -33,15 +40,16 @@ export const setNotFoundPageOp = defineOperation({
   input: z.object({ pageId: z.string().uuid().nullable() }).strict(),
   output: z.object({ pageId: z.string().nullable() }),
   handler: async (ctx, input, tx) => {
+    let heldByBranch = false;
     if (input.pageId !== null) {
       // Branch-aware so a page created on THIS chat's branch can be
       // designated in the same session (same rule as set_home_page).
       const branchFilter = branchVisibilityFilter(ctx);
       const pageRows = (await tx.execute(sql`
-        SELECT current_path FROM pages
+        SELECT current_path, chat_branch_id::text AS owner FROM pages
         WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL ${branchFilter}
         LIMIT 1
-      `)) as unknown as { current_path: string | null }[];
+      `)) as unknown as { current_path: string | null; owner: string | null }[];
       const page = pageRows[0];
       if (!page) {
         return err({
@@ -53,12 +61,14 @@ export const setNotFoundPageOp = defineOperation({
       }
       // The homepage serves "/"; as the 404 page it would vanish from the
       // root (the generator emits the 404 page only as /404.html).
-      const homeRows = (await tx.execute(sql`
-        SELECT 1 AS is_home FROM site_defaults
-        WHERE id = 1 AND home_page_id = ${input.pageId}::uuid
-        LIMIT 1
-      `)) as unknown as { is_home: number }[];
-      if (homeRows.length > 0 || page.current_path === "/") {
+      // Main's home counts too, whatever a branch has pending to replace it.
+      const inChat = await loadSiteDesignations(tx, ctx.chatBranchId ?? null);
+      const onMain = await loadSiteDesignations(tx, null);
+      if (
+        inChat.homePageId === input.pageId ||
+        onMain.homePageId === input.pageId ||
+        page.current_path === "/"
+      ) {
         return err({
           kind: "HandlerError",
           operation: "pages.set_not_found_page",
@@ -67,12 +77,17 @@ export const setNotFoundPageOp = defineOperation({
           refusal: true,
         });
       }
+      heldByBranch = page.owner !== null;
     }
     // Fail loudly if the singleton row is missing (no silent no-op
     // UPDATE — CLAUDE.md §2 no-fallbacks). RETURNING confirms the write.
     const updated = (await tx.execute(sql`
       UPDATE site_defaults
-         SET not_found_page_id = ${input.pageId}::uuid,
+         SET ${
+           heldByBranch
+             ? sql`pending_not_found_page_id = ${input.pageId}::uuid`
+             : sql`not_found_page_id = ${input.pageId}::uuid, pending_not_found_page_id = NULL`
+         },
              updated_at = now()
        WHERE id = 1
        RETURNING id

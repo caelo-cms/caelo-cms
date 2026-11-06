@@ -19,6 +19,7 @@ export const classificationReasonSchema = z
       "theme",
       "new_page",
       "plugin_config",
+      "site_setting",
       "first_stage",
       "plugin_activation",
       "no_chat_context",

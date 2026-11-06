@@ -49,6 +49,8 @@ export const FK_EXEMPTIONS: readonly FkExemption[] = [
     "cms_admin site_defaults(default_layout_id) -> layouts",
     "cms_admin site_defaults(home_page_id) -> pages",
     "cms_admin site_defaults(not_found_page_id) -> pages",
+    "cms_admin site_defaults(pending_home_page_id) -> pages",
+    "cms_admin site_defaults(pending_not_found_page_id) -> pages",
   ].map((key) => ({
     key,
     reason:
