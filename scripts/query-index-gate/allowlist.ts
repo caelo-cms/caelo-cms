@@ -141,8 +141,7 @@ export const ALLOWED: readonly AllowedRule[] = [
   {
     table: "plugin_*.*",
     op: "plugin_storage.list",
-    filter:
-      "(caelo_deleted_at IS NULL) AND (caelo_chat_branch_id IS NULL) AND (id <> ALL (?))",
+    filter: "(caelo_deleted_at IS NULL) AND (caelo_chat_branch_id IS NULL) AND (id <> ALL (?))",
     reason:
       "A plugin's unfiltered private list on a branch: every live row minus the rows the branch overlays (private-storage.ts privateListSql). A whole-table read the plugin asked for; the exclusion selects nearly every row.",
   },
