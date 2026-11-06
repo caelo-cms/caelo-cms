@@ -2737,6 +2737,13 @@ export default definePlugin<PluginContextTier1>({
   contributionsOperation: "head_contributions",
   contentVariantsOperation: "content_variants",
   linkResolveOperation: "link_resolve",
+  // #1269 — the partition is computed from these columns only (variant
+  // rows and the locale registry): core keeps it until one of them changes,
+  // so a translation's status update re-asks nothing.
+  linkResolveReads: {
+    tables: ["page_variants", "locales"],
+    columns: ["page_id", "group_id", "locale_code", "code", "is_default"],
+  },
   linkLocationsOperation: "link_locations",
   /**
    * #399 — companion skills (CLAUDE.md §2: skills are the official way

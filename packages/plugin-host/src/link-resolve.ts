@@ -28,12 +28,27 @@
  * Loud (CLAUDE.md §2): a failing plugin op, an ill-formed answer, an
  * answer for a page that was not asked about, and two plugins answering
  * for the same page all throw.
+ *
+ * #1269 — a plugin that declares what its answer is computed from
+ * (`linkResolveReads`: its own tables, and the columns that matter) has
+ * the answer kept per render scope, with the change-journal mark it was
+ * read at, like the site view. A render asks the plugin only about pages
+ * it has not answered for yet, and asks again from scratch after a
+ * journaled change to those tables: a live row whose declared columns
+ * changed, a pending row on the render's branch, or a Stage / undo /
+ * takeover of a pending change. Without it every preview asked about
+ * every page of the site, and international-site read its whole variant
+ * table for each.
  */
 
 import { linkResolvePageVariant } from "@caelo-cms/plugin-sdk";
+import type { JournalFilter, JournalMark } from "@caelo-cms/query-api";
 import type { LinkPageVariant } from "@caelo-cms/shared";
+import { checkPluginJournalMark } from "./change-consumers.js";
 import {
+  hostInfra,
   isPluginDisabled,
+  type LoadedPlugin,
   loadedPlugins,
   type RenderScope,
   renderInvocation,
@@ -48,6 +63,45 @@ export type ResolvedLinkVariants = ReadonlyMap<string, LinkPageVariant>;
  *  skip the call entirely otherwise. */
 export function hasLinkResolveContributors(): boolean {
   return contributors().length > 0;
+}
+
+/** A plugin's answers in one render scope (null: no opinion), valid as of `mark`. */
+interface CachedAnswers {
+  readonly mark: JournalMark;
+  readonly answers: Map<string, LinkPageVariant | null>;
+}
+
+/** Per loaded plugin (a reload is a new one), per branch ("" = main). */
+const cachedAnswers = new WeakMap<LoadedPlugin, Map<string, CachedAnswers>>();
+/** Render scopes kept per plugin, least recently used dropped first. */
+const MAX_CACHED_SCOPES = 16;
+
+/**
+ * The journal rows that change a plugin's answer in `branchId`'s scope:
+ * its declared tables' live rows (an update only when it changed a
+ * declared column), its pending rows on that branch, and the Stage /
+ * undo / takeover of a pending change (header updates).
+ */
+export function linkResolveJournalFilter(
+  plugin: LoadedPlugin,
+  reads: NonNullable<LoadedPlugin["definition"]["linkResolveReads"]>,
+  branchId: string | null,
+): JournalFilter {
+  return {
+    kinds: ["plugin_storage", "plugin_row", "snapshot"],
+    branchId,
+    pluginIds: [plugin.pluginId],
+    pluginTables: [...reads.tables],
+    kindOps: { snapshot: ["update", "delete", "truncate"] },
+    unscopedOps: ["update", "delete", "truncate"],
+    branchOnlyKinds: ["plugin_row"],
+    ...(reads.columns ? { columns: { plugin_storage: [...reads.columns] } } : {}),
+  };
+}
+
+/** Test seam: forget every kept answer. */
+export function clearLinkResolveCache(): void {
+  for (const lp of loadedPlugins.all()) cachedAnswers.delete(lp);
 }
 
 function contributors() {
@@ -67,34 +121,51 @@ function contributors() {
 export async function resolveLinkVariants(
   pageIds: ReadonlyArray<string>,
   scope: RenderScope,
+  opts: {
+    /**
+     * #1269 — serve a plugin's kept answers (it declares `linkResolveReads`)
+     * when nothing they derive from changed. Checks the change journal on
+     * its own connection, so pass it only with no transaction held — the
+     * editor preview, which asks about the whole site on every render.
+     */
+    readonly keep?: boolean;
+  } = {},
 ): Promise<ResolvedLinkVariants> {
   const out = new Map<string, LinkPageVariant>();
   if (pageIds.length === 0) return out;
   const plugins = contributors();
   if (plugins.length === 0) return out;
-  const asked = new Set(pageIds);
   const answeredBy = new Map<string, string>();
 
   for (const lp of plugins) {
     const operationName = lp.definition.linkResolveOperation as string;
-    const r = await runPluginOperation({
-      invocation: renderInvocation(scope),
-      pluginSlug: lp.slug,
-      operationName,
-      args: { pageIds: [...pageIds] },
-    });
-    if (!r.ok) {
-      const reason = `link-resolve: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`;
-      // #1087 — a preview renders without this plugin's partition (links
-      // then resolve as on a single-variant site) and flags it.
-      if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "link-resolve", reason })) {
-        continue;
-      }
-      throw new Error(reason);
+    const reads = opts.keep ? lp.definition.linkResolveReads : undefined;
+    const scopeKey = scope.chatBranchId ?? "";
+    let kept: CachedAnswers | null = null;
+    let toAsk: readonly string[] = pageIds;
+    if (reads) {
+      const scopes = cachedAnswers.get(lp) ?? new Map<string, CachedAnswers>();
+      cachedAnswers.set(lp, scopes);
+      const hit = scopes.get(scopeKey);
+      const infra = hostInfra();
+      // Taken before the plugin reads, so a change committing meanwhile
+      // is unseen by the mark and invalidates once.
+      const { fresh, mark } = await checkPluginJournalMark(
+        infra.adapter,
+        infra.registry,
+        hit?.mark ?? null,
+        linkResolveJournalFilter(lp, reads, scope.chatBranchId ?? null),
+      );
+      kept = { mark, answers: hit && fresh ? hit.answers : new Map() };
+      toAsk = pageIds.filter((id) => !kept?.answers.has(id));
     }
-    const pages = (r.value as { pages?: Record<string, unknown> } | null)?.pages ?? {};
-    for (const [pageId, raw] of Object.entries(pages)) {
-      if (!asked.has(pageId)) {
+    const fromPlugin = toAsk.length > 0 ? await askPlugin(lp, operationName, toAsk, scope) : {};
+    if (fromPlugin === null) continue; // reported as a render failure (#1087)
+    const askedNow = new Set(toAsk);
+    const answers = new Map<string, LinkPageVariant | null>(kept?.answers ?? []);
+    for (const id of toAsk) answers.set(id, null);
+    for (const [pageId, raw] of Object.entries(fromPlugin)) {
+      if (!askedNow.has(pageId)) {
         throw new Error(
           `link-resolve: plugin "${lp.slug}" answered for page ${pageId}, which is not part of this render`,
         );
@@ -105,6 +176,21 @@ export async function resolveLinkVariants(
           `link-resolve: plugin "${lp.slug}" returned an invalid answer for page ${pageId}: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
         );
       }
+      answers.set(pageId, { variant: parsed.data.variant, group: parsed.data.group });
+    }
+    if (kept && !kept.mark.dirty) {
+      const scopes = cachedAnswers.get(lp) as Map<string, CachedAnswers>;
+      scopes.delete(scopeKey);
+      scopes.set(scopeKey, { mark: kept.mark, answers });
+      while (scopes.size > MAX_CACHED_SCOPES) {
+        const oldest = scopes.keys().next().value;
+        if (oldest === undefined) break;
+        scopes.delete(oldest);
+      }
+    }
+    for (const pageId of pageIds) {
+      const answer = answers.get(pageId);
+      if (!answer) continue;
       const other = answeredBy.get(pageId);
       if (other !== undefined) {
         // Two partitions of one page cannot both decide where its links
@@ -114,8 +200,37 @@ export async function resolveLinkVariants(
         );
       }
       answeredBy.set(pageId, lp.slug);
-      out.set(pageId, { variant: parsed.data.variant, group: parsed.data.group });
+      out.set(pageId, answer);
     }
   }
   return out;
+}
+
+/**
+ * One call of the plugin's link-resolve operation for `pageIds`: its raw
+ * answers by page, or null when it failed and the render goes on without
+ * it (reported, #1087). Any other failure throws.
+ */
+async function askPlugin(
+  lp: LoadedPlugin,
+  operationName: string,
+  pageIds: readonly string[],
+  scope: RenderScope,
+): Promise<Record<string, unknown> | null> {
+  const r = await runPluginOperation({
+    invocation: renderInvocation(scope),
+    pluginSlug: lp.slug,
+    operationName,
+    args: { pageIds: [...pageIds] },
+  });
+  if (!r.ok) {
+    const reason = `link-resolve: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`;
+    // #1087 — a preview renders without this plugin's partition (links
+    // then resolve as on a single-variant site) and flags it.
+    if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "link-resolve", reason })) {
+      return null;
+    }
+    throw new Error(reason);
+  }
+  return (r.value as { pages?: Record<string, unknown> } | null)?.pages ?? {};
 }
