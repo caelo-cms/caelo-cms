@@ -59,13 +59,11 @@ export const actions: Actions = {
           : "approve failed";
       return fail(400, { error: message });
     }
-    const v = r.value as { runId: string | null };
-    return {
-      ok: true,
-      message: v.runId
-        ? `Proposal applied. Deploy run ${v.runId.slice(0, 8)}… in flight.`
-        : "Proposal applied.",
-    };
+    const v = r.value as { runId: string | null; warning?: string };
+    const applied = v.runId
+      ? `Proposal applied. Deploy run ${v.runId.slice(0, 8)}… in flight.`
+      : "Proposal applied.";
+    return { ok: true, message: v.warning ? `${applied} ${v.warning}` : applied };
   },
   reject: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");

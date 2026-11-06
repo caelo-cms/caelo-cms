@@ -461,6 +461,10 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   // reaches; it runs the background work above on its cadences.
   `${A}/scheduler/**`,
   `${A}/ops/scheduled_tasks.ts`,
+  // The site's security headers (#1454): an approval-gated Owner setting
+  // and the policy every build derives; no scenario changes or reads it.
+  `${A}/ops/security_headers.ts`,
+  `${SHARED}/site-security-headers.ts`,
   // Owner-only and install-time surfaces.
   `${A}/platform-updates/**`,
   `${A}/ops/platform-update*.ts`,

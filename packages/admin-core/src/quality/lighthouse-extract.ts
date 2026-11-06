@@ -10,6 +10,7 @@
  * typed here with only the fields we read.
  */
 
+import { type CspIssue, cspIssueElements, withCspNextStep } from "./csp-violations.js";
 import { combineRunMetrics, type RunMetrics, runMetrics } from "./lighthouse-metrics.js";
 import { elementFromNode, nonEmpty } from "./lighthouse-node.js";
 import {
@@ -98,8 +99,9 @@ function consoleEntry(item: Record<string, unknown>): FlaggedElement | null {
   const location = item.sourceLocation as { url?: unknown } | null | undefined;
   const url = nonEmpty(location?.url) ?? nonEmpty(item.url);
   const source = nonEmpty(item.source);
+  const message = withCspNextStep(description);
   return {
-    explanation: source ? `${source}: ${description}` : description,
+    explanation: source ? `${source}: ${message}` : message,
     ...(url ? { url } : {}),
   };
 }
@@ -268,7 +270,7 @@ function hasEstimatedSavings(metricSavings: LhrLike["audits"][string]["metricSav
 
 /** Failing audits of one run, with the gated categories that reference
  *  each (ordered by audit id for stable output). */
-export function failingAudits(lhr: LhrLike): FailingAudit[] {
+export function failingAudits(lhr: LhrLike, cspIssues: readonly CspIssue[] = []): FailingAudit[] {
   assertUsable(lhr);
   const categoriesOf = new Map<string, QualityCategory[]>();
   // Audits some gated category scores them with (weight > 0, or a weight
@@ -289,7 +291,11 @@ export function failingAudits(lhr: LhrLike): FailingAudit[] {
     const audit = lhr.audits[id];
     if (!audit || audit.score === null || !SCORED_MODES.has(audit.scoreDisplayMode)) continue;
     if (audit.score >= PASS_SCORE) continue;
-    const elements = flaggedElements(audit.details);
+    // #1454 — the audit's table names no directive, the run's artifact does.
+    const elements =
+      id === "inspector-issues" && cspIssues.length > 0
+        ? cspIssueElements(cspIssues)
+        : flaggedElements(audit.details);
     // An audit no category scores (weight 0 — the Performance insights),
     // for which Lighthouse estimates no gain on any metric and whose details
     // name nothing, leaves nothing to fix: the network-dependency-tree
@@ -354,10 +360,11 @@ export function reduceRun(
   lhr: LhrLike,
   categories: readonly QualityCategory[],
   cpuCalibration?: RunMeasurement["cpuCalibration"],
+  cspIssues: readonly CspIssue[] = [],
 ): RunMeasurement {
   return {
     scores: categoryScores(lhr, categories),
-    failingAudits: failingAudits(lhr),
+    failingAudits: failingAudits(lhr, cspIssues),
     otherCategoryAuditIds: [
       ...new Set(
         categories

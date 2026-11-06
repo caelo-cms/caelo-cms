@@ -143,6 +143,8 @@ export interface TagColumns {
 /** What the runtime needs to inject one tag and clean up after it. */
 export interface BakedTag {
   readonly name: string;
+  /** Which template made it, for the hosts it goes on to contact (csp-sources.ts). */
+  readonly vendor: string;
   readonly category: string;
   readonly src: string;
   readonly inline: string;

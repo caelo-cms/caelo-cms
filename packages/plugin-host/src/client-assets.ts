@@ -60,7 +60,11 @@ export interface PluginClientAsset {
   readonly pluginSlug: string;
   /** Name as the plugin returned it, e.g. `runtime.js`. */
   readonly fileName: string;
-  readonly kind: "js" | "css";
+  /**
+   * `csp` is {@link PLUGIN_CSP_SOURCES_FILE}: read by the build, never
+   * written or linked.
+   */
+  readonly kind: "js" | "css" | "csp";
   readonly content: string;
   /** Build-dir-relative path, content hash included. */
   readonly relPath: string;
@@ -76,6 +80,14 @@ export interface PluginClientAsset {
 const MAX_TOTAL_BYTES = 512 * 1024;
 
 const FILE_NAME_RE = /^[a-z][a-z0-9-]*\.(js|css)$/;
+
+/**
+ * #1454 — the reserved `buildAssets` name for what a plugin's client code
+ * reaches at runtime (`pluginCspSourcesSchema`): a build reads pages, and a
+ * script injected after consent is in none of them. Shown to the Owner by
+ * plugin beside the site's policy (`get_security_headers`).
+ */
+export const PLUGIN_CSP_SOURCES_FILE = "csp-sources.json";
 
 function assetPaths(
   pluginSlug: string,
@@ -150,6 +162,17 @@ export async function collectBuildAssets(
           `client-assets: plugin "${lp.slug}" returned a non-string body for "${fileName}"`,
         );
       }
+      if (fileName === PLUGIN_CSP_SOURCES_FILE) {
+        out.push({
+          pluginSlug: lp.slug,
+          fileName,
+          kind: "csp",
+          content,
+          relPath: "",
+          publicPath: "",
+        });
+        continue;
+      }
       if (!FILE_NAME_RE.test(fileName)) {
         throw new Error(
           `client-assets: plugin "${lp.slug}" returned an invalid asset name "${fileName}" — expected lowercase-with-dashes ending in .js or .css`,
@@ -184,9 +207,10 @@ const BODY_CLOSE_RE = /<\/body\s*>/i;
  * it arrives, and Lighthouse flags it: a round-trip for a few hundred
  * bytes of rules (the consent runtime's show/hide rule) is the slowest
  * way to ship them. Above the limit the file is big enough that caching
- * it once across pages beats repeating it in every page's HTML. Static
- * pages carry no CSP restricting `style-src`, so an inline block is
- * allowed wherever the link was.
+ * it once across pages beats repeating it in every page's HTML. The
+ * site's CSP keeps `'unsafe-inline'` in `style-src` (@caelo-cms/shared
+ * site-security-headers.ts), so an inline block is allowed wherever the
+ * link was.
  */
 export const INLINE_CSS_MAX_BYTES = 2 * 1024;
 

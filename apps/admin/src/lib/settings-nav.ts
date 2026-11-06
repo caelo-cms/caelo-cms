@@ -209,6 +209,14 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         ],
       },
       {
+        href: "/settings/security-headers",
+        label: "Security headers",
+        description: "What browsers may load on your site, and who may frame it.",
+        permission: "settings.write",
+        icon: "shield",
+        keywords: ["csp", "content security policy", "hsts", "referrer", "clickjacking", "frame"],
+      },
+      {
         href: "/settings/static-files",
         label: "Static files",
         description: "Small data files at an address of your choice, like robots.txt.",

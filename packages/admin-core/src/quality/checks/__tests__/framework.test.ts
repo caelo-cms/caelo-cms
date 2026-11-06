@@ -88,11 +88,13 @@ describe("CheckRegistry", () => {
       ["structure", "findings"],
       ["links", "findings"],
       ["references", "findings"],
+      ["security-headers", "findings"],
     ]);
     expect(r.findingChecks().map((e) => [e.id, e.scope, e.source])).toEqual([
       ["structure", "site", { kind: "core" }],
       ["links", "site", { kind: "core" }],
       ["references", "site", { kind: "core" }],
+      ["security-headers", "site", { kind: "core" }],
     ]);
     expect(r.lighthouse()?.id).toBe("lighthouse");
   });

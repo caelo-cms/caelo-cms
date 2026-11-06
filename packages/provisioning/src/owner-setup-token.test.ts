@@ -13,7 +13,7 @@ import { OWNER_BOOTSTRAP_TOKEN_SECRET, parseOwnerBootstrapToken } from "@caelo-c
 import type { GcloudResult } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import { GCP_STACK_ENV, gcpSecretId } from "./gcp-names.js";
-import { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
+import { INFRA_CONTRACT_STEPS } from "./infra-contract.js";
 import { INSTALL_SETUP_LINK_SECRET } from "./install-job.js";
 import { issueOwnerSetup, readOwnerBootstrapToken } from "./owner-setup-token.js";
 
@@ -187,7 +187,9 @@ describe("where the token lives", () => {
     "%s neither mounts the secret nor binds it: existing installs get no converge step",
     (provider) => {
       expect(stack(provider)).not.toContain("owner-bootstrap-token");
-      expect(INFRA_CONTRACT_VERSION).toBe(22);
+      // No contract step was added for the token (#1476): a later bump is
+      // another change, so check the steps, not the current number.
+      expect(Object.values(INFRA_CONTRACT_STEPS).join("\n")).not.toContain("#1476");
     },
   );
 });

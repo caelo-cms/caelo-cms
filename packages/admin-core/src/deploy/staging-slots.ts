@@ -27,9 +27,11 @@
 import {
   nextStagingSlot,
   runBatched,
+  type SiteHeaderSet,
   type StagedFileEntry,
   type StagedManifest,
   stagedFileKey,
+  stagedHeaderFields,
   stagedManifestKey,
   stagedManifestSchema,
   stagingSlotLocation,
@@ -143,6 +145,8 @@ export class GcsSlotSync {
   async finish(args: {
     runId: string;
     pageUrlStyle: "directory" | "no-extension";
+    /** #1454 — the headers of the build's pages. */
+    siteHeaders: SiteHeaderSet | null;
   }): Promise<SlotSyncSummary> {
     if (this.#state !== "open") throw new Error("slot sync is finished");
     this.#state = "finished";
@@ -165,6 +169,7 @@ export class GcsSlotSync {
       runId: args.runId,
       pageUrlStyle: args.pageUrlStyle,
       files: Object.fromEntries([...this.#files].sort(([a], [b]) => (a < b ? -1 : 1))),
+      ...(args.siteHeaders ? stagedHeaderFields(args.siteHeaders) : {}),
     };
     await this.#bucket.file(stagedManifestKey(this.#location)).save(JSON.stringify(manifest), {
       contentType: "application/json",

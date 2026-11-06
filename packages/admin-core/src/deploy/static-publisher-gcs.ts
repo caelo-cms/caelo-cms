@@ -48,9 +48,12 @@ import {
   IMMUTABLE_CACHE_CONTROL,
   isContentHashedPath,
   parseRedirectsFile,
+  parseSiteHeaderSet,
   parseStaticFilesManifest,
   type RedirectPlan,
   runBatched,
+  SECURITY_HEADERS_BUILD_FILE,
+  type SiteHeaderSet,
   STATIC_FILES_MANIFEST_FILE,
   type StagedFileEntry,
 } from "@caelo-cms/shared";
@@ -61,6 +64,7 @@ import {
 } from "@caelo-cms/static-generator";
 import type { Bucket, File as GcsFile, Storage as StorageType } from "@google-cloud/storage";
 import { readBuildFiles, uniqueAssets } from "./build-files.js";
+import { applyGcpSiteHeaders, type GcpBackendBucketApi } from "./gcp-site-headers.js";
 import {
   adcComputeApi,
   applyGcpRedirectPlan,
@@ -156,8 +160,8 @@ async function bucketHandles(): Promise<BucketHandles> {
 
 /** What the GCS publisher reaches beyond the buckets (tests inject fakes). */
 export interface GcsPublisherDeps {
-  /** The Compute API the redirect rules are written through (#587). */
-  readonly computeApi: () => Promise<GcpComputeApi>;
+  /** The Compute API the redirect rules and site headers are written through (#587, #1454). */
+  readonly computeApi: () => Promise<GcpComputeApi & GcpBackendBucketApi>;
 }
 
 /** The GCS publisher; {@link gcsStaticPublisher} is the production one. */
@@ -299,7 +303,17 @@ export function createGcsStaticPublisher(
         "application/json",
       );
       // #587 — after the files: the redirects of the build now live.
-      await applyRedirectPlan(redirectPlan, await deps.computeApi());
+      const compute = await deps.computeApi();
+      await applyRedirectPlan(redirectPlan, compute);
+      // #1454 — and its headers. A run staged before they existed has none:
+      // it must not keep the previous build's CSP either.
+      const headersFile = h.stagingBucket.file(`${prefix}${SECURITY_HEADERS_BUILD_FILE}`);
+      await applySiteHeaders(
+        (await headersFile.exists())[0]
+          ? parseSiteHeaderSet((await headersFile.download())[0].toString("utf8"))
+          : null,
+        compute,
+      );
       const summary: PromoteSummary = {
         provider: "gcp",
         uploadedCount: copied,
@@ -448,12 +462,22 @@ export function createGcsStaticPublisher(
       ).uploaded;
       await pruneStaleObjects(h.staticBucket, build.paths);
       // #587 — the rolled-back build's redirects, as on Confirm-publish.
+      const compute = await deps.computeApi();
       await applyRedirectPlan(
         await redirectPlanForBuild(sourceBuildDir, target.pageUrlStyle ?? "directory", [
           ...build.paths,
         ]),
-        await deps.computeApi(),
+        compute,
       );
+      // #1454 — and its headers; none for a build older than they are.
+      const headers = await readFile(
+        join(sourceBuildDir, SECURITY_HEADERS_BUILD_FILE),
+        "utf8",
+      ).then(parseSiteHeaderSet, (e: NodeJS.ErrnoException) => {
+        if (e.code === "ENOENT") return null;
+        throw e;
+      });
+      await applySiteHeaders(headers, compute);
       return {
         provider: "gcp",
         uploadedCount: uploaded,
@@ -486,6 +510,7 @@ class GcsBuildUpload implements BuildUpload {
   /** Files saved under the run's prefix (the rest are identical to live). */
   readonly #inPrefix = new Set<string>();
   #redirectsFile: string | null = null;
+  #siteHeaders: SiteHeaderSet | null = null;
   #uploaded = 0;
   #skipped = 0;
   #state: "open" | "finished" | "aborted" = "open";
@@ -510,6 +535,9 @@ class GcsBuildUpload implements BuildUpload {
     this.#paths.add(file.relPath);
     const body = Buffer.from(file.body);
     if (file.relPath === "_redirects") this.#redirectsFile = body.toString("utf8");
+    if (file.relPath === SECURITY_HEADERS_BUILD_FILE) {
+      this.#siteHeaders = parseSiteHeaderSet(body.toString("utf8"));
+    }
     // v0.2.85 — a bare-slug page ('no-extension') says its Content-Type;
     // everything else is typed from its extension.
     const contentType = file.contentType ?? contentTypeFor(file.relPath);
@@ -555,6 +583,11 @@ class GcsBuildUpload implements BuildUpload {
     if (this.#redirectsFile === null) {
       throw new Error(
         "static-publisher-gcs: the build has no _redirects file. The static generator writes it on every build; re-run the build instead of deploying a partial one.",
+      );
+    }
+    if (this.#siteHeaders === null) {
+      throw new Error(
+        `static-publisher-gcs: the build has no ${SECURITY_HEADERS_BUILD_FILE}. The static generator writes it on every build; re-run the build instead of deploying a partial one.`,
       );
     }
     const plan = redirectPlanOf(this.#redirectsFile, args.pageUrlStyle, served);
@@ -620,7 +653,11 @@ class GcsBuildUpload implements BuildUpload {
         copyFrom(asset.path, assetsInPrefix.has(asset.path)),
       );
     });
-    return sync.finish({ runId: this.#runId, pageUrlStyle });
+    return sync.finish({
+      runId: this.#runId,
+      pageUrlStyle,
+      siteHeaders: this.#siteHeaders,
+    });
   }
 
   /**
@@ -734,22 +771,31 @@ async function pruneStaleObjects(
   });
 }
 
+/** The host the site is served on. */
+function siteHost(): string {
+  const siteUrl = process.env.CAELO_SITE_URL;
+  if (!siteUrl) {
+    throw new Error(
+      "static-publisher-gcs: CAELO_SITE_URL not set. The GCP Pulumi stack sets it on the admin Cloud Run service; the redirects and headers are served for that host.",
+    );
+  }
+  return new URL(siteUrl).host;
+}
+
 /** Put a plan live on the load balancer routing the site's host. */
 async function applyRedirectPlan(
   plan: RedirectPlan,
   api: GcpComputeApi,
 ): Promise<GcpRedirectApplyResult> {
-  const siteUrl = process.env.CAELO_SITE_URL;
-  if (!siteUrl) {
-    throw new Error(
-      "static-publisher-gcs: CAELO_SITE_URL not set. The GCP Pulumi stack sets it on the admin Cloud Run service; the redirects are served for that host.",
-    );
-  }
-  return applyGcpRedirectPlan({
-    plan,
-    siteHost: new URL(siteUrl).host,
-    api,
-  });
+  return applyGcpRedirectPlan({ plan, siteHost: siteHost(), api });
+}
+
+/** Put a build's page headers on the static backend bucket (#1454). */
+async function applySiteHeaders(
+  set: SiteHeaderSet | null,
+  api: GcpBackendBucketApi,
+): Promise<void> {
+  await applyGcpSiteHeaders({ set, siteHost: siteHost(), api });
 }
 
 function parseJsonOrNull(raw: string | null): unknown {

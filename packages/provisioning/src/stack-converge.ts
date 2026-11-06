@@ -68,7 +68,10 @@ import {
   stagingGatewayEnvContract,
   staticBackendBucketPrefix,
 } from "./stack-contract.js";
-import { GCP_STATIC_RESPONSE_HEADERS } from "./static-security-headers.js";
+import {
+  GCP_STATIC_RESPONSE_HEADERS,
+  withStaticResponseHeaders,
+} from "./static-security-headers.js";
 import { ensureSvgDownloads } from "./static-svg-gcp.js";
 
 // ===========================================================================
@@ -590,19 +593,22 @@ async function ensureCdnPolicy(
     project,
     "--format=json",
   ]);
+  let liveHeaders: readonly string[] = [];
   if (describe.ok) {
     const live = JSON.parse(describe.stdout) as {
       cdnPolicy?: Record<string, unknown>;
       customResponseHeaders?: unknown;
     };
     const cdn = live.cdnPolicy;
+    if (Array.isArray(live.customResponseHeaders)) {
+      liveHeaders = live.customResponseHeaders.map(String);
+    }
     const inShape =
       cdn !== undefined &&
       (Object.keys(STATIC_CDN_POLICY) as (keyof typeof STATIC_CDN_POLICY)[]).every(
         (k) => String(cdn[k]) === String(STATIC_CDN_POLICY[k]),
       ) &&
-      JSON.stringify(live.customResponseHeaders ?? []) ===
-        JSON.stringify(GCP_STATIC_RESPONSE_HEADERS);
+      GCP_STATIC_RESPONSE_HEADERS.every((h) => liveHeaders.includes(h));
     if (inShape) return { ...base, status: "present" };
   }
   const update = await run([
@@ -615,8 +621,9 @@ async function ensureCdnPolicy(
     `--default-ttl=${STATIC_CDN_POLICY.defaultTtl}`,
     `--max-ttl=${STATIC_CDN_POLICY.maxTtl}`,
     `--client-ttl=${STATIC_CDN_POLICY.clientTtl}`,
-    // Replaces the bucket's list, so this is the complete set.
-    ...GCP_STATIC_RESPONSE_HEADERS.map((h) => `--custom-response-header=${h}`),
+    // Replaces the bucket's list, so this is the complete set: the stack's
+    // own headers and those of the live build (#1454, Publish live writes them).
+    ...withStaticResponseHeaders(liveHeaders).map((h) => `--custom-response-header=${h}`),
     "--quiet",
   ]);
   return update.ok

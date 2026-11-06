@@ -45,12 +45,17 @@ import { dirname, join, resolve, sep } from "node:path";
 import {
   CADDY_REDIRECTS_FILE,
   emitCaddyRedirects,
+  emitCaddySiteHeaders,
   emitCaddyStaticFileHeaders,
   formatRedirectsFile,
   isSafeStagedPath,
+  parseSiteHeaderSet,
   parseStaticFilesManifest,
+  SECURITY_HEADERS_BUILD_FILE,
+  type SiteHeaderSet,
   STATIC_FILES_MANIFEST_FILE,
   type StagedManifest,
+  stagedHeaderFields,
 } from "@caelo-cms/shared";
 import { BUILD_INTERNAL_FILES } from "@caelo-cms/static-generator";
 import { planRedirectSync } from "./redirect-sync-plan.js";
@@ -199,7 +204,12 @@ export const selfHostedStaticPublisher: StaticPublisher = {
         throw e;
       },
     );
-    const snippet = emitCaddyRedirects(sync.plan) + emitCaddyStaticFileHeaders(staticFiles);
+    // #1454 — and the headers of the build served; none on a build from before them.
+    const siteHeaders = await readSiteHeaderFile(currentDir);
+    const snippet =
+      emitCaddyRedirects(sync.plan) +
+      emitCaddyStaticFileHeaders(staticFiles) +
+      (siteHeaders ? emitCaddySiteHeaders(siteHeaders) : "");
     const table = formatRedirectsFile(rows);
     const files: readonly (readonly [string, string])[] = [
       ["_redirects", table],
@@ -377,11 +387,13 @@ async function writeBuildManifest(
   }
   const location = `builds/${runId}`;
   const buildsDir = dirname(buildDir);
+  const siteHeaders = await readSiteHeaderFile(buildDir);
   const manifest: StagedManifest = {
     version: 1,
     runId,
     pageUrlStyle: target.pageUrlStyle ?? "directory",
     files: entries,
+    ...(siteHeaders ? stagedHeaderFields(siteHeaders) : {}),
   };
   const manifestPath = join(buildsDir, `${runId}.manifest.json`);
   await writeFile(`${manifestPath}.tmp`, JSON.stringify(manifest), "utf8");
@@ -492,4 +504,15 @@ async function syncContentsInto(src: string, dst: string): Promise<void> {
     }
   };
   await sweep("");
+}
+
+/** #1454 — the headers `dir` holds, or null for a build from before them. */
+async function readSiteHeaderFile(dir: string): Promise<SiteHeaderSet | null> {
+  return readFile(join(dir, SECURITY_HEADERS_BUILD_FILE), "utf8").then(
+    parseSiteHeaderSet,
+    (e: NodeJS.ErrnoException) => {
+      if (e.code === "ENOENT") return null;
+      throw e;
+    },
+  );
 }

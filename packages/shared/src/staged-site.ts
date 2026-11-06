@@ -100,6 +100,13 @@ export const stagedManifestSchema = z.object({
     .refine((files) => Object.keys(files).every(isSafeStagedPath), {
       message: "every path must be a plain build-relative path",
     }),
+  /**
+   * #1454 — the headers of the build's pages (`SiteHeaderSet.headers`).
+   * Absent on a build staged before they existed.
+   */
+  securityHeaders: z.record(z.string(), z.string()).optional(),
+  /** #1454 — `SiteCspFacts.originBoundScripts`: this gateway hashes them for its host. */
+  originBoundScripts: z.array(z.string()).optional(),
 });
 
 export type StagedManifest = z.infer<typeof stagedManifestSchema>;
@@ -127,6 +134,11 @@ export function stagedKeysFor(requestPath: string): string[] | null {
   if (key === "") return ["index.html"];
   if (decoded.endsWith("/")) return [`${key}/index.html`];
   return [key, `${key}/index.html`];
+}
+
+/** True for an HTML document's Content-Type (#1454: the page headers go on these). */
+export function isHtmlContentType(contentType: string): boolean {
+  return contentType.trimStart().toLowerCase().startsWith("text/html");
 }
 
 function extensionOf(key: string): string {
@@ -246,6 +258,24 @@ const AFTER_ORIGIN = String.raw`(?=[/"'?#\s<>),;\\\]}&|]|$)`;
 
 function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * `text` as {@link originRewriteStream} would serve it.
+ *
+ * @example
+ *   rewriteOrigins('fetch("https://example.com/x")', originRewritePairs("https://example.com", "https://staging.example.com"))
+ */
+export function rewriteOrigins(
+  text: string,
+  pairs: readonly (readonly [string, string])[],
+): string {
+  let out = text;
+  for (const [from, to] of pairs) {
+    if (from.length === 0) continue;
+    out = out.replace(new RegExp(`${escapeRegExp(from)}${AFTER_ORIGIN}`, "g"), to);
+  }
+  return out;
 }
 
 /**

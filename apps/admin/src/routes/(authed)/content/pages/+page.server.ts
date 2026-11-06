@@ -261,6 +261,7 @@ export const actions: Actions = {
       published: {
         pageId,
         targetName: "production",
+        notice: (promote.value as { securityHeadersNote?: string }).securityHeadersNote,
       },
     };
   },

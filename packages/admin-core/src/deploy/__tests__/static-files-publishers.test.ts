@@ -9,7 +9,13 @@ import { describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { formatStaticFilesManifest } from "@caelo-cms/shared";
+import {
+  composeSiteHeaders,
+  DEFAULT_SITE_SECURITY_POLICY,
+  EMPTY_CSP_FACTS,
+  formatStaticFilesManifest,
+  SECURITY_HEADERS_BUILD_FILE,
+} from "@caelo-cms/shared";
 import { localBuildSource } from "../../quality/staged-origin.js";
 import { staticFileHeaderEntries } from "../static-publisher-firebase.js";
 import { selfHostedStaticPublisher } from "../static-publisher-self-hosted.js";
@@ -51,6 +57,26 @@ describe("self-hosted", () => {
     expect(snippet).toContain("/old");
     expect(snippet).toContain(`path /${AASA.path}`);
     expect(snippet).toContain(`Content-Type "${AASA.contentType}"`);
+  });
+
+  it("keeps the build's page headers in the snippet when a redirect sync rewrites it (#1454)", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "caelo-static-files-"));
+    const current = join(outputRoot, "out", "current");
+    await mkdir(current, { recursive: true });
+    await writeFile(join(current, "index.html"), "<html></html>");
+    await writeFile(
+      join(current, SECURITY_HEADERS_BUILD_FILE),
+      JSON.stringify(composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS)),
+    );
+    await selfHostedStaticPublisher.syncRedirects({
+      target: { env: "production", outDir: "out" },
+      rows: [{ fromPath: "/old", toPath: "/", statusCode: 301 }],
+      servedRunId: "00000000-0000-0000-0000-000000000001",
+      outputRoot,
+    } as unknown as Parameters<typeof selfHostedStaticPublisher.syncRedirects>[0]);
+    const snippet = await readFile(join(current, "_redirects.caddy"), "utf8");
+    expect(snippet).toContain("/old");
+    expect(snippet).toContain('header @caelo_documents X-Frame-Options "SAMEORIGIN"');
   });
 
   it("syncs a build from before static files, which has no sidecar", async () => {

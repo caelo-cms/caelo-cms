@@ -23,9 +23,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  composeSiteHeaders,
+  DEFAULT_SITE_SECURITY_POLICY,
+  EMPTY_CSP_FACTS,
   GCP_PUBLIC_BASE_PATHS,
   HTML_CACHE_CONTROL,
   IMMUTABLE_CACHE_CONTROL,
+  SECURITY_HEADERS_BUILD_FILE,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 // Imported for real up front so afterAll can restore the genuine module
@@ -40,6 +44,11 @@ import {
 } from "../../__tests__/fixtures/asset-references.js";
 import type { GcpUrlMap } from "../gcp-url-map-redirects.js";
 import { CACHE_POLICY_VERSION } from "../static-publisher-gcs.js";
+
+/** The build's page headers, as the generator writes them on every build (#1454). */
+const SITE_HEADERS_FILE = JSON.stringify(
+  composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS),
+);
 
 const realGcsStorageExports = { ...realGcsStorage };
 
@@ -178,11 +187,18 @@ let buildDir: string;
 
 /** URL-map writes the publisher made through its Compute API (#587). */
 let urlMapUpdates: GcpUrlMap[];
+let bucketHeaders: readonly string[];
 const SITE_MAP: GcpUrlMap = {
   name: "caelo-production-url-map-x",
   fingerprint: "fp",
   hostRules: [{ hosts: ["example.com"], pathMatcher: "public" }],
-  pathMatchers: [{ name: "public", pathRules: [{ paths: ["/api/*"], service: "gw" }] }],
+  pathMatchers: [
+    {
+      name: "public",
+      defaultService: "https://www.googleapis.com/compute/v1/projects/p/global/backendBuckets/site",
+      pathRules: [{ paths: ["/api/*"], service: "gw" }],
+    },
+  ],
 };
 
 async function publisher() {
@@ -195,6 +211,11 @@ async function publisher() {
         return { name: `op-${name}`, status: "DONE" };
       },
       waitOperation: async (name) => ({ name, status: "DONE" }),
+      getBackendBucket: async (name) => ({ name, customResponseHeaders: bucketHeaders }),
+      patchBackendBucket: async (name, body) => {
+        bucketHeaders = body.customResponseHeaders;
+        return { name: `op-${name}`, status: "DONE" };
+      },
     }),
   });
 }
@@ -206,8 +227,10 @@ beforeEach(async () => {
   process.env.CAELO_STAGING_BUCKET = "test-staging";
   process.env.CAELO_SITE_URL = "https://example.com";
   urlMapUpdates = [];
+  bucketHeaders = [];
   buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-"));
   await writeFile(join(buildDir, "_redirects"), "# generated\n/old /en/about 301\n", "utf8");
+  await writeFile(join(buildDir, SECURITY_HEADERS_BUILD_FILE), SITE_HEADERS_FILE, "utf8");
   await writeAssetReferences(buildDir);
   await mkdir(join(buildDir, "en", "about"), { recursive: true });
   await writeFile(join(buildDir, "en", "about", "index.html"), "<html>about</html>", "utf8");
@@ -255,7 +278,7 @@ describe("gcsStaticPublisher.publishStaging", () => {
       servedStagingLocation: null,
     });
     expect(summary.provider).toBe("gcp");
-    expect(summary.uploadedCount).toBe(4);
+    expect(summary.uploadedCount).toBe(5);
     expect(summary.skippedUnchangedCount).toBe(0);
     expect(summary.location).toBe("gs://test-staging/run-1/");
     // Files landed under the runId prefix in the staging bucket.
@@ -280,6 +303,7 @@ describe("gcsStaticPublisher.publishStaging", () => {
     buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-noext-"));
     await writeAssetReferences(buildDir);
     await writeFile(join(buildDir, "_redirects"), "# generated\n", "utf8");
+    await writeFile(join(buildDir, SECURITY_HEADERS_BUILD_FILE), SITE_HEADERS_FILE, "utf8");
     await mkdir(join(buildDir, "en"), { recursive: true });
     await writeFile(join(buildDir, "en", "about"), "<html>about</html>", "utf8");
     await writeFile(
@@ -370,7 +394,7 @@ describe("gcsStaticPublisher.publishStaging", () => {
       servedStagingLocation: null,
     });
     expect(summary.skippedUnchangedCount).toBe(1);
-    expect(summary.uploadedCount).toBe(3);
+    expect(summary.uploadedCount).toBe(4);
     expect(stagingBucket.files.has("run-2/en/about/index.html")).toBe(false);
     // #1330 — the slot holds the whole build, the skipped page included,
     // copied server-side from the live bucket.
@@ -383,6 +407,34 @@ describe("gcsStaticPublisher.publishStaging", () => {
     );
     expect(slot.runId).toBe("run-2");
     expect(Object.keys(slot.files)).toContain("en/about/index.html");
+  });
+});
+
+describe("gcsStaticPublisher — a build's page headers (#1454)", () => {
+  it("Publish live puts them on the backend bucket, after the files", async () => {
+    await writeFile(
+      join(buildDir, "routing-manifest.json"),
+      JSON.stringify({ env: "staging", envNoindexInHtml: false }),
+      "utf8",
+    );
+    const pub = await publisher();
+    await pub.publishStaging({
+      buildDir,
+      runId: "run-headers",
+      target: TARGET,
+      servedStagingLocation: null,
+    });
+    await pub.promoteToProduction({
+      sourceRunId: "run-headers",
+      sourceBuildDir: buildDir,
+      sourceLocation: null,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
+    });
+    expect(bucketHeaders[0]).toBe("X-Content-Type-Options: nosniff");
+    expect(bucketHeaders).toContain("X-Frame-Options: SAMEORIGIN");
+    expect(staticBucket.files.has(SECURITY_HEADERS_BUILD_FILE)).toBe(true);
   });
 });
 
@@ -625,6 +677,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
     buildDir = await mkdtemp(join(tmpdir(), "caelo-pub-noext-promote-"));
     await writeAssetReferences(buildDir);
     await writeFile(join(buildDir, "_redirects"), "# generated\n", "utf8");
+    await writeFile(join(buildDir, SECURITY_HEADERS_BUILD_FILE), SITE_HEADERS_FILE, "utf8");
     await mkdir(join(buildDir, "en"), { recursive: true });
     await writeFile(join(buildDir, "en", "about"), "<html>about</html>", "utf8");
     await writeFile(
@@ -1223,6 +1276,10 @@ describe("gcsStaticPublisher — a build streamed into the staging prefix (#1271
     const upload = await gcs.openBuildUpload!({ runId: "run-stream", target: TARGET });
     await upload.put({ relPath: "_redirects", body: Buffer.from("# generated\n") });
     await upload.put({
+      relPath: SECURITY_HEADERS_BUILD_FILE,
+      body: Buffer.from(SITE_HEADERS_FILE),
+    });
+    await upload.put({
       relPath: "en/about",
       body: Buffer.from("<html>about</html>"),
       contentType: "text/html; charset=utf-8",
@@ -1233,7 +1290,7 @@ describe("gcsStaticPublisher — a build streamed into the staging prefix (#1271
       target: TARGET,
       upload,
     });
-    expect(summary.uploadedCount).toBe(2);
+    expect(summary.uploadedCount).toBe(3);
     const page = stagingBucket.files.get("run-stream/en/about");
     expect(page?.body?.toString()).toBe("<html>about</html>");
     expect((page?.metadata as { contentType?: string } | undefined)?.contentType).toContain(
@@ -1242,7 +1299,7 @@ describe("gcsStaticPublisher — a build streamed into the staging prefix (#1271
     const list = JSON.parse(
       stagingBucket.files.get("_build-files/run-stream.json")?.body?.toString() ?? "{}",
     ) as { files?: string[] };
-    expect(list.files).toEqual(["_redirects", "en/about"]);
+    expect(list.files).toEqual(["_redirects", SECURITY_HEADERS_BUILD_FILE, "en/about"]);
     await rm(dir, { recursive: true, force: true });
   });
 });

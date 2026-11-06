@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   clientAddress,
   DEFAULT_STAGING_HEADER_NAME,
@@ -259,6 +260,50 @@ describe("#1330 staging gateway: serving the staged build", () => {
     const png = await admitted("/_assets/logo.png");
     expect(await png.text()).toBe("PNG https://example.com bytes");
     expect(png.headers.get("content-type")).toBe("image/png");
+  });
+
+  it("sends the build's page headers on documents only (#1454)", async () => {
+    const securityHeaders = { "Referrer-Policy": "no-referrer", "X-Frame-Options": "SAMEORIGIN" };
+    const storage = memoryStorage({
+      ...FILES,
+      [stagedManifestKey(LOCATION)]: JSON.stringify({ ...MANIFEST, securityHeaders }),
+    });
+    const cookie = await sessionCookie();
+    const page = await handleStagingSiteRequest(
+      get("/", { cookie }),
+      deps({ storage, manifests: new ManifestCache() }),
+    );
+    expect(page.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(page.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+    const file = await handleStagingSiteRequest(
+      get("/_assets/logo.png", { cookie }),
+      deps({ storage, manifests: new ManifestCache() }),
+    );
+    expect(file.headers.get("referrer-policy")).toBeNull();
+  });
+
+  it("hashes an inline script holding the build's origin again for the staging host (#1454)", async () => {
+    const script = 'fetch("https://example.com/api/x")';
+    const served = 'fetch("https://staging.example.com/api/x")';
+    const securityHeaders = {
+      "Content-Security-Policy-Report-Only": "default-src 'self'; script-src 'self' 'sha256-build'",
+    };
+    const storage = memoryStorage({
+      ...FILES,
+      [stagedManifestKey(LOCATION)]: JSON.stringify({
+        ...MANIFEST,
+        securityHeaders,
+        originBoundScripts: [script],
+      }),
+    });
+    const page = await handleStagingSiteRequest(
+      get("/", { cookie: await sessionCookie() }),
+      deps({ storage, manifests: new ManifestCache() }),
+    );
+    const digest = createHash("sha256").update(served, "utf8").digest("base64");
+    expect(page.headers.get("content-security-policy-report-only")).toBe(
+      `default-src 'self'; script-src 'self' 'sha256-${digest}' 'sha256-build'`,
+    );
   });
 
   it("marks every answer noindex and uncacheable by shared caches", async () => {

@@ -19,10 +19,26 @@ import {
   FRONT_DOOR_SECURITY_RULE_SET,
   frontDoorSecurityRules,
   GCP_STATIC_RESPONSE_HEADERS,
+  withStaticResponseHeaders,
 } from "./static-security-headers.js";
 
 const stack = (provider: string): string =>
   readFileSync(resolve(import.meta.dir, "..", "stacks", provider, "index.ts"), "utf8");
+
+describe("GCP backend bucket (#1454)", () => {
+  it("a converge keeps the live build's page headers beside the stack's own", () => {
+    const live = ["Referrer-Policy: no-referrer", ...GCP_STATIC_RESPONSE_HEADERS];
+    expect(withStaticResponseHeaders(live)).toEqual([
+      ...GCP_STATIC_RESPONSE_HEADERS,
+      "Referrer-Policy: no-referrer",
+    ]);
+    expect(withStaticResponseHeaders([])).toEqual([...GCP_STATIC_RESPONSE_HEADERS]);
+  });
+
+  it("the stack does not reset what Publish live wrote", () => {
+    expect(stack("gcp")).toContain('ignoreChanges: ["customResponseHeaders"]');
+  });
+});
 
 describe("AWS CloudFront response headers policies", () => {
   it("site: nosniff only (a CSP with sandbox would break every page)", () => {

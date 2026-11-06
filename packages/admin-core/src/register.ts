@@ -587,6 +587,12 @@ import {
 } from "./ops/security/operator_oauth.js";
 import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/security/telemetry.js";
 import {
+  getSecurityHeadersOp,
+  previewSetSecurityHeadersOp,
+  proposeSetSecurityHeadersOp,
+  setSecurityHeadersOp,
+} from "./ops/security_headers.js";
+import {
   pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
   pagesSeoCheckShareImageOp,
@@ -1296,6 +1302,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPendingDomainProposalsOp);
   // Issue #1461 — static files on the site's domain, gated (§11.A).
   registry.register(listStaticFilesOp);
+  registry.register(getSecurityHeadersOp);
+  registry.register(setSecurityHeadersOp);
+  registry.register(proposeSetSecurityHeadersOp);
+  registry.register(previewSetSecurityHeadersOp);
   registry.register(getStaticFileOp);
   registry.register(setStaticFilesOp);
   registry.register(deleteStaticFilesOp);

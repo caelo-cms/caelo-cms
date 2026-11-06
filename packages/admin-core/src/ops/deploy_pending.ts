@@ -484,7 +484,7 @@ async function runExecuteDeployProposal(
   ctx: ExecutionContext,
   input: { proposalId: string },
   steps: OperationSteps,
-): Promise<Result<{ runId: string | null }, QueryError>> {
+): Promise<Result<{ runId: string | null; warning?: string }, QueryError>> {
   const { registry, adapter } = steps;
   // The run's id (Publish live or rollback), minted now so the claim names it.
   const claimedRunId = randomUUID();
@@ -546,7 +546,10 @@ async function runExecuteDeployProposal(
       ),
     );
   }
-  return ok({ runId });
+  const note = applied.ok
+    ? (applied.value as { securityHeadersNote?: string }).securityHeadersNote
+    : undefined;
+  return ok({ runId, ...(note ? { warning: `${note} Tell the operator this.` } : {}) });
 }
 
 const executeDeployProposalOpDefinition = defineStepwiseOperation({
@@ -557,7 +560,11 @@ const executeDeployProposalOpDefinition = defineStepwiseOperation({
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ proposalId: z.string().uuid() }).strict(),
-  output: z.object({ runId: z.string().nullable() }),
+  output: z.object({
+    runId: z.string().nullable(),
+    /** #1454 — what the AI relays and the queue page shows. */
+    warning: z.string().optional(),
+  }),
   stepwise: runExecuteDeployProposal,
 });
 

@@ -28,12 +28,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import {
+  composeSiteHeaders,
+  DEFAULT_SITE_SECURITY_POLICY,
+  EMPTY_CSP_FACTS,
+} from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { removeUploadedBuild, retainedBuildsFor } from "../deploy/build-cleanup.js";
 import type { StaticPublisher } from "../deploy/static-publisher.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
+
+const SITE_HEADERS = composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS);
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -74,7 +81,8 @@ for await (const line of console) {
     process.exit(1);
   }
   console.log(JSON.stringify({ kind: "done", pageCount: 1, fileCount: 1, durationMs: 1,
-    phases: [], buildDir, peakRssMb: 1, unpublishedLinkTargets: [], crossVariantLinks: [], truncatedLists: [] }));
+    phases: [], buildDir, peakRssMb: 1, unpublishedLinkTargets: [], crossVariantLinks: [],
+    truncatedLists: [], securityHeaders: ${JSON.stringify(SITE_HEADERS)} }));
   process.exit(0);
 }
 `;

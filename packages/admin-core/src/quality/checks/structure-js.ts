@@ -30,8 +30,8 @@
  * module-js-analysis.ts, module-js-hooks.ts.
  */
 
-import { truncateKeepingIds } from "@caelo-cms/shared";
-import type { StagedPage } from "./check.js";
+import { runBatched, truncateKeepingIds } from "@caelo-cms/shared";
+import type { StagedBuild, StagedPage } from "./check.js";
 import type { Finding } from "./findings.js";
 import { analyseModuleJs } from "./module-js-analysis.js";
 import { foreignHooks, hookOwners, templateHooks } from "./module-js-hooks.js";
@@ -47,9 +47,10 @@ export function moduleJsFindings(
   stagedPages: readonly StagedPage[],
   modules: readonly StructureModule[],
   layouts: readonly StructureLayout[],
+  bundleFiles: ReadonlyMap<string, string> = new Map(),
 ): Finding[] {
   const byId = new Map(modules.map((m) => [m.id, m]));
-  const shipped = shippedOn(analysis, stagedPages, modules);
+  const shipped = shippedOn(analysis, stagedPages, modules, bundleFiles);
   const owners = hookOwners(modules);
   const neutral = new Set(layouts.flatMap((l) => [...templateHooks(l.html)]));
   const findings: Finding[] = [];
@@ -128,6 +129,9 @@ export function moduleJsFindings(
 
 const BUNDLE_OPEN = '<script defer data-source="modules"';
 const BASE64_SRC = ' src="data:text/javascript;base64,';
+/** #1454 — on a deployed page the module script is a file of the build. */
+const BUNDLE_FILE_RE =
+  /<script defer data-source="modules" src="(\/_assets\/page-script\.[0-9a-f]{16}\.js)"/;
 const DEFERRED_RE = /data-caelo-deferred-script="([0-9a-f-]{36})"/gi;
 
 /**
@@ -144,6 +148,7 @@ function shippedOn(
   analysis: StructureAnalysis,
   pages: readonly StagedPage[],
   modules: readonly StructureModule[],
+  bundleFiles: ReadonlyMap<string, string>,
 ): Map<string, Set<string>> {
   const shipped = new Map<string, Set<string>>();
   const on = (moduleId: string, pageId: string) => {
@@ -156,7 +161,7 @@ function shippedOn(
   for (const page of pages) {
     for (const m of page.html.matchAll(DEFERRED_RE))
       on((m[1] as string).toLowerCase(), page.pageId);
-    const bundle = moduleBundle(page.html);
+    const bundle = moduleBundle(page.html, bundleFiles);
     if (bundle !== null) bundles.set(bundle, [...(bundles.get(bundle) ?? []), page.pageId]);
   }
   const residuals = [...bundles].map(([bundle, pageIds]) => {
@@ -177,8 +182,32 @@ function shippedOn(
   return shipped;
 }
 
+/**
+ * The module script files of `pages`, each read once from the staged build,
+ * by path. A script the build does not serve reads as no script: the links
+ * check reports the missing file.
+ */
+export async function readBundleFiles(
+  pages: readonly StagedPage[],
+  build: StagedBuild,
+): Promise<Map<string, string>> {
+  const paths = new Set<string>();
+  for (const page of pages) {
+    const path = page.html.match(BUNDLE_FILE_RE)?.[1];
+    if (path) paths.add(path);
+  }
+  const files = new Map<string, string>();
+  await runBatched([...paths], 16, async (path) => {
+    const text = await build.text(path);
+    if (text !== null) files.set(path, text);
+  });
+  return files;
+}
+
 /** The page's module script as the composer emitted it, or null. */
-function moduleBundle(html: string): string | null {
+function moduleBundle(html: string, bundleFiles: ReadonlyMap<string, string>): string | null {
+  const file = html.match(BUNDLE_FILE_RE)?.[1];
+  if (file) return bundleFiles.get(file) ?? null;
   const at = html.indexOf(BUNDLE_OPEN);
   if (at === -1) return null;
   const rest = at + BUNDLE_OPEN.length;

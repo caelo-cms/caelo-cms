@@ -16,7 +16,8 @@
  * its own findings checks, `structure` (#820: repeated free markup that
  * should be a module), `links` (#849: broken internal links, missing
  * assets, redirect chains and loops, orphan pages) and `references` (#724:
- * stored links to deleted, language-less or unpublished pages) — maintainer decision:
+ * stored links to deleted, language-less or unpublished pages) and
+ * `security-headers` (#1454: what the build's CSP cannot allow) — maintainer decision:
  * core topics like Lighthouse, not plugin add-ons. The rule about pages without a meta description
  * is enforced before the build by `deploy.trigger` (#730,
  * deploy/missing-seo.ts), so a staged build can never contain such a page.
@@ -30,6 +31,7 @@ import type { QualityCheck } from "./check.js";
 import { checkIdSchema } from "./findings.js";
 import { createLinksCheck, type LinkSources } from "./links.js";
 import { createReferencesCheck, type ReferenceSources } from "./references.js";
+import { createSecurityHeadersCheck } from "./security-headers.js";
 import { createStructureCheck, type StructureSources } from "./structure.js";
 
 /** Who contributed a check. */
@@ -146,5 +148,6 @@ export function createCoreCheckRegistry(options: {
   registry.register(createStructureCheck(options.structure), CORE);
   registry.register(createLinksCheck(options.links), CORE);
   registry.register(createReferencesCheck(options.references), CORE);
+  registry.register(createSecurityHeadersCheck(), CORE);
   return registry;
 }

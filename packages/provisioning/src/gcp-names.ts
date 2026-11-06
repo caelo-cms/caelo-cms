@@ -326,11 +326,15 @@ export function urlMapRedirectsRoleId(env: string): string {
  * #587 — permissions of {@link urlMapRedirectsRoleId}: read-modify-write of
  * the URL map and waiting for the operation. A URL-map update must be
  * allowed to "use" every backend the map references, hence the `.use` pair.
+ * #1454 — get and update of the static backend bucket: a build's page headers
+ * are its custom response headers (admin-core gcp-site-headers.ts).
  */
 export const URL_MAP_REDIRECTS_PERMISSIONS: readonly string[] = [
   "compute.urlMaps.list",
   "compute.urlMaps.get",
   "compute.urlMaps.update",
+  "compute.backendBuckets.get",
+  "compute.backendBuckets.update",
   "compute.backendBuckets.use",
   "compute.backendServices.use",
   "compute.globalOperations.get",

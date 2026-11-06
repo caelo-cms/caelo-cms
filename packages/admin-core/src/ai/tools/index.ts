@@ -226,6 +226,7 @@ import { retryToolCallTool } from "./retry-tool-call.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotExternalPageTool } from "./screenshot-external-page.js";
 import { screenshotPageTool } from "./screenshot-page.js";
+import { getSecurityHeadersTool, proposeSetSecurityHeadersTool } from "./security-header-tools.js";
 import { sendTestEmailTool } from "./send-test-email.js";
 import { setContentInstanceValuesManyTool } from "./set-content-instance-values-many.js";
 import { setHomePageTool } from "./set-home-page.js";
@@ -644,6 +645,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetStagingHostTool);
   // Issue #1461 — static files on the site's domain.
   registry.register(listStaticFilesTool);
+  registry.register(getSecurityHeadersTool);
+  registry.register(proposeSetSecurityHeadersTool);
   registry.register(getStaticFileTool);
   registry.register(proposeSetStaticFilesTool);
   registry.register(proposeExternalRedirectTool);

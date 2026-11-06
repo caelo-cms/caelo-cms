@@ -80,7 +80,8 @@ What keeps the two apart:
 | Gateway cookie secret | `gateway.rotate_cookie_secret` | provider / runtime | Projected on commit | Gated (`propose_rotate_gateway_cookie_secret`) |
 | Rate-limit profiles and overrides | `gateway.set_rate_limit_profile` / `set_rate_limit_override` | provider / runtime | Projected on commit | Gated (`tune_rate_limit`) |
 | Custom domains | `domains.add` / `remove` / `reconnect_hosting` | provider | gcp-firebase: the custom-domain API when the proposal is approved; self-hosted: the Caddy vhosts `cms-provision` writes from the table | Gated (`propose_add_domain`, `propose_remove_domain`, `propose_reconnect_domain`) |
-| Response headers (security, cache, staging `X-Robots-Tag`) | none | provider | No operator setting. Code-defined, written by each publish. | n/a |
+| Cache and staging `X-Robots-Tag` response headers, `nosniff`, the SVG CSP | none | provider | No operator setting. Code-defined, written by each publish. | n/a |
+| Security headers of pages (CSP, Referrer-Policy, Permissions-Policy, framing, HSTS) | `security_headers.set` | rendered (each build derives its CSP and carries it, [site-security-headers.md](./site-security-headers.md)) | Next Stage + Publish live. Never on save: a CSP names what one build ships. | Gated (`propose_set_security_headers`) |
 | Site base URL, sitemap toggle, Organization JSON-LD | `site_defaults.set_seo` | rendered (canonicals, og:url, sitemap, robots `Sitemap:` line, JSON-LD) | Next Stage + Publish live | Gated (`propose_set_site_seo`) |
 | Site language (`<html lang>`) | `site_defaults.set_identity` | rendered | Next Stage + Publish live | Routine: one call undoes it |
 | Default share image (`og:image` of pages without their own) | `themes.set_asset` slot `socialShare`; per language `set_locale_share_image` (`international-site`) | rendered ([themes.md](../themes.md)) | Next Stage + Publish live | Routine: one call undoes it |

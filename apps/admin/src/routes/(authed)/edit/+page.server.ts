@@ -1021,13 +1021,19 @@ export const actions: Actions = {
       console.error("[promoteToProduction] deploy.promote failed", { error: promote.error });
       return fail(500, { error: `Publish live failed: ${describeError(promote.error)}` });
     }
-    const v = promote.value as { fromRunId: string; toRunId: string; buildId: string };
+    const v = promote.value as {
+      fromRunId: string;
+      toRunId: string;
+      buildId: string;
+      securityHeadersNote?: string;
+    };
     return {
       published: {
         targetName: "production",
         fromRunId: v.fromRunId,
         toRunId: v.toRunId,
         buildId: v.buildId,
+        notice: v.securityHeadersNote,
       },
     };
   },

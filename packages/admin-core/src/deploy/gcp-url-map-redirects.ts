@@ -30,6 +30,7 @@ import {
   type RedirectPlan,
   withGcpRedirects,
 } from "@caelo-cms/shared";
+import type { GcpBackendBucket, GcpBackendBucketApi } from "./gcp-site-headers.js";
 
 /** A URL map as the Compute REST API returns it (fields we read). */
 export interface GcpUrlMap {
@@ -159,7 +160,7 @@ const COMPUTE_API = "https://compute.googleapis.com/compute/v1";
  * The Compute REST API as the admin's run SA (ADC), for the project ADC
  * resolves to — the install's project on Cloud Run.
  */
-export async function adcComputeApi(): Promise<GcpComputeApi> {
+export async function adcComputeApi(): Promise<GcpComputeApi & GcpBackendBucketApi> {
   const { GoogleAuth } = await import("google-auth-library");
   const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/compute"] });
   const project = await auth.getProjectId();
@@ -203,6 +204,10 @@ export async function adcComputeApi(): Promise<GcpComputeApi> {
     },
     updateUrlMap: (name, body) =>
       call<GcpOperation>("PUT", `global/urlMaps/${encodeURIComponent(name)}`, body),
+    getBackendBucket: (name) =>
+      call<GcpBackendBucket>("GET", `global/backendBuckets/${encodeURIComponent(name)}`),
+    patchBackendBucket: (name, body) =>
+      call<GcpOperation>("PATCH", `global/backendBuckets/${encodeURIComponent(name)}`, body),
     waitOperation: (name) =>
       call<GcpOperation>("POST", `global/operations/${encodeURIComponent(name)}/wait`),
   };

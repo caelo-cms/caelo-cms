@@ -25,12 +25,42 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  composeSiteHeaders,
+  DEFAULT_SITE_SECURITY_POLICY,
+  EMPTY_CSP_FACTS,
   HTML_CACHE_CONTROL,
   IMMUTABLE_CACHE_CONTROL,
   NOSNIFF,
+  SITE_DOCUMENT_PATH_PATTERN,
   SVG_DOCUMENT_CSP,
 } from "@caelo-cms/shared";
-import { VERSION_CONFIG_HEADERS } from "../static-publisher-firebase.js";
+import {
+  siteHeaderEntry,
+  VERSION_CONFIG_HEADERS,
+  withSecurityHeaders,
+} from "../static-publisher-firebase.js";
+
+describe("a build's page headers (#1454)", () => {
+  const set = composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS);
+
+  it("are a map entry on the document pattern", () => {
+    const entry = siteHeaderEntry(set);
+    expect(entry.regex).toBe(SITE_DOCUMENT_PATH_PATTERN);
+    expect(entry.headers["X-Frame-Options"]).toBe("SAMEORIGIN");
+    expect(entry.headers["Strict-Transport-Security"]).toBeUndefined();
+  });
+
+  it("survive a promote or rollback, which replace the other security entries", () => {
+    const entry = siteHeaderEntry(set);
+    const out = withSecurityHeaders({ headers: [entry] });
+    expect(out.headers).toContainEqual(entry);
+    const legacy = withSecurityHeaders({
+      headers: [{ regex: "^/", headers: { "X-Content-Type-Options": "nosniff" } }],
+    });
+    expect(legacy.headers?.filter((e) => e.regex === "^/")).toHaveLength(1);
+    expect(legacy.headers?.some((e) => e.regex === SITE_DOCUMENT_PATH_PATTERN)).toBe(false);
+  });
+});
 
 describe("VERSION_CONFIG_HEADERS — Firebase Hosting REST API shape", () => {
   it("is a non-empty array of header-config entries", () => {

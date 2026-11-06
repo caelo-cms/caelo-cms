@@ -20,7 +20,9 @@
  * - served like staging serves it: the publishers' Content-Type and
  *   Cache-Control policy (#555 immutable hashed assets, #571 .ico), the
  *   media security headers every staging origin sends (#891: nosniff, the
- *   SVG CSP) plus staging's `X-Robots-Tag: noindex`;
+ *   SVG CSP), the headers of the build's pages (#1454: Lighthouse sees a
+ *   CSP violation as it happens on the site) plus staging's
+ *   `X-Robots-Tag: noindex`;
  * - compressed like the CDN in front of every staging and live host: an
  *   uncompressed document fails Lighthouse's document-latency insight, and
  *   would measure transfer costs no visitor pays.
@@ -31,8 +33,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { join, sep } from "node:path";
 import { gzipSync } from "node:zlib";
 import {
+  isHtmlContentType,
   isPluginCallPath,
   mediaSecurityHeaders,
+  parseSiteHeaderSet,
+  SECURITY_HEADERS_BUILD_FILE,
   STAGING_PLUGIN_STUB_BODY,
   type StagedManifest,
   stagedFileKey,
@@ -198,6 +203,16 @@ function encoded(
 
 /** Serve `source` on 127.0.0.1 at a random port until `close()`. */
 export async function serveStagedBuild(source: StagedFileSource): Promise<StagedOrigin> {
+  // #1454 — one set per build; a build from before them has none.
+  let headerSet: Promise<Readonly<Record<string, string>>> | null = null;
+  const siteHeaders = () => {
+    headerSet ??= source
+      .read(SECURITY_HEADERS_BUILD_FILE)
+      .then((file) =>
+        file ? parseSiteHeaderSet(new TextDecoder().decode(file.bytes)).headers : {},
+      );
+    return headerSet;
+  };
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // #1326 interim — a plugin call never goes to live: the live gateway
     // refuses the staged page (no live Origin), and must. Answer it here
@@ -231,6 +246,7 @@ export async function serveStagedBuild(source: StagedFileSource): Promise<Staged
         "Content-Length": String(body.byteLength),
         "Cache-Control": cacheControlForContentType(file.contentType, key),
         ...mediaSecurityHeaders(file.contentType),
+        ...(isHtmlContentType(file.contentType) ? await siteHeaders() : {}),
         "X-Robots-Tag": "noindex",
         ...headers,
       });

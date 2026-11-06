@@ -37,6 +37,7 @@ import {
   type ExecutionContext,
   GENERATOR_POOL_MAX,
   phaseTimingSchema,
+  siteHeaderSetSchema,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { z } from "zod";
@@ -125,6 +126,8 @@ const subprocessDoneSchema = z.object({
   crossVariantLinks: z.array(crossVariantLinkSchema),
   /** #1257 — page lists cut at the query cap (a Stage warning). */
   truncatedLists: z.array(truncatedListSchema),
+  /** #1454 — the headers of the build's pages. */
+  securityHeaders: siteHeaderSetSchema,
 });
 
 /** What a finished generator run reports. */

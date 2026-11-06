@@ -106,6 +106,9 @@ export const actions: Actions = {
       toTarget,
     });
     if (!result.ok) return fail(500, { error: `Promote ${fromTarget} → ${toTarget} failed.` });
+    // #1454 — a redirect would drop what the operator must read.
+    const notice = (result.value as { securityHeadersNote?: string }).securityHeadersNote;
+    if (notice) return { published: { targetName: toTarget, notice } };
     throw redirect(303, "/settings/deployments");
   },
 };

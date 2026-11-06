@@ -45,6 +45,7 @@ import {
 import { unreviewedEmbedFindings } from "./audit.js";
 import { DEFAULT_CATEGORIES } from "./categories.js";
 import { consentLogCsv, consentLogPage, consentStats, describeConsentLog } from "./consent-log.js";
+import { tagCspSources } from "./csp-sources.js";
 import {
   CONSENT_VENDOR_FIELDS,
   consentPurposesOf,
@@ -548,6 +549,7 @@ export default definePlugin<PluginContextTier1>({
         buildTagInjector(baked),
       ),
       "runtime.css": RUNTIME_CSS,
+      "csp-sources.json": JSON.stringify(tagCspSources(baked)),
     };
   },
 

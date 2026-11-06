@@ -37,6 +37,7 @@ import {
   OperationRegistry,
 } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { NO_BUILD_HEADERS_NOTE } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
@@ -229,6 +230,43 @@ describe("deploy.promote ships production SEO semantics", () => {
     ) as { env: string; runId: string };
     expect(manifest.env).toBe("production");
     expect(manifest.runId).toBe(staged.buildId);
+  });
+
+  it("says why no headers shipped when a run predates them, on Publish live and rollback (#1454)", async () => {
+    const staged = await ok<{ buildId: string; runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    await markAudited(staged.runId);
+    const current = await ok<{ toRunId: string; securityHeadersNote?: string }>("deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    expect(current.securityHeadersNote).toBeUndefined();
+
+    const sql = new SQL(ADMIN_URL!);
+    try {
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`UPDATE deploy_runs SET security_headers = NULL WHERE id = ${staged.runId}::uuid`;
+      });
+    } finally {
+      await sql.end();
+    }
+    const legacy = await ok<{ toRunId: string; securityHeadersNote?: string }>("deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    expect(legacy.securityHeadersNote).toBe(NO_BUILD_HEADERS_NOTE);
+
+    const rollback = await ok<{ securityHeadersNote?: string }>("deploy.rollback", {
+      targetName: "production",
+      runId: current.toRunId,
+      repoRoot: testRoot,
+    });
+    expect(rollback.securityHeadersNote).toBe(NO_BUILD_HEADERS_NOTE);
   });
 
   it("refuses to promote a legacy staging build whose pages carry staging's noindex", async () => {

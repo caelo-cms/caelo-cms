@@ -40,10 +40,12 @@
  * {@link FIRST_BYTE_BUDGET_MS} is answered with a 504.
  */
 
+import { createHash } from "node:crypto";
 import {
   buildRedirectPlan,
   decideStagingAccess,
   goneStatusOnProvider,
+  isHtmlContentType,
   isRewritableContentType,
   isSafeStagedLocation,
   mediaSecurityHeaders,
@@ -53,6 +55,7 @@ import {
   type RedirectPlan,
   type RedirectTableRow,
   readSessionCookie,
+  rewriteOrigins,
   STAGING_ACCESS_PATH,
   STAGING_CHECK_PATH,
   STAGING_RUN_TOKEN_HEADER,
@@ -70,6 +73,7 @@ import {
   stagingIpAllowlistSupported,
   verifyStagingRunToken,
   verifyStagingToken,
+  withScriptHashes,
 } from "@caelo-cms/shared";
 import { type MemoryLimitSpec, MemoryRateLimiter } from "../middleware/memory-limiter.js";
 import type { StagingStorage } from "./storage.js";
@@ -172,6 +176,8 @@ interface LoadedBuild {
   readonly files: ReadonlySet<string>;
   /** Redirect plan by the redirects rows it was built from. */
   plan: { readonly rows: readonly RedirectTableRow[]; readonly plan: RedirectPlan } | null;
+  /** #1454 — see {@link pageHeadersFor}. */
+  pageHeaders?: { readonly host: string; readonly headers: Readonly<Record<string, string>> };
 }
 
 /**
@@ -228,6 +234,33 @@ async function loadBuild(
     );
   }
   return { manifest: parsed.data, files: new Set(Object.keys(parsed.data.files)), plan: null };
+}
+
+/**
+ * #1454 — a build's page headers as this gateway serves them. The rewrite
+ * below changes an inline script holding the build's origin, so its hash from
+ * the build no longer matches: the same script is hashed again for the host
+ * the gateway serves now. Computed once per build and host.
+ */
+function pageHeadersFor(
+  build: LoadedBuild,
+  served: ServedBuild,
+  host: string | null,
+): Readonly<Record<string, string>> {
+  const headers = build.manifest.securityHeaders ?? {};
+  const scripts = build.manifest.originBoundScripts ?? [];
+  if (host === null || served.buildOrigin === null || scripts.length === 0) return headers;
+  if (build.pageHeaders?.host === host) return build.pageHeaders.headers;
+  const pairs = originRewritePairs(served.buildOrigin, `https://${host}`);
+  const hashes = scripts.map((body) => {
+    const digest = createHash("sha256")
+      .update(rewriteOrigins(body, pairs), "utf8")
+      .digest("base64");
+    return `'sha256-${digest}'`;
+  });
+  const out = withScriptHashes(headers, hashes);
+  build.pageHeaders = { host, headers: out };
+  return out;
 }
 
 function redirectPlanFor(build: LoadedBuild, rows: readonly RedirectTableRow[]): RedirectPlan {
@@ -547,6 +580,8 @@ async function serveFile(
   const headers = stagingHeaders({
     "Content-Type": entry.type,
     ...mediaSecurityHeaders(entry.type),
+    // #1454 — the headers Publish live ships with this build.
+    ...(isHtmlContentType(entry.type) ? pageHeadersFor(build, served, state.host) : {}),
   });
   const rewrite =
     state.host !== null && served.buildOrigin !== null && isRewritableContentType(entry.type);
