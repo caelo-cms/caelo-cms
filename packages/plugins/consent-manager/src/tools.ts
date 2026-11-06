@@ -103,7 +103,8 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
     description:
       "Reword a consent category's name or description to match the site's voice and audience. " +
       "The category KEYS are fixed (necessary, functional, analytics, marketing) because tags and withheld modules refer to them — only the operator-facing copy changes. " +
-      "Use when the operator asks for different wording, another language, or a specific tone in the banner.",
+      "Use when the operator asks for different wording or a specific tone in the banner. " +
+      "NOT for another language on a multi-language site: these are the source texts of every language, and translate_chrome translates them.",
     operationName: "describe_categories",
     // Consent copy is site configuration the visitor-facing banner shows.
     requiredPermission: "settings.write",

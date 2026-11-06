@@ -46,9 +46,25 @@
  *   - query / system source nodes store nothing: core already scopes
  *     queries by variant; only a source node's own fields (a heading)
  *     are units.
+ *
+ * Two kinds of unit differ from a text (#1323, #1324):
+ *   - an external link address is OPTIONAL: its value is the same in every
+ *     language unless a language says otherwise, so "no row" is not
+ *     "missing" and the source's edits keep flowing to that language. A
+ *     stored value replaces only the href; writing the source's own
+ *     address back removes it. An internal link is no unit: it follows
+ *     the page language by itself;
+ *   - a text of a plugin list source is FAITHFUL: another plugin generates
+ *     the entry, and a visitor may decide on what it says (a consent
+ *     category). The field must opt in with `translate: true`. Only a
+ *     translation of the CURRENT source text shows: a missing or outdated
+ *     one renders the source text and is a finding, because a stale
+ *     sentence at a decision would state something the site no longer
+ *     does. Such an entry is never hidden: dropping a consent choice from
+ *     one language is not a translator's call.
  */
 
-import type { FieldDef, ListItem, ListTypeDef } from "@caelo-cms/plugin-sdk";
+import type { FieldDef, ListItem, ListResolveSource, ListTypeDef } from "@caelo-cms/plugin-sdk";
 
 /** This plugin's slug: the key of its attributes under `ext`. */
 export const PLUGIN_SLUG = "international-site";
@@ -81,6 +97,14 @@ export function translateAttribute(field: FieldDef): boolean | undefined {
 /** True when the field's value is translated per language. */
 export function isTranslatableField(field: FieldDef): boolean {
   return TRANSLATABLE_FIELD_TYPES.has(field.type) && (translateAttribute(field) ?? true);
+}
+
+/** An address another language may replace: anything that leaves this site. */
+const EXTERNAL_HREF_RE = /^(https?:|mailto:|tel:)/i;
+
+/** True for a link that leaves the site; a page reference or path never does. */
+export function isExternalHref(href: string): boolean {
+  return EXTERNAL_HREF_RE.test(href);
 }
 
 /** Change detector of a source text (djb2 — not a security boundary). */
@@ -117,6 +141,10 @@ export interface SourceUnit {
   };
   /** pageProp units: the language version and the property. */
   readonly pageProp?: { readonly pageId: string; readonly field: string };
+  /** Link units: the stored link; a translation replaces only its `href` (#1324). */
+  readonly link?: Readonly<Record<string, unknown>>;
+  /** A plugin source's text: only a translation of the current text shows (#1323). */
+  readonly faithful?: boolean;
 }
 
 /** One stored entry, for hiding and link checks. */
@@ -142,6 +170,10 @@ export interface ListSourceSnapshot {
   readonly targets: ReadonlyMap<string, SourceTarget>;
   /** Every stored value address (translatable or not) — tells "gone" from "not translated". */
   readonly existing: ReadonlySet<string>;
+  /** Link values that stay internal: they follow the page language by themselves. */
+  readonly internalLinks: ReadonlySet<string>;
+  /** Plugin sources that answered; a silent one says nothing about its entries. */
+  readonly pluginSources: ReadonlySet<string>;
 }
 
 /** A shared list as the plugin reads it (`lists.list` with items). */
@@ -180,6 +212,8 @@ export interface SourceInput {
   readonly lists: readonly SourceList[];
   readonly instances: readonly SourceInstance[];
   readonly pageProps: readonly SourcePageProps[];
+  /** Plugin list sources with fields offered to this plugin (#1323). */
+  readonly pluginSources?: readonly ListResolveSource[];
 }
 
 function hrefOf(v: unknown): string | null {
@@ -216,7 +250,12 @@ function walkTree(
     readonly entryAddress: (itemId: string) => string;
     readonly vocabularyListId: string | null;
   },
-  out: { units: SourceUnit[]; entries: SourceEntry[]; existing: Set<string> },
+  out: {
+    units: SourceUnit[];
+    entries: SourceEntry[];
+    existing: Set<string>;
+    internalLinks: Set<string>;
+  },
 ): void {
   for (const item of items) {
     const node = type.nodes[item.node];
@@ -228,7 +267,23 @@ function walkTree(
       if (v !== undefined && v !== null) out.existing.add(address);
       if (f.type === "link") {
         const href = hrefOf(v);
-        if (href) links.push(href);
+        if (!href) continue;
+        links.push(href);
+        if (!isExternalHref(href)) out.internalLinks.add(address);
+        else if (translateAttribute(f) !== false) {
+          out.units.push({
+            address,
+            entry,
+            target: ctx.target,
+            store: "value",
+            text: href,
+            hash: textHash(href),
+            required: false,
+            field: f,
+            locales: ctx.locales,
+            link: (typeof v === "string" ? { href } : v) as Record<string, unknown>,
+          });
+        }
         continue;
       }
       if (!isTranslatableField(f) || typeof v !== "string" || v.trim() === "") continue;
@@ -275,6 +330,7 @@ export function collectSources(input: SourceInput): ListSourceSnapshot {
     units: [] as SourceUnit[],
     entries: [] as SourceEntry[],
     existing: new Set<string>(),
+    internalLinks: new Set<string>(),
   };
   const targets = new Map<string, SourceTarget>();
   for (const list of input.lists) {
@@ -350,6 +406,33 @@ export function collectSources(input: SourceInput): ListSourceSnapshot {
     }
     if (any) targets.set(key, { key, label: `page properties of ${p.label}` });
   }
+  for (const source of input.pluginSources ?? []) {
+    const key = `source:${source.name}`;
+    let any = false;
+    for (const entry of source.entries) {
+      for (const f of source.fields) {
+        const address = `source/${source.name}/item/${entry.id}/${f.name}`;
+        const v = entry.values[f.name];
+        if (v !== undefined && v !== null) out.existing.add(address);
+        const translated = TRANSLATABLE_FIELD_TYPES.has(f.type) && translateAttribute(f) === true;
+        if (!translated || typeof v !== "string" || v.trim() === "") continue;
+        any = true;
+        out.units.push({
+          address,
+          entry: null,
+          target: key,
+          store: "value",
+          text: v,
+          hash: textHash(v),
+          required: f.required === true,
+          field: f,
+          locales: null,
+          faithful: true,
+        });
+      }
+    }
+    if (any) targets.set(key, { key, label: `${source.label} (from a plugin)` });
+  }
   // A term's name and slug are stored together and checked against one
   // change detector, so a changed name re-offers the slug too.
   const termParts = new Map<string, SourceUnit[]>();
@@ -367,7 +450,14 @@ export function collectSources(input: SourceInput): ListSourceSnapshot {
       .join("\n");
     return { ...u, hash: textHash(combined) };
   });
-  return { units, entries: out.entries, targets, existing: out.existing };
+  return {
+    units,
+    entries: out.entries,
+    targets,
+    existing: out.existing,
+    internalLinks: out.internalLinks,
+    pluginSources: new Set((input.pluginSources ?? []).map((s) => s.name)),
+  };
 }
 
 /** True when a unit / entry is translated into `locale`. */
@@ -398,7 +488,8 @@ export type UnitStatus = "translated" | "needs_update" | "missing";
 /** The status of `unit` in `locale`, from the stored row (or its absence). */
 export function unitStatus(unit: SourceUnit, locale: string, index: TranslationIndex): UnitStatus {
   const row = index.get(indexKey(locale, unit.address));
-  if (!row || row.value === null) return "missing";
+  // An external link without its own value is the source's: nothing is due.
+  if (!row || row.value === null) return unit.link ? "translated" : "missing";
   return row.hash === unit.hash ? "translated" : "needs_update";
 }
 
@@ -431,8 +522,11 @@ export function overlayFor(
   for (const u of snapshot.units) {
     if (!appliesTo(u, locale)) continue;
     const status = unitStatus(u, locale, index);
+    if (u.faithful && status !== "translated") continue;
     if (status !== "missing") {
-      values[u.address] = index.get(indexKey(locale, u.address))?.value ?? "";
+      const stored = index.get(indexKey(locale, u.address))?.value;
+      if (stored === undefined || stored === null) continue;
+      values[u.address] = u.link ? { ...u.link, href: stored } : stored;
       continue;
     }
     // A page cannot be hidden by a list overlay; a missing property
@@ -477,19 +571,25 @@ export function findingsFor(
   for (const u of snapshot.units) {
     if (!appliesTo(u, locale.code)) continue;
     if (u.entry !== null && hiddenByOperator.has(u.entry)) continue;
-    if (unitStatus(u, locale.code, index) !== "missing") continue;
+    const status = unitStatus(u, locale.code, index);
+    if (status !== "missing" && !(u.faithful && status === "needs_update")) continue;
     missingByTarget.set(u.target, [...(missingByTarget.get(u.target) ?? []), u]);
   }
   for (const [target, units] of missingByTarget) {
     const label = snapshot.targets.get(target)?.label ?? target;
     const isPage = units[0]?.store === "pageProp";
+    const effect = isPage
+      ? ""
+      : units[0]?.faithful
+        ? "; a text without a current translation shows in the source language on that language's pages"
+        : "; entries whose required text is missing are hidden on that language's pages";
     out.push({
       code: isPage ? "page-property-missing" : "list-translation-missing",
       severity: "warning",
       localeCode: locale.code,
       target,
       address: units[0]?.address ?? target,
-      message: `translation missing in ${locale.display_name} (${locale.code}): ${label} — ${units.length} text${units.length === 1 ? "" : "s"}${isPage ? "" : "; entries whose required text is missing are hidden on that language's pages"}.`,
+      message: `translation missing in ${locale.display_name} (${locale.code}): ${label} — ${units.length} text${units.length === 1 ? "" : "s"}${effect}.`,
       nextStep: `translate_chrome({ localeCode: "${locale.code}" }) translates it, or apply_translations with kind "addresses" writes given texts.`,
     });
   }
@@ -511,6 +611,11 @@ export function findingsFor(
   return out;
 }
 
+/** False for a link that simply follows the source: there is nothing to count or do. */
+function isDue(unit: SourceUnit, locale: string, index: TranslationIndex): boolean {
+  return !unit.link || index.has(indexKey(locale, unit.address));
+}
+
 /** Per target and language: counts of each status, for intl_status. */
 export function statusSummary(
   snapshot: ListSourceSnapshot,
@@ -520,7 +625,7 @@ export function statusSummary(
   const out = new Map<string, Record<string, Record<UnitStatus, number>>>();
   for (const u of snapshot.units) {
     for (const l of locales) {
-      if (!appliesTo(u, l)) continue;
+      if (!appliesTo(u, l) || !isDue(u, l, index)) continue;
       const perTarget = out.get(u.target) ?? {};
       const counts = perTarget[l] ?? { translated: 0, needs_update: 0, missing: 0 };
       counts[unitStatus(u, l, index)] += 1;
@@ -575,8 +680,11 @@ export function reconcile(
     have.add(indexKey(r.locale, r.address));
     const unit = unitByAddress.get(r.address);
     let next: ReconcileRow["status"] = r.status;
-    if (!snapshot.existing.has(r.address)) next = "orphaned";
-    else if (unit && appliesTo(unit, r.locale)) {
+    if (!snapshot.existing.has(r.address)) {
+      // A plugin that is off or failing says nothing about its entries.
+      const source = /^source\/([^/]+)\//.exec(r.address)?.[1];
+      next = source === undefined || snapshot.pluginSources.has(source) ? "orphaned" : r.status;
+    } else if (unit && appliesTo(unit, r.locale)) {
       next = !r.hasValue ? "missing" : r.hash === unit.hash ? "translated" : "needs_update";
     } else if (r.status === "orphaned") {
       // Back (an undo), but not translatable now: keep it, not orphaned.
@@ -590,7 +698,7 @@ export function reconcile(
   const inserts: { locale: string; unit: SourceUnit }[] = [];
   for (const u of snapshot.units) {
     for (const l of locales) {
-      if (!appliesTo(u, l) || have.has(indexKey(l, u.address))) continue;
+      if (!appliesTo(u, l) || u.link || have.has(indexKey(l, u.address))) continue;
       // A term's two parts share one row: insert it once.
       if (
         u.term &&
@@ -630,7 +738,7 @@ export function entryStates(
 ): { address: string; label: string; locales: Record<string, EntryLanguageState> }[] {
   const unitsByEntry = new Map<string, SourceUnit[]>();
   for (const u of snapshot.units) {
-    if (u.target !== target || u.entry === null) continue;
+    if (u.target !== target || u.entry === null || u.link) continue;
     unitsByEntry.set(u.entry, [...(unitsByEntry.get(u.entry) ?? []), u]);
   }
   return snapshot.entries

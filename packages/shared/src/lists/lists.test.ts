@@ -374,6 +374,8 @@ describe("page types and addresses", () => {
       `instance/${LIST}/features/item/${ITEM}/text`,
       `page/${PAGE}/props/author`,
       `list_type/${LIST}/node/entry/label`,
+      "source/consent_categories/item/necessary/label",
+      "source/consent_vendors/item/tag:abc.1/purpose",
     ]) {
       const a = parseValueAddress(s);
       expect(a).not.toBeNull();

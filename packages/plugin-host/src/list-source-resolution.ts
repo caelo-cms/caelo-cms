@@ -38,6 +38,7 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import { overlayListSources } from "./list-source-overlays.js";
 import { pluginListSourcesRegistry } from "./list-sources.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
 
@@ -119,15 +120,30 @@ export function checkListSourceEntries(
  * @param pageIds pages being rendered in this pass.
  * @param pageUrlStyle the serving target's page URL style, handed to the
  *   plugin so the page links it lists equal the canonical URLs (#590).
- * @returns the entries each page may iterate. Empty when no active plugin
- *   offers any — the common single-language case, which costs zero
- *   plugin calls.
+ * @returns the entries each page may iterate, in the page's variant
+ *   (#1323, `list-source-overlays.ts`). Empty when no active plugin offers
+ *   any — the common single-language case, which costs zero plugin calls.
  */
 export async function resolveListSources(
   pageIds: ReadonlyArray<string>,
   scope: RenderScope,
   pageUrlStyle: PageUrlStyle,
 ): Promise<ResolvedListSources> {
+  return overlayListSources(await sourceEntriesOf(pageIds, scope, pageUrlStyle), scope);
+}
+
+/**
+ * The entries the plugins answered, as they stored them: what a variant
+ * overlay starts from, and the text a translation is made of.
+ *
+ * @param pageIds pages being rendered in this pass.
+ * @param pageUrlStyle see {@link resolveListSources}.
+ */
+export async function sourceEntriesOf(
+  pageIds: ReadonlyArray<string>,
+  scope: RenderScope,
+  pageUrlStyle: PageUrlStyle,
+): Promise<Map<string, Record<string, PluginSourceEntry[]>>> {
   const out = new Map<string, Record<string, PluginSourceEntry[]>>();
   if (pageIds.length === 0) return out;
   const sources = pluginListSourcesRegistry.activeByOperation();

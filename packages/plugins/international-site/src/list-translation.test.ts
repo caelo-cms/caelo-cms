@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { ListItem, ListTypeDef } from "@caelo-cms/plugin-sdk";
+import type { ListItem, ListResolveSource, ListTypeDef } from "@caelo-cms/plugin-sdk";
 import {
   collectSources,
   findingsFor,
@@ -18,6 +18,7 @@ import {
   type ReconcileRow,
   reconcile,
   type StoredTranslation,
+  statusSummary,
   textHash,
   unitStatus,
 } from "./list-translation.js";
@@ -328,5 +329,175 @@ describe("terms, local lists and page properties", () => {
       }),
     );
     expect(done.values[`page/${PAGE}/props/subtitle`]).toBe("Faire Preise");
+  });
+});
+
+describe("#1324 — an external link is a per-language value", () => {
+  const URL_DE = "https://example.org/de/glossar";
+  const URL_EN = "https://example.org/en/glossary";
+  const external = entry(A, {
+    label: "Glossar",
+    link: { href: URL_DE, target: "_blank" },
+  });
+  const internal = entry(B, { label: "Preise", link: { href: `caelo:page/${PAGE}` } });
+  const s = snapshot([external, internal]);
+  const link = (id: string) => addr(id, "link");
+  const label = addr(A, "label");
+  const texts = { [label]: { value: "Glossary", hash: textHash("Glossar") } };
+
+  it("without a value of its own the language shows the source's link, and nothing is due", () => {
+    const idx = index(texts);
+    expect(Object.hasOwn(overlay(s, idx).values, link(A))).toBe(false);
+    const unit = s.units.find((u) => u.address === link(A));
+    expect(unit && unitStatus(unit, "de", idx)).toBe("translated");
+    expect(reconcile(s, ["de"], [], "t").inserts.map((i) => i.unit.address)).not.toContain(link(A));
+    const found = findingsFor(s, { code: "de", display_name: "Deutsch" }, idx, allLinksOk, none);
+    expect(found.map((f) => f.address)).not.toContain(link(A));
+    const counts = statusSummary(s, ["de"], idx).find((c) => c.target === `list:${LIST}`);
+    expect(counts?.locales.de?.translated).toBe(1);
+  });
+
+  it("a stored value replaces the href only, and every other entry is untouched", () => {
+    const o = overlay(s, index({ ...texts, [link(A)]: { value: URL_EN, hash: textHash(URL_DE) } }));
+    expect(o.values[link(A)]).toEqual({ href: URL_EN, target: "_blank" });
+    expect(Object.hasOwn(o.values, link(B))).toBe(false);
+    expect(o.hidden.filter((h) => h.startsWith(`list/${LIST}/`))).not.toContain(entryAddr(A));
+  });
+
+  it("a changed source link is offered again, and the language's value stays until redone", () => {
+    const moved = snapshot([
+      entry(A, { label: "Glossar", link: { href: "https://example.org/de/lexikon" } }),
+    ]);
+    const idx = index({ ...texts, [link(A)]: { value: URL_EN, hash: textHash(URL_DE) } });
+    const unit = moved.units.find((u) => u.address === link(A));
+    expect(unit && unitStatus(unit, "de", idx)).toBe("needs_update");
+    expect(overlay(moved, idx).values[link(A)]).toEqual({
+      href: URL_EN,
+    });
+  });
+
+  it("an internal link is no unit: it follows the page language by itself", () => {
+    expect(s.units.map((u) => u.address)).not.toContain(link(B));
+    expect(s.internalLinks.has(link(B))).toBe(true);
+  });
+
+  it("translate: false keeps a link out", () => {
+    const fixed: ListTypeDef = {
+      ...menu,
+      nodes: {
+        entry: {
+          label: "Entry",
+          fields: [
+            {
+              name: "link",
+              label: "Link",
+              type: "link",
+              ext: { "international-site": { translate: false } },
+            },
+          ],
+        },
+      },
+    };
+    const out = collectSources({
+      listTypes: new Map([["menu", fixed]]),
+      lists: [
+        {
+          id: LIST,
+          slug: "x",
+          name: "X",
+          type: "menu",
+          items: [entry(A, { link: { href: URL_DE } })],
+        },
+      ],
+      instances: [],
+      pageProps: [],
+    });
+    expect(out.units).toEqual([]);
+  });
+
+  it("a local list's entry behaves the same", () => {
+    const local = snapshot([], { instance: [entry(C, { label: "Doc", link: { href: URL_DE } })] });
+    expect(local.units.map((u) => u.address)).toContain(`instance/${CI}/links/item/${C}/link`);
+  });
+});
+
+describe("#1323 — a plugin source's text", () => {
+  const consent: ListResolveSource = {
+    name: "consent_categories",
+    label: "Consent categories",
+    fields: [
+      {
+        name: "label",
+        label: "Label",
+        type: "text",
+        required: true,
+        ext: { "international-site": { translate: true } },
+      },
+      { name: "note", label: "Note", type: "text", ext: { "international-site": {} } },
+    ],
+    entries: [{ id: "marketing", values: { label: "Werbung", note: "intern" } }],
+  };
+  const s = collectSources({
+    listTypes: types,
+    lists: [],
+    instances: [],
+    pageProps: [],
+    pluginSources: [consent],
+  });
+  const address = "source/consent_categories/item/marketing/label";
+  const de = { code: "de", display_name: "Deutsch" };
+  const hash = textHash("Werbung");
+
+  it("only a field that opted in is a unit", () => {
+    expect(s.units.map((u) => u.address)).toEqual([address]);
+    expect(s.units[0]?.target).toBe("source:consent_categories");
+  });
+
+  it("a current translation shows", () => {
+    const idx = index({ [address]: { value: "Advertising", hash } });
+    expect(overlay(s, idx).values[address]).toBe("Advertising");
+    expect(findingsFor(s, de, idx, allLinksOk, none)).toEqual([]);
+  });
+
+  it("a missing one renders the source text, never hides the entry, and is a finding", () => {
+    const idx = index({});
+    const o = overlay(s, idx);
+    expect(o).toEqual({ values: {}, hidden: [] });
+    const f = findingsFor(s, de, idx, allLinksOk, none);
+    expect(f.map((x) => x.code)).toEqual(["list-translation-missing"]);
+    expect(f[0]?.message).toContain("shows in the source language");
+    expect(f[0]?.message).not.toContain("hidden");
+  });
+
+  it("an outdated one is not shown: a stale sentence must not stand at a decision", () => {
+    const idx = index({ [address]: { value: "Advertising", hash: textHash("Alt") } });
+    expect(overlay(s, idx).values).toEqual({});
+    expect(findingsFor(s, de, idx, allLinksOk, none).map((x) => x.code)).toEqual([
+      "list-translation-missing",
+    ]);
+  });
+
+  it("a source that did not answer orphans nothing; an entry it dropped is orphaned", () => {
+    const silent = snapshot([]);
+    const stored = {
+      id: "r",
+      locale: "de",
+      address,
+      hasValue: true,
+      hash,
+      status: "translated" as const,
+      orphanedAt: null,
+    };
+    expect(reconcile(silent, ["de"], [stored], "t").updates).toEqual([]);
+    const dropped = collectSources({
+      listTypes: types,
+      lists: [],
+      instances: [],
+      pageProps: [],
+      pluginSources: [{ ...consent, entries: [] }],
+    });
+    expect(reconcile(dropped, ["de"], [stored], "t").updates.map((u) => u.status)).toEqual([
+      "orphaned",
+    ]);
   });
 });

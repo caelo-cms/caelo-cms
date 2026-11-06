@@ -199,6 +199,10 @@ export interface ChromeTranslationTarget {
   /** Operator-facing description ("Footer (layout default, block footer)"). */
   readonly label: string;
   readonly strings: readonly TranslatableString[];
+  /** A plugin's fixed statements, translated strictly (`buildChromeTranslationPrompt`). */
+  readonly faithful?: boolean;
+  /** Some of the strings are external link addresses. */
+  readonly links?: boolean;
 }
 
 /** The translator's answer: every offered path of every offered target. */
@@ -284,6 +288,16 @@ export function buildChromeTranslationPrompt(input: {
     `Target locale: ${input.targetLocale} (${input.targetLocaleDisplayName}).`,
     "",
     "Translate every string listed below. Menu labels stay short (navigation labels, not sentences); keep the same term for the same thing across targets. Preserve HTML tags and attributes inside a string verbatim.",
+    ...(input.targets.some((t) => t.faithful)
+      ? [
+          "Targets marked (exact meaning) state what a site feature does, and a visitor may decide on them, for example a consent choice. Translate them faithfully: the same purpose and the same scope in the target language's usual wording. Do not soften, shorten, extend or market them, and do not leave one empty.",
+        ]
+      : []),
+    ...(input.targets.some((t) => t.links)
+      ? [
+          "A string that is a URL is an external link whose source address changed. Answer the address this language should link to: the source's URL, unless you know that site has its own page for this language.",
+        ]
+      : []),
     "",
     'Respond with a JSON object matching: {"targets": [{"target": "<the target id from the heading, copied EXACTLY — e.g. c0>", "strings": {"<path, copied exactly>": "<translated string>", ...}}, ...]}. Return EVERY target and EVERY path listed — nothing more.',
     input.glossaryBlock,
@@ -296,7 +310,7 @@ export function buildChromeTranslationPrompt(input: {
     "",
     ...input.targets.map((t) =>
       [
-        `### Target ${t.id} (${t.label})`,
+        `### Target ${t.id} (${t.label})${t.faithful ? " (exact meaning)" : ""}`,
         ...t.strings.map((s) => `${s.path}:\n\`\`\`\n${s.text}\n\`\`\``),
       ].join("\n"),
     ),
