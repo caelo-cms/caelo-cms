@@ -114,6 +114,8 @@ const READS: ReadonlyArray<readonly [string, Zone, string, PluginQueryFilter]> =
   ["international-site", "adminSchema", "chrome_variants", { orderBy: "id", orderDir: "asc" }],
   ["international-site", "adminSchema", "glossary", { locale_code: "de" }],
   ["international-site", "adminSchema", "glossary", { term: "x", locale_code: "de" }],
+  ["international-site", "adminSchema", "neutral_terms", { locale_code: "de" }],
+  ["international-site", "adminSchema", "neutral_terms", { anyOf: { locale_code: ["de", "*"] } }],
   [
     "international-site",
     "adminSchema",

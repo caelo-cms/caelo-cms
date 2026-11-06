@@ -93,6 +93,7 @@ describe("#394 — international-site skeleton on the foundation", () => {
         "list_item_visibility",
         "list_value_translations",
         "locales",
+        "neutral_terms",
         "page_prop_translations",
         "page_variants",
         "settings",
