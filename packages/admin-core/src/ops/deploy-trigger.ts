@@ -367,7 +367,12 @@ export const startTriggerOp = defineOperation({
           startedAt,
           message: `Blocked, missing SEO: ${missingSeo}`,
         });
-        return err({ kind: "HandlerError", operation: "deploy.trigger", message: missingSeo });
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: missingSeo,
+          refusal: true,
+        });
       }
     }
     // #1240 — every build, whatever it merged: a page published in the panel
@@ -383,7 +388,12 @@ export const startTriggerOp = defineOperation({
           startedAt,
           message: `Blocked, links: ${links.message}`,
         });
-        return err({ kind: "HandlerError", operation: "deploy.trigger", message: links.message });
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: links.message,
+          refusal: true,
+        });
       }
       linkWarnings = links.warnings;
       linkNotice = links.notice;
@@ -401,7 +411,7 @@ export const startTriggerOp = defineOperation({
         message: `Blocked, plugins not running: ${message}`,
         pluginProblems,
       });
-      return err({ kind: "HandlerError", operation: "deploy.trigger", message });
+      return err({ kind: "HandlerError", operation: "deploy.trigger", message, refusal: true });
     }
     // #553 — a production build publishes what is staged, so it passes the
     // same quality gate as Publish live (production-gate.ts). A refusal is
@@ -415,7 +425,12 @@ export const startTriggerOp = defineOperation({
           startedAt,
           message: `Blocked by the quality gate: ${gate.message}`,
         });
-        return err({ kind: "HandlerError", operation: "deploy.trigger", message: gate.message });
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.trigger",
+          message: gate.message,
+          refusal: true,
+        });
       }
       override = gate.override;
     }
@@ -732,6 +747,7 @@ async function runTrigger(
   const fail = async (
     stored: string,
     reply: string = stored,
+    refusal = false,
   ): Promise<Result<TriggerOutput, QueryError>> => {
     const r = await execute(registry, adapter, sys, "deploy.fail_run", {
       runId,
@@ -743,7 +759,12 @@ async function runTrigger(
     // A given-up upload serves nothing (no-op once publishStaging finished it).
     await upload?.abort();
     logRunTimings(runKind, runId, timer, { status: "failed" });
-    return err({ kind: "HandlerError", operation: "deploy.trigger", message: reply });
+    return err({
+      kind: "HandlerError",
+      operation: "deploy.trigger",
+      message: reply,
+      ...(refusal ? { refusal: true as const } : {}),
+    });
   };
 
   try {
@@ -849,6 +870,7 @@ async function runTrigger(
       return await fail(
         subprocess.message + tail,
         `generator failed: ${subprocess.message}${stderrTail}`,
+        subprocess.refusal === true,
       );
     }
     const built = subprocess.result;

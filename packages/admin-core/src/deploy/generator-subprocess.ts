@@ -135,6 +135,8 @@ interface SubprocessError {
   message: string;
   /** #1240 — set when the render gate stopped the build. */
   renderFailures?: unknown;
+  /** #1484 — the generator refused the site's content, it did not fail. */
+  refusal?: true;
 }
 /** #1271 — one served file the generator streams to the upload. */
 interface SubprocessFile {
@@ -254,6 +256,11 @@ export type GeneratorOutcome =
       readonly stderr: string;
       /** #1240 — what the render gate refused; absent for any other failure. */
       readonly renderFailures?: readonly RenderFailure[];
+      /**
+       * #1484 — the build refused the site's content (`BuildRefusal`):
+       * `message` names what to fix. Absent on every other failure.
+       */
+      readonly refusal?: true;
     };
 
 /**
@@ -454,6 +461,7 @@ async function runGeneratorProcess(
           message: finalEvent.message,
           stderr,
           ...(failures.success ? { renderFailures: failures.data } : {}),
+          ...(finalEvent.refusal === true ? { refusal: true as const } : {}),
         });
       } else {
         finish({

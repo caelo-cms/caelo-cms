@@ -456,6 +456,7 @@ export const setPluginAiCostCapOp = defineOperation({
         kind: "HandlerError",
         operation: "plugins.set_ai_cost_cap",
         message: "plugin not found",
+        refusal: true,
       });
     }
     await recordAudit(tx, {

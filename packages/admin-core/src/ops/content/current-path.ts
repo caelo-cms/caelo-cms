@@ -235,6 +235,7 @@ export const refreshCurrentPathOp = defineOperation({
         kind: "HandlerError",
         operation: "pages.refresh_current_path",
         message: "page not found or deleted",
+        refusal: true,
       });
     }
     const scope = renderScopeOf(ctx, tx);

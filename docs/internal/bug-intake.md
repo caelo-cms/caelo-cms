@@ -56,6 +56,10 @@ Every report carries a `kind` (#1192):
 
 The two kinds have separate fingerprint indexes, candidate pools (`candidates/pool` and `candidates/suggestion-pool`), daily counters (`issueSlots`, `suggestionIssueSlots`) and queues (`pendingIssues`, `pendingSuggestionIssues`), so a suggestion and a defect with the same text, even the same fingerprint, end in two clusters. A report without `kind`, which is what installs released before #1192 send, is a defect; so is every cluster and pool entry stored before #1192. No step is needed on upgrade: the suggestion pool is built on first use.
 
+Automatic capture files only failures whose structure does not say they are expected (`packages/admin-core/src/ai/chat-runner/tool-failure-capture.ts`, #1484). A refusal the AI is meant to act on is not a report: a validation error, a conflict, an error that names its input path or next tool, a `refusal` such as a lookup of an id not in view or a Stage the build refused over the site's content. A failure with no such structure stays a report, so an unhandled exception, a provider failure or an internal error is still filed. One escape: when one chat gets the same refusal from one tool 5 times, a single `cosmetic` report says so, because the AI may be stuck.
+
+A report from a CI run carries `ciRun` (run URL, branch, commit; #1416). Its issue shows a **Filed by CI** row, and the run is counted apart from installs: it never adds to "Installs reporting it" or to a milestone. A CI report opens its issue without waiting for the install threshold. The workflow marks these with `CAELO_E2E_FORWARD_BUGS=1`; an intake older than this field refuses them, so deploy the intake first.
+
 A suggestion issue asks maintainers to close it as **not planned** when the idea is rejected (installs then show "Won't be done") and as completed when it ships.
 
 ## One-time setup

@@ -43,6 +43,7 @@ export const moduleImpactOp = defineOperation({
         kind: "HandlerError",
         operation: "snapshots.module_impact",
         message: "module not found",
+        refusal: true,
       });
     }
 

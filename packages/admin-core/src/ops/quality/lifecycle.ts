@@ -420,6 +420,7 @@ export const enqueueAuditOp = defineOperation({
         message: run
           ? `deploy run ${input.deployRunId} is a ${run.status} ${run.env} run — only a succeeded staging deploy is audited`
           : `deploy run ${input.deployRunId} not found`,
+        refusal: true,
       });
     }
 

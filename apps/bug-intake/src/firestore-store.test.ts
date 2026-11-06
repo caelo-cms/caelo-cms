@@ -152,6 +152,7 @@ const cluster = (id: string, over: Partial<ClusterRecord> = {}): ClusterRecord =
   blockedTask: false,
   fingerprints: ["a".repeat(64)],
   installHashes: [],
+  ciRuns: [],
   occurrences: 0,
   versions: [],
   firstSeen: "2026-10-21T10:00:00.000Z",

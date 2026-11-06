@@ -149,6 +149,7 @@ export {
   writeMainPluginColumn,
 } from "./link-locations.js";
 export {
+  clearLinkResolveCache,
   hasLinkResolveContributors,
   type ResolvedLinkVariants,
   resolveLinkVariants,

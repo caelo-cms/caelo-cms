@@ -121,6 +121,7 @@ export const proposeAiProvidersClearKeyOp = defineOperation({
         kind: "HandlerError",
         operation: "ai_providers.propose_clear_key",
         message: `provider ${input.name} not found`,
+        refusal: true,
       });
     }
     if (!e.has_db_key) {

@@ -32,6 +32,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   bootstrap,
+  clearLinkResolveCache,
   collectContributions,
   MAIN_RENDER,
   type RenderScope,
@@ -46,6 +47,7 @@ import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 
@@ -174,6 +176,17 @@ interface PreviewResult {
  * the link partition for the pages the page references, and the head
  * contributions (hreflang).
  */
+/** A human Owner (unlinking a variant needs content.write); returns its actor id. */
+async function seedOwner(): Promise<string> {
+  const owner = crypto.randomUUID();
+  await sqlSystem(async (tx) => {
+    await tx`INSERT INTO actors (id, kind, display_name) VALUES (${owner}::uuid, 'human', 'Owner')`;
+    await tx`INSERT INTO users (id, email, password_hash) VALUES (${owner}::uuid, ${`${owner}@t1269.test`}, 'test-only')`;
+    await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${owner}::uuid, id FROM roles WHERE name = 'owner'`;
+  });
+  return owner;
+}
+
 /** The editor toolbar's language place for `pageId`, and the operations it ran (#1255). */
 async function languageToolbar(
   pageId: string,
@@ -204,6 +217,9 @@ async function preview(
 ): Promise<PreviewResult> {
   const scope: RenderScope = { chatBranchId, renderId: crypto.randomUUID() };
   const calls: string[] = [];
+  // Each preview here measures a cold pass; the kept link-resolve answers
+  // (#1269) have their own tests below.
+  clearLinkResolveCache();
   previewsRunning += 1;
   return previewCalls
     .run(calls, async () => {
@@ -216,7 +232,7 @@ async function preview(
       if (!annotated.ok) throw new Error(annotated.error.message);
       const sources = await resolveListSources([pageId], scope, "directory");
       await resolveContentVariants([{ pageId, placements: [] }], scope);
-      await resolveLinkVariants([pageId, ...referenced], scope);
+      await resolveLinkVariants([pageId, ...referenced], scope, { keep: true });
       const contributed = await collectContributions([pageId], {
         ...scope,
         siteBaseUrl: BASE,
@@ -248,7 +264,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
   await cleanup();
   const report = await bootstrap({
-    infra: { adapter, registry },
+    infra: { adapter, registry, lockPluginRow },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [{ definition: intlPlugin }],
@@ -311,8 +327,12 @@ describe("#1213 — international-site render hooks at scale", () => {
     expect(smallPreview.switcher).toEqual(["en", "de"]);
     // The pass shares its reads: 35 operations before #1213 (the registry
     // and the variant rows re-read by every hook, two whole-site
-    // pages.list), 14 since. A new read in a render hook shows up here.
-    expect(smallPreview.calls.length).toBeLessThanOrEqual(14);
+    // pages.list), 14 since. #1269 adds the host's one journal check of the
+    // kept link-resolve answers, and a cold refill reads in a pass of its
+    // own (so it is read after the mark it is kept with): 17. A warm pass
+    // asks the plugin nothing. A new read in a render hook shows up here.
+    expect(smallPreview.calls.length).toBeLessThanOrEqual(17);
+    expect(smallPreview.calls).toContain("system:plugin_changes.check_mark");
     expect(smallPreview.calls).not.toContain("plugin:pages.list");
   });
 
@@ -457,5 +477,147 @@ describe("#1213 — international-site render hooks at scale", () => {
         (tx) => tx`DELETE FROM chat_sessions WHERE id = ${session.chatSessionId}::uuid`,
       );
     }
+  });
+
+  it("keeps the link-resolve answers until a declared column changes (#1269)", async () => {
+    const [pair] = await seedGroups("k", 1);
+    if (!pair) throw new Error("seed");
+    const pass = async (ids: string[]) => {
+      const calls: string[] = [];
+      const partition = await previewCalls.run(calls, () =>
+        resolveLinkVariants(
+          ids,
+          { chatBranchId: null, renderId: crypto.randomUUID() },
+          { keep: true },
+        ),
+      );
+      return { calls, partition };
+    };
+    const asked = [pair.en, pair.de];
+    clearLinkResolveCache();
+    // A page asked about twice is one page, kept or not.
+    for (const keep of [false, true]) {
+      const twice = await resolveLinkVariants(
+        [pair.de, pair.de],
+        { chatBranchId: null, renderId: crypto.randomUUID() },
+        { keep },
+      );
+      expect(twice.get(pair.de)?.variant).toBe("de");
+    }
+    clearLinkResolveCache();
+    const cold = await pass(asked);
+    expect(cold.calls.filter((c) => c.startsWith("plugin:")).length).toBeGreaterThan(0);
+    expect(cold.partition.get(pair.de)?.variant).toBe("de");
+
+    // Nothing changed: one journal check, the plugin is not asked.
+    const warm = await pass(asked);
+    expect(warm.calls).toEqual(["system:plugin_changes.check_mark"]);
+    expect([...warm.partition]).toEqual([...cold.partition]);
+
+    // A translation's status is no column the answer reads.
+    await sqlSystem(async (tx) => {
+      await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${pluginId}', true)`);
+      await tx.unsafe(
+        `UPDATE plugin_international_site.page_variants SET translation_status = 'needs_update' WHERE page_id = '${pair.de}'`,
+      );
+    });
+    expect((await pass(asked)).calls).toEqual(["system:plugin_changes.check_mark"]);
+
+    // A page not asked about before: the plugin is asked about it alone.
+    const more = await pass([...asked, small[1]?.de ?? ""]);
+    expect(more.calls.filter((c) => c.startsWith("plugin:")).length).toBeGreaterThan(0);
+    expect(more.partition.get(small[1]?.de ?? "")?.variant).toBe("de");
+
+    // The page leaves its group on main, through the storage API (a delete
+    // there is an update of the host's caelo_deleted_at): asked again, and
+    // the answer follows.
+    const owner = await seedOwner();
+    const unlinked = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: owner },
+      pluginSlug: "international-site",
+      operationName: "unlink_page_variants",
+      args: { pageId: pair.de },
+    });
+    if (!unlinked.ok) throw new Error(`${unlinked.error.kind}: ${unlinked.error.message}`);
+    const after = await pass(asked);
+    expect(after.calls.filter((c) => c.startsWith("plugin:")).length).toBeGreaterThan(0);
+    expect(after.partition.get(pair.de)?.group ?? null).toBeNull();
+  });
+
+  it("a chat's pending variant change re-asks in that chat only; main keeps its answers (#1269)", async () => {
+    const [pair] = await seedGroups("kb", 1);
+    if (!pair) throw new Error("seed");
+    const session = await sysOp<{ chatSessionId: string; chatBranchId: string }>(
+      "chat.create_session",
+      { isolation: "experiment", title: `${PFX}kb-chat` },
+    );
+    const pass = async (chatBranchId: string | null) => {
+      const calls: string[] = [];
+      const partition = await previewCalls.run(calls, () =>
+        resolveLinkVariants(
+          [pair.en, pair.de],
+          { chatBranchId, renderId: crypto.randomUUID() },
+          { keep: true },
+        ),
+      );
+      return { asked: calls.some((c) => c.startsWith("plugin:")), partition };
+    };
+    clearLinkResolveCache();
+    await pass(null);
+    await pass(session.chatBranchId);
+    expect((await pass(null)).asked).toBe(false);
+    expect((await pass(session.chatBranchId)).asked).toBe(false);
+
+    // The chat (acting for an Owner: unlinking needs content.write)
+    // unlinks the German page: a pending row on its branch.
+    const owner = await seedOwner();
+    const unlinked = await runPluginOperation({
+      invocation: {
+        origin: "chat",
+        actorId: owner,
+        operatorActorId: owner,
+        chatBranchId: session.chatBranchId,
+        chatTaskId: session.chatSessionId,
+      },
+      pluginSlug: "international-site",
+      operationName: "unlink_page_variants",
+      args: { pageId: pair.de },
+    });
+    if (!unlinked.ok) throw new Error(`${unlinked.error.kind}: ${unlinked.error.message}`);
+
+    const inChat = await pass(session.chatBranchId);
+    expect(inChat.asked).toBe(true);
+    expect(inChat.partition.get(pair.de)?.group ?? null).toBeNull();
+    const onMain = await pass(null);
+    expect(onMain.asked).toBe(false);
+    expect(onMain.partition.get(pair.de)?.variant).toBe("de");
+  });
+
+  it("a kept refill is read after its mark, not from an earlier hook of the pass (#1269)", async () => {
+    const [pair] = await seedGroups("km", 1);
+    if (!pair) throw new Error("seed");
+    clearLinkResolveCache();
+    const scope: RenderScope = { chatBranchId: null, renderId: crypto.randomUUID() };
+    // An earlier hook of the same pass memoizes the variant rows.
+    const annotated = await runPluginOperation({
+      invocation: renderInvocation(scope),
+      pluginSlug: "international-site",
+      operationName: "url_annotations",
+      args: { pageIds: [pair.de] },
+    });
+    if (!annotated.ok) throw new Error(annotated.error.message);
+    // The variant leaves its group before the partition is asked for.
+    const owner = await seedOwner();
+    const unlinked = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: owner },
+      pluginSlug: "international-site",
+      operationName: "unlink_page_variants",
+      args: { pageId: pair.de },
+    });
+    if (!unlinked.ok) throw new Error(`${unlinked.error.kind}: ${unlinked.error.message}`);
+    const partition = await resolveLinkVariants([pair.de], scope, { keep: true });
+    // Kept with a mark that has seen the unlink: it must not be the
+    // memoized grouped row.
+    expect(partition.get(pair.de)?.group ?? null).toBeNull();
   });
 });

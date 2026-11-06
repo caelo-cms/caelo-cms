@@ -12,6 +12,7 @@
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
+  clearLinkResolveCache,
   pluginWorkerScheduler,
   resetPluginHost,
   runPluginOperation,
@@ -237,6 +238,11 @@ export async function setupCostSite(opts: {
     lastStatements: () => statements,
     seedFillerPages,
     measure: async () => {
+      // Cold for the plugins' kept link-resolve answers too (#1269): kept
+      // ones would answer for the pages a previous measure saw and ask
+      // only about pages added since, so a site that grew would look as
+      // if its render cost grew with it.
+      clearLinkResolveCache();
       const cold = await count({ pageId: page.pageId });
       const warm = await count({ pageId: page.pageId });
       const branchCold = await count({ pageId: page.pageId, chatBranchId: branchId });

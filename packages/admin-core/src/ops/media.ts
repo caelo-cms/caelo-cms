@@ -495,6 +495,7 @@ export const mediaUpdateAltOp = defineOperation({
         kind: "HandlerError",
         operation: "media.update_alt",
         message: "asset not found",
+        refusal: true,
       });
     }
     await recordAudit(tx, {
@@ -540,6 +541,7 @@ export const mediaSetSourceOp = defineOperation({
         kind: "HandlerError",
         operation: "media.set_source",
         message: "media asset not found",
+        refusal: true,
       });
     }
     await recordAudit(tx, {
@@ -580,6 +582,7 @@ export const mediaSetVisibilityOp = defineOperation({
         kind: "HandlerError",
         operation: "media.set_visibility",
         message: 'media asset not found — take the id from find_media (visibility: "all")',
+        refusal: true,
       });
     }
     await recordAudit(tx, {
@@ -625,6 +628,7 @@ export const mediaDeleteOp = defineOperation({
         kind: "HandlerError",
         operation: "media.delete",
         message: "asset not found",
+        refusal: true,
       });
     }
 
@@ -837,6 +841,7 @@ export const setFocalPointOp = defineOperation({
         kind: "HandlerError",
         operation: "media.set_focal_point",
         message: "asset not found",
+        refusal: true,
       });
     }
     await recordAudit(tx, {
@@ -919,6 +924,7 @@ export const deleteCropOp = defineOperation({
         kind: "HandlerError",
         operation: "media.delete_crop",
         message: "crop not found",
+        refusal: true,
       });
     }
     await recordAudit(tx, {
@@ -998,6 +1004,7 @@ export const getProcessingStatusOp = defineOperation({
         kind: "HandlerError",
         operation: "media.get_processing_status",
         message: "asset not found",
+        refusal: true,
       });
     }
     return ok({

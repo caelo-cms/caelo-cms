@@ -6,11 +6,8 @@
  * specify one. Per CLAUDE.md §2 the renderer never substitutes —
  * site_defaults is a *create-time* resolver, not a render-time fallback.
  *
- * #1276 — there is no default page type or template any more: a page's
- * type is always chosen (pageType, or a template of exactly one type),
- * so nothing reads `default_template_id` / `default_page_type_id`; 0444
- * left the columns for the previous image and the next release drops
- * them.
+ * #1276 — there is no default page type or template: a page's type is
+ * always chosen (pageType, or a template of exactly one type).
  *
  * Writes are open to AI per CLAUDE.md §11.A: the only side-effect of
  * a defaults change is "future templates that omit the layout resolve
@@ -181,6 +178,7 @@ export const setSiteDefaultsOp = defineOperation({
         kind: "HandlerError",
         operation: "site_defaults.set",
         message: "default layout not found or deleted",
+        refusal: true,
       });
     }
     // v0.5.16 — site_defaults.id is `int GENERATED ALWAYS AS IDENTITY`

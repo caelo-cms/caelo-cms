@@ -189,11 +189,12 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
       });
       return stillRunningResult(toolCtx, opCtx, deployRunId);
     }
-    if (!staged.ok)
-      return {
-        ok: false,
-        content: `Stage failed (${staged.error.step}): ${staged.error.aiMessage ?? staged.error.message}`,
-      };
+    if (!staged.ok) {
+      return toolError(
+        staged.error.error,
+        `Stage failed (${staged.error.step}): ${staged.error.aiMessage ?? staged.error.message}`,
+      );
+    }
     const v = staged.value;
     // #678 — a draft page is never built: name them and the next step, so
     // a "successful" Stage does not hide pages the operator expects.

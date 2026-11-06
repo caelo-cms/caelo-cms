@@ -56,6 +56,7 @@ export const revertSiteOp = defineOperation({
         kind: "HandlerError",
         operation: "snapshots.revert_site",
         message: "snapshot not found",
+        refusal: true,
       });
     }
 
