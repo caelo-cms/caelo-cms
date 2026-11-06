@@ -112,9 +112,43 @@ export function uuidArray(values: readonly string[]) {
   return sql`ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(values)}::text)::jsonb)::uuid)`;
 }
 
+/** Every operation a journal row can carry. */
+const ALL_OPS: readonly JournalChange["op"][] = ["insert", "update", "delete", "truncate"];
+
+/**
+ * The asked kinds with the operations that count for each, grouped by
+ * those operations: one `(kind = ANY(...) [AND op = ANY(...)])` per group,
+ * ORed (an OR of index ranges is a BitmapOr). A group that does not count
+ * inserts also names `op <> 'insert'`, the predicate of the partial index
+ * of 0650: there a kind's inserts the reader ignores (the snapshot header
+ * every write inserts) are not in the index range at all.
+ */
+function kindOpsSql(filter: JournalFilter, a: ReturnType<typeof sql.raw>) {
+  const groups = new Map<string, { ops: readonly string[]; kinds: string[] }>();
+  for (const kind of filter.kinds) {
+    const ops = [...(filter.kindOps?.[kind] ?? ALL_OPS)].sort();
+    const key = ops.join(",");
+    const group = groups.get(key) ?? { ops, kinds: [] };
+    group.kinds.push(kind);
+    groups.set(key, group);
+  }
+  if (groups.size === 0) return sql`false`;
+  return sql`(${sql.join(
+    [...groups.values()].map((g) =>
+      g.ops.length === ALL_OPS.length
+        ? sql`${a}.kind = ANY(${textArray(g.kinds)})`
+        : g.ops.includes("insert")
+          ? sql`(${a}.kind = ANY(${textArray(g.kinds)}) AND ${a}.op = ANY(${textArray(g.ops)}))`
+          : sql`(${a}.kind = ANY(${textArray(g.kinds)}) AND ${a}.op = ANY(${textArray(g.ops)})
+                 AND ${a}.op <> 'insert')`,
+    ),
+    sql` OR `,
+  )})`;
+}
+
 function filterSql(filter: JournalFilter, alias = "ec") {
   const a = sql.raw(alias);
-  const parts = [sql`${a}.kind = ANY(${textArray(filter.kinds)})`];
+  const parts = [kindOpsSql(filter, a)];
   if (filter.branchId !== undefined) {
     const scoped =
       filter.branchId === null
@@ -129,9 +163,6 @@ function filterSql(filter: JournalFilter, alias = "ec") {
         : []),
     ];
     parts.push(unscoped.length > 0 ? sql`(${sql.join([...unscoped, scoped], sql` OR `)})` : scoped);
-  }
-  for (const [kind, ops] of Object.entries(filter.kindOps ?? {})) {
-    parts.push(sql`(${a}.kind <> ${kind} OR ${a}.op = ANY(${textArray(ops)}))`);
   }
   for (const [kind, columns] of Object.entries(filter.columns ?? {})) {
     parts.push(
@@ -171,7 +202,9 @@ function filterSql(filter: JournalFilter, alias = "ec") {
  * poll after every write re-read the journal since it began (#1392: 894 s
  * of the scale gate's database time, 42,000 buffers per read). Callers
  * keep the exact visibility test. Their kind filter applies inside each
- * range through `(kind, xid)` (0602), so rows of other kinds cost nothing.
+ * range through `(kind, xid)` (0602), and a group that counts no inserts
+ * reads the non-insert partial index (0650): rows of other kinds, and the
+ * inserts such a reader ignores, cost nothing.
  */
 function unseenRows(cte: string, opts: { readonly withOwn?: boolean } = {}) {
   const c = sql.raw(cte);
