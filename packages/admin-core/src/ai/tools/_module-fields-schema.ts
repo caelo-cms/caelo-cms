@@ -116,7 +116,12 @@ function moduleFieldItemSchema(): Record<string, unknown> {
     required: ["name", "kind", "label"],
     properties: {
       name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-      kind: { type: "string", enum: [...MODULE_FIELD_KINDS] },
+      kind: {
+        type: "string",
+        enum: [...MODULE_FIELD_KINDS],
+        description:
+          "`link` value: `{href, target?}`, read as {{f}} or {{f.href}}, {{f.target}}, {{f.title}} (no label: that is a text field of its own). Other scalars have no dot paths.",
+      },
       label: { type: "string", minLength: 1, maxLength: 128 },
       // The ORIGINAL value the placeholder replaced; its JSON shape varies
       // by `kind`. Each branch is concrete (an empty `{}` subschema is

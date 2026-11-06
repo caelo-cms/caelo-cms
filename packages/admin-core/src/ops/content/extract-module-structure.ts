@@ -492,10 +492,12 @@ export function validateTemplatizedModule(
   );
   // Match primitive {{name}}, single-nested {{>name}}, and list/section
   // {{#name}} / {{/name}} markers — all count as (top-level) references.
-  const ref = /\{\{\s*(?:>|#|\/)?\s*([a-z][a-z0-9_]*)\s*\}\}/g;
+  // A dotted {{field.href}} references its head when that is a field;
+  // {{page.title}} and the like reference none (#1433).
+  const ref = /\{\{\s*(?:>|#|\/)?\s*([a-z][a-z0-9_]*)(\.[a-z0-9_.]+)?\s*\}\}/g;
   let m: RegExpExecArray | null = ref.exec(topLevelHtml);
   while (m !== null) {
-    if (m[1]) referenced.add(m[1]);
+    if (m[1] && (m[2] === undefined || declared.has(m[1]))) referenced.add(m[1]);
     m = ref.exec(topLevelHtml);
   }
   for (const name of referenced) {

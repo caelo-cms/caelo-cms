@@ -89,17 +89,26 @@ function holdsNeedle(needle: ContentInstanceNeedle, valuesText: string): boolean
  * Content instances whose values contain at least one of `needles`. The
  * match is a superset (an id needle matches the id wherever it appears);
  * callers confirm with an exact parse of `valuesText`.
+ *
+ * @param liveLimitPerModuleNeedle for `id` needles that are module ids: read
+ *   at most this many live matches per module, for a caller that names
+ *   parents rather than listing every instance (a module nested in
+ *   thousands). Only matches that can survive count towards it.
  */
 export async function findContentInstancesContaining(
   tx: TransactionRunner,
   chatBranchId: string | null | undefined,
   needles: readonly ContentInstanceNeedle[],
+  liveLimitPerModuleNeedle?: number,
 ): Promise<ContentInstanceRef[]> {
   if (needles.length === 0) return [];
+  const branchId = chatBranchId ?? null;
   return loadInstancesInView(
     tx,
-    chatBranchId ?? null,
-    needleFilterSql(needles),
+    branchId,
+    liveLimitPerModuleNeedle === undefined
+      ? needleFilterSql(needles)
+      : boundedModuleNeedleFilterSql(needles, branchId, liveLimitPerModuleNeedle),
     { candidates: (branchId) => pendingNeedleCandidatesSql(branchId, needles) },
     (_moduleId, valuesText) => needles.some((n) => holdsNeedle(n, valuesText)),
   );
@@ -122,11 +131,61 @@ export function needleFilterSql(needles: readonly ContentInstanceNeedle[]): SQL 
                         WHERE ${sql.join(terms, sql` OR `)})`;
 }
 
-/** The live rows the caller sees that match `liveFilter` (see {@link loadInstancesInView}). */
-export function liveInstancesSql(branchId: string | null, liveFilter: SQL): SQL {
-  const visible = branchId
+/** Rows of `ci` the caller's branch can see. */
+function visibleInstanceSql(branchId: string | null): SQL {
+  return branchId
     ? sql`(ci.chat_branch_id IS NULL OR ci.chat_branch_id = ${branchId}::uuid)`
     : sql`ci.chat_branch_id IS NULL`;
+}
+
+/**
+ * {@link needleFilterSql} for module-id needles that stops after `limit`
+ * instances per module. Everything that would drop an instance later sits
+ * inside the limit, or a sample of dropped rows would report a nested module
+ * as unplaced while a surviving parent exists: visibility, the parent being
+ * another module that is not deleted, live or on this branch, and no pending
+ * state of the instance (those are read through the pending candidates).
+ */
+function boundedModuleNeedleFilterSql(
+  needles: readonly ContentInstanceNeedle[],
+  branchId: string | null,
+  limit: number,
+): SQL {
+  const ids = needles.flatMap((n) => {
+    if (n.kind !== "id") throw new Error("a bounded instance read takes module-id needles only");
+    return [n.id.toLowerCase()];
+  });
+  const notPending = branchId
+    ? sql`AND (SELECT true FROM draft_pending_entities h
+                WHERE h.chat_branch_id = ${branchId}::uuid
+                  AND h.entity_kind = 'contentInstance' AND h.entity_id = ci.id
+                LIMIT 1) IS NULL
+          AND NOT COALESCE((
+            SELECT (ms.state->>'deletedAt') IS NOT NULL
+              FROM draft_pending_entities h
+              JOIN module_snapshots ms ON ms.id = h.snapshot_row_id
+             WHERE h.chat_branch_id = ${branchId}::uuid
+               AND h.entity_kind = 'module' AND h.entity_id = ci.module_id
+             ORDER BY h.header_created_at DESC, h.row_created_at DESC, h.snapshot_row_id DESC
+             LIMIT 1), false)`
+    : sql``;
+  return sql`ci.id IN (
+    SELECT hit.id
+      FROM unnest(${textArray(ids)}) AS needle(ref)
+     CROSS JOIN LATERAL (
+       SELECT ci.id
+         FROM content_instance_refs r
+         JOIN content_instances ci ON ci.id = r.content_instance_id
+         JOIN modules parent ON parent.id = ci.module_id AND parent.deleted_at IS NULL
+        WHERE r.ref_kind = 'id' AND r.ref = needle.ref AND ci.module_id::text <> needle.ref
+          AND ci.deleted_at IS NULL AND ${visibleInstanceSql(branchId)} ${notPending}
+        LIMIT ${limit}
+     ) hit)`;
+}
+
+/** The live rows the caller sees that match `liveFilter` (see {@link loadInstancesInView}). */
+export function liveInstancesSql(branchId: string | null, liveFilter: SQL): SQL {
+  const visible = visibleInstanceSql(branchId);
   return sql`
     SELECT ci.id::text AS id, ci.module_id::text AS module_id, ci."values"::text AS values_text
       FROM content_instances ci

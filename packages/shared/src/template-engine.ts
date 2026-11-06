@@ -23,7 +23,8 @@
  *   {{>name}}                 — single nested module reference
  *                                 (module field kind)
  *   {{page.title}}, {{a.b}}   — dot access (`page.*`, compound entry
- *                                 values); inside a list entry the
+ *                                 values, a `link` field's `href`,
+ *                                 `target`, `title`); inside a list entry the
  *                                 entry's keys, `{{>recurse}}`,
  *                                 `{{>f}}` (embedded module) and the
  *                                 system keys — see template-sections.ts
@@ -55,6 +56,12 @@
  * for a key no entry, enclosing entry or module field has, and
  * `list-context-unavailable:<field>` / `…:page` for a list rendered by a
  * caller that gave the engine no list context (never legitimate output).
+ * #1433: `field-path-unknown:<path>` for a dotted placeholder whose head
+ * exists and whose rest does not (`{{cta.label}}` on a link field),
+ * `field-value-empty:<path>` for a path into a `link` field with no value,
+ * `field-value-malformed:<field>` for a `link` value of no link shape.
+ * Unlike `field-not-declared` these stop a Stage: an unknown `{{name}}` can
+ * be literal copy, a broken path cannot.
  * Epic #724: `link-target-missing:page/<id>` / `…:media/<id>` for an
  * internal reference (`caelo:page/<id>`, `caelo:media/<id>`) whose
  * target does not exist, `link-resolver-unavailable:<kind>/<id>` for
@@ -87,8 +94,15 @@ import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
 import type { ListPaginationSettings } from "./lists/pagination.js";
 import type { ListHolder, ListPageContext } from "./lists/resolve.js";
+import { parseLinkFieldValue } from "./lists/resolve-values.js";
 import { stripCdataGuards } from "./strip-cdata.js";
 import { renderSections } from "./template-sections.js";
+
+export {
+  describeFieldPathProblems,
+  type FieldPathProblem,
+  fieldPathProblems,
+} from "./template-sections.js";
 
 // Override Mustache's default HTML escape — module HTML substitutes
 // raw. The engine module is the only workspace importer of mustache,
@@ -411,6 +425,19 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     if (SECTION_KINDS.has(f.kind) || f.kind === "module") continue;
     if (f.default !== undefined && f.default !== null) view[lower] = f.default;
   }
+  // A `{{{cta}}}` of a link field: the section pass answers `{{cta}}`, and
+  // a triple tag must not stringify the object either.
+  for (const f of input.fields) {
+    if (f.kind !== "link") continue;
+    const lower = f.name.toLowerCase();
+    const value = view[lower];
+    if (typeof value !== "object" || value === null) continue;
+    const link = parseLinkFieldValue(value);
+    if (link === null) continue;
+    // An object with no href is no value: it stays raw like any empty field.
+    if (link.href.length > 0) view[lower] = link.href;
+    else delete view[lower];
+  }
 
   // v0.11.1 (issue #76) — pre-populate four theme-asset substitutions
   // when the caller supplied `themeAssets`. `contentValues` already
@@ -538,6 +565,19 @@ export function shieldLiteralText(html: string, mkKey: (text: string) => string)
     if (run.trim().length === 0) return run;
     return mkKey(run);
   });
+}
+
+/**
+ * A marker of a dotted path its field cannot answer (#1433). The preview
+ * surfaces these and the Stage refuses them: unlike an unknown `{{name}}`,
+ * they are never literal copy.
+ */
+export function isFieldPathMarker(marker: string): boolean {
+  return (
+    marker.startsWith("field-path-unknown:") ||
+    marker.startsWith("field-value-empty:") ||
+    marker.startsWith("field-value-malformed:")
+  );
 }
 
 function renderModuleList(
