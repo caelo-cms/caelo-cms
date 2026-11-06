@@ -2485,6 +2485,27 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly linkResolveOperation?: string;
   /**
+   * #1269 — what the `linkResolveOperation` answer is computed from: the
+   * plugin's own private tables (`adminSchema`) and, optionally, the
+   * columns of them that matter. When declared, core keeps the answer per
+   * render scope and asks again only for pages it has not asked about, or
+   * after a journaled change to these tables (an update counts only when
+   * it changed one of `columns`; inserts and deletes always count). Every
+   * preview otherwise asks about every page of the site. Declare exactly
+   * what the operation reads: an answer that also depends on something
+   * else would be served stale.
+   *
+   * @example
+   *   linkResolveReads: {
+   *     tables: ["page_variants", "locales"],
+   *     columns: ["page_id", "group_id", "locale_code", "code", "is_default"],
+   *   },
+   */
+  readonly linkResolveReads?: {
+    readonly tables: ReadonlyArray<string>;
+    readonly columns?: ReadonlyArray<string>;
+  };
+  /**
    * Epic #724 (rollout E) — where this plugin's private storage holds
    * internal links, so core's link migration converts them to
    * references together with core content. An operation in `operations`

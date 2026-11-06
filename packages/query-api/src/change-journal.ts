@@ -100,6 +100,13 @@ export interface JournalFilter {
   readonly pluginIds?: readonly string[];
   /** Plugin storage rows only of these tables (bare names, with {@link pluginIds}). */
   readonly pluginTables?: readonly string[];
+  /**
+   * Kinds that count only on {@link branchId} itself, never on main: a
+   * plugin row snapshot is a pending row on a chat's branch, while on main
+   * it only records a write whose live row (`plugin_storage`) the reader
+   * already counts. Without a branch they count nowhere and are not read.
+   */
+  readonly branchOnlyKinds?: readonly string[];
 }
 
 /** `ARRAY[...]` bound as ONE parameter (rule 7: no per-element bind lists). */
@@ -125,7 +132,10 @@ const ALL_OPS: readonly JournalChange["op"][] = ["insert", "update", "delete", "
  */
 function kindOpsSql(filter: JournalFilter, a: ReturnType<typeof sql.raw>) {
   const groups = new Map<string, { ops: readonly string[]; kinds: string[] }>();
+  const branchOnly = new Set(filter.branchOnlyKinds ?? []);
   for (const kind of filter.kinds) {
+    // Not read at all where they cannot count (see branchOnlyKinds).
+    if (branchOnly.has(kind) && !filter.branchId) continue;
     const ops = [...(filter.kindOps?.[kind] ?? ALL_OPS)].sort();
     const key = ops.join(",");
     const group = groups.get(key) ?? { ops, kinds: [] };
@@ -149,6 +159,17 @@ function kindOpsSql(filter: JournalFilter, a: ReturnType<typeof sql.raw>) {
 function filterSql(filter: JournalFilter, alias = "ec") {
   const a = sql.raw(alias);
   const parts = [kindOpsSql(filter, a)];
+  if (filter.branchOnlyKinds && filter.branchOnlyKinds.length > 0 && filter.branchId) {
+    // An unscoped operation (a lock takeover's re-point) counts wherever
+    // it is: the row it moved left this branch.
+    const unscoped =
+      filter.unscopedOps && filter.unscopedOps.length > 0
+        ? sql` OR ${a}.op = ANY(${textArray(filter.unscopedOps)})`
+        : sql``;
+    parts.push(
+      sql`(${a}.kind <> ALL(${textArray(filter.branchOnlyKinds)}) OR ${a}.chat_branch_id = ${filter.branchId}::uuid${unscoped})`,
+    );
+  }
   if (filter.branchId !== undefined) {
     const scoped =
       filter.branchId === null
