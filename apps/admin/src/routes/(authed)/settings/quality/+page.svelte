@@ -289,7 +289,8 @@
       <CardDescription>
         What editors decided to live with, grouped per decision (one rule across its pages). Each
         acceptance holds the value measured when it was accepted — a worse value blocks again, a
-        better one tightens it. {data.canRevoke
+        better one tightens it. A file Caelo or a plugin ships is accepted site-wide, until the file
+        changes. {data.canRevoke
           ? "Revoking makes the findings block Publish live on their pages again at once."
           : "Only the Owner can revoke."}
       </CardDescription>

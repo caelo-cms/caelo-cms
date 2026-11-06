@@ -2,13 +2,20 @@
 
 /**
  * The update jobs' queues: the job ops (ops.ts) through the Query API, as a
- * system actor — {@link UpdateQueue} for the upgrader job (and the
- * self-hosted agent), {@link ConvergeQueue} for the converge job (#819). A
+ * system actor — {@link UpgraderQueue} for the upgrader job (#1029),
+ * {@link ConvergeQueue} for the converge job (#819), {@link AgentQueue} for
+ * the self-hosted agent. A
  * failed op throws — the job turns that into a failed request (or, for the
  * claim, a failed run) with the message.
  */
 
-import type { AgentQueue, ConvergeQueue, UpdateQueue } from "@caelo-cms/provisioning";
+import type {
+  AgentQueue,
+  ConvergeQueue,
+  HandoverQueue,
+  JobClaim,
+  UpgraderQueue,
+} from "@caelo-cms/provisioning";
 import {
   type DatabaseAdapter,
   execute,
@@ -37,12 +44,25 @@ export function upgraderRegistry(): OperationRegistry {
   return registry;
 }
 
-/** The queue over `adapter` (connected as the platform_updater IAM user). */
+/**
+ * The upgrader job's queue over `adapter` (connected as the platform_updater
+ * IAM user): claims `app_roll` requests, or the one still running to
+ * continue it (#1029); events, facts and the end as the agent's.
+ */
 export function createDbUpdateQueue(
   adapter: DatabaseAdapter,
   registry: OperationRegistry = upgraderRegistry(),
-): UpdateQueue {
-  return createDbAgentQueue(adapter, registry);
+): UpgraderQueue {
+  const {
+    claim: _agentClaim,
+    heartbeat: _heartbeat,
+    ...shared
+  } = createDbAgentQueue(adapter, registry);
+  return {
+    ...shared,
+    claimUpgrade: adoptingClaim(adapter, registry, "app_roll"),
+    handover: routeHandover(adapter, registry, "app_roll"),
+  };
 }
 
 /** The claimed request as `platform_updates.job_claim` returns it. */
@@ -71,6 +91,43 @@ function opCaller(adapter: DatabaseAdapter, registry: OperationRegistry) {
   };
 }
 
+/** A job's hand-over, bound to its route: it cannot move the other job's request. */
+function routeHandover(
+  adapter: DatabaseAdapter,
+  registry: OperationRegistry,
+  route: "app_roll" | "converge",
+): HandoverQueue["handover"] {
+  const call = opCaller(adapter, registry);
+  return async (requestId, from, to) => {
+    const r = await call<{ handedOver: boolean }>("platform_updates.job_handover", {
+      requestId,
+      route,
+      from,
+      to,
+    });
+    return r.handedOver;
+  };
+}
+
+/** A job's claim that returns its route's running request instead of a new one. */
+function adoptingClaim(
+  adapter: DatabaseAdapter,
+  registry: OperationRegistry,
+  route: "app_roll" | "converge",
+): (execution: string | null) => Promise<JobClaim | null> {
+  const call = opCaller(adapter, registry);
+  return async (execution) => {
+    const r = await call<{ claimed: ClaimedRow | null }>("platform_updates.job_claim", {
+      execution,
+      route,
+      adopt: true,
+    });
+    if (!r.claimed) return null;
+    const { resume, execution: current, ...request } = r.claimed;
+    return { request, resume, execution: current };
+  };
+}
+
 /**
  * The converge job's queue (#819): claims `converge` requests (or the one
  * still running, to continue it) and hands a running request over to the
@@ -80,7 +137,6 @@ export function createDbConvergeQueue(
   adapter: DatabaseAdapter,
   registry: OperationRegistry = upgraderRegistry(),
 ): ConvergeQueue {
-  const call = opCaller(adapter, registry);
   const {
     claim: _appRollClaim,
     heartbeat: _heartbeat,
@@ -88,23 +144,8 @@ export function createDbConvergeQueue(
   } = createDbAgentQueue(adapter, registry);
   return {
     ...shared,
-    async claimConverge(execution) {
-      const r = await call<{ claimed: ClaimedRow | null }>("platform_updates.job_claim", {
-        execution,
-        route: "converge",
-      });
-      if (!r.claimed) return null;
-      const { resume, execution: current, ...request } = r.claimed;
-      return { request, resume, execution: current };
-    },
-    async handover(requestId, from, to) {
-      const r = await call<{ handedOver: boolean }>("platform_updates.job_handover", {
-        requestId,
-        from,
-        to,
-      });
-      return r.handedOver;
-    },
+    claimConverge: adoptingClaim(adapter, registry, "converge"),
+    handover: routeHandover(adapter, registry, "converge"),
   };
 }
 

@@ -61,6 +61,7 @@ export {
 } from "./converge-job.js";
 export { convergeExecutionNameError, gcpConvergeDeps } from "./converge-job-gcp.js";
 export { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
+export type { HandoverQueue, JobClaim } from "./job-handover.js";
 export {
   INFRA_CONTRACT_PATHS,
   isInfraContractPath,
@@ -106,6 +107,7 @@ export {
   gcpUpgraderDeps,
   type UpgraderPlacement,
   upgraderDatabaseHost,
+  upgraderExecutionNameError,
 } from "./upgrader-gcp.js";
 export {
   type ClaimedUpdate,
@@ -115,6 +117,7 @@ export {
   type UpdateFacts,
   type UpdateQueue,
   type UpgraderJobDeps,
+  type UpgraderQueue,
   type UpgraderRunResult,
 } from "./upgrader-job.js";
 export type { JobLog } from "./upgrader-reporter.js";

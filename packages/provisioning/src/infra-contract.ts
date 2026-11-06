@@ -192,6 +192,13 @@ export const INFRA_CONTRACT_VERSION = 23;
 //       `caeloUrlMapRedirects` role gains `compute.backendBuckets.get` and
 //       `.update`, a custom-role change the in-cloud upgrader may not make.
 //       Other providers have nothing to converge for it.
+//
+// #1029 is deliberately NOT a bump. The upgrader job's stage 1 moves the job
+// onto the target's ops image with rights it has held on itself since
+// contract 9 (`run.jobs.update`, `run.jobs.run`, `actAs` on its own account),
+// so no install needs a converge for it. It also ends the first reason of
+// bump 21: once an install's job carries #1029, an app-roll runs the target
+// release's code, and "the upgrader rolls with old code" is no reason to bump.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's

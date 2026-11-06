@@ -29,6 +29,7 @@ export {
   isBuildPluginMethod,
   localBuildPluginServices,
   remoteBuildPluginServices,
+  renderPluginOnLiveBuild,
   type StaticRenderPlugin,
   serveBuildPluginCall,
 } from "./build-services.js";
@@ -149,6 +150,7 @@ export {
   writeMainPluginColumn,
 } from "./link-locations.js";
 export {
+  clearLinkResolveCache,
   hasLinkResolveContributors,
   type ResolvedLinkVariants,
   resolveLinkVariants,

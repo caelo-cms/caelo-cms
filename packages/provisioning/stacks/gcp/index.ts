@@ -25,7 +25,6 @@ import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 import * as random from "@pulumi/random";
 import type { CloudAdapterOutputs, DnsRecord } from "../../dist/adapter.js";
-import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import { gatewayArmorRuleArgs } from "../../dist/gateway-edge.js";
 import {
   gatewayServiceAccountId,
@@ -1399,10 +1398,8 @@ new gcp.bigquery.DatasetIamMember(
 );
 
 // =========================================================================
-// Bootstrap token + outputs
+// Outputs
 // =========================================================================
-
-const tokenInfo = generateBootstrapToken();
 
 const dnsRecordsRequired: pulumi.Output<DnsRecord[]> = lbIp.address.apply((ip): DnsRecord[] => [
   {
@@ -1426,8 +1423,10 @@ const out: CloudAdapterOutputs = {
   publicStagingDatabaseUrl: dbUrls.publicStaging as unknown as string,
   mediaStorageUrl: pulumi.interpolate`gs://${mediaBucket.name}` as unknown as string,
   mediaCdnBaseUrl: pulumi.interpolate`https://${domain}/media` as unknown as string,
-  bootstrapUrl:
-    pulumi.interpolate`https://${adminDomain}/setup?token=${tokenInfo.token}` as unknown as string,
+  // No token: the installer mints it at the end of the install and adds it to
+  // the link (src/owner-setup-token.ts, #1476). Minted here, it would change
+  // on every `pulumi up` and sit in the stack's state.
+  bootstrapUrl: `https://${adminDomain}/setup`,
   dnsRecordsRequired: dnsRecordsRequired as unknown as DnsRecord[],
   edgeLogSinkUrl:
     pulumi.interpolate`bigquery://${project}/${edgeLogDataset.datasetId}` as unknown as string,
@@ -1451,7 +1450,6 @@ export const adminCloudRunUrlOut = adminSvc.uri;
 export const gatewayCloudRunUrlOut = gatewaySvc?.uri;
 export const lbIpOut = lbIp.address;
 export const adminDomainOut = adminDomain;
-export const bootstrapTokenExpiresAtOut = tokenInfo.expiresAt;
 export const staticPublisherSaEmailOut = staticPublisherSa.email;
 export const staticBucketNameOut = staticBucket.name;
 // P15 self-hosted CDN-copy adapter ABI — kept for cross-stack compat.

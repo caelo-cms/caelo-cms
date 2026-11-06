@@ -534,6 +534,8 @@ describe("P6 deploy.trigger", () => {
       expect(result.error.kind).toBe("HandlerError");
       const message = "message" in result.error ? String(result.error.message) : "";
       expect(message).toContain("no page serves the site root");
+      // #1484 — the real generator reports this content gate as a refusal.
+      expect((result.error as { refusal?: true }).refusal).toBe(true);
       // The next step designates the homepage; a slug rename would move
       // another page's URL to the root.
       expect(message).toContain("set_home_page");

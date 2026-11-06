@@ -814,7 +814,11 @@ export interface PluginAuditPageFacts {
     readonly moduleId: string | null;
     readonly listItem: string | null;
     readonly pluginSlug: string | null;
-    /** `text` for a text run, else the attribute (`alt`, `placeholder`, …). */
+    /**
+     * `text` for a text run, else the attribute (`alt`, `placeholder`, …);
+     * `literal` for either inside `code`, `pre`, `kbd`, `samp`, `var` or
+     * `translate="no"`: visible, but not language.
+     */
     readonly source: string;
   }[];
   readonly truncated: boolean;
@@ -1111,6 +1115,11 @@ export const pluginManifest = z
     adminSchema: pluginSchemaMap.optional(),
     /** #1292 — see `PluginDefinition.indexes`. */
     indexes: pluginIndexes.optional(),
+    /** #1387 — see `PluginDefinition.aiReadableTables`. */
+    aiReadableTables: z
+      .array(z.string().regex(/^[a-z_][a-z0-9_]*$/))
+      .max(64)
+      .optional(),
     /** Operation names. Bodies live in source — the manifest just lists names. */
     operations: z.array(z.string().min(1).max(120)).min(1),
     component: pluginComponent.optional(),
@@ -1242,6 +1251,15 @@ export const pluginManifest = z
     checkPluginIndexes(m, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["indexes", ...path], message }),
     );
+    for (const [i, table] of (m.aiReadableTables ?? []).entries()) {
+      if (!m.adminSchema?.[table]) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["aiReadableTables", i],
+          message: `aiReadableTables names "${table}", which adminSchema does not declare`,
+        });
+      }
+    }
     checkPublicSurface(m, (path, message) => ctx.addIssue({ code: "custom", path, message }));
     checkMailTemplates(m, (path, message) => ctx.addIssue({ code: "custom", path, message }));
     checkAdminPanels(m.adminPanels ?? [], m.operations, (path, message) =>
@@ -2158,6 +2176,18 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   /** #389 — see `pluginManifest.adminSchema`. */
   readonly adminSchema?: PluginSchemaMap;
   /**
+   * #1387 — the `adminSchema` tables whose values the host may show the AI
+   * when a chat re-reads a row another chat changed (`get_plugin_draft_rows`).
+   * List a table only when every column is fine for the AI to read: a table
+   * left out stays hidden, and the AI sees only who changed which row and
+   * when. Part of the manifest, so the Owner reviews it at approval. Leave
+   * out anything like recipient lists or tokens.
+   *
+   * @example
+   * aiReadableTables: ["glossary", "style_guides"],
+   */
+  readonly aiReadableTables?: ReadonlyArray<string>;
+  /**
    * #1292 — the indexes the plugin's reads need, per zone and table
    * (`indexes.schema` for `schema`, `indexes.adminSchema` for
    * `adminSchema`). `id`, `ref:` columns and the host's branch column are
@@ -2464,6 +2494,27 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly linkResolveOperation?: string;
   /**
+   * #1269 — what the `linkResolveOperation` answer is computed from: the
+   * plugin's own private tables (`adminSchema`) and, optionally, the
+   * columns of them that matter. When declared, core keeps the answer per
+   * render scope and asks again only for pages it has not asked about, or
+   * after a journaled change to these tables (an update counts only when
+   * it changed one of `columns`; inserts and deletes always count). Every
+   * preview otherwise asks about every page of the site. Declare exactly
+   * what the operation reads: an answer that also depends on something
+   * else would be served stale.
+   *
+   * @example
+   *   linkResolveReads: {
+   *     tables: ["page_variants", "locales"],
+   *     columns: ["page_id", "group_id", "locale_code", "code", "is_default"],
+   *   },
+   */
+  readonly linkResolveReads?: {
+    readonly tables: ReadonlyArray<string>;
+    readonly columns?: ReadonlyArray<string>;
+  };
+  /**
    * Epic #724 (rollout E) — where this plugin's private storage holds
    * internal links, so core's link migration converts them to
    * references together with core content. An operation in `operations`
@@ -2662,6 +2713,7 @@ export function manifestFromDefinition(def: {
   readonly tier: 1 | 2;
   readonly schema: PluginSchemaMap;
   readonly adminSchema?: PluginSchemaMap;
+  readonly aiReadableTables?: ReadonlyArray<string>;
   readonly indexes?: PluginIndexes;
   readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
   readonly contributes?: ReadonlyArray<ContributionKind>;
@@ -2703,6 +2755,9 @@ export function manifestFromDefinition(def: {
     tier: def.tier,
     schema: def.schema,
     ...(def.adminSchema ? { adminSchema: def.adminSchema } : {}),
+    ...(def.aiReadableTables && def.aiReadableTables.length > 0
+      ? { aiReadableTables: [...def.aiReadableTables] }
+      : {}),
     ...(def.indexes && (def.indexes.schema || def.indexes.adminSchema)
       ? { indexes: def.indexes }
       : {}),

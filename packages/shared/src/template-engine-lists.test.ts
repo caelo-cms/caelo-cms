@@ -231,7 +231,7 @@ describe("lists — dot access and compound values", () => {
   it("a dotted key the value does not have stays raw and is reported", () => {
     const r = render("{{#menu}}{{link.nope}}{{/menu}}", [HEADER]);
     expect(r.html).toContain("{{link.nope}}");
-    expect(r.missingSlots).toContain("field-not-declared:menu.link.nope");
+    expect(r.missingSlots).toContain("field-path-unknown:menu.link.nope");
   });
 });
 

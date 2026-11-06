@@ -543,6 +543,7 @@ async function computeLayoutBlastRadius(
         kind: "HandlerError",
         operation: "layouts.propose_*",
         message: "layout not found or deleted",
+        refusal: true,
       }) as { ok: false; error: { kind: "HandlerError"; operation: string; message: string } },
     };
   }

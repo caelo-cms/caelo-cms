@@ -86,6 +86,7 @@ import {
 import { sql } from "drizzle-orm";
 import { ASSET_REFERENCES_FILE, serializeAssetReferences } from "./asset-references.js";
 import { type BuildOutput, DiskOutput } from "./build-output.js";
+import { BuildRefusal } from "./build-refusal.js";
 import type { VariantComposeModule } from "./content-variants-pass.js";
 import { publishFontFiles } from "./font-assets.js";
 import { loadSiteFontUsage } from "./font-usage-sources.js";
@@ -481,7 +482,7 @@ export function assertNoPluginMarkers(
     if (hits.size > 0) found.push(`page "${page.pageSlug}": ${[...hits].sort().join(", ")}`);
   }
   if (found.length > 0) {
-    throw new Error(
+    throw new BuildRefusal(
       `static-generator: ${found.length} page(s) would ship raw plugin data-list markers — ${found.join("; ")}. ` +
         "The plugin that offers the list is not running for this build. Activate it again at /settings/plugins, or remove the module that iterates the list, then publish again.",
     );
@@ -681,7 +682,7 @@ async function buildSite(
     env: target.env,
     incremental: pagesToBuild !== null,
   });
-  if (zeroPageError !== null) throw new Error(zeroPageError);
+  if (zeroPageError !== null) throw new BuildRefusal(zeroPageError);
 
   // #802 — the designated 404 page ships as /404.html, not at its path.
   const notFoundPageId = await readNotFoundPageId(tx);
@@ -691,7 +692,7 @@ async function buildSite(
     env: target.env,
     incremental: pagesToBuild !== null,
   });
-  if (notFoundError !== null) throw new Error(notFoundError);
+  if (notFoundError !== null) throw new BuildRefusal(notFoundError);
   const outputPathOf = (p: PageRow): string =>
     builtPageOutputPath(
       { pageId: p.page_id, currentPath: p.current_path },
@@ -716,7 +717,7 @@ async function buildSite(
     env: target.env,
     incremental: pagesToBuild !== null,
   });
-  if (rootError !== null) throw new Error(rootError);
+  if (rootError !== null) throw new BuildRefusal(rootError);
   const templates = new Map<string, { html: string; css: string }>();
   const layouts = new Map<string, { slug: string; html: string; css: string }>();
   {
@@ -1173,7 +1174,7 @@ async function buildSite(
     if (paginatedOverviews.length > 0) {
       allPagePaths ??= await loadAllPagePaths(tx, statusFilter);
       const collision = followUpCollisionError(paginatedOverviews, allPagePaths);
-      if (collision !== null) throw new Error(collision);
+      if (collision !== null) throw new BuildRefusal(collision);
       for (const p of pages) if (p.followUp) outputPaths.add(p.relPath);
       outputPaths.assertNone();
     }
@@ -1380,6 +1381,9 @@ async function buildSite(
     runId,
     builtAt: new Date().toISOString(),
     pageCount: pageRows.length,
+    // #1495 — with each page's `url`: what a plugin-data build links, so a
+    // later tick never takes an origin or a path from cms_admin.
+    siteBaseUrl: seoSettings.siteBaseUrl,
     // #1155 — `pageId` lets a plugin-data build find a page's file in the
     // build that is live, without reading the (possibly unpublished)
     // current page paths from cms_admin.
@@ -1389,6 +1393,7 @@ async function buildSite(
         pageId: p.page_id,
         slug: p.slug,
         path: p.current_path,
+        url: seo.publicUrl(p.page_id),
         outputPath: outputPathOf(p),
         // #1257 — the files of pages 2… of a paginated overview.
         ...(followUps ? { followUpOutputPaths: followUps } : {}),
@@ -1431,7 +1436,7 @@ async function buildSite(
     return issue ? [`${r.from_path} → ${issue}`] : [];
   });
   if (unsafeTargets.length > 0) {
-    throw new Error(
+    throw new BuildRefusal(
       `static-generator: ${unsafeTargets.length} redirect(s) have an unsafe target; fix each with redirects.create_many (upsert: true, a same-site toPath) or delete it with redirects.delete_many, then rebuild:\n  ${unsafeTargets.join("\n  ")}`,
     );
   }
@@ -1598,7 +1603,7 @@ export function assertStaticFilesFit(
     ];
   });
   if (problems.length > 0) {
-    throw new Error(
+    throw new BuildRefusal(
       `static-generator: ${problems.length} static file conflict(s): ${[...new Set(problems)].join("; ")}. ` +
         "Next step: change the page's address (AI tool: update_pages_many), delete the redirect (bulk_delete_redirects), or remove or move the file (propose_delete_static_files, Settings → Static files), then Stage again.",
     );

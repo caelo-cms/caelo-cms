@@ -120,12 +120,12 @@ async function collectAllGarbage(opts: Parameters<typeof collectJournalGarbage>[
 const PROBE_KIND = "t1269_probe";
 
 /** One journal row of {@link PROBE_KIND}, in a transaction of its own; returns its row id. */
-async function writeProbeRow(): Promise<string> {
+async function writeProbeRow(op: "insert" | "update" = "insert"): Promise<string> {
   const rowId = crypto.randomUUID();
   await adapter.withAdminTransaction(SYS, (tx) =>
     tx.execute(sql`
       INSERT INTO entity_changes (xid, table_name, row_id, kind, op)
-      VALUES (pg_current_xact_id(), 't1269_probe', ${rowId}, ${PROBE_KIND}, 'insert')`),
+      VALUES (pg_current_xact_id(), 't1269_probe', ${rowId}, ${PROBE_KIND}, ${op})`),
   );
   return rowId;
 }
@@ -613,6 +613,40 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
 
       // A row of the asked kind after the mark still makes it stale.
       await writeProbeRow();
+      const after = await adapter.withAdminTransaction(SYS, (tx) =>
+        checkJournalMark(tx, mark, filter),
+      );
+      expect(after.fresh).toBe(false);
+    } finally {
+      await dropProbeRows();
+    }
+  });
+
+  it("a check reads only the operations a kind counts, not every insert of it (#1269)", async () => {
+    // The site view counts a snapshot header's updates and deletes (a
+    // Stage, an undo), never its insert, and every write inserts one.
+    const filter = { kinds: [PROBE_KIND], kindOps: { [PROBE_KIND]: ["update" as const] } };
+    try {
+      const { mark } = await adapter.withAdminTransaction(SYS, (tx) =>
+        checkJournalMark(tx, null, filter),
+      );
+      await adapter.withAdminTransaction(SYS, (tx) =>
+        tx.execute(sql`
+          INSERT INTO entity_changes (xid, table_name, row_id, kind, op)
+          SELECT pg_current_xact_id(), 't1269_probe', 'ins-' || i, ${PROBE_KIND}, 'insert'
+            FROM generate_series(1, 4000) i`),
+      );
+      await analyzeJournal();
+      const buffers: number[] = [];
+      const check = await adapter.withAdminTransaction(SYS, async (tx) => {
+        await tx.execute(sql`SET LOCAL enable_seqscan = off`);
+        return checkJournalMark(measuring(tx, buffers), mark, filter);
+      });
+      expect(check.fresh).toBe(true);
+      // Through (kind, xid) the check read the 4,000 inserts and dropped
+      // them; through the non-insert partial index (0650) it reads none.
+      expect(Math.max(...buffers)).toBeLessThan(30);
+      await writeProbeRow("update");
       const after = await adapter.withAdminTransaction(SYS, (tx) =>
         checkJournalMark(tx, mark, filter),
       );

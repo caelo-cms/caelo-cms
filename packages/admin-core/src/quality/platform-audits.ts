@@ -23,6 +23,7 @@
  * do NOT change what blocks Publish live (see gate.ts).
  */
 
+import { isContentHashedPath } from "@caelo-cms/shared";
 import { TRUNCATED_ELEMENTS_PREFIX, TRUNCATED_ELEMENTS_SUFFIX } from "./lighthouse-extract.js";
 import type { FlaggedElement } from "./ratchet.js";
 
@@ -121,4 +122,61 @@ export function findingOwner(
     );
   }
   return null;
+}
+
+/**
+ * Where the build writes the files Caelo and plugins ship: plugin client
+ * assets (plugin-host client-assets.ts) and Vite's immutable bundles. Media
+ * and fonts under `_assets/` are content-hashed too, but the site chose
+ * those, so a finding on them stays the page's.
+ */
+const SHIPPED_RESOURCE_PREFIXES: readonly string[] = ["/_caelo/plugin/", "/_app/immutable/"];
+
+/**
+ * The site path of a file Caelo or a plugin ships, or null for anything
+ * else. Only a content-hashed name qualifies: the name then changes with
+ * the bytes, which is what lets an acceptance end by itself when the file
+ * changes. A same-named path on another origin is a third party's file.
+ */
+export function shippedResourcePath(url: string, pageUrl: string): string | null {
+  let resource: URL;
+  let page: URL;
+  try {
+    resource = new URL(url, pageUrl);
+    page = new URL(pageUrl);
+  } catch {
+    return null;
+  }
+  if (resource.origin !== page.origin) return null;
+  const path = resource.pathname;
+  if (!SHIPPED_RESOURCE_PREFIXES.some((prefix) => path.startsWith(prefix))) return null;
+  return isContentHashedPath(path) ? path : null;
+}
+
+/**
+ * #1446 — the shipped files a Lighthouse finding is entirely about, or null
+ * when it is about anything else too. Null is the safe answer: an element,
+ * a console message or a reason next to the URL, a truncated list or a file
+ * of the site's own is the page's problem, which an acceptance of a shipped
+ * file must never cover.
+ *
+ * @param elements - what the audit flagged on the page
+ * @param pageUrl - the audited page's URL, to resolve and compare origins
+ * @returns the distinct site paths, sorted; null when the finding does not
+ *   name shipped files only
+ */
+export function shippedResourcesOf(
+  elements: readonly FlaggedElement[] | undefined,
+  pageUrl: string,
+): string[] | null {
+  if (!elements || elements.length === 0) return null;
+  const paths = new Set<string>();
+  for (const element of elements) {
+    const { url, selector, snippet, label, explanation } = element;
+    if (!url || selector || snippet || label || explanation) return null;
+    const path = shippedResourcePath(url, pageUrl);
+    if (path === null) return null;
+    paths.add(path);
+  }
+  return [...paths].sort();
 }

@@ -56,6 +56,7 @@ export const getSnapshotWithEntitiesOp = defineOperation({
         kind: "HandlerError",
         operation: "snapshots.get_with_entities",
         message: "snapshot not found",
+        refusal: true,
       });
     }
 

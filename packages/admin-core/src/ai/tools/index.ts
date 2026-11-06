@@ -77,6 +77,7 @@ import { getImageCapabilitiesTool } from "./get-image-capabilities.js";
 import { getImportPageTool } from "./get-import-page.js";
 import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
 import { getPageLogTool } from "./get-page-log.js";
+import { getPluginDraftRowsTool } from "./get-plugin-draft-rows.js";
 import { getThemeTool } from "./get-theme.js";
 import { grepContentTool } from "./grep-content.js";
 import {
@@ -345,6 +346,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // v0.12.0 — content_instances + placement binding tools.
   registry.register(listContentInstancesTool);
   registry.register(getContentInstanceTool);
+  registry.register(getPluginDraftRowsTool);
   // `_many` tools via the DRY makeBulkTool factory (CLAUDE.md §11: one item
   // is the n=1 case; retired singular names alias here — retired-tools.ts).
   registry.register(

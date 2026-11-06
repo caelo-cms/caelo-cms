@@ -23,6 +23,7 @@ import {
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ModuleFieldKind } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { BuildRefusal } from "./build-refusal.js";
 
 /** A module as the composer consumes it (layout or page block entry). */
 export interface VariantComposeModule {
@@ -132,7 +133,7 @@ export async function resolveBuildContentVariants(
     }
   }
   if (problems.length > 0) {
-    throw new Error(
+    throw new BuildRefusal(
       `static-generator: ${problems.length} page placement(s) have no content to ship in their page's variant — ${problems.join("; ")}. ` +
         "The editor preview lists the same problems on the missing-content surface; fix them (e.g. ask the AI to translate the site chrome), then publish again.",
     );
@@ -170,7 +171,7 @@ export async function resolveBuildContentVariants(
     }
     const missing = [...overrideIds].filter((id) => !overrideModules.has(id));
     if (missing.length > 0) {
-      throw new Error(
+      throw new BuildRefusal(
         `static-generator: a content variant renders module(s) ${missing.join(", ")}, which no longer exist on the live site. Point the variant at an existing module, then publish again.`,
       );
     }

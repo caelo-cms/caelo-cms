@@ -19,7 +19,10 @@
  *
  *   - the custom role `caeloUpgraderRun` on the project
  *     ({@link UPGRADER_RUN_ROLE}): deploy admin/gateway revisions, move
- *     traffic, recreate and run the migration job, update its own job image.
+ *     traffic, recreate and run the migration job, and move its own job onto
+ *     the ops image of the release it installs and start it (#1029; stage 1
+ *     of upgrader-job.ts, without overrides: the target's image runs the
+ *     command and args this setup deployed).
  *     NOT `roles/run.developer`: that role holds `run.jobs.runWithOverrides`
  *     on every job of the project, including the converge job and the
  *     install job, which run as `caelo-provisioner` — the upgrader could run
@@ -119,7 +122,7 @@ export const UPGRADER_OPS_LIST_ROLE: CustomRoleSpec = {
 
 /**
  * What an app-roll does on Cloud Run (upgrade/app-roll.ts, migration-runner.ts,
- * the self-update, the #815 lock lease) — `roles/run.developer` minus
+ * the hand-over to the target's image, the #815 lock lease) — `roles/run.developer` minus
  * everything else, above all `run.jobs.runWithOverrides` (see the file
  * header). Keep in step with upgrader-iam-preflight.ts.
  */

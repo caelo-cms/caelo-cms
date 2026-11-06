@@ -22,6 +22,7 @@ import {
 import { type ChromeDeps, loadChromeTargets, loadChromeVariants } from "./chrome-ops.js";
 import type { PageVariantRow } from "./index.js";
 import { listFindings, loadListTranslationState } from "./list-translation-ops.js";
+import type { NeutralTermRow } from "./neutral-terms.js";
 import type { GlossaryRow } from "./page-translation.js";
 import { listAll } from "./store-reads.js";
 
@@ -56,19 +57,21 @@ export async function loadAuditState(
   deps: ChromeDeps,
   stagedPages: readonly StagedPageRef[],
 ): Promise<AuditState> {
-  const [variants, glossary, defaults, shared, chromeRows, targets] = await Promise.all([
-    listAll(deps.q, "page_variants") as Promise<PageVariantRow[]>,
-    listAll(deps.q, "glossary") as Promise<GlossaryRow[]>,
-    deps.cms.call<{
-      defaults: { rootPageId: string | null; notFoundPageId: string | null } | null;
-    }>("site_defaults.get", {}),
-    deps.cms.call<{
-      layoutPlacements: { moduleId: string }[];
-      sharedInstances: { moduleId: string }[];
-    }>("pages.list_shared_content", {}),
-    loadChromeVariants(deps.q),
-    loadChromeTargets(deps.cms),
-  ]);
+  const [variants, glossary, neutralTerms, defaults, shared, chromeRows, targets] =
+    await Promise.all([
+      listAll(deps.q, "page_variants") as Promise<PageVariantRow[]>,
+      listAll(deps.q, "glossary") as Promise<GlossaryRow[]>,
+      listAll(deps.q, "neutral_terms") as Promise<NeutralTermRow[]>,
+      deps.cms.call<{
+        defaults: { rootPageId: string | null; notFoundPageId: string | null } | null;
+      }>("site_defaults.get", {}),
+      deps.cms.call<{
+        layoutPlacements: { moduleId: string }[];
+        sharedInstances: { moduleId: string }[];
+      }>("pages.list_shared_content", {}),
+      loadChromeVariants(deps.q),
+      loadChromeTargets(deps.cms),
+    ]);
   const labels = new Map(targets.map((t) => [t.key, t.label]));
   return {
     locales: deps.locales,
@@ -77,6 +80,7 @@ export async function loadAuditState(
     siteHomePageId: defaults.defaults?.rootPageId ?? null,
     notFoundPageId: defaults.defaults?.notFoundPageId ?? null,
     glossary,
+    neutralTerms,
     chromeModuleIds: new Set([
       ...shared.layoutPlacements.map((p) => p.moduleId),
       ...shared.sharedInstances.map((i) => i.moduleId),
