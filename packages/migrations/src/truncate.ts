@@ -110,6 +110,7 @@ const ADMIN_TABLES = [
   "redirects",
   // #1461 — static files are site content; their snapshots cascade.
   "static_file_pending_actions",
+  "redirect_pending_actions",
   "static_files",
 
   // Media

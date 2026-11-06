@@ -306,6 +306,15 @@ describe("#1330 staging gateway: serving the staged build", () => {
     ).toBe(404);
   });
 
+  it("answers an approved external target with its address (#1358)", async () => {
+    const rows: RedirectTableRow[] = [
+      { fromPath: "/termin", toPath: "https://calendar.example/book", statusCode: 302 },
+    ];
+    const res = await admitted("/termin?x=1", { redirects: async () => rows });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://calendar.example/book?x=1");
+  });
+
   it("says so when nothing is staged yet, or the served slot holds another run", async () => {
     const empty = await handleStagingSiteRequest(
       get("/", {}),

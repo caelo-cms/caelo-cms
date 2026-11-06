@@ -225,6 +225,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "layouts.list_pending": PENDING_QUEUE,
   "email_config.list_pending": PENDING_QUEUE,
   "domains.list_pending": PENDING_QUEUE,
+  "redirects.list_pending": PENDING_QUEUE,
   "plugins.list_approvals": {
     kind: "covered",
     by: ["list_plugins"],

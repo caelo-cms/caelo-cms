@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The one validator for a redirect's TARGET (`toPath`) — issue #657.
+ * The validators for a redirect's TARGET (`toPath`) — issues #657, #1358.
  *
- * Caelo redirects only ever point at a path on the same site: the
- * `redirects` table has no external-URL field, and every surface that
+ * A routine redirect points at a path on the same site. Every surface that
  * serves the table (the admin's 404 fallback, the generator's
  * `_redirects` / `_redirects.caddy`, the per-provider emitters) writes
  * `toPath` verbatim into a `Location` header. "Starts with `/`" is not
@@ -20,10 +19,18 @@
  *     URL, so `/\t/host` collapses to `//host`; the `_redirects` formats
  *     are whitespace-delimited and the emitters already refuse them.
  *
- * Every write path (redirects.create / create_many, page delete with
- * `disposition: 'redirect'`, the AI tool schemas, the import composer)
- * and every serving path (static generator, admin 404 fallback) calls
- * this, so a value rejected at write time can never be served either.
+ * Every routine write path (redirects.create / create_many, page delete
+ * with `disposition: 'redirect'`, the AI tool schemas, the import composer)
+ * calls {@link redirectTargetIssue}, so none of them can store anything but
+ * a same-site path.
+ *
+ * #1358 — the one exception is an `https` address on another domain, written
+ * only by `redirects.execute_proposal` after an Owner's approval
+ * (CLAUDE.md §11.A). {@link externalRedirectTargetIssue} holds its form: one
+ * canonical spelling, so that what the Owner reads is exactly where a
+ * browser goes. Serving paths accept both kinds through
+ * {@link servableRedirectTargetIssue}, so a value that is neither can never
+ * be served.
  */
 
 import { z } from "zod";
@@ -40,7 +47,134 @@ const SCHEME_PREFIX = /^([A-Za-z][A-Za-z0-9+.-]*):/;
 const WEB_SCHEMES = new Set(["http", "https"]);
 
 const EXTERNAL_NOT_SUPPORTED =
-  "Redirects can only target a path on this site (e.g. '/pricing'); external (other-domain) redirect targets are not supported. If the destination is a page on this site, pass only its path.";
+  "This call only takes a path on this site (e.g. '/pricing'). A redirect to another domain needs the Owner's approval: use propose_external_redirect with the https address. If the destination is a page on this site, pass only its path.";
+
+/** Longest external target: a URL-map `pathRedirect` holds 1024 characters. */
+const EXTERNAL_REDIRECT_MAX_LENGTH = 1000;
+
+/** Characters no serving layer can carry literally, or that hide a URL's meaning. */
+const EXTERNAL_UNSAFE = /[\s\p{Cc}\\{}"`<>^|]/u;
+
+/** A host no browser on the internet can reach, or an address instead of a name. */
+const NON_PUBLIC_HOST =
+  /^(\[.*\]|\d{1,3}(\.\d{1,3}){3}|localhost|[^.]+|.+\.(localhost|local|internal))$/i;
+
+/** True when a stored target is a URL, not a path on this site. */
+export function isExternalRedirectTarget(target: string): boolean {
+  return target.startsWith("https://");
+}
+
+/**
+ * Return why `url` is not a valid external redirect target, or `null` when
+ * it is. Only `https`, no credentials, no port, a public host name, and the
+ * URL's one canonical spelling: that refuses `https://a.example/x/../y`,
+ * `%2e%2e` segments, an upper-case or percent-encoded host and every other
+ * form where the text the Owner approves differs from where a browser lands.
+ *
+ * @example
+ *   externalRedirectTargetIssue("https://calendar.example/book")   // null
+ *   externalRedirectTargetIssue("https://our.site@evil.example/")  // "... credentials ..."
+ *   externalRedirectTargetIssue("http://calendar.example/")        // "... https ..."
+ */
+export function externalRedirectTargetIssue(url: string): string | null {
+  const shown = JSON.stringify(url);
+  if (url.length > EXTERNAL_REDIRECT_MAX_LENGTH) {
+    return `The address is longer than ${EXTERNAL_REDIRECT_MAX_LENGTH} characters, which not every hosting can serve. Use a shorter one.`;
+  }
+  if (!url.startsWith("https://")) {
+    return `${shown} must be a full https address (https://example.com/page); other schemes are refused.`;
+  }
+  if (EXTERNAL_UNSAFE.test(url)) {
+    return `${shown} contains a space, a control character or one of \\ { } " \` < > ^ |. Percent-encode it or remove it.`;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `${shown} is not a valid address.`;
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    return `${shown} carries credentials before the host; browsers then go to what follows the '@', not to what the address seems to name. Pass the address without them.`;
+  }
+  if (parsed.port !== "") {
+    return `${shown} names a port, which not every hosting can serve. Use an address on the standard https port.`;
+  }
+  // A final dot is the same host to DNS, and would pass every host comparison.
+  if (parsed.hostname.endsWith(".") || NON_PUBLIC_HOST.test(parsed.hostname)) {
+    return `${shown} does not name a public host. Use a domain name; IP addresses and internal names are refused.`;
+  }
+  if (parsed.href !== url && parsed.href !== `${url}/`) {
+    return `${shown} is not in its plain form, so it may lead somewhere else than it reads. A browser reads it as ${parsed.href}: pass that if it is what you mean.`;
+  }
+  return null;
+}
+
+/**
+ * Return why an otherwise valid external `url` may not be used on this
+ * install: its host is one of the install's own. Compares the parsed,
+ * lower-cased host, which is what a browser connects to.
+ *
+ * @param installHosts lower-case host → what it is ("the Caelo admin", …).
+ */
+export function externalRedirectHostIssue(
+  url: string,
+  installHosts: ReadonlyMap<string, string>,
+): string | null {
+  const host = new URL(url).hostname;
+  const what = installHosts.get(host);
+  if (what === undefined) return null;
+  return what === "this site"
+    ? `${host} is this site. Use bulk_create_redirects with the path only.`
+    : `${host} is ${what}, which a redirect may not point at.`;
+}
+
+/**
+ * Return why `provider`'s hosting cannot serve this external target, or
+ * `null` when it can. Refused at the proposal, because one rule a provider
+ * cannot express would stop the sync of the whole table.
+ *
+ * - `gcp`: the URL map carries a host and a path. It stores a query in
+ *   `pathRedirect`, but how the load balancer answers one is unverified, so
+ *   it stays refused like every target with a query there.
+ * - `aws`, `azure`: no publisher exists yet (#749, #750). Their redirect
+ *   writing must add this when it lands.
+ *
+ * @param provider `CAELO_PROVIDER`; empty = self-hosted.
+ */
+export function externalRedirectProviderIssue(url: string, provider?: string): string | null {
+  switch (provider) {
+    case undefined:
+    case "":
+    case "self-hosted":
+    case "gcp-firebase":
+      return null;
+    case "gcp": {
+      // The literal characters, as the plan decides: `/book?` has an empty
+      // `URL.search`, and one row the emitter refuses stops the whole sync.
+      return !/[?#]/.test(url)
+        ? null
+        : `The GCP load balancer serves an external redirect without a query string or fragment. Use an address without '?…' and '#…', or a short link at the destination.`;
+    }
+    case "aws":
+    case "azure":
+      return `Redirects to another domain are not available on ${provider} yet: Caelo has no publisher there (https://github.com/caelo-cms/caelo-cms/issues/${provider === "aws" ? 749 : 750}).`;
+    default:
+      throw new Error(
+        `externalRedirectProviderIssue: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | gcp-firebase | aws | azure.`,
+      );
+  }
+}
+
+/**
+ * Return why a stored target cannot be served, or `null` when it can: a
+ * same-site path, or an external address in its approved form. What serving
+ * layers call; write paths call {@link redirectTargetIssue}.
+ */
+export function servableRedirectTargetIssue(target: string): string | null {
+  return isExternalRedirectTarget(target)
+    ? externalRedirectTargetIssue(target)
+    : redirectTargetIssue(target);
+}
 
 /**
  * Return why `toPath` is not a safe same-site redirect target, or `null`

@@ -178,3 +178,60 @@ describe("redirectFromPathSpellings", () => {
     expect(redirectFromPathSpellings("/")).toEqual(["/"]);
   });
 });
+
+describe("external targets (#1358)", () => {
+  const external = (rows: [string, string, number][]) =>
+    buildRedirectPlan({
+      rows: rows.map(([fromPath, toPath, statusCode]) => ({ fromPath, toPath, statusCode })),
+      pageUrlStyle: "directory",
+      servedFiles: new Set(["index.html"]),
+    });
+
+  it("keeps the address as approved: no slash added, the visitor's query rides along", () => {
+    const plan = external([["/termin", "https://calendar.example/book", 302]]);
+    expect(plan.redirects).toEqual([
+      {
+        fromPath: "/termin",
+        matchPaths: ["/termin", "/termin/"],
+        location: "https://calendar.example/book",
+        statusCode: 302,
+        preserveQuery: true,
+      },
+    ]);
+  });
+
+  it("a target with its own query carries no visitor query", () => {
+    const plan = external([["/t", "https://calendar.example/b?gv=true", 302]]);
+    expect(plan.redirects[0]?.preserveQuery).toBe(false);
+  });
+
+  it("a chain ends at the address and collapses onto it", () => {
+    const plan = external([
+      ["/a", "/b", 301],
+      ["/b", "https://calendar.example/", 302],
+    ]);
+    expect(plan.redirects.find((r) => r.fromPath === "/a")).toMatchObject({
+      location: "https://calendar.example/",
+      statusCode: 302,
+    });
+  });
+
+  it("the build still wins, and an address is never an unserved path", () => {
+    const plan = external([
+      ["/", "https://calendar.example/", 302],
+      ["/x", "https://calendar.example/", 302],
+    ]);
+    expect(plan.shadowedByBuild).toEqual(["/"]);
+    expect(redirectsToUnservedPaths(plan, new Set())).toEqual([]);
+  });
+
+  it("refuses a stored row in a form that was never approved", () => {
+    expect(() => external([["/x", "http://evil.example/", 302]])).toThrow("must start with '/'");
+    expect(() => external([["/x", "https://a@evil.example/", 302]])).toThrow("credentials");
+  });
+
+  it("survives the _redirects file the providers read", () => {
+    const rows = [{ fromPath: "/t", toPath: "https://a.example/b?c=d", statusCode: 302 }];
+    expect(parseRedirectsFile(formatRedirectsFile(rows))).toEqual(rows);
+  });
+});

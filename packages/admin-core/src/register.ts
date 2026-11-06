@@ -510,6 +510,13 @@ import {
   lookupRedirectOp,
 } from "./ops/redirects.js";
 import {
+  executeRedirectProposalOp,
+  listPendingRedirectProposalsOp,
+  previewExternalRedirectsOp,
+  proposeExternalRedirectsOp,
+  rejectRedirectProposalOp,
+} from "./ops/redirects_pending.js";
+import {
   executeRoleProposalOp,
   listPendingRoleProposalsOp,
   proposeRoleCreateOp,
@@ -1148,6 +1155,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(pageConflictsRedirectOp);
   registry.register(deleteRedirectOp);
   registry.register(createRedirectsManyOp);
+  registry.register(proposeExternalRedirectsOp);
+  registry.register(previewExternalRedirectsOp);
+  registry.register(executeRedirectProposalOp);
+  registry.register(rejectRedirectProposalOp);
+  registry.register(listPendingRedirectProposalsOp);
   registry.register(deleteRedirectsManyOp);
   // #1157 — redirects sync to the hosting provider on save, no build.
   registry.register(syncRedirectsProviderOp);

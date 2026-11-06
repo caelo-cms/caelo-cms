@@ -108,6 +108,8 @@ async function readProposalDecisions(tx: Tx, proposalId: string): Promise<Propos
       FROM domain_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'static_files', status, decided_at, decision_reason, NULL, NULL
       FROM static_file_pending_actions WHERE id = ${id}
+    UNION ALL SELECT 'redirects', status, decided_at, decision_reason, NULL, NULL
+      FROM redirect_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'themes', status, decided_at, decision_reason, NULL, NULL
       FROM theme_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'site_defaults', status, decided_at, decision_reason, NULL, NULL

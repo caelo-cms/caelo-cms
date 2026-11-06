@@ -122,6 +122,26 @@ describe("applyGcpRedirectPlan", () => {
     expect(updates).toEqual([]);
   });
 
+  it("treats a new target host as a change, even on the same path (#1358)", async () => {
+    const live = {
+      paths: ["/old", "/old/"],
+      urlRedirect: {
+        hostRedirect: "a.example",
+        pathRedirect: "/book",
+        redirectResponseCode: "MOVED_PERMANENTLY_DEFAULT",
+        stripQuery: false,
+      },
+    };
+    const { api, updates } = fakeApi([siteMap([live])]);
+    const result = await applyGcpRedirectPlan({
+      plan: plan([["/old", "https://b.example/book", 301]]),
+      siteHost: "example.com",
+      api,
+    });
+    expect(result.changed).toBe(true);
+    expect(JSON.stringify(updates[0]?.body)).toContain('"hostRedirect":"b.example"');
+  });
+
   it("removes every redirect rule for an empty plan", async () => {
     const { api, updates } = fakeApi([siteMap([{ paths: ["/a"], urlRedirect: {} }])]);
     await applyGcpRedirectPlan({ plan: plan([]), siteHost: "example.com", api });

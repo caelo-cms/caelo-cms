@@ -9,6 +9,10 @@
  * deploy/redirect-sync.ts); every build carries it too. The SvelteKit hooks
  * fall back to the table on a 404 so smoke / dev environments respect the
  * redirect without a serving layer in front.
+ *
+ * #1358 — a target on another domain never comes through these ops: it is
+ * approval-gated (redirects_pending.ts) and the target checks here refuse it.
+ * Deleting one, or replacing it with a same-site target, stays routine.
  */
 
 import { defineOperation, type TransactionRunner, textArray } from "@caelo-cms/query-api";
@@ -23,7 +27,7 @@ import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js"
  * #1461 — a static file owns its URL. The refusal for redirects that would
  * start at one, or null. The build would leave such a row out silently.
  */
-async function staticFileRedirectRefusal(
+export async function staticFileRedirectRefusal(
   tx: TransactionRunner,
   fromPaths: readonly string[],
 ): Promise<string | null> {

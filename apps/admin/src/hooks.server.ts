@@ -65,7 +65,7 @@ import {
   syncPluginHost,
 } from "@caelo-cms/plugin-host";
 import { execute, withBranchVisibilityScope } from "@caelo-cms/query-api";
-import { type ExecutionContext, redirectTargetIssue } from "@caelo-cms/shared";
+import { type ExecutionContext, servableRedirectTargetIssue } from "@caelo-cms/shared";
 import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
 import { bootstrapE2eOperatorAccess } from "#lib/server/google-iap.js";
@@ -691,9 +691,10 @@ const handleRequest: Handle = async ({ event, resolve }) => {
           }
         ).match;
         // #657 — never emit a Location that leaves the site (`//host`)
-        // or embeds a URL in the path; such a stored row is reported
-        // and the 404 stands (the static build refuses the same rows).
-        const unsafeTarget = m ? redirectTargetIssue(m.toPath) : null;
+        // or embeds a URL in the path, unless it is an approved external
+        // address (#1358); such a stored row is reported and the 404 stands
+        // (the static build refuses the same rows).
+        const unsafeTarget = m ? servableRedirectTargetIssue(m.toPath) : null;
         if (m && unsafeTarget) {
           console.error(`[hooks] redirect ${event.url.pathname} not served: ${unsafeTarget}`);
         } else if (m) {

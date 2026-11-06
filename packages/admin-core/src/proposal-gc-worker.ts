@@ -41,6 +41,7 @@ const PENDING_TABLES = [
   "template_pending_actions",
   "domain_pending_actions",
   "static_file_pending_actions",
+  "redirect_pending_actions",
   "plugin_rate_limit_proposals",
   // v0.11.0 (#45) — themes primitive uses the standard pending shape.
   "theme_pending_actions",
