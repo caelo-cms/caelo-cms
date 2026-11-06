@@ -90,9 +90,18 @@ describe("scale-gate.yml", () => {
       "auto_explain.log_buffers=on",
       "auto_explain.log_timing=off",
       "auto_explain.log_format=json",
+      "auto_explain.log_nested_statements=on",
+      // Whole messages straight into the file the harness reads: no
+      // interleaved plans, no follower lagging behind the phase offsets.
+      "logging_collector=on",
+      "log_directory=/pg-log",
+      "log_filename=postgres.log",
+      "log_file_mode=0644",
     ]) {
       expect(runs).toContain(flag);
     }
+    const load = job?.steps.find((s) => s.name === "Run the load")?.run ?? "";
+    expect(load).toContain("--pg-log pg-log/postgres.log");
   });
 
   it("W4: no expression in a run script, read-only token", () => {

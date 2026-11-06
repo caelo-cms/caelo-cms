@@ -69,12 +69,23 @@ jobs:
       # "Cap Postgres at the db-f1-micro CPU share"), so seeding stays fast.
       # #1269: auto_explain logs the plan of every statement over 2 s, with
       # actual rows and buffers per node (timing off, the expensive part of
-      # analyze), so the report shows why a heavy statement is heavy.
+      # analyze), so the report shows why a heavy statement is heavy. The
+      # server's logging collector writes the log straight into
+      # pg-log/postgres.log: whole messages, so the multi-line plans of
+      # concurrent backends never interleave (they do on a plain stderr
+      # pipe once a message exceeds PIPE_BUF), and no follower process lags
+      # behind the offsets the harness takes per phase. Readable by the
+      # runner (log_file_mode); the container's own stderr keeps only what
+      # the server says before the collector starts.
       - name: Start Postgres (db-f1-micro sized)
         run: |
+          mkdir -m 777 pg-log
           docker run -d --name scale-gate-pg --network host --memory=614m \
             -e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB \
+            -v "$PWD/pg-log:/pg-log" \
             postgres:17-alpine \
+            -c logging_collector=on -c log_directory=/pg-log -c log_filename=postgres.log \
+            -c log_file_mode=0644 -c log_rotation_age=0 -c log_rotation_size=0 \
             -c shared_preload_libraries=pg_stat_statements,auto_explain \
             -c auto_explain.log_min_duration=2s -c auto_explain.log_analyze=on \
             -c auto_explain.log_buffers=on -c auto_explain.log_timing=off \
@@ -90,7 +101,8 @@ jobs:
             sleep 1
           done
           docker exec scale-gate-pg pg_isready -h 127.0.0.1 -U "$POSTGRES_USER"
-          docker logs -f scale-gate-pg > postgres.log 2>&1 &
+          docker logs -f scale-gate-pg > postgres-stderr.log 2>&1 &
+          test -r pg-log/postgres.log
 
       - name: Bootstrap databases and migrate
         env:
@@ -150,7 +162,7 @@ jobs:
           set -o pipefail
           bun scripts/scale-gate/run.ts --fixture scale-gate-fixture.json \
             --base-url "$ORIGIN" --duration "$SCALE_GATE_DURATION" \
-            --admin-log admin.log --pg-log postgres.log --report scale-gate-report.json \
+            --admin-log admin.log --pg-log pg-log/postgres.log --report scale-gate-report.json \
             --pg-container scale-gate-pg --tick-every 60 --settle-consumers \
             | tee scale-gate-report.md
 
@@ -167,6 +179,7 @@ jobs:
             scale-gate-report.json
             scale-gate-report.md
             admin.log
-            postgres.log
+            pg-log/postgres.log
+            postgres-stderr.log
           if-no-files-found: warn
           retention-days: 30

@@ -12,7 +12,7 @@ It complements the per-op rows-read test in PR CI (which catches the same class 
 - on a **pull request with the `perf-gate` label** (and on every push to it while the label is set);
 - manually (`workflow_dispatch`).
 
-A release is blocked while the nightly run is red. The JSON report, the markdown table and both logs are uploaded as the run's artifact; the table is also in the job summary.
+A release is blocked while the nightly run is red. The JSON report, the markdown table, the admin log and the Postgres log are uploaded as the run's artifact; the table is also in the job summary.
 
 ## Environment
 
@@ -24,6 +24,7 @@ A release is blocked while the nightly run is red. The JSON report, the markdown
 | Lock waits | `deadlock_timeout=100ms`, `log_lock_waits=on` | every wait over 100 ms is logged as `still waiting for`, which the gate counts |
 | `pg_stat_statements` | preloaded | so a red run can be diagnosed from the same database |
 | `auto_explain` | preloaded; `log_min_duration=2s`, `log_analyze`, `log_buffers`, `log_timing=off`, `log_nested_statements`, `log_format=json` | the plan of every statement over 2 s, with actual rows and buffers per node (#1269): a statement's cost under load and in a local repro can come from different plans. Per-node timing is off because it is what makes analyze expensive on a fifth of a core |
+| Postgres log | `logging_collector=on` into `pg-log/postgres.log` (`log_file_mode=0644`), read by the harness; the container's stderr (`postgres-stderr.log`) keeps only the start-up | the collector writes whole messages, so the multi-line plans of concurrent backends never interleave (they do on a plain stderr pipe once a message exceeds `PIPE_BUF`), and no `docker logs` follower lags behind the offsets the harness takes per phase |
 | Plugins | every shipped plugin active (the fixture), dev-signed at boot (`NODE_ENV=development`), like the E2E suite | their change consumers, workers and render hooks are part of the load (#1390) |
 | Scheduler | `CAELO_SCHEDULER_CLOCK=off`; the load calls `POST /api/internal/scheduler/tick` every 60 s with an internal token (`CAELO_INTERNAL_SECRET`) | like an install's scheduler at its shortest interval (`schedulerIntervalMinutes` 1), so every plugin worker runs during the load |
 
@@ -72,7 +73,7 @@ During the load it also:
 - samples the Postgres container's own cgroup every `--cpu-interval` seconds (default 5) through `docker exec <--pg-container> cat /sys/fs/cgroup/cpu.stat`, and reads the share it runs under from `cpu.max` (`scripts/scale-gate/observe.ts`);
 - calls the scheduler tick every `--tick-every` seconds, the first one at once (a worker the due-table has not seen is due then), and records each plugin worker's runs and failures from the tick's answer;
 - resets `pg_stat_statements` at the start of the settle wait and again at the start of the load, and reports the 15 statements with the most execution time of each phase (calls, total and mean ms, rows, buffers, the normalised text; JSON `dbStatements.settle` / `.load`, the top ten in the table), so a saturated CPU share names the statements it went to;
-- afterwards reads the plans `auto_explain` wrote into the Postgres log during each phase (`scripts/scale-gate/plans.ts`), groups them by statement text and reports the ten with the most logged time per phase: count, total and slowest duration, and the slowest occurrence's plan as a tree with actual rows, loops, buffers, conditions and rows removed by a filter (JSON `slowPlans.settle` / `.load`, collapsed blocks under the table);
+- afterwards reads the plans `auto_explain` wrote into the Postgres log during each phase (`scripts/scale-gate/plans.ts`), groups them by statement text and reports the ten with the most logged time per phase: count, total and slowest duration, and the slowest occurrence's plan as a tree with actual rows, loops, buffers, conditions and rows removed by a filter (JSON `slowPlans.settle` / `.load`, collapsed blocks under the table). A statement counts in the phase in which it finished: auto_explain logs it then;
 - afterwards reads the admin log written since the preflight for plugin failures: `[plugin-host] <slug> <phase> failed (…)` (a failed load, operation or render, `recordPluginError`), `change consumer of "<slug>" stopped`, and the host-level consumer and heartbeat failures.
 
 ## Definitions and SLOs
@@ -99,8 +100,11 @@ Plus **zero pool-acquire timeouts** (a `PoolAcquireTimeoutError` in the admin lo
 Use a throwaway Postgres container, never a database with data you need: the fixture rewrites site settings and the harness writes thousands of rows. Postgres runs in Docker because the CPU share and the CPU readings come from the container's cgroup (cgroup v2; Docker Desktop has it).
 
 ```sh
-docker run -d --name sg-pg -p 127.0.0.1:5563:5432 --memory=614m \
+mkdir -p /tmp/sg && mkdir -m 777 /tmp/sg/pg-log
+docker run -d --name sg-pg -p 127.0.0.1:5563:5432 --memory=614m -v /tmp/sg/pg-log:/pg-log \
   -e POSTGRES_USER=caelo -e POSTGRES_PASSWORD=pg -e POSTGRES_DB=postgres postgres:17-alpine \
+  -c logging_collector=on -c log_directory=/pg-log -c log_filename=postgres.log \
+  -c log_file_mode=0644 -c log_rotation_age=0 -c log_rotation_size=0 \
   -c shared_preload_libraries=pg_stat_statements,auto_explain -c max_connections=100 \
   -c auto_explain.log_min_duration=2s -c auto_explain.log_analyze=on -c auto_explain.log_buffers=on \
   -c auto_explain.log_timing=off -c auto_explain.log_nested_statements=on -c auto_explain.log_format=json \
@@ -126,10 +130,9 @@ bun run --filter '@caelo-cms/shared' build && bun run --filter '@caelo-cms/mcp-s
 (cd apps/admin && PORT=4391 ORIGIN=http://localhost:4391 NODE_ENV=development \
   CAELO_RELEASE_CHECK=off CAELO_UPDATE_SCHEDULER=off CAELO_SCHEDULER_CLOCK=off \
   bun run build/index.js > /tmp/sg/admin.log 2>&1 &)
-docker logs -f sg-pg > /tmp/sg/pg.log 2>&1 &
 
 bun scripts/scale-gate/run.ts --fixture /tmp/sg/fixture.json --base-url http://localhost:4391 \
-  --duration 300 --admin-log /tmp/sg/admin.log --pg-log /tmp/sg/pg.log \
+  --duration 300 --admin-log /tmp/sg/admin.log --pg-log /tmp/sg/pg-log/postgres.log \
   --pg-container sg-pg --tick-every 60 --settle-consumers \
   --report /tmp/sg/report.json --baseline
 ```
