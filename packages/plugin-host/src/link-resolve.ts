@@ -95,9 +95,17 @@ export function linkResolveJournalFilter(
     kindOps: { snapshot: ["update", "delete", "truncate"] },
     unscopedOps: ["update", "delete", "truncate"],
     branchOnlyKinds: ["plugin_row"],
-    ...(reads.columns ? { columns: { plugin_storage: [...reads.columns] } } : {}),
+    // The host's own columns change what a row means however the plugin
+    // declared it: a storage delete is an UPDATE of caelo_deleted_at, and a
+    // row's branch moves with caelo_chat_branch_id.
+    ...(reads.columns
+      ? { columns: { plugin_storage: [...reads.columns, ...HOST_VISIBILITY_COLUMNS] } }
+      : {}),
   };
 }
+
+/** Host-managed storage columns that make a row appear or disappear. */
+const HOST_VISIBILITY_COLUMNS = ["caelo_deleted_at", "caelo_chat_branch_id"] as const;
 
 /** Test seam: forget every kept answer. */
 export function clearLinkResolveCache(): void {
@@ -159,7 +167,11 @@ export async function resolveLinkVariants(
       kept = { mark, answers: hit && fresh ? hit.answers : new Map() };
       toAsk = pageIds.filter((id) => !kept?.answers.has(id));
     }
-    const fromPlugin = toAsk.length > 0 ? await askPlugin(lp, operationName, toAsk, scope) : {};
+    // A refill that is kept must be read after its mark: the render pass's
+    // memo (renderId) may hold the plugin's rows from an earlier hook of
+    // this pass, read before the mark — so a kept read gets a pass of its own.
+    const askScope = kept ? { ...scope, renderId: crypto.randomUUID() } : scope;
+    const fromPlugin = toAsk.length > 0 ? await askPlugin(lp, operationName, toAsk, askScope) : {};
     if (fromPlugin === null) continue; // reported as a render failure (#1087)
     const askedNow = new Set(toAsk);
     const answers = new Map<string, LinkPageVariant | null>(kept?.answers ?? []);

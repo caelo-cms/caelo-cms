@@ -176,6 +176,17 @@ interface PreviewResult {
  * the link partition for the pages the page references, and the head
  * contributions (hreflang).
  */
+/** A human Owner (unlinking a variant needs content.write); returns its actor id. */
+async function seedOwner(): Promise<string> {
+  const owner = crypto.randomUUID();
+  await sqlSystem(async (tx) => {
+    await tx`INSERT INTO actors (id, kind, display_name) VALUES (${owner}::uuid, 'human', 'Owner')`;
+    await tx`INSERT INTO users (id, email, password_hash) VALUES (${owner}::uuid, ${`${owner}@t1269.test`}, 'test-only')`;
+    await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${owner}::uuid, id FROM roles WHERE name = 'owner'`;
+  });
+  return owner;
+}
+
 /** The editor toolbar's language place for `pageId`, and the operations it ran (#1255). */
 async function languageToolbar(
   pageId: string,
@@ -316,9 +327,11 @@ describe("#1213 — international-site render hooks at scale", () => {
     expect(smallPreview.switcher).toEqual(["en", "de"]);
     // The pass shares its reads: 35 operations before #1213 (the registry
     // and the variant rows re-read by every hook, two whole-site
-    // pages.list), 14 since, plus the host's one journal check of the kept
-    // link-resolve answers (#1269). A new read in a render hook shows here.
-    expect(smallPreview.calls.length).toBeLessThanOrEqual(15);
+    // pages.list), 14 since. #1269 adds the host's one journal check of the
+    // kept link-resolve answers, and a cold refill reads in a pass of its
+    // own (so it is read after the mark it is kept with): 17. A warm pass
+    // asks the plugin nothing. A new read in a render hook shows up here.
+    expect(smallPreview.calls.length).toBeLessThanOrEqual(17);
     expect(smallPreview.calls).toContain("system:plugin_changes.check_mark");
     expect(smallPreview.calls).not.toContain("plugin:pages.list");
   });
@@ -505,13 +518,17 @@ describe("#1213 — international-site render hooks at scale", () => {
     expect(more.calls.filter((c) => c.startsWith("plugin:")).length).toBeGreaterThan(0);
     expect(more.partition.get(small[1]?.de ?? "")?.variant).toBe("de");
 
-    // The page leaves its group: asked again, and the answer follows.
-    await sqlSystem(async (tx) => {
-      await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${pluginId}', true)`);
-      await tx.unsafe(
-        `DELETE FROM plugin_international_site.page_variants WHERE page_id = '${pair.de}'`,
-      );
+    // The page leaves its group on main, through the storage API (a delete
+    // there is an update of the host's caelo_deleted_at): asked again, and
+    // the answer follows.
+    const owner = await seedOwner();
+    const unlinked = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: owner },
+      pluginSlug: "international-site",
+      operationName: "unlink_page_variants",
+      args: { pageId: pair.de },
     });
+    if (!unlinked.ok) throw new Error(`${unlinked.error.kind}: ${unlinked.error.message}`);
     const after = await pass(asked);
     expect(after.calls.filter((c) => c.startsWith("plugin:")).length).toBeGreaterThan(0);
     expect(after.partition.get(pair.de)?.group ?? null).toBeNull();
@@ -543,12 +560,7 @@ describe("#1213 — international-site render hooks at scale", () => {
 
     // The chat (acting for an Owner: unlinking needs content.write)
     // unlinks the German page: a pending row on its branch.
-    const owner = crypto.randomUUID();
-    await sqlSystem(async (tx) => {
-      await tx`INSERT INTO actors (id, kind, display_name) VALUES (${owner}::uuid, 'human', 'Owner')`;
-      await tx`INSERT INTO users (id, email, password_hash) VALUES (${owner}::uuid, ${`${owner}@t1269.test`}, 'test-only')`;
-      await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${owner}::uuid, id FROM roles WHERE name = 'owner'`;
-    });
+    const owner = await seedOwner();
     const unlinked = await runPluginOperation({
       invocation: {
         origin: "chat",
@@ -569,5 +581,33 @@ describe("#1213 — international-site render hooks at scale", () => {
     const onMain = await pass(null);
     expect(onMain.asked).toBe(false);
     expect(onMain.partition.get(pair.de)?.variant).toBe("de");
+  });
+
+  it("a kept refill is read after its mark, not from an earlier hook of the pass (#1269)", async () => {
+    const [pair] = await seedGroups("km", 1);
+    if (!pair) throw new Error("seed");
+    clearLinkResolveCache();
+    const scope: RenderScope = { chatBranchId: null, renderId: crypto.randomUUID() };
+    // An earlier hook of the same pass memoizes the variant rows.
+    const annotated = await runPluginOperation({
+      invocation: renderInvocation(scope),
+      pluginSlug: "international-site",
+      operationName: "url_annotations",
+      args: { pageIds: [pair.de] },
+    });
+    if (!annotated.ok) throw new Error(annotated.error.message);
+    // The variant leaves its group before the partition is asked for.
+    const owner = await seedOwner();
+    const unlinked = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: owner },
+      pluginSlug: "international-site",
+      operationName: "unlink_page_variants",
+      args: { pageId: pair.de },
+    });
+    if (!unlinked.ok) throw new Error(`${unlinked.error.kind}: ${unlinked.error.message}`);
+    const partition = await resolveLinkVariants([pair.de], scope, { keep: true });
+    // Kept with a mark that has seen the unlink: it must not be the
+    // memoized grouped row.
+    expect(partition.get(pair.de)?.group ?? null).toBeNull();
   });
 });
