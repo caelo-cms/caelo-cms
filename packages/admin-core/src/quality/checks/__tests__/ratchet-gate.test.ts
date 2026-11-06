@@ -91,10 +91,21 @@ describe("the gate with page-check problems", () => {
     errorCode: null,
     errorMessage: null,
     publishOverride: null,
-    pages: [{ pageId: P, pagePath: "/team", problems: [problem] }],
+    pages: [
+      {
+        pageId: P,
+        pagePath: "/team",
+        pageUrl: "https://staging.example.test/team",
+        problems: [problem],
+      },
+    ],
     siteProblems: [{ ...problem, ruleId: "robots/blocked", checkId: "robots", count: 1 }],
   };
-  const none = { findings: new Map<string, number | null>(), scores: new Map<string, number>() };
+  const none = {
+    findings: new Map<string, number | null>(),
+    scores: new Map<string, number>(),
+    resources: new Map<string, number>(),
+  };
 
   it("blocks on page and site-wide problems, naming both", () => {
     const d = decideGate(audit, { ...none, checks: new Map() });
