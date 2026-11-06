@@ -21,6 +21,7 @@ import {
   testIamCall,
   UPGRADER_PREFLIGHT_VOICE,
   upgraderAccessChecks,
+  upgraderHandoverChecks,
 } from "./upgrader-iam-preflight.js";
 import {
   UPGRADER_FORBIDDEN_ROLES,
@@ -117,6 +118,32 @@ function tester(grants: Map<string, Set<string>>, asked: string[] = []): IamTest
   };
 }
 
+describe("upgraderHandoverChecks (#1029)", () => {
+  const all = upgraderHandoverChecks(TARGET);
+
+  it("needs nothing setup does not already grant: the hand-over widens no right", async () => {
+    expect((await runIamPreflight(all, tester(setupGrants()))).kind).toBe("ok");
+    for (const p of all.flatMap((c) => c.permissions)) {
+      if (p === "iam.serviceAccounts.actAs") continue;
+      expect(UPGRADER_RUN_ROLE.permissions).toContain(p);
+    }
+  });
+
+  it("asks about the job's own job and own account, and is part of the full list", () => {
+    expect(all.map((c) => resourceName(c.resource))).toEqual([
+      "projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
+      "projects/acme",
+      "projects/acme/serviceAccounts/caelo-production-upgrader@acme.iam.gserviceaccount.com",
+    ]);
+    const full = new Set(upgraderAccessChecks(TARGET).flatMap((c) => c.permissions));
+    for (const p of all.flatMap((c) => c.permissions)) expect(full.has(p)).toBe(true);
+  });
+
+  it("never asks for overrides: an execution of the job runs what setup deployed", () => {
+    expect(all.flatMap((c) => c.permissions)).not.toContain("run.jobs.runWithOverrides");
+  });
+});
+
 describe("upgraderAccessChecks", () => {
   it("asks only for what upgrader-setup.ts grants: a fresh setup passes the self-check", async () => {
     const r = await runIamPreflight(upgraderAccessChecks(TARGET), tester(setupGrants()));
@@ -190,7 +217,7 @@ describe("upgraderAccessChecks", () => {
       "run.jobs.create", // the migration job
       "run.jobs.run",
       "run.executions.get", // execute --wait, the lock lease
-      "run.jobs.update", // the self-update
+      "run.jobs.update", // the hand-over, the audit and capture jobs
       "cloudsql.backupRuns.create", // the backup
       "iam.serviceAccounts.actAs",
       "iam.serviceAccounts.signJwt", // the IAP health check

@@ -39,7 +39,13 @@ A region is refreshed only when:
 - the running Caelo version rendered the live build (`deploy_runs.caelo_version`);
 - the plugin runs here and on every live server (#1008 `activePluginProblems`). Other plugins' health does not matter, because their regions and assets stay as published.
 
-Otherwise the build reports `blocked` (with the reason) or leaves the region for the next Publish live. The publisher refuses when the live release is not the one the live run recorded (something was released outside Caelo).
+Otherwise the build reports `blocked` (with the reason) or leaves the region for the next Publish live.
+
+**Page links stay published (#1495).** A plugin that links pages from `staticRender` asks `pages.resolve_public_urls`, as in any build. During a plugin-data build that op answers from the live build's routing manifest (`siteBaseUrl`, `pages[].url`) and reads nothing from `cms_admin`, because the stored base URL, `pages.current_path` and a canonical override may hold changes nobody published. `ctx.invocation.siteBaseUrl` is the manifest's origin too. When a region asks for a page the live build does not ship, the op throws, and the region keeps its published output even if the plugin catches the error and renders on. Its mark stays pending but moves behind newer marks, so a full batch cannot starve them. The tick's message names the page, and the region is baked after the Publish live that ships the page. If the render then throws anything other than that refusal, the error goes to `plugin_errors` (plugin health) and the tick carries on for every other plugin.
+
+This covers URLs only: other core data a `staticRender` reads through `ctx.cms` comes from `main`, so a baked region should read plugin data and ask core for nothing but URLs.
+
+The publisher refuses when the live release is not the one the live run recorded (something was released outside Caelo).
 
 The result is a deploy run with `build_kind = 'plugin_data'` and `base_run_id` = the live run. Its `plugin_data` column says what it baked. `deploy.build_plugin_data` audits it. When nothing changed (the data is the same as baked), the build publishes nothing and records no run. "When did a human last publish" (the dashboard, the editor toolbar, international-site's garbage collection) skips plugin-data runs.
 

@@ -128,6 +128,10 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     input: () => ({ query: "zebrafinch lan", limit: 50 }),
   },
   { op: "modules.list", ctx: "chat", input: () => ({}) },
+  // #1424 — the module sits on every page and on every pending layout of
+  // the fixture: the read stays at the cap on either size.
+  { op: "modules.list_usage", ctx: "chat", input: (r) => ({ moduleIds: [r.moduleId] }) },
+  { op: "snapshots.module_impact", ctx: "chat", input: (r) => ({ moduleId: r.moduleId }) },
   { op: "content_instances.list", ctx: "chat", input: () => ({}) },
   // The shapes plugins call in the background, after every write: the
   // consent-manager's change consumer re-reads the instances of what a

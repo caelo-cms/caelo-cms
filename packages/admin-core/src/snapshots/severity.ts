@@ -6,8 +6,10 @@
  *
  * Rules in P4:
  *   - high   when >=5 affected pages, OR any affected slot is a
- *            template "header" slot (proxy for above-the-fold).
- *   - medium when >=2 affected pages, OR the change spans >=2 templates.
+ *            template "header" slot (proxy for above-the-fold), OR a layout
+ *            holds the module (site chrome is on every page of the layout).
+ *   - medium when >=2 affected pages, OR the change spans >=2 templates,
+ *            OR a parent module nests it (every page of the parent shows it).
  *   - low    otherwise.
  *
  * `templateBlockIsHeader` is injected so the caller (the impact op) can
@@ -22,6 +24,12 @@ export interface SeverityInput {
     readonly templateId: string;
     readonly blockName: string;
   }[];
+  /** `affectedPages` is cut off: more pages place the module. */
+  readonly capped?: boolean;
+  /** Layouts whose chrome holds the module. */
+  readonly layouts?: readonly string[];
+  /** Parent modules that nest it. */
+  readonly nestedIn?: readonly string[];
   /** Returns true if the slot is considered above-the-fold / chrome. */
   readonly templateBlockIsHeader: (templateId: string, blockName: string) => boolean;
 }
@@ -50,16 +58,20 @@ export function classifySeverity(input: SeverityInput): SeverityResult {
     input.templateBlockIsHeader(p.templateId, p.blockName),
   );
 
+  const layouts = input.layouts ?? [];
+  const nestedIn = input.nestedIn ?? [];
+
   const reasons: string[] = [];
   if (touchesHeader) reasons.push("touches a header / nav slot");
-  if (pageCount >= 5) reasons.push(`affects ${pageCount} pages`);
-  else if (pageCount >= 2) reasons.push(`affects ${pageCount} pages`);
+  if (layouts.length > 0) reasons.push(`site chrome of layout(s) ${layouts.join(", ")}`);
+  if (nestedIn.length > 0) reasons.push(`nested in module(s) ${nestedIn.join(", ")}`);
+  if (pageCount >= 2) reasons.push(`affects ${pageCount}${input.capped ? "+" : ""} pages`);
   if (distinctTemplates >= 2) reasons.push(`spans ${distinctTemplates} templates`);
 
-  if (touchesHeader || pageCount >= 5) {
+  if (touchesHeader || pageCount >= 5 || layouts.length > 0) {
     return { severity: "high", reasons };
   }
-  if (pageCount >= 2 || distinctTemplates >= 2) {
+  if (pageCount >= 2 || distinctTemplates >= 2 || nestedIn.length > 0) {
     return { severity: "medium", reasons };
   }
   if (pageCount === 1) reasons.push("affects 1 page");

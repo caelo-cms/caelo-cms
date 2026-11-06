@@ -297,6 +297,14 @@ describe("render dependencies", () => {
     });
   });
 
+  it("#1433 — a module link field's internal target is a dependency of the page", () => {
+    const ctx = page(PAGE.home);
+    ctx.linkScope({ href: "https://example.com/" });
+    expect(ctx.deps().pages).toEqual([]);
+    ctx.linkScope({ href: `caelo:page/${PAGE.team}` });
+    expect(ctx.deps().pages).toEqual([PAGE.team]);
+  });
+
   it("records only what the render reached (lazy)", () => {
     const ctx = page(PAGE.home);
     const mega = entries(ctx, {

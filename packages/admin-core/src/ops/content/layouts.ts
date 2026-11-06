@@ -347,6 +347,7 @@ export const updateLayoutOp = defineOperation({
           kind: "HandlerError",
           operation: "layouts.update",
           message: `layout ${input.layoutId} not found. Next step: list layouts and use an existing id.`,
+          refusal: true,
         });
       }
       const linkCanon = await canonicaliseLayoutHtml(tx, ctx, input.html, prevHtml);
@@ -500,6 +501,7 @@ export const setLayoutModulesOp = defineOperation({
         kind: "HandlerError",
         operation: "layout_modules.set",
         message: "layout not found",
+        refusal: true,
       });
     }
     const blockRows = (await tx.execute(sql`
@@ -645,6 +647,7 @@ export const setLayoutBlocksOp = defineOperation({
         kind: "HandlerError",
         operation: "layout_blocks.set",
         message: "layout not found",
+        refusal: true,
       });
     }
 

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P14 — owner bootstrap token. cms-provision generates one at first
- * `up`; the operator visits /setup?token=<…> to create the first
- * Owner. Single-use, 24h TTL.
+ * P14 — owner bootstrap token. cms-provision generates one; the operator
+ * visits /setup?token=<…> to create the first Owner. Single-use, 24h TTL.
+ * Self-hosted hands it to the admin in `.caelo/pending-token.json`, Google
+ * Cloud in Secret Manager (owner-setup-token.ts).
  */
 
 export interface BootstrapToken {

@@ -27,7 +27,7 @@
  */
 
 import type { ListResolveScope } from "@caelo-cms/plugin-sdk";
-import type { ListOverlayIssue } from "@caelo-cms/shared";
+import type { ListOverlayIssue, LiveBuildUrls, PageUrlStyle } from "@caelo-cms/shared";
 import { collectBuildAssets, type PluginClientAsset } from "./client-assets.js";
 import {
   hasContentVariantContributors,
@@ -40,6 +40,8 @@ import {
   resolveModuleDeferrals,
 } from "./deferrals.js";
 import {
+  hostInfra,
+  hostSystemActorId,
   isPluginDisabled,
   loadedPlugins,
   MAIN_RENDER,
@@ -67,6 +69,7 @@ import {
 } from "./list-source-resolution.js";
 import { pluginListSourcesRegistry } from "./list-sources.js";
 import { type PublicUrlContext, type PublicUrlPage, resolvePublicPageUrls } from "./public-urls.js";
+import { recordPluginError } from "./runtime-health.js";
 
 type ContentVariantPages = Parameters<typeof resolveContentVariants>[0];
 type DeferralCandidates = Parameters<typeof resolveModuleDeferrals>[0];
@@ -177,6 +180,55 @@ export const localBuildPluginServices: BuildPluginServices = {
       pageUrlStyle: urlContext.pageUrlStyle,
     })) ?? "",
 };
+
+/**
+ * #1495 — re-render one bake region for a plugin-data build, on what the
+ * live build was published with. Not a {@link BuildPluginServices} method:
+ * the generator renders main for a human's release, this renders into the
+ * release that is live, so the two must not share a URL source.
+ *
+ * @returns the region's markup, or null when it asked for a page the live
+ *   build does not ship: the region stays as published. An unrelated error
+ *   thrown after such a refusal goes to `plugin_errors` (plugin health,
+ *   #1008) rather than stopping the tick for every other plugin; any other
+ *   render failure throws.
+ */
+export async function renderPluginOnLiveBuild(
+  pluginSlug: string,
+  pageId: string,
+  live: {
+    readonly pageUrlStyle: PageUrlStyle;
+    /** The origin the live build recorded; null for a build that recorded none. */
+    readonly siteBaseUrl: string | null;
+    readonly liveUrls: LiveBuildUrls;
+  },
+): Promise<string | null> {
+  const scope = live.siteBaseUrl ? { ...MAIN_RENDER, siteBaseUrl: live.siteBaseUrl } : MAIN_RENDER;
+  let html = "";
+  try {
+    html =
+      (await runPluginStaticRender({
+        invocation: renderInvocation(scope),
+        pluginSlug,
+        pageId,
+        pageUrlStyle: live.pageUrlStyle,
+        liveUrls: live.liveUrls,
+      })) ?? "";
+  } catch (e) {
+    if (live.liveUrls.unknownPageIds.size === 0) throw e;
+    if (!(e instanceof Error && live.liveUrls.refusals.has(e))) {
+      await recordPluginError({
+        infra: hostInfra(),
+        systemActorId: hostSystemActorId(),
+        slug: pluginSlug,
+        pluginId: loadedPlugins.bySlug(pluginSlug)?.pluginId ?? null,
+        phase: "render",
+        error: e,
+      });
+    }
+  }
+  return live.liveUrls.unknownPageIds.size > 0 ? null : html;
+}
 
 /** The method names a build may call — the RPC's whole surface. */
 export const BUILD_PLUGIN_METHODS = [

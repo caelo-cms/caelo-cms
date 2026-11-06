@@ -88,6 +88,8 @@ export interface SeoPass {
    * once after the last batch. Returns whether it was written.
    */
   writeSitemap(write: (relPath: string, content: string) => Promise<void>): Promise<boolean>;
+  /** The public URL this build gave a page: what its canonical carries. */
+  publicUrl(pageId: string): string;
 }
 
 /** A JSON value bound as one jsonb parameter. */
@@ -238,6 +240,12 @@ export async function prepareSeoPass(args: {
   const followUpsOf = new Map<string, number[]>();
 
   return {
+    publicUrl(pageId) {
+      const url = publicUrls.get(pageId);
+      if (url === undefined) throw new Error(`seo-pass: no public URL resolved for page ${pageId}`);
+      return url;
+    },
+
     async apply(pages) {
       const wantCrumbs = new Set<string>();
       for (const p of pages) {

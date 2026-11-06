@@ -58,7 +58,7 @@
                 {#each lines(p.preview) as line (line)}<li>{line}</li>{/each}
               </ul>
               <p class="text-xs text-muted-foreground">
-                Applies only to these pages; the same finding on another page still blocks.
+                {String(p.preview.note ?? "")}
               </p>
             {:else}
               <p>Failed check: {String(p.preview.failedCheck ?? "")}</p>

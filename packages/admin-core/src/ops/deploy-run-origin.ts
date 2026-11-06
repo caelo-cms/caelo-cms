@@ -52,6 +52,7 @@ export const getDeployRunOriginOp = defineOperation({
         kind: "HandlerError",
         operation: "deploy.get_run_origin",
         message: `deploy run ${input.runId} does not exist — omit runId to read the newest staged build`,
+        refusal: true,
       });
     }
     return ok({

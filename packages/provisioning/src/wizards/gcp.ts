@@ -80,7 +80,7 @@ import {
   upgraderServiceAccountEmail,
 } from "../gcp-names.js";
 import { INFRA_CONTRACT_VERSION } from "../infra-contract.js";
-import { INSTALL_JOB_NAME, INSTALL_JOB_ROLES, storeSetupLink } from "../install-job.js";
+import { INSTALL_JOB_NAME, INSTALL_JOB_ROLES } from "../install-job.js";
 import {
   adoptStateBackend,
   ensureInstallDir,
@@ -105,6 +105,7 @@ import {
   resolveOperatorAccessTarget,
 } from "../operator-access.js";
 import { ensureOpsBackend } from "../ops-backend.js";
+import { issueOwnerSetup } from "../owner-setup-token.js";
 import { formatPlan, type PlannedStep, planGate, writePlanFile } from "../preview-plan.js";
 import {
   convergeKeylessProvisioner,
@@ -156,12 +157,7 @@ import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { promptProjectId } from "./gcp-prompts.js";
-import {
-  GCP_STACK_KNOB_DEFAULTS,
-  PulumiUpDeclinedError,
-  pulumiUpGcp,
-  readStackOutput,
-} from "./gcp-pulumi.js";
+import { GCP_STACK_KNOB_DEFAULTS, PulumiUpDeclinedError, pulumiUpGcp } from "./gcp-pulumi.js";
 
 export interface GcpWizardOpts {
   installId: string;
@@ -2459,32 +2455,6 @@ async function stepUploadStaticPlaceholder(
   markStepDone(installId, stepName, { bucket: bucketName });
 }
 
-/**
- * The Owner setup link from the install's stack (`bootstrapUrlOut`). A
- * secret: read here, at the moment it is shown, never checkpointed (#656).
- * Fails loudly when the stack can't be read: the run's last step, so a
- * re-run picks it up.
- */
-async function readBootstrapUrl(installId: string, provider: string): Promise<string> {
-  const meta = readMetadata(installId);
-  if (!meta) throw new Error(`No install.json for install '${installId}'.`);
-  const value = await readStackOutput({
-    installRoot: installRoot(installId),
-    backend: resolveBackend(meta, {
-      installRoot: installRoot(installId),
-      readPassphrase: () => readSecret(installId, "pulumi-passphrase"),
-    }),
-    provider: provider === "gcp-firebase" ? "gcp-firebase" : "gcp",
-    name: "bootstrapUrlOut",
-  });
-  if (typeof value !== "string" || value === "") {
-    throw new Error(
-      "The stack has no bootstrapUrlOut output. Re-run the installer to refresh the stack.",
-    );
-  }
-  return value;
-}
-
 /** The install's Pulumi outputs, as the `pulumi-up` step recorded them. */
 async function recordedStackOutputs(
   installId: string,
@@ -2573,36 +2543,30 @@ async function stepFinalize(installId: string, setupLink: "print" | "secret"): P
 
   // v0.3.15 — On gcp-firebase, the admin DomainMapping is opt-in
   // (`provisionAdminDomain=true` after Search Console verification);
-  // without it, `admin.<domain>` doesn't resolve and the bootstrap
-  // URL must point at the Cloud Run-generated *.run.app URL. The
-  // bootstrap token in Pulumi's output already includes the right
-  // path + query; we just swap the host.
-  //
-  // #656 — the link carries the setup token, so it is never checkpointed;
-  // it is read from the stack here, where it is shown.
-  const stackBootstrapUrl = await readBootstrapUrl(installId, provider);
-  const bootstrapToken = stackBootstrapUrl.match(/token=([^&]+)/)?.[1] ?? "";
-  const bootstrapUrl =
-    provider === "gcp-firebase" && adminCloudRunUrl.length > 0
-      ? `${adminCloudRunUrl}/setup?token=${bootstrapToken}`
-      : stackBootstrapUrl;
-  // #696 — the install job's output lands in Cloud Logging: the link goes to
-  // Secret Manager, where the operator's terminal reads it (install-job.ts).
-  if (setupLink === "secret") {
-    if (!meta.region) throw new Error(`install.json of ${installId} records no region.`);
-    const stored = await storeSetupLink(
-      gcloud,
-      { projectId: meta.projectId, region: meta.region },
-      bootstrapUrl,
-    );
-    if (!stored.ok) {
-      cancel(`Could not store the Owner setup link: ${stored.error}`);
-      process.exit(1);
-    }
+  // without it, `admin.<domain>` doesn't resolve and the setup link must
+  // point at the Cloud Run-generated *.run.app URL.
+  const adminBase = provider === "gcp-firebase" ? adminCloudRunUrl : `https://${adminDomainOut}`;
+  if (adminBase === "") {
+    cancel("The stack reported no admin URL. Re-run the installer to refresh its outputs.");
+    process.exit(1);
+  }
+  if (!meta.region) throw new Error(`install.json of ${installId} records no region.`);
+  // #1476 — the token and its link: minted now so its 24 hours start with
+  // this summary, stored for the admin and for `status --project`. #696 — the
+  // install job's output lands in Cloud Logging, so the link is printed only
+  // when this runs in the operator's terminal.
+  const issued = await issueOwnerSetup(
+    gcloud,
+    { projectId: meta.projectId, region: meta.region },
+    adminBase,
+  );
+  if (!issued.ok) {
+    cancel(`Could not store the Owner setup link: ${issued.error}`);
+    process.exit(1);
   }
   const setupLinkLine =
     setupLink === "print"
-      ? `     ${cyan(String(bootstrapUrl))}`
+      ? `     ${cyan(issued.link)}  ${dim(`(valid until ${issued.expiresAt})`)}`
       : `     ${dim(`(shown in your Cloud Shell terminal; or, from any terminal: ${selfCommand("status", "--project", meta.projectId)})`)}`;
 
   // Both providers report their records in `dnsRecordsRequiredOut`; the
@@ -2624,7 +2588,6 @@ async function stepFinalize(installId: string, setupLink: "print" | "secret"): P
     }
   }
 
-  const adminBase = provider === "gcp-firebase" ? adminCloudRunUrl : `https://${adminDomainOut}`;
   const adminNote: string[] =
     provider === "gcp-firebase"
       ? [

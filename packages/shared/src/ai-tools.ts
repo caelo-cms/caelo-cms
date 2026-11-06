@@ -299,6 +299,13 @@ export const getContentInstanceToolInput = z
   })
   .strict();
 
+/** Issue #1387 — the re-read a draft conflict on a plugin row names. */
+export const getPluginDraftRowsToolInput = z
+  .object({
+    rowIds: z.array(z.string().uuid()).min(1).max(100),
+  })
+  .strict();
+
 export const createContentInstanceToolInput = contentInstanceCreateSchema;
 export const setContentInstanceValuesToolInput = contentInstanceUpdateSchema;
 export const deleteContentInstanceToolInput = contentInstanceDeleteSchema;

@@ -243,9 +243,20 @@ rules expect nothing of it.
 | `variant-group-broken` | error | two pages of one language in a group, or a group without source |
 | `coverage` | info | pages per language |
 
-Text that is the same in every language on purpose (a brand or product
-name) is a glossary entry with itself as the translation; it is then
-never counted as untranslated.
+Text that is correct unchanged is not an untranslated text (#1449):
+
+- `code`, `pre`, `kbd`, `samp`, `var` and `translate="no"` are never
+  measured: core's page facts mark them as `literal`.
+- URL-shaped tokens (URLs, e-mail addresses, paths, `robots.txt`,
+  `example.com`) do not count as language.
+- `set_neutral_terms` keeps a list of terms in the private table
+  `neutral_terms`, for one language or for every language (`locale_code`
+  `*`). A text is neutral when nothing is left once its neutral terms and
+  URL-shaped tokens are taken out, so an untranslated sentence that
+  contains a neutral term is still reported. Each translation gets the
+  terms that occur in its source as glossary entries that stay as they
+  are, unless the language's glossary pins that term.
+- A glossary entry with a term as its own translation counts the same way.
 
 Not covered yet: links between hosts of the `subdomain` / `domain`
 strategies (only URLs on the site's own hosts have a path in the facts).

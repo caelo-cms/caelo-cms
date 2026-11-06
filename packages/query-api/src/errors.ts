@@ -22,9 +22,13 @@ export type QueryError =
        * precondition the caller can meet is not met (the module is still
        * placed, the instance still referenced, the module type not
        * allowed in that field), and `message` names the step that meets
-       * it. Not a defect: the chat's automatic bug capture skips it, while
-       * every failure without the flag is still filed. Set it only on a
-       * deliberate guard, never on a failure the caller cannot fix.
+       * it. A lookup of an id the caller named that is not in its view
+       * counts (#1484): the caller re-reads the list. Not a defect: the
+       * chat's automatic bug capture skips it, while a failure without the
+       * flag that names no input (`errors`) or next tool is still filed.
+       * This is what tells a refusal from a defect: `HandlerError` alone
+       * covers both. Set it only on a deliberate guard, never on a failure
+       * the caller cannot fix, nor on a row only a defect could lose.
        */
       readonly refusal?: true;
       /**

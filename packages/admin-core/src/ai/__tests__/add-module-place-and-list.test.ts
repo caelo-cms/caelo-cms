@@ -84,7 +84,32 @@ function toolCtxWith(calls: string[]): ToolContext {
           return ok({ modules: [HERO, FOOTER, GUIDE] });
         case "modules.list_usage":
           return ok({
-            usage: [{ moduleId: HERO.id, placementCount: 3, sampleSlugs: ["home", "pricing"] }],
+            usage: [
+              {
+                moduleId: HERO.id,
+                placementCount: 3,
+                placementCountCapped: false,
+                samplePaths: ["/", "/pricing"],
+                layouts: [],
+                nestedIn: [],
+              },
+              {
+                moduleId: FOOTER.id,
+                placementCount: 0,
+                placementCountCapped: false,
+                samplePaths: [],
+                layouts: ["site-default"],
+                nestedIn: [],
+              },
+              {
+                moduleId: GUIDE.id,
+                placementCount: 0,
+                placementCountCapped: false,
+                samplePaths: [],
+                layouts: [],
+                nestedIn: [],
+              },
+            ],
           });
         case "pages.get_with_modules":
           return ok({
@@ -154,6 +179,7 @@ describe("list_modules (issue #159)", () => {
     expect(res.content).toContain("placements");
     expect(res.content).toMatch(/,3(?: \(|,|\n|$)/); // usage count rendered in the placements column
     expect(res.content).toContain("unplaced");
+    expect(res.content).toContain("layout site-default"); // chrome is placed, not "unplaced"
     const payload = JSON.stringify((res as { value?: unknown }).value ?? {});
     expect(payload).toContain(HERO.id);
     expect(payload).not.toContain("{{hero_title}}"); // html body must not leak

@@ -80,6 +80,7 @@ function state(overrides: Partial<AuditState> = {}): AuditState {
     notFoundPageId: null,
     glossary: [],
     sameOnPurpose: new Map(),
+    neutralTerms: [],
     chromeModuleIds: new Set([FOOTER]),
     staleChrome: [],
     ...overrides,
@@ -400,6 +401,80 @@ describe("content in the right language", () => {
       facts(PRICES_EN, "/en/pricing", "en", { texts: [t("Caelo Cloud")] }),
     ]);
     expect(found.filter((f) => f.rule.startsWith("content-"))).toEqual([]);
+  });
+
+  it("#1449 does not report correct text on an English page", () => {
+    const model = new BuildModel(
+      state({
+        neutralTerms: [
+          { id: "n1", term: "Alerts", locale_code: "*" },
+          { id: "n2", term: "Webhook", locale_code: "en" },
+          { id: "n3", term: "Crawl", locale_code: "fr" },
+        ],
+      }),
+    );
+    const shared = [
+      t("Alerts & Webhook"),
+      t("robots.txt"),
+      t("https://example.com/preise"),
+      t("curl -X POST", HERO, "literal"),
+      t("hreflang=de", HERO, "literal"),
+    ];
+    const found = pageFindings(model, [
+      facts(PRICES_DE, "/preise", "de", { texts: shared }),
+      facts(PRICES_EN, "/en/pricing", "en", { texts: shared }),
+    ]);
+    expect(found.filter((f) => f.rule.startsWith("content-"))).toEqual([]);
+  });
+
+  it("#1449 a neutral title, and a number in a literal or address, report nothing", () => {
+    const model = new BuildModel(
+      state({ neutralTerms: [{ id: "n1", term: "Alerts", locale_code: "*" }] }),
+    );
+    const found = pageFindings(model, [
+      facts(PRICES_DE, "/preise", "de", { title: "Alerts" }),
+      facts(PRICES_EN, "/en/pricing", "en", {
+        title: "Alerts",
+        texts: [t("1.234,56", HERO, "literal"), t("example.com/1.234,56")],
+      }),
+    ]);
+    expect(found.filter((f) => f.rule === "seo-untranslated")).toEqual([]);
+    expect(found.filter((f) => f.rule === "locale-format")).toEqual([]);
+  });
+
+  it("#1449 still reports what no list covers", () => {
+    const model = new BuildModel(
+      state({
+        neutralTerms: [
+          { id: "n1", term: "Webhook", locale_code: "*" },
+          { id: "n2", term: "Crawl", locale_code: "fr" },
+        ],
+      }),
+    );
+    const shared = [t("Lege einen Webhook an"), t("Crawl")];
+    const found = pageFindings(model, [
+      facts(PRICES_DE, "/preise", "de", { texts: shared }),
+      facts(PRICES_EN, "/en/pricing", "en", { texts: shared }),
+    ]);
+    const mixed = found.find((f) => f.rule === "content-mixed-language");
+    expect(mixed?.message).toContain("Lege einen Webhook an");
+    // A term neutral in French is no answer for the English page.
+    expect(mixed?.message).toContain("Crawl");
+    expect(mixed?.fix?.hint).toContain("set_neutral_terms");
+  });
+
+  it("#1449 a text in a code element counts for no language rule", () => {
+    const model = new BuildModel(
+      state({
+        glossary: [
+          { id: "g1", term: "Checkout", locale_code: "en", translation: "Basket", context: null },
+        ],
+      }),
+    );
+    const found = pageFindings(model, [
+      facts(PRICES_EN, "/en/pricing", "en", { texts: [t("Checkout", HERO, "literal")] }),
+    ]);
+    expect(found.filter((f) => f.rule === "glossary-violation")).toEqual([]);
   });
 
   it("flags a glossary term used against the glossary, and numbers in another language's format", () => {
