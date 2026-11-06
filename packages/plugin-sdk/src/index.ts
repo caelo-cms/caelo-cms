@@ -1167,6 +1167,10 @@ export const pluginManifest = z
      *  `link_resolve` capability: it changes where every internal link
      *  on a page goes. */
     hasLinkResolve: z.boolean().default(false),
+    /** See `PluginDefinition.shareImagesOperation` (#1452). Requires the
+     *  `head_contributions` capability: it changes every affected page's
+     *  head. */
+    hasShareImages: z.boolean().default(false),
     /** See `PluginDefinition.auditFindingsOperation` (epic #1107). Must
      *  name one of `operations`. Needs no capability: it reads like a
      *  render and only adds findings to the Stage audit. */
@@ -2489,6 +2493,24 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly linkResolveOperation?: string;
   /**
+   * #1452 — the default social-share image of pages this plugin knows
+   * something about (international-site: their language). An operation in
+   * `operations` taking `{pageIds: string[]}` — pages without an image of
+   * their own — and returning `{images: Record<pageId, mediaAssetUuid>}`.
+   * A page absent from the answer has no plugin default and takes the site
+   * default (the active theme's `socialShare` slot). A page's own image
+   * always wins; nothing is written onto the page. Separate from
+   * `contributionsOperation` because the editor and `get_page_seo` ask for
+   * it without a base URL and without the rest of a head. Requires the
+   * `head_contributions` capability.
+   *
+   * @example
+   *   share_images: async (_ctx, { pageIds }) => ({
+   *     images: { [pageIds[0]]: "6f1c2c1e-3f43-4a55-9b0f-0a6a2f6f8e11" },
+   *   }),
+   */
+  readonly shareImagesOperation?: string;
+  /**
    * #1269 — what the `linkResolveOperation` answer is computed from: the
    * plugin's own private tables (`adminSchema`) and, optionally, the
    * columns of them that matter. When declared, core keeps the answer per
@@ -2724,6 +2746,7 @@ export function manifestFromDefinition(def: {
   readonly deferralsOperation?: string;
   readonly contentVariantsOperation?: string;
   readonly linkResolveOperation?: string;
+  readonly shareImagesOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
   readonly changeConsumer?: PluginChangeConsumerSpec;
@@ -2783,6 +2806,7 @@ export function manifestFromDefinition(def: {
     hasDeferrals: Boolean(def.deferralsOperation),
     hasContentVariants: Boolean(def.contentVariantsOperation),
     hasLinkResolve: Boolean(def.linkResolveOperation),
+    hasShareImages: Boolean(def.shareImagesOperation),
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),

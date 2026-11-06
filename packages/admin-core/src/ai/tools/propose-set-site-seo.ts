@@ -63,7 +63,7 @@ export const proposeSetSiteSeoTool = makeProposeTool({
 export const getSiteSeoTool = makeReadTool<Record<string, never>>({
   name: "get_site_seo",
   description:
-    "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `organizationJson`. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; site language: `get_site_defaults`.",
+    "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `organizationJson`. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; default share image: `set_theme_asset` slot socialShare; site language: `get_site_defaults`.",
   opName: "site_defaults.get_seo",
   input: z.object({}).strict(),
   format: (value) => {

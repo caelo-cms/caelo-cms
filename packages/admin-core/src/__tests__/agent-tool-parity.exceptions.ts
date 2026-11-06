@@ -340,6 +340,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     by: ["get_page_seo"],
     note: "single-page SEO read kept for the panel and plugin actors (#591); get_page_seo reads the same fields plus each page's core text through the bulk pages_seo.get_many",
   },
+  "pages_seo.share_images": {
+    kind: "covered",
+    by: ["get_page_seo"],
+    note: "the editor's read of which image pages get (#1452); get_page_seo carries the same answer through pages_seo.get_many",
+  },
   "page_module_content.list_for_page": {
     kind: "internal",
     reason:

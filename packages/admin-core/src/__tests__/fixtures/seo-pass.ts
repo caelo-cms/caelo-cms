@@ -29,6 +29,8 @@ export async function runSeoPass(args: {
   settings: SiteSeoSettings;
   pageUrlStyle: PageUrlStyle;
   notFoundPageId: string | null;
+  /** #1452 — the theme's bound default share image; none unless set. */
+  siteShareImageAssetId?: string | null;
 }): Promise<{ sitemapEmitted: boolean }> {
   const media = new MediaPass({
     tx: args.tx,
@@ -45,6 +47,7 @@ export async function runSeoPass(args: {
     settings: args.settings,
     pageUrlStyle: args.pageUrlStyle,
     notFoundPageId: args.notFoundPageId,
+    siteShareImageAssetId: args.siteShareImageAssetId ?? null,
   });
   const pages = args.pages.map((p) => ({ ...p, pageTitle: p.pageTitle ?? p.pageSlug }));
   await seo.apply(pages);

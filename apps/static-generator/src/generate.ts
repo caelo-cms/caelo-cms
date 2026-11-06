@@ -975,6 +975,7 @@ async function buildSite(
     settings: seoSettings,
     pageUrlStyle,
     notFoundPageId,
+    siteShareImageAssetId: tr?.social_share_media_id ?? null,
   });
   // #449 — plugin client assets: one call per contributing plugin for
   // the whole build, written under `_caelo/plugin/<slug>/` with the

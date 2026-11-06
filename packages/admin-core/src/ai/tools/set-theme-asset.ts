@@ -29,7 +29,8 @@ export const setThemeAssetTool: ToolDefinitionWithHandler<SetThemeAssetToolInput
   name: "set_theme_asset",
   description:
     "Bind a theme brand-asset slot to a media row, or clear it with `mediaId: null`. Active theme unless `themeSlug`. " +
-    'A bound favicon is emitted as `<link rel="icon">` on every page — never hand-write icon tags in modules.',
+    'A bound favicon is emitted as `<link rel="icon">` on every page — never hand-write icon tags in modules. ' +
+    "`socialShare` is the site's default link-preview image (og:image): every page without its own shows it after the next Stage + Publish live, so never copy it onto pages with `set_page_seo_many`.",
   schema: setThemeAssetToolInput,
   inputSchema: {
     type: "object",

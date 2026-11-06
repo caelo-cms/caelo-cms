@@ -5,6 +5,7 @@ import {
   breadcrumbJsonLdItems,
   checkPublicSiteBaseUrl,
   injectSeoIntoHead,
+  pickShareImage,
   renderSeoHead,
   resolveCanonicalUrl,
   seoAutofillInputSchema,
@@ -458,5 +459,28 @@ describe("BreadcrumbList JSON-LD (#1142)", () => {
       breadcrumbJsonLdItems(["home", "draft-parent", "team"], (id) => known[id] ?? null),
     ).toEqual([known.home, known.team]);
     expect(breadcrumbJsonLdItems(null, () => null)).toEqual([]);
+  });
+});
+
+describe("#1452 pickShareImage", () => {
+  const levels = { page: "own", language: "lang", site: "site" };
+
+  it("a page's own image wins, then its language, then the site", () => {
+    expect(pickShareImage(levels)).toEqual({ source: "page", assetId: "own" });
+    expect(pickShareImage({ ...levels, page: null })).toEqual({
+      source: "language",
+      assetId: "lang",
+    });
+    expect(pickShareImage({ ...levels, page: null, language: null })).toEqual({
+      source: "site",
+      assetId: "site",
+    });
+  });
+
+  it("with no level set a page has no image", () => {
+    expect(pickShareImage({ page: null, language: null, site: null })).toEqual({
+      source: "none",
+      assetId: null,
+    });
   });
 });

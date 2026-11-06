@@ -271,7 +271,7 @@ export class MediaPass {
     const v = rows[0];
     if (!v) {
       throw new Error(
-        `static-generator: og:image asset ${assetId} has no variants — deploy aborted (no-fallbacks)`,
+        `static-generator: og:image asset ${assetId} has no variants or was deleted — deploy aborted (no-fallbacks). Next step: repair it with regenerate_media_variants, or bind another image (set_page_seo_many for a page's own image, set_theme_asset slot socialShare for the site default), then Stage again.`,
       );
     }
     if (v.visibility === "reference") {

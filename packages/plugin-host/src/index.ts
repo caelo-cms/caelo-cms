@@ -253,6 +253,7 @@ export {
   pluginWorkerScheduler,
   type ScheduledWorker,
 } from "./scheduler.js";
+export { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
 export {
   parseListFilter,
   publicListSql,

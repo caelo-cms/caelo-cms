@@ -22,11 +22,18 @@
  * Zod-validated field. Per CLAUDE.md §2.
  */
 
-import { defineOperation, OperationAbortError, type QueryError } from "@caelo-cms/query-api";
+import { createPluginRenderFailureSink } from "@caelo-cms/plugin-host";
+import {
+  defineOperation,
+  defineReadOperation,
+  OperationAbortError,
+  type QueryError,
+} from "@caelo-cms/query-api";
 import {
   err,
   ok,
   SEO_DESCRIPTION_HARD_MAX,
+  SHARE_IMAGE_SOURCES,
   seoAutofillInputSchema,
   seoOptimizeInputSchema,
   seoSetInputSchema,
@@ -50,6 +57,12 @@ import {
   peekPageSeo,
   sameSeo,
 } from "../seo/page-seo-write.js";
+import {
+  type PageShareImage,
+  resolvePageShareImages,
+  type ShortRead,
+  shareImageAssetIssue,
+} from "../seo/share-image.js";
 import type { PageSeoState } from "../snapshots/state.js";
 import { loadPageContentTexts } from "./content/page-content-text.js";
 
@@ -91,6 +104,32 @@ async function loadSeoRows(
   );
 }
 
+const shareImageOutput = z.object({
+  source: z.enum(SHARE_IMAGE_SOURCES),
+  assetId: z.string().nullable(),
+  url: z.string().nullable(),
+});
+
+/**
+ * These pages' share images in the caller's view (#1452). A plugin that
+ * fails degrades its pages to the site default and is named in `warnings`:
+ * reading a page's SEO must not depend on a plugin running, and the build
+ * stays the loud gate.
+ */
+async function loadShareImages(
+  read: ShortRead,
+  pages: readonly { pageId: string; seo: { ogImageAssetId: string | null } | null }[],
+  chatBranchId: string | null | undefined,
+): Promise<{ images: Map<string, PageShareImage>; warnings: string[] }> {
+  const sink = createPluginRenderFailureSink();
+  const images = await resolvePageShareImages(
+    read,
+    pages.map((p) => ({ pageId: p.pageId, ownAssetId: p.seo?.ogImageAssetId ?? null })),
+    { chatBranchId: chatBranchId ?? null, onPluginFailure: sink.onPluginFailure },
+  );
+  return { images, warnings: sink.failures().map((f) => f.reason) };
+}
+
 // ---------------------------------------------------------------------
 // pages_seo.get
 // ---------------------------------------------------------------------
@@ -119,6 +158,50 @@ export const pagesSeoGetOp = defineOperation({
 /** Most pages one `pages_seo.get_many` call reads (each renders its content). */
 export const SEO_GET_MANY_MAX = 50;
 
+// ---------------------------------------------------------------------
+// pages_seo.share_images — which image pages really get, and from where
+// ---------------------------------------------------------------------
+
+export const pagesSeoShareImagesOp = defineReadOperation({
+  name: "pages_seo.share_images",
+  readScope: "request",
+  // CLAUDE.md §11: reads are open. The editor's read; the AI gets the same
+  // through get_page_seo. A read op: no transaction while plugins answer (#1212).
+  actorScope: ["human", "ai", "system"],
+  input: z.object({ pageIds: z.array(z.string().uuid()).min(1).max(SEO_GET_MANY_MAX) }).strict(),
+  output: z.object({
+    images: z.array(shareImageOutput.extend({ pageId: z.string() })),
+    warnings: z.array(z.string()),
+  }),
+  handler: async (ctx, input, reads) => {
+    const pageIds = input.pageIds.map(pageKey);
+    const read: ShortRead = (fn) => reads.read(fn);
+    const seo = await read((tx) => loadSeoRows(tx, pageIds, ctx.chatBranchId));
+    const { images, warnings } = await loadShareImages(
+      read,
+      pageIds.map((pageId) => ({ pageId, seo: seo.get(pageId) ?? null })),
+      ctx.chatBranchId,
+    );
+    return ok({
+      images: [...images].map(([pageId, image]) => ({ pageId, ...image })),
+      warnings,
+    });
+  },
+});
+
+export const pagesSeoCheckShareImageOp = defineOperation({
+  name: "pages_seo.check_share_image",
+  readScope: "request",
+  // Why human-only: no AI tool needs it — set_theme_asset and the plugin's
+  // set_locale_share_image run this check themselves. #1452: it exists so a
+  // plugin learns only whether an asset can be a default, not the media row.
+  actorScope: ["human", "plugin", "system"],
+  database: "cms_admin",
+  input: z.object({ assetId: z.string().uuid() }).strict(),
+  output: z.object({ issue: z.string().nullable() }),
+  handler: async (_ctx, input, tx) => ok({ issue: await shareImageAssetIssue(tx, input.assetId) }),
+});
+
 export const pagesSeoGetManyOp = defineOperation({
   name: "pages_seo.get_many",
   readScope: "request",
@@ -126,6 +209,9 @@ export const pagesSeoGetManyOp = defineOperation({
   // its core text before it writes or re-optimizes a description.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
+  // #1452 — plugins answer which share image a page gets, between two
+  // short transactions (#1212). The draft observation below still writes.
+  transaction: "none",
   input: z.object({ pageIds: z.array(z.string().uuid()).min(1).max(SEO_GET_MANY_MAX) }).strict(),
   output: z.object({
     pages: z.array(
@@ -134,18 +220,39 @@ export const pagesSeoGetManyOp = defineOperation({
         title: z.string(),
         path: z.string(),
         seo: seoRowOutput.nullable(),
+        /** #1452 — the image this page really gets, and from where. */
+        shareImage: shareImageOutput,
         contentText: z.string(),
         contentTextTruncated: z.boolean(),
         contentTextLength: z.number().int(),
       }),
     ),
+    /** A plugin could not say: its pages show the site default here. */
+    shareImageWarnings: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
-    const texts = await loadPageContentTexts(
-      tx,
-      input.pageIds.map(pageKey),
-      ctx.chatBranchId ?? null,
-    );
+    const loaded = await tx.transaction(async (t) => {
+      const texts = await loadPageContentTexts(
+        t,
+        input.pageIds.map(pageKey),
+        ctx.chatBranchId ?? null,
+      );
+      if (texts.missing.length > 0) return { texts, seoByPage: new Map<string, SeoRow>() };
+      const seoByPage = await loadSeoRows(
+        t,
+        texts.pages.map((p) => p.pageId),
+        ctx.chatBranchId,
+      );
+      // The chat has now seen these pages' draft state (a conflict's re-read).
+      await observeDraftReads(
+        t,
+        ctx,
+        "page",
+        texts.pages.map((p) => p.pageId),
+      );
+      return { texts, seoByPage };
+    });
+    const { texts, seoByPage } = loaded;
     if (texts.missing.length > 0) {
       return err({
         kind: "HandlerError",
@@ -155,20 +262,19 @@ export const pagesSeoGetManyOp = defineOperation({
           "(or the Stage-readiness note) and call again.",
       });
     }
-    const seoByPage = await loadSeoRows(
-      tx,
-      texts.pages.map((p) => p.pageId),
+    const pages = texts.pages.map((p) => ({ ...p, seo: seoByPage.get(p.pageId) ?? null }));
+    const { images, warnings } = await loadShareImages(
+      (fn) => tx.transaction(fn),
+      pages,
       ctx.chatBranchId,
     );
-    // The chat has now seen these pages' draft state (a conflict's re-read).
-    await observeDraftReads(
-      tx,
-      ctx,
-      "page",
-      texts.pages.map((p) => p.pageId),
-    );
     return ok({
-      pages: texts.pages.map((p) => ({ ...p, seo: seoByPage.get(p.pageId) ?? null })),
+      pages: pages.map((p) => {
+        const shareImage = images.get(p.pageId);
+        if (!shareImage) throw new Error(`pages_seo.get_many: no share image for ${p.pageId}`);
+        return { ...p, shareImage };
+      }),
+      shareImageWarnings: warnings,
     });
   },
 });

@@ -68,6 +68,7 @@ What keeps the two apart:
 | Response headers (security, cache, staging `X-Robots-Tag`) | none | provider | No operator setting. Code-defined, written by each publish. | n/a |
 | Site base URL, sitemap toggle, Organization JSON-LD | `site_defaults.set_seo` | rendered (canonicals, og:url, sitemap, robots `Sitemap:` line, JSON-LD) | Next Stage + Publish live | Gated (`propose_set_site_seo`) |
 | Site language (`<html lang>`) | `site_defaults.set_identity` | rendered | Next Stage + Publish live | Routine: one call undoes it |
+| Default share image (`og:image` of pages without their own) | `themes.set_asset` slot `socialShare`; per language `set_locale_share_image` (`international-site`) | rendered ([themes.md](../themes.md)) | Next Stage + Publish live | Routine: one call undoes it |
 | Media CDN copy | `site_defaults.set_media_cdn` | rendered (media URLs, `media-pass.ts`) | Next Stage + Publish live | Owner-only op |
 | Robots policy and page URL style per target | `deploy_targets` row (Ops) | rendered (`robots.txt`, page file layout) | Next Stage + Publish live | Ops only |
 | Home page, 404 page | `pages.set_home_page` / `pages.set_not_found_page` | rendered (page paths, `404.html`) | Next Stage + Publish live. A page only a chat's branch holds cannot go live yet, so its designation waits (below). | Routine |
