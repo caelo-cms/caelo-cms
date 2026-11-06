@@ -451,7 +451,7 @@ describe("the converge route (#819)", () => {
       requestId,
       sessionHash: ownerSession,
     });
-    expect(message(pending)).toContain("Only an update that Caelo's converge job was installing");
+    expect(message(pending)).toContain("Only an update that is still marked as running");
 
     await admin(
       (tx) =>
@@ -484,7 +484,7 @@ describe("the converge route (#819)", () => {
     expect(got.events.some((e) => e.message.startsWith("Continued by the Owner"))).toBe(true);
   });
 
-  it("an app-roll that died is not continued (the next request ends and retries it)", async () => {
+  it("#1029: an app-roll whose run died continues too, and says which job takes it", async () => {
     await stepUp(owner, ownerSession);
     const { requestId } = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
       targetVersion: NEWEST,
@@ -495,11 +495,12 @@ describe("the converge route (#819)", () => {
         tx`UPDATE platform_update_requests SET status = 'running', started_at = now() WHERE id = ${requestId}::uuid`,
     );
     await stepUp(owner, ownerSession);
-    const r = await run(owner, "platform_updates.continue", {
-      requestId,
-      sessionHash: ownerSession,
-    });
-    expect(message(r)).toContain("Only an update that Caelo's converge job was installing");
+    const r = await okValue<{ targetVersion: string; route: string }>(
+      owner,
+      "platform_updates.continue",
+      { requestId, sessionHash: ownerSession },
+    );
+    expect(r).toEqual({ targetVersion: NEWEST, route: "app_roll" });
   });
 });
 

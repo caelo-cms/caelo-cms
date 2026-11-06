@@ -21,7 +21,7 @@
  * only about connections that do not exist yet.
  */
 
-import type { ConvergeQueue, UpdateQueue } from "@caelo-cms/provisioning";
+import type { ConvergeQueue, UpgraderQueue } from "@caelo-cms/provisioning";
 
 /** Reopen when the token has less than this left. */
 export const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
@@ -33,12 +33,12 @@ export interface AccessToken {
 }
 
 /** A queue over one pool, and how to close that pool. */
-export interface OpenedQueue<Q = UpdateQueue> {
+export interface OpenedQueue<Q = UpgraderQueue> {
   readonly queue: Q;
   close(): Promise<void>;
 }
 
-export interface TokenQueueDeps<Q = UpdateQueue> {
+export interface TokenQueueDeps<Q = UpgraderQueue> {
   readonly fetchToken: () => Promise<AccessToken>;
   /** Open a pool whose password is `token`. */
   readonly open: (token: string) => OpenedQueue<Q>;
@@ -158,22 +158,23 @@ function refreshingPools<Q>(deps: TokenQueueDeps<Q>): {
 }
 
 /**
- * An {@link UpdateQueue} that opens its pool with a fresh token whenever the
+ * An {@link UpgraderQueue} that opens its pool with a fresh token whenever the
  * current one is about to expire. `close` closes every pool still open.
  *
  * @example
  *   const q = tokenRefreshingQueue({ fetchToken, open: (t) => openPool(t), now: Date.now });
- *   await q.queue.claim(execution);
+ *   await q.queue.claimUpgrade(execution);
  *   await q.close();
  */
-export function tokenRefreshingQueue(deps: TokenQueueDeps<UpdateQueue>): {
-  readonly queue: UpdateQueue;
+export function tokenRefreshingQueue(deps: TokenQueueDeps<UpgraderQueue>): {
+  readonly queue: UpgraderQueue;
   close(): Promise<void>;
 } {
   const { call, close } = refreshingPools(deps);
   return {
     queue: {
-      claim: (execution) => call((q) => q.claim(execution)),
+      claimUpgrade: (execution) => call((q) => q.claimUpgrade(execution)),
+      handover: (id, from, to) => call((q) => q.handover(id, from, to)),
       event: (id, phase, level, message) => call((q) => q.event(id, phase, level, message)),
       record: (id, facts) => call((q) => q.record(id, facts)),
       finish: (id, end) => call((q) => q.finish(id, end)),

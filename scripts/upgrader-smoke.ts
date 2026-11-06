@@ -20,7 +20,7 @@
  *     admin + gateway digests;
  *   - the revisions serving traffic run exactly those images and the
  *     services are Ready (the images booted on Cloud Run);
- *   - the upgrader job moved itself onto R's ops image (its last step).
+ *   - the upgrader job moved itself onto R's ops image (stage 1, #1029).
  *
  * Two modes:
  *

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { ConvergeQueue, UpdateQueue } from "@caelo-cms/provisioning";
+import type { ConvergeQueue, UpgraderQueue } from "@caelo-cms/provisioning";
 import {
   type AccessToken,
   type OpenedQueue,
@@ -33,10 +33,14 @@ function harness(tokens: AccessToken[]) {
       if (entry.closed) throw new Error(`pool ${token} is closed`);
       if (clock >= expiresAt) throw new Error(`password authentication failed (${token} expired)`);
     };
-    const queue: UpdateQueue = {
-      claim: async () => {
+    const queue: UpgraderQueue = {
+      claimUpgrade: async () => {
         await use();
         return null;
+      },
+      handover: async () => {
+        await use();
+        return true;
       },
       event: async () => use(),
       record: async () => use(),
@@ -81,7 +85,7 @@ describe("tokenRefreshingQueue", () => {
       { token: "t1", expiresAt: 60 * MIN },
       { token: "t2", expiresAt: 120 * MIN },
     ]);
-    await h.q.queue.claim("x1");
+    await h.q.queue.claimUpgrade("x1");
     h.advance(70 * MIN); // a long migration step
     expect(await h.q.queue.finish("req-1", END)).toBe(true);
     expect(h.opened.map((p) => p.token)).toEqual(["t1", "t2"]);
@@ -156,7 +160,8 @@ describe("tokenRefreshingQueue", () => {
       fetchToken: async () => tokens[next++] as AccessToken,
       open: (token) => ({
         queue: {
-          claim: async () => null,
+          claimUpgrade: async () => null,
+          handover: async () => true,
           event: async () => {
             if (token !== "t1") return;
             inside();
