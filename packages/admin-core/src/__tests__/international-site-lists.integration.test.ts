@@ -44,7 +44,7 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let restoreBase: (() => Promise<void>) | null = null;
 let restoreLang: (() => Promise<void>) | null = null;
-const ids = { list: "", vocab: "", en: "", de: "", about: "", target: "" };
+const ids = { list: "", vocab: "", en: "", de: "", about: "", target: "", nav: "" };
 
 /** Scripted translator: "DE:<source>" for every offered path (see international-site-chrome). */
 type Schema = {
@@ -345,6 +345,7 @@ beforeAll(async () => {
       VALUES (${`${PFX}-nav`}, 'Nav', ${`${PFX}-nav`},
               '<nav class="t1114i"><ul>{{#menu}}<li>{{label}}</li>{{/menu}}</ul></nav>', (${fields}::text)::jsonb)
       RETURNING id::text AS id`) as unknown as { id: string }[];
+    ids.nav = mod[0]?.id ?? "";
     const ci = (await tx`
       INSERT INTO content_instances (module_id, "values") VALUES (${mod[0]?.id}::uuid, '{}'::jsonb)
       RETURNING id::text AS id`) as unknown as { id: string }[];
@@ -542,6 +543,81 @@ describe("international-site lists — tools", () => {
       ],
     });
     expect(msg).toContain("nothing was written");
+  });
+
+  it("#1324 — one entry's external link differs per language; the source's edits reach the others", async () => {
+    const entry = (id: string, href: string) => ({
+      op: "add",
+      position: 0,
+      item: { id, node: "entry", values: { label: "Extern", link: { href } } },
+    });
+    await patch([
+      entry(E(4), "https://status.example.org/"),
+      entry(E(5), "https://docs.example.org/"),
+    ]);
+    const linkAddr = `list/${ids.list}/item/${E(4)}/link`;
+    const hrefOf = async (pageId: string, id: string): Promise<string | undefined> => {
+      const r = await sysOp<{ html: string }>("pages.render_preview", { pageId });
+      return new RegExp(`data-id="${id}" data-href="([^"]*)"`).exec(r.html)?.[1];
+    };
+    await sysOp("modules.update", {
+      moduleId: ids.nav,
+      html: '<nav class="t1114i"><ul>{{#menu}}<li data-id="{{id}}" data-href="{{link}}">{{label}}</li>{{/menu}}</ul></nav>',
+    });
+    await op("apply_translations", {
+      items: [
+        {
+          kind: "addresses",
+          localeCode: "de",
+          translations: [
+            { address: linkAddr, value: "https://status.example.org/de/" },
+            { address: labelAddr(4), value: "Status" },
+            { address: labelAddr(5), value: "Doku" },
+          ],
+        },
+      ],
+    });
+    expect(await hrefOf(ids.de, E(4))).toBe("https://status.example.org/de/");
+    expect(await hrefOf(ids.en, E(4))).toBe("https://status.example.org/");
+
+    // The list stays attached: a default-language edit of another entry
+    // reaches German without anything being translated.
+    await patch([
+      {
+        op: "update",
+        itemId: E(5),
+        values: { link: { href: "https://docs.example.org/v2/" } },
+      },
+    ]);
+    expect(await hrefOf(ids.de, E(5))).toBe("https://docs.example.org/v2/");
+
+    // An internal link and a non-address are refused with what to do instead.
+    const refused = async (address: string, value: string) =>
+      opError("apply_translations", {
+        items: [{ kind: "addresses", localeCode: "de", translations: [{ address, value }] }],
+      });
+    expect(await refused(`list/${ids.list}/item/${E(2)}/link`, "https://x.example/")).toContain(
+      "follows the page language by itself",
+    );
+    expect(await refused(linkAddr, "/x")).toContain("no external address");
+    expect(await refused(linkAddr, "javascript:alert(1)")).toContain("no external address");
+
+    // The source's own address removes the override.
+    await op("apply_translations", {
+      items: [
+        {
+          kind: "addresses",
+          localeCode: "de",
+          translations: [{ address: linkAddr, value: "https://status.example.org/" }],
+        },
+      ],
+    });
+    expect(await hrefOf(ids.de, E(4))).toBe("https://status.example.org/");
+    expect((await rows("list_value_translations")).map((r) => r.address)).not.toContain(linkAddr);
+    await patch([
+      { op: "remove", itemId: E(4) },
+      { op: "remove", itemId: E(5) },
+    ]);
   });
 
   it("set_list_item_visibility hides an entry in one language and shows it again", async () => {

@@ -165,6 +165,8 @@ describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () =>
         ["/hop2", "/blog", 301],
         ["/Case", "/about", 301],
         ["/q", "/about?ref=old", 301],
+        ["/ext", "https://calendar.example/book", 302],
+        ["/extq", "https://calendar.example/book?gv=true", 302],
         ["/gone", "/410", 410],
         ["/about", "/elsewhere", 301],
       ]),
@@ -245,6 +247,9 @@ describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () =>
     expectRedirect("/tmp", 302, "/blog/");
     expectRedirect("/perm/", 308, "/about/");
     expectRedirect("/hop1", 301, "/blog/");
+    expectRedirect("/ext", 302, "https://calendar.example/book");
+    expectRedirect("/ext/?a=1", 302, "https://calendar.example/book?a=1");
+    expectRedirect("/extq", 302, "https://calendar.example/book?gv=true");
     expectRedirect("/Case", 301, "/about/");
     expectRedirect("/q?dropped=1", 301, "/about?ref=old");
     // #1330 — Caddy serves no staged file and answers no staging redirect:

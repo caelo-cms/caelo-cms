@@ -72,6 +72,8 @@ export interface AuditState {
   readonly glossary: readonly GlossaryRow[];
   /** #1449 — terms that read the same in a language, or in every language. */
   readonly neutralTerms: readonly NeutralTermRow[];
+  /** Per language, plugin texts a translation deliberately keeps as they are (lower case). */
+  readonly sameOnPurpose: ReadonlyMap<string, ReadonlySet<string>>;
   /** Modules placed in a layout: their text is the site's chrome. */
   readonly chromeModuleIds: ReadonlySet<string>;
   readonly staleChrome: readonly StaleChrome[];
@@ -772,11 +774,13 @@ function contentLanguage(
   const sourceLocale = model.localeOf(source.pageId);
   if (primary(locale) === primary(sourceLocale)) return out;
   const neutral = neutralIn(model, locale);
+  const keptAsIs = model.state.sameOnPurpose.get(locale);
   const texts = languageTexts(f);
   const fromSource = languageTexts(source);
   const sourceTexts = new Set(fromSource.filter((t) => t.source !== "alt").map((t) => t.text));
   const sourceAlts = new Set(fromSource.filter((t) => t.source === "alt").map((t) => t.text));
-  const same = (t: PluginAuditPageFacts["texts"][number]) => hasLanguageText(t.text, neutral);
+  const same = (t: PluginAuditPageFacts["texts"][number]) =>
+    hasLanguageText(t.text, neutral) && !keptAsIs?.has(t.text.toLowerCase());
 
   const body = texts.filter(
     (t) => t.source !== "alt" && !(t.moduleId && model.state.chromeModuleIds.has(t.moduleId)),

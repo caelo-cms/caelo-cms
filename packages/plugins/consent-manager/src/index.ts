@@ -78,6 +78,11 @@ import { buildTagInjector, describeIssues, type TagRow } from "./tags.js";
 import { CONSENT_TOOLS } from "./tools.js";
 
 const SLUG = "consent-manager";
+/**
+ * Offers a list source field to a translating plugin. An attribute, not a
+ * dependency: without that plugin running nobody reads it.
+ */
+const PER_LANGUAGE = { "international-site": { translate: true } };
 const RECORD_ENDPOINT = `/api/plugin/${SLUG}/record_consent`;
 
 /** A visitor's decision as the runtime posts it through the gateway. */
@@ -449,8 +454,17 @@ export default definePlugin<PluginContextTier1>({
         label: "Consent category",
         fields: [
           { name: "key", label: "Key", type: "text", required: true, maxLength: 64 },
-          { name: "label", label: "Label", type: "text", required: true },
-          { name: "description", label: "Description", type: "text", maxLength: 2000 },
+          // Offered to a translating plugin, the wording only: `key`,
+          // `required` and `used` are what a visitor's decision means and
+          // stay out of an overlay's reach (#1323). Inert without one.
+          { name: "label", label: "Label", type: "text", required: true, ext: PER_LANGUAGE },
+          {
+            name: "description",
+            label: "Description",
+            type: "text",
+            maxLength: 2000,
+            ext: PER_LANGUAGE,
+          },
           { name: "required", label: "Always on", type: "boolean" },
           { name: "used", label: "Controls something on this site", type: "boolean" },
         ],

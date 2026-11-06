@@ -53,7 +53,7 @@ export const CONSENT_SKILLS: ReadonlyArray<PluginSkillSpec> = [
       "Lawful-banner rules, all of them:",
       "- Reject is on the FIRST layer, next to Accept, with the same size, colour weight and number of clicks. No 'reject' hidden behind 'settings'.",
       "- Nothing optional is pre-ticked; the required category is shown as always on.",
-      "- Each category says in one sentence what it is for (describe_categories rewords them; do not fork the copy into the module).",
+      "- Each category says in one sentence what it is for (describe_categories rewords them; do not fork the copy into the module). On a multi-language site translate_chrome translates them; never replace the list with fixed entries to get a language in.",
       "- Link the privacy policy from the banner — by the path of the existing privacy page (list_pages). If there is none yet, leave the link out and tell the operator; a link to a page that does not exist is refused.",
       "- A data-consent-open link in the footer lets visitors change their mind; the runtime moves focus into the banner, closes it on Escape and returns focus.",
       "- Do NOT hide or show the banner yourself in CSS; give its root whatever display (flex, grid) the layout needs — the runtime only hides it when no choice is due.",

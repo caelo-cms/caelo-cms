@@ -26,7 +26,12 @@ export const setPageSeoManyTool = makeBulkTool({
     properties: {
       pageId: { type: "string", format: "uuid" },
       metaDescription: { type: "string", maxLength: 320 },
-      ogImageAssetId: { type: ["string", "null"], format: "uuid" },
+      ogImageAssetId: {
+        type: ["string", "null"],
+        format: "uuid",
+        description:
+          "This page's own share image; null = the default (language, then site `socialShare`).",
+      },
       canonicalUrl: { type: ["string", "null"], maxLength: 2048 },
       noindex: { type: "boolean" },
       changefreq: {

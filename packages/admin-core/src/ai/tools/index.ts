@@ -157,6 +157,7 @@ import {
   revalidatePluginTool,
 } from "./plugin-lifecycle-tools.js";
 import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
+import { proposeExternalRedirectTool } from "./propose-external-redirect.js";
 import {
   getAiBudgetsTool,
   getGatewaySettingsTool,
@@ -648,6 +649,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetSecurityHeadersTool);
   registry.register(getStaticFileTool);
   registry.register(proposeSetStaticFilesTool);
+  registry.register(proposeExternalRedirectTool);
   registry.register(proposeDeleteStaticFilesTool);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);

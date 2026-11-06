@@ -16,7 +16,10 @@
  *     what the site costs. For every address in the scope it is the
  *     whole-site answer, value for value (the overlay of a list, an
  *     instance or a page depends only on that source, its stored rows and
- *     the variants of the pages its links point at).
+ *     the variants of the pages its links point at). A scope may also
+ *     carry plugin list source entries (#1323): core hands them over,
+ *     because this plugin cannot read another plugin's data, and answers
+ *     them by `source/<name>/item/<entryId>/<field>`.
  *
  * The page variants come through the render pass's shared reads
  * (`VariantReads`, index.ts): a preview's `link_resolve` already read the
@@ -293,6 +296,7 @@ async function loadScopedListState(
     lists: sourceLists,
     instances: sourceInstances,
     pageProps,
+    pluginSources: scope.sources ?? [],
   });
   const inLocale = { locale_code: locale };
   // Every unit's address, as the whole-site index would hold a value row

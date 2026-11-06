@@ -94,6 +94,7 @@ export const aggregateNotificationsOp = defineOperation({
         UNION ALL SELECT 1 FROM template_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM domain_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM static_file_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 1 FROM redirect_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 1 FROM site_defaults_pending_actions WHERE status = 'pending'
         -- An approve_release card is the same decision as the row
         -- pluginApprovals counts; it must not count twice.

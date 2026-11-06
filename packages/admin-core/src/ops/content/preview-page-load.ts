@@ -16,7 +16,6 @@
 
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import {
-  buildMediaUrl,
   type ComposeTheme,
   collectNestedRefs,
   type NestedContentInstanceResource,
@@ -84,7 +83,8 @@ export interface PreviewPageBundle {
     readonly canonicalUrl: string | null;
     readonly noindex: boolean;
   } | null;
-  readonly ogImageUrl: string | null;
+  /** The page's own image; which image it shows is `resolvePageShareImages`'. */
+  readonly ownOgImageAssetId: string | null;
   /** #918 — pages showing each synced instance (only with edit markers). */
   readonly sharedPageCounts: Map<string, number>;
 }
@@ -389,26 +389,6 @@ export async function loadPreviewPage(
     noindex: boolean;
   }[];
   const seoRow = seoRows[0];
-  let ogImageUrl: string | null = null;
-  if (seoRow?.og_image_asset_id) {
-    const variants = (await tx.execute(sql`
-      SELECT mv.variant AS variant, mv.format AS format, ma.slug AS slug
-      FROM media_variants mv
-      JOIN media_assets ma ON ma.id = mv.asset_id AND ma.deleted_at IS NULL
-      WHERE mv.asset_id = ${seoRow.og_image_asset_id}::uuid
-      ORDER BY
-        CASE mv.variant
-          WHEN 'webp-1200' THEN 0 WHEN 'webp-1600' THEN 1
-          WHEN 'webp-800'  THEN 2 WHEN 'orig'      THEN 3 ELSE 4
-        END
-      LIMIT 1
-    `)) as unknown as { variant: string; format: string; slug: string }[];
-    const v = variants[0];
-    // Preview keeps the /_caelo/media URL form (built from the slug) so the
-    // admin resolver serves the bytes; the static generator rewrites to
-    // /_assets at deploy.
-    if (v) ogImageUrl = buildMediaUrl(v.slug, v.variant);
-  }
 
   return {
     pageRow,
@@ -426,7 +406,7 @@ export async function loadPreviewPage(
           noindex: seoRow.noindex,
         }
       : null,
-    ogImageUrl,
+    ownOgImageAssetId: seoRow?.og_image_asset_id ?? null,
     sharedPageCounts,
   };
 }

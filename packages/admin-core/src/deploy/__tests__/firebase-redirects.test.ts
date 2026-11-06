@@ -81,3 +81,16 @@ describe("firebaseRedirectsFromFile", () => {
     ]);
   });
 });
+
+describe("external targets (#1358)", () => {
+  it("keeps the address absolute and encodes a colon that would read as a capture group", () => {
+    const file = "/t https://calendar.example/a:b?t=12:30 302\n";
+    expect(firebaseRedirectsFromFile(file, "directory", NO_FILES)).toEqual([
+      {
+        regex: "^/t/?$",
+        location: "https://calendar.example/a%3Ab?t=12%3A30",
+        statusCode: 302,
+      },
+    ]);
+  });
+});

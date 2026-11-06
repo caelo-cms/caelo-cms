@@ -171,6 +171,21 @@ active theme's bound assets at render time. Unbound slots stay loud-raw
 (the `{{…}}` survives in output and `theme-asset-unbound:<slot>` lands in
 `missingSlots`) per the no-fallbacks rule.
 
+The `socialShare` slot is the site's default link-preview image (#1452):
+every page without its own image renders it as `og:image` and
+`twitter:card: summary_large_image`. The rule is `pickShareImage`: the
+page's own image wins, then its language's default (the
+`share-images` composition point, `set_locale_share_image` of the
+`international-site` plugin), then this slot. A default is read at render
+time and never written onto a page, so `pages_seo` keeps meaning "this
+page's own image" and the fill-once rule (CLAUDE.md §2) is untouched. The
+build, the preview, `get_page_seo` and the editor's SEO info resolve it
+the same way and say which level the image came from
+(`pages_seo.share_images`). Like the favicon, a chat's bind writes the live
+`themes` row (v0.11.4); no build runs, so it reaches visitors only with the
+next Stage and Publish live. An image deleted after binding stops the
+build, the same as a page's own.
+
 The favicon is document metadata, not module content: when the active
 theme has a `favicon` bound, the composer emits
 `<link rel="icon" href="…" type="<media mime>">` into `<head>` on every

@@ -154,6 +154,12 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                chat_session_id::text
           FROM static_file_pending_actions WHERE status = 'pending'
         UNION ALL
+        -- #1358 — redirects to another domain.
+        SELECT 'redirects', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'summary', 'external redirect'),
+               chat_session_id::text
+          FROM redirect_pending_actions WHERE status = 'pending'
+        UNION ALL
         -- v0.11.0 (#45) — themes primitive.
         SELECT 'themes', kind, id::text, proposed_by::text, created_at,
                COALESCE(preview->>'slug', preview->>'targetSlug',
@@ -256,6 +262,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'templates' FROM template_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'domains' FROM domain_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'static_files' FROM static_file_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'redirects' FROM redirect_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'themes' FROM theme_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'site_defaults' FROM site_defaults_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'owner_settings' FROM owner_settings_pending_actions WHERE status = 'pending'

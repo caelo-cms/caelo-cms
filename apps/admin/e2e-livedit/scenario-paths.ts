@@ -445,6 +445,8 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   // No scenario reaches these ops: redirects, provider setup, theme import,
   // revert proposals, proposal cancel, background GC loops.
   `${A}/ops/redirects.ts`,
+  // A redirect to another domain, AI-proposed and Owner-approved (#1358).
+  `${A}/ops/redirects_pending.ts`,
   // Saved redirects sync to the hosting provider on save (#1157).
   `${A}/ops/redirect_sync.ts`,
   `${A}/redirect-sync-worker.ts`,

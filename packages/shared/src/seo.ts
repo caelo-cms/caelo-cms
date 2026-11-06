@@ -110,6 +110,31 @@ export const siteSeoProposalInputSchema = z
   );
 export type SiteSeoProposalInput = z.infer<typeof siteSeoProposalInputSchema>;
 
+/** Where a page's social-share image comes from (#1452). */
+export const SHARE_IMAGE_SOURCES = ["page", "language", "site", "none"] as const;
+export type ShareImageSource = (typeof SHARE_IMAGE_SOURCES)[number];
+
+/**
+ * Which image a page's `og:image` shows (#1452). Its own image always wins,
+ * then the default of its language (a plugin's answer), then the site
+ * default (the active theme's `socialShare` slot). The defaults are stored
+ * data the Owner set, read at render time: nothing is copied onto the page,
+ * so a page's stored SEO never changes because a default did.
+ *
+ * @returns the asset to render and where it came from; `none` when no level
+ *   holds an image, and the page then ships without `og:image`.
+ */
+export function pickShareImage(levels: {
+  readonly page: string | null;
+  readonly language: string | null;
+  readonly site: string | null;
+}): { readonly source: ShareImageSource; readonly assetId: string | null } {
+  if (levels.page !== null) return { source: "page", assetId: levels.page };
+  if (levels.language !== null) return { source: "language", assetId: levels.language };
+  if (levels.site !== null) return { source: "site", assetId: levels.site };
+  return { source: "none", assetId: null };
+}
+
 /** Result of {@link checkPublicSiteBaseUrl}. */
 export type PublicSiteBaseUrlCheck = { ok: true; url: string } | { ok: false; message: string };
 

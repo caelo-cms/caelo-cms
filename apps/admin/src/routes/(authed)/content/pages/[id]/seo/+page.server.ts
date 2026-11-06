@@ -46,7 +46,19 @@ export const load: PageServerLoad = async ({ locals, params }) => {
     }
   }
 
-  return { page, seo, ogImageSlug };
+  // #1452 — what the page shows while it has no image of its own.
+  const shareR = await execute(registry, adapter, locals.ctx, "pages_seo.share_images", {
+    pageIds: [params.id],
+  });
+  const shareImage = shareR.ok
+    ? ((
+        shareR.value as {
+          images: { source: "page" | "language" | "site" | "none"; url: string | null }[];
+        }
+      ).images[0] ?? null)
+    : null;
+
+  return { page, seo, ogImageSlug, shareImage };
 };
 
 export const actions: Actions = {

@@ -3,6 +3,12 @@
 import { describe, expect, it } from "bun:test";
 import { proposalQueueRoute } from "./proposal-queue-route.js";
 
+describe("#1358", () => {
+  it("external redirects decide on the redirects page, which has the actions", () => {
+    expect(proposalQueueRoute("redirects")).toBe("/settings/redirects");
+  });
+});
+
 describe("proposalQueueRoute", () => {
   it("maps domains whose Owner page path differs from the op domain", () => {
     expect(proposalQueueRoute("owner_settings")).toBe("/settings/owner-settings/pending");

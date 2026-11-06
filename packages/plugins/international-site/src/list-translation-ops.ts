@@ -20,6 +20,7 @@
 
 import {
   type ListItem,
+  type ListResolveSource,
   type ListTypeDef,
   type PageTypeDef,
   validateFieldValue,
@@ -32,8 +33,10 @@ import {
   collectSources,
   findingsFor,
   indexKey,
+  isExternalHref,
   type ListSourceSnapshot,
   type ListTranslationFinding,
+  PLUGIN_SLUG,
   type ReconcileRow,
   reconcile,
   type SourceInstance,
@@ -312,6 +315,24 @@ export function linkVersionCheck(input: {
 }
 
 /**
+ * The plugin list sources offered to this plugin (#1323): texts another
+ * plugin generates, read through core because its storage is not ours.
+ *
+ * @param pageId any page of the site; none means nothing can render them.
+ */
+export async function loadPluginSources(
+  cms: ChromeDeps["cms"],
+  pageId: string | undefined,
+): Promise<ListResolveSource[]> {
+  if (pageId === undefined) return [];
+  const r = await cms.call<{ sources: ListResolveSource[] }>("lists.plugin_source_texts", {
+    pluginSlug: PLUGIN_SLUG,
+    pageId,
+  });
+  return r.sources;
+}
+
+/**
  * Load the source state and the stored translations as the caller sees
  * them (a chat sees its branch's lists, instance values and its own
  * translation rows; pages-to-instance placement and page variants are
@@ -375,6 +396,7 @@ export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTr
       .map((l) => ({ id: l.id, slug: l.slug, name: l.name, type: l.type, items: l.items ?? [] })),
     instances: sourceInstances,
     pageProps,
+    pluginSources: await loadPluginSources(cms, pages.pages[0]?.id),
   });
 
   const [values, terms, props, visibility] = await Promise.all([
@@ -473,11 +495,27 @@ export function checkListTranslations(
     const unit = unitByAddress.get(address);
     if (!unit || !appliesTo(unit, locale.code)) {
       problems.push(
-        `${address}: not a translatable list value of ${locale.code} (call translate_chrome or intl_status for the current addresses)`,
+        state.snapshot.internalLinks.has(address)
+          ? `${address}: this link points at a page of this site and follows the page language by itself; create_variant gives its page a ${locale.code} version, nothing is set here`
+          : `${address}: not a translatable list value of ${locale.code} (call translate_chrome or intl_status for the current addresses)`,
       );
       continue;
     }
-    const bad = validateFieldValue(unit.field, value, address);
+    if (unit.link && !isExternalHref(value)) {
+      problems.push(
+        `${address}: "${value}" is no external address (https://…, mailto:, tel:); a page of this site is linked in the list itself and follows the page language`,
+      );
+      continue;
+    }
+    if (unit.faithful && value.trim() === "") {
+      problems.push(`${address}: a visitor reads this text, it cannot be left empty`);
+      continue;
+    }
+    const bad = validateFieldValue(
+      unit.field,
+      unit.link ? { ...unit.link, href: value } : value,
+      address,
+    );
     if (bad.length > 0) {
       problems.push(bad.map((b) => `${b.path}: ${b.message}`).join("; "));
       continue;
@@ -529,7 +567,12 @@ export async function writeListTranslations(
   let written = 0;
   for (const [address, value] of answers) {
     const unit = unitByAddress.get(address) as SourceUnit;
-    if (unit.store === "value") {
+    if (unit.link && value === unit.text) {
+      // The source's own address: no language value, its edits flow here again.
+      const row = state.values.find((r) => r.locale_code === locale.code && r.address === address);
+      if (row) await deps.q.delete("list_value_translations", row.id);
+      written += 1;
+    } else if (unit.store === "value") {
       await upsertRow(
         deps,
         "list_value_translations",

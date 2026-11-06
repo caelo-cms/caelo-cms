@@ -20,6 +20,8 @@ const QUEUE_ROUTE_OVERRIDES: Readonly<Record<string, string>> = {
   site_defaults: "/settings/seo",
   // #1461 — static files decide on their own page.
   static_files: "/settings/static-files",
+  // #1358 — external redirects decide on the redirects page.
+  redirects: "/settings/redirects",
   // needsApproval tool calls (pending_proposals.list domain `tool_approvals`).
   tool_approvals: "/settings/tool-approvals/pending",
   // #684 — these two decide on their feature page, which exposes

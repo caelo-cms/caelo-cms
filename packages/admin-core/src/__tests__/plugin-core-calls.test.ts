@@ -87,6 +87,7 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "links.canonicalise_values": { pending: INTL_1255 },
     "list_types.list": { measured: ["list_types.list"] },
     "lists.list": { pending: LIST_RESOLVE_1270 },
+    "lists.plugin_source_texts": { measured: ["lists.plugin_source_texts"] },
     "modules.list": { pending: LIST_RESOLVE_1270 },
     "page_module_content.list_for_page": { measured: ["page_module_content.list_for_page"] },
     "page_module_content.set": { notBackground: "translate tools write one page's content" },
@@ -101,6 +102,9 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "pages_seo.apply_translation": { notBackground: "translate tools write one page's SEO" },
     // The staleness consumer reads each changed source's meta description.
     "pages_seo.get": { measured: ["pages_seo.get"] },
+    "pages_seo.check_share_image": {
+      notBackground: "set_locale_share_image checks the image it is given",
+    },
     "placement.fork_paths": { notBackground: "translate tools copy content of one placement" },
     "redirects.create": { notBackground: "variant tools create the redirect of a moved page" },
     "redirects.page_conflicts": {

@@ -41,6 +41,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   hasDeferrals: "Withheld page modules",
   hasContentVariants: "Content variants",
   hasLinkResolve: "Internal link handling",
+  hasShareImages: "Default social-share images",
   auditFindingsOperation: "Stage audit findings",
   writeHintsOperation: "Hints to the AI",
   changeConsumer: "Followed site changes",

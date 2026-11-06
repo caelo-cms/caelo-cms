@@ -27,6 +27,12 @@
  * path. Failures throw — per the no-fallbacks rule, a missing or
  * deleted og_image_asset_id stops the deploy loudly.
  *
+ * #1452 — a page without its own image shows its language's default (a
+ * plugin's answer) or the site default (the active theme's `socialShare`
+ * slot), see `pickShareImage`. Both are read here, per build, and nothing
+ * lands on the page's SEO row: its own image keeps winning, and a changed
+ * default reaches visitors with the next Stage and Publish live.
+ *
  * #1271 — prepared once ({@link prepareSeoPass}: every page's SEO row,
  * plugin contributions and public URL — a small record per page) and
  * applied page batch by page batch, so the build never holds every page's
@@ -42,6 +48,7 @@ import {
   injectSeoIntoHead,
   type PageUrlStyle,
   pagedUrl,
+  pickShareImage,
   renderSeoHead,
   resolveDocumentLanguage,
   type SiteSeoSettings,
@@ -119,6 +126,10 @@ export async function prepareSeoPass(args: {
   /** #802 — the designated 404 page (shipped as `/404.html`), or null.
    *  It gets {@link notFoundPageSeo} and never enters the sitemap. */
   notFoundPageId: string | null;
+  /** #1452 — the active theme's bound `socialShare` asset: the site's
+   *  default share image, or null when none is bound. The raw binding, so
+   *  an asset deleted after binding stops the build instead of vanishing. */
+  siteShareImageAssetId: string | null;
 }): Promise<SeoPass> {
   const { tx, plugins, settings, pageUrlStyle, notFoundPageId } = args;
   const urlArgs = { siteBaseUrl: settings.siteBaseUrl, pageUrlStyle };
@@ -179,13 +190,28 @@ export async function prepareSeoPass(args: {
   seoBundles.sort((a, b) => (order.get(a.pageId) ?? 0) - (order.get(b.pageId) ?? 0));
   const bundleById = new Map<string, PageSeoBundle>(seoBundles.map((b) => [b.pageId, b]));
 
-  // Resolve every og_image_asset_id to a public URL and publish that file
-  // with the build: the og:image need not appear on any page, so the media
-  // pass may not have published it. Same content-hashed name as the media
-  // pass (#667), so a file that is also on a page lands on the same path.
+  // #1452 — the image each page shows: its own, its language's, the site's.
+  const languageImages = await plugins.resolveShareImages(
+    seoBundles.filter((b) => b.ogImageAssetId === null).map((b) => b.pageId),
+  );
+  const shareImageOf = new Map(
+    seoBundles.map((b) => [
+      b.pageId,
+      pickShareImage({
+        page: b.ogImageAssetId,
+        language: languageImages.get(b.pageId) ?? null,
+        site: args.siteShareImageAssetId,
+      }).assetId,
+    ]),
+  );
+
+  // Resolve every shown image to a public URL and publish that file with
+  // the build: the og:image need not appear on any page, so the media pass
+  // may not have published it. Same content-hashed name as the media pass
+  // (#667), so a file that is also on a page lands on the same path.
   const base = settings.siteBaseUrl.replace(/\/$/, "");
   const ogImageUrlByAsset = new Map<string, string>();
-  for (const id of new Set(seoBundles.map((b) => b.ogImageAssetId))) {
+  for (const id of new Set(shareImageOf.values())) {
     if (id === null) continue;
     ogImageUrlByAsset.set(id, `${base}/${await args.media.publishOgImage(id)}`);
   }
@@ -296,9 +322,8 @@ export async function prepareSeoPass(args: {
           followUpsOf.set(p.pageId, [...(followUpsOf.get(p.pageId) ?? []), p.followUp.page]);
         }
         const isNotFoundPage = bundle.pageId === notFoundPageId;
-        const ogImageUrl = bundle.ogImageAssetId
-          ? (ogImageUrlByAsset.get(bundle.ogImageAssetId) ?? null)
-          : null;
+        const shareImage = shareImageOf.get(bundle.pageId) ?? null;
+        const ogImageUrl = shareImage === null ? null : (ogImageUrlByAsset.get(shareImage) ?? null);
         const headBlock = renderSeoHead({
           title: bundle.title,
           metaDescription: bundle.metaDescription,

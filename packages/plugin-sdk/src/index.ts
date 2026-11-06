@@ -29,7 +29,12 @@
 import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
 // The list model only (Zod underneath): the SDK is bundled into the
 // plugin sandbox with everything it imports at runtime.
-import { type ListTypeDef, listTypeDefSchema, nodeDefSchema } from "@caelo-cms/shared/lists-model";
+import {
+  fieldDefSchema,
+  type ListTypeDef,
+  listTypeDefSchema,
+  nodeDefSchema,
+} from "@caelo-cms/shared/lists-model";
 import { z } from "zod";
 import { checkAdminPanels, type PluginAdminPanel, pluginAdminPanel } from "./admin-panels.js";
 import {
@@ -397,6 +402,12 @@ export const pluginListSourceSpec = z
     label: z.string().min(1).max(128),
     /** One line for the AI: what the entries are and when the list is non-empty. */
     description: z.string().min(1).max(300),
+    /**
+     * A field's `ext.<pluginSlug>` offers it to that `list-resolve`
+     * contributor (`docs/lists.md` §9.3, #1323); unmarked fields stay
+     * structure. Marking one promises an entry id means one entry on
+     * every page.
+     */
     node: nodeDefSchema,
   })
   .strict()
@@ -463,6 +474,29 @@ export const listResolveVariantOverlay = z
 export type ListResolveVariantOverlay = z.infer<typeof listResolveVariantOverlay>;
 
 /**
+ * #1323 — one plugin list source as a `list-resolve` contributor sees it:
+ * the fields that carry this contributor's own `ext` attribute (the
+ * source's declaration says which ones) and only those fields' values. A
+ * source's other fields are structure: an overlay cannot reach them.
+ */
+export const listResolveSource = z
+  .object({
+    name: z.string().min(1).max(64),
+    label: z.string().min(1).max(128),
+    fields: z.array(fieldDefSchema).max(32),
+    entries: z
+      .array(
+        z
+          .object({ id: z.string().min(1).max(128), values: z.record(z.string(), z.unknown()) })
+          .strict(),
+      )
+      .max(10_000),
+  })
+  .strict();
+
+export type ListResolveSource = z.infer<typeof listResolveSource>;
+
+/**
  * #1223 — what one page's render can show from lists, so a `list-resolve`
  * answer can cost what the page costs instead of what the site costs:
  * the shared lists, the content instances whose local lists render, and
@@ -476,6 +510,12 @@ export const listResolveScope = z
     listIds: z.array(z.string().min(1).max(64)).max(50_000),
     contentInstanceIds: z.array(z.string().uuid()).max(50_000),
     pageIds: z.array(z.string().uuid()).max(50_000),
+    /**
+     * #1323 — plugin list source entries this render shows, each source
+     * with the fields carrying the asked plugin's `ext` attribute. Keyed
+     * in the answer by `source/<name>/item/<entryId>/<field>`.
+     */
+    sources: z.array(listResolveSource).max(20).optional(),
   })
   .strict();
 
@@ -1167,6 +1207,10 @@ export const pluginManifest = z
      *  `link_resolve` capability: it changes where every internal link
      *  on a page goes. */
     hasLinkResolve: z.boolean().default(false),
+    /** See `PluginDefinition.shareImagesOperation` (#1452). Requires the
+     *  `head_contributions` capability: it changes every affected page's
+     *  head. */
+    hasShareImages: z.boolean().default(false),
     /** See `PluginDefinition.auditFindingsOperation` (epic #1107). Must
      *  name one of `operations`. Needs no capability: it reads like a
      *  render and only adds findings to the Stage audit. */
@@ -2494,6 +2538,24 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly linkResolveOperation?: string;
   /**
+   * #1452 — the default social-share image of pages this plugin knows
+   * something about (international-site: their language). An operation in
+   * `operations` taking `{pageIds: string[]}` — pages without an image of
+   * their own — and returning `{images: Record<pageId, mediaAssetUuid>}`.
+   * A page absent from the answer has no plugin default and takes the site
+   * default (the active theme's `socialShare` slot). A page's own image
+   * always wins; nothing is written onto the page. Separate from
+   * `contributionsOperation` because the editor and `get_page_seo` ask for
+   * it without a base URL and without the rest of a head. Requires the
+   * `head_contributions` capability.
+   *
+   * @example
+   *   share_images: async (_ctx, { pageIds }) => ({
+   *     images: { [pageIds[0]]: "6f1c2c1e-3f43-4a55-9b0f-0a6a2f6f8e11" },
+   *   }),
+   */
+  readonly shareImagesOperation?: string;
+  /**
    * #1269 — what the `linkResolveOperation` answer is computed from: the
    * plugin's own private tables (`adminSchema`) and, optionally, the
    * columns of them that matter. When declared, core keeps the answer per
@@ -2729,6 +2791,7 @@ export function manifestFromDefinition(def: {
   readonly deferralsOperation?: string;
   readonly contentVariantsOperation?: string;
   readonly linkResolveOperation?: string;
+  readonly shareImagesOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
   readonly changeConsumer?: PluginChangeConsumerSpec;
@@ -2788,6 +2851,7 @@ export function manifestFromDefinition(def: {
     hasDeferrals: Boolean(def.deferralsOperation),
     hasContentVariants: Boolean(def.contentVariantsOperation),
     hasLinkResolve: Boolean(def.linkResolveOperation),
+    hasShareImages: Boolean(def.shareImagesOperation),
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),

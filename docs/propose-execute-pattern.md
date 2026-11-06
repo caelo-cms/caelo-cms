@@ -58,6 +58,7 @@ bypass — `execute_proposal`'s `actorScope` is `["human", "system"]`.
 | `templates` | `propose_update`, `propose_delete` | `content.write` |
 | `domains` | `propose_add`, `propose_remove` | `settings.write` |
 | `static_files` (0625, approve on `/settings/static-files`, [dev/static-files.md](./dev/static-files.md)) | `propose_set`, `propose_delete` | `settings.write` |
+| `redirects` (0643, targets on another domain; approve on `/settings/redirects`, [dev/redirects-and-settings-sync.md](./dev/redirects-and-settings-sync.md)) | `propose_external` | `settings.write` |
 | `site_defaults` (SEO settings; approve on `/settings/seo`) | `propose_set_seo` | `roles.manage` |
 | `gateway` | `propose_rate_limit` | `settings.write` |
 | `owner_settings` (0235, 0241, 0244, 0251) | `propose_set_ai_budget`, `propose_set_ai_pricing`, `propose_set_gateway_settings`, `propose_set_translation_model`, `propose_set_plugin_ai_cost_cap`, `propose_rotate_gateway_cookie_secret`, `propose_set_staging_access`, `propose_rotate_staging_credentials`, `propose_set_staging_host`, `propose_set_security_headers` (0639, [dev/site-security-headers.md](./dev/site-security-headers.md)) — one table, `kind` discriminator | `settings.write` |

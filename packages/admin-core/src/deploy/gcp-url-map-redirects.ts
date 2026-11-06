@@ -145,6 +145,7 @@ function canonical(rule: GcpPathRule): unknown {
     service: rule.service ?? null,
     urlRedirect: rule.urlRedirect
       ? {
+          hostRedirect: rule.urlRedirect.hostRedirect ?? null,
           pathRedirect: rule.urlRedirect.pathRedirect ?? null,
           redirectResponseCode: rule.urlRedirect.redirectResponseCode ?? null,
           stripQuery: rule.urlRedirect.stripQuery ?? false,

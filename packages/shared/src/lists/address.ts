@@ -25,6 +25,13 @@ export type ValueAddress =
     }
   | { readonly kind: "pageProp"; readonly pageId: string; readonly field: string }
   | {
+      /** An entry of a plugin list source (`{{#name}}`), by its stable entry id. */
+      readonly kind: "pluginSource";
+      readonly source: string;
+      readonly itemId: string;
+      readonly field: string;
+    }
+  | {
       readonly kind: "listTypeField";
       readonly listTypeId: string;
       readonly node: string;
@@ -32,11 +39,14 @@ export type ValueAddress =
     };
 
 const SEG = "[a-z0-9_-]+";
+/** A plugin source's entry id (`list-source-resolution.ts`), wider than a stored id. */
+const SOURCE_ENTRY = "[A-Za-z0-9_.:-]{1,128}";
 const ADDRESS_RE = new RegExp(
   `^(?:list/(${SEG})/item/(${SEG})/(${SEG})` +
     `|instance/(${SEG})/(${SEG})/item/(${SEG})/(${SEG})` +
     `|page/(${SEG})/props/(${SEG})` +
-    `|list_type/(${SEG})/node/(${SEG})/(${SEG}))$`,
+    `|list_type/(${SEG})/node/(${SEG})/(${SEG})` +
+    `|source/(${SEG})/item/(${SOURCE_ENTRY})/(${SEG}))$`,
 );
 
 /** Format an address as its canonical string. */
@@ -48,6 +58,8 @@ export function formatValueAddress(a: ValueAddress): string {
       return `instance/${a.contentInstanceId}/${a.field}/item/${a.itemId}/${a.itemField}`;
     case "pageProp":
       return `page/${a.pageId}/props/${a.field}`;
+    case "pluginSource":
+      return `source/${a.source}/item/${a.itemId}/${a.field}`;
     case "listTypeField":
       return `list_type/${a.listTypeId}/node/${a.node}/${a.field}`;
   }
@@ -70,6 +82,9 @@ export function parseValueAddress(s: string): ValueAddress | null {
   if (m[8] && m[9]) return { kind: "pageProp", pageId: m[8], field: m[9] };
   if (m[10] && m[11] && m[12]) {
     return { kind: "listTypeField", listTypeId: m[10], node: m[11], field: m[12] };
+  }
+  if (m[13] && m[14] && m[15]) {
+    return { kind: "pluginSource", source: m[13], itemId: m[14], field: m[15] };
   }
   return null;
 }

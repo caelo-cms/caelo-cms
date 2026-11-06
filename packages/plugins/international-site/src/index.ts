@@ -188,6 +188,12 @@ let prefixDefaultLocaleCache = false;
  *  switch. Absent row = off (the original bare-default behaviour). */
 const PREFIX_DEFAULT_LOCALE_KEY = "prefix_default_locale";
 
+/**
+ * `settings` row key prefix of the per-language default share images (#1452):
+ * one row per language, so setting two at once cannot lose either.
+ */
+const LOCALE_SHARE_IMAGE_KEY_PREFIX = "locale_share_image:";
+
 interface SettingRow {
   id: string;
   key: string;
@@ -543,6 +549,27 @@ async function loadPrefixDefaultLocaleSetting(
 }
 
 /**
+ * Read the per-language default share images (#1452): locale code → media
+ * asset id. A row whose value is not the shape this plugin writes is schema
+ * drift, and fails loudly (CLAUDE.md §2).
+ */
+async function loadLocaleShareImages(q: PluginAdminQuery): Promise<Record<string, string>> {
+  const rows = (await listAll(q, "settings")) as unknown as (SettingRow & { key: string })[];
+  const images: Record<string, string> = {};
+  for (const row of rows) {
+    if (!row.key.startsWith(LOCALE_SHARE_IMAGE_KEY_PREFIX)) continue;
+    const parsed = localeShareImageValue.safeParse(row.value);
+    if (!parsed.success) {
+      throw new Error(
+        `international-site: setting "${row.key}" holds ${JSON.stringify(row.value)}, expected {"assetId": <uuid>}. Re-run set_locale_share_image to rewrite it.`,
+      );
+    }
+    images[row.key.slice(LOCALE_SHARE_IMAGE_KEY_PREFIX.length)] = parsed.data.assetId;
+  }
+  return images;
+}
+
+/**
  * The variant row of each page that has one. One `anyOf` read per 1000
  * pages (#1213 — it used to be one read per page, which a build of the
  * whole site paid for every page); within a render pass, a page read once
@@ -688,6 +715,14 @@ async function pageVariantPartition(
 }
 
 const linkResolveArgs = z.object({ pageIds: z.array(z.string().uuid()) }).strict();
+
+const shareImagesArgs = z.object({ pageIds: z.array(z.string().uuid()) }).strict();
+
+const localeShareImageValue = z.object({ assetId: z.string().uuid() }).strict();
+
+const setLocaleShareImageArgs = z
+  .object({ localeCode: z.string().min(2).max(35), mediaId: z.string().uuid().nullable() })
+  .strict();
 
 /** What the chrome and page translation operations need, with a fresh
  *  locale registry (#592, #741). */
@@ -1681,6 +1716,8 @@ export default definePlugin<PluginContextTier1>({
         })),
         // Site-wide: the default locale is prefixed too (home stays at "/").
         prefixDefaultLocale: reg.prefixDefaultLocale,
+        // #1452 — locale code → the language's default share image.
+        shareImages: await loadLocaleShareImages(q),
         groups: [...groups.entries()].map(([groupId, vs]) => ({ groupId, variants: vs })),
         // Pages without a variant row belong to the default locale and
         // have NO translations yet — the AI's to-do surface.
@@ -2246,6 +2283,64 @@ export default definePlugin<PluginContextTier1>({
     },
 
     /**
+     * #1452 — set or clear a language's default share image. Routine: one
+     * call undoes it, and it lands on the chat's branch like every write of
+     * this plugin, so it reaches visitors with Stage + Publish live.
+     */
+    set_locale_share_image: async (ctx, args) => {
+      const { localeCode, mediaId } = setLocaleShareImageArgs.parse(args);
+      const q = adminQueryOf(ctx);
+      const reg = await refreshLocaleCache(q, ctx);
+      if (!reg.byCode.has(localeCode)) {
+        throw new Error(
+          `locale "${localeCode}" is not registered — list the codes with intl_status`,
+        );
+      }
+      if (mediaId !== null) {
+        const { issue } = await cmsOf(ctx).call<{ issue: string | null }>(
+          "pages_seo.check_share_image",
+          { assetId: mediaId },
+        );
+        if (issue !== null) throw new Error(issue);
+      }
+      const key = `${LOCALE_SHARE_IMAGE_KEY_PREFIX}${localeCode}`;
+      const rows = (await q.list("settings", { key, limit: 1 })) as unknown as SettingRow[];
+      const row = rows[0];
+      if (mediaId === null) {
+        if (row) await q.delete("settings", row.id);
+      } else if (row) {
+        await q.update("settings", row.id, { value: { assetId: mediaId } });
+      } else {
+        await q.insert("settings", { key, value: { assetId: mediaId } });
+      }
+      return {
+        localeCode,
+        mediaId,
+        nextStep:
+          "Saved in the draft: pages of this language without an own image show it after the next Stage and Publish live.",
+      };
+    },
+
+    /**
+     * #1452 — the share-images composition point: each page's language
+     * default. Pages of a language without one are absent from the answer
+     * and take the site default.
+     */
+    share_images: async (ctx, args) => {
+      const { pageIds } = shareImagesArgs.parse(args);
+      const q = adminQueryOf(ctx);
+      const byLocale = await loadLocaleShareImages(q);
+      const images: Record<string, string> = {};
+      if (Object.keys(byLocale).length === 0) return { images };
+      const reg = await refreshLocaleCache(q, ctx);
+      for (const [pageId, locale] of await localesByPage(q, pageIds, reg.byCode, ctx)) {
+        const assetId = byLocale[locale.code];
+        if (assetId !== undefined) images[pageId] = assetId;
+      }
+      return { images };
+    },
+
+    /**
      * The change consumer (#397, on the change journal since #1267): the
      * host hands it committed changes of the MAIN line — a chat's change
      * arrives when its Stage lands it there, which is when staleness
@@ -2699,6 +2794,27 @@ export default definePlugin<PluginContextTier1>({
       },
     },
     {
+      name: "set_locale_share_image",
+      description:
+        "Set a language's default link-preview image (og:image) for its pages without an own image; `mediaId: null` clears it. It wins over the site default (`set_theme_asset` slot socialShare), loses to a page's own (`set_page_seo_many`). Only when languages need different images; never copy an image onto pages instead. Goes live with Stage + Publish live. `get_page_seo` shows what each page gets.",
+      operationName: "set_locale_share_image",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["localeCode", "mediaId"],
+        properties: {
+          localeCode: { type: "string", minLength: 2, maxLength: 35 },
+          mediaId: {
+            type: ["string", "null"],
+            format: "uuid",
+            description: "From `find_media`; null clears the language's image.",
+          },
+        },
+      },
+    },
+    {
       name: "set_neutral_terms",
       description:
         "Keep terms as they are, unmeasured and untranslated: technical terms, brand and product names that are correct unchanged ('Webhook', 'Crawl'). The language checks stop reporting text made of them, and every translation keeps them verbatim. Omit localeCode for every language. " +
@@ -2805,6 +2921,7 @@ export default definePlugin<PluginContextTier1>({
   auditFindingsOperation: "audit_findings",
   writeHintsOperation: "write_hints",
   contributionsOperation: "head_contributions",
+  shareImagesOperation: "share_images",
   contentVariantsOperation: "content_variants",
   linkResolveOperation: "link_resolve",
   // #1269 — the partition is computed from these columns only (variant

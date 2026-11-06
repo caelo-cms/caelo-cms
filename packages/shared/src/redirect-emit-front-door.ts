@@ -17,6 +17,7 @@
  */
 
 import type { PlannedRedirect, RedirectPlan, RedirectStatusCode } from "./redirect-plan.js";
+import { isExternalRedirectTarget } from "./redirect-target.js";
 
 /** Rules per rule set / per route on Front Door Standard and Premium. */
 export const FRONT_DOOR_MAX_RULES = 100;
@@ -85,6 +86,11 @@ export function frontDoorRedirectRules(plan: RedirectPlan): FrontDoorRedirectRul
 }
 
 function toRule(r: PlannedRedirect, order: number): FrontDoorRedirectRule {
+  if (isExternalRedirectTarget(r.location)) {
+    throw new Error(
+      `redirect-emit-front-door: the redirect ${r.fromPath} → ${r.location} leaves the site, which this rule shape cannot express. External redirects are refused on azure until its publisher exists (#750); delete the row with bulk_delete_redirects.`,
+    );
+  }
   const { path, query, fragment } = splitLocation(r.location);
   return {
     // Rule names: letters and digits only, starting with a letter.

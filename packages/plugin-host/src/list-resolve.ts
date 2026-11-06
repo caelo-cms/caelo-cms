@@ -75,10 +75,11 @@ const answerSchema = z
 
 /** True when an active plugin answers the list-resolve point. */
 export function hasListResolveContributors(): boolean {
-  return contributors().length > 0;
+  return listResolveContributors().length > 0;
 }
 
-function contributors() {
+/** The plugins answering `list-resolve`, in a stable order. */
+export function listResolveContributors() {
   return loadedPlugins
     .all()
     .filter((lp) => !isPluginDisabled(lp.slug))
@@ -99,11 +100,27 @@ export async function resolveListOverlays(
   scope: RenderScope,
   pageScope?: ListResolveScope,
 ): Promise<ResolvedListOverlays> {
-  const plugins: PluginListOverlays[] = [];
-  if (variants.length === 0) return { plugins };
+  if (variants.length === 0) return { plugins: [] };
+  return askListResolve(listResolveContributors(), variants, scope, () => pageScope);
+}
+
+/**
+ * Ask these plugins for their overlays of `variants`.
+ *
+ * @param scopeFor the `scope` each plugin is asked with; a plugin's answer
+ *   is only as wide as its scope, and #1323's source texts differ per asker.
+ */
+export async function askListResolve(
+  plugins: ReturnType<typeof listResolveContributors>,
+  variants: ReadonlyArray<string>,
+  scope: RenderScope,
+  scopeFor: (pluginSlug: string) => ListResolveScope | undefined,
+): Promise<ResolvedListOverlays> {
+  const answers: PluginListOverlays[] = [];
   const asked = new Set(variants);
-  for (const lp of contributors()) {
+  for (const lp of plugins) {
     const operationName = lp.definition.listResolveOperation as string;
+    const pageScope = scopeFor(lp.slug);
     const label = `list-resolve: ${lp.slug}.${operationName}`;
     const r = await runPluginOperation({
       invocation: renderInvocation(scope),
@@ -138,9 +155,9 @@ export async function resolveListOverlays(
         );
       }
     }
-    plugins.push({ slug: lp.slug, overlays: parsed.data.overlays });
+    answers.push({ slug: lp.slug, overlays: parsed.data.overlays });
   }
-  return { plugins };
+  return { plugins: answers };
 }
 
 /**

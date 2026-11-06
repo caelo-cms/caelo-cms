@@ -166,12 +166,14 @@ export {
   reportListOverlayIssues,
   resolveListOverlays,
 } from "./list-resolve.js";
+export { markedSourceEntries, sourcesMarkedFor } from "./list-source-overlays.js";
 export {
   checkListSourceEntries,
   dormantListSourceNames,
   LIST_SOURCE_ANSWER_MAX_BYTES,
   type ResolvedListSources,
   resolveListSources,
+  sourceEntriesOf,
 } from "./list-source-resolution.js";
 export { pluginListSourcesRegistry } from "./list-sources.js";
 export {
@@ -253,6 +255,7 @@ export {
   pluginWorkerScheduler,
   type ScheduledWorker,
 } from "./scheduler.js";
+export { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
 export {
   parseListFilter,
   publicListSql,

@@ -510,6 +510,13 @@ import {
   lookupRedirectOp,
 } from "./ops/redirects.js";
 import {
+  executeRedirectProposalOp,
+  listPendingRedirectProposalsOp,
+  previewExternalRedirectsOp,
+  proposeExternalRedirectsOp,
+  rejectRedirectProposalOp,
+} from "./ops/redirects_pending.js";
+import {
   executeRoleProposalOp,
   listPendingRoleProposalsOp,
   proposeRoleCreateOp,
@@ -584,12 +591,14 @@ import {
 import {
   pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
+  pagesSeoCheckShareImageOp,
   pagesSeoGetManyOp,
   pagesSeoGetOp,
   pagesSeoListStaleOp,
   pagesSeoOptimizeManyOp,
   pagesSeoOptimizeOp,
   pagesSeoSetOp,
+  pagesSeoShareImagesOp,
   siteDefaultsGetSeoOp,
   siteDefaultsSeedSiteBaseUrlOp,
   siteDefaultsSetSeoOp,
@@ -1152,6 +1161,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(pageConflictsRedirectOp);
   registry.register(deleteRedirectOp);
   registry.register(createRedirectsManyOp);
+  registry.register(proposeExternalRedirectsOp);
+  registry.register(previewExternalRedirectsOp);
+  registry.register(executeRedirectProposalOp);
+  registry.register(rejectRedirectProposalOp);
+  registry.register(listPendingRedirectProposalsOp);
   registry.register(deleteRedirectsManyOp);
   // #1157 — redirects sync to the hosting provider on save, no build.
   registry.register(syncRedirectsProviderOp);
@@ -1474,6 +1488,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P8 — SEO sidecar + site SEO defaults.
   registry.register(pagesSeoGetOp);
   registry.register(pagesSeoGetManyOp);
+  registry.register(pagesSeoShareImagesOp);
+  registry.register(pagesSeoCheckShareImageOp);
   registry.register(pagesSeoSetOp);
   // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
   registry.register(pagesSeoSetManyOp);

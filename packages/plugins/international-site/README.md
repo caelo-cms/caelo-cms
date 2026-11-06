@@ -51,6 +51,16 @@ chrome variant (`src/chrome-ops.ts`), field by field from the list type
 content instance's local lists go through addresses; its chrome variant
 keeps rendering the current entries so an added entry shows up there.
 
+## Share images per language
+
+`set_locale_share_image` stores a language's default link-preview image
+in `settings` (one `locale_share_image:<code>` row per language), on the chat's branch like every
+write here. The plugin answers core's `share-images` composition point
+(`share_images`) with each page's language default; core's rule is the
+page's own image, then this, then the site default ([themes.md](../../../docs/themes.md)).
+A language without an image is absent from the answer, so its pages take
+the site default.
+
 ## Change handling
 
 Statuses (`translated | needs_update | missing | orphaned`) are computed
@@ -69,9 +79,35 @@ the main line) persists them.
 | `translate` switched off | the translation is kept, but no longer applied |
 | link to a page without a version in that language | the entry is hidden there, and a finding names it |
 | query / system source node | nothing stored: core scopes queries by variant; only the node's own fields (a heading) are units |
+| external link in an entry | optional: without a value of its own the language shows the source's link, so its edits flow through; a value replaces only the `href`, and writing the source's address back removes it (`apply_translations`, `kind: "addresses"`) |
+| text of a plugin list source | see below: never hidden, and shown only as a translation of the current source text |
 
 The operator can hide an entry in one language on purpose
 (`list_item_visibility`, tool `set_list_item_visibility`).
+
+### Texts of plugin list sources
+
+A plugin offers a field of a list source by marking it
+`ext: { "international-site": { translate: true } }`; consent-manager does
+that for a category's `label` and `description`. Core hands those values
+over (`lists.plugin_source_texts`, `scope.sources` of `list_resolve`), this
+plugin stores translations under `source/<name>/item/<entryId>/<field>`,
+and `translate_chrome` offers them with the other chrome texts. A visitor
+may decide on such a text, so the rules are stricter than a menu label's:
+
+- only a translation of the CURRENT source text shows; a missing or
+  outdated one renders the source text and is a `list-translation-missing`
+  finding, because a stale sentence would describe what the site no longer
+  does;
+- the entry is never hidden, and core applies nothing but the marked
+  fields, so `key`, `required` and which entries exist stay the source
+  plugin's;
+- the prompt asks for the same purpose and scope, and an empty answer is
+  refused;
+- a current translation that reads like its source ("Marketing") counts as
+  translated in `chrome-untranslated`;
+- while the source plugin is off or failing, its stored translations are
+  left alone.
 
 ## Tools and surfaces
 
