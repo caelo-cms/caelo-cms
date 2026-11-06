@@ -206,6 +206,13 @@ describe("host forms", () => {
     expect(set.headers["Content-Security-Policy-Report-Only"]).not.toContain('"');
   });
 
+  it("Caddy: refuses a value that would end the string or expand a placeholder", () => {
+    for (const bad of ['a"b', "{env.SECRET}", "a\\b", "a\nb"]) {
+      const broken = { ...set, headers: { ...set.headers, "X-Frame-Options": bad } };
+      expect(() => emitCaddySiteHeaders(broken)).toThrow(/Caddyfile cannot carry/);
+    }
+  });
+
   it("gcp: nosniff first, one Name: value per header", () => {
     const list = gcpBackendBucketHeaders(set);
     expect(list[0]).toBe("X-Content-Type-Options: nosniff");

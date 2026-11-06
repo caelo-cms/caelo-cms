@@ -1,6 +1,12 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { CSP_SOURCE_KINDS, DENIED_BROWSER_FEATURES, REFERRER_POLICIES } from "@caelo-cms/shared";
+  import {
+    CSP_SOURCE_KINDS,
+    DENIED_BROWSER_FEATURES,
+    ENFORCE_EVIDENCE_NOTE,
+    NO_BUILD_HEADERS_NOTE,
+    REFERRER_POLICIES,
+  } from "@caelo-cms/shared";
   import { enhance } from "$app/forms";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -71,8 +77,8 @@
         <CardHeader>
           <CardTitle class="text-base">Content Security Policy</CardTitle>
           <CardDescription>
-            Test mode blocks nothing: browsers only report what the policy would stop, and the quality
-            check after a Stage shows it. Enforcing makes browsers block it for every visitor.
+            Test mode blocks nothing: the quality check after a Stage shows what the policy would stop.
+            Enforcing makes browsers block it for every visitor.
           </CardDescription>
         </CardHeader>
         <CardContent class="space-y-4">
@@ -83,6 +89,7 @@
               <option value="enforce">Enforce</option>
             </Select>
           </div>
+          <p class="text-sm" data-testid="security-headers-evidence">{ENFORCE_EVIDENCE_NOTE}</p>
           {#if state.enforceBlockers.length > 0}
             <Alert variant="destructive">
               <AlertDescription>
@@ -230,7 +237,7 @@
               </p>
             {/if}
           {:else}
-            <p class="text-sm text-muted-foreground">Nothing yet: this needs a new build.</p>
+            <p class="text-sm text-muted-foreground">{NO_BUILD_HEADERS_NOTE}</p>
           {/if}
         </CardContent>
       </Card>

@@ -6,6 +6,7 @@
  * docs/dev/site-security-headers.md).
  */
 
+import { ENFORCE_EVIDENCE_NOTE, NO_BUILD_HEADERS_NOTE } from "@caelo-cms/shared";
 import { z } from "zod";
 import {
   proposeSecurityHeadersInput,
@@ -36,8 +37,8 @@ export function formatSecurityHeaders(v: Value): string {
     `Host: ${v.host.provider}. ${v.host.note}`,
     ...(v.host.served ? [] : ["Headers cannot be served here, so changes are refused."]),
     `Policy: CSP ${p.cspMode}; frameAncestors [${p.frameAncestors.join(" ")}]; referrer ${p.referrerPolicy}; allowedFeatures [${p.allowedFeatures.join(" ")}]; HSTS ${v.host.hostSendsHsts ? "sent by the host" : `max-age ${p.hsts.maxAgeSeconds}`}; extraSources {${extra}}`,
-    ...headerLines("Staging sends", v.staged, "nothing yet, no build since these headers exist"),
-    ...headerLines("Live sends", v.live, "nothing yet, no Publish live since these headers exist"),
+    ...headerLines("Staging sends", v.staged, NO_BUILD_HEADERS_NOTE),
+    ...headerLines("Live sends", v.live, NO_BUILD_HEADERS_NOTE),
     `Derived from the staged build: ${derived || "no third-party origins"}; ${v.inlineScriptHashes} inline script hash(es).`,
     ...v.plugins.map(
       (x) =>
@@ -45,7 +46,8 @@ export function formatSecurityHeaders(v: Value): string {
     ),
     v.enforceBlockers.length > 0
       ? `Enforcing would stop: ${v.enforceBlockers.join("; ")}`
-      : "Nothing in the staged markup stops enforcing. Runtime loads show as report-only violations in the Stage's quality check.",
+      : "Nothing in the staged markup stops enforcing. Runtime loads on audited pages show as report-only violations in the Stage's quality check.",
+    ENFORCE_EVIDENCE_NOTE,
     ...(v.stageNeeded
       ? ["The saved policy is newer than the staged build: Stage to apply it."]
       : []),
@@ -69,9 +71,9 @@ export const proposeSetSecurityHeadersTool = makeProposeTool({
   approvalPreviewOp: "security_headers.preview_set",
   when:
     "Change the site's response-header policy; only the named settings change. The build derives each CSP from what it ships (origins in markup, approved tags and embeds, inline hashes), so a host used in a page needs no entry.\n" +
-    "USE FOR: `extraSources` when a module's script or a tag loads something at runtime that a report-only violation names; `frameAncestors` when another site must embed this one; `cspMode` when the operator decides to enforce.\n" +
+    "USE FOR: `extraSources` when a Stage finding names a host and this tool as the next step; `frameAncestors` when another site must embed this one; `cspMode` when the operator decides to enforce.\n" +
     "DO NOT USE FOR: allowing an embed or tag for visitors -> consent tools; turning off a blocker -> move the handler into module `js`.\n" +
-    "CORE RULES: read `get_security_headers` first. Propose `enforce` only when it lists nothing that enforcing would stop and the Stage's quality check shows no CSP violation, and say that a missed source then stops working for visitors. After approval it is saved, not live: offer the Stage; Publish live stays the operator's.",
+    "CORE RULES: read `get_security_headers` first. Patch fields replace, so `extraSources` carries every entry to keep. Propose `enforce` only when it lists nothing that enforcing would stop and the Stage's quality check shows no CSP violation, and tell the operator what that rests on: the check opens a few pages and gives no consent, so a violation elsewhere or after consent reaches nobody and is blocked for visitors. After approval it is saved, not live: offer the Stage; Publish live stays the operator's.",
   schema: proposeSecurityHeadersInput,
   summarize: (_input, preview) => String(preview.summary ?? "security headers change"),
 });

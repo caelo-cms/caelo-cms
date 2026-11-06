@@ -42,6 +42,16 @@ describe("CspScanner", () => {
     expect(facts.objectOrigins).toEqual(["https://pdf.vendor.com"]);
   });
 
+  it("leaves out a host no header may carry: a placeholder, a quote, a directive", () => {
+    const facts = scan(`
+      <img src="https://{env.SECRET}.example.com/x.png">
+      <img src='https://a"b.example.com/x.png'>
+      <script src="https://a;script-src.example.com/x.js"></script>
+      <img src="https://ok.vendor.com/x.png">`);
+    expect(facts.origins.img).toEqual(["https://ok.vendor.com"]);
+    expect(facts.origins.script).toBeUndefined();
+  });
+
   it("reads CSS: fonts, imports, backgrounds, style attributes", () => {
     const facts = scan(`
       <style>
@@ -110,7 +120,7 @@ describe("CspScanner", () => {
     const first = new CspScanner("https://www.example.com");
     first.scanPage('<iframe src="https://old.vendor.com/x"></iframe>', "/old");
     const second = new CspScanner("https://www.example.com");
-    second.addPrevious(first.facts());
+    second.addPrevious({ facts: first.facts(), blockers: first.blockerPages() });
     second.addPlugin("consent-manager", {
       origins: { script: ["https://*.googletagmanager.com"] },
       inlineScripts: ["gtag()"],
@@ -122,6 +132,27 @@ describe("CspScanner", () => {
     expect(facts.plugins).toEqual([
       { slug: "consent-manager", origins: ["https://*.googletagmanager.com"], inlineScripts: 1 },
     ]);
+  });
+
+  it("a same-origin object is 'self', and a data block's src widens no script-src", () => {
+    const facts = scan(`
+      <object data="/media/doc.pdf"></object>
+      <script type="application/ld+json" src="https://data.vendor.com/a.json"></script>
+      <script type="importmap" src="https://map.vendor.com/m.json"></script>`);
+    expect(facts.objectOrigins).toEqual(["'self'"]);
+    expect(facts.origins.script).toBeUndefined();
+  });
+
+  it("an incremental build drops the blocker a rebuilt page no longer has", () => {
+    const first = new CspScanner("https://www.example.com");
+    first.scanPage('<button onclick="go()">x</button>', "/a");
+    first.scanPage('<button onclick="go()">x</button>', "/b");
+    const second = new CspScanner("https://www.example.com");
+    second.addPrevious({ facts: first.facts(), blockers: first.blockerPages() });
+    second.scanPage("<button>x</button>", "/a");
+    expect(second.facts().blockers.find((b) => b.detail === "onclick")?.pages).toEqual(["/b"]);
+    second.scanPage("<button>x</button>", "/b");
+    expect(second.facts().blockers).toEqual([]);
   });
 
   it("the policy of a 50,000-page-style site stays in budget: no per-page hash", async () => {

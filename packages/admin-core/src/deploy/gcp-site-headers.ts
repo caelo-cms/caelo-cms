@@ -64,7 +64,8 @@ async function siteBackendBucket(api: GcpBackendBucketApi, siteHost: string): Pr
  * @returns whether the list changed.
  */
 export async function applyGcpSiteHeaders(args: {
-  readonly set: SiteHeaderSet;
+  /** Null for a build from before the headers: the bucket keeps only nosniff. */
+  readonly set: SiteHeaderSet | null;
   readonly siteHost: string;
   readonly api: GcpBackendBucketApi;
   readonly now?: () => number;

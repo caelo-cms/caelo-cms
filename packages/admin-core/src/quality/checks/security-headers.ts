@@ -8,8 +8,9 @@
  * is never a violation. What it cannot derive is reported here: markup no
  * CSP without `'unsafe-inline'` lets run, and a policy that did not fit a
  * response header. Runtime loads are the Lighthouse run's part: the audited
- * origin sends the build's headers, and each violation, report-only ones
- * too, lands in the console as an `errors-in-console` problem.
+ * origin sends the build's headers, so a report-only violation fails
+ * `inspector-issues` and an enforced one `errors-in-console` too, each with
+ * the next step (csp-violations.ts).
  *
  * Under `report_only` nothing is blocked for a visitor, so these are
  * warnings: they must not stop a Publish live on a site that works. Under

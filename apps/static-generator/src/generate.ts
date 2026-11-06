@@ -131,7 +131,7 @@ import {
 import { BakeStore, type BakeTarget, runPluginRenderPass } from "./plugin-pass.js";
 import { rewritePreviewFontUrls } from "./preview-font-urls.js";
 import { redirectFiles } from "./redirects-pass.js";
-import { CspScanner, readPreviousCspFacts } from "./security-headers-pass.js";
+import { CspScanner, readPreviousCspScan, writeCspScan } from "./security-headers-pass.js";
 import {
   buildRobotsTxtWithSitemap,
   prepareSeoPass,
@@ -605,8 +605,18 @@ async function buildSite(
   };
   const incremental = isIncremental(change);
   const previousDeps = incremental ? await readTargetRenderDeps(outDir) : null;
+  // #1454 — a page left alone keeps what it ships, so an incremental build
+  // adds to the last scan. When an earlier build is there but left no scan
+  // (it predates the headers), the CSP would name only the changed pages:
+  // every page is rendered instead. With no earlier build at all, the
+  // changed pages are the whole output, so their scan is complete.
+  const previousCsp = incremental ? await readPreviousCspScan(outDir) : null;
+  const unscannedPreviousBuild = previousDeps !== null && previousCsp === null;
   // null = every page (full build, or no deps recorded yet for this target).
-  const pagesToBuild = incremental ? incrementalPageIds(change, previousDeps, listData) : null;
+  const pagesToBuild =
+    incremental && !unscannedPreviousBuild
+      ? incrementalPageIds(change, previousDeps, listData)
+      : null;
 
   // P13 ideas-pass — incremental whitelist filter when caller supplied
   // changedPageIds. Empty list / undefined = full-site build.
@@ -1003,10 +1013,7 @@ async function buildSite(
   for (const asset of builtAssets) {
     if (asset.kind === "csp") csp.addPlugin(asset.pluginSlug, parsePluginCspSources(asset));
   }
-  if (pagesToBuild !== null) {
-    const previous = await readPreviousCspFacts(outDir);
-    if (previous) csp.addPrevious(previous);
-  }
+  if (pagesToBuild !== null && previousCsp !== null) csp.addPrevious(previousCsp);
   const pageScripts = new PageScripts(writeBuildFile);
   for (const asset of clientAssets) {
     await writeBuildFile(asset.relPath, asset.content);
@@ -1444,7 +1451,7 @@ async function buildSite(
   await writeBuildFile(SECURITY_HEADERS_BUILD_FILE, securityHeadersJson, undefined, {
     alwaysUpload: true,
   });
-  await writeFile(join(outDir, SECURITY_HEADERS_BUILD_FILE), securityHeadersJson, "utf8");
+  await writeCspScan(outDir, securityHeadersJson, csp);
   fileCount += 1;
 
   const assets = [...media.assets(), ...fontAssets];

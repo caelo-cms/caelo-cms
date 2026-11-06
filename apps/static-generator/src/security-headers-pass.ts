@@ -18,22 +18,58 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   CSP_SOURCE_KINDS,
   type CspBlocker,
   type CspSourceKind,
+  cspBlockerSchema,
   type PluginCspSources,
   parseSiteHeaderSet,
   SECURITY_HEADERS_BUILD_FILE,
   type SiteCspFacts,
 } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
+import { z } from "zod";
 
-/** Distinct blockers kept per build; the rest are only counted on the ones kept. */
+/** Distinct blockers kept per build. */
 const MAX_BLOCKERS = 50;
+
+/**
+ * What a scanned origin may look like before it enters a header. The URL
+ * parser accepts `"`, `{`, `}` and `;` in a host, and a host like that would
+ * end a Caddyfile string, expand a Caddy placeholder or add a CSP directive.
+ * No real host has them, so such a URL loads nothing and is left out.
+ */
+const SCANNED_ORIGIN_RE =
+  /^https?:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:\d{1,5})?$/;
+/** Pages named per blocker in the facts; all of them are in the sidecar. */
 const MAX_BLOCKER_PAGES = 5;
+/** Inline scripts holding the site's origin kept for the staging gateway. */
+const MAX_ORIGIN_BOUND_SCRIPTS = 50;
+
+/**
+ * Which pages each blocker is on, beside the build (`outDir`) and never
+ * served: an incremental build rescans only its changed pages, and a page
+ * whose handler was removed must lose its blocker.
+ */
+const BLOCKER_PAGES_FILE = "_security-blockers.json";
+
+/** A blocker with every page it is on. */
+interface BlockerPages {
+  readonly kind: CspBlocker["kind"];
+  readonly detail: string;
+  readonly pages: Set<string>;
+}
+
+const blockerPagesSchema = z.array(
+  z.object({
+    kind: cspBlockerSchema.shape.kind,
+    detail: z.string(),
+    pages: z.array(z.string()),
+  }),
+);
 
 const URL_IN_CSS_RE = /url\(\s*['"]?((?:https?:)?\/\/[^'")\s]+)/gi;
 const IMPORT_IN_CSS_RE = /@import\s+(?:url\(\s*)?['"]?((?:https?:)?\/\/[^'")\s;]+)/gi;
@@ -57,12 +93,15 @@ export class CspScanner {
   readonly #origins = new Map<CspSourceKind, Set<string>>();
   readonly #objects = new Set<string>();
   readonly #hashes = new Set<string>();
-  readonly #blockers = new Map<string, CspBlocker>();
+  readonly #blockers = new Map<string, BlockerPages>();
+  readonly #originBound = new Set<string>();
+  readonly #originForms: readonly string[];
   readonly #plugins: SiteCspFacts["plugins"][number][] = [];
 
   /** @param siteBaseUrl the origin the build renders for. */
   constructor(siteBaseUrl: string) {
     this.#selfOrigin = new URL(siteBaseUrl).origin;
+    this.#originForms = [this.#selfOrigin, this.#selfOrigin.replaceAll("/", "\\/")];
   }
 
   #note(kind: CspSourceKind, origin: string): void {
@@ -77,7 +116,8 @@ export class CspScanner {
     const absolute = trimmed.startsWith("//") ? `https:${trimmed}` : trimmed;
     if (!/^https?:\/\//i.test(absolute)) return null;
     try {
-      return new URL(absolute).origin;
+      const origin = new URL(absolute).origin;
+      return SCANNED_ORIGIN_RE.test(origin) ? origin : null;
     } catch {
       return null;
     }
@@ -110,13 +150,19 @@ export class CspScanner {
     let entry = this.#blockers.get(key);
     if (!entry) {
       if (this.#blockers.size >= MAX_BLOCKERS) return;
-      entry = { kind, detail: detail.slice(0, 200), pages: [], pageCount: 0 };
+      entry = { kind, detail: detail.slice(0, 200), pages: new Set() };
       this.#blockers.set(key, entry);
     }
-    if (entry.pages.at(-1) === page) return;
-    if (!entry.pages.includes(page)) {
-      entry.pageCount += 1;
-      if (entry.pages.length < MAX_BLOCKER_PAGES) entry.pages.push(page);
+    entry.pages.add(page);
+  }
+
+  #noteInlineScript(body: string): void {
+    this.#hashes.add(inlineScriptHash(body));
+    if (
+      this.#originBound.size < MAX_ORIGIN_BOUND_SCRIPTS &&
+      this.#originForms.some((form) => body.includes(form))
+    ) {
+      this.#originBound.add(body);
     }
   }
 
@@ -132,6 +178,8 @@ export class CspScanner {
     if (a.style) this.#css(a.style);
     switch (name) {
       case "script":
+        // A data block fetches and runs nothing.
+        if (!EXECUTABLE_SCRIPT_TYPES.has((a.type ?? "").trim().toLowerCase())) break;
         if (/^\s*data:/i.test(a.src ?? ""))
           this.#blocker("data-script", "<script src=data:>", path);
         else this.#source("script", a.src);
@@ -176,8 +224,8 @@ export class CspScanner {
         break;
       case "embed":
       case "object": {
-        const origin = this.#originOf(a.src ?? a.data ?? "");
-        if (origin !== null) this.#objects.add(origin);
+        const url = a.src ?? a.data ?? "";
+        if (url.length > 0) this.#objects.add(this.#originOf(url) ?? "'self'");
         break;
       }
       case "form":
@@ -202,6 +250,8 @@ export class CspScanner {
 
   /** Read one finished page. */
   scanPage(html: string, path: string): void {
+    // An incremental build's previous blockers: this page says anew.
+    for (const entry of this.#blockers.values()) entry.pages.delete(path);
     let raw: { tag: string; attribs: Record<string, string>; text: string } | null = null;
     let mediaDepth = 0;
     const parser = new Parser(
@@ -240,15 +290,16 @@ export class CspScanner {
     if (el.attribs.src !== undefined || el.text.length === 0) return;
     // A withheld module's script: the consent runtime runs its decoded text inline.
     if (el.attribs["data-caelo-deferred-script"] !== undefined) {
-      const body =
-        el.attribs["data-caelo-encoding"] === "base64"
-          ? Buffer.from(el.text, "base64").toString("utf8")
-          : el.text;
-      this.#hashes.add(inlineScriptHash(body));
+      if (el.attribs["data-caelo-encoding"] === "base64") {
+        // Base64 hides the origin from staging's rewrite, so one hash holds there too.
+        this.#hashes.add(inlineScriptHash(Buffer.from(el.text, "base64").toString("utf8")));
+      } else {
+        this.#noteInlineScript(el.text);
+      }
       return;
     }
     const type = (el.attribs.type ?? "").trim().toLowerCase();
-    if (EXECUTABLE_SCRIPT_TYPES.has(type)) this.#hashes.add(inlineScriptHash(el.text));
+    if (EXECUTABLE_SCRIPT_TYPES.has(type)) this.#noteInlineScript(el.text);
   }
 
   /** Take in what a plugin says its client code reaches. */
@@ -260,7 +311,7 @@ export class CspScanner {
         origins.add(origin);
       }
     }
-    for (const body of sources.inlineScripts ?? []) this.#hashes.add(inlineScriptHash(body));
+    for (const body of sources.inlineScripts ?? []) this.#noteInlineScript(body);
     this.#plugins.push({
       slug,
       origins: [...origins].sort(),
@@ -269,18 +320,26 @@ export class CspScanner {
   }
 
   /** Take in the facts of a previous build: an incremental build sees only its changed pages. */
-  addPrevious(facts: SiteCspFacts): void {
+  addPrevious({ facts, blockers }: PreviousCspScan): void {
     for (const kind of CSP_SOURCE_KINDS) {
       for (const origin of facts.origins[kind] ?? []) this.#note(kind, origin);
     }
     for (const origin of facts.objectOrigins) this.#objects.add(origin);
     for (const hash of facts.inlineScriptHashes) this.#hashes.add(hash);
-    for (const blocker of facts.blockers) {
-      const key = `${blocker.kind}:${blocker.detail}`;
-      if (!this.#blockers.has(key) && this.#blockers.size < MAX_BLOCKERS) {
-        this.#blockers.set(key, { ...blocker, pages: [...blocker.pages] });
-      }
+    for (const body of facts.originBoundScripts) this.#originBound.add(body);
+    for (const blocker of blockers) {
+      this.#blockers.set(`${blocker.kind}:${blocker.detail}`, {
+        ...blocker,
+        pages: new Set(blocker.pages),
+      });
     }
+  }
+
+  /** Every blocker with all its pages, for the next incremental build. */
+  blockerPages(): z.infer<typeof blockerPagesSchema> {
+    return [...this.#blockers.values()]
+      .filter((b) => b.pages.size > 0)
+      .map((b) => ({ ...b, pages: [...b.pages] }));
   }
 
   /** What the build ships. */
@@ -291,20 +350,52 @@ export class CspScanner {
       origins,
       inlineScriptHashes: [...this.#hashes].sort(),
       objectOrigins: [...this.#objects].sort(),
-      blockers: [...this.#blockers.values()],
+      originBoundScripts: [...this.#originBound].sort(),
+      blockers: [...this.#blockers.values()]
+        .filter((b) => b.pages.size > 0)
+        .map((b) => ({
+          kind: b.kind,
+          detail: b.detail,
+          pages: [...b.pages].slice(0, MAX_BLOCKER_PAGES),
+          pageCount: b.pages.size,
+        })),
       plugins: this.#plugins,
     };
   }
 }
 
-/** The facts the last build for `outDir` left, or null when it left none. */
-export async function readPreviousCspFacts(outDir: string): Promise<SiteCspFacts | null> {
-  let text: string;
+/** What the last build for an `outDir` found. */
+export interface PreviousCspScan {
+  readonly facts: SiteCspFacts;
+  readonly blockers: z.infer<typeof blockerPagesSchema>;
+}
+
+async function readIfPresent(path: string): Promise<string | null> {
   try {
-    text = await readFile(join(outDir, SECURITY_HEADERS_BUILD_FILE), "utf8");
+    return await readFile(path, "utf8");
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw e;
   }
-  return parseSiteHeaderSet(text).facts;
+}
+
+/** What the last build for `outDir` left, or null when it left no complete scan. */
+export async function readPreviousCspScan(outDir: string): Promise<PreviousCspScan | null> {
+  const set = await readIfPresent(join(outDir, SECURITY_HEADERS_BUILD_FILE));
+  const blockers = await readIfPresent(join(outDir, BLOCKER_PAGES_FILE));
+  if (set === null || blockers === null) return null;
+  return {
+    facts: parseSiteHeaderSet(set).facts,
+    blockers: blockerPagesSchema.parse(JSON.parse(blockers)),
+  };
+}
+
+/** Leave this build's scan for the next incremental build. */
+export async function writeCspScan(
+  outDir: string,
+  setJson: string,
+  scanner: CspScanner,
+): Promise<void> {
+  await writeFile(join(outDir, SECURITY_HEADERS_BUILD_FILE), setJson, "utf8");
+  await writeFile(join(outDir, BLOCKER_PAGES_FILE), JSON.stringify(scanner.blockerPages()), "utf8");
 }

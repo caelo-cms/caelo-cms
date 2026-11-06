@@ -55,6 +55,7 @@ import {
   type SiteHeaderSet,
   STATIC_FILES_MANIFEST_FILE,
   type StagedManifest,
+  stagedHeaderFields,
 } from "@caelo-cms/shared";
 import { BUILD_INTERNAL_FILES } from "@caelo-cms/static-generator";
 import { planRedirectSync } from "./redirect-sync-plan.js";
@@ -392,7 +393,7 @@ async function writeBuildManifest(
     runId,
     pageUrlStyle: target.pageUrlStyle ?? "directory",
     files: entries,
-    ...(siteHeaders ? { securityHeaders: siteHeaders.headers } : {}),
+    ...(siteHeaders ? stagedHeaderFields(siteHeaders) : {}),
   };
   const manifestPath = join(buildsDir, `${runId}.manifest.json`);
   await writeFile(`${manifestPath}.tmp`, JSON.stringify(manifest), "utf8");

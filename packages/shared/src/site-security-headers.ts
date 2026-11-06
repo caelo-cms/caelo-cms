@@ -19,10 +19,10 @@
  *   clickjacking protection and the part of the CSP that blocks no script
  *   (`frame-ancestors`, `base-uri`, `object-src`).
  * - The full CSP: `Content-Security-Policy-Report-Only` until the Owner
- *   switches `cspMode` to `enforce`. Report-only breaks nothing; browsers
- *   print each violation to the console, which the Stage's Lighthouse run
- *   reads as a problem, and the `security-headers` quality check names what
- *   could not be derived.
+ *   switches `cspMode` to `enforce`. Report-only breaks nothing; the Stage's
+ *   Lighthouse run reports each violation with its next step, and the
+ *   `security-headers` quality check names what could not be derived. That
+ *   is all the evidence there is: {@link ENFORCE_EVIDENCE_NOTE}.
  *
  * `script-src` carries no `'unsafe-inline'`: it is `'self'`, the origins the
  * build references and the hashes of the few inline scripts left, because
@@ -82,6 +82,17 @@ export const REFERRER_POLICIES = [
   "same-origin",
   "no-referrer",
 ] as const;
+
+/**
+ * What enforcing rests on, said wherever the switch is made. There is no
+ * report endpoint, so nothing from a visitor's browser reaches anyone.
+ */
+export const ENFORCE_EVIDENCE_NOTE =
+  "Enforcing rests on what the Stage's quality check saw. It opens a few pages and gives no consent, so a violation on any other page, or after a visitor consents, reaches nobody and is blocked for visitors.";
+
+/** Why a build shipped no page headers, for a Publish live or rollback of one. */
+export const NO_BUILD_HEADERS_NOTE =
+  "No security headers shipped: this build was staged before Caelo sent them, so the site serves it without them. A new Stage and Publish live fixes it.";
 
 const ORIGIN_RE =
   /^(https|wss):\/\/(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?$/;
@@ -196,8 +207,14 @@ export const siteCspFactsSchema = z.object({
   origins: z.partialRecord(z.enum(CSP_SOURCE_KINDS), z.array(z.string())),
   /** Inline scripts, as CSP sources (`'sha256-…'`), sorted. */
   inlineScriptHashes: z.array(z.string()),
-  /** `<object>` or `<embed>` origins, sorted (`object-src`). */
+  /** `object-src` sources of `<object>` and `<embed>`, sorted. */
   objectOrigins: z.array(z.string()),
+  /**
+   * Inline scripts holding the build's own origin. The staging gateway
+   * rewrites that origin in the body, which changes their hash, so it hashes
+   * them again for its host (staging/site.ts).
+   */
+  originBoundScripts: z.array(z.string()),
   blockers: z.array(cspBlockerSchema),
   /** What each plugin contributed, shown to the Owner beside the policy. */
   plugins: z.array(
@@ -215,6 +232,7 @@ export const EMPTY_CSP_FACTS: SiteCspFacts = {
   origins: {},
   inlineScriptHashes: [],
   objectOrigins: [],
+  originBoundScripts: [],
   blockers: [],
   plugins: [],
 };
@@ -434,6 +452,14 @@ function withHsts(set: SiteHeaderSet): Record<string, string> {
 export function emitCaddySiteHeaders(set: SiteHeaderSet): string {
   const lines = ["@caelo_documents {", "\tnot path /api/* /_*", "\tnot path *.svg", "}"];
   for (const [name, value] of Object.entries(withHsts(set))) {
+    // A quote or backslash would end the quoted string and a brace would be
+    // read as a Caddy placeholder; the composer never produces one, so one
+    // here is a broken build file, not something to escape.
+    if (!/^[A-Za-z0-9-]+$/.test(name) || !/^[ -~]*$/.test(value) || /["\\{}]/.test(value)) {
+      throw new Error(
+        `The build's ${name} header holds a character a Caddyfile cannot carry (quote, backslash, brace or control character). Stage again; if it repeats, the build's ${SECURITY_HEADERS_BUILD_FILE} is corrupt.`,
+      );
+    }
     lines.push(`header @caelo_documents ${name} "${value}"`);
   }
   return `${lines.join("\n")}\n`;
@@ -445,10 +471,39 @@ export function emitCaddySiteHeaders(set: SiteHeaderSet): string {
  * every file; harmless, a CSP only acts on documents and an SVG is served
  * as a download there (`gcsObjectMetadata`). Nosniff stays first: it is the
  * entry the provisioning stack owns.
+ *
+ * @param set - null for a build from before the headers: its files must not
+ *   keep the previous build's CSP, which names other inline scripts.
  */
-export function gcpBackendBucketHeaders(set: SiteHeaderSet): string[] {
+export function gcpBackendBucketHeaders(set: SiteHeaderSet | null): string[] {
   return [
     `X-Content-Type-Options: ${NOSNIFF}`,
-    ...Object.entries(withHsts(set)).map(([name, value]) => `${name}: ${value}`),
+    ...(set === null ? [] : Object.entries(withHsts(set))).map(
+      ([name, value]) => `${name}: ${value}`,
+    ),
   ];
+}
+
+/** The staged manifest's fields for a build's headers. */
+export function stagedHeaderFields(set: SiteHeaderSet): {
+  securityHeaders: Record<string, string>;
+  originBoundScripts: string[];
+} {
+  return { securityHeaders: set.headers, originBoundScripts: set.facts.originBoundScripts };
+}
+
+/** `headers` with more inline-script sources in whichever CSP has a `script-src`. */
+export function withScriptHashes(
+  headers: Readonly<Record<string, string>>,
+  hashes: readonly string[],
+): Record<string, string> {
+  if (hashes.length === 0) return { ...headers };
+  const out = { ...headers };
+  for (const name of ["Content-Security-Policy", "Content-Security-Policy-Report-Only"]) {
+    const value = out[name];
+    if (value?.includes("script-src 'self'")) {
+      out[name] = value.replace("script-src 'self'", `script-src 'self' ${hashes.join(" ")}`);
+    }
+  }
+  return out;
 }

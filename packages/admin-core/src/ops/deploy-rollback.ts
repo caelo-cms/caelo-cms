@@ -53,7 +53,13 @@ import {
   type OperationSteps,
   type QueryError,
 } from "@caelo-cms/query-api";
-import { type ExecutionContext, err, ok, type Result } from "@caelo-cms/shared";
+import {
+  type ExecutionContext,
+  err,
+  NO_BUILD_HEADERS_NOTE,
+  ok,
+  type Result,
+} from "@caelo-cms/shared";
 import { readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -89,12 +95,19 @@ const rollbackInput = z
     newRunId: z.string().uuid().optional(),
   })
   .strict();
-const rollbackOutput = z.object({ buildId: z.string(), newRunId: z.string() });
+const rollbackOutput = z.object({
+  buildId: z.string(),
+  newRunId: z.string(),
+  /** #1454 — set when the restored build carries no page headers. */
+  securityHeadersNote: z.string().optional(),
+});
 
 const leaseTtl = z.number().int().min(1_000).max(3_600_000);
 
 /** What deploy.start_rollback hands the provider step. */
 const rollbackPlan = z.object({
+  /** #1454 — false for a build from before the page headers existed. */
+  restoredHasSecurityHeaders: z.boolean(),
   target: z.object({
     id: z.string(),
     name: z.string(),
@@ -140,13 +153,23 @@ export const startRollbackOp = defineOperation({
     const target = targetRows[0];
     if (!target) return refuse(`target not found: ${input.targetName}`);
     const priorRows = (await tx.execute(sql`
-      SELECT build_id, publish_summary->>'location' AS location, caelo_version FROM deploy_runs
-      WHERE id = ${input.restoreRunId}::uuid
-        AND target_id = ${target.id}::uuid
-        AND status = 'succeeded'
-        AND build_id IS NOT NULL
+      SELECT r.build_id, r.publish_summary->>'location' AS location, r.caelo_version,
+             source.security_headers IS NOT NULL AS has_security_headers
+      FROM deploy_runs r
+      LEFT JOIN deploy_runs source ON source.id = CASE
+        WHEN r.build_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN r.build_id::uuid END
+      WHERE r.id = ${input.restoreRunId}::uuid
+        AND r.target_id = ${target.id}::uuid
+        AND r.status = 'succeeded'
+        AND r.build_id IS NOT NULL
       LIMIT 1
-    `)) as unknown as { build_id: string; location: string | null; caelo_version: string | null }[];
+    `)) as unknown as {
+      build_id: string;
+      location: string | null;
+      caelo_version: string | null;
+      has_security_headers: boolean | null;
+    }[];
     const prior = priorRows[0];
     if (!prior) return refuse("no matching succeeded build for that target");
     // #1155 — the run carries the Caelo version that rendered the restored
@@ -170,6 +193,7 @@ export const startRollbackOp = defineOperation({
       target: rowToTarget(target),
       buildId: prior.build_id,
       sourceLocation: prior.location,
+      restoredHasSecurityHeaders: prior.has_security_headers === true,
       siteBaseUrl,
     });
   },
@@ -398,7 +422,11 @@ async function runRollback(
     });
   }
   if (lostMessage !== null) return refused(lostMessage);
-  return ok({ buildId: plan.buildId, newRunId: runId });
+  return ok({
+    buildId: plan.buildId,
+    newRunId: runId,
+    ...(plan.restoredHasSecurityHeaders ? {} : { securityHeadersNote: NO_BUILD_HEADERS_NOTE }),
+  });
 }
 
 /**

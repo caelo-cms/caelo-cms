@@ -44,6 +44,12 @@ describe("applyGcpSiteHeaders", () => {
     expect(patches).toEqual([{ name: "static-backend-1", headers: gcpBackendBucketHeaders(set) }]);
   });
 
+  it("a build from before the headers keeps only nosniff, not the previous CSP", async () => {
+    const { api, patches } = fakeApi(gcpBackendBucketHeaders(set));
+    await applyGcpSiteHeaders({ set: null, siteHost: "www.example.com", api });
+    expect(patches[0]?.headers).toEqual(["X-Content-Type-Options: nosniff"]);
+  });
+
   it("writes nothing when the bucket already says it", async () => {
     const { api, patches } = fakeApi(gcpBackendBucketHeaders(set));
     expect(await applyGcpSiteHeaders({ set, siteHost: "www.example.com", api })).toBe(false);

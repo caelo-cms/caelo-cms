@@ -19,6 +19,13 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
+import {
+  composeSiteHeaders,
+  DEFAULT_SITE_SECURITY_POLICY,
+  EMPTY_CSP_FACTS,
+  parseSiteHeaderSet,
+  SECURITY_HEADERS_BUILD_FILE,
+} from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 // Snapshot the real module so afterAll can undo the process-global
 // mock.module below (issue #305 — same pattern as the GCS test).
@@ -297,6 +304,11 @@ const realFetch = globalThis.fetch;
 const ENV_KEYS = ["CAELO_FIREBASE_SITE", "CAELO_GATEWAY_SERVICE", "CAELO_GATEWAY_REGION"] as const;
 const savedEnv: Record<string, string | undefined> = {};
 
+/** Header entries in a fixed order, for configs whose order carries no meaning. */
+function unordered(entries: readonly unknown[] | undefined): string[] {
+  return (entries ?? []).map((e) => JSON.stringify(e)).sort();
+}
+
 function robotsHeaders(config: VersionConfig): HeaderEntry[] {
   return (config.headers ?? []).filter((e) =>
     Object.keys(e.headers).some((k) => k.toLowerCase() === "x-robots-tag"),
@@ -356,10 +368,14 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
       servedStagingLocation: null,
     });
     const staged = fake.versions.get("v1");
-    const { VERSION_CONFIG_HEADERS } = await import("../static-publisher-firebase.js");
-    // #555's cache entries + the staging-only robots entry, nothing else.
+    const { VERSION_CONFIG_HEADERS, siteHeaderEntry } = await import(
+      "../static-publisher-firebase.js"
+    );
+    // #555's cache entries, the page headers (#1454) and the staging-only
+    // robots entry, nothing else.
     expect(staged!.config.headers).toEqual([
       ...VERSION_CONFIG_HEADERS,
+      siteHeaderEntry(parseSiteHeaderSet(SITE_HEADERS_FILE)),
       { glob: "**", headers: { "X-Robots-Tag": "noindex" } },
     ]);
 
@@ -370,7 +386,10 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
       servedStagingLocation: null,
     });
     const direct = [...fake.versions.values()].at(-1);
-    expect(direct!.config.headers).toEqual([...VERSION_CONFIG_HEADERS]);
+    expect(direct!.config.headers).toEqual([
+      ...VERSION_CONFIG_HEADERS,
+      siteHeaderEntry(parseSiteHeaderSet(SITE_HEADERS_FILE)),
+    ]);
   });
 
   it("Publish live drops the noindex header, keeps content, and serves production robots + sitemap", async () => {
@@ -405,8 +424,17 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
     expect(live.config.redirects).toEqual(staged.config.redirects);
     // #555 — the live release keeps exactly the immutable (content-hashed)
     // and short-cache (pages, robots, sitemap) entries.
-    const { VERSION_CONFIG_HEADERS } = await import("../static-publisher-firebase.js");
-    expect(live.config.headers).toEqual([...VERSION_CONFIG_HEADERS]);
+    const { VERSION_CONFIG_HEADERS, siteHeaderEntry } = await import(
+      "../static-publisher-firebase.js"
+    );
+    // Promote moves the security entries last; the patterns are disjoint, so
+    // the order does not matter to Hosting.
+    expect(unordered(live.config.headers)).toEqual(
+      unordered([
+        ...VERSION_CONFIG_HEADERS,
+        siteHeaderEntry(parseSiteHeaderSet(SITE_HEADERS_FILE)),
+      ]),
+    );
 
     // What staging shows is what production gets: every file but
     // robots.txt is the very same content hash.
@@ -459,8 +487,17 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
     });
     const live = fake.liveVersion();
     expect(robotsHeaders(live.config)).toEqual([]);
-    const { VERSION_CONFIG_HEADERS } = await import("../static-publisher-firebase.js");
-    expect(live.config.headers).toEqual([...VERSION_CONFIG_HEADERS]);
+    const { VERSION_CONFIG_HEADERS, siteHeaderEntry } = await import(
+      "../static-publisher-firebase.js"
+    );
+    // Promote moves the security entries last; the patterns are disjoint, so
+    // the order does not matter to Hosting.
+    expect(unordered(live.config.headers)).toEqual(
+      unordered([
+        ...VERSION_CONFIG_HEADERS,
+        siteHeaderEntry(parseSiteHeaderSet(SITE_HEADERS_FILE)),
+      ]),
+    );
     expect(fake.fileBody(live, "/robots.txt")).toContain("Allow: /");
     expect(fake.fileBody(live, "/robots.txt")).toContain("Sitemap:");
   });
@@ -1020,7 +1057,8 @@ describe("firebaseHostingPublisher — a build streamed into the version (#1271)
     });
     const version = fake.versions.get(summary.location.split("/").pop() ?? "");
     expect(version?.status).toBe("FINALIZED");
-    expect(Object.keys(version?.files ?? {})).toHaveLength(603);
+    // 600 pages, the static-files manifest, robots.txt and the page headers.
+    expect(Object.keys(version?.files ?? {})).toHaveLength(604);
     // #1461 — a static file's Content-Type rides the config too.
     expect(JSON.stringify(version?.config)).toContain("text/plain; charset=utf-8");
     expect(fake.populateCalls).toBeGreaterThanOrEqual(3);

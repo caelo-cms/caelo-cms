@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   clientAddress,
   DEFAULT_STAGING_HEADER_NAME,
@@ -279,6 +280,30 @@ describe("#1330 staging gateway: serving the staged build", () => {
       deps({ storage, manifests: new ManifestCache() }),
     );
     expect(file.headers.get("referrer-policy")).toBeNull();
+  });
+
+  it("hashes an inline script holding the build's origin again for the staging host (#1454)", async () => {
+    const script = 'fetch("https://example.com/api/x")';
+    const served = 'fetch("https://staging.example.com/api/x")';
+    const securityHeaders = {
+      "Content-Security-Policy-Report-Only": "default-src 'self'; script-src 'self' 'sha256-build'",
+    };
+    const storage = memoryStorage({
+      ...FILES,
+      [stagedManifestKey(LOCATION)]: JSON.stringify({
+        ...MANIFEST,
+        securityHeaders,
+        originBoundScripts: [script],
+      }),
+    });
+    const page = await handleStagingSiteRequest(
+      get("/", { cookie: await sessionCookie() }),
+      deps({ storage, manifests: new ManifestCache() }),
+    );
+    const digest = createHash("sha256").update(served, "utf8").digest("base64");
+    expect(page.headers.get("content-security-policy-report-only")).toBe(
+      `default-src 'self'; script-src 'self' 'sha256-${digest}' 'sha256-build'`,
+    );
   });
 
   it("marks every answer noindex and uncacheable by shared caches", async () => {

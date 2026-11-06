@@ -25,6 +25,7 @@ import {
   fastestBenchmarkIndex,
   TARGET_BENCHMARK_INDEX,
 } from "./cpu-calibration.js";
+import type { CspIssue } from "./csp-violations.js";
 import {
   type LhrLike,
   LighthouseRunError,
@@ -36,7 +37,13 @@ import type { QualityCategory } from "./ratchet.js";
 type LighthouseFn = (
   url: string,
   flags: Record<string, unknown>,
-) => Promise<{ lhr: LhrLike } | undefined>;
+) => Promise<
+  | {
+      lhr: LhrLike;
+      artifacts?: { InspectorIssues?: { contentSecurityPolicyIssue?: readonly CspIssue[] } };
+    }
+  | undefined
+>;
 
 /** Benchmark samples per session; each takes about one second. */
 const BENCHMARK_SAMPLES = 3;
@@ -154,7 +161,13 @@ export async function startLighthouseSession(): Promise<SessionStart> {
         if (!result)
           throw new LighthouseRunError("NO_RESULT", `Lighthouse returned no result for ${url}`);
         assertCpuSlowdownApplied(result.lhr, cpuCalibration.cpuSlowdownMultiplier);
-        return reduceRun(result.lhr, categories, cpuCalibration);
+        return reduceRun(
+          result.lhr,
+          categories,
+          cpuCalibration,
+          // #1454 — report-only violations, which name their directive only here.
+          result.artifacts?.InspectorIssues?.contentSecurityPolicyIssue ?? [],
+        );
       },
       close: () => launched.browser.close(),
     },

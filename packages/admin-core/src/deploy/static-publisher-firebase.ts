@@ -884,7 +884,7 @@ class FirebaseBuildUpload implements BuildUpload {
       ? await this.#slot.finish({
           runId: args.runId,
           pageUrlStyle: target.pageUrlStyle ?? "directory",
-          securityHeaders: this.#siteHeaders.headers,
+          siteHeaders: this.#siteHeaders,
         })
       : null;
     if (slot) timer.lap("staging-slot");

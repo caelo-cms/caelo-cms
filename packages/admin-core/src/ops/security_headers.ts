@@ -19,6 +19,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import {
   composeSiteHeaders,
   EMPTY_CSP_FACTS,
+  ENFORCE_EVIDENCE_NOTE,
   type ExecutionContext,
   enforceBlockers,
   ok,
@@ -107,9 +108,9 @@ export const securityHeadersOutput = z.object({
     hostSendsHsts: z.boolean(),
     note: z.string(),
   }),
-  /** The headers staging sends now; null before the first Stage after #1454. */
+  /** The headers staging sends now; null when the build it serves predates them. */
   staged: servedShape,
-  /** The headers the live site sends now; null before the first Publish live after #1454. */
+  /** The headers the live site sends now; null when the build it serves predates them. */
   live: servedShape,
   /** The stored policy differs from the staged build's: a Stage is needed. */
   stageNeeded: z.boolean(),
@@ -263,6 +264,7 @@ async function planPatch(
     );
   }
   if (merged.cspMode === "enforce") {
+    warnings.push(ENFORCE_EVIDENCE_NOTE);
     warnings.push(...enforceBlockers(after.set).map((b) => `Would stop working: ${b}`));
   }
   if (host.hostSendsHsts && "hsts" in changes) {

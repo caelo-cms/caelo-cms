@@ -67,6 +67,7 @@ import {
 import {
   type ExecutionContext,
   err,
+  NO_BUILD_HEADERS_NOTE,
   ok,
   PhaseTimer,
   phaseTimingSchema,
@@ -145,10 +146,14 @@ const promoteOutput = z.object({
   fromRunId: z.string(),
   toRunId: z.string(),
   buildId: z.string(),
+  /** #1454 — set when the staged build carries no page headers. */
+  securityHeadersNote: z.string().optional(),
 });
 
 /** What deploy.start_promote hands the rest of the run. */
 const promotePlan = z.object({
+  /** #1454 — false for a run staged before the page headers existed. */
+  stagedHasSecurityHeaders: z.boolean(),
   toRunId: z.string(),
   from: targetRow,
   to: targetRow,
@@ -201,6 +206,7 @@ export const startPromoteOp = defineOperation({
     if (!from || !to) return refused("fromTarget or toTarget not found");
     const fromRunRows = (await tx.execute(sql`
       SELECT id::text AS id, build_id, site_url, plugin_problems,
+             security_headers IS NOT NULL AS has_security_headers,
              publish_summary->>'location' AS location, caelo_version, page_count, file_count
       FROM deploy_runs
       WHERE target_id = ${from.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
@@ -211,6 +217,7 @@ export const startPromoteOp = defineOperation({
       site_url: string | null;
       plugin_problems: unknown;
       location: string | null;
+      has_security_headers: boolean;
       caelo_version: string | null;
       page_count: number | string | null;
       file_count: number | string | null;
@@ -305,6 +312,7 @@ export const startPromoteOp = defineOperation({
       fromRunId: fromRow.id,
       buildId: fromRow.build_id,
       stagedLocation: fromRow.location,
+      stagedHasSecurityHeaders: fromRow.has_security_headers,
       stagedCaeloVersion: fromRow.caelo_version,
       stagedPageCount: num(fromRow.page_count),
       stagedFileCount: num(fromRow.file_count),
@@ -639,7 +647,12 @@ async function runPromote(
     }
     // Last fallible step done: one line per run, never succeeded + failed.
     logRunTimings("publish-live", runId, timer, { status: "succeeded" });
-    return ok({ fromRunId: plan.fromRunId, toRunId: runId, buildId: published.destinationBuildId });
+    return ok({
+      fromRunId: plan.fromRunId,
+      toRunId: runId,
+      buildId: published.destinationBuildId,
+      ...(plan.stagedHasSecurityHeaders ? {} : { securityHeadersNote: NO_BUILD_HEADERS_NOTE }),
+    });
   } catch (e) {
     // A throw past the steps above is a bug; the run still ends failed and
     // releases its leases instead of waiting for them to lapse.

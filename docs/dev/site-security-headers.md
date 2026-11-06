@@ -53,12 +53,13 @@ Every install starts at `report_only` (a stored default, migration 0639), so an 
 
 Violations reach the Owner in the Stage's quality audit:
 
-- The audit's origin sends the build's own headers, so a report-only violation lands in Lighthouse's console as an `errors-in-console` problem, naming the source and directive. The fix is usually an `extraSources` entry through `propose_set_security_headers`.
+- The audit's origin sends the build's own headers, so Lighthouse sees each violation. Under `report_only` a violation is not a console error: it fails only `inspector-issues` (Best Practices, weight 1, so it still blocks Publish live). Under `enforce` it also fails `errors-in-console`. Measured with real Chromium through `runAuditJob`: a clean page 100, a third-party fetch 96 report-only and 92 enforced.
+- `inspector-issues` names no directive, so the audit session reads Lighthouse's `InspectorIssues` artifact (`quality/csp-violations.ts`). The finding names the blocked host and the `extraSources.<kind>` to add through `propose_set_security_headers`.
 - The core `security-headers` check names what no policy can allow: `inline-handler`, `javascript-url`, `data-script`, `foreign-base`. Under `report_only` they are warnings, because nothing is blocked for a visitor. Under `enforce` they are errors, which block Publish live.
 
 There is no report endpoint on the gateway. Reports from visitors' browsers would need a public write that cannot carry a captcha, plus a table in `cms_public` that the admin reads as untrusted data, on a gateway that answers a fixed 404 when no visitor plugin is active (#763). So the report-only header carries no `report-to`, and violations on pages the audit does not open, or after consent, are not seen by anyone. That is the known limit of this rollout.
 
-Lighthouse's `csp-xss`, `has-hsts`, `origin-isolation` and `clickjacking-mitigation` are informative audits. They never count as findings (`lighthouse-extract.ts`), so an unenforced CSP costs no score.
+Lighthouse's `csp-xss`, `has-hsts`, `origin-isolation` and `clickjacking-mitigation` are informative audits with weight 0. They never count as findings (`lighthouse-extract.ts`), so an unenforced CSP costs no score.
 
 ## How it goes live
 

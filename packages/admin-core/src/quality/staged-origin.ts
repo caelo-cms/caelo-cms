@@ -20,8 +20,8 @@
  * - served like staging serves it: the publishers' Content-Type and
  *   Cache-Control policy (#555 immutable hashed assets, #571 .ico), the
  *   media security headers every staging origin sends (#891: nosniff, the
- *   SVG CSP), the headers of the build's pages (#1454: a CSP violation
- *   reaches Lighthouse's console like on the site) plus staging's
+ *   SVG CSP), the headers of the build's pages (#1454: Lighthouse sees a
+ *   CSP violation as it happens on the site) plus staging's
  *   `X-Robots-Tag: noindex`;
  * - compressed like the CDN in front of every staging and live host: an
  *   uncompressed document fails Lighthouse's document-latency insight, and

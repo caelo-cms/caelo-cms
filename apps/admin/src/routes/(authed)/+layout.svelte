@@ -44,7 +44,12 @@
     if (typeof f["error"] === "string") {
       toast.error(f["error"] as string);
     } else if (f["published"] && typeof f["published"] === "object") {
-      toast.success("Published to production.");
+      const notice = (f["published"] as { notice?: unknown }).notice;
+      if (typeof notice === "string") {
+        toast.warning("Published to production.", { description: notice });
+      } else {
+        toast.success("Published to production.");
+      }
     } else if (f["staged"] && typeof f["staged"] === "object") {
       const s = f["staged"] as {
         previewUrl?: string;

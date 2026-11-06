@@ -305,12 +305,15 @@ export function createGcsStaticPublisher(
       // #587 — after the files: the redirects of the build now live.
       const compute = await deps.computeApi();
       await applyRedirectPlan(redirectPlan, compute);
-      // #1454 — and its headers. A run staged before they existed has none.
+      // #1454 — and its headers. A run staged before they existed has none:
+      // it must not keep the previous build's CSP either.
       const headersFile = h.stagingBucket.file(`${prefix}${SECURITY_HEADERS_BUILD_FILE}`);
-      if ((await headersFile.exists())[0]) {
-        const set = parseSiteHeaderSet((await headersFile.download())[0].toString("utf8"));
-        await applySiteHeaders(set, compute);
-      }
+      await applySiteHeaders(
+        (await headersFile.exists())[0]
+          ? parseSiteHeaderSet((await headersFile.download())[0].toString("utf8"))
+          : null,
+        compute,
+      );
       const summary: PromoteSummary = {
         provider: "gcp",
         uploadedCount: copied,
@@ -466,7 +469,7 @@ export function createGcsStaticPublisher(
         ]),
         compute,
       );
-      // #1454 — and its headers, unless it is older than they are.
+      // #1454 — and its headers; none for a build older than they are.
       const headers = await readFile(
         join(sourceBuildDir, SECURITY_HEADERS_BUILD_FILE),
         "utf8",
@@ -474,7 +477,7 @@ export function createGcsStaticPublisher(
         if (e.code === "ENOENT") return null;
         throw e;
       });
-      if (headers) await applySiteHeaders(headers, compute);
+      await applySiteHeaders(headers, compute);
       return {
         provider: "gcp",
         uploadedCount: uploaded,
@@ -653,7 +656,7 @@ class GcsBuildUpload implements BuildUpload {
     return sync.finish({
       runId: this.#runId,
       pageUrlStyle,
-      securityHeaders: this.#siteHeaders?.headers ?? {},
+      siteHeaders: this.#siteHeaders,
     });
   }
 
@@ -788,7 +791,10 @@ async function applyRedirectPlan(
 }
 
 /** Put a build's page headers on the static backend bucket (#1454). */
-async function applySiteHeaders(set: SiteHeaderSet, api: GcpBackendBucketApi): Promise<void> {
+async function applySiteHeaders(
+  set: SiteHeaderSet | null,
+  api: GcpBackendBucketApi,
+): Promise<void> {
   await applyGcpSiteHeaders({ set, siteHost: siteHost(), api });
 }
 
