@@ -196,7 +196,6 @@ function measuring(tx: TransactionRunner, buffers: number[]): TransactionRunner 
           "QUERY PLAN": [{ Plan: { "Shared Hit Blocks": number; "Shared Read Blocks": number } }];
         }[];
         const top = plan[0]?.["QUERY PLAN"][0]?.Plan;
-        console.log("PLAN", JSON.stringify(plan[0]?.["QUERY PLAN"][0]?.Plan));
         buffers.push((top?.["Shared Hit Blocks"] ?? 0) + (top?.["Shared Read Blocks"] ?? 0));
         return target.execute(q);
       };

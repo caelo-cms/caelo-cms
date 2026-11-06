@@ -222,7 +222,7 @@ function filterSql(filter: JournalFilter, alias = "ec") {
 }
 
 /** The bounds of a `pg_snapshot` that decide which journal rows it has not seen. */
-export interface SnapshotBounds {
+interface SnapshotBounds {
   /** First xid the snapshot has not seen started (xid8, as text). */
   readonly xmax: string;
   /** Xids in flight when it was taken, all below xmax (xid8, as text). */
@@ -236,7 +236,7 @@ const SNAPSHOT_TEXT = /^(\d{1,20}):(\d{1,20}):((?:\d{1,20})(?:,\d{1,20})*)?$/;
  * Throws on anything else: a cursor or mark is only ever written by this
  * module, so a malformed one is a bug to surface, not to read around.
  */
-export function snapshotBounds(snapshot: string): SnapshotBounds {
+function snapshotBounds(snapshot: string): SnapshotBounds {
   const m = SNAPSHOT_TEXT.exec(snapshot);
   if (!m?.[2]) throw new Error(`change journal: not a pg_snapshot: ${JSON.stringify(snapshot)}`);
   return { xmax: m[2], xip: m[3] ? m[3].split(",") : [] };
