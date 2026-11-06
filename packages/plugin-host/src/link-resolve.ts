@@ -200,7 +200,8 @@ export async function resolveLinkVariants(
         scopes.delete(oldest);
       }
     }
-    for (const pageId of pageIds) {
+    // Each page once: a repeated id is one page, not a second contributor.
+    for (const pageId of new Set(pageIds)) {
       const answer = answers.get(pageId);
       if (!answer) continue;
       const other = answeredBy.get(pageId);

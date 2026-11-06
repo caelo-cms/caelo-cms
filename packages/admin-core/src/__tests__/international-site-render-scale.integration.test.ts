@@ -495,6 +495,16 @@ describe("#1213 — international-site render hooks at scale", () => {
     };
     const asked = [pair.en, pair.de];
     clearLinkResolveCache();
+    // A page asked about twice is one page, kept or not.
+    for (const keep of [false, true]) {
+      const twice = await resolveLinkVariants(
+        [pair.de, pair.de],
+        { chatBranchId: null, renderId: crypto.randomUUID() },
+        { keep },
+      );
+      expect(twice.get(pair.de)?.variant).toBe("de");
+    }
+    clearLinkResolveCache();
     const cold = await pass(asked);
     expect(cold.calls.filter((c) => c.startsWith("plugin:")).length).toBeGreaterThan(0);
     expect(cold.partition.get(pair.de)?.variant).toBe("de");
