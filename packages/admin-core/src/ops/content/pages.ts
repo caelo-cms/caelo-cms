@@ -55,6 +55,7 @@ import type { PageState } from "../../snapshots/state.js";
 import { buildPatchSet, buildWhere, jsonbParam } from "../../sql-helpers.js";
 import { decodeKeysetCursor, encodeKeysetCursor } from "../keyset-cursor.js";
 import { createRedirectOp } from "../redirects.js";
+import { annotationDriftPaths, pendingUrlAnnotationPageIds } from "./branch-url-drift.js";
 import { loadSiteDesignations } from "./compose-paths.js";
 import { cloneContentInstancesDeep } from "./content-instance-clone.js";
 import {
@@ -459,6 +460,12 @@ export const listPagesOp = defineOperation({
  * slugs for "/"). A URL-space root keeps its path when renamed, so the
  * stored path finds it. The caller keeps those whose composed path
  * matches. The cost is the pages sharing those slugs, never a subtree.
+ *
+ * A pending row of a URL plugin can give a page a path that does not end
+ * in its slug (a locale root serves at its prefix, #1411). Those pages are
+ * composed here and only an exact match is returned: the caller's LIMIT
+ * runs before its path filter, so unrelated pages must not take its rows.
+ * That composition costs the branch's pending rows of URL plugins.
  */
 async function pagesNamedByLastSegment(
   tx: TransactionRunner,
@@ -483,16 +490,22 @@ async function pagesNamedByLastSegment(
      WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'page'
        AND d.slug = ANY(${textArray([...slugs])})
   `)) as unknown as { id: string }[];
-  return rows.map((r) => r.id);
+  const annotated = await pendingUrlAnnotationPageIds(tx, branchId);
+  const { tree } = await loadPageChains(tx, branchId, annotated);
+  const wanted = new Set(paths);
+  const composedThere = [...(await annotationDriftPaths(tx, tree, annotated, branchId))]
+    .filter(([, path]) => wanted.has(normalisedPath(path)))
+    .map(([id]) => id);
+  return [...rows.map((r) => r.id), ...composedThere];
 }
 
 /**
  * 0263 — the tree half of pages.list for the returned pages: depth, and —
  * under a chat branch — the chat's view of every path its pending renames
- * / moves change (the live `current_path` of a main page only moves at
- * publish). Reads those pages' ancestor chains, never the whole tree
- * (#1269). Deleted rows (includeDeleted) keep depth 1: they are not part
- * of the live tree.
+ * / moves or plugin rows change (the live `current_path` of a main page
+ * only moves at publish). Reads those pages' ancestor chains, never the
+ * whole tree (#1269). Deleted rows (includeDeleted) keep depth 1: they are
+ * not part of the live tree.
  */
 async function withTreeView(
   tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
@@ -500,15 +513,25 @@ async function withTreeView(
   pages: z.infer<typeof pageRowSchema>[],
   only: PageSelection | null = null,
 ): Promise<z.infer<typeof pageListRowSchema>[]> {
+  const branchId = ctx.chatBranchId ?? null;
   const { tree, drifted } = await loadPageChains(
     tx,
-    ctx.chatBranchId ?? null,
+    branchId,
     pages.map((p) => p.id),
   );
-  const branchPaths =
-    ctx.chatBranchId && drifted.size > 0
-      ? await composePaths(tx, tree, [...drifted], renderScopeOf(ctx, tx))
-      : new Map<string, string>();
+  const branchPaths = new Map<string, string>();
+  if (branchId !== null) {
+    const ids = pages.map((p) => p.id);
+    const annotated = await pendingUrlAnnotationPageIds(tx, branchId, ids);
+    const moved =
+      drifted.size > 0 ? await composePaths(tx, tree, [...drifted], renderScopeOf(ctx, tx)) : [];
+    for (const [id, path] of [
+      ...(await annotationDriftPaths(tx, tree, annotated, branchId)),
+      ...moved,
+    ]) {
+      branchPaths.set(id, path);
+    }
+  }
   const out = pages.map((p) => ({
     ...p,
     currentPath: branchPaths.get(p.id) ?? p.currentPath,

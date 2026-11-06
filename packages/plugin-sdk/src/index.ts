@@ -2269,7 +2269,10 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * Returns `{ "runtime.js": "…", "runtime.css": "…" }`. `.js` files
    * are linked (deferred) before `</body>`, `.css` files go before
    * `</head>`: a stylesheet up to 2 KB is inlined as `<style>` so it does
-   * not block first paint (#1124), a larger one is linked. The host
+   * not block first paint (#1124), a larger one is linked. Files run in
+   * plugin-slug order, so a runtime that reads what another plugin's runtime
+   * sets on `window` (the consent decision) starts at DOMContentLoaded,
+   * when every deferred file has run. The host
    * hashes each file's content into its name so a CDN can cache it
    * forever and a changed file still lands.
    *
@@ -2381,6 +2384,13 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * contributions themselves stay pure. Name of an operation in
    * `operations` taking `{pageIds: string[]}` and returning
    * `{annotations: Record<pageId, Record<string, unknown>>}`.
+   *
+   * #1411 — a row that gives one page its URL names it in a `page_id`
+   * column: a chat's pending row is how core knows that page's URL may
+   * differ on the chat's branch before anything is published. The URL of
+   * a page depends on its own rows; a change that moves pages without
+   * naming them is a site-wide URL setting and goes through
+   * `propose_url_migration`.
    */
   readonly urlAnnotationsOperation?: string;
   /** #391 — see `pluginManifest.contributes`. */

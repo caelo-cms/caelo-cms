@@ -26,11 +26,28 @@ import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 
+/**
+ * Keyset position in a page's thread (#1169). `archivedAt` keeps Postgres'
+ * microseconds: a `Date` would round them to milliseconds, and a page break
+ * inside that millisecond would skip or repeat comments.
+ */
+const threadCursor = z
+  .object({ archivedAt: z.string().datetime({ precision: 6 }), id: z.string().uuid() })
+  .strict();
+
 const listForPageInput = z
   .object({
     pageId: z.string().uuid(),
     status: z.enum(["approved", "rejected", "spam"]).optional(),
+    /** Only comments archived after this instant: the bake's delta feed. */
     since: z.string().datetime().optional(),
+    /** Only comments older than this position: the next page of the thread. */
+    before: threadCursor.optional(),
+    /**
+     * Only this comment. Either of its ids: a visitor's reply names its
+     * parent by the public row id, a team reply (`post_team`) by the archive id.
+     */
+    commentId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(500).optional(),
   })
   .strict();
@@ -48,6 +65,52 @@ const archiveRowSchema = z.object({
 });
 
 /**
+ * A page of a thread, newest approval first. `archived_at` is the one axis
+ * of both feeds (#1169): the bake is the top of it, `since` reads above the
+ * bake and `before` below it, so nothing can fall between them, and both
+ * tables already index it per page.
+ */
+const listForPageOutput = z.object({
+  comments: z.array(archiveRowSchema),
+  /** Pass as `before` for the next page; null on the last page. */
+  nextCursor: threadCursor.nullable(),
+});
+
+/**
+ * Where a page starts in the thread (`before` of the input), as SQL. The
+ * reads select `id::text AS id`, so their ORDER BY names the table's column
+ * to sort by the same uuid this compares.
+ */
+function beforeClause(before: z.infer<typeof threadCursor> | undefined) {
+  return before
+    ? sql`AND (archived_at, id) < (${before.archivedAt}::timestamptz, ${before.id}::uuid)`
+    : sql``;
+}
+
+/** Narrow a read to one comment (`commentId` of the input), as SQL. */
+function commentClause(commentId: string | undefined) {
+  return commentId
+    ? sql`AND (id = ${commentId}::uuid OR public_row_id = ${commentId}::uuid)`
+    : sql``;
+}
+
+/** The exact position of a row: `threadCursor.archivedAt` with its microseconds. */
+const CURSOR_COLUMN = sql`to_char(archived_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at`;
+
+/** Split the `limit + 1` rows a page reads into the page and its next cursor. */
+function pageOf<R extends { id: string; cursor_at: string }>(
+  rows: readonly R[],
+  limit: number,
+): { page: readonly R[]; nextCursor: z.infer<typeof threadCursor> | null } {
+  const page = rows.slice(0, limit);
+  const last = page[page.length - 1];
+  return {
+    page,
+    nextCursor: rows.length > limit && last ? { archivedAt: last.cursor_at, id: last.id } : null,
+  };
+}
+
+/**
  * Read archived comments for one page (approved by default). The static
  * bake and the comments plugin's visitor `list_approved` both read here
  * (v0.2.18 Fix D: cms_public only holds the pending inbox). The ADMIN's
@@ -60,7 +123,7 @@ export const commentArchiveListForPageOp = defineOperation({
   actorScope: ["human", "ai", "system", "plugin"],
   database: "cms_admin",
   input: listForPageInput,
-  output: z.object({ comments: z.array(archiveRowSchema) }),
+  output: listForPageOutput,
   handler: async (_ctx, input, tx) => {
     const status = input.status ?? "approved";
     const limit = input.limit ?? 200;
@@ -75,13 +138,16 @@ export const commentArchiveListForPageOp = defineOperation({
         content,
         status,
         submitted_at,
-        archived_at
+        archived_at,
+        ${CURSOR_COLUMN}
       FROM comment_archive
       WHERE page_id = ${input.pageId}::uuid
         AND status = ${status}
         AND archived_at > ${since}::timestamptz
-      ORDER BY submitted_at ASC
-      LIMIT ${limit}
+        ${beforeClause(input.before)}
+        ${commentClause(input.commentId)}
+      ORDER BY archived_at DESC, comment_archive.id DESC
+      LIMIT ${limit + 1}
     `)) as unknown as Array<{
       id: string;
       public_row_id: string;
@@ -92,9 +158,12 @@ export const commentArchiveListForPageOp = defineOperation({
       status: string;
       submitted_at: string | Date;
       archived_at: string | Date;
+      cursor_at: string;
     }>;
+    const { page, nextCursor } = pageOf(rows, limit);
     return ok({
-      comments: rows.map((r) => ({
+      nextCursor,
+      comments: page.map((r) => ({
         id: r.id,
         publicRowId: r.public_row_id,
         pageId: r.page_id,
@@ -122,18 +191,21 @@ export const publishedCommentsListForPageOp = defineOperation({
   actorScope: ["system", "plugin"],
   database: "cms_public",
   input: listForPageInput,
-  output: z.object({ comments: z.array(archiveRowSchema) }),
+  output: listForPageOutput,
   handler: async (_ctx, input, tx) => {
-    if ((input.status ?? "approved") !== "approved") return ok({ comments: [] });
+    if ((input.status ?? "approved") !== "approved") return ok({ comments: [], nextCursor: null });
     const limit = input.limit ?? 200;
     const since = input.since ?? "1970-01-01T00:00:00Z";
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, public_row_id::text AS public_row_id, page_id::text AS page_id,
-             parent_id::text AS parent_id, author_name, content, submitted_at, archived_at
+             parent_id::text AS parent_id, author_name, content, submitted_at, archived_at,
+             ${CURSOR_COLUMN}
       FROM published_comments
       WHERE page_id = ${input.pageId}::uuid AND archived_at > ${since}::timestamptz
-      ORDER BY submitted_at ASC
-      LIMIT ${limit}
+        ${beforeClause(input.before)}
+        ${commentClause(input.commentId)}
+      ORDER BY archived_at DESC, published_comments.id DESC
+      LIMIT ${limit + 1}
     `)) as unknown as Array<{
       id: string;
       public_row_id: string;
@@ -143,9 +215,12 @@ export const publishedCommentsListForPageOp = defineOperation({
       content: string;
       submitted_at: string | Date;
       archived_at: string | Date;
+      cursor_at: string;
     }>;
+    const { page, nextCursor } = pageOf(rows, limit);
     return ok({
-      comments: rows.map((r) => ({
+      nextCursor,
+      comments: page.map((r) => ({
         id: r.id,
         publicRowId: r.public_row_id,
         pageId: r.page_id,

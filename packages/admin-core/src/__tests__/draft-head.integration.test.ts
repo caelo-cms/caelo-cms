@@ -406,6 +406,44 @@ describe("#1268 draft head", () => {
     expect(await drift()).toEqual([]);
   });
 
+  // #1411 — the branch views read a plugin row's page from the head. The
+  // column belongs to the plugin, so a value that is no uuid is no page,
+  // never a failed plugin write.
+  it("names the page of a plugin row, and no page for a value that is not a uuid", async () => {
+    const a = await chat("plugin row page");
+    const pageId = crypto.randomUUID();
+    const pluginId = "00000000-0000-4000-8000-000000001411";
+    const states = [{ page_id: pageId }, { page_id: "not-a-uuid" }, { page_id: 7 }, {}];
+    await asSystem(
+      (tx) =>
+        tx`INSERT INTO plugins (id, slug, version, tier, status, manifest_json, manifest_signature,
+                                submitted_by)
+           VALUES (${pluginId}::uuid, ${`${PFX}plugin-1411`}, '0.1.0', 1, 'disabled', '{}'::jsonb,
+                   'fixture', ${HUMAN}::uuid)`,
+    );
+    for (const values of states) {
+      const state = JSON.stringify({ values });
+      await asSystem(
+        (tx) =>
+          tx`WITH h AS (
+               INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
+               VALUES (${HUMAN}::uuid, 'plugin_storage.update', ${`${PFX}row-page`}, ${a.id}::uuid, ${a.branch}::uuid)
+               RETURNING id)
+             INSERT INTO plugin_row_snapshots (site_snapshot_id, plugin_id, schema_name, table_name, row_id, state)
+             SELECT h.id, ${pluginId}::uuid, 'plugin_t1411', 'rows', gen_random_uuid(), ${state}::text::jsonb
+               FROM h`,
+      );
+    }
+    const named = await asSystem(
+      (tx) =>
+        tx`SELECT page_id::text AS page_id FROM draft_pending_entities
+            WHERE chat_branch_id = ${a.branch}::uuid AND plugin_id = ${pluginId}::uuid
+              AND page_id IS NOT NULL` as Promise<{ page_id: string }[]>,
+    );
+    expect(named).toEqual([{ page_id: pageId }]);
+    expect(await drift()).toEqual([]);
+  });
+
   it("follows a subagent unlinked from its parent, and session GC keeps a session that owns pending changes", async () => {
     const parent = await chat("unlink parent");
     const m = await seedModule("unlink");

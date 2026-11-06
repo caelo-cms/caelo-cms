@@ -276,6 +276,7 @@ export {
   type ResolvedPageUrl,
   resolvePageUrl,
   type UrlCompositionView,
+  urlAnnotationPluginSlugs,
   urlContributionsRegistry,
 } from "./url-composition.js";
 export {

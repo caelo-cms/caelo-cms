@@ -441,7 +441,11 @@ import {
   listPluginCapabilityGrantsOp,
   proposeRevokePluginCapabilityOp,
 } from "./ops/plugins/capability_proposals.js";
-import { commentArchiveInsertOp, commentArchivePostTeamOp } from "./ops/plugins/comment_archive.js";
+import {
+  commentArchiveInsertOp,
+  commentArchivePostTeamOp,
+  commentArchiveStatsManyOp,
+} from "./ops/plugins/comment_archive.js";
 import { getDraftRowsOp } from "./ops/plugins/draft-rows.js";
 import {
   approvePluginInstallationOp,
@@ -1546,4 +1550,5 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(commentArchiveInsertOp);
   registry.register(commentArchivePostTeamOp);
   registry.register(commentArchiveListForPageOp);
+  registry.register(commentArchiveStatsManyOp);
 }
