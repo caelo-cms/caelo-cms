@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.12.3",
   "tools": [
     {
       "name": "read_content",
@@ -441,7 +441,8 @@
                           "list",
                           "module",
                           "module-list"
-                        ]
+                        ],
+                        "description": "`link` value: `{href, target?}`, read as {{f}} or {{f.href}}, {{f.target}}, {{f.title}} (no label: that is a text field of its own). Other scalars have no dot paths."
                       },
                       "label": {
                         "type": "string",
@@ -1096,37 +1097,36 @@
     },
     {
       "name": "list_pages",
-      "description": "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, short title (breadcrumb/navigation label), page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. Use for any page UUID/path; never ask the operator to paste a UUID.",
+      "description": "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, short title (breadcrumb/navigation label), page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. To find a page, pass `search` with words of its title or path; without it, rows come one page of the site at a time (follow `next cursor` to browse a small site or a subtree, never to scan a large one). Use for any page UUID/path; never ask the operator to paste a UUID.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "includeDeleted": {
-            "default": false,
-            "type": "boolean"
+          "search": {
+            "description": "Words that start words of the page's title or path, e.g. \"pricing\" or \"blog launch\" (the last word names the page itself). Searches the whole site.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
           },
           "underPageId": {
-            "description": "Only this page's subtree.",
+            "description": "Only this page's subtree (not with search).",
             "type": "string",
             "format": "uuid"
           },
-          "filter": {
-            "description": "Case-insensitive substring over all columns.",
-            "type": "string",
-            "maxLength": 200
+          "includeDeleted": {
+            "description": "Also deleted pages (not with search).",
+            "type": "boolean"
           },
           "limit": {
             "description": "Default 50.",
             "type": "integer",
             "minimum": 1,
-            "maximum": 500
+            "maximum": 200
           },
-          "offset": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "full": {
-            "description": "true = all rows, no truncation.",
-            "type": "boolean"
+          "cursor": {
+            "description": "`next cursor` of the previous call, with the same search / underPageId.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
           }
         },
         "additionalProperties": false
@@ -1159,7 +1159,7 @@
     },
     {
       "name": "list_modules",
-      "description": "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placement usage.\nUSE FOR: a reuse candidate before placing/creating (prefer `add_module` with `moduleId` over a near-duplicate); the accepted child types before filling a `module`/`module-list` field.\nFields column: `blocks:module-list allowed=faq/cta` -> child `type` must be one of them (`allowed=any` = unrestricted). `nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)` | `… paginate(per_page=50 follow_ups=index)` = overview of every match over follow-up pages.",
+      "description": "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placements as this chat sees the site (`unplaced` = no page, layout or parent module).\nUSE FOR: a reuse candidate before placing/creating (prefer `add_module` with `moduleId` over a near-duplicate); the accepted child types before filling a `module`/`module-list` field.\nFields column: `blocks:module-list allowed=faq/cta` -> child `type` must be one of them (`allowed=any` = unrestricted). `nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)` | `… paginate(per_page=50 follow_ups=index)` = overview of every match over follow-up pages.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2433,7 +2433,8 @@
                     "list",
                     "module",
                     "module-list"
-                  ]
+                  ],
+                  "description": "`link` value: `{href, target?}`, read as {{f}} or {{f.href}}, {{f.target}}, {{f.title}} (no label: that is a text field of its own). Other scalars have no dot paths."
                 },
                 "label": {
                   "type": "string",
@@ -3695,7 +3696,8 @@
                     "string",
                     "null"
                   ],
-                  "format": "uuid"
+                  "format": "uuid",
+                  "description": "This page's own share image; null = the default (language, then site `socialShare`)."
                 },
                 "canonicalUrl": {
                   "type": [
@@ -3827,7 +3829,7 @@
     },
     {
       "name": "check_links",
-      "description": "Check internal links (to own pages/media) in your draft, wherever stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms/properties, plugin data. Each problem names the page, storage place and fixing tool.\nSeverity: BLOCK Stage + Publish = links to deleted pages/media, links without a page in the linking page's language, refs to a deleted list, removed term or deleted module in a list entry. BLOCK Publish (Stage warning) = links to unpublished pages. Warning = old plain-path links.\nUSE FOR: before `stage_changes` after deleting/unpublishing/translating pages; a Stage refused for links; operator asks about broken links.\nDO NOT USE FOR: external links or the built site (`get_quality_audit` checks the staged build).",
+      "description": "Check internal links (to own pages/media) in your draft, wherever stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms/properties, plugin data. Each problem names the page, storage place and fixing tool.\nSeverity: BLOCK Stage + Publish = links to deleted pages/media, refs to a deleted list, removed term or deleted module in a list entry. BLOCK Publish (Stage warning) = links to unpublished pages, links without a page in the linking page's language. Warning = old plain-path links.\nUSE FOR: before `stage_changes` after deleting/unpublishing/translating pages; a Stage refused for links; operator asks about broken links.\nDO NOT USE FOR: external links or the built site (`get_quality_audit` checks the staged build).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -4761,7 +4763,8 @@
                           "list",
                           "module",
                           "module-list"
-                        ]
+                        ],
+                        "description": "`link` value: `{href, target?}`, read as {{f}} or {{f.href}}, {{f.target}}, {{f.title}} (no label: that is a text field of its own). Other scalars have no dot paths."
                       },
                       "label": {
                         "type": "string",
@@ -6080,7 +6083,7 @@
     },
     {
       "name": "get_site_seo",
-      "description": "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `organizationJson`. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; site language: `get_site_defaults`.",
+      "description": "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `organizationJson`. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; default share image: `set_theme_asset` slot socialShare; site language: `get_site_defaults`.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -6568,6 +6571,169 @@
         },
         "additionalProperties": false
       }
+    },
+    {
+      "name": "get_security_headers",
+      "description": "Read the site's response-header policy and the headers staging and the live site send now (CSP, Referrer-Policy, Permissions-Policy, framing, HSTS), what the build derived and which plugin added what.\nUSE FOR: a security scan names a missing header; a script, embed or frame is blocked; before `propose_set_security_headers`.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "propose_set_security_headers",
+      "description": "Change the site's response-header policy; only the named settings change. The build derives each CSP from what it ships (origins in markup, approved tags and embeds, inline hashes), so a host used in a page needs no entry.\nUSE FOR: `extraSources` when a Stage finding names a host and this tool as the next step; `frameAncestors` when another site must embed this one; `cspMode` when the operator decides to enforce.\nDO NOT USE FOR: allowing an embed or tag for visitors -> consent tools; turning off a blocker -> move the handler into module `js`.\nCORE RULES: read `get_security_headers` first. Patch fields replace, so `extraSources` carries every entry to keep. Propose `enforce` only when it lists nothing that enforcing would stop and the Stage's quality check shows no CSP violation, and tell the operator what that rests on: the check opens a few pages and gives no consent, so a violation elsewhere or after consent reaches nobody and is blocked for visitors. After approval it is saved, not live: offer the Stage; Publish live stays the operator's.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "cspMode": {
+            "type": "string",
+            "enum": [
+              "report_only",
+              "enforce"
+            ]
+          },
+          "frameAncestors": {
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 253,
+              "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+            }
+          },
+          "referrerPolicy": {
+            "type": "string",
+            "enum": [
+              "strict-origin-when-cross-origin",
+              "strict-origin",
+              "same-origin",
+              "no-referrer"
+            ]
+          },
+          "allowedFeatures": {
+            "maxItems": 9,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "bluetooth",
+                "camera",
+                "geolocation",
+                "hid",
+                "microphone",
+                "midi",
+                "payment",
+                "serial",
+                "usb"
+              ]
+            }
+          },
+          "hsts": {
+            "type": "object",
+            "properties": {
+              "maxAgeSeconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 63072000
+              },
+              "includeSubdomains": {
+                "type": "boolean"
+              },
+              "preload": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "maxAgeSeconds",
+              "includeSubdomains",
+              "preload"
+            ],
+            "additionalProperties": false
+          },
+          "extraSources": {
+            "type": "object",
+            "properties": {
+              "script": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "style": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "img": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "font": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "connect": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "frame": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "media": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              },
+              "form": {
+                "maxItems": 50,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 253,
+                  "pattern": "^(https|wss):\\/\\/(\\*\\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\\d{1,5})?$"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "gated": true
     },
     {
       "name": "get_static_file",
@@ -7121,7 +7287,7 @@
     },
     {
       "name": "set_theme_asset",
-      "description": "Bind a theme brand-asset slot to a media row, or clear it with `mediaId: null`. Active theme unless `themeSlug`. A bound favicon is emitted as `<link rel=\"icon\">` on every page — never hand-write icon tags in modules.",
+      "description": "Bind a theme brand-asset slot to a media row, or clear it with `mediaId: null`. Active theme unless `themeSlug`. A bound favicon is emitted as `<link rel=\"icon\">` on every page — never hand-write icon tags in modules. `socialShare` is the site's default link-preview image (og:image): every page without its own shows it after the next Stage + Publish live, so never copy it onto pages with `set_page_seo_many`.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -7805,7 +7971,7 @@
     },
     {
       "name": "get_module_impact",
-      "description": "Blast radius of editing one module: every live page placing it + severity and reasons. Use BEFORE editing a possibly shared module (header, footer, CTA) to tell the operator what else changes, or to pick `fork_placement_content` instead.",
+      "description": "Blast radius of editing one module, as this chat sees the site: pages placing it, layouts and parent modules holding it, severity and reasons. Use BEFORE editing a possibly shared module (header, footer, CTA) to tell the operator what else changes, or to pick `fork_placement_content` instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7907,7 +8073,7 @@
     },
     {
       "name": "get_page_seo",
-      "description": "Read pages' stored SEO fields (meta description, OG image, canonical, noindex, sitemap, autofill/optimize times) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\nUSE FOR: reading before writing/optimizing descriptions — ALL pages in one call, then ONE `autofill_page_seo_many` (first description) or `bulk_optimize_seo`/`set_page_seo_many`.\nDO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
+      "description": "Read pages' stored SEO fields (meta description, own OG image, canonical, noindex, sitemap, autofill/optimize times), the `shareImage` each page really gets (own, language default or site default) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\nUSE FOR: reading before writing/optimizing descriptions — ALL pages in one call, then ONE `autofill_page_seo_many` (first description) or `bulk_optimize_seo`/`set_page_seo_many`.\nDO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
       "inputSchema": {
         "type": "object",
         "properties": {
