@@ -123,12 +123,33 @@ const cache = new Map<string, { readonly view: SiteView; readonly parts: SiteVie
 const MAX_CACHED_VIEWS = 8;
 
 /**
+ * #1270 — the whole reads in flight, per branch key. When several requests
+ * find no usable view of the same branch at once (a cold admin, a flood of
+ * changes), each one used to read the whole site itself: in the scale gate
+ * ten readers of the shared draft started together and took 35 s each on
+ * the saturated database, where one alone takes a few seconds. Now the
+ * first one reads; the others wait for it and then load through the cache
+ * like any request: their own journal check (a new snapshot under READ
+ * COMMITTED, so it sees the leader's view as written before it), and the
+ * delta since the leader's mark. A waiter that still cannot use the view
+ * (its own uncommitted writes, a snapshot older than the cached view)
+ * reads the whole site itself, as before.
+ */
+const wholeReads = new Map<string, Promise<unknown>>();
+
+/**
  * The branch's site view as `tx` sees it: from the cache when no journaled
  * change reached it since it was read, else read now and cached.
  */
-export async function loadSiteView(
+export function loadSiteView(tx: TransactionRunner, branchId: string | null): Promise<SiteView> {
+  return loadSiteViewOnce(tx, branchId, false);
+}
+
+/** {@link loadSiteView}; `waited` once it waited for another request's whole read. */
+async function loadSiteViewOnce(
   tx: TransactionRunner,
   branchId: string | null,
+  waited: boolean,
 ): Promise<SiteView> {
   const key = branchId ?? "";
   const filter = siteViewJournalFilter(branchId);
@@ -159,9 +180,23 @@ export async function loadSiteView(
   if ("parts" in delta) {
     parts = delta.parts;
   } else {
+    const running = wholeReads.get(key);
+    if (running && !waited) {
+      // Its outcome is the leader's to report; this request only needs the cache after it.
+      await running.catch(() => undefined);
+      return loadSiteViewOnce(tx, branchId, true);
+    }
     // One line per whole read, with why: the scale gate counts them (#1270).
     console.info(`[site-view] whole read (${key || "main"}): ${delta.wholeRead}`);
-    parts = await readSiteParts(tx, branchId);
+    const read = readSiteParts(tx, branchId);
+    if (!running && !mark.dirty) wholeReads.set(key, read);
+    try {
+      parts = await read;
+    } finally {
+      // The view is cached below before a waiter resumes: both run after this
+      // await, the cache first (a waiter's continuation is queued behind it).
+      if (wholeReads.get(key) === read) wholeReads.delete(key);
+    }
   }
   const view = siteViewOf(branchId, mark, parts);
   // A read that saw its own transaction's uncommitted writes is not
@@ -181,4 +216,5 @@ export async function loadSiteView(
 /** Test seam: forget every cached view (the rows-read test measures cold reads). */
 export function clearSiteViewCache(): void {
   cache.clear();
+  wholeReads.clear();
 }
