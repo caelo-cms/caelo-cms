@@ -34,6 +34,8 @@ const SYS_CTX: ExecutionContext = {
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
+/** #1269 — the `pages.list` inputs while recording (null = not recording). */
+let pageListInputs: unknown[] | null = null;
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -66,6 +68,11 @@ async function cleanup(): Promise<void> {
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  const runOperation = adapter.runOperation.bind(adapter);
+  adapter.runOperation = ((o, ctx, input) => {
+    if (o.name === "pages.list") pageListInputs?.push(input);
+    return runOperation(o, ctx, input);
+  }) as typeof adapter.runOperation;
   registry = new OperationRegistry();
   registerAdminOps(registry);
   await cleanup();
@@ -83,7 +90,7 @@ afterAll(async () => {
   await adapter.close();
 });
 
-async function seedPage(slug: string): Promise<string> {
+async function seedPage(slug: string, parentPageId?: string): Promise<string> {
   const templateId = await sqlSystem(async (tx) => {
     const lay = (await tx.unsafe(
       `INSERT INTO layouts (slug, display_name, html, css) VALUES ('${slug}-lay', 'L', '<html></html>', '') RETURNING id::text AS id`,
@@ -100,6 +107,7 @@ async function seedPage(slug: string): Promise<string> {
     slug,
     title: slug,
     templateId,
+    ...(parentPageId ? { parentPageId } : {}),
   });
   if (!created.ok) throw new Error(JSON.stringify(created.error));
   return (created.value as { pageId: string }).pageId;
@@ -204,6 +212,42 @@ describe("#396 — international-site AI tools", () => {
         }[],
     );
     expect(redirect[0]?.to_path).toBe("/t396-preise");
+  });
+
+  it("#1269 — create_variant reads the pages it names, never the whole site", async () => {
+    const parentId = await seedPage("t396-docs");
+    const childId = await seedPage("t396-setup", parentId);
+    pageListInputs = [];
+    try {
+      // The parent has no German counterpart yet: refused, naming the parent's path.
+      const refused = await runPluginOperation({
+        invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+        pluginSlug: "international-site",
+        operationName: "create_variant",
+        args: { sourcePageId: childId, localeCode: "de", slug: "t396-einrichtung" },
+      });
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) expect(refused.error.message).toContain("sits under /t396-docs");
+      const parent = await op<{ path: string }>("create_variant", {
+        sourcePageId: parentId,
+        localeCode: "de",
+        slug: "t396-doku",
+      });
+      expect(parent.path).toBe("/de/t396-doku");
+      const child = await op<{ path: string }>("create_variant", {
+        sourcePageId: childId,
+        localeCode: "de",
+        slug: "t396-einrichtung",
+      });
+      expect(child.path).toBe("/de/t396-doku/t396-einrichtung");
+      expect(pageListInputs.length).toBeGreaterThan(0);
+      for (const input of pageListInputs) {
+        const i = input as { pageIds?: string[]; underPageId?: string; limit?: number };
+        expect(i.pageIds !== undefined || i.underPageId !== undefined).toBe(true);
+      }
+    } finally {
+      pageListInputs = null;
+    }
   });
 
   it("set_locales ships approval-gated; the other tools stay routine", () => {

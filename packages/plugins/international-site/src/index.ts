@@ -882,11 +882,14 @@ async function linkPageIntoGroup(
   // would keep its parent chain, and children under a root would stop
   // extending their parent's URL. Refuse before writing anything.
   if ((await siteHomePageId(cms)) === groupPageId) {
-    const listed = await cms.call<{
-      pages: { id: string; currentPath: string; parentPageId: string | null }[];
-    }>("pages.list", {});
-    const target = listed.pages.find((p) => p.id === pageId);
-    const children = listed.pages.filter((p) => p.parentPageId === pageId);
+    // #1269 — the page and the pages below it, not the site.
+    type Listed = { pages: { id: string; currentPath: string; parentPageId: string | null }[] };
+    const [own, below] = await Promise.all([
+      cms.call<Listed>("pages.list", { pageIds: [pageId] }),
+      cms.call<Listed>("pages.list", { underPageId: pageId }),
+    ]);
+    const target = own.pages[0];
+    const children = below.pages.filter((p) => p.parentPageId === pageId);
     if (target?.parentPageId) {
       throw new Error(
         `page ${target.currentPath} sits under another page, but the home page's ${localeCode} counterpart is that locale's root — move it to the top level first (move_pages with parent null), then link it`,
@@ -1831,10 +1834,15 @@ export default definePlugin<PluginContextTier1>({
       const homePageId = await siteHomePageId(cms);
       const isLocaleRoot = homePageId === sourcePageId;
 
-      const pages = await cms.call<{
+      // #1269 — the source page (its parent only for the error), never the whole site:
+      // the gate's agents call this per page, and each whole read cost the
+      // 50k-page site plus the branch overlay of every pending page.
+      type Listed = {
         pages: { id: string; slug: string; currentPath: string; parentPageId: string | null }[];
-      }>("pages.list", {});
-      const source = pages.pages.find((p) => p.id === sourcePageId);
+      };
+      const pageOf = async (id: string) =>
+        (await cms.call<Listed>("pages.list", { pageIds: [id] })).pages[0];
+      const source = await pageOf(sourcePageId);
       const sourceSlug = source?.slug;
       if (!source || !sourceSlug) {
         throw new Error(`source page ${sourcePageId} not found — check intl_status for page ids`);
@@ -1851,7 +1859,7 @@ export default definePlugin<PluginContextTier1>({
           ctx,
         );
         if (variantParentId === null) {
-          const parent = pages.pages.find((p) => p.id === source.parentPageId);
+          const parent = await pageOf(source.parentPageId);
           const parentPath = parent?.currentPath ?? source.parentPageId;
           // The suggested call must itself succeed: it carries a slug
           // unless the parent is the home (whose counterpart takes none).
