@@ -16,7 +16,13 @@
  */
 
 import { defineOperation, type TransactionRunner, textArray } from "@caelo-cms/query-api";
-import { err, ok, redirectTargetIssue, redirectTargetPathSchema } from "@caelo-cms/shared";
+import {
+  err,
+  ok,
+  redirectFromPathSpellings,
+  redirectTargetIssue,
+  redirectTargetPathSchema,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
@@ -37,6 +43,38 @@ export async function staticFileRedirectRefusal(
   `)) as unknown as { path: string }[];
   if (rows.length === 0) return null;
   return `A static file is served at ${rows.map((r) => r.path).join(", ")}, so a redirect cannot start there. Choose another path, or remove the file first (propose_delete_static_files).`;
+}
+
+/**
+ * #1517 — a row answers its path with and without the trailing slash
+ * (`redirectFromPathSpellings`), so `/x` and `/x/` are one address. Two rows
+ * for it with different targets make the redirect plan refuse the whole
+ * table, which stops every provider sync, so a writer must never leave both:
+ * an upsert replaces the other spelling's row, a plain create counts it as
+ * existing.
+ *
+ * @returns the stored rows (id, from path) answering `fromPath`'s address.
+ */
+async function rowsAnsweringPath(
+  tx: TransactionRunner,
+  fromPath: string,
+): Promise<{ id: string; from_path: string }[]> {
+  return (await tx.execute(sql`
+    SELECT id::text AS id, from_path FROM redirects
+    WHERE from_path = ANY(${textArray([...redirectFromPathSpellings(fromPath)])})
+    ORDER BY from_path
+  `)) as unknown as { id: string; from_path: string }[];
+}
+
+/** Delete the rows answering `fromPath`'s address under another spelling. */
+async function deleteOtherSpellings(tx: TransactionRunner, fromPath: string): Promise<number> {
+  const gone = (await tx.execute(sql`
+    DELETE FROM redirects
+    WHERE from_path = ANY(${textArray([...redirectFromPathSpellings(fromPath)])})
+      AND from_path <> ${fromPath}
+    RETURNING 1 AS gone
+  `)) as unknown as unknown[];
+  return gone.length;
 }
 
 const redirectRow = z.object({
@@ -92,6 +130,9 @@ export const createRedirectOp = defineOperation({
     if (taken) return err({ kind: "HandlerError", operation: "redirects.create", message: taken });
     // Upsert — if a redirect already exists from this path, replace
     // its target. Common during slug ping-pong (rename A→B then B→A).
+    // #1517 — in either spelling: a slug change writes `/old` where an
+    // imported table holds `/old/`.
+    await deleteOtherSpellings(tx, input.fromPath);
     const rows = (await tx.execute(sql`
       INSERT INTO redirects (from_path, to_path, status_code, created_by)
       VALUES (${input.fromPath}, ${input.toPath}, ${input.statusCode}, ${ctx.actorId}::uuid)
@@ -320,17 +361,26 @@ export const createRedirectsManyOp = defineOperation({
         skipped += 1;
         continue;
       }
-      const existing = (await tx.execute(sql`
-        SELECT id::text AS id FROM redirects WHERE from_path = ${r.fromPath} LIMIT 1
-      `)) as unknown as { id: string }[];
-      if (existing[0]) {
+      // #1517 — the address in either spelling: `/x` next to a stored `/x/`
+      // with another target would stop every redirect sync.
+      const existing = await rowsAnsweringPath(tx, r.fromPath);
+      if (existing.length > 0) {
         if (!input.upsert) {
           skipped += 1;
           continue;
         }
+        // One row per address: the one in the stored spelling closest to
+        // the request is kept and updated, the other is deleted.
+        const keep = existing.find((e) => e.from_path === r.fromPath) ?? existing[0];
+        if (!keep) throw new Error("unreachable: existing rows vanished");
+        await tx.execute(sql`
+          DELETE FROM redirects
+          WHERE from_path = ANY(${textArray(existing.map((e) => e.from_path))})
+            AND id <> ${keep.id}::uuid
+        `);
         await tx.execute(sql`
           UPDATE redirects SET to_path = ${r.toPath}, status_code = ${r.statusCode}
-          WHERE id = ${existing[0].id}::uuid
+          WHERE id = ${keep.id}::uuid
         `);
         updated += 1;
       } else {

@@ -24,9 +24,18 @@
  *
  * Always main-line: callers pass a context without a chat branch —
  * redirects are live state, like the paths they follow.
+ *
+ * #1517 — and therefore only for pages that are on the main line. A page
+ * only a chat's branch holds (created or duplicated there, never merged)
+ * has no public URL: its old path was never served, so it gets no 301, and
+ * its new path is not served either, so a rule there keeps answering on
+ * the live site. Such a move only stores the path; the rule on the new URL
+ * is taken over when the page is first shipped by Publish live
+ * ({@link takeOverRedirectsOnFirstPublishedPages}), and the write tools
+ * name it meanwhile (`redirects.page_conflicts`).
  */
 
-import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import { type ExecutionContext, redirectFromPathSpellings } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { requestRedirectSync } from "../../deploy/redirect-sync.js";
@@ -59,6 +68,66 @@ export function collapseRedirectChainsSql(moves: ReadonlyArray<Pick<PathMove, "f
 }
 
 /**
+ * The moves of pages on the main line: a page a chat's branch holds
+ * (`chat_branch_id` set until the merge takes it live) moves without live
+ * effects (#1517, see the module comment).
+ */
+async function mainLineMoves(
+  tx: TransactionRunner,
+  moves: ReadonlyArray<PathMove>,
+): Promise<PathMove[]> {
+  if (moves.length === 0) return [];
+  const branchOnly = (await tx.execute(sql`
+    SELECT id::text AS id FROM pages
+    WHERE id = ANY(${uuidArray(moves.map((m) => m.pageId))}) AND chat_branch_id IS NOT NULL
+  `)) as unknown as { id: string }[];
+  if (branchOnly.length === 0) return [...moves];
+  const skipped = new Set(branchOnly.map((r) => r.id));
+  return moves.filter((m) => !skipped.has(m.pageId));
+}
+
+/**
+ * #1517 — Publish live takes a page's URL over from a redirect rule: the
+ * pages a production build ships for the first time (`pageIds`, stamped
+ * `first_published_at` by that release) delete every rule on their path, in
+ * both spellings, in the release's transaction. Until then the rule kept
+ * answering on the live site, which did not serve the page yet; the build
+ * that now serves it wins over the rule anyway (the redirect plan leaves a
+ * served path out), so the delete only keeps the rule from coming back when
+ * the page leaves the build. Not at the merge (Stage): the live site serves
+ * the previous build until Publish live, and a rule deleted at Stage would
+ * leave the URL answering 404 there.
+ *
+ * The caller pushes the table after its commit (the release's own redirect
+ * sync); a request is registered too, for the targets that release does not
+ * push.
+ *
+ * @returns how many rules were deleted.
+ */
+export async function takeOverRedirectsOnFirstPublishedPages(
+  ctx: ExecutionContext,
+  tx: TransactionRunner,
+  pages: ReadonlyArray<{ readonly id: string; readonly path: string }>,
+): Promise<number> {
+  if (pages.length === 0) return 0;
+  // The 404 page is served at /404.html: its own path is free for a rule.
+  const designated = (await tx.execute(sql`
+    SELECT not_found_page_id::text AS id FROM site_defaults WHERE id = 1
+  `)) as unknown as { id: string | null }[];
+  const notFound = designated[0]?.id ?? null;
+  const spellings = pages
+    .filter((p) => p.id !== notFound)
+    .flatMap((p) => redirectFromPathSpellings(p.path));
+  if (spellings.length === 0) return 0;
+  const gone = (await tx.execute(sql`
+    DELETE FROM redirects WHERE from_path = ANY(${textArray(spellings)})
+    RETURNING 1 AS gone
+  `)) as unknown as { gone: number }[];
+  if (gone.length > 0) await requestRedirectSync(tx, ctx);
+  return gone.length;
+}
+
+/**
  * Apply the side effects of already-persisted path moves.
  *
  * @param redirects `"skip"` suppresses the old-URL 301s (operator asked
@@ -75,7 +144,10 @@ export async function applyPathMoveEffects(
 ): Promise<PathMoveEffects> {
   const skipsRedirect = (pageId: string): boolean =>
     redirects === "skip" ? true : redirects === "auto" ? false : redirects.skip(pageId);
-  const real = moves.filter((m) => m.from !== m.to);
+  const real = await mainLineMoves(
+    tx,
+    moves.filter((m) => m.from !== m.to),
+  );
   if (real.length === 0) return { redirectsCreated: 0 };
   const { chatBranchId: _b, chatTaskId: _t, ...mainCtx } = ctx;
 

@@ -21,6 +21,8 @@ import { readSiteUrls, structureSourcesFromOps } from "./structure-sources.js";
 
 /** Rows per `redirects.list` page (the op's maximum). */
 const REDIRECT_PAGE = 1000;
+/** `pages.list`'s maximum `pageIds`. */
+const PAGES_PER_LIST = 1000;
 /** `links.check_references`' maximum `limit`. */
 const REPORTED_DRAFT_LINKS = 500;
 
@@ -105,6 +107,16 @@ export function linkSourcesFromOps(
           ? [{ targetPath: i.targetPath, pageIds: i.pageIds, origin }]
           : [];
       });
+    },
+    async neverLivePageIds(pageIds) {
+      const neverLive = new Set<string>();
+      for (let i = 0; i < pageIds.length; i += PAGES_PER_LIST) {
+        const r = (await run("pages.list", {
+          pageIds: pageIds.slice(i, i + PAGES_PER_LIST),
+        })) as { pages: { id: string; firstPublishedAt: string | null }[] };
+        for (const p of r.pages) if (p.firstPublishedAt === null) neverLive.add(p.id);
+      }
+      return neverLive;
     },
     siteUrls: () => readSiteUrls((op, input) => run(op, input)),
   };

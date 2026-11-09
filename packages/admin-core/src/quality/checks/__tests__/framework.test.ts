@@ -80,6 +80,7 @@ describe("CheckRegistry", () => {
         redirects: async () => [],
         siteUrls: async () => [],
         reportedDraftLinks: async () => [],
+        neverLivePageIds: async () => new Set<string>(),
       },
       references: { issues: async () => ({ issues: [], truncated: false }) },
     });

@@ -99,6 +99,7 @@ const INPUT = {
   redirects: [] as RedirectRow[],
   siteUrls: ["https://example.com", "www.example.com"],
   reportedDraftLinks: [] as ReportedDraftLink[],
+  neverLivePageIds: new Set<string>(),
 };
 
 const HOME = page(1, "/", mod(TEXT, '<a href="/team">Team</a>'));
@@ -107,13 +108,19 @@ const TEAM = page(3, "/team", mod(TEXT, "<p>The team.</p>"));
 
 async function findingsOf(
   pages: readonly StagedPage[],
-  opts: { files?: string[]; redirects?: RedirectRow[]; reported?: ReportedDraftLink[] } = {},
+  opts: {
+    files?: string[];
+    redirects?: RedirectRow[];
+    reported?: ReportedDraftLink[];
+    neverLive?: string[];
+  } = {},
 ) {
   const build = buildWith(opts.files ?? []);
   const findings = await linkFindings(pages, build, {
     ...INPUT,
     redirects: opts.redirects ?? [],
     reportedDraftLinks: opts.reported ?? [],
+    neverLivePageIds: new Set(opts.neverLive ?? []),
   });
   for (const f of findings) expect(findingSchema.safeParse(f).success).toBe(true);
   return { findings, probed: build.probed };
@@ -545,6 +552,7 @@ describe("createLinksCheck", () => {
       redirects: async () => [],
       siteUrls: async () => INPUT.siteUrls,
       reportedDraftLinks: async () => [],
+      neverLivePageIds: async () => new Set<string>(),
     });
     expect(check.id).toBe(LINKS_CHECK_ID);
     const about = page(2, "/about", mod(TEXT, '<a href="/nope">x</a>'));
@@ -560,6 +568,7 @@ describe("createLinksCheck", () => {
       redirects: async () => [],
       siteUrls: async () => [],
       reportedDraftLinks: async () => [],
+      neverLivePageIds: async () => new Set<string>(),
     });
     const failing: StagedBuild = {
       baseUrl: BASE,
@@ -737,5 +746,84 @@ describe("links/redirect-shadows-page (#1447)", () => {
     expect(findings[0]?.severity).toBe("error");
     expect(findings[0]?.message).toContain("/guides/old/");
     expect(findings[0]?.fix?.tool).toBe("stage_changes");
+  });
+});
+
+describe("links/redirect-taken-over (#1517)", () => {
+  const RULES = ["links/redirect-shadows-page", "links/redirect-taken-over"];
+  const run = async (pages: readonly StagedPage[], redirects: RedirectRow[], neverLive: string[]) =>
+    (await findingsOf(pages, { redirects, neverLive })).findings.filter((f) =>
+      RULES.includes(f.ruleId),
+    );
+
+  it("a rule on a never-live page's URL is info: Publish live takes it over", async () => {
+    const findings = await run(
+      [page(1, "/", ""), page(2, "/en/empco", "")],
+      [{ fromPath: "/en/empco/", toPath: "/en/guides/empco-directive/", statusCode: 301 }],
+      [id(2)],
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      ruleId: "links/redirect-taken-over",
+      severity: "info",
+      pageId: id(2),
+    });
+    expect(findings[0]?.message).toContain('"/en/empco/" → "/en/guides/empco-directive/" (301)');
+    expect(findings[0]?.message).toContain("Publish live");
+  });
+
+  it("stays an error for a page that was live before", async () => {
+    const findings = await run(
+      [page(1, "/", ""), page(2, "/about", "")],
+      [{ fromPath: "/about", toPath: "/guides/old", statusCode: 301 }],
+      [id(1)],
+    );
+    expect(findings.map((f) => [f.ruleId, f.severity])).toEqual([
+      ["links/redirect-shadows-page", "error"],
+    ]);
+  });
+
+  it("stays an error when staging really redirected a never-live page", async () => {
+    const findings = await run(
+      [page(1, "/", ""), { ...page(2, "/about", ""), redirectedTo: "/guides/old/" }],
+      [{ fromPath: "/about", toPath: "/guides/old", statusCode: 301 }],
+      [id(2)],
+    );
+    expect(findings.map((f) => [f.ruleId, f.severity])).toEqual([
+      ["links/redirect-shadows-page", "error"],
+    ]);
+  });
+
+  it("asks only about the pages that have a rule on their URL", async () => {
+    const asked: string[][] = [];
+    const check = createLinksCheck({
+      modules: async () => [],
+      layouts: async () => [],
+      redirects: async () => [{ fromPath: "/about/", toPath: "/", statusCode: 301 }],
+      siteUrls: async () => [],
+      reportedDraftLinks: async () => [],
+      neverLivePageIds: async (ids) => {
+        asked.push([...ids]);
+        return new Set(ids);
+      },
+    });
+    const home = page(1, "/", mod(TEXT, '<a href="/about">a</a>'));
+    const about = page(2, "/about", mod(TEXT, '<a href="/">h</a>'));
+    const result = await runFindingChecks(
+      [
+        {
+          kind: "findings" as const,
+          id: check.id,
+          title: check.title,
+          scope: "site" as const,
+          source: { kind: "core" as const },
+          check,
+        },
+      ],
+      [home, about],
+      buildWith([]),
+    );
+    expect(asked).toEqual([[id(2)]]);
+    expect(result.findings.map((f) => f.ruleId)).toContain("links/redirect-taken-over");
   });
 });

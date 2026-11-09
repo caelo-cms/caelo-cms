@@ -73,6 +73,9 @@ const HIDDEN_SLUG = "promote-seo-hidden";
 // issue #302 — staging/production builds need a page at the site root.
 const HOME_SLUG = "home";
 const SLUGS = [PAGE_SLUG, HIDDEN_SLUG, HOME_SLUG];
+// #1517 — a page first shipped by Publish live takes its URL over.
+const TAKEN_SLUG = "promote-seo-taken";
+const ALL_SLUGS = [...SLUGS, TAKEN_SLUG];
 
 const ROBOTS_META = /<meta name="robots"[^>]*>/;
 
@@ -83,9 +86,10 @@ async function wipe(): Promise<void> {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM deploy_pending_actions WHERE payload_hash LIKE 'promote-seo-%'`;
       await tx`DELETE FROM deploy_runs`;
-      await tx`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${PAGE_SLUG}, ${HIDDEN_SLUG}, ${HOME_SLUG}))`;
-      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${PAGE_SLUG}, ${HIDDEN_SLUG}, ${HOME_SLUG}))`;
-      await tx`DELETE FROM pages WHERE slug IN (${PAGE_SLUG}, ${HIDDEN_SLUG}, ${HOME_SLUG})`;
+      await tx`DELETE FROM redirects WHERE from_path LIKE '/promote-seo-%'`;
+      await tx`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(ALL_SLUGS)})`;
+      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(ALL_SLUGS)})`;
+      await tx`DELETE FROM pages WHERE slug IN ${tx(ALL_SLUGS)}`;
       await tx`DELETE FROM modules WHERE slug = ${MOD_SLUG}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
       await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
@@ -120,6 +124,42 @@ async function ok<T>(op: string, input: unknown): Promise<T> {
   return r.value as T;
 }
 
+let seededTemplateId = "";
+let seededModuleId = "";
+
+/** A published page with content and a meta description, as builds need. */
+async function seedPublishedPage(slug: string): Promise<string> {
+  const { pageId } = await ok<{ pageId: string }>("pages.create", {
+    slug,
+    title: slug,
+    templateId: seededTemplateId,
+  });
+  await ok("pages.set_modules", {
+    pageId,
+    blocks: [{ blockName: "content", moduleIds: [seededModuleId] }],
+  });
+  await ok("pages.update", { pageId, status: "published" });
+  // Builds refuse published pages without a meta description.
+  await ok("pages_seo.autofill", { pageId, metaDescription: `The ${slug} page.` });
+  return pageId;
+}
+
+/** The stored redirect rules starting with `prefix`. */
+async function rulesFrom(prefix: string): Promise<string[]> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const rows = (await tx`
+        SELECT from_path FROM redirects WHERE from_path LIKE ${`${prefix}%`} ORDER BY from_path
+      `) as { from_path: string }[];
+      return rows.map((r) => r.from_path);
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
 async function seedSite(): Promise<void> {
   const { templateId } = await ok<{ templateId: string }>("templates.create", {
     pageType: "home",
@@ -138,19 +178,10 @@ async function seedSite(): Promise<void> {
     html: "<p>promote seo</p>",
     fields: [{ name: "body", kind: "text", label: "Body" } as never],
   });
+  seededTemplateId = templateId;
+  seededModuleId = moduleId;
   for (const slug of SLUGS) {
-    const { pageId } = await ok<{ pageId: string }>("pages.create", {
-      slug,
-      title: slug,
-      templateId,
-    });
-    await ok("pages.set_modules", {
-      pageId,
-      blocks: [{ blockName: "content", moduleIds: [moduleId] }],
-    });
-    await ok("pages.update", { pageId, status: "published" });
-    // Builds refuse published pages without a meta description.
-    await ok("pages_seo.autofill", { pageId, metaDescription: `The ${slug} page.` });
+    const pageId = await seedPublishedPage(slug);
     // The operator's own per-page choice — must survive promote.
     if (slug === HIDDEN_SLUG) await ok("pages_seo.set", { pageId, noindex: true });
   }
@@ -267,6 +298,37 @@ describe("deploy.promote ships production SEO semantics", () => {
       repoRoot: testRoot,
     });
     expect(rollback.securityHeadersNote).toBe(NO_BUILD_HEADERS_NOTE);
+  });
+
+  // #1517 — a rule on the URL of a page that was never live keeps answering
+  // on the live site through the Stage (the live build does not serve the
+  // page yet) and is deleted by the Publish live that first ships the page.
+  // A rule on a page that was live before is the operator's to settle.
+  it("the Publish live that first ships a page deletes the rule on its URL, not the Stage", async () => {
+    await seedPublishedPage(TAKEN_SLUG);
+    await ok("redirects.create_many", {
+      redirects: [
+        { fromPath: `/${TAKEN_SLUG}/`, toPath: `/${PAGE_SLUG}` },
+        // PAGE_SLUG was shipped by an earlier Publish live in this suite.
+        { fromPath: `/${HIDDEN_SLUG}`, toPath: `/${PAGE_SLUG}` },
+      ],
+    });
+
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    expect(await rulesFrom(`/${TAKEN_SLUG}`)).toEqual([`/${TAKEN_SLUG}/`]);
+
+    await markAudited(staged.runId);
+    await ok("deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+
+    expect(await rulesFrom(`/${TAKEN_SLUG}`)).toEqual([]);
+    expect(await rulesFrom(`/${HIDDEN_SLUG}`)).toEqual([`/${HIDDEN_SLUG}`]);
   });
 
   it("refuses to promote a legacy staging build whose pages carry staging's noindex", async () => {
