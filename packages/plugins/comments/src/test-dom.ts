@@ -142,33 +142,77 @@ export class El {
   }
 }
 
-/** Parse well-formed markup (what the bake and the skill write) into `parent`. */
+const isSpace = (c: string | undefined) => c === " " || c === "\n" || c === "\t" || c === "\r";
+
+/**
+ * Parse well-formed markup (what the bake and the skill write) into
+ * `parent`. One forward pass, character by character: no backtracking
+ * regex over the markup (CodeQL js/redos).
+ */
 export function parseInto(parent: El, html: string): El {
   const stack = [parent];
-  const token =
-    /<!--[\s\S]*?-->|<\/([a-z0-9-]+)\s*>|<([a-z0-9-]+)((?:\s+[^\s=>/]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?)*)\s*\/?>|([^<]+)/gi;
-  for (const m of html.matchAll(token)) {
-    const top = stack[stack.length - 1] as El;
-    if (m[1]) {
-      const closing = m[1].toLowerCase();
-      while (stack.length > 1 && (stack.pop() as El).tag !== closing) {
+  const n = html.length;
+  let i = 0;
+  const top = () => stack[stack.length - 1] as El;
+  while (i < n) {
+    if (html[i] !== "<") {
+      const end = html.indexOf("<", i);
+      const stop = end === -1 ? n : end;
+      const t = new El("#text");
+      t.text = decode(html.slice(i, stop));
+      top().appendChild(t);
+      i = stop;
+      continue;
+    }
+    if (html.startsWith("<!--", i)) {
+      const end = html.indexOf("-->", i + 4);
+      i = end === -1 ? n : end + 3;
+      continue;
+    }
+    const closing = html[i + 1] === "/";
+    let j = i + (closing ? 2 : 1);
+    const nameStart = j;
+    while (j < n && !isSpace(html[j]) && html[j] !== ">" && html[j] !== "/") j++;
+    const tag = html.slice(nameStart, j).toLowerCase();
+    if (closing) {
+      const end = html.indexOf(">", j);
+      i = end === -1 ? n : end + 1;
+      while (stack.length > 1 && (stack.pop() as El).tag !== tag) {
         /* unwind to the matching open tag */
       }
-    } else if (m[2]) {
-      const el = new El(m[2].toLowerCase());
-      for (const a of (m[3] ?? "").matchAll(
-        /([^\s=>/]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g,
-      )) {
-        el.attrs.set((a[1] as string).toLowerCase(), decode(a[2] ?? a[3] ?? a[4] ?? ""));
-      }
-      if (el.attrs.has("disabled")) el.disabled = true;
-      top.appendChild(el);
-      if (!VOID_TAGS.has(el.tag)) stack.push(el);
-    } else if (m[4]) {
-      const t = new El("#text");
-      t.text = decode(m[4]);
-      top.appendChild(t);
+      continue;
     }
+    const el = new El(tag);
+    while (j < n && html[j] !== ">") {
+      if (isSpace(html[j]) || html[j] === "/") {
+        j++;
+        continue;
+      }
+      const attrStart = j;
+      while (j < n && !isSpace(html[j]) && html[j] !== "=" && html[j] !== ">" && html[j] !== "/")
+        j++;
+      const name = html.slice(attrStart, j).toLowerCase();
+      let value = "";
+      if (html[j] === "=") {
+        j++;
+        const quote = html[j];
+        if (quote === '"' || quote === "'") {
+          const close = html.indexOf(quote, j + 1);
+          const stop = close === -1 ? n : close;
+          value = html.slice(j + 1, stop);
+          j = stop + 1;
+        } else {
+          const valueStart = j;
+          while (j < n && !isSpace(html[j]) && html[j] !== ">") j++;
+          value = html.slice(valueStart, j);
+        }
+      }
+      if (name) el.attrs.set(name, decode(value));
+    }
+    i = j + 1;
+    if (el.attrs.has("disabled")) el.disabled = true;
+    top().appendChild(el);
+    if (!VOID_TAGS.has(el.tag)) stack.push(el);
   }
   return parent;
 }
