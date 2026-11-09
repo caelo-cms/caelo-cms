@@ -100,8 +100,20 @@ export function linkResolveJournalFilter(
     // The host's own columns change what a row means however the plugin
     // declared it: a storage delete is an UPDATE of caelo_deleted_at, and a
     // row's branch moves with caelo_chat_branch_id.
+    // A page column always counts: a row that moves to another page changes
+    // two pages' answers, whatever `columns` lists.
     ...(reads.columns
-      ? { columns: { plugin_storage: [...reads.columns, ...HOST_VISIBILITY_COLUMNS] } }
+      ? {
+          columns: {
+            plugin_storage: [
+              ...new Set([
+                ...reads.columns,
+                ...Object.values(reads.pageColumns ?? {}),
+                ...HOST_VISIBILITY_COLUMNS,
+              ]),
+            ],
+          },
+        }
       : {}),
   };
 }
