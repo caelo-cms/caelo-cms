@@ -699,6 +699,31 @@ describe("#1213 — international-site render hooks at scale", () => {
     }
   });
 
+  it("renders that find no kept answers at once ask the plugin once (#1269)", async () => {
+    const pairs = await seedGroups("kf", 2);
+    const asked = pairs.flatMap((p) => [p.en, p.de]);
+    clearLinkResolveCache();
+    const reads: string[] = [];
+    const partitions = await storeReads.run(reads, () =>
+      Promise.all(
+        Array.from({ length: 4 }, () =>
+          resolveLinkVariants(
+            asked,
+            { chatBranchId: null, renderId: crypto.randomUUID() },
+            { keep: true },
+          ),
+        ),
+      ),
+    );
+    // One ask: the variant rows of these pages were read once.
+    expect(reads.filter((r) => r.includes(asked[0] ?? "")).length).toBe(1);
+    const cold = await resolveLinkVariants(asked, {
+      chatBranchId: null,
+      renderId: crypto.randomUUID(),
+    });
+    for (const p of partitions) expect([...p].sort()).toEqual([...cold].sort());
+  });
+
   it("a kept refill is read after its mark, not from an earlier hook of the pass (#1269)", async () => {
     const [pair] = await seedGroups("km", 1);
     if (!pair) throw new Error("seed");

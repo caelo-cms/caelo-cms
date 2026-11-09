@@ -75,6 +75,16 @@ interface CachedAnswers {
 
 /** Per loaded plugin (a reload is a new one), per branch ("" = main). */
 const cachedAnswers = new WeakMap<LoadedPlugin, Map<string, CachedAnswers>>();
+/**
+ * #1269 — the asks in flight per plugin and render scope. When several
+ * renders find no kept answers for the same pages at once (a cold admin,
+ * a flood of previews), each one asked the plugin about the whole site
+ * itself: on the scale gate 25 previews asked international-site about
+ * all 50,000 pages, each read of its variant table a few seconds on the
+ * saturated database. Now the first one asks; the others wait for it and
+ * then load through the kept answers.
+ */
+const asksInFlight = new Map<string, Promise<unknown>>();
 /** Render scopes kept per plugin, least recently used dropped first. */
 const MAX_CACHED_SCOPES = 16;
 
@@ -124,6 +134,7 @@ const HOST_VISIBILITY_COLUMNS = ["caelo_deleted_at", "caelo_chat_branch_id"] as 
 /** Test seam: forget every kept answer. */
 export function clearLinkResolveCache(): void {
   for (const lp of loadedPlugins.all()) cachedAnswers.delete(lp);
+  asksInFlight.clear();
 }
 
 function contributors() {
@@ -160,82 +171,8 @@ export async function resolveLinkVariants(
   const answeredBy = new Map<string, string>();
 
   for (const lp of plugins) {
-    const operationName = lp.definition.linkResolveOperation as string;
-    const reads = opts.keep ? lp.definition.linkResolveReads : undefined;
-    const scopeKey = scope.chatBranchId ?? "";
-    let kept: CachedAnswers | null = null;
-    let toAsk: readonly string[] = pageIds;
-    if (reads) {
-      const scopes = cachedAnswers.get(lp) ?? new Map<string, CachedAnswers>();
-      cachedAnswers.set(lp, scopes);
-      const hit = scopes.get(scopeKey);
-      const infra = hostInfra();
-      // Taken before the plugin reads, so a change committing meanwhile
-      // is unseen by the mark and invalidates once.
-      const filter = linkResolveJournalFilter(lp, reads, scope.chatBranchId ?? null);
-      const { fresh, mark } = await checkPluginJournalMark(
-        infra.adapter,
-        infra.registry,
-        hit?.mark ?? null,
-        filter,
-      );
-      let answers = new Map<string, LinkPageVariant | null>();
-      if (hit && fresh) answers = hit.answers;
-      else if (hit && reads.pageColumns) {
-        // Carry the kept answers forward: drop only the pages a changed row
-        // names; those are asked again below with the pages never asked.
-        const delta = await readLinkResolveDelta(infra.adapter, infra.registry, {
-          pluginId: lp.pluginId,
-          schema: `plugin_${lp.slug.replace(/-/g, "_")}`,
-          pageColumns: reads.pageColumns,
-          from: hit.mark,
-          to: mark,
-          filter,
-        });
-        if ("pages" in delta) {
-          answers = new Map(hit.answers);
-          for (const id of delta.pages) answers.delete(id);
-        } else {
-          // One line per whole re-ask, with why: the scale gate counts them.
-          console.info(`[link-resolve] ${lp.slug} asked about every page again: ${delta.whole}`);
-        }
-      }
-      kept = { mark, answers };
-      toAsk = pageIds.filter((id) => !kept?.answers.has(id));
-    }
-    // A refill that is kept must be read after its mark: the render pass's
-    // memo (renderId) may hold the plugin's rows from an earlier hook of
-    // this pass, read before the mark — so a kept read gets a pass of its own.
-    const askScope = kept ? { ...scope, renderId: crypto.randomUUID() } : scope;
-    const fromPlugin = toAsk.length > 0 ? await askPlugin(lp, operationName, toAsk, askScope) : {};
-    if (fromPlugin === null) continue; // reported as a render failure (#1087)
-    const askedNow = new Set(toAsk);
-    const answers = new Map<string, LinkPageVariant | null>(kept?.answers ?? []);
-    for (const id of toAsk) answers.set(id, null);
-    for (const [pageId, raw] of Object.entries(fromPlugin)) {
-      if (!askedNow.has(pageId)) {
-        throw new Error(
-          `link-resolve: plugin "${lp.slug}" answered for page ${pageId}, which is not part of this render`,
-        );
-      }
-      const parsed = linkResolvePageVariant.safeParse(raw);
-      if (!parsed.success) {
-        throw new Error(
-          `link-resolve: plugin "${lp.slug}" returned an invalid answer for page ${pageId}: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
-        );
-      }
-      answers.set(pageId, { variant: parsed.data.variant, group: parsed.data.group });
-    }
-    if (kept && !kept.mark.dirty) {
-      const scopes = cachedAnswers.get(lp) as Map<string, CachedAnswers>;
-      scopes.delete(scopeKey);
-      scopes.set(scopeKey, { mark: kept.mark, answers });
-      while (scopes.size > MAX_CACHED_SCOPES) {
-        const oldest = scopes.keys().next().value;
-        if (oldest === undefined) break;
-        scopes.delete(oldest);
-      }
-    }
+    const answers = await answersOf(lp, pageIds, scope, opts.keep === true, false);
+    if (answers === null) continue; // reported as a render failure (#1087)
     // Each page once: a repeated id is one page, not a second contributor.
     for (const pageId of new Set(pageIds)) {
       const answer = answers.get(pageId);
@@ -253,6 +190,116 @@ export async function resolveLinkVariants(
     }
   }
   return out;
+}
+
+/**
+ * One plugin's answers for `pageIds` (null: it failed and the render goes
+ * on without it, reported). `waited` once it waited for another render's
+ * ask of the same plugin and scope.
+ */
+async function answersOf(
+  lp: LoadedPlugin,
+  pageIds: ReadonlyArray<string>,
+  scope: RenderScope,
+  keep: boolean,
+  waited: boolean,
+): Promise<Map<string, LinkPageVariant | null> | null> {
+  const operationName = lp.definition.linkResolveOperation as string;
+  const reads = keep ? lp.definition.linkResolveReads : undefined;
+  const scopeKey = scope.chatBranchId ?? "";
+  let kept: CachedAnswers | null = null;
+  let toAsk: readonly string[] = pageIds;
+  if (reads) {
+    const scopes = cachedAnswers.get(lp) ?? new Map<string, CachedAnswers>();
+    cachedAnswers.set(lp, scopes);
+    const hit = scopes.get(scopeKey);
+    const infra = hostInfra();
+    // Taken before the plugin reads, so a change committing meanwhile
+    // is unseen by the mark and invalidates once.
+    const filter = linkResolveJournalFilter(lp, reads, scope.chatBranchId ?? null);
+    const { fresh, mark } = await checkPluginJournalMark(
+      infra.adapter,
+      infra.registry,
+      hit?.mark ?? null,
+      filter,
+    );
+    let answers = new Map<string, LinkPageVariant | null>();
+    if (hit && fresh) answers = hit.answers;
+    else if (hit && reads.pageColumns) {
+      // Carry the kept answers forward: drop only the pages a changed row
+      // names; those are asked again below with the pages never asked.
+      const delta = await readLinkResolveDelta(infra.adapter, infra.registry, {
+        pluginId: lp.pluginId,
+        schema: `plugin_${lp.slug.replace(/-/g, "_")}`,
+        pageColumns: reads.pageColumns,
+        from: hit.mark,
+        to: mark,
+        filter,
+      });
+      if ("pages" in delta) {
+        answers = new Map(hit.answers);
+        for (const id of delta.pages) answers.delete(id);
+      } else {
+        // One line per whole re-ask, with why: the scale gate counts them.
+        console.info(`[link-resolve] ${lp.slug} asked about every page again: ${delta.whole}`);
+      }
+    }
+    kept = { mark, answers };
+    toAsk = pageIds.filter((id) => !kept?.answers.has(id));
+  }
+  // A refill that is kept must be read after its mark: the render pass's
+  // memo (renderId) may hold the plugin's rows from an earlier hook of
+  // this pass, read before the mark — so a kept read gets a pass of its own.
+  const askScope = kept ? { ...scope, renderId: crypto.randomUUID() } : scope;
+  const flightKey = `${lp.pluginId}:${scopeKey}`;
+  const running = kept && toAsk.length > 0 ? asksInFlight.get(flightKey) : undefined;
+  if (running && !waited) {
+    // Another render is asking this plugin in the same scope: wait for it,
+    // then load through the kept answers like any render (its own journal
+    // check, and only what is still unanswered).
+    await running.catch(() => undefined);
+    return answersOf(lp, pageIds, scope, keep, true);
+  }
+  const ask =
+    toAsk.length > 0 ? askPlugin(lp, operationName, toAsk, askScope) : Promise.resolve({});
+  if (kept && !kept.mark.dirty && toAsk.length > 0 && !running) asksInFlight.set(flightKey, ask);
+  let fromPlugin: Record<string, unknown> | null;
+  try {
+    fromPlugin = await ask;
+  } finally {
+    // The answers are kept below before a waiter resumes: both run after
+    // this await, the keeping first (a waiter's continuation is queued behind it).
+    if (asksInFlight.get(flightKey) === ask) asksInFlight.delete(flightKey);
+  }
+  if (fromPlugin === null) return null;
+  const askedNow = new Set(toAsk);
+  const answers = new Map<string, LinkPageVariant | null>(kept?.answers ?? []);
+  for (const id of toAsk) answers.set(id, null);
+  for (const [pageId, raw] of Object.entries(fromPlugin)) {
+    if (!askedNow.has(pageId)) {
+      throw new Error(
+        `link-resolve: plugin "${lp.slug}" answered for page ${pageId}, which is not part of this render`,
+      );
+    }
+    const parsed = linkResolvePageVariant.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(
+        `link-resolve: plugin "${lp.slug}" returned an invalid answer for page ${pageId}: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
+      );
+    }
+    answers.set(pageId, { variant: parsed.data.variant, group: parsed.data.group });
+  }
+  if (kept && !kept.mark.dirty) {
+    const scopes = cachedAnswers.get(lp) as Map<string, CachedAnswers>;
+    scopes.delete(scopeKey);
+    scopes.set(scopeKey, { mark: kept.mark, answers });
+    while (scopes.size > MAX_CACHED_SCOPES) {
+      const oldest = scopes.keys().next().value;
+      if (oldest === undefined) break;
+      scopes.delete(oldest);
+    }
+  }
+  return answers;
 }
 
 /**
