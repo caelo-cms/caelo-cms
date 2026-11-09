@@ -21,6 +21,7 @@ const context: PluginContext = {
     insert: async () => ({ id: "11111111-1111-4111-8111-111111111111" }),
     list: async () => [{ body: "host result" }],
     update: async () => {},
+    updateMany: async () => {},
     delete: async () => {},
     compareAndSwap: async () => true,
   },
@@ -337,6 +338,34 @@ describe("invocation handed to plugin code", () => {
   });
 });
 
+it("carries updateMany through the bridge and refuses a malformed id list (#1391)", async () => {
+  const calls: unknown[][] = [];
+  const result = await invoke(
+    `
+    const id = "11111111-1111-4111-8111-111111111111";
+    await ctx.query.updateMany("notes", [id], { body: "bulk" });
+    const errors = [];
+    for (const ids of [["not-a-uuid"], id, [1]]) {
+      try { await ctx.query.updateMany("notes", ids, { body: "x" }); } catch (e) { errors.push(e.message); }
+    }
+    return { errors: errors.length };
+  `,
+    {
+      context: {
+        ...context,
+        query: {
+          ...context.query,
+          updateMany: async (...args) => {
+            calls.push(args);
+          },
+        },
+      },
+    },
+  );
+  expect(result).toEqual({ errors: 3 });
+  expect(calls).toEqual([["notes", ["11111111-1111-4111-8111-111111111111"], { body: "bulk" }]]);
+});
+
 it("preview denies public/private writes and cross-plugin RPC in the real sandbox", async () => {
   const readonly = previewContext({ ...context, adminQuery: context.query });
   const result = await invoke(
@@ -344,7 +373,7 @@ it("preview denies public/private writes and cross-plugin RPC in the real sandbo
     const denied = [];
     for (const target of [ctx.query, ctx.adminQuery]) {
       const id = "11111111-1111-4111-8111-111111111111";
-      for (const [method, args] of [["insert", ["notes", {body:"changed"}]], ["update", ["notes", id, {body:"changed"}]], ["delete", ["notes", id]], ["compareAndSwap", ["notes", id, {body:"old"}, {body:"changed"}]]]) {
+      for (const [method, args] of [["insert", ["notes", {body:"changed"}]], ["update", ["notes", id, {body:"changed"}]], ["updateMany", ["notes", [id], {body:"changed"}]], ["delete", ["notes", id]], ["compareAndSwap", ["notes", id, {body:"old"}, {body:"changed"}]]]) {
         try { await target[method](...args); } catch (e) { denied.push(e.message); }
       }
     }
@@ -354,7 +383,7 @@ it("preview denies public/private writes and cross-plugin RPC in the real sandbo
     { context: readonly },
   );
   expect(result).toEqual({
-    denied: Array(9).fill("PluginPreviewReadOnly"),
+    denied: Array(11).fill("PluginPreviewReadOnly"),
     rows: [{ body: "host result" }],
   });
 });

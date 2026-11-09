@@ -112,7 +112,7 @@ const handles = (prefix, names) => {
   }
   return ObjectFreeze(out);
 };
-const QUERY_METHODS = ["insert", "list", "update", "compareAndSwap", "delete"];
+const QUERY_METHODS = ["insert", "list", "update", "updateMany", "compareAndSwap", "delete"];
 let initialized = false;
 let buffer = "";
 const execute = async (message) => {
