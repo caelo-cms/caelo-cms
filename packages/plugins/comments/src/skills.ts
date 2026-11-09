@@ -48,7 +48,7 @@ export const COMMENTS_SKILLS: ReadonlyArray<PluginSkillSpec> = [
       `- \`hidden\` on the form and the older-comments button is deliberate: the plugin shows them once it can serve them (visitors without JavaScript see the comments, not a form that cannot send). Do not show or hide them in CSS; the plugin keeps the spam trap field ${HONEYPOT_FIELD_NAME} out of sight itself — do not add one.`,
       '- Each comment the plugin renders is `<article class="comment"><header><span class="comment-author"></span> <time></time></header><div class="body"></div></article>` inside `[data-comment-thread]`: style those selectors in the section\'s CSS.',
       `- Style the outcome with [${C.status}][data-state="sent"] and [data-state="error"].`,
-      "- Link a privacy page in the hint by its page (caelo:page/<id> from list_pages); if there is none, leave the link out and tell the operator.",
+      "- The hint paragraph is optional: without a comments_hint site text, leave the <p> out (a {{site_text}} key nobody added stops the Stage). Link a privacy page in it by its page (caelo:page/<id> from list_pages); if there is none, leave the link out and tell the operator.",
       "",
       "## 4. Put it on the pages",
       "Make the section once with add_module, then place the same module (moduleId) on the pages:",
