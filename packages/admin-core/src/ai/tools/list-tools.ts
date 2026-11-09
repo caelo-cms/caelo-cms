@@ -24,13 +24,13 @@ import {
 import { previewListSourceOp } from "../../ops/lists/preview-source.js";
 import { promoteLocalListOp } from "../../ops/lists/promote-local.js";
 import { idOf } from "./_draft-reads.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 import { makeOpTool } from "./_list-tool-kit.js";
 import {
   PATCH_LIST_ITEMS_JSON_SCHEMA,
   PREVIEW_LIST_SOURCE_JSON_SCHEMA,
   UPSERT_LISTS_JSON_SCHEMA,
 } from "./_list-tool-schemas.js";
-import { makeListReadTool } from "./_make-read-tool.js";
 
 /**
  * Operator words -> lists. Said once, in list_lists, where the AI looks for
@@ -80,6 +80,8 @@ export const listListsTool = makeListReadTool<Record<string, unknown>, ListSumma
     "Call BEFORE creating a list: 'add Careers to the menu' -> the header's list is here (usedBy = header module) -> patch it, never mint a second menu.\n" +
     `${MENUS_ARE_LISTS} Local lists are not listed here -> \`list_modules\`.`,
   opName: "lists.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: listListsInput,
   label: "lists",
   rows: (value) => (value as { lists: ListSummaryRow[] }).lists,

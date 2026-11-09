@@ -347,16 +347,58 @@ describe("gateway reads", () => {
     expect((await run(getGatewayAnalyticsTool, { windowSec: 5 }, h.toolCtx)).ok).toBe(false);
   });
 
-  it("list_gateway_requests maps filters and pages within the op's cap", async () => {
-    const h = harness({ "gateway.list_recent_requests": () => ({ rows: [] }) });
+  it("list_gateway_requests maps filters and pages server-side (#1538)", async () => {
+    const h = harness({ "gateway.list_recent_requests": () => ({ rows: [], droppedRows: 0 }) });
     const r = await run(
       listGatewayRequestsTool,
       { pluginSlug: "forms", onlyErrors: true, limit: 20, offset: 10 },
       h.toolCtx,
     );
     expect(r.ok).toBe(true);
-    expect(h.calls[0]?.input).toEqual({ pluginSlug: "forms", onlyErrors: true, limit: 30 });
-    expect(r.content).toContain("No gateway requests");
+    // One row past the page says whether more exist.
+    expect(h.calls[0]?.input).toEqual({
+      pluginSlug: "forms",
+      onlyErrors: true,
+      offset: 10,
+      limit: 21,
+    });
+    expect(r.content).toBe("No requests past offset 10.");
+    const first = await run(listGatewayRequestsTool, {}, h.toolCtx);
+    expect(first.content).toContain("No gateway requests");
+  });
+
+  // Regression (Copilot on #1539): the op drops log rows that fail
+  // validation, so a page of `limit + 1` read rows came back with `limit`
+  // valid ones and read as the end of the log.
+  it("list_gateway_requests keeps paging past a dropped log row", async () => {
+    const row = (i: number) => ({
+      id: `r${i}`,
+      pluginSlug: "forms",
+      operation: "submit",
+      statusCode: 200,
+      durationMs: 5,
+      bodyBytes: 10,
+      wasRateLimited: false,
+      wasHoneypotCaught: false,
+      captchaPassed: true,
+      errorKind: null,
+      createdAt: `2026-11-09T10:00:${String(i).padStart(2, "0")}Z`,
+    });
+    // 11 rows read for limit 10 + 1, one of them invalid and dropped.
+    const h = harness({
+      "gateway.list_recent_requests": () => ({
+        rows: Array.from({ length: 10 }, (_v, i) => row(i)),
+        droppedRows: 1,
+      }),
+    });
+    const r = await run(listGatewayRequestsTool, { limit: 10 }, h.toolCtx);
+    expect(r.content).toContain("requests[10]");
+    expect(r.content).toContain("# rows 1-10 — more exist; next: offset=10.");
+    const allDropped = harness({
+      "gateway.list_recent_requests": () => ({ rows: [], droppedRows: 11 }),
+    });
+    const empty = await run(listGatewayRequestsTool, { limit: 10 }, allDropped.toolCtx);
+    expect(empty.content).toBe("No valid requests in rows 1-10 — more exist; next: offset=10.");
   });
 
   it("list_rate_limit_profiles renders TOON rows", async () => {
@@ -405,7 +447,8 @@ describe("email, bug reports, media settings", () => {
   it("list_bug_reports forwards the status filter", async () => {
     const h = harness({ "ai_bug_reports.list": () => ({ reports: [], total: 0 }) });
     await run(listBugReportsTool, { status: "new" }, h.toolCtx);
-    expect(h.calls[0]?.input).toEqual({ status: "new", limit: 50 });
+    // The op counts every match, so the page is asked for exactly.
+    expect(h.calls[0]?.input).toEqual({ status: "new", offset: 0, limit: 50 });
     expect((await run(listBugReportsTool, { status: "open" }, h.toolCtx)).ok).toBe(false);
   });
 
@@ -459,7 +502,8 @@ describe("email, bug reports, media settings", () => {
     };
     const h = harness({ "ai_bug_reports.list": () => ({ reports: [row], total: 1 }) });
     const r = await run(listBugReportsTool, { kind: "suggestion" }, h.toolCtx);
-    expect(h.calls[0]?.input).toEqual({ kind: "suggestion", limit: 50 });
+    expect(h.calls[0]?.input).toEqual({ kind: "suggestion", offset: 0, limit: 50 });
+    expect(r.content).toContain("# rows 1-1 of 1.");
     expect(r.content).toContain("kind");
     expect(r.content).toContain("suggestion");
     expect(r.content).not.toContain("null");
@@ -478,7 +522,12 @@ describe("history tools", () => {
   it("list_snapshots forwards filters, not list params", async () => {
     const h = harness({ "snapshots.list": () => ({ snapshots: [] }) });
     await run(listSnapshotsTool, { forPageId: U1, limit: 10 }, h.toolCtx);
-    expect(h.calls[0]?.input).toEqual({ forPageId: U1, includeArchived: false, limit: 10 });
+    expect(h.calls[0]?.input).toEqual({
+      forPageId: U1,
+      includeArchived: false,
+      offset: 0,
+      limit: 11,
+    });
     expect((await run(listSnapshotsTool, { forChatBranchId: U1 }, h.toolCtx)).ok).toBe(false);
   });
 
@@ -645,7 +694,7 @@ describe("content maintenance tools", () => {
       }),
     });
     const r = await run(listStaleSeoPagesTool, {}, h.toolCtx);
-    expect(h.calls[0]?.input).toEqual({ limit: 50 });
+    expect(h.calls[0]?.input).toEqual({ offset: 0, limit: 51 });
     expect(r.content).toContain("about,About,EMPTY");
   });
 
@@ -730,11 +779,12 @@ describe("content maintenance tools", () => {
     const first = await run(listImportRunsTool, { limit: 10 }, h.toolCtx);
     expect(h.calls[0]?.input).toEqual({ offset: 0, limit: 11 });
     expect(first.content).toContain("import_runs[10]");
-    expect(first.content).toContain("more exist; next: offset=10");
+    expect(first.content).toContain("# rows 1-10 — more exist; next: offset=10.");
     const later = await run(listImportRunsTool, { limit: 10, offset: 25 }, h.toolCtx);
     expect(h.calls[1]?.input).toEqual({ offset: 25, limit: 11 });
     expect(later.content).toContain("import_runs[5]");
     expect(later.content).toContain("run-29");
+    expect(later.content).toContain("# rows 26-30.");
     expect(later.content).not.toContain("more exist");
   });
 

@@ -16,7 +16,8 @@
 
 import { z } from "zod";
 import { translationModelChoices } from "../../ops/security/ai_providers.js";
-import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
+import { makeReadTool } from "./_make-read-tool.js";
 import { withHostingStatus } from "./domain-hosting-status.js";
 
 const noInput = z.object({}).strict();
@@ -67,6 +68,11 @@ export const listPendingProposalsTool = makeListReadTool<
     "Rows with requestedBy=external-agent belong to an external MCP agent, which gets the decision and continues: in the Caelo chat do not act on or re-propose them.",
   opName: "pending_proposals.list",
   input: noInput,
+  paging: {
+    kind: "offset",
+    maxLimit: 200,
+    total: (value) => (value as { total: number }).total,
+  },
   label: "pending_proposals",
   rows: (value) =>
     (
@@ -109,6 +115,7 @@ export const listEntityLocksTool = makeListReadTool<
     "Call before planning edits another chat may be working on, to say up front whose work you will take over. Every open chat's unstaged changes -> `list_unpublished_changes({allChats:true})`.",
   opName: "chat.list_foreign_locks",
   input: noInput,
+  paging: { kind: "offset", maxLimit: 100 },
   buildOpInput: (_input, _ctx, toolCtx) => ({ chatSessionId: toolCtx.chatSessionId }),
   label: "locks",
   rows: (value) =>
@@ -134,6 +141,8 @@ export const listUsersTool = makeListReadTool<
   description:
     "List site users (email, display name, roles); read-only. Changes: propose_create_user / propose_set_user_roles / propose_delete_user (Owner-approved).",
   opName: "users.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: noInput,
   label: "users",
   rows: (value) =>
@@ -159,6 +168,8 @@ export const listRolesTool = makeListReadTool<
   description:
     "List site roles (name, description, builtin); read-only. Changes: propose_create_role / propose_update_role_permissions / propose_delete_role (Owner-approved).",
   opName: "roles.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: noInput,
   label: "roles",
   rows: (value) =>
@@ -191,6 +202,8 @@ export const listAiProvidersTool = makeListReadTool<Record<string, never>, Provi
   description:
     "List configured AI providers (display name, active, key configured?, chat model, translation model + allowed catalogue models); never returns keys. Changes: propose_set_ai_provider / propose_clear_ai_provider_key; translation model: propose_set_translation_model (Owner-approved).",
   opName: "ai_providers.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: noInput,
   includeValue: false,
   label: "ai_providers",
@@ -234,6 +247,8 @@ export const listDomainsTool = withHostingStatus(
       "List the site's domains (hostname, kind, TLS status). Changes -> `propose_add_domain`/`propose_remove_domain` (Owner-approved). " +
       "Firebase Hosting installs also list each hosting custom domain's live state; 'stuck' -> `propose_reconnect_domain` heals it (CDN cache clears automatically once active).",
     opName: "domains.list",
+    // The op returns every row of a bounded domain: the tool pages in memory.
+    paging: { kind: "complete" },
     input: noInput,
     label: "domains",
     rows: (value) =>

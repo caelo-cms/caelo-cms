@@ -71,6 +71,10 @@ export const listForeignLocksOp = defineOperation({
     .object({
       /** The caller's own chat session — its locks are excluded. */
       chatSessionId: z.string().uuid(),
+      /** Newest locks first, at most this many. */
+      limit: z.number().int().min(1).max(200).default(50),
+      /** #1538 — locks to skip, so a reader reaches every one. */
+      offset: z.number().int().min(0).default(0),
     })
     .strict(),
   output: z.object({ locks: z.array(foreignLockSchema) }),
@@ -133,8 +137,8 @@ export const listForeignLocksOp = defineOperation({
       -- Issue #620: locks on the caller's own branch are not foreign — on
       -- the shared draft every draft chat writes the same branch.
       WHERE l.chat_branch_id <> ${caller.chat_branch_id}::uuid
-      ORDER BY l.locked_at DESC
-      LIMIT 50
+      ORDER BY l.locked_at DESC, l.entity_kind, l.entity_id
+      LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as ForeignLockRow[];
 
     const locks: ForeignLock[] = rows.map((r) => ({

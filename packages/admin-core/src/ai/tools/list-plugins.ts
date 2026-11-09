@@ -19,7 +19,7 @@
 
 import { z } from "zod";
 import { awaitingApprovalReason } from "../../ops/plugins/health.js";
-import { makeListReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 
 const listPluginsInput = z.object({}).strict();
 
@@ -98,6 +98,8 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
     "USE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\n" +
     "DO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",
   opName: "plugins.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: listPluginsInput,
   label: "plugins",
   rows: (value) => (value as { plugins: PluginListRow[] }).plugins,

@@ -18,6 +18,8 @@ export const snapshotsListInput = z
     /** ISO timestamp; only snapshots strictly before this are returned. */
     before: z.string().datetime().optional(),
     limit: z.number().int().min(1).max(200).default(50),
+    /** #1538 — rows to skip, newest first, so a reader reaches older snapshots. */
+    offset: z.number().int().min(0).default(0),
     /** When set, only snapshots that touched this module are returned. */
     forModuleId: z.string().uuid().optional(),
     /** When set, only snapshots that touched this page (metadata or layout). */

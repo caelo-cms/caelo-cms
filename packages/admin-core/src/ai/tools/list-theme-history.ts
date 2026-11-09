@@ -2,13 +2,11 @@
 
 /**
  * v0.11.2 — `list_theme_history` (2026-07: makeListReadTool — TOON
- * output). The op caps at 100 entries; `full: true` requests that max.
+ * output). #1538 — the op pages by `offset`, so older edits stay reachable.
  */
 
-import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
-import { makeListReadTool } from "./_make-read-tool.js";
-import type { ToolContext } from "./dispatch.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 
 const listThemeHistoryInput = z
   .object({
@@ -37,19 +35,12 @@ export const listThemeHistoryTool = makeListReadTool<
 >({
   name: "list_theme_history",
   description:
-    "List a theme's edit history (who changed what, when; newest first, max 100). Omit `themeSlug` for the ACTIVE theme.",
+    "List a theme's edit history (who changed what, when; newest first). Omit `themeSlug` for the ACTIVE theme.",
   opName: "themes.list_history",
   input: listThemeHistoryInput,
-  buildOpInput: (
-    input: { themeSlug?: string; limit?: number; full?: boolean },
-    _ctx: ExecutionContext,
-    _toolCtx: ToolContext,
-  ) => ({
-    ...(input.themeSlug !== undefined ? { themeSlug: input.themeSlug } : {}),
-    // The op caps at 100; fetch generously so client-side filter/offset
-    // operate on the real tail, then let the factory paginate.
-    limit: input.full ? 100 : Math.min(input.limit ?? 20, 100),
-  }),
+  // The op takes at most 100 rows; one more than the page says whether more exist.
+  paging: { kind: "offset", maxLimit: 50 },
+  defaultLimit: 20,
   label: "theme_history",
   rows: (value) => (value as { entries: HistoryRow[] }).entries,
   columns: [
