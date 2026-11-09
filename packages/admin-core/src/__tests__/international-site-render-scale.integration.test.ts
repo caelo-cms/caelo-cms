@@ -87,6 +87,8 @@ let previewsRunning = 0;
  * a preview was rendering when it ran.
  */
 const tickCalls = new AsyncLocalStorage<{ name: string; duringPreview: boolean }[]>();
+/** The inputs of the plugin's private store reads in this context (#1269). */
+const storeReads = new AsyncLocalStorage<string[]>();
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -258,6 +260,7 @@ beforeAll(async () => {
     const name = `${ctx.actorKind}:${op.name}`;
     previewCalls.getStore()?.push(name);
     tickCalls.getStore()?.push({ name, duringPreview: previewsRunning > 0 });
+    if (op.name === "plugin_storage.list") storeReads.getStore()?.push(JSON.stringify(input));
     return runOperation(op, ctx, input);
   }) as typeof adapter.runOperation;
   registry = new OperationRegistry();
@@ -591,6 +594,95 @@ describe("#1213 — international-site render hooks at scale", () => {
     const onMain = await pass(null);
     expect(onMain.asked).toBe(false);
     expect(onMain.partition.get(pair.de)?.variant).toBe("de");
+  });
+
+  it("a written variant row re-asks only the pages it names, on main and in a chat (#1269)", async () => {
+    const pairs = await seedGroups("kd", 3);
+    const [a, b, c] = pairs;
+    if (!a || !b || !c) throw new Error("seed");
+    // Two pages in no group yet: each joins a's group below.
+    const [x, y] = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          `INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
+           SELECT '${PFX}kd-x' || i, 'X', 'X', '${templateId}', '${pageTypeId}', true, '/${PFX}kd-x' || i, 'published'
+             FROM generate_series(1, 2) i ORDER BY i
+           RETURNING id::text AS id`,
+        )) as { id: string }[],
+    );
+    if (!x || !y) throw new Error("seed");
+    const asked = [...pairs.flatMap((p) => [p.en, p.de]), x.id, y.id];
+    const session = await sysOp<{ chatSessionId: string; chatBranchId: string }>(
+      "chat.create_session",
+      { isolation: "experiment", title: `${PFX}kd-chat` },
+    );
+    const pass = async (chatBranchId: string | null) => {
+      const reads: string[] = [];
+      const partition = await storeReads.run(reads, () =>
+        resolveLinkVariants(asked, { chatBranchId, renderId: crypto.randomUUID() }, { keep: true }),
+      );
+      // The pages the plugin was asked about: those its variant read names.
+      const askedNow = asked.filter((id) => reads.some((r) => r.includes(id)));
+      return { askedNow, partition };
+    };
+    const cold = async (chatBranchId: string | null) =>
+      resolveLinkVariants(asked, { chatBranchId, renderId: crypto.randomUUID() });
+    clearLinkResolveCache();
+    expect((await pass(null)).askedNow).toEqual(asked);
+    expect((await pass(session.chatBranchId)).askedNow).toEqual(asked);
+
+    // On main: x joins a's group. Only x is asked again, and the kept
+    // answers are the answers a cold ask gives.
+    const owner = await seedOwner();
+    const linked = await runPluginOperation({
+      invocation: { origin: "owner-panel", actorId: owner },
+      pluginSlug: "international-site",
+      operationName: "link_page_variants",
+      args: { groupPageId: a.en, pageId: x.id, localeCode: "de" },
+    });
+    if (!linked.ok) throw new Error(`${linked.error.kind}: ${linked.error.message}`);
+    const main = await pass(null);
+    expect(main.askedNow).toEqual([x.id]);
+    expect(main.partition.get(x.id)?.group).toBe(main.partition.get(a.en)?.group ?? "");
+    expect([...main.partition].sort()).toEqual([...(await cold(null))].sort());
+
+    // In the chat: y joins a's group as a pending row on its branch. The
+    // chat asks again about y (and x, written on main since), main about nothing.
+    const inChat = await runPluginOperation({
+      invocation: {
+        origin: "chat",
+        actorId: owner,
+        operatorActorId: owner,
+        chatBranchId: session.chatBranchId,
+        chatTaskId: session.chatSessionId,
+      },
+      pluginSlug: "international-site",
+      operationName: "link_page_variants",
+      args: { groupPageId: a.en, pageId: y.id, localeCode: "de" },
+    });
+    if (!inChat.ok) throw new Error(`${inChat.error.kind}: ${inChat.error.message}`);
+    const chat = await pass(session.chatBranchId);
+    expect(chat.askedNow.sort()).toEqual([x.id, y.id].sort());
+    expect(chat.partition.get(y.id)?.group).toBe(chat.partition.get(a.en)?.group ?? "");
+    expect([...chat.partition].sort()).toEqual([...(await cold(session.chatBranchId))].sort());
+    expect((await pass(null)).askedNow).toEqual([]);
+
+    // The locale registry decides every page's answer: a new language asks
+    // about every page again (and is gone before the next test).
+    const registry = async (statement: string) =>
+      sqlSystem(async (tx) => {
+        await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${pluginId}', true)`);
+        await tx.unsafe(statement);
+      });
+    await registry(
+      `INSERT INTO plugin_international_site.locales (code, display_name, url_strategy, is_default)
+       VALUES ('fr', 'Francais', 'subdirectory', false)`,
+    );
+    try {
+      expect((await pass(null)).askedNow).toEqual(asked);
+    } finally {
+      await registry(`DELETE FROM plugin_international_site.locales WHERE code = 'fr'`);
+    }
   });
 
   it("a kept refill is read after its mark, not from an earlier hook of the pass (#1269)", async () => {

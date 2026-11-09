@@ -38,7 +38,8 @@
  * changed, a pending row on the render's branch, or a Stage / undo /
  * takeover of a pending change. Without it every preview asked about
  * every page of the site, and international-site read its whole variant
- * table for each.
+ * table for each. With `pageColumns` declared too, a changed row re-asks
+ * only the pages it names (`link-resolve-delta.ts`), not every page.
  */
 
 import { linkResolvePageVariant } from "@caelo-cms/plugin-sdk";
@@ -54,6 +55,7 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import { readLinkResolveDelta } from "./link-resolve-delta.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
 
 /** pageId → its variant and variant group. A missing page maps nothing. */
@@ -158,13 +160,35 @@ export async function resolveLinkVariants(
       const infra = hostInfra();
       // Taken before the plugin reads, so a change committing meanwhile
       // is unseen by the mark and invalidates once.
+      const filter = linkResolveJournalFilter(lp, reads, scope.chatBranchId ?? null);
       const { fresh, mark } = await checkPluginJournalMark(
         infra.adapter,
         infra.registry,
         hit?.mark ?? null,
-        linkResolveJournalFilter(lp, reads, scope.chatBranchId ?? null),
+        filter,
       );
-      kept = { mark, answers: hit && fresh ? hit.answers : new Map() };
+      let answers = new Map<string, LinkPageVariant | null>();
+      if (hit && fresh) answers = hit.answers;
+      else if (hit && reads.pageColumns) {
+        // Carry the kept answers forward: drop only the pages a changed row
+        // names; those are asked again below with the pages never asked.
+        const delta = await readLinkResolveDelta(infra.adapter, infra.registry, {
+          pluginId: lp.pluginId,
+          schema: `plugin_${lp.slug.replace(/-/g, "_")}`,
+          pageColumns: reads.pageColumns,
+          from: hit.mark,
+          to: mark,
+          filter,
+        });
+        if ("pages" in delta) {
+          answers = new Map(hit.answers);
+          for (const id of delta.pages) answers.delete(id);
+        } else {
+          // One line per whole re-ask, with why: the scale gate counts them.
+          console.info(`[link-resolve] ${lp.slug} asked about every page again: ${delta.whole}`);
+        }
+      }
+      kept = { mark, answers };
       toAsk = pageIds.filter((id) => !kept?.answers.has(id));
     }
     // A refill that is kept must be read after its mark: the render pass's
