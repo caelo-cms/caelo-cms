@@ -35,14 +35,17 @@ export const NOSNIFF = "nosniff";
 export const SVG_CONTENT_TYPE = "image/svg+xml";
 
 /**
- * Regex (source string, unanchored at the start) matching a URL path that
- * ends in `.svg`, any case. Only syntax shared by ECMAScript and RE2 (no
- * inline flags), so the same string serves Firebase Hosting's `regex`
- * header matcher and `RegExp` here. The static generator names every file
- * by extension (`contentTypeFor` in admin-core), so the extension is what
- * decides the served `image/svg+xml`.
+ * Regex (source string) matching a whole URL path that ends in `.svg`, any
+ * case. Anchored at both ends because Firebase Hosting matches a header
+ * `regex` against the WHOLE request path (`firebase-version-headers.ts` in
+ * admin-core): the unanchored `\.[sS][vV][gG]$` it replaced never matched
+ * there, so SVGs went out without the CSP. Self-anchored, it means the same
+ * under a full match and a `RegExp` search. Only syntax shared by
+ * ECMAScript and RE2 (no inline flags). The static generator names every
+ * file by extension (`contentTypeFor` in admin-core), so the extension is
+ * what decides the served `image/svg+xml`.
  */
-export const SVG_PATH_PATTERN = "\\.[sS][vV][gG]$";
+export const SVG_PATH_PATTERN = "^/.*\\.[sS][vV][gG]$";
 
 /** True when `contentType` is SVG (case and parameters such as `; charset=` ignored). */
 export function isSvgContentType(contentType: string): boolean {

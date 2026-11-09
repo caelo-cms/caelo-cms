@@ -69,7 +69,7 @@ The policy is stored live in `site_settings.security_headers` and read by the bu
 
 | Host | Where the headers come from | Note |
 |---|---|---|
-| `gcp-firebase` | a header entry in the Hosting version (`siteHeaderEntry`), matched by `SITE_DOCUMENT_PATH_PATTERN` | Goes live atomically with the release. Disjoint from the SVG entry, because Firebase names no winner when two set one header. Hosting sends HSTS itself, so the policy's `hsts` has no effect |
+| `gcp-firebase` | a header entry in the Hosting version (`siteHeaderEntry`), matched by `SITE_DOCUMENT_PATH_PATTERN` | Goes live atomically with the release. Disjoint from the SVG entry, because Firebase names no winner when two set one header. Hosting sends HSTS itself, so the policy's `hsts` has no effect. Every `regex` must match the whole path (see below) |
 | `gcp` | the static backend bucket's `customResponseHeaders`, written by Publish live and rollback (`gcp-site-headers.ts`) | After the files, and the load balancer takes minutes to apply it, so the previous build's headers sit on the new files meanwhile. One list per bucket, so it covers every file; harmless, a CSP acts on documents only and an SVG is a download there. Needs `compute.backendBuckets.get` and `.update` (contract 23). The converge and the stack leave the non-nosniff entries alone |
 | self-hosted | `@caelo_documents` header rules appended to `_redirects.caddy`, which the public site block already imports and the Caddy container reloads; `syncRedirects` keeps them | No Caddyfile change |
 | staging gateway | the staged manifest's `securityHeaders`, on HTML answers, on every provider | No HSTS: the host is a staging host |
@@ -77,6 +77,12 @@ The policy is stored live in `site_settings.security_headers` and read by the bu
 | `aws`, `azure` | none | No publisher exists (#749, #750): a Stage refuses with the publisher's message, and `security_headers.get`, `.set` and the proposal say so. Their publishers must serve the set when they land |
 
 A build staged before this feature has no set. Publish live of such a run, or a rollback to one, ships no page headers until the next Stage and Publish live.
+
+### Firebase matches a header regex against the whole path
+
+Firebase Hosting runs a version's header `regex` (RE2) as a match of the whole request path, not a search. The reference only says "to match against the request URL path"; the guide's examples pin it (`/firebase/.*` "equivalent to" the glob `/firebase/**`), and the API shows it: a version created with `^/` comes back from `GET …/channels/live` as `^/$`. Up to v0.12.1 Caelo wrote three entries as searches, so on every gcp-firebase install `nosniff` reached only `/` (not robots.txt, media, 404 pages or any other page), no SVG got its sandboxing CSP, and no favicon its `image/x-icon` type. Every pattern Caelo hands Firebase now starts with `^/` and ends with `$` (`firebase-version-headers.ts`), so the API stores it unchanged and a search means the same; the header tests evaluate every entry as a whole-path match, so a search-only pattern fails them.
+
+A live release of an older version keeps its stored entries until something releases a new version. After the upgrade the admin's boot finds the stale entries on the live release and runs one redirect sync, which re-releases the same files with the current fixed headers (`refreshStaleLiveReleaseAtBoot`). Promote, rollback, the plugin-data release and every redirect sync write them too, so a rollback to an older build is protected as well; only a version that is never released again keeps the old entries, and nothing serves it.
 
 ## Who may change it
 
@@ -88,8 +94,8 @@ A site whose tag container needs inline script stays on `report_only`. There is 
 
 ## What a real host still has to prove
 
-Unit tests pin each host's config. Only Caddy was run for real (the compose stack's `caddy:2-alpine` serving a generated snippet: documents, a 404 and no header on `.svg` or `/_assets/`). No Firebase or `gcp` host has served this yet.
+Unit tests pin each host's config. Caddy was run for real (the compose stack's `caddy:2-alpine` serving a generated snippet: documents, a 404 and no header on `.svg` or `/_assets/`), and a v0.12.1 gcp-firebase install served the document entry: it deploys, `/` and the custom 404 at an extensionless path carry it, robots.txt does not. No `gcp` host has served this yet.
 
-- **Firebase:** that a version with the document entry deploys (`SITE_DOCUMENT_PATH_PATTERN` is checked in ECMAScript, and uses only syntax RE2 shares), that a header of up to 6 KiB is accepted and served, and that the entry reaches a custom 404 at an extensionless path.
+- **Firebase:** that a header of up to 6 KiB is accepted and served.
 - **`gcp`:** that `backendBuckets.patch` accepts the list, including a 6 KiB value, that the headers survive Cloud CDN's cache, and that contract 23's role is enough.
 - **Browsers:** that a real tracked page raises no violation with the derived policy, also after consent. A plugin-data build re-renders bake regions without a new CSP, so an inline script a plugin's `staticRender` adds later would need a new Stage; no shipped plugin renders one.

@@ -42,8 +42,8 @@ import {
   makePluginImageProvider,
   makePluginTextProvider,
   mcpBackPressureResponse,
+  refreshStaleLiveReleaseAtBoot,
   registerRedirectSyncRunner,
-  repointStaleGatewayRewriteAtBoot,
   retireLegacyStagingPreviewsAtBoot,
   setStagingCaptureAccess,
   stagingCaptureAccess,
@@ -494,18 +494,19 @@ function bootstrapRedirectSync(): void {
   const { adapter, registry } = getQueryContext();
   registerRedirectSyncRunner({ adapter, registry });
   // #1380 — a converge that moved the visitor gateway leaves the live
-  // Firebase release's /api/** rewrite on the old service; the first boot
-  // after it re-releases the served version with the current rewrite (no
-  // build). Every other provider returns at once.
-  void repointStaleGatewayRewriteAtBoot({ adapter, registry }).then(
+  // Firebase release's /api/** rewrite on the old service, and a release
+  // that fixes the fixed headers (nosniff, SVG CSP) leaves the old ones live;
+  // the first boot after either re-releases the served version with the
+  // current config (no build). Every other provider returns at once.
+  void refreshStaleLiveReleaseAtBoot({ adapter, registry }).then(
     (outcome) => {
-      if (outcome === "repointed") {
+      if (outcome === "refreshed") {
         console.info(
-          "[bootstrap.gateway-rewrite] the live /api/** rewrite now names the current gateway",
+          "[bootstrap.live-release] the live release now has the current /api/** rewrite and security headers",
         );
       }
     },
-    (e) => console.error("[bootstrap.gateway-rewrite] failed", e),
+    (e) => console.error("[bootstrap.live-release] failed", e),
   );
   // #1331 — preview channels an older release staged to are public by URL:
   // delete them, so the staging gateway stays the only path to staged pages.

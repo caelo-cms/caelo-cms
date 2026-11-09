@@ -35,10 +35,13 @@ import {
   SVG_DOCUMENT_CSP,
 } from "@caelo-cms/shared";
 import {
-  siteHeaderEntry,
+  type FirebaseHeaderEntry,
+  hasCurrentFixedHeaders,
+  SECURITY_HEADER_ENTRIES,
   VERSION_CONFIG_HEADERS,
-  withSecurityHeaders,
-} from "../static-publisher-firebase.js";
+  withCurrentFixedHeaders,
+} from "../firebase-version-headers.js";
+import { siteHeaderEntry, staticFileHeaderEntries } from "../static-publisher-firebase.js";
 
 describe("a build's page headers (#1454)", () => {
   const set = composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS);
@@ -50,15 +53,62 @@ describe("a build's page headers (#1454)", () => {
     expect(entry.headers["Strict-Transport-Security"]).toBeUndefined();
   });
 
-  it("survive a promote or rollback, which replace the other security entries", () => {
+  it("survive a promote or rollback, which replace the fixed entries", () => {
     const entry = siteHeaderEntry(set);
-    const out = withSecurityHeaders({ headers: [entry] });
+    const out = withCurrentFixedHeaders({ headers: [entry] });
     expect(out.headers).toContainEqual(entry);
-    const legacy = withSecurityHeaders({
-      headers: [{ regex: "^/", headers: { "X-Content-Type-Options": "nosniff" } }],
-    });
-    expect(legacy.headers?.filter((e) => e.regex === "^/")).toHaveLength(1);
-    expect(legacy.headers?.some((e) => e.regex === SITE_DOCUMENT_PATH_PATTERN)).toBe(false);
+    expect(out.headers?.filter((e) => e.regex === SITE_DOCUMENT_PATH_PATTERN)).toHaveLength(1);
+  });
+});
+
+describe("withCurrentFixedHeaders / hasCurrentFixedHeaders", () => {
+  // The fixed entries as the live channel of a v0.12.1 install returned
+  // them: Hosting stored the unanchored patterns anchored at both ends.
+  const V0121_AS_STORED: FirebaseHeaderEntry[] = [
+    { regex: "^\\.ico$", headers: { "Content-Type": "image/x-icon" } },
+    { regex: "^/$", headers: { "X-Content-Type-Options": "nosniff" } },
+    { regex: "^\\.[sS][vV][gG]$", headers: { "Content-Security-Policy": SVG_DOCUMENT_CSP } },
+  ];
+  const cache = VERSION_CONFIG_HEADERS[0];
+  const staticFile = {
+    regex: "^/bot/ips\\.json$",
+    headers: { "Content-Type": "application/json" },
+  };
+  const page = siteHeaderEntry(composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS));
+  const robots = { glob: "**", headers: { "X-Robots-Tag": "noindex" } };
+
+  it("replaces the fixed entries a v0.12.1 release stored, and keeps the build's own", () => {
+    const stale = { headers: [cache, ...V0121_AS_STORED, staticFile, page, robots] };
+    expect(hasCurrentFixedHeaders(stale)).toBe(false);
+    const fixed = withCurrentFixedHeaders(stale);
+    expect(fixed.headers).toEqual([
+      cache,
+      staticFile,
+      page,
+      robots,
+      VERSION_CONFIG_HEADERS[2],
+      ...SECURITY_HEADER_ENTRIES,
+    ]);
+    expect(hasCurrentFixedHeaders(fixed)).toBe(true);
+    // Idempotent: a current config is left as it is.
+    expect(withCurrentFixedHeaders(fixed)).toEqual(fixed);
+  });
+
+  it("a fresh build's config is current, also with the header keys in another order", () => {
+    expect(hasCurrentFixedHeaders({ headers: [...VERSION_CONFIG_HEADERS, page] })).toBe(true);
+    const asReturned = VERSION_CONFIG_HEADERS.map((e) => ({
+      regex: e.regex,
+      headers: Object.fromEntries(Object.entries(e.headers).reverse()),
+    }));
+    expect(hasCurrentFixedHeaders({ headers: asReturned })).toBe(true);
+  });
+
+  it("a config missing a fixed entry, or with a duplicate, is stale", () => {
+    expect(hasCurrentFixedHeaders({ headers: [cache, page] })).toBe(false);
+    expect(hasCurrentFixedHeaders({})).toBe(false);
+    expect(
+      hasCurrentFixedHeaders({ headers: [...VERSION_CONFIG_HEADERS, SECURITY_HEADER_ENTRIES[0]] }),
+    ).toBe(false);
   });
 });
 
@@ -116,21 +166,115 @@ describe("VERSION_CONFIG_HEADERS — Firebase Hosting REST API shape", () => {
 });
 
 /**
- * Evaluate the version config the way Firebase does: every entry whose
- * matcher hits the REQUEST URL path contributes its headers. Entries
- * here are all `regex` (RE2); the patterns stay inside the
- * RE2 ∩ ECMAScript subset, so `RegExp` gives the same answer.
+ * Whether Hosting applies `regex` to `path`: RE2 matched against the WHOLE
+ * request path (firebase-version-headers.ts cites why), which is
+ * `^(?:regex)$` in ECMAScript. The patterns stay inside the
+ * RE2 ∩ ECMAScript subset, so `RegExp` gives Hosting's answer. A
+ * `new RegExp(regex).test(path)` search is NOT what Hosting runs — this
+ * suite used one, and so passed while `^/` sent nosniff only on `/` and the
+ * SVG CSP reached no path at all.
  */
-function headerValuesFor(path: string, header: string): string[] {
+function hostingMatches(regex: string, path: string): boolean {
+  return new RegExp(`^(?:${regex})$`).test(path);
+}
+
+/** Every value Hosting sends for `header` on `path`, one per matching entry. */
+function headerValuesFor(
+  path: string,
+  header: string,
+  entries: readonly FirebaseHeaderEntry[] = VERSION_CONFIG_HEADERS,
+): string[] {
   const out: string[] = [];
-  for (const entry of VERSION_CONFIG_HEADERS) {
-    const { regex } = entry as { regex?: string };
+  for (const entry of entries) {
+    const { regex } = entry;
     if (regex === undefined) throw new Error("glob entries are not evaluated by this helper");
-    const value = (entry.headers as Record<string, string>)[header];
-    if (value !== undefined && new RegExp(regex).test(path)) out.push(value);
+    const value = entry.headers[header];
+    if (value !== undefined && hostingMatches(regex, path)) out.push(value);
   }
   return out;
 }
+
+/** Every header Hosting sends on `path`; a header set by two entries fails. */
+function responseHeadersFor(
+  path: string,
+  entries: readonly FirebaseHeaderEntry[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const entry of entries) {
+    if (entry.regex === undefined || !hostingMatches(entry.regex, path)) continue;
+    for (const [name, value] of Object.entries(entry.headers)) {
+      if (name in out) throw new Error(`${path}: two entries set ${name}`);
+      out[name] = value;
+    }
+  }
+  return out;
+}
+
+describe("a production version's headers under Hosting's whole-path match", () => {
+  const pageHeaders = composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS).headers;
+  const entries: FirebaseHeaderEntry[] = [
+    ...VERSION_CONFIG_HEADERS,
+    ...staticFileHeaderEntries([{ path: "bot/ips.json", contentType: "application/json" }]),
+    siteHeaderEntry(composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS)),
+  ];
+  const nosniff = { "X-Content-Type-Options": NOSNIFF };
+  const page = { "Cache-Control": HTML_CACHE_CONTROL, ...nosniff, ...pageHeaders };
+
+  it.each<[string, Record<string, string>]>([
+    ["/", page],
+    ["/about", page],
+    ["/about/", page],
+    ["/x/index.html", page],
+    ["/robots.txt", { "Cache-Control": HTML_CACHE_CONTROL, ...nosniff }],
+    ["/_assets/x.0123456789abcdef.png", { "Cache-Control": IMMUTABLE_CACHE_CONTROL, ...nosniff }],
+    [
+      "/_assets/logo.0123456789abcdef.svg",
+      {
+        "Cache-Control": IMMUTABLE_CACHE_CONTROL,
+        ...nosniff,
+        "Content-Security-Policy": SVG_DOCUMENT_CSP,
+      },
+    ],
+    [
+      "/media/a.svg",
+      {
+        "Cache-Control": HTML_CACHE_CONTROL,
+        ...nosniff,
+        "Content-Security-Policy": SVG_DOCUMENT_CSP,
+      },
+    ],
+    [
+      "/favicon.ico",
+      { "Cache-Control": HTML_CACHE_CONTROL, ...nosniff, "Content-Type": "image/x-icon" },
+    ],
+    [
+      "/bot/ips.json",
+      { "Cache-Control": HTML_CACHE_CONTROL, ...nosniff, "Content-Type": "application/json" },
+    ],
+    ["/api/x", nosniff],
+  ])("%s gets exactly its headers", (path, expected) => {
+    expect(responseHeadersFor(path, entries)).toEqual(expected);
+  });
+
+  it("every regex is anchored at both ends, so Hosting stores it unchanged and a search agrees", () => {
+    const probes = [
+      "/",
+      "/a",
+      "/a/",
+      "/a/b.svg",
+      "/a.ico",
+      "/_assets/x.0123456789abcdef.png",
+      "/api/x",
+      "x",
+    ];
+    for (const entry of entries) {
+      const regex = entry.regex ?? "";
+      expect(regex.startsWith("^/")).toBe(true);
+      expect(regex.endsWith("$")).toBe(true);
+      for (const p of probes) expect(new RegExp(regex).test(p)).toBe(hostingMatches(regex, p));
+    }
+  });
+});
 
 function cacheControlsFor(path: string): string[] {
   return headerValuesFor(path, "Cache-Control");
