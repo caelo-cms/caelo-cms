@@ -272,6 +272,7 @@ export {
   collectUrlAnnotations,
   type DecodedPagePath,
   decodePagePath,
+  pathEndsInSlug,
   type RegisteredUrlContribution,
   type ResolvedPageUrl,
   resolvePageUrl,
