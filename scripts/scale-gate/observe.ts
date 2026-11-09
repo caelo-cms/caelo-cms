@@ -169,7 +169,7 @@ export interface StatementCost {
   readonly meanMs: number;
   readonly rows: number;
   readonly buffers: number;
-  /** The normalised text, whitespace collapsed, cut at 400 characters. */
+  /** The normalised text, whitespace collapsed, cut at 2000 characters (the WHERE clause of a wide SELECT). */
   readonly query: string;
 }
 
@@ -205,7 +205,7 @@ export async function topStatements(container: string, limit: number): Promise<S
               round(s.mean_exec_time::numeric, 1)::float AS "meanMs",
               s.rows::bigint AS rows,
               (s.shared_blks_hit + s.shared_blks_read)::bigint AS buffers,
-              left(regexp_replace(s.query, '\\s+', ' ', 'g'), 400) AS query
+              left(regexp_replace(s.query, '\\s+', ' ', 'g'), 2000) AS query
          FROM pg_stat_statements s JOIN pg_database d ON d.oid = s.dbid
         WHERE s.query NOT ILIKE '%pg_stat_statements%'
         ORDER BY s.total_exec_time DESC LIMIT ${Math.trunc(limit)}) t`,
