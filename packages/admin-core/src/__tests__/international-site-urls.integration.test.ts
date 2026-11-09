@@ -490,6 +490,14 @@ describe("create_variant — the slug the caller cannot invent", () => {
   // takes the URL over (deploy-promote-seo.integration.test.ts).
   it("leaves a live rule on a chat-branch variant's URL alone and names it (#1517)", async () => {
     const sourceId = await seedPage("t395-chat-source");
+    const kidSource = await execute(registry, adapter, SYS_CTX, "pages.create", {
+      slug: "t395-chat-kid",
+      title: "t395-chat-kid",
+      parentPageId: sourceId,
+      pageType: "home",
+    });
+    if (!kidSource.ok) throw new Error(JSON.stringify(kidSource.error));
+    const kidSourceId = (kidSource.value as { pageId: string }).pageId;
     await sqlSystem((tx) =>
       tx.unsafe(
         `INSERT INTO redirects (from_path, to_path, status_code, created_by)
@@ -508,19 +516,41 @@ describe("create_variant — the slug the caller cannot invent", () => {
     // A chat call acts for a person who may write content.
     const operator = "5e1d7a3c-1517-4c1e-9a1e-0000000015a7";
     await ensureRoleUser(ADMIN_URL, operator, "owner");
+    const invocation = {
+      origin: "chat" as const,
+      actorId: operator,
+      operatorActorId: operator,
+      chatBranchId,
+      chatTaskId: chatSessionId,
+    };
+    // Everything the provider sync would push: the rows and their change log.
+    const liveState = () =>
+      sqlSystem(async (tx) => ({
+        rows: await tx.unsafe(
+          "SELECT from_path, to_path, status_code, created_at FROM redirects ORDER BY from_path",
+        ),
+        changes: await tx.unsafe("SELECT count(*)::int AS n FROM redirect_changes"),
+      }));
+    const before = await liveState();
 
     const created = await runPluginOperation({
-      invocation: {
-        origin: "chat",
-        actorId: operator,
-        operatorActorId: operator,
-        chatBranchId,
-        chatTaskId: chatSessionId,
-      },
+      invocation,
       pluginSlug: "international-site",
       operationName: "create_variant",
       args: { sourcePageId: sourceId, localeCode: "de", slug: "t395-chat" },
     });
+    // The child's variant joins the locale under the new parent: a move from
+    // its pre-link path, which was never public either (the #1517 report's
+    // /de/empco/detection -> /en/empco/detection 301s).
+    const kid = await runPluginOperation({
+      invocation,
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: kidSourceId, localeCode: "de", slug: "t395-chat-kid" },
+    });
+    if (!kid.ok) throw new Error(JSON.stringify(kid.error));
+    expect((kid.value as { path: string }).path).toBe("/de/t395-chat/t395-chat-kid");
+    expect(await liveState()).toEqual(before);
 
     if (!created.ok) throw new Error(JSON.stringify(created.error));
     const value = created.value as { pageId: string; path: string; redirectOnThisUrl?: string };

@@ -68,21 +68,33 @@ export function collapseRedirectChainsSql(moves: ReadonlyArray<Pick<PathMove, "f
 }
 
 /**
- * The moves of pages on the main line: a page a chat's branch holds
- * (`chat_branch_id` set until the merge takes it live) moves without live
- * effects (#1517, see the module comment).
+ * #1517 — the pages of `pageIds` only a chat's branch holds
+ * (`chat_branch_id` set until the merge takes them to main). Such a page
+ * was never served, so no page write may touch the redirects table for it
+ * (see the module comment): every page-driven redirect write asks here
+ * first (`scripts/no-draft-live-writes.test.ts` pins them).
  */
+export async function branchOnlyPageIds(
+  tx: TransactionRunner,
+  pageIds: ReadonlyArray<string>,
+): Promise<Set<string>> {
+  if (pageIds.length === 0) return new Set();
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id FROM pages
+    WHERE id = ANY(${uuidArray([...pageIds])}) AND chat_branch_id IS NOT NULL
+  `)) as unknown as { id: string }[];
+  return new Set(rows.map((r) => r.id));
+}
+
+/** The moves of pages on the main line (#1517, {@link branchOnlyPageIds}). */
 async function mainLineMoves(
   tx: TransactionRunner,
   moves: ReadonlyArray<PathMove>,
 ): Promise<PathMove[]> {
-  if (moves.length === 0) return [];
-  const branchOnly = (await tx.execute(sql`
-    SELECT id::text AS id FROM pages
-    WHERE id = ANY(${uuidArray(moves.map((m) => m.pageId))}) AND chat_branch_id IS NOT NULL
-  `)) as unknown as { id: string }[];
-  if (branchOnly.length === 0) return [...moves];
-  const skipped = new Set(branchOnly.map((r) => r.id));
+  const skipped = await branchOnlyPageIds(
+    tx,
+    moves.map((m) => m.pageId),
+  );
   return moves.filter((m) => !skipped.has(m.pageId));
 }
 

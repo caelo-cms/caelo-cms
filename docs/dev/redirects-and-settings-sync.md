@@ -58,6 +58,12 @@ An approved rule takes the ordinary sync, right after the commit, and the plan t
 | self-hosted | The Caddy `map` value is the URL (`redir` takes an absolute target); `_redirects` carries it unchanged. |
 | `aws`, `azure` | Refused at the proposal until their publishers exist (#749, #750). `frontDoorRedirectRules` throws on one. The real publishers must lift this deliberately: CloudFront's value can carry a URL, a Front Door rule needs a `customHostname`. |
 
+## No live write as a side effect
+
+#1517. A live-write kind changes what visitors get the moment its transaction commits, so it is written only by an op whose purpose IS that write: the `redirects.*` ops and their tools and Settings form, the approved external rule, the page-move gateway for pages on the main line (`applyPathMoveEffects`: slug changes, `move_pages`, reverts, the merge's recompose), `pages.delete`'s dead-URL 301, an approved URL migration, the Publish live take-over (below), and the `international-site` plugin's approval-gated locale-root redirect. A draft or authoring write never writes one as a side effect. A page only a chat's branch holds (`chat_branch_id` set, `branchOnlyPageIds`) is served nowhere outside the chat's preview, so the gateway and the delete leave it out. This holds whether a core op or a plugin operation calling that op makes the write.
+
+`scripts/no-draft-live-writes.test.ts` pins every source that writes `redirects` rows, runs a redirect op (through `execute` or a plugin's `cms.call`), asks for the provider sync (`requestRedirectSync`, `markRedirectsBehind`) or runs the gateway, each with its reason. A new caller fails CI and is a reviewed decision. `draft-no-live-writes.integration.test.ts` and the `create_variant` cases of `international-site-urls.integration.test.ts` drive every page op that moves a URL against draft pages: the rows, `redirect_changes` and `redirect_sync_state` must stay unchanged. Left: the same pin for the other live-write kinds, a runtime guard keyed on the calling op, a main-line page deleted in a chat (#1523), and merged moves of live pages (#1521).
+
 ## A rule on a page's URL
 
 A row of the table and a page can share a path, in either spelling: a row answers its path with and without the trailing slash (`redirectFromPathSpellings`), and a table imported from a CMS with `/`-terminated URLs stores `/old/`.

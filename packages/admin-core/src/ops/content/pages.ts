@@ -67,7 +67,7 @@ import {
 import { planPageMoves } from "./page-move-plan.js";
 import { executePageMoves } from "./page-moves.js";
 import { ancestorIdsOf, loadPageChains, loadPageTree, loadSubtreeIds } from "./page-tree.js";
-import { applyPathMoveEffects } from "./path-moves.js";
+import { applyPathMoveEffects, branchOnlyPageIds } from "./path-moves.js";
 
 const pageRowSchema = z.object({
   id: z.string(),
@@ -2155,7 +2155,13 @@ async function deletePageHandler(
   // Dead-URL redirect, on this tx. `state` carries the page's slug
   // (delete doesn't change it). A failed 301 aborts the delete rather than
   // leaving the URL silently unredirected (§2 no-fallbacks).
-  if (input.disposition === "redirect" && state) {
+  // #1517 — not for a page only a chat's branch holds: its URL was never
+  // public, and the upsert would replace a live rule sitting on that path.
+  if (
+    input.disposition === "redirect" &&
+    state &&
+    !(await branchOnlyPageIds(tx, [input.pageId])).has(input.pageId)
+  ) {
     // #390 — the composed path (prefixes included) is the URL that
     // needs the 301, not the bare slug shape.
     const pathRows = (await tx.execute(sql`
