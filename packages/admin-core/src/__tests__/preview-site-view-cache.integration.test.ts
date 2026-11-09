@@ -47,10 +47,11 @@ afterAll(async () => {
 
 describe("preview site-view cache (#1212)", () => {
   it("serves an unchanged draft from the cache", async () => {
-    await site.measure();
-    const { cold, warm } = await site.measure();
-    // The first render of measure() after an earlier one is already warm.
-    expect(warm).toBe(cold);
+    // measure() renders cold (the site view cache cleared), then warm.
+    const { cold, warm, branchWarm } = await site.measure();
+    expect(warm).toBeLessThan(cold);
+    // The statements below are the last render's: the warm branch one.
+    expect(branchWarm).toBeGreaterThan(0);
     expect(
       site.lastStatements().some((s) => /FROM media_assets WHERE deleted_at IS NULL/.test(s)),
     ).toBe(false);
