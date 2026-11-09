@@ -386,6 +386,64 @@ describe("nested page URLs — chat branch + publish + revert", () => {
     expect(await pathOf(page)).toBe(`/${PFX}-br`);
   });
 
+  it("#1269 — in a chat, a URL is held where the chat's pending renames put a page, not where it is stored", async () => {
+    const parent = await makePage("hd-p");
+    const child = await makePage("hd-c", parent);
+    const renamed = await makePage("hd-old");
+    const other = await makePage("hd-o");
+    const session = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      isolation: "experiment",
+      title: `${PFX}-chat-hd`,
+    });
+    if (!session.ok) throw new Error("session");
+    const { chatSessionId, chatBranchId } = session.value as {
+      chatSessionId: string;
+      chatBranchId: string;
+    };
+    const chatCtx: ExecutionContext = { ...SYSTEM, chatBranchId, chatTaskId: chatSessionId };
+    // Pending in the chat: renamed -> hd-new, parent -> hd-p2 (its child follows).
+    const renames = await move(
+      [
+        { pageId: renamed, parentPageId: null, newSlug: `${PFX}-hd-new` },
+        { pageId: parent, parentPageId: null, newSlug: `${PFX}-hd-p2` },
+      ],
+      chatCtx,
+    );
+    expect(renames.ok).toBe(true);
+    expect(await pathOf(renamed)).toBe(`/${PFX}-hd-old`);
+
+    // The renamed page holds its new URL in the chat …
+    const onNew = await execute(registry, adapter, chatCtx, "pages.create", {
+      slug: `${PFX}-hd-new`,
+      title: "x",
+      templateId,
+    });
+    expect(errMsg(onNew)).toMatch(new RegExp(`page already exists at /${PFX}-hd-new`));
+    // … and the child holds its composed URL under the renamed parent.
+    const onChild = await move(
+      [{ pageId: other, parentPageId: parent, newSlug: `${PFX}-hd-c` }],
+      chatCtx,
+    );
+    expect(errMsg(onChild)).toMatch(
+      new RegExp(`/${PFX}-hd-p2/${PFX}-hd-c, which is already page ${child}`),
+    );
+    // The stored URLs the chat moved away from are free in the chat.
+    const onOld = await makePage("hd-old", undefined, chatCtx);
+    expect(onOld).toBeTruthy();
+    const underOldParent = await move(
+      [{ pageId: other, parentPageId: null, newSlug: `${PFX}-hd-p` }],
+      chatCtx,
+    );
+    expect(underOldParent.ok).toBe(true);
+    // On main nothing moved: the old URLs are still held there.
+    const onMain = await execute(registry, adapter, SYSTEM, "pages.create", {
+      slug: `${PFX}-hd-old`,
+      title: "x",
+      templateId,
+    });
+    expect(errMsg(onMain)).toMatch(/page already exists at/);
+  });
+
   it("a chat's own new page moved in the chat lists at its pending path; 'skip' survives publish", async () => {
     const target = await makePage("br2-t");
     const live = await makePage("br2-live");
