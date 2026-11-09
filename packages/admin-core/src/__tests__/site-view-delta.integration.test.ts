@@ -220,6 +220,20 @@ describe("site view delta (#1270)", () => {
     expect(view.pages.find((p) => p.id === e)?.title).toBe("Written after the read");
   });
 
+  it("shows the reading transaction's own earlier write (a dirty mark)", async () => {
+    const [, , , , , f] = fillerIds;
+    await loadAndCompare(null);
+    await adapter.withAdminTransaction(COST_SYSTEM, async (tx) => {
+      await tx.execute(
+        sql`UPDATE pages SET title = 'Written before the read' WHERE id = ${f}::uuid`,
+      );
+      const view = await loadSiteView(tx, null);
+      expect(view.mark.dirty).toBe(true);
+      expect(view.pages.find((p) => p.id === f)?.title).toBe("Written before the read");
+      expect(view).toEqual(await readSiteView(tx, null, view.mark));
+    });
+  });
+
   it("reads the whole site again past MAX_DELTA_CHANGES journal rows, still exact", async () => {
     await site.seedFillerPages(152, 152 + MAX_DELTA_CHANGES + 1);
     const r = await both();

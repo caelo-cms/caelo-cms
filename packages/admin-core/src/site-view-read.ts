@@ -22,7 +22,8 @@
  *
  * A delta falls back to a whole read when it cannot be exact or would
  * not be cheaper: the reader's snapshot does not follow the mark (an old
- * transaction must not be served newer rows), the journal lost rows the
+ * transaction must not be served newer rows), the reader already wrote
+ * rows the view reads (a dirty mark), the journal lost rows the
  * comparison needs, a truncate, a table this file does not know, or more
  * than {@link MAX_DELTA_CHANGES} journal rows or pages (a Stage of the
  * whole draft).
@@ -235,7 +236,10 @@ export async function readSiteDelta(
   },
 ): Promise<SiteViewParts | null> {
   const { branchId, parts, from, to, filter } = input;
-  if (!snapshotFollows(from.snapshot, to.snapshot)) return null;
+  // A reader that already wrote rows of the view sees them, but its own xid
+  // can be at the target's xmax, where `readChanges` would leave them out;
+  // such a view is not cached anyway (`loadSiteView`).
+  if (to.dirty || !snapshotFollows(from.snapshot, to.snapshot)) return null;
   const read = await readChanges(tx, {
     cursor: from.snapshot,
     target: to.snapshot,
