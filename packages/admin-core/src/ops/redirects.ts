@@ -15,7 +15,12 @@
  * Deleting one, or replacing it with a same-site target, stays routine.
  */
 
-import { defineOperation, type TransactionRunner, textArray } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  handlerErrorFromDetails,
+  type TransactionRunner,
+  textArray,
+} from "@caelo-cms/query-api";
 import {
   err,
   ok,
@@ -161,6 +166,28 @@ export const createRedirectOp = defineOperation({
   },
 });
 
+/**
+ * #1538 — `redirects.list` pages by keyset on `from_path` (unique, so a
+ * total order, and indexed): the cursor is the last row's `from_path`, as
+ * opaque base64url text, and a deep page costs what the first one does.
+ */
+function encodeRedirectCursor(fromPath: string): string {
+  return Buffer.from(JSON.stringify(["redirects.list", fromPath])).toString("base64url");
+}
+
+/** The `from_path` a `redirects.list` cursor continues after, or null for anything else. */
+function decodeRedirectCursor(cursor: string): string | null {
+  try {
+    const v = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
+    if (Array.isArray(v) && v.length === 2 && v[0] === "redirects.list") {
+      return typeof v[1] === "string" && v[1].startsWith("/") ? v[1] : null;
+    }
+  } catch {
+    // Not base64url JSON: an unknown cursor.
+  }
+  return null;
+}
+
 export const listRedirectsOp = defineOperation({
   name: "redirects.list",
   readScope: "request",
@@ -177,28 +204,48 @@ export const listRedirectsOp = defineOperation({
         .union([z.literal(301), z.literal(302), z.literal(307), z.literal(308), z.literal(410)])
         .optional(),
       limit: z.number().int().positive().max(1000).default(200),
-      /** #849 — rows to skip, so a reader can page through every row. */
-      offset: z.number().int().min(0).default(0),
+      /**
+       * #1538 — `nextCursor` of the previous page (same `query` and
+       * `statusCode`): the rows after it, ordered by `fromPath`.
+       */
+      cursor: z.string().min(1).max(4000).optional(),
     })
     .strict(),
   output: z.object({
+    /** Ordered by `fromPath`. */
     redirects: z.array(redirectRow),
+    /** Every row matching `query` and `statusCode`, on all pages. */
     totalCount: z.number().int(),
+    /** Continue with `cursor: nextCursor`; null when no row follows. */
+    nextCursor: z.string().nullable(),
   }),
   handler: async (_ctx, input, tx) => {
+    const after = input.cursor === undefined ? null : decodeRedirectCursor(input.cursor);
+    if (input.cursor !== undefined && after === null) {
+      return err(
+        handlerErrorFromDetails("redirects.list", [
+          {
+            path: ["cursor"],
+            message: "is not a cursor this redirect list returned",
+            next: "pass the next cursor exactly as the previous call printed it, or omit it to start at the first page",
+          },
+        ]),
+      );
+    }
     const queryFilter =
       input.query && input.query.length > 0
         ? sql`AND (from_path ILIKE ${`%${input.query}%`} OR to_path ILIKE ${`%${input.query}%`})`
         : sql``;
     const statusFilter =
       input.statusCode !== undefined ? sql`AND status_code = ${input.statusCode}` : sql``;
-    const rows = (await tx.execute(sql`
+    const afterFilter = after === null ? sql`` : sql`AND from_path > ${after}`;
+    const fetched = (await tx.execute(sql`
       SELECT id::text AS id, from_path, to_path, status_code,
              created_by::text AS created_by, created_at
       FROM redirects
-      WHERE 1 = 1 ${queryFilter} ${statusFilter}
-      ORDER BY created_at DESC, id
-      LIMIT ${input.limit} OFFSET ${input.offset}
+      WHERE 1 = 1 ${queryFilter} ${statusFilter} ${afterFilter}
+      ORDER BY from_path
+      LIMIT ${input.limit + 1}
     `)) as unknown as {
       id: string;
       from_path: string;
@@ -211,6 +258,9 @@ export const listRedirectsOp = defineOperation({
       SELECT count(*)::int AS count FROM redirects
       WHERE 1 = 1 ${queryFilter} ${statusFilter}
     `)) as unknown as { count: number }[];
+    // One row past the page says whether another page follows.
+    const rows = fetched.slice(0, input.limit);
+    const last = rows.at(-1);
     return ok({
       redirects: rows.map((r) => ({
         id: r.id,
@@ -221,6 +271,8 @@ export const listRedirectsOp = defineOperation({
         createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
       })),
       totalCount: totalRows[0]?.count ?? 0,
+      nextCursor:
+        fetched.length > input.limit && last ? encodeRedirectCursor(last.from_path) : null,
     });
   },
 });

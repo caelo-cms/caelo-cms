@@ -7,11 +7,9 @@
  * <img src>; never rewrite the variant segment.
  */
 
-import type { ExecutionContext } from "@caelo-cms/shared";
 import { buildMediaUrl, pickAiImageVariant } from "@caelo-cms/shared";
 import { z } from "zod";
-import { makeListReadTool } from "./_make-read-tool.js";
-import type { ToolContext } from "./dispatch.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 
 const findMediaInput = z
   .object({
@@ -56,28 +54,19 @@ export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, Me
     "CORE RULES: `id` = media UUID for `set_theme_asset` / `set_media_alt_many` / `regenerate_media_variants`; take it from here, never invent one. `url` points at an EXISTING variant: use it verbatim in `<img src>` (via `update_modules_many`), never rewrite the variant segment. Reference images (generate/edit guides, not placeable) are hidden unless `visibility` is `reference` | `all`.",
   opName: "media.list",
   input: findMediaInput,
-  listParamDescriptions: {
-    filter: "Server-side search over alt text and filename.",
-    limit: "Default 15, max 50.",
+  paging: {
+    kind: "offset",
+    maxLimit: 50,
+    total: (value) => (value as { totalCount: number }).totalCount,
+    serverFilter: true,
   },
-  buildOpInput: (
-    input: {
-      mime?: string;
-      visibility?: "library" | "reference" | "all";
-      filter?: string;
-      limit?: number;
-      offset?: number;
-      full?: boolean;
-    },
-    _ctx: ExecutionContext,
-    _toolCtx: ToolContext,
-  ) => ({
+  defaultLimit: 15,
+  listParamDescriptions: { filter: "Server-side search over alt text and filename." },
+  buildOpInput: (input) => ({
     ...(input.filter !== undefined ? { query: input.filter } : {}),
     ...(input.mime !== undefined ? { mime: input.mime } : {}),
     ...(input.visibility !== undefined ? { visibility: input.visibility } : {}),
     sort: "most_used",
-    limit: input.full ? 50 : Math.min(input.limit ?? 15, 50),
-    offset: input.offset ?? 0,
   }),
   label: "media",
   rows: (value) => (value as { assets: MediaRow[] }).assets,

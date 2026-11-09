@@ -88,8 +88,8 @@ export const listSnapshotsOp = defineOperation({
              (SELECT count(*) FROM page_layout_snapshots pls WHERE pls.site_snapshot_id = s.id)::int AS page_layout_count
       FROM site_snapshots s
       WHERE 1=1 ${beforeFilter} ${moduleFilter} ${templateFilter} ${pageFilter} ${opKindFilter} ${archivedFilter} ${chatBranchFilter} ${chatSessionFilter}
-      ORDER BY s.created_at DESC
-      LIMIT ${input.limit}
+      ORDER BY s.created_at DESC, s.id DESC
+      LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as {
       id: string;
       actor_id: string;

@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import { makeListReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 
 interface TemplateRow {
   id: string;
@@ -26,6 +26,8 @@ export const listTemplatesTool = makeListReadTool<z.infer<typeof listTemplatesIn
     "`pageBlocks` = the ONLY valid `blockName` for `build_page` / `add_module` target='page' (usually `content`). " +
     "Header/footer/nav are layout chrome (`list_layouts`), placed once via `add_module` target='layout'.",
   opName: "templates.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: listTemplatesInput,
   label: "templates",
   rows: (value) => (value as { templates: TemplateRow[] }).templates,

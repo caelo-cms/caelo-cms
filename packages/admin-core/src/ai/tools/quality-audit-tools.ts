@@ -26,7 +26,8 @@ import type { getAuditOp, listAcceptancesOp, listAuditsOp } from "../../ops/qual
 import { findingOwner } from "../../quality/platform-audits.js";
 import { droppedSincePrevious } from "../../quality/ratchet.js";
 import { describeError } from "./_describe-error.js";
-import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
+import { makeReadTool } from "./_make-read-tool.js";
 import {
   formatCheckNotes,
   formatCheckProblem,
@@ -548,13 +549,13 @@ export const listQualityAuditsTool = makeListReadTool<
     "List recent quality audits of staging deploys, newest first. Find an audit id for `get_quality_audit` or check whether the last Stage's audit still runs.",
   opName: "quality_audits.list",
   input: listAuditsInput,
-  listParamDescriptions: { limit: "Default 20." },
+  paging: { kind: "offset", maxLimit: 100 },
+  defaultLimit: 20,
   buildOpInput: (input, _ctx, toolCtx) => ({
     ...(input.status ? { status: input.status } : {}),
     ...(input.thisChatOnly && toolCtx.chatSessionId
       ? { chatSessionId: toolCtx.chatSessionId }
       : {}),
-    limit: input.full ? 200 : Math.min((input.offset ?? 0) + (input.limit ?? 20), 200),
   }),
   label: "quality_audits",
   rows: (value) => (value as { runs: AuditListRow[] }).runs,
@@ -584,14 +585,17 @@ export const listQualityAcceptancesTool = makeListReadTool<
   name: "list_quality_acceptances",
   description:
     "List accepted quality findings, category scores <100 and page-check rules. Check before asking the operator to decide something again. " +
-    "An acceptance applies ONLY to its page (`site-wide` = site-wide page-check rule, or, with `resource`, one audit for one file Caelo or a plugin ships (`/_caelo/plugin/…`, `/_app/immutable/…`), on every page loading it until the file changes). It records the accepted value — `score`: category score; `finding`: audit score in points (acceptedScore); `check`: up to acceptedCount errors of its rule (auditId = rule id); a worse value blocks again. `filter` searches audit/rule id, reason, page path, file.",
+    "An acceptance applies ONLY to its page (`site-wide` = site-wide page-check rule, or, with `resource`, one audit for one file Caelo or a plugin ships (`/_caelo/plugin/…`, `/_app/immutable/…`), on every page loading it until the file changes). It records the accepted value — `score`: category score; `finding`: audit score in points (acceptedScore); `check`: up to acceptedCount errors of its rule (auditId = rule id); a worse value blocks again.",
   opName: "quality_acceptances.list",
   input: listAcceptancesInput,
+  paging: { kind: "offset", maxLimit: 200, serverFilter: true },
+  listParamDescriptions: {
+    filter: "Substring of audit/rule id, reason, page path or file.",
+  },
   buildOpInput: (input) => ({
     ...(input.pageId ? { pageId: input.pageId } : {}),
     ...(input.filter ? { query: input.filter } : {}),
     ...(input.includeRevoked ? { includeRevoked: true } : {}),
-    limit: input.full ? 500 : Math.min((input.offset ?? 0) + (input.limit ?? 50), 500),
   }),
   label: "quality_acceptances",
   rows: (value) => (value as { acceptances: AcceptanceRow[] }).acceptances,

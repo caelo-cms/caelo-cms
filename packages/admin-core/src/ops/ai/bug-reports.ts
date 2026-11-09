@@ -219,7 +219,7 @@ export const listBugReportsOp = defineOperation({
              count(*) OVER ()::int AS total
       FROM ai_bug_reports
       ${where}
-      ORDER BY created_at DESC
+      ORDER BY created_at DESC, id DESC
       LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as Array<z.infer<typeof bugReportRow> & { total: number }>;
     return ok({

@@ -13,7 +13,7 @@
  */
 
 import { z } from "zod";
-import { makeListReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 
 const listContentInstancesInput = z
   .object({
@@ -48,6 +48,8 @@ export const listContentInstancesTool = makeListReadTool<
     "Narrow by `moduleId` / `slug` / `pageId` (instances used on that page).",
   ].join("\n"),
   opName: "content_instances.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: listContentInstancesInput,
   // The reuse decision rests on usage: ask the op for it.
   buildOpInput: (input) => {

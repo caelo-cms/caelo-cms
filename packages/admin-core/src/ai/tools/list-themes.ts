@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import { makeListReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 
 const listThemesInput = z.object({}).strict();
 
@@ -19,6 +19,8 @@ export const listThemesTool = makeListReadTool<
   description:
     "List themes (TOON rows): UUID (needed by `propose_activate_theme`), slug, display name, active flag.",
   opName: "themes.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: listThemesInput,
   label: "themes",
   rows: (value) =>
