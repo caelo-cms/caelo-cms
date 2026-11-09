@@ -6,7 +6,9 @@
  * plan leaves it out on every provider), but until a build ships the page the
  * rule answers the URL, and once it does the rule does nothing. Write tools
  * read this to say so at once; a Stage reports what is left
- * (`links/redirect-shadows-page`).
+ * (`links/redirect-shadows-page`, or `links/redirect-taken-over` for a page
+ * that was never live: #1517, the Publish live that first ships it deletes
+ * the rule).
  *
  * Pages come from `pages.list`, so a chat sees its own pending renames, moves
  * and deletes. Rules are live state, so they are read directly. O(request):
@@ -33,6 +35,13 @@ const redirectPageConflictSchema = z.object({
   pagePath: z.string(),
   pageTitle: z.string(),
   pageStatus: z.string(),
+  /**
+   * #1517 — whether a Publish live has shipped the page before. A page that
+   * was never live takes its URL over at the Publish live that first ships
+   * it (the rule is deleted then); until then the rule keeps answering on
+   * the live site.
+   */
+  pageLive: z.boolean(),
 });
 
 export type RedirectPageConflict = z.infer<typeof redirectPageConflictSchema>;
@@ -108,6 +117,7 @@ export const pageConflictsRedirectOp = defineOperation({
             pagePath: page.currentPath,
             pageTitle: page.title,
             pageStatus: page.status,
+            pageLive: page.firstPublishedAt !== null,
           },
         ];
       }),

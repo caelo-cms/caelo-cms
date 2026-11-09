@@ -20,12 +20,16 @@
  * - `links/redirect-loop` (error): the URL runs into a redirect cycle.
  * - `links/redirect-chain` (warning): the URL works only through the
  *   redirect table — link the final URL directly.
- * - `links/redirect-shadows-page` (error, #1447): a redirect rule sits on a
- *   page's URL, or staging really answered the page's URL with a redirect.
- *   The first is a contradiction to settle: a build's page wins, so the rule
- *   does nothing here, yet it answers on the live site until Publish live
- *   and again whenever the page leaves the build. The second is the outage
- *   itself, and the fetched HTML is not this page's.
+ * - `links/redirect-shadows-page` (error, #1447): a redirect rule sits on the
+ *   URL of a page that has been live before, or staging really answered the
+ *   page's URL with a redirect. The first is a contradiction to settle: a
+ *   build's page wins, so the rule does nothing here, yet it answers again
+ *   whenever the page leaves the build. The second is the outage itself,
+ *   and the fetched HTML is not this page's.
+ * - `links/redirect-taken-over` (info, #1517): a redirect rule sits on the
+ *   URL of a page that was never live. It keeps answering on the live site
+ *   until Publish live ships the page, which deletes it (the page takes
+ *   its URL over); nothing to settle unless the rule should keep the URL.
  * - `links/orphan-page` (warning): no other page links to this one, the
  *   navigation included.
  * - `links/limit-reached` (info): the bounds below cut the check short;
@@ -65,6 +69,8 @@ export const LINKS_CHECK_ID = "links";
 
 /** A rule on a page's URL, or staging redirecting a page away (#1447). */
 const REDIRECT_SHADOWS_PAGE = "links/redirect-shadows-page";
+/** A rule on a never-live page's URL, which Publish live takes over (#1517). */
+const REDIRECT_TAKEN_OVER = "links/redirect-taken-over";
 
 /** One call may probe this long: hundreds of asset URLs over the network. */
 export const LINKS_CHECK_TIMEOUT_MS = 240_000;
@@ -89,6 +95,12 @@ export interface LinkSources {
    * `links/broken-internal`, because nothing else blocks on it.
    */
   reportedDraftLinks(): Promise<readonly ReportedDraftLink[]>;
+  /**
+   * #1517 — which of `pageIds` were never live (no Publish live shipped
+   * them yet, `first_published_at` unset). Publish live takes a rule on
+   * such a page's URL over, so the pair is no contradiction.
+   */
+  neverLivePageIds(pageIds: readonly string[]): Promise<ReadonlySet<string>>;
 }
 
 /** One stored link to a draft page, as the `references` check reports it. */
@@ -155,12 +167,16 @@ export function createLinksCheck(sources: LinkSources): SiteCheck {
         sources.siteUrls(),
         sources.reportedDraftLinks(),
       ]);
+      const ruled = pageIdsUnderRules(pages, redirects);
+      const neverLivePageIds =
+        ruled.length > 0 ? await sources.neverLivePageIds(ruled) : new Set<string>();
       return linkFindings(pages, build, {
         modules,
         layouts,
         redirects,
         siteUrls,
         reportedDraftLinks,
+        neverLivePageIds,
       });
     },
   };
@@ -176,6 +192,8 @@ export async function linkFindings(
     readonly redirects: readonly RedirectRow[];
     readonly siteUrls: readonly string[];
     readonly reportedDraftLinks: readonly ReportedDraftLink[];
+    /** Staged pages never live yet ({@link LinkSources.neverLivePageIds}). */
+    readonly neverLivePageIds: ReadonlySet<string>;
   },
 ): Promise<Finding[]> {
   const hosts = siteHostsOf([build.baseUrl, build.displayBaseUrl, ...input.siteUrls]);
@@ -210,7 +228,7 @@ export async function linkFindings(
     layouts: input.layouts,
   };
   const findings = [
-    ...redirectsOnPages(pages, input.redirects),
+    ...redirectsOnPages(pages, input.redirects, input.neverLivePageIds),
     ...linkProblems(occurrences, resolutions, ctx, input.reportedDraftLinks),
     ...orphanPages(pages, occurrences, resolutions),
   ];
@@ -404,22 +422,42 @@ function messageOf(ruleId: string, ref: string, r: Resolution): string {
   return `${label}: ${ref} goes ${chain(hops)}. Link the final URL directly — every hop costs visitors a round-trip and crawlers link equity.`;
 }
 
-/**
- * Rules on a page's URL, and pages staging answered with a redirect
- * (#1447). One finding per page. The 404 page is left out: it is served at
- * `/404.html`, so its own path is free for a rule.
- */
-function redirectsOnPages(
-  pages: readonly StagedPage[],
-  redirects: readonly RedirectRow[],
-): Finding[] {
-  // Every row per key: `/x` and `/x/` can both be stored, and deleting one
-  // would leave the same finding on the next Stage.
+/** Every stored rule per path key: `/x` and `/x/` can both be stored. */
+function rulesByKey(redirects: readonly RedirectRow[]): Map<string, RedirectRow[]> {
   const rowsByKey = new Map<string, RedirectRow[]>();
   for (const r of redirects) {
     const key = pathKey(r.fromPath);
     rowsByKey.set(key, [...(rowsByKey.get(key) ?? []), r]);
   }
+  return rowsByKey;
+}
+
+/** The staged pages (404 page aside) with a redirect rule on their URL. */
+function pageIdsUnderRules(
+  pages: readonly StagedPage[],
+  redirects: readonly RedirectRow[],
+): string[] {
+  const rowsByKey = rulesByKey(redirects);
+  return pages
+    .filter((p) => !p.notFoundPage && rowsByKey.has(pathKey(p.path)))
+    .map((p) => p.pageId);
+}
+
+/**
+ * Rules on a page's URL, and pages staging answered with a redirect
+ * (#1447). One finding per page. The 404 page is left out: it is served at
+ * `/404.html`, so its own path is free for a rule. A rule on the URL of a
+ * page that was never live is Publish live's to take over (#1517): reported
+ * as info, so the writer sees it, and never blocking.
+ */
+function redirectsOnPages(
+  pages: readonly StagedPage[],
+  redirects: readonly RedirectRow[],
+  neverLivePageIds: ReadonlySet<string>,
+): Finding[] {
+  // Every row per key: deleting one spelling would leave the same finding
+  // on the next Stage.
+  const rowsByKey = rulesByKey(redirects);
   return pages.flatMap((page): Finding[] => {
     if (page.notFoundPage) return [];
     const rules = rowsByKey.get(pathKey(page.path)) ?? [];
@@ -427,6 +465,22 @@ function redirectsOnPages(
     const ruleText = rules
       .map((r) => `"${r.fromPath}" → "${r.toPath}" (${r.statusCode})`)
       .join(", ");
+    if (page.redirectedTo === undefined && neverLivePageIds.has(page.pageId)) {
+      return [
+        {
+          ruleId: REDIRECT_TAKEN_OVER,
+          severity: "info",
+          pageId: page.pageId,
+          message: clip(
+            `Redirect on this new page's URL: ${ruleText} sits on ${page.path}. The staged page wins here; on the live site the rule keeps answering until Publish live ships the page, and that Publish live deletes the rule.`,
+          ),
+          fix: {
+            tool: "move_pages",
+            hint: "nothing to do if the page takes this URL over; if the rule should keep the URL, give the page another slug (update_pages_many) or set it to draft (set_pages_status_many) before Publish live",
+          },
+        },
+      ];
+    }
     const message =
       page.redirectedTo !== undefined
         ? `Redirect instead of this page: staging answers ${page.path} with a redirect to ${page.redirectedTo}, so visitors never reach it${ruleText ? ` (${ruleText})` : ""}.`

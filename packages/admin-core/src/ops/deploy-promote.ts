@@ -36,9 +36,10 @@
  *   deploy.renew_run_lease   the fence: proof the run still holds every lease,
  *                            right before the provider release
  *   (provider release)       no transaction
- *   deploy.finish_promote    record the run (first publication, bakes, the
- *                            publish-anyway decision), release the leases,
- *                            mark the target's redirects behind
+ *   deploy.finish_promote    record the run (first publication and the
+ *                            redirect rules those pages take over, bakes,
+ *                            the publish-anyway decision), release the
+ *                            leases, mark the target's redirects behind
  *   redirects.sync_provider  push the redirects (after the run is recorded)
  *   deploy.fail_run          on every failure or abort before the release
  *
@@ -97,6 +98,7 @@ import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publ
 import { rewindBakesToRun } from "../plugin-data/stale-pages.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { stampFirstPublished } from "./content/first-published.js";
+import { takeOverRedirectsOnFirstPublishedPages } from "./content/path-moves.js";
 import {
   logRunTimings,
   productionNeedsHuman,
@@ -423,7 +425,12 @@ export const finishPromoteOp = defineOperation({
     if (input.env === "production") {
       // Epic #1107 — the pages of the build it ships get their
       // first_published_at — the staged run's start, which the build rendered.
-      await stampFirstPublished(tx, input.fromRunId);
+      // #1517 — those pages take their URLs over from redirect rules there.
+      await takeOverRedirectsOnFirstPublishedPages(
+        ctx,
+        tx,
+        await stampFirstPublished(tx, input.fromRunId),
+      );
       // #1155 — the promoted build baked its plugin data when it was
       // staged; bakes a plugin-data build made since are pending again.
       await rewindBakesToRun(tx, input.fromRunId);

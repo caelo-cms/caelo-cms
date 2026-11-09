@@ -19,12 +19,18 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
-/** Stamp every page the shipped build contains that was never live before. */
+/**
+ * Stamp every page the shipped build contains that was never live before.
+ *
+ * @returns the pages stamped, with their path: the pages this release ships
+ *   for the first time (#1517: they take their URL over from a redirect
+ *   rule, `takeOverRedirectsOnFirstPublishedPages`).
+ */
 export async function stampFirstPublished(
   tx: TransactionRunner,
   builtAtRunId: string,
-): Promise<void> {
-  await tx.execute(sql`
+): Promise<{ id: string; path: string }[]> {
+  return (await tx.execute(sql`
     UPDATE pages p
        SET first_published_at = r.started_at
       FROM deploy_runs r
@@ -34,7 +40,8 @@ export async function stampFirstPublished(
        AND p.deleted_at IS NULL
        AND p.status = 'published'
        AND p.created_at <= r.started_at
-  `);
+    RETURNING p.id::text AS id, p.current_path AS path
+  `)) as unknown as { id: string; path: string }[];
 }
 
 /**

@@ -133,6 +133,7 @@ import { jsonbParam } from "../sql-helpers.js";
 import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import { buildReferenceGate } from "./content/link-integrity.js";
+import { takeOverRedirectsOnFirstPublishedPages } from "./content/path-moves.js";
 import {
   effectiveOutDir,
   logRunTimings,
@@ -619,7 +620,14 @@ export const finishTriggerOp = defineOperation({
     }
     // Epic #1107 — a production build is a Publish live: pages it ships
     // for the first time get their first_published_at.
-    if (input.env === "production") await stampFirstPublished(tx, input.runId);
+    // #1517 — and take their URLs over from redirect rules there.
+    if (input.env === "production") {
+      await takeOverRedirectsOnFirstPublishedPages(
+        ctx,
+        tx,
+        await stampFirstPublished(tx, input.runId),
+      );
+    }
     // #1329 — the environment now serves the projection state this run
     // froze (deploy.start_trigger); the drain after this commit publishes
     // it. Staging moves with every Stage; live only with an Owner's

@@ -1934,10 +1934,11 @@ export default definePlugin<PluginContextTier1>({
         });
         linked = { ...linked, path: path.path };
       }
-      // #1447 — a move onto the URL takes any redirect rule there over, but a
-      // copy that needed no move (no locale prefix) lands next to the rule.
+      // #1447 / #1517 — a rule on the new page's URL keeps answering on the
+      // live site until Publish live first ships the page and takes the URL
+      // over; the variant is a draft, so name the rule instead.
       const { conflicts } = await cms.call<{
-        conflicts: { fromPath: string; toPath: string }[];
+        conflicts: { fromPath: string; toPath: string; pageLive: boolean }[];
       }>("redirects.page_conflicts", { pageIds: [duplicated.pageId] });
       return {
         pageId: duplicated.pageId,
@@ -1946,7 +1947,7 @@ export default definePlugin<PluginContextTier1>({
         ...linked,
         ...(conflicts.length > 0
           ? {
-              redirectOnThisUrl: `The redirect ${conflicts.map((c) => `${c.fromPath} -> ${c.toPath}`).join(", ")} sits on this URL. It answers there until the page is published and a build ships it; then the page wins and Stage reports the pair as an error. If the page stays here, remove it: bulk_delete_redirects({ fromPaths: ${JSON.stringify(conflicts.map((c) => c.fromPath))} }).`,
+              redirectOnThisUrl: `The redirect ${conflicts.map((c) => `${c.fromPath} -> ${c.toPath}`).join(", ")} sits on this URL. It keeps answering on the live site until the variant is published and Publish live ships it; that Publish live deletes the rule, so the page takes its URL over with nothing to do. Do not delete the rule before then (the live URL would answer 404 until Publish live). If the rule should keep the URL, give the variant another slug (update_pages_many).`,
             }
           : {}),
         // #644 — the clone still carries the source language; name the

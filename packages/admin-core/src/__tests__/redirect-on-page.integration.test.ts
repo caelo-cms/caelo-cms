@@ -3,15 +3,22 @@
 /**
  * #1447 — a redirect rule on a page's URL, in either spelling.
  *
- * Real Postgres (§6). A move takes the rule over whether it is stored as
- * `/x` or `/x/` (imported tables store the slash), and every write that
- * leaves the two side by side says so with the next step: the page tools
- * after creating or publishing, the redirect tool after writing the rule.
+ * Real Postgres (§6). A move of a main-line page takes the rule over whether
+ * it is stored as `/x` or `/x/` (imported tables store the slash), and every
+ * write that leaves the two side by side says so with the next step: the
+ * page tools after creating or publishing, the redirect tool after writing
+ * the rule.
+ *
+ * #1517 — a page only a chat's branch holds moves without live effects (the
+ * rule stays, no 301 from a URL that was never public), a page that was
+ * never live is told that Publish live takes its URL over, and no write
+ * leaves `/x` and `/x/` with different targets (the plan would refuse the
+ * table and stop every sync).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { buildRedirectPlan, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
@@ -134,6 +141,134 @@ describe("a move onto a URL takes the redirect rule over", () => {
   });
 });
 
+/** Mark `pageId` as shipped by a Publish live before. */
+async function markLive(pageId: string): Promise<void> {
+  await q((tx) => tx`UPDATE pages SET first_published_at = now() WHERE id = ${pageId}::uuid`);
+}
+
+/** A chat on the site draft, and the context its writes carry. */
+async function openChat(title: string): Promise<ExecutionContext> {
+  const session = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+    title: `${PFX}-${title}`,
+  });
+  if (!session.ok) throw new Error(JSON.stringify(session.error));
+  const { chatSessionId, chatBranchId } = session.value as {
+    chatSessionId: string;
+    chatBranchId: string;
+  };
+  return { ...SYSTEM, chatBranchId, chatTaskId: chatSessionId };
+}
+
+describe("a page only a chat's branch holds moves without live effects (#1517)", () => {
+  it("a slug change of a chat's new page leaves the rule on its new URL and writes no 301", async () => {
+    const chat = await openChat("draft-rename");
+    const created = await execute(registry, adapter, chat, "pages.create", {
+      slug: `${PFX}-draft-before`,
+      title: "Draft before",
+      templateId,
+      status: "draft",
+    });
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const page = (created.value as { pageId: string }).pageId;
+    await addRule(`/${PFX}-draft-after/`);
+
+    const renamed = await execute(registry, adapter, chat, "pages.update", {
+      pageId: page,
+      slug: `${PFX}-draft-after`,
+    });
+    if (!renamed.ok) throw new Error(JSON.stringify(renamed.error));
+    const refreshed = await execute(registry, adapter, chat, "pages.refresh_current_path", {
+      pageId: page,
+    });
+    if (!refreshed.ok) throw new Error(JSON.stringify(refreshed.error));
+
+    expect(await rulesFrom(`/${PFX}-draft-after`)).toEqual([`/${PFX}-draft-after/`]);
+    expect(await rulesFrom(`/${PFX}-draft-before`)).toEqual([]);
+    const r = await execute(registry, adapter, chat, "redirects.page_conflicts", {
+      pageIds: [page],
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect(
+      (r.value as { conflicts: RedirectPageConflict[] }).conflicts.map((c) => [
+        c.fromPath,
+        c.pageLive,
+      ]),
+    ).toEqual([[`/${PFX}-draft-after/`, false]]);
+  });
+});
+
+describe("one address, one rule: /x and /x/ never point two ways (#1517)", () => {
+  const plan = async (prefix: string) => {
+    const rows = (await q(
+      (tx) => tx`
+        SELECT from_path, to_path, status_code FROM redirects
+        WHERE from_path LIKE ${`${prefix}%`} ORDER BY from_path`,
+    )) as unknown as { from_path: string; to_path: string; status_code: number }[];
+    return buildRedirectPlan({
+      rows: rows.map((r) => ({
+        fromPath: r.from_path,
+        toPath: r.to_path,
+        statusCode: r.status_code,
+      })),
+      pageUrlStyle: "directory",
+      servedFiles: new Set(),
+    });
+  };
+
+  it("create_many counts the other spelling as existing, and upsert replaces it", async () => {
+    const path = `/${PFX}-spelled`;
+    await addRule(`${path}/`, `/${PFX}-first`);
+
+    const plain = await execute(registry, adapter, SYSTEM, "redirects.create_many", {
+      redirects: [{ fromPath: path, toPath: `/${PFX}-second` }],
+    });
+    if (!plain.ok) throw new Error(JSON.stringify(plain.error));
+    expect(plain.value).toEqual({ created: 0, updated: 0, skipped: 1 });
+    expect(await rulesFrom(path)).toEqual([`${path}/`]);
+    expect((await plan(path)).redirects.map((r) => r.location)).toEqual([`/${PFX}-first/`]);
+
+    const upsert = await execute(registry, adapter, SYSTEM, "redirects.create_many", {
+      redirects: [{ fromPath: path, toPath: `/${PFX}-second` }],
+      upsert: true,
+    });
+    if (!upsert.ok) throw new Error(JSON.stringify(upsert.error));
+    expect(upsert.value).toEqual({ created: 0, updated: 1, skipped: 0 });
+    expect(await rulesFrom(path)).toEqual([`${path}/`]);
+    expect((await plan(path)).redirects.map((r) => r.location)).toEqual([`/${PFX}-second/`]);
+  });
+
+  it("upsert folds both stored spellings into one row", async () => {
+    const path = `/${PFX}-twice`;
+    await addRule(path, `/${PFX}-first`);
+    await q(
+      (tx) => tx`
+        INSERT INTO redirects (from_path, to_path, status_code, created_by)
+        VALUES (${`${path}/`}, ${`/${PFX}-first`}, 301, ${SYSTEM.actorId}::uuid)`,
+    );
+
+    const r = await execute(registry, adapter, SYSTEM, "redirects.create_many", {
+      redirects: [{ fromPath: `${path}/`, toPath: `/${PFX}-second` }],
+      upsert: true,
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect(await rulesFrom(path)).toEqual([`${path}/`]);
+    expect((await plan(path)).redirects.map((r) => r.location)).toEqual([`/${PFX}-second/`]);
+  });
+
+  it("redirects.create (a slug change's 301) replaces the other spelling", async () => {
+    const path = `/${PFX}-single`;
+    await addRule(`${path}/`, `/${PFX}-first`);
+
+    const r = await execute(registry, adapter, SYSTEM, "redirects.create", {
+      fromPath: path,
+      toPath: `/${PFX}-second`,
+    });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    expect(await rulesFrom(path)).toEqual([path]);
+    expect((await plan(path)).redirects.map((r) => r.location)).toEqual([`/${PFX}-second/`]);
+  });
+});
+
 describe("redirects.page_conflicts", () => {
   it("finds a rule by page and by path, in either spelling, and only then", async () => {
     const page = await makePage("found");
@@ -153,7 +288,12 @@ describe("redirects.page_conflicts", () => {
   it("names both rows when both spellings are stored", async () => {
     const page = await makePage("both");
     await addRule(`/${PFX}-both`);
-    await addRule(`/${PFX}-both/`);
+    // Stored as an import leaves it: no op writes the second spelling.
+    await q(
+      (tx) => tx`
+        INSERT INTO redirects (from_path, to_path, status_code, created_by)
+        VALUES (${`/${PFX}-both/`}, ${`/${PFX}-target`}, 301, ${SYSTEM.actorId}::uuid)`,
+    );
     expect((await conflicts({ pageIds: [page] })).map((c) => c.fromPath)).toEqual([
       `/${PFX}-both`,
       `/${PFX}-both/`,
@@ -217,6 +357,7 @@ describe("redirects.page_conflicts", () => {
 describe("write tools name the rule and the next step", () => {
   it("set_pages_status_many on publish, not on draft", async () => {
     const page = await makePage("publish");
+    await markLive(page);
     const rule = `/${PFX}-publish/`;
     await addRule(rule);
 
@@ -236,7 +377,9 @@ describe("write tools name the rule and the next step", () => {
     expect(drafted.content).not.toContain("bulk_delete_redirects");
   });
 
-  it("duplicate_page when the copy lands on a rule", async () => {
+  // #1517 — a copy is a new page: Publish live takes the URL over, and an
+  // early delete would leave the live URL answering 404 until then.
+  it("duplicate_page when the copy lands on a rule: Publish live takes it over", async () => {
     const source = await makePage("source");
     await addRule(`/${PFX}-copy`);
 
@@ -246,11 +389,14 @@ describe("write tools name the rule and the next step", () => {
       tools(),
     );
 
-    expect(r.content).toContain(`bulk_delete_redirects({ fromPaths: ["/${PFX}-copy"] })`);
+    expect(r.content).toContain(`/${PFX}-copy -> /${PFX}-target (301)`);
+    expect(r.content).toContain("that Publish live deletes the rule");
+    expect(r.content).toContain("Do not delete the rule before then");
+    expect(r.content).not.toContain("bulk_delete_redirects");
   });
 
   it("bulk_create_redirects when a rule lands on a page", async () => {
-    await makePage("existing");
+    await markLive(await makePage("existing"));
     const r = await bulkCreateRedirectsTool.handler(
       SYSTEM,
       {
@@ -266,6 +412,21 @@ describe("write tools name the rule and the next step", () => {
     expect(r.content).toContain(`"Title existing" (/${PFX}-existing, draft)`);
     expect(r.content).toContain(`bulk_delete_redirects({ fromPaths: ["/${PFX}-existing/"] })`);
     expect(r.content).not.toContain(`/${PFX}-free ->`);
+  });
+
+  it("bulk_create_redirects on a never-live page's URL says Publish live takes it over", async () => {
+    await makePage("fresh");
+    const r = await bulkCreateRedirectsTool.handler(
+      SYSTEM,
+      {
+        items: [{ fromPath: `/${PFX}-fresh`, toPath: `/${PFX}-elsewhere`, statusCode: 301 }],
+        upsert: false,
+      },
+      tools(),
+    );
+    expect(r.content).toContain(`"Title fresh" (/${PFX}-fresh, draft), which was never live`);
+    expect(r.content).toContain("that Publish live deletes the rule");
+    expect(r.content).not.toContain("bulk_delete_redirects");
   });
 
   it("says nothing when no rule sits on a page", async () => {
