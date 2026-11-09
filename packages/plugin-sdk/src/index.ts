@@ -1604,13 +1604,18 @@ export interface PluginQuery {
   ): Promise<void>;
   /**
    * One patch on many rows (#1391): every listed row gets the same
-   * columns, in one call and as one change — one undo step, one snapshot.
-   * Every row or none: a missing or deleted id refuses the whole call and
-   * names the ids. Up to 1000 ids per call (split a longer list); an empty
-   * list does nothing. Prefer it to a loop of `update` whenever a pass
-   * sets the same value on several rows: each `update` is its own write
-   * and snapshot, so 10,000 rows cost minutes of database time instead of
-   * seconds. From a chat it lands on the chat's branch like `update`.
+   * columns, in one call and one statement. Every row or none: a missing
+   * or deleted id refuses the whole call and names the ids. Up to 1000
+   * ids per call (split a longer list); an empty list does nothing.
+   * Prefer it to a loop of `update` whenever a pass sets the same value
+   * on several rows: 10,000 single updates cost minutes of database time,
+   * the same rows in ten calls seconds.
+   *
+   * On `ctx.adminQuery` (private rows) the call is one change: one
+   * snapshot for all rows, one undo step, and from a chat it lands on the
+   * chat's branch like `update`. On `ctx.query` (public, visitor data) it
+   * writes the live rows directly, with no snapshot or undo, like `update`
+   * there.
    *
    * @example
    * ```ts

@@ -485,13 +485,14 @@ describe("branch-aware plugin storage", () => {
     const g = await newChat("g");
     // One row already edited in the chat: the bulk write starts from that state.
     expect((await call(g.invocation, "rename", { id: ids[0], label: "um-1-chat" })).ok).toBe(true);
-    const missing = crypto.randomUUID();
+    const missing = [crypto.randomUUID(), crypto.randomUUID()];
     const refused = await call(g.invocation, "relabel_many", {
-      ids: [...ids, missing],
+      ids: [missing[0], ...ids, missing[1]],
       label: "um-x",
     });
     expect(refused.ok).toBe(false);
-    if (!refused.ok) expect(refused.error.message).toContain(missing);
+    // Every missing row is named, so one retry can drop them all.
+    if (!refused.ok) for (const id of missing) expect(refused.error.message).toContain(id);
     expect(await labels(g.invocation)).not.toContain("um-x");
 
     const done = await call(g.invocation, "relabel_many", { ids, label: "um-bulk" });
@@ -512,6 +513,26 @@ describe("branch-aware plugin storage", () => {
     );
     // The single rename, then one header for the three rows of the bulk write.
     expect(headers.map((h) => h.n)).toEqual([1, 3]);
+  });
+
+  it("runs two bulk writes over the same rows in opposite orders without a deadlock (#1391)", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const added = await call(MAIN, "add", { label: `ud-${i}` });
+      if (!added.ok) throw new Error(added.error.message);
+      ids.push(idOf(added.value));
+    }
+    const h = await newChat("h");
+    const results = await Promise.all([
+      call(h.invocation, "relabel_many", { ids, label: "ud-a" }),
+      call(h.invocation, "relabel_many", { ids: [...ids].reverse(), label: "ud-b" }),
+    ]);
+    // Both wait their turn on the rows; neither is aborted as a deadlock.
+    expect(results.map((r) => (r.ok ? "ok" : r.error.message))).toEqual(["ok", "ok"]);
+    const seen = await labels(h.invocation);
+    const final = seen.filter((l) => l === "ud-a" || l === "ud-b");
+    expect(final).toHaveLength(6);
+    expect(new Set(final).size).toBe(1);
   });
 
   it("pages by id and filters by anyOf across a chat's overlay, each row once (#1213)", async () => {
