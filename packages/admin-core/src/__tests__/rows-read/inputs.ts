@@ -212,7 +212,6 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
   {
     op: "pages.duplicate",
     ctx: "chat",
-    plugins: ["international-site"],
     input: (r, tag) => ({ sourcePageId: r.write.pageId, newSlug: `copy-${tag}` }),
   },
 ];

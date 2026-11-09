@@ -39,15 +39,26 @@ export async function pagesNamedByLastSegment(
   branchId: string,
   paths: readonly string[],
 ): Promise<string[]> {
-  const slugs = new Set<string>();
-  for (const p of paths) {
-    const last = p
-      .split("/")
-      .filter((x) => x !== "")
-      .at(-1);
-    if (last === undefined) for (const h of ["", "home", "index"]) slugs.add(h);
-    else slugs.add(last);
-  }
+  const rows = await pagesWithSlugs(tx, branchId, lastSegmentsOf(paths));
+  const annotated = await pendingUrlAnnotationPageIds(tx, branchId);
+  const { tree } = await loadPageChains(tx, branchId, annotated);
+  const wanted = new Set(paths);
+  const composedThere = [...(await annotationDriftPaths(tx, tree, annotated, branchId))]
+    .filter(([, path]) => wanted.has(normalisedPath(path)))
+    .map(([id]) => id);
+  return [...rows, ...composedThere];
+}
+
+/**
+ * The visible pages, and the branch's pending pages, whose slug is one of
+ * `slugs` (indexed: pages_slug_idx, draft_pending_entities_page_slug_idx).
+ */
+export async function pagesWithSlugs(
+  tx: TransactionRunner,
+  branchId: string,
+  slugs: readonly string[],
+): Promise<string[]> {
+  if (slugs.length === 0) return [];
   const rows = (await tx.execute(sql`
     SELECT id::text AS id FROM pages
      WHERE slug = ANY(${textArray([...slugs])}) AND deleted_at IS NULL
@@ -57,11 +68,39 @@ export async function pagesNamedByLastSegment(
      WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'page'
        AND d.slug = ANY(${textArray([...slugs])})
   `)) as unknown as { id: string }[];
-  const annotated = await pendingUrlAnnotationPageIds(tx, branchId);
-  const { tree } = await loadPageChains(tx, branchId, annotated);
-  const wanted = new Set(paths);
-  const composedThere = [...(await annotationDriftPaths(tx, tree, annotated, branchId))]
-    .filter(([, path]) => wanted.has(normalisedPath(path)))
-    .map(([id]) => id);
-  return [...rows.map((r) => r.id), ...composedThere];
+  return rows.map((r) => r.id);
+}
+
+/** The last segment of each path ("/" names the home slugs). */
+export function lastSegmentsOf(paths: readonly string[]): string[] {
+  const slugs = new Set<string>();
+  for (const p of paths) {
+    const last = p
+      .split("/")
+      .filter((x) => x !== "")
+      .at(-1);
+    if (last === undefined) for (const h of ["", "home", "index"]) slugs.add(h);
+    else slugs.add(last);
+  }
+  return [...slugs];
+}
+
+/**
+ * The pages whose slug or parent a pending state on the branch changes
+ * (a superset: a page several chats changed has a head row per chat; the
+ * caller confirms on the newest state). Costs the branch's pending pages,
+ * never the site.
+ */
+export async function pendingRenamedPages(
+  tx: TransactionRunner,
+  branchId: string,
+): Promise<string[]> {
+  const rows = (await tx.execute(sql`
+    SELECT DISTINCT d.entity_id::text AS id
+      FROM draft_pending_entities d
+      JOIN pages p ON p.id = d.entity_id::uuid
+     WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'page'
+       AND (d.slug IS DISTINCT FROM p.slug OR d.parent_page_id IS DISTINCT FROM p.parent_page_id)
+  `)) as unknown as { id: string }[];
+  return rows.map((r) => r.id);
 }

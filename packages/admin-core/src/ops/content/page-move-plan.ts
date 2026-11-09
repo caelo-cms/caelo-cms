@@ -16,9 +16,10 @@
  * caller (CLAUDE.md §11: failure surfaces are AI-actionable).
  */
 
-import type { RenderScope } from "@caelo-cms/plugin-host";
+import { pathEndsInSlug, type RenderScope } from "@caelo-cms/plugin-host";
 import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { pendingUrlAnnotationPageIds } from "./branch-url-drift.js";
 import { composePathsDetailed, type PathMove } from "./current-path.js";
 import {
   ancestorIdsOf,
@@ -30,7 +31,12 @@ import {
   type PageTree,
   type PageTreeNode,
 } from "./page-tree.js";
-import { normalisedPath, pagesNamedByLastSegment } from "./path-candidates.js";
+import {
+  lastSegmentsOf,
+  normalisedPath,
+  pagesWithSlugs,
+  pendingRenamedPages,
+} from "./path-candidates.js";
 
 /** One requested change. `parentPageId: undefined` keeps the parent. */
 export interface TreeChange {
@@ -72,10 +78,16 @@ async function storedHolders(
   const visibility = chatBranchId
     ? sql`(chat_branch_id IS NULL OR chat_branch_id = ${chatBranchId}::uuid)`
     : sql`chat_branch_id IS NULL`;
+  // Both spellings, so the lookup stays on pages_current_path_branch_uidx:
+  // a stored path may carry a trailing slash, a composed one never does.
+  const spellings = new Set<string>();
+  for (const p of paths.map(normalisedPath)) {
+    spellings.add(p);
+    if (p !== "/") spellings.add(`${p}/`);
+  }
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, current_path FROM pages
-     WHERE (CASE WHEN length(current_path) > 1 THEN rtrim(current_path, '/') ELSE current_path END)
-           = ANY(${textArray([...new Set(paths.map(normalisedPath))])})
+     WHERE current_path = ANY(${textArray([...spellings])})
        AND deleted_at IS NULL AND ${visibility}
   `)) as unknown as { id: string; current_path: string }[];
   return new Map(rows.map((r) => [r.id, r.current_path]));
@@ -222,12 +234,18 @@ export async function planPageMoves(
 
 /**
  * #1269 — which page other than the affected ones holds each of `paths` in
- * the scope: its stored `current_path`, or, where the branch's pending
- * renames and moves (of the page or an ancestor) changed it, the path it
- * composes to with this plan applied. The candidates are the pages stored
- * at a path and, on a branch, the pages named by its last segment
- * ({@link pagesNamedByLastSegment}): a composed path ends in the page's
- * own slug. Costs the pages sharing those paths and slugs, never the tree.
+ * the scope, read from the pages that can hold one, never the tree:
+ *
+ * - the pages stored at a path;
+ * - on a branch, the pages whose path the branch's pending renames and
+ *   moves change: found by a path's last segment when every composed path
+ *   ends in its slug ({@link pathEndsInSlug}), else every page the branch
+ *   renamed or moved with the pages below it;
+ * - on a branch, the pages a pending row of a URL plugin annotates.
+ *
+ * A page whose own or an ancestor's slug or parent the branch changed, or
+ * that a pending plugin row annotates, holds the path it composes to with
+ * this plan applied; any other holds its stored path.
  */
 async function holdersOf(
   tx: TransactionRunner,
@@ -238,29 +256,36 @@ async function holdersOf(
 ): Promise<Map<string, string>> {
   const branchId = scope.chatBranchId ?? null;
   const stored = await storedHolders(tx, branchId, paths);
-  const named = branchId ? await pagesNamedByLastSegment(tx, branchId, paths) : [];
-  const candidates = [...new Set([...stored.keys(), ...named])].filter((id) => !affected.has(id));
+  const annotated = branchId ? await pendingUrlAnnotationPageIds(tx, branchId) : [];
+  let moved: string[] = [];
+  if (branchId) {
+    if (pathEndsInSlug()) moved = await pagesWithSlugs(tx, branchId, lastSegmentsOf(paths));
+    else {
+      const renamed = await pendingRenamedPages(tx, branchId);
+      moved = [...renamed, ...(await loadSubtreeIds(tx, branchId, renamed))];
+    }
+  }
+  const candidates = [...new Set([...stored.keys(), ...moved, ...annotated])].filter(
+    (id) => !affected.has(id),
+  );
   const holderOf = new Map<string, string>();
   if (candidates.length === 0) return holderOf;
   // Their branch view: a page the branch deleted holds nothing.
   const { tree, drifted } = await loadPageChains(tx, branchId, candidates);
-  const driftedIds = candidates.filter((id) => drifted.has(id));
+  const composeIds = new Set([...candidates.filter((id) => drifted.has(id)), ...annotated]);
   let composed = new Map<string, { path: string }>();
-  if (driftedIds.length > 0) {
+  if (composeIds.size > 0) {
     const merged = new Map<string, PageTreeNode>(tree.byId);
     for (const [id, node] of whatIf) merged.set(id, node);
-    composed = await composePathsDetailed(tx, indexTree(merged), driftedIds, scope);
+    composed = await composePathsDetailed(tx, indexTree(merged), [...composeIds], scope);
   }
-  const storedPaths =
-    driftedIds.length === candidates.length
-      ? new Map<string, string>()
-      : await storedPathsOf(
-          tx,
-          candidates.filter((id) => !drifted.has(id)),
-        );
+  const storedPaths = await storedPathsOf(
+    tx,
+    candidates.filter((id) => !composeIds.has(id)),
+  );
   for (const id of candidates) {
     if (!tree.byId.has(id)) continue;
-    const path = composed.get(id)?.path ?? storedPaths.get(id);
+    const path = composeIds.has(id) ? composed.get(id)?.path : storedPaths.get(id);
     if (path !== undefined) holderOf.set(path, id);
   }
   return holderOf;

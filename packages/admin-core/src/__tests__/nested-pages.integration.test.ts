@@ -18,6 +18,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { urlContributionsRegistry } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
@@ -442,6 +443,46 @@ describe("nested page URLs — chat branch + publish + revert", () => {
       templateId,
     });
     expect(errMsg(onMain)).toMatch(/page already exists at/);
+  });
+
+  it("#1269 — with a slug format, a page a chat renamed holds its formatted URL there", async () => {
+    // A slug format that maps several slugs to one URL segment: the path
+    // no longer ends in the slug, so the conflict check cannot find the
+    // holder by its slug.
+    urlContributionsRegistry.register("t1269-slug-format", [
+      {
+        slot: "slug-format",
+        encode: (page) => page.slug.split("--")[0] ?? page.slug,
+        decode: (segment) => segment,
+      },
+    ]);
+    try {
+      const b = await makePage("sf-b--1");
+      expect(await pathOf(b)).toBe(`/${PFX}-sf-b`);
+      const session = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+        isolation: "experiment",
+        title: `${PFX}-chat-sf`,
+      });
+      if (!session.ok) throw new Error("session");
+      const { chatSessionId, chatBranchId } = session.value as {
+        chatSessionId: string;
+        chatBranchId: string;
+      };
+      const chatCtx: ExecutionContext = { ...SYSTEM, chatBranchId, chatTaskId: chatSessionId };
+      const renamed = await move(
+        [{ pageId: b, parentPageId: null, newSlug: `${PFX}-sf-y--1` }],
+        chatCtx,
+      );
+      expect(renamed.ok).toBe(true);
+      const clash = await execute(registry, adapter, chatCtx, "pages.create", {
+        slug: `${PFX}-sf-y--2`,
+        title: "clash",
+        templateId,
+      });
+      expect(errMsg(clash)).toMatch(new RegExp(`page already exists at /${PFX}-sf-y`));
+    } finally {
+      urlContributionsRegistry.unregisterPlugin("t1269-slug-format");
+    }
   });
 
   it("a chat's own new page moved in the chat lists at its pending path; 'skip' survives publish", async () => {
