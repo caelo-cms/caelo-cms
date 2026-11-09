@@ -122,6 +122,30 @@ describe("redirects.list — keyset paging (#1538)", () => {
     expect(r.error.kind).toBe("HandlerError");
     expect(JSON.stringify(r.error)).toContain('"path":["cursor"]');
   });
+
+  // Regression (Copilot on #1539): a cursor carried only the last path, so
+  // reusing it with another filter silently skipped that filter's rows
+  // before the path.
+  it("refuses a cursor reused with another query or statusCode", async () => {
+    const first = await execute(registry, adapter, AI, "redirects.list", {
+      query: PFX,
+      limit: 100,
+    });
+    if (!first.ok) throw new Error(JSON.stringify(first.error));
+    const cursor = (first.value as { nextCursor: string | null }).nextCursor;
+    expect(cursor).not.toBeNull();
+    for (const changed of [{ query: `${PFX}/rule-0` }, { query: PFX, statusCode: 410 }]) {
+      const r = await execute(registry, adapter, AI, "redirects.list", {
+        ...changed,
+        limit: 100,
+        cursor,
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) continue;
+      expect(JSON.stringify(r.error)).toContain('"path":["cursor"]');
+      expect(JSON.stringify(r.error)).toContain("same filter and statusCode");
+    }
+  });
 });
 
 describe("find_redirects — every rule reachable (#1538)", () => {

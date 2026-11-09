@@ -30,8 +30,8 @@ import { generateInputSchema } from "./generate-input-schema.js";
 export const LIST_DEFAULT_LIMIT = 50;
 /** Content char cap; `full: true` disables it. */
 const LIST_CHAR_CAP = 6000;
-/** Longest cursor a tool accepts (an op's cursor may carry a 500-char path). */
-const CURSOR_MAX_LENGTH = 4000;
+/** Longest cursor a tool accepts (an op's cursor may carry a 500-char path and its search). */
+const CURSOR_MAX_LENGTH = 8000;
 
 /**
  * The list params of a tool over a COMPLETE read — the factory's `complete`
@@ -73,6 +73,13 @@ export type ListPaging =
       readonly maxLimit: number;
       /** The op's count of every row matching the call, for "rows 1-50 of N". */
       readonly total?: (value: unknown) => number;
+      /**
+       * Rows the op read for this page, including rows it then dropped (an op
+       * that validates untrusted rows, like the gateway log). Without it a
+       * dropped row would read as the end of the list. Positions then count
+       * read rows, so the next page may repeat a row but never skips one.
+       */
+      readonly scanned?: (value: unknown) => number;
       /**
        * `buildOpInput` hands `filter` to the op, which searches every row (set
        * `listParamDescriptions.filter` to say what it matches). Otherwise
@@ -307,8 +314,20 @@ async function offsetPage(
   const fetched = args.rows(r.value);
   const rows = fetched.slice(0, want);
   const total = p.total?.(r.value);
-  const more = total === undefined ? fetched.length > want : offset + rows.length < total;
+  // Rows of the op's page this answer covers; more than `rows` when the op
+  // dropped some.
+  const read = p.scanned?.(r.value) ?? fetched.length;
+  const consumed = Math.min(read, want);
+  const more = total === undefined ? read > want : offset + rows.length < total;
   const ofTotal = total === undefined ? "" : ` of ${total}`;
+  if (rows.length === 0 && consumed > 0 && more) {
+    // Every row of this page was dropped, but the list goes on.
+    return answer(
+      args,
+      r.value,
+      `No valid ${args.label} in rows ${offset + 1}-${offset + consumed} — more exist; next: offset=${offset + consumed}.`,
+    );
+  }
   if (rows.length === 0) {
     // A count of 0 here can be a window count over no rows, not the set's size.
     const past = `No ${args.label} past offset ${offset}${total ? ` (${total} in total)` : ""}.`;
@@ -320,18 +339,21 @@ async function offsetPage(
   );
   const kept = capChars(lines, input.full);
   const cut = kept.length < lines.length;
-  const range = `rows ${offset + 1}-${offset + (pageFilter ? rows.length : kept.length)}${ofTotal}`;
+  // Rows of the op's page this answer accounts for: all of them, unless the
+  // char cap cut an unfiltered page (then up to the last row shown).
+  const covered = cut && !pageFilter ? kept.length : consumed;
+  const range = `rows ${offset + 1}-${offset + covered}${ofTotal}`;
   let footer: string;
   if (pageFilter) {
     const shown = `${kept.length} match${kept.length === 1 ? "" : "es"} in ${range} (filter="${input.filter}" applied to this page)`;
     footer = cut
       ? `# ${shown}, cut at the size cap — pass full=true or a narrower filter.`
-      : `# ${shown}${more ? ` — more exist; next: offset=${offset + rows.length}.` : "."}`;
+      : `# ${shown}${more ? ` — more exist; next: offset=${offset + covered}.` : "."}`;
   } else {
     const filterNote = input.filter ? ` (filter="${input.filter}")` : "";
     footer =
       cut || more
-        ? `# ${range}${filterNote} — more exist; next: offset=${offset + kept.length}.`
+        ? `# ${range}${filterNote} — more exist; next: offset=${offset + covered}.`
         : `# ${range}${filterNote}.`;
   }
   // A first page that holds everything, unfiltered and uncounted, needs no footer.

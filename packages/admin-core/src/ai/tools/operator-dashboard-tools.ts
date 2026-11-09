@@ -323,7 +323,16 @@ export const listGatewayRequestsTool = makeListReadTool<
       onlyErrors: z.boolean().optional().describe("Only status >= 400."),
     })
     .strict(),
-  paging: { kind: "offset", maxLimit: 200 },
+  paging: {
+    kind: "offset",
+    maxLimit: 200,
+    // The op drops log rows that fail validation (cms_public is untrusted):
+    // count them as read, so a dropped row never ends the list early.
+    scanned: (value) => {
+      const v = value as OpValue<typeof listGatewayRequestsOp>;
+      return v.rows.length + v.droppedRows;
+    },
+  },
   rows: (value) => (value as OpValue<typeof listGatewayRequestsOp>).rows,
   label: "requests",
   columns: [

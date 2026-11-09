@@ -348,7 +348,7 @@ describe("gateway reads", () => {
   });
 
   it("list_gateway_requests maps filters and pages server-side (#1538)", async () => {
-    const h = harness({ "gateway.list_recent_requests": () => ({ rows: [] }) });
+    const h = harness({ "gateway.list_recent_requests": () => ({ rows: [], droppedRows: 0 }) });
     const r = await run(
       listGatewayRequestsTool,
       { pluginSlug: "forms", onlyErrors: true, limit: 20, offset: 10 },
@@ -365,6 +365,40 @@ describe("gateway reads", () => {
     expect(r.content).toBe("No requests past offset 10.");
     const first = await run(listGatewayRequestsTool, {}, h.toolCtx);
     expect(first.content).toContain("No gateway requests");
+  });
+
+  // Regression (Copilot on #1539): the op drops log rows that fail
+  // validation, so a page of `limit + 1` read rows came back with `limit`
+  // valid ones and read as the end of the log.
+  it("list_gateway_requests keeps paging past a dropped log row", async () => {
+    const row = (i: number) => ({
+      id: `r${i}`,
+      pluginSlug: "forms",
+      operation: "submit",
+      statusCode: 200,
+      durationMs: 5,
+      bodyBytes: 10,
+      wasRateLimited: false,
+      wasHoneypotCaught: false,
+      captchaPassed: true,
+      errorKind: null,
+      createdAt: `2026-11-09T10:00:${String(i).padStart(2, "0")}Z`,
+    });
+    // 11 rows read for limit 10 + 1, one of them invalid and dropped.
+    const h = harness({
+      "gateway.list_recent_requests": () => ({
+        rows: Array.from({ length: 10 }, (_v, i) => row(i)),
+        droppedRows: 1,
+      }),
+    });
+    const r = await run(listGatewayRequestsTool, { limit: 10 }, h.toolCtx);
+    expect(r.content).toContain("requests[10]");
+    expect(r.content).toContain("# rows 1-10 — more exist; next: offset=10.");
+    const allDropped = harness({
+      "gateway.list_recent_requests": () => ({ rows: [], droppedRows: 11 }),
+    });
+    const empty = await run(listGatewayRequestsTool, { limit: 10 }, allDropped.toolCtx);
+    expect(empty.content).toBe("No valid requests in rows 1-10 — more exist; next: offset=10.");
   });
 
   it("list_rate_limit_profiles renders TOON rows", async () => {

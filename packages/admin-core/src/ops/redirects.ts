@@ -17,6 +17,7 @@
 
 import {
   defineOperation,
+  type ErrorDetail,
   handlerErrorFromDetails,
   type TransactionRunner,
   textArray,
@@ -168,24 +169,75 @@ export const createRedirectOp = defineOperation({
 
 /**
  * #1538 — `redirects.list` pages by keyset on `from_path` (unique, so a
- * total order, and indexed): the cursor is the last row's `from_path`, as
- * opaque base64url text, and a deep page costs what the first one does.
+ * total order, and indexed): the cursor is the last row's `from_path` plus
+ * the `query` and `statusCode` of the call that issued it, as opaque
+ * base64url text. A deep page costs what the first one does, and a cursor
+ * reused with another filter is refused instead of silently skipping the
+ * new filter's rows before that path.
  */
-function encodeRedirectCursor(fromPath: string): string {
-  return Buffer.from(JSON.stringify(["redirects.list", fromPath])).toString("base64url");
+interface RedirectCursor {
+  readonly after: string;
+  readonly query: string;
+  readonly statusCode: number | null;
 }
 
-/** The `from_path` a `redirects.list` cursor continues after, or null for anything else. */
-function decodeRedirectCursor(cursor: string): string | null {
+function encodeRedirectCursor(c: RedirectCursor): string {
+  const payload = ["redirects.list", c.after, c.query, c.statusCode];
+  return Buffer.from(JSON.stringify(payload)).toString("base64url");
+}
+
+/** A `redirects.list` cursor, or null for anything else. */
+function decodeRedirectCursor(cursor: string): RedirectCursor | null {
   try {
     const v = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
-    if (Array.isArray(v) && v.length === 2 && v[0] === "redirects.list") {
-      return typeof v[1] === "string" && v[1].startsWith("/") ? v[1] : null;
+    if (
+      Array.isArray(v) &&
+      v.length === 4 &&
+      v[0] === "redirects.list" &&
+      typeof v[1] === "string" &&
+      v[1].startsWith("/") &&
+      typeof v[2] === "string" &&
+      (v[3] === null || typeof v[3] === "number")
+    ) {
+      return { after: v[1], query: v[2], statusCode: v[3] };
     }
   } catch {
     // Not base64url JSON: an unknown cursor.
   }
   return null;
+}
+
+/**
+ * The `from_path` a cursor continues after, or the error detail when it
+ * cannot continue this call (not one of ours, or another search's).
+ */
+function redirectCursorAfter(
+  text: string,
+  query: string,
+  statusCode: number | null,
+): { ok: true; after: string } | { ok: false; detail: ErrorDetail } {
+  const cursor = decodeRedirectCursor(text);
+  if (cursor === null) {
+    return {
+      ok: false,
+      detail: {
+        path: ["cursor"],
+        message: "is not a cursor this redirect list returned",
+        next: "pass the next cursor exactly as the previous call printed it, or omit it to start at the first page",
+      },
+    };
+  }
+  if (cursor.query !== query || cursor.statusCode !== statusCode) {
+    return {
+      ok: false,
+      detail: {
+        path: ["cursor"],
+        message: `continues the list for filter "${cursor.query}" and statusCode ${cursor.statusCode ?? "(any)"}, not this one`,
+        next: "send the same filter and statusCode as the call that returned it, or omit cursor to start this search at its first page",
+      },
+    };
+  }
+  return { ok: true, after: cursor.after };
 }
 
 export const listRedirectsOp = defineOperation({
@@ -205,10 +257,10 @@ export const listRedirectsOp = defineOperation({
         .optional(),
       limit: z.number().int().positive().max(1000).default(200),
       /**
-       * #1538 — `nextCursor` of the previous page (same `query` and
-       * `statusCode`): the rows after it, ordered by `fromPath`.
+       * #1538 — `nextCursor` of the previous page: the rows after it,
+       * ordered by `fromPath`. Refused with another `query` / `statusCode`.
        */
-      cursor: z.string().min(1).max(4000).optional(),
+      cursor: z.string().min(1).max(8000).optional(),
     })
     .strict(),
   output: z.object({
@@ -220,17 +272,13 @@ export const listRedirectsOp = defineOperation({
     nextCursor: z.string().nullable(),
   }),
   handler: async (_ctx, input, tx) => {
-    const after = input.cursor === undefined ? null : decodeRedirectCursor(input.cursor);
-    if (input.cursor !== undefined && after === null) {
-      return err(
-        handlerErrorFromDetails("redirects.list", [
-          {
-            path: ["cursor"],
-            message: "is not a cursor this redirect list returned",
-            next: "pass the next cursor exactly as the previous call printed it, or omit it to start at the first page",
-          },
-        ]),
-      );
+    const query = input.query ?? "";
+    const statusCode = input.statusCode ?? null;
+    let after: string | null = null;
+    if (input.cursor !== undefined) {
+      const c = redirectCursorAfter(input.cursor, query, statusCode);
+      if (!c.ok) return err(handlerErrorFromDetails("redirects.list", [c.detail]));
+      after = c.after;
     }
     const queryFilter =
       input.query && input.query.length > 0
@@ -272,7 +320,9 @@ export const listRedirectsOp = defineOperation({
       })),
       totalCount: totalRows[0]?.count ?? 0,
       nextCursor:
-        fetched.length > input.limit && last ? encodeRedirectCursor(last.from_path) : null,
+        fetched.length > input.limit && last
+          ? encodeRedirectCursor({ after: last.from_path, query, statusCode })
+          : null,
     });
   },
 });
