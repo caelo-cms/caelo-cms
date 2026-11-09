@@ -246,7 +246,10 @@ export async function privateUpdateMany(
     chatTaskId: ctx.chatTaskId ?? null,
   };
   if (ctx.chatBranchId) {
-    for (const rowId of rowIds) {
+    // In one order for every caller: each lock holds its row until commit,
+    // so two bulk writes over the same rows in opposite orders would
+    // otherwise deadlock instead of one of them getting the lock conflict.
+    for (const rowId of [...rowIds].sort()) {
       const busy = await lock(tx, ctx, locker, operation, rowId);
       if (busy) return { ok: false, message: busy };
     }
@@ -267,9 +270,13 @@ export async function privateUpdateMany(
       for (const r of rows) live.set(r.id, rowToState(r.row));
     }
     const states: { rowId: string; state: PluginRowState }[] = [];
+    const missing: string[] = [];
     for (const rowId of rowIds) {
       const current = branch.get(rowId) ?? live.get(rowId);
-      if (!current || current.deletedAt !== null) return notFoundMany(operation, [rowId]);
+      if (!current || current.deletedAt !== null) {
+        missing.push(rowId);
+        continue;
+      }
       states.push({
         rowId,
         state: {
@@ -280,6 +287,7 @@ export async function privateUpdateMany(
         },
       });
     }
+    if (missing.length > 0) return notFoundMany(operation, missing);
     await emitPluginRowSnapshots(tx, { ...header, rows: states });
     return { ok: true, value: { updated: states.length } };
   }
