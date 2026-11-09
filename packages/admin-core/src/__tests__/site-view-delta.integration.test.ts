@@ -234,6 +234,23 @@ describe("site view delta (#1270)", () => {
     });
   });
 
+  it("reads the whole site once when several requests find no cached view at once", async () => {
+    clearSiteViewCache();
+    statements = [];
+    counting = true;
+    const views = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        adapter.withAdminTransaction(COST_SYSTEM, (tx) => loadSiteView(tx, null)),
+      ),
+    );
+    counting = false;
+    expect(pageReads().whole).toBe(1);
+    const fresh = await adapter.withAdminTransaction(COST_SYSTEM, (tx) =>
+      readSiteView(tx, null, views[0]!.mark),
+    );
+    for (const v of views) expect({ ...v, mark: fresh.mark }).toEqual(fresh);
+  });
+
   it("reads the whole site again past MAX_DELTA_CHANGES journal rows, still exact", async () => {
     await site.seedFillerPages(152, 152 + MAX_DELTA_CHANGES + 1);
     const r = await both();
