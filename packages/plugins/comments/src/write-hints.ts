@@ -30,6 +30,37 @@ function hasName(html: string, name: string): boolean {
   return new RegExp(`\\bname\\s*=\\s*["']${name}["']`, "i").test(html);
 }
 
+/** Attributes whose values a visitor reads or hears. */
+const VISIBLE_ATTRS = ["aria-label", "placeholder", "title", "alt"];
+
+/**
+ * The visible texts of the markup that are written out rather than read
+ * from a site text or a field: text runs between tags and the values of
+ * {@link VISIBLE_ATTRS}. A linear scan over the markup, no backtracking.
+ */
+function literalTexts(html: string): string[] {
+  const out: string[] = [];
+  const add = (raw: string) => {
+    const text = raw.replace(/\s+/g, " ").trim();
+    if (text !== "" && !text.includes("{{") && /\p{L}/u.test(text) && !out.includes(text)) {
+      out.push(text);
+    }
+  };
+  for (const part of html.split("<")) {
+    const close = part.indexOf(">");
+    if (close === -1) continue;
+    const tag = part.slice(0, close);
+    for (const name of VISIBLE_ATTRS) {
+      const at = tag.indexOf(`${name}="`);
+      if (at === -1 || !/[\s"']/.test(tag[at - 1] ?? "")) continue;
+      const end = tag.indexOf('"', at + name.length + 2);
+      if (end !== -1) add(tag.slice(at + name.length + 2, end));
+    }
+    if (!tag.startsWith("!--")) add(part.slice(close + 1));
+  }
+  return out;
+}
+
 /** The hints for one module's markup; empty when it carries no comments placeholder. */
 export function commentsModuleHints(html: string): string[] {
   if (!PLACEHOLDER_RE.test(html)) return [];
@@ -66,11 +97,10 @@ export function commentsModuleHints(html: string): string[] {
   if (!hasName(html, C.authorField)) missing.push(`a name field name="${C.authorField}"`);
   if (!hasName(html, C.contentField)) missing.push(`a comment field name="${C.contentField}"`);
   if (!/\btype\s*=\s*["']submit["']/i.test(html)) missing.push('a button type="submit"');
-  if (!hasAttr(html, C.status))
-    missing.push(`an element with ${C.status} role="status" for the outcome`);
-  if (!hasAttr(html, C.sentText) || !hasAttr(html, C.errorText)) {
+  if (!hasAttr(html, C.status)) missing.push(`an element with ${C.status} for the outcome`);
+  if (!hasAttr(html, C.sent) || !hasAttr(html, C.error)) {
     missing.push(
-      `${C.sentText} and ${C.errorText} on the form (what the visitor reads after sending)`,
+      `the two messages inside it, <span ${C.sent} hidden>…</span> and <span ${C.error} hidden>…</span>`,
     );
   }
   if (!hasAttr(html, C.older))
@@ -90,9 +120,14 @@ export function commentsModuleHints(html: string): string[] {
       "Give the name and comment fields visible <label>s (a placeholder is no label: screen readers and autofill need one).",
     );
   }
-  if (!html.includes("{{site_text.")) {
+  const literals = literalTexts(html);
+  if (literals.length > 0) {
+    const shown = literals
+      .slice(0, 4)
+      .map((t) => JSON.stringify(t))
+      .join(", ");
     out.push(
-      `Word the heading, labels, button, ${C.sentText} and ${C.errorText} with {{site_text.<key>}} (keys in the site-texts list, added with patch_list_items_many), never literal text: then every language of the site shows its own words.`,
+      `Word every visible text with {{site_text.<key>}} (keys in the site-texts list, added with patch_list_items_many), never literal text: ${shown} would show in every language of the site as written.`,
     );
   }
   return out.slice(0, 5);

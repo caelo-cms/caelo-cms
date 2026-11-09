@@ -180,6 +180,23 @@ export { PLUGIN_CAPABILITY_INFO, type PluginCapabilityInfo } from "./capability-
  */
 export type PluginProvenance = "release-signed" | "runtime-authored";
 
+/**
+ * The permissions a plugin tool may require of the human a chat call acts
+ * for (`PluginToolSpec.requiredPermission`): the ones a plugin's own owner
+ * panel uses for its writes, so the chat is no way around the panel.
+ * `plugins.approve` is "approve plugin items such as comments", the
+ * Reviewer role's permission (CMS_REQUIREMENTS §9.1).
+ */
+export const PLUGIN_TOOL_PERMISSIONS = [
+  "content.write",
+  "settings.write",
+  "deploy.trigger",
+  "plugins.approve",
+] as const;
+
+/** One of {@link PLUGIN_TOOL_PERMISSIONS}. */
+export type PluginToolPermission = (typeof PLUGIN_TOOL_PERMISSIONS)[number];
+
 /** Tier 1 background worker spec (cron-style). */
 export const pluginWorkerSpec = z.object({
   name: z.string().min(1).max(120),
@@ -236,7 +253,7 @@ export const pluginToolSpec = z.object({
    *  a way around it (e.g. sending a newsletter needs `settings.write`
    *  in the panel and therefore in the chat). Enforced by the host for
    *  `chat` and `approved` invocations, including the Power-MCP. */
-  requiredPermission: z.enum(["content.write", "settings.write", "deploy.trigger"]).optional(),
+  requiredPermission: z.enum(PLUGIN_TOOL_PERMISSIONS).optional(),
   /** #741 — the operation can call `ctx.ai` or generate images, i.e. spend
    *  the install's AI. Declared so the Power-MCP applies a token's cost cap
    *  to exactly these tools and tells the agent the AI part comes back to

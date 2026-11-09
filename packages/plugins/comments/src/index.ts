@@ -708,6 +708,8 @@ export default definePlugin<PluginContextTier1>({
       name: "list_pending_comments",
       description: "Browse unmoderated visitor comments. Returns up to 200 ordered newest first.",
       operationName: "list_pending",
+      // The moderation panel's permission: the chat is no way around it.
+      requiredPermission: "plugins.approve",
       inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
     },
     {
@@ -715,6 +717,7 @@ export default definePlugin<PluginContextTier1>({
       description:
         "Decide ONE pending comment: approved (shown on its page at once), rejected or spam (both leave the queue). For several with the same decision use bulk_moderate_comments.",
       operationName: "moderate",
+      requiredPermission: "plugins.approve",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -731,6 +734,7 @@ export default definePlugin<PluginContextTier1>({
         "Give several pending comments the same decision in one call: approved (shown on their pages at once), rejected or spam. " +
         "Returns `updated` and `failed` (each failed id with why; those stay pending). Prefer it over repeated moderate_comment calls.",
       operationName: "bulk_moderate",
+      requiredPermission: "plugins.approve",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
@@ -754,6 +758,7 @@ export default definePlugin<PluginContextTier1>({
         "(the moderation prompt) — answer it with APPROVE, REJECT or SPAM and call this tool again with the same commentId plus that answer as `verdict`. " +
         "Pass `verdict` only when answering such a work item; use moderate_comment to set a status you decided without the moderation prompt.",
       operationName: "ai_moderate",
+      requiredPermission: "plugins.approve",
       // Spends the install's AI unless answered or delegated (#741).
       usesInstallAi: true,
       inputJsonSchema: {

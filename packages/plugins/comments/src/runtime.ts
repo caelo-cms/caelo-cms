@@ -21,14 +21,19 @@
  *                                   placeholder is empty in the module
  *   [data-comment-older]            a button the runtime shows while older
  *                                   comments exist; one click reads a page
- *   form[data-comment-form]         the form; `data-sent-text` and
- *                                   `data-error-text` are what the visitor
- *                                   reads after sending
+ *   form[data-comment-form]         the form
  *     [name="authorName"]           the name field
  *     [name="content"]              the comment field
  *     [type="submit"]               the button
- *     [data-comment-status]         where the outcome is announced
- *                                   (`role="status"`)
+ *     [data-comment-status]         the live region the outcome is
+ *                                   announced in; the runtime makes it
+ *                                   `role="status"` if the module did not
+ *       [data-comment-sent]         hidden; shown after a comment was sent
+ *       [data-comment-error]        hidden; shown when sending failed
+ *
+ * The two messages are elements, not attribute values: module values are
+ * substituted raw (the template engine does not escape), so a site text
+ * with a quote in it would break out of an attribute.
  *
  * The honeypot is the runtime's: it adds the field when the form has none,
  * and `runtime.css` keeps it off-screen. The proof-of-work for `submit` is
@@ -60,9 +65,10 @@
  * ## Safety
  *
  * Visitor text only ever reaches the DOM through `textContent`. Dates are
- * formatted in the language of the region (its nearest `lang`, else
- * `<html lang>`) with the bake's options, so a comment that arrives later
- * reads like the baked ones. A missing piece of the contract is reported
+ * formatted in `<html lang>` with the bake's options, exactly as the bake
+ * did, so a comment that arrives later reads like the baked ones; a page
+ * language `Intl` cannot format shows no late comments rather than dates in
+ * another format (the baked ones stay). A missing piece of the contract is reported
  * to the console naming the attribute that was expected: a form that
  * quietly does nothing is the worst outcome (the plugin's write hints say
  * the same to the AI when it writes the module). Pages without a comments
@@ -77,9 +83,9 @@ export const COMMENTS_CONTRACT = {
   section: "data-comments",
   older: "data-comment-older",
   form: "data-comment-form",
-  sentText: "data-sent-text",
-  errorText: "data-error-text",
   status: "data-comment-status",
+  sent: "data-comment-sent",
+  error: "data-comment-error",
   authorField: "authorName",
   contentField: "content",
 } as const;
@@ -97,7 +103,8 @@ export const MAX_CONTENT_LENGTH = 4000;
  */
 export const RUNTIME_CSS =
   `[data-comments] input[name="${HONEYPOT_FIELD_NAME}"]{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;opacity:0}` +
-  "[data-comments] [data-comment-older][hidden],[data-comments] form[data-comment-form][hidden]{display:none}" +
+  "[data-comments] [data-comment-older][hidden],[data-comments] form[data-comment-form][hidden]," +
+  "[data-comments] [data-comment-sent][hidden],[data-comments] [data-comment-error][hidden]{display:none}" +
   "[data-comment-thread] .body{white-space:pre-wrap}";
 
 const C = COMMENTS_CONTRACT;
@@ -178,16 +185,14 @@ export const THREAD_RUNTIME_JS = `(function () {
     return next();
   }
 
-  function langOf(el) {
-    var withLang = el.closest("[lang]");
-    return (withLang && withLang.getAttribute("lang")) || document.documentElement.getAttribute("lang") || "";
-  }
-
-  function dateFormat(lang) {
+  // The bake formats in <html lang> (the page's document language); so does
+  // this, whatever lang a module around the region carries.
+  function dateFormat() {
+    var lang = document.documentElement.getAttribute("lang") || "";
     try {
       return new Intl.DateTimeFormat(lang, DATE_OPTIONS);
     } catch (e) {
-      warn("the page language '" + lang + "' cannot format dates; showing them as ISO dates");
+      warn("the page language '" + lang + "' cannot format dates, so no comment newer than the page is shown");
       return null;
     }
   }
@@ -203,7 +208,7 @@ export const THREAD_RUNTIME_JS = `(function () {
     author.textContent = c.author_name;
     var time = document.createElement("time");
     time.setAttribute("datetime", at.toISOString());
-    time.textContent = day ? day.format(at) : at.toISOString().slice(0, 10);
+    time.textContent = day.format(at);
     header.appendChild(author);
     header.appendChild(document.createTextNode(" "));
     header.appendChild(time);
@@ -217,7 +222,7 @@ export const THREAD_RUNTIME_JS = `(function () {
 
   function mountThread(region, section, pageId) {
     var bakedAt = region.getAttribute("data-baked-at");
-    var day = dateFormat(langOf(region));
+    var day = dateFormat();
     var thread = region.querySelector("[data-comment-thread]");
     if (!thread) {
       thread = document.createElement("div");
@@ -247,6 +252,7 @@ export const THREAD_RUNTIME_JS = `(function () {
     }
 
     function add(comments, onTop) {
+      if (!day) return;
       var fresh = comments.filter(function (c) { return !seen[c.id]; });
       if (onTop) fresh.reverse();
       fresh.forEach(function (c) {
@@ -300,15 +306,15 @@ export const THREAD_RUNTIME_JS = `(function () {
     var content = form.querySelector('[name="${C.contentField}"]');
     var submit = form.querySelector('[type="submit"]');
     var status = form.querySelector("[${C.status}]");
-    var sentText = form.getAttribute("${C.sentText}");
-    var errorText = form.getAttribute("${C.errorText}");
+    var sent = status ? status.querySelector("[${C.sent}]") : null;
+    var failed = status ? status.querySelector("[${C.error}]") : null;
     var missing = [];
     if (!author) missing.push('[name="${C.authorField}"]');
     if (!content) missing.push('[name="${C.contentField}"]');
     if (!submit) missing.push('[type="submit"]');
     if (!status) missing.push("[${C.status}]");
-    if (!sentText) missing.push("${C.sentText}");
-    if (!errorText) missing.push("${C.errorText}");
+    if (!sent) missing.push("[${C.sent}] inside [${C.status}]");
+    if (!failed) missing.push("[${C.error}] inside [${C.status}]");
     // Never let the browser send the form itself: it would put the comment
     // in the page's address and reach no one.
     form.addEventListener("submit", function (ev) {
@@ -332,20 +338,29 @@ export const THREAD_RUNTIME_JS = `(function () {
       trap.setAttribute("aria-hidden", "true");
       form.appendChild(trap);
     }
+    // The outcome must reach screen readers too, whatever the module wrote.
+    if (!status.getAttribute("role")) status.setAttribute("role", "status");
+    if (!status.getAttribute("aria-live")) status.setAttribute("aria-live", "polite");
+    sent.hidden = true;
+    failed.hidden = true;
     if (!(author.maxLength > 0 && author.maxLength <= MAX_AUTHOR)) author.maxLength = MAX_AUTHOR;
     if (!(content.maxLength > 0 && content.maxLength <= MAX_CONTENT)) content.maxLength = MAX_CONTENT;
     form.hidden = false;
 
-    function announce(state, text) {
-      status.setAttribute("data-state", state);
-      status.textContent = text;
+    // Only the hidden flags change: the messages are the module's own
+    // elements, in the site's words, and the live region announces the one
+    // that appears.
+    function announce(state) {
+      if (state) status.setAttribute("data-state", state);
+      else status.removeAttribute("data-state");
+      sent.hidden = state !== "sent";
+      failed.hidden = state !== "error";
     }
 
     function send() {
       submit.disabled = true;
       form.setAttribute("aria-busy", "true");
-      status.removeAttribute("data-state");
-      status.textContent = "";
+      announce(null);
       var trapField = form.querySelector('[name="' + HONEYPOT + '"]');
       var body = {
         pageId: pageId,
@@ -360,12 +375,12 @@ export const THREAD_RUNTIME_JS = `(function () {
         })
         .then(function (json) {
           if (!json.ok) throw new Error((json.error && json.error.kind) || "refused");
-          announce("sent", sentText);
+          announce("sent");
           form.reset();
         })
         .catch(function (e) {
           warn("the comment was not sent: " + e);
-          announce("error", errorText);
+          announce("error");
         })
         .then(function () {
           submit.disabled = false;

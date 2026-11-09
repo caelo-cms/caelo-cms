@@ -73,7 +73,8 @@ describe("comments write hints (#1511)", () => {
       'name="content"',
       'type="submit"',
       "data-comment-status",
-      "data-sent-text",
+      "data-comment-sent",
+      "data-comment-error",
       "data-comment-older",
     ]) {
       expect(missing).toContain(part);
@@ -88,6 +89,19 @@ describe("comments write hints (#1511)", () => {
     const hints = commentsModuleHints(html).join(" ");
     expect(hints).toContain("<label>");
     expect(hints).toContain("{{site_text.<key>}}");
+  });
+
+  it("names each literal text, even next to translated ones", () => {
+    const html = SKILL_SECTION.replace("{{site_text.comments_name_label}}", "Your name").replace(
+      "{{site_text.comments_submit}}",
+      "Send",
+    );
+    const hint = commentsModuleHints(html).find((h) => h.includes("literal")) ?? "";
+    expect(hint).toContain('"Your name"');
+    expect(hint).toContain('"Send"');
+    expect(
+      commentsModuleHints(SKILL_SECTION.replace(">{{", ' placeholder="Write here">{{')),
+    ).toEqual([expect.stringContaining('"Write here"')]);
   });
 
   it("stays within core's five hints and says each thing once", () => {

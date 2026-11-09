@@ -430,6 +430,31 @@ describe("dates in the page's language (#1511)", () => {
   it("refuses a page language Intl cannot format instead of guessing one", async () => {
     await expect(bake([row(1)], "not a tag")).rejects.toThrow(/page language/);
   });
+
+  it("formats in <html lang> like the bake, whatever lang a module around it carries", async () => {
+    const later = row(4000);
+    const section = skillSection().replace(
+      "<section data-comments",
+      '<section lang="fr" data-comments',
+    );
+    const root = pageWith(await bake([row(1)], "de"), row(1).archivedAt, section);
+    const v = await visit(root, [row(1), later], { lang: "de" });
+    const time = (v.root.querySelector("[data-comment-thread]") as El).children[0]?.querySelector(
+      "time",
+    );
+    expect(time?.textContent).toBe(
+      new Intl.DateTimeFormat("de", COMMENT_DATE_OPTIONS).format(new Date(later.submittedAt)),
+    );
+  });
+
+  it("shows no late comments in another format when the page language is broken", async () => {
+    const later = row(4000);
+    const v = await visit(pageWith(await bake([row(1)]), row(1).archivedAt), [row(1), later], {
+      lang: "not a tag",
+    });
+    expect(v.ids()).toEqual([row(1).id]);
+    expect(String(v.warnings[0]?.[0])).toContain("not a tag");
+  });
 });
 
 describe("the comment form (#1511)", () => {
@@ -465,8 +490,10 @@ describe("the comment form (#1511)", () => {
     const contract = plugin.publicOperations?.find((o) => o.name === "submit")?.input;
     const { _caelo_captcha: _proof, ...body } = sent;
     expect(contract?.safeParse(body).success).toBe(true);
-    expect(v.status().textContent).toBe("T:comments_sent");
     expect(v.status().getAttribute("data-state")).toBe("sent");
+    expect(v.status().querySelector("[data-comment-sent]")?.hidden).toBe(false);
+    expect(v.status().querySelector("[data-comment-sent]")?.textContent).toBe("T:comments_sent");
+    expect(v.status().querySelector("[data-comment-error]")?.hidden).toBe(true);
     expect((form.querySelector('[name="content"]') as El).value).toBe("");
     expect((form.querySelector('[type="submit"]') as El).disabled).toBe(false);
   });
@@ -486,8 +513,9 @@ describe("the comment form (#1511)", () => {
     });
     v.form().dispatch("submit");
     await v.settle();
-    expect(v.status().textContent).toBe("T:comments_error");
     expect(v.status().getAttribute("data-state")).toBe("error");
+    expect(v.status().querySelector("[data-comment-error]")?.hidden).toBe(false);
+    expect(v.status().querySelector("[data-comment-sent]")?.hidden).toBe(true);
     expect(String(v.warnings[0]?.[0])).toContain("Rejected");
   });
 
@@ -501,16 +529,31 @@ describe("the comment form (#1511)", () => {
 
   it("names every missing part of the contract, and never lets the browser send the form", async () => {
     const broken = skillSection()
-      .replace(/ data-sent-text="[^"]*"/, "")
-      .replace(/<p data-comment-status[^>]*><\/p>/, "");
+      .replace(/<span data-comment-sent[^>]*>[^<]*<\/span>/, "")
+      .replace(' name="content"', "");
     const v = await visit(pageWith(null, null, broken), []);
     const text = v.warnings.map((w) => String(w[0])).join("\n");
-    expect(text).toContain("data-sent-text");
-    expect(text).toContain("[data-comment-status]");
+    expect(text).toContain("[data-comment-sent]");
+    expect(text).toContain('[name="content"]');
     expect(v.form().hidden).toBe(true);
     expect(v.form().dispatch("submit")).toBe(true);
     await v.settle();
     expect(v.submits).toEqual([]);
+  });
+
+  it("makes the outcome a live region even when the module forgot to", async () => {
+    const bare = skillSection().replace(' role="status" aria-live="polite"', "");
+    const v = await visit(pageWith(null, null, bare), []);
+    expect(v.warnings).toEqual([]);
+    expect(v.status().getAttribute("role")).toBe("status");
+    expect(v.status().getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("puts a site text with quotes and markup characters in an element, never an attribute", () => {
+    // Module values are substituted raw: a quote in an attribute would break out of it.
+    const section = skillSection();
+    expect(section).not.toMatch(/="T:/);
+    for (const key of ["comments_sent", "comments_error"]) expect(section).toContain(`>T:${key}<`);
   });
 
   it("warns when the placeholder sits in no comments section", async () => {

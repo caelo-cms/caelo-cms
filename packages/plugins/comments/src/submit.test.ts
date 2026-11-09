@@ -172,6 +172,10 @@ describe("what the Owner approves (#1511)", () => {
     expect(plugin.adminPanels?.[0]?.permission).toBe("plugins.approve");
   });
 
+  it("asks the same permission of the human a chat moderates for: the chat is no way around the panel", () => {
+    for (const tool of plugin.tools ?? []) expect(tool.requiredPermission).toBe("plugins.approve");
+  });
+
   it("offers a bulk moderation tool next to the single one", () => {
     const tools = plugin.tools?.map((t) => t.name) ?? [];
     expect(tools).toContain("bulk_moderate_comments");

@@ -11,6 +11,7 @@
  */
 
 import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+import { PLUGIN_TOOL_PERMISSIONS } from "@caelo-cms/plugin-sdk";
 import {
   defineOperation,
   type OperationDefinition,
@@ -90,7 +91,7 @@ const operatorHasPermissionOp = defineOperation({
   input: z
     .object({
       actorId: z.string().uuid(),
-      permission: z.enum(["content.write", "settings.write", "deploy.trigger"]),
+      permission: z.enum(PLUGIN_TOOL_PERMISSIONS),
     })
     .strict(),
   output: z.object({ allowed: z.boolean() }),
