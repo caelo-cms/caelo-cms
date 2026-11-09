@@ -56,7 +56,7 @@ Put the filter columns first and the order column last (`["status", "created_at"
 plugin_public_storage.list: no index covers this read of "reviews" (it filters by page_id). Declare one in the plugin's manifest — indexes: { schema: { reviews: [["page_id","created_at"]] } } — and ship it as a new version. …
 ```
 
-`id`-only reads and writes (`update`, `delete`, `compareAndSwap`) go by the primary key and need nothing.
+`id`-only reads and writes (`update`, `updateMany`, `delete`, `compareAndSwap`) go by the primary key and need nothing.
 
 The check reads the table's indexes from the database catalog (`packages/plugin-host/src/index-coverage.ts`), not from the caller: the storage operations are reachable from plugin code (`ctx.cms.call`), so an index list passed in could claim indexes that do not exist. The catalog holds exactly what the emitters built from the manifest. A read with only a `limit` skips the catalog lookup.
 

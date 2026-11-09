@@ -262,6 +262,9 @@ const SOURCE_HASH_BACKFILL_PROGRESS_KEY = "source_hash_backfill_progress";
  */
 const SOURCE_HASH_BACKFILL_BATCH = 100;
 
+/** Variants one rebuild write flags at most (the storage's `updateMany` ceiling). */
+const REBUILD_WRITE_BATCH = 1000;
+
 /** The fingerprint a stored `source_hash` holds, without the backfill prefix. */
 function storedFingerprint(hash: string | null): string | null {
   if (hash === null) return null;
@@ -2427,15 +2430,24 @@ export default definePlugin<PluginContextTier1>({
       const rows = (await listAll(q, "page_variants", {
         translation_status: "up_to_date",
       })) as unknown as PageVariantRow[];
+      const stale: string[] = [];
       for (const row of rows) {
         const current = await sourceHashOf(row.group_id);
         // No source to compare with (none, or deleted): left as it is.
         if (current === null) continue;
         const same = (stored: string | null) => storedFingerprint(stored) === current.hash;
         if (await staysUpToDate(deps, row, current, same)) continue;
-        await q.update("page_variants", row.id, { translation_status: "needs_update" });
-        marked += 1;
+        stale.push(row.id);
       }
+      // #1391 — one write per thousand variants, not one per variant: on a
+      // large site every variant can be stale (translations from before
+      // their fingerprints), and a write each took minutes of database time.
+      for (let i = 0; i < stale.length; i += REBUILD_WRITE_BATCH) {
+        await q.updateMany("page_variants", stale.slice(i, i + REBUILD_WRITE_BATCH), {
+          translation_status: "needs_update",
+        });
+      }
+      marked += stale.length;
       marked += await refreshChromeStaleness(deps);
       const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
       await supersedeSourceHashBackfill(q);
