@@ -30,6 +30,7 @@ export {
   localBuildPluginServices,
   remoteBuildPluginServices,
   renderPluginOnLiveBuild,
+  type StaticRenderContext,
   type StaticRenderPlugin,
   serveBuildPluginCall,
 } from "./build-services.js";

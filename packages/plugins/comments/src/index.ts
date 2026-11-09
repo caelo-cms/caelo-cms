@@ -8,33 +8,37 @@
  * deploy bakes the newest approved comments; `runtime.ts` adds what came
  * after the bake and pages through the older ones (#1169).
  *
+ * #1511 — what visitors see is a module the AI writes (`skills.ts`): its
+ * texts are site texts, so every language of the site has its own, its
+ * look is the site's theme, and it carries the placeholder with
+ * `{{page.id}}`, so one module serves every page it is placed on. The
+ * plugin bakes data only (`render.ts`), dates in the page's language, and
+ * its runtime binds to the module by attribute (`runtime.ts`).
+ *
  * Schema (cms_public.plugin_comments.*):
  *   comments — page_id + parent_id (3-level threads) + author + status
  *   comment_meta — page_id + last_approved_at + count (delta-fetch since)
  */
 
-import {
-  attachCaptchaProof,
-  escapeHtml,
-  HONEYPOT_FIELD_NAME,
-  honeypotBodyField,
-  honeypotFieldHtml,
-  isHoneypotArgTripped,
-  KIT_CSS,
-  postPluginJson,
-  readBakeTimestamp,
-  setStatus,
-} from "@caelo-cms/plugin-component-kit";
+import { HONEYPOT_FIELD_NAME, isHoneypotArgTripped } from "@caelo-cms/plugin-component-kit";
 import {
   type AiWorkItem,
-  defineComponent,
   definePlugin,
   isAiDelegated,
   type PluginContextTier1,
+  type PluginWriteHintsArgs,
   PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
-import { THREAD_RUNTIME_JS } from "./runtime.js";
+import { threadHtml } from "./render.js";
+import {
+  MAX_AUTHOR_LENGTH,
+  MAX_CONTENT_LENGTH,
+  RUNTIME_CSS,
+  THREAD_RUNTIME_JS,
+} from "./runtime.js";
+import { COMMENTS_SKILLS } from "./skills.js";
+import { writeHints } from "./write-hints.js";
 
 const MAX_THREAD_DEPTH = 3;
 
@@ -49,7 +53,24 @@ const THREAD_PAGE_SIZE = 50;
 /** The most pages `comment_archive.stats_many` answers at once. */
 const MAX_STATS_PAGES = 500;
 
-type ModerationDecision = "approved" | "rejected" | "spam";
+const moderationDecision = z.enum(["approved", "rejected", "spam"]);
+type ModerationDecision = z.infer<typeof moderationDecision>;
+
+/** `moderate`: one comment, one decision (the panel's row actions and `moderate_comment`). */
+const moderateInput = z
+  .object({ commentId: z.string().uuid(), decision: moderationDecision })
+  .strict();
+
+/** The most comments one `bulk_moderate` decides (the moderation queue lists at most 200). */
+const MAX_BULK_MODERATE = 200;
+
+/** `bulk_moderate`: many comments, one decision (the panel's bulk actions and `bulk_moderate_comments`). */
+const bulkModerateInput = z
+  .object({
+    commentIds: z.array(z.string().uuid()).min(1).max(MAX_BULK_MODERATE),
+    decision: moderationDecision,
+  })
+  .strict();
 
 /**
  * `ai_moderate` boundary. `verdict` is the classification a Power-MCP
@@ -97,16 +118,19 @@ function parseVerdict(raw: string): { verdict: string; decision: ModerationDecis
   return { verdict, decision: null };
 }
 
-/** A visitor's comment (#1332): validated by the host before `submit` runs. */
+/**
+ * A visitor's comment (#1332): validated by the host before `submit` runs.
+ * The limits are the stored ones: a longer name or comment is refused, not
+ * cut short behind the visitor's back (the form carries them as
+ * `maxlength`, so a visitor never meets the refusal).
+ */
 const submitInput = z
   .object({
-    pageId: z.string().min(1).max(200),
+    pageId: z.string().uuid(),
     /** The approved comment this replies to (its id as `list_approved` returns it). */
-    parentId: z.string().max(200).nullable().optional(),
-    authorName: z.string().max(200),
-    content: z.string().max(20_000),
-    /** Ignored; the gateway verifies the proof-of-work itself. Kept so older pages still submit. */
-    captchaToken: z.string().max(200).nullable().optional(),
+    parentId: z.string().uuid().nullable().optional(),
+    authorName: z.string().max(MAX_AUTHOR_LENGTH),
+    content: z.string().max(MAX_CONTENT_LENGTH),
     [HONEYPOT_FIELD_NAME]: z.string().max(500).optional(),
   })
   .strict();
@@ -246,7 +270,7 @@ interface CommentRow {
 async function archiveAndDeletePublic(
   ctx: PluginContextTier1,
   commentId: string,
-  decision: "approved" | "rejected" | "spam",
+  decision: ModerationDecision,
 ): Promise<string | null> {
   if (!ctx.cms) {
     throw new Error("comments.moderate: cms capability required to drain to admin");
@@ -270,7 +294,7 @@ async function archiveAndDeletePublic(
       parentId: string | null;
       authorName: string;
       content: string;
-      status: "approved" | "rejected" | "spam";
+      status: ModerationDecision;
       submittedAt: string;
     },
     { archiveId: string | null }
@@ -301,7 +325,7 @@ function bakedPage(decision: ModerationDecision, pageId: string | null): { pageI
 
 export default definePlugin<PluginContextTier1>({
   slug: "comments",
-  version: "1.2.0",
+  version: "1.3.0",
   tier: 1,
   schema: {
     comments: {
@@ -322,7 +346,18 @@ export default definePlugin<PluginContextTier1>({
   },
   /** #1292 — the moderation queue reads by status, newest first. */
   indexes: { schema: { comments: [["status", "submitted_at"]] } },
-  requestedCapabilities: ["ai_provider", "chat_runner_tools", "cms_admin"],
+  /**
+   * `client_assets`: `buildAssets` puts `runtime.js` and `runtime.css` on
+   * every page of the site. `companion_skills`: the setup skill. Both are
+   * declared so the Owner sees them at approval (CMS_REQUIREMENTS §14.5).
+   */
+  requestedCapabilities: [
+    "ai_provider",
+    "chat_runner_tools",
+    "cms_admin",
+    "client_assets",
+    "companion_skills",
+  ],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
   publicOperations: [
@@ -404,8 +439,8 @@ export default definePlugin<PluginContextTier1>({
       const r = await ctx.query.insert("comments", {
         page_id: input.pageId,
         parent_id: input.parentId ?? "",
-        author_name: input.authorName.slice(0, 80),
-        content: input.content.slice(0, 4000),
+        author_name: input.authorName.trim(),
+        content: input.content.trim(),
         status: "pending",
       });
       return { commentId: r.id, status: "pending" as const };
@@ -457,7 +492,7 @@ export default definePlugin<PluginContextTier1>({
       //      UNIQUE(public_row_id) — a retry doesn't double-archive).
       //   3. Delete from cms_public so a public-DB compromise leaks
       //      no historical comment data.
-      const input = args as { commentId: string; decision: "approved" | "rejected" | "spam" };
+      const input = moderateInput.parse(args);
       const pageId = await archiveAndDeletePublic(ctx, input.commentId, input.decision);
       return {
         commentId: input.commentId,
@@ -467,25 +502,29 @@ export default definePlugin<PluginContextTier1>({
     },
 
     bulk_moderate: async (ctx, args) => {
-      const input = args as {
-        commentIds: ReadonlyArray<string>;
-        decision: "approved" | "rejected" | "spam";
-      };
+      const input = bulkModerateInput.parse(args);
       let updated = 0;
       const pageIds = new Set<string>();
-      for (const id of input.commentIds) {
+      const failed: { commentId: string; error: string }[] = [];
+      for (const id of new Set(input.commentIds)) {
         try {
           const pageId = await archiveAndDeletePublic(ctx, id, input.decision);
           updated += 1;
           if (input.decision === "approved" && pageId) pageIds.add(pageId);
-        } catch {
-          // Per-row failure shouldn't strand the whole batch; the
-          // unarchived row stays in cms_public for a retry on the
-          // next moderation attempt.
+        } catch (e) {
+          // One comment's failure must not strand the rest of the batch.
+          // Its row stays in the inbox for the next attempt, and the caller
+          // hears which one failed and why, not a count that came up short.
+          failed.push({ commentId: id, error: e instanceof Error ? e.message : String(e) });
         }
       }
-      return { updated, pageIds: [...pageIds] };
+      return { updated, failed, pageIds: [...pageIds] };
     },
+
+    /** Core's write-hints hook (`write-hints.ts`): reads the AI's own module markup, writes nothing. */
+    write_hints: async (_ctx, args) => ({
+      hints: writeHints((args as PluginWriteHintsArgs).writes ?? []),
+    }),
 
     /**
      * AI moderation. Classifies a single pending comment as approved /
@@ -574,7 +613,9 @@ export default definePlugin<PluginContextTier1>({
       title: "Comments",
       description: "Approve or remove visitor comments.",
       icon: "message-square",
-      permission: "settings.write",
+      // "Approve plugin items such as comments": the Reviewer role's
+      // permission (CMS_REQUIREMENTS §9.1). Moderating needs no settings access.
+      permission: "plugins.approve",
       sections: [
         {
           kind: "table",
@@ -672,14 +713,35 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "moderate_comment",
       description:
-        "Moderate one comment. `decision` ∈ approved | rejected | spam. Use `bulk_moderate` for >1 at a time.",
+        "Decide ONE pending comment: approved (shown on its page at once), rejected or spam (both leave the queue). For several with the same decision use bulk_moderate_comments.",
       operationName: "moderate",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,
         required: ["commentId", "decision"],
         properties: {
-          commentId: { type: "string" },
+          commentId: { type: "string", format: "uuid" },
+          decision: { type: "string", enum: ["approved", "rejected", "spam"] },
+        },
+      },
+    },
+    {
+      name: "bulk_moderate_comments",
+      description:
+        "Give several pending comments the same decision in one call: approved (shown on their pages at once), rejected or spam. " +
+        "Returns `updated` and `failed` (each failed id with why; those stay pending). Prefer it over repeated moderate_comment calls.",
+      operationName: "bulk_moderate",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["commentIds", "decision"],
+        properties: {
+          commentIds: {
+            type: "array",
+            minItems: 1,
+            maxItems: MAX_BULK_MODERATE,
+            items: { type: "string", format: "uuid" },
+          },
           decision: { type: "string", enum: ["approved", "rejected", "spam"] },
         },
       },
@@ -716,7 +778,9 @@ export default definePlugin<PluginContextTier1>({
    * after the bake (#1169). It loads on every page and stops at once where
    * no comments region exists.
    */
-  buildAssets: () => ({ "runtime.js": THREAD_RUNTIME_JS }),
+  buildAssets: () => ({ "runtime.js": THREAD_RUNTIME_JS, "runtime.css": RUNTIME_CSS }),
+  writeHintsOperation: "write_hints",
+  skills: COMMENTS_SKILLS,
 
   /**
    * P13 perf-pass — batched signature for the whole build at once.
@@ -741,9 +805,10 @@ export default definePlugin<PluginContextTier1>({
 
   /**
    * P13 — staticRender bakes the newest {@link THREAD_PAGE_SIZE} approved
-   * comments at deploy time, newest approval first. A longer thread adds a
-   * line with the total and the cursor of the next page, which `runtime.ts`
-   * reads; the older comments are not in the HTML (#1169).
+   * comments at deploy time, newest approval first, their dates in the
+   * page's language (#1511). A longer thread carries the next page's cursor
+   * and the total on the thread element, which `runtime.ts` reads; the
+   * older comments are not in the HTML (#1169).
    */
   staticRender: async (ctx, args) => {
     // v0.2.18 / Fix D — bake from cms_admin's comment_archive. The
@@ -757,151 +822,22 @@ export default definePlugin<PluginContextTier1>({
       throw new Error("comments staticRender: the cms_admin grant is required to read comments");
     }
     const page = await approvedComments(ctx, args.pageId, { limit: THREAD_PAGE_SIZE });
-    const articles = page.comments
-      .map((c) => {
-        const safeAuthor = escapeHtml(c.authorName);
-        const safeContent = escapeHtml(c.content);
-        return `<article class="comment" data-comment-id="${escapeHtml(c.publicRowId)}"><header>${safeAuthor} · ${new Date(c.submittedAt).toISOString()}</header><div class="body">${safeContent}</div></article>`;
-      })
-      .join("");
-    const thread = `<div data-comment-thread>${articles}</div>`;
-    if (!page.nextCursor) return thread;
-    const total = (await threadStats(ctx, [args.pageId])).get(args.pageId)?.approved;
+    const total = page.nextCursor
+      ? (await threadStats(ctx, [args.pageId])).get(args.pageId)?.approved
+      : null;
     if (total === undefined) {
       throw new Error(`comments staticRender: no comment count for page ${args.pageId}`);
     }
-    const cursor = escapeHtml(JSON.stringify(page.nextCursor));
-    return `${thread}<p data-older-comments data-cursor="${cursor}">Showing the newest ${page.comments.length} of ${total} comments.</p>`;
+    return threadHtml({
+      comments: page.comments.map((c) => ({
+        id: c.publicRowId,
+        authorName: c.authorName,
+        content: c.content,
+        submittedAt: c.submittedAt,
+      })),
+      lang: args.lang,
+      nextCursor: page.nextCursor,
+      total,
+    });
   },
-
-  /**
-   * Web Component `<caelo-comments>` — visitor-facing comments thread.
-   * Server-renders approved comments at deploy via staticRender (P13);
-   * client-side fetch refreshes after `since` for late comments.
-   *
-   * Nothing mounts it on a built page yet (#455); the baked thread's
-   * client today is `runtime.ts`, which the port has to merge with this.
-   *
-   * Attributes: page-id.
-   */
-  component: defineComponent({
-    tag: "caelo-comments",
-    shadowMode: "open",
-    mounted: async (host) => {
-      const root = host.shadowRoot ?? host.attachShadow({ mode: "open" });
-      const pageId = host.getAttribute("page-id") ?? "";
-
-      // Comments-specific CSS extends the kit base.
-      const extraCss = `
-        .thread { display: grid; gap: 1rem; }
-        .comment { border-left: 2px solid var(--caelo-color-border, #e5e7eb); padding-left: 1rem; }
-        .comment header { font-size: 0.875rem; color: var(--caelo-color-muted, #6b7280); margin-bottom: 0.25rem; }
-        .comment .body { white-space: pre-wrap; }
-        form { margin-top: 1.5rem; }
-      `;
-
-      root.innerHTML = `
-        <style>${KIT_CSS}${extraCss}</style>
-        <div data-thread class="thread"></div>
-        <form novalidate>
-          <h3>Add a comment</h3>
-          <input name="authorName" placeholder="Your name" required />
-          <textarea name="content" placeholder="Your comment" rows="3" required></textarea>
-          ${honeypotFieldHtml()}
-          <button type="submit">Post</button>
-          <p data-status aria-live="polite"></p>
-        </form>
-      `;
-
-      const threadEl = root.querySelector("[data-thread]") as HTMLDivElement;
-      const form = root.querySelector("form") as HTMLFormElement;
-      const status = root.querySelector("[data-status]") as HTMLParagraphElement;
-
-      // P13 — only fetch deltas (rows added since the bake) when the
-      // static generator pre-rendered the thread. The placeholder's
-      // data-baked-at attribute carries the cutoff. When the bake is
-      // missing (preview / dev) we fall back to a full fetch.
-      const bakedAt = readBakeTimestamp(host, "comments");
-
-      async function refresh(): Promise<void> {
-        try {
-          const args: Record<string, unknown> = { pageId };
-          if (bakedAt) args.since = bakedAt;
-          const json = await postPluginJson<{
-            comments: Array<{
-              id: string;
-              author_name: string;
-              content: string;
-              submitted_at: string;
-            }>;
-          }>("comments", "list_approved", args);
-          if (!json.ok || !json.data) return;
-          // If we're delta-fetching, prepend the new ones; otherwise
-          // replace the thread entirely.
-          const html = json.data.comments
-            .map(
-              (c) =>
-                `<article class="comment"><header>${escapeHtml(c.author_name)} · ${new Date(c.submitted_at).toLocaleDateString()}</header><div class="body">${escapeHtml(c.content)}</div></article>`,
-            )
-            .join("");
-          if (bakedAt) {
-            threadEl.insertAdjacentHTML("afterbegin", html);
-          } else {
-            threadEl.innerHTML = html;
-          }
-        } catch {
-          // best-effort
-        }
-      }
-
-      await refresh();
-
-      form.addEventListener("submit", async (ev) => {
-        ev.preventDefault();
-        setStatus(status, "clear");
-        const fd = new FormData(form);
-        try {
-          // P13 — solve PoW captcha (if enabled by /settings/gateway).
-          const captcha = await attachCaptchaProof("comments", "submit").catch(() => null);
-          const json = await postPluginJson("comments", "submit", {
-            pageId,
-            authorName: fd.get("authorName"),
-            content: fd.get("content"),
-            // The honeypot rides along; `submit` judges it server-side.
-            ...honeypotBodyField(fd),
-            ...(captcha ? { _caelo_captcha: captcha } : {}),
-          });
-          if (json.ok) {
-            setStatus(status, "ok", "Thanks — pending moderation.");
-            form.reset();
-          } else {
-            setStatus(status, "err", json.error?.message ?? "Submission failed.");
-          }
-        } catch (e) {
-          setStatus(status, "err", `Network error: ${(e as Error).message}`);
-        }
-      });
-    },
-  }),
-  promptContext: [
-    {
-      label: "comments",
-      render: async (ctx) => {
-        if (!("query" in ctx)) return "";
-        try {
-          const pending = await ctx.query.list<"comments", { id: string }>("comments", {
-            status: "pending",
-            limit: 200,
-          });
-          if (pending.length === 0) return "";
-          return [
-            "# Comments awaiting moderation",
-            `${pending.length} comment${pending.length === 1 ? "" : "s"} pending. Use list_pending_comments to browse, ai_moderate_comment to triage.`,
-          ].join("\n");
-        } catch {
-          return "";
-        }
-      },
-    },
-  ],
 });

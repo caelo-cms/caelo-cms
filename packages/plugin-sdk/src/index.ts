@@ -2292,10 +2292,34 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * `pageUrlStyle` is the serving target's page URL style; a plugin that
    * links to pages gets their URLs from core (`pages.resolve_public_urls`
    * with this style) instead of building them (#590).
+   *
+   * `lang` is the page's document language (`<html lang>`, BCP 47: the
+   * site language, or the page's locale where a plugin such as
+   * international-site assigns one). Format what the output shows for
+   * the page's readers with it — dates through `Intl.DateTimeFormat(lang,
+   * …)` — so crawlers read the same text visitors do (#1511). Interface
+   * copy (labels, buttons) belongs in the module around the placeholder,
+   * as `{{site_text.<key>}}`, not in this output: the output is plugin
+   * data, re-rendered by plugin-data builds (#1155) that never touch the
+   * page's modules.
+   *
+   * @example
+   * ```ts
+   * staticRender: async (ctx, { pageId, lang }) => {
+   *   const day = new Intl.DateTimeFormat(lang, { dateStyle: "long", timeZone: "UTC" });
+   *   const rows = await ctx.query.list<"entries", { text: string; at: string }>("entries", {
+   *     page_id: pageId,
+   *     limit: 50,
+   *   });
+   *   return rows
+   *     .map((r) => `<p><time datetime="${r.at}">${day.format(new Date(r.at))}</time></p>`)
+   *     .join("");
+   * },
+   * ```
    */
   readonly staticRender?: (
     ctx: C,
-    args: { pageId: string; pageUrlStyle: PageUrlStyle },
+    args: { pageId: string; pageUrlStyle: PageUrlStyle; lang: string },
   ) => Promise<string> | string;
   /**
    * The plugin's channel to the browser: files emitted ONCE per build

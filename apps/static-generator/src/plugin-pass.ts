@@ -4,8 +4,9 @@
  * P13 — static plugin render pass.
  *
  * For every active Tier-1 plugin whose definition declares a
- * `staticRender(ctx, {pageId}) => string`, this pass:
- *   1. Computes a cache key (plugin.version + page content hash).
+ * `staticRender(ctx, {pageId, pageUrlStyle, lang}) => string`, this pass:
+ *   1. Computes a cache key (plugin version, URL style, origin, the page's
+ *      `<html lang>` and the plugin's data signature).
  *   2. Skips render when the existing `static_bakes` row matches.
  *   3. On miss / on bust: calls the plugin via `runPluginStaticRender`
  *      and writes the row.
@@ -32,7 +33,7 @@
 
 import type { BuildPluginServices } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import type { PageUrlStyle } from "@caelo-cms/shared";
+import { type PageUrlStyle, readDocumentLanguage } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { bakeRegion, neutralizeBakeMarkers } from "./bake-regions.js";
 
@@ -261,6 +262,15 @@ export async function runPluginRenderPass(args: {
     if (!target) continue;
     for (const plugin of activePlugins) {
       if (!(placedPages.get(plugin.slug) ?? []).includes(target.pageId)) continue;
+      // #1511 — the page's language (set by the SEO pass before this one)
+      // is what the plugin formats its dates and numbers in. A paginated
+      // overview's follow-up pages share the page and its language.
+      const lang = readDocumentLanguage(page.html);
+      if (lang === null) {
+        throw new Error(
+          `static-generator: page ${target.pageId} has no <html lang> when plugin "${plugin.slug}" renders into it; the SEO pass sets it from the site language (set_site_identity) or a plugin's per-page language`,
+        );
+      }
       const regionKey = bakeKey(plugin.id, target.pageId);
       const done = regions.get(regionKey);
       if (done !== undefined) {
@@ -277,8 +287,10 @@ export async function runPluginRenderPass(args: {
         batched?.get(target.pageId) ?? (await plugins.metaSignature(plugin.slug, target.pageId));
       // The URL style and the origin are part of the key: a plugin linking
       // to pages renders different hrefs per style (#590) and per host — a
-      // staging bake must never be reused by a live build (#650).
-      const cacheKey = `${plugin.version}:${pageUrlStyle}:${siteBaseUrl}:${metaSig}`;
+      // staging bake must never be reused by a live build (#650). So is the
+      // page's language: a German page's dates are not an English page's
+      // (#1511), and a page whose language changed must render again.
+      const cacheKey = `${plugin.version}:${pageUrlStyle}:${siteBaseUrl}:${lang}:${metaSig}`;
 
       const cached = cache.get(bakeKey(plugin.id, target.pageId));
 
@@ -300,6 +312,7 @@ export async function runPluginRenderPass(args: {
           html = await plugins.staticRender(plugin.slug, target.pageId, {
             siteBaseUrl,
             pageUrlStyle,
+            lang,
           });
         } catch (e) {
           throw new Error(

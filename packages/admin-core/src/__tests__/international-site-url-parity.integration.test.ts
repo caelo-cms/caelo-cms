@@ -273,6 +273,7 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
         pluginSlug: "international-site",
         pageId: pages[1]?.id ?? "",
         pageUrlStyle: style,
+        lang: "de",
       });
       for (const href of Object.values(expected)) {
         expect(selector).toContain(`<a href="${href}"`);
@@ -348,7 +349,7 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
     const selector = await localBuildPluginServices.staticRender(
       "international-site",
       pages[1]?.id ?? "",
-      urlContext,
+      { ...urlContext, lang: "de" },
     );
     for (const href of Object.values(expected)) expect(selector).toContain(`<a href="${href}"`);
     expect(selector).not.toContain(`href="${BASE}/`);

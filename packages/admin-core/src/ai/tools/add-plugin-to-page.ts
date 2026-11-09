@@ -47,7 +47,9 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
 > = {
   name: "add_plugin_to_page",
   description:
-    "Place an active plugin's output (comments, contact form, ratings, newsletter signup …) on ONE page at a block + position, e.g. 'add comments to /about'. Active slugs: `list_plugins`. Site-wide (every blog post) = one call per page.",
+    "Place an active plugin's output (contact form, ratings, newsletter signup …) on ONE page at a block + position, e.g. 'add the contact form to /about'. Active slugs: `list_plugins`. " +
+    "Comments: follow the comments skill instead (this places only the list, without a form). " +
+    'Many pages (every page of a template, the whole site): write ONE module whose placeholder is <div data-caelo-plugin="<slug>" data-page-id="{{page.id}}"></div> and place it with add_module (target template, or layout for future pages too) — not one call per page.',
   schema: addPluginToPageToolInput,
   inputSchema: {
     type: "object",

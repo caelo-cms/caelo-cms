@@ -348,22 +348,11 @@ exports[`shipped plugins' public surface (#1332) comments: matches the reviewed 
         "additionalProperties": false,
         "properties": {
           "authorName": {
-            "maxLength": 200,
+            "maxLength": 80,
             "type": "string",
           },
-          "captchaToken": {
-            "anyOf": [
-              {
-                "maxLength": 200,
-                "type": "string",
-              },
-              {
-                "type": "null",
-              },
-            ],
-          },
           "content": {
-            "maxLength": 20000,
+            "maxLength": 4000,
             "type": "string",
           },
           "hp_address": {
@@ -371,14 +360,15 @@ exports[`shipped plugins' public surface (#1332) comments: matches the reviewed 
             "type": "string",
           },
           "pageId": {
-            "maxLength": 200,
-            "minLength": 1,
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
             "type": "string",
           },
           "parentId": {
             "anyOf": [
               {
-                "maxLength": 200,
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
                 "type": "string",
               },
               {

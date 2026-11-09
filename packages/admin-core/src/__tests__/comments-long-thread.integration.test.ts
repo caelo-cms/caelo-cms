@@ -96,7 +96,7 @@ function listApproved(ctx: PluginContextTier1, args: Record<string, unknown>) {
 function bake(): Promise<string> {
   const render = commentsPlugin.staticRender;
   if (!render) throw new Error("staticRender missing");
-  return render(adminCtx(), { pageId, pageUrlStyle: "directory" }) as Promise<string>;
+  return render(adminCtx(), { pageId, pageUrlStyle: "directory", lang: "en" }) as Promise<string>;
 }
 
 function signature(): Promise<string> {
@@ -166,14 +166,16 @@ describe("a thread longer than the bake (#1169)", () => {
   it("bakes the newest comments and says how many exist", async () => {
     const html = await bake();
     expect([...html.matchAll(/<article /g)]).toHaveLength(PAGE_SIZE);
-    expect(html).toContain(`Showing the newest ${PAGE_SIZE} of ${THREAD_LENGTH} comments.`);
-    expect(html).toContain(`<header>Author ${THREAD_LENGTH} · `);
-    expect(html).not.toContain("<header>Author 1 · ");
+    expect(html).toContain(`data-total="${THREAD_LENGTH}"`);
+    expect(html).toContain(`<span class="comment-author">Author ${THREAD_LENGTH}</span>`);
+    expect(html).not.toContain('<span class="comment-author">Author 1</span>');
   });
 
   it("the bake plus the visitor's pages hold every approved comment, each once", async () => {
     const html = await bake();
-    const reached = [...html.matchAll(/<header>(Author \d+) · /g)].map((m) => m[1] as string);
+    const reached = [...html.matchAll(/<span class="comment-author">(Author \d+)<\/span>/g)].map(
+      (m) => m[1] as string,
+    );
     const line = /data-cursor="([^"]+)"/.exec(html)?.[1]?.replaceAll("&quot;", '"');
     let before = line ? (JSON.parse(line) as VisitorPage["nextCursor"]) : null;
     expect(before).not.toBeNull();
@@ -300,7 +302,15 @@ describe("a reply's depth (#1169)", () => {
     await expect(submitReply("bbbbbbbb-0000-4000-8000-000000000000")).rejects.toThrow(
       "not on this page",
     );
-    await expect(submitReply("not-a-uuid")).rejects.toThrow("not on this page");
+    // #1511 — a malformed id never reaches the handler: the declared contract refuses it.
+    const contract = commentsPlugin.publicOperations?.find((o) => o.name === "submit")?.input;
+    expect(
+      contract?.safeParse({ pageId, parentId: "not-a-uuid", authorName: "A", content: "c" })
+        .success,
+    ).toBe(false);
+    const before = inserted.length;
+    await expect(submitReply("not-a-uuid")).rejects.toThrow();
+    expect(inserted).toHaveLength(before);
   });
 });
 
