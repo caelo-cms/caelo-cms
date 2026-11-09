@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { AiWorkItem, PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { type AiWorkItem, indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 const COMMENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -49,7 +49,7 @@ function harness(opts: {
         };
   h.ctx = {
     invocation: { origin: "chat", actorId: "a", aiDelegated: opts.delegated },
-    query: {
+    query: indexCheckedQuery(plugin, "schema", {
       list: async (_t: string, filter: { id?: string }) =>
         filter.id === COMMENT_ID
           ? [
@@ -70,7 +70,7 @@ function harness(opts: {
       delete: async (_t: string, id: string) => {
         h.deleted.push(id);
       },
-    },
+    }),
     ai,
     ...(opts.withCms === false
       ? {}

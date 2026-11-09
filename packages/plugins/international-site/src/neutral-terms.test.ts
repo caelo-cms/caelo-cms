@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import type { PluginAdminQuery } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
+import plugin from "./index.js";
 import {
   EVERY_LANGUAGE,
   hasLanguageText,
@@ -19,7 +20,8 @@ function store(tables: Record<string, Record<string, unknown>[]> = {}): PluginAd
     tables[table] ??= [];
     return tables[table];
   };
-  return {
+  // The host's read rule in front of list() (#1536).
+  return indexCheckedQuery(plugin, "adminSchema", {
     list: async (table: string, filter: Record<string, unknown> = {}) =>
       rows(table).filter((row) => {
         const anyOf = filter.anyOf as Record<string, string[]> | undefined;
@@ -37,7 +39,7 @@ function store(tables: Record<string, Record<string, unknown>[]> = {}): PluginAd
     delete: async (table: string, id: string) => {
       tables[table] = rows(table).filter((row) => row.id !== id);
     },
-  } as unknown as PluginAdminQuery;
+  }) as unknown as PluginAdminQuery;
 }
 
 describe("hasLanguageText", () => {
