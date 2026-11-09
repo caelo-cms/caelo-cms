@@ -14,7 +14,7 @@
  * this view, the page tree and the link targets from the same read.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { headOverlaySql } from "../draft.js";
 import type { PageState } from "../snapshots/state.js";
@@ -78,14 +78,22 @@ function iso(v: string | Date | null): string | null {
  * Read every page row the branch sees (main plus the branch's own,
  * soft-deleted ones included: a pending snapshot may restore them) and
  * the branch's newest pending page state per page. Two queries.
+ *
+ * @param opts.ids only these pages (the site view's delta, #1270): their
+ *   rows and pending states, by primary key and draft-head key.
  */
 export async function loadPageRows(
   tx: TransactionRunner,
   branchId: string | null,
+  opts: { readonly ids?: readonly string[] } = {},
 ): Promise<PageRows> {
-  const visible = branchId
+  if (opts.ids !== undefined && opts.ids.length === 0) return { rows: [], pending: new Map() };
+  const branchVisible = branchId
     ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
     : sql`p.chat_branch_id IS NULL`;
+  const visible = opts.ids
+    ? sql`${branchVisible} AND p.id = ANY(${uuidArray(opts.ids)})`
+    : branchVisible;
   const rows = (await tx.execute(sql`
     SELECT p.id::text AS id, p.slug, p.title, p.short_title, p.current_path,
            p.parent_page_id::text AS parent_page_id, p.template_id::text AS template_id,
@@ -106,7 +114,12 @@ export async function loadPageRows(
   if (branchId) {
     // #1268 — the branch's pending pages from the draft head.
     const snaps = (await tx.execute(
-      headOverlaySql({ kind: "page", table: "page_snapshots", branchId }),
+      headOverlaySql({
+        kind: "page",
+        table: "page_snapshots",
+        branchId,
+        ...(opts.ids ? { ids: opts.ids } : {}),
+      }),
     )) as unknown as { entity_id: string; state: unknown }[];
     for (const s of snaps) {
       pending.set(s.entity_id, s.state as PageState);
