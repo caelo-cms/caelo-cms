@@ -35,6 +35,7 @@ import { groupSlowPlans, parseLoggedPlans, renderPlan } from "./scale-gate/plans
 import { SHIPPED_PLUGIN_SLUGS } from "./scale-gate/plugins.ts";
 import {
   countNewMatches,
+  countSiteViewWholeReads,
   markdownCell,
   notRunning,
   POOL_EXHAUSTED,
@@ -348,5 +349,21 @@ describe("scale-gate slow plans (#1269)", () => {
       "      Filter: (op <> 'insert'::text)",
     ]);
     expect(renderPlan(scan)).toStartWith("Index Scan using");
+  });
+});
+
+describe("scale-gate site view whole reads (#1270)", () => {
+  it("counts the admin log's whole reads per reason, across branches", () => {
+    const log = [
+      "[site-view] whole read (main): no cached view of the branch",
+      "[site-view] whole read (6b1f…): no cached view of the branch",
+      "noise [plugin-data] skipped: nothing",
+      "[site-view] whole read (6b1f…): more than 2000 journal rows since",
+    ].join("\n");
+    expect(countSiteViewWholeReads(log)).toEqual({
+      "no cached view of the branch": 2,
+      "more than 2000 journal rows since": 1,
+    });
+    expect(countSiteViewWholeReads("")).toEqual({});
   });
 });

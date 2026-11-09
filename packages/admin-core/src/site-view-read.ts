@@ -220,7 +220,7 @@ async function headerEntities(
 
 /**
  * `parts` (read at `from`) carried forward to `to` by the journal rows
- * between them, or null when only a whole read is exact or cheaper (see
+ * between them, or why only a whole read is exact or cheaper (see
  * the file header). `to` is the mark `tx` took for this read, before any
  * of its statements: a change committing during the delta is unseen by
  * `to` and comes again with the next one.
@@ -234,12 +234,15 @@ export async function readSiteDelta(
     readonly to: JournalMark;
     readonly filter: JournalFilter;
   },
-): Promise<SiteViewParts | null> {
+): Promise<{ readonly parts: SiteViewParts } | { readonly wholeRead: string }> {
   const { branchId, parts, from, to, filter } = input;
   // A reader that already wrote rows of the view sees them, but its own xid
   // can be at the target's xmax, where `readChanges` would leave them out;
   // such a view is not cached anyway (`loadSiteView`).
-  if (to.dirty || !snapshotFollows(from.snapshot, to.snapshot)) return null;
+  if (to.dirty) return { wholeRead: "the reader already wrote rows of the view" };
+  if (!snapshotFollows(from.snapshot, to.snapshot)) {
+    return { wholeRead: "the reader's snapshot is older than the cached view" };
+  }
   const read = await readChanges(tx, {
     cursor: from.snapshot,
     target: to.snapshot,
@@ -248,7 +251,8 @@ export async function readSiteDelta(
     limit: MAX_DELTA_CHANGES,
     ownXid: from.ownXid,
   });
-  if (read.needsRebuild || read.more) return null;
+  if (read.needsRebuild) return { wholeRead: "the journal no longer holds every change since" };
+  if (read.more) return { wholeRead: `more than ${MAX_DELTA_CHANGES} journal rows since` };
 
   const targets: DeltaTargets = {
     pageIds: new Set(),
@@ -259,18 +263,26 @@ export async function readSiteDelta(
   };
   for (const c of read.changes) {
     const apply = DELTA_OF_TABLE[c.table];
-    if (c.op === "truncate" || apply === undefined) return null;
+    if (c.op === "truncate") return { wholeRead: `a truncate of ${c.table}` };
+    if (apply === undefined)
+      return { wholeRead: `a change of ${c.table}, which a delta does not read` };
     apply(targets, c.rowId);
   }
   if (targets.headerIds.size > 0) {
     const held = await headerEntities(tx, [...targets.headerIds], MAX_DELTA_CHANGES + 1);
-    if (held.length > MAX_DELTA_CHANGES) return null;
+    if (held.length > MAX_DELTA_CHANGES) {
+      return {
+        wholeRead: `a staged or undone snapshot of more than ${MAX_DELTA_CHANGES} entities`,
+      };
+    }
     for (const e of held) {
       if (e.kind === "page") targets.pageIds.add(e.id);
       else targets.listKinds.add(e.kind);
     }
   }
-  if (targets.pageIds.size > MAX_DELTA_CHANGES) return null;
+  if (targets.pageIds.size > MAX_DELTA_CHANGES) {
+    return { wholeRead: `more than ${MAX_DELTA_CHANGES} changed pages` };
+  }
 
   const pageRows =
     targets.pageIds.size === 0
@@ -281,38 +293,40 @@ export async function readSiteDelta(
           await loadPageRows(tx, branchId, { ids: [...targets.pageIds] }),
         );
   return {
-    pageRows,
-    listTypes: targets.listKinds.has("listType")
-      ? await loadListEntities(tx, "listType", branchId)
-      : parts.listTypes,
-    lists: targets.listKinds.has("list")
-      ? await loadListEntities(tx, "list", branchId)
-      : parts.lists,
-    pageTypes: targets.listKinds.has("pageType")
-      ? await loadListEntities(tx, "pageType", branchId)
-      : parts.pageTypes,
-    seo:
-      targets.seoPageIds.size === 0
-        ? parts.seo
-        : patchById(
-            parts.seo,
-            (r) => r.page_id,
-            targets.seoPageIds,
-            await readSeo(tx, [...targets.seoPageIds]),
-          ),
-    media:
-      targets.mediaIds.size === 0
-        ? parts.media
-        : patchById(
-            parts.media,
-            (r) => r.id,
-            targets.mediaIds,
-            await readMedia(tx, [...targets.mediaIds]),
-          ),
-    // One row each: cheaper to re-read than to reason about (the home page
-    // designation also depends on the designated page's branch).
-    settings: await readSettings(tx),
-    homePageId: (await loadSiteDesignations(tx, branchId)).homePageId,
+    parts: {
+      pageRows,
+      listTypes: targets.listKinds.has("listType")
+        ? await loadListEntities(tx, "listType", branchId)
+        : parts.listTypes,
+      lists: targets.listKinds.has("list")
+        ? await loadListEntities(tx, "list", branchId)
+        : parts.lists,
+      pageTypes: targets.listKinds.has("pageType")
+        ? await loadListEntities(tx, "pageType", branchId)
+        : parts.pageTypes,
+      seo:
+        targets.seoPageIds.size === 0
+          ? parts.seo
+          : patchById(
+              parts.seo,
+              (r) => r.page_id,
+              targets.seoPageIds,
+              await readSeo(tx, [...targets.seoPageIds]),
+            ),
+      media:
+        targets.mediaIds.size === 0
+          ? parts.media
+          : patchById(
+              parts.media,
+              (r) => r.id,
+              targets.mediaIds,
+              await readMedia(tx, [...targets.mediaIds]),
+            ),
+      // One row each: cheaper to re-read than to reason about (the home page
+      // designation also depends on the designated page's branch).
+      settings: await readSettings(tx),
+      homePageId: (await loadSiteDesignations(tx, branchId)).homePageId,
+    },
   };
 }
 

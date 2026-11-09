@@ -152,16 +152,17 @@ export async function loadSiteView(
   }
   // #1270 — carry the cached read forward by what changed since its mark;
   // a whole read only when that cannot be exact or would not be cheaper.
-  const parts =
-    (hit
-      ? await readSiteDelta(tx, {
-          branchId,
-          parts: hit.parts,
-          from: hit.view.mark,
-          to: mark,
-          filter,
-        })
-      : null) ?? (await readSiteParts(tx, branchId));
+  const delta = hit
+    ? await readSiteDelta(tx, { branchId, parts: hit.parts, from: hit.view.mark, to: mark, filter })
+    : { wholeRead: "no cached view of the branch" };
+  let parts: SiteViewParts;
+  if ("parts" in delta) {
+    parts = delta.parts;
+  } else {
+    // One line per whole read, with why: the scale gate counts them (#1270).
+    console.info(`[site-view] whole read (${key || "main"}): ${delta.wholeRead}`);
+    parts = await readSiteParts(tx, branchId);
+  }
   const view = siteViewOf(branchId, mark, parts);
   // A read that saw its own transaction's uncommitted writes is not
   // cached: a rollback would undo them without a journal row.
