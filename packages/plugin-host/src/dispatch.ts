@@ -540,6 +540,16 @@ export function renderInvocation(scope: RenderScope): PluginInvocation {
 export async function runPluginOperation(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {
+  // DIAGNOSTIC (scale gate branch only, never merged): who asks about many pages.
+  {
+    const a = opts.args as { pageIds?: unknown; writes?: unknown } | null;
+    const n = Array.isArray(a?.pageIds) ? a.pageIds.length : -1;
+    const site = ["intl_status", "audit_findings", "write_hints", "translation_staleness_tick", "rebuild_translation_staleness"];
+    if (n > 1000 || site.includes(opts.operationName)) {
+      const where = new Error().stack?.split("\n").slice(2, 7).map((l) => l.trim()).join(" < ");
+      console.info(`[diag] ${opts.pluginSlug}.${opts.operationName} pageIds=${n} origin=${opts.invocation.origin} at ${where}`);
+    }
+  }
   if (opts.invocation.origin === "render") {
     return joinHeldTransaction(() => runPluginOperationNow(opts));
   }
