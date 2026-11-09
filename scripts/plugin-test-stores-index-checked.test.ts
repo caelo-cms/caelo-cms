@@ -12,26 +12,31 @@
  * host's refusal instead, so a read the host would refuse fails the test
  * that reaches it.
  *
- * This scan fails on an object literal in a shipped plugin's test that
- * defines `list` and is not the argument of `indexCheckedQuery(…)`. A fake
- * that is not a store (another handle with a `list`), or a store wrapped
- * where it is handed out, is allowed with a reason below.
+ * The scan parses each test (TypeScript AST) and fails on:
+ * - an object literal that defines `list` — as a property, a method
+ *   (`list(t) {…}`, `async list(t) {…}`) or shorthand — and is not the
+ *   third argument of `indexCheckedQuery(…)`;
+ * - an assignment to `<something>.list`, which would replace a checked
+ *   `list` after the fact.
+ * A fake that is not a store (another handle with a `list`), or a store
+ * wrapped where it is handed out, is allowed with a reason below.
  */
 
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import ts from "typescript";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const PLUGINS = resolve(REPO_ROOT, "packages/plugins");
 
-/** `<file>: <line opening the literal>` → why it may stay unwrapped. */
+/** `<file>: <first line of the literal or assignment>` → why it may stay unwrapped. */
 const ALLOWED: Record<string, string> = {
-  "packages/plugins/consent-manager/src/render-hooks.test.ts: consentPurposes: { list: async () => [] },":
+  "packages/plugins/consent-manager/src/render-hooks.test.ts: { list: async () => [] }":
     "the visitor's consent purposes (ctx.consentPurposes), not a store",
-  "packages/plugins/newsletter/src/send-runs.test.ts: return {":
+  "packages/plugins/newsletter/src/send-runs.test.ts: {":
     "FakeStore.handle(): every handle it gives out is wrapped where the harness hands it to the plugin (query, adminQuery)",
-  "packages/plugins/newsletter/src/send-runs.test.ts: const raced = {":
+  "packages/plugins/newsletter/src/send-runs.test.ts: {\n      ...admin,":
     "overrides list() of a handle wrapped in indexCheckedQuery and delegates to it",
 };
 
@@ -45,56 +50,104 @@ function testFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Index of the `{` opening the object literal around `at`, or -1. Skips strings naively. */
-function enclosingBrace(src: string, at: number): number {
-  let depth = 0;
-  for (let i = at - 1; i >= 0; i--) {
-    const c = src[i];
-    if (c === "}") depth += 1;
-    else if (c === "{") {
-      if (depth === 0) return i;
-      depth -= 1;
-    }
-  }
-  return -1;
+const isListName = (name: ts.PropertyName | undefined): boolean =>
+  name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === "list";
+
+/** Does this object literal define a `list` member? */
+function definesList(node: ts.ObjectLiteralExpression): boolean {
+  return node.properties.some(
+    (p) =>
+      (ts.isPropertyAssignment(p) ||
+        ts.isMethodDeclaration(p) ||
+        ts.isShorthandPropertyAssignment(p)) &&
+      isListName(p.name),
+  );
 }
 
-/** Every object literal defining `list` that is not handed to indexCheckedQuery. */
-function uncheckedStores(src: string): string[] {
-  const out: string[] = [];
-  for (const m of src.matchAll(
-    /(^|[\s,{])(list\s*:\s*(async\b|\(|function\b)|async\s+list\s*[<(])/gm,
-  )) {
-    const brace = enclosingBrace(src, (m.index ?? 0) + m[1].length);
-    if (brace < 0) continue;
-    const before = src.slice(Math.max(0, brace - 200), brace);
-    if (/indexCheckedQuery\(\s*[\w.]+\s*,\s*"(schema|adminSchema)"\s*,\s*$/.test(before)) continue;
-    const lineStart = src.lastIndexOf("\n", brace) + 1;
-    const lineEnd = src.indexOf("\n", brace);
-    out.push(src.slice(lineStart, lineEnd < 0 ? undefined : lineEnd).trim());
+/** Is this literal the store argument of `indexCheckedQuery(manifest, zone, store)`? */
+function isCheckedStore(node: ts.ObjectLiteralExpression): boolean {
+  let child: ts.Node = node;
+  let parent = node.parent;
+  // `({ … }) as X` and `({ … })` still hand the literal over.
+  while (parent && (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent))) {
+    child = parent;
+    parent = parent.parent;
   }
+  return (
+    parent !== undefined &&
+    ts.isCallExpression(parent) &&
+    ts.isIdentifier(parent.expression) &&
+    parent.expression.text === "indexCheckedQuery" &&
+    parent.arguments[2] === child
+  );
+}
+
+/** Every store literal not handed to indexCheckedQuery, and every `x.list = …`, by its first line(s). */
+function uncheckedStores(src: string): string[] {
+  const file = ts.createSourceFile("t.ts", src, ts.ScriptTarget.Latest, true);
+  const out: string[] = [];
+  const head = (node: ts.Node) => {
+    const text = node.getText(file);
+    // The opening line; for a literal that only spreads first, the spread too.
+    const lines = text.split("\n");
+    return (
+      lines[0]?.trim() === "{" && lines[1]?.trim().startsWith("...")
+        ? `{\n${lines[1]}`
+        : (lines[0] ?? "")
+    ).trimEnd();
+  };
+  const visit = (node: ts.Node) => {
+    if (ts.isObjectLiteralExpression(node) && definesList(node) && !isCheckedStore(node)) {
+      out.push(head(node));
+    } else if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.left) &&
+      node.left.name.text === "list"
+    ) {
+      out.push(head(node));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
   return out;
 }
 
 describe("#1536 — shipped plugins' test stores apply the host's read rule", () => {
-  it("finds an unwrapped store and accepts a wrapped one", () => {
-    expect(uncheckedStores("const q = {\n  list: async () => rows,\n};")).toEqual(["const q = {"]);
+  it("finds every way to define list() outside indexCheckedQuery", () => {
+    expect(uncheckedStores("const q = {\n  list: async () => rows,\n};")).toEqual(["{"]);
+    expect(uncheckedStores("const s = {\n  async list(table) { return []; },\n};")).toEqual(["{"]);
+    expect(
+      uncheckedStores("const s = {\n  list(table) { return Promise.resolve(rows); },\n};"),
+    ).toEqual(["{"]);
+    expect(uncheckedStores("const list = async () => rows;\nconst s = { list };")).toEqual([
+      "{ list }",
+    ]);
+    expect(uncheckedStores("q.list = async () => rows;")).toEqual(["q.list = async () => rows"]);
+  });
+
+  it("accepts a store handed to indexCheckedQuery, also through a cast", () => {
     expect(
       uncheckedStores(
         'const q = indexCheckedQuery(plugin, "adminSchema", {\n  list: async () => rows,\n});',
       ),
     ).toEqual([]);
-    expect(uncheckedStores("const s = {\n  async list(table) { return []; },\n};")).toEqual([
-      "const s = {",
-    ]);
+    expect(
+      uncheckedStores(
+        'const q = indexCheckedQuery(plugin, "schema", { list: async () => rows } as unknown as Q);',
+      ),
+    ).toEqual([]);
+    // A call to list() is a read, not a definition.
+    expect(uncheckedStores('await q.list("t", {});\nconst r = { rows: list() };')).toEqual([]);
   });
 
   it("every store a shipped plugin's test fakes is index-checked", () => {
     const found: string[] = [];
     for (const path of testFiles(PLUGINS)) {
       const file = relative(REPO_ROOT, path);
-      for (const line of uncheckedStores(readFileSync(path, "utf8")))
+      for (const line of uncheckedStores(readFileSync(path, "utf8"))) {
         found.push(`${file}: ${line}`);
+      }
     }
     const unexplained = found.filter((f) => !(f in ALLOWED));
     expect(

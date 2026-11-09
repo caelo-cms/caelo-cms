@@ -75,7 +75,7 @@ const adminQuery = indexCheckedQuery(plugin, "adminSchema", {
 
 international-site 0.12.2 shipped a read by `address` alone on a table indexed `["locale_code", "address"]` (#1536). Its unit test reached the read through a bare fake, so CI passed, and on the first install with a translated plugin text every Stage's audit errored. For the shipped plugins three tests now keep that from recurring:
 
-- `scripts/plugin-test-stores-index-checked.test.ts` fails on a fake store in `packages/plugins/*` that is not wrapped in `indexCheckedQuery`.
+- `scripts/plugin-test-stores-index-checked.test.ts` parses every test in `packages/plugins/*`. It fails on an object literal that defines `list` (as a property, a method or a shorthand) and is not handed to `indexCheckedQuery`, and on an assignment to `<handle>.list`, which would replace a checked `list` later.
 - `packages/admin-core/src/__tests__/plugin-indexes-shipped.integration.test.ts` provisions every shipped plugin and checks that `declaredIndexLeads` matches what the catalog holds for each table, so the unit-tier check refuses exactly what the host refuses. It also plans each listed read shape with sequential scans off.
 - The integration tests that run two plugins together (for example `consent-category-translation.integration.test.ts`, which calls `audit_findings` with a plugin text in the store) reach the reads only another plugin's data triggers.
 

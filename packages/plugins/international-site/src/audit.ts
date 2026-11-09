@@ -84,15 +84,16 @@ export async function pluginTextsKeptAsIs(
   });
   const addresses = units.map((u) => u.address);
   const translated = [...deps.locales.values()].filter((l) => !l.is_default);
-  const rows = (
-    await Promise.all(
-      translated.map((l) =>
-        listWhereAnyOf(deps.q, "list_value_translations", "address", addresses, {
-          locale_code: l.code,
-        }),
-      ),
-    )
-  ).flat() as unknown as ValueTranslationRow[];
+  // One language after the other: each read holds a connection, and the
+  // audit already runs its other reads beside this one (loadAuditState).
+  const rows: ValueTranslationRow[] = [];
+  for (const l of translated) {
+    rows.push(
+      ...((await listWhereAnyOf(deps.q, "list_value_translations", "address", addresses, {
+        locale_code: l.code,
+      })) as unknown as ValueTranslationRow[]),
+    );
+  }
   const unitByAddress = new Map(units.map((u) => [u.address, u]));
   const out = new Map<string, Set<string>>();
   for (const r of rows) {
