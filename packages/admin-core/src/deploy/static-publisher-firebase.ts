@@ -40,10 +40,6 @@ import { readFile } from "node:fs/promises";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
-  CONTENT_HASHED_PATH_PATTERN,
-  HTML_CACHE_CONTROL,
-  IMMUTABLE_CACHE_CONTROL,
-  NOSNIFF,
   PhaseTimer,
   parseSiteHeaderSet,
   parseStaticFilesManifest,
@@ -53,8 +49,6 @@ import {
   type SiteHeaderSet,
   STATIC_FILES_MANIFEST_FILE,
   type StaticFileManifestEntry,
-  SVG_DOCUMENT_CSP,
-  SVG_PATH_PATTERN,
 } from "@caelo-cms/shared";
 import {
   type AssetReference,
@@ -75,6 +69,13 @@ import {
 } from "./firebase-gateway-rewrite.js";
 import { syncFirebaseRedirects } from "./firebase-redirect-sync.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
+import {
+  type FirebaseHeaderEntry,
+  type FirebaseVersionConfig,
+  hasCurrentFixedHeaders,
+  VERSION_CONFIG_HEADERS,
+  withCurrentFixedHeaders,
+} from "./firebase-version-headers.js";
 import { GcsSlotSync, stagingBucket } from "./staging-slots.js";
 import { contentTypeFor } from "./static-file-policy.js";
 import type {
@@ -114,100 +115,6 @@ export async function googleAuthToken(
 }
 
 /**
- * RE2 pattern for "every path whose first segment neither starts with
- * `_` nor is exactly `api`" — RE2 has no lookahead, so the `api`
- * exclusion is spelled out character by character. Matches `/`,
- * `/about/`, `/about`, `/apiary`, `/robots.txt`; rejects `/_assets/…`,
- * `/api`, `/api/…`. See VERSION_CONFIG_HEADERS for why.
- */
-export const FIREBASE_SHORT_CACHE_PATH_PATTERN =
-  "^/(?:(?:[^_a/][^/]*|a(?:[^p/][^/]*)?|ap(?:[^i/][^/]*)?|api[^/]+)(?:/.*)?)?$";
-
-/**
- * v0.6.3 — per-path response headers attached to every Firebase
- * Hosting version we publish. Exported so the regression test in
- * __tests__/static-publisher-firebase-headers.test.ts can pin the
- * shape WITHOUT needing to mock the entire Firebase REST surface.
- *
- * SCHEMA CONTRACT (critical — getting this wrong causes 400 at deploy):
- * Firebase Hosting's REST API at sites.versions.create expects each
- * entry's `headers` field as a map<string, string> (key → value).
- * The Firebase CLI's firebase.json uses an array-of-{key,value}
- * shape and translates internally — the REST API does NOT. Mixing
- * the two shapes was the v0.3.1 → v0.6.2 staging-deploy bug
- * ("Cannot bind a list to map for field 'headers'").
- *
- * Spec: https://firebase.google.com/docs/reference/hosting/rest/v1beta1/sites.versions#Header
- *
- * MATCHING CONTRACT: each entry's `glob` / `regex` is matched against
- * the REQUEST URL path (Firebase discovery doc, `Header.regex`: "RE2
- * regular expression to match against the request URL path"), not
- * the file that ends up served. A page requested as `/about/` is
- * served from `/about/index.html` but never matched the old
- * `*.html` glob — which is why pages fell through to Firebase's
- * default `max-age=3600`, as did the content-hashed fonts.
- *
- * The two entries are DISJOINT on purpose: Firebase applies every
- * matching entry and does not document which one wins when two set
- * the same header, so no path may match both.
- *
- *   1. Content-hashed build outputs (fonts, plugin bundles, media since
- *      #667 — see `@caelo-cms/shared` static-cache-policy.ts) →
- *      immutable, 1 year.
- *      All of them live under a `/_…` top-level directory.
- *   2. Every path whose first segment does NOT start with `_` and is
- *      not `api` → short + stale-while-revalidate: pages (`/`,
- *      `/about/`, `/about.html`, bare-slug `/about`), robots.txt,
- *      sitemap.xml, root manifests. A publish creates a new release
- *      (Firebase purges its CDN) and visitors pick it up within 60s.
- *
- * Paths matching neither keep Firebase's default (`max-age=3600`):
- * pre-#667 media under a bare slug (`/_assets/<slug>.<ext>` — stable URL,
- * bytes replaceable, must not be immutable), the pinned-font license files
- * and the `/api/**` rewrite to the gateway (its own headers stay
- * authoritative).
- *
- * A third entry pins `Content-Type: image/x-icon` on `.ico` files (theme
- * favicons): the one icon MIME the media library stores and the
- * `<link rel="icon" type>` declares, instead of whatever name Hosting's
- * extension table picks. It sets no Cache-Control, so overlapping a
- * Cache-Control entry on the path never makes two entries set the same
- * header.
- *
- * The {@link SECURITY_HEADER_ENTRIES} close the list (#891): every
- * response `nosniff`, every SVG the sandboxing CSP. Neither sets
- * Cache-Control or Content-Type, so they overlap the entries above
- * without two entries ever setting the same header. A build's page headers
- * ride their own entry ({@link siteHeaderEntry}, #1454).
- */
-export const SECURITY_HEADER_ENTRIES = [
-  {
-    regex: "^/",
-    headers: { "X-Content-Type-Options": NOSNIFF },
-  },
-  {
-    regex: SVG_PATH_PATTERN,
-    headers: { "Content-Security-Policy": SVG_DOCUMENT_CSP },
-  },
-] as const;
-
-export const VERSION_CONFIG_HEADERS = [
-  {
-    regex: CONTENT_HASHED_PATH_PATTERN,
-    headers: { "Cache-Control": IMMUTABLE_CACHE_CONTROL },
-  },
-  {
-    regex: FIREBASE_SHORT_CACHE_PATH_PATTERN,
-    headers: { "Cache-Control": HTML_CACHE_CONTROL },
-  },
-  {
-    regex: "\\.ico$",
-    headers: { "Content-Type": "image/x-icon" },
-  },
-  ...SECURITY_HEADER_ENTRIES,
-] as const;
-
-/**
  * Response header that keeps a non-indexable target (staging) out of
  * search engines at the serving layer — CMS_REQUIREMENTS §16.5, same
  * rule as the Caddy staging vhost. The generator no longer bakes the
@@ -216,18 +123,6 @@ export const VERSION_CONFIG_HEADERS = [
  * staging version non-indexable — together with its robots.txt.
  */
 const ROBOTS_HEADER = "X-Robots-Tag";
-
-interface FirebaseHeaderEntry {
-  glob?: string;
-  regex?: string;
-  headers: Record<string, string>;
-}
-/** The slice of a Hosting version `config` this publisher inspects;
- *  every other field (rewrites, …) passes through untouched. */
-interface FirebaseVersionConfig {
-  headers?: ReadonlyArray<FirebaseHeaderEntry>;
-  [field: string]: unknown;
-}
 
 function isRobotsHeaderEntry(entry: FirebaseHeaderEntry): boolean {
   return Object.keys(entry.headers ?? {}).some(
@@ -262,26 +157,6 @@ export function withTargetRobotsHeader(
  */
 export function siteHeaderEntry(set: SiteHeaderSet): FirebaseHeaderEntry {
   return { regex: SITE_DOCUMENT_PATH_PATTERN, headers: set.headers };
-}
-
-const SECURITY_HEADER_NAMES = new Set(
-  SECURITY_HEADER_ENTRIES.flatMap((e) => Object.keys(e.headers).map((k) => k.toLowerCase())),
-);
-
-/**
- * Return `config` with the current {@link SECURITY_HEADER_ENTRIES} in
- * place of whatever security entries it carried. Promote and rollback
- * re-release a SOURCE version's config; a version staged (or released)
- * before #891 has no SVG CSP, and this is what keeps such a version from
- * going live without it.
- */
-export function withSecurityHeaders(config: FirebaseVersionConfig): FirebaseVersionConfig {
-  const kept = (config.headers ?? []).filter(
-    (e) =>
-      e.regex === SITE_DOCUMENT_PATH_PATTERN ||
-      !Object.keys(e.headers ?? {}).some((k) => SECURITY_HEADER_NAMES.has(k.toLowerCase())),
-  );
-  return { ...config, headers: [...kept, ...SECURITY_HEADER_ENTRIES] };
 }
 
 /**
@@ -457,24 +332,29 @@ async function liveChannelVersion(site: string, token: string): Promise<string |
 }
 
 /**
- * #1380 — whether the live release sends `/api/**` to the gateway the
- * admin's env names now (`CAELO_GATEWAY_SERVICE`), or null when nothing is
- * live. One channel read and one version read.
+ * Whether the live release's config is what this release writes: its
+ * `/api/**` rewrite names the gateway the admin's env names now
+ * (`CAELO_GATEWAY_SERVICE`, #1380) and it carries the current fixed headers
+ * (hasCurrentFixedHeaders — a release before the whole-path patterns sent
+ * nosniff only on `/` and no SVG CSP). Null when nothing is live. One
+ * channel read and one version read.
  */
-export async function liveGatewayRewriteIsCurrent(): Promise<boolean | null> {
+export async function liveReleaseConfigIsCurrent(): Promise<boolean | null> {
   const site = siteName();
   const token = await googleAuthToken();
   const live = await liveChannelVersion(site, token);
   if (live === null) return null;
-  return hasCurrentGatewayRewrite(await versionConfig(site, live, token));
+  const config = await versionConfig(site, live, token);
+  return hasCurrentGatewayRewrite(config) && hasCurrentFixedHeaders(config);
 }
 
 /**
  * #1155 — release `liveVersionName` again with `files` replaced: same
  * config (headers, redirects, rewrites) verbatim except the `/api/**`
  * rewrite, which names the current gateway (withCurrentGatewayRewrite,
- * #1328), same files by hash except the replaced ones, which are the only
- * uploads.
+ * #1328), and the fixed headers, which are the current ones
+ * (withCurrentFixedHeaders); same files by hash except the replaced ones,
+ * which are the only uploads.
  */
 async function releasePluginDataVersion(args: {
   site: string;
@@ -504,7 +384,9 @@ async function releasePluginDataVersion(args: {
   const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
     method: "POST",
     body: JSON.stringify({
-      config: withCurrentGatewayRewrite(await versionConfig(site, args.liveVersionName, token)),
+      config: withCurrentGatewayRewrite(
+        withCurrentFixedHeaders(await versionConfig(site, args.liveVersionName, token)),
+      ),
     }),
     token,
   });
@@ -542,8 +424,10 @@ async function releasePluginDataVersion(args: {
  * for `target`: same files except robots.txt (the target's policy, with
  * the `Sitemap:` line when the version carries a sitemap.xml), same
  * config except the env-level robots header (see
- * withTargetRobotsHeader) and the current security headers (see
- * withSecurityHeaders — a version from before #891 lacks the SVG CSP) and
+ * withTargetRobotsHeader) and the current fixed headers (see
+ * withCurrentFixedHeaders — a version from before #891 lacks the SVG CSP,
+ * one from before the whole-path patterns has entries Hosting matched only
+ * on `/` or never) and
  * the `/api/**` rewrite to the current gateway (withCurrentGatewayRewrite —
  * a version from before #1328 names the service that is now the
  * MCP-Auth-Proxy). Page HTML + sitemap.xml are reused by hash —
@@ -583,7 +467,9 @@ async function releaseAsTarget(args: {
     method: "POST",
     body: JSON.stringify({
       config: withCurrentGatewayRewrite(
-        withSecurityHeaders(withTargetRobotsHeader(args.sourceConfig, args.target.robotsDefault)),
+        withCurrentFixedHeaders(
+          withTargetRobotsHeader(args.sourceConfig, args.target.robotsDefault),
+        ),
       ),
     }),
     token,

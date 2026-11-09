@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { RedirectSyncOutcome } from "./deploy/redirect-sync.js";
-import { repointStaleGatewayRewrite } from "./redirect-sync-worker.js";
+import { refreshStaleLiveRelease } from "./redirect-sync-worker.js";
 
 function outcome(status: RedirectSyncOutcome["status"]): RedirectSyncOutcome {
   return {
@@ -18,11 +18,11 @@ function outcome(status: RedirectSyncOutcome["status"]): RedirectSyncOutcome {
   };
 }
 
-describe("#1380 repointStaleGatewayRewrite", () => {
-  it("does nothing off gcp-firebase (no Hosting rewrite to repoint)", async () => {
+describe("#1380 refreshStaleLiveRelease (stale rewrite or fixed headers)", () => {
+  it("does nothing off gcp-firebase (no Hosting release config to refresh)", async () => {
     let read = false;
-    const r = await repointStaleGatewayRewrite("gcp", {
-      liveRewriteIsCurrent: async () => {
+    const r = await refreshStaleLiveRelease("gcp", {
+      liveConfigIsCurrent: async () => {
         read = true;
         return false;
       },
@@ -32,10 +32,10 @@ describe("#1380 repointStaleGatewayRewrite", () => {
     expect(read).toBe(false);
   });
 
-  it("leaves a current rewrite alone (no release)", async () => {
+  it("leaves a current config alone (no release)", async () => {
     let synced = false;
-    const r = await repointStaleGatewayRewrite("gcp-firebase", {
-      liveRewriteIsCurrent: async () => true,
+    const r = await refreshStaleLiveRelease("gcp-firebase", {
+      liveConfigIsCurrent: async () => true,
       syncProduction: async () => {
         synced = true;
         return [];
@@ -46,32 +46,34 @@ describe("#1380 repointStaleGatewayRewrite", () => {
   });
 
   it("reports nothing-live when no release exists yet", async () => {
-    const r = await repointStaleGatewayRewrite("gcp-firebase", {
-      liveRewriteIsCurrent: async () => null,
+    const r = await refreshStaleLiveRelease("gcp-firebase", {
+      liveConfigIsCurrent: async () => null,
       syncProduction: async () => [outcome("applied")],
     });
     expect(r).toBe("nothing-live");
   });
 
-  it("syncs the production targets when the rewrite names an older gateway", async () => {
+  it("syncs the production targets when the rewrite or the fixed headers are stale", async () => {
     let synced = 0;
-    const r = await repointStaleGatewayRewrite("gcp-firebase", {
-      liveRewriteIsCurrent: async () => false,
+    const r = await refreshStaleLiveRelease("gcp-firebase", {
+      liveConfigIsCurrent: async () => false,
       syncProduction: async () => {
         synced += 1;
         return [outcome("applied")];
       },
     });
-    expect(r).toBe("repointed");
+    expect(r).toBe("refreshed");
     expect(synced).toBe(1);
   });
 
-  it("fails loudly when the repointing sync failed", async () => {
+  it("fails loudly when the refreshing sync failed", async () => {
     await expect(
-      repointStaleGatewayRewrite("gcp-firebase", {
-        liveRewriteIsCurrent: async () => false,
+      refreshStaleLiveRelease("gcp-firebase", {
+        liveConfigIsCurrent: async () => false,
         syncProduction: async () => [outcome("failed")],
       }),
-    ).rejects.toThrow(/previous gateway: production: 403 from Hosting/);
+    ).rejects.toThrow(
+      /stale \/api\/\*\* rewrite or security headers: production: 403 from Hosting/,
+    );
   });
 });

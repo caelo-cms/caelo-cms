@@ -48,6 +48,18 @@ describe("firebaseRedirectsFromFile", () => {
     expect(new RegExp(rule?.regex ?? "").test("/aab(c)")).toBe(false);
   });
 
+  it("anchors every rule at both ends: Hosting matches a regex against the whole path", () => {
+    const rules = firebaseRedirectsFromFile(`${FILE}/a|b /x 301\n`, "directory", NO_FILES);
+    for (const { regex } of rules) {
+      expect(regex.startsWith("^/")).toBe(true);
+      expect(regex.endsWith("$")).toBe(true);
+      // Anchored, a search and Hosting's whole-path match agree.
+      for (const p of ["/de", "/de/", "/de/x", "/xde", "/a|b", "/a", "/old.html"]) {
+        expect(new RegExp(regex).test(p)).toBe(new RegExp(`^(?:${regex})$`).test(p));
+      }
+    }
+  });
+
   it("fails loudly on a malformed line instead of dropping a redirect", () => {
     expect(() => firebaseRedirectsFromFile("/a b /c 301\n", "directory", NO_FILES)).toThrow(
       /line 1/,
