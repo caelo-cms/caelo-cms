@@ -1527,14 +1527,23 @@ export default definePlugin<PluginContextTier1>({
       const q = adminQueryOf(ctx);
       const reg = await refreshLocaleCache(q, ctx);
       if (reg.rows.length < 2) return { hints: [] };
-      const variants = (await listAll(q, "page_variants")) as PageVariantRow[];
+      // #1269 — the hints need the home page's language versions only: read
+      // its variant group, not the variant table (a read per 1000 rows on
+      // every AI write, the scale gate's heaviest load).
+      const homePageId = await siteHomePageId(cmsOf(ctx));
+      const home = homePageId
+        ? (await loadVariantsByPage(q, [homePageId], ctx)).get(homePageId)
+        : undefined;
+      const homeGroup = home
+        ? ((await loadGroupMembers(q, [home.group_id], ctx)).get(home.group_id) ?? [home])
+        : [];
       return {
         hints: writeHints(
           {
             locales: reg.byCode,
             prefixDefaultLocale: reg.prefixDefaultLocale,
-            variants,
-            siteHomePageId: await siteHomePageId(cmsOf(ctx)),
+            homeGroup,
+            siteHomePageId: homePageId,
           },
           writes as PluginWrite[],
         ),
