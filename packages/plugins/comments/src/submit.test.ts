@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { HONEYPOT_FIELD_NAME } from "@caelo-cms/plugin-component-kit";
-import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 function harness() {
@@ -21,13 +21,13 @@ function harness() {
         return true;
       },
     },
-    query: {
+    query: indexCheckedQuery(plugin, "schema", {
       list: async () => [],
       insert: async () => {
         state.inserts += 1;
         return { id: "c1" };
       },
-    },
+    }),
   } as unknown as PluginContextTier1;
   return { ctx, state };
 }

@@ -6,7 +6,14 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { type ListIndexAccess, listIndexRefusal, readsByColumn } from "./index-coverage.js";
+import { listAccessOfFilter } from "@caelo-cms/plugin-sdk";
+import {
+  type ListIndexAccess,
+  listAccessOf,
+  listIndexRefusal,
+  readsByColumn,
+} from "./index-coverage.js";
+import { parseListFilter } from "./storage-ops.js";
 
 const read = (
   access: Partial<ListIndexAccess>,
@@ -80,4 +87,28 @@ describe("readsByColumn", () => {
     expect(readsByColumn({ ...none, createdAtRange: true })).toBe(true);
     expect(readsByColumn({ ...none, anyOf: ["x"] })).toBe(true);
   });
+});
+
+describe("listAccessOf and the SDK's listAccessOfFilter (#1536)", () => {
+  // A plugin's unit tests apply the rule to the raw filter
+  // (`indexCheckedQuery`); this host to the parsed one. They must agree.
+  const columns = { status: "string", email: "string", page_id: "uuid", created_at: "timestamp" };
+  const filters: Record<string, unknown>[] = [
+    {},
+    { limit: 5 },
+    { status: "x" },
+    { status: null, limit: 1 },
+    { anyOf: { page_id: ["a"], email: ["b"] }, status: "x" },
+    { orderBy: "created_at", orderDir: "asc" },
+    { orderBy: "id", orderDir: "asc", afterId: "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b" },
+    { since: "2026-01-01T00:00:00Z" },
+    { before: "2026-01-01T00:00:00Z", orderBy: "created_at" },
+  ];
+  for (const filter of filters) {
+    it(JSON.stringify(filter), () => {
+      const plan = parseListFilter("probe.list", columns, filter);
+      if (typeof plan === "string") throw new Error(plan);
+      expect(listAccessOfFilter(filter)).toEqual(listAccessOf(plan));
+    });
+  }
 });

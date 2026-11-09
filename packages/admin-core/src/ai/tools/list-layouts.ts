@@ -7,7 +7,7 @@
  */
 
 import { z } from "zod";
-import { makeListReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 
 const listLayoutsInput = z.object({ includeDeleted: z.boolean().default(false) }).strict();
 
@@ -25,6 +25,8 @@ export const listLayoutsTool = makeListReadTool<
     'Layouts: UUID, slug, display name, blocks with the chrome modules placed in each (`header(main-menu)|content|footer(site-footer)`) — answers "is module X already on the layout?". Use for a layout UUID/slug (e.g. after a layout-create approval); never ask the operator to paste one.\n' +
     "Layout blocks = site chrome: place header/footer/nav ONCE for every page via `add_module` target='layout'. NOT `build_page` blockNames — pages place into their TEMPLATE's blocks (`list_templates` `pageBlocks`, usually `content`); the layout's `content` block is where the template renders.",
   opName: "layouts.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: listLayoutsInput,
   label: "layouts",
   rows: (value) =>

@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 type Row = Record<string, unknown>;
@@ -16,13 +16,13 @@ type Row = Record<string, unknown>;
 function ctxFor(tables: { locales: Row[]; settings: Row[] }, chatBranchId?: string) {
   return {
     invocation: { origin: chatBranchId ? "chat" : "system", actorId: "a", chatBranchId },
-    adminQuery: {
+    adminQuery: indexCheckedQuery(plugin, "adminSchema", {
       list: async (table: string) => {
         if (table === "locales") return tables.locales;
         if (table === "settings") return tables.settings;
         return [];
       },
-    },
+    }),
   } as unknown as PluginContextTier1;
 }
 

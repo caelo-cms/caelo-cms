@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PluginQuery } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginQuery } from "@caelo-cms/plugin-sdk";
 import type { CategoryRow } from "./categories.js";
 import { consentLogCsv, consentLogPage, consentStats, describeConsentLog } from "./consent-log.js";
 import consentPlugin from "./index.js";
@@ -24,7 +24,7 @@ const CATEGORIES: CategoryRow[] = ["necessary", "functional", "analytics", "mark
 
 /** `created_at > since`, ordered, limited — the host's semantics. */
 function logQuery(rows: Array<Record<string, unknown>>, pageSize: { calls: number }): PluginQuery {
-  return {
+  return indexCheckedQuery(consentPlugin, "schema", {
     list: async (_t: string, f: { since?: string; limit?: number } = {}) => {
       pageSize.calls += 1;
       return rows
@@ -32,7 +32,7 @@ function logQuery(rows: Array<Record<string, unknown>>, pageSize: { calls: numbe
         .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
         .slice(0, f.limit ?? 100) as never;
     },
-  } as unknown as PluginQuery;
+  }) as unknown as PluginQuery;
 }
 
 const now = Date.now();
@@ -114,7 +114,7 @@ function newestFirst(rows: Array<{ id: string; at: string }>): PluginQuery {
     const [base, frac = ""] = iso.replace("Z", "").split(".");
     return Date.parse(`${base}Z`) * 1000 + Number(frac.padEnd(6, "0"));
   };
-  return {
+  return indexCheckedQuery(consentPlugin, "schema", {
     list: async (_t: string, f: { before?: string; limit?: number } = {}) =>
       rows
         .filter((r) => !f.before || micros(r.at) < micros(f.before))
@@ -127,7 +127,7 @@ function newestFirst(rows: Array<{ id: string; at: string }>): PluginQuery {
           policy_version: 1,
           created_at: new Date(Math.floor(micros(r.at) / 1000)),
         })),
-  } as unknown as PluginQuery;
+  }) as unknown as PluginQuery;
 }
 
 describe("consentLogPage", () => {

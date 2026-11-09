@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { renderToonList } from "../tools/_make-read-tool.js";
+import { renderToonList } from "../tools/_list-read-tool.js";
 
 const rows = Array.from({ length: 120 }, (_v, i) => ({
   slug: `page-${i}`,

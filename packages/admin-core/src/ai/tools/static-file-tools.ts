@@ -16,8 +16,9 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { staticFilesSetInput } from "../../ops/static_files.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
-import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
+import { makeReadTool } from "./_make-read-tool.js";
 
 interface FileMeta {
   readonly path: string;
@@ -34,6 +35,8 @@ export const listStaticFilesTool = makeListReadTool({
     "List the site's static data files (JSON, TXT, CSV, XML at a chosen address, like /bot/ips.json or /.well-known/security.txt): path, type, size, why it exists, and `releaseState` (not_staged | staged | live).\n" +
     "USE FOR: before `propose_set_static_files`; when a third party needs a file on the domain. A `not_staged` file goes live with a Stage and the operator's Publish live.",
   opName: "static_files.list",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: z.object({ contentType: z.enum(STATIC_FILE_CONTENT_TYPES).optional() }).strict(),
   label: "staticFiles",
   rows: (v) => (v as { files: FileMeta[] }).files,

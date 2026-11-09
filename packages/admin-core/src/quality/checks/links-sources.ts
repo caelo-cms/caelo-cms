@@ -74,11 +74,12 @@ export function linkSourcesFromOps(
     layouts: structure.layouts,
     async redirects() {
       const rows: RedirectRow[] = [];
+      let cursor: string | null = null;
       for (;;) {
         const page = (await run("redirects.list", {
           limit: REDIRECT_PAGE,
-          offset: rows.length,
-        })) as { redirects: RedirectRow[]; totalCount: number };
+          ...(cursor === null ? {} : { cursor }),
+        })) as { redirects: RedirectRow[]; nextCursor: string | null };
         rows.push(
           ...page.redirects.map((r) => ({
             fromPath: r.fromPath,
@@ -86,7 +87,8 @@ export function linkSourcesFromOps(
             statusCode: r.statusCode,
           })),
         );
-        if (page.redirects.length < REDIRECT_PAGE || rows.length >= page.totalCount) return rows;
+        if (page.nextCursor === null) return rows;
+        cursor = page.nextCursor;
       }
     },
     async reportedDraftLinks() {

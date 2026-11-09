@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { HONEYPOT_FIELD_NAME } from "@caelo-cms/plugin-component-kit";
-import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 function harness(proofOk: boolean) {
@@ -22,13 +22,13 @@ function harness(proofOk: boolean) {
         return proofOk;
       },
     },
-    query: {
+    query: indexCheckedQuery(plugin, "schema", {
       list: async () => [],
       insert: async () => {
         state.inserts += 1;
         return { id: "s1" };
       },
-    },
+    }),
     email: {
       queue: async () => {
         state.mails += 1;
@@ -84,11 +84,11 @@ describe("newsletter subscribe answers alike for every address", () => {
     const ctx = {
       invocation: { origin: "visitor", actorId: "v" },
       captcha: { requireProof: async () => true },
-      query: {
+      query: indexCheckedQuery(plugin, "schema", {
         list: async () => (row ? [row] : []),
         insert: async () => ({ id: "33333333-3333-4333-8333-333333333333" }),
         update: async () => {},
-      },
+      }),
       email: { queue: async () => {} },
     } as unknown as PluginContextTier1;
     return subscribe(ctx, { email: "known@example.com" });

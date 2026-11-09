@@ -272,6 +272,21 @@ describe("#1323 consent categories in the page language", () => {
     ]);
   });
 
+  it("#1536: the Stage audit reads the category texts' translations through an index", async () => {
+    // The audit asks which plugin texts a translation keeps as they are.
+    // That read went out by address alone, which the table's index
+    // (locale_code, address) cannot drive, so the host refused it and every
+    // Stage's audit errored: "operation "audit_findings" threw:
+    // plugin_storage.list: no index covers this read of
+    // "list_value_translations" (it filters by address)".
+    const audit = await plugin<{ findings: { rule: string }[] }>(
+      "international-site",
+      "audit_findings",
+      { pages: [{ pageId: ids.en, path: `/en/${PFX}-home` }] },
+    );
+    expect(Array.isArray(audit.findings)).toBe(true);
+  });
+
   it("an empty translation of a text a visitor decides on is refused", async () => {
     const r = await runPluginOperation({
       invocation: { origin: "system", actorId: SYSTEM_ACTOR_ID },

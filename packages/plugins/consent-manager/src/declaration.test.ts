@@ -6,9 +6,10 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PluginAdminQuery } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
 import type { CategoryRow } from "./categories.js";
 import { usedCategoryKeys, vendorEntries } from "./declaration.js";
+import consentPlugin from "./index.js";
 import { resolveTagColumns, type TagRow } from "./tags.js";
 
 const CATEGORIES: CategoryRow[] = ["necessary", "functional", "analytics", "marketing"].map(
@@ -24,14 +25,14 @@ const CATEGORIES: CategoryRow[] = ["necessary", "functional", "analytics", "mark
 
 /** Answers `list` by equality on the filter's columns, like the host does. */
 function fakeQuery(tables: Record<string, Array<Record<string, unknown>>>): PluginAdminQuery {
-  return {
+  return indexCheckedQuery(consentPlugin, "adminSchema", {
     list: async (table: string, filter: Record<string, unknown> = {}) => {
       const rows = (tables[table] ?? []).filter((r) =>
         Object.entries(filter).every(([k, v]) => k === "limit" || r[k] === v),
       );
       return rows.slice(0, Number(filter.limit ?? 100)) as never;
     },
-  } as unknown as PluginAdminQuery;
+  }) as unknown as PluginAdminQuery;
 }
 
 function tag(
