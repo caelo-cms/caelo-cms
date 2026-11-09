@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import { applyTranslationsArgs } from "./apply-translations.js";
 import plugin from "./index.js";
 import { buildFullTranslationPrompt } from "./translation.js";
@@ -91,7 +91,8 @@ function world() {
   /** Every write, in order — the equivalence check compares these. */
   const writes: unknown[] = [];
 
-  const q = {
+  // The host's read rule in front of list() (#1536).
+  const q = indexCheckedQuery(plugin, "adminSchema", {
     insert: async (table: string, data: Record<string, unknown>) => {
       const id = `row-${nextId++}`;
       const rows = tables[table] ?? [];
@@ -118,7 +119,7 @@ function world() {
     compareAndSwap: async () => {
       throw new Error("not used");
     },
-  };
+  });
 
   const cms = {
     call: async <O>(op: string, input: unknown): Promise<O> => {

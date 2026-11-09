@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 function harness() {
@@ -15,13 +15,13 @@ function harness() {
     invocation: { origin: "visitor", actorId: "v" },
     visitor: { id: null },
     captcha: { requireProof: async () => true },
-    query: {
+    query: indexCheckedQuery(plugin, "schema", {
       list: async () => [],
       insert: async () => {
         state.inserts += 1;
         return { id: "r1" };
       },
-    },
+    }),
   } as unknown as PluginContextTier1;
   return { ctx, state };
 }

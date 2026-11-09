@@ -58,7 +58,32 @@ plugin_public_storage.list: no index covers this read of "reviews" (it filters b
 
 `id`-only reads and writes (`update`, `delete`, `compareAndSwap`) go by the primary key and need nothing.
 
-The check reads the table's indexes from the database catalog (`packages/plugin-host/src/index-coverage.ts`), not from the caller: the storage operations are reachable from plugin code (`ctx.cms.call`), so an index list passed in could claim indexes that do not exist. The catalog holds exactly what the emitters built from the manifest. A read with only a `limit` skips the catalog lookup.
+The rule itself lives in the SDK (`packages/plugin-sdk/src/index-coverage.ts`), so the host and a plugin's tests apply the same code. The host check reads the table's indexes from the database catalog (`packages/plugin-host/src/index-coverage.ts`), not from the caller: the storage operations are reachable from plugin code (`ctx.cms.call`), so an index list passed in could claim indexes that do not exist. The catalog holds exactly what the emitters built from the manifest. A read with only a `limit` skips the catalog lookup.
+
+## Testing a plugin's reads
+
+A unit test that fakes the store with `{ list: async () => rows }` answers every read, including the ones the host refuses. Wrap the fake in `indexCheckedQuery` from the SDK instead: it derives the table's indexes from the manifest the way the emitters build them (`declaredIndexLeads`: `id`, every declared index, and in private storage the `ref:` columns and the branch column), and a read none of them drives throws the host's refusal.
+
+```ts
+import { indexCheckedQuery } from "@caelo-cms/plugin-sdk";
+import plugin from "./index.js";
+
+const adminQuery = indexCheckedQuery(plugin, "adminSchema", {
+  list: async (table, filter) => rows.filter(/* … */),
+});
+```
+
+international-site 0.12.2 shipped a read by `address` alone on a table indexed `["locale_code", "address"]` (#1536). Its unit test reached the read through a bare fake, so CI passed, and on the first install with a translated plugin text every Stage's audit errored. For the shipped plugins three tests now keep that from recurring:
+
+- `scripts/plugin-test-stores-index-checked.test.ts` parses every test in `packages/plugins/*`. It fails on an object literal that defines `list` (as a property, a method or a shorthand) and is not handed to `indexCheckedQuery`, and on an assignment to `<handle>.list`, which would replace a checked `list` later.
+- `packages/admin-core/src/__tests__/plugin-indexes-shipped.integration.test.ts` provisions every shipped plugin and checks that `declaredIndexLeads` matches what the catalog holds for each table, so the unit-tier check refuses exactly what the host refuses. It also plans each listed read shape with sequential scans off.
+- The integration tests that run two plugins together (for example `consent-category-translation.integration.test.ts`, which calls `audit_findings` with a plugin text in the store) reach the reads only another plugin's data triggers.
+
+A read that no test reaches is still unchecked. Each new read gets a unit test through a checked fake.
+
+## Fixing a refused read
+
+First check whether the read can carry the column the declared index leads with. The #1536 read wanted one language at a time anyway, so it now runs once per language with `locale_code` set. That changes code and leaves the manifest alone. A release-signed plugin's approval is bound to its manifest digest (`approved_manifest_digest`, #1332), so such a fix reaches installs with the next release and the Owner does not have to approve again. Declare a new index only when the read's shape needs one. That changes the manifest, and with it the digest, so the plugin stops on the next release until the Owner approves it.
 
 ## Names, evolution, existing installs
 

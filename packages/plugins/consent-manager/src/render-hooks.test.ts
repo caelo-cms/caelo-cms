@@ -13,7 +13,11 @@
  */
 
 import { beforeEach, describe, expect, it } from "bun:test";
-import type { PluginContextTier1, PluginQueryFilter } from "@caelo-cms/plugin-sdk";
+import {
+  indexCheckedQuery,
+  type PluginContextTier1,
+  type PluginQueryFilter,
+} from "@caelo-cms/plugin-sdk";
 import { DEFAULT_CATEGORIES } from "./categories.js";
 import { allGuards, guardsByModule } from "./guards.js";
 import consentPlugin from "./index.js";
@@ -49,7 +53,7 @@ class MemoryStore {
     return row;
   }
 
-  readonly query = {
+  readonly query = indexCheckedQuery(consentPlugin, "adminSchema", {
     insert: async (table: string, data: Record<string, unknown>) => ({
       id: this.seed(table, data).id,
     }),
@@ -89,7 +93,7 @@ class MemoryStore {
       );
     },
     compareAndSwap: async () => false,
-  };
+  });
 }
 
 interface ModuleFixture {

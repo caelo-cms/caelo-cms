@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, test } from "bun:test";
-import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import newsletterPlugin from "../../newsletter/src/index.js";
 import ratingsPlugin from "./index.js";
 
@@ -11,7 +11,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
     const ctx = {
       visitor: { id: "vis-1" },
       captcha: { requireProof: async () => true },
-      query: {
+      query: indexCheckedQuery(ratingsPlugin, "schema", {
         list: async () => {
           throw new Error("submit must not read: votes are an inbox");
         },
@@ -25,7 +25,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
           inserted.push(row);
           return { id: "row-new" };
         },
-      },
+      }),
     } as unknown as PluginContextTier1;
 
     await expect(ratingsPlugin.operations.submit(ctx, { pageId: "   ", score: 5 })).rejects.toThrow(
@@ -41,7 +41,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
     const insertedAggs: Array<Record<string, unknown>> = [];
     const deleted: string[] = [];
     const ctx = {
-      query: {
+      query: indexCheckedQuery(ratingsPlugin, "schema", {
         list: async (table: string) => {
           if (table === "ratings") {
             return [
@@ -78,7 +78,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
         delete: async (table: string, id: string) => {
           deleted.push(`${table}:${id}`);
         },
-      },
+      }),
     } as unknown as PluginContextTier1;
 
     const r = await ratingsPlugin.operations._refresh(ctx, {});
@@ -106,7 +106,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
           queued.push(m);
         },
       },
-      query: {
+      query: indexCheckedQuery(newsletterPlugin, "schema", {
         list: async () => [
           {
             id: "sub-1",
@@ -119,7 +119,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
         update: async (_t: string, _id: string, patch: Record<string, unknown>) => {
           updates.push(patch);
         },
-      },
+      }),
     } as unknown as PluginContextTier1;
 
     const subRes = await newsletterPlugin.operations.subscribe(ctx, {
@@ -149,7 +149,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
           validQueued.push(m);
         },
       },
-      query: {
+      query: indexCheckedQuery(newsletterPlugin, "schema", {
         list: async () => [
           {
             id: "sub-2",
@@ -161,7 +161,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
         update: async () => {
           throw new Error("a valid link must not be replaced");
         },
-      },
+      }),
     } as unknown as PluginContextTier1;
     await newsletterPlugin.operations.subscribe(validCtx, { email: "again@example.com" });
     expect(validQueued[0]?.token).toBe("99999999-2222-3333-4444-555555555555");

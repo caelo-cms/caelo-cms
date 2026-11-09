@@ -82,6 +82,7 @@ export {
 } from "@caelo-cms/shared/lists-model";
 export * from "./admin-panels.js";
 export * from "./editor-toolbar.js";
+export * from "./index-coverage.js";
 export * from "./indexes.js";
 export * from "./mail-templates.js";
 export * from "./public-surface.js";
