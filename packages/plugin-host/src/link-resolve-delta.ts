@@ -43,6 +43,7 @@ import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { hostSystemActorId } from "./dispatch.js";
+import { withPluginScope } from "./row-snapshots.js";
 
 /** Most journal rows one delta reads; past it the answers are asked again from scratch. */
 export const MAX_LINK_RESOLVE_DELTA = 500;
@@ -125,7 +126,11 @@ async function deltaOf(
   for (const [table, rowIds] of rowsByTable) {
     const column = pageColumns[table] as string;
     const ids = uuidArray([...rowIds]);
-    const named = (await tx.execute(sql`
+    // The plugin's tables are RLS-scoped to it: without its scope the live
+    // half reads nothing, and a row written outside the ops (no snapshot)
+    // would name no page.
+    const named = (await withPluginScope(tx, pluginId, () =>
+      tx.execute(sql`
       SELECT t.${sql.identifier(column)}::text AS page_id
         FROM ${sql.identifier(schema)}.${sql.identifier(table)} t
        WHERE t.id = ANY(${ids})
@@ -133,7 +138,8 @@ async function deltaOf(
       SELECT s.state -> 'values' ->> ${column}
         FROM plugin_row_snapshots s
        WHERE s.plugin_id = ${pluginId}::uuid AND s.table_name = ${table} AND s.row_id = ANY(${ids})
-    `)) as unknown as { page_id: string | null }[];
+    `),
+    )) as unknown as { page_id: string | null }[];
     for (const r of named) if (r.page_id) pages.add(r.page_id);
   }
   return { pages: [...pages] };

@@ -36,6 +36,8 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 /** #1269 — the `pages.list` inputs while recording (null = not recording). */
 let pageListInputs: unknown[] | null = null;
+/** #1269 — the filters of the plugin's page_variants reads while recording. */
+let variantReadFilters: (Record<string, unknown> | undefined)[] | null = null;
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -71,6 +73,10 @@ beforeAll(async () => {
   const runOperation = adapter.runOperation.bind(adapter);
   adapter.runOperation = ((o, ctx, input) => {
     if (o.name === "pages.list") pageListInputs?.push(input);
+    const read = input as { table?: string; filter?: Record<string, unknown> };
+    if (o.name === "plugin_storage.list" && read.table === "page_variants") {
+      variantReadFilters?.push(read.filter);
+    }
     return runOperation(o, ctx, input);
   }) as typeof adapter.runOperation;
   registry = new OperationRegistry();
@@ -247,6 +253,47 @@ describe("#396 — international-site AI tools", () => {
       }
     } finally {
       pageListInputs = null;
+    }
+  });
+
+  it("#1269 — write_hints reads the home page's language versions, not the variant table", async () => {
+    const homeId = await seedPage("t396-start");
+    const prior = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe("SELECT home_page_id::text AS id FROM site_defaults WHERE id = 1")) as {
+          id: string | null;
+        }[],
+    );
+    if (prior.length === 0) throw new Error("no site_defaults row");
+    await sqlSystem((tx) =>
+      tx.unsafe(`UPDATE site_defaults SET home_page_id = '${homeId}' WHERE id = 1`),
+    );
+    try {
+      const root = await op<{ pageId: string }>("create_variant", {
+        sourcePageId: homeId,
+        localeCode: "de",
+      });
+      variantReadFilters = [];
+      const r = await op<{ hints: string[] }>("write_hints", {
+        writes: [
+          { kind: "values", moduleId: null, values: { switch: `caelo:page/${root.pageId}` } },
+        ],
+      });
+      expect(r.hints).toHaveLength(1);
+      expect(r.hints[0]).toContain("Deutsch home page");
+      expect(variantReadFilters.length).toBeGreaterThan(0);
+      for (const filter of variantReadFilters) {
+        const keys = Object.keys(filter ?? {});
+        expect(keys.some((k) => k === "page_id" || k === "group_id" || k === "anyOf")).toBe(true);
+      }
+    } finally {
+      variantReadFilters = null;
+      const before = prior[0]?.id;
+      await sqlSystem((tx) =>
+        tx.unsafe(
+          `UPDATE site_defaults SET home_page_id = ${before ? `'${before}'` : "NULL"} WHERE id = 1`,
+        ),
+      );
     }
   });
 

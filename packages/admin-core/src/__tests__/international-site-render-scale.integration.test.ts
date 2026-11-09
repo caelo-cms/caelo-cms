@@ -600,18 +600,18 @@ describe("#1213 — international-site render hooks at scale", () => {
     const pairs = await seedGroups("kd", 3);
     const [a, b, c] = pairs;
     if (!a || !b || !c) throw new Error("seed");
-    // Two pages in no group yet: each joins a's group below.
-    const [x, y] = await sqlSystem(
+    // Three pages in no group yet: each joins a's group below.
+    const [x, y, z] = await sqlSystem(
       async (tx) =>
         (await tx.unsafe(
           `INSERT INTO pages (slug, title, short_title, template_id, page_type_id, page_type_confirmed, current_path, status)
            SELECT '${PFX}kd-x' || i, 'X', 'X', '${templateId}', '${pageTypeId}', true, '/${PFX}kd-x' || i, 'published'
-             FROM generate_series(1, 2) i ORDER BY i
+             FROM generate_series(1, 3) i ORDER BY i
            RETURNING id::text AS id`,
         )) as { id: string }[],
     );
-    if (!x || !y) throw new Error("seed");
-    const asked = [...pairs.flatMap((p) => [p.en, p.de]), x.id, y.id];
+    if (!x || !y || !z) throw new Error("seed");
+    const asked = [...pairs.flatMap((p) => [p.en, p.de]), x.id, y.id, z.id];
     const session = await sysOp<{ chatSessionId: string; chatBranchId: string }>(
       "chat.create_session",
       { isolation: "experiment", title: `${PFX}kd-chat` },
@@ -646,8 +646,22 @@ describe("#1213 — international-site render hooks at scale", () => {
     expect(main.partition.get(x.id)?.group).toBe(main.partition.get(a.en)?.group ?? "");
     expect([...main.partition].sort()).toEqual([...(await cold(null))].sort());
 
+    // A row written outside the ops (a migration, an import) has no
+    // snapshot: its live row names the page.
+    await sqlSystem(async (tx) => {
+      await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${pluginId}', true)`);
+      await tx.unsafe(
+        `INSERT INTO plugin_international_site.page_variants (group_id, page_id, locale_code, translation_status)
+         SELECT group_id, '${z.id}', 'de', 'up_to_date' FROM plugin_international_site.page_variants
+          WHERE page_id = '${b.en}'`,
+      );
+    });
+    const raw = await pass(null);
+    expect(raw.askedNow).toEqual([z.id]);
+    expect(raw.partition.get(z.id)?.group).toBe(raw.partition.get(b.en)?.group ?? "");
+
     // In the chat: y joins a's group as a pending row on its branch. The
-    // chat asks again about y (and x, written on main since), main about nothing.
+    // chat asks again about y (and x and z, written on main since), main about nothing.
     const inChat = await runPluginOperation({
       invocation: {
         origin: "chat",
@@ -662,7 +676,7 @@ describe("#1213 — international-site render hooks at scale", () => {
     });
     if (!inChat.ok) throw new Error(`${inChat.error.kind}: ${inChat.error.message}`);
     const chat = await pass(session.chatBranchId);
-    expect(chat.askedNow.sort()).toEqual([x.id, y.id].sort());
+    expect(chat.askedNow.sort()).toEqual([x.id, y.id, z.id].sort());
     expect(chat.partition.get(y.id)?.group).toBe(chat.partition.get(a.en)?.group ?? "");
     expect([...chat.partition].sort()).toEqual([...(await cold(session.chatBranchId))].sort());
     expect((await pass(null)).askedNow).toEqual([]);
