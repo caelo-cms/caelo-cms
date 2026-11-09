@@ -366,7 +366,7 @@ Postgres MUST live on a private network IP that the public internet cannot reach
 | `wafAdaptiveProtection` | `false` | `true` | +$5/mo (ML-based bot mitigation) |
 | `backupRetentionDays` | `7` | up to `90` | +$5-15/mo |
 
-No knob limits the CDN to a region. Cloud CDN and Firebase Hosting (served by Fastly) cache at a global edge that cannot be confined to one region; the install region decides where the origin bucket, the services and the logs live.
+No knob limits the CDN to a region. Cloud CDN and Firebase Hosting (served by Fastly) cache at a global edge that cannot be confined to one region. The install region places the services, the database and the buckets: on gcp the static site's origin bucket too, while on gcp-firebase the static site is a Firebase Hosting site, which has no region. No stack sets a location for the project's `_Default` log bucket.
 
 Adapters MUST surface every knob via `pulumi config set caelo-<provider>:<key> <value>`. The names are identical across providers so operators can switch providers without re-learning config; the defaults match the "minimal-viable, scale-up later" goal.
 
