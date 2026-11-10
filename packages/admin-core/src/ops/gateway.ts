@@ -5,7 +5,7 @@
  *   - gateway.list_recent_requests — request log surface for /settings/gateway.
  *   - gateway.rotate_cookie_secret  — Owner-only HMAC secret rotation.
  *   - gateway.set_settings           — body cap + captcha provider knobs.
- *   - gateway.get_settings           — read singleton.
+ *   - gateway.get_settings           — read singleton, with the last refresh pings.
  *   - gateway.set_rate_limit_override— Owner-direct override.
  *   - gateway.propose_rate_limit     — AI propose (§11.A).
  *   - gateway.list_pending_rate_limit_proposals
@@ -26,6 +26,7 @@ import {
   untrustedTimestamp,
 } from "../untrusted/public-data.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
+import { gatewayRefreshPingShape, readGatewayRefreshPings } from "./gateway-refresh.js";
 
 const captchaProvider = z.enum(["off", "pow", "turnstile", "hcaptcha"]);
 
@@ -43,8 +44,13 @@ export const getGatewaySettingsOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
-  output: z.object({ settings: settingsShape }),
+  output: z.object({
+    settings: settingsShape,
+    /** How each gateway took the admin's last refresh ping (gateway-refresh.ts). */
+    refreshPings: z.array(gatewayRefreshPingShape),
+  }),
   handler: async (_ctx, _input, tx) => {
+    const refreshPings = await readGatewayRefreshPings(tx);
     const rows = (await tx.execute(sql`
       SELECT
         gateway_max_body_bytes     AS max_body_bytes,
@@ -70,6 +76,7 @@ export const getGatewaySettingsOp = defineOperation({
           cookieSecretSet: false,
           updatedAt: new Date(0).toISOString(),
         },
+        refreshPings,
       });
     }
     return ok({
@@ -80,6 +87,7 @@ export const getGatewaySettingsOp = defineOperation({
         cookieSecretSet: r.gateway_cookie_secret !== null && r.gateway_cookie_secret !== "",
         updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
       },
+      refreshPings,
     });
   },
 });

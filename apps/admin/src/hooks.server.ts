@@ -32,6 +32,7 @@ import {
   configureMcpBridge,
   configurePluginUninstallFinalizer,
   configureProviderResolver,
+  createGatewayRefresher,
   createPublicProjectionPublisher,
   type EmailConfigRow,
   emitSnapshot,
@@ -253,8 +254,15 @@ async function bootPluginHost(): Promise<void> {
   }
   // #635 — the gateway has no cms_admin login: publish what it serves from
   // into cms_public now that the plugins (and their projection triggers)
-  // are in place, then keep it current from the outbox.
-  const publisher = createPublicProjectionPublisher({ adapter, stagingAdapter });
+  // are in place, then keep it current from the outbox. After each publish,
+  // ping the gateways whose database it wrote (gateway-refresh.ts; only
+  // where they run on request-billed CPU).
+  const refreshGateways = createGatewayRefresher({ adapter, registry });
+  const publisher = createPublicProjectionPublisher({
+    adapter,
+    stagingAdapter,
+    ...(refreshGateways ? { afterPublish: refreshGateways } : {}),
+  });
   // #1140 — the scheduler tick's projection backstop drains through it.
   setSchedulerProjectionPublisher(publisher);
   // A failed boot publish (another publisher held the lock throughout, the

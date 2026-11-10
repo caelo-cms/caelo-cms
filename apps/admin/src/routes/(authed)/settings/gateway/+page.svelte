@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { confirmSubmit } from "#lib/confirm.svelte.js";
-  import { Activity, KeyRound, Shield } from "lucide-svelte";
+  import { Activity, KeyRound, RefreshCw, Shield } from "lucide-svelte";
   import { enhance } from "$app/forms";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -29,6 +29,11 @@
 
   function fmtTime(s: string): string {
     return new Date(s).toLocaleString();
+  }
+  /** Whether a gateway missed the admin's last refresh: its last failure is newer than its last success. */
+  function refreshFailed(p: { lastOkAt: string | null; lastErrorAt: string | null }): boolean {
+    if (p.lastErrorAt === null) return false;
+    return p.lastOkAt === null || new Date(p.lastErrorAt) >= new Date(p.lastOkAt);
   }
   function statusVariant(code: number): "default" | "secondary" | "destructive" | "outline" {
     if (code >= 500) return "destructive";
@@ -102,6 +107,48 @@
       <form method="post" action="?/rotateSecret" use:enhance use:confirmSubmit={{ title: "Rotate the cookie secret?", description: "Every visitor is signed out and has to log in again.", confirmLabel: "Rotate secret" }}>
         <Button type="submit" variant="destructive">Rotate cookie secret</Button>
       </form>
+    </CardContent>
+  </Card>
+
+  <Card>
+    <CardHeader>
+      <CardTitle class="flex items-center gap-2"><RefreshCw class="size-4" /> Refresh after changes</CardTitle>
+      <CardDescription>
+        After a change that affects what a gateway serves, the admin tells that gateway to load it at once. A gateway that missed the last one may keep serving the earlier state until it next restarts.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      {#if data.refreshPings.length === 0}
+        <p class="text-sm text-muted-foreground">
+          No refresh sent yet. The admin sends one only where the gateways need it (on Google Cloud), after the next change.
+        </p>
+      {:else}
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Gateway</TableHead>
+              <TableHead>Last refresh</TableHead>
+              <TableHead>Result</TableHead>
+              <TableHead>Details</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {#each data.refreshPings as p (p.target)}
+              {@const failed = refreshFailed(p)}
+              <TableRow data-testid="gateway-refresh-{p.target}">
+                <TableCell>{p.target === "live" ? "Live site" : "Staging site"}</TableCell>
+                <TableCell class="whitespace-nowrap">{fmtTime(p.lastAttemptAt)}</TableCell>
+                <TableCell>
+                  <Badge variant={failed ? "destructive" : "default"}>{failed ? "missed" : "taken"}</Badge>
+                </TableCell>
+                <TableCell class="text-xs text-muted-foreground">
+                  {#if failed && p.lastError}{p.lastError}{:else if p.lastErrorAt}Last missed {fmtTime(p.lastErrorAt)}: {p.lastError}{:else}{p.url ?? ""}{/if}
+                </TableCell>
+              </TableRow>
+            {/each}
+          </TableBody>
+        </Table>
+      {/if}
     </CardContent>
   </Card>
 

@@ -178,13 +178,13 @@ export const listAiPricingTool = makeReadTool({
 export const getGatewaySettingsTool = makeReadTool({
   name: "get_gateway_settings",
   description:
-    "Read public API gateway settings (captcha, proof-of-work, max body). Use before `propose_set_gateway_settings`.",
+    "Read public API gateway settings (captcha, proof-of-work, max body) and `refreshPings`: per gateway, whether it took the admin's last refresh ping after a publish (lastErrorAt later than lastOkAt = it missed it and may serve older published state; tell the operator the reason). Use before `propose_set_gateway_settings`.",
   opName: "gateway.get_settings",
   input: noInput,
   format: (value) => {
-    const { cookieSecretSet: _secret, ...s } = (value as OpValue<typeof getGatewaySettingsOp>)
-      .settings;
-    return JSON.stringify(s);
+    const v = value as OpValue<typeof getGatewaySettingsOp>;
+    const { cookieSecretSet: _secret, ...s } = v.settings;
+    return JSON.stringify({ ...s, refreshPings: v.refreshPings });
   },
 });
 
