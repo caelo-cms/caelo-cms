@@ -353,11 +353,16 @@ const goLiveOutput = z.object({
       statusCode: z.number().int().nullable(),
     }),
   ),
-  /** The push to the hosting, per production target (a failure is retried). */
+  /**
+   * The push to the hosting, per production target. `failed` is retried;
+   * `queued`: another release held the live site, and its holder pushes
+   * the table when it finishes (the retry catches up otherwise). Until a
+   * target is `applied` or `unchanged`, visitors get the previous rule.
+   */
   targets: z.array(
     z.object({
       targetName: z.string(),
-      status: z.enum(["applied", "unchanged", "not-served", "nothing-live", "failed"]),
+      status: z.enum(["applied", "unchanged", "not-served", "nothing-live", "failed", "queued"]),
       error: z.string().nullable(),
     }),
   ),
@@ -387,7 +392,7 @@ async function goLiveUnderLease(
   | {
       readonly ok: true;
       readonly applied: readonly ReleasedRedirect[];
-      readonly targetIds: string[];
+      readonly targets: readonly { readonly id: string; readonly name: string }[];
     }
   | { readonly ok: false; readonly error: QueryError }
 > {
@@ -498,7 +503,9 @@ async function goLiveUnderLease(
       { states: ["draft", "staged"], liveFingerprint: liveRedirectsFingerprint(checked.live) },
     );
     if (!released.released) return released;
-    await markRedirectsBehind(t, targetIds);
+    // Pushed right after the commit, also to a target backing off from an
+    // earlier failure: the operator asked for it live now.
+    await markRedirectsBehind(t, targetIds, { dueNow: true });
     await recordAudit(t, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -523,7 +530,11 @@ async function goLiveUnderLease(
       },
     };
   }
-  return { ok: true, applied: written.applied, targetIds };
+  return {
+    ok: true,
+    applied: written.applied,
+    targets: checked.targets.map((t) => ({ id: t.id, name: t.name })),
+  };
 }
 
 export const goLiveNowOp = defineOperation({
@@ -593,18 +604,33 @@ export const goLiveNowOp = defineOperation({
     if (!done.ok) return err(done.error);
     const outcomes = await syncRedirects(tx, ctx, {
       trigger: "go_live",
-      targetIds: done.targetIds,
+      targetIds: done.targets.map((t) => t.id),
       ...(input.repoRoot ? { outputRoot: resolveOutputRoot(input.repoRoot) } : {}),
     });
+    const pushed = new Map(
+      outcomes
+        .filter((o: RedirectSyncOutcome) => o.env === "production")
+        .map((o) => [o.targetId, o]),
+    );
     return ok({
       applied: done.applied.map((r) => ({
         fromPath: r.fromPath,
         toPath: r.toPath,
         statusCode: r.statusCode,
       })),
-      targets: outcomes
-        .filter((o: RedirectSyncOutcome) => o.env === "production")
-        .map((o) => ({ targetName: o.targetName, status: o.status, error: o.error })),
+      // Every target, pushed or not: a sync skips a target while another
+      // release holds the live site, and silence must not read as "live".
+      targets: done.targets.map((t) => {
+        const o = pushed.get(t.id);
+        return o
+          ? { targetName: o.targetName, status: o.status, error: o.error }
+          : {
+              targetName: t.name,
+              status: "queued" as const,
+              error:
+                "another release is putting the live site out right now; it pushes this change when it finishes",
+            };
+      }),
     });
   },
 });

@@ -155,7 +155,7 @@ export const actions: Actions = {
           });
         }
         return goLiveResult(
-          live.pushFailed,
+          live.notOnHosting,
           `Redirect ${fromPath} → ${toPath} is live on your site now.`,
         );
       }
@@ -215,7 +215,7 @@ export const actions: Actions = {
         });
       }
       return goLiveResult(
-        live.pushFailed,
+        live.notOnHosting,
         `Redirect ${fromPath} → ${toPath} is live on your site now.${pageNote}`,
       );
     }
@@ -245,7 +245,7 @@ export const actions: Actions = {
     }
     const live = await goLiveNow(locals, fromPaths, [{ id: changeId, revision }]);
     if (!live.live) return fail(409, { error: live.refused });
-    return goLiveResult(live.pushFailed, `${fromPaths.join(", ")}: live on your site now.`);
+    return goLiveResult(live.notOnHosting, `${fromPaths.join(", ")}: live on your site now.`);
   },
   approve: async ({ request, locals }) => {
     const form = await request.formData();

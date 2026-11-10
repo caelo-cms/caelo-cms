@@ -297,6 +297,29 @@ describe("a save is a pending change, never live (#1550)", () => {
     ]);
   });
 
+  it("deleting again a rule whose removal is a Draft stages that removal", async () => {
+    await seedLiveRedirects(ADMIN_URL as string, SYSTEM_ID, [
+      { fromPath: `${P}-again`, toPath: "/", statusCode: 301 },
+    ]);
+    await op(OWNER, "redirects.delete_many", { fromPaths: [`${P}-again`], goLive: "later" });
+    expect(await pendingRedirects(ADMIN_URL as string, `${P}-again`)).toEqual([
+      expect.objectContaining({ toPath: null, state: "draft" }),
+    ]);
+    const r = await op<{ changes: { fromPath: string; outcome: string }[] }>(
+      OWNER,
+      "redirects.delete_many",
+      { fromPaths: [`${P}-again`] },
+    );
+    expect(r.changes.map((c) => [c.fromPath, c.outcome])).toEqual([[`${P}-again`, "pending"]]);
+    expect(await pendingRedirects(ADMIN_URL as string, `${P}-again`)).toEqual([
+      expect.objectContaining({ toPath: null, state: "staged" }),
+    ]);
+    // The live rule answers until its removal goes live.
+    expect(await liveRedirects(ADMIN_URL as string, `${P}-again`)).toEqual([
+      { fromPath: `${P}-again`, toPath: "/", statusCode: 301 },
+    ]);
+  });
+
   it("one pending change per address: a new one replaces the other chat's, and the result says so", async () => {
     const a = await op<{ chatSessionId: string; chatBranchId: string }>(
       SYS,
@@ -393,6 +416,36 @@ describe("Go live now (#1550)", () => {
         after_rules: [{ fromPath: `${P}-now`, toPath: "/t1550-live", statusCode: 302 }],
       },
     ]);
+  });
+
+  it("pushes a hosting target that backs off from an earlier failure right away", async () => {
+    // Production failed earlier and waits an hour for its next retry.
+    await asSystem(ADMIN_URL as string, async (tx) => {
+      await tx`
+        INSERT INTO redirect_sync_state (target_id, wanted_revision, synced_revision, failed_attempts, next_attempt_at)
+        VALUES (${productionTargetId}::uuid, 2, 1, 3, now() + interval '1 hour')
+        ON CONFLICT (target_id) DO UPDATE SET wanted_revision = 2, synced_revision = 1,
+          failed_attempts = 3, next_attempt_at = EXCLUDED.next_attempt_at`;
+    });
+    await op(OWNER, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-backoff`, toPath: "/t1550-live" }],
+    });
+    const r = await op<{ targets: { status: string }[] }>(OWNER, "redirects.go_live_now", {
+      fromPaths: [`${P}-backoff`],
+      repoRoot: root,
+    });
+    expect(r.targets.map((t) => t.status)).toEqual(["applied"]);
+    expect(await caddySnippet()).toContain(`${P}-backoff`);
+    const state = await asSystem(
+      ADMIN_URL as string,
+      async (tx) =>
+        (await tx`SELECT wanted_revision = synced_revision AS in_sync, next_attempt_at
+                  FROM redirect_sync_state WHERE target_id = ${productionTargetId}::uuid`) as {
+          in_sync: boolean;
+          next_attempt_at: Date | null;
+        }[],
+    );
+    expect(state).toEqual([{ in_sync: true, next_attempt_at: null }]);
   });
 
   it("refuses an automatic change, a target the live build lacks and a path a live page answers, all at once", async () => {

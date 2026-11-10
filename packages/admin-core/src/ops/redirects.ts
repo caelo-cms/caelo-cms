@@ -594,6 +594,21 @@ async function addressesOfIds(
 }
 
 /** Removal changes of the addresses of `fromPaths`, one per address. */
+/** #1550 — the addresses of `addresses` with a live rule or any pending change, a removal included. */
+async function addressesWithRuleOrChange(
+  tx: TransactionRunner,
+  addresses: readonly string[],
+): Promise<Set<string>> {
+  if (addresses.length === 0) return new Set();
+  const list = textArray([...addresses]);
+  const rows = (await tx.execute(sql`
+    SELECT address FROM redirects WHERE address = ANY(${list})
+    UNION
+    SELECT address FROM pending_redirects WHERE address = ANY(${list})
+  `)) as unknown as { address: string }[];
+  return new Set(rows.map((r) => r.address));
+}
+
 function removalsOf(fromPaths: readonly string[]): RedirectChangeInput[] {
   const seen = new Set<string>();
   const out: RedirectChangeInput[] = [];
@@ -840,9 +855,11 @@ export const deleteRedirectsManyOp = defineOperation({
         });
       }
     }
-    // Only addresses that have a rule now or pending: a path with neither
-    // deletes nothing.
-    const ruled = await pendingViewAddresses(tx, addressesOf(fromPaths));
+    // Only addresses with a live rule or a pending change: a path with
+    // neither deletes nothing. A removal already pending counts, so asking
+    // again sets the requested state on it (Draft → Staged), as the single
+    // delete does.
+    const ruled = await addressesWithRuleOrChange(tx, addressesOf(fromPaths));
     const removals = removalsOf(fromPaths.filter((p) => ruled.has(redirectAddress(p))));
     const outcomes = await writeRedirectChanges(tx, removals, {
       origin: "manual",

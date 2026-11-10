@@ -195,10 +195,15 @@ export function attachGatedExecute(
             fromPaths: saved.changes.map((c) => c.fromPath),
             changes: saved.changes.map(({ id, revision }) => ({ id, revision })),
           });
-          const pushFailed = live.ok
+          // A failed push is retried, a queued one waits for the release
+          // holding the live site: either way the hosting lacks it for now.
+          const notOnHosting = live.ok
             ? (live.value as { targets: { targetName: string; status: string }[] }).targets
-                .filter((t) => t.status === "failed")
-                .map((t) => t.targetName)
+                .filter((t) => t.status === "failed" || t.status === "queued")
+                .map(
+                  (t) =>
+                    `${t.targetName} (${t.status === "failed" ? "push failed, retried" : "push queued behind a running release"})`,
+                )
             : [];
           return {
             ok: true,
@@ -208,9 +213,9 @@ export function attachGatedExecute(
               ...(live.ok
                 ? {
                     wentLiveNow: true,
-                    ...(pushFailed.length > 0
+                    ...(notOnHosting.length > 0
                       ? {
-                          warning: `Live in Caelo, but the push to the hosting failed (${pushFailed.join(", ")}) and is retried automatically: visitors keep getting the previous rule until it lands. Do not say it is live on the site yet.`,
+                          warning: `Live in Caelo, but not on the hosting yet: ${notOnHosting.join(", ")}. Visitors keep getting the previous rule until it lands. Do not say it is live on the site yet.`,
                         }
                       : {}),
                   }

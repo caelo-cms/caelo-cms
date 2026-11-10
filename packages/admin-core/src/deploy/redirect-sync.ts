@@ -152,10 +152,16 @@ const MAX_ROUNDS = 5;
  * never run, the target stays behind and the worker retries it. Called by
  * the step that records a Publish live, production build, plugin-data
  * build, rollback or Go live now — never by a content write.
+ *
+ * `dueNow` (Go live now): a human's explicit release is pushed by the
+ * caller's sync right away, not at a failing target's next retry, so the
+ * backoff wait ends. The failure count stays: another failure backs off
+ * longer. The other callers' triggers push every target they claim anyway.
  */
 export async function markRedirectsBehind(
   tx: TransactionRunner,
   targetIds: readonly string[],
+  opts: { readonly dueNow?: boolean } = {},
 ): Promise<void> {
   if (targetIds.length === 0) return;
   const ids = uuidArray(targetIds);
@@ -163,7 +169,9 @@ export async function markRedirectsBehind(
     INSERT INTO redirect_sync_state (target_id, wanted_revision)
     SELECT id, 1 FROM deploy_targets WHERE env IN ${SYNC_ENVS} AND id = ANY(${ids}) ORDER BY id
     ON CONFLICT (target_id) DO UPDATE
-      SET wanted_revision = redirect_sync_state.wanted_revision + 1, updated_at = now()
+      SET wanted_revision = redirect_sync_state.wanted_revision + 1,
+          ${opts.dueNow ? sql`next_attempt_at = NULL,` : sql``}
+          updated_at = now()
   `);
 }
 

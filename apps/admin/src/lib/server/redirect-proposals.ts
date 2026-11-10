@@ -37,9 +37,13 @@ export function messageOf(error: unknown, fallback: string): string {
     : fallback;
 }
 
-/** What a Go live now did: live in Caelo (with the hosting pushes that failed), or refused. */
+/**
+ * What a Go live now did: live in Caelo — `notOnHosting` says which hosting
+ * pushes did not land yet, null when every target took the table — or
+ * refused.
+ */
 export type GoLiveNowOutcome =
-  | { readonly live: true; readonly pushFailed: string | null }
+  | { readonly live: true; readonly notOnHosting: string | null }
   | { readonly live: false; readonly refused: string };
 
 /**
@@ -59,34 +63,46 @@ export async function goLiveNow(
     ...(changes ? { changes: changes.map(({ id, revision }) => ({ id, revision })) } : {}),
   });
   if (!r.ok) return { live: false, refused: messageOf(r.error, "Go live now failed") };
-  return { live: true, pushFailed: failedHostingPushes(r.value) };
+  return { live: true, notOnHosting: hostingNotUpdated(r.value) };
 }
 
 /**
- * The hosting pushes of a Go live now result that failed, as one line, or
- * null when every target took the table.
+ * Which hosting targets of a Go live now result do not serve the change
+ * yet, as one sentence, or null when every target took the table: a push
+ * that failed (retried automatically) or one queued behind a release that
+ * holds the live site (its holder pushes when it finishes).
  */
-function failedHostingPushes(value: unknown): string | null {
-  const failed = (
+function hostingNotUpdated(value: unknown): string | null {
+  const targets = (
     value as { targets: { targetName: string; status: string; error: string | null }[] }
-  ).targets.filter((t) => t.status === "failed");
-  if (failed.length === 0) return null;
-  return failed.map((t) => (t.error ? `${t.targetName}: ${t.error}` : t.targetName)).join("; ");
+  ).targets;
+  const named = (status: string) =>
+    targets
+      .filter((t) => t.status === status)
+      .map((t) => (t.error ? `${t.targetName}: ${t.error}` : t.targetName))
+      .join("; ");
+  const failed = named("failed");
+  const queued = named("queued");
+  const parts = [
+    failed ? `the push to your hosting failed and is retried automatically (${failed})` : null,
+    queued ? `the push to your hosting waits for a release that is running (${queued})` : null,
+  ].filter((p): p is string => p !== null);
+  return parts.length === 0 ? null : parts.join("; ");
 }
 
 /**
- * The form result of a Go live now that ran: `liveMessage`, or — when a
- * hosting push failed — that failure as a warning. The save or approval
+ * The form result of a Go live now that ran: `liveMessage`, or — when the
+ * hosting does not serve it yet — that as a warning. The save or approval
  * stands (it is live in Caelo, and a chat card shows its proposal applied),
- * but visitors keep getting the previous rule until the retried push
- * lands, so it is never reported as "live on your site".
+ * but visitors keep getting the previous rule until the push lands, so it
+ * is never reported as "live on your site".
  */
-export function goLiveResult(pushFailed: string | null, liveMessage: string) {
-  if (pushFailed === null) return { ok: true as const, message: liveMessage };
+export function goLiveResult(notOnHosting: string | null, liveMessage: string) {
+  if (notOnHosting === null) return { ok: true as const, message: liveMessage };
   return {
     ok: true as const,
     warning: true as const,
-    message: `It is live in Caelo, but the push to your hosting failed (${pushFailed}). It is retried automatically; until it lands, visitors keep getting the previous rule.`,
+    message: `It is live in Caelo, but ${notOnHosting}. Until it lands, visitors keep getting the previous rule.`,
   };
 }
 
@@ -119,7 +135,7 @@ export async function approveRedirectProposal(
       proposalId,
     });
     if (!r.ok) return fail(409, { error: messageOf(r.error, "approve failed") });
-    return goLiveResult(failedHostingPushes(r.value), "Approved: live on your site now.");
+    return goLiveResult(hostingNotUpdated(r.value), "Approved: live on your site now.");
   }
   requireApproverPermission(locals, registry, "redirects.execute_proposal");
   if (proposal.payload.goLive === "now") requirePermission(locals, "deploy.trigger");
@@ -145,7 +161,7 @@ export async function approveRedirectProposal(
         error: `Approved and saved; it goes live with the next Publish live, but it could not go live now: ${live.refused}`,
       });
     }
-    return goLiveResult(live.pushFailed, v.nextStep);
+    return goLiveResult(live.notOnHosting, v.nextStep);
   }
   return { ok: true, message: v.nextStep };
 }
