@@ -25,6 +25,7 @@ import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import { drainProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
 import { liveRedirectsFingerprint, loadLiveRedirectRows } from "../redirects/model.js";
 import { releaseRedirectChanges } from "../redirects/release.js";
+import { retargetPendingRedirects } from "../redirects/write.js";
 import { registerAdminOps } from "../register.js";
 import {
   liveRedirects,
@@ -540,6 +541,47 @@ describe("Go live now (#1550)", () => {
     ]);
   });
 
+  it("an approval and a reject never both succeed: the release refuses a proposal decided meanwhile", async () => {
+    await op(AI, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-decided`, toPath: "/t1550-live" }],
+    });
+    const first = await op<{ proposalId: string }>(AI, "redirects.propose_go_live", {
+      fromPaths: [`${P}-decided`],
+    });
+    // The approval read the proposal as pending; a reject commits before its release.
+    await op(OWNER, "redirects.reject_proposal", { proposalId: first.proposalId });
+    const why = await refusal(OWNER, "redirects.go_live_now", {
+      fromPaths: [`${P}-decided`],
+      proposalId: first.proposalId,
+      repoRoot: root,
+    });
+    expect(why).toContain("this proposal was rejected meanwhile");
+    expect(await liveRedirects(ADMIN_URL as string, P)).toEqual([]);
+    // The other way round: an applied proposal refuses a reject after it.
+    const second = await op<{ proposalId: string }>(AI, "redirects.propose_go_live", {
+      fromPaths: [`${P}-decided`],
+    });
+    await op(OWNER, "redirects.execute_go_live", { proposalId: second.proposalId, repoRoot: root });
+    expect(
+      await refusal(OWNER, "redirects.reject_proposal", { proposalId: second.proposalId }),
+    ).toContain("this proposal is applied already");
+    expect(await liveRedirects(ADMIN_URL as string, P)).toEqual([
+      { fromPath: `${P}-decided`, toPath: "/t1550-live", statusCode: 301 },
+    ]);
+  });
+
+  it("proposes Go live now for as many changes as one tool call saves (500)", async () => {
+    const fromPaths = Array.from({ length: 150 }, (_, i) => `${P}-many-${i}`);
+    await op(AI, "redirects.create_many", {
+      redirects: fromPaths.map((fromPath) => ({ fromPath, toPath: "/t1550-live" })),
+    });
+    const { proposalId } = await op<{ proposalId: string }>(AI, "redirects.propose_go_live", {
+      fromPaths,
+    });
+    await op(OWNER, "redirects.execute_go_live", { proposalId, repoRoot: root });
+    expect(await liveRedirects(ADMIN_URL as string, `${P}-many-`)).toHaveLength(150);
+  });
+
   it("an external approval 'now' puts live the rules it saved, not a rule already live as it is", async () => {
     await seedLiveRedirects(ADMIN_URL as string, OWNER_ID, [
       { fromPath: `${P}-ext-same`, toPath: "https://calendar.example/a", statusCode: 302 },
@@ -752,6 +794,29 @@ describe("a page move retargets pending changes in place (#1550)", () => {
         state: "staged",
         origin: "page_move",
       }),
+    ]);
+  });
+
+  it("a page move leaves a pending change that was saved again after the move read it", async () => {
+    const saved = await op<{ changes: { changeId: string | null }[] }>(
+      OWNER,
+      "redirects.create_many",
+      { redirects: [{ fromPath: `${P}-raced-move`, toPath: "/t1550-about" }], goLive: "later" },
+    );
+    const id = saved.changes[0]?.changeId;
+    if (!id) throw new Error("no pending change saved");
+    // Another editor points it elsewhere between the move's read and its write.
+    await op(OWNER, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-raced-move`, toPath: "/t1550-contact" }],
+      goLive: "later",
+      upsert: true,
+    });
+    const moved = await adapter.withAdminTransaction(SYS, (tx) =>
+      retargetPendingRedirects(tx, [{ id, pointedAt: "/t1550-about", toPath: "/t1550-company" }]),
+    );
+    expect(moved).toBe(0);
+    expect(await pendingRedirects(ADMIN_URL as string, `${P}-raced-move`)).toEqual([
+      expect.objectContaining({ toPath: "/t1550-contact", state: "draft" }),
     ]);
   });
 });

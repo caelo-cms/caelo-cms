@@ -241,11 +241,17 @@ export function findRedirectLoops(
 
 /**
  * The planned redirects whose Location is a same-site path the build does
- * not serve (#1157; an external address is the destination's business). Redirects reach the live site on save, pages only with
- * Publish live, so a redirect to a page that is still a draft answers 404 at
- * its target until that page is published. Callers report these; they are
- * not an error. Paths under `/api/` are answered by the gateway, not the
- * build, and are never reported.
+ * not serve (#1157; an external address is the destination's business), so
+ * a redirect to a page that is still a draft answers 404 at its target
+ * until that page is published. Callers report these, and a release keeps
+ * such a change waiting (#1550). Paths under `/api/` are answered by the
+ * gateway, not the build, and are never reported.
+ *
+ * #1550 — a Location with a query or fragment ends the plan's chain
+ * collapse (it is another URL than the path a rule matches), but every
+ * serving layer matches a rule by the path alone: `/alias?utm=x` follows
+ * the rule on `/alias`. So a path another planned rule answers is served
+ * when that rule's own Location is (a gone rule's is not).
  *
  * @example
  *   redirectsToUnservedPaths(plan, new Set(["index.html"]))
@@ -255,13 +261,23 @@ export function redirectsToUnservedPaths(
   plan: RedirectPlan,
   servedFiles: ReadonlySet<string>,
 ): PlannedRedirect[] {
-  return plan.redirects.filter((r) => {
-    if (isExternalRedirectTarget(r.location)) return false;
-    const path = pathBeforeQuery(r.location);
-    if (path === "/api" || path.startsWith("/api/")) return false;
-    if (looksLikeFile(path)) return !servedFiles.has(path.slice(1));
-    return !servedByBuild(stripTrailingSlash(path), servedFiles);
-  });
+  const byFromPath = new Map(plan.redirects.map((r) => [r.fromPath, r]));
+  const reachable = (location: string, seen: Set<string>): boolean => {
+    if (isExternalRedirectTarget(location)) return true;
+    const path = pathBeforeQuery(location);
+    if (path === "/api" || path.startsWith("/api/")) return true;
+    const bare = stripTrailingSlash(path);
+    if (looksLikeFile(path) ? servedFiles.has(path.slice(1)) : servedByBuild(bare, servedFiles)) {
+      return true;
+    }
+    // A rule answers the path: served when its own Location is. `seen`
+    // ends a loop, which serves nothing.
+    const next = byFromPath.get(bare);
+    if (next === undefined || seen.has(bare)) return false;
+    seen.add(bare);
+    return reachable(next.location, seen);
+  };
+  return plan.redirects.filter((r) => !reachable(r.location, new Set([r.fromPath])));
 }
 
 /**

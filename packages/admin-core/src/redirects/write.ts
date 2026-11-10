@@ -200,19 +200,28 @@ export async function writeRedirectChanges(
  * included, and a manual change stays one the operator can keep as a
  * draft. Each gets a new revision, like any other save.
  *
+ * `pointedAt` is the target the move read: a change saved again since
+ * (the same row, another target) no longer points at the moved page and
+ * keeps its newer target.
+ *
  * @returns how many changes were retargeted.
  */
 export async function retargetPendingRedirects(
   tx: TransactionRunner,
-  retargets: readonly { readonly id: string; readonly toPath: string }[],
+  retargets: readonly {
+    readonly id: string;
+    readonly pointedAt: string;
+    readonly toPath: string;
+  }[],
 ): Promise<number> {
   if (retargets.length === 0) return 0;
   const moved = (await tx.execute(sql`
     UPDATE pending_redirects p
     SET to_path = r.to_path, revision = p.revision + 1, updated_at = now()
-    FROM jsonb_to_recordset(${jsonbParam(retargets.map((r) => ({ id: r.id, to_path: r.toPath })))})
-      AS r(id uuid, to_path text)
-    WHERE p.id = r.id AND p.to_path IS DISTINCT FROM r.to_path
+    FROM jsonb_to_recordset(${jsonbParam(
+      retargets.map((r) => ({ id: r.id, pointed_at: r.pointedAt, to_path: r.toPath })),
+    )}) AS r(id uuid, pointed_at text, to_path text)
+    WHERE p.id = r.id AND p.to_path = r.pointed_at AND p.to_path IS DISTINCT FROM r.to_path
     RETURNING 1
   `)) as unknown as unknown[];
   return moved.length;

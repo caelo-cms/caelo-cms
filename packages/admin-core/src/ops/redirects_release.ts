@@ -371,6 +371,7 @@ const goLiveOutput = z.object({
 type GoLiveInput = {
   readonly fromPaths: readonly string[];
   readonly changes?: readonly { readonly id: string; readonly revision: number }[] | undefined;
+  readonly proposalId?: string | undefined;
   readonly repoRoot?: string | undefined;
 };
 
@@ -495,6 +496,24 @@ async function goLiveUnderLease(
   }
   const targetIds = checked.targets.map((t) => t.id);
   const written = await tx.transaction(async (t) => {
+    // An approval decides its proposal in the release's own commit: the row
+    // stays locked until then, so a reject or cancel since the approval read
+    // it refuses the release instead of both succeeding.
+    if (input.proposalId !== undefined) {
+      const rows = (await t.execute(sql`
+        SELECT status FROM redirect_pending_actions
+        WHERE id = ${input.proposalId}::uuid AND kind = 'go_live_now'
+        FOR UPDATE
+      `)) as unknown as { status: string }[];
+      const status = rows[0]?.status ?? "gone";
+      if (status !== "pending") {
+        return {
+          released: false as const,
+          reason: `this proposal was ${status} meanwhile`,
+          decided: true,
+        };
+      }
+    }
     const released = await releaseRedirectChanges(
       t,
       ctx.actorId,
@@ -502,7 +521,14 @@ async function goLiveUnderLease(
       { kind: "go_live_now" },
       { states: ["draft", "staged"], liveFingerprint: liveRedirectsFingerprint(checked.live) },
     );
-    if (!released.released) return released;
+    if (!released.released) return { ...released, decided: false };
+    if (input.proposalId !== undefined) {
+      await t.execute(sql`
+        UPDATE redirect_pending_actions
+        SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
+        WHERE id = ${input.proposalId}::uuid
+      `);
+    }
     // Pushed right after the commit, also to a target backing off from an
     // earlier failure: the operator asked for it live now.
     await markRedirectsBehind(t, targetIds, { dueNow: true });
@@ -525,7 +551,9 @@ async function goLiveUnderLease(
       error: {
         kind: "HandlerError",
         operation: op,
-        message: `Nothing went live: ${written.reason} while it was checked. Look at it again (find_redirects) and Go live now again.`,
+        message: written.decided
+          ? `Nothing went live: ${written.reason}, so it is not the approver's to apply any more.`
+          : `Nothing went live: ${written.reason} while it was checked. Look at it again (find_redirects) and Go live now again.`,
         conflict: true,
       },
     };
@@ -562,6 +590,12 @@ export const goLiveNowOp = defineOperation({
        * saved proposal showed them: a change saved since refuses the call.
        */
       changes: z.array(changeRefSchema).max(500).optional(),
+      /**
+       * The Go live now proposal this applies (redirects.execute_go_live):
+       * marked applied in the release's commit, which refuses when it was
+       * rejected or cancelled since.
+       */
+      proposalId: z.string().uuid().optional(),
       /** Where relative out_dirs resolve (deploy ops' `repoRoot`). */
       repoRoot: z.string().optional(),
     })
@@ -637,9 +671,9 @@ export const goLiveNowOp = defineOperation({
 
 const goLivePayload = z
   .object({
-    fromPaths: fromPathsSchema.max(100),
+    fromPaths: fromPathsSchema,
     /** The changes the card showed (id and revision): the approval applies exactly these. */
-    changes: z.array(changeRefSchema).max(100),
+    changes: z.array(changeRefSchema).max(500),
   })
   .strict();
 
@@ -649,7 +683,9 @@ export const proposeGoLiveOp = defineOperation({
   // §11.A — the AI proposes Go live now; the operator approves the card.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ fromPaths: fromPathsSchema.max(100) }).strict(),
+  // As many as the redirect tools take in one call (500), so a valid tool
+  // request can always queue its card.
+  input: z.object({ fromPaths: fromPathsSchema }).strict(),
   output: z.object({ proposalId: z.string(), preview: z.record(z.string(), z.unknown()) }),
   handler: async (ctx, input, tx) => {
     const op = "redirects.propose_go_live";
@@ -740,22 +776,22 @@ const executeGoLiveDefinition = defineStepwiseOperation({
       });
     }
     const payload = goLivePayload.parse(row.payload);
+    // The release marks the proposal applied in its own commit (and refuses
+    // when a reject or cancel came first), so approval and rejection never
+    // both succeed.
     const applied = await execute(steps.registry, steps.adapter, ctx, "redirects.go_live_now", {
       fromPaths: payload.fromPaths,
       changes: payload.changes,
+      proposalId: input.proposalId,
       ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
     });
-    // Refused: the proposal stays pending, the card shows why; reject it or
-    // approve again once the reason is gone.
+    // Refused: the proposal stays as it was (pending, or decided by someone
+    // else), the card shows why; reject it or approve again once the reason
+    // is gone.
     if (!applied.ok) return err(applied.error);
     await steps.adapter.withAdminTransaction(
       ctx,
       async (tx) => {
-        await tx.execute(sql`
-          UPDATE redirect_pending_actions
-          SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
-          WHERE id = ${input.proposalId}::uuid AND status = 'pending'
-        `);
         await recordAudit(tx, {
           actorId: ctx.actorId,
           requestId: ctx.requestId,

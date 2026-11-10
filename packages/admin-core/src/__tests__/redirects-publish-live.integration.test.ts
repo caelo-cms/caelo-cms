@@ -56,7 +56,8 @@ const HOME = "home";
 const A = "t1550pg-a";
 const TARGET = "t1550pg-target";
 const LATER = "t1550pg-later";
-const SLUGS = [HOME, A, `${A}-renamed`, TARGET, LATER];
+const TAKEOVER = "t1550pg-takeover";
+const SLUGS = [HOME, A, `${A}-renamed`, TARGET, LATER, TAKEOVER];
 const P = "/t1550pl";
 
 let adapter: DatabaseAdapter;
@@ -455,6 +456,26 @@ describe("redirects go live with Publish live (#1550)", () => {
     ]);
     // The hosting took the table: the push after the rollback had no loop to refuse.
     expect(await liveSnippet()).toContain(`${P}-ring-b`);
+  });
+
+  it("a page that takes a rule's URL over fulfils the rule's pending removal", async () => {
+    await seedLiveRedirects(ADMIN_URL as string, OWNER_ID, [
+      { fromPath: `/${TAKEOVER}`, toPath: `/${TARGET}`, statusCode: 301 },
+    ]);
+    await op(OWNER, "redirects.delete_many", { fromPaths: [`/${TAKEOVER}`], goLive: "later" });
+    expect(await pendingRedirects(ADMIN_URL as string, `/${TAKEOVER}`)).toEqual([
+      expect.objectContaining({ toPath: null, state: "draft" }),
+    ]);
+    await page(TAKEOVER, "published");
+    await stage();
+    await publishLive([]);
+    expect(await liveRedirects(ADMIN_URL as string, `/${TAKEOVER}`)).toEqual([]);
+    expect(await pendingRedirects(ADMIN_URL as string, `/${TAKEOVER}`)).toEqual([]);
+    // The list answers for the address (a removal without a live rule made it throw).
+    const listed = await op<{ redirects: unknown[] }>(OWNER, "redirects.list", {
+      query: TAKEOVER,
+    });
+    expect(listed.redirects).toEqual([]);
   });
 });
 

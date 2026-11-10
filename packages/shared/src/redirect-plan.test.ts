@@ -203,6 +203,31 @@ describe("redirectsToUnservedPaths (#1157)", () => {
     const p = plan([row("/x", "/y"), row("/y", "/live")], served);
     expect(redirectsToUnservedPaths(p, served)).toEqual([]);
   });
+
+  it("follows a target with a query through the rule on its path (#1550)", () => {
+    // The plan stops collapsing at `/alias?utm=x`, but `/alias`'s rule answers it.
+    const p = plan(
+      [
+        row("/old", "/alias?utm_source=campaign"),
+        row("/alias", "/live"),
+        row("/lost", "/nowhere?x=1"),
+        row("/gone-ref", "/gone?x=1"),
+        row("/gone", "/gone", 410),
+        row("/ring-a", "/ring-b?x=1"),
+        row("/ring-b", "/ring-a?y=1"),
+      ],
+      served,
+    );
+    expect(p.redirects.find((r) => r.fromPath === "/old")?.location).toBe(
+      "/alias?utm_source=campaign",
+    );
+    expect(redirectsToUnservedPaths(p, served).map((r) => r.fromPath)).toEqual([
+      "/lost",
+      "/gone-ref",
+      "/ring-a",
+      "/ring-b",
+    ]);
+  });
 });
 
 describe("redirectFromPathSpellings", () => {

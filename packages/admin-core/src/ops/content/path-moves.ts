@@ -178,15 +178,16 @@ export async function applyPathMoveEffects(
     status_code: number;
     change_id: string | null;
   }[];
-  const retargets: { id: string; address: string; toPath: string }[] = [];
+  const retargets: { id: string; address: string; pointedAt: string; toPath: string }[] = [];
   for (const r of pointing) {
     const to = newPathOf.get(r.to_path);
     // A rule on a new path is being removed above; never point it anywhere.
     if (to === undefined || newAddresses.has(r.address)) continue;
     if (r.change_id !== null) {
       // #1550 — a pending change is retargeted in place: it keeps its
-      // state, origin and owner (a Draft nobody included stays a Draft).
-      retargets.push({ id: r.change_id, address: r.address, toPath: to });
+      // state, origin and owner (a Draft nobody included stays a Draft),
+      // and only while it still points where this read saw it.
+      retargets.push({ id: r.change_id, address: r.address, pointedAt: r.to_path, toPath: to });
     } else {
       changes.push({ fromPath: r.from_path, toPath: to, statusCode: r.status_code });
     }

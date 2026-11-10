@@ -111,6 +111,14 @@ describe("planRedirectRelease", () => {
     expect(r.plan.redirects.find((p) => p.fromPath === "/old")?.location).toBe("/about/");
   });
 
+  it("a target with a query on a served redirect's path counts as served", () => {
+    // The plan keeps `/mid?utm=x` as written; the rule on /mid answers it.
+    const r = plan([row("/mid", "/about")], [change("1", "/old", "/mid?utm_source=x")], served);
+    expect(r.applied).toEqual(["1"]);
+    expect(r.waiting).toEqual([]);
+    expect(r.plan.redirects.find((p) => p.fromPath === "/old")?.location).toBe("/mid?utm_source=x");
+  });
+
   it("leaving one change out leaves out the change whose chain went through it", () => {
     // /a → /b → /c, where /c is not in the build: /b waits, then /a ends at
     // /b (no rule, no page) and waits too.

@@ -282,6 +282,14 @@ export async function takeOverRedirectsOnFirstPublishedPages(
     DELETE FROM redirects WHERE from_path = ANY(${textArray(spellings)})
     RETURNING from_path, to_path, status_code
   `)) as unknown as { from_path: string; to_path: string; status_code: number }[];
+  // #1550 — a pending removal of a rule the page took over is fulfilled:
+  // nothing is left to remove, and a removal without a live rule is no row
+  // the redirects list can show.
+  await tx.execute(sql`
+    DELETE FROM pending_redirects
+    WHERE address = ANY(${textArray([...new Set(spellings.map((s) => redirectAddress(s)))])})
+      AND to_path IS NULL
+  `);
   const byAddress = new Map<string, RedirectTableRow[]>();
   for (const r of gone) {
     const address = redirectAddress(r.from_path);

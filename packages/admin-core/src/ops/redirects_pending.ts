@@ -511,12 +511,26 @@ export const rejectRedirectProposalOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
+    const rejected = (await tx.execute(sql`
       UPDATE redirect_pending_actions
       SET status = 'rejected', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
           decision_reason = ${input.reason ?? null}
       WHERE id = ${input.proposalId}::uuid AND status = 'pending'
-    `);
+      RETURNING id
+    `)) as unknown as unknown[];
+    // #1550 — an approval that won the race (Go live now marks its proposal
+    // applied in the release's commit) is not rejected after the fact.
+    if (rejected.length === 0) {
+      const now = (await tx.execute(sql`
+        SELECT status FROM redirect_pending_actions WHERE id = ${input.proposalId}::uuid
+      `)) as unknown as { status: string }[];
+      return err({
+        kind: "HandlerError",
+        operation: "redirects.reject_proposal",
+        message: `Nothing was rejected: this proposal is ${now[0]?.status ?? "gone"} already.`,
+        refusal: true,
+      });
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
