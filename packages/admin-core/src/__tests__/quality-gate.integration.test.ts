@@ -770,12 +770,15 @@ describe("a failed quality check", () => {
     expect(
       await op(HUMAN, "deploy.recheck_publish_anyway", { fromRunId: staged[0]?.id, auditRunId }),
     ).toEqual({});
+    // #1574 — a carried build passes its order's id: the claim's run takes it.
+    const publishRunId = crypto.randomUUID();
     const applied = await op<{ kind: string; toRunId: string }>(
       HUMAN,
       "quality_audits.execute_proposal",
-      { proposalId: proposal.proposalId },
+      { proposalId: proposal.proposalId, runId: publishRunId },
     );
     expect(applied.kind).toBe("publish_anyway");
+    expect(applied.toRunId).toBe(publishRunId);
     expect(await gate()).toMatchObject({ open: true, state: "overridden" });
     const run = await op<{ run: { publishOverride: { by: string; reason: string } | null } }>(
       AI,

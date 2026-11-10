@@ -172,6 +172,8 @@ export const actions: Actions = {
         previewUrl,
         previewLabel: previewLabel ?? previewUrl,
       },
+      // #1574 — built without the build carrier (the layout's toast says so).
+      ...(stagingDeploy.warning ? { carrierWarning: stagingDeploy.warning } : {}),
     };
   },
   /**
@@ -265,6 +267,7 @@ export const actions: Actions = {
         targetName: "production",
         notice: (promote.value as { securityHeadersNote?: string }).securityHeadersNote,
       },
+      ...(promote.warning ? { carrierWarning: promote.warning } : {}),
     };
   },
 };

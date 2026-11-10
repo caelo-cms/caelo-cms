@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS build_orders (
   -- limit (a self-hosted admin holds no request limit).
   max_run_seconds    integer NULL CHECK (max_run_seconds BETWEEN 1 AND 3600),
   stop_requested_at  timestamptz NULL,
+  -- Why the build is to stop: the operator's Stop, or the backstop giving
+  -- the order up; the stopped run names it.
+  stop_reason        text NULL CHECK (char_length(stop_reason) <= 500),
   created_at         timestamptz NOT NULL DEFAULT now(),
   started_at         timestamptz NULL,
   finished_at        timestamptz NULL,
@@ -55,9 +58,10 @@ CREATE TABLE IF NOT EXISTS build_orders (
     (state = 'done') = (finished_at IS NOT NULL AND outcome IS NOT NULL))
 );
 
--- The backstop's read: queued orders whose carrier never started.
-CREATE INDEX IF NOT EXISTS build_orders_queued_idx
-  ON build_orders (created_at) WHERE state = 'queued';
+-- The backstop's read: orders not ended whose carrier never started, or
+-- whose carrier's job ended first.
+CREATE INDEX IF NOT EXISTS build_orders_open_idx
+  ON build_orders (created_at) WHERE state IN ('queued', 'running');
 -- The clean-up of finished orders.
 CREATE INDEX IF NOT EXISTS build_orders_done_idx
   ON build_orders (finished_at) WHERE state = 'done';

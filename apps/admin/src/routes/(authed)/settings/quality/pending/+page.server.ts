@@ -77,6 +77,7 @@ export const actions: Actions = {
         v.kind === "accept"
           ? `Accepted ${v.accepted ?? 0} quality finding(s).`
           : "Published live over the failed quality check.",
+      ...("warning" in r && r.warning ? { carrierWarning: r.warning } : {}),
     };
   },
   reject: async ({ request, locals }) => {

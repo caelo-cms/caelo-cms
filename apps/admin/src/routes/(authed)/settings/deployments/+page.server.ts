@@ -92,6 +92,8 @@ export const actions: Actions = {
     if (!result.ok) {
       return fail(409, { error: `Build ${targetName} refused: ${describeError(result.error)}` });
     }
+    // #1574 — a redirect would drop the warning of a build run without its carrier.
+    if (result.warning) return { ok: `Built ${targetName}.`, carrierWarning: result.warning };
     throw redirect(303, "/settings/deployments");
   },
   promote: async ({ request, locals }) => {
@@ -110,7 +112,10 @@ export const actions: Actions = {
     if (!result.ok) return fail(500, { error: `Promote ${fromTarget} → ${toTarget} failed.` });
     // #1454 — a redirect would drop what the operator must read.
     const notice = (result.value as { securityHeadersNote?: string }).securityHeadersNote;
-    if (notice) return { published: { targetName: toTarget, notice } };
+    const carrier = result.warning ? { carrierWarning: result.warning } : {};
+    if (notice || result.warning) {
+      return { published: { targetName: toTarget, ...(notice ? { notice } : {}) }, ...carrier };
+    }
     throw redirect(303, "/settings/deployments");
   },
 };

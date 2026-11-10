@@ -145,6 +145,8 @@ export const actions: Actions = {
         pluginProblemWarning,
         linkNoticeWarning,
       },
+      // #1574 — built without the build carrier (the layout's toast says so).
+      ...(staged.warning ? { carrierWarning: staged.warning } : {}),
     };
   },
 

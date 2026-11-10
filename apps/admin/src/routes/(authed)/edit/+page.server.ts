@@ -815,7 +815,7 @@ export const actions: Actions = {
       },
     );
     if (!r.ok) return fail(400, { error: describeError(r.error) });
-    return { published: true };
+    return { published: true, ...(r.warning ? { carrierWarning: r.warning } : {}) };
   },
   stageAndDeployStaging: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");
@@ -864,6 +864,8 @@ export const actions: Actions = {
         // Issue #620 — other chats' changes to the same things rode along.
         alsoIncludes: summary.alsoIncludes.map((a) => a.title),
       },
+      // #1574 — built without the build carrier (the layout's toast says so).
+      ...(staged.warning ? { carrierWarning: staged.warning } : {}),
     };
   },
   /**
@@ -1006,6 +1008,7 @@ export const actions: Actions = {
         kinds: [...checked],
         ...(changedPageIds ? { changedPageCount: changedPageIds.length } : {}),
       },
+      ...(productionDeploy.warning ? { carrierWarning: productionDeploy.warning } : {}),
     };
   },
   /**
@@ -1051,6 +1054,7 @@ export const actions: Actions = {
         buildId: v.buildId,
         notice: v.securityHeadersNote,
       },
+      ...(promote.warning ? { carrierWarning: promote.warning } : {}),
     };
   },
 };

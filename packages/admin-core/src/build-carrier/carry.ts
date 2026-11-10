@@ -4,9 +4,10 @@
  * Issue #1574 — how a request asks for a build it may not live to see end:
  * an agent's Stage (it waits about a minute), a button's Stage, Publish
  * live or production build (the browser tab may close mid-build). The
- * request writes a build order, starts the order's carrier and waits for
- * the outcome as long as it waits; the build itself runs inside the
- * carrier's request (run-order.ts), on whichever admin instance takes it.
+ * request checks what the op would refuse at once (preflight.ts), writes a
+ * build order, starts the order's carrier and waits for the outcome as long
+ * as it waits; the build itself runs inside the carrier's request
+ * (run-order.ts), on whichever admin instance takes it.
  *
  *   gcp, gcp-firebase  the carrier is one execution of the build carrier's
  *                      Cloud Run job (kind.ts): request-billed CPU is there
@@ -15,7 +16,10 @@
  *                      admin has CPU between requests there); a process
  *                      that registered no launcher (a test, a script) runs
  *                      it in-process too — a build must run when asked
- *   aws, azure         nowhere yet (#749, #750): the order fails at once
+ *   no carrier         (a Google Cloud admin whose converge step did not set
+ *                      it up, AWS / Azure #749 / #750): a button builds in
+ *                      its own request, as before the carrier, and says so;
+ *                      an agent is refused with the step to re-run
  *
  * The Live Edit chat's own Stage is not carried: it waits inside its turn,
  * and the operator's Stop or a closed tab stops it with the turn (#1204).
@@ -25,7 +29,9 @@
 import { randomUUID } from "node:crypto";
 import { execute, type QueryError } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok, type Result } from "@caelo-cms/shared";
+import { stoppedByOperator } from "../ai/chat-runner/agent-runs.js";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { abortableSleep } from "../ops/deploy-lease-steps.js";
 import type { StagedBy } from "../quality/chat-feedback.js";
 import { inProcessJobLauncher } from "../reporting-jobs/in-process.js";
 import { type AdminJobDeps, REPORTING_JOB_CTX } from "../reporting-jobs/kind.js";
@@ -37,8 +43,10 @@ import {
 } from "../reporting-jobs/launcher.js";
 import { ADMIN_REQUEST_LIMIT_SECONDS } from "../reporting-jobs/protocol.js";
 import type { StagedChats, StageFailure } from "../stage/stage-chats.js";
-import { buildCarrierJobKind } from "./kind.js";
+import { BUILD_CARRIER_JOB_ENV_VAR, buildCarrierJobKind } from "./kind.js";
 import { actorOf, type BuildOpName, type BuildOrder, type BuildOutcome } from "./order.js";
+import { preflightBuild } from "./preflight.js";
+import { executeBuildOrder } from "./run-order.js";
 
 /**
  * How long before the admin's request limit a carried build stops (so its
@@ -46,23 +54,42 @@ import { actorOf, type BuildOpName, type BuildOrder, type BuildOutcome } from ".
  */
 const LIMIT_MARGIN_SECONDS = 2 * 60;
 
+/** The waiting request's look at its order: from this pause, doubling, up to the next. */
+const FIRST_LOOK_MS = 250;
+const LONGEST_LOOK_MS = 5_000;
+
+/** A signal that never aborts (a wait nobody can stop). */
+const NEVER = new AbortController().signal;
+
 /** How a carried build's caller waits. */
 export interface CarryOptions {
-  /** The order's id — the run's id for a Stage, a build or a Publish live. Minted when absent. */
+  /** The order's id — the run's id of every carried build. Minted when absent. */
   readonly id?: string;
-  /** How long the caller waits for the outcome; absent: until the build ends. */
+  /**
+   * How long the caller waits, counted from the call — checking, ordering
+   * and starting the carrier included; absent: until the build ends.
+   */
   readonly waitMs?: number;
-  /** The caller's Stop (the operator's): passed on to the build while the caller waits. */
-  readonly signal?: AbortSignal;
+  /**
+   * The operator's Stop: passed on to the build while the caller waits, its
+   * reason recorded. Only a Stop (see {@link operatorStopOf}): a caller whose
+   * request merely ended leaves the build to its carrier.
+   */
+  readonly stopSignal?: AbortSignal;
   /** The most seconds the build may run; default: the admin's request limit where one holds. */
   readonly maxRunSeconds?: number | null;
   /** Where the carrier runs instead of this install's choice (tests). */
   readonly launcher?: JobLauncher;
+  /** Treat this install as one without a carrier, for this reason (tests). */
+  readonly unavailable?: string;
 }
 
-/** A carried build's outcome, or "still running" once the caller's wait is over. */
+/**
+ * A carried build's outcome, or "still running" once the caller's wait is
+ * over. `warning`: the build ran without its carrier (see the file comment).
+ */
 export type Carried =
-  | { readonly state: "done"; readonly outcome: BuildOutcome }
+  | { readonly state: "done"; readonly outcome: BuildOutcome; readonly warning?: string }
   | { readonly state: "running"; readonly id: string };
 
 /** The most a carried build may run on this install (null: no request limit). */
@@ -73,6 +100,30 @@ export function carriedBuildLimitSeconds(
   return provider === "gcp" || provider === "gcp-firebase"
     ? ADMIN_REQUEST_LIMIT_SECONDS - LIMIT_MARGIN_SECONDS
     : null;
+}
+
+/**
+ * The part of a caller's abort signal that is the operator's Stop. A
+ * request that merely ended (a client that gave up waiting) must not stop
+ * a build the carrier exists to keep going.
+ */
+export function operatorStopOf(signal: AbortSignal): AbortSignal {
+  const stop = new AbortController();
+  const onAbort = (): void => {
+    if (stoppedByOperator(signal)) stop.abort(signal.reason);
+  };
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+  return stop.signal;
+}
+
+/** What a stop says on the stopped run: the operator's Stop, or the reason given. */
+function stopReasonOf(reason: unknown): string {
+  if (reason instanceof Error && reason.name === "OperatorStoppedError") {
+    return "the operator stopped it";
+  }
+  const text = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "";
+  return (text || "the operator stopped it").slice(0, 500);
 }
 
 function systemCtx(ctx: ExecutionContext): ExecutionContext {
@@ -96,6 +147,19 @@ export async function carryBuild(
   order: BuildOrder,
   opts: CarryOptions = {},
 ): Promise<Carried> {
+  // The caller's budget starts now: an agent's MCP call has about a minute
+  // in all, the checks, the order and the carrier's start included.
+  const until = opts.waitMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + opts.waitMs;
+  const refused = await preflightBuild(deps, ctx, order);
+  if (refused) return { state: "done", outcome: refused };
+  if (opts.unavailable !== undefined) {
+    return withoutCarrier(deps, ctx, order, opts, opts.unavailable);
+  }
+  const choice = opts.launcher ? null : launcherFor(buildCarrierJobKind);
+  if (choice?.kind === "unavailable") {
+    return withoutCarrier(deps, ctx, order, opts, whyNoCarrier(choice.message));
+  }
+
   const { registry, adapter } = deps;
   const sys = systemCtx(ctx);
   const id = opts.id ?? randomUUID();
@@ -113,30 +177,87 @@ export async function carryBuild(
   // Nothing in this process registered a launcher (a test, a script): the
   // carrier runs here, as on a self-hosted admin.
   const launcher =
-    opts.launcher ??
-    (launcherFor(buildCarrierJobKind).kind === "none"
-      ? inProcessJobLauncher(deps, "build")
-      : undefined);
+    opts.launcher ?? (choice?.kind === "none" ? inProcessJobLauncher(deps, "build") : undefined);
   const started = await startReportingJob(deps, "build", id, launcher ? { launcher } : {});
   if (started.outcome === "launch-failed") {
     // Never retried later: the person who asked is told now (kind.ts).
     await giveUpReportingJob(deps, buildCarrierJobKind, id, `its carrier job ${started.message}`);
   }
-  return waitForOrder(deps, sys, id, order.kind, opts);
+  return waitForOrder(deps, sys, id, order.kind, until, opts.stopSignal);
 }
 
-/** Wait for order `id` as `opts` says; poll the order with a short back-off. */
+/**
+ * Why this install has no build carrier. The launcher's own message speaks
+ * of work recorded as failed, never run in the admin (true of the audit and
+ * the crawl); a build without its carrier is told differently (below).
+ */
+function whyNoCarrier(
+  launcherMessage: string,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const provider = env.CAELO_PROVIDER ?? "";
+  if (provider === "aws" || provider === "azure") {
+    return `provider "${provider}" has no build carrier yet (${buildCarrierJobKind.pendingIssue[provider]})`;
+  }
+  const gcp = provider === "gcp" || provider === "gcp-firebase";
+  if (gcp && !(env[BUILD_CARRIER_JOB_ENV_VAR]?.trim() && env.CAELO_ADMIN_URL?.trim())) {
+    return `the admin has no build carrier job (${BUILD_CARRIER_JOB_ENV_VAR} or CAELO_ADMIN_URL is not set)`;
+  }
+  return launcherMessage;
+}
+
+/**
+ * No carrier on this install (see the file comment): a person waiting in
+ * this request gets the build in it, with a warning; an agent, whose call
+ * ends within a minute, is refused with what to set up.
+ */
+async function withoutCarrier(
+  deps: AdminJobDeps,
+  ctx: ExecutionContext,
+  order: BuildOrder,
+  opts: CarryOptions,
+  why: string,
+): Promise<Carried> {
+  const gcp = carriedBuildLimitSeconds() !== null;
+  const setUp = gcp
+    ? ' Re-run the upgrade (`cms-provision upgrade`, its step "Ensuring the build carrier") to set the carrier up.'
+    : "";
+  if (opts.waitMs !== undefined) {
+    return failed(
+      order.kind,
+      `Nothing was built: ${why}. Without a build carrier the build would stop when this call ends.${setUp} A Stage or Publish live from the editor still works meanwhile.`,
+    );
+  }
+  console.error("[build-carrier] no build carrier: building inside the caller's request", {
+    kind: order.kind,
+    why,
+  });
+  const outcome = await executeBuildOrder(
+    deps,
+    ctx,
+    opts.id ?? randomUUID(),
+    order,
+    opts.stopSignal ?? NEVER,
+  );
+  return {
+    state: "done",
+    outcome: JSON.parse(JSON.stringify(outcome)) as BuildOutcome,
+    warning: `This build ran inside your request, not in a build carrier (${why}): closing the tab mid-build could have stopped it.${setUp}`,
+  };
+}
+
+/** Wait for order `id` until `until`; look at it with a back-off. */
 async function waitForOrder(
   deps: AdminJobDeps,
   sys: ExecutionContext,
   id: string,
   kind: BuildOrder["kind"],
-  opts: CarryOptions,
+  until: number,
+  stopSignal: AbortSignal | undefined,
 ): Promise<Carried> {
   const { registry, adapter } = deps;
-  const until = opts.waitMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + opts.waitMs;
   let stopPassedOn = false;
-  let pause = 100;
+  let pause = FIRST_LOOK_MS;
   for (;;) {
     const r = await execute(registry, adapter, sys, "build_orders.get", { id });
     if (!r.ok)
@@ -144,10 +265,14 @@ async function waitForOrder(
     const found = (r.value as { order: { state: string; outcome: BuildOutcome | null } | null })
       .order;
     if (!found) return failed(kind, "the build's order is gone");
+    // Final: an order ends once, with what its build can no longer change.
     if (found.state === "done" && found.outcome) return { state: "done", outcome: found.outcome };
-    if (opts.signal?.aborted && !stopPassedOn) {
+    if (stopSignal?.aborted && !stopPassedOn) {
       stopPassedOn = true;
-      const stopped = await execute(registry, adapter, sys, "build_orders.request_stop", { id });
+      const stopped = await execute(registry, adapter, sys, "build_orders.request_stop", {
+        id,
+        reason: stopReasonOf(stopSignal.reason),
+      });
       if (!stopped.ok) {
         console.error("[build-carrier] could not pass the Stop on", {
           id,
@@ -158,26 +283,9 @@ async function waitForOrder(
     }
     const left = until - Date.now();
     if (left <= 0) return { state: "running", id };
-    await pauseFor(Math.min(pause, left), stopPassedOn ? undefined : opts.signal);
-    pause = Math.min(pause * 2, 2_000);
+    await abortableSleep(Math.min(pause, left), stopPassedOn ? NEVER : (stopSignal ?? NEVER));
+    pause = Math.min(pause * 2, LONGEST_LOOK_MS);
   }
-}
-
-/** Resolves after `ms`, or at once when `signal` aborts. */
-function pauseFor(ms: number, signal: AbortSignal | undefined): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) {
-      resolve();
-      return;
-    }
-    const done = (): void => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    signal?.addEventListener("abort", done, { once: true });
-  });
 }
 
 /** A stored error as the QueryError it was (or the given-up message as one). */
@@ -192,10 +300,20 @@ function asQueryError(error: unknown, operation: string): QueryError {
   return { kind: "HandlerError", operation, message: String(error) };
 }
 
+/** Whether a success was read back from the run (its result was never recorded). */
+function recovered(value: unknown): { runId: string } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as { recovered?: unknown; runId?: unknown };
+  return v.recovered === true && typeof v.runId === "string" ? { runId: v.runId } : null;
+}
+
+/** `executeBuild`'s answer: `execute`'s, plus the warning of a build run without its carrier. */
+export type BuildResult = Result<unknown, QueryError> & { readonly warning?: string };
+
 /**
  * Run `op` with `input` as a carried build and wait until it ends: the same
  * answer `execute` gives in the caller's request. The order's id becomes
- * the run's id where the op takes one.
+ * the run's id.
  */
 export async function executeBuild(
   deps: AdminJobDeps,
@@ -203,18 +321,35 @@ export async function executeBuild(
   op: BuildOpName,
   input: Readonly<Record<string, unknown>>,
   opts: Omit<CarryOptions, "waitMs"> = {},
-): Promise<Result<unknown, QueryError>> {
+): Promise<BuildResult> {
   const carried = await carryBuild(deps, ctx, { kind: op, input }, opts);
   if (carried.state !== "done") {
     throw new Error("executeBuild waits until its build ends; the order is still running");
   }
-  return carried.outcome.ok
-    ? ok(carried.outcome.value)
-    : err(asQueryError(carried.outcome.error, op));
+  const warning = carried.warning ? { warning: carried.warning } : {};
+  const { outcome } = carried;
+  if (!outcome.ok) return { ...err(asQueryError(outcome.error, op)), ...warning };
+  const lost = recovered(outcome.value);
+  if (lost) {
+    // It went through, but its answer is gone: say so, and that it must
+    // not be repeated.
+    return {
+      ...err({
+        kind: "HandlerError",
+        operation: op,
+        message: `The build went through (run ${lost.runId}), but its carrier stopped before the result was recorded, so its details are not shown here. Do not run it again: Settings → Deployments shows the run.`,
+      }),
+      ...warning,
+    };
+  }
+  return { ...ok(outcome.value), ...warning };
 }
 
 /** The Stage flow's answer (stage-chats.ts `stageChatSessions`). */
-export type StageAnswer = { ok: true; value: StagedChats } | { ok: false; error: StageFailure };
+export type StageAnswer = (
+  | { ok: true; value: StagedChats }
+  | { ok: false; error: StageFailure }
+) & { readonly warning?: string };
 
 /** A carried build the caller stopped waiting for. */
 export type StillRunning = { readonly state: "running"; readonly id: string };
@@ -256,14 +391,28 @@ export async function carryStage(
     opts,
   );
   if (carried.state === "running") return carried;
+  const warning = carried.warning ? { warning: carried.warning } : {};
   const { outcome } = carried;
-  if (outcome.ok) return { ok: true, value: outcome.value as StagedChats };
-  // The Stage flow's own failure, or the carrier's (given up, never started).
-  const failure = outcome.error as Partial<StageFailure>;
-  if (typeof failure.step === "string" && failure.error) {
-    return { ok: false, error: failure as StageFailure };
+  const lost = outcome.ok ? recovered(outcome.value) : null;
+  if (outcome.ok && !lost) return { ok: true, value: outcome.value as StagedChats, ...warning };
+  if (lost) {
+    const error: QueryError = {
+      kind: "HandlerError",
+      operation: "stage",
+      message: `Staging was rebuilt (run ${lost.runId}), but its carrier stopped before the Stage's result was recorded. Do not Stage again for it: the quality check follows as usual.`,
+    };
+    return {
+      ok: false,
+      error: { step: "deploy", chatSessionId: null, message: error.message, error },
+      ...warning,
+    };
   }
-  const error = asQueryError(outcome.error, "stage");
+  // The Stage flow's own failure, or the carrier's (given up, never started).
+  const failure = (outcome as { error: unknown }).error as Partial<StageFailure>;
+  if (typeof failure.step === "string" && failure.error) {
+    return { ok: false, error: failure as StageFailure, ...warning };
+  }
+  const error = asQueryError((outcome as { error: unknown }).error, "stage");
   return {
     ok: false,
     error: {
@@ -272,5 +421,6 @@ export async function carryStage(
       message: `Staging build failed: ${describeError(error)}`,
       error,
     },
+    ...warning,
   };
 }

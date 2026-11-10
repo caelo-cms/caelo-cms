@@ -34,13 +34,20 @@ export type BuildOrderKind = (typeof BUILD_ORDER_KINDS)[number];
 /** The ops a build order may run (every kind but the Stage flow). */
 export type BuildOpName = Exclude<BuildOrderKind, "stage">;
 
-/** A Stage's order: the chats to merge and build, and who staged them. */
+/**
+ * A Stage's order: the chats to merge and build, and who staged them. As
+ * many chats as a Stage took before the carrier ("Stage all"); the order's
+ * input size is what bounds them (ops/build_orders.ts).
+ */
 export const stageOrderInputSchema = z
   .object({
-    chatSessionIds: z.array(z.string().uuid()).min(1).max(100),
+    chatSessionIds: z.array(z.string().uuid()).min(1),
     stagedBy: stagedBySchema,
   })
   .strict();
+
+/** Why a build stops when the backstop gives its order up (its carrier stopped reporting). */
+export const GIVEN_UP_STOP_REASON = "its carrier job stopped reporting, and the build was given up";
 
 /** What to build. An op's input is checked by the op itself when it runs. */
 export type BuildOrder =

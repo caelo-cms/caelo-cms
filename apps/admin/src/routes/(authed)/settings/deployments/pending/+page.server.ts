@@ -65,7 +65,11 @@ export const actions: Actions = {
     const applied = v.runId
       ? `Proposal applied. Deploy run ${v.runId.slice(0, 8)}… in flight.`
       : "Proposal applied.";
-    return { ok: true, message: v.warning ? `${applied} ${v.warning}` : applied };
+    return {
+      ok: true,
+      message: v.warning ? `${applied} ${v.warning}` : applied,
+      ...(r.warning ? { carrierWarning: r.warning } : {}),
+    };
   },
   reject: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");

@@ -122,12 +122,17 @@ async function orderedStage(
   tx: Parameters<typeof settleOrphanedRuns>[0],
   id: string,
 ): Promise<StageStatusRun[]> {
-  // A Stage, or a staging rebuild an agent asked for (deploy_staging).
+  // A Stage, or a rebuild of a STAGING target (deploy_staging); never a
+  // production build, which is no Stage.
   const rows = (await tx.execute(sql`
-    SELECT state, outcome, created_at, finished_at, clock_timestamp() AS now,
-           COALESCE(input ->> 'targetName', 'staging') AS target_name
-      FROM build_orders
-     WHERE id = ${id}::uuid AND kind IN ('stage', 'deploy.trigger')
+    SELECT o.state, o.outcome, o.created_at, o.finished_at, clock_timestamp() AS now,
+           COALESCE(o.input ->> 'targetName', 'staging') AS target_name
+      FROM build_orders o
+     WHERE o.id = ${id}::uuid
+       AND (o.kind = 'stage'
+            OR (o.kind = 'deploy.trigger'
+                AND EXISTS (SELECT 1 FROM deploy_targets t
+                             WHERE t.name = o.input ->> 'targetName' AND t.env = 'staging')))
   `)) as unknown as {
     state: "queued" | "running" | "done";
     outcome: { ok?: boolean; error?: unknown } | null;

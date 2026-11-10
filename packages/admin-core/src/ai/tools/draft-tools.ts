@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
-import { carryStage } from "../../build-carrier/carry.js";
+import { carryStage, operatorStopOf } from "../../build-carrier/carry.js";
 import { describeDraftPages } from "../../deploy/draft-pages.js";
 import { describeStagedPluginProblems } from "../../deploy/plugin-problems.js";
 import { describeTruncatedLists } from "../../deploy/truncated-lists.js";
@@ -158,7 +158,7 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
             stagedBy: "other_agent",
             id: deployRunId,
             waitMs: stageToolWaitMs(),
-            ...(toolCtx.abortSignal ? { signal: toolCtx.abortSignal } : {}),
+            ...(toolCtx.abortSignal ? { stopSignal: operatorStopOf(toolCtx.abortSignal) } : {}),
           });
     if ("state" in staged) return stillRunningResult(toolCtx, opCtx, deployRunId);
     if (!staged.ok) {

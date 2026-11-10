@@ -20,7 +20,7 @@
 import { randomUUID } from "node:crypto";
 import { execute, type QueryError } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { carryBuild } from "../../build-carrier/carry.js";
+import { carryBuild, operatorStopOf } from "../../build-carrier/carry.js";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import { stageToolWaitMs } from "./draft-tools.js";
@@ -116,7 +116,7 @@ export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = 
         {
           id: runId,
           waitMs: stageToolWaitMs(),
-          ...(toolCtx.abortSignal ? { signal: toolCtx.abortSignal } : {}),
+          ...(toolCtx.abortSignal ? { stopSignal: operatorStopOf(toolCtx.abortSignal) } : {}),
         },
       );
       if (carried.state === "running") {

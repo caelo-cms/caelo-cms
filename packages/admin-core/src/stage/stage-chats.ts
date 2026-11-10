@@ -147,6 +147,50 @@ export function combineStageClassifications(
 }
 
 /**
+ * The selection a Stage builds: every chat must be an open chat of the
+ * caller, sorted into the shared draft's and the isolated ones. The Stage
+ * flow's first step, and the check a carried Stage makes before it orders
+ * its build (build-carrier/carry.ts), so a wrong chat is told at once.
+ */
+export async function selectStageChats(
+  deps: StageFlowDeps,
+  ctx: ExecutionContext,
+  chatSessionIds: readonly string[],
+): Promise<
+  { ok: true; draftIds: string[]; isolatedIds: string[] } | { ok: false; error: StageFailure }
+> {
+  const draftIds: string[] = [];
+  const isolatedIds: string[] = [];
+  for (const chatSessionId of new Set(chatSessionIds)) {
+    const r = await execute(deps.registry, deps.adapter, ctx, "chat.resolve_session", {
+      chatSessionId,
+    });
+    const session = r.ok
+      ? (
+          r.value as {
+            session: { publishedAt: string | null; archivedAt: string | null; branchKind: string };
+          }
+        ).session
+      : null;
+    if (!r.ok || !session || session.publishedAt !== null || session.archivedAt !== null) {
+      return {
+        ok: false,
+        error: {
+          step: "select",
+          chatSessionId,
+          message: `Chat ${chatSessionId} is not one of your open chats — only your own open chats can be staged; nothing was staged.`,
+          error: r.ok
+            ? { kind: "HandlerError", operation: "chat.resolve_session", message: "chat is closed" }
+            : r.error,
+        },
+      };
+    }
+    (session.branchKind === "draft" ? draftIds : isolatedIds).push(chatSessionId);
+  }
+  return { ok: true, draftIds, isolatedIds };
+}
+
+/**
  * Stage the given chats together: verify, classify, merge each, build
  * staging once, finalize each, queue one audit. Every chat must be an open
  * chat of the caller; the selection is checked before anything merges.
@@ -189,32 +233,9 @@ export async function stageChatSessions(
 
   // Verify the whole selection BEFORE any merge: a refusal halfway would
   // leave the chats merged before it in main but unconsumed.
-  const draftIds: string[] = [];
-  const isolatedIds: string[] = [];
-  for (const chatSessionId of ids) {
-    const r = await execute(registry, adapter, ctx, "chat.resolve_session", { chatSessionId });
-    const session = r.ok
-      ? (
-          r.value as {
-            session: { publishedAt: string | null; archivedAt: string | null; branchKind: string };
-          }
-        ).session
-      : null;
-    if (!r.ok || !session || session.publishedAt !== null || session.archivedAt !== null) {
-      return {
-        ok: false,
-        error: {
-          step: "select",
-          chatSessionId,
-          message: `Chat ${chatSessionId} is not one of your open chats — only your own open chats can be staged; nothing was staged.`,
-          error: r.ok
-            ? { kind: "HandlerError", operation: "chat.resolve_session", message: "chat is closed" }
-            : r.error,
-        },
-      };
-    }
-    (session.branchKind === "draft" ? draftIds : isolatedIds).push(chatSessionId);
-  }
+  const selected = await selectStageChats(deps, ctx, ids);
+  if (!selected.ok) return selected;
+  const { draftIds, isolatedIds } = selected;
   timer.lap("select");
   // Issue #620 — the shared draft's chats are one unit (one selective
   // merge of exactly their changes); every isolated chat is its own unit.

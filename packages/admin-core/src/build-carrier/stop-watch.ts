@@ -1,25 +1,29 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #1574 — a carried build's look for the operator's Stop. The request
- * that asked for the build passes the Stop on through the build's order
- * (`build_orders.request_stop`); the build runs inside its carrier's
- * request, maybe on another admin instance, so it looks at its order now
- * and then. Request-scoped: the watch lives exactly as long as the build's
- * request, and builds nothing itself (scripts/no-automatic-production-deploy.test.ts).
+ * Issue #1574 — a carried build's look for a stop. The request that asked
+ * for the build passes the operator's Stop on through the build's order
+ * (`build_orders.request_stop`), and the backstop asks a build to stop when
+ * it gives the order up; the build runs inside its carrier's request, maybe
+ * on another admin instance, so it looks at its order now and then.
+ * Request-scoped: the watch lives exactly as long as the build's request,
+ * and builds nothing itself (scripts/no-automatic-production-deploy.test.ts).
+ *
+ * One small read every few seconds for as long as the build runs (up to
+ * 58 minutes): often enough that a Stop lands within seconds, rare enough
+ * for the smallest database (#1392).
  */
 
 import { execute } from "@caelo-cms/query-api";
 import { describeError } from "../ai/tools/_describe-error.js";
 import { type AdminJobDeps, REPORTING_JOB_CTX } from "../reporting-jobs/kind.js";
 
-/** How often a running build looks for the operator's Stop on its order. */
-const STOP_POLL_MS = 2_000;
+/** How often a running build looks at its order for a stop. */
+const STOP_POLL_MS = 5_000;
 
 /**
- * Abort `stop` once order `orderId` asks for a stop: the operator's, or the
- * backstop's when it gave the order up (its carrier stopped reporting) —
- * each with its own reason, so the run says which.
+ * Abort `stop` with the order's stop reason once order `orderId` asks for a
+ * stop: the operator's Stop, or the backstop's when it gave the order up.
  *
  * @returns the function that ends the watch.
  */
@@ -36,13 +40,9 @@ export function watchForStop(
     execute(deps.registry, deps.adapter, REPORTING_JOB_CTX, "build_orders.get", { id: orderId })
       .then((r) => {
         if (!r.ok) throw new Error(describeError(r.error));
-        const order = (r.value as { order: { state: string; stopRequested: boolean } | null })
-          .order;
-        if (order?.state === "done") {
-          stop.abort(new Error("its carrier job stopped reporting, and the build was given up"));
-        } else if (order?.stopRequested) {
-          stop.abort(new Error("the operator stopped it"));
-        }
+        const reason = (r.value as { order: { stopReason: string | null } | null }).order
+          ?.stopReason;
+        if (reason) stop.abort(new Error(reason));
       })
       .catch((e: unknown) => {
         console.error(

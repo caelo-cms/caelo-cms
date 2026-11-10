@@ -447,13 +447,28 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
       { fromTarget: "staging", toTarget: "production", repoRoot: testRoot },
       {},
     );
+    // #1574 — the check an approval's carried build makes before it starts
+    // a job: this one proposal, while it is pending.
+    const pendingNow = async () => {
+      const r = await execute(registry, adapter, owner, "deploy.list_pending", {
+        proposalId: promoteId,
+        limit: 1,
+      });
+      if (!r.ok) throw new Error(`list_pending failed: ${JSON.stringify(r.error)}`);
+      return (r.value as { proposals: { id: string }[] }).proposals.map((p) => p.id);
+    };
+    expect(await pendingNow()).toEqual([promoteId]);
+    // #1574 — a carried build passes its order's id: the claim's run takes it.
+    const promoteRunId = crypto.randomUUID();
     const promoted = await execute(registry, adapter, owner, "deploy.execute_proposal", {
       proposalId: promoteId,
+      runId: promoteRunId,
     });
     if (!promoted.ok) throw new Error(`promote approve failed: ${JSON.stringify(promoted.error)}`);
     const liveRunId = (promoted.value as { runId: string | null }).runId;
-    expect(liveRunId).not.toBeNull();
+    expect(liveRunId).toBe(promoteRunId);
     expect(await proposalStatus(promoteId)).toBe("applied");
+    expect(await pendingNow()).toEqual([]);
     const production = join(testRoot, "output", "production", "current");
     const manifest = JSON.parse(
       await readFile(join(production, "routing-manifest.json"), "utf8"),
@@ -465,12 +480,15 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
       { target: "production", repoRoot: testRoot },
       { restoreRunId: liveRunId },
     );
+    const rollbackRunId = crypto.randomUUID();
     const rolledBack = await execute(registry, adapter, owner, "deploy.execute_proposal", {
       proposalId: rollbackId,
+      runId: rollbackRunId,
     });
     if (!rolledBack.ok) {
       throw new Error(`rollback approve failed: ${JSON.stringify(rolledBack.error)}`);
     }
+    expect((rolledBack.value as { runId: string | null }).runId).toBe(rollbackRunId);
     expect(await proposalStatus(rollbackId)).toBe("applied");
   });
 

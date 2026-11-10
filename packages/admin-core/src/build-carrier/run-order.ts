@@ -55,7 +55,36 @@ interface ClaimedOrder {
   readonly input: Record<string, unknown>;
   readonly actor: OrderActor;
   readonly maxRunSeconds: number | null;
-  readonly stopRequested: boolean;
+  /** Set when the order was asked to stop before its carrier took it. */
+  readonly stopReason: string | null;
+  /** How long the order waited for its carrier (the job's start). */
+  readonly waitedMs: number;
+}
+
+/**
+ * How the order's outcome is recorded: a short op, tried again a few times
+ * while this request still carries it — once the request ends, the outcome
+ * would be lost and the backstop could only read it back from the run.
+ */
+const FINISH_TRIES = [0, 1_000, 3_000, 7_000] as const;
+
+async function recordOutcome(
+  deps: AdminJobDeps,
+  orderId: string,
+  outcome: BuildOutcome,
+): Promise<void> {
+  let last: unknown = null;
+  for (const wait of FINISH_TRIES) {
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    try {
+      await op(deps, "build_orders.finish", { id: orderId, outcome });
+      return;
+    } catch (e) {
+      last = e;
+      console.error(`[build-carrier] ${orderId}: could not record the outcome yet:`, describe(e));
+    }
+  }
+  throw last;
 }
 
 function answer(outcome: BuildOutcome): ActionResult {
@@ -97,9 +126,13 @@ export async function runBuildOrder(
     );
   }
   const order = claimed.order;
+  // The carrier job's start as a person waits for it: a cold start counts.
+  console.info(
+    `[build-carrier] ${orderId}: its carrier took the ${order.kind} order ${order.waitedMs} ms after it was written`,
+  );
   let outcome: BuildOutcome;
-  if (order.stopRequested) {
-    outcome = stoppedBeforeStart(order.kind);
+  if (order.stopReason !== null) {
+    outcome = stoppedBeforeStart(order.kind, order.stopReason);
   } else {
     outcome = await withLimits(deps, orderId, order, request.signal, (signal) =>
       executeBuildOrder(
@@ -111,18 +144,17 @@ export async function runBuildOrder(
       ),
     );
   }
-  await op(deps, "build_orders.finish", { id: orderId, outcome: plain(outcome) });
+  await recordOutcome(deps, orderId, plain(outcome));
   return answer(outcome);
 }
 
-function stoppedBeforeStart(kind: BuildOrderKind): BuildOutcome {
+function stoppedBeforeStart(kind: BuildOrderKind, reason: string): BuildOutcome {
   return {
     ok: false,
     error: {
       kind: "HandlerError",
       operation: kind,
-      message:
-        "The build was stopped before it started; nothing was built or published. Start it again when ready.",
+      message: `The build was stopped before it started (${reason}); nothing was built or published. Start it again when ready.`,
     },
   };
 }
@@ -247,14 +279,14 @@ export async function executeBuildOrder(
         ),
       );
     case "deploy.execute_proposal":
-      // The proposal's claim names its own run.
+      // Its claim takes the order's id as its run's, like every carried build.
       return asOutcome(
         await execute(
           registry,
           adapter,
           ctx,
           "deploy.execute_proposal",
-          { ...order.input },
+          { ...order.input, runId: orderId },
           { signal },
         ),
       );
@@ -270,14 +302,14 @@ export async function executeBuildOrder(
         ),
       );
     case "quality_audits.execute_proposal":
-      // An approved publish-anyway: its claim names its own run.
+      // An approved publish-anyway; its claim takes the order's id as its run's.
       return asOutcome(
         await execute(
           registry,
           adapter,
           ctx,
           "quality_audits.execute_proposal",
-          { ...order.input },
+          { ...order.input, runId: orderId },
           { signal },
         ),
       );

@@ -24,7 +24,7 @@
  * still being built, on this instance or any other.
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
 import { ok, phaseTimingSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -179,12 +179,30 @@ export async function settleOrphanedRuns<R extends RunStateRow>(
  * Sweep runs that died mid-build, then insert `input`'s row as running.
  * Runs in the caller's (start step's) transaction.
  *
+ * #1574 — a run whose build order was given up never starts: the order
+ * already ended (its waiting request heard the outcome), and a build that
+ * began now would go live behind that answer. A carried build's run takes
+ * its order's id (build-carrier/run-order.ts).
+ *
  * @returns the ids of the runs marked failed.
+ * @throws OperationAbortError when the run's build order was given up.
  */
 export async function beginRunInTx(
   tx: TransactionRunner,
   input: z.infer<typeof beginRunInput>,
 ): Promise<string[]> {
+  const givenUp = (await tx.execute(sql`
+    SELECT 1 AS given_up FROM build_orders WHERE id = ${input.runId}::uuid AND state = 'done'
+  `)) as unknown as { given_up: number }[];
+  if (givenUp.length > 0) {
+    throw new OperationAbortError({
+      kind: "HandlerError",
+      operation: "deploy.start_run",
+      message:
+        "this build's order was given up before its run started (its build carrier stopped), so nothing was built or published. Start it again.",
+      refusal: true,
+    });
+  }
   const running = (await tx.execute(sql`
     SELECT id::text AS id FROM deploy_runs WHERE status = 'running' AND id <> ${input.runId}::uuid
   `)) as unknown as { id: string }[];
