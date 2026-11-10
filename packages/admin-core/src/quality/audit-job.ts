@@ -22,7 +22,11 @@
  */
 
 import type { JobReporter } from "../reporting-jobs/job-reporter.js";
-import { JobStoppedError } from "../reporting-jobs/job-reporter.js";
+import {
+  faultWatchingReporter,
+  isPassingReportFault,
+  JobStoppedError,
+} from "../reporting-jobs/job-reporter.js";
 import { type AuditStart, type PageIndexWire, pageIndexFromWire } from "./audit-job-wire.js";
 import { type AuditReport, auditClaimedRun, type OriginEnv } from "./audit-run.js";
 import type { LinkSources } from "./checks/links.js";
@@ -43,8 +47,11 @@ import { lighthouseRunnerFromEnv } from "./lighthouse-runner-select.js";
 
 /** What a test hands the audit instead of its defaults. */
 export interface AuditJobDeps {
-  /** The checks; core's (sources asked from the admin) plus the active plugins' when omitted. */
-  readonly checks?: CheckRegistry;
+  /**
+   * The checks; core's (sources asked from the admin) plus the active
+   * plugins' when omitted. A function gets the reporter its reads go through.
+   */
+  readonly checks?: CheckRegistry | ((reporter: JobReporter) => CheckRegistry);
   readonly runJob?: LighthouseRunner;
   readonly fetchPage?: typeof fetch;
   readonly env?: OriginEnv;
@@ -138,26 +145,48 @@ export async function runQualityAuditJob(
     console.log(`[quality-audit-job] ${reporter.subjectId}: nothing to audit (${start.reason})`);
     return;
   }
-  let report: AuditReport;
+  // Every read goes through a reporter that remembers a passing fault, so a
+  // read the admin could not answer in time spoils the attempt even when a
+  // check turned it into a check error.
+  const watched = faultWatchingReporter(reporter);
+  let report: AuditReport | null = null;
+  let failure: unknown = null;
   try {
+    const checks =
+      typeof deps.checks === "function"
+        ? deps.checks(watched.reporter)
+        : (deps.checks ?? auditChecks(watched.reporter, start.pluginContributors));
     report = await auditClaimedRun(start.run, {
-      checks: deps.checks ?? auditChecks(reporter, start.pluginContributors),
+      checks,
       ...(deps.runJob ? { runJob: deps.runJob } : {}),
       ...(deps.fetchPage ? { fetchPage: deps.fetchPage } : {}),
       ...(deps.env ? { env: deps.env } : {}),
     });
   } catch (e) {
     if (e instanceof JobStoppedError) throw e;
-    // A bug in the audit itself: recorded as the audit's failure, never
-    // left to the backstop's retries (it would fail the same way again).
-    report = {
+    failure = e;
+  }
+  const fault = watched.fault() ?? (isPassingReportFault(failure) ? failure : null);
+  if (fault !== null) {
+    // The admin was starting, busy or unreachable for one of the audit's
+    // reads: another attempt may get the answer. Give this one back with
+    // the reason; the next tick starts the next attempt, and after the last
+    // one the audit fails with that reason. Nothing spoiled is recorded.
+    const reason = (fault instanceof Error ? fault.message : String(fault)).slice(0, 1000);
+    await reporter.call("defer", { reason }).catch(() => undefined);
+    throw fault;
+  }
+  await reporter.call(
+    "result",
+    report ?? {
+      // A bug in the audit itself: recorded as the audit's failure, never
+      // left to the backstop's retries (it would fail the same way again).
       baseUrl: null,
       outcome: {
         kind: "failed",
         code: "worker-crashed",
-        message: e instanceof Error ? e.message : String(e),
+        message: failure instanceof Error ? failure.message : String(failure),
       },
-    };
-  }
-  await reporter.call("result", report);
+    },
+  );
 }

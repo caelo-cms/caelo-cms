@@ -56,6 +56,16 @@ export class ReportError extends Error {
   }
 }
 
+/**
+ * A failure another attempt may not meet: the admin was not reached within
+ * the retry budget, or answered busy (429) or failing (5xx). A job gives
+ * such an attempt back (`defer`) and the backstop starts the next one; it
+ * never records the work as failed because of it.
+ */
+export function isPassingReportFault(e: unknown): boolean {
+  return e instanceof ReportError && (e.status === 0 || e.status === 429 || e.status >= 500);
+}
+
 /** Sends a job's reports. */
 export interface JobReporter {
   readonly kind: JobOrder["kind"];
@@ -70,6 +80,39 @@ export interface JobReporter {
   call<T = unknown>(action: string, payload?: unknown): Promise<T>;
   /** True once the admin ended this attempt. */
   readonly stopped: boolean;
+}
+
+/**
+ * `inner`, remembering the first passing fault of any of its calls, also
+ * of a call whose error its caller swallowed (a findings check turns a
+ * failed read into a check error, the crawler a failed render into a
+ * static fetch). The job then gives the attempt back instead of recording
+ * what the fault spoiled.
+ */
+export function faultWatchingReporter(inner: JobReporter): {
+  readonly reporter: JobReporter;
+  fault(): unknown;
+} {
+  let fault: unknown = null;
+  return {
+    reporter: {
+      kind: inner.kind,
+      subjectId: inner.subjectId,
+      attempt: inner.attempt,
+      get stopped() {
+        return inner.stopped;
+      },
+      async call<T>(action: string, payload?: unknown): Promise<T> {
+        try {
+          return await inner.call<T>(action, payload);
+        } catch (e) {
+          if (fault === null && isPassingReportFault(e)) fault = e;
+          throw e;
+        }
+      },
+    },
+    fault: () => fault,
+  };
 }
 
 export interface ReporterOptions {

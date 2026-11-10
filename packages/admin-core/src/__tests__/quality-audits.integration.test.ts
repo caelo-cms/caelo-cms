@@ -29,7 +29,7 @@ import {
   listQualityAuditsTool,
 } from "../ai/tools/quality-audit-tools.js";
 import { recordedRuns, sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
-import { runQualityAuditJob } from "../quality/audit-job.js";
+import { reportedCheckSources, runQualityAuditJob } from "../quality/audit-job.js";
 import { qualityAuditJobKind } from "../quality/audit-job-kind.js";
 import type { ClaimedAuditRun } from "../quality/audit-run.js";
 import type { AuditTaskBatch, AuditTaskResult } from "../quality/audit-task-protocol.js";
@@ -43,10 +43,12 @@ import { registerAdminOps } from "../register.js";
 import { runReportingJobBackstop } from "../reporting-jobs/backstop.js";
 import { handleJobReport } from "../reporting-jobs/dispatch.js";
 import { httpReportTransport } from "../reporting-jobs/http-transport.js";
-import { runInProcessAttempt } from "../reporting-jobs/in-process.js";
+import { inProcessReportTransport, runInProcessAttempt } from "../reporting-jobs/in-process.js";
 import { runOrder } from "../reporting-jobs/job-entry.js";
+import { createJobReporter, type ReportTransport } from "../reporting-jobs/job-reporter.js";
 import { startReportingJob } from "../reporting-jobs/launcher.js";
 import { JOB_TOKEN_HEADER, type JobOrder } from "../reporting-jobs/protocol.js";
+import { runJobAttempt } from "../reporting-jobs/run-job.js";
 import { claimNextQueuedAudit, drainAuditQueue } from "./fixtures/drain-audits.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -1335,5 +1337,75 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
     const run = await status(auditRunId);
     expect(run).toMatchObject({ status: "errored", errorCode: "job-failed" });
     expect(run.errorMessage).toContain("#749");
+  });
+
+  it("a read the admin cannot answer in time gives the attempt back; nothing spoiled is recorded", async () => {
+    const { deployRunId, auditRunId } = await queuedAudit(400);
+    const staged = stagedServer(deployRunId);
+    try {
+      const sent: string[] = [];
+      const flaky = launcher(async (order) => {
+        // The admin answers every `source` read 503, past the job's retries.
+        const inner = inProcessReportTransport(ADMIN(), order);
+        const busy: ReportTransport = {
+          label: "a busy admin",
+          async send(envelope) {
+            sent.push(envelope.action);
+            if (envelope.action !== "source") return inner.send(envelope);
+            return {
+              status: 503,
+              answer: {
+                ok: false,
+                error: { code: "unavailable", message: "the admin is starting" },
+              },
+            };
+          },
+        };
+        const reporter = createJobReporter(order, busy, { retryBudgetMs: 0 });
+        await runJobAttempt(
+          reporter,
+          (r) =>
+            runQualityAuditJob(r, {
+              // A check that reads a source, and turns its failure into a
+              // check error the way every findings check does.
+              checks: (rep) => {
+                const checks = testCheckRegistry(allGood);
+                checks.register(
+                  {
+                    id: "test-source",
+                    title: "Reads the modules (test)",
+                    scope: "page",
+                    run: async () => {
+                      await reportedCheckSources(rep).structure.modules();
+                      return [];
+                    },
+                  },
+                  { kind: "core" },
+                );
+                return checks;
+              },
+              env: { provider: "", stagingBaseUrl: `http://127.0.0.1:${staged.port}` },
+              runJob: allGood,
+            }),
+          60_000,
+        ).catch(() => undefined);
+      });
+      await startReportingJob(ADMIN(), "quality_audit", auditRunId, flaky);
+      expect(sent).toContain("defer");
+      expect(sent).not.toContain("result");
+      // Not recorded as failed: the next attempt audits it again.
+      expect((await status(auditRunId)).status).toBe("running");
+      const row = await withSql(
+        async (tx) =>
+          (await tx`
+            SELECT last_error, lease_until <= now() AS released FROM reporting_jobs
+            WHERE kind = 'quality_audit' AND subject_id = ${auditRunId}::uuid
+          `) as unknown as { last_error: string | null; released: boolean }[],
+      );
+      expect(row[0]?.released).toBe(true);
+      expect(row[0]?.last_error).toContain("the admin is starting");
+    } finally {
+      staged.stop(true);
+    }
   });
 });
