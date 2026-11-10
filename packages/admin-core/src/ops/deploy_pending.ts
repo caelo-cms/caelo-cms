@@ -516,13 +516,22 @@ async function runExecuteDeployProposal(
     );
   } else {
     // The propose-time preview captured `restoreRunId`; the Owner's click
-    // reproduces what they previewed.
-    applied = await execute(registry, adapter, ctx, "deploy.rollback", {
-      targetName: (plan.payload as { target: string }).target,
-      runId: plan.restoreRunId,
-      newRunId: claimedRunId,
-      ...(typeof plan.payload.repoRoot === "string" ? { repoRoot: plan.payload.repoRoot } : {}),
-    });
+    // reproduces what they previewed. The stop goes with it, as with a
+    // promote: a carried rollback whose carrier is gone must not take the
+    // live release later (#1574).
+    applied = await execute(
+      registry,
+      adapter,
+      ctx,
+      "deploy.rollback",
+      {
+        targetName: (plan.payload as { target: string }).target,
+        runId: plan.restoreRunId,
+        newRunId: claimedRunId,
+        ...(typeof plan.payload.repoRoot === "string" ? { repoRoot: plan.payload.repoRoot } : {}),
+      },
+      steps.signal ? { signal: steps.signal } : {},
+    );
   }
   const runId = applied.ok
     ? plan.proposalKind === "promote"

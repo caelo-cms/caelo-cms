@@ -178,12 +178,55 @@ export async function carryBuild(
   // carrier runs here, as on a self-hosted admin.
   const launcher =
     opts.launcher ?? (choice?.kind === "none" ? inProcessJobLauncher(deps, "build") : undefined);
+  const starting = startCarrier(deps, id, launcher);
+  if (!(await settlesBefore(starting, until, id))) {
+    // The caller's wait ran out while the job was being started (a stalled
+    // launch): it hears "still running" with the order's id. The order
+    // stays one that settles without this request: a launch that fails
+    // gives it up, a late carrier runs it, and the backstop gives up one
+    // whose job never reports.
+    return { state: "running", id };
+  }
+  return waitForOrder(deps, sys, id, order.kind, until, opts.stopSignal);
+}
+
+/** Start order `id`'s carrier; a launch that fails gives the order up at once. */
+async function startCarrier(
+  deps: AdminJobDeps,
+  id: string,
+  launcher: JobLauncher | undefined,
+): Promise<void> {
   const started = await startReportingJob(deps, "build", id, launcher ? { launcher } : {});
   if (started.outcome === "launch-failed") {
     // Never retried later: the person who asked is told now (kind.ts).
     await giveUpReportingJob(deps, buildCarrierJobKind, id, `its carrier job ${started.message}`);
   }
-  return waitForOrder(deps, sys, id, order.kind, until, opts.stopSignal);
+}
+
+/**
+ * Whether `work` settles before `until` (its failure is thrown, as when it
+ * is awaited). Past `until` nobody waits for it, so a later failure is
+ * logged instead.
+ */
+async function settlesBefore(work: Promise<void>, until: number, id: string): Promise<boolean> {
+  if (until === Number.POSITIVE_INFINITY) {
+    await work;
+    return true;
+  }
+  const timer = new AbortController();
+  const inTime = await Promise.race([
+    work.then(() => true),
+    abortableSleep(Math.max(0, until - Date.now()), timer.signal).then(() => false),
+  ]).finally(() => timer.abort());
+  if (!inTime) {
+    work.catch((e: unknown) => {
+      console.error("[build-carrier] the carrier's start failed after its caller stopped waiting", {
+        id,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    });
+  }
+  return inTime;
 }
 
 /**

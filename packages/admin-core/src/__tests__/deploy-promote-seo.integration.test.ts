@@ -539,6 +539,47 @@ describe("#1225 — the Owner approves the AI's Publish live / rollback card", (
     expect(await productionRunCount()).toBe(runs + 1);
   });
 
+  it("an approved rollback whose build carrier stopped rolls nothing back (#1574)", async () => {
+    const owner = await makeOwner();
+    const runs = await productionRunCount();
+    const sql = new SQL(ADMIN_URL!);
+    let liveRunId = "";
+    try {
+      liveRunId = (
+        await sql.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          return (await tx`SELECT r.id::text AS id FROM deploy_runs r JOIN deploy_targets t
+                            ON t.id = r.target_id WHERE t.env = 'production' AND r.status = 'succeeded'
+                            ORDER BY r.finished_at DESC LIMIT 1`) as { id: string }[];
+        })
+      )[0]?.id as string;
+    } finally {
+      await sql.end();
+    }
+    const rollbackId = await insertProposal(
+      "rollback",
+      { target: "production", repoRoot: testRoot },
+      { restoreRunId: liveRunId },
+    );
+    // The carried approval's request ended: its stop reaches the rollback
+    // as it reaches a Publish live, before the rollback takes the live release.
+    const gone = new AbortController();
+    gone.abort(new Error("its build carrier job stopped"));
+    const r = await execute(
+      registry,
+      adapter,
+      owner,
+      "deploy.execute_proposal",
+      { proposalId: rollbackId, runId: crypto.randomUUID() },
+      { signal: gone.signal },
+    );
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r.ok ? null : r.error)).toContain("nothing was rolled back");
+    expect(await productionRunCount()).toBe(runs);
+    // Nothing went live: the card can be approved again.
+    expect(await proposalStatus(rollbackId)).toBe("pending");
+  });
+
   it("the approval's and Publish live's own steps authorise nothing on their own", async () => {
     const reviewer: ExecutionContext = {
       actorId: crypto.randomUUID(),

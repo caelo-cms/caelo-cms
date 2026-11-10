@@ -23,9 +23,11 @@
  * ended (the order then says what the run says, a success included), lost
  * its lease (it is marked failed now), or never started — and the run's
  * start refuses a given-up order's id for good (deploy-run-lifecycle.ts
- * `beginRunInTx`). A run still building is asked to stop instead and ends
- * the order itself. So the request that waits never reads a failure for a
- * build that then goes live.
+ * `beginRunInTx`). The start and the give-up take one lock on the order's
+ * id (deploy-run-lock.ts `lockBuildOrderInTx`), so a give-up never misses a
+ * run whose start is not committed yet. A run still building is asked to
+ * stop instead and ends the order itself. So the request that waits never
+ * reads a failure for a build that then goes live.
  *
  * All system-only: the order is the admin's own record. The request that
  * asks for a build writes it with its caller's context as data, and the
@@ -49,7 +51,7 @@ import {
   orderActorSchema,
   stageOrderInputSchema,
 } from "../build-carrier/order.js";
-import { deployRunIsOrphaned } from "../deploy/deploy-run-lock.js";
+import { deployRunIsOrphaned, lockBuildOrderInTx } from "../deploy/deploy-run-lock.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { failRunIfOrphanedInTx } from "./deploy-run-lifecycle.js";
 
@@ -344,6 +346,9 @@ export const giveUpBuildOrderOp = defineOperation({
     result: z.enum(["ended", "stopping", "already-ended"]),
   }),
   handler: async (ctx, input, tx) => {
+    // First, before any read: a run that is starting for this order holds
+    // the lock until its row is committed, and the reads below see it.
+    await lockBuildOrderInTx(tx, input.id);
     const found = (await tx.execute(sql`
       SELECT kind FROM build_orders WHERE id = ${input.id}::uuid AND state <> 'done' FOR UPDATE
     `)) as unknown as { kind: BuildOrderKind }[];

@@ -28,7 +28,7 @@ import { defineOperation, OperationAbortError, type TransactionRunner } from "@c
 import { ok, phaseTimingSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { deployRunIsOrphaned } from "../deploy/deploy-run-lock.js";
+import { deployRunIsOrphaned, lockBuildOrderInTx } from "../deploy/deploy-run-lock.js";
 import {
   acquireLiveRelease,
   releaseLiveRelease,
@@ -176,13 +176,36 @@ export async function settleOrphanedRuns<R extends RunStateRow>(
 }
 
 /**
+ * Whether `runId` is the id of a build order that ended (given up), read
+ * under the order's lock, which this transaction then holds. A run without
+ * an order (every run that is not carried) takes no lock: an order is
+ * written before its run starts, so none can appear for it later.
+ */
+async function buildOrderEnded(tx: TransactionRunner, runId: string): Promise<boolean> {
+  const ordered = (await tx.execute(sql`
+    SELECT 1 AS ordered FROM build_orders WHERE id = ${runId}::uuid
+  `)) as unknown as { ordered: number }[];
+  if (ordered.length === 0) return false;
+  await lockBuildOrderInTx(tx, runId);
+  // A statement after the lock: it sees what a give-up committed meanwhile.
+  const order = (await tx.execute(sql`
+    SELECT state FROM build_orders WHERE id = ${runId}::uuid
+  `)) as unknown as { state: string }[];
+  return order[0]?.state === "done";
+}
+
+/**
  * Sweep runs that died mid-build, then insert `input`'s row as running.
  * Runs in the caller's (start step's) transaction.
  *
  * #1574 — a run whose build order was given up never starts: the order
  * already ended (its waiting request heard the outcome), and a build that
  * began now would go live behind that answer. A carried build's run takes
- * its order's id (build-carrier/run-order.ts).
+ * its order's id (build-carrier/run-order.ts). The order's state is read
+ * under the lock its give-up takes too, held until this transaction has
+ * committed the run (deploy-run-lock.ts `lockBuildOrderInTx`): a give-up
+ * either ended the order first, and the run is refused, or waits and then
+ * sees the run, and asks it to stop.
  *
  * @returns the ids of the runs marked failed.
  * @throws OperationAbortError when the run's build order was given up.
@@ -191,10 +214,7 @@ export async function beginRunInTx(
   tx: TransactionRunner,
   input: z.infer<typeof beginRunInput>,
 ): Promise<string[]> {
-  const givenUp = (await tx.execute(sql`
-    SELECT 1 AS given_up FROM build_orders WHERE id = ${input.runId}::uuid AND state = 'done'
-  `)) as unknown as { given_up: number }[];
-  if (givenUp.length > 0) {
+  if (await buildOrderEnded(tx, input.runId)) {
     throw new OperationAbortError({
       kind: "HandlerError",
       operation: "deploy.start_run",

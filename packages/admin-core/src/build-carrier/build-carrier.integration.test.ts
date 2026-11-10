@@ -15,7 +15,8 @@
  *   - an order given up while its build still runs asks that build to stop
  *     and ends with the build's own outcome; one whose run went through is
  *     read back as "went through, do not run again"; a run never starts for
- *     an order given up before it;
+ *     an order given up before it, and a give-up waits for a run that is
+ *     starting;
  *   - a carrier that dies without a word is given up by the tick's
  *     backstop: the order and its run (the order's id) say where it ran and
  *     what to do next;
@@ -23,8 +24,10 @@
  *   - a build longer than its request limit stops loudly with that reason;
  *   - the operator's Stop reaches a carried build while its caller waits; a
  *     caller's request that merely ends does not stop it;
- *   - an agent's wait counts from its call; deploy_staging answers "still
- *     running" past it, and the build goes on;
+ *   - an agent's wait counts from its call, its carrier's start included:
+ *     a stalled start answers "still running", and the order still settles
+ *     (a late carrier runs it, a failed start gives it up); deploy_staging
+ *     answers "still running" past the wait, and the build goes on;
  *   - without a carrier a person's button builds in its own request and
  *     says so, and an agent is refused with the step to re-run;
  *   - "where does my Stage stand" sees a Stage order before its run exists,
@@ -50,16 +53,17 @@ import { describeError } from "../ai/tools/_describe-error.js";
 import { deployStagingTool } from "../ai/tools/deploy-staging.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { setDeployBridge } from "../ops/deploy.js";
+import { beginRunInTx } from "../ops/deploy-run-lifecycle.js";
 import { registerAdminOps } from "../register.js";
 import { runReportingJobBackstop, sweepFinishedReportingJobs } from "../reporting-jobs/backstop.js";
 import { admitJobReport } from "../reporting-jobs/dispatch.js";
+import { inProcessJobLauncher } from "../reporting-jobs/in-process.js";
 import { JOB_MAINS } from "../reporting-jobs/job-mains.js";
 import { createJobReporter, type ReportTransport } from "../reporting-jobs/job-reporter.js";
 import type { AdminJobDeps } from "../reporting-jobs/kind.js";
-import { giveUpReportingJob, type JobLauncher } from "../reporting-jobs/launcher.js";
+import type { JobLauncher } from "../reporting-jobs/launcher.js";
 import { runJobAttempt } from "../reporting-jobs/run-job.js";
 import { carryBuild, executeBuild, operatorStopOf } from "./carry.js";
-import { buildCarrierJobKind } from "./kind.js";
 import { stageOrderInputSchema } from "./order.js";
 import { executeBuildOrder } from "./run-order.js";
 
@@ -468,7 +472,7 @@ describe("a build inside the request its carrier holds open (#1574)", () => {
       id,
       launcher: deadCarrier,
     });
-    await until(async () => (await jobRow(id)) !== undefined, "the carrier's start");
+    await until(async () => (await jobRow(id))?.execution != null, "the carrier's start");
     // As if the carrier had taken the order and the build went through,
     // and the carrier died before the outcome was recorded.
     await withSql(async (tx) => {
@@ -527,6 +531,8 @@ describe("a build inside the request its carrier holds open (#1574)", () => {
       { id, launcher: deadCarrier, waitMs: 200 },
     );
     expect(carried).toEqual({ state: "running", id });
+    // The wait may end before the carrier's start does (it counts too).
+    await until(async () => (await jobRow(id))?.execution != null, "the carrier's start");
     // As if the admin had started the build and its request froze when the
     // carrier died: a running run whose lease lapsed.
     await withSql(async (tx) => {
@@ -688,14 +694,16 @@ describe("a build inside the request its carrier holds open (#1574)", () => {
     expect((await orderRow(id))?.stop_requested).toBe(false);
   });
 
-  it("counts an agent's wait from its call: a slow carrier start does not stretch it", async () => {
+  it("counts an agent's wait from its call, its carrier's start included; a late carrier still runs the build", async () => {
     setEnv({ CAELO_TEST_STUB_GENERATOR: undefined });
     const id = crypto.randomUUID();
-    const slow: JobLauncher = {
+    const inProcess = inProcessJobLauncher(deps(), "build");
+    // A Cloud Run start that stalls for 3 s, then runs.
+    const late: JobLauncher = {
       label: "the test",
-      async launch() {
-        await Bun.sleep(2_000);
-        return "test-slow-start";
+      async launch(order) {
+        await Bun.sleep(3_000);
+        return inProcess.launch(order);
       },
     };
     const asked = Date.now();
@@ -703,14 +711,126 @@ describe("a build inside the request its carrier holds open (#1574)", () => {
       deps(),
       HUMAN,
       { kind: "deploy.trigger", input: staging() },
-      { id, launcher: slow, waitMs: 1_500 },
+      { id, launcher: late, waitMs: 1_000 },
     );
     const took = Date.now() - asked;
     expect(carried).toEqual({ state: "running", id });
-    // Waiting 1.5 s after a 2 s start would answer after 3.5 s.
-    expect(took).toBeLessThan(3_000);
-    await giveUpReportingJob(deps(), buildCarrierJobKind, id, "the test is over");
-    expect((await orderRow(id))?.state).toBe("done");
+    // Waiting for the start would answer after 3 s at the earliest.
+    expect(took).toBeLessThan(2_500);
+    // The start goes on without its caller, and its carrier runs the build.
+    await until(async () => (await orderRow(id))?.state === "done", "the late carrier's build");
+    expect((await orderRow(id))?.outcome.ok).toBe(true);
+    expect((await runRow(id))?.status).toBe("succeeded");
+  });
+
+  it("ends the order when its stalled start fails after its caller stopped waiting", async () => {
+    const id = crypto.randomUUID();
+    let failLaunch!: (e: Error) => void;
+    const stalled: JobLauncher = {
+      label: "the test",
+      launch: () =>
+        new Promise<string>((_, reject) => {
+          failLaunch = reject;
+        }),
+    };
+    const asked = Date.now();
+    const carried = await carryBuild(
+      deps(),
+      HUMAN,
+      { kind: "deploy.trigger", input: staging() },
+      { id, launcher: stalled, waitMs: 1_000 },
+    );
+    expect(carried).toEqual({ state: "running", id });
+    expect(Date.now() - asked).toBeLessThan(2_500);
+    expect((await orderRow(id))?.state).toBe("queued");
+    failLaunch(new Error("Cloud Run answered 503"));
+    await until(async () => (await orderRow(id))?.state === "done", "the given-up order");
+    const order = await orderRow(id);
+    expect(order?.outcome.givenUp).toBe(true);
+    expect(order?.outcome.error?.message).toContain("Cloud Run answered 503");
+    expect((await jobRow(id))?.state).toBe("done");
+  });
+
+  it("orders a run's start and its order's give-up: the give-up waits for the run, then asks it to stop", async () => {
+    const id = crypto.randomUUID();
+    const created = await createOrder(id, "deploy.trigger", { targetName: "staging" });
+    if (!created.ok) throw new Error(describeError(created.error));
+    const claimed = await execute(registry, adapter, SYSTEM, "build_orders.claim", { id });
+    if (!claimed.ok) throw new Error(describeError(claimed.error));
+    const targets = (await withSql(
+      (tx) => tx`SELECT id::text AS id FROM deploy_targets WHERE name = 'staging'`,
+    )) as { id: string }[];
+    // A run's start (deploy.trigger's first step) that has written its row
+    // and not committed it yet.
+    let rowWritten!: () => void;
+    const written = new Promise<void>((resolve) => {
+      rowWritten = resolve;
+    });
+    let commit!: () => void;
+    const committing = new Promise<void>((resolve) => {
+      commit = resolve;
+    });
+    const holding = new OperationRegistry();
+    holding.register(
+      defineOperation({
+        name: "test.start_run_and_hold",
+        readScope: "request",
+        actorScope: ["human"],
+        database: "cms_admin",
+        input: z.object({}).strict(),
+        output: z.object({}),
+        handler: async (_ctx, _input, tx) => {
+          await beginRunInTx(tx, {
+            runId: id,
+            targetId: targets[0]?.id ?? "",
+            actorId: HUMAN.actorId,
+            startedAt: new Date().toISOString(),
+            renderFingerprint: null,
+            caeloVersion: null,
+            pluginProblems: null,
+            buildKind: "site",
+            baseRunId: null,
+            leaseTtlMs: 120_000,
+          });
+          rowWritten();
+          await committing;
+          return ok({});
+        },
+      }),
+    );
+    const start = execute(holding, adapter, HUMAN, "test.start_run_and_hold", {});
+    try {
+      await written;
+      const givingUp = execute(registry, adapter, SYSTEM, "build_orders.give_up", {
+        id,
+        message: "its job stopped reporting.",
+      });
+      // It waits for the start's transaction instead of judging the order
+      // without the run.
+      expect(
+        await Promise.race([givingUp.then(() => "decided"), Bun.sleep(750).then(() => "waiting")]),
+      ).toBe("waiting");
+      commit();
+      expect((await start).ok).toBe(true);
+      const given = await givingUp;
+      if (!given.ok) throw new Error(describeError(given.error));
+      // It sees the committed run: the run may still go live, so the order
+      // stays open and the run is asked to stop.
+      expect(given.value).toEqual({ result: "stopping" });
+      const order = await orderRow(id);
+      expect(order?.state).toBe("running");
+      expect(order?.stop_requested).toBe(true);
+    } finally {
+      commit();
+      await start;
+      await withSql(
+        (tx) => tx`UPDATE deploy_runs
+                      SET status = 'failed', finished_at = clock_timestamp(),
+                          lease_expires_at = NULL, error_message = 'the test is over'
+                    WHERE id = ${id}::uuid AND status = 'running'`,
+      );
+      await execute(registry, adapter, SYSTEM, "build_orders.give_up", { id, message: "test." });
+    }
   });
 
   it("carries an agent's deploy_staging: a quick build answers as before, a long one answers still running and goes on", async () => {
