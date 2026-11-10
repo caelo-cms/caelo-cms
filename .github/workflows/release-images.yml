@@ -147,7 +147,12 @@ jobs:
       - name: Build ops image for the boot smoke (amd64, no push)
         # The multi-arch build below pushes but cannot `load` into the
         # local daemon, so the smoke builds the runner's own platform
-        # separately. Same cache scope: the push build reuses its layers.
+        # separately. The push build reuses its layers from this job's
+        # builder. It reads the cache scope but never writes it (#1559):
+        # a gha scope keeps only its last export, so an amd64-only export
+        # here replaced the push build's arm64 half, every arm64 build
+        # started from scratch, and every release carried ~334 MB of new
+        # arm64 layers. Only the push build writes the scope.
         if: matrix.service == 'ops'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -158,7 +163,6 @@ jobs:
           push: false
           tags: caelo-ops:smoke
           cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,scope=${{ matrix.service }},mode=max
 
       - name: Boot smoke (caelo-ops --version + pinned tools)
         # Runs on PRs too: a Dockerfile.ops regression (wrong stack path,
@@ -242,8 +246,9 @@ jobs:
           load: true
           push: false
           tags: caelo-${{ matrix.service }}:smoke
+          # Read, never written: the push build is the scope's one writer
+          # (see the ops smoke build above, #1559).
           cache-from: type=gha,scope=${{ matrix.service }}
-          cache-to: type=gha,scope=${{ matrix.service }},mode=max
 
       - name: Setup Bun (image checks)
         if: matrix.spec
