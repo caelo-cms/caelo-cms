@@ -28,6 +28,7 @@ import {
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { clearSiteViewCache } from "../site-view.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -243,6 +244,10 @@ export async function setupCostSite(opts: {
       // only about pages added since, so a site that grew would look as
       // if its render cost grew with it.
       clearLinkResolveCache();
+      // Cold for the site view too: a cached one from an earlier measure
+      // would be carried forward by the journal (#1270), and a site that
+      // grew by more than a delta takes would first try one.
+      clearSiteViewCache();
       const cold = await count({ pageId: page.pageId });
       const warm = await count({ pageId: page.pageId });
       const branchCold = await count({ pageId: page.pageId, chatBranchId: branchId });

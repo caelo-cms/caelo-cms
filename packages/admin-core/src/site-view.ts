@@ -16,7 +16,7 @@
  * statement that no journaled change to a table read here became visible
  * since — on main or on this branch, whoever made it (an op, a Stage, an
  * undo, a migration, a psql session, another admin instance) — and
- * re-reads the view only when one did. An unchanged draft costs one
+ * re-reads only what one changed (#1270, `site-view-read.ts`). An unchanged draft costs one
  * statement for the whole site, a change on another chat's isolated branch
  * costs nothing, and no edit can leave a preview stale.
  *
@@ -37,11 +37,10 @@ import {
 } from "@caelo-cms/query-api";
 import type { LinkIndexMedia } from "@caelo-cms/shared";
 import type { ListRenderBase } from "@caelo-cms/static-generator";
-import { sql } from "drizzle-orm";
-import { loadPageRows, type PageInView, type PageRows, pagesInViewOf } from "./lists/pages-view.js";
-import { type ListEntityView, loadListEntities } from "./lists/store.js";
-import { loadSiteDesignations } from "./ops/content/compose-paths.js";
-import { driftIdsBetween, type PageTree, pageTreeOf } from "./ops/content/page-tree.js";
+import type { PageInView, PageRows } from "./lists/pages-view.js";
+import type { ListEntityView } from "./lists/store.js";
+import type { PageTree } from "./ops/content/page-tree.js";
+import { readSiteDelta, readSiteParts, type SiteViewParts, siteViewOf } from "./site-view-read.js";
 
 /** The `site_defaults` columns a render reads. */
 export interface SiteViewSettings {
@@ -112,83 +111,7 @@ export async function readSiteView(
   branchId: string | null,
   mark: JournalMark,
 ): Promise<SiteView> {
-  const pageRows = await loadPageRows(tx, branchId);
-  const live = pageRows.rows.filter((r) => r.deleted_at === null);
-  const tree = pageTreeOf(live, pageRows.pending);
-  const driftedIds =
-    branchId && pageRows.pending.size > 0 ? driftIdsBetween(tree, pageTreeOf(live, new Map())) : [];
-
-  const listTypes = await loadListEntities(tx, "listType", branchId);
-  const lists = await loadListEntities(tx, "list", branchId);
-  const pageTypes = await loadListEntities(tx, "pageType", branchId);
-
-  const seoRows = (await tx.execute(sql`
-    SELECT page_id::text AS page_id, meta_description, og_image_asset_id::text AS og_image,
-           canonical_url
-    FROM pages_seo
-  `)) as unknown as {
-    page_id: string;
-    meta_description: string;
-    og_image: string | null;
-    canonical_url: string | null;
-  }[];
-  const mediaRows = (await tx.execute(sql`
-    SELECT id::text AS id, slug, alt, width, height FROM media_assets WHERE deleted_at IS NULL
-  `)) as unknown as {
-    id: string;
-    slug: string;
-    alt: string;
-    width: number | null;
-    height: number | null;
-  }[];
-  const settingsRows = (await tx.execute(sql`
-    SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
-           site_language
-    FROM site_defaults WHERE id = 1
-  `)) as unknown as {
-    site_base_url: string | null;
-    sitemap_enabled: boolean;
-    organization_json: string | null;
-    site_language: string | null;
-  }[];
-  const s = settingsRows[0];
-  if (!s) {
-    throw new Error(
-      "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
-    );
-  }
-  const { homePageId } = await loadSiteDesignations(tx, branchId);
-
-  return {
-    branchId,
-    mark,
-    pageRows,
-    pages: pagesInViewOf(pageRows),
-    tree,
-    driftedIds,
-    listTypes,
-    lists,
-    pageTypes,
-    listBase: {
-      seo: seoRows.map((r) => ({
-        page_id: r.page_id,
-        meta_description: r.meta_description,
-        og_image: r.og_image,
-      })),
-      media: mediaRows.map((m) => ({ id: m.id, alt: m.alt, width: m.width, height: m.height })),
-      siteLanguage: s.site_language,
-      homePageId,
-    },
-    canonicalOverrides: new Map(seoRows.map((r) => [r.page_id, r.canonical_url || null])),
-    media: mediaRows.map((m) => ({ id: m.id, slug: m.slug })),
-    settings: {
-      siteBaseUrl: s.site_base_url,
-      sitemapEnabled: s.sitemap_enabled,
-      organizationJson: s.organization_json,
-      siteLanguage: s.site_language,
-      homePageId,
-    },
-  };
+  return siteViewOf(branchId, mark, await readSiteParts(tx, branchId));
 }
 
 /**
@@ -196,16 +119,37 @@ export async function readSiteView(
  * view holds the whole site, and a preview only ever needs the newest
  * view of the branches being edited right now.
  */
-const cache = new Map<string, SiteView>();
+const cache = new Map<string, { readonly view: SiteView; readonly parts: SiteViewParts }>();
 const MAX_CACHED_VIEWS = 8;
+
+/**
+ * #1270 — the whole reads in flight, per branch key. When several requests
+ * find no usable view of the same branch at once (a cold admin, a flood of
+ * changes), each one used to read the whole site itself: in the scale gate
+ * ten readers of the shared draft started together and took 35 s each on
+ * the saturated database, where one alone takes a few seconds. Now the
+ * first one reads; the others wait for it and then load through the cache
+ * like any request: their own journal check (a new snapshot under READ
+ * COMMITTED, so it sees the leader's view as written before it), and the
+ * delta since the leader's mark. A waiter that still cannot use the view
+ * (its own uncommitted writes, a snapshot older than the cached view)
+ * reads the whole site itself, as before.
+ */
+const wholeReads = new Map<string, Promise<unknown>>();
 
 /**
  * The branch's site view as `tx` sees it: from the cache when no journaled
  * change reached it since it was read, else read now and cached.
  */
-export async function loadSiteView(
+export function loadSiteView(tx: TransactionRunner, branchId: string | null): Promise<SiteView> {
+  return loadSiteViewOnce(tx, branchId, false);
+}
+
+/** {@link loadSiteView}; `waited` once it waited for another request's whole read. */
+async function loadSiteViewOnce(
   tx: TransactionRunner,
   branchId: string | null,
+  waited: boolean,
 ): Promise<SiteView> {
   const key = branchId ?? "";
   const filter = siteViewJournalFilter(branchId);
@@ -213,7 +157,7 @@ export async function loadSiteView(
   // One statement, hit or miss: the check, and the mark of the read below
   // (taken before its statements, so a change committing during the read
   // is unseen by the mark and invalidates once).
-  const { fresh, mark } = await checkJournalMark(tx, hit?.mark ?? null, filter);
+  const { fresh, mark } = await checkJournalMark(tx, hit?.view.mark ?? null, filter);
   if (hit && fresh) {
     // Still exact now, so it is the view a read at this mark would give:
     // keep the new mark (#1269). The next check then costs what was written
@@ -222,17 +166,44 @@ export async function loadSiteView(
     // snapshot header a write inserts, other branches' writes) would
     // otherwise pile up behind an old mark on every render. A mark that saw
     // this transaction's own uncommitted writes is never stored.
-    const current = mark.dirty ? hit : { ...hit, mark };
+    const current = mark.dirty ? hit : { ...hit, view: { ...hit.view, mark } };
     cache.delete(key);
     cache.set(key, current);
-    return current;
+    return current.view;
   }
-  const view = await readSiteView(tx, branchId, mark);
+  // #1270 — carry the cached read forward by what changed since its mark;
+  // a whole read only when that cannot be exact or would not be cheaper.
+  const delta = hit
+    ? await readSiteDelta(tx, { branchId, parts: hit.parts, from: hit.view.mark, to: mark, filter })
+    : { wholeRead: "no cached view of the branch" };
+  let parts: SiteViewParts;
+  if ("parts" in delta) {
+    parts = delta.parts;
+  } else {
+    const running = wholeReads.get(key);
+    if (running && !waited) {
+      // Its outcome is the leader's to report; this request only needs the cache after it.
+      await running.catch(() => undefined);
+      return loadSiteViewOnce(tx, branchId, true);
+    }
+    // One line per whole read, with why: the scale gate counts them (#1270).
+    console.info(`[site-view] whole read (${key || "main"}): ${delta.wholeRead}`);
+    const read = readSiteParts(tx, branchId);
+    if (!running && !mark.dirty) wholeReads.set(key, read);
+    try {
+      parts = await read;
+    } finally {
+      // The view is cached below before a waiter resumes: both run after this
+      // await, the cache first (a waiter's continuation is queued behind it).
+      if (wholeReads.get(key) === read) wholeReads.delete(key);
+    }
+  }
+  const view = siteViewOf(branchId, mark, parts);
   // A read that saw its own transaction's uncommitted writes is not
   // cached: a rollback would undo them without a journal row.
   if (!mark.dirty) {
     cache.delete(key);
-    cache.set(key, view);
+    cache.set(key, { view, parts });
     while (cache.size > MAX_CACHED_VIEWS) {
       const oldest = cache.keys().next().value;
       if (oldest === undefined) break;
@@ -245,4 +216,5 @@ export async function loadSiteView(
 /** Test seam: forget every cached view (the rows-read test measures cold reads). */
 export function clearSiteViewCache(): void {
   cache.clear();
+  wholeReads.clear();
 }
