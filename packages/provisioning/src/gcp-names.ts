@@ -276,6 +276,35 @@ export function auditRunnerServiceAccountEmail(projectId: string, env: string): 
 }
 
 /**
+ * #1360 — Cloud Run job that crawls a site import and reports each page to
+ * the admin, one execution per attempt (reporting-job-setup.ts). The admin
+ * renders the pages it asks for through the capture job.
+ */
+export function importCrawlJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-import`;
+}
+
+/** Full resource name of the crawl job, as the admin's env carries it. */
+export function importCrawlJobResource(projectId: string, region: string, env: string): string {
+  return `projects/${projectId}/locations/${region}/jobs/${importCrawlJobName(env)}`;
+}
+
+/**
+ * Account id of the crawl job's own service account: reports to the admin
+ * through IAP and fetches robots.txt and sitemaps through the SSRF guard —
+ * no database, no secret, no bucket, no other job (reporting-job-setup.ts).
+ * `caelo-production-import` is 23 of the 30 characters an id may have.
+ */
+export function importCrawlServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-import`;
+}
+
+/** Email of the crawl job's service account. */
+export function importCrawlServiceAccountEmail(projectId: string, env: string): string {
+  return `${importCrawlServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/**
  * #1217 — Cloud Run job that runs every server-side browser render
  * (screenshots, rendered HTML) of the install, one execution per render, so
  * no Chromium runs in the admin (capture-job-setup.ts).

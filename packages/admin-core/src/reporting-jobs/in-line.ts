@@ -3,7 +3,8 @@
 /**
  * Issue #1359 — one in-process attempt of a kind at a time (in-process.ts):
  * the self-hosted admin ran its audits one after another, and two at once
- * would share the CPU their Lighthouse runs measure (#837, #874).
+ * would share the CPU their Lighthouse runs measure (#837, #874). Two site
+ * imports' crawls (#1360) would only take turns at the one shared browser.
  */
 
 /**

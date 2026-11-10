@@ -3,7 +3,7 @@
 /**
  * #1359 (#1140 category A) — set up (and converge) a reporting job on a
  * Google Cloud install (`gcp`, `gcp-firebase`): a Cloud Run job that runs
- * long, bounded work (a Stage's quality audit; the site-import crawl in
+ * long, bounded work (a Stage's quality audit, #1359; a site import's crawl,
  * #1360) outside the admin and reports back to it by request, so the admin
  * only works inside requests (CLAUDE.md §11.B Tier 5). Run by the wizard
  * after `pulumi up` and by `cms-provision upgrade`'s converge (and the
@@ -23,7 +23,8 @@
  *     operator-access sync job keeps it there, operator-access.ts);
  *   - `roles/logging.logWriter`.
  *
- * plus its kind's own grants (the audit runner: {@link auditRunnerJobSpec}).
+ * plus its kind's own grants (the audit runner: {@link auditRunnerJobSpec};
+ * the site-import crawler has none, {@link importCrawlJobSpec}).
  * Nothing else: no Secret Manager, no Cloud SQL, no VPC egress. Passing IAP
  * reaches nothing by itself: the admin's report endpoint takes a report of
  * a kind only from that kind's account AND with the token the admin minted
@@ -48,6 +49,8 @@ import {
   auditRunnerJobName,
   auditRunnerServiceAccountId,
   gcpBucketName,
+  importCrawlJobName,
+  importCrawlServiceAccountId,
   runServiceAccountEmail,
 } from "./gcp-names.js";
 import { type IapResource, iapResourceArgs } from "./mcp-iap.js";
@@ -154,6 +157,36 @@ export function auditRunnerJobSpec(
       { bucket: results, why: "it reads the Lighthouse tasks' results" },
     ],
     runJobs: [{ job: auditJobName(env), why: "it starts the Lighthouse tasks" }],
+  };
+}
+
+/**
+ * The site-import crawler (#1360): one site import's crawl. It reads
+ * third-party pages, so it holds nothing beyond the shared grants: no
+ * bucket, no other job. It fetches robots.txt and sitemaps itself, through
+ * the SSRF guard; every page render is the admin's, which starts the
+ * capture job and keeps the screenshot, so the crawler never runs a
+ * browser and never touches the capture job or its bucket.
+ */
+export function importCrawlJobSpec(
+  target: Pick<ReportingJobTarget, "provider" | "env">,
+): ReportingJobSpec {
+  return {
+    label: "site-import crawler",
+    jobName: importCrawlJobName(target.env),
+    serviceAccountId: importCrawlServiceAccountId(target.env),
+    displayName: "Caelo site-import crawler",
+    description:
+      "Crawls a site the Owner approved for import and reports each page to the admin; fetches robots.txt and sitemaps through the SSRF guard, nothing else.",
+    env: [`CAELO_PROVIDER=${target.provider}`],
+    cpu: "1",
+    // The frontier and up to four rendered pages' HTML at once.
+    memory: "2Gi",
+    // admin-core JOB_TIMING.site_import.maxRunSeconds: a longer crawl goes
+    // on in the next attempt, from its checkpoint.
+    taskTimeoutSeconds: 6 * 3600,
+    readBuckets: [],
+    runJobs: [],
   };
 }
 
@@ -347,4 +380,12 @@ export function ensureAuditRunnerJob(
   deps: { run?: GcloudRunner; sleep?: Sleep } = {},
 ): Promise<ReportingJobResult> {
   return ensureReportingJob(target, auditRunnerJobSpec(target), deps);
+}
+
+/** Ensure the site-import crawler (#1360). */
+export function ensureImportCrawlJob(
+  target: ReportingJobTarget,
+  deps: { run?: GcloudRunner; sleep?: Sleep } = {},
+): Promise<ReportingJobResult> {
+  return ensureReportingJob(target, importCrawlJobSpec(target), deps);
 }

@@ -335,6 +335,17 @@ import {
   writeExtractedPagesOp,
 } from "./ops/imports.js";
 import {
+  addCrawlPageNoteOp,
+  claimCrawlOp,
+  failCrawlOp,
+  finishCrawlOp,
+  isCrawlingOp,
+  listCaptureTargetsOp,
+  saveCrawlCheckpointOp,
+  sweepUnstartedCrawlsOp,
+  takeRenderOp,
+} from "./ops/imports-crawl.js";
+import {
   getLinkMigrationReportOp,
   migrateLinksToReferencesOp,
   revertLinkMigrationOp,
@@ -1369,6 +1380,16 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #247 — run-level computed-style token aggregate.
   registry.register(setRunDesignTokensOp);
   registry.register(writeExtractedPagesOp);
+  // #1360 — the crawl's side of a run, reported by its job.
+  registry.register(claimCrawlOp);
+  registry.register(takeRenderOp);
+  registry.register(isCrawlingOp);
+  registry.register(saveCrawlCheckpointOp);
+  registry.register(listCaptureTargetsOp);
+  registry.register(addCrawlPageNoteOp);
+  registry.register(finishCrawlOp);
+  registry.register(failCrawlOp);
+  registry.register(sweepUnstartedCrawlsOp);
   registry.register(acceptImportedPageOp);
   registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);

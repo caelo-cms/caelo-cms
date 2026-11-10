@@ -51,7 +51,6 @@ import {
   stagingCaptureAccess,
   stagingServedByGateway,
   startLiveFanOut,
-  startSiteImportWorker,
   transformPluginImage,
 } from "@caelo-cms/admin-core";
 import {
@@ -438,19 +437,6 @@ function bootstrapReportingJobs(): void {
   setInProcessJobLauncher((kind) => inProcessJobLauncher({ adapter, registry }, kind));
 }
 
-// #1360 — the site-import crawl worker (P14) still polls in-process until
-// it moves into a container job of its own (#1140 category A). Every other
-// maintenance loop runs on the scheduler tick (lib/server/scheduler.ts).
-let siteImportBootstrapped = false;
-function bootstrapSiteImport(): void {
-  if (siteImportBootstrapped) return;
-  siteImportBootstrapped = true;
-  const { adapter, registry } = getQueryContext();
-  // issue #198 — hand the importer worker the media storage so crawl
-  // screenshots persist (review side-by-sides + parity references).
-  startSiteImportWorker({ adapter, registry, screenshotStorage: getMediaStorage() });
-}
-
 // #817 — once per process: an upgrade the Owner ran from Cloud Shell never
 // touches the database, so the new admin closes the request that asked for
 // it (`superseded`). Settings → Updates then stops offering a step for a
@@ -616,7 +602,6 @@ const handleRequest: Handle = async ({ event, resolve }) => {
   // task failures (plugin manifest invalid, bootstrap token DB write)
   // land in Cloud Run stderr instead of disappearing into the void.
   bootstrapE2eOperatorAccess();
-  bootstrapSiteImport();
   bootstrapSupersedeUpdateRequests();
   bootstrapMcpBridge();
   bootstrapLiveFanOut();

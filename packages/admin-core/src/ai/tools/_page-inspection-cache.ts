@@ -23,6 +23,11 @@ export interface PageInspection {
    *  render happened for this page. query_page_html prefers it over the
    *  static `html` so selectors run against the real DOM. */
   readonly renderedHtml?: string;
+  /**
+   * #1360 — a site import's stored page, crawled by its job: every read of
+   * it marks the text as crawled content (shared `siteData`).
+   */
+  readonly crawled?: true;
 }
 
 const CACHE_CAP = 32;

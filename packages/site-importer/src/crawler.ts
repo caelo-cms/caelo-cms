@@ -404,25 +404,49 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
 
   const pages: CrawledPage[] = [];
   let batch: CrawledPage[] = [];
+  /** The requested URL of each page in `batch`, in order. */
+  let batchKeys: string[] = [];
   let sinceFlush = 0;
 
+  // issue #1360 — what a checkpoint must not count as done. A URL is marked
+  // seen when a worker takes it, but its page is written only when a later
+  // flush hands it to `onBatch`; meanwhile other workers keep crawling. A
+  // checkpoint that called those URLs seen would resume without them, and
+  // their pages would be lost for good. So a checkpoint puts back in front
+  // of the queue every URL still in flight and every page not yet written
+  // (with the final URL a redirect marked seen), and counts only the
+  // written pages.
+  const inFlight = new Map<string, { url: string; depth: number }>();
+  const unwritten = new Map<
+    string,
+    { readonly entry: { url: string; depth: number }; readonly finalUrl?: string }
+  >();
+
   const flush = async (): Promise<void> => {
+    // Counted from the start of this flush: a worker that finishes a page
+    // while it is written does not start a second flush of one page.
+    sinceFlush = 0;
     if (opts.onBatch && batch.length > 0) {
       const toSend = batch;
+      const keys = batchKeys;
       batch = [];
+      batchKeys = [];
       await opts.onBatch(toSend);
+      for (const k of keys) unwritten.delete(k);
     }
     if (opts.onCheckpoint) {
+      const pending = [...inFlight.values(), ...[...unwritten.values()].map((u) => u.entry)];
+      const notSeen = new Set(pending.map((e) => e.url));
+      for (const u of unwritten.values()) if (u.finalUrl) notSeen.add(u.finalUrl);
       await opts.onCheckpoint({
-        queue: [...queue],
-        seen: [...seen],
-        pagesCrawled,
+        queue: [...pending, ...queue],
+        seen: [...seen].filter((u) => !notSeen.has(u)),
+        pagesCrawled: pagesCrawled - unwritten.size,
         errors: [...errors],
         skipped: [...skipped],
         skippedOutOfScope,
       });
     }
-    sinceFlush = 0;
   };
 
   // Shared polite gate: request STARTS are spaced by `throttle` across
@@ -441,6 +465,15 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   const pageFetcher = fetcher;
 
   const processOne = async (next: { url: string; depth: number }): Promise<void> => {
+    inFlight.set(next.url, next);
+    try {
+      await processPage(next);
+    } finally {
+      inFlight.delete(next.url);
+    }
+  };
+
+  const processPage = async (next: { url: string; depth: number }): Promise<void> => {
     // issue #425 — the scope's path-prefix rule decides PRE-fetch, at the
     // single point every URL passes through (crawl root, frontier links,
     // sitemap seeds, LIST entries alike): out-of-scope URLs are recorded
@@ -577,8 +610,11 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     }
     pagesCrawled += 1;
     sinceFlush += 1;
-    if (opts.onBatch) batch.push(page);
-    else pages.push(page);
+    if (opts.onBatch) {
+      batch.push(page);
+      batchKeys.push(next.url);
+    } else pages.push(page);
+    unwritten.set(next.url, { entry: next, ...(redirected ? { finalUrl } : {}) });
 
     // Enqueue same-domain links if depth allows.
     if (next.depth < depth) {

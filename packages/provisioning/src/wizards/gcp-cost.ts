@@ -227,6 +227,15 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
         "one container per Stage for the audit's length (~2-10 min at 1 vCPU / 2 GiB, longer on large sites): ~$0.002-0.01 per Stage, mostly in the free tier",
     },
     {
+      // #1360 — a site import's crawl runs in its own job, not on the
+      // admin's CPU: the crawl loop, robots.txt, sitemaps, extraction. Each
+      // page's render is the capture job's, priced below.
+      name: "Site imports (Cloud Run crawl job)",
+      monthlyUsd: 0,
+      notes:
+        "one container per site import for the crawl's length (~1-2 min per 10 pages at 1 vCPU / 2 GiB, mostly waiting for renders): ~$0.01 for a 50-page import; nothing without imports",
+    },
+    {
       name: "Screenshots (Cloud Run capture job)",
       monthlyUsd: 1,
       notes:

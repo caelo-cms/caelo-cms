@@ -3,10 +3,11 @@
 /**
  * The Cloud Run jobs that run the admin image: the quality-audit job (#875,
  * admin-core quality/audit-task.ts), the capture job (#1217, admin-core
- * capture/capture-task.ts) and the quality-audit runner (#1359, admin-core
- * reporting-jobs/job-entry.ts). Each refuses an order from an admin on another
- * version, so every app-roll moves them onto the admin's new image right
- * after the services rolled, and a rollback moves them back.
+ * capture/capture-task.ts), the quality-audit runner (#1359) and the
+ * site-import crawler (#1360, both admin-core reporting-jobs/job-entry.ts).
+ * Each refuses an order from an admin on another version, so every app-roll
+ * moves them onto the admin's new image right after the services rolled,
+ * and a rollback moves them back.
  *
  * `run jobs update --image` changes nothing else of a job (identity, env,
  * parallelism), so this stays inside the app-roll's rights: the upgrader's
@@ -14,7 +15,12 @@
  */
 
 import type { GcloudRunner } from "../gcloud-retry.js";
-import { auditJobName, auditRunnerJobName, captureJobName } from "../gcp-names.js";
+import {
+  auditJobName,
+  auditRunnerJobName,
+  captureJobName,
+  importCrawlJobName,
+} from "../gcp-names.js";
 
 /** One job that follows the admin's image. */
 export interface AdminImageJob {
@@ -44,6 +50,11 @@ export function adminImageJobs(env: string): readonly AdminImageJob[] {
       name: auditRunnerJobName(env),
       label: "quality-audit runner",
       lagging: "Stage audits wait for it and fail after their last attempt",
+    },
+    {
+      name: importCrawlJobName(env),
+      label: "site-import crawler",
+      lagging: "site imports wait for it and fail after their last attempt",
     },
   ];
 }

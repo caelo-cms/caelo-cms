@@ -385,8 +385,8 @@ export {
   UpgraderTriggerError,
   upgraderTriggerFromEnv,
 } from "./security/upgrader/job-trigger.js";
-// #1154 — the site-import crawl worker (formerly in the redeploy orchestrator).
-export { startSiteImportWorker } from "./site-import/crawl-worker.js";
+// #1360 — start a site import's crawl (its job; the backstop retries a lost start).
+export { startSiteImportJob } from "./site-import/start-import-job.js";
 export { emitSnapshot } from "./snapshots/emit.js";
 // issue #620 — the Stage flow for one chat or a selection of chats (/edit's
 // Stage button, the Open changes overview).

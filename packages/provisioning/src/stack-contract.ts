@@ -47,6 +47,8 @@ import {
   gcpBucketName,
   gcpNamePrefix,
   gcpSecretId,
+  importCrawlJobResource,
+  importCrawlServiceAccountEmail,
   mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   operatorAccessJobResource,
@@ -399,6 +401,13 @@ export const MEDIA_BUCKET_ENV_VAR = "CAELO_MEDIA_BUCKET";
  */
 export const AUDIT_RUNNER_JOB_ENV_VAR = "CAELO_AUDIT_RUNNER_JOB";
 export const AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR = "CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT";
+
+/**
+ * #1360 — the same pair for the site-import crawler (a site import's crawl,
+ * a reporting job; admin-core site-import/import-job-kind.ts).
+ */
+export const IMPORT_CRAWL_JOB_ENV_VAR = "CAELO_IMPORT_CRAWL_JOB";
+export const IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR = "CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT";
 
 /**
  * #1140 — the admin env var naming the service account of the scheduler
@@ -1471,6 +1480,16 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     {
       name: AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR,
       value: auditRunnerServiceAccountEmail(projectId, env),
+    },
+    // #1360 — the job a site import's crawl runs in, and the only IAP
+    // identity whose reports the admin takes for it.
+    {
+      name: IMPORT_CRAWL_JOB_ENV_VAR,
+      value: importCrawlJobResource(projectId, inputs.region, env),
+    },
+    {
+      name: IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR,
+      value: importCrawlServiceAccountEmail(projectId, env),
     },
     // #1140 — the only IAP identity the admin's scheduler tick endpoint
     // accepts (scheduler-setup.ts).

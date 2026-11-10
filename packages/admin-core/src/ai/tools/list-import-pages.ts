@@ -14,6 +14,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { siteData } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -107,7 +108,7 @@ export const listImportPagesTool: ToolDefinitionWithHandler<Input> = {
     const lines = [
       `# Import run ${v.run.sourceUrl} — status: ${v.run.status} (${v.run.pagesExtracted} extracted of ${v.run.pagesSeen} URLs seen)`,
     ];
-    if (v.run.errorMessage) lines.push(`Run error: ${v.run.errorMessage}`);
+    if (v.run.errorMessage) lines.push(`Run error: ${siteData(v.run.errorMessage)}`);
     if (v.run.status === "crawling" || v.run.status === "proposed") {
       lines.push(
         "The crawl has not finished — tell the operator in one sentence, wait, and re-check; continue the moment it reaches ready_for_review.",
@@ -127,7 +128,7 @@ export const listImportPagesTool: ToolDefinitionWithHandler<Input> = {
       for (const p of v.pages) {
         const cluster = p.clusterLabel ?? p.clusterKey;
         lines.push(
-          `- ${p.id} | ${p.status} | /${p.proposedSlug} | ${p.sourceUrl}` +
+          `- ${p.id} | ${p.status} | /${p.proposedSlug} | ${siteData(p.sourceUrl)}` +
             (p.acceptedPageId ? ` | built page ${p.acceptedPageId}` : "") +
             (cluster ? ` | type: ${cluster}` : "") +
             (p.hasScreenshot ? "" : " | NO source screenshot (unverified)"),

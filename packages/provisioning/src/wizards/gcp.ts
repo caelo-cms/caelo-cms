@@ -77,6 +77,7 @@ import {
 import {
   auditRunnerServiceAccountEmail,
   GCP_STACK_ENV,
+  importCrawlServiceAccountEmail,
   schedulerServiceAccountEmail,
   upgraderServiceAccountEmail,
 } from "../gcp-names.js";
@@ -122,7 +123,7 @@ import {
   type RemoteMcpTarget,
   resolveStackRemoteMcpIdentity,
 } from "../remote-mcp.js";
-import { ensureAuditRunnerJob } from "../reporting-job-setup.js";
+import { ensureAuditRunnerJob, ensureImportCrawlJob } from "../reporting-job-setup.js";
 import type { RunMode } from "../run-mode.js";
 import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
@@ -583,7 +584,19 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // === 11.32. The quality-audit runner: a Stage's audit in its own job (#1359) ===
   // After the audit job (it starts its Lighthouse tasks), before the
   // upgrader (actAs on its account) and operator access (keeps it on IAP).
-  await stepAuditRunnerJob(projectId, region, provider, ownerEmail);
+  await stepReportingJob(projectId, region, provider, ownerEmail, {
+    starting: "Setting up the quality-audit runner (audits outside the admin)...",
+    ready: "Quality-audit runner ready",
+    ensure: ensureAuditRunnerJob,
+  });
+
+  // === 11.33. The site-import crawler: a site import's crawl in its own job (#1360) ===
+  // Before the upgrader and operator access, for the same reasons.
+  await stepReportingJob(projectId, region, provider, ownerEmail, {
+    starting: "Setting up the site-import crawler (crawls outside the admin)...",
+    ready: "Site-import crawler ready",
+    ensure: ensureImportCrawlJob,
+  });
 
   // === 11.35. The capture job: server-side screenshots outside the admin (#1217) ===
   // Before the upgrader as well, which gets actAs on its service account.
@@ -618,8 +631,9 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
     [
       ...(keepScheduler ? [schedulerServiceAccountEmail(projectId, GCP_STACK_ENV)] : []),
-      // #1359 — set up above (a failure stops the wizard there).
+      // #1359 / #1360 — set up above (a failure stops the wizard there).
       auditRunnerServiceAccountEmail(projectId, GCP_STACK_ENV),
+      importCrawlServiceAccountEmail(projectId, GCP_STACK_ENV),
     ],
   );
 
@@ -1332,19 +1346,25 @@ async function stepAuditJob(
 }
 
 /**
- * #1359 — set up the quality-audit runner (reporting-job-setup.ts) on the
- * deployed admin's image: the job a Stage's whole audit runs in, reporting
- * back through IAP. A failure stops the wizard: without it every Stage
- * audit fails. Idempotent, so it runs on every wizard pass.
+ * #1359 / #1360 — set up a reporting job (reporting-job-setup.ts) on the
+ * deployed admin's image: the quality-audit runner (a Stage's whole audit)
+ * or the site-import crawler (a site import's crawl), each reporting back
+ * through IAP. A failure stops the wizard: without it that work fails.
+ * Idempotent, so it runs on every wizard pass.
  */
-async function stepAuditRunnerJob(
+async function stepReportingJob(
   projectId: string,
   region: string,
   provider: "gcp" | "gcp-firebase",
   ownerEmail: string,
+  job: {
+    readonly starting: string;
+    readonly ready: string;
+    readonly ensure: typeof ensureAuditRunnerJob;
+  },
 ): Promise<void> {
   const s = spinner();
-  s.start("Setting up the quality-audit runner (audits outside the admin)...");
+  s.start(job.starting);
   const image = await resolveAdminImage({ projectId, region, env: GCP_STACK_ENV });
   const resolved = image.ok
     ? await resolveOperatorAccessTarget({
@@ -1359,7 +1379,7 @@ async function stepAuditRunnerJob(
     ? { ok: false as const, done: [], error: image.error }
     : !resolved?.ok
       ? { ok: false as const, done: [], error: resolved?.error ?? "no IAP resource" }
-      : await ensureAuditRunnerJob({
+      : await job.ensure({
           provider,
           projectId,
           region,
@@ -1373,7 +1393,7 @@ async function stepAuditRunnerJob(
     cancel("Aborted.");
     process.exit(1);
   }
-  s.stop(green(`Quality-audit runner ready (${r.done.length} steps)`));
+  s.stop(green(`${job.ready} (${r.done.length} steps)`));
 }
 
 /**

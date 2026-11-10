@@ -53,8 +53,6 @@ const ALLOWED: Record<string, string> = {
   "apps/admin/src/hooks.server.ts":
     "the dev/test scheduler clock (bootstrapDevSchedulerClock): never with NODE_ENV=production, where the install's scheduler calls the tick",
   // Tracked moves (#1140 follow-ups).
-  "packages/admin-core/src/site-import/crawl-worker.ts":
-    "FIXME(issue #1360): the site-import crawl moves into a container job that reports back",
   "packages/plugin-host/src/runtime-health.ts":
     "FIXME(issue #1361): the plugin runtime heartbeat refreshes at request start instead",
   "packages/plugin-host/src/reconcile.ts":

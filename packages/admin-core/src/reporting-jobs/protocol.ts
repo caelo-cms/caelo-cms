@@ -29,8 +29,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 
-/** The kinds of reporting job. #1360 adds the site-import crawl. */
-export const REPORTING_JOB_KINDS = ["quality_audit"] as const;
+/** The kinds of reporting job: a Stage's audit (#1359), a site import's crawl (#1360). */
+export const REPORTING_JOB_KINDS = ["quality_audit", "site_import"] as const;
 
 export type ReportingJobKind = (typeof REPORTING_JOB_KINDS)[number];
 
@@ -58,6 +58,16 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
     renewEverySeconds: 60,
     maxAttempts: 3,
     maxRunSeconds: 60 * 60,
+  },
+  // A site import's crawl: minutes to hours (a page render in the capture
+  // job takes up to two minutes). Every attempt resumes from the last
+  // checkpoint, so a crawl longer than one execution goes on in the next.
+  site_import: {
+    firstLeaseSeconds: 15 * 60,
+    leaseSeconds: 10 * 60,
+    renewEverySeconds: 60,
+    maxAttempts: 5,
+    maxRunSeconds: 6 * 60 * 60,
   },
 };
 

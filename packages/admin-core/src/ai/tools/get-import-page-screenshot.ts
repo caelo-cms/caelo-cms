@@ -54,7 +54,7 @@ export const getImportPageScreenshotTool: ToolDefinitionWithHandler<Input> = {
       return {
         ok: false,
         content:
-          "No source screenshot is stored for this page (the crawl worker ran without screenshot capture). Tell the operator you cannot compare visually for this page — do not pretend you saw it.",
+          "No source screenshot is stored for this page (the crawl ran without screenshot capture). Tell the operator you cannot compare visually for this page — do not pretend you saw it.",
       };
     }
     try {

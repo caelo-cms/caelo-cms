@@ -17,6 +17,8 @@ import type { GcloudResult } from "./gcloud.js";
 import {
   auditRunnerJobSpec,
   ensureAuditRunnerJob,
+  ensureImportCrawlJob,
+  importCrawlJobSpec,
   REPORTING_JOB_FORBIDDEN_ROLES,
   REPORTING_JOB_SCRIPT,
   type ReportingJobTarget,
@@ -225,5 +227,83 @@ describe("ensureAuditRunnerJob (#1359)", () => {
       "acme-caelo-production-audit-results",
     ]);
     expect(spec.runJobs.map((j) => j.job)).toEqual(["caelo-production-audit"]);
+  });
+});
+
+describe("ensureImportCrawlJob (#1360)", () => {
+  const CRAWLER_SA = "caelo-production-import@acme.iam.gserviceaccount.com";
+  const CRAWLER = `serviceAccount:${CRAWLER_SA}`;
+
+  it("grants the crawler the shared line and nothing else: no bucket, no other job", async () => {
+    const { run, calls } = fakeGcloud();
+    const r = await ensureImportCrawlJob(TARGET, { run, sleep: async () => {} });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.serviceAccount).toBe(CRAWLER_SA);
+    expect(
+      calls.some((c) =>
+        c.join(" ").startsWith("iam service-accounts create caelo-production-import "),
+      ),
+    ).toBe(true);
+    const mine = grants(calls).filter((g) => g.member === CRAWLER);
+    expect(mine.map((g) => [g.where, g.role])).toEqual([
+      // Signs its own IAP credential, nobody else's.
+      [
+        `iam service-accounts add-iam-policy-binding ${CRAWLER_SA}`,
+        "roles/iam.serviceAccountTokenCreator",
+      ],
+      ["projects add-iam-policy-binding acme", "roles/logging.logWriter"],
+      [
+        "iap web add-iam-policy-binding --resource-type=backend-services",
+        "roles/iap.httpsResourceAccessor",
+      ],
+    ]);
+    for (const g of mine) {
+      for (const forbidden of REPORTING_JOB_FORBIDDEN_ROLES) {
+        expect(g.role.startsWith(forbidden)).toBe(false);
+      }
+      // It reads third-party pages: no run right anywhere, no storage at all.
+      expect(g.role.startsWith("roles/run.")).toBe(false);
+      expect(g.role.startsWith("roles/storage.")).toBe(false);
+    }
+  });
+
+  it("gives the admin run-with-overrides and view on the crawler, nothing else", async () => {
+    const { run, calls } = fakeGcloud();
+    await ensureImportCrawlJob(TARGET, { run, sleep: async () => {} });
+    expect(
+      grants(calls)
+        .filter((g) => g.member === ADMIN_SA)
+        .map((g) => [g.where, g.role]),
+    ).toEqual([
+      [
+        "run jobs add-iam-policy-binding caelo-production-import",
+        "roles/run.jobsExecutorWithOverrides",
+      ],
+      ["run jobs add-iam-policy-binding caelo-production-import", "roles/run.viewer"],
+    ]);
+  });
+
+  it("deploys the admin image as its own SA: no secret, no database, no VPC, no bucket, no Cloud Run retry", async () => {
+    const { run, calls } = fakeGcloud();
+    await ensureImportCrawlJob(TARGET, { run, sleep: async () => {} });
+    const deploy = deployOf(calls);
+    expect(deploy.slice(0, 4)).toEqual(["run", "jobs", "deploy", "caelo-production-import"]);
+    expect(flag(deploy, "image")).toBe(ADMIN_IMAGE);
+    expect(flag(deploy, "service-account")).toBe(CRAWLER_SA);
+    expect(flag(deploy, "args")).toBe(`--bun,${REPORTING_JOB_SCRIPT}`);
+    expect(flag(deploy, "max-retries")).toBe("0");
+    // admin-core JOB_TIMING.site_import.maxRunSeconds.
+    expect(flag(deploy, "task-timeout")).toBe("21600s");
+    expect(flag(deploy, "set-env-vars")).toBe("CAELO_PROVIDER=gcp");
+    for (const a of deploy) {
+      expect(a).not.toMatch(/^--(set|update)-secrets|^--(vpc-connector|network|subnet|vpc-egress)/);
+    }
+  });
+
+  it("asks for no bucket and no job of its own", () => {
+    const spec = importCrawlJobSpec({ provider: "gcp-firebase", env: "production" });
+    expect(spec.env).toEqual(["CAELO_PROVIDER=gcp-firebase"]);
+    expect(spec.readBuckets).toEqual([]);
+    expect(spec.runJobs).toEqual([]);
   });
 });

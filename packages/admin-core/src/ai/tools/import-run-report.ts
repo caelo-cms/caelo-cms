@@ -9,6 +9,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { siteData } from "@caelo-cms/shared";
 import { z } from "zod";
 import { formatMicrocentsAsMoney } from "../../ops/imports-cost.js";
 import { describeError, toolError } from "./_describe-error.js";
@@ -256,7 +257,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       v.crawlErrors.length > 0
         ? `Crawl errors (${v.crawlErrors.length}): ${v.crawlErrors
             .slice(0, 8)
-            .map((e) => `${e.url} (${e.reason})`)
+            .map((e) => siteData(`${e.url} (${e.reason})`))
             .join("; ")}${v.crawlErrors.length > 8 ? "; …" : ""}`
         : "Crawl errors: none.",
       // Epic #724 — always stated, like the crawl errors: a link that
@@ -286,7 +287,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       v.crawlSkipped.length > 0
         ? `Skipped URLs (${v.crawlSkipped.length} recorded): ${v.crawlSkipped
             .slice(0, 8)
-            .map((s) => `${s.url} (${s.reason})`)
+            .map((s) => siteData(`${s.url} (${s.reason})`))
             .join("; ")}${v.crawlSkipped.length > 8 ? "; …" : ""}`
         : "",
       // issue #247/#423 — design ground truth status. The capture ledger
@@ -303,7 +304,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
         ? `WARNING: ${v.pagesMissingScreenshot} page(s) have NO stored source screenshot (see notes/screenshot_missing) — they are UNVERIFIED: nothing confirms their rebuild matches the original. Tell the operator plainly.`
         : "Source screenshots: every page has one.",
       v.siteDesignTokens
-        ? `Sampled design tokens (computed-style ground truth) are stored on this run: ${JSON.stringify(v.siteDesignTokens).slice(0, 1500)} — these are the crawl's measured design ground truth; cite THESE values (not guesses) when discussing the site's colors/fonts.`
+        ? `Sampled design tokens (computed-style ground truth) are stored on this run: ${siteData(JSON.stringify(v.siteDesignTokens).slice(0, 1500))} — these are the crawl's measured design ground truth; cite THESE values (not guesses) when discussing the site's colors/fonts.`
         : "No sampled design tokens on this run (fetch-only crawl) — theme values came from the inline-CSS extractor.",
       // issue #248 (WS2) — surface detected boilerplate: blocks that
       // should be ONE shared module, not copied per page.
@@ -312,14 +313,17 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
             .slice(0, 8)
             .map(
               (c) =>
-                `<${c.tag}> ×${c.pageCount} → ${c.suggestedPlacement} ("${c.sampleText.slice(0, 48)}")`,
+                `<${c.tag}> ×${c.pageCount} → ${c.suggestedPlacement} (${siteData(c.sampleText.slice(0, 48))})`,
             )
             .join("; ")}`
         : "",
       ...v.notes.map(
         (n) =>
           `Notes/${n.category}: ${n.applied} fixed, ${n.suggested} suggested. Samples: ${n.samples
-            .map((s) => `"${s.note}" (${s.applied ? "fixed" : "suggested"}, ${s.sourceUrl})`)
+            .map(
+              (s) =>
+                `${siteData(s.note)} (${s.applied ? "fixed" : "suggested"}, ${siteData(s.sourceUrl)})`,
+            )
             .join("; ")}`,
       ),
       // issue #28 — the run's error/warning LEDGER. Every problem hit during

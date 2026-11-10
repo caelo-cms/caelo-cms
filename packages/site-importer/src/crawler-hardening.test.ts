@@ -200,6 +200,53 @@ describe("streaming + checkpoint/resume (#192)", () => {
       expect(siteB.fetched).not.toContain(seenUrl);
     }
   });
+
+  it("#1360: a checkpoint keeps the pages still in flight or not yet written, so a killed crawl loses none", async () => {
+    // Slow pages: while one worker flushes a batch, the others are still
+    // fetching, and pages land in the next batch after the checkpoint.
+    const site = makeSite(routes);
+    const slow = async (url: string) => {
+      await new Promise((r) => setTimeout(r, url.endsWith("/p0") ? 1 : 15));
+      return site.fetcher(url);
+    };
+    const written: string[] = [];
+    let mid: CrawlCheckpoint | null = null;
+    let writtenAtMid: string[] = [];
+    await crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: slow,
+      throttleMs: 0,
+      maxPages: 50,
+      batchSize: 2,
+      concurrency: 4,
+      onBatch: async (b) => {
+        written.push(...b.map((p) => p.url));
+      },
+      onCheckpoint: async (cp) => {
+        if (mid === null && cp.pagesCrawled > 0 && cp.pagesCrawled < 10) {
+          mid = structuredClone(cp);
+          writtenAtMid = [...written];
+        }
+      },
+    });
+    const cp = mid as CrawlCheckpoint | null;
+    if (!cp) throw new Error("no mid-crawl checkpoint");
+    // Only what was written counts as crawled.
+    expect(cp.pagesCrawled).toBe(writtenAtMid.length);
+    for (const url of cp.seen) expect(writtenAtMid).toContain(url);
+    // The job died right after that checkpoint: what it had written is
+    // kept, and the next attempt crawls every other page.
+    const resumed = await crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: makeSite(routes).fetcher,
+      throttleMs: 0,
+      maxPages: 50,
+      resumeFrom: cp,
+    });
+    const all = new Set([...writtenAtMid, ...resumed.pages.map((p) => p.url)]);
+    expect(all.size).toBe(10);
+    expect(resumed.pagesCrawled).toBe(10);
+  });
 });
 
 describe("scale (#192)", () => {

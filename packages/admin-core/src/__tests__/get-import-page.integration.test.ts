@@ -17,6 +17,7 @@ import { SQL } from "bun";
 import { getPageInspection } from "../ai/tools/_page-inspection-cache.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { getImportPageTool } from "../ai/tools/get-import-page.js";
+import { readPageMoreTool } from "../ai/tools/read-page-more.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -126,8 +127,39 @@ describe("imports.get_page_gist + get_import_page tool", () => {
       registry,
       chatSessionId: "gist-test-session",
     } as ToolContext);
-    expect(res.content).toContain(`Source meta description: ${SOURCE_DESCRIPTION}`);
+    expect(res.content).toContain(
+      `Source meta description: <site-data>${SOURCE_DESCRIPTION}</site-data>`,
+    );
     expect(res.content).toContain("autofill_page_seo_many");
+  });
+
+  // #1360 — the page was crawled by the import's job, which read a
+  // third-party site: its title, text and tokens reach the AI marked as
+  // crawled content, the tool's own guidance around them does not.
+  it("marks the crawled parts of the page as site data, and keeps its own guidance outside", async () => {
+    const res = await getImportPageTool.handler(SYSTEM, { importPageId: PAGE_ID }, {
+      adapter,
+      registry,
+      chatSessionId: "gist-test-session",
+    } as ToolContext);
+    const c = res.content;
+    expect(c).toMatch(/Proposed title: <site-data>[^<]*<\/site-data>/);
+    expect(c).toMatch(
+      /## Page text \(Markdown\)\n<site-data>[\s\S]*Our Pricing[\s\S]*<\/site-data>/,
+    );
+    expect(c).toMatch(/<site-data>[\s\S]*color-primary[\s\S]*<\/site-data>/);
+    const guidance = c.split("\n").find((l) => l.startsWith("Rebuild with build_page"));
+    expect(guidance).toBeDefined();
+    expect(guidance).not.toContain("site-data");
+    const pageRef = c.match(/pg_[a-z0-9]+/)?.[0];
+    expect(getPageInspection(pageRef as string)?.crawled).toBe(true);
+    // The rest of the same page stays marked when it is read on.
+    const more = await readPageMoreTool.handler(SYSTEM, { pageRef: pageRef as string, cursor: 0 }, {
+      adapter,
+      registry,
+      chatSessionId: "gist-test-session",
+    } as ToolContext);
+    expect(more.content).toMatch(/<site-data>[\s\S]*Our Pricing[\s\S]*<\/site-data>/);
   });
 
   it("tool surfaces Markdown + tokens + a pageRef + a screenshot hint — but NEVER raw page-builder HTML", async () => {

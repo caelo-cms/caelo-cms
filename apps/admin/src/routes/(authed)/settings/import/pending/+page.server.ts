@@ -14,6 +14,7 @@ import {
   deriveCeilingFromEstimate,
   ESTIMATE_CEILING_SAFETY_FACTOR,
   formatMicrocentsAsMoney,
+  startSiteImportJob,
 } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
@@ -113,11 +114,14 @@ export const actions: Actions = {
       return fail(400, { error: message });
     }
     const v = r.value as { ceilingMicrocents: number | null; ceilingCurrency: string | null };
+    // #1360 — the crawl runs in its own job; a start that fails here is
+    // retried by the next scheduler tick.
+    await startSiteImportJob({ adapter, registry }, runId);
     const budgetNote =
       v.ceilingMicrocents !== null && v.ceilingCurrency !== null
         ? ` Cost ceiling armed: ${formatMicrocentsAsMoney(v.ceilingMicrocents, v.ceilingCurrency)}.`
         : "";
-    return { ok: true, message: `Approved — worker picks it up within 10s.${budgetNote}` };
+    return { ok: true, message: `Approved — the crawl has started.${budgetNote}` };
   },
   reject: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
