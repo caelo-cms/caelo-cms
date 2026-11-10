@@ -239,7 +239,7 @@ export const actions: Actions = {
     }
     return {
       ok: true,
-      message: `Reloading ${slug} on every server. This server has retried already; the others follow within seconds.`,
+      message: `Reloading ${slug} on every server. This server has retried already; the others follow on their next request.`,
     };
   },
   disable: async ({ request, locals }) => {

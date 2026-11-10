@@ -300,6 +300,10 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
     "derived (synchronous, #1391): the ids and media slugs each list snapshot state's items reference, maintained by triggers on the journaled list_snapshots; rebuilt by content_instances.rebuild_refs",
   module_snapshot_refs:
     "derived (synchronous, #1391): the ids and media slugs each module snapshot state's fields reference, maintained by triggers on the journaled module_snapshots; rebuilt by content_instances.rebuild_refs",
+  content_value_hashes:
+    "derived (synchronous, #1062/#1269): the md5 of each content instance's field values of 20+ characters, maintained by triggers on the journaled content_instances; rebuilt by content_instances.rebuild_value_hashes",
+  draft_pending_content_value_hashes:
+    "derived (synchronous, #1062/#1269): the same hashes of each pending content-instance state of the draft head, maintained by triggers on draft_pending_entities; rebuilt by content_instances.rebuild_value_hashes",
   page_search_words:
     "derived (synchronous, #1269): the search words of each page's title, short title and slug, maintained by triggers on the journaled pages; rebuilt by pages.rebuild_search_words",
   draft_pending_page_words:

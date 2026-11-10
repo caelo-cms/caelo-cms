@@ -181,6 +181,23 @@ export { PLUGIN_CAPABILITY_INFO, type PluginCapabilityInfo } from "./capability-
  */
 export type PluginProvenance = "release-signed" | "runtime-authored";
 
+/**
+ * The permissions a plugin tool may require of the human a chat call acts
+ * for (`PluginToolSpec.requiredPermission`): the ones a plugin's own owner
+ * panel uses for its writes, so the chat is no way around the panel.
+ * `plugins.approve` is "approve plugin items such as comments", the
+ * Reviewer role's permission (CMS_REQUIREMENTS §9.1).
+ */
+export const PLUGIN_TOOL_PERMISSIONS = [
+  "content.write",
+  "settings.write",
+  "deploy.trigger",
+  "plugins.approve",
+] as const;
+
+/** One of {@link PLUGIN_TOOL_PERMISSIONS}. */
+export type PluginToolPermission = (typeof PLUGIN_TOOL_PERMISSIONS)[number];
+
 /** Tier 1 background worker spec (cron-style). */
 export const pluginWorkerSpec = z.object({
   name: z.string().min(1).max(120),
@@ -237,7 +254,7 @@ export const pluginToolSpec = z.object({
    *  a way around it (e.g. sending a newsletter needs `settings.write`
    *  in the panel and therefore in the chat). Enforced by the host for
    *  `chat` and `approved` invocations, including the Power-MCP. */
-  requiredPermission: z.enum(["content.write", "settings.write", "deploy.trigger"]).optional(),
+  requiredPermission: z.enum(PLUGIN_TOOL_PERMISSIONS).optional(),
   /** #741 — the operation can call `ctx.ai` or generate images, i.e. spend
    *  the install's AI. Declared so the Power-MCP applies a token's cost cap
    *  to exactly these tools and tells the agent the AI part comes back to
@@ -1603,6 +1620,33 @@ export interface PluginQuery {
     id: string,
     patch: Record<string, unknown>,
   ): Promise<void>;
+  /**
+   * One patch on many rows (#1391): every listed row gets the same
+   * columns, in one call and one statement. Every row or none: a missing
+   * or deleted id refuses the whole call and names the ids. Up to 1000
+   * ids per call (split a longer list); an empty list does nothing.
+   * Prefer it to a loop of `update` whenever a pass sets the same value
+   * on several rows: 10,000 single updates cost minutes of database time,
+   * the same rows in ten calls seconds.
+   *
+   * On `ctx.adminQuery` (private rows) the call is one change: one
+   * snapshot for all rows, one undo step, and from a chat it lands on the
+   * chat's branch like `update`. On `ctx.query` (public, visitor data) it
+   * writes the live rows directly, with no snapshot or undo, like `update`
+   * there.
+   *
+   * @example
+   * ```ts
+   * await ctx.adminQuery.updateMany("page_variants", staleIds, {
+   *   translation_status: "needs_update",
+   * });
+   * ```
+   */
+  updateMany<TableName extends string>(
+    table: TableName,
+    ids: readonly string[],
+    patch: Record<string, unknown>,
+  ): Promise<void>;
   delete<TableName extends string>(table: TableName, id: string): Promise<void>;
   /**
    * Atomically update one row only while every expected value still
@@ -2293,10 +2337,34 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * `pageUrlStyle` is the serving target's page URL style; a plugin that
    * links to pages gets their URLs from core (`pages.resolve_public_urls`
    * with this style) instead of building them (#590).
+   *
+   * `lang` is the page's document language (`<html lang>`, BCP 47: the
+   * site language, or the page's locale where a plugin such as
+   * international-site assigns one). Format what the output shows for
+   * the page's readers with it — dates through `Intl.DateTimeFormat(lang,
+   * …)` — so crawlers read the same text visitors do (#1511). Interface
+   * copy (labels, buttons) belongs in the module around the placeholder,
+   * as `{{site_text.<key>}}`, not in this output: the output is plugin
+   * data, re-rendered by plugin-data builds (#1155) that never touch the
+   * page's modules.
+   *
+   * @example
+   * ```ts
+   * staticRender: async (ctx, { pageId, lang }) => {
+   *   const day = new Intl.DateTimeFormat(lang, { dateStyle: "long", timeZone: "UTC" });
+   *   const rows = await ctx.query.list<"entries", { text: string; at: string }>("entries", {
+   *     page_id: pageId,
+   *     limit: 50,
+   *   });
+   *   return rows
+   *     .map((r) => `<p><time datetime="${r.at}">${day.format(new Date(r.at))}</time></p>`)
+   *     .join("");
+   * },
+   * ```
    */
   readonly staticRender?: (
     ctx: C,
-    args: { pageId: string; pageUrlStyle: PageUrlStyle },
+    args: { pageId: string; pageUrlStyle: PageUrlStyle; lang: string },
   ) => Promise<string> | string;
   /**
    * The plugin's channel to the browser: files emitted ONCE per build
@@ -2612,15 +2680,24 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * what the operation reads: an answer that also depends on something
    * else would be served stale.
    *
+   * `pageColumns` names, per table, the column of the page a row answers
+   * for, when a row of that table changes the answer of that page and of
+   * no other. A change to such a row then asks again only about the pages
+   * the row names now and named before, instead of every page; a change
+   * to a table not listed here (a registry every answer depends on) still
+   * asks about every page.
+   *
    * @example
    *   linkResolveReads: {
    *     tables: ["page_variants", "locales"],
    *     columns: ["page_id", "group_id", "locale_code", "code", "is_default"],
+   *     pageColumns: { page_variants: "page_id" },
    *   },
    */
   readonly linkResolveReads?: {
     readonly tables: ReadonlyArray<string>;
     readonly columns?: ReadonlyArray<string>;
+    readonly pageColumns?: Readonly<Record<string, string>>;
   };
   /**
    * Epic #724 (rollout E) — where this plugin's private storage holds

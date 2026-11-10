@@ -43,11 +43,6 @@ const listForPageInput = z
     since: z.string().datetime().optional(),
     /** Only comments older than this position: the next page of the thread. */
     before: threadCursor.optional(),
-    /**
-     * Only this comment. Either of its ids: a visitor's reply names its
-     * parent by the public row id, a team reply (`post_team`) by the archive id.
-     */
-    commentId: z.string().uuid().optional(),
     limit: z.number().int().min(1).max(500).optional(),
   })
   .strict();
@@ -84,13 +79,6 @@ const listForPageOutput = z.object({
 function beforeClause(before: z.infer<typeof threadCursor> | undefined) {
   return before
     ? sql`AND (archived_at, id) < (${before.archivedAt}::timestamptz, ${before.id}::uuid)`
-    : sql``;
-}
-
-/** Narrow a read to one comment (`commentId` of the input), as SQL. */
-function commentClause(commentId: string | undefined) {
-  return commentId
-    ? sql`AND (id = ${commentId}::uuid OR public_row_id = ${commentId}::uuid)`
     : sql``;
 }
 
@@ -145,7 +133,6 @@ export const commentArchiveListForPageOp = defineOperation({
         AND status = ${status}
         AND archived_at > ${since}::timestamptz
         ${beforeClause(input.before)}
-        ${commentClause(input.commentId)}
       ORDER BY archived_at DESC, comment_archive.id DESC
       LIMIT ${limit + 1}
     `)) as unknown as Array<{
@@ -203,7 +190,6 @@ export const publishedCommentsListForPageOp = defineOperation({
       FROM published_comments
       WHERE page_id = ${input.pageId}::uuid AND archived_at > ${since}::timestamptz
         ${beforeClause(input.before)}
-        ${commentClause(input.commentId)}
       ORDER BY archived_at DESC, published_comments.id DESC
       LIMIT ${limit + 1}
     `)) as unknown as Array<{

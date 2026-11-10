@@ -243,6 +243,25 @@ function snapshotBounds(snapshot: string): SnapshotBounds {
 }
 
 /**
+ * Has a reader at `later` seen every transaction `earlier` saw? Only then
+ * do the journal rows between the two ({@link readChanges} from `earlier`
+ * to `later`) carry a cached read at `earlier` forward to `later`; a
+ * reader whose snapshot is older than the cache (a long build
+ * transaction) must read afresh. The same test `checkJournalMark` makes
+ * in SQL, on the snapshot texts.
+ */
+export function snapshotFollows(earlier: string, later: string): boolean {
+  const e = snapshotBounds(earlier);
+  const l = snapshotBounds(later);
+  const eMax = BigInt(e.xmax);
+  if (eMax > BigInt(l.xmax)) return false;
+  const inFlightEarlier = new Set(e.xip);
+  // A transaction `earlier` saw committed (below its xmax, not in its
+  // xip) must not still be in flight for `later`.
+  return l.xip.every((x) => BigInt(x) >= eMax || inFlightEarlier.has(x));
+}
+
+/**
  * The journal rows a snapshot has not seen, as a FROM item: those of a
  * transaction at or after its xmax, or of one in flight when it was taken
  * (its xip list, all below xmax), plus `ownXid`'s when given. That is
@@ -459,17 +478,40 @@ export async function finishConsumerRebuild(
   name: string,
   opts: { readonly holder?: string } = {},
 ): Promise<void> {
+  if (opts.holder !== undefined) {
+    if (!(await finishConsumerRebuildIfHeld(tx, name, opts.holder))) {
+      throw new Error(
+        `finishConsumerRebuild(${name}): this instance's claim lapsed or was taken over during the rebuild; the rebuild stays pending and runs again`,
+      );
+    }
+    return;
+  }
   const rows = (await tx.execute(sql`
     UPDATE change_consumers SET rebuild_pending = false, updated_at = now()
-     WHERE name = ${name} AND ${claimHeld(opts.holder)}
+     WHERE name = ${name}
     RETURNING 1
   `)) as unknown as unknown[];
-  if (rows.length === 0) {
-    if (opts.holder === undefined) throw unknownConsumer(name);
-    throw new Error(
-      `finishConsumerRebuild(${name}): this instance's claim lapsed or was taken over during the rebuild; the rebuild stays pending and runs again`,
-    );
-  }
+  if (rows.length === 0) throw unknownConsumer(name);
+}
+
+/**
+ * {@link finishConsumerRebuild} for a claim holder, answering instead of
+ * throwing: false (and nothing changes) when `holder`'s claim lapsed or
+ * was taken over during the rebuild, which then stays pending.
+ *
+ * @returns whether the consumer is marked rebuilt
+ */
+export async function finishConsumerRebuildIfHeld(
+  tx: TransactionRunner,
+  name: string,
+  holder: string,
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    UPDATE change_consumers SET rebuild_pending = false, updated_at = now()
+     WHERE name = ${name} AND ${claimHeld(holder)}
+    RETURNING 1
+  `)) as unknown as unknown[];
+  return rows.length > 0;
 }
 
 /** Whether the consumer's derived state still has to be rebuilt ({@link beginConsumerRebuild}). */
@@ -609,6 +651,12 @@ export async function readChanges(
     readonly after: readonly [string, string, string] | null;
     readonly filter: JournalFilter;
     readonly limit: number;
+    /**
+     * The cursor's own xid ({@link JournalMark.ownXid}) when the cursor is a
+     * cached read's mark: Postgres leaves a transaction's own xid out of its
+     * snapshots, so its writes after the read would otherwise count as seen.
+     */
+    readonly ownXid?: string | null;
   },
 ): Promise<{
   changes: JournalChange[];
@@ -635,8 +683,8 @@ export async function readChanges(
              ec.site_snapshot_id::text AS site_snapshot_id,
              ec.prev_snapshot_id::text AS prev_snapshot_id, ec.op_name,
              ec.created_at::text AS created_at
-        FROM ${unseenRows(snapshotBounds(input.cursor))} ec, c
-       WHERE NOT pg_visible_in_snapshot(ec.xid, c.s)
+        FROM ${unseenRows(snapshotBounds(input.cursor), input.ownXid ?? null)} ec, c
+       WHERE (NOT pg_visible_in_snapshot(ec.xid, c.s) OR ec.xid = ${input.ownXid ?? null}::xid8)
          AND pg_visible_in_snapshot(ec.xid, c.t)
          ${
            after
@@ -721,6 +769,27 @@ export async function commitChanges(
   token: string,
   opts: { readonly holder?: string } = {},
 ): Promise<void> {
+  if (!(await commitChangesIfCurrent(tx, name, token, opts))) {
+    throw new Error(
+      `commitChanges(${name}): the cursor moved since this batch was polled, or this instance's claim lapsed — another instance may be consuming it; the batch stays uncommitted and is delivered again`,
+    );
+  }
+}
+
+/**
+ * {@link commitChanges}, answering instead of throwing when the batch is no
+ * longer this consumer's to store: the cursor moved since it was polled, or
+ * the holder's claim lapsed or was taken over. Then nothing changes and the
+ * answer is false. A token of another consumer still throws.
+ *
+ * @returns whether the batch was stored
+ */
+export async function commitChangesIfCurrent(
+  tx: TransactionRunner,
+  name: string,
+  token: string,
+  opts: { readonly holder?: string } = {},
+): Promise<boolean> {
   let parsed: Token;
   try {
     parsed = JSON.parse(token) as Token;
@@ -742,11 +811,7 @@ export async function commitChanges(
        AND ${claimHeld(opts.holder)}
     RETURNING 1
   `)) as unknown as unknown[];
-  if (rows.length === 0) {
-    throw new Error(
-      `commitChanges(${name}): the cursor moved since this batch was polled, or this instance's claim lapsed — another instance may be consuming it; the batch stays uncommitted and is delivered again`,
-    );
-  }
+  return rows.length > 0;
 }
 
 /**

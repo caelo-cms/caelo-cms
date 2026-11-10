@@ -60,6 +60,7 @@ const PROBE_CONTEXT: PluginContext = {
     insert: denied,
     list: denied,
     update: denied,
+    updateMany: denied,
     delete: denied,
     compareAndSwap: denied,
   },

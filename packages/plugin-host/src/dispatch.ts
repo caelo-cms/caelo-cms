@@ -1054,7 +1054,7 @@ function extractEntityId(result: unknown): string | null {
 }
 
 /**
- * P13 — invoke the plugin's `staticRender(ctx, {pageId})`
+ * P13 — invoke the plugin's `staticRender(ctx, {pageId, pageUrlStyle, lang})`
  * function via the same context factory used by ordinary ops. Returns
  * `null` when the plugin doesn't declare a staticRender. Used by the
  * static generator's plugin pass to bake plugin-emitted HTML at deploy.
@@ -1063,6 +1063,8 @@ export async function runPluginStaticRender(opts: {
   pluginSlug: string;
   pageId: string;
   pageUrlStyle: PageUrlStyle;
+  /** The page's document language (`<html lang>`), #1511. */
+  lang: string;
   invocation: PluginInvocation;
   /** #1495 — a plugin-data build: page URLs come from the live build. */
   liveUrls?: LiveBuildUrls;
@@ -1084,6 +1086,7 @@ export async function runPluginStaticRender(opts: {
   const out = await render(ctx as PluginContext, {
     pageId: opts.pageId,
     pageUrlStyle: opts.pageUrlStyle,
+    lang: opts.lang,
   });
   return typeof out === "string" ? out : "";
 }

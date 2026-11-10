@@ -12,6 +12,7 @@
     previewUrl,
   } from "#lib/components/edit/iframe-protocol.js";
   import { persistPreviewCookies } from "#lib/components/edit/preview-cookie-jar.js";
+  import { browserPresence } from "#lib/live/presence.js";
 
   let { data, form } = $props();
 
@@ -97,6 +98,8 @@
   onMount(() => {
     const handler = (ev: MessageEvent): void => {
       const msg = previewMessage(ev, iframe?.contentWindow, previewChannel);
+      // #1361 — input in the preview never reaches this window; it reports it.
+      if (msg?.kind === "caelo:activity") browserPresence.noteInput();
       // Cookies the page set, kept for the next load (preview-cookie-jar.ts).
       if (msg?.kind === "caelo:cookies") persistPreviewCookies(msg.cookies);
       if (msg?.kind !== "caelo:navigate" || !iframe) return;
