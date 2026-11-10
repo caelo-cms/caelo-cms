@@ -2516,8 +2516,9 @@ export default definePlugin<PluginContextTier1>({
       "list_type",
     ],
     // #1269 — a variant written names the pages whose list translations
-    // to re-check (list-reconcile.ts).
-    ownTables: ["page_variants"],
+    // to re-check; a language added or removed re-checks all of them
+    // (list-reconcile.ts).
+    ownTables: ["page_variants", "locales"],
     lines: "main",
   },
   workers: [

@@ -29,14 +29,15 @@
  *     (a new placement can make an instance show in another language) and
  *     its language-version properties (its own, or its group's when it is
  *     the source);
- *   - a module whose fields changed → its instances (a local list field
- *     added or removed);
+ *   - a module whose fields changed, or that was removed or restored →
+ *     its instances (a local list field added or removed);
  *   - a page variant written → the same as its page;
  *   - plugin texts → every batch (another plugin's storage sends this
  *     plugin no changes; they are few).
  * A list type or page type changes the shape of every list or property of
- * that type, a removed variant no longer names its page, and a truncate
- * names nothing: those take the whole reconcile, which is also the rebuild.
+ * that type, the site's languages are an input of every target, a removed
+ * variant no longer names its page, and a truncate names nothing: those
+ * take the whole reconcile, which is also the rebuild.
  *
  * An instance shown in no other language keeps its rows (collectSources):
  * a removed placement names no instance, so only a removed instance, field
@@ -44,7 +45,8 @@
  *
  * Garbage collection of orphaned rows waits for a production build that
  * started after the removal; it runs once per such build
- * ({@link collectLiveOrphans}), reading the orphaned rows by status.
+ * ({@link collectLiveOrphans}), reading the orphaned rows by status and
+ * reconciling their targets first (an entry restored since keeps them).
  */
 
 import type { ListTypeDef, PageTypeDef } from "@caelo-cms/plugin-sdk";
@@ -351,6 +353,28 @@ export async function reconcileListTranslations(
   lastLiveAt: string | null,
   scope: ReconcileScope = "all",
 ): Promise<{ updated: number; inserted: number; collected: number }> {
+  const done = await reconcileTargets(deps, lastLiveAt, scope);
+  const gc = await collectLiveOrphans(deps, lastLiveAt);
+  return {
+    updated: done.updated + gc.updated,
+    inserted: done.inserted + gc.inserted,
+    collected: done.collected + gc.collected,
+  };
+}
+
+/** What one reconcile of a scope did; `touched` = every row it updated or deleted. */
+interface ReconcileOutcome {
+  readonly updated: number;
+  readonly inserted: number;
+  readonly collected: number;
+  readonly touched: ReadonlySet<string>;
+}
+
+async function reconcileTargets(
+  deps: ChromeDeps,
+  lastLiveAt: string | null,
+  scope: ReconcileScope,
+): Promise<ReconcileOutcome> {
   const input = await loadReconcileInput(deps, scope);
   const locales = [...deps.locales.values()].filter((l) => !l.is_default).map((l) => l.code);
   const rows: (ReconcileRow & { table: string })[] = [
@@ -437,23 +461,37 @@ export async function reconcileListTranslations(
       });
     }
   }
-  collected += await collectLiveOrphans(deps, lastLiveAt);
-  return { updated: updatedCount, inserted: plan.inserts.length, collected };
+  return {
+    updated: updatedCount,
+    inserted: plan.inserts.length,
+    collected,
+    touched: new Set(plan.updates.map((u) => u.id)),
+  };
 }
 
 function isLive(liveAt: number | null, orphanedAt: string | null): boolean {
   return liveAt !== null && orphanedAt !== null && Date.parse(orphanedAt) < liveAt;
 }
 
+const TRANSLATION_TABLES = [
+  "list_value_translations",
+  "term_translations",
+  "page_prop_translations",
+];
+
 /**
  * Delete the orphaned rows whose removal a production build has made live:
  * once per such build, not per batch — a row orphaned after the build
- * started waits for the next one.
- *
- * @returns how many rows were deleted.
+ * started waits for the next one. Their targets are reconciled first: an
+ * entry restored since (its change still queued behind this batch) brings
+ * its rows back instead of losing them.
  */
-async function collectLiveOrphans(deps: ChromeDeps, lastLiveAt: string | null): Promise<number> {
-  if (lastLiveAt === null) return 0;
+async function collectLiveOrphans(
+  deps: ChromeDeps,
+  lastLiveAt: string | null,
+): Promise<{ updated: number; inserted: number; collected: number }> {
+  const none = { updated: 0, inserted: 0, collected: 0 };
+  if (lastLiveAt === null) return none;
   const { q } = deps;
   const mark = (
     (await q.list("settings", { key: ORPHANS_COLLECTED_KEY, limit: 1 })) as unknown as {
@@ -461,24 +499,44 @@ async function collectLiveOrphans(deps: ChromeDeps, lastLiveAt: string | null): 
       value: { liveAt?: string } | null;
     }[]
   )[0];
-  if (mark?.value?.liveAt === lastLiveAt) return 0;
+  if (mark?.value?.liveAt === lastLiveAt) return none;
   const liveAt = Date.parse(lastLiveAt);
-  let collected = 0;
-  for (const table of ["list_value_translations", "term_translations", "page_prop_translations"]) {
-    const orphaned = (await listAll(q, table, { status: "orphaned" })) as unknown as {
-      id: string;
-      orphaned_at: unknown;
-    }[];
-    for (const r of orphaned) {
-      if (!isLive(liveAt, iso(r.orphaned_at))) continue;
-      await q.delete(table, r.id);
-      collected += 1;
+  const candidates: { table: string; row: Record<string, unknown> & { id: string } }[] = [];
+  for (const table of TRANSLATION_TABLES) {
+    for (const row of (await listAll(q, table, { status: "orphaned" })) as unknown as (Record<
+      string,
+      unknown
+    > & { id: string })[]) {
+      if (isLive(liveAt, iso(row.orphaned_at))) candidates.push({ table, row });
+    }
+  }
+  let outcome: ReconcileOutcome = { ...none, touched: new Set() };
+  if (candidates.length > 0) {
+    const lists = new Set<string>();
+    const instances = new Set<string>();
+    const pages = new Set<string>();
+    for (const { table, row } of candidates) {
+      if (table === "term_translations") lists.add(String(row.list_id));
+      else if (table === "page_prop_translations") pages.add(String(row.page_id));
+      else {
+        const [kind, id] = targetOfAddress(String(row.address)).split(":") as [string, string];
+        if (kind === "list") lists.add(id);
+        else if (kind === "instance") instances.add(id);
+        // Plugin texts are part of every reconcile.
+      }
+    }
+    outcome = await reconcileTargets(deps, lastLiveAt, { lists, instances, pages });
+    for (const { table, row } of candidates) {
+      // Restored, or already collected by the reconcile: nothing left to do.
+      if (outcome.touched.has(row.id)) continue;
+      await q.delete(table, row.id);
+      outcome = { ...outcome, collected: outcome.collected + 1 };
     }
   }
   const value = { liveAt: lastLiveAt };
   if (mark) await q.update("settings", mark.id, { value });
   else await q.insert("settings", { key: ORPHANS_COLLECTED_KEY, value });
-  return collected;
+  return { updated: outcome.updated, inserted: outcome.inserted, collected: outcome.collected };
 }
 
 /** One change as the consumer receives it (the fields the scope reads). */
@@ -490,9 +548,6 @@ export interface ListChange {
   readonly table?: string | null;
   readonly changedColumns?: readonly string[] | null;
 }
-
-/** Variant columns that move a page between groups or languages. */
-const VARIANT_PLACE_COLUMNS = new Set(["page_id", "group_id", "locale_code"]);
 
 /**
  * The targets a batch of main-line changes names (see the header), or the
@@ -506,12 +561,10 @@ export async function reconcileScopeOf(
   const instances = new Set<string>();
   const pages = new Set<string>();
   const placementPages = new Set<string>();
-  const fieldModules = new Set<string>();
+  const visibleModules = new Set<string>();
+  // A variant write arrives as its row's change and its history
+  // snapshot's, both naming the variant.
   const variantIds = new Set<string>();
-  // Status-only updates: they matter only where a page became its group's
-  // source (whose old source, now a version, the group re-check covers).
-  // The staleness marks this consumer writes itself change nothing here.
-  const statusOnly = new Set<string>();
   const touches = (c: ListChange, column: string) =>
     c.op !== "update" || c.changedColumns == null || c.changedColumns.includes(column);
   for (const c of changes) {
@@ -528,7 +581,9 @@ export async function reconcileScopeOf(
         instances.add(c.rowId);
         break;
       case "module":
-        if (touches(c, "fields")) fieldModules.add(c.rowId);
+        // Its fields decide which local lists its instances hold; removing
+        // or restoring it shows or hides all of them.
+        if (touches(c, "fields") || touches(c, "deleted_at")) visibleModules.add(c.rowId);
         break;
       case "page":
         pages.add(c.rowId);
@@ -541,23 +596,24 @@ export async function reconcileScopeOf(
         if (c.parentId) placementPages.add(c.parentId);
         break;
       case "own":
-        if (c.table !== "page_variants") break;
-        if (c.op === "delete") return { whole: "a removed page variant no longer names its page" };
-        if (c.op === "insert" || c.changedColumns == null) variantIds.add(c.rowId);
-        else if (c.changedColumns.some((col) => VARIANT_PLACE_COLUMNS.has(col))) {
-          variantIds.add(c.rowId);
-        } else if (c.changedColumns.includes("translation_status")) statusOnly.add(c.rowId);
+        // The languages are an input of every target.
+        if (c.table === "locales") return { whole: "the site's languages changed" };
+        if (c.table === "page_variants") variantIds.add(c.rowId);
         break;
       default:
         break;
     }
   }
   const { cms, q } = deps;
-  for (const v of (await listWhereAnyOf(q, "page_variants", "id", [
+  const variants = (await listWhereAnyOf(q, "page_variants", "id", [
     ...variantIds,
-    ...statusOnly,
-  ])) as unknown as PageVariantRow[]) {
-    if (!variantIds.has(v.id) && v.translation_status !== "source") continue;
+  ])) as unknown as PageVariantRow[];
+  // A removed variant (deleted, or its row soft-deleted) no longer names
+  // its page or group.
+  if (variants.length < variantIds.size) {
+    return { whole: "a removed page variant no longer names its page" };
+  }
+  for (const v of variants) {
     pages.add(v.page_id);
     placementPages.add(v.page_id);
   }
@@ -568,7 +624,7 @@ export async function reconcileScopeOf(
     );
     for (const li of r.listInstances) instances.add(li.contentInstanceId);
   }
-  for (const part of chunked([...fieldModules])) {
+  for (const part of chunked([...visibleModules])) {
     const r = await cms.call<{ instances: { id: string }[] }>("content_instances.list", {
       moduleIds: part,
     });

@@ -619,6 +619,22 @@ describe("international-site lists — #1269 the change consumer reconciles what
     expect((await row())?.target).toBe(`instance:${ciId}`);
     await expectNoDrift();
 
+    // Removed or restored with its module: orphaned, then back.
+    await sqlSystem(
+      (tx) =>
+        tx`UPDATE modules SET deleted_at = now() WHERE id = (SELECT module_id FROM content_instances WHERE id = ${ciId}::uuid)`,
+    );
+    await tick();
+    expect(await orphanedOrCollected(await row())).toBe(true);
+    await expectNoDrift();
+    await sqlSystem(
+      (tx) =>
+        tx`UPDATE modules SET deleted_at = NULL WHERE id = (SELECT module_id FROM content_instances WHERE id = ${ciId}::uuid)`,
+    );
+    await tick();
+    expect((await row())?.status).toBe("missing");
+    await expectNoDrift();
+
     // Off the German page: nothing to translate any more, the row is kept.
     await sqlSystem(
       (tx) =>
@@ -633,11 +649,89 @@ describe("international-site lists — #1269 the change consumer reconciles what
       (tx) => tx`UPDATE content_instances SET deleted_at = now() WHERE id = ${ciId}::uuid`,
     );
     await tick();
-    expect((await row())?.status).toBe("orphaned");
+    expect(await orphanedOrCollected(await row())).toBe(true);
     // The later tests render these pages: take the placement off again.
     await sqlSystem((tx) => tx`DELETE FROM page_modules WHERE content_instance_id = ${ciId}::uuid`);
   });
+
+  it("a language added gets its rows for every list, without a list change", async () => {
+    const locales = [
+      { code: "en", displayName: "English", urlStrategy: "subdirectory", isDefault: true },
+      { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+    ];
+    await op("set_locales", {
+      locales: [
+        ...locales,
+        { code: "fr", displayName: "Français", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    await tick();
+    const fr = (await rows("list_value_translations")).find(
+      (r) => r.address === labelAddr(1) && r.locale_code === "fr",
+    );
+    expect(fr?.status).toBe("missing");
+    await expectNoDrift();
+    await op("set_locales", { locales });
+  });
+
+  it("collecting orphans re-checks their targets: an entry restored since keeps its translation", async () => {
+    const about = {
+      id: E(2),
+      node: "entry",
+      values: { label: "About us", note: "t1269", link: { href: `caelo:page/${ids.about}` } },
+    };
+    await patch([{ op: "remove", itemId: E(2) }]);
+    await tick();
+    const before = await valueRow(labelAddr(2));
+    expect(await orphanedOrCollected(before)).toBe(true);
+    // A production build after the removal, and the entry back — but the
+    // batch that restores it is not delivered yet: an unrelated batch
+    // reaches the collector first.
+    await sqlSystem(async (tx) => {
+      const t = (await tx`INSERT INTO deploy_targets (name, env, out_dir)
+        VALUES (${`${PFX}-prod2`}, 'production', '/tmp/t1114i') RETURNING id::text AS id`) as unknown as {
+        id: string;
+      }[];
+      await tx`INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at)
+        VALUES (${t[0]?.id}::uuid, ${SYSTEM_ACTOR_ID}::uuid, 'succeeded', now() + interval '1 second', now() + interval '2 seconds')`;
+    });
+    await patch([{ op: "add", position: 1, item: about }]);
+    await op("translation_staleness_tick", {
+      chatBranchId: null,
+      changes: [{ kind: "page", op: "update", rowId: ids.about, parentId: null }],
+    });
+    if (before) {
+      // It was still orphaned (not yet collected): the collector restored it.
+      const after = await valueRow(labelAddr(2));
+      expect(after?.status).not.toBe("orphaned");
+      expect(after?.value).toBe(before.value);
+    }
+  });
 });
+
+/** A German value row by address. */
+async function valueRow(address: string): Promise<Record<string, unknown> | undefined> {
+  return (await rows("list_value_translations")).find(
+    (r) => r.address === address && r.locale_code === "de",
+  );
+}
+
+/**
+ * A removed entry's row is orphaned — or already collected, when a
+ * production build that started after the removal exists (other test
+ * files seed production runs dated ahead).
+ */
+async function orphanedOrCollected(r: Record<string, unknown> | undefined): Promise<boolean> {
+  if (r?.status === "orphaned") return true;
+  if (r !== undefined) return false;
+  const ahead = (await sqlSystem(
+    (tx) => tx`SELECT EXISTS (
+      SELECT 1 FROM deploy_runs dr JOIN deploy_targets dt ON dt.id = dr.target_id
+      WHERE dt.env = 'production' AND dr.status = 'succeeded' AND dr.started_at > now() - interval '1 minute'
+    ) AS ahead`,
+  )) as unknown as { ahead: boolean }[];
+  return ahead[0]?.ahead === true;
+}
 
 describe("international-site lists — tools", () => {
   it("apply_translations by address writes a dictated wording and refuses unknown addresses", async () => {
