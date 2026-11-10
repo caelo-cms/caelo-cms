@@ -45,7 +45,9 @@
  * requests keep coming the instance had CPU all along and its notifications
  * were handled; it confirms again only once the last confirmation is older
  * than {@link CONFIRM_MAX_AGE_MS}, which also bounds what a LISTEN
- * connection that died without a word could hide.
+ * connection that died without a word could hide. A "feature off" answer
+ * from memory comes before every gate, so it confirms at most once per
+ * {@link CONFIRM_MAX_AGE_MS} instead ({@link confirmOffAnswer}).
  */
 
 import type { DatabaseAdapter, ListenHandle } from "@caelo-cms/query-api";
@@ -143,6 +145,34 @@ export function confirmPublishedState(
   if (!subscribed) return Promise.resolve();
   if (confirming) return confirming;
   if (!mayHaveMissed && now - confirmedAt < CONFIRM_MAX_AGE_MS) return Promise.resolve();
+  return startConfirmation(readVersions, now);
+}
+
+/**
+ * Confirm the published state behind a "this feature is off" answer from
+ * memory (epic #763 E14 a). That answer comes before anything of the
+ * request is read, junk included, so this reads at most once per
+ * {@link CONFIRM_MAX_AGE_MS}, whether or not the instance idled. An
+ * instance that idled longer than that confirms on its first request, so a
+ * feature switched on meanwhile (a staging host set, a visitor plugin
+ * activated) is served from that request on. A request within
+ * {@link CONFIRM_MAX_AGE_MS} of the last confirmation can still get the
+ * fixed 404 once more while the notification waits.
+ *
+ * @param readVersions - as for {@link confirmPublishedState}
+ * @param now - milliseconds since the epoch (tests)
+ */
+export function confirmOffAnswer(
+  readVersions: () => Promise<string>,
+  now: number = Date.now(),
+): Promise<void> {
+  if (!subscribed) return Promise.resolve();
+  if (confirming) return confirming;
+  if (now - confirmedAt < CONFIRM_MAX_AGE_MS) return Promise.resolve();
+  return startConfirmation(readVersions, now);
+}
+
+function startConfirmation(readVersions: () => Promise<string>, now: number): Promise<void> {
   const run = (async () => {
     try {
       const versions = await readVersions();

@@ -143,7 +143,8 @@ describe("no background timer does the admin's work (#1140)", () => {
     );
     // The heartbeat's one interval is the renewal a request in flight holds
     // (holdRuntimeHeartbeat, released by the admin's handle when the
-    // response is sent); it has no timeout either.
+    // response body ends); it has no timeout either. A sub-request holds
+    // nothing: its body may go unread, and a hold it took would never end.
     const health = text("packages/plugin-host/src/runtime-health.ts");
     expect(health.match(/\bsetInterval\s*\(/g)).toEqual(["setInterval("]);
     expect(health).not.toMatch(/\bsetTimeout\s*\(/);
@@ -151,6 +152,7 @@ describe("no background timer does the admin's work (#1140)", () => {
     const hooks = text("apps/admin/src/hooks.server.ts");
     expect(hooks).toContain("const release = holdRuntimeHeartbeat();");
     expect(hooks).toContain("releaseWhenSent(await handleRequest(input), release)");
+    expect(hooks).toContain("if (input.event.isSubRequest) return handleRequest(input);");
     // The change consumers' only timeout is a wake-up's 50 ms coalescing,
     // which runs on the CPU of whatever woke it; a retry rides the next
     // request start or tick instead of a timer.
