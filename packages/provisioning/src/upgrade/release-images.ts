@@ -115,15 +115,17 @@ export function canonicalReleaseTag(s: string): string | null {
 /**
  * The registry tag for an upgrade request: an explicit version (a leading
  * `v` dropped, as release tags are `vX.Y.Z` but image tags `X.Y.Z`), else
- * the channel's moving tag, else `latest`.
+ * `latest`, the newest stable release.
+ *
+ * No `channel`: the pipeline publishes no moving `rc` / `beta` tag, so a
+ * channel is resolved to its exact version first (release-candidate.ts
+ * resolveChannelVersion, #1558). The parameter type refuses one that wasn't.
  */
 export function releaseTag(opts: {
   readonly version?: string;
-  readonly channel?: "stable" | "rc" | "beta";
+  readonly channel?: undefined;
 }): string {
   if (opts.version) return opts.version.startsWith("v") ? opts.version.slice(1) : opts.version;
-  if (opts.channel === "rc") return "rc";
-  if (opts.channel === "beta") return "beta";
   return "latest";
 }
 

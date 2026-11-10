@@ -1,8 +1,8 @@
 # Maintainer one-time setup — public image registry mirrors
 
 The release-images workflow publishes the `admin`, `gateway`, `mcp-auth-proxy` and `ops` containers (and release.yml the signed `release-manifest` artifact, epic #696) to:
-1. `ghcr.io/caelo-cms/<service>` — canonical, used by Compose installs.
-2. `<region>-docker.pkg.dev/<project>/caelo-cms-images/<service>` — required because Cloud Run rejects ghcr.io directly.
+1. `ghcr.io/caelo-cms/<service>` — canonical, used by Compose installs. Every publishing build: main and every release.
+2. `<region>-docker.pkg.dev/<project>/caelo-cms-images/<service>` — required because Cloud Run rejects ghcr.io directly. Releases and release candidates only (#1558); a push to main never reaches it.
 3. *(P15)* `public.ecr.aws/caelo-cms/<service>` — for AWS adapter.
 4. *(P15)* `<acr>.azurecr.io/<service>` — for Azure adapter.
 
@@ -93,18 +93,13 @@ echo "  GCP_PUBLIC_REGISTRY_REPO=${REPO}"
 
 ## Verification
 
-After landing the variables in GitHub Actions, push an empty commit to trigger release-images:
+The mirror receives release builds only (#1558), so a push to main does not exercise it. After landing the variables in GitHub Actions, cut a release candidate (RELEASING.md, "Pre-releases"): its `release.yml` run calls release-images on the tag.
 
-```bash
-git commit --allow-empty -m "chore: trigger release-images for AR mirror"
-git push origin main
-```
-
-Watch `gh run watch` — the workflow's "Mirror image to GCP public AR" step should succeed for every image (admin, gateway, mcp-auth-proxy, ops). A new GHCR package (such as `mcp-auth-proxy` on its first push, #1328) starts private: set its visibility to public and link it to the repo under the package's settings, or anonymous Compose pulls and the retention workflow fail for it. Then anonymous pull should work:
+Watch `gh run watch` — release-images' "Mirror image (+ signatures) to GCP public AR" and "Verify the mirrored image is signed (gate)" steps should succeed for every image (admin, gateway, mcp-auth-proxy, ops). A new GHCR package (such as `mcp-auth-proxy` on its first push, #1328) starts private: set its visibility to public and link it to the repo under the package's settings, or anonymous Compose pulls and the retention workflow fail for it. Then anonymous pull should work:
 
 ```bash
 gcloud artifacts docker images list europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images
-docker pull europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/admin:main  # no auth
+docker pull europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/admin:<rc-version>  # no auth
 ```
 
 ## Signatures must survive the mirror
@@ -115,21 +110,24 @@ The mirror step therefore uses `oras copy -r`, which walks the OCI referrer grap
 
 To repair an already-published release whose mirror is unsigned, re-run `release-images` against the tag (`gh workflow run release-images.yml --ref vX.Y.Z`): it re-signs and re-mirrors under the same semver tags.
 
-## Retention — releases live forever, dev images for 7 days
+## Retention — releases forever, release candidates 14 days, dev images 7 days on GHCR only
 
-release-images publishes two kinds of images per service, with different lifetimes:
+release-images publishes three kinds of images per service (#1558):
 
-| Kind | Tags | Lifetime | Why |
-|---|---|---|---|
-| Release images | `X.Y.Z`, `X.Y`, `latest` | forever | The artifacts operators pin. Fresh installs and `cms-provision upgrade` both resolve `latest`; the live caelo-cms.com deploy runs a release digest. Deleting one would break `--version vX.Y.Z` pins + cosign verification. |
-| Dev images | `main` (floating), `main-<sha7>` (per merge) | 7 days | Debug/bisect material only — compose dev setups and manual pulls. Nothing in the install path references them: the wizard and `upgrade` resolve release tags. |
+| Kind | Tags | GHCR | GCP AR mirror | Why |
+|---|---|---|---|---|
+| Release | `X.Y.Z`, `X.Y`, `latest` | forever | forever | What installs run. Fresh installs resolve `latest` or the release `--version` names; `cms-provision upgrade` the same. |
+| Release candidate | `X.Y.Z-rc.N` and the marker `rc-X.Y.Z-rc.N` (no `X.Y`, no `latest`) | forever | 14 days | For scratch installs before a release goes out (RELEASING.md, "Pre-releases"). Self-hosted test installs pull from GHCR, which keeps it. |
+| Dev image | `main` (floating), `main-<sha7>` (per merge) | 7 days | never published | Debug/bisect material only — compose dev setups and manual pulls. Nothing in the install path references them. |
 
-Deleting an old digest cannot break a deployed install: per the Cloud Run docs, *"The container image is imported by Cloud Run when deployed. Cloud Run keeps this copy of the container image as long as it is used by a serving revision."* Only re-deploying that exact digest would need the registry copy — and both retention rules below always keep the newest dev images, so the floating `main` tag stays resolvable.
+A release stays in the mirror for good. Cloud Run imports a service's image when it deploys it and serves from that copy — per the Cloud Run docs, *"The container image is imported by Cloud Run when deployed. Cloud Run keeps this copy of the container image as long as it is used by a serving revision."* Cloud Run **jobs** do not: they pull their image each time they run, and a deleted image fails the execution with "Image not found". An install's jobs run its own release's images — the upgrader's first stage and the converge job the installed release's ops image, the quality audit and page captures its admin image — so a deleted release would cost every install still on it its updates from Settings → Updates, its converge job, its quality audits and its page captures, and an update's rollback could not redeploy it. Deleting old releases becomes possible once installs keep their own copy of the images they run.
+
+A release candidate loses exactly that after 14 days. That is why it is for test installs only, and why `init --version` and `upgrade --version` (or `--channel rc`) on Google Cloud warn and ask before they install one (`--accept-release-candidate` confirms in a script).
 
 Enforcement is per registry:
 
 - **GHCR** — the scheduled [`registry-retention.yml`](../.github/workflows/registry-retention.yml) workflow prunes `main-<sha7>` images older than 7 days plus orphaned untagged manifests, daily. Manual `workflow_dispatch` runs default to dry-run.
-- **GCP AR mirror** — native [cleanup policies](https://cloud.google.com/artifact-registry/docs/repositories/cleanup-policy) do the same server-side (no credentials, no cron to maintain). One-time apply (policy file lives at [`maintainer-ar-cleanup-policy.json`](./maintainer-ar-cleanup-policy.json)):
+- **GCP AR mirror** — native [cleanup policies](https://cloud.google.com/artifact-registry/docs/repositories/cleanup-policy) server-side (no credentials, no cron to maintain). One-time apply, and again after every change to the policy file [`maintainer-ar-cleanup-policy.json`](./maintainer-ar-cleanup-policy.json):
 
 ```bash
 gcloud artifacts repositories set-cleanup-policies caelo-cms-images \
@@ -139,13 +137,20 @@ gcloud artifacts repositories set-cleanup-policies caelo-cms-images \
   --no-dry-run
 ```
 
-The policy deletes `main-*`-tagged versions older than 7 days and untagged versions older than 7 days, with a keep-rule for the 10 most recent versions per package as an idle-week backstop (keep beats delete in AR policy evaluation, and release tags never match the `main-` prefix). AR runs cleanup policies roughly daily; expect up to a day of lag after applying.
+The rules:
 
-Known cosmetic leftover: cosign signature artifacts (`sha256-<digest>.sig` tags) of deleted dev images stay behind as orphaned versions in AR — they can't be prefix-matched without also matching release signatures, and at ~2 KB each they're not worth a bespoke GC. GHCR-side the cleanup action removes them together with their subject image.
+- `delete-release-candidates-after-14d` — versions tagged `rc-*` older than 14 days. A release candidate's images and its release manifest carry the marker `rc-<version>` (release-images.yml, release.yml). A tag-prefix rule matches a version when one of its tags starts with the prefix (AR: *"Applied on any prefix match"*), so the candidate goes although it also carries `X.Y.Z-rc.N`. No release tag starts with `rc-` or `main-`; `scripts/ar-cleanup-policy.test.ts` pins that no delete rule matches a release.
+- `delete-untagged-after-7d` — untagged versions older than 7 days. AR never deletes an image a parent manifest still references, and attachments (cosign signatures as OCI referrers) are deleted with their image, not on their own.
+- `delete-main-dev-images-after-7d` — the `main-*` dev images pushed before #1558. Nothing pushes them any more; the rule clears the last of them and then matches nothing.
+- `keep-10-most-recent-versions` — keep beats delete in AR policy evaluation, so in an idle stretch a release candidate that is still among the 10 most recent versions of its package outlives its 14 days.
+
+AR runs cleanup policies roughly daily; expect up to a day of lag after applying. 15 days after the first release candidate, check that its versions are gone (`gcloud artifacts docker tags list europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/admin | grep rc-`).
+
+Known cosmetic leftover: cosign signature artifacts (`sha256-<digest>.sig` tags) of deleted images stay behind as orphaned versions in AR — they can't be prefix-matched without also matching release signatures, and at ~2 KB each they're not worth a bespoke GC. GHCR-side the cleanup action removes them together with their subject image.
 
 ## Operator deploy after mirror is live
 
-Operators run `bunx @caelo-cms/provisioning --provider gcp` and Cloud Run pulls from the mirror — no operator-side AR repo, no copy step, no auth. To pin a specific tag, operators do `pulumi config set caelo-gcp:image-tag v0.1.2`.
+Operators run `bunx @caelo-cms/provisioning --provider gcp` and Cloud Run pulls from the mirror — no operator-side AR repo, no copy step, no auth. To install a specific release, operators pass it to that release's own installer: `bunx @caelo-cms/provisioning@0.12.4 --provider gcp --version 0.12.4`.
 
 To repoint at a different mirror project (e.g. when the dedicated `caelo-cms-public-registry` project is set up later):
 

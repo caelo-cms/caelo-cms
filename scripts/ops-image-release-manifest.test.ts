@@ -13,11 +13,14 @@
  *      identity and verifies it before publishing.
  *   M2 npm + the GitHub Release wait for the manifest; the Release
  *      carries the manifest + bundle.
+ *   M4 A release candidate's manifest also carries the marker tag
+ *      rc-<version>, which the AR cleanup policy deletes it by (#1558).
  */
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import * as yaml from "js-yaml";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -102,6 +105,36 @@ describe("release.yml — signed release manifest", () => {
     expect(gh?.needs).toContain("release-manifest");
     const create = gh?.steps?.find((s) => s.name === "Create GitHub Release");
     expect(String(create?.with?.files)).toContain("release-manifest.json.sigstore.json");
+  });
+
+  it("M4 (#1558): a release candidate's manifest gets rc-<version> in GHCR and the AR mirror", () => {
+    const step = job?.steps?.find((s) => s.name === "Resolve version + guard the signing identity");
+    const script = step?.run ?? "";
+    // Run the step's own script: the tags it hands the push and the mirror.
+    const tagsFor = (ref: string): string => {
+      const dir = mkdtempSync(join(tmpdir(), "release-ver-"));
+      const out = join(dir, "output");
+      writeFileSync(out, "");
+      const r = Bun.spawnSync(["bash", "-euo", "pipefail", "-c", script], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          REF: ref,
+          GITHUB_REF: `refs/tags/${ref}`,
+          GITHUB_OUTPUT: out,
+        },
+      });
+      const lines = readFileSync(out, "utf8");
+      rmSync(dir, { recursive: true, force: true });
+      expect(r.exitCode).toBe(0);
+      return lines.match(/^tags=(.*)$/m)?.[1] ?? "";
+    };
+    expect(tagsFor("v0.12.4")).toBe("0.12.4");
+    expect(tagsFor("v0.12.5-rc.1")).toBe("0.12.5-rc.1,rc-0.12.5-rc.1");
+    const push = job?.steps?.find((s) => s.name === "Push the manifest as an OCI artifact (GHCR)");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell variable in the workflow
+    expect(push?.run).toContain('oras push "${MANIFEST_IMAGE}:${TAGS}"');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell variable in the workflow
+    expect(runs).toContain("/release-manifest:${TAGS}");
   });
 
   it("M3 (#1025): signs each image's linux/amd64 platform digest, read from the index by digest", () => {

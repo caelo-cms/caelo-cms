@@ -40,12 +40,14 @@ import {
   currentMetadata,
   type InstallMetadata,
   installRoot,
-  isStepDone,
   readLocalMetadata,
   readMetadata,
-  recordedImageDigests,
-  recordImageDigests,
 } from "../install-state.js";
+import {
+  attachedInstallVersionProblem,
+  installRecordFromManifest,
+  recordLaunchRelease,
+} from "../install-version.js";
 import { issueOwnerSetup } from "../owner-setup-token.js";
 import { fetchVerifiedReleaseManifest } from "../release-manifest.js";
 import { selfCommand } from "../self-command.js";
@@ -294,6 +296,10 @@ async function showResult(meta: InstallMetadata): Promise<void> {
 /**
  * After the bootstrap (gcp.ts, job mode): pin the release, start the job —
  * or attach to / show the one already there — and follow it.
+ *
+ * @param opts.version - `--version` (#1558), already settled by the wizard:
+ *   the release the job runs and, on a new install, deploys. Default: the
+ *   release this CLI belongs to.
  */
 export async function launchInstallJob(opts: {
   installId: string;
@@ -301,6 +307,7 @@ export async function launchInstallJob(opts: {
   region: string;
   provisionerEmail: string;
   nonInteractive: boolean;
+  version?: string;
 }): Promise<void> {
   const { installId, projectId, region } = opts;
   const meta = readMetadata(installId);
@@ -329,22 +336,27 @@ export async function launchInstallJob(opts: {
     }
   }
 
-  // The release this CLI belongs to, verified against Caelo's release
-  // workflow identity: its manifest pins the ops image the job runs and,
-  // for a new install, the admin + gateway images it deploys.
-  const verified = await fetchVerifiedReleaseManifest(CAELO_VERSION);
+  // The release to install (`--version`, else the one this CLI belongs to),
+  // verified against Caelo's release workflow identity: its manifest pins
+  // the ops image the job runs and, for a new install, the admin, gateway
+  // and MCP-Auth-Proxy images it deploys.
+  const version = opts.version ?? CAELO_VERSION;
+  const verified = await fetchVerifiedReleaseManifest(version);
   if (!verified.ok) {
-    cancel(`Could not verify release v${CAELO_VERSION}: ${verified.error.message}`);
+    cancel(`Could not verify release v${version}: ${verified.error.message}`);
     process.exit(1);
   }
   const { digests } = verified.manifest;
-  if (!isStepDone(installId, `pulumi-up-${projectId}`) && !recordedImageDigests(meta)) {
-    recordImageDigests(installId, { admin: digests.admin, gateway: digests.gateway });
+  const record = installRecordFromManifest(verified.manifest);
+  if (!record.ok) {
+    cancel(record.error);
+    process.exit(1);
   }
 
   // One launcher at a time decides and starts: two terminals resuming the
   // same install would otherwise both start an execution before either
-  // recorded it. Under the lock the decision is taken again.
+  // recorded it. Under the lock the decision is taken again, and only the
+  // launcher that starts the job records its release.
   const bucket = opsBucketName(projectId);
   let release: () => void;
   try {
@@ -363,6 +375,15 @@ export async function launchInstallJob(opts: {
         await followToTheEnd(meta, now.status.execution);
       } else await showResult(meta);
       return;
+    }
+    // #1558 — the release the job deploys, recorded from the bucket as it is
+    // now: another launcher may have recorded one, or an earlier job taken
+    // the install past its first `pulumi up`, since this process read it.
+    const recorded = recordLaunchRelease(installId, projectId, opts.version, record);
+    if (!recorded.ok) {
+      release();
+      cancel(recorded.error);
+      process.exit(1);
     }
     // Automatic DNS in the job (dns/cloudflare.ts) when this shell has a
     // Cloudflare token: it goes to Secret Manager and is mounted into the
@@ -409,7 +430,8 @@ export async function launchInstallJob(opts: {
         execution,
         state: "running",
         phase: "Starting the install job",
-        caeloVersion: CAELO_VERSION,
+        // The release the job runs (its own record says the same).
+        caeloVersion: version,
         startedAt: at,
         updatedAt: at,
       },
@@ -437,9 +459,14 @@ export type JobModePreparation =
  * followed and one whose job finished is shown, without re-running the
  * bootstrap. Otherwise the wizard continues (new install, or a re-run of an
  * unfinished bootstrap).
+ *
+ * @param opts.version - `--version` (#1558): refused before following or
+ *   showing a job that installs another release, since neither path reaches
+ *   the wizard's own check.
  */
 export async function prepareJobModeInstall(opts: {
   projectId?: string;
+  version?: string;
 }): Promise<JobModePreparation> {
   const account = await activeAccount();
   if (!account) {
@@ -475,6 +502,13 @@ export async function prepareJobModeInstall(opts: {
   log.success(`Found install ${bold(meta.installId)} (${meta.domain}) in ${projectId}.`);
   if (!meta.region) return { kind: "existing", meta };
   const decision = await decide(gcloud, realSyncGcloud, { projectId, region: meta.region });
+  if (decision.kind === "attach" || decision.kind === "done") {
+    const problem = attachedInstallVersionProblem(opts.version, meta.releaseVersion);
+    if (problem) {
+      cancel(problem);
+      process.exit(1);
+    }
+  }
   if (decision.kind === "attach") {
     announceHandoff(projectId);
     await followToTheEnd(meta, decision.status.execution);

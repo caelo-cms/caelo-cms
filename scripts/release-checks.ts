@@ -270,10 +270,9 @@ export function previousStableTag(
 }
 
 /**
- * The newest tag of any kind strictly older than `version`, as `vX.Y.Z[-pre]`
- * — the changelog's starting point. Found by version, not by walking HEAD's
- * history: a release commit sits only on its tag and never reaches main, so
- * the tag is never an ancestor of main.
+ * The newest tag of any kind strictly older than `version`, as `vX.Y.Z[-pre]`.
+ * Found by version, not by walking HEAD's history: a release commit sits only
+ * on its tag and never reaches main, so the tag is never an ancestor of main.
  */
 export function previousTag(versions: readonly string[], version: string): string | null {
   const last = versions
@@ -281,6 +280,24 @@ export function previousTag(versions: readonly string[], version: string): strin
     .sort(compareSemver)
     .at(-1);
   return last ? `v${last}` : null;
+}
+
+/**
+ * Where `version`'s changelog starts, as `vX.Y.Z[-pre]`.
+ *
+ * A stable release starts at the previous STABLE tag. An install on that
+ * release jumps straight to this one (release candidates are never offered
+ * to installs), so its notes, which Settings → Updates shows, must list
+ * everything in between, including what a candidate before it already
+ * carried. Starting at the candidate would leave a stable release cut right
+ * after its tested candidate with almost no notes. A release candidate
+ * starts at the tag right before it: the previous candidate, or the last
+ * stable release.
+ */
+export function changelogBaseTag(versions: readonly string[], version: string): string | null {
+  return version.includes("-")
+    ? previousTag(versions, version)
+    : previousStableTag(versions, version);
 }
 
 /**

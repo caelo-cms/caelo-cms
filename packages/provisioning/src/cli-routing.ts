@@ -70,9 +70,9 @@ export interface CliCommandDoc {
 export const CLI_COMMANDS: readonly CliCommandDoc[] = [
   {
     name: "init",
-    args: "--domain <d> --owner-email <e> [--staging-domain <host>] [--version x.y.z] [--tls acme|internal] [--http-port 80] [--https-port 443]",
+    args: "[--provider self-hosted|gcp|gcp-firebase] --domain <d> --owner-email <e> [--staging-domain <host>] [--version x.y.z[-rc.N]] [--accept-release-candidate] [--tls acme|internal] [--http-port 80] [--https-port 443]",
     summary:
-      "Self-hosted only: write the install's config with fresh secrets, verify the signed release images and start the Docker Compose stack; prints the Owner setup link. Cloud providers run the wizard instead.",
+      "Set up a new install from verified, signed release images (--version names the release): self-hosted writes the config with fresh secrets, starts the Docker Compose stack and prints the Owner setup link, gcp and gcp-firebase run the wizard; a release candidate (x.y.z-rc.N) is for test installs only and asks for confirmation on Google Cloud, or takes --accept-release-candidate.",
   },
   {
     name: "up",
@@ -94,9 +94,9 @@ export const CLI_COMMANDS: readonly CliCommandDoc[] = [
   },
   {
     name: "upgrade",
-    args: "[--version x.y.z] [--channel stable|rc|beta] [--region <r>] [--skip-verify] [--skip-health-check] [--install <id|domain|all>] [--project <gcp-project-id>]",
+    args: "[--version x.y.z[-rc.N]] [--channel stable|rc|beta] [--accept-release-candidate] [--region <r>] [--skip-verify] [--skip-health-check] [--install <id|domain|all>] [--project <gcp-project-id>]",
     summary:
-      "Roll the install to a newer release (latest stable by default) after verifying the image signatures.",
+      "Roll the install to a newer release (latest stable by default; --channel rc takes the newest release candidate or stable release, whichever is newer) after verifying the image signatures; on Google Cloud a release candidate asks for confirmation first, or takes --accept-release-candidate.",
   },
   {
     name: "backup",
@@ -181,8 +181,9 @@ export const CLI_COMMANDS: readonly CliCommandDoc[] = [
 /** The text `cms-provision --help` prints, built from {@link CLI_COMMANDS}. */
 export function cliUsage(): string {
   return (
-    `Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r> [--scheduler-interval-minutes 1-15]] [--local|--install-job] | <${CLI_COMMANDS.map((c) => c.name).join("|")}> [options]\n` +
+    `Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r> [--version x.y.z[-rc.N]] [--scheduler-interval-minutes 1-15]] [--local|--install-job] | <${CLI_COMMANDS.map((c) => c.name).join("|")}> [options]\n` +
     "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
+    "--version installs the release it names (otherwise the newest stable one). A release candidate (x.y.z-rc.N) is for test installs only: Caelo's Google Cloud registry keeps its images for 14 days, so installing or upgrading to one there asks for confirmation (--accept-release-candidate in a script).\n" +
     "Pass --no-wizard with no sub-command to print this usage instead of the wizard."
   );
 }

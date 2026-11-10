@@ -38,16 +38,22 @@
 # CLAUDE.md §11.C: end-users never build these images. They consume
 # pre-built mirrors per provider:
 #   - GHCR (ghcr.io/caelo-cms/<service>) — canonical, used by Compose.
+#     Receives every publishing build: main (`:main`, `:main-<sha7>`)
+#     and every release.
 #   - GCP public AR (europe-west1-docker.pkg.dev/caelo-website/
 #     caelo-cms-images/<service>) — Cloud Run rejects ghcr.io directly.
+#     Receives release builds only (a `v*` tag ref, #1558): releases and
+#     release candidates. No install, job or workflow pulls a main build
+#     from it.
 #   - AWS public ECR + Azure ACR will land alongside the P15 cloud
 #     adapters; same pattern (workflow pushes once per release; stack
 #     references the public URL).
 #
-# Retention: release tags live forever; the per-merge `main-<sha7>`
-# dev images are pruned after 7 days — GHCR via registry-retention.yml,
-# the AR mirror via native cleanup policies. See
-# docs/maintainer-public-registry-setup.md ("Retention").
+# Retention: release tags live forever. The per-merge `main-<sha7>` dev
+# images are pruned from GHCR after 7 days (registry-retention.yml). A
+# release candidate (`vX.Y.Z-rc.N`) also carries the marker tag
+# `rc-<version>`, and the AR mirror's cleanup policy deletes it after 14
+# days. See docs/maintainer-public-registry-setup.md ("Retention").
 
 name: release-images
 
@@ -406,10 +412,18 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}
           tags: |
-            # tag-builds → semver tags (v0.1.2 → 0.1.2 + 0.1 + latest)
+            # tag-builds → semver tags (v0.1.2 → 0.1.2 + 0.1 + latest).
+            # A pre-release (v0.1.2-rc.1) gets 0.1.2-rc.1 only: the action
+            # turns every pattern but {{raw}} into {{version}} for it and
+            # adds no `latest`.
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern=latest
+            # #1558 — a release candidate's marker tag rc-<version>: the AR
+            # mirror's cleanup policy deletes rc-* after 14 days
+            # (docs/maintainer-ar-cleanup-policy.json). The prefix is applied
+            # after the pre-release {{version}} fallback.
+            type=semver,pattern={{version}},prefix=rc-,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-') }}
             # main-branch builds → :main + :main-<sha7>
             type=ref,event=branch
             type=sha,format=short,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
@@ -470,26 +484,32 @@ jobs:
 
       # ──────────────────────────────────────────────────────────────
       # GCP public AR mirror — Cloud Run accepts *.docker.pkg.dev only.
+      # Release builds only (#1558): a `v*` tag ref, i.e. release.yml's
+      # workflow_call on a release or release-candidate tag, or a manual
+      # dispatch on such a tag (the re-mirror repair). A push to main
+      # publishes to GHCR only. Decided by `github.ref`, not by the event:
+      # in a workflow_call, `github.event_name` is the caller's event, and
+      # release.yml's tag push and a push to main are both `push`.
       # Skipped if no WIF credential is configured (forks / first-run
       # before Caelo team sets up the mirror project).
       # ──────────────────────────────────────────────────────────────
       - name: Authenticate to GCP via Workload Identity Federation
-        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_PUBLIC_REGISTRY_SA_EMAIL }}
 
       - name: Configure docker for GCP AR push
-        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         run: gcloud auth configure-docker ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}-docker.pkg.dev --quiet
 
       - name: Install oras (referrer-aware registry copy)
-        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
 
       - name: Mirror image (+ signatures) to GCP public AR
-        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           GHCR_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.service }}
@@ -524,7 +544,7 @@ jobs:
         # finds out until an operator's `cms-provision upgrade` refuses
         # to roll days later. Verify the AR copy with the same identity
         # check operators run, and fail the release here instead.
-        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
+        if: (github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') && vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           AR_REGION: ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}

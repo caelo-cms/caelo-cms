@@ -64,9 +64,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { writePowerCatalogue } from "./power-catalogue.ts";
 import {
+  changelogBaseTag,
   parseAdvisoryList,
   previousStableTag,
-  previousTag,
   RELEASE_COMMIT_SUBJECT,
   RELEASE_META_PATH,
   type ReleaseMeta,
@@ -558,10 +558,11 @@ async function main(): Promise<void> {
   console.log(`✓ Tier-1 manifests resigned`);
 
   // Generate the changelog stanza from conventional commits since the
-  // previous tag and prepend it to THAT tag's CHANGELOG.md: the file lives
-  // on release commits only (main has none), so each tag carries the whole
-  // history and the previous one is the base.
-  const prevTag = previousTag(tags, newVersion);
+  // changelog base (the previous stable release; for a release candidate,
+  // the tag right before it) and prepend it to THAT tag's CHANGELOG.md: the
+  // file lives on release commits only (main has none), so each tag carries
+  // the whole history and the base is its starting point.
+  const prevTag = changelogBaseTag(tags, newVersion);
   const stanza = generateChangelog(prevTag, newVersion);
   const changelogPath = resolve(REPO_ROOT, "CHANGELOG.md");
   const HEADER = "# Changelog\n\n";
