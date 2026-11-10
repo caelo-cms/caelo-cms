@@ -18,9 +18,11 @@ import {
   createIapVerifier,
   IAP_ASSERTION_HEADER,
   iapTestKeyPairForTests,
+  MAX_REPORT_BODY_BYTES,
   setIapVerifierForTests,
   signIapTestAssertionForTests,
 } from "@caelo-cms/admin-core";
+import { POST } from "../../routes/api/internal/jobs/[kind]/report/+server.js";
 import { authorizeJobReport, readReportBody } from "./reporting-jobs.js";
 
 const AUDIENCE = "/projects/42/locations/europe-west1/services/caelo-production-admin";
@@ -46,14 +48,15 @@ const reportRequest = (headers: Record<string, string>, body?: BodyInit) =>
     ...(body === undefined ? {} : { body }),
   });
 
-async function status(p: Promise<unknown>): Promise<number | "ok"> {
-  try {
-    await p;
-    return "ok";
-  } catch (e) {
-    if (e instanceof Response) return e.status;
-    throw e;
-  }
+/** A refusal is returned, never thrown (SvelteKit makes a thrown Response a 500). */
+async function status(p: Promise<Response | null>): Promise<number | "ok"> {
+  const refused = await p;
+  return refused === null ? "ok" : refused.status;
+}
+
+async function bodyStatus(p: ReturnType<typeof readReportBody>): Promise<number | string> {
+  const body = await p;
+  return "refused" in body ? body.refused.status : body.text;
 }
 
 describe("authorizeJobReport (#1359)", () => {
@@ -107,12 +110,12 @@ describe("authorizeJobReport (#1359)", () => {
 
 describe("readReportBody (#1359)", () => {
   it("reads a body under the cap", async () => {
-    expect(await readReportBody(reportRequest({}, '{"a":1}'), 100)).toBe('{"a":1}');
+    expect(await bodyStatus(readReportBody(reportRequest({}, '{"a":1}'), 100))).toBe('{"a":1}');
   });
 
   it("refuses a body whose Content-Length is over the cap before reading it", async () => {
     const req = reportRequest({ "content-length": "1000" }, "x".repeat(1000));
-    expect(await status(readReportBody(req, 100))).toBe(413);
+    expect(await bodyStatus(readReportBody(req, 100))).toBe(413);
   });
 
   it("refuses a streamed body that grows past the cap, whatever it claimed", async () => {
@@ -130,6 +133,57 @@ describe("readReportBody (#1359)", () => {
       "https://admin.example.com/api/internal/jobs/quality_audit/report",
       init,
     );
-    expect(await status(readReportBody(req, 100))).toBe(413);
+    expect(await bodyStatus(readReportBody(req, 100))).toBe(413);
+  });
+});
+
+describe("POST /api/internal/jobs/<kind>/report answers its refusals (#1359)", () => {
+  // Called the way SvelteKit calls it: a thrown Response would reach the
+  // client as a 500, which the job retries as if the admin were down.
+  const post = (request: Request, kind = "quality_audit") =>
+    POST({ request, params: { kind } } as unknown as Parameters<typeof POST>[0]);
+
+  it("returns the 401 for a caller that is not the job, as JSON the job reads", async () => {
+    const saved = process.env.CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT;
+    process.env.CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT = RUNNER_SA;
+    try {
+      const assertion = signIapTestAssertionForTests(KEY, {
+        aud: AUDIENCE,
+        email: "owner@example.com",
+      });
+      const res = await post(reportRequest({ [IAP_ASSERTION_HEADER]: assertion }, "{}"));
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ ok: false, error: { code: "not-the-job" } });
+    } finally {
+      if (saved === undefined) delete process.env.CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT;
+      else process.env.CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT = saved;
+    }
+  });
+
+  it("returns the 413 for the job's own report when it is over the cap", async () => {
+    const saved = process.env.CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT;
+    process.env.CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT = RUNNER_SA;
+    try {
+      const assertion = signIapTestAssertionForTests(KEY, { aud: AUDIENCE, email: RUNNER_SA });
+      const res = await post(
+        reportRequest(
+          {
+            [IAP_ASSERTION_HEADER]: assertion,
+            "content-length": String(MAX_REPORT_BODY_BYTES + 1),
+          },
+          "x",
+        ),
+      );
+      expect(res.status).toBe(413);
+      expect(await res.json()).toMatchObject({ ok: false, error: { code: "too-large" } });
+    } finally {
+      if (saved === undefined) delete process.env.CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT;
+      else process.env.CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT = saved;
+    }
+  });
+
+  it("returns a 404 for a kind that does not exist", async () => {
+    const res = await post(reportRequest({}, "{}"), "nope");
+    expect(res.status).toBe(404);
   });
 });

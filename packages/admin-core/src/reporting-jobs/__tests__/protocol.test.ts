@@ -9,14 +9,19 @@
 import { describe, expect, it } from "bun:test";
 import {
   hashJobToken,
+  INLINE_PAYLOAD_CHARS,
   JOB_TIMING,
   jobOrderSchema,
+  MAX_REPORT_BODY_BYTES,
+  MAX_UPLOAD_CHARS_PER_RUN,
+  MAX_UPLOAD_PARTS,
   mintJobToken,
   REPORTING_JOB_KINDS,
   reportEnvelopeSchema,
   reportOrigin,
   reportPath,
   splitIntoParts,
+  UPLOAD_PART_CHARS,
 } from "../protocol.js";
 
 describe("reportOrigin", () => {
@@ -69,6 +74,38 @@ describe("splitIntoParts", () => {
 
   it("gives no part for empty text", () => {
     expect(splitIntoParts("", 10)).toEqual([]);
+  });
+
+  it("keeps every part's request under the cap, whatever characters the input holds", () => {
+    // A part travels as a JSON string: quotes and backslashes double, a
+    // unit of U+0800..U+FFFF takes 3 UTF-8 bytes, a surrogate pair 4.
+    const envelope = (data: string, part: number) =>
+      JSON.stringify({
+        subjectId: "00000000-0000-4000-8000-000000001359",
+        attempt: 20,
+        action: "upload-part",
+        payload: { uploadId: "00000000-0000-4000-8000-000000000001", part, data },
+      });
+    const worst = [
+      { label: "three-byte characters", value: "語".repeat(UPLOAD_PART_CHARS + 10) },
+      { label: "quotes and backslashes", value: `"\\`.repeat(UPLOAD_PART_CHARS / 2) },
+      { label: "emoji", value: "😀".repeat(UPLOAD_PART_CHARS) },
+      { label: "escaped control characters", value: "\n\t\u0001".repeat(UPLOAD_PART_CHARS / 4) },
+    ];
+    for (const { label, value } of worst) {
+      const parts = splitIntoParts(JSON.stringify({ value }));
+      expect(parts.length, label).toBeGreaterThan(1);
+      for (const [i, data] of parts.entries()) {
+        const bytes = Buffer.byteLength(envelope(data, i), "utf8");
+        expect(bytes, label).toBeLessThanOrEqual(MAX_REPORT_BODY_BYTES);
+      }
+    }
+  });
+
+  it("an upload of the most parts holds what a run may hold", () => {
+    expect(MAX_UPLOAD_PARTS * UPLOAD_PART_CHARS).toBeGreaterThanOrEqual(MAX_UPLOAD_CHARS_PER_RUN);
+    // An inline input is the envelope's own JSON: at most 3 bytes per unit.
+    expect(INLINE_PAYLOAD_CHARS * 3 + 1024).toBeLessThanOrEqual(MAX_REPORT_BODY_BYTES);
   });
 });
 

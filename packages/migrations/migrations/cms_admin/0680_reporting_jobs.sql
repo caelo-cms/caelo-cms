@@ -70,9 +70,9 @@ CREATE TABLE IF NOT EXISTS reporting_job_uploads (
   kind        text NOT NULL,
   subject_id  uuid NOT NULL,
   upload_id   uuid NOT NULL,
-  part        integer NOT NULL CHECK (part BETWEEN 0 AND 63),
+  part        integer NOT NULL CHECK (part BETWEEN 0 AND 127),
   attempt     integer NOT NULL CHECK (attempt BETWEEN 1 AND 20),
-  data        text NOT NULL CHECK (char_length(data) BETWEEN 1 AND 2097152),
+  data        text NOT NULL CHECK (char_length(data) BETWEEN 1 AND 1048576),
   created_at  timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (kind, subject_id, upload_id, part),
   FOREIGN KEY (kind, subject_id) REFERENCES reporting_jobs (kind, subject_id) ON DELETE CASCADE

@@ -144,6 +144,31 @@ export const jobOrderSchema = z
 
 export type JobOrder = z.infer<typeof jobOrderSchema>;
 
+/** The most bytes one report may carry; larger inputs go in parts. */
+export const MAX_REPORT_BODY_BYTES = 6 * 1024 * 1024;
+
+/**
+ * Inputs whose JSON is longer than this go in parts. Inline, the JSON is
+ * the envelope's own: at most 3 UTF-8 bytes per UTF-16 unit, 3 MiB.
+ */
+export const INLINE_PAYLOAD_CHARS = 1024 * 1024;
+
+/**
+ * Characters of JSON per part. A part travels as a JSON string, so it
+ * grows on the wire: a `"` or `\` doubles, a unit of U+0800..U+FFFF takes
+ * 3 UTF-8 bytes, a surrogate pair 4 for two units. JSON text holds no raw
+ * control character or lone surrogate (JSON.stringify escapes both), so 3
+ * bytes per unit is the most: a full part is at most 3 MiB plus the
+ * envelope, half of {@link MAX_REPORT_BODY_BYTES}.
+ */
+export const UPLOAD_PART_CHARS = 1024 * 1024;
+
+/** The most parts one upload may have (the parts table's limit). */
+export const MAX_UPLOAD_PARTS = 128;
+
+/** The most characters a run may hold in uploads at once. */
+export const MAX_UPLOAD_CHARS_PER_RUN = 128 * 1024 * 1024;
+
 /** An action name: what a report asks the admin to do. */
 const actionName = z.string().regex(/^[a-z][a-z-]{0,39}$/);
 
@@ -159,7 +184,7 @@ export const reportEnvelopeSchema = z
     upload: z
       .object({
         uploadId: z.string().uuid(),
-        parts: z.number().int().min(1).max(64),
+        parts: z.number().int().min(1).max(MAX_UPLOAD_PARTS),
       })
       .strict()
       .optional(),
@@ -184,27 +209,16 @@ export const FOUNDATION_ACTIONS = ["heartbeat", "upload-part", "defer"] as const
 export const uploadPartSchema = z
   .object({
     uploadId: z.string().uuid(),
-    part: z.number().int().min(0).max(63),
-    data: z.string().min(1).max(2_097_152),
+    part: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_UPLOAD_PARTS - 1),
+    data: z.string().min(1).max(UPLOAD_PART_CHARS),
   })
   .strict();
 
 export const deferSchema = z.object({ reason: z.string().min(1).max(1000) }).strict();
-
-/** The most bytes one report may carry; larger inputs go in parts. */
-export const MAX_REPORT_BODY_BYTES = 6 * 1024 * 1024;
-
-/** Inputs whose JSON is longer than this go in parts. */
-export const INLINE_PAYLOAD_CHARS = 1024 * 1024;
-
-/** Characters of JSON per part (the parts table's limit). */
-export const UPLOAD_PART_CHARS = 2 * 1024 * 1024;
-
-/** The most parts one upload may have. */
-export const MAX_UPLOAD_PARTS = 64;
-
-/** The most characters a run may hold in uploads at once. */
-export const MAX_UPLOAD_CHARS_PER_RUN = 128 * 1024 * 1024;
 
 /** Reports one run may send per minute; past it the admin answers 429. */
 export const REPORTS_PER_MINUTE = 600;

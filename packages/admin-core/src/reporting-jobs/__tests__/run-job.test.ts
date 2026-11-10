@@ -47,6 +47,25 @@ describe("runJobAttempt", () => {
     expect(t.sent.filter((e) => e.action === "heartbeat").length).toBe(beats);
   });
 
+  it("renews the lease while a report of the main waits for a slow answer", async () => {
+    // A large source read can take the admin minutes: the heartbeat does not
+    // queue behind it, so the lease of a living job never runs out meanwhile.
+    const sent: ReportEnvelope[] = [];
+    const t: ReportTransport = {
+      label: "test",
+      async send(envelope) {
+        sent.push(envelope);
+        if (envelope.action === "source") await wait(100);
+        return { status: 200, answer: { ok: true, value: {} } };
+      },
+    };
+    const reporter = createJobReporter(ORDER, t);
+    await runJobAttempt(reporter, (r) => r.call("source", { what: "pageIndex" }), 15);
+    const sourceAt = sent.findIndex((e) => e.action === "source");
+    const beatsWhileWaiting = sent.slice(sourceAt + 1).filter((e) => e.action === "heartbeat");
+    expect(beatsWhileWaiting.length).toBeGreaterThanOrEqual(3);
+  });
+
   it("ends as stopped when the admin ended the attempt", async () => {
     const reporter = createJobReporter(ORDER, recording());
     const outcome = await runJobAttempt(

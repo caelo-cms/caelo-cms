@@ -170,6 +170,10 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${A}/ops/links*.ts`,
       `${A}/stage/**`,
       `${A}/quality/**`,
+      // #1359 — the Stage's audit runs as a reporting job (in-process on the
+      // CI install; the GCP job shares the protocol, dispatch and lease).
+      `${A}/reporting-jobs/**`,
+      `${A}/ops/reporting_jobs.ts`,
       `${A}/snapshots/**`,
       `${A}/deploy/**`,
       `${A}/draft.ts`,

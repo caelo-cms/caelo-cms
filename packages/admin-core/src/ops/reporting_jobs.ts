@@ -36,7 +36,12 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { MAX_UPLOAD_CHARS_PER_RUN, REPORTING_JOB_KINDS } from "../reporting-jobs/protocol.js";
+import {
+  MAX_UPLOAD_CHARS_PER_RUN,
+  MAX_UPLOAD_PARTS,
+  REPORTING_JOB_KINDS,
+  UPLOAD_PART_CHARS,
+} from "../reporting-jobs/protocol.js";
 
 const kind = z.enum(REPORTING_JOB_KINDS);
 const subjectId = z.string().uuid();
@@ -397,8 +402,12 @@ export const putReportingJobUploadPartOp = defineOperation({
       subjectId,
       attempt,
       uploadId: z.string().uuid(),
-      part: z.number().int().min(0).max(63),
-      data: z.string().min(1).max(2_097_152),
+      part: z
+        .number()
+        .int()
+        .min(0)
+        .max(MAX_UPLOAD_PARTS - 1),
+      data: z.string().min(1).max(UPLOAD_PART_CHARS),
     })
     .strict(),
   output: z.object({ stored: z.boolean() }),

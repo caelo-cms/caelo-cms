@@ -1045,6 +1045,22 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
     });
   }
 
+  // Pages of this describe's own: the ones before it delete the homepage
+  // ("every page gone"), and an audit without pages measures nothing.
+  const jobPageIds: string[] = [];
+  beforeAll(async () => {
+    for (const slug of ["job-page-a", "job-page-b", "job-page-c"]) {
+      const created = await op<{ pageId: string }>(SYS, "pages.create", {
+        slug: `${PFX}${slug}`,
+        title: slug,
+        templateId,
+        status: "published",
+      });
+      jobPageIds.push(created.pageId);
+    }
+  });
+
+  /** A queued audit of this describe's pages, its Stage `minutes` into the test day (later Stages supersede earlier ones). */
   async function queuedAudit(
     minutes: number,
   ): Promise<{ deployRunId: string; auditRunId: string }> {
@@ -1053,6 +1069,7 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
       deployRunId,
       chatSessionId: null,
       branch: null,
+      pageIds: jobPageIds,
     });
     return { deployRunId, auditRunId: queued.auditRunId };
   }
@@ -1224,6 +1241,7 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
             Array.from({ length: 499 }, (_, i) => ({
               ruleId: "test-noise/noise",
               severity: "warning" as const,
+              // 499 findings (the most one call gives) of 1 KB on each of three pages: two parts.
               message: `Noise: ${"x".repeat(980)} ${i}`,
             })),
         },
@@ -1257,7 +1275,7 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
         run: { status: string; checkSummary: { findingCounts: { warning: number } } };
       }>(SYS, "quality_audits.get", { auditRunId });
       expect(got.run.status).toBe("passed");
-      expect(got.run.checkSummary.findingCounts.warning).toBeGreaterThanOrEqual(998);
+      expect(got.run.checkSummary.findingCounts.warning).toBeGreaterThanOrEqual(3 * 499);
     } finally {
       staged.stop(true);
       admin.stop(true);
@@ -1308,7 +1326,8 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
   });
 
   it("an install that cannot run the job records the audit as failed at once, never runs it in the admin", async () => {
-    const { auditRunId } = await queuedAudit(360);
+    // Later than every Stage above: an older one would be superseded instead.
+    const { auditRunId } = await queuedAudit(390);
     const r = await startReportingJob(ADMIN(), "quality_audit", auditRunId, {
       env: { CAELO_PROVIDER: "aws" },
     });
