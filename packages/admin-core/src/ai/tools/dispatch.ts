@@ -354,9 +354,12 @@ export interface GatedToolSpec {
    * `sync-operator-access` updates the cloud identity gate (Google IAP)
    * for the user an approved users.* proposal touched (every user after
    * a role deletion) — a cloud call that must neither hold nor undo the
-   * apply transaction.
+   * apply transaction. #1550 `redirects-go-live-now` puts the rules an
+   * approved proposal saved live when it asked for `goLive: "now"` (Go
+   * live now reads the live build's files and pushes to the hosting:
+   * provider I/O, never inside the apply).
    */
-  readonly afterApply?: "load-activated-plugin" | "sync-operator-access";
+  readonly afterApply?: "load-activated-plugin" | "sync-operator-access" | "redirects-go-live-now";
   /**
    * #971 — the apply creates a credential (a user's password, a bearer
    * token). Its executor returns a credential handoff instead of the

@@ -178,6 +178,31 @@ export function attachGatedExecute(
           };
         }
       }
+      if (gated.afterApply === "redirects-go-live-now") {
+        const saved = appliedValue as { goLive?: string; fromPaths?: string[] };
+        if (saved.goLive === "now" && saved.fromPaths && saved.fromPaths.length > 0) {
+          // #1550 — the approver asked for these live now: Go live now as
+          // the approver, after the apply committed (it reads the live
+          // build's files and pushes to the hosting). A refusal leaves the
+          // rules Staged and says why.
+          const live = await execute(registry, adapter, ownerCtxLive, "redirects.go_live_now", {
+            fromPaths: saved.fromPaths,
+          });
+          return {
+            ok: true,
+            status: APPLIED_STATUS,
+            value: {
+              ...(appliedValue as Record<string, unknown>),
+              ...(live.ok
+                ? { wentLiveNow: true }
+                : {
+                    wentLiveNow: false,
+                    warning: `Saved Staged, but it could not go live now: ${describePersistError(live.error)} It goes live with the next Publish live.`,
+                  }),
+            },
+          };
+        }
+      }
       if (gated.afterApply === "sync-operator-access") {
         return {
           ok: true,

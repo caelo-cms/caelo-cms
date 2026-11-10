@@ -78,7 +78,7 @@ import {
   type StagedBuildFiles,
   StagedRunError,
 } from "./staged-build-files.js";
-import { GcsSlotSync, type SlotSyncSummary } from "./staging-slots.js";
+import { GcsSlotSync, type SlotSyncSummary, stagedSlotFiles } from "./staging-slots.js";
 import { contentTypeFor, gcsObjectMetadata } from "./static-file-policy.js";
 import type {
   BuildUpload,
@@ -156,6 +156,16 @@ async function bucketHandles(): Promise<BucketHandles> {
     staticBucketName,
     stagingBucketName,
   };
+}
+
+/**
+ * The files the live bucket serves: exactly the published build (Publish
+ * live and rollback prune everything else), without the publisher's
+ * `_state/`.
+ */
+async function liveBucketFiles(h: BucketHandles): Promise<Set<string>> {
+  const [liveFiles] = await h.staticBucket.getFiles();
+  return new Set(liveFiles.map((f) => f.name).filter((name) => !name.startsWith("_state/")));
 }
 
 /** What the GCS publisher reaches beyond the buckets (tests inject fakes). */
@@ -324,10 +334,26 @@ export function createGcsStaticPublisher(
       return summary;
     },
 
+    async readStagedBuildFiles({ runId, location }) {
+      // #1330 — the slot manifest the staging gateway serves the build by.
+      return stagedSlotFiles(location, runId);
+    },
+
+    async readServedFiles({ target }) {
+      if (target.env !== "production") {
+        throw new Error(
+          `static-publisher-gcs: ${target.name} (${target.env}) is served by the staging gateway from its slot; read a staged build with readStagedBuildFiles.`,
+        );
+      }
+      const h = await bucketHandles();
+      const served = await liveBucketFiles(h);
+      return served.size === 0 ? null : served;
+    },
+
     async syncRedirects({ target, rows }) {
-      // The URL map routes the site's host only; staging on gcp is the
-      // admin's staging preview over the staging bucket, which answers no
-      // redirects (the staged plan goes live with Publish live).
+      // The URL map routes the site's host only; staging is served by the
+      // staging gateway (#1330), which answers the staging view itself
+      // (#1550). The staged plan goes live with Publish live.
       if (target.env !== "production") {
         return {
           outcome: "not-served",
@@ -335,16 +361,11 @@ export function createGcsStaticPublisher(
           goneCount: 0,
           shadowedCount: 0,
           unservedTargets: [],
-          location: "staging preview (no redirects on gcp)",
+          location: "the staging gateway (published redirects table)",
         };
       }
       const h = await bucketHandles();
-      // The live bucket holds exactly the published build (Confirm-publish
-      // and rollback prune everything else) plus the publisher's `_state/`.
-      const [liveFiles] = await h.staticBucket.getFiles();
-      const served = new Set(
-        liveFiles.map((f) => f.name).filter((name) => !name.startsWith("_state/")),
-      );
+      const served = await liveBucketFiles(h);
       if (served.size === 0) {
         throw new Error(
           `static-publisher-gcs: the live bucket gs://${h.staticBucketName}/ is empty, so the redirects cannot be checked against a published build. Publish live first; the redirects go out with it.`,

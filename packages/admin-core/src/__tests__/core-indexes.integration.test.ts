@@ -33,7 +33,7 @@ import { DatabaseAdapter, type TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { collapseRedirectChainsSql } from "../ops/content/path-moves.js";
+import { rulesPointingAtSql } from "../ops/content/path-moves.js";
 import { liveLighthouseAcceptancesSql } from "../ops/quality/record-result.js";
 import { spentMicrocentsSql } from "../ops/security/mcp_tool_call.js";
 
@@ -123,14 +123,10 @@ describe("#1291 — hot paths plan an index scan", () => {
     expectIndexed(plans, "ai_calls", "ai_calls_chat_session_idx", "ai_calls_actor_idx");
   });
 
-  it("a page move collapses redirect chains by index", async () => {
-    const plans = await plansOf(
-      collapseRedirectChainsSql([
-        { from: "/a", to: "/b" },
-        { from: "/c", to: "/d" },
-      ]),
-    );
+  it("a page move finds the rules to collapse by index, live and pending (#1550)", async () => {
+    const plans = await plansOf(rulesPointingAtSql(["/a", "/c"]));
     expectIndexed(plans, "redirects", "redirects_to_path_idx");
+    expectIndexed(plans, "pending_redirects", "pending_redirects_to_path_idx");
   });
 });
 

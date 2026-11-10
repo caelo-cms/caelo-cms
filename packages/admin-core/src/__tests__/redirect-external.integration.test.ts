@@ -11,6 +11,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import { buildRedirectPlan, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { ruleView } from "./fixtures/redirects.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -71,11 +72,22 @@ async function propose(fromPath: string, url = BOOKING, statusCode?: number): Pr
   return (r.value as { proposalId: string }).proposalId;
 }
 
+/**
+ * The rule at the address of `fromPath` once its pending change is live
+ * (#1550: an approval saves a Staged change; the live table waits for
+ * Publish live or Go live now).
+ */
 const rowsAt = (fromPath: string) =>
   asSystem(
     (tx) => tx`
+      SELECT from_path, to_path, status_code FROM pending_redirects
+      WHERE address = caelo_redirect_address(${fromPath}) AND to_path IS NOT NULL
+      UNION ALL
       SELECT from_path, to_path, status_code FROM redirects
-      WHERE from_path IN (${fromPath}, ${`${fromPath}/`})`,
+      WHERE from_path IN (${fromPath}, ${`${fromPath}/`})
+        AND NOT EXISTS (
+          SELECT 1 FROM pending_redirects WHERE address = caelo_redirect_address(${fromPath})
+        )`,
   ) as Promise<{ from_path: string; to_path: string; status_code: number }[]>;
 
 beforeAll(async () => {
@@ -99,6 +111,7 @@ beforeEach(async () => {
   process.env.CAELO_ADMIN_URL = "https://admin.site.example";
   await asSystem(async (tx) => {
     await tx`DELETE FROM redirect_pending_actions`;
+    await tx`DELETE FROM pending_redirects WHERE from_path LIKE '/t1358%'`;
     await tx`DELETE FROM redirects WHERE from_path LIKE '/t1358%'`;
   });
 });
@@ -110,6 +123,7 @@ afterAll(async () => {
   if (envBefore.CAELO_ADMIN_URL === undefined) delete process.env.CAELO_ADMIN_URL;
   await asSystem(async (tx) => {
     await tx`DELETE FROM redirect_pending_actions`;
+    await tx`DELETE FROM pending_redirects WHERE from_path LIKE '/t1358%'`;
     await tx`DELETE FROM redirects WHERE from_path LIKE '/t1358%'`;
   });
   await restoreBase?.();
@@ -275,16 +289,9 @@ describe("an approved rule among the others", () => {
   it("serves from the stored table through the plan, and a same-site row collapses onto it", async () => {
     await run(SYSTEM, "redirects.execute_proposal", { proposalId: await propose(`${PFX}-ext`) });
     await run(SYSTEM, "redirects.create", { fromPath: `${PFX}-short`, toPath: `${PFX}-ext` });
-    const rows = (await asSystem(
-      (tx) => tx`SELECT from_path, to_path, status_code FROM redirects
-                 WHERE from_path LIKE '/t1358%'`,
-    )) as { from_path: string; to_path: string; status_code: number }[];
+    // The table once these Staged changes are live, as a release serves it.
     const plan = buildRedirectPlan({
-      rows: rows.map((r) => ({
-        fromPath: r.from_path,
-        toPath: r.to_path,
-        statusCode: r.status_code,
-      })),
+      rows: await ruleView(ADMIN_URL as string, "/t1358"),
       pageUrlStyle: "directory",
       servedFiles: new Set(),
     });

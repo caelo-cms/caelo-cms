@@ -19,14 +19,18 @@
  *                          #1330 — the upload fills the staging slot staging
  *                          does not serve, and no other Stage may fill it too)
  *   (publisher upload)     no transaction
- *   deploy.finish_trigger  record the origin + the run, release the lease,
- *                          mark the target's redirects behind; a staging
- *                          build writes the quality audit row
- *                          deploy.start_trigger planned (#1319) in this
- *                          same transaction, so no succeeded Stage is ever
- *                          left without its audit
- *   redirects.sync_provider push the redirects (provider I/O, after the
- *                          run is recorded; a failure is retried)
+ *   deploy.finish_trigger  record the origin + the run, release the lease;
+ *                          a production build releases the Staged redirect
+ *                          changes it serves (#1550) and marks the live
+ *                          redirects behind; a staging build writes the
+ *                          quality audit row deploy.start_trigger planned
+ *                          (#1319) in this same transaction, so no
+ *                          succeeded Stage is ever left without its audit
+ *   redirects.sync_provider production only: push the live redirects
+ *                          (provider I/O, after the run is recorded; a
+ *                          failure is retried). Staging is pushed nothing:
+ *                          the staging gateway serves the staging view
+ *                          itself (#1330, #1550)
  *   deploy.fail_run        on every failure or abort: record it, release
  *
  * A heartbeat (deploy.renew_run_lease) keeps the run's lease — and the
@@ -129,11 +133,16 @@ import {
 } from "../links/link-notice.js";
 import { loadedVisitorProjections } from "../public-projection.js";
 import { kickQualityAuditWorker } from "../quality/audit-worker.js";
+import { loadStagedChanges } from "../redirects/model.js";
+import {
+  releaseRedirectChanges,
+  takeOverRedirectsOnFirstPublishedPages,
+} from "../redirects/release.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import { buildReferenceGate } from "./content/link-integrity.js";
-import { takeOverRedirectsOnFirstPublishedPages } from "./content/path-moves.js";
+
 import {
   effectiveOutDir,
   logRunTimings,
@@ -160,6 +169,7 @@ import {
   recordProductionOverride,
 } from "./quality/production-gate.js";
 import { computeRenderFingerprint } from "./quality/render-fingerprint.js";
+import type { RedirectReleasePlan } from "./redirects_release.js";
 import { setStagingOrigin } from "./staging_access.js";
 
 const triggerInput = z.object({
@@ -258,6 +268,11 @@ const triggerOutput = z.object({
    * published, and a production build refuses instead.
    */
   pluginProblems: z.array(deployPluginProblem),
+  /**
+   * #1550 — a production build whose Staged redirect changes could not be
+   * planned: they stay Staged for the next Publish live, and this says why.
+   */
+  redirectsNote: z.string().optional(),
 });
 
 /** What deploy.start_trigger hands the rest of the run. */
@@ -279,6 +294,12 @@ const startPlan = z.object({
   linkNotice: linkNoticeSchema.nullable(),
   /** #553 — the publish-anyway decision a production build carries. */
   override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
+  /**
+   * #1550 — a production build: the Staged redirect changes at the click
+   * (the build's confirmation), by id and revision. The ones whose target
+   * the new build serves go live with it; one saved since waits.
+   */
+  redirectChanges: z.array(z.object({ id: z.string(), revision: z.number().int() })),
 });
 type StartPlan = z.infer<typeof startPlan>;
 
@@ -524,6 +545,10 @@ export const startTriggerOp = defineOperation({
       linkWarnings,
       linkNotice,
       override,
+      redirectChanges:
+        target.env === "production"
+          ? (await loadStagedChanges(tx)).map((c) => ({ id: c.id, revision: c.revision }))
+          : [],
     });
   },
 });
@@ -557,12 +582,22 @@ export const finishTriggerOp = defineOperation({
       securityHeaders: siteHeaderSetSchema,
       /** #1240 — the language links this build rendered; null: none. */
       linkNotice: linkNoticeSchema.nullable(),
+      /**
+       * #1550 — a production build: the Staged redirect changes the new
+       * build serves (redirects.release_plan's `goingLive`); empty otherwise.
+       */
+      redirectChanges: z
+        .array(z.object({ id: z.string().uuid(), revision: z.number().int().min(1) }).strict())
+        .max(20_000)
+        .default([]),
     })
     .strict(),
   output: z.object({
     draftPages: draftPagesSummary,
     /** #1330 — `https://<staging host>/` for a Stage while a host is set; null otherwise. */
     stagingUrl: z.string().nullable(),
+    /** #1550 — how many redirect changes a production build put live. */
+    redirectsApplied: z.number().int(),
   }),
   handler: async (ctx, input, tx) => {
     // Refusals throw OperationAbortError: nothing of this step may commit,
@@ -621,10 +656,23 @@ export const finishTriggerOp = defineOperation({
     // Epic #1107 — a production build is a Publish live: pages it ships
     // for the first time get their first_published_at.
     // #1517 — and take their URLs over from redirect rules there.
+    // #1550 — and the redirect changes it ships go live with it, before
+    // the run is stamped finished (a rollback to this run keeps them).
+    let redirectsApplied = 0;
     if (input.env === "production") {
+      redirectsApplied = (
+        await releaseRedirectChanges(
+          tx,
+          ctx.actorId,
+          input.redirectChanges,
+          { kind: "release", runId: input.runId },
+          ["staged"],
+        )
+      ).length;
       await takeOverRedirectsOnFirstPublishedPages(
         ctx,
         tx,
+        input.runId,
         await stampFirstPublished(tx, input.runId),
       );
     }
@@ -667,16 +715,18 @@ export const finishTriggerOp = defineOperation({
       });
       if (!queued.ok) refuse(describeError(queued.error));
     }
-    // #1157 — the build read the redirects table when it started; a
-    // redirect saved since then was pushed to what the target served before
-    // this build. The target is behind until the table as saved now is put
-    // on the build it serves now — after this commit (deploy.trigger), so
-    // no provider I/O runs inside this transaction (#1211).
-    await markRedirectsBehind(tx, [input.targetId]);
+    // #1157 — a production build read the live redirects when it started;
+    // the provider must serve them as they are now (this build's changes
+    // included). The target is behind until then — pushed after this
+    // commit (deploy.trigger), so no provider I/O runs inside this
+    // transaction (#1211). #1550 — a Stage needs no push: the staging
+    // gateway serves the staging view itself.
+    if (input.env === "production") await markRedirectsBehind(tx, [input.targetId]);
     const host = input.env === "staging" ? await readStagingHost(tx) : null;
     return ok({
       draftPages: await mainDraftPages(tx),
       stagingUrl: host ? `https://${host}/` : null,
+      redirectsApplied,
     });
   },
 });
@@ -988,6 +1038,30 @@ async function runTrigger(
     // The last point a stop is honoured: from here on the run is recorded.
     if (stop.aborted && !servedByGenerator) return await fail(abortMessage(stop));
 
+    // #1550 — a production build ships the Staged redirect changes of its
+    // click whose target it serves; production serves its files now. A
+    // plan that cannot be made leaves them Staged (the build is live
+    // already): the next Publish live takes them.
+    let redirectChanges: { id: string; revision: number }[] = [];
+    let redirectNote: string | null = null;
+    if (plan.target.env === "production" && plan.redirectChanges.length > 0) {
+      const planned = await execute(registry, adapter, sys, "redirects.release_plan", {
+        changes: plan.redirectChanges,
+        against: "live",
+        ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
+      });
+      if (!planned.ok) {
+        redirectNote = `The Staged redirect changes stay Staged: ${describeError(planned.error)}`;
+      } else {
+        const p = planned.value as RedirectReleasePlan;
+        if (p.problem !== null)
+          redirectNote = `The Staged redirect changes stay Staged: ${p.problem}`;
+        redirectChanges = p.goingLive.map((c) => ({ id: c.id, revision: c.revision }));
+      }
+      if (redirectNote !== null)
+        console.error("[deploy] production build", { runId, redirectNote });
+    }
+
     timer.lap("finish");
     const finished = await execute(registry, adapter, ctx, "deploy.finish_trigger", {
       runId,
@@ -1005,16 +1079,17 @@ async function runTrigger(
         plan.target.env === "staging" ? (input.qualityAudit ?? OUTSIDE_CHAT_AUDIT) : null,
       securityHeaders: built.securityHeaders,
       linkNotice,
+      redirectChanges,
     });
     if (!finished.ok) return await fail(describeError(finished.error));
     // The audit row committed with the run; wake this instance's worker
     // instead of waiting for its next pass.
     if (plan.target.env === "staging") kickQualityAuditWorker();
-    // The run is recorded; now put the redirects table on the build the
-    // target serves, in a transaction of its own. A failure is recorded and
-    // retried by the redirect-sync worker (the target stays behind); it
-    // does not undo the Stage.
-    if (plan.target.env !== "dev") {
+    // The run is recorded; now put the live redirects on the build
+    // production serves, in a transaction of its own. A failure is recorded
+    // and retried by the redirect-sync worker (the target stays behind).
+    // #1550 — staging needs no push: its gateway serves the staging view.
+    if (plan.target.env === "production") {
       const synced = await execute(registry, adapter, sys, "redirects.sync_provider", {
         trigger: "build",
         targetIds: [plan.target.id],
@@ -1051,6 +1126,7 @@ async function runTrigger(
       linkNotice,
       truncatedLists: built.truncatedLists,
       pluginProblems: plan.pluginProblems,
+      ...(redirectNote !== null ? { redirectsNote: redirectNote } : {}),
     });
   } catch (e) {
     // A throw past the steps above is a bug; the run still ends failed and

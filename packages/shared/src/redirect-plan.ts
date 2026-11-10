@@ -209,6 +209,20 @@ export function redirectsToUnservedPaths(
 }
 
 /**
+ * #1550 — whether a file of the build answers `path` (a same-site path, its
+ * query and fragment ignored): the page's directory index, the bare-slug
+ * page, or the file itself. The same test the plan uses to let a page win
+ * over a rule.
+ *
+ * @example
+ *   redirectPathServed("/about/", new Set(["about/index.html"])) // → true
+ *   redirectPathServed("/gone", new Set(["index.html"]))          // → false
+ */
+export function redirectPathServed(path: string, servedFiles: ReadonlySet<string>): boolean {
+  return servedByBuild(stripTrailingSlash(pathBeforeQuery(path)), servedFiles);
+}
+
+/**
  * #1447 — every spelling of a path the redirects table can hold a row for.
  * A row answers its path with and without the trailing slash (see the module
  * comment), and a table imported from a CMS with `/`-terminated URLs stores

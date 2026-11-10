@@ -173,6 +173,9 @@ export {
   type PluginUninstallFinalizer,
 } from "./ops/plugins/uninstall.js";
 export type { RedirectSyncTargetStatus } from "./ops/redirect_sync.js";
+// #1550 — redirects as draft state: the list rows and what Publish live ships.
+export type { RedirectRule } from "./ops/redirects.js";
+export type { PlannedRedirectChange, RedirectReleasePlan } from "./ops/redirects_release.js";
 export * from "./ops/roles.js";
 // Issue #806 — remote MCP: the credential an /api/mcp/remote/* request
 // carries into the mcp.* ops, and its request-time resolution.
@@ -257,10 +260,9 @@ export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
 export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
-// #1157 — the post-commit redirect sync every redirects write runs.
+// #1157 — the live redirects on the hosting: the boot refresh of a stale live release.
 export {
   refreshStaleLiveReleaseAtBoot,
-  registerRedirectSyncRunner,
   retireLegacyStagingPreviewsAtBoot,
 } from "./redirect-sync-worker.js";
 export * from "./register.js";

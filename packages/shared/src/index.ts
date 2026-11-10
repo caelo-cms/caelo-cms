@@ -74,6 +74,7 @@ export * from "./redirect-emit-cloudfront.js";
 export * from "./redirect-emit-front-door.js";
 export * from "./redirect-emit-gcp.js";
 export * from "./redirect-plan.js";
+export * from "./redirect-release.js";
 export * from "./redirect-target.js";
 export * from "./release-manifest.js";
 export * from "./responsive-images.js";

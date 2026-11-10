@@ -1010,9 +1010,24 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
+    // #1550 — the redirect changes the Publish live confirmation listed as
+    // going live: exactly these go live (a change saved since waits).
+    // Absent when the confirmation listed none; then the click decides.
+    const listed = form.get("redirectChanges");
+    let redirectChanges: { id: string; revision: number }[] | undefined;
+    if (typeof listed === "string" && listed !== "") {
+      try {
+        redirectChanges = JSON.parse(listed) as { id: string; revision: number }[];
+      } catch {
+        return fail(400, {
+          error: "The confirmed redirect list is not valid; open Publish live again.",
+        });
+      }
+    }
     const promote = await execute(registry, adapter, locals.ctx, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
+      ...(redirectChanges ? { redirectChanges } : {}),
     });
     if (!promote.ok) {
       // run #10 D6 — stderr breadcrumb: "Publish live" failures must be
@@ -1026,6 +1041,7 @@ export const actions: Actions = {
       toRunId: string;
       buildId: string;
       securityHeadersNote?: string;
+      redirects: { wentLive: number; waiting: number };
     };
     return {
       published: {
@@ -1034,6 +1050,7 @@ export const actions: Actions = {
         toRunId: v.toRunId,
         buildId: v.buildId,
         notice: v.securityHeadersNote,
+        redirects: v.redirects,
       },
     };
   },

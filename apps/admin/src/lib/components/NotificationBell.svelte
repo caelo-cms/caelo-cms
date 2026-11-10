@@ -187,7 +187,7 @@
                 onclick={() => (open = false)}
               >
                 <Badge variant="destructive">{counts.failedRedirectSyncs}</Badge>
-                <span>Saved redirects are not live yet</span>
+                <span>The live redirects are not on your hosting yet</span>
               </a>
             {/if}
             {#if counts.staleBranches > 0}

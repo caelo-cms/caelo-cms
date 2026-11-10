@@ -60,6 +60,7 @@ test.afterAll(() => {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx\`DELETE FROM url_migration_pending_actions WHERE payload_hash = \${"e2e-" + slug}\`;
+      await tx\`DELETE FROM pending_redirects WHERE from_path = \${"/old/" + slug}\`;
       await tx\`DELETE FROM redirects WHERE from_path = \${"/old/" + slug}\`;
       await tx\`DELETE FROM pages WHERE slug = \${slug}\`;
       await tx\`DELETE FROM templates WHERE slug = \${slug + "-tpl"}\`;
@@ -101,7 +102,9 @@ test("an Owner approves a queued URL migration; the page moves and the old addre
     const out = await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const p = await tx\`SELECT current_path FROM pages WHERE slug = \${slug}\`;
-      const r = await tx\`SELECT to_path, status_code FROM redirects WHERE from_path = \${"/old/" + slug}\`;
+      // #1550 — the migration's 301 is Staged: live with the next Publish live.
+      const r = await tx\`SELECT to_path, status_code FROM pending_redirects
+        WHERE from_path = \${"/old/" + slug} AND state = 'staged'\`;
       return { path: p[0]?.current_path, redirect: r[0] ?? null };
     });
     await sql.end();

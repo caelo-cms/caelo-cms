@@ -49,6 +49,7 @@ import {
   normaliseLinkPath,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { SHARED_DRAFT_PENDING } from "../redirects/model.js";
 import {
   type ActiveImportTargets,
   type ImportLinkEntityKind,
@@ -118,8 +119,18 @@ export async function loadLinkTargetLookup(
   // rename left the 301 behind; links written with the old path mean the
   // page). A temporary redirect (302 / 307) says the old URL comes back,
   // so pinning a link to its current destination would be a guess.
+  // #1550 — the pending view: a rename's 301 is a Staged change until the
+  // Publish live that ships it, and a removal pending takes a rule away.
   const redirects = (await tx.execute(sql`
-    SELECT from_path, to_path FROM redirects WHERE status_code IN (301, 308)
+    SELECT r.from_path, r.to_path FROM redirects r
+    WHERE r.status_code IN (301, 308)
+      AND NOT EXISTS (
+        SELECT 1 FROM pending_redirects p
+        WHERE p.address = caelo_redirect_address(r.from_path) AND ${SHARED_DRAFT_PENDING}
+      )
+    UNION ALL
+    SELECT p.from_path, p.to_path FROM pending_redirects p
+    WHERE p.status_code IN (301, 308) AND ${SHARED_DRAFT_PENDING}
   `)) as unknown as { from_path: string; to_path: string }[];
   const redirectTo = new Map(
     redirects.map((r) => [normaliseLinkPath(r.from_path), normaliseLinkPath(r.to_path)]),

@@ -41,6 +41,7 @@ import { NO_BUILD_HEADERS_NOTE } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
+import { seedLiveRedirects } from "./fixtures/redirects.js";
 import { ensureRoleUser } from "./fixtures/role-user.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
@@ -86,6 +87,7 @@ async function wipe(): Promise<void> {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM deploy_pending_actions WHERE payload_hash LIKE 'promote-seo-%'`;
       await tx`DELETE FROM deploy_runs`;
+      await tx`DELETE FROM pending_redirects WHERE from_path LIKE '/promote-seo-%'`;
       await tx`DELETE FROM redirects WHERE from_path LIKE '/promote-seo-%'`;
       await tx`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(ALL_SLUGS)})`;
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(ALL_SLUGS)})`;
@@ -306,12 +308,14 @@ describe("deploy.promote ships production SEO semantics", () => {
   // A rule on a page that was live before is the operator's to settle.
   it("the Publish live that first ships a page deletes the rule on its URL, not the Stage", async () => {
     await seedPublishedPage(TAKEN_SLUG);
+    // A live rule from before the page existed (#1550: a save is Staged, so
+    // the live state is seeded the way a release left it).
+    await seedLiveRedirects(ADMIN_URL!, HUMAN.actorId, [
+      { fromPath: `/${TAKEN_SLUG}/`, toPath: `/${PAGE_SLUG}`, statusCode: 301 },
+    ]);
+    // PAGE_SLUG was shipped by an earlier Publish live in this suite.
     await ok("redirects.create_many", {
-      redirects: [
-        { fromPath: `/${TAKEN_SLUG}/`, toPath: `/${PAGE_SLUG}` },
-        // PAGE_SLUG was shipped by an earlier Publish live in this suite.
-        { fromPath: `/${HIDDEN_SLUG}`, toPath: `/${PAGE_SLUG}` },
-      ],
+      redirects: [{ fromPath: `/${HIDDEN_SLUG}`, toPath: `/${PAGE_SLUG}` }],
     });
 
     const staged = await ok<{ runId: string }>("deploy.trigger", {
@@ -319,6 +323,8 @@ describe("deploy.promote ships production SEO semantics", () => {
       repoRoot: testRoot,
     });
     expect(await rulesFrom(`/${TAKEN_SLUG}`)).toEqual([`/${TAKEN_SLUG}/`]);
+    // #1550 — the Stage puts nothing live: the saved rule waits for Publish live.
+    expect(await rulesFrom(`/${HIDDEN_SLUG}`)).toEqual([]);
 
     await markAudited(staged.runId);
     await ok("deploy.promote", {

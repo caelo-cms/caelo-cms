@@ -133,6 +133,18 @@ export const ALLOWED: readonly AllowedRule[] = [
       "The operator/AI redirect search (ILIKE '%…%'). #1291 tried a pg_trgm GIN index: under the table's RLS policy ~~* is not leakproof, so it can never become an index condition for admin_role. Operator search, not a per-request path.",
   },
   {
+    table: "public.pending_redirects",
+    op: "redirects.*",
+    reason:
+      "#1550 — the same operator/AI redirect search over the pending changes, which the rule list shows next to the live rules (ILIKE '%…%': no index condition under RLS, see public.redirects above). Operator search, not a per-request path.",
+  },
+  {
+    table: "public.pending_redirects",
+    filter: "(status_code = ANY (?))",
+    reason:
+      "#1550 — link canonicalisation also loads the shared draft's pending permanent redirects (301/308), like public.redirects above: a filter that selects nearly every row.",
+  },
+  {
     table: "public.font_assets",
     op: "fonts.find",
     reason:

@@ -14,8 +14,9 @@
  *   - **Immediate sections** — `settings` (each environment its own cookie
  *     secret, so staging never holds the live one), `staging` (the gate),
  *     `rate_limits`, `comments` (moderation and team posts) and, for the
- *     staging database only, `redirects` (a live write, #1157, that the
- *     staging gateway serves itself). Published from the current state.
+ *     staging database only, `redirects`: the live rows and the shared
+ *     draft's Staged changes (#1550), which the staging gateway serves
+ *     itself against the staged build. Published from the current state.
  *   - **Release sections** — `plugins` (the registry with its grants) and
  *     each `plugin:<id>` (a plugin's visitorProjection rows). They follow
  *     the release: a Stage freezes them with its build ({@link freezeRelease},
@@ -645,6 +646,8 @@ interface Snapshot {
   stagingSite?: Row[];
   rateLimits?: Row[];
   redirects?: Row[];
+  /** #1550 — the shared draft's Staged redirect changes (staging database only). */
+  redirectChanges?: Row[];
   /** Each target's release state to publish, narrowed; absent: not wanted. */
   releases?: Record<PublicTarget, ReleaseState | null>;
   /** Full comment resync. */
@@ -785,6 +788,19 @@ async function readSnapshot(
     snap.redirects = await rows(
       tx,
       sql`SELECT id::text AS id, from_path, to_path, status_code FROM redirects ORDER BY from_path`,
+    );
+    // #1550 — the staging view: the live rows above with the Staged changes
+    // of the shared draft (main and the site draft; an isolated branch's
+    // changes join at its Stage merge). Draft changes are served nowhere.
+    snap.redirectChanges = await rows(
+      tx,
+      sql`SELECT id::text AS id, address, from_path, to_path, status_code,
+                 origin <> 'manual' AS automatic
+          FROM pending_redirects
+          WHERE state = 'staged'
+            AND (chat_branch_id IS NULL
+                 OR chat_branch_id = (SELECT branch_id FROM site_draft WHERE id = 1))
+          ORDER BY address`,
     );
   }
   if (want.has("plugins")) {
@@ -927,7 +943,8 @@ async function writeSnapshot(
     sections.push("rate_limits");
   }
   // #1157 — the live site gets its redirects from the hosting provider;
-  // the staging gateway serves them itself, from here.
+  // the staging gateway serves them itself, from here: the live rows and
+  // (#1550) the Staged changes it applies against the staged build.
   if (snap.redirects && target === "staging") {
     await replaceAll(
       tx,
@@ -935,6 +952,13 @@ async function writeSnapshot(
       "id, from_path, to_path, status_code",
       "id uuid, from_path text, to_path text, status_code int",
       snap.redirects,
+    );
+    await replaceAll(
+      tx,
+      "published_redirect_changes",
+      "id, address, from_path, to_path, status_code, automatic",
+      "id uuid, address text, from_path text, to_path text, status_code int, automatic boolean",
+      snap.redirectChanges ?? [],
     );
     sections.push("redirects");
   }

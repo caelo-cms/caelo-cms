@@ -23,6 +23,7 @@ import { describeError } from "../ai/tools/_describe-error.js";
 import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
+import { ruleView } from "./fixtures/redirects.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -48,19 +49,12 @@ const BAD_TARGETS = [
 ];
 
 /** Rows whose from_path starts with `/<PFX>` (RLS needs caelo.actor_kind). */
+/** The rules under the prefix once their pending changes are live (#1550: a save is Staged). */
 async function redirectsUnderPrefix(): Promise<{ from_path: string; to_path: string }[]> {
-  const sql = new SQL(ADMIN_URL!);
-  try {
-    return await sql.begin(async (tx) => {
-      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      return (await tx`
-        SELECT from_path, to_path FROM redirects
-        WHERE from_path LIKE ${`/${PFX}-%`} ORDER BY from_path
-      `) as unknown as { from_path: string; to_path: string }[];
-    });
-  } finally {
-    await sql.end();
-  }
+  return (await ruleView(ADMIN_URL!, `/${PFX}-`)).map((r) => ({
+    from_path: r.fromPath,
+    to_path: r.toPath,
+  }));
 }
 
 async function isDeleted(pageId: string): Promise<boolean> {
@@ -93,6 +87,7 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`/${PFX}-%`}`;
       await tx`DELETE FROM redirects WHERE from_path LIKE ${`/${PFX}-%`}`;
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}-%`})`;
       await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}-%`}`;

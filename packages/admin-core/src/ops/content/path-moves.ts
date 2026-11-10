@@ -3,7 +3,7 @@
 /**
  * The side effects of a page URL move — ONE implementation for every
  * cause: a slug change, a reparent / subtree move, a chat's moves going
- * live at publish, a plugin URL-shape change.
+ * live at publish, a plugin URL-shape change, a revert.
  *
  * A move is never just a column write: the old URL must keep working
  * (301), redirects that pointed at the old URL must not become chains,
@@ -11,6 +11,16 @@
  * All of it runs on the caller's transaction, so the move commits or
  * rolls back as a whole (CLAUDE.md §11: a multi-step patch belongs
  * inside one op).
+ *
+ * #1550 — and none of it touches the live redirects. Each effect is an
+ * AUTOMATIC pending change (always Staged, `redirects/write.ts`): the 301,
+ * the chain collapse and the take-over of the rule on the new URL go live
+ * with the Publish live that ships the page change (closes #1521). Until
+ * then the live site keeps serving the previous build with its redirects,
+ * and staging serves the changes against the staged build: a 301 to a URL
+ * the staged build does not have yet waits for the next Stage, and so does
+ * the take-over of a URL the build does not serve the page at yet
+ * (`planRedirectRelease`).
  *
  * No stored link is touched (epic #724). Internal links are page
  * references (`caelo:page/<id>`) that resolve to the page's current path
@@ -22,55 +32,61 @@
  * 301 and the link checks report it, so it is fixed visibly, never
  * guessed.
  *
- * Always main-line: callers pass a context without a chat branch —
- * redirects are live state, like the paths they follow.
- *
- * #1517 — and therefore only for pages that are on the main line. A page
- * only a chat's branch holds (created or duplicated there, never merged)
- * has no public URL: its old path was never served, so it gets no 301, and
- * its new path is not served either, so a rule there keeps answering on
- * the live site. Such a move only stores the path; the rule on the new URL
- * is taken over when the page is first shipped by Publish live
- * ({@link takeOverRedirectsOnFirstPublishedPages}), and the write tools
- * name it meanwhile (`redirects.page_conflicts`).
+ * #1517 — only for pages that are on the main line. A page only a chat's
+ * branch holds (created or duplicated there, never merged) has no public
+ * URL: its old path was never served, so it gets no 301, and its new path
+ * is not served either, so a rule there keeps answering on the live site.
+ * Such a move only stores the path; the rule on the new URL is taken over
+ * when the page is first shipped by Publish live
+ * (`takeOverRedirectsOnFirstPublishedPages`, redirects/release.ts), and the
+ * write tools name it meanwhile (`redirects.page_conflicts`).
  */
 
 import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
-import { type ExecutionContext, redirectFromPathSpellings } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
-import { requestRedirectSync } from "../../deploy/redirect-sync.js";
-import { createRedirectOp } from "../redirects.js";
+import { type ExecutionContext, redirectAddress } from "@caelo-cms/shared";
+import { type SQL, sql } from "drizzle-orm";
+import {
+  pendingByAddress,
+  type RedirectOrigin,
+  SHARED_DRAFT_PENDING,
+} from "../../redirects/model.js";
+import { type RedirectChangeInput, writeRedirectChanges } from "../../redirects/write.js";
 import type { PathMove } from "./current-path.js";
 
 /** What a move set changed besides the paths themselves. */
 export interface PathMoveEffects {
-  /** Old-URL 301s created (one per moved page unless suppressed). */
+  /** Old-URL 301s staged (one per moved page unless suppressed). */
   readonly redirectsCreated: number;
 }
 
 /**
- * The chain-collapse statement of a move set: every redirect that pointed
- * at a moved page's old path now points at its new one. Served by
- * `redirects_to_path_idx` (#1291) — it runs on every page move and slug
- * change, so a scan of the redirects table here grows with the site.
+ * The rules a move's chain collapse retargets: every rule of the pending
+ * view (a live rule nobody changes, or a pending create / change) whose
+ * target is one of `oldPaths`. Served by `redirects_to_path_idx` (#1291)
+ * and `pending_redirects_to_path_idx` — it runs on every page move and
+ * slug change, so a scan of either table here grows with the site.
  * Exported so the plan test checks this exact statement.
  */
-export function collapseRedirectChainsSql(moves: ReadonlyArray<Pick<PathMove, "from" | "to">>) {
+export function rulesPointingAtSql(oldPaths: readonly string[]): SQL {
+  const targets = textArray([...oldPaths]);
   return sql`
-    UPDATE redirects r SET to_path = m.new_path
-    FROM (VALUES ${sql.join(
-      moves.map((m) => sql`(${m.from}, ${m.to})`),
-      sql`, `,
-    )}) AS m(old_path, new_path)
-    WHERE r.to_path = m.old_path
-    RETURNING 1 AS collapsed
+    SELECT caelo_redirect_address(r.from_path) AS address, r.from_path, r.to_path, r.status_code
+    FROM redirects r
+    WHERE r.to_path = ANY(${targets})
+      AND NOT EXISTS (
+        SELECT 1 FROM pending_redirects p WHERE p.address = caelo_redirect_address(r.from_path)
+      )
+    UNION ALL
+    SELECT p.address, p.from_path, p.to_path, p.status_code
+    FROM pending_redirects p
+    WHERE p.to_path = ANY(${targets}) AND ${SHARED_DRAFT_PENDING}
   `;
 }
 
 /**
  * #1517 — the pages of `pageIds` only a chat's branch holds
  * (`chat_branch_id` set until the merge takes them to main). Such a page
- * was never served, so no page write may touch the redirects table for it
+ * was never served, so no page write may write a redirect change for it
  * (see the module comment): every page-driven redirect write asks here
  * first (`scripts/no-draft-live-writes.test.ts` pins them).
  */
@@ -99,60 +115,22 @@ async function mainLineMoves(
 }
 
 /**
- * #1517 — Publish live takes a page's URL over from a redirect rule: the
- * pages a production build ships for the first time (`pageIds`, stamped
- * `first_published_at` by that release) delete every rule on their path, in
- * both spellings, in the release's transaction. Until then the rule kept
- * answering on the live site, which did not serve the page yet; the build
- * that now serves it wins over the rule anyway (the redirect plan leaves a
- * served path out), so the delete only keeps the rule from coming back when
- * the page leaves the build. Not at the merge (Stage): the live site serves
- * the previous build until Publish live, and a rule deleted at Stage would
- * leave the URL answering 404 there.
- *
- * The caller pushes the table after its commit (the release's own redirect
- * sync); a request is registered too, for the targets that release does not
- * push.
- *
- * @returns how many rules were deleted.
- */
-export async function takeOverRedirectsOnFirstPublishedPages(
-  ctx: ExecutionContext,
-  tx: TransactionRunner,
-  pages: ReadonlyArray<{ readonly id: string; readonly path: string }>,
-): Promise<number> {
-  if (pages.length === 0) return 0;
-  // The 404 page is served at /404.html: its own path is free for a rule.
-  const designated = (await tx.execute(sql`
-    SELECT not_found_page_id::text AS id FROM site_defaults WHERE id = 1
-  `)) as unknown as { id: string | null }[];
-  const notFound = designated[0]?.id ?? null;
-  const spellings = pages
-    .filter((p) => p.id !== notFound)
-    .flatMap((p) => redirectFromPathSpellings(p.path));
-  if (spellings.length === 0) return 0;
-  const gone = (await tx.execute(sql`
-    DELETE FROM redirects WHERE from_path = ANY(${textArray(spellings)})
-    RETURNING 1 AS gone
-  `)) as unknown as { gone: number }[];
-  if (gone.length > 0) await requestRedirectSync(tx, ctx);
-  return gone.length;
-}
-
-/**
- * Apply the side effects of already-persisted path moves.
+ * Stage the redirect side effects of already-persisted path moves.
  *
  * @param redirects `"skip"` suppresses the old-URL 301s (operator asked
  *   for the old URLs to 404); `{ skip }` decides per moved page (a publish
  *   carrying moves with different requests). Chain collapse and reclaim
  *   always run over the WHOLE move set in one pass — split passes would
  *   re-collapse one subset's fresh redirects.
+ * @param origin what caused the moves, recorded on the automatic changes
+ *   (a slug change or move is `page_move`, a revert `revert`).
  */
 export async function applyPathMoveEffects(
   ctx: ExecutionContext,
   tx: TransactionRunner,
   moves: ReadonlyArray<PathMove>,
   redirects: "auto" | "skip" | { readonly skip: (pageId: string) => boolean },
+  origin: Extract<RedirectOrigin, "page_move" | "revert"> = "page_move",
 ): Promise<PathMoveEffects> {
   const skipsRedirect = (pageId: string): boolean =>
     redirects === "skip" ? true : redirects === "auto" ? false : redirects.skip(pageId);
@@ -161,51 +139,63 @@ export async function applyPathMoveEffects(
     moves.filter((m) => m.from !== m.to),
   );
   if (real.length === 0) return { redirectsCreated: 0 };
-  const { chatBranchId: _b, chatTaskId: _t, ...mainCtx } = ctx;
+  const changes: RedirectChangeInput[] = [];
 
-  // A page now lives at each new path: a redirect from there (e.g. left
-  // by an earlier move away, now moved back) would shadow it — drop it
-  // BEFORE collapsing chains, or "new → old" would collapse into a
-  // self-loop. #1447 — both spellings: a row answers its path with and
-  // without the trailing slash, and an imported table stores `/old/`.
-  const newPaths = new Set(real.map((m) => m.to));
-  // #1254 — counted: only a move that changed redirect rows asks for a sync.
-  let redirectRowsChanged = 0;
+  // A page now lives at each new path: a rule there (e.g. left by an
+  // earlier move away, now moved back) would shadow it — remove it BEFORE
+  // collapsing chains, or "new → old" would collapse into a self-loop.
+  // #1447 — both spellings: one address.
+  const newAddresses = new Set(real.map((m) => redirectAddress(m.to)));
+  const atNew = await pendingByAddress(tx, [...newAddresses]);
+  const liveAtNew = (await tx.execute(sql`
+    SELECT DISTINCT caelo_redirect_address(from_path) AS address FROM redirects
+    WHERE caelo_redirect_address(from_path) = ANY(${textArray([...newAddresses])})
+  `)) as unknown as { address: string }[];
+  const ruledAtNew = new Set([
+    ...liveAtNew.map((r) => r.address),
+    ...[...atNew.values()].filter((p) => p.toPath !== null).map((p) => p.address),
+  ]);
   for (const m of real) {
-    const gone = (await tx.execute(sql`
-      DELETE FROM redirects WHERE from_path = ANY(${textArray(redirectFromPathSpellings(m.to))})
-      RETURNING 1 AS gone
-    `)) as unknown as { gone: number }[];
-    redirectRowsChanged += gone.length;
+    if (ruledAtNew.has(redirectAddress(m.to))) {
+      changes.push({ fromPath: m.to, toPath: null, statusCode: null });
+    }
   }
+
   // Collapse chains: X → old becomes X → new, so a visitor hops once.
-  // ONE statement against the original targets: with chained or swapped
-  // moves (/a → /b, /b → /c) sequential updates would carry "/legacy →
-  // /a" on to /c, i.e. to the wrong page.
-  const collapsed = (await tx.execute(collapseRedirectChainsSql(real))) as unknown as {
-    collapsed: number;
+  // ONE read against the original targets: with chained or swapped moves
+  // (/a → /b, /b → /c) sequential updates would carry "/legacy → /a" on to
+  // /c, i.e. to the wrong page.
+  const newPathOf = new Map(real.map((m) => [m.from, m.to]));
+  const pointing = (await tx.execute(rulesPointingAtSql([...newPathOf.keys()]))) as unknown as {
+    address: string;
+    from_path: string;
+    to_path: string;
+    status_code: number;
   }[];
-  redirectRowsChanged += collapsed.length;
+  for (const r of pointing) {
+    const to = newPathOf.get(r.to_path);
+    // A rule on a new path is being removed above; never point it anywhere.
+    if (to === undefined || newAddresses.has(r.address)) continue;
+    changes.push({ fromPath: r.from_path, toPath: to, statusCode: r.status_code });
+  }
+
+  // The old URLs' 301s last: a later change of an address replaces an
+  // earlier one of the same write (the collapse of a rule that is itself
+  // an old URL of this move set).
   let redirectsCreated = 0;
   for (const m of real) {
     if (skipsRedirect(m.pageId)) continue;
     // Two pages swapping URLs: the old URL is another page's new home.
-    if (newPaths.has(m.from)) continue;
-    const red = await createRedirectOp.handler(
-      mainCtx,
-      { fromPath: m.from, toPath: m.to, statusCode: 301 },
-      tx,
-    );
-    // Loud: a move whose 301 failed is exactly the state that strands
-    // inbound links, so it aborts the whole transaction.
-    if (!red.ok) throw new Error(`page move aborted — redirect ${m.from} → ${m.to} failed`);
+    if (newAddresses.has(redirectAddress(m.from))) continue;
+    changes.push({ fromPath: m.from, toPath: m.to, statusCode: 301 });
     redirectsCreated += 1;
   }
-
-  // #1157 — the deletes and chain updates above changed the redirects table
-  // too (each created 301 already asked for the sync itself). #1254 — a move
-  // that changed no redirect row asks for nothing: the sync runs off the
-  // write path and only when the table changed (deploy/redirect-sync.ts).
-  if (redirectRowsChanged > 0) await requestRedirectSync(tx, ctx);
+  await writeRedirectChanges(tx, changes, {
+    origin,
+    state: "staged",
+    // Main-line effects: the shared draft's, owned by no chat (an Undo of
+    // a chat never undoes a page change that is already on the main line).
+    owner: { actorId: ctx.actorId, chatSessionId: null, chatBranchId: null },
+  });
   return { redirectsCreated };
 }

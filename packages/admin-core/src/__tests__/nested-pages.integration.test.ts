@@ -24,6 +24,7 @@ import { SQL } from "bun";
 import { deletePagesManyTool } from "../ai/tools/bulk-pages-modules.js";
 import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import { registerAdminOps } from "../register.js";
+import { liveRedirects, ruleView } from "./fixtures/redirects.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -60,11 +61,14 @@ async function pathOf(pageId: string): Promise<string> {
   return rows[0]?.current_path ?? "<missing>";
 }
 
+/**
+ * The rule at `fromPath` once its pending change is live (#1550: a move's
+ * 301s and chain collapses are Staged changes; the live table waits for the
+ * Publish live that ships the move).
+ */
 async function redirectTo(fromPath: string): Promise<string | null> {
-  const rows = (await q(
-    (tx) => tx`SELECT to_path FROM redirects WHERE from_path = ${fromPath}`,
-  )) as unknown as { to_path: string }[];
-  return rows[0]?.to_path ?? null;
+  const rules = await ruleView(ADMIN_URL!, fromPath);
+  return rules.find((r) => r.fromPath === fromPath)?.toPath ?? null;
 }
 
 async function makePage(
@@ -95,6 +99,7 @@ function errMsg(r: { ok: boolean; error?: unknown }): string {
 
 async function wipe(): Promise<void> {
   await q(async (tx) => {
+    await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`%${PFX}-%`} OR to_path LIKE ${`%${PFX}-%`}`;
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}-%`} OR to_path LIKE ${`%${PFX}-%`}`;
     await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${`${PFX}-%`})`;
     await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}-%`}`;
@@ -335,7 +340,7 @@ describe("nested page URLs — homepage + delete rules", () => {
 });
 
 describe("nested page URLs — chat branch + publish + revert", () => {
-  it("a move in a chat is pending until merge, then goes live with 301s", async () => {
+  it("a move in a chat is pending until merge, then stages its 301s (#1550)", async () => {
     const target = await makePage("br-t");
     const page = await makePage("br");
     const session = await execute(registry, adapter, SYSTEM, "chat.create_session", {
@@ -367,6 +372,8 @@ describe("nested page URLs — chat branch + publish + revert", () => {
     expect(merged.ok).toBe(true);
     expect(await pathOf(page)).toBe(`/${PFX}-br-t/${PFX}-br`);
     expect(await redirectTo(`/${PFX}-br`)).toBe(`/${PFX}-br-t/${PFX}-br`);
+    // Staged, not live: the 301 goes live with the Publish live that ships the move.
+    expect(await liveRedirects(ADMIN_URL!, `/${PFX}-br`)).toEqual([]);
 
     // revert_page to the pre-move snapshot restores the parent + URL.
     const snaps = (await q(

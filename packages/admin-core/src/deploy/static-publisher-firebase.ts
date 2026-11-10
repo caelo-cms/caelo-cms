@@ -67,7 +67,7 @@ import {
   hasCurrentGatewayRewrite,
   withCurrentGatewayRewrite,
 } from "./firebase-gateway-rewrite.js";
-import { syncFirebaseRedirects } from "./firebase-redirect-sync.js";
+import { servedChannelFiles, syncFirebaseRedirects } from "./firebase-redirect-sync.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
 import {
   type FirebaseHeaderEntry,
@@ -76,7 +76,7 @@ import {
   VERSION_CONFIG_HEADERS,
   withCurrentFixedHeaders,
 } from "./firebase-version-headers.js";
-import { GcsSlotSync, stagingBucket } from "./staging-slots.js";
+import { GcsSlotSync, stagedSlotFiles, stagingBucket } from "./staging-slots.js";
 import { contentTypeFor } from "./static-file-policy.js";
 import type {
   BuildUpload,
@@ -1098,6 +1098,26 @@ export const firebaseHostingPublisher: StaticPublisher = {
       destinationBuildId: sourceRunId,
     };
     return summary;
+  },
+
+  async readStagedBuildFiles({ runId, location }) {
+    // #1330 — the slot manifest the staging gateway serves the build by.
+    return stagedSlotFiles(location, runId);
+  },
+
+  async readServedFiles({ target }) {
+    if (target.env !== "production") {
+      throw new Error(
+        `static-publisher-firebase: ${target.name} (${target.env}) is served by the staging gateway from its slot; read a staged build with readStagedBuildFiles.`,
+      );
+    }
+    const site = siteName();
+    const token = await googleAuthToken();
+    return servedChannelFiles({
+      call: (path, init) => firebaseFetch(path, { ...init, token }),
+      site,
+      channelId: "live",
+    });
   },
 
   async syncRedirects({ target, rows }) {

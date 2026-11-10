@@ -43,7 +43,6 @@ import {
   makePluginTextProvider,
   mcpBackPressureResponse,
   refreshStaleLiveReleaseAtBoot,
-  registerRedirectSyncRunner,
   retireLegacyStagingPreviewsAtBoot,
   setStagingCaptureAccess,
   stagingCaptureAccess,
@@ -486,13 +485,12 @@ function bootstrapLiveFanOut(): void {
 }
 let liveFanOutBootstrapped = false;
 
-// #1157 — redirects sync to the hosting provider on save, no build: the
-// post-commit push every redirects write runs (idempotent). Targets whose
-// provider is behind are retried on the scheduler tick (Settings →
-// Redirects shows it).
+// #1157 / #1550 — the live redirects reach the hosting provider without a
+// build: each release (Publish live, Go live now, a rollback) pushes them
+// after its commit, and targets whose provider is behind are retried on the
+// scheduler tick (Settings → Redirects shows it). A save pushes nothing.
 function bootstrapRedirectSync(): void {
   const { adapter, registry } = getQueryContext();
-  registerRedirectSyncRunner({ adapter, registry });
   // #1380 — a converge that moved the visitor gateway leaves the live
   // Firebase release's /api/** rewrite on the old service, and a release
   // that fixes the fixed headers (nosniff, SVG CSP) leaves the old ones live;

@@ -21,15 +21,16 @@ import { proposeAcceptInput, proposePublishAnywayInput } from "../../ops/quality
 import { describeError, toolError } from "./_describe-error.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 import { makeReadTool } from "./_make-read-tool.js";
+import { redirectReleaseNote } from "./_redirect-sync-note.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import { AUDIT_PENDING_NEXT_STEP } from "./quality-audit-tools.js";
 
 const noInput = z.object({}).strict();
 
-export const getPublishGateTool = makeReadTool<Record<string, never>>({
+const gateTool = makeReadTool<Record<string, never>>({
   name: "get_publish_gate",
   description:
-    "Is Publish live open for the staged build? If not: why + next step (fix quality problems — target 100, zero findings — or hand truly unfixable ones to the operator as a decision; retry a failed check; wait for a running one). Call before telling the operator they can publish. Findings -> `get_quality_audit`.",
+    "Is Publish live open for the staged build? If not: why + next step (fix quality problems — target 100, zero findings — or hand truly unfixable ones to the operator as a decision; retry a failed check; wait for a running one). Also which redirect changes go live with it. Call before telling the operator they can publish. Findings -> `get_quality_audit`.",
   opName: "quality_audits.gate_status",
   input: noInput,
   buildOpInput: () => ({}),
@@ -53,6 +54,16 @@ export const getPublishGateTool = makeReadTool<Record<string, never>>({
     return `Publish live is BLOCKED (${v.gate.state}, audit ${v.gate.auditRunId ?? "none"}): ${v.gate.message}${pending ? ` ${AUDIT_PENDING_NEXT_STEP}` : ""}`;
   },
 });
+
+/** #1550 — the gate, plus what the next Publish live does to the redirects. */
+export const getPublishGateTool: ToolDefinitionWithHandler<Record<string, never>> = {
+  ...gateTool,
+  handler: async (ctx, input, toolCtx) => {
+    const gate = await gateTool.handler(ctx, input, toolCtx);
+    if (!gate.ok) return gate;
+    return { ...gate, content: `${gate.content}${await redirectReleaseNote(ctx, toolCtx)}` };
+  },
+};
 
 const retryInput = z
   .object({

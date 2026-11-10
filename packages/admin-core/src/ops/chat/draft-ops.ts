@@ -36,6 +36,10 @@ import {
   pendingSnapshotSql,
   releaseIdleDraftLocks,
 } from "../../draft.js";
+import {
+  discardChatRedirectChanges,
+  settleStagedChatRedirectChanges,
+} from "../../redirects/lifecycle.js";
 import { mergeWindowToMain, STAGE_CHANGED_PREFIX } from "./publish.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
@@ -128,6 +132,10 @@ async function finalizeDraftSelection(
     SET last_staged_at = GREATEST(COALESCE(last_staged_at, '-infinity'::timestamptz), ${stagedAt}::timestamptz)
     WHERE id = ANY(${uuidArray(chatSessionIds)})
   `);
+  // #1550 — the automatic redirect changes of the staged page writes (a
+  // delete's 301) belong to the staged state now: a later Undo of these
+  // chats, which drops only unstaged work, leaves them.
+  await settleStagedChatRedirectChanges(tx, chatSessionIds, stagedAt);
   await releaseIdleDraftLocks(tx, branchId);
   return staged;
 }
@@ -330,6 +338,10 @@ export async function undoDraftChat(
     droppedRows += rows.length;
   }
   droppedRows += await discardBranchPluginRows(tx, binding.branchId, selection.pluginRowIds);
+  // #1550 — the chat's pending redirect changes go with it (Draft and
+  // Staged, its manual ones and the automatic ones of its unstaged page
+  // writes); the live redirects are never undone.
+  droppedRows += await discardChatRedirectChanges(tx, binding.chatSessionId);
   await releaseIdleDraftLocks(tx, binding.branchId);
   // The undo itself is history: one header on the draft, not pending.
   await tx.execute(sql`

@@ -82,7 +82,8 @@ test.beforeAll(() => {
     await adapter.close();
     const red = await db.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      return tx\`SELECT to_path FROM redirects WHERE from_path = \${"/" + tag + "-moved"}\`;
+      // #1550 — the move's 301 is a Staged change until Publish live ships it.
+      return tx\`SELECT to_path FROM pending_redirects WHERE from_path = \${"/" + tag + "-moved"}\`;
     });
     await db.end();
     process.stdout.write(JSON.stringify({

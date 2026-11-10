@@ -94,7 +94,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
-import { type RedirectTableRow, SESSION_ENTRY } from "@caelo-cms/shared";
+import { SESSION_ENTRY } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
   ClientAddressError,
@@ -148,6 +148,7 @@ import {
   gateFailureLimiter,
   handleStagingSiteRequest,
   ManifestCache,
+  type PublishedRedirects,
   type StagingSiteState,
 } from "./staging/site.js";
 import { type StagingStorage, stagingStorageFromEnv } from "./staging/storage.js";
@@ -345,7 +346,7 @@ function featureOff(): boolean {
 // ---------------------------------------------------------------------------
 
 let cachedStagingState: StagingSiteState | null = null;
-let cachedRedirects: readonly RedirectTableRow[] | null = null;
+let cachedRedirects: PublishedRedirects | null = null;
 
 async function loadStagingSiteState(adapter: DatabaseAdapter): Promise<StagingSiteState> {
   if (cachedStagingState && publishedCacheUsable()) return cachedStagingState;
@@ -405,23 +406,44 @@ async function loadStagingSiteState(adapter: DatabaseAdapter): Promise<StagingSi
   return state;
 }
 
-async function loadPublishedRedirects(
-  adapter: DatabaseAdapter,
-): Promise<readonly RedirectTableRow[]> {
+/**
+ * #1550 — the live rows and the shared draft's Staged changes, read in one
+ * transaction so the two always belong to the same publish.
+ */
+async function loadPublishedRedirects(adapter: DatabaseAdapter): Promise<PublishedRedirects> {
   if (cachedRedirects && publishedCacheUsable()) return cachedRedirects;
   const startedAt = publishedCacheGeneration();
-  const rows = (await adapter.withPublicTransaction(
-    SYSTEM_CTX,
-    async (tx) =>
-      await tx.execute(
-        sql`SELECT from_path, to_path, status_code FROM published_redirects ORDER BY from_path`,
-      ),
-  )) as unknown as { from_path: string; to_path: string; status_code: number }[];
-  const redirects = rows.map((r) => ({
-    fromPath: r.from_path,
-    toPath: r.to_path,
-    statusCode: r.status_code,
+  const { live, staged } = await adapter.withPublicTransaction(SYSTEM_CTX, async (tx) => ({
+    live: (await tx.execute(
+      sql`SELECT from_path, to_path, status_code FROM published_redirects ORDER BY from_path`,
+    )) as unknown as { from_path: string; to_path: string; status_code: number }[],
+    staged: (await tx.execute(
+      sql`SELECT id::text AS id, address, from_path, to_path, status_code, automatic
+          FROM published_redirect_changes ORDER BY address`,
+    )) as unknown as {
+      id: string;
+      address: string;
+      from_path: string;
+      to_path: string | null;
+      status_code: number | null;
+      automatic: boolean;
+    }[],
   }));
+  const redirects: PublishedRedirects = {
+    live: live.map((r) => ({
+      fromPath: r.from_path,
+      toPath: r.to_path,
+      statusCode: r.status_code,
+    })),
+    staged: staged.map((c) => ({
+      id: c.id,
+      address: c.address,
+      fromPath: c.from_path,
+      toPath: c.to_path,
+      statusCode: c.status_code,
+      automatic: c.automatic,
+    })),
+  };
   if (mayCacheRead(startedAt)) cachedRedirects = redirects;
   return redirects;
 }

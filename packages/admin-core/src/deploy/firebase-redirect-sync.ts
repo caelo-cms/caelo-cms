@@ -99,6 +99,26 @@ function remember(versionName: string, files: ReadonlyMap<string, string>): void
 }
 
 /**
+ * #1550 — the files `channelId` of `site` serves now (relative, no leading
+ * slash), or null when the channel serves no version yet. Go live now and an
+ * Owner's production build check redirect targets against them; cached per
+ * version like the sync's own read.
+ */
+export async function servedChannelFiles(args: {
+  readonly call: FirebaseCall;
+  readonly site: string;
+  readonly channelId: string;
+}): Promise<ReadonlySet<string> | null> {
+  const releases = await args.call<{ releases?: { version?: { name?: string } }[] }>(
+    `sites/${args.site}/channels/${args.channelId}/releases?pageSize=1`,
+  );
+  const servedVersion = releases.releases?.[0]?.version?.name;
+  if (!servedVersion) return null;
+  const files = await versionFiles(args.call, args.site, servedVersion);
+  return new Set([...files.keys()].map((p) => p.replace(/^\/+/, "")));
+}
+
+/**
  * Put `rows` live on `channelId` (`live`, or a staging preview channel) of
  * `site`, reusing the version that channel serves.
  */
