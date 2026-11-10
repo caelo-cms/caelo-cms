@@ -600,12 +600,15 @@ export const init: ServerInit = async () => {
  * of one request (a preview, one MCP tool call, a chat turn) ask
  * `caelo_branch_visible` once per branch, and no verdict outlives it.
  *
- * #1361 — and holds the plugin runtime heartbeat until its response is
- * sent (an event stream until its end), so a server busy with a long
- * request keeps counting as live for the other servers.
+ * #1361 — and holds the plugin runtime heartbeat until its response body
+ * is sent (an event stream, a streamed page, a media download until its
+ * end), so a server busy with a long request keeps counting as live for
+ * the other servers. A sub-request (a load's own `fetch` during SSR) runs
+ * inside a request that holds it already, and its body may go unread.
  */
 export const handle: Handle = (input) =>
   withBranchVisibilityScope(async () => {
+    if (input.event.isSubRequest) return handleRequest(input);
     const release = holdRuntimeHeartbeat();
     try {
       return releaseWhenSent(await handleRequest(input), release);

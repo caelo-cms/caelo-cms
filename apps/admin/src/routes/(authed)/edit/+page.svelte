@@ -54,6 +54,7 @@
     samePreviewDocument,
   } from "#lib/components/edit/iframe-protocol.js";
   import { persistPreviewCookies } from "#lib/components/edit/preview-cookie-jar.js";
+  import { browserPresence } from "#lib/live/presence.js";
   import { StreamedValue } from "#lib/components/edit/streamed-value.svelte.js";
   import { pageToFollow } from "#lib/components/edit/streamed-read.js";
   import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
@@ -358,7 +359,11 @@
       // previewMessage).
       const msg = previewMessage(ev, iframe?.contentWindow, previewChannel);
       if (!msg) return;
-      if (msg.kind === "caelo:element-referenced") {
+      if (msg.kind === "caelo:activity") {
+        // #1361 — the operator works in the preview, whose input this
+        // window never sees: the live waits go on.
+        browserPresence.noteInput();
+      } else if (msg.kind === "caelo:element-referenced") {
         // Chip (+ Ask AI composer focus) for the chat; the Overlay expands itself
         // first when collapsed so ChatPanel is mounted to receive it.
         const { kind: _kind, ...detail } = msg;

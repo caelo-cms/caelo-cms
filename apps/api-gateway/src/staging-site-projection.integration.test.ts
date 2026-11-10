@@ -8,7 +8,7 @@
  * the live database.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, setSystemTime } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +21,11 @@ import {
   stagedManifestKey,
 } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { listenForPublishedChanges, onPublishedChange } from "./published-changes.js";
+import {
+  CONFIRM_MAX_AGE_MS,
+  listenForPublishedChanges,
+  onPublishedChange,
+} from "./published-changes.js";
 import {
   handleRequest,
   invalidateGatewaySettings,
@@ -310,6 +314,68 @@ describe("#1361 a gate change whose notification still waits in the socket", () 
       await asSystem(
         ADMIN_URL,
         (tx) => tx`UPDATE staging_access SET cookie_enabled = true WHERE id = 1`,
+      );
+      await publish();
+    }
+  });
+});
+
+describe("#1361 a staging host set while the instance idles", () => {
+  it("is served from the first request once the off answer is older than CONFIRM_MAX_AGE_MS", async () => {
+    // Copilot review of #1557: the off answer comes from memory before
+    // everything else (E14 a), so without its own confirmation a staging
+    // host set while this instance idled kept getting the fixed 404 until
+    // the LISTEN callback happened to run.
+    const held: string[] = [];
+    const throttled = new Proxy(gateway, {
+      get(target, prop) {
+        if (prop === "listen") {
+          return (...args: Parameters<DatabaseAdapter["listen"]>) => {
+            const [pool, channel, callbacks] = args;
+            return target.listen(pool, channel, {
+              ...callbacks,
+              onNotify: (payload) => void held.push(payload),
+            });
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    onPublishedChange(invalidateGatewaySettings);
+    await asSystem(
+      ADMIN_URL,
+      (tx) => tx`UPDATE staging_access SET staging_host = NULL WHERE id = 1`,
+    );
+    await publish();
+    const listening = await listenForPublishedChanges(throttled);
+    // A client of its own: the earlier tests spent some of the shared
+    // client's failure budget.
+    const visitor = { "x-forwarded-for": "198.51.100.61" };
+    try {
+      expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
+        404,
+      );
+      // The Owner sets the host; this idle instance has not handled the notification.
+      await asSystem(
+        ADMIN_URL,
+        (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
+      );
+      await publishProjectionOnce(adapter, staging, { declarations: new Map() });
+      const deadline = Date.now() + 5_000;
+      while (held.length === 0 && Date.now() < deadline) await Bun.sleep(20);
+      expect(held.length).toBeGreaterThan(0);
+      setSystemTime(new Date(Date.now() + CONFIRM_MAX_AGE_MS));
+      // From the cached "off" this was the fixed 404; now the gate answers.
+      expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
+        403,
+      );
+    } finally {
+      setSystemTime();
+      await listening.unlisten();
+      await asSystem(
+        ADMIN_URL,
+        (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
       );
       await publish();
     }

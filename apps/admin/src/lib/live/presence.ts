@@ -10,7 +10,8 @@
  * long work, the gateway live view's stream — would bill the admin around
  * the clock for a tab left open. A tab is present while it is visible and
  * the operator used it (pointer, keyboard, touch, wheel, focus) within the
- * last {@link OPERATOR_IDLE_MS}. Those surfaces hold a request only while
+ * last {@link OPERATOR_IDLE_MS}, in this window or in an editor's preview
+ * frame, which reports its own input. Those surfaces hold a request only while
  * the tab is present, and resume the moment the operator is back: the tab
  * becomes visible, the window gets focus, or the first input after an idle
  * stretch.
@@ -37,12 +38,27 @@ export interface Presence {
   onReturn(listener: () => void): () => void;
   /** The tab was hidden. @returns the unsubscribe */
   onHide(listener: () => void): () => void;
+  /**
+   * Input this window's listeners cannot see: an editor's preview runs in a
+   * sandboxed frame, and input there never reaches this window. The preview
+   * reports its own (`caelo:activity`, at most every
+   * {@link FRAME_INPUT_INTERVAL_MS}); it counts like input here.
+   */
+  noteInput(): void;
 }
 
 /** Whether `presence` says someone is at the tab now. */
 export function isPresent(presence: Presence): boolean {
   return presence.isVisible() && presence.idleMs() < OPERATOR_IDLE_MS;
 }
+
+/**
+ * How often, at most, an editor's preview frame reports the operator's
+ * input ({@link Presence.noteInput}). Far below {@link OPERATOR_IDLE_MS};
+ * the first input after a quiet stretch is reported at once, which is the
+ * one a return waits for.
+ */
+export const FRAME_INPUT_INTERVAL_MS = 30_000;
 
 /** Input that says the operator uses the tab. Passive and captured: it is only counted. */
 export const PRESENCE_INPUT_EVENTS = [
@@ -76,14 +92,13 @@ export function createPresence(dom: PresenceDom): Presence {
     lastUsedAt = now;
     return idleFor;
   };
+  const input = () => {
+    if (used() >= OPERATOR_IDLE_MS) announce(returns);
+  };
   const attach = () => {
     if (attached) return;
     attached = true;
-    for (const type of PRESENCE_INPUT_EVENTS) {
-      dom.listen("window", type, () => {
-        if (used() >= OPERATOR_IDLE_MS) announce(returns);
-      });
-    }
+    for (const type of PRESENCE_INPUT_EVENTS) dom.listen("window", type, input);
     dom.listen("document", "visibilitychange", () => {
       if (!dom.visible()) {
         announce(hides);
@@ -110,6 +125,7 @@ export function createPresence(dom: PresenceDom): Presence {
       hides.add(listener);
       return () => void hides.delete(listener);
     },
+    noteInput: input,
   };
 }
 

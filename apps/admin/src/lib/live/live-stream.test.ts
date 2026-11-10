@@ -56,6 +56,9 @@ function fakeTab() {
       hides.add(l);
       return () => void hides.delete(l);
     },
+    noteInput: () => {
+      idle = 0;
+    },
   };
   const sources: FakeSource[] = [];
   const states: PresentStreamState[] = [];

@@ -144,6 +144,7 @@ import { addJsonSecurityHeaders, withJsonSecurityHeaders } from "./middleware/se
 import { signCookieValue } from "./middleware/signed-cookie.js";
 import { GATEWAY_PLUGINS_ROOT } from "./plugins-root.js";
 import {
+  confirmOffAnswer,
   confirmPublishedState,
   listenForPublishedChanges,
   mayCacheRead,
@@ -320,6 +321,11 @@ async function readProjectionVersions(adapter: DatabaseAdapter): Promise<string>
 /** {@link confirmPublishedState} against this gateway's own projection. */
 function confirmPublishedStateOn(adapter: DatabaseAdapter): Promise<void> {
   return confirmPublishedState(() => readProjectionVersions(adapter));
+}
+
+/** {@link confirmOffAnswer} against this gateway's own projection. */
+function confirmOffAnswerOn(adapter: DatabaseAdapter): Promise<void> {
+  return confirmOffAnswer(() => readProjectionVersions(adapter));
 }
 
 export function invalidateGatewaySettings(): void {
@@ -799,9 +805,16 @@ async function stagingRequest(
   // The published state first: E14 a — with no staging host set the staging
   // site is off, the fixed 404 before anything of the request is read (from
   // memory while the LISTEN holds, else one read of the projection row).
+  // #1361 — an answer from memory is confirmed at most once per
+  // CONFIRM_MAX_AGE_MS: a staging host set while this instance idled is
+  // served from its first request after that.
   let state: StagingSiteState;
   try {
     state = await loadStagingSiteState(adapter);
+    if (state.host === null) {
+      await confirmOffAnswerOn(adapter);
+      state = await loadStagingSiteState(adapter);
+    }
   } catch (e) {
     return unavailable(e);
   }
@@ -858,10 +871,13 @@ async function visitorRequest(
   }
 
   // ---- E14 a: no visitor plugin active, the fixed 404 before anything of
-  // the request is read. Known from memory while the LISTEN holds; not
-  // known yet (the first request after a publish or boot, or the LISTEN is
-  // down): one registry read decides, shared by concurrent requests and at
-  // most one per SYNC_TTL_MS (plugin-host syncDispatchPlugins). ----
+  // the request is read. Known from memory while the LISTEN holds, that
+  // answer confirmed at most once per CONFIRM_MAX_AGE_MS (#1361: a plugin
+  // activated while this instance idled); not known yet (the first request
+  // after a publish or boot, or the LISTEN is down): one registry read
+  // decides, shared by concurrent requests and at most one per
+  // SYNC_TTL_MS (plugin-host syncDispatchPlugins). ----
+  if (featureOff() && cachedAdapter) await confirmOffAnswerOn(cachedAdapter);
   if (featureOff()) return errorResponse("NotFound", 404, requestId);
   if (cachedAdapter && (await learnVisitorApiOff(cachedAdapter))) {
     return errorResponse("NotFound", 404, requestId);

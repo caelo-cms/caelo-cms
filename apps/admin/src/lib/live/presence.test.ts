@@ -6,7 +6,13 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { createPresence, isPresent, OPERATOR_IDLE_MS, type PresenceDom } from "./presence.js";
+import {
+  createPresence,
+  FRAME_INPUT_INTERVAL_MS,
+  isPresent,
+  OPERATOR_IDLE_MS,
+  type PresenceDom,
+} from "./presence.js";
 
 function fakeDom() {
   let now = 0;
@@ -60,6 +66,30 @@ describe("#1361 — operator presence", () => {
     expect(presence.idleMs()).toBe(0);
     f.fire("window:pointermove");
     expect(returns).toBe(1);
+  });
+
+  it("counts input the preview frame reports like input here (Codex review of #1557)", () => {
+    // Input inside the editor's sandboxed preview never reaches this
+    // window's listeners: an operator editing in the preview for ten
+    // minutes would read as gone, and the live waits would stop.
+    const f = fakeDom();
+    const presence = createPresence(f.dom);
+    let returns = 0;
+    presence.onReturn(() => {
+      returns += 1;
+    });
+    for (let minute = 0; minute < 15; minute += 1) {
+      f.advance(FRAME_INPUT_INTERVAL_MS);
+      presence.noteInput();
+    }
+    expect(isPresent(presence)).toBe(true);
+    expect(returns).toBe(0);
+    // The first reported input after an idle stretch is a return.
+    f.advance(OPERATOR_IDLE_MS);
+    expect(isPresent(presence)).toBe(false);
+    presence.noteInput();
+    expect(returns).toBe(1);
+    expect(isPresent(presence)).toBe(true);
   });
 
   it("announces showing and focus as a return, hiding as a hide", () => {
