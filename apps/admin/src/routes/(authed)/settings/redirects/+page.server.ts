@@ -225,7 +225,14 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const fromPaths = fromPathsOf(form);
     if (fromPaths.length === 0) return fail(400, { error: "fromPath missing" });
-    const refused = await goLiveNow(locals, fromPaths);
+    // The change as the row showed it (id and revision): a save since the
+    // page loaded refuses the click instead of putting that save live.
+    const changeId = String(form.get("changeId") ?? "");
+    const revision = Number(form.get("revision") ?? "");
+    if (!/^[0-9a-f-]{36}$/i.test(changeId) || !Number.isInteger(revision) || revision < 1) {
+      return fail(400, { error: "The change to put live is missing; reload the page." });
+    }
+    const refused = await goLiveNow(locals, fromPaths, [{ id: changeId, revision }]);
     if (refused) return fail(409, { error: refused });
     return { ok: true, message: `${fromPaths.join(", ")}: live on your site now.` };
   },

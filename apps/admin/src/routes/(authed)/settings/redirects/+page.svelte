@@ -353,6 +353,9 @@
                           <form method="post" action="?/goLive" use:confirmSubmit={{ title: `Put ${c.fromPath} live now?`, description: "It goes live on your site right away, without Publish live.", confirmLabel: "Go live now" }}>
                             <input type="hidden" name="_csrf" value={data.csrfToken} />
                             <input type="hidden" name="fromPath" value={c.fromPath} />
+                            <!-- #1550 — the change as shown: a save since refuses the click. -->
+                            <input type="hidden" name="changeId" value={c.id} />
+                            <input type="hidden" name="revision" value={c.revision} />
                             <Button
                               type="submit"
                               size="sm"
