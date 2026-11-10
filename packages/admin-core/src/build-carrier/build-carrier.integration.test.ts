@@ -37,7 +37,7 @@ import { deployStagingTool } from "../ai/tools/deploy-staging.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
-import { runReportingJobBackstop } from "../reporting-jobs/backstop.js";
+import { runReportingJobBackstop, sweepFinishedReportingJobs } from "../reporting-jobs/backstop.js";
 import { admitJobReport } from "../reporting-jobs/dispatch.js";
 import { JOB_MAINS } from "../reporting-jobs/job-mains.js";
 import { createJobReporter, type ReportTransport } from "../reporting-jobs/job-reporter.js";
@@ -422,6 +422,29 @@ describe("a build inside the request its carrier holds open (#1574)", () => {
     } finally {
       setEnv({ CAELO_OUTPUT_ROOT: undefined, CAELO_STAGE_TOOL_WAIT_MS: undefined });
     }
+  });
+
+  it("sweeps finished orders after their retention with the job rows, and keeps the rest", async () => {
+    const old = crypto.randomUUID();
+    const recent = crypto.randomUUID();
+    for (const id of [old, recent]) {
+      const created = await execute(registry, adapter, SYSTEM, "build_orders.create", {
+        id,
+        kind: "deploy.trigger",
+        input: { targetName: "staging" },
+        actor: { actorId: HUMAN.actorId, actorKind: "human", requestId: "sweep" },
+        maxRunSeconds: null,
+      });
+      if (!created.ok) throw new Error(describeError(created.error));
+      await execute(registry, adapter, SYSTEM, "build_orders.give_up", { id, message: "test." });
+    }
+    await withSql(
+      (tx) =>
+        tx`UPDATE build_orders SET finished_at = now() - interval '8 days' WHERE id = ${old}::uuid`,
+    );
+    expect(await sweepFinishedReportingJobs(deps())).toBeGreaterThanOrEqual(1);
+    expect(await orderRow(old)).toBeUndefined();
+    expect((await orderRow(recent))?.state).toBe("done");
   });
 
   it("refuses at once on AWS and Azure, naming the issue it waits for", async () => {

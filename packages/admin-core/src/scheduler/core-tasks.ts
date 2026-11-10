@@ -195,7 +195,7 @@ export function coreScheduledTasks(deps: CoreTaskDeps): ScheduledTask[] {
     }),
     task("reporting-jobs-gc", 24 * HOUR, async () => {
       const deleted = await sweepFinishedReportingJobs({ adapter, registry });
-      return deleted > 0 ? `${deleted} finished job row(s) deleted` : undefined;
+      return deleted > 0 ? `${deleted} finished job row(s) and build order(s) deleted` : undefined;
     }),
   );
   return tasks;

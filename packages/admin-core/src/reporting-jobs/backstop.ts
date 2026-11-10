@@ -91,12 +91,19 @@ export async function runReportingJobBackstop(
   return parts.length > 0 ? parts.join("; ") : undefined;
 }
 
-/** Drop finished job rows past their retention (the daily clean-up task). */
+/**
+ * Drop finished job rows past their retention, and the finished build
+ * orders (#1574) with them (the daily clean-up task).
+ */
 export async function sweepFinishedReportingJobs(deps: AdminJobDeps): Promise<number> {
-  const r = await execute(deps.registry, deps.adapter, REPORTING_JOB_CTX, "reporting_jobs.sweep", {
-    olderThanDays: REPORTING_JOB_RETENTION_DAYS,
-    limit: 1000,
-  });
-  if (!r.ok) throw new Error(`reporting_jobs.sweep failed: ${describeError(r.error)}`);
-  return (r.value as { deleted: number }).deleted;
+  let deleted = 0;
+  for (const name of ["reporting_jobs.sweep", "build_orders.sweep"]) {
+    const r = await execute(deps.registry, deps.adapter, REPORTING_JOB_CTX, name, {
+      olderThanDays: REPORTING_JOB_RETENTION_DAYS,
+      limit: 1000,
+    });
+    if (!r.ok) throw new Error(`${name} failed: ${describeError(r.error)}`);
+    deleted += (r.value as { deleted: number }).deleted;
+  }
+  return deleted;
 }
