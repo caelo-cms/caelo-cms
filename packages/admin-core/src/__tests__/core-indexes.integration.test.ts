@@ -124,9 +124,32 @@ describe("#1291 — hot paths plan an index scan", () => {
   });
 
   it("a page move finds the rules to collapse by index, live and pending (#1550)", async () => {
-    const plans = await plansOf(rulesPointingAtSql(["/a", "/c"]));
-    expectIndexed(plans, "redirects", "redirects_to_path_idx");
-    expectIndexed(plans, "pending_redirects", "pending_redirects_to_path_idx");
+    // Statistics of the production shape, as for any choice between two
+    // indexes: nearly every pending change is on the shared draft. On a
+    // table nobody analyzed, a generic plan takes the draft filter for a
+    // selective one and walks the branch index instead of the target.
+    const seed = "/t1291-seed-";
+    await adapter.withAdminTransaction(SYS, async (tx) => {
+      await tx.execute(sql`
+        INSERT INTO actors (id, kind, display_name) VALUES (${SYS.actorId}::uuid, 'system', 'core-indexes')
+        ON CONFLICT DO NOTHING`);
+      await tx.execute(sql`
+        INSERT INTO pending_redirects (address, from_path, to_path, status_code, state, origin, actor_id)
+        SELECT ${seed} || i, ${seed} || i, '/t1291-target-' || i, 301, 'staged', 'manual',
+               ${SYS.actorId}::uuid
+        FROM generate_series(1, 1000) AS i`);
+      await tx.execute(sql`ANALYZE pending_redirects`);
+    });
+    try {
+      const plans = await plansOf(rulesPointingAtSql(["/a", "/c"]));
+      expectIndexed(plans, "redirects", "redirects_to_path_idx");
+      expectIndexed(plans, "pending_redirects", "pending_redirects_to_path_idx");
+    } finally {
+      await adapter.withAdminTransaction(SYS, async (tx) => {
+        await tx.execute(sql`DELETE FROM pending_redirects WHERE address LIKE ${`${seed}%`}`);
+        await tx.execute(sql`ANALYZE pending_redirects`);
+      });
+    }
   });
 });
 
