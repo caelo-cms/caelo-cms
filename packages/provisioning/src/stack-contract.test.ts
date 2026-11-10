@@ -230,6 +230,9 @@ describe("gatewayEnvContract", () => {
       CAELO_TRUSTED_PROXY_HOPS: "2",
       PUBLIC_DATABASE_URL:
         "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      // The only account whose refresh pings it takes: the admin's runtime
+      // account. An identity, nothing secret.
+      CAELO_GATEWAY_REFRESH_ACCOUNT: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
       // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328); no
       // staging gate key: the staging gateway's, through its projection (#1330).
@@ -260,6 +263,7 @@ describe("gatewayEnvContract", () => {
         PUBLIC_DATABASE_URL:
           "postgresql://public_staging_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
         CAELO_STAGING_STORAGE: "gs://acme-caelo-production-staging",
+        CAELO_GATEWAY_REFRESH_ACCOUNT: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
         PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-staging-role-password:latest",
       });
     }

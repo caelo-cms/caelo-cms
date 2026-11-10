@@ -293,6 +293,7 @@ import {
   setRateLimitOverrideOp,
   setRateLimitProfileOp,
 } from "./ops/gateway.js";
+import { gatewayRefreshTargetsOp, recordGatewayRefreshOp } from "./ops/gateway-refresh.js";
 import {
   addGenesisDraftOp,
   listGenesisDraftsOp,
@@ -1415,6 +1416,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(provisionStagingOp);
   // P13 — gateway hardening surface.
   registry.register(getGatewaySettingsOp);
+  // The admin's refresh pings to the gateways (gateway-refresh.ts).
+  registry.register(gatewayRefreshTargetsOp);
+  registry.register(recordGatewayRefreshOp);
   registry.register(setGatewaySettingsOp);
   registry.register(rotateCookieSecretOp);
   registry.register(listGatewayRequestsOp);

@@ -367,6 +367,8 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
       "ADMIN_DATABASE_URL",
       // #1329 — the gateway says it is the live site's.
       "CAELO_GATEWAY_ENVIRONMENT",
+      // Whose refresh pings it takes: the admin's account.
+      "CAELO_GATEWAY_REFRESH_ACCOUNT",
       // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328).
       // No staging gate key: it reaches the staging gateway through the
       // staging projection (#1330), never the live gateway.

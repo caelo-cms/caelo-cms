@@ -3,6 +3,7 @@
 /**
  * P13 — gateway dashboard.
  *  - Recent request log (last 100, status-coded).
+ *  - How each gateway took the admin's last refresh ping.
  *  - Body-cap + captcha provider knobs.
  *  - Cookie secret rotation.
  */
@@ -19,6 +20,15 @@ interface GatewaySettings {
   captchaPowTargetPrefix: string;
   cookieSecretSet: boolean;
   updatedAt: string;
+}
+
+interface RefreshPing {
+  target: "live" | "staging";
+  url: string | null;
+  lastAttemptAt: string;
+  lastOkAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
 }
 
 interface RequestRow {
@@ -56,6 +66,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
           cookieSecretSet: false,
           updatedAt: new Date(0).toISOString(),
         } as GatewaySettings),
+    // How each gateway took the admin's last refresh ping (gateway-refresh.ts).
+    refreshPings: s.ok ? (s.value as { refreshPings: RefreshPing[] }).refreshPings : [],
     requests: r.ok ? (r.value as { rows: RequestRow[] }).rows : [],
     onlyErrors,
   };

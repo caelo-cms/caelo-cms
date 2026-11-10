@@ -349,8 +349,8 @@ describe("planContractEnv", () => {
     // gets no remote-MCP env.
     expect(plan.services.gateway.flags).toEqual([
       // The gateway learns which forwarded address is the visitor (#845),
-      // and (#1329) that it is the live site's.
-      "--update-env-vars=CAELO_GATEWAY_ENVIRONMENT=live,CAELO_TRUSTED_PROXY_HOPS=1",
+      // (#1329) that it is the live site's, and whose refresh pings it takes.
+      "--update-env-vars=CAELO_GATEWAY_ENVIRONMENT=live,CAELO_TRUSTED_PROXY_HOPS=1,CAELO_GATEWAY_REFRESH_ACCOUNT=caelo-production-run-sa@acme.iam.gserviceaccount.com",
     ]);
     // The old gateway service becomes the proxy in one revision: every
     // database and site var goes, its own contract arrives.
