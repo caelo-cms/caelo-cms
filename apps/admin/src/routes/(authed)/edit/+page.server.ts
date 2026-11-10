@@ -1028,10 +1028,25 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
+    // #1550 — the redirect changes the Publish live confirmation listed as
+    // going live: exactly these go live (a change saved since waits).
+    // Absent when the confirmation listed none; then the click decides.
+    const listed = form.get("redirectChanges");
+    let redirectChanges: { id: string; revision: number }[] | undefined;
+    if (typeof listed === "string" && listed !== "") {
+      try {
+        redirectChanges = JSON.parse(listed) as { id: string; revision: number }[];
+      } catch {
+        return fail(400, {
+          error: "The confirmed redirect list is not valid; open Publish live again.",
+        });
+      }
+    }
     // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
     const promote = await executeBuild({ adapter, registry }, locals.ctx, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
+      ...(redirectChanges ? { redirectChanges } : {}),
     });
     if (!promote.ok) {
       // run #10 D6 — stderr breadcrumb: "Publish live" failures must be
@@ -1045,14 +1060,22 @@ export const actions: Actions = {
       toRunId: string;
       buildId: string;
       securityHeadersNote?: string;
+      redirects: { wentLive: number; waiting: number; heldBack: string | null };
     };
+    // #1550 — the operator learns when the listed redirect changes stayed
+    // Staged because one of them moved on during the Publish live.
+    const heldBack = v.redirects.heldBack
+      ? `The redirect changes stayed Staged: ${v.redirects.heldBack}. The next Publish live plans them again.`
+      : undefined;
+    const notice = [v.securityHeadersNote, heldBack].filter((n): n is string => !!n).join(" ");
     return {
       published: {
         targetName: "production",
         fromRunId: v.fromRunId,
         toRunId: v.toRunId,
         buildId: v.buildId,
-        notice: v.securityHeadersNote,
+        notice: notice || undefined,
+        redirects: v.redirects,
       },
       ...(promote.warning ? { carrierWarning: promote.warning } : {}),
     };

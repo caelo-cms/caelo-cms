@@ -17,6 +17,12 @@
  * And the automatic redeploy's trigger does not come back: no admin source
  * polls `audit_events` on a timer.
  *
+ * #1550 — Go live now is the one path past Publish live for a redirect: a
+ * human's click with the Publish live permission (Settings → Redirects), or
+ * the approval of the AI's card, run as the approving human. Its callers are
+ * pinned the same way; scripts/no-draft-live-writes.test.ts pins the rest of
+ * what writes the live redirects.
+ *
  * The one thing the scheduler tick may publish is plugin data (#1155, #1140):
  * the plugin-data build republishes the LIVE build with fresher plugin-owned
  * bake regions and nothing else. It never starts the generator over cms_admin, never
@@ -41,6 +47,21 @@ const REPO_ROOT = resolve(import.meta.dir, "..");
  */
 const DEPLOY_CALL =
   /["'`]deploy\.(trigger|promote)["'`]\s*,\s*\{|\b(triggerDeployOp|promoteDeployOp)\.handler\b/;
+
+/**
+ * #1550 — a call of Go live now: the op (or its approval executor) with its
+ * input object, or a handler run directly.
+ */
+const GO_LIVE_CALL =
+  /["'`]redirects\.(go_live_now|execute_go_live)["'`]\s*,\s*\{|\b(goLiveNowOp|executeGoLiveOp)\.handler\b/;
+
+/** Every source that may put a redirect live without Publish live, and why it may. */
+const GO_LIVE_CALLERS: Record<string, string> = {
+  "apps/admin/src/lib/server/redirect-proposals.ts":
+    "Settings → Redirects' form actions: the Go live now button, the form's Now choice and the Approve of the AI's card",
+  "packages/admin-core/src/ai/tools/gated-tools.ts":
+    "the in-chat Approve of an external redirect asked live now, run as the approving human",
+};
 
 /** Every source that may start a build or a publish, and why it may. */
 const ALLOWED_CALLERS: Record<string, string> = {
@@ -115,13 +136,31 @@ describe("no automatic caller starts a production build (#1154)", () => {
     expect(DEPLOY_CALL.test(`requirePermission(locals, "deploy.trigger");`)).toBe(false);
   });
 
+  it("only a human's click or approval puts a redirect live without Publish live (#1550)", () => {
+    const callers = ALL_SOURCES.filter(
+      (s) =>
+        s.path !== "packages/admin-core/src/ops/redirects_release.ts" && GO_LIVE_CALL.test(s.text),
+    )
+      .map((s) => s.path)
+      .sort();
+    expect(callers).toEqual(Object.keys(GO_LIVE_CALLERS).sort());
+    expect(
+      GO_LIVE_CALL.test(`await execute(r, a, SYSTEM, "redirects.go_live_now", { fromPaths });`),
+    ).toBe(true);
+    expect(
+      GO_LIVE_CALL.test(`holdsApproverPermission(locals, registry, "redirects.execute_go_live")`),
+    ).toBe(false);
+  });
+
   it("no background worker the admin starts calls the deploy ops", () => {
     const hooks = ALL_SOURCES.find((s) => s.path === "apps/admin/src/hooks.server.ts");
     expect(hooks).toBeDefined();
     expect(DEPLOY_CALL.test(hooks?.text ?? "")).toBe(false);
     const workers = ALL_SOURCES.filter((s) => /setInterval\s*\(/.test(s.text));
     expect(workers.length).toBeGreaterThan(5);
-    const deploying = workers.filter((s) => DEPLOY_CALL.test(s.text)).map((s) => s.path);
+    const deploying = workers
+      .filter((s) => DEPLOY_CALL.test(s.text) || GO_LIVE_CALL.test(s.text))
+      .map((s) => s.path);
     expect(deploying).toEqual([]);
   });
 
@@ -154,6 +193,11 @@ describe("no automatic caller starts a production build (#1154)", () => {
       /\bcurrent_path\b/,
       /\bcanonical_url\b/,
       /\blocalBuildPluginServices\b/,
+      // #1550 — nor does it apply a pending redirect change: it pushes the
+      // live table as it is.
+      /\breleaseRedirectChanges\b/,
+      /\bpending_redirects\b/,
+      GO_LIVE_CALL,
     ]) {
       expect(forbidden.test(build)).toBe(false);
     }
@@ -173,7 +217,9 @@ describe("no automatic caller starts a production build (#1154)", () => {
         s.path === "apps/admin/src/routes/api/internal/scheduler/tick/+server.ts",
     );
     expect(tick.map((s) => s.path)).toContain("packages/admin-core/src/scheduler/core-tasks.ts");
-    expect(tick.filter((s) => DEPLOY_CALL.test(s.text)).map((s) => s.path)).toEqual([]);
+    expect(
+      tick.filter((s) => DEPLOY_CALL.test(s.text) || GO_LIVE_CALL.test(s.text)).map((s) => s.path),
+    ).toEqual([]);
     const callers = ALL_SOURCES.filter(
       (s) =>
         /\brunPluginDataBuildIfDue\s*\(/.test(s.text) &&

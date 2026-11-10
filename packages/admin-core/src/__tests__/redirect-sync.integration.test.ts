@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1157 — a saved redirect answers on the live site without a build.
+ * #1157, #1550 — the live redirects reach the hosting without a build, and
+ * only what is live does.
  *
- * Real Postgres (§6) and the real self-hosted publisher against a temporary
- * output root: the save pushes the redirects table into the `current/`
- * directory Caddy serves (the `_redirects.caddy` snippet its reload loop
- * watches), computed against the files of that live build; a failed push is
- * loud, recorded and retried; Publish live / rollback re-sync their target.
+ * Redirects are draft state (#1550): a save is a pending change and pushes
+ * nothing. The live table changes only in a release (Publish live, an
+ * Owner's production build, a rollback, the first-publish take-over) or Go
+ * live now, and each of those pushes it. This file covers the push itself:
+ * real Postgres (§6) and the real self-hosted publisher against a temporary
+ * output root, the `_redirects.caddy` snippet Caddy's reload loop watches,
+ * computed against the files of the live build; a failed push is loud,
+ * recorded and retried; staging is never pushed (the staging gateway serves
+ * the staging view itself). Live rows are written the way a release writes
+ * them (redirects-publish-live.integration.test.ts drives the releases).
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
@@ -26,17 +32,12 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql as drizzleSql } from "drizzle-orm";
 import { redirectSyncNote } from "../ai/tools/_redirect-sync-note.js";
-import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { type SyncRedirectsArgs, syncRedirects } from "../deploy/redirect-sync.js";
 import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
 import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import type { RedirectSyncTargetStatus } from "../ops/redirect_sync.js";
-import {
-  registerRedirectSyncRunner,
-  retryRedirectSync,
-  unregisterRedirectSyncRunner,
-} from "../redirect-sync-worker.js";
+import { retryRedirectSync } from "../redirect-sync-worker.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -108,11 +109,29 @@ function syncDetached(args: SyncRedirectsArgs) {
   return syncRedirects(runner, SYSTEM, args);
 }
 
-async function createRedirects(rows: { fromPath: string; toPath: string }[]) {
-  return execute(registry, adapter, SYSTEM, "redirects.create_many", {
-    redirects: rows,
-    upsert: true,
+interface LiveRow {
+  readonly fromPath: string;
+  readonly toPath: string;
+  readonly statusCode?: number;
+}
+
+/** Write live rows the way a release does (the table's triggers log the change). */
+async function writeLive(rows: readonly LiveRow[]): Promise<void> {
+  await sys(async (tx) => {
+    for (const r of rows) {
+      await tx`
+        INSERT INTO redirects (from_path, to_path, status_code, created_by)
+        VALUES (${r.fromPath}, ${r.toPath}, ${r.statusCode ?? 301}, ${SYSTEM.actorId}::uuid)
+        ON CONFLICT (from_path) DO UPDATE
+          SET to_path = EXCLUDED.to_path, status_code = EXCLUDED.status_code`;
+    }
   });
+}
+
+/** A release of `rows`: written live, then the push Go live now makes. */
+async function putLive(rows: readonly LiveRow[]) {
+  await writeLive(rows);
+  return syncDetached({ trigger: "go_live" });
 }
 
 async function seedProductionRun(): Promise<string> {
@@ -124,6 +143,22 @@ async function seedProductionRun(): Promise<string> {
     `) as { id: string }[];
     return rows[0]!.id;
   });
+}
+
+async function syncRows(): Promise<number> {
+  const rows = await sys(
+    (tx) =>
+      tx`SELECT count(*)::int AS n FROM redirect_syncs` as unknown as Promise<{ n: number }[]>,
+  );
+  return rows[0]?.n ?? 0;
+}
+
+async function changeRows(): Promise<number> {
+  const rows = await sys(
+    (tx) =>
+      tx`SELECT count(*)::int AS n FROM redirect_changes` as unknown as Promise<{ n: number }[]>,
+  );
+  return rows[0]?.n ?? 0;
 }
 
 beforeAll(async () => {
@@ -153,13 +188,12 @@ beforeAll(async () => {
   await sys(
     (tx) => tx`UPDATE site_defaults SET site_base_url = 'https://www.example.test' WHERE id = 1`,
   );
-  // The tests drive the retry (the scheduler tick's task) themselves.
-  registerRedirectSyncRunner({ adapter, registry });
 });
 
 beforeEach(async () => {
   await rm(join(root, "output"), { recursive: true, force: true });
   await sys(async (tx) => {
+    await tx`DELETE FROM pending_redirects`;
     await tx`DELETE FROM redirects`;
     await tx`DELETE FROM redirect_syncs`;
     await tx`DELETE FROM redirect_sync_state`;
@@ -171,7 +205,6 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  unregisterRedirectSyncRunner();
   await sys((tx) => tx`UPDATE site_defaults SET site_base_url = ${savedBaseUrl} WHERE id = 1`);
   await adapter.close();
   await rm(root, { recursive: true, force: true });
@@ -180,35 +213,45 @@ afterAll(async () => {
   if (savedEnv.provider !== undefined) process.env.CAELO_PROVIDER = savedEnv.provider;
 });
 
-describe("redirect sync on save (#1157)", () => {
-  it("a saved redirect is live on the served build without a build, and recorded", async () => {
-    const r = await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
+describe("the live redirects reach the hosting (#1157, #1550)", () => {
+  it("a save pushes nothing: the hosting keeps the live redirects until a release", async () => {
+    const r = await execute(registry, adapter, SYSTEM, "redirects.create_many", {
+      redirects: [{ fromPath: "/old", toPath: "/about" }],
+    });
     expect(r.ok).toBe(true);
+    expect(existsSync(join(currentDir("production"), "_redirects.caddy"))).toBe(false);
+    expect(await changeRows()).toBe(0);
+    expect(await syncRows()).toBe(0);
+    expect((await status()).production).toMatchObject({ inSync: true, last: null });
+  });
+
+  it("a released redirect is pushed to the served build, and recorded", async () => {
+    await putLive([{ fromPath: "/old", toPath: "/about" }]);
     expect(await snippet("production")).toContain("/old");
     expect(await readFile(join(currentDir("production"), "_redirects"), "utf8")).toContain(
       "/old /about 301",
     );
     const s = await status();
     expect(s.production?.inSync).toBe(true);
+    expect(s.production?.live).toBe(true);
     expect(s.production?.last).toMatchObject({
       status: "applied",
-      trigger: "save",
+      trigger: "go_live",
       redirectCount: 1,
     });
-    // Nothing published on staging: nothing to put redirects in front of.
-    expect(s.staging?.inSync).toBe(true);
-    expect(s.staging?.last?.status).toBe("nothing-live");
+    // Staging is the staging gateway's: no status, no push.
+    expect(s.staging).toBeUndefined();
     const audited = await sys(
       (tx) =>
         tx`SELECT count(*)::int AS n FROM audit_events WHERE operation = 'redirects.sync_provider' AND succeeded` as unknown as Promise<
           { n: number }[]
         >,
     );
-    expect(audited[0]?.n).toBeGreaterThanOrEqual(2);
+    expect(audited[0]?.n).toBeGreaterThanOrEqual(1);
   });
 
   it("the live page wins: a row whose path the served build has is left out", async () => {
-    await createRedirects([
+    await putLive([
       { fromPath: "/about", toPath: "/elsewhere" },
       { fromPath: "/gone-page", toPath: "/about" },
     ]);
@@ -224,19 +267,8 @@ describe("redirect sync on save (#1157)", () => {
     expect(rows[0]?.shadowed_count).toBe(1);
   });
 
-  it("names redirects whose target page is not published yet, and the AI tool says so", async () => {
-    const r = await bulkCreateRedirectsTool.handler(
-      SYSTEM,
-      {
-        items: [{ fromPath: "/promo", toPath: "/draft-page", statusCode: 301 }],
-        upsert: false,
-      },
-      { adapter, registry } as ToolContext,
-    );
-    expect(r.ok).toBe(true);
-    expect(r.content).toContain("live now");
-    expect(r.content).toContain("/promo -> /draft-page/");
-    expect(r.content).toContain("404 until Publish live");
+  it("names live redirects whose target page the live build does not have", async () => {
+    await putLive([{ fromPath: "/promo", toPath: "/draft-page" }]);
     const s = await status();
     expect(s.production?.last?.unservedTargets).toEqual([
       { fromPath: "/promo", location: "/draft-page/" },
@@ -244,48 +276,34 @@ describe("redirect sync on save (#1157)", () => {
   });
 
   it("#1357 reports the 410 rules, and that they answer 404 where the host cannot send 410", async () => {
-    const r = await bulkCreateRedirectsTool.handler(
-      SYSTEM,
-      {
-        items: [
-          { fromPath: "/retired", toPath: "/", statusCode: 410 },
-          { fromPath: "/old", toPath: "/about", statusCode: 301 },
-        ],
-        upsert: false,
-      },
-      { adapter, registry } as ToolContext,
-    );
-    expect(r.ok).toBe(true);
+    await putLive([
+      { fromPath: "/retired", toPath: "/", statusCode: 410 },
+      { fromPath: "/old", toPath: "/about", statusCode: 301 },
+    ]);
     // Caddy (self-hosted) answers the bare 410: nothing to warn about.
-    expect(r.content).toContain("live now");
-    expect(r.content).not.toContain("404 on this hosting");
     expect(await snippet("production")).toContain("respond 410");
     const s = await status();
     expect(s.production?.goneAnswer).toBe(410);
     expect(s.production?.last).toMatchObject({ redirectCount: 1, goneCount: 1 });
+    const tools = { adapter, registry } as ToolContext;
+    expect(await redirectSyncNote(SYSTEM, tools, [])).not.toContain("404 on this hosting");
     // The same recorded push read on Firebase Hosting, which serves no 410.
     process.env.CAELO_PROVIDER = "gcp-firebase";
     try {
       expect((await status()).production?.goneAnswer).toBe(404);
-      const note = await redirectSyncNote(SYSTEM, { adapter, registry } as ToolContext);
-      expect(note).toContain("production (production): live now");
-      expect(note).toContain("1 410 rule answers 404 on this hosting, not 410 Gone");
+      const note = await redirectSyncNote(SYSTEM, tools, []);
+      expect(note).toContain("1 live 410 rule answers 404 on this hosting, not 410 Gone");
     } finally {
       delete process.env.CAELO_PROVIDER;
     }
   });
 
-  it("an unchanged table writes nothing", async () => {
-    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
-    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
-    // #1254 — the second save changed no row: nothing is due, no push ran.
-    const pushes = await sys(
-      (tx) =>
-        tx`SELECT count(*)::int AS n FROM redirect_syncs WHERE target_id = ${targets.production.id}::uuid` as unknown as Promise<
-          { n: number }[]
-        >,
-    );
-    expect(pushes[0]?.n).toBe(1);
+  it("an unchanged live table pushes nothing new", async () => {
+    await putLive([{ fromPath: "/old", toPath: "/about" }]);
+    const pushes = await syncRows();
+    // Nothing changed since: the retry finds nothing due.
+    await retryRedirectSync({ adapter, registry });
+    expect(await syncRows()).toBe(pushes);
     expect((await status()).production?.inSync).toBe(true);
     // An explicit push of the same table changes nothing at the provider.
     await syncDetached({ trigger: "manual", targetIds: [targets.production.id] });
@@ -293,28 +311,18 @@ describe("redirect sync on save (#1157)", () => {
   });
 
   it("Try again now on one target folds a change nobody pushed yet and puts it live (#1140)", async () => {
-    // A change whose own save never synced (another process, a seed): its
-    // row waits in redirect_changes, and the target reads behind.
-    await sys(
-      (tx) => tx`
-        INSERT INTO redirects (from_path, to_path, status_code, created_by)
-        VALUES ('/unfolded', '/about', 301, ${SYSTEM.actorId}::uuid)
-      `,
-    );
+    // A live change whose push never ran (the instance died after the
+    // release): its row waits in redirect_changes, and the target reads behind.
+    await writeLive([{ fromPath: "/unfolded", toPath: "/about" }]);
     expect((await status()).production?.inSync).toBe(false);
-    // The operator's retry of production alone: before, it pushed the old
-    // table and left the target "Going live…" until a scheduler tick
-    // folded the change.
     await syncDetached({ trigger: "manual", targetIds: [targets.production.id] });
     const after = await status();
     expect(after.production?.inSync).toBe(true);
     expect(await snippet("production")).toContain("/unfolded");
-    // The fold restarted every target's backoff; the change reaches staging too.
-    expect(after.staging?.inSync).toBe(true);
   });
 
-  it("Try again now on production answers for production, not for a staging that fails alongside", async () => {
-    // Staging serves a run whose files are gone: every push to it fails.
+  it("Try again now pushes production only: staging is never pushed (#1550)", async () => {
+    await serve("staging", { "index.html": "home staging" });
     await sys(
       (tx) => tx`
         INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id)
@@ -322,19 +330,11 @@ describe("redirect sync on save (#1157)", () => {
                 '22222222-2222-4222-8222-222222222222')
       `,
     );
-    await sys(
-      (tx) => tx`
-        INSERT INTO redirects (from_path, to_path, status_code, created_by)
-        VALUES ('/unfolded', '/about', 301, ${SYSTEM.actorId}::uuid)
-      `,
-    );
-    // The pending change widens the retry to staging too (the fold restarts
-    // its backoff); Settings' action reads the op's result as the answer to
-    // the operator's click on production.
+    await writeLive([{ fromPath: "/unfolded", toPath: "/about" }]);
     const r = await execute(registry, adapter, SYSTEM, "redirects.sync_provider", {
       trigger: "manual",
       // An upper-case spelling is the same target (the Settings form accepts it).
-      targetIds: [targets.production.id.toUpperCase()],
+      targetIds: [targets.production.id.toUpperCase(), targets.staging.id],
     });
     expect(r.ok).toBe(true);
     const outcomes = (r.ok ? r.value : { targets: [] }) as {
@@ -343,37 +343,33 @@ describe("redirect sync on save (#1157)", () => {
     expect(outcomes.targets).toEqual([
       expect.objectContaining({ env: "production", status: "applied" }),
     ]);
-    const after = await status();
-    expect(after.production?.inSync).toBe(true);
     expect(await snippet("production")).toContain("/unfolded");
-    // Staging's own failure is still recorded and shown on its own row.
-    expect(after.staging?.inSync).toBe(false);
-    expect(after.staging?.lastError).toContain("serves no files");
+    // The staging gateway serves the staging view: staging's files get no snippet.
+    expect(existsSync(join(currentDir("staging"), "_redirects.caddy"))).toBe(false);
   });
 
-  it("a failed push is loud, keeps the redirect, is shown and retried until live", async () => {
+  it("a failed push is loud, keeps the live rule, is shown and retried until it is on the hosting", async () => {
     await rm(currentDir("production"), { recursive: true, force: true });
-    // The write is saved and answers ok; the AI tool result says why it is not live.
-    const r = await bulkCreateRedirectsTool.handler(
-      SYSTEM,
-      { items: [{ fromPath: "/old", toPath: "/about", statusCode: 301 }], upsert: false },
-      { adapter, registry } as ToolContext,
-    );
-    expect(r.ok).toBe(true);
-    expect(r.content).toContain("production (production): NOT live yet");
-    expect(r.content).toContain("serves no files");
-    expect(r.content).toContain("Retried automatically");
+    const outcomes = await putLive([{ fromPath: "/old", toPath: "/about" }]);
+    expect(outcomes.find((o) => o.env === "production")?.status).toBe("failed");
 
-    const saved = await sys(
+    const kept = await sys(
       (tx) => tx`SELECT count(*)::int AS n FROM redirects` as unknown as Promise<{ n: number }[]>,
     );
-    expect(saved[0]?.n).toBe(1);
+    expect(kept[0]?.n).toBe(1);
     const behind = await status();
     expect(behind.production?.inSync).toBe(false);
     expect(behind.production?.lastError).toContain("serves no files");
     expect(behind.production?.nextAttemptAt).not.toBeNull();
     const bell = await execute(registry, adapter, SYSTEM, "notifications.aggregate", {});
     expect(bell.ok && (bell.value as { failedRedirectSyncs: number }).failedRedirectSyncs).toBe(1);
+    // The AI tools' results say so too.
+    const note = await redirectSyncNote(SYSTEM, { adapter, registry } as ToolContext, []);
+    expect(note).toContain(
+      "production (production): the live redirects are NOT on the hosting yet",
+    );
+    expect(note).toContain("serves no files");
+    expect(note).toContain("Retried automatically");
 
     // Not due yet: the poll leaves it alone.
     await serve("production", { "index.html": "home", "about/index.html": "about" });
@@ -390,74 +386,45 @@ describe("redirect sync on save (#1157)", () => {
     expect(await snippet("production")).toContain("/old");
   });
 
-  it("without the post-commit runner the target stays behind until the worker syncs it", async () => {
-    unregisterRedirectSyncRunner();
-    try {
-      const r = await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
-      expect(r.ok).toBe(true);
-      expect(existsSync(join(currentDir("production"), "_redirects.caddy"))).toBe(false);
-      const s = await status();
-      expect(s.production?.inSync).toBe(false);
-      expect(s.production?.lastError).toBeNull();
-      await retryRedirectSync({ adapter, registry });
-      expect((await status()).production?.inSync).toBe(true);
-      expect(await snippet("production")).toContain("/old");
-    } finally {
-      registerRedirectSyncRunner({ adapter, registry });
-    }
+  it("a live change nobody pushed stays behind until the scheduler's retry pushes it", async () => {
+    await writeLive([{ fromPath: "/old", toPath: "/about" }]);
+    expect(existsSync(join(currentDir("production"), "_redirects.caddy"))).toBe(false);
+    const s = await status();
+    expect(s.production?.inSync).toBe(false);
+    expect(s.production?.lastError).toBeNull();
+    await retryRedirectSync({ adapter, registry });
+    expect((await status()).production?.inSync).toBe(true);
+    expect(await snippet("production")).toContain("/old");
   });
 
   it("a retry only touches targets whose backoff has elapsed", async () => {
-    unregisterRedirectSyncRunner();
-    try {
-      await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
-      // Both targets failed earlier (the change is folded); production backs
-      // off for an hour, staging (nothing published) is due.
-      await sys(async (tx) => {
-        await tx`DELETE FROM redirect_changes`;
-        await tx`
-          INSERT INTO redirect_sync_state (target_id, wanted_revision, synced_revision, failed_attempts, next_attempt_at)
-          SELECT id, 2, 1, 1, CASE WHEN id = ${targets.production.id}::uuid
-                                   THEN now() + interval '1 hour' ELSE now() - interval '1 second' END
-          FROM deploy_targets WHERE env IN ('staging', 'production')
-          ON CONFLICT (target_id) DO UPDATE SET wanted_revision = 2, synced_revision = 1,
-            failed_attempts = 1, next_attempt_at = EXCLUDED.next_attempt_at
-        `;
-      });
-      await retryRedirectSync({ adapter, registry });
-      const s = await status();
-      expect(s.staging?.inSync).toBe(true);
-      expect(s.production?.inSync).toBe(false);
-      expect(s.production?.last).toBeNull();
-    } finally {
-      registerRedirectSyncRunner({ adapter, registry });
-    }
-  });
-
-  it("staging that serves a build gets its own snippet", async () => {
-    await serve("staging", { "index.html": "home staging" });
-    await sys(
-      (tx) => tx`
-        INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id)
-        VALUES (${targets.staging.id}::uuid, ${SYSTEM.actorId}::uuid, 'succeeded', now(), now(), 'stage-1')
-      `,
-    );
-    await createRedirects([{ fromPath: "/old", toPath: "/" }]);
-    expect(await snippet("staging")).toContain("/old");
-    expect((await status()).staging?.last?.status).toBe("applied");
-  });
-
-  it("a deleted redirect stops answering on save", async () => {
-    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
-    const del = await execute(registry, adapter, SYSTEM, "redirects.delete_many", {
-      fromPaths: ["/old"],
+    await writeLive([{ fromPath: "/old", toPath: "/about" }]);
+    // Production failed earlier (the change is folded) and backs off for an hour.
+    await sys(async (tx) => {
+      await tx`DELETE FROM redirect_changes`;
+      await tx`
+        INSERT INTO redirect_sync_state (target_id, wanted_revision, synced_revision, failed_attempts, next_attempt_at)
+        VALUES (${targets.production.id}::uuid, 2, 1, 1, now() + interval '1 hour')
+        ON CONFLICT (target_id) DO UPDATE SET wanted_revision = 2, synced_revision = 1,
+          failed_attempts = 1, next_attempt_at = EXCLUDED.next_attempt_at
+      `;
     });
-    expect(del.ok).toBe(true);
+    await retryRedirectSync({ adapter, registry });
+    const s = await status();
+    expect(s.production?.inSync).toBe(false);
+    expect(s.production?.last).toBeNull();
+  });
+
+  it("a released removal stops answering", async () => {
+    await putLive([{ fromPath: "/old", toPath: "/about" }]);
+    expect(await snippet("production")).toContain("/old");
+    await sys((tx) => tx`DELETE FROM redirects WHERE from_path = '/old'`);
+    await syncDetached({ trigger: "go_live" });
     expect(await snippet("production")).not.toContain("/old");
   });
 
-  it("a rollback puts its build live and then the redirects as saved now", async () => {
-    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
+  it("a rollback puts its build live and then pushes the live redirects", async () => {
+    await putLive([{ fromPath: "/old", toPath: "/about" }]);
     const runId = (
       await sys(
         (tx) =>
@@ -479,21 +446,18 @@ describe("redirect sync on save (#1157)", () => {
     });
     if (!r.ok) throw new Error(JSON.stringify(r.error));
     expect(await readFile(join(currentDir("production"), "index.html"), "utf8")).toBe("home v1");
+    // No release after the restored run changed a redirect: the live table
+    // stays, and the push puts it on the restored build.
     expect(await snippet("production")).toContain("/old");
     expect((await status()).production?.last).toMatchObject({ trigger: "rollback" });
   });
 
-  it("a build re-sync puts the table as saved now on the new build, even when the target reads in sync", async () => {
-    // A redirect saved while a build ran was pushed to the build served
-    // before it; the new build carries the table from its start. Simulated:
-    // the row is in the table, the target reads in sync, the served files
-    // lack it.
-    await sys(
-      (tx) => tx`
-        INSERT INTO redirects (from_path, to_path, status_code, created_by)
-        VALUES ('/saved-during-build', '/about', 301, ${SYSTEM.actorId}::uuid)
-      `,
-    );
+  it("a build re-sync puts the live table on the new build, even when the target reads in sync", async () => {
+    // A redirect that went live while a build ran was pushed to the build
+    // served before it; the new build carries the table from its start.
+    // Simulated: the row is in the table, the target reads in sync, the
+    // served files lack it.
+    await writeLive([{ fromPath: "/live-during-build", toPath: "/about" }]);
     // Folded by an earlier sync that pushed onto the previous build.
     await sys((tx) => tx`DELETE FROM redirect_changes`);
     expect((await status()).production?.inSync).toBe(true);
@@ -502,7 +466,7 @@ describe("redirect sync on save (#1157)", () => {
       targetIds: [targets.production.id],
     });
     expect(outcomes.map((o) => o.status)).toEqual(["applied"]);
-    expect(await snippet("production")).toContain("/saved-during-build");
+    expect(await snippet("production")).toContain("/live-during-build");
     expect((await status()).production?.last).toMatchObject({
       trigger: "build",
       status: "applied",
@@ -511,7 +475,7 @@ describe("redirect sync on save (#1157)", () => {
 
   it("#1211 a sync while a Stage publishes staging leaves staging's state row unlocked", async () => {
     // A Stage holds the staging-publication lease (it publishes without a
-    // transaction); its finish step will write staging's sync state.
+    // transaction); its finish step will write staging's state.
     const stageRun = crypto.randomUUID();
     await sys(async (tx) => {
       await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
@@ -582,6 +546,8 @@ describe("redirect sync on save (#1157)", () => {
       publishStaging: () => Promise.reject(new Error("unused")),
       promoteToProduction: () => Promise.reject(new Error("unused")),
       rollback: () => Promise.reject(new Error("unused")),
+      readStagedBuildFiles: () => Promise.reject(new Error("unused")),
+      readServedFiles: () => Promise.reject(new Error("unused")),
       syncRedirects: async () => ({
         outcome: "applied",
         redirectCount: 0,
@@ -611,7 +577,7 @@ describe("redirect sync on save (#1157)", () => {
   });
 
   it("a publish whose re-sync fails leaves the target behind, so it is retried", async () => {
-    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
+    await putLive([{ fromPath: "/old", toPath: "/about" }]);
     expect((await status()).production?.inSync).toBe(true);
     const runId = (
       await sys(
@@ -626,12 +592,10 @@ describe("redirect sync on save (#1157)", () => {
     await writeFile(join(archive, "index.html"), "home v1");
     // A loop no host can serve, stored behind the ops' back: the re-sync
     // after the rollback fails.
-    await sys(
-      (tx) => tx`
-        INSERT INTO redirects (from_path, to_path, status_code, created_by)
-        VALUES ('/a', '/b', 301, ${SYSTEM.actorId}::uuid), ('/b', '/a', 301, ${SYSTEM.actorId}::uuid)
-      `,
-    );
+    await writeLive([
+      { fromPath: "/a", toPath: "/b" },
+      { fromPath: "/b", toPath: "/a" },
+    ]);
     // Many failures in a row must not overflow the backoff.
     await sys((tx) => tx`UPDATE redirect_sync_state SET failed_attempts = 40`);
     const r = await execute(registry, adapter, SYSTEM, "deploy.rollback", {
@@ -647,7 +611,7 @@ describe("redirect sync on save (#1157)", () => {
   });
 });
 
-describe("redirect sync off the write path (#1254)", () => {
+describe("redirect sync off the write path (#1254, #1550)", () => {
   /** The state rows' row versions: any write (even of equal values) changes xmin. */
   async function stateVersions(): Promise<string[]> {
     const rows = await sys(
@@ -659,27 +623,11 @@ describe("redirect sync off the write path (#1254)", () => {
     return rows.map((r) => r.v);
   }
 
-  async function changeRows(): Promise<number> {
-    const rows = await sys(
-      (tx) =>
-        tx`SELECT count(*)::int AS n FROM redirect_changes` as unknown as Promise<{ n: number }[]>,
-    );
-    return rows[0]?.n ?? 0;
-  }
-
-  async function syncRows(): Promise<number> {
-    const rows = await sys(
-      (tx) =>
-        tx`SELECT count(*)::int AS n FROM redirect_syncs` as unknown as Promise<{ n: number }[]>,
-    );
-    return rows[0]?.n ?? 0;
-  }
-
   it("a path move that creates no redirect does not touch redirect_sync_state", async () => {
-    // A synced baseline: every target has its state row.
-    await createRedirects([{ fromPath: "/legacy", toPath: "/about" }]);
+    // A synced baseline: production has its state row.
+    await putLive([{ fromPath: "/legacy", toPath: "/about" }]);
     const before = await stateVersions();
-    expect(before.length).toBe(2);
+    expect(before.length).toBe(1);
     const syncsBefore = await syncRows();
 
     const effects = await adapter.withAdminTransaction(SYSTEM, (tx) =>
@@ -698,8 +646,7 @@ describe("redirect sync off the write path (#1254)", () => {
     expect(await syncRows()).toBe(syncsBefore);
   });
 
-  it("a page move that creates a redirect commits while the sync state rows are locked", async () => {
-    unregisterRedirectSyncRunner();
+  it("a page move stages its 301 while the sync state rows are locked, and pushes nothing", async () => {
     const holder = new SQL(ADMIN_URL!);
     let release: () => void = () => undefined;
     const released = new Promise<void>((r) => {
@@ -709,7 +656,7 @@ describe("redirect sync off the write path (#1254)", () => {
       await sys(
         (tx) => tx`
           INSERT INTO redirect_sync_state (target_id)
-          SELECT id FROM deploy_targets WHERE env IN ('staging', 'production')
+          SELECT id FROM deploy_targets WHERE env = 'production'
           ON CONFLICT (target_id) DO NOTHING
         `,
       );
@@ -738,72 +685,52 @@ describe("redirect sync off the write path (#1254)", () => {
       expect(effects.redirectsCreated).toBe(1);
       release();
       await held;
-      // The change waits in the log; the worker pushes it.
-      expect(await changeRows()).toBe(1);
-      expect((await status()).production?.inSync).toBe(false);
-      await retryRedirectSync({ adapter, registry });
+      // #1550 — a Staged change: nothing went live, nothing waits for a push.
+      expect(await changeRows()).toBe(0);
+      const staged = await sys(
+        (tx) =>
+          tx`SELECT state, origin FROM pending_redirects WHERE from_path = '/team'` as unknown as Promise<
+            { state: string; origin: string }[]
+          >,
+      );
+      expect(staged).toEqual([{ state: "staged", origin: "page_move" }]);
       expect((await status()).production?.inSync).toBe(true);
-      expect(await snippet("production")).toContain("/team");
+      await retryRedirectSync({ adapter, registry });
+      expect(existsSync(join(currentDir("production"), "_redirects.caddy"))).toBe(false);
     } finally {
       release();
       await holder.end();
-      registerRedirectSyncRunner({ adapter, registry });
     }
   });
 
-  it("several pending changes are pushed by one coalesced run", async () => {
-    unregisterRedirectSyncRunner();
-    try {
-      for (const n of [1, 2, 3]) {
-        const r = await createRedirects([{ fromPath: `/old-${n}`, toPath: "/about" }]);
-        expect(r.ok).toBe(true);
-      }
-      expect(await changeRows()).toBe(3);
-      const real = await loadStaticPublisher(undefined);
-      let pushes = 0;
-      const counting: StaticPublisher = {
-        ...real,
-        syncRedirects: (args) => {
-          pushes += 1;
-          return real.syncRedirects!(args);
-        },
-      };
-      const outcomes = await syncDetached({ trigger: "save", publisher: counting });
-      // Staging serves no build: only production reaches the provider.
-      expect(pushes).toBe(1);
-      expect(outcomes.find((o) => o.env === "production")?.status).toBe("applied");
-      expect(await changeRows()).toBe(0);
-      const caddy = await snippet("production");
-      for (const n of [1, 2, 3]) expect(caddy).toContain(`/old-${n}`);
-      expect((await status()).production?.inSync).toBe(true);
-      // Nothing left: the next save-triggered run pushes nothing.
-      await syncDetached({ trigger: "save", publisher: counting });
-      expect(pushes).toBe(1);
-    } finally {
-      registerRedirectSyncRunner({ adapter, registry });
-    }
-  });
-
-  it("concurrent saves coalesce and every one of them goes live", async () => {
-    const before = await syncRows();
-    const saves = [1, 2, 3, 4, 5, 6];
-    const results = await Promise.all(
-      saves.map((n) => createRedirects([{ fromPath: `/c-${n}`, toPath: "/about" }])),
-    );
-    expect(results.every((r) => r.ok)).toBe(true);
+  it("several live changes are pushed by one run", async () => {
+    // Three releases' transactions: one change row each.
+    for (const n of [1, 2, 3]) await writeLive([{ fromPath: `/old-${n}`, toPath: "/about" }]);
+    expect(await changeRows()).toBe(3);
+    const real = await loadStaticPublisher(undefined);
+    let pushes = 0;
+    const counting: StaticPublisher = {
+      ...real,
+      syncRedirects: (args) => {
+        pushes += 1;
+        return real.syncRedirects!(args);
+      },
+    };
+    const outcomes = await syncDetached({ trigger: "go_live", publisher: counting });
+    expect(pushes).toBe(1);
+    expect(outcomes.find((o) => o.env === "production")?.status).toBe("applied");
+    expect(await changeRows()).toBe(0);
     const caddy = await snippet("production");
-    for (const n of saves) expect(caddy).toContain(`/c-${n}`);
+    for (const n of [1, 2, 3]) expect(caddy).toContain(`/old-${n}`);
     expect((await status()).production?.inSync).toBe(true);
-    // Two history rows (production + staging) per push: fewer pushes than saves.
-    expect((await syncRows()) - before).toBeLessThan(saves.length * 2);
+    // Nothing left: the next run pushes nothing.
+    await syncDetached({ trigger: "retry", publisher: counting });
+    expect(pushes).toBe(1);
   });
 
   it("the provider push runs with no transaction open and no sync or lease row locked", async () => {
-    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
-    await sys(
-      (tx) => tx`INSERT INTO redirects (from_path, to_path, status_code, created_by)
-                 VALUES ('/later', '/about', 301, ${SYSTEM.actorId}::uuid)`,
-    );
+    await putLive([{ fromPath: "/old", toPath: "/about" }]);
+    await writeLive([{ fromPath: "/later", toPath: "/about" }]);
     const real = await loadStaticPublisher(undefined);
     const seen: {
       nested: boolean;
@@ -851,7 +778,7 @@ describe("redirect sync off the write path (#1254)", () => {
         return real.syncRedirects!(args);
       },
     };
-    const outcomes = await syncDetached({ trigger: "save", publisher: probing });
+    const outcomes = await syncDetached({ trigger: "go_live", publisher: probing });
     expect(outcomes.find((o) => o.env === "production")?.status).toBe("applied");
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ nested: false, stateFree: true, leaseFree: true });
@@ -869,7 +796,7 @@ describe("redirect sync off the write path (#1254)", () => {
   });
 
   it("a sync skips production while a Publish live holds the live-release lease", async () => {
-    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
+    await putLive([{ fromPath: "/old", toPath: "/about" }]);
     const run = crypto.randomUUID();
     await sys(async (tx) => {
       await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
@@ -884,7 +811,7 @@ describe("redirect sync off the write path (#1254)", () => {
                VALUES ('/during-publish', '/about', 301, ${SYSTEM.actorId}::uuid)`;
     });
     try {
-      const outcomes = await syncDetached({ trigger: "save" });
+      const outcomes = await syncDetached({ trigger: "go_live" });
       expect(outcomes.map((o) => o.env)).not.toContain("production");
       // Left behind, not lost: the publish's finish step (or the worker) pushes it.
       expect((await status()).production?.inSync).toBe(false);

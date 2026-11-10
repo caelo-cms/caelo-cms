@@ -202,6 +202,10 @@ function recordingToolCtx(calls: { op: string; input: unknown }[]): ToolContext 
       // #1447 — and whether a rule landed on a page's URL.
       if (op.name === "redirects.page_conflicts") return ok({ conflicts: [] });
       calls.push({ op: op.name, input });
+      // #1550 — a redirect save reports each rule's pending change.
+      if (op.name === "redirects.create_many") {
+        return ok({ created: 1, updated: 0, skipped: 0, changes: [] });
+      }
       return ok({ results: [{}], count: 1 });
     },
   } as unknown as DatabaseAdapter;

@@ -97,7 +97,7 @@ export const revertPageOp = defineOperation({
         // Revert writes live rows, so the live (main) tree is what moved.
         { chatBranchId: null },
       );
-      await applyPathMoveEffects(ctx, tx, recomputed.moves, "auto");
+      await applyPathMoveEffects(ctx, tx, recomputed.moves, "auto", "revert");
     }
 
     if (layoutRows[0]) {

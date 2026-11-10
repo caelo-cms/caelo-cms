@@ -303,6 +303,7 @@ import {
   setRateLimitOverrideOp,
   setRateLimitProfileOp,
 } from "./ops/gateway.js";
+import { gatewayRefreshTargetsOp, recordGatewayRefreshOp } from "./ops/gateway-refresh.js";
 import {
   addGenesisDraftOp,
   listGenesisDraftsOp,
@@ -536,6 +537,7 @@ import {
   deleteRedirectsManyOp,
   listRedirectsOp,
   lookupRedirectOp,
+  setRedirectChangesStateOp,
 } from "./ops/redirects.js";
 import {
   executeRedirectProposalOp,
@@ -544,6 +546,12 @@ import {
   proposeExternalRedirectsOp,
   rejectRedirectProposalOp,
 } from "./ops/redirects_pending.js";
+import {
+  executeGoLiveOp,
+  goLiveNowOp,
+  proposeGoLiveOp,
+  releasePlanOp,
+} from "./ops/redirects_release.js";
 import {
   authorizeReportingJobOp,
   beginReportingJobAttemptOp,
@@ -1209,7 +1217,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(rejectRedirectProposalOp);
   registry.register(listPendingRedirectProposalsOp);
   registry.register(deleteRedirectsManyOp);
-  // #1157 — redirects sync to the hosting provider on save, no build.
+  // #1550 — redirects are draft state: Draft / Staged, what Publish live
+  // ships, and Go live now (a human step; the AI proposes it).
+  registry.register(setRedirectChangesStateOp);
+  registry.register(releasePlanOp);
+  registry.register(goLiveNowOp);
+  registry.register(proposeGoLiveOp);
+  registry.register(executeGoLiveOp);
+  // #1157 — the live redirects reach the hosting without a build; #1550 —
+  // pushed by the releases and Go live now, never by a save.
   registry.register(syncRedirectsProviderOp);
   registry.register(redirectSyncStatusOp);
   // Epic #724 rollout E — literal links → references, report, revert.
@@ -1425,6 +1441,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(provisionStagingOp);
   // P13 — gateway hardening surface.
   registry.register(getGatewaySettingsOp);
+  // The admin's refresh pings to the gateways (gateway-refresh.ts).
+  registry.register(gatewayRefreshTargetsOp);
+  registry.register(recordGatewayRefreshOp);
   registry.register(setGatewaySettingsOp);
   registry.register(rotateCookieSecretOp);
   registry.register(listGatewayRequestsOp);

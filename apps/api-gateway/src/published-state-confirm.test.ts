@@ -18,8 +18,8 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import type { DatabaseAdapter, ListenCallbacks } from "@caelo-cms/query-api";
 import {
   CONFIRM_MAX_AGE_MS,
-  confirmOffAnswer,
   confirmPublishedState,
+  dropPublishedState,
   listenForPublishedChanges,
   mayCacheRead,
   onPublishedChange,
@@ -192,54 +192,17 @@ describe("#1361 — a request after an idle stretch confirms the published state
     expect(versionReads).toBe(before + 1);
   });
 
-  it("a feature switched on while the instance idled is served from the first request (Copilot review of #1557)", async () => {
-    // The off answer comes from memory before every gate (E14 a): "gate"
-    // stands for the staging host here, "off" for none set.
-    published = "off";
-    const offRequest = () =>
-      servePublishedRequest(async () => {
-        const known = await readGate();
-        if (known !== "off") return known;
-        await confirmOffAnswer(readVersions, clock);
-        return readGate();
-      });
-    expect(await offRequest()).toBe("off");
-    // The Owner sets a staging host while the instance idles: its
-    // notification waits in the socket.
-    clock += CONFIRM_MAX_AGE_MS;
-    publishWithoutNotification("on", "staging_site:105");
-    // Without the confirmation this was the fixed 404 again.
-    expect(await offRequest()).toBe("on");
-  });
-
-  it("junk on an off feature costs at most one read per CONFIRM_MAX_AGE_MS, idle or not", async () => {
-    published = "off";
-    const offAnswer = () =>
-      servePublishedRequest(async () => {
-        await readGate();
-        await confirmOffAnswer(readVersions, clock);
-        return readGate();
-      });
-    await offAnswer();
-    const reads = versionReads;
-    expect(reads).toBe(1);
-    // Every one of these starts on an idle instance.
-    for (let i = 0; i < 20; i += 1) {
-      clock += 1_000;
-      await offAnswer();
-    }
-    expect(versionReads).toBe(reads);
-    clock += CONFIRM_MAX_AGE_MS;
-    await offAnswer();
-    expect(versionReads).toBe(reads + 1);
-    // A request whose feature turned out on goes on to its gates, and the
-    // confirmation there stands on the one its off answer just made.
-    clock += CONFIRM_MAX_AGE_MS;
-    await servePublishedRequest(async () => {
-      await confirmOffAnswer(readVersions, clock);
-      await confirmPublishedState(readVersions, clock);
-    });
-    expect(versionReads).toBe(reads + 2);
+  it("the admin's ping drops every cache, as a notification would; a read across it is not cached", async () => {
+    expect(await readGate()).toBe("gate: open");
+    // A publish whose notification still waits; the admin's ping arrives.
+    publishWithoutNotification("gate: closed", "staging_site:105");
+    dropPublishedState();
+    expect(await readGate()).toBe("gate: closed");
+    expect(sourceReads).toBe(2);
+    // A read that started before a drop is not cached over it.
+    const startedAt = publishedCacheGeneration();
+    dropPublishedState();
+    expect(mayCacheRead(startedAt)).toBe(false);
   });
 
   it("confirms nothing for a request that reads no published state, or while the LISTEN is down", async () => {

@@ -267,7 +267,7 @@ export const undoThisChatTool: ToolDefinitionWithHandler<z.infer<typeof undoInpu
     return {
       ok: true,
       content:
-        v.undoneSnapshots === 0
+        v.undoneSnapshots === 0 && v.droppedRows === 0
           ? "This chat had no unstaged changes — nothing to undo."
           : `Undid this chat's unstaged changes (${v.undoneSnapshots} change set(s)${v.droppedRows > 0 ? `, ${v.droppedRows} new item(s) removed` : ""}).` +
             (v.overlap.length > 0

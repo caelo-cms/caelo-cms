@@ -19,8 +19,6 @@ import type { RedirectRow } from "./links-analysis.js";
 import type { ReferenceCheckIssue, ReferenceSources } from "./references.js";
 import { readSiteUrls, structureSourcesFromOps } from "./structure-sources.js";
 
-/** Rows per `redirects.list` page (the op's maximum). */
-const REDIRECT_PAGE = 1000;
 /** `pages.list`'s maximum `pageIds`. */
 const PAGES_PER_LIST = 1000;
 /** `links.check_references`' maximum `limit`. */
@@ -73,23 +71,22 @@ export function linkSourcesFromOps(
     modules: structure.modules,
     layouts: structure.layouts,
     async redirects() {
-      const rows: RedirectRow[] = [];
-      let cursor: string | null = null;
-      for (;;) {
-        const page = (await run("redirects.list", {
-          limit: REDIRECT_PAGE,
-          ...(cursor === null ? {} : { cursor }),
-        })) as { redirects: RedirectRow[]; nextCursor: string | null };
-        rows.push(
-          ...page.redirects.map((r) => ({
-            fromPath: r.fromPath,
-            toPath: r.toPath,
-            statusCode: r.statusCode,
-          })),
-        );
-        if (page.nextCursor === null) return rows;
-        cursor = page.nextCursor;
+      // #1550 — what staging serves: the live rows (every stored spelling)
+      // with the Staged changes the staged build serves, exactly as the
+      // staging gateway computes it. Drafts and changes waiting for their
+      // target are left out.
+      const plan = (await run("redirects.release_plan", { includeRows: true })) as {
+        rows: RedirectRow[] | null;
+        problem: string | null;
+      };
+      if (plan.problem !== null || plan.rows === null) {
+        throw new Error(`redirects.release_plan: ${plan.problem ?? "returned no rows"}`);
       }
+      return plan.rows.map((r) => ({
+        fromPath: r.fromPath,
+        toPath: r.toPath,
+        statusCode: r.statusCode,
+      }));
     },
     async reportedDraftLinks() {
       // Every unpublished-target issue (warnings included: a draft page's

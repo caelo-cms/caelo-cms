@@ -100,7 +100,14 @@ import {
 } from "@caelo-cms/plugin-host";
 import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
-import { type RedirectTableRow, SESSION_ENTRY } from "@caelo-cms/shared";
+import {
+  GATEWAY_REFRESH_ACCOUNT_ENV,
+  GATEWAY_REFRESH_PATH,
+  GATEWAY_REFRESH_TOKEN_HEADER,
+  gatewayRefreshAudience,
+  gatewayRefreshPingsOn,
+  SESSION_ENTRY,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
   ClientAddressError,
@@ -144,8 +151,8 @@ import { addJsonSecurityHeaders, withJsonSecurityHeaders } from "./middleware/se
 import { signCookieValue } from "./middleware/signed-cookie.js";
 import { GATEWAY_PLUGINS_ROOT } from "./plugins-root.js";
 import {
-  confirmOffAnswer,
   confirmPublishedState,
+  dropPublishedState,
   listenForPublishedChanges,
   mayCacheRead,
   onPublishedChange,
@@ -153,10 +160,12 @@ import {
   publishedCacheUsable,
   servePublishedRequest,
 } from "./published-changes.js";
+import { createRefreshPingVerifier, type RefreshPingVerifier } from "./refresh-ping.js";
 import {
   gateFailureLimiter,
   handleStagingSiteRequest,
   ManifestCache,
+  type PublishedRedirects,
   type StagingSiteState,
 } from "./staging/site.js";
 import { type StagingStorage, stagingStorageFromEnv } from "./staging/storage.js";
@@ -323,11 +332,6 @@ function confirmPublishedStateOn(adapter: DatabaseAdapter): Promise<void> {
   return confirmPublishedState(() => readProjectionVersions(adapter));
 }
 
-/** {@link confirmOffAnswer} against this gateway's own projection. */
-function confirmOffAnswerOn(adapter: DatabaseAdapter): Promise<void> {
-  return confirmOffAnswer(() => readProjectionVersions(adapter));
-}
-
 export function invalidateGatewaySettings(): void {
   cachedSettings = null;
   cachedStagingState = null;
@@ -381,6 +385,93 @@ function featureOff(): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// The admin's refresh ping (@caelo-cms/shared gateway-refresh.ts). On
+// request-billed CPU a publish notification that arrives while this
+// instance idles waits in its socket, and an off gateway answers visitors
+// from memory without ever asking the database. So after every publish that
+// wrote this gateway's database the admin sends it one request, and that
+// request reads the published state again.
+// ---------------------------------------------------------------------------
+
+/** The check of the admin's pings; null when this gateway takes none. */
+let refreshPingVerifier: RefreshPingVerifier | null = null;
+
+/** Configure (or, with null, switch off) the check of the admin's pings. Called once at boot; tests. */
+export function setRefreshPingVerifier(verifier: RefreshPingVerifier | null): void {
+  refreshPingVerifier = verifier;
+}
+
+/** A refresh in flight, joined by pings that arrive while it runs. */
+let refreshing: Promise<void> | null = null;
+
+/** How often a refresh reads again when a notification dropped what it read. */
+const REFRESH_ROUNDS = 2;
+
+/**
+ * Drop every cache of published state, as a notification does, and read
+ * again, on this request's CPU, what decides this gateway's answers: the
+ * visitor API's registry and, on the staging gateway, the staging site. The
+ * visitors after the ping are answered from memory again (E14 a).
+ *
+ * The notification of the same publish may be handled while this reads (it
+ * arrived first and waited in the socket): it drops what the read was about
+ * to cache, and the refresh reads once more.
+ *
+ * @throws when it could not learn that state — the registry sync failed or
+ *   an active plugin could not be attached (the plugin host logs and
+ *   swallows both), or the staging site could not be read — so the ping
+ *   answers 503 and the admin records a miss, never a success.
+ */
+function refreshPublishedState(adapter: DatabaseAdapter): Promise<void> {
+  if (refreshing) return refreshing;
+  const run = (async () => {
+    // Nothing is cached while the LISTEN is down: every request reads through.
+    if (!publishedCacheUsable()) return;
+    let missing: string | null = null;
+    for (let round = 0; round < REFRESH_ROUNDS; round += 1) {
+      dropPublishedState();
+      await learnVisitorApiOff(adapter);
+      if (stagingSite) await loadStagingSiteState(adapter);
+      missing =
+        visitorApiOff === null
+          ? "the plugin registry (this gateway's plugin-host log says why)"
+          : stagingSite && cachedStagingState === null
+            ? "the staging site"
+            : null;
+      if (missing === null) return;
+    }
+    throw new Error(`could not learn ${missing} in ${REFRESH_ROUNDS} reads`);
+  })().finally(() => {
+    if (refreshing === run) refreshing = null;
+  });
+  refreshing = run;
+  return run;
+}
+
+/**
+ * `POST` {@link GATEWAY_REFRESH_PATH}: the admin's ping. Anything but a ping
+ * this gateway can verify — no check configured, another method, a missing
+ * or invalid token — gets the fixed 404 of an unknown path, without the
+ * database and without reading more of the request (E14 a).
+ */
+async function refreshPingRequest(req: Request, requestId: string): Promise<Response> {
+  const verifier = refreshPingVerifier;
+  if (req.method !== "POST" || verifier === null || cachedAdapter === null) {
+    return errorResponse("NotFound", 404, requestId);
+  }
+  const verdict = await verifier(req.headers.get(GATEWAY_REFRESH_TOKEN_HEADER));
+  if (!verdict.ok) return errorResponse("NotFound", 404, requestId);
+  try {
+    await refreshPublishedState(cachedAdapter);
+  } catch (e) {
+    return errorResponse("ServiceUnavailable", 503, requestId, {
+      log: `refresh ping: could not read the published state — ${describeFailure(e)}`,
+    });
+  }
+  return jsonResponse({ ok: true }, { requestId });
+}
+
+// ---------------------------------------------------------------------------
 // The staging site (#1330) — what the staging gateway serves, as the admin
 // published it into cms_public_staging (`published_staging_site`): the gate,
 // its key and the served build; and the redirects table. Cached and
@@ -389,7 +480,7 @@ function featureOff(): boolean {
 // ---------------------------------------------------------------------------
 
 let cachedStagingState: StagingSiteState | null = null;
-let cachedRedirects: readonly RedirectTableRow[] | null = null;
+let cachedRedirects: PublishedRedirects | null = null;
 
 async function loadStagingSiteState(adapter: DatabaseAdapter): Promise<StagingSiteState> {
   if (cachedStagingState && publishedCacheUsable()) return cachedStagingState;
@@ -449,23 +540,60 @@ async function loadStagingSiteState(adapter: DatabaseAdapter): Promise<StagingSi
   return state;
 }
 
-async function loadPublishedRedirects(
-  adapter: DatabaseAdapter,
-): Promise<readonly RedirectTableRow[]> {
+/**
+ * #1550 — the live rows and the shared draft's Staged changes, read in ONE
+ * statement: under READ COMMITTED each statement takes its own snapshot,
+ * so two reads could straddle a projection commit and pair the live rows of
+ * one publish with the changes of the next (a loop neither of them has).
+ */
+async function loadPublishedRedirects(adapter: DatabaseAdapter): Promise<PublishedRedirects> {
   if (cachedRedirects && publishedCacheUsable()) return cachedRedirects;
   const startedAt = publishedCacheGeneration();
   const rows = (await adapter.withPublicTransaction(
     SYSTEM_CTX,
     async (tx) =>
-      await tx.execute(
-        sql`SELECT from_path, to_path, status_code FROM published_redirects ORDER BY from_path`,
-      ),
-  )) as unknown as { from_path: string; to_path: string; status_code: number }[];
-  const redirects = rows.map((r) => ({
-    fromPath: r.from_path,
-    toPath: r.to_path,
-    statusCode: r.status_code,
-  }));
+      await tx.execute(sql`
+        SELECT 'live' AS kind, NULL::text AS id, NULL::text AS address, from_path, to_path,
+               status_code, NULL::boolean AS automatic, from_path AS sort_key
+        FROM published_redirects
+        UNION ALL
+        SELECT 'staged', id::text, address, from_path, to_path, status_code, automatic,
+               address
+        FROM published_redirect_changes
+        ORDER BY kind, sort_key
+      `),
+  )) as unknown as {
+    kind: "live" | "staged";
+    id: string | null;
+    address: string | null;
+    from_path: string;
+    to_path: string | null;
+    status_code: number | null;
+    automatic: boolean | null;
+  }[];
+  const live: PublishedRedirects["live"][number][] = [];
+  const staged: PublishedRedirects["staged"][number][] = [];
+  for (const r of rows) {
+    if (r.kind === "live") {
+      if (r.to_path === null || r.status_code === null) {
+        throw new Error(`published_redirects: the row for ${r.from_path} has no target`);
+      }
+      live.push({ fromPath: r.from_path, toPath: r.to_path, statusCode: r.status_code });
+    } else {
+      if (r.id === null || r.address === null || r.automatic === null) {
+        throw new Error(`published_redirect_changes: the change for ${r.from_path} is incomplete`);
+      }
+      staged.push({
+        id: r.id,
+        address: r.address,
+        fromPath: r.from_path,
+        toPath: r.to_path,
+        statusCode: r.status_code,
+        automatic: r.automatic,
+      });
+    }
+  }
+  const redirects: PublishedRedirects = { live, staged };
   if (mayCacheRead(startedAt)) cachedRedirects = redirects;
   return redirects;
 }
@@ -767,6 +895,9 @@ async function routeRequest(
 ): Promise<Response> {
   const url = new URL(req.url);
 
+  // The admin's ping, on both gateways: before the staging gate and before
+  // the off switch, checked without the database (refreshPingRequest).
+  if (url.pathname === GATEWAY_REFRESH_PATH) return refreshPingRequest(req, requestId);
   if (stagingSite && url.pathname !== "/healthz") {
     return stagingRequest(req, conn, requestId, stagingSite);
   }
@@ -805,16 +936,12 @@ async function stagingRequest(
   // The published state first: E14 a — with no staging host set the staging
   // site is off, the fixed 404 before anything of the request is read (from
   // memory while the LISTEN holds, else one read of the projection row).
-  // #1361 — an answer from memory is confirmed at most once per
-  // CONFIRM_MAX_AGE_MS: a staging host set while this instance idled is
-  // served from its first request after that.
+  // Visitor traffic never makes an off gateway ask the database again: a
+  // host set while this instance idled reaches it with the admin's ping
+  // (refreshPingRequest).
   let state: StagingSiteState;
   try {
     state = await loadStagingSiteState(adapter);
-    if (state.host === null) {
-      await confirmOffAnswerOn(adapter);
-      state = await loadStagingSiteState(adapter);
-    }
   } catch (e) {
     return unavailable(e);
   }
@@ -871,13 +998,12 @@ async function visitorRequest(
   }
 
   // ---- E14 a: no visitor plugin active, the fixed 404 before anything of
-  // the request is read. Known from memory while the LISTEN holds, that
-  // answer confirmed at most once per CONFIRM_MAX_AGE_MS (#1361: a plugin
-  // activated while this instance idled); not known yet (the first request
-  // after a publish or boot, or the LISTEN is down): one registry read
-  // decides, shared by concurrent requests and at most one per
-  // SYNC_TTL_MS (plugin-host syncDispatchPlugins). ----
-  if (featureOff() && cachedAdapter) await confirmOffAnswerOn(cachedAdapter);
+  // the request is read. Known from memory while the LISTEN holds; not
+  // known yet (the first request after a publish or boot, or the LISTEN is
+  // down): one registry read decides, shared by concurrent requests and at
+  // most one per SYNC_TTL_MS (plugin-host syncDispatchPlugins). A plugin
+  // activated while this instance idled reaches it with the admin's ping
+  // (refreshPingRequest), never through visitor traffic. ----
   if (featureOff()) return errorResponse("NotFound", 404, requestId);
   if (cachedAdapter && (await learnVisitorApiOff(cachedAdapter))) {
     return errorResponse("NotFound", 404, requestId);
@@ -1426,6 +1552,30 @@ if (import.meta.main) {
   onPublishedChange(invalidateGatewaySettings);
   onPublishedChange(invalidateRateLimitSpecCache);
   await listenForPublishedChanges(adapter);
+  // The admin's refresh ping (refresh-ping.ts), taken from the admin's
+  // runtime service account only. Required where the gateways run on
+  // request-billed CPU; elsewhere the gateway hears every notification as
+  // it arrives and takes no pings.
+  const refreshAccount = process.env[GATEWAY_REFRESH_ACCOUNT_ENV]?.trim();
+  const installEnv = process.env.CAELO_ENV?.trim();
+  if (gatewayRefreshPingsOn(process.env.CAELO_PROVIDER) && (!refreshAccount || !installEnv)) {
+    throw new Error(
+      `${GATEWAY_REFRESH_ACCOUNT_ENV} and CAELO_ENV must be set on ${process.env.CAELO_PROVIDER}: without them the gateway cannot check the admin's refresh pings, and an off gateway would not see a feature switched on. Run \`cms-provision upgrade\`, which sets them.`,
+    );
+  }
+  if (refreshAccount && installEnv) {
+    setRefreshPingVerifier(
+      createRefreshPingVerifier({
+        account: refreshAccount,
+        audience: gatewayRefreshAudience(installEnv, urls.environment),
+      }),
+    );
+    console.log(`[api-gateway] refresh pings: taken from ${refreshAccount}`);
+  } else {
+    console.log(
+      "[api-gateway] refresh pings: none (this gateway has CPU between requests and hears every publish notification as it arrives)",
+    );
+  }
   // #387 one-trust-path: same dev auto-signing + verified disk load as
   // the admin host. Non-production boots regenerate stale manifests
   // with the repo dev key; the loader verifies via the trust-root drop

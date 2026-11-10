@@ -39,6 +39,11 @@ const TPL_SLUG = `${PFX}-tpl`;
 let templateId: string;
 
 /** Redirect rows out of `fromPath` (RLS needs caelo.actor_kind). */
+/**
+ * #1550 — the dead-URL 301 a delete wrote: a Staged change of origin
+ * `page_delete`, which goes live with the Publish live that ships the
+ * delete. The live table must stay untouched.
+ */
 async function redirectsFrom(
   fromPath: string,
 ): Promise<{ to_path: string; status_code: number }[]> {
@@ -46,8 +51,13 @@ async function redirectsFrom(
   try {
     return await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const live = (await tx`
+        SELECT 1 FROM redirects WHERE from_path = ${fromPath}
+      `) as unknown as unknown[];
+      expect(live).toHaveLength(0);
       return (await tx`
-        SELECT to_path, status_code FROM redirects WHERE from_path = ${fromPath}
+        SELECT to_path, status_code FROM pending_redirects
+        WHERE from_path = ${fromPath} AND state = 'staged' AND origin = 'page_delete'
       `) as unknown as { to_path: string; status_code: number }[];
     });
   } finally {
@@ -85,6 +95,7 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`/${PFX}-%`} OR to_path LIKE ${`/${PFX}-%`}`;
       await tx`DELETE FROM redirects WHERE from_path LIKE ${`/${PFX}-%`} OR to_path LIKE ${`/${PFX}-%`}`;
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}-%`})`;
       await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}-%`}`;

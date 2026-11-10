@@ -52,7 +52,7 @@ export interface MakeProposeToolArgs<I> {
    */
   readonly executeOpOverride?: string;
   /** Post-commit step for the gated tool — see FilteredTool.gated. */
-  readonly afterApply?: "load-activated-plugin" | "sync-operator-access";
+  readonly afterApply?: "load-activated-plugin" | "sync-operator-access" | "redirects-go-live-now";
   /**
    * #971 — approving this creates a credential. The executor returns a
    * credential handoff (never the secret) and the description gains the

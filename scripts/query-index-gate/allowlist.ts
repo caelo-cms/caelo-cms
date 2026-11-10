@@ -121,18 +121,6 @@ export const ALLOWED: readonly AllowedRule[] = [
       "A rollback resets the bake mark of every stale page (#1155): a whole-table update by design, run once per rollback.",
   },
   {
-    table: "public.redirects",
-    filter: "(status_code = ANY (?))",
-    reason:
-      "Link canonicalisation loads every permanent redirect (301/308 — nearly all of them) into memory; no index serves a filter that selects almost every row. Its cost is the redirect count, a scale question (#1003), not a missing index.",
-  },
-  {
-    table: "public.redirects",
-    op: "redirects.*",
-    reason:
-      "The operator/AI redirect search (ILIKE '%…%'). #1291 tried a pg_trgm GIN index: under the table's RLS policy ~~* is not leakproof, so it can never become an index condition for admin_role. Operator search, not a per-request path.",
-  },
-  {
     table: "public.font_assets",
     op: "fonts.find",
     reason:

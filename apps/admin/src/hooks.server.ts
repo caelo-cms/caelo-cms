@@ -32,6 +32,7 @@ import {
   configureMcpBridge,
   configurePluginUninstallFinalizer,
   configureProviderResolver,
+  createGatewayRefresher,
   createPublicProjectionPublisher,
   type EmailConfigRow,
   emitSnapshot,
@@ -44,7 +45,6 @@ import {
   makePluginTextProvider,
   mcpBackPressureResponse,
   refreshStaleLiveReleaseAtBoot,
-  registerRedirectSyncRunner,
   retireLegacyStagingPreviewsAtBoot,
   setInProcessJobLauncher,
   setStagingCaptureAccess,
@@ -253,8 +253,15 @@ async function bootPluginHost(): Promise<void> {
   }
   // #635 — the gateway has no cms_admin login: publish what it serves from
   // into cms_public now that the plugins (and their projection triggers)
-  // are in place, then keep it current from the outbox.
-  const publisher = createPublicProjectionPublisher({ adapter, stagingAdapter });
+  // are in place, then keep it current from the outbox. After each publish,
+  // ping the gateways whose database it wrote (gateway-refresh.ts; only
+  // where they run on request-billed CPU).
+  const refreshGateways = createGatewayRefresher({ adapter, registry });
+  const publisher = createPublicProjectionPublisher({
+    adapter,
+    stagingAdapter,
+    ...(refreshGateways ? { afterPublish: refreshGateways } : {}),
+  });
   // #1140 — the scheduler tick's projection backstop drains through it.
   setSchedulerProjectionPublisher(publisher);
   // A failed boot publish (another publisher held the lock throughout, the
@@ -478,13 +485,12 @@ function bootstrapLiveFanOut(): void {
 }
 let liveFanOutBootstrapped = false;
 
-// #1157 — redirects sync to the hosting provider on save, no build: the
-// post-commit push every redirects write runs (idempotent). Targets whose
-// provider is behind are retried on the scheduler tick (Settings →
-// Redirects shows it).
+// #1157 / #1550 — the live redirects reach the hosting provider without a
+// build: each release (Publish live, Go live now, a rollback) pushes them
+// after its commit, and targets whose provider is behind are retried on the
+// scheduler tick (Settings → Redirects shows it). A save pushes nothing.
 function bootstrapRedirectSync(): void {
   const { adapter, registry } = getQueryContext();
-  registerRedirectSyncRunner({ adapter, registry });
   // #1380 — a converge that moved the visitor gateway leaves the live
   // Firebase release's /api/** rewrite on the old service, and a release
   // that fixes the fixed headers (nosniff, SVG CSP) leaves the old ones live;

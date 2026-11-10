@@ -34,7 +34,12 @@
  * Pure module — the stacks import it from `dist/`.
  */
 
-import { CLOUD_SQL_CA_BUNDLE, isIpLiteral, verifyFullQuery } from "@caelo-cms/shared";
+import {
+  CLOUD_SQL_CA_BUNDLE,
+  GATEWAY_REFRESH_ACCOUNT_ENV,
+  isIpLiteral,
+  verifyFullQuery,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import type { SupportedProvider } from "./adapter.js";
 import {
@@ -1035,6 +1040,12 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
     { name: GATEWAY_ENVIRONMENT_ENV, value: "live" },
     { name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS[inputs.provider]) },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
+    // The only account whose refresh pings the gateway takes: the admin's
+    // (@caelo-cms/shared gateway-refresh.ts). An identity, not a secret.
+    {
+      name: GATEWAY_REFRESH_ACCOUNT_ENV,
+      value: runServiceAccountEmail(inputs.projectId, inputs.env),
+    },
     ...secretEnv("gateway", inputs.env),
   ];
 }
@@ -1059,6 +1070,11 @@ export function stagingGatewayEnvContract<V>(
     },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.publicStaging },
     { name: STAGING_STORAGE_ENV, value: gcpStagingStorage(inputs.projectId, inputs.env) },
+    // As the live gateway's: whose refresh pings it takes.
+    {
+      name: GATEWAY_REFRESH_ACCOUNT_ENV,
+      value: runServiceAccountEmail(inputs.projectId, inputs.env),
+    },
     ...secretEnv("staging-gateway", inputs.env),
   ];
 }

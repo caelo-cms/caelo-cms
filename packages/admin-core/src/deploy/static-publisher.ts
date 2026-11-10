@@ -221,6 +221,32 @@ export interface StaticPublisher {
   syncRedirects(args: RedirectSyncArgs): Promise<RedirectSyncResult>;
 
   /**
+   * #1550 — the files of the staged build `runId` at `location` (its staged
+   * manifest, which the staging gateway serves by): what Publish live of it
+   * ships, so the Staged redirect changes that wait for their target are
+   * told apart before anything is released. Relative paths, no leading
+   * slash. Throws when the manifest is missing or names another run (a
+   * later Stage replaced it): the next step is a new Stage.
+   */
+  readStagedBuildFiles(args: {
+    target: DeployTarget;
+    runId: string;
+    location: string;
+    outputRoot: string;
+  }): Promise<ReadonlySet<string>>;
+
+  /**
+   * #1550 — the files `target` serves right now (production: the live
+   * build), or null when it serves none yet. What Go live now and an Owner's
+   * production build check redirect targets and sources against. Relative
+   * paths, no leading slash.
+   */
+  readServedFiles(args: {
+    target: DeployTarget;
+    outputRoot: string;
+  }): Promise<ReadonlySet<string> | null>;
+
+  /**
    * #1155 — read files of the build that is live on `target`, as visitors
    * get them. A path the build does not contain maps to null.
    */
