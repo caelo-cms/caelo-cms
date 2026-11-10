@@ -2956,10 +2956,13 @@ export default definePlugin<PluginContextTier1>({
   linkResolveOperation: "link_resolve",
   // #1269 — the partition is computed from these columns only (variant
   // rows and the locale registry): core keeps it until one of them changes,
-  // so a translation's status update re-asks nothing.
+  // so a translation's status update re-asks nothing. A variant row
+  // decides only its own page's answer (pageVariantPartition): writing one
+  // re-asks that page, not the site.
   linkResolveReads: {
     tables: ["page_variants", "locales"],
     columns: ["page_id", "group_id", "locale_code", "code", "is_default"],
+    pageColumns: { page_variants: "page_id" },
   },
   linkLocationsOperation: "link_locations",
   /**

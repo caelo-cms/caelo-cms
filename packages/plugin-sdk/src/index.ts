@@ -2639,15 +2639,24 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * what the operation reads: an answer that also depends on something
    * else would be served stale.
    *
+   * `pageColumns` names, per table, the column of the page a row answers
+   * for, when a row of that table changes the answer of that page and of
+   * no other. A change to such a row then asks again only about the pages
+   * the row names now and named before, instead of every page; a change
+   * to a table not listed here (a registry every answer depends on) still
+   * asks about every page.
+   *
    * @example
    *   linkResolveReads: {
    *     tables: ["page_variants", "locales"],
    *     columns: ["page_id", "group_id", "locale_code", "code", "is_default"],
+   *     pageColumns: { page_variants: "page_id" },
    *   },
    */
   readonly linkResolveReads?: {
     readonly tables: ReadonlyArray<string>;
     readonly columns?: ReadonlyArray<string>;
+    readonly pageColumns?: Readonly<Record<string, string>>;
   };
   /**
    * Epic #724 (rollout E) — where this plugin's private storage holds
