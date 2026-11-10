@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
+import { carryStage, operatorStopOf } from "../../build-carrier/carry.js";
 import { describeDraftPages } from "../../deploy/draft-pages.js";
 import { describeStagedPluginProblems } from "../../deploy/plugin-problems.js";
 import { describeTruncatedLists } from "../../deploy/truncated-lists.js";
@@ -56,9 +57,6 @@ function operatorCtx(
 function describeAffected(list: readonly AffectedChat[]): string {
   return list.map((a) => `chat '${a.title}' (${a.labels.join(", ") || "changes"})`).join("; ");
 }
-
-/** stage_changes' answer when the Stage outlasted its wait (#1204). */
-const STILL_RUNNING = Symbol("still-running");
 
 /**
  * How long stage_changes waits for the Stage before it answers "still
@@ -138,57 +136,31 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
         };
       }
     }
-    // #1204 — the operator's Stop reaches the build only while this call
-    // waits for it; a Stage left running past the wait (below) is not
-    // stopped by whatever later ends the caller's turn.
     const deployRunId = randomUUID();
-    const stop = new AbortController();
-    const forwardStop = (): void => stop.abort(toolCtx.abortSignal?.reason);
-    if (toolCtx.abortSignal?.aborted) forwardStop();
-    toolCtx.abortSignal?.addEventListener("abort", forwardStop, { once: true });
-    const staging = stageChatSessions(
-      { registry: toolCtx.registry, adapter: toolCtx.adapter },
-      opCtx,
-      ids,
-      {
-        // #685 — the chat's fix request says who staged: the Live Edit AI
-        // (an operator browser consumes this turn) or another agent (an
-        // external MCP agent, or a subagent, which never gets that flag).
-        stagedBy: toolCtx.operatorBrowserAttached === true ? "live_edit_ai" : "other_agent",
-        deployRunId,
-        abortSignal: stop.signal,
-      },
-    );
-    // #1204 — an agent without the operator's chat (Power-MCP, a subagent)
-    // gets an answer within its client's request timeout: a long Stage
-    // keeps building on the server and the call returns "still running",
-    // so the call — and the chat's turn lease it holds — never outlives
-    // the caller. The Live Edit chat waits for the Stage, as before.
-    const waitMs = toolCtx.operatorBrowserAttached === true ? null : stageToolWaitMs();
-    let waited: ReturnType<typeof setTimeout> | undefined;
+    const deps = { registry: toolCtx.registry, adapter: toolCtx.adapter };
+    // The Live Edit chat waits for its Stage inside its own turn: the
+    // operator's Stop, or a closed tab, stops the Stage with the turn (#1204).
+    // An agent without the operator's chat (Power-MCP, caelo_chat, a
+    // subagent) gets an answer within its client's request timeout instead:
+    // its Stage runs inside the request its carrier job holds open (#1574),
+    // so it goes on after this call answers "still running" — the call, and
+    // the chat's turn lease it holds, never outlive the caller. The
+    // operator's Stop reaches the build while this call waits for it.
     const staged =
-      waitMs === null
-        ? await staging
-        : await Promise.race([
-            staging,
-            new Promise<typeof STILL_RUNNING>((done) => {
-              waited = setTimeout(() => done(STILL_RUNNING), waitMs);
-            }),
-          ]);
-    clearTimeout(waited);
-    toolCtx.abortSignal?.removeEventListener("abort", forwardStop);
-    if (staged === STILL_RUNNING) {
-      void staging.then((r) => {
-        if (!r.ok) {
-          console.error("[stage] a Stage that outlasted its caller's wait failed", {
+      toolCtx.operatorBrowserAttached === true
+        ? await stageChatSessions(deps, opCtx, ids, {
+            // #685 — the chat's fix request says who staged.
+            stagedBy: "live_edit_ai",
             deployRunId,
-            step: r.error.step,
-            message: r.error.message,
+            ...(toolCtx.abortSignal ? { abortSignal: toolCtx.abortSignal } : {}),
+          })
+        : await carryStage(deps, opCtx, ids, {
+            stagedBy: "other_agent",
+            id: deployRunId,
+            waitMs: stageToolWaitMs(),
+            ...(toolCtx.abortSignal ? { stopSignal: operatorStopOf(toolCtx.abortSignal) } : {}),
           });
-        }
-      });
-      return stillRunningResult(toolCtx, opCtx, deployRunId);
-    }
+    if ("state" in staged) return stillRunningResult(toolCtx, opCtx, deployRunId);
     if (!staged.ok) {
       return toolError(
         staged.error.error,

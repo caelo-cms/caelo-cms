@@ -46,6 +46,8 @@ import {
   auditJobResource,
   auditRunnerJobResource,
   auditRunnerServiceAccountEmail,
+  buildCarrierJobResource,
+  buildCarrierServiceAccountEmail,
   captureJobResource,
   convergeJobResource,
   gatewayServiceAccountEmail,
@@ -413,6 +415,13 @@ export const AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR = "CAELO_AUDIT_RUNNER_SERVICE_
  */
 export const IMPORT_CRAWL_JOB_ENV_VAR = "CAELO_IMPORT_CRAWL_JOB";
 export const IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR = "CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT";
+
+/**
+ * #1574 — the same pair for the build carrier (the job that holds the
+ * request a build runs in; admin-core build-carrier/kind.ts).
+ */
+export const BUILD_CARRIER_JOB_ENV_VAR = "CAELO_BUILD_CARRIER_JOB";
+export const BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR = "CAELO_BUILD_CARRIER_SERVICE_ACCOUNT";
 
 /**
  * #1140 — the admin env var naming the service account of the scheduler
@@ -1506,6 +1515,16 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     {
       name: IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR,
       value: importCrawlServiceAccountEmail(projectId, env),
+    },
+    // #1574 — the job that holds the request a build nobody else waits for
+    // runs in, and the only IAP identity whose reports the admin takes for it.
+    {
+      name: BUILD_CARRIER_JOB_ENV_VAR,
+      value: buildCarrierJobResource(projectId, inputs.region, env),
+    },
+    {
+      name: BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR,
+      value: buildCarrierServiceAccountEmail(projectId, env),
     },
     // #1140 — the only IAP identity the admin's scheduler tick endpoint
     // accepts (scheduler-setup.ts).

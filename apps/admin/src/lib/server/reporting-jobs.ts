@@ -22,15 +22,26 @@
  * index of a big site) is not bound by a response-size limit. Every refusal
  * is the endpoint's answer (401, 413, 4xx from the dispatch), so the job
  * tells a permanent refusal from a passing fault.
+ *
+ * A long action (the build carrier's `run`, #1574) holds the request while
+ * the admin works on it: once admitted it is answered at once with a `200`
+ * stream that sends a newline every `KEEPALIVE_SECONDS`, so nothing between
+ * the job and the admin closes the request as idle, and ends with the
+ * answer's JSON, a refusal's status inside it. The request is the CPU the
+ * work runs on: when the job's request ends first (the job died), the
+ * action's signal aborts.
  */
 
 import {
-  handleJobReport,
+  type AdmittedReport,
+  admitJobReport,
   IAP_ASSERTION_HEADER,
   iapVerifier,
   JOB_TOKEN_HEADER,
+  KEEPALIVE_SECONDS,
   MAX_REPORT_BODY_BYTES,
   type ReportingJobKind,
+  type ReportResponse,
   reportingJobKind,
 } from "@caelo-cms/admin-core";
 import { getQueryContext } from "#lib/server/query.js";
@@ -106,6 +117,64 @@ export async function readReportBody(
   return { text: Buffer.concat(chunks).toString("utf8") };
 }
 
+const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store" };
+
+/** An answer as a streamed body (no Content-Length): Cloud Run caps buffered answers at 32 MiB. */
+function streamedAnswer({ status, answer }: ReportResponse): Response {
+  return new Response(new Blob([JSON.stringify(answer)]).stream(), {
+    status,
+    headers: JSON_HEADERS,
+  });
+}
+
+/**
+ * A long action's answer (see the file comment): a newline every
+ * `KEEPALIVE_SECONDS` while it runs, then the answer. The action's signal
+ * aborts when the job's request ends first.
+ *
+ * @param keepaliveMs - the newline's interval (tests shorten it).
+ */
+export function keptAliveAnswer(
+  admitted: AdmittedReport,
+  requestSignal: AbortSignal,
+  keepaliveMs: number = KEEPALIVE_SECONDS * 1000,
+): Response {
+  const encoder = new TextEncoder();
+  const gone = new AbortController();
+  const signal = AbortSignal.any([requestSignal, gone.signal]);
+  let keepalive: ReturnType<typeof setInterval> | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      // A write after the job is gone throws; the action learns it from its signal.
+      const write = (text: string): void => {
+        try {
+          controller.enqueue(encoder.encode(text));
+        } catch {
+          gone.abort(new Error("the job's request to the admin ended"));
+        }
+      };
+      // Request-scoped: cleared when the answer is written or the job is gone.
+      keepalive = setInterval(() => write("\n"), keepaliveMs);
+      void admitted.run(signal).then((r) => {
+        clearInterval(keepalive);
+        if (signal.aborted) return;
+        const answer = r.answer.ok ? r.answer : { ...r.answer, status: r.status };
+        write(JSON.stringify(answer));
+        try {
+          controller.close();
+        } catch {
+          // The job went away while the answer was written.
+        }
+      });
+    },
+    cancel() {
+      clearInterval(keepalive);
+      gone.abort(new Error("the job's request to the admin ended"));
+    },
+  });
+  return new Response(body, { status: 200, headers: JSON_HEADERS });
+}
+
 /** Answer one report (see the file comment). */
 export async function answerJobReport(request: Request, kind: ReportingJobKind): Promise<Response> {
   const unauthorized = await authorizeJobReport(request, kind);
@@ -114,13 +183,11 @@ export async function answerJobReport(request: Request, kind: ReportingJobKind):
   if ("refused" in body) return body.refused;
   const bodyText = body.text;
   const { adapter, registry } = getQueryContext();
-  const { status, answer } = await handleJobReport(
+  const admission = await admitJobReport(
     { adapter, registry },
     { kind, token: request.headers.get(JOB_TOKEN_HEADER), bodyText },
   );
-  // Streamed (no Content-Length): Cloud Run caps buffered answers at 32 MiB.
-  return new Response(new Blob([JSON.stringify(answer)]).stream(), {
-    status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-  });
+  if ("refused" in admission) return streamedAnswer(admission.refused);
+  if (admission.admitted.long) return keptAliveAnswer(admission.admitted, request.signal);
+  return streamedAnswer(await admission.admitted.run(request.signal));
 }

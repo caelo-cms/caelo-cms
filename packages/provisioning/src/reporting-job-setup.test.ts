@@ -16,7 +16,9 @@ import { join } from "node:path";
 import type { GcloudResult } from "./gcloud.js";
 import {
   auditRunnerJobSpec,
+  buildCarrierJobSpec,
   ensureAuditRunnerJob,
+  ensureBuildCarrierJob,
   ensureImportCrawlJob,
   importCrawlJobSpec,
   REPORTING_JOB_FORBIDDEN_ROLES,
@@ -302,6 +304,87 @@ describe("ensureImportCrawlJob (#1360)", () => {
 
   it("asks for no bucket and no job of its own", () => {
     const spec = importCrawlJobSpec({ provider: "gcp-firebase", env: "production" });
+    expect(spec.env).toEqual(["CAELO_PROVIDER=gcp-firebase"]);
+    expect(spec.readBuckets).toEqual([]);
+    expect(spec.runJobs).toEqual([]);
+  });
+});
+
+describe("ensureBuildCarrierJob (#1574)", () => {
+  const CARRIER_SA = "caelo-production-build@acme.iam.gserviceaccount.com";
+  const CARRIER = `serviceAccount:${CARRIER_SA}`;
+
+  it("grants the carrier exactly token creator on itself, IAP access and log writing", async () => {
+    const { run, calls } = fakeGcloud();
+    const r = await ensureBuildCarrierJob(TARGET, { run, sleep: async () => {} });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.serviceAccount).toBe(CARRIER_SA);
+    expect(
+      calls.some((c) =>
+        c.join(" ").startsWith("iam service-accounts create caelo-production-build "),
+      ),
+    ).toBe(true);
+    const mine = grants(calls).filter((g) => g.member === CARRIER);
+    expect(mine.map((g) => [g.where, g.role])).toEqual([
+      // Signs its own IAP credential, nobody else's.
+      [
+        `iam service-accounts add-iam-policy-binding ${CARRIER_SA}`,
+        "roles/iam.serviceAccountTokenCreator",
+      ],
+      ["projects add-iam-policy-binding acme", "roles/logging.logWriter"],
+      [
+        "iap web add-iam-policy-binding --resource-type=backend-services",
+        "roles/iap.httpsResourceAccessor",
+      ],
+    ]);
+    for (const g of mine) {
+      for (const forbidden of REPORTING_JOB_FORBIDDEN_ROLES) {
+        expect(g.role.startsWith(forbidden)).toBe(false);
+      }
+      // The build stays the admin's: no run right, no bucket, no secret, no database.
+      expect(g.role.startsWith("roles/run.")).toBe(false);
+      expect(g.role.startsWith("roles/storage.")).toBe(false);
+      expect(g.role.startsWith("roles/secretmanager.")).toBe(false);
+      expect(g.role.startsWith("roles/cloudsql.")).toBe(false);
+    }
+  });
+
+  it("gives the admin run-with-overrides and view on the carrier, nothing else", async () => {
+    const { run, calls } = fakeGcloud();
+    await ensureBuildCarrierJob(TARGET, { run, sleep: async () => {} });
+    expect(
+      grants(calls)
+        .filter((g) => g.member === ADMIN_SA)
+        .map((g) => [g.where, g.role]),
+    ).toEqual([
+      [
+        "run jobs add-iam-policy-binding caelo-production-build",
+        "roles/run.jobsExecutorWithOverrides",
+      ],
+      ["run jobs add-iam-policy-binding caelo-production-build", "roles/run.viewer"],
+    ]);
+  });
+
+  it("deploys the admin image as its own SA on the smallest machine, outliving the admin's request limit", async () => {
+    const { run, calls } = fakeGcloud();
+    await ensureBuildCarrierJob(TARGET, { run, sleep: async () => {} });
+    const deploy = deployOf(calls);
+    expect(deploy.slice(0, 4)).toEqual(["run", "jobs", "deploy", "caelo-production-build"]);
+    expect(flag(deploy, "image")).toBe(ADMIN_IMAGE);
+    expect(flag(deploy, "service-account")).toBe(CARRIER_SA);
+    expect(flag(deploy, "args")).toBe(`--bun,${REPORTING_JOB_SCRIPT}`);
+    expect(flag(deploy, "max-retries")).toBe("0");
+    // admin-core JOB_TIMING.build.maxRunSeconds: the request limit plus room.
+    expect(flag(deploy, "task-timeout")).toBe("3900s");
+    expect(flag(deploy, "memory")).toBe("512Mi");
+    expect(flag(deploy, "set-env-vars")).toBe("CAELO_PROVIDER=gcp");
+    for (const a of deploy) {
+      expect(a).not.toMatch(/^--(set|update)-secrets|^--(vpc-connector|network|subnet|vpc-egress)/);
+    }
+  });
+
+  it("asks for no bucket and no job of its own", () => {
+    const spec = buildCarrierJobSpec({ provider: "gcp-firebase", env: "production" });
     expect(spec.env).toEqual(["CAELO_PROVIDER=gcp-firebase"]);
     expect(spec.readBuckets).toEqual([]);
     expect(spec.runJobs).toEqual([]);

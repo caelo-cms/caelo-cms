@@ -236,6 +236,15 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
         "one container per site import for the crawl's length (~1-2 min per 10 pages at 1 vCPU / 2 GiB, mostly waiting for renders): ~$0.01 for a 50-page import; nothing without imports",
     },
     {
+      // #1574 — a Stage, Publish live or production build nobody else waits
+      // for (an agent's Stage, a button whose tab closed) runs inside the
+      // request this job holds open; the build itself stays the admin's.
+      name: "Builds nobody waits for (Cloud Run build carrier job)",
+      monthlyUsd: 0,
+      notes:
+        "one small container per such build for the build's length (1 vCPU / 512 MiB, waiting for the admin's answer): ~$0.001 per build minute, a 2-minute Stage ~$0.002; mostly in the free tier",
+    },
+    {
       name: "Screenshots (Cloud Run capture job)",
       monthlyUsd: 1,
       notes:

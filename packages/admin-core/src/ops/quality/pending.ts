@@ -897,11 +897,11 @@ export const endExecuteQualityProposalOp = requiresApproverPermission(
  */
 async function runExecuteQualityProposal(
   ctx: ExecutionContext,
-  input: { proposalId: string },
+  input: { proposalId: string; runId?: string | undefined },
   steps: OperationSteps,
 ): Promise<Result<ExecuteOutput, QueryError>> {
   const { registry, adapter } = steps;
-  const runId = randomUUID();
+  const runId = input.runId ?? randomUUID();
   const begun = await execute(registry, adapter, ctx, "quality_audits.begin_execute_proposal", {
     proposalId: input.proposalId,
     runId,
@@ -947,7 +947,16 @@ const executeQualityProposalOpDefinition = defineStepwiseOperation({
   // Why human-only: the click the §11.A gate exists to obtain.
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z.object({ proposalId: z.string().uuid() }).strict(),
+  input: z
+    .object({
+      proposalId: z.string().uuid(),
+      /**
+       * #1574 — the id the claim gives its run: a carried build passes its
+       * order's id, so the order and its run share one. Default: a fresh id.
+       */
+      runId: z.string().uuid().optional(),
+    })
+    .strict(),
   output: executeOutput,
   stepwise: runExecuteQualityProposal,
 });

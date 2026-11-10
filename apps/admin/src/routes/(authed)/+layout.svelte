@@ -41,6 +41,15 @@
     if (key === lastSerialised) return;
     lastSerialised = key;
 
+    // #1574 — a build that ran without its build carrier (the install's
+    // converge did not set it up) still finished, but the operator must hear
+    // that a closed tab would have stopped it, and what to re-run.
+    if (typeof f["carrierWarning"] === "string") {
+      toast.warning("Built without the build carrier.", {
+        description: f["carrierWarning"] as string,
+      });
+    }
+
     if (typeof f["error"] === "string") {
       toast.error(f["error"] as string);
     } else if (f["published"] && typeof f["published"] === "object") {

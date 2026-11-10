@@ -17,10 +17,14 @@
  * "your edits are on staging" after this call.
  */
 
-import { execute } from "@caelo-cms/query-api";
+import { randomUUID } from "node:crypto";
+import { execute, type QueryError } from "@caelo-cms/query-api";
 import { z } from "zod";
+import { carryBuild, operatorStopOf } from "../../build-carrier/carry.js";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { stageToolWaitMs } from "./draft-tools.js";
+import { readStageStatus, stillRunningStageText } from "./stage-status-tool.js";
 
 const deployStagingInput = z
   .object({
@@ -95,9 +99,37 @@ export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = 
       };
     }
 
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "deploy.trigger", {
-      targetName,
-    });
+    // The Live Edit chat waits for the build inside its turn. An agent
+    // without the operator's chat gets an answer within its client's
+    // request timeout: the build runs inside the request its carrier job
+    // holds open (#1574), and goes on after this call answers.
+    const deps = { registry: toolCtx.registry, adapter: toolCtx.adapter };
+    let r: Awaited<ReturnType<typeof execute>>;
+    if (toolCtx.operatorBrowserAttached === true) {
+      r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "deploy.trigger", { targetName });
+    } else {
+      const runId = randomUUID();
+      const carried = await carryBuild(
+        deps,
+        ctx,
+        { kind: "deploy.trigger", input: { targetName } },
+        {
+          id: runId,
+          waitMs: stageToolWaitMs(),
+          ...(toolCtx.abortSignal ? { stopSignal: operatorStopOf(toolCtx.abortSignal) } : {}),
+        },
+      );
+      if (carried.state === "running") {
+        return {
+          ok: true,
+          content: stillRunningStageText(runId, await readStageStatus(toolCtx, ctx, runId)),
+          value: { runId, status: "running" },
+        };
+      }
+      r = carried.outcome.ok
+        ? { ok: true, value: carried.outcome.value }
+        : { ok: false, error: carried.outcome.error as QueryError };
+    }
     if (!r.ok) {
       return toolError(
         r.error,

@@ -51,11 +51,31 @@ export class ActionRefusal extends Error {
   }
 }
 
+/** What a report handler knows about the request it answers. */
+export interface ActionRequest {
+  /**
+   * Aborts when the job's request ended before the answer (the job died,
+   * or its connection dropped). Absent for a job inside the admin's process.
+   */
+  readonly signal?: AbortSignal;
+}
+
 /** One action a job of this kind may report. */
 export interface ReportingAction<I = unknown> {
   /** The input's schema, checked before `handle` runs (a job's data is untrusted). */
   readonly input: z.ZodType<I>;
-  handle(deps: AdminJobDeps, subjectId: string, input: I): Promise<ActionResult>;
+  /**
+   * The action holds its request while the admin works (the build carrier's
+   * `run`, #1574): it is answered as a stream that keeps the request busy
+   * until the answer (protocol.ts `KEEPALIVE_SECONDS`).
+   */
+  readonly long?: boolean;
+  handle(
+    deps: AdminJobDeps,
+    subjectId: string,
+    input: I,
+    request: ActionRequest,
+  ): Promise<ActionResult>;
 }
 
 /** Everything the admin needs to run one kind of reporting job. */
@@ -71,6 +91,18 @@ export interface ReportingJobKindDef {
   readonly gcp: { readonly jobEnvVar: string; readonly serviceAccountEnvVar: string };
   /** What `aws` / `azure` lack for it, for the refusal (#749, #750). */
   readonly pendingIssue: Readonly<Record<"aws" | "azure", string>>;
+  /**
+   * Inside the admin's process (self-hosted, development): `in-line` runs
+   * one attempt of the kind at a time (in-line.ts says why), `at-once`
+   * starts each attempt when it is launched.
+   */
+  readonly inProcess: "in-line" | "at-once";
+  /**
+   * What the backstop does with work that has no job ({@link listUnstarted}):
+   * `start` it late, or `give-up` — work a person asked for and waits on (a
+   * build) is never started minutes after the request that asked for it.
+   */
+  readonly unstarted: "start" | "give-up";
   /** The kind's own actions (the shared ones: protocol.ts FOUNDATION_ACTIONS). */
   // biome-ignore lint/suspicious/noExplicitAny: each action narrows its own input with its schema.
   readonly actions: Readonly<Record<string, ReportingAction<any>>>;

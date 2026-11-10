@@ -92,6 +92,9 @@ export const qualityAuditJobKind: ReportingJobKindDef = {
     aws: "issue #749: an ECS task per audit",
     azure: "issue #750: a Container Apps job per audit",
   },
+  // One audit at a time in-process: two would share the CPU their Lighthouse runs measure.
+  inProcess: "in-line",
+  unstarted: "start",
   actions: {
     start: {
       input: z.object({}).strict(),

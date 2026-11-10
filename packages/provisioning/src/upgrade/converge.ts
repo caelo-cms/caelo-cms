@@ -43,6 +43,7 @@ import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import {
   auditRunnerServiceAccountEmail,
+  buildCarrierServiceAccountEmail,
   importCrawlServiceAccountEmail,
   schedulerServiceAccountEmail,
   upgraderServiceAccountEmail,
@@ -52,7 +53,11 @@ import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import { ensureRemoteMcpEdge, resolveRemoteMcpIdentity } from "../remote-mcp.js";
-import { ensureAuditRunnerJob, ensureImportCrawlJob } from "../reporting-job-setup.js";
+import {
+  ensureAuditRunnerJob,
+  ensureBuildCarrierJob,
+  ensureImportCrawlJob,
+} from "../reporting-job-setup.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -67,6 +72,8 @@ import {
   AUDIT_RESULTS_BUCKET_ENV_VAR,
   AUDIT_RUNNER_JOB_ENV_VAR,
   AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR,
+  BUILD_CARRIER_JOB_ENV_VAR,
+  BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR,
   CAPTURE_BUCKET_ENV_VAR,
   CAPTURE_JOB_ENV_VAR,
   type CloudRunEnvVar,
@@ -484,6 +491,22 @@ export function startConverge(
       ensure: ensureImportCrawlJob,
       serviceAccount: importCrawlServiceAccountEmail(install.projectId, install.env),
       envVars: [IMPORT_CRAWL_JOB_ENV_VAR, IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR],
+    });
+
+  /**
+   * #1574 — the job that holds the request a Stage, Publish live or
+   * production build nobody else waits for runs in.
+   */
+  const buildCarrierJob = () =>
+    reportingJob({
+      step: "Ensuring the build carrier (builds that outlast their request)...",
+      ready: "Build carrier ready (a build nobody waits for still ends)",
+      label: "Build carrier",
+      consequence:
+        "an agent's Stage and every Stage or Publish live button fail at once with this reason",
+      ensure: ensureBuildCarrierJob,
+      serviceAccount: buildCarrierServiceAccountEmail(install.projectId, install.env),
+      envVars: [BUILD_CARRIER_JOB_ENV_VAR, BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR],
     });
 
   async function captureJob(): Promise<void> {
@@ -1003,6 +1026,7 @@ export function startConverge(
       await auditJob();
       await auditRunnerJob();
       await importCrawlJob();
+      await buildCarrierJob();
       await captureJob();
       await remoteMcpEdge();
       await gatewayArmor();

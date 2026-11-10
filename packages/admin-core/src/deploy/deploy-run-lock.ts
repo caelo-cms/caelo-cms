@@ -61,6 +61,28 @@ export async function deployRunIsOrphaned(tx: TransactionRunner, runId: string):
   return rows[0]?.free === true;
 }
 
+/**
+ * #1574 — the advisory-lock class of a build order (the two-key form, whose
+ * keys never meet the one-key locks above or elsewhere).
+ */
+const BUILD_ORDER_LOCK_CLASS = 1574;
+
+/**
+ * Hold, for the rest of this transaction, the lock that orders a carried
+ * run's start (`beginRunInTx`, whose run takes its order's id) against its
+ * build order's give-up (`build_orders.give_up`): whichever comes second
+ * waits for the first to commit, and its next read sees what that one
+ * committed, so a give-up never misses a run that is starting and a run
+ * never starts for an order already given up. An advisory lock instead of
+ * the order row's: the start runs as the person or agent who asked for the
+ * build, and row-level security lets only the system actor lock that row.
+ */
+export async function lockBuildOrderInTx(tx: TransactionRunner, orderId: string): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(${BUILD_ORDER_LOCK_CLASS}::int, hashtext(${orderId}::text))`,
+  );
+}
+
 /** What one heartbeat learned. */
 export interface DeployRunBeat {
   /** False when the row is no longer this run's to finish (marked failed as orphaned). */

@@ -15,15 +15,17 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
+  type AdmittedReport,
   createIapVerifier,
   IAP_ASSERTION_HEADER,
   iapTestKeyPairForTests,
   MAX_REPORT_BODY_BYTES,
+  type ReportResponse,
   setIapVerifierForTests,
   signIapTestAssertionForTests,
 } from "@caelo-cms/admin-core";
 import { POST } from "../../routes/api/internal/jobs/[kind]/report/+server.js";
-import { authorizeJobReport, readReportBody } from "./reporting-jobs.js";
+import { authorizeJobReport, keptAliveAnswer, readReportBody } from "./reporting-jobs.js";
 
 const AUDIENCE = "/projects/42/locations/europe-west1/services/caelo-production-admin";
 const RUNNER_SA = "caelo-production-audit-run@p.iam.gserviceaccount.com";
@@ -197,5 +199,66 @@ describe("POST /api/internal/jobs/<kind>/report answers its refusals (#1359)", (
   it("returns a 404 for a kind that does not exist", async () => {
     const res = await post(reportRequest({}, "{}"), "nope");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("keptAliveAnswer: a long report holds its request (#1574)", () => {
+  const admitted = (run: (signal?: AbortSignal) => Promise<ReportResponse>): AdmittedReport => ({
+    long: true,
+    run,
+  });
+
+  it("sends newlines while the action runs, then the answer: JSON whitespace the job parses", async () => {
+    const res = keptAliveAnswer(
+      admitted(async () => {
+        await Bun.sleep(120);
+        return { status: 200, answer: { ok: true, value: { outcome: "succeeded" } } };
+      }),
+      new AbortController().signal,
+      20,
+    );
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text.startsWith("\n")).toBe(true);
+    expect(text.trimStart()).toBe('{"ok":true,"value":{"outcome":"succeeded"}}');
+    expect(JSON.parse(text)).toEqual({ ok: true, value: { outcome: "succeeded" } });
+  });
+
+  it("carries a refusal's status inside the answer, since the stream already said 200", async () => {
+    const res = keptAliveAnswer(
+      admitted(async () => ({
+        status: 422,
+        answer: { ok: false, error: { code: "refused", message: "already running" } },
+      })),
+      new AbortController().signal,
+      20,
+    );
+    expect(res.status).toBe(200);
+    expect(JSON.parse(await res.text())).toEqual({
+      ok: false,
+      error: { code: "refused", message: "already running" },
+      status: 422,
+    });
+  });
+
+  it("aborts the action when the job's request ends first", async () => {
+    let seen: AbortSignal | undefined;
+    const ended = new Promise<string>((resolve) => {
+      const res = keptAliveAnswer(
+        admitted(async (signal) => {
+          seen = signal;
+          await new Promise((r) => signal?.addEventListener("abort", r, { once: true }));
+          resolve(String((signal?.reason as Error | undefined)?.message));
+          return { status: 200, answer: { ok: true, value: {} } };
+        }),
+        new AbortController().signal,
+        20,
+      );
+      // The job reads the first keep-alive and goes away.
+      const reader = res.body?.getReader();
+      void reader?.read().then(() => reader.cancel());
+    });
+    expect(await ended).toContain("ended");
+    expect(seen?.aborted).toBe(true);
   });
 });

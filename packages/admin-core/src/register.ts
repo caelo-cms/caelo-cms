@@ -39,6 +39,16 @@ import {
   resetPasswordOp,
   resolveSessionOp,
 } from "./ops/auth.js";
+import {
+  claimBuildOrderOp,
+  createBuildOrderOp,
+  finishBuildOrderOp,
+  getBuildOrderOp,
+  giveUpBuildOrderOp,
+  listUnstartedBuildOrdersOp,
+  requestBuildOrderStopOp,
+  sweepBuildOrdersOp,
+} from "./ops/build_orders.js";
 import { cancelProposalOp } from "./ops/cancel_proposal.js";
 import { collectJournalGarbageOp } from "./ops/change-journal.js";
 import {
@@ -1487,6 +1497,15 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(putReportingJobUploadPartOp);
   registry.register(readReportingJobUploadOp);
   registry.register(sweepReportingJobsOp);
+  // #1574 — build orders: a build inside the request its carrier job holds open.
+  registry.register(createBuildOrderOp);
+  registry.register(claimBuildOrderOp);
+  registry.register(getBuildOrderOp);
+  registry.register(finishBuildOrderOp);
+  registry.register(requestBuildOrderStopOp);
+  registry.register(giveUpBuildOrderOp);
+  registry.register(listUnstartedBuildOrdersOp);
+  registry.register(sweepBuildOrdersOp);
   // #1337 — the public mail outboxes' drain (system-only).
   registry.register(claimMailOutboxOp);
   registry.register(completeMailOutboxOp);
