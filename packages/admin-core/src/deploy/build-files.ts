@@ -67,3 +67,13 @@ export function uniqueAssets(references: AssetReferences): AssetReference[] {
   for (const a of references.assets) if (!seen.has(a.path)) seen.set(a.path, a);
   return [...seen.values()];
 }
+
+/**
+ * A streamed file's bytes as a Buffer over the same memory, for an upload's
+ * `put`. Every file the generator streams passes through one, and a few grow
+ * with the site (the sitemap, the routing manifest, the render deps): a copy
+ * there held each of them twice while the provider took it.
+ */
+export function bytesOfUpload(body: Uint8Array): Buffer {
+  return Buffer.isBuffer(body) ? body : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+}

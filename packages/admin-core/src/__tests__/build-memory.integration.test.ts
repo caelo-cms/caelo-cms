@@ -24,10 +24,16 @@
  * it allocated before, and the garbage the collector has not returned yet.
  * On unchanged code that read 53–128 MB of growth (#1441). The admin side
  * is therefore measured as what stays alive: a full collection before each
- * sample, then the live heap plus the buffers outside it, held to a budget
- * per page. A whole-site buffer is alive by definition; garbage is not.
- * The collections also keep the resident peak near the live set, so its
- * check stays, for memory outside the engine's accounting.
+ * sample, then the engine's heap size, held to a budget per page. A
+ * whole-site buffer is alive by definition; garbage is not. The collections
+ * also keep the resident peak near the live set, so its check stays, for
+ * memory outside the engine's accounting.
+ *
+ * The comparison is the same Stage at two sizes. Two warm-up Stages put the
+ * media on Hosting and into both staging slots first, so neither measured
+ * Stage moves a media byte. The media's first upload, in the 1k Stage only,
+ * read as up to 14 MB while it ran, and a sample that hit it took that much
+ * off the growth (CI read the 1k peak anywhere from 0 to 18 MB).
  */
 
 import { heapStats } from "bun:jsc";
@@ -72,6 +78,11 @@ const SYSTEM: ExecutionContext = {
 const MEDIA = 24;
 const SIZES = [1_000, 10_000] as const;
 /**
+ * The warm-up Stages' site: page g shows photos g and g + 7 (mod
+ * {@link MEDIA}), so these pages show every photo.
+ */
+const WARM_UP_PAGES = 100;
+/**
  * How much the peak may grow from 1k to 10k pages. What legitimately grows
  * is a small record per page (path, SEO row, URL, parity digest — a few KB
  * each, ~30 MB at 10k) plus the garbage collector's slack; what grew before
@@ -81,8 +92,9 @@ const SIZES = [1_000, 10_000] as const;
 const MAX_GROWTH_MB = 128;
 /**
  * What the admin may keep alive per page the site grows by: the records of
- * docs/dev/build-memory.md, ~2 KB per page measured. Keeping every page's
- * body and gzip in memory read ~15 KB per page when tried on purpose (#1441).
+ * docs/dev/build-memory.md, 1.1–1.7 KB per page measured (the link check's
+ * model is the largest). An upload that keeps every page's bytes and gzip
+ * read ~8 KB per page when tried on purpose.
  */
 const MAX_ADMIN_LIVE_BYTES_PER_PAGE = 4096;
 /**
@@ -94,6 +106,9 @@ const LIVE_SAMPLE_MS = 40;
 
 const realFetch = globalThis.fetch;
 const hosting = new FakeFirebaseHosting(SITE, realFetch);
+const slots = fakeStagingBucket({ keepBodies: false });
+/** A media file in the staging slot (`_slots/a/_assets/memory-photo-3/…webp`). */
+const SLOT_MEDIA_FILE = /\/_assets\/.+\.(?:jpe?g|png|webp|avif|gif)$/;
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let root: string;
@@ -211,8 +226,12 @@ interface StageResult {
   adminLivePeakMb: number;
   /** Samples behind {@link adminLivePeakMb}: a handful would miss the peak. */
   adminLiveSamples: number;
+  /** Where in the Stage the peak was read ({@link stagePart}). */
+  adminLivePeakIn: string;
   /** Media files (by gzip hash) this Stage uploaded. */
   mediaUploaded: number;
+  /** Media files this Stage wrote into the staging slot (#1330). */
+  slotMediaWrites: number;
   /**
    * The most bytes the build ever had on the admin's disk. On Cloud Run that
    * disk is memory (tmpfs), so it counts like RSS (#1271: only the build's
@@ -252,11 +271,24 @@ async function peakDiskBytes<T>(dir: string, run: () => Promise<T>): Promise<[T,
   }
 }
 
-/** This process's live memory, in MiB: the heap and the buffers outside it, after a full collection. */
+/**
+ * This process's live memory, in MiB, after a full collection: the engine's
+ * heap size, which counts its objects and the memory outside them it was
+ * told about (buffers, string contents). `extraMemorySize` is part of it
+ * already; adding it again counted every buffer and every string twice, so
+ * a Stage's buffer-heavy moments read double (#1271).
+ */
 function liveMb(): number {
   Bun.gc(true);
-  const h = heapStats();
-  return (h.heapSize + h.extraMemorySize) / 1048576;
+  return heapStats().heapSize / 1048576;
+}
+
+/** The most a run added to this process's live memory, and when. */
+interface LivePeak {
+  readonly mb: number;
+  /** `performance.now()` of the sample that read it. */
+  readonly at: number;
+  readonly samples: number;
 }
 
 /**
@@ -264,39 +296,71 @@ function liveMb(): number {
  * sample stops the world, so it is taken {@link LIVE_SAMPLE_MS} apart, not
  * back to back; a buffer that grows with the site lives for many samples.
  */
-async function peakLive<T>(run: () => Promise<T>): Promise<[T, number, number]> {
+async function peakLive<T>(run: () => Promise<T>): Promise<[T, LivePeak]> {
   const start = liveMb();
   let peak = start;
+  let at = performance.now();
   let samples = 0;
   let running = true;
   const loop = (async () => {
     while (running) {
       await Bun.sleep(LIVE_SAMPLE_MS);
-      peak = Math.max(peak, liveMb());
+      const mb = liveMb();
+      if (mb > peak) {
+        peak = mb;
+        at = performance.now();
+      }
       samples += 1;
     }
   })();
   try {
     const out = await run();
-    return [out, peak - start, samples];
+    return [out, { mb: peak - start, at, samples }];
   } finally {
     running = false;
     await loop;
   }
 }
 
+/**
+ * When the running Stage opened its Hosting version (its checks are done and
+ * the generator starts) and finalized it (the build is uploaded), read off
+ * the publisher's calls, so a reading can be placed without a hook in the
+ * Stage itself.
+ */
+const stageMarks = { opened: Number.POSITIVE_INFINITY, finalized: Number.POSITIVE_INFINITY };
+
+const markingFetch = async (input: string | URL | Request, init?: RequestInit) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (init?.method === "POST" && url.endsWith(`/sites/${SITE}/versions`)) {
+    stageMarks.opened = performance.now();
+  }
+  if (init?.method === "PATCH" && url.includes("updateMask=status,config")) {
+    stageMarks.finalized = performance.now();
+  }
+  return hosting.fetch(input, init);
+};
+
+/** Which part of the Stage a moment at `at` fell in (see {@link stageMarks}). */
+function stagePart(at: number): string {
+  if (at < stageMarks.opened) return "the checks before the build (link references, SEO, plugins)";
+  if (at < stageMarks.finalized) return "the build streaming into the upload";
+  return "the publish and the run's record";
+}
+
 async function stage(): Promise<StageResult> {
   const before = hosting.uploaded.length;
   const pagesBefore = hosting.uploadedBytes;
-  const [[staged, adminLivePeakMb, adminLiveSamples], localPeakBytes] = await peakDiskBytes(
-    join(root, "output"),
-    () =>
-      peakLive(() =>
-        ok<{ runId: string; phases: PhaseTiming[] }>("deploy.trigger", {
-          targetName: "staging",
-          repoRoot: root,
-        }),
-      ),
+  const slotWritesBefore = slots.writes.length;
+  stageMarks.opened = Number.POSITIVE_INFINITY;
+  stageMarks.finalized = Number.POSITIVE_INFINITY;
+  const [[staged, live], localPeakBytes] = await peakDiskBytes(join(root, "output"), () =>
+    peakLive(() =>
+      ok<{ runId: string; phases: PhaseTiming[] }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: root,
+      }),
+    ),
   );
   console.info(
     "[build-memory] phases",
@@ -313,10 +377,14 @@ async function stage(): Promise<StageResult> {
     generatorPeakMb: peak("generator."),
     uploadPeakMb: peak("publish."),
     startMb: staged.phases.find((p) => p.phase === "prepare")?.peakRssMb ?? 0,
-    adminLivePeakMb,
-    adminLiveSamples,
+    adminLivePeakMb: live.mb,
+    adminLiveSamples: live.samples,
+    adminLivePeakIn: stagePart(live.at),
     mediaUploaded: (await mediaHashes()).filter((h) => hosting.uploaded.slice(before).includes(h))
       .length,
+    slotMediaWrites: slots.writes
+      .slice(slotWritesBefore)
+      .filter((name) => SLOT_MEDIA_FILE.test(name)).length,
     localPeakBytes,
     uploadedPages: hosting.uploadedBytes - pagesBefore,
   };
@@ -331,10 +399,10 @@ beforeAll(async () => {
     CAELO_GATEWAY_REGION: "europe-west1",
     CAELO_SKIP_STAGING_SERVE_CHECK: "1",
   });
-  globalThis.fetch = hosting.fetch as typeof fetch;
+  globalThis.fetch = markingFetch as typeof fetch;
   // #1330 — a Stage mirrors its build into the private staging bucket; the
   // fake keeps no page bytes, so it adds nothing to the measured memory.
-  setStagingBucketForTests(fakeStagingBucket({ keepBodies: false }).bucket);
+  setStagingBucketForTests(slots.bucket);
   restore.push(async () => setStagingBucketForTests(null));
   restore.push(await pinSiteBaseUrl(ADMIN_URL!, "https://example.com"));
   restore.push(await pinSiteLanguage(ADMIN_URL!, "en"));
@@ -445,6 +513,16 @@ describe("#1271 Stage memory is flat in the site's size", () => {
   it(
     "1k vs 10k pages with media: flat peak RSS, and no media byte in a Stage that needs none",
     async () => {
+      // The warm-up: the first Stage puts the media on Hosting and into one
+      // staging slot, the second into the other one (Stages alternate).
+      await seedTo(WARM_UP_PAGES);
+      const firstWarmUp = await stage();
+      const secondWarmUp = await stage();
+      expect(firstWarmUp.mediaUploaded).toBe((await mediaHashes()).length);
+      expect(firstWarmUp.slotMediaWrites).toBeGreaterThan(0);
+      expect(secondWarmUp.mediaUploaded).toBe(0);
+      expect(secondWarmUp.slotMediaWrites).toBe(firstWarmUp.slotMediaWrites);
+
       const results = new Map<number, StageResult>();
       for (const n of SIZES) {
         await seedTo(n);
@@ -454,10 +532,12 @@ describe("#1271 Stage memory is flat in the site's size", () => {
       const large = results.get(SIZES[1]) as StageResult;
       console.info("[build-memory]", JSON.stringify(Object.fromEntries(results)));
 
-      // The first Stage put the media on Hosting; ten times the pages
-      // reference the same files, so not one is sent again.
-      expect(small.mediaUploaded).toBe((await mediaHashes()).length);
-      expect(large.mediaUploaded).toBe(0);
+      // Hosting and both slots have the media; ten times the pages reference
+      // the same files, so not one is sent again, to either.
+      for (const r of [small, large]) {
+        expect(r.mediaUploaded).toBe(0);
+        expect(r.slotMediaWrites).toBe(0);
+      }
 
       expect(large.generatorPeakMb - small.generatorPeakMb).toBeLessThan(MAX_GROWTH_MB);
       // tmpfs: the HTML went to Hosting as it was written; what stayed on
@@ -474,7 +554,9 @@ describe("#1271 Stage memory is flat in the site's size", () => {
       ).toBeLessThan(MAX_GROWTH_MB);
       // What the admin keeps alive grows by a small record per page.
       const liveGrowthMb = large.adminLivePeakMb - small.adminLivePeakMb;
-      console.info("[build-memory] admin live growth MB", liveGrowthMb.toFixed(1));
+      console.info(
+        `[build-memory] admin live growth ${liveGrowthMb.toFixed(1)} MB; peaks: 1k ${small.adminLivePeakMb.toFixed(1)} MB in ${small.adminLivePeakIn}, 10k ${large.adminLivePeakMb.toFixed(1)} MB in ${large.adminLivePeakIn}`,
+      );
       expect(large.adminLiveSamples).toBeGreaterThan(10);
       expect(liveGrowthMb * 1048576).toBeLessThan(
         (SIZES[1] - SIZES[0]) * MAX_ADMIN_LIVE_BYTES_PER_PAGE,
