@@ -48,7 +48,7 @@ export async function runInProcessAttempt(
   deps: AdminJobDeps,
   order: JobOrder,
   main: JobMain = JOB_MAINS[order.kind],
-): Promise<"completed" | "stopped" | "crashed"> {
+): Promise<"completed" | "stopped" | "deferred" | "crashed"> {
   const reporter = createJobReporter(order, inProcessReportTransport(deps, order));
   try {
     return await runJobAttempt(reporter, main, JOB_TIMING[order.kind].renewEverySeconds * 1000);

@@ -9,7 +9,14 @@
 
 import { describe, expect, it } from "bun:test";
 import { runOrder } from "../job-entry.js";
-import { createJobReporter, JobStoppedError, type ReportTransport } from "../job-reporter.js";
+import {
+  createJobReporter,
+  deferAttempt,
+  faultWatchingReporter,
+  JobStoppedError,
+  ReportError,
+  type ReportTransport,
+} from "../job-reporter.js";
 import type { JobOrder, ReportEnvelope } from "../protocol.js";
 import { runJobAttempt } from "../run-job.js";
 
@@ -92,6 +99,51 @@ describe("runJobAttempt", () => {
     ).rejects.toThrow("out of memory");
     await wait(30);
     expect(t.sent.filter((e) => e.action === "heartbeat")).toHaveLength(0);
+  });
+});
+
+describe("deferAttempt and faultWatchingReporter", () => {
+  it("a main that gives its attempt back ends as deferred, with the reason reported", async () => {
+    const t = recording();
+    const reporter = createJobReporter(ORDER, t);
+    const outcome = await runJobAttempt(
+      reporter,
+      (r) => deferAttempt(r, "the admin did not answer in time"),
+      60_000,
+    );
+    expect(outcome).toBe("deferred");
+    const defer = t.sent.find((e) => e.action === "defer");
+    expect(defer?.payload).toEqual({ reason: "the admin did not answer in time" });
+  });
+
+  it("knows the calls still in flight, and the first passing fault, also a swallowed one", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const t: ReportTransport = {
+      label: "test",
+      async send(envelope) {
+        if (envelope.action === "source") {
+          await gate;
+          return {
+            status: 503,
+            answer: { ok: false, error: { code: "unavailable", message: "starting" } },
+          };
+        }
+        return { status: 200, answer: { ok: true, value: {} } };
+      },
+    };
+    const watched = faultWatchingReporter(createJobReporter(ORDER, t, { retryBudgetMs: 0 }));
+    // A caller that stops waiting (a check that timed out) swallows the call.
+    void watched.reporter.call("source", {}).catch(() => undefined);
+    await watched.reporter.call("heartbeat");
+    expect(watched.inFlight()).toEqual(["source"]);
+    expect(watched.fault()).toBeNull();
+    release();
+    await watched.settled();
+    expect(watched.inFlight()).toEqual([]);
+    expect(watched.fault()).toBeInstanceOf(ReportError);
   });
 });
 

@@ -26,6 +26,8 @@ The quality audit after a Stage runs this way (#1359). The site-import crawl fol
 
 On another version than the admin that started it (an upgrade moved the admin first), the job sends `defer`: the lease ends at once, and the next tick starts the next attempt on the job's image as it is then.
 
+A job also gives its attempt back (`deferAttempt`) when the admin could not answer one of its reports in time: the reporter's retries ran out on a 429, a 5xx or an unreachable admin, or a findings check stopped waiting for a read that was still running (`faultWatchingReporter` sees both, also when a check swallowed the error, and the audit lets every read end before it decides). Nothing the delay spoiled is recorded; after the last attempt the work fails with the reason.
+
 ## The backstop
 
 A job that dies stops reporting. Its lease runs out: 15 minutes for the first report, 5 minutes after every later one (`JOB_TIMING`). The core task `core:reporting-jobs` runs on every tick and does two things per kind:

@@ -12,7 +12,7 @@
  * (scripts/no-background-timers.test.ts lists it as such).
  */
 
-import { type JobReporter, JobStoppedError } from "./job-reporter.js";
+import { AttemptDeferredError, type JobReporter, JobStoppedError } from "./job-reporter.js";
 
 /** What a kind's job does with its reporter. */
 export type JobMain = (reporter: JobReporter) => Promise<void>;
@@ -21,7 +21,8 @@ export type JobMain = (reporter: JobReporter) => Promise<void>;
  * Run `main` while renewing the lease every `renewEveryMs`.
  *
  * @returns `completed` when the main returned, `stopped` when the admin
- *   ended the attempt (a newer one replaced it, or the work is over).
+ *   ended the attempt (a newer one replaced it, or the work is over),
+ *   `deferred` when the main gave the attempt back (`deferAttempt`).
  * @throws whatever else the main threw: the attempt died without finishing,
  *   and the backstop starts the next one when its lease runs out.
  */
@@ -29,7 +30,7 @@ export async function runJobAttempt(
   reporter: JobReporter,
   main: JobMain,
   renewEveryMs: number,
-): Promise<"completed" | "stopped"> {
+): Promise<"completed" | "stopped" | "deferred"> {
   const renew = setInterval(() => {
     if (reporter.stopped) return;
     reporter.call("heartbeat").catch((e: unknown) => {
@@ -48,6 +49,7 @@ export async function runJobAttempt(
     return "completed";
   } catch (e) {
     if (e instanceof JobStoppedError) return "stopped";
+    if (e instanceof AttemptDeferredError) return "deferred";
     throw e;
   } finally {
     clearInterval(renew);

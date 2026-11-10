@@ -86,14 +86,21 @@ export interface JobReporter {
  * `inner`, remembering the first passing fault of any of its calls, also
  * of a call whose error its caller swallowed (a findings check turns a
  * failed read into a check error, the crawler a failed render into a
- * static fetch). The job then gives the attempt back instead of recording
- * what the fault spoiled.
+ * static fetch), and knowing which calls are still in flight: a call its
+ * caller stopped waiting for (a check that timed out) is still running.
+ * The job then gives the attempt back instead of recording what the fault,
+ * or the race with the admin, spoiled.
  */
 export function faultWatchingReporter(inner: JobReporter): {
   readonly reporter: JobReporter;
   fault(): unknown;
+  /** The actions of the calls not ended yet. */
+  inFlight(): string[];
+  /** Resolves once every call made so far has ended, either way. */
+  settled(): Promise<void>;
 } {
   let fault: unknown = null;
+  const running = new Map<Promise<unknown>, string>();
   return {
     reporter: {
       kind: inner.kind,
@@ -102,17 +109,41 @@ export function faultWatchingReporter(inner: JobReporter): {
       get stopped() {
         return inner.stopped;
       },
-      async call<T>(action: string, payload?: unknown): Promise<T> {
-        try {
-          return await inner.call<T>(action, payload);
-        } catch (e) {
+      call<T>(action: string, payload?: unknown): Promise<T> {
+        const call = inner.call<T>(action, payload).catch((e: unknown) => {
           if (fault === null && isPassingReportFault(e)) fault = e;
           throw e;
-        }
+        });
+        const tracked = call.finally(() => running.delete(tracked)).catch(() => undefined);
+        running.set(tracked, action);
+        return call;
       },
     },
     fault: () => fault,
+    inFlight: () => [...running.values()],
+    settled: async () => {
+      await Promise.all([...running.keys()]);
+    },
   };
+}
+
+/** The attempt gave itself back (`defer`): the next tick starts the next one. */
+export class AttemptDeferredError extends Error {
+  constructor(readonly reason: string) {
+    super(`the attempt was given back: ${reason}`);
+    this.name = "AttemptDeferredError";
+  }
+}
+
+/**
+ * Give the attempt back with `reason` and end it. When even the report
+ * fails, the lease runs out and the backstop starts the next attempt
+ * anyway; the reason is then in the job's log only.
+ */
+export async function deferAttempt(reporter: JobReporter, reason: string): Promise<never> {
+  const text = reason.slice(0, 1000) || "the attempt could not go on";
+  await reporter.call("defer", { reason: text }).catch(() => undefined);
+  throw new AttemptDeferredError(text);
 }
 
 export interface ReporterOptions {

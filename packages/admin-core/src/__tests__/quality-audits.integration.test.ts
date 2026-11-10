@@ -1408,4 +1408,89 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
       staged.stop(true);
     }
   });
+
+  // Codex on #1562: a check that times out before its read ends must not
+  // let the job record the read's trouble as the audit's result.
+  for (const [label, minutes, answer, reason] of [
+    ["fails after the check gave up", 410, "fail", "the admin is starting"],
+    [
+      "answers after the check gave up",
+      420,
+      "late",
+      "stopped waiting for the admin's answer to source",
+    ],
+  ] as const) {
+    it(`a read that ${label} gives the attempt back; nothing raced is recorded`, async () => {
+      const { deployRunId, auditRunId } = await queuedAudit(minutes);
+      const staged = stagedServer(deployRunId);
+      try {
+        const sent: string[] = [];
+        const slow = launcher(async (order) => {
+          // Every `source` read takes longer than the check waits for it.
+          const inner = inProcessReportTransport(ADMIN(), order);
+          const lagging: ReportTransport = {
+            label: "a slow admin",
+            async send(envelope) {
+              sent.push(envelope.action);
+              if (envelope.action !== "source") return inner.send(envelope);
+              await new Promise((r) => setTimeout(r, 300));
+              if (answer === "late") return inner.send(envelope);
+              return {
+                status: 503,
+                answer: {
+                  ok: false,
+                  error: { code: "unavailable", message: "the admin is starting" },
+                },
+              };
+            },
+          };
+          const reporter = createJobReporter(order, lagging, { retryBudgetMs: 0 });
+          expect(
+            await runJobAttempt(
+              reporter,
+              (r) =>
+                runQualityAuditJob(r, {
+                  checks: (rep) => {
+                    const checks = testCheckRegistry(allGood);
+                    checks.register(
+                      {
+                        id: "test-references",
+                        title: "Reads the reference issues (test)",
+                        scope: "site",
+                        // Gives up long before the read ends.
+                        timeoutMs: 50,
+                        run: async () => {
+                          await reportedCheckSources(rep).references.issues(10);
+                          return [];
+                        },
+                      },
+                      { kind: "core" },
+                    );
+                    return checks;
+                  },
+                  env: { provider: "", stagingBaseUrl: `http://127.0.0.1:${staged.port}` },
+                  runJob: allGood,
+                }),
+              60_000,
+            ),
+          ).toBe("deferred");
+        });
+        await startReportingJob(ADMIN(), "quality_audit", auditRunId, slow);
+        expect(sent).toContain("defer");
+        expect(sent).not.toContain("result");
+        expect((await status(auditRunId)).status).toBe("running");
+        const row = await withSql(
+          async (tx) =>
+            (await tx`
+              SELECT last_error, lease_until <= now() AS released FROM reporting_jobs
+              WHERE kind = 'quality_audit' AND subject_id = ${auditRunId}::uuid
+            `) as unknown as { last_error: string | null; released: boolean }[],
+        );
+        expect(row[0]?.released).toBe(true);
+        expect(row[0]?.last_error).toContain(reason);
+      } finally {
+        staged.stop(true);
+      }
+    });
+  }
 });
