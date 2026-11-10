@@ -84,6 +84,13 @@ export interface WizardOptions {
    * (run-mode.ts): `job` (default in Cloud Shell) or `local`.
    */
   runMode?: RunMode;
+  /**
+   * #1558 — `--version`: the release a new GCP install runs instead of the
+   * newest stable one (a release candidate needs a confirmation).
+   */
+  version?: string;
+  /** #1558 — `--accept-release-candidate`: confirms a release candidate without a prompt. */
+  acceptReleaseCandidate?: boolean;
 }
 
 export async function runWizard(opts: WizardOptions = {}): Promise<void> {
@@ -217,6 +224,11 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   for (const line of scrubInstallProgress(installId)) log.warn(yellow(line));
 
   // 4. Delegate to the provider-specific wizard.
+  // #1558 — the release to install, settled by the GCP wizard.
+  const release = {
+    ...(opts.version ? { version: opts.version } : {}),
+    ...(opts.acceptReleaseCandidate ? { acceptReleaseCandidate: true } : {}),
+  };
   switch (provider) {
     case "gcp":
       await runGcpWizard({
@@ -227,6 +239,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         nonInteractive: opts.nonInteractive ?? false,
         ...(opts.region ? { region: opts.region } : {}),
         runMode,
+        ...release,
       });
       break;
     case "gcp-firebase":
@@ -238,13 +251,14 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         nonInteractive: opts.nonInteractive ?? false,
         ...(opts.region ? { region: opts.region } : {}),
         runMode,
+        ...release,
       });
       break;
     case "self-hosted":
       // The self-hosted install runs on the Docker host itself, from the
       // directory that should hold `.caelo/` — not from this wizard.
       cancel(
-        `Run this on the Docker host, in the directory that should hold the install:\n  ${selfCommand("--provider", "self-hosted", "--domain", domain, "--owner-email", ownerEmail)}`,
+        `Run this on the Docker host, in the directory that should hold the install:\n  ${selfCommand("--provider", "self-hosted", "--domain", domain, "--owner-email", ownerEmail, ...(opts.version ? ["--version", opts.version] : []))}`,
       );
       process.exit(0);
       break;

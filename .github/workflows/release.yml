@@ -18,7 +18,9 @@
 # Pre-release tags (e.g. `v0.6.0-rc.1`) ship to npm under the matching
 # dist-tag (`rc`) and are flagged as pre-release in the GitHub UI; they
 # do NOT receive `latest` so `bunx @caelo-cms/provisioning` keeps
-# pulling the prior stable.
+# pulling the prior stable. Their images and release manifest also carry
+# the marker tag `rc-<version>`, by which the GCP registry's cleanup
+# policy deletes them after 14 days (#1558, RELEASING.md "Pre-releases").
 #
 # CLAUDE.md §11.C — operators consume pre-built artifacts:
 #   - npm: `bunx @caelo-cms/<pkg>`
@@ -271,6 +273,13 @@ jobs:
         run: |
           V="${REF#v}"
           echo "version=${V}" >> "${GITHUB_OUTPUT}"
+          # #1558 — a release candidate's manifest carries the marker tag
+          # rc-<version> next to its version, like its images: the AR
+          # mirror's cleanup policy deletes rc-* after 14 days.
+          case "${V}" in
+            *-*) echo "tags=${V},rc-${V}" >> "${GITHUB_OUTPUT}" ;;
+            *) echo "tags=${V}" >> "${GITHUB_OUTPUT}" ;;
+          esac
           # Upgraders accept only release.yml@refs/tags/v<version>. A run
           # dispatched from a branch with a `tag` input would sign under
           # the branch identity and every install would refuse it.
@@ -346,11 +355,12 @@ jobs:
 
       - name: Push the manifest as an OCI artifact (GHCR)
         env:
-          V: ${{ steps.ver.outputs.version }}
+          TAGS: ${{ steps.ver.outputs.tags }}
         run: |
           # The bundle travels as a LAYER of the artifact, not as an OCI
-          # referrer, so any registry copy keeps the signature.
-          oras push "${MANIFEST_IMAGE}:${V}" \
+          # referrer, so any registry copy keeps the signature. TAGS is the
+          # version, plus rc-<version> for a release candidate (#1558).
+          oras push "${MANIFEST_IMAGE}:${TAGS}" \
             --artifact-type application/vnd.caelo.release-manifest.v1 \
             release-manifest.json:application/vnd.caelo.release-manifest.v1+json \
             release-manifest.json.sigstore.json:application/vnd.dev.sigstore.bundle.v0.3+json
@@ -370,6 +380,7 @@ jobs:
         if: vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''
         env:
           V: ${{ steps.ver.outputs.version }}
+          TAGS: ${{ steps.ver.outputs.tags }}
           FLAGS: ${{ steps.digests.outputs.flags }}
           AR_REGION: ${{ vars.GCP_PUBLIC_REGISTRY_REGION || 'europe-west1' }}
           AR_PROJECT: ${{ vars.GCP_PUBLIC_REGISTRY_PROJECT || 'caelo-website' }}
@@ -378,8 +389,10 @@ jobs:
           set -euo pipefail
           gcloud auth print-access-token \
             | oras login "${AR_REGION}-docker.pkg.dev" -u oauth2accesstoken --password-stdin
+          # Every tag the GHCR copy carries: a release candidate's rc-<version>
+          # marker is what the AR cleanup policy deletes it by (#1558).
           oras copy -r "${MANIFEST_IMAGE}:${V}" \
-            "${AR_REGION}-docker.pkg.dev/${AR_PROJECT}/${AR_REPO}/release-manifest:${V}"
+            "${AR_REGION}-docker.pkg.dev/${AR_PROJECT}/${AR_REPO}/release-manifest:${TAGS}"
           # shellcheck disable=SC2086 # FLAGS is `--digest svc=sha256:…` words.
           bun scripts/release-manifest.ts verify --version "${V}" \
             --registry "${AR_REGION}-docker.pkg.dev" \

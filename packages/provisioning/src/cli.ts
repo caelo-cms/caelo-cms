@@ -78,6 +78,7 @@ import {
   selfHostedSiteUrl,
 } from "./compose.js";
 import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
+import { ACCEPT_RELEASE_CANDIDATE_FLAG } from "./release-candidate.js";
 import { selfCommand } from "./self-command.js";
 import { ensureSelfHostedDbTls, selfHostedDbTlsServerCertSha256 } from "./self-hosted-db-tls.js";
 import { ensureInternalSecret, writeInternalSecret } from "./self-hosted-internal-secret.js";
@@ -1303,6 +1304,8 @@ async function lifecycleUpgrade(): Promise<void> {
   //   bunx @caelo-cms/provisioning upgrade --channel rc
   // P21 ship 4 — `--skip-verify` opts out of cosign signature checks.
   //   Default verifies; skip only for forks/staging using unsigned images.
+  // #1558 — on Google Cloud a release candidate asks for confirmation;
+  //   `--accept-release-candidate` gives it where no prompt can ask.
   const version = arg("version");
   const channelArg = arg("channel");
   const channel: "stable" | "rc" | "beta" | undefined =
@@ -1335,6 +1338,9 @@ async function lifecycleUpgrade(): Promise<void> {
     ...(channel ? { channel } : {}),
     ...(skipVerify ? { skipVerify: true } : {}),
     ...(skipHealthCheck ? { skipHealthCheck: true } : {}),
+    ...(process.argv.includes(ACCEPT_RELEASE_CANDIDATE_FLAG)
+      ? { acceptReleaseCandidate: true }
+      : {}),
   });
 }
 async function lifecycleBackup(): Promise<void> {
@@ -1743,7 +1749,8 @@ async function waitForDomainMappingCert(target: {
  * §11.C — interactive wizard. Loaded lazily so the bare-CLI startup
  * cost stays small (clack + kleur are pulled in only when needed).
  * Reads `--provider`, `--domain`, `--owner-email`, `--project-id`, `--region`,
- * `--scheduler-interval-minutes` (#1140), `--non-interactive` and the run mode (`--local` / `--install-job`, default:
+ * `--scheduler-interval-minutes` (#1140), `--version` and
+ * `--accept-release-candidate` (#1558), `--non-interactive` and the run mode (`--local` / `--install-job`, default:
  * the install job in Cloud Shell, local elsewhere — run-mode.ts) from argv.
  */
 async function wizardCommand(): Promise<void> {
@@ -1760,6 +1767,12 @@ async function wizardCommand(): Promise<void> {
     console.error((e as Error).message);
     process.exit(2);
   }
+  const version = arg("version");
+  if (version === undefined && process.argv.includes("--version")) {
+    // A bare trailing `--version` would otherwise install `latest` silently.
+    console.error("--version needs a release version, e.g. --version 0.12.5-rc.1");
+    process.exit(2);
+  }
   await runWizard({
     ...(schedulerIntervalMinutes !== undefined ? { schedulerIntervalMinutes } : {}),
     runMode: chooseRunMode(process.argv, process.env),
@@ -1770,6 +1783,10 @@ async function wizardCommand(): Promise<void> {
     ownerEmail: arg("owner-email"),
     projectId: arg("project-id"),
     region: arg("region"),
+    ...(version !== undefined ? { version } : {}),
+    ...(process.argv.includes(ACCEPT_RELEASE_CANDIDATE_FLAG)
+      ? { acceptReleaseCandidate: true }
+      : {}),
   });
 }
 

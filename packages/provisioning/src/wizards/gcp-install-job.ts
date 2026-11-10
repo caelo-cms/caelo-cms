@@ -46,6 +46,7 @@ import {
   recordedImageDigests,
   recordImageDigests,
 } from "../install-state.js";
+import { installRecordFromManifest, launcherRecordsRelease } from "../install-version.js";
 import { issueOwnerSetup } from "../owner-setup-token.js";
 import { fetchVerifiedReleaseManifest } from "../release-manifest.js";
 import { selfCommand } from "../self-command.js";
@@ -294,6 +295,10 @@ async function showResult(meta: InstallMetadata): Promise<void> {
 /**
  * After the bootstrap (gcp.ts, job mode): pin the release, start the job —
  * or attach to / show the one already there — and follow it.
+ *
+ * @param opts.version - `--version` (#1558), already settled by the wizard:
+ *   the release the job runs and, on a new install, deploys. Default: the
+ *   release this CLI belongs to.
  */
 export async function launchInstallJob(opts: {
   installId: string;
@@ -301,6 +306,7 @@ export async function launchInstallJob(opts: {
   region: string;
   provisionerEmail: string;
   nonInteractive: boolean;
+  version?: string;
 }): Promise<void> {
   const { installId, projectId, region } = opts;
   const meta = readMetadata(installId);
@@ -329,17 +335,30 @@ export async function launchInstallJob(opts: {
     }
   }
 
-  // The release this CLI belongs to, verified against Caelo's release
-  // workflow identity: its manifest pins the ops image the job runs and,
-  // for a new install, the admin + gateway images it deploys.
-  const verified = await fetchVerifiedReleaseManifest(CAELO_VERSION);
+  // The release to install (`--version`, else the one this CLI belongs to),
+  // verified against Caelo's release workflow identity: its manifest pins
+  // the ops image the job runs and, for a new install, the admin, gateway
+  // and MCP-Auth-Proxy images it deploys.
+  const version = opts.version ?? CAELO_VERSION;
+  const verified = await fetchVerifiedReleaseManifest(version);
   if (!verified.ok) {
-    cancel(`Could not verify release v${CAELO_VERSION}: ${verified.error.message}`);
+    cancel(`Could not verify release v${version}: ${verified.error.message}`);
     process.exit(1);
   }
   const { digests } = verified.manifest;
-  if (!isStepDone(installId, `pulumi-up-${projectId}`) && !recordedImageDigests(meta)) {
-    recordImageDigests(installId, { admin: digests.admin, gateway: digests.gateway });
+  const record = installRecordFromManifest(verified.manifest);
+  if (!record.ok) {
+    cancel(record.error);
+    process.exit(1);
+  }
+  if (
+    launcherRecordsRelease({
+      deployed: isStepDone(installId, `pulumi-up-${projectId}`),
+      requested: opts.version !== undefined,
+      recorded: recordedImageDigests(meta),
+    })
+  ) {
+    recordImageDigests(installId, record.digests, record.version);
   }
 
   // One launcher at a time decides and starts: two terminals resuming the
@@ -409,7 +428,8 @@ export async function launchInstallJob(opts: {
         execution,
         state: "running",
         phase: "Starting the install job",
-        caeloVersion: CAELO_VERSION,
+        // The release the job runs (its own record says the same).
+        caeloVersion: version,
         startedAt: at,
         updatedAt: at,
       },

@@ -96,10 +96,10 @@ describe("parseBearerChallenge", () => {
 });
 
 describe("releaseTag", () => {
-  it("strips a leading v and maps channels", () => {
+  it("strips a leading v, and names `latest` without a version", () => {
     expect(releaseTag({ version: "v0.10.43" })).toBe("0.10.43");
     expect(releaseTag({ version: "0.10.43" })).toBe("0.10.43");
-    expect(releaseTag({ channel: "rc" })).toBe("rc");
+    expect(releaseTag({ version: "0.12.5-rc.1" })).toBe("0.12.5-rc.1");
     expect(releaseTag({})).toBe("latest");
   });
 });
