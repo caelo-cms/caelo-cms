@@ -13,7 +13,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { publishProjectionOnce, stagingPublicAdapter } from "@caelo-cms/admin-core";
-import { DatabaseAdapter } from "@caelo-cms/query-api";
+import { bootstrapDispatchOnly, resetPluginHost } from "@caelo-cms/plugin-host";
+import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import {
   GATEWAY_REFRESH_PATH,
   GATEWAY_REFRESH_TOKEN_HEADER,
@@ -393,82 +394,111 @@ describe("the admin's refresh ping on the staging gateway", () => {
     await publish();
   }
 
-  it("an off gateway makes no database read because of visitor traffic, however long it idles", async () => {
-    // E14 a, as the switched-off recheck of #1555 had changed it: the
-    // answer comes from memory, and nothing a visitor sends makes the
-    // gateway ask the database again.
-    const { counter, proxied } = throttledGateway();
+  it("answers 503 when it cannot learn the plugin registry, so the admin records a miss (Codex review of #1575)", async () => {
+    // This gateway's plugin host has not run yet: the registry is unknown,
+    // and a 200 would have recorded a refresh that did not happen.
+    const { proxied } = throttledGateway();
     const listening = await offAndLearned(proxied);
     try {
-      counter.reads = 0;
-      for (const idle of [0, 31_000, 3_600_000]) {
-        setSystemTime(new Date(Date.now() + idle));
-        for (const path of ["/about/", "/_caelo/staging-access?t=x", "/api/captcha/challenge"]) {
-          expect((await handleRequest(req("staging.example.com", path, visitor))).status).toBe(404);
+      expect((await ping(signIdTokenForTests(key, { aud: audience }))).status).toBe(503);
+    } finally {
+      await restore(listening);
+    }
+  });
+
+  describe("with the gateway's plugin host running", () => {
+    beforeAll(async () => {
+      // As the staging gateway boots (server.ts main): no plugin active here.
+      await bootstrapDispatchOnly({
+        infra: { adapter: gateway, registry: new OperationRegistry() },
+        pluginsRoot: "/dev/null/unused",
+        systemActorId: SYSTEM_ACTOR_ID,
+        testPlugins: [],
+      });
+    });
+    afterAll(() => {
+      resetPluginHost();
+    });
+
+    it("an off gateway makes no database read because of visitor traffic, however long it idles", async () => {
+      // E14 a, as the switched-off recheck of #1555 had changed it: the
+      // answer comes from memory, and nothing a visitor sends makes the
+      // gateway ask the database again.
+      const { counter, proxied } = throttledGateway();
+      const listening = await offAndLearned(proxied);
+      try {
+        counter.reads = 0;
+        for (const idle of [0, 31_000, 3_600_000]) {
+          setSystemTime(new Date(Date.now() + idle));
+          for (const path of ["/about/", "/_caelo/staging-access?t=x", "/api/captcha/challenge"]) {
+            expect((await handleRequest(req("staging.example.com", path, visitor))).status).toBe(
+              404,
+            );
+          }
         }
+        expect(counter.reads).toBe(0);
+      } finally {
+        await restore(listening);
       }
-      expect(counter.reads).toBe(0);
-    } finally {
-      await restore(listening);
-    }
-  });
+    });
 
-  it("a valid ping makes the next request see the new state, the notification still waiting", async () => {
-    const { held, proxied } = throttledGateway();
-    const listening = await offAndLearned(proxied);
-    try {
-      // The Owner sets a staging host; this idle instance does not hear it.
-      await asSystem(
-        ADMIN_URL,
-        (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
-      );
-      await publishProjectionOnce(adapter, staging, { declarations: new Map() });
-      const deadline = Date.now() + 5_000;
-      while (held.length === 0 && Date.now() < deadline) await Bun.sleep(20);
-      expect(held.length).toBeGreaterThan(0);
-      // From memory still the fixed 404, whatever the visitors send.
-      expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
-        404,
-      );
-      const r = await ping(signIdTokenForTests(key, { aud: audience }));
-      expect(r.status).toBe(200);
-      expect(await r.json()).toEqual({ ok: true });
-      // On now: the gate answers.
-      expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
-        403,
-      );
-    } finally {
-      await restore(listening);
-    }
-  });
-
-  it("a forged or missing ping gets the fixed 404, without a read", async () => {
-    const { counter, proxied } = throttledGateway();
-    const listening = await offAndLearned(proxied);
-    try {
-      counter.reads = 0;
-      const forger = idTokenTestKey(key.kid);
-      for (const r of [
-        await ping(null),
-        await ping("not-a-token"),
-        await ping(signIdTokenForTests(forger, { aud: audience })),
-        // The live gateway's token.
-        await ping(signIdTokenForTests(key, { aud: gatewayRefreshAudience("test", "live") })),
-        await ping(signIdTokenForTests(key, { aud: audience, email: "someone@example.com" })),
-        await ping(signIdTokenForTests(key, { aud: audience }), "GET"),
-      ]) {
-        expect(r.status).toBe(404);
-        const body = (await r.json()) as { error: Record<string, unknown> };
-        // The same answer as for a path that names nothing.
-        expect(Object.keys(body.error).sort()).toEqual(["kind", "requestId"]);
-        expect(body.error.kind).toBe("NotFound");
+    it("a valid ping makes the next request see the new state, the notification still waiting", async () => {
+      const { held, proxied } = throttledGateway();
+      const listening = await offAndLearned(proxied);
+      try {
+        // The Owner sets a staging host; this idle instance does not hear it.
+        await asSystem(
+          ADMIN_URL,
+          (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
+        );
+        await publishProjectionOnce(adapter, staging, { declarations: new Map() });
+        const deadline = Date.now() + 5_000;
+        while (held.length === 0 && Date.now() < deadline) await Bun.sleep(20);
+        expect(held.length).toBeGreaterThan(0);
+        // From memory still the fixed 404, whatever the visitors send.
+        expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
+          404,
+        );
+        const r = await ping(signIdTokenForTests(key, { aud: audience }));
+        expect(r.status).toBe(200);
+        expect(await r.json()).toEqual({ ok: true });
+        // On now: the gate answers.
+        expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
+          403,
+        );
+      } finally {
+        await restore(listening);
       }
-      expect(counter.reads).toBe(0);
-      // The admin's own ping reads.
-      expect((await ping(signIdTokenForTests(key, { aud: audience }))).status).toBe(200);
-      expect(counter.reads).toBeGreaterThan(0);
-    } finally {
-      await restore(listening);
-    }
+    });
+
+    it("a forged or missing ping gets the fixed 404, without a read", async () => {
+      const { counter, proxied } = throttledGateway();
+      const listening = await offAndLearned(proxied);
+      try {
+        counter.reads = 0;
+        const forger = idTokenTestKey(key.kid);
+        for (const r of [
+          await ping(null),
+          await ping("not-a-token"),
+          await ping(signIdTokenForTests(forger, { aud: audience })),
+          // The live gateway's token.
+          await ping(signIdTokenForTests(key, { aud: gatewayRefreshAudience("test", "live") })),
+          await ping(signIdTokenForTests(key, { aud: audience, email: "someone@example.com" })),
+          await ping(signIdTokenForTests(key, { aud: audience }), "GET"),
+        ]) {
+          expect(r.status).toBe(404);
+          const body = (await r.json()) as { error: Record<string, unknown> };
+          // The same answer as for a path that names nothing.
+          expect(Object.keys(body.error).sort()).toEqual(["kind", "requestId"]);
+          expect(body.error.kind).toBe("NotFound");
+        }
+        expect(counter.reads).toBe(0);
+        // The admin's own ping reads.
+        expect((await ping(signIdTokenForTests(key, { aud: audience }))).status).toBe(200);
+        expect(counter.reads).toBeGreaterThan(0);
+      } finally {
+        await restore(listening);
+      }
+    });
   });
 });

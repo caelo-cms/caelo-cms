@@ -133,4 +133,31 @@ describe("Google's ID-token keys", () => {
     expect(await unknown(signIdTokenForTests(key, { aud: live }))).toEqual({ ok: true });
     expect(fetches).toBe(3);
   });
+
+  it("are not fetched again within a minute of a failed fetch (Codex review of #1575)", async () => {
+    // Google's key endpoint is down on a cold instance: junk with a JWT
+    // shape must not cause one outbound fetch per request.
+    let clock = 1_000_000;
+    let fetches = 0;
+    let down = true;
+    const keys = googleIdTokenKeys(
+      async () => {
+        fetches += 1;
+        if (down) throw new Error("certs endpoint unavailable");
+        return { [key.kid]: key.publicPem };
+      },
+      () => clock,
+    );
+    const check = createRefreshPingVerifier({ account: TEST_ADMIN_ACCOUNT, audience: live, keys });
+    const token = signIdTokenForTests(key, { aud: live });
+    for (let i = 0; i < 30; i += 1) {
+      clock += 1_000;
+      expect((await check(token)).ok).toBe(false);
+    }
+    expect(fetches).toBe(1);
+    down = false;
+    clock += FORCED_KEY_REFRESH_MIN_INTERVAL_MS;
+    expect(await check(token)).toEqual({ ok: true });
+    expect(fetches).toBe(2);
+  });
 });

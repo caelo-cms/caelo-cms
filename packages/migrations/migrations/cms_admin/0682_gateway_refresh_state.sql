@@ -34,7 +34,7 @@ ALTER TABLE gateway_refresh_state FORCE ROW LEVEL SECURITY;
 -- and the AI read them (gateway.get_settings).
 DROP POLICY IF EXISTS gateway_refresh_state_read ON gateway_refresh_state;
 CREATE POLICY gateway_refresh_state_read ON gateway_refresh_state FOR SELECT
-  USING (current_setting('caelo.actor_kind', true) IN ('human', 'ai', 'system'));
+  USING (caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai', 'system']));
 DROP POLICY IF EXISTS gateway_refresh_state_system ON gateway_refresh_state;
 CREATE POLICY gateway_refresh_state_system ON gateway_refresh_state
   USING (caelo_setting_is('caelo.actor_kind', 'system'))

@@ -416,20 +416,31 @@ const REFRESH_ROUNDS = 2;
  * The notification of the same publish may be handled while this reads (it
  * arrived first and waited in the socket): it drops what the read was about
  * to cache, and the refresh reads once more.
+ *
+ * @throws when it could not learn that state — the registry sync failed or
+ *   an active plugin could not be attached (the plugin host logs and
+ *   swallows both), or the staging site could not be read — so the ping
+ *   answers 503 and the admin records a miss, never a success.
  */
 function refreshPublishedState(adapter: DatabaseAdapter): Promise<void> {
   if (refreshing) return refreshing;
   const run = (async () => {
     // Nothing is cached while the LISTEN is down: every request reads through.
     if (!publishedCacheUsable()) return;
+    let missing: string | null = null;
     for (let round = 0; round < REFRESH_ROUNDS; round += 1) {
       dropPublishedState();
       await learnVisitorApiOff(adapter);
       if (stagingSite) await loadStagingSiteState(adapter);
-      const learned =
-        visitorApiOff !== null && (stagingSite === null || cachedStagingState !== null);
-      if (learned) return;
+      missing =
+        visitorApiOff === null
+          ? "the plugin registry (this gateway's plugin-host log says why)"
+          : stagingSite && cachedStagingState === null
+            ? "the staging site"
+            : null;
+      if (missing === null) return;
     }
+    throw new Error(`could not learn ${missing} in ${REFRESH_ROUNDS} reads`);
   })().finally(() => {
     if (refreshing === run) refreshing = null;
   });

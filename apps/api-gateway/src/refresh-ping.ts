@@ -71,7 +71,10 @@ export type RefreshPingVerifier = (token: string | null) => Promise<RefreshPingV
 /**
  * Google's ID-token keys through google-auth-library, cached for an hour.
  * A forced refresh refetches at once, but at most once per
- * {@link FORCED_KEY_REFRESH_MIN_INTERVAL_MS}.
+ * {@link FORCED_KEY_REFRESH_MIN_INTERVAL_MS}. A fetch that failed is not
+ * tried again within that interval either, cache or none: while Google's
+ * key endpoint is down, junk on the ping path must not cause one outbound
+ * fetch per request (the path is checked before any rate limit).
  *
  * @param now - milliseconds since the epoch (tests)
  */
@@ -82,12 +85,18 @@ export function googleIdTokenKeys(
 ): GoogleIdTokenKeyProvider {
   let cached: { keys: GoogleIdTokenKeys; fetchedAt: number } | null = null;
   let lastForcedAt = Number.NEGATIVE_INFINITY;
+  let lastFailure: { at: number; error: unknown } | null = null;
   let fetching: Promise<GoogleIdTokenKeys> | null = null;
   const refetch = (): Promise<GoogleIdTokenKeys> => {
     fetching ??= fetchKeys()
       .then((keys) => {
         cached = { keys, fetchedAt: now() };
+        lastFailure = null;
         return keys;
+      })
+      .catch((error: unknown) => {
+        lastFailure = { at: now(), error };
+        throw error;
       })
       .finally(() => {
         fetching = null;
@@ -96,11 +105,17 @@ export function googleIdTokenKeys(
   };
   return async ({ forceRefresh }) => {
     const t = now();
-    if (cached && t - cached.fetchedAt < KEY_CACHE_MS) {
+    const fresh = cached !== null && t - cached.fetchedAt < KEY_CACHE_MS;
+    if (cached && fresh) {
       if (!forceRefresh || t - lastForcedAt < FORCED_KEY_REFRESH_MIN_INTERVAL_MS) {
         return cached.keys;
       }
       lastForcedAt = t;
+    }
+    if (lastFailure && t - lastFailure.at < FORCED_KEY_REFRESH_MIN_INTERVAL_MS) {
+      // The last fetch failed a moment ago: no new one yet.
+      if (cached && fresh) return cached.keys;
+      throw lastFailure.error;
     }
     return refetch();
   };
