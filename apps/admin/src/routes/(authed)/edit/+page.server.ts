@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError, stageChatSessions } from "@caelo-cms/admin-core";
+import { carryStage, describeError, executeBuild } from "@caelo-cms/admin-core";
 import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -803,12 +803,19 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const r = await execute(registry, adapter, locals.ctx, "quality_audits.publish_anyway", {
-      auditRunId: String(form.get("auditRunId") ?? ""),
-      reason: String(form.get("reason") ?? ""),
-    });
+    // #1574 — inside the request a carrier job holds open, so a closed tab
+    // does not stop it mid-way.
+    const r = await executeBuild(
+      { adapter, registry },
+      locals.ctx,
+      "quality_audits.publish_anyway",
+      {
+        auditRunId: String(form.get("auditRunId") ?? ""),
+        reason: String(form.get("reason") ?? ""),
+      },
+    );
     if (!r.ok) return fail(400, { error: describeError(r.error) });
-    return { published: true };
+    return { published: true, ...(r.warning ? { carrierWarning: r.warning } : {}) };
   },
   stageAndDeployStaging: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");
@@ -822,8 +829,10 @@ export const actions: Actions = {
     // The whole flow — #553 classification before the merge, merge
     // (deferConsume), staging build, finalize only on build success, audit
     // enqueue — lives in admin-core's stageChatSessions, shared with the
-    // Open changes overview's multi-chat Stage (issue #620).
-    const staged = await stageChatSessions({ adapter, registry }, locals.ctx, [chatSessionId]);
+    // Open changes overview's multi-chat Stage (issue #620). #1574 — it runs
+    // inside the request a carrier job holds open: a closed tab does not
+    // stop it, and this request waits for it as before.
+    const staged = await carryStage({ adapter, registry }, locals.ctx, [chatSessionId]);
     if (!staged.ok) return fail(500, { error: staged.error.message });
     const summary = staged.value;
     const {
@@ -855,6 +864,8 @@ export const actions: Actions = {
         // Issue #620 — other chats' changes to the same things rode along.
         alsoIncludes: summary.alsoIncludes.map((a) => a.title),
       },
+      // #1574 — built without the build carrier (the layout's toast says so).
+      ...(staged.warning ? { carrierWarning: staged.warning } : {}),
     };
   },
   /**
@@ -957,10 +968,16 @@ export const actions: Actions = {
       }
     }
 
-    const productionDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
-      targetName: "production",
-      ...(changedPageIds && changedPageIds.length > 0 ? { changedPageIds } : {}),
-    });
+    // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
+    const productionDeploy = await executeBuild(
+      { adapter, registry },
+      locals.ctx,
+      "deploy.trigger",
+      {
+        targetName: "production",
+        ...(changedPageIds && changedPageIds.length > 0 ? { changedPageIds } : {}),
+      },
+    );
     if (!productionDeploy.ok) {
       // run #10 D6 — stderr breadcrumb on the publish path (same
       // rationale as stageAndDeployStaging/#267): the inline alert and
@@ -991,6 +1008,7 @@ export const actions: Actions = {
         kinds: [...checked],
         ...(changedPageIds ? { changedPageCount: changedPageIds.length } : {}),
       },
+      ...(productionDeploy.warning ? { carrierWarning: productionDeploy.warning } : {}),
     };
   },
   /**
@@ -1010,9 +1028,25 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const promote = await execute(registry, adapter, locals.ctx, "deploy.promote", {
+    // #1550 — the redirect changes the Publish live confirmation listed as
+    // going live: exactly these go live (a change saved since waits).
+    // Absent when the confirmation listed none; then the click decides.
+    const listed = form.get("redirectChanges");
+    let redirectChanges: { id: string; revision: number }[] | undefined;
+    if (typeof listed === "string" && listed !== "") {
+      try {
+        redirectChanges = JSON.parse(listed) as { id: string; revision: number }[];
+      } catch {
+        return fail(400, {
+          error: "The confirmed redirect list is not valid; open Publish live again.",
+        });
+      }
+    }
+    // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
+    const promote = await executeBuild({ adapter, registry }, locals.ctx, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
+      ...(redirectChanges ? { redirectChanges } : {}),
     });
     if (!promote.ok) {
       // run #10 D6 — stderr breadcrumb: "Publish live" failures must be
@@ -1026,15 +1060,24 @@ export const actions: Actions = {
       toRunId: string;
       buildId: string;
       securityHeadersNote?: string;
+      redirects: { wentLive: number; waiting: number; heldBack: string | null };
     };
+    // #1550 — the operator learns when the listed redirect changes stayed
+    // Staged because one of them moved on during the Publish live.
+    const heldBack = v.redirects.heldBack
+      ? `The redirect changes stayed Staged: ${v.redirects.heldBack}. The next Publish live plans them again.`
+      : undefined;
+    const notice = [v.securityHeadersNote, heldBack].filter((n): n is string => !!n).join(" ");
     return {
       published: {
         targetName: "production",
         fromRunId: v.fromRunId,
         toRunId: v.toRunId,
         buildId: v.buildId,
-        notice: v.securityHeadersNote,
+        notice: notice || undefined,
+        redirects: v.redirects,
       },
+      ...(promote.warning ? { carrierWarning: promote.warning } : {}),
     };
   },
 };

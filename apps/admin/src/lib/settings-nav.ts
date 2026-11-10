@@ -609,6 +609,13 @@ export const SETTINGS_SUB_PAGES: readonly SettingsSubPage[] = [
   { route: "/settings/layouts/[id]", parent: "/settings/layouts", permission: "roles.manage" },
   { route: "/settings/import/[runId]", parent: "/settings/import", permission: "settings.write" },
   { route: "/settings/audit/[requestId]", parent: SETTINGS_ROOT, permission: "settings.read" },
+  // #1550 — the queue URL the AI's Go live now card posts to; a visit lands
+  // on Settings → Redirects, which lists the queue.
+  {
+    route: "/settings/redirects/pending",
+    parent: "/settings/redirects",
+    permission: "content.read",
+  },
 ];
 
 /** Permission needed for the overview's "Look up a request" form. */

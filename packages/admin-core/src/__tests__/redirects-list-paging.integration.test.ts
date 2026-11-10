@@ -52,6 +52,7 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`${PFX}%`}`;
       await tx`DELETE FROM redirects WHERE from_path LIKE ${`${PFX}%`}`;
     });
   } finally {
@@ -143,7 +144,7 @@ describe("redirects.list — keyset paging (#1538)", () => {
       expect(r.ok).toBe(false);
       if (r.ok) continue;
       expect(JSON.stringify(r.error)).toContain('"path":["cursor"]');
-      expect(JSON.stringify(r.error)).toContain("same filter and statusCode");
+      expect(JSON.stringify(r.error)).toContain("same filter, statusCode and state");
     }
   });
 });

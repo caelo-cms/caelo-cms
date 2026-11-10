@@ -115,6 +115,9 @@ describe("adminEnvContract", () => {
       // #1360 — the same pair for the site-import crawler.
       CAELO_IMPORT_CRAWL_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-import",
       CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT: "caelo-production-import@acme.iam.gserviceaccount.com",
+      // #1574 — and for the build carrier.
+      CAELO_BUILD_CARRIER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-build",
+      CAELO_BUILD_CARRIER_SERVICE_ACCOUNT: "caelo-production-build@acme.iam.gserviceaccount.com",
       CAELO_STATIC_BUCKET: "acme-caelo-production-static",
       CAELO_STAGING_BUCKET: "acme-caelo-production-staging",
       // #1330 — every provider serves staging at its own host now.
@@ -170,6 +173,9 @@ describe("adminEnvContract", () => {
       // #1360 — the same pair for the site-import crawler.
       CAELO_IMPORT_CRAWL_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-import",
       CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT: "caelo-production-import@acme.iam.gserviceaccount.com",
+      // #1574 — and for the build carrier.
+      CAELO_BUILD_CARRIER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-build",
+      CAELO_BUILD_CARRIER_SERVICE_ACCOUNT: "caelo-production-build@acme.iam.gserviceaccount.com",
       CAELO_FIREBASE_SITE: "caelo-production-site-abc123",
       CAELO_GATEWAY_SERVICE: "caelo-production-gateway-1a2b3c4",
       CAELO_GATEWAY_REGION: "europe-west1",
@@ -230,6 +236,9 @@ describe("gatewayEnvContract", () => {
       CAELO_TRUSTED_PROXY_HOPS: "2",
       PUBLIC_DATABASE_URL:
         "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      // The only account whose refresh pings it takes: the admin's runtime
+      // account. An identity, nothing secret.
+      CAELO_GATEWAY_REFRESH_ACCOUNT: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
       // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328); no
       // staging gate key: the staging gateway's, through its projection (#1330).
@@ -260,6 +269,7 @@ describe("gatewayEnvContract", () => {
         PUBLIC_DATABASE_URL:
           "postgresql://public_staging_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
         CAELO_STAGING_STORAGE: "gs://acme-caelo-production-staging",
+        CAELO_GATEWAY_REFRESH_ACCOUNT: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
         PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-staging-role-password:latest",
       });
     }

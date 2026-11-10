@@ -18,6 +18,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { resolvePageRef } from "../ai/tools/_page-ref.js";
 import { registerAdminOps } from "../register.js";
+import { ruleView } from "./fixtures/redirects.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -69,6 +70,7 @@ function errMsg(r: { ok: boolean; error?: unknown }): string {
 
 async function wipe(): Promise<void> {
   await q(async (tx) => {
+    await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`%${PFX}-%`} OR to_path LIKE ${`%${PFX}-%`}`;
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}-%`} OR to_path LIKE ${`%${PFX}-%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}-%`})`;
     await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}-%`}`;
@@ -136,10 +138,11 @@ describe("page identity is the id; the URL path is unique", () => {
     });
     expect(moved.ok).toBe(true);
     expect(await pathOf(xb)).toBe(`/${PFX}-a/${PFX}-x2`);
-    const red = (await q(
-      (tx) => tx`SELECT to_path FROM redirects WHERE from_path = ${`/${PFX}-b/${PFX}-x`}`,
-    )) as unknown as { to_path: string }[];
-    expect(red[0]?.to_path).toBe(`/${PFX}-a/${PFX}-x2`);
+    // #1550 — the move's 301 is a Staged change until Publish live ships it.
+    const red = await ruleView(ADMIN_URL!, `/${PFX}-b/${PFX}-x`);
+    expect(red.find((r) => r.fromPath === `/${PFX}-b/${PFX}-x`)?.toPath).toBe(
+      `/${PFX}-a/${PFX}-x2`,
+    );
   });
 
   it("create and duplicate onto a taken path are refused", async () => {

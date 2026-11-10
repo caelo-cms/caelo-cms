@@ -178,6 +178,55 @@ export function attachGatedExecute(
           };
         }
       }
+      if (gated.afterApply === "redirects-go-live-now") {
+        const saved = appliedValue as {
+          goLive?: string;
+          changes?: { fromPath: string; id: string; revision: number }[];
+        };
+        if (saved.goLive === "now" && saved.changes && saved.changes.length > 0) {
+          // #1550 — the approver asked for these live now: Go live now as
+          // the approver, after the apply committed (it reads the live
+          // build's files and pushes to the hosting). A refusal leaves the
+          // rules Staged and says why.
+          // Bound to the changes the approval saved: a save in between is not
+          // the change that was approved, and a rule already live as it is
+          // has no change (its path would refuse the whole batch).
+          const live = await execute(registry, adapter, ownerCtxLive, "redirects.go_live_now", {
+            fromPaths: saved.changes.map((c) => c.fromPath),
+            changes: saved.changes.map(({ id, revision }) => ({ id, revision })),
+          });
+          // A failed push is retried, a queued one waits for the release
+          // holding the live site: either way the hosting lacks it for now.
+          const notOnHosting = live.ok
+            ? (live.value as { targets: { targetName: string; status: string }[] }).targets
+                .filter((t) => t.status === "failed" || t.status === "queued")
+                .map(
+                  (t) =>
+                    `${t.targetName} (${t.status === "failed" ? "push failed, retried" : "push queued behind a running release"})`,
+                )
+            : [];
+          return {
+            ok: true,
+            status: APPLIED_STATUS,
+            value: {
+              ...(appliedValue as Record<string, unknown>),
+              ...(live.ok
+                ? {
+                    wentLiveNow: true,
+                    ...(notOnHosting.length > 0
+                      ? {
+                          warning: `Live in Caelo, but not on the hosting yet: ${notOnHosting.join(", ")}. Visitors keep getting the previous rule until it lands. Do not say it is live on the site yet.`,
+                        }
+                      : {}),
+                  }
+                : {
+                    wentLiveNow: false,
+                    warning: `Saved Staged, but it could not go live now: ${describePersistError(live.error)} It goes live with the next Publish live.`,
+                  }),
+            },
+          };
+        }
+      }
       if (gated.afterApply === "sync-operator-access") {
         return {
           ok: true,

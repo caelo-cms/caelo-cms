@@ -3,8 +3,9 @@
 /**
  * The Cloud Run jobs that run the admin image: the quality-audit job (#875,
  * admin-core quality/audit-task.ts), the capture job (#1217, admin-core
- * capture/capture-task.ts), the quality-audit runner (#1359) and the
- * site-import crawler (#1360, both admin-core reporting-jobs/job-entry.ts).
+ * capture/capture-task.ts), the quality-audit runner (#1359), the
+ * site-import crawler (#1360) and the build carrier (#1574, all three
+ * admin-core reporting-jobs/job-entry.ts).
  * Each refuses an order from an admin on another version, so every app-roll
  * moves them onto the admin's new image right after the services rolled,
  * and a rollback moves them back.
@@ -18,6 +19,7 @@ import type { GcloudRunner } from "../gcloud-retry.js";
 import {
   auditJobName,
   auditRunnerJobName,
+  buildCarrierJobName,
   captureJobName,
   importCrawlJobName,
 } from "../gcp-names.js";
@@ -55,6 +57,11 @@ export function adminImageJobs(env: string): readonly AdminImageJob[] {
       name: importCrawlJobName(env),
       label: "site-import crawler",
       lagging: "site imports wait for it and fail after their last attempt",
+    },
+    {
+      name: buildCarrierJobName(env),
+      label: "build carrier",
+      lagging: "an agent's Stage and the Stage and Publish live buttons fail (Stage again)",
     },
   ];
 }

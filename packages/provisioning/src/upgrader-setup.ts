@@ -81,6 +81,7 @@ import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud
 import {
   auditRunnerServiceAccountEmail,
   auditServiceAccountEmail,
+  buildCarrierServiceAccountEmail,
   captureServiceAccountEmail,
   gatewayServiceAccountEmail,
   importCrawlServiceAccountEmail,
@@ -398,6 +399,11 @@ export async function ensureUpgraderJob(
       account: importCrawlServiceAccountEmail(projectId, env),
       role: "roles/iam.serviceAccountUser",
       why: "the app-roll moves the site-import crawler, which runs as it, onto the new image",
+    },
+    {
+      account: buildCarrierServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "the app-roll moves the build carrier, which runs as it, onto the new image",
     },
     {
       account: mcpIapServiceAccountEmail(projectId),

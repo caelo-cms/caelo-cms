@@ -92,6 +92,8 @@ describe("ensureUpgraderJob", () => {
         "iam service-accounts add-iam-policy-binding caelo-production-audit-run@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         // #1360 — and the site-import crawler.
         "iam service-accounts add-iam-policy-binding caelo-production-import@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
+        // #1574 — and the build carrier.
+        "iam service-accounts add-iam-policy-binding caelo-production-build@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → roles/storage.objectUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → projects/acme/roles/caeloUpgraderOpsList",
       ].sort(),

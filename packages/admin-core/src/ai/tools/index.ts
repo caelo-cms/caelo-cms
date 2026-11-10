@@ -270,6 +270,7 @@ import {
 import { submitPluginTool } from "./submit-plugin.js";
 import { submitResultTool } from "./submit-result.js";
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
+import { updateRedirectChangesTool } from "./update-redirect-changes.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
 
 let processRegistry: ToolRegistry | null = null;
@@ -542,6 +543,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(screenshotPageTool);
   registry.register(bulkCreateRedirectsTool);
   registry.register(bulkDeleteRedirectsTool);
+  // #1550 — Draft / Staged / discard / Go live now of pending redirect changes.
+  registry.register(updateRedirectChangesTool);
   registry.register(bulkOptimizeSeoTool);
   // v0.2.33 — bulk variants for pages + modules (CLAUDE.md §11
   // "every routine domain ships a bulk variant"). delete_many for the

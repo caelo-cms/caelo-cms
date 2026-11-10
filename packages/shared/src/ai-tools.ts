@@ -891,6 +891,14 @@ export type AutofillPageSeoToolInput = z.infer<typeof autofillPageSeoToolInput>;
  * in a single turn. The handlers run inside one transaction so the
  * batch is all-or-nothing.
  */
+/**
+ * #1550 — when a redirect the AI saves goes live: `next_publish` (Staged:
+ * staging serves it at once, the live site with the next Publish live),
+ * `later` (a Draft, served nowhere), `now` (Staged, plus a Go live now
+ * proposal the operator approves on its card; live once approved).
+ */
+export const redirectGoLiveToolSchema = z.enum(["next_publish", "later", "now"]);
+
 export const findRedirectsToolInput = z
   .object({
     query: z.string().max(500).optional(),
@@ -925,6 +933,8 @@ export const bulkCreateRedirectsToolInput = z
       .min(1)
       .max(500),
     upsert: z.boolean().default(false),
+    /** #1550 — when the saved rules go live (see {@link redirectGoLiveToolSchema}). */
+    goLive: redirectGoLiveToolSchema.default("next_publish"),
   })
   .strict();
 export type BulkCreateRedirectsToolInput = z.infer<typeof bulkCreateRedirectsToolInput>;
@@ -950,6 +960,8 @@ export const bulkDeleteRedirectsToolInput = z
     redirectIds: z.array(z.string().uuid()).max(500).optional(),
     fromPaths: z.array(z.string().min(1).max(500)).max(500).optional(),
     matches: z.string().min(1).max(500).optional(),
+    /** #1550 — when the removals go live (see {@link redirectGoLiveToolSchema}). */
+    goLive: redirectGoLiveToolSchema.default("next_publish"),
   })
   .strict();
 export type BulkDeleteRedirectsToolInput = z.infer<typeof bulkDeleteRedirectsToolInput>;

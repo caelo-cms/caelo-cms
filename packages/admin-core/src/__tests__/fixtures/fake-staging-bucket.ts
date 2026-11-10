@@ -19,8 +19,14 @@ export interface FakeStagingBucket {
 /**
  * A fresh, empty fake staging bucket. `keepBodies: false` stores only
  * manifests (a memory test must not count the fake's own copies).
+ * `onSave` sees each body `save` is handed, before the fake copies it.
  */
-export function fakeStagingBucket(opts: { keepBodies?: boolean } = {}): FakeStagingBucket {
+export function fakeStagingBucket(
+  opts: {
+    keepBodies?: boolean;
+    onSave?: (name: string, body: string | Buffer | Uint8Array) => void;
+  } = {},
+): FakeStagingBucket {
   const keep = (name: string) => opts.keepBodies !== false || name.endsWith(".manifest.json");
   const objects = new Map<string, Buffer>();
   const generations = new Map<string, number>();
@@ -53,6 +59,7 @@ export function fakeStagingBucket(opts: { keepBodies?: boolean } = {}): FakeStag
         return [{ generation: String(generations.get(name)) }];
       },
       async save(body: string | Buffer | Uint8Array) {
+        opts.onSave?.(name, body);
         writes.push(name);
         stored(name, keep(name) ? Buffer.from(body) : Buffer.alloc(0));
         return [{}];

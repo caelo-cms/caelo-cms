@@ -142,4 +142,28 @@ describe("httpReportTransport", () => {
     expect(r.answer.ok).toBe(false);
     if (!r.answer.ok) expect(r.answer.error.code).toBe("bad-answer");
   });
+
+  it("#1574: reads a long report's kept-alive stream, a refusal's status from inside the answer", async () => {
+    const streamed = (body: string) =>
+      httpReportTransport({
+        kind: "build",
+        adminUrl: "https://admin.example.com",
+        token: "tok",
+        credential: async () => "jwt",
+        fetch: (async () => new Response(body, { status: 200 })) as unknown as typeof fetch,
+      });
+    const envelope = {
+      subjectId: "00000000-0000-4000-8000-000000001574",
+      attempt: 1,
+      action: "run",
+    };
+    const done = await streamed('\n\n\n{"ok":true,"value":{"outcome":"succeeded"}}').send(envelope);
+    expect(done).toEqual({ status: 200, answer: { ok: true, value: { outcome: "succeeded" } } });
+    const refused = await streamed(
+      '\n\n{"ok":false,"error":{"code":"failed","message":"boom"},"status":500}',
+    ).send(envelope);
+    // A 500 the job retries as a passing fault, though the stream said 200.
+    expect(refused.status).toBe(500);
+    expect(refused.answer.ok).toBe(false);
+  });
 });

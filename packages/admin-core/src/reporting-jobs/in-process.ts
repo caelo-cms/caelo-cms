@@ -19,6 +19,7 @@ import { createLines } from "./in-line.js";
 import { JOB_MAINS } from "./job-mains.js";
 import { createJobReporter, type ReportTransport } from "./job-reporter.js";
 import type { AdminJobDeps } from "./kind.js";
+import { reportingJobKind } from "./kinds.js";
 import type { JobLauncher } from "./launcher.js";
 import { JOB_TIMING, type JobOrder, type ReportingJobKind } from "./protocol.js";
 import { type JobMain, runJobAttempt } from "./run-job.js";
@@ -62,21 +63,26 @@ export async function runInProcessAttempt(
 }
 
 /**
- * One attempt of a kind at a time in this process (in-line.ts says why).
- * An attempt in line keeps renewing its lease (its heartbeat already runs),
- * so waiting never reads as a dead job.
+ * One attempt of an `in-line` kind at a time in this process (in-line.ts
+ * says why). An attempt in line keeps renewing its lease (its heartbeat
+ * already runs), so waiting never reads as a dead job.
  */
 const inLine = createLines<ReportingJobKind>();
 
-/** A launcher that runs each attempt in this process, in line, without waiting for it. */
+/**
+ * A launcher that runs each attempt in this process without waiting for
+ * it: in line for an `in-line` kind, at once for an `at-once` kind (a
+ * build's carrier: two builds do not wait on each other here either).
+ */
 export function inProcessJobLauncher(deps: AdminJobDeps, kind: ReportingJobKind): JobLauncher {
+  const oneAtATime = reportingJobKind(kind).inProcess === "in-line";
   return {
     label: "the admin process",
     async launch(order) {
       if (order.kind !== kind)
         throw new Error(`a ${kind} launcher was handed a ${order.kind} order`);
       void runInProcessAttempt(deps, order, (reporter) =>
-        inLine(kind, () => JOB_MAINS[kind](reporter)),
+        oneAtATime ? inLine(kind, () => JOB_MAINS[kind](reporter)) : JOB_MAINS[kind](reporter),
       );
       return `in-process:${process.env.K_REVISION ?? hostname()}/${process.pid}`;
     },

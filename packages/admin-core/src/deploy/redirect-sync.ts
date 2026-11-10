@@ -1,32 +1,36 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1157 — redirects go live when they are saved, without a build.
+ * #1157 — the live redirects reach the hosting provider without a build.
  *
  * Redirects are not page content: they are answered by the hosting
  * provider in front of the static files (Firebase Hosting config, the GCP
- * URL map, the Caddy snippet). So a redirects write no longer waits for the
- * next build — and since #1154 there is no automatic build — but pushes the
- * table to the provider right after it commits.
+ * URL map, the Caddy snippet). So a change of the LIVE redirects (the
+ * `redirects` table) is pushed to the provider of every production target
+ * right after it commits, without a build.
+ *
+ * #1550 — and only a release changes the live redirects: Publish live, an
+ * Owner's production build, Go live now and a rollback (`redirects/
+ * release.ts`). A save is a pending change (Draft or Staged) and pushes
+ * nothing; staging serves the staging view from its own gateway
+ * (cms_public_staging), so only production targets are synced here.
  *
  * #1254 — and nothing of the sync sits on the write path:
  *
  *  1. A write that changes a `redirects` row leaves one insert-only row in
  *     `redirect_changes` (row triggers, migration 0457), keyed by its own
- *     transaction id. A write that changes no row (a page move that creates
- *     no redirect) leaves nothing. No site-wide row is written or locked in
- *     the writer's transaction, so parallel page writes never queue on it.
- *     {@link requestRedirectSync} only registers a post-commit effect.
- *  2. After the commit, that effect runs `redirects.sync_provider`, which
- *     calls {@link syncRedirects}, coalesced per process (one run, one
- *     queued behind it, see redirect-sync-worker.ts). A sync is three
- *     steps, none of which holds a transaction across the network:
+ *     transaction id. No site-wide row is written or locked in the
+ *     writer's transaction, so parallel writes never queue on it.
+ *  2. After the commit, the release runs `redirects.sync_provider` (Go live
+ *     now unrestricted, a Publish live, production build or rollback for its
+ *     target), which calls {@link syncRedirects}; the retry worker pushes
+ *     what is left on the scheduler tick. A sync is three steps, none of
+ *     which holds a transaction across the network:
  *       - prepare (one short transaction): fold every visible change row
  *         into `redirect_sync_state.wanted_revision` of every target and
- *         delete it; CLAIM the publish lease of each environment it syncs
- *         (live-release for production, staging-publication for staging —
- *         a lease row with an expiry, not a lock); read the revision, then
- *         the table and the build each target serves; commit;
+ *         delete it; CLAIM the live-release lease (a lease row with an
+ *         expiry, not a lock); read the revision, then the table and the
+ *         build each target serves; commit;
  *       - push (no transaction, no row lock): `StaticPublisher.syncRedirects`
  *         per target against the files of the build it serves NOW — the
  *         live page still wins, a draft page's path is not live yet;
@@ -40,14 +44,15 @@
  *     in Settings → Redirects and the notification bell, is named in the
  *     redirect tools' results ("NOT live yet" + the error), and is retried
  *     with backoff by the redirect-sync worker. Never silent. It does not
- *     turn the write itself into an error: the write is saved, and a page
- *     slug change must not fail because the hosting was unreachable.
+ *     turn the release itself into an error: the live state is recorded,
+ *     and the push follows it.
  *
- * Every change of the build a target serves runs the same sync for that
- * target once the files are live — a Stage, Publish live, the plugin-data
- * build and a rollback, each after its own transaction committed (#1211,
- * #1225): the build they ship carries the table as it was at its build
- * time, and the provider must end up with the table as it is now.
+ * Every change of the build a production target serves runs the same sync
+ * for that target once the files are live — Publish live, an Owner's
+ * production build, the plugin-data build and a rollback, each after its
+ * own transaction committed (#1211, #1225): the build they ship carries the
+ * table as it was at its build time, and the provider must end up with the
+ * live table as it is now.
  *
  * Revisions make "is the provider current?" exact without comparing tables:
  * the prepare step reads the revision BEFORE the rows, so a sync can only
@@ -56,7 +61,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { afterCommit, type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
+import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext, RedirectTableRow } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
@@ -68,15 +73,14 @@ import {
   renewLiveReleaseForSync,
 } from "./live-release-lock.js";
 import { resolveOutputRoot } from "./output-root.js";
-import {
-  claimStagingPublicationForSync,
-  releaseStagingPublicationForSync,
-  renewStagingPublicationForSync,
-} from "./staging-publication-lock.js";
 import { loadStaticPublisher, type StaticPublisher } from "./static-publisher.js";
 
-/** Why a sync ran. */
-export type RedirectSyncTrigger = "save" | "build" | "publish" | "rollback" | "retry" | "manual";
+/**
+ * Why a sync ran. Before #1550 every redirects write pushed the table
+ * (`save`, kept only in the history of `redirect_syncs`); now the releases,
+ * Go live now (`go_live`), a retry and the operator's "Try again" do.
+ */
+export type RedirectSyncTrigger = "build" | "publish" | "rollback" | "retry" | "manual" | "go_live";
 
 /** Triggers that changed the build a target serves (see {@link syncRedirects}). */
 const SERVED_BUILD_CHANGED: ReadonlySet<RedirectSyncTrigger> = new Set([
@@ -87,8 +91,8 @@ const SERVED_BUILD_CHANGED: ReadonlySet<RedirectSyncTrigger> = new Set([
 
 /**
  * Triggers that push every target they claim, behind or not: a new served
- * build (it carries an old table) and the operator's "Try again". A save
- * and a retry push only the targets that are behind.
+ * build (it carries an old table) and the operator's "Try again". Go live
+ * now and a retry push only the targets that are behind.
  */
 const PUSH_ALL: ReadonlySet<RedirectSyncTrigger> = new Set([...SERVED_BUILD_CHANGED, "manual"]);
 
@@ -112,8 +116,12 @@ export interface RedirectSyncOutcome {
   readonly error: string | null;
 }
 
-/** The deploy targets whose provider can serve redirects. */
-const SYNC_ENVS = sql`('staging', 'production')`;
+/**
+ * The deploy targets whose provider serves the live redirects. #1550 —
+ * staging is served by the staging gateway on every provider (#1330),
+ * which answers the staging view from cms_public_staging itself.
+ */
+const SYNC_ENVS = sql`('production')`;
 
 /** History rows kept per target. */
 const HISTORY_PER_TARGET = 50;
@@ -137,69 +145,23 @@ const SYNC_LEASE_RENEW_MS = 30_000;
 const MAX_ROUNDS = 5;
 
 /**
- * Runs `redirects.sync_provider` after a redirects write commits; set by
- * {@link setRedirectSyncRunner} (the admin process, at boot). A process
- * without it (a test that does not exercise the sync) leaves the change
- * pending, which Settings shows and the worker of the next admin process
- * syncs.
- */
-type RedirectSyncRunner = (trigger: RedirectSyncTrigger) => Promise<RedirectSyncOutcome[]>;
-let runner: RedirectSyncRunner | null = null;
-
-/** Register (or with `null` remove) what runs the sync after a redirects write. */
-export function setRedirectSyncRunner(next: RedirectSyncRunner | null): void {
-  runner = next;
-}
-
-/** Transactions that already requested a sync (one per commit is enough). */
-const requested = new WeakSet<TransactionRunner>();
-
-/**
- * Once `tx` commits, push the redirects table to the provider. Call from
- * every write that changed redirects rows, in the same transaction; a write
- * that changed none need not call it (the change log decides what is due,
- * this only starts the push sooner than the worker's poll). Writes nothing
- * itself — no site-wide row on the write path (#1254). Idempotent per
- * transaction.
- */
-export async function requestRedirectSync(
-  tx: TransactionRunner,
-  _ctx: ExecutionContext,
-): Promise<void> {
-  if (requested.has(tx)) return;
-  requested.add(tx);
-  const run = runner;
-  if (run === null) return;
-  afterCommit(tx, {
-    label: "put the saved redirects live on your hosting",
-    // A failed push does not fail the write that triggered it (a slug change
-    // must not report an error because the hosting was unreachable): it is
-    // recorded, shown in Settings → Redirects and the bell, named in the
-    // redirect tools' results, and retried by the worker.
-    run: async () => {
-      const outcomes = await run("save");
-      for (const o of outcomes.filter((x) => x.status === "failed")) {
-        console.error(
-          "[redirect-sync] the saved redirects are not live yet; retried automatically",
-          { target: o.targetName, error: o.error },
-        );
-      }
-    },
-  });
-}
-
-/**
  * #1211 — mark `targetIds` as behind in the caller's transaction: the build
  * they serve changed and carries the redirects of its own build time. The
  * caller pushes the table after its commit (`redirects.sync_provider`), so
  * no provider I/O runs inside its transaction; should that push fail or
  * never run, the target stays behind and the worker retries it. Called by
- * the step that records a Stage, Publish live, plugin-data build or
- * rollback — never by a content write.
+ * the step that records a Publish live, production build, plugin-data
+ * build, rollback or Go live now — never by a content write.
+ *
+ * `dueNow` (Go live now): a human's explicit release is pushed by the
+ * caller's sync right away, not at a failing target's next retry, so the
+ * backoff wait ends. The failure count stays: another failure backs off
+ * longer. The other callers' triggers push every target they claim anyway.
  */
 export async function markRedirectsBehind(
   tx: TransactionRunner,
   targetIds: readonly string[],
+  opts: { readonly dueNow?: boolean } = {},
 ): Promise<void> {
   if (targetIds.length === 0) return;
   const ids = uuidArray(targetIds);
@@ -207,7 +169,9 @@ export async function markRedirectsBehind(
     INSERT INTO redirect_sync_state (target_id, wanted_revision)
     SELECT id, 1 FROM deploy_targets WHERE env IN ${SYNC_ENVS} AND id = ANY(${ids}) ORDER BY id
     ON CONFLICT (target_id) DO UPDATE
-      SET wanted_revision = redirect_sync_state.wanted_revision + 1, updated_at = now()
+      SET wanted_revision = redirect_sync_state.wanted_revision + 1,
+          ${opts.dueNow ? sql`next_attempt_at = NULL,` : sql``}
+          updated_at = now()
   `);
 }
 
@@ -265,7 +229,7 @@ interface PlannedTarget {
 
 /** What a round's prepare step committed to push. */
 interface RoundPlan {
-  readonly claimed: ReadonlyArray<"staging" | "production">;
+  readonly claimed: ReadonlyArray<"production">;
   readonly targets: readonly PlannedTarget[];
   readonly table: readonly RedirectTableRow[];
 }
@@ -291,7 +255,7 @@ export interface SyncRedirectsArgs {
 
 /**
  * Put the redirects table live on the given targets (default: every
- * staging and production target), recording each attempt. Never throws for
+ * production target), recording each attempt. Never throws for
  * a provider failure — that is a `failed` outcome, recorded and scheduled
  * for retry.
  *
@@ -348,7 +312,7 @@ export async function syncRedirects(
   }
   // The operator asked about these targets: another target the widened
   // retry pushed along records its own result on its own row, and its
-  // failure (staging with no build to serve) must not answer this retry.
+  // failure (a target with no build to serve) must not answer this retry.
   // Lower-cased like the `id::text` the outcomes carry: the database
   // matched an upper-case spelling of the same uuid.
   const asked =
@@ -424,17 +388,11 @@ async function prepareRound(
   `)) as unknown as { env: "staging" | "production" }[];
   if (wanted.length === 0) return { claimed: [], targets: [], table: [] };
 
-  // Lock order: live release first, then the staging publication (as every
-  // publish takes them). Never waits: a held lease skips its environment.
-  const claimed: ("staging" | "production")[] = [];
-  const envs = new Set(wanted.map((w) => w.env));
+  // Never waits: a held live-release lease (a Publish live, a rollback, a
+  // plugin-data build, another sync) skips the push; its holder syncs.
+  const claimed: "production"[] = [];
   const claim = { syncId, ttlMs: SYNC_LEASE_TTL_MS };
-  if (envs.has("production") && (await claimLiveReleaseForSync(tx, claim))) {
-    claimed.push("production");
-  }
-  if (envs.has("staging") && (await claimStagingPublicationForSync(tx, claim))) {
-    claimed.push("staging");
-  }
+  if (await claimLiveReleaseForSync(tx, claim)) claimed.push("production");
   if (claimed.length === 0) return { claimed, targets: [], table: [] };
   const claimedEnvs = textArray(claimed);
 
@@ -482,7 +440,7 @@ async function prepareRound(
 /** Run `work` (the pushes) while renewing the sync's lease claims. */
 async function withRenewedClaims<T>(
   tx: TransactionRunner,
-  claimed: ReadonlyArray<"staging" | "production">,
+  claimed: ReadonlyArray<"production">,
   syncId: string,
   work: () => Promise<T>,
 ): Promise<T> {
@@ -491,7 +449,6 @@ async function withRenewedClaims<T>(
     tx
       .transaction(async (t) => {
         if (claimed.includes("production")) await renewLiveReleaseForSync(t, claim);
-        if (claimed.includes("staging")) await renewStagingPublicationForSync(t, claim);
       })
       .catch((e: unknown) => {
         // A missed renewal is not fatal while the TTL still covers the push;
@@ -510,10 +467,9 @@ async function withRenewedClaims<T>(
 
 async function releaseClaims(
   tx: TransactionRunner,
-  claimed: ReadonlyArray<"staging" | "production">,
+  claimed: ReadonlyArray<"production">,
   syncId: string,
 ): Promise<void> {
-  if (claimed.includes("staging")) await releaseStagingPublicationForSync(tx, syncId);
   if (claimed.includes("production")) await releaseLiveReleaseForSync(tx, syncId);
 }
 
@@ -605,20 +561,11 @@ async function pushTarget(
 }
 
 /**
- * The deploy run whose build `t` serves: production — its last released
- * succeeded run with a build (Publish live, rollback); staging — the run the staging
- * host serves (#650, `staging_access.origin_run_id`), else its newest
- * succeeded run. Null when nothing was ever published there.
+ * The deploy run whose build production target `t` serves: its last
+ * released succeeded run with a build (Publish live, rollback). Null when
+ * nothing was ever published there.
  */
 async function servedRun(tx: TransactionRunner, t: TargetRow): Promise<string | null> {
-  if (t.env === "staging") {
-    const origin = (await tx.execute(sql`
-      SELECT s.origin_run_id::text AS run_id
-      FROM staging_access s JOIN deploy_runs r ON r.id = s.origin_run_id
-      WHERE s.id = 1 AND r.target_id = ${t.id}::uuid
-    `)) as unknown as { run_id: string | null }[];
-    if (origin[0]?.run_id) return origin[0].run_id;
-  }
   // Release order, not start order: every publish and rollback marks its
   // run finished while it holds the target's publish lease, so the newest
   // finished_at is the build released last.

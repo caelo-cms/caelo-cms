@@ -31,6 +31,7 @@ import { lockPluginRow } from "../locks.js";
 import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
+import { ruleView } from "./fixtures/redirects.js";
 import { ensureRoleUser } from "./fixtures/role-user.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 
@@ -88,6 +89,12 @@ async function cleanup(): Promise<void> {
   await sqlSystem(async (tx) => {
     await tx.unsafe('DROP SCHEMA IF EXISTS "plugin_international_site" CASCADE');
     await tx.unsafe("DELETE FROM url_migration_pending_actions");
+    // #1550 — page moves and the locale-root redirect write pending changes.
+    await tx.unsafe(
+      `DELETE FROM pending_redirects WHERE from_path LIKE '/t395-%' OR from_path LIKE '/de/t395-%'
+         OR from_path LIKE '/en/t395-%' OR from_path IN ('/de', '/en', '/home-de', '/de/home-de')
+         OR actor_id IN (SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'international-site'))`,
+    );
     await tx.unsafe(
       "DELETE FROM redirects WHERE from_path LIKE '/t395-%' OR from_path LIKE '/de/t395-%' OR from_path = '/de'",
     );
@@ -351,13 +358,19 @@ describe("#395 — international-site URL contributions on the generic engine", 
         }[],
     );
     expect(finalPaths[0]?.current_path).toBe("/t395-preise");
+    // #1550 — the migration's 301 is Staged: it goes live with the Publish
+    // live that ships the moved pages.
     const redirect = await sqlSystem(
       async (tx) =>
-        (await tx.unsafe(`SELECT to_path FROM redirects WHERE from_path = '/de/t395-preise'`)) as {
-          to_path: string;
-        }[],
+        (await tx.unsafe(
+          `SELECT to_path, state, origin FROM pending_redirects WHERE from_path = '/de/t395-preise'`,
+        )) as { to_path: string; state: string; origin: string }[],
     );
-    expect(redirect[0]?.to_path).toBe("/t395-preise");
+    expect(redirect[0]).toEqual({
+      to_path: "/t395-preise",
+      state: "staged",
+      origin: "url_migration",
+    });
   });
 
   it("host strategy without url_host fails LOUDLY at composition", async () => {
@@ -474,13 +487,23 @@ describe("create_variant — the slug the caller cannot invent", () => {
     if (!created.ok) throw new Error(JSON.stringify(created.error));
     expect((created.value as { path: string }).path).toBe("/de/t395-rule");
     expect(created.value).not.toHaveProperty("redirectOnThisUrl");
+    // #1550 — the take-over is a Staged removal of the address (both
+    // spellings): the live rule keeps answering until the Publish live that
+    // ships the page there.
     const left = await sqlSystem(
       async (tx) =>
         (await tx.unsafe(
           "SELECT 1 FROM redirects WHERE from_path = '/de/t395-rule/'",
         )) as unknown[],
     );
-    expect(left).toHaveLength(0);
+    expect(left).toHaveLength(1);
+    const removal = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          "SELECT to_path, state, origin FROM pending_redirects WHERE address = '/de/t395-rule'",
+        )) as { to_path: string | null; state: string; origin: string }[],
+    );
+    expect(removal).toEqual([{ to_path: null, state: "staged", origin: "page_move" }]);
   });
 
   // #1517 — a variant a chat creates exists only on the chat's branch: its
@@ -633,9 +656,12 @@ describe("create_variant — the slug the caller cannot invent", () => {
       tx.unsafe(`SELECT slug, current_path FROM pages WHERE id = '${sameId}'`),
     )) as { slug: string; current_path: string }[];
     expect(rows[0]).toEqual({ slug: "t395-lr-about", current_path: "/de/t395-lr-about" });
-    // The provisional URL was never public: nothing redirects from it.
+    // The provisional URL was never public: nothing redirects from it, live
+    // or pending (#1550).
     const redirects = (await sqlSystem((tx) =>
-      tx.unsafe(`SELECT from_path FROM redirects WHERE to_path LIKE '/de/t395-lr-about%'`),
+      tx.unsafe(`SELECT from_path FROM redirects WHERE to_path LIKE '/de/t395-lr-about%'
+                 UNION ALL
+                 SELECT from_path FROM pending_redirects WHERE to_path LIKE '/de/t395-lr-about%'`),
     )) as { from_path: string }[];
     expect(redirects).toEqual([]);
   });
@@ -762,6 +788,9 @@ describe("create_variant — the slug the caller cannot invent", () => {
       await sqlSystem(async (tx) => {
         const ids = [homeId, variantId].filter((id): id is string => id !== null);
         await tx.unsafe(
+          `DELETE FROM pending_redirects WHERE to_path = '/de' OR from_path IN ('/home-de', '/de/home-de')`,
+        );
+        await tx.unsafe(
           `DELETE FROM redirects WHERE to_path = '/de' OR from_path IN ('/home-de', '/de/home-de')`,
         );
         await tx.unsafe(`DELETE FROM pages WHERE id IN (${ids.map((id) => `'${id}'`).join(", ")})`);
@@ -798,11 +827,10 @@ describe("prefixDefaultLocale — every locale prefixed, default home at '/'", (
     return rows[0]?.current_path;
   }
 
+  /** #1550 — the rule at `fromPath` once its pending change is live (Staged by the plugin). */
   async function redirectTo(fromPath: string): Promise<string | undefined> {
-    const rows = (await sqlSystem((tx) =>
-      tx.unsafe(`SELECT to_path FROM redirects WHERE from_path = '${fromPath}'`),
-    )) as { to_path: string }[];
-    return rows[0]?.to_path;
+    const rules = await ruleView(ADMIN_URL as string, fromPath);
+    return rules.find((r) => r.fromPath === fromPath)?.toPath;
   }
 
   async function migrate(): Promise<void> {

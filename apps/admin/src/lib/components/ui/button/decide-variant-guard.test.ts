@@ -18,8 +18,9 @@ const SRC = join(import.meta.dir, "..", "..", "..", "..");
 
 /** File (relative to apps/admin/src) → number of `"decide"` literals. */
 const ALLOWED: Record<string, number> = {
-  // Publish live in the /edit toolbar (one snippet, both branches).
-  "lib/components/edit/StageDeployButton.svelte": 1,
+  // Publish live in the /edit toolbar (one snippet, both branches) and the
+  // Publish live of its redirect confirmation (#1550).
+  "lib/components/edit/StageDeployButton.svelte": 2,
   // Approve on an in-chat proposal tool card.
   "lib/components/chat/tool-cards/ProposeCard.svelte": 1,
   // Approve on the SDK approval strip + the pending-proposals strip.

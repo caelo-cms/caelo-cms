@@ -134,6 +134,7 @@ async function wipe(): Promise<void> {
   await withSystemSql(async (tx) => {
     await tx.unsafe(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
     const byPluginActor = `SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`;
+    await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`%${PFX}%`}`;
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}%`}`;
     await tx.unsafe(`DELETE FROM site_snapshots WHERE actor_id IN (${byPluginActor})`);
     await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (${byPluginActor})`);
@@ -285,9 +286,12 @@ describe("plugin URL annotations on a chat branch", () => {
     expect(await livePath(mainId)).toBe(`/fr/${PFX}main`);
     expect(await livePath(branchPageId)).toBe(`/de/${PFX}de`);
     expect(await livePath(copyId)).toBe(`/it/${PFX}copy`);
+    // #1550 — the 301 is a Staged change: it goes live with the Publish live
+    // that ships the recomposed path.
     const redirects = await withSystemSql(
       async (tx) =>
-        (await tx`SELECT to_path FROM redirects WHERE from_path = ${`/${PFX}main`}`) as {
+        (await tx`SELECT to_path FROM pending_redirects
+                  WHERE from_path = ${`/${PFX}main`} AND state = 'staged'`) as {
           to_path: string;
         }[],
     );
@@ -409,9 +413,11 @@ describe("plugin URL annotations on a chat branch", () => {
     });
     if (!applied.ok) throw new Error(JSON.stringify(applied.error));
     expect(await livePath(liveId)).toBe(`/en/${PFX}live`);
+    // #1550 — Staged, live with the Publish live that ships the migration.
     const redirects = await withSystemSql(
       async (tx) =>
-        (await tx`SELECT to_path FROM redirects WHERE from_path = ${`/${PFX}live`}`) as {
+        (await tx`SELECT to_path FROM pending_redirects
+                  WHERE from_path = ${`/${PFX}live`} AND state = 'staged'`) as {
           to_path: string;
         }[],
     );

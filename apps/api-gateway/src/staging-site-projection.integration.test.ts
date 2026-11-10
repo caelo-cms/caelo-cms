@@ -13,24 +13,29 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { publishProjectionOnce, stagingPublicAdapter } from "@caelo-cms/admin-core";
-import { DatabaseAdapter } from "@caelo-cms/query-api";
+import { bootstrapDispatchOnly, resetPluginHost } from "@caelo-cms/plugin-host";
+import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import {
+  GATEWAY_REFRESH_PATH,
+  GATEWAY_REFRESH_TOKEN_HEADER,
+  gatewayRefreshAudience,
   SESSION_ENTRY,
   sessionCookieValue,
   signStagingToken,
   stagedManifestKey,
 } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { listenForPublishedChanges, onPublishedChange } from "./published-changes.js";
 import {
-  CONFIRM_MAX_AGE_MS,
-  listenForPublishedChanges,
-  onPublishedChange,
-  resetPublishedStateConfirmation,
-} from "./published-changes.js";
+  idTokenTestKey,
+  signIdTokenForTests,
+  testRefreshPingVerifier,
+} from "./refresh-ping.test-helpers.js";
 import {
   handleRequest,
   invalidateGatewaySettings,
   setGatewayAdapter,
+  setRefreshPingVerifier,
   setStagingSite,
 } from "./server.js";
 import { directoryStagingStorage } from "./staging/storage.js";
@@ -321,14 +326,29 @@ describe("#1361 a gate change whose notification still waits in the socket", () 
   });
 });
 
-describe("#1361 a staging host set while the instance idles", () => {
-  it("is served from the first request once the off answer is older than CONFIRM_MAX_AGE_MS", async () => {
-    // Copilot review of #1557: the off answer comes from memory before
-    // everything else (E14 a), so without its own confirmation a staging
-    // host set while this instance idled kept getting the fixed 404 until
-    // the LISTEN callback happened to run.
+describe("the admin's refresh ping on the staging gateway", () => {
+  const audience = gatewayRefreshAudience("test", "staging");
+  const key = idTokenTestKey("google-key-1");
+  // A client of its own: the earlier tests spent some of the shared
+  // client's failure budget.
+  const visitor = { "x-forwarded-for": "198.51.100.61" };
+  const ping = (token: string | null, method = "POST") =>
+    handleRequest(
+      new Request(`https://staging.example.com${GATEWAY_REFRESH_PATH}`, {
+        method,
+        headers: token === null ? {} : { [GATEWAY_REFRESH_TOKEN_HEADER]: token },
+      }),
+    );
+
+  /**
+   * The gateway's adapter with its LISTEN held back (`held` receives the
+   * notifications, the gateway never hears them: the throttled instance),
+   * counting every cms_public transaction it opens.
+   */
+  function throttledGateway() {
     const held: string[] = [];
-    const throttled = new Proxy(gateway, {
+    const counter = { reads: 0 };
+    const proxied = new Proxy(gateway, {
       get(target, prop) {
         if (prop === "listen") {
           return (...args: Parameters<DatabaseAdapter["listen"]>) => {
@@ -339,48 +359,146 @@ describe("#1361 a staging host set while the instance idles", () => {
             });
           };
         }
+        if (prop === "withPublicTransaction") counter.reads += 1;
         const value = Reflect.get(target, prop, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
+    return { held, counter, proxied };
+  }
+
+  /** Switch the staging site off (no host) and let the gateway learn it once. */
+  async function offAndLearned(proxied: DatabaseAdapter) {
     onPublishedChange(invalidateGatewaySettings);
     await asSystem(
       ADMIN_URL,
       (tx) => tx`UPDATE staging_access SET staging_host = NULL WHERE id = 1`,
     );
     await publish();
-    const listening = await listenForPublishedChanges(throttled);
-    // A client of its own: the earlier tests spent some of the shared
-    // client's failure budget.
-    const visitor = { "x-forwarded-for": "198.51.100.61" };
+    setGatewayAdapter(proxied);
+    setRefreshPingVerifier(testRefreshPingVerifier(key, audience));
+    const listening = await listenForPublishedChanges(proxied);
+    expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(404);
+    return listening;
+  }
+
+  async function restore(listening: { unlisten(): Promise<void> }) {
+    setSystemTime();
+    setRefreshPingVerifier(null);
+    setGatewayAdapter(gateway);
+    await listening.unlisten();
+    await asSystem(
+      ADMIN_URL,
+      (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
+    );
+    await publish();
+  }
+
+  it("answers 503 when it cannot learn the plugin registry, so the admin records a miss (Codex review of #1575)", async () => {
+    // This gateway's plugin host has not run yet: the registry is unknown,
+    // and a 200 would have recorded a refresh that did not happen.
+    const { proxied } = throttledGateway();
+    const listening = await offAndLearned(proxied);
     try {
-      expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
-        404,
-      );
-      // The Owner sets the host; this idle instance has not handled the notification.
-      await asSystem(
-        ADMIN_URL,
-        (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
-      );
-      await publishProjectionOnce(adapter, staging, { declarations: new Map() });
-      const deadline = Date.now() + 5_000;
-      while (held.length === 0 && Date.now() < deadline) await Bun.sleep(20);
-      expect(held.length).toBeGreaterThan(0);
-      setSystemTime(new Date(Date.now() + CONFIRM_MAX_AGE_MS));
-      // From the cached "off" this was the fixed 404; now the gate answers.
-      expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
-        403,
-      );
+      expect((await ping(signIdTokenForTests(key, { aud: audience }))).status).toBe(503);
     } finally {
-      setSystemTime();
-      // That confirmation is dated 30 s ahead; nothing after this test may rely on it.
-      resetPublishedStateConfirmation();
-      await listening.unlisten();
-      await asSystem(
-        ADMIN_URL,
-        (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
-      );
-      await publish();
+      await restore(listening);
     }
+  });
+
+  describe("with the gateway's plugin host running", () => {
+    beforeAll(async () => {
+      // As the staging gateway boots (server.ts main): no plugin active here.
+      await bootstrapDispatchOnly({
+        infra: { adapter: gateway, registry: new OperationRegistry() },
+        pluginsRoot: "/dev/null/unused",
+        systemActorId: SYSTEM_ACTOR_ID,
+        testPlugins: [],
+      });
+    });
+    afterAll(() => {
+      resetPluginHost();
+    });
+
+    it("an off gateway makes no database read because of visitor traffic, however long it idles", async () => {
+      // E14 a, as the switched-off recheck of #1555 had changed it: the
+      // answer comes from memory, and nothing a visitor sends makes the
+      // gateway ask the database again.
+      const { counter, proxied } = throttledGateway();
+      const listening = await offAndLearned(proxied);
+      try {
+        counter.reads = 0;
+        for (const idle of [0, 31_000, 3_600_000]) {
+          setSystemTime(new Date(Date.now() + idle));
+          for (const path of ["/about/", "/_caelo/staging-access?t=x", "/api/captcha/challenge"]) {
+            expect((await handleRequest(req("staging.example.com", path, visitor))).status).toBe(
+              404,
+            );
+          }
+        }
+        expect(counter.reads).toBe(0);
+      } finally {
+        await restore(listening);
+      }
+    });
+
+    it("a valid ping makes the next request see the new state, the notification still waiting", async () => {
+      const { held, proxied } = throttledGateway();
+      const listening = await offAndLearned(proxied);
+      try {
+        // The Owner sets a staging host; this idle instance does not hear it.
+        await asSystem(
+          ADMIN_URL,
+          (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
+        );
+        await publishProjectionOnce(adapter, staging, { declarations: new Map() });
+        const deadline = Date.now() + 5_000;
+        while (held.length === 0 && Date.now() < deadline) await Bun.sleep(20);
+        expect(held.length).toBeGreaterThan(0);
+        // From memory still the fixed 404, whatever the visitors send.
+        expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
+          404,
+        );
+        const r = await ping(signIdTokenForTests(key, { aud: audience }));
+        expect(r.status).toBe(200);
+        expect(await r.json()).toEqual({ ok: true });
+        // On now: the gate answers.
+        expect((await handleRequest(req("staging.example.com", "/about/", visitor))).status).toBe(
+          403,
+        );
+      } finally {
+        await restore(listening);
+      }
+    });
+
+    it("a forged or missing ping gets the fixed 404, without a read", async () => {
+      const { counter, proxied } = throttledGateway();
+      const listening = await offAndLearned(proxied);
+      try {
+        counter.reads = 0;
+        const forger = idTokenTestKey(key.kid);
+        for (const r of [
+          await ping(null),
+          await ping("not-a-token"),
+          await ping(signIdTokenForTests(forger, { aud: audience })),
+          // The live gateway's token.
+          await ping(signIdTokenForTests(key, { aud: gatewayRefreshAudience("test", "live") })),
+          await ping(signIdTokenForTests(key, { aud: audience, email: "someone@example.com" })),
+          await ping(signIdTokenForTests(key, { aud: audience }), "GET"),
+        ]) {
+          expect(r.status).toBe(404);
+          const body = (await r.json()) as { error: Record<string, unknown> };
+          // The same answer as for a path that names nothing.
+          expect(Object.keys(body.error).sort()).toEqual(["kind", "requestId"]);
+          expect(body.error.kind).toBe("NotFound");
+        }
+        expect(counter.reads).toBe(0);
+        // The admin's own ping reads.
+        expect((await ping(signIdTokenForTests(key, { aud: audience }))).status).toBe(200);
+        expect(counter.reads).toBeGreaterThan(0);
+      } finally {
+        await restore(listening);
+      }
+    });
   });
 });

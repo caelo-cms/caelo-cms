@@ -81,6 +81,7 @@ import {
 } from "../gcloud.js";
 import {
   auditRunnerServiceAccountEmail,
+  buildCarrierServiceAccountEmail,
   GCP_STACK_ENV,
   importCrawlServiceAccountEmail,
   schedulerServiceAccountEmail,
@@ -134,7 +135,11 @@ import {
   type RemoteMcpTarget,
   resolveStackRemoteMcpIdentity,
 } from "../remote-mcp.js";
-import { ensureAuditRunnerJob, ensureImportCrawlJob } from "../reporting-job-setup.js";
+import {
+  ensureAuditRunnerJob,
+  ensureBuildCarrierJob,
+  ensureImportCrawlJob,
+} from "../reporting-job-setup.js";
 import type { RunMode } from "../run-mode.js";
 import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
@@ -631,6 +636,14 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     ensure: ensureImportCrawlJob,
   });
 
+  // === 11.34. The build carrier: holds the request a build nobody waits for runs in (#1574) ===
+  // Before the upgrader and operator access, for the same reasons.
+  await stepReportingJob(projectId, region, provider, ownerEmail, {
+    starting: "Setting up the build carrier (builds that outlast their request)...",
+    ready: "Build carrier ready",
+    ensure: ensureBuildCarrierJob,
+  });
+
   // === 11.35. The capture job: server-side screenshots outside the admin (#1217) ===
   // Before the upgrader as well, which gets actAs on its service account.
   await stepCaptureJob(projectId, region, provider);
@@ -664,9 +677,10 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
     [
       ...(keepScheduler ? [schedulerServiceAccountEmail(projectId, GCP_STACK_ENV)] : []),
-      // #1359 / #1360 — set up above (a failure stops the wizard there).
+      // #1359 / #1360 / #1574 — set up above (a failure stops the wizard there).
       auditRunnerServiceAccountEmail(projectId, GCP_STACK_ENV),
       importCrawlServiceAccountEmail(projectId, GCP_STACK_ENV),
+      buildCarrierServiceAccountEmail(projectId, GCP_STACK_ENV),
     ],
   );
 

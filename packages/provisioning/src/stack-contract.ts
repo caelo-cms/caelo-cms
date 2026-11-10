@@ -34,13 +34,20 @@
  * Pure module — the stacks import it from `dist/`.
  */
 
-import { CLOUD_SQL_CA_BUNDLE, isIpLiteral, verifyFullQuery } from "@caelo-cms/shared";
+import {
+  CLOUD_SQL_CA_BUNDLE,
+  GATEWAY_REFRESH_ACCOUNT_ENV,
+  isIpLiteral,
+  verifyFullQuery,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import type { SupportedProvider } from "./adapter.js";
 import {
   auditJobResource,
   auditRunnerJobResource,
   auditRunnerServiceAccountEmail,
+  buildCarrierJobResource,
+  buildCarrierServiceAccountEmail,
   captureJobResource,
   convergeJobResource,
   gatewayServiceAccountEmail,
@@ -408,6 +415,13 @@ export const AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR = "CAELO_AUDIT_RUNNER_SERVICE_
  */
 export const IMPORT_CRAWL_JOB_ENV_VAR = "CAELO_IMPORT_CRAWL_JOB";
 export const IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR = "CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT";
+
+/**
+ * #1574 — the same pair for the build carrier (the job that holds the
+ * request a build runs in; admin-core build-carrier/kind.ts).
+ */
+export const BUILD_CARRIER_JOB_ENV_VAR = "CAELO_BUILD_CARRIER_JOB";
+export const BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR = "CAELO_BUILD_CARRIER_SERVICE_ACCOUNT";
 
 /**
  * #1140 — the admin env var naming the service account of the scheduler
@@ -1026,6 +1040,12 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
     { name: GATEWAY_ENVIRONMENT_ENV, value: "live" },
     { name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS[inputs.provider]) },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
+    // The only account whose refresh pings the gateway takes: the admin's
+    // (@caelo-cms/shared gateway-refresh.ts). An identity, not a secret.
+    {
+      name: GATEWAY_REFRESH_ACCOUNT_ENV,
+      value: runServiceAccountEmail(inputs.projectId, inputs.env),
+    },
     ...secretEnv("gateway", inputs.env),
   ];
 }
@@ -1050,6 +1070,11 @@ export function stagingGatewayEnvContract<V>(
     },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.publicStaging },
     { name: STAGING_STORAGE_ENV, value: gcpStagingStorage(inputs.projectId, inputs.env) },
+    // As the live gateway's: whose refresh pings it takes.
+    {
+      name: GATEWAY_REFRESH_ACCOUNT_ENV,
+      value: runServiceAccountEmail(inputs.projectId, inputs.env),
+    },
     ...secretEnv("staging-gateway", inputs.env),
   ];
 }
@@ -1492,6 +1517,16 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     {
       name: IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR,
       value: importCrawlServiceAccountEmail(projectId, env),
+    },
+    // #1574 — the job that holds the request a build nobody else waits for
+    // runs in, and the only IAP identity whose reports the admin takes for it.
+    {
+      name: BUILD_CARRIER_JOB_ENV_VAR,
+      value: buildCarrierJobResource(projectId, inputs.region, env),
+    },
+    {
+      name: BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR,
+      value: buildCarrierServiceAccountEmail(projectId, env),
     },
     // #1140 — the only IAP identity the admin's scheduler tick endpoint
     // accepts (scheduler-setup.ts).

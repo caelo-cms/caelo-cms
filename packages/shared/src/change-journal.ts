@@ -43,6 +43,7 @@ export const JOURNAL_KINDS = [
   "media_crop",
   "font",
   "redirect",
+  "pending_redirect",
   "static_file",
   "domain",
   "site_defaults",
@@ -143,6 +144,7 @@ export const JOURNALED_TABLES: Readonly<Record<string, JournaledTable>> = {
   media_crops: row("media_crop", "id", ["id"], { parent: "asset_id" }),
   font_assets: row("font", "id", ["id"]),
   redirects: row("redirect", "id", ["id"]),
+  pending_redirects: row("pending_redirect", "id", ["id"], { branch: "chat_branch_id" }),
   static_files: row("static_file", "id", ["id"]),
   domains: row("domain", "id", ["id"]),
   site_defaults: row("site_defaults", "id", ["id"]),
@@ -227,6 +229,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   platform_update_events: LOG,
   plugin_errors: LOG,
   redirect_syncs: LOG,
+  redirect_release_log:
+    "#1550: every write of the live redirects, per address (release, take-over, Go live now, rollback); a rollback reads it, nothing is derived from it",
   operator_access_sync_runs: LOG,
   link_migration_runs: LOG,
   comment_archive:
@@ -283,6 +287,7 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   deploy_targets: "deploy target configuration; read by the deploy ops",
   deploy_runs: "deploy runs; reach editors as the op-classified `deploys` topic",
   redirect_sync_state: RUNTIME,
+  gateway_refresh_state: RUNTIME,
   redirect_changes:
     "which transactions changed redirects, folded by the redirect sync; the journaled redirects table is the source",
   static_bakes: "derived build output of plugin-baked regions",
@@ -331,6 +336,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   reporting_jobs: LEASE,
   reporting_job_uploads:
     "#1359: the parts of a job's report too large for one request, read by the action that names them",
+  build_orders:
+    "#1574: what a build carrier's request builds and how it ended, read by the request that waits for it; the deploy run is the build's record",
 
   import_runs: "site-import runs; reach editors as the op-classified `crawl` topic",
   import_pages: "crawled pages of a site import, before they become pages",

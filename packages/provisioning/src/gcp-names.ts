@@ -305,6 +305,35 @@ export function importCrawlServiceAccountEmail(projectId: string, env: string): 
 }
 
 /**
+ * #1574 — Cloud Run job that carries a build: one execution per Stage,
+ * Publish live or production build nobody else waits for, holding the
+ * admin request the build runs in (reporting-job-setup.ts).
+ */
+export function buildCarrierJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-build`;
+}
+
+/** Full resource name of the build carrier's job, as the admin's env carries it. */
+export function buildCarrierJobResource(projectId: string, region: string, env: string): string {
+  return `projects/${projectId}/locations/${region}/jobs/${buildCarrierJobName(env)}`;
+}
+
+/**
+ * Account id of the build carrier's own service account: it reports to the
+ * admin through IAP and holds nothing else — no database, no secret, no
+ * bucket, no other job (reporting-job-setup.ts). `caelo-production-build`
+ * is 22 of the 30 characters an id may have.
+ */
+export function buildCarrierServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-build`;
+}
+
+/** Email of the build carrier's service account. */
+export function buildCarrierServiceAccountEmail(projectId: string, env: string): string {
+  return `${buildCarrierServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/**
  * #1217 — Cloud Run job that runs every server-side browser render
  * (screenshots, rendered HTML) of the install, one execution per render, so
  * no Chromium runs in the admin (capture-job-setup.ts).

@@ -205,3 +205,30 @@ export async function stagingBucket(
   const { Storage } = await import("@google-cloud/storage");
   return new Storage().bucket(name);
 }
+
+/**
+ * #1550 — the files of the staged build `runId` in its slot `location`
+ * (`_slots/a`), from the slot's manifest: what the staging gateway serves
+ * and what Publish live of that build ships. Throws when the slot has no
+ * manifest (a Stage is resyncing it) or holds another run (a later Stage
+ * replaced it): the next step is a new Stage.
+ */
+export async function stagedSlotFiles(location: string, runId: string): Promise<Set<string>> {
+  const bucket = await stagingBucket();
+  const file = bucket.file(stagedManifestKey(location));
+  const [exists] = await file.exists();
+  if (!exists) {
+    throw new Error(
+      `the staging slot ${location} has no manifest (a Stage is resyncing it), so the files of build ${runId} cannot be read. Stage again.`,
+    );
+  }
+  const manifest = stagedManifestSchema.parse(
+    JSON.parse((await file.download())[0].toString("utf8")),
+  );
+  if (manifest.runId !== runId) {
+    throw new Error(
+      `the staging slot ${location} holds build ${manifest.runId}, not ${runId}: a later Stage replaced it. Stage again.`,
+    );
+  }
+  return new Set(Object.keys(manifest.files));
+}

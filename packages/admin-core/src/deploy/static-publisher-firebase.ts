@@ -60,14 +60,14 @@ import {
   hostingGzip,
   readAssetReferences,
 } from "@caelo-cms/static-generator";
-import { CPU_PARALLELISM, readBuildFiles, uniqueAssets } from "./build-files.js";
+import { bytesOfUpload, CPU_PARALLELISM, readBuildFiles, uniqueAssets } from "./build-files.js";
 import { readFirebaseBuiltFile } from "./firebase-channel-file.js";
 import {
   currentGatewayRewrite,
   hasCurrentGatewayRewrite,
   withCurrentGatewayRewrite,
 } from "./firebase-gateway-rewrite.js";
-import { syncFirebaseRedirects } from "./firebase-redirect-sync.js";
+import { servedChannelFiles, syncFirebaseRedirects } from "./firebase-redirect-sync.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
 import {
   type FirebaseHeaderEntry,
@@ -76,7 +76,7 @@ import {
   VERSION_CONFIG_HEADERS,
   withCurrentFixedHeaders,
 } from "./firebase-version-headers.js";
-import { GcsSlotSync, stagingBucket } from "./staging-slots.js";
+import { GcsSlotSync, stagedSlotFiles, stagingBucket } from "./staging-slots.js";
 import { contentTypeFor } from "./static-file-policy.js";
 import type {
   BuildUpload,
@@ -601,16 +601,15 @@ class FirebaseBuildUpload implements BuildUpload {
       throw new Error(`static-publisher-firebase: ${file.relPath} was written twice`);
     }
     this.#paths.add(file.relPath);
+    const raw = bytesOfUpload(file.body);
     // The redirects ride the version config, built at finish().
-    if (file.relPath === "_redirects")
-      this.#redirectsFile = Buffer.from(file.body).toString("utf8");
+    if (file.relPath === "_redirects") this.#redirectsFile = raw.toString("utf8");
     if (file.relPath === STATIC_FILES_MANIFEST_FILE) {
-      this.#staticFiles = parseStaticFilesManifest(Buffer.from(file.body).toString("utf8"));
+      this.#staticFiles = parseStaticFilesManifest(raw.toString("utf8"));
     }
     if (file.relPath === SECURITY_HEADERS_BUILD_FILE) {
-      this.#siteHeaders = parseSiteHeaderSet(Buffer.from(file.body).toString("utf8"));
+      this.#siteHeaders = parseSiteHeaderSet(raw.toString("utf8"));
     }
-    const raw = Buffer.from(file.body);
     const { body, sha256 } = await gzipAndHashBytes(raw);
     // #1330 — the slot keeps the plain bytes; the gzip hash names them.
     const type = file.contentType ?? contentTypeFor(file.relPath);
@@ -1098,6 +1097,26 @@ export const firebaseHostingPublisher: StaticPublisher = {
       destinationBuildId: sourceRunId,
     };
     return summary;
+  },
+
+  async readStagedBuildFiles({ runId, location }) {
+    // #1330 — the slot manifest the staging gateway serves the build by.
+    return stagedSlotFiles(location, runId);
+  },
+
+  async readServedFiles({ target }) {
+    if (target.env !== "production") {
+      throw new Error(
+        `static-publisher-firebase: ${target.name} (${target.env}) is served by the staging gateway from its slot; read a staged build with readStagedBuildFiles.`,
+      );
+    }
+    const site = siteName();
+    const token = await googleAuthToken();
+    return servedChannelFiles({
+      call: (path, init) => firebaseFetch(path, { ...init, token }),
+      site,
+      channelId: "live",
+    });
   },
 
   async syncRedirects({ target, rows }) {

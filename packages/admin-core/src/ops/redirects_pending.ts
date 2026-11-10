@@ -17,15 +17,18 @@
  * a proposal waits: at propose, on the card, and at execute. The serving
  * layers check the URL's form again (`servableRedirectTargetIssue`).
  *
- * An approved rule lands in `redirects` (`to_path` holds the URL) and reaches
- * the hosting through the ordinary sync: redirects are provider state, not
- * draft state (docs/dev/redirects-and-settings-sync.md).
+ * #1550 — an approved rule is a pending change like any other (`to_path`
+ * holds the URL): Staged by default, live with the next Publish live. The
+ * card names the mode; `goLive: "now"` puts it live at approval through Go
+ * live now (`redirects.go_live_now`, run after this op's commit), and then
+ * the approver also needs the Publish live permission. The list of the
+ * shared redirect proposals (`list_pending`, `reject_proposal`) also holds
+ * the AI's Go live now proposals (`redirects_release.ts`).
  */
 
 import {
   defineOperation,
   handlerErrorFromDetails,
-  OperationAbortError,
   type TransactionRunner,
   textArray,
 } from "@caelo-cms/query-api";
@@ -38,12 +41,14 @@ import {
   ok,
   type ProposalStatus,
   proposalStatus,
+  redirectAddress,
   redirectFromPathSpellings,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { requestRedirectSync } from "../deploy/redirect-sync.js";
+import { ownerOfContext } from "../redirects/model.js";
+import { writeRedirectChanges } from "../redirects/write.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
 import {
@@ -53,6 +58,7 @@ import {
   resolveChatSessionId,
 } from "./_propose-helpers.js";
 import { pagesByRedirectSpelling } from "./content/redirect-page-conflicts.js";
+import { actorHasPermission } from "./quality/_permissions.js";
 import { staticFileRedirectRefusal } from "./redirects.js";
 
 /** Most rules one proposal holds: the Owner reads every address on the card. */
@@ -85,7 +91,15 @@ const externalRedirectItem = z
 
 /** Input of `redirects.propose_external` (and the `propose_external_redirect` tool). */
 export const externalRedirectsInput = z
-  .object({ redirects: z.array(externalRedirectItem).min(1).max(MAX_EXTERNAL_REDIRECTS) })
+  .object({
+    redirects: z.array(externalRedirectItem).min(1).max(MAX_EXTERNAL_REDIRECTS),
+    /**
+     * #1550 — `next_publish` (default): saved Staged at approval, live with
+     * the next Publish live. `now`: live at approval, without Publish live
+     * (the approver needs the Publish live permission too).
+     */
+    goLive: z.enum(["next_publish", "now"]).default("next_publish"),
+  })
   .strict();
 
 type ExternalRedirectsInput = z.infer<typeof externalRedirectsInput>;
@@ -167,28 +181,39 @@ async function externalRedirectProblems(
 }
 
 /**
- * What each from path answers now, in every spelling, with its status: the
- * change a click makes, and what must still hold when it is made.
+ * #1550 — what each from path answers once everything saved goes live (its
+ * pending change, else its live rule), with its status: the change a click
+ * makes, and what must still hold when it is made. With `lock`, the rows
+ * stay locked until the commit.
  */
 async function currentTargets(
   tx: TransactionRunner,
   input: ExternalRedirectsInput,
   lock = false,
 ): Promise<Record<string, string | null>> {
-  const spellings = input.redirects.flatMap((r) => redirectFromPathSpellings(r.fromPath));
-  const rows = (await tx.execute(sql`
-    SELECT from_path, to_path, status_code FROM redirects
-    WHERE from_path = ANY(${textArray(spellings)})
+  const addresses = textArray(input.redirects.map((r) => redirectAddress(r.fromPath)));
+  // Locked, the pending rows before the live ones, as every writer takes
+  // them (redirects/release.ts).
+  const pending = (await tx.execute(sql`
+    SELECT address, to_path, status_code FROM pending_redirects WHERE address = ANY(${addresses})
+    ORDER BY address
     ${lock ? sql`FOR UPDATE` : sql``}
-  `)) as unknown as { from_path: string; to_path: string; status_code: number }[];
-  const byPath = new Map(rows.map((r) => [r.from_path, `${r.to_path} (${r.status_code})`]));
+  `)) as unknown as { address: string; to_path: string | null; status_code: number | null }[];
+  const live = (await tx.execute(sql`
+    SELECT address, to_path, status_code FROM redirects
+    WHERE address = ANY(${addresses})
+    ORDER BY from_path
+    ${lock ? sql`FOR UPDATE` : sql``}
+  `)) as unknown as { address: string; to_path: string; status_code: number }[];
+  const byAddress = new Map<string, string | null>();
+  for (const r of live) {
+    if (!byAddress.has(r.address)) byAddress.set(r.address, `${r.to_path} (${r.status_code})`);
+  }
+  for (const p of pending) {
+    byAddress.set(p.address, p.to_path === null ? null : `${p.to_path} (${p.status_code})`);
+  }
   return Object.fromEntries(
-    input.redirects.map((r) => [
-      r.fromPath,
-      redirectFromPathSpellings(r.fromPath)
-        .map((s) => byPath.get(s))
-        .find((t) => t !== undefined) ?? null,
-    ]),
+    input.redirects.map((r) => [r.fromPath, byAddress.get(redirectAddress(r.fromPath)) ?? null]),
   );
 }
 
@@ -215,6 +240,13 @@ const statusWords = (code: number): string =>
     ? "permanent: browsers remember it even after it is removed"
     : "temporary";
 
+/** #1550 — what the click does, in the card's words. */
+function modeLine(goLive: ExternalRedirectsInput["goLive"]): string {
+  return goLive === "now"
+    ? "It goes live on your hosting right after you approve, without a Publish live. Approving it needs the Publish live permission too."
+    : "It is saved Staged when you approve: staging serves it at once, the live site with the next Publish live.";
+}
+
 function card(
   input: ExternalRedirectsInput,
   current: Record<string, string | null>,
@@ -236,7 +268,7 @@ function card(
       (c) =>
         `A page uses ${c.fromPath} ("${c.pageTitle}"): once it is published, visitors see the page instead of this redirect.`,
     ),
-    "It goes live on your hosting right after you approve, without a Publish live.",
+    modeLine(input.goLive),
   ].join("\n\n");
 }
 
@@ -266,11 +298,12 @@ export const proposeExternalRedirectsOp = defineOperation({
     const preview = {
       summary: input.redirects.map((r) => `${r.fromPath} → ${r.url}`).join(", "),
       redirects: input.redirects,
+      goLive: input.goLive,
       current,
       pageConflicts: conflicts,
-      effect: "Live on the hosting right after approval.",
+      effect: modeLine(input.goLive),
     };
-    const payload = { redirects: input.redirects };
+    const payload = { redirects: input.redirects, goLive: input.goLive };
     const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
     const payloadHash = await hashProposalPayload(payload);
     try {
@@ -332,6 +365,20 @@ const executeDefinition = defineOperation({
   input: z.object({ proposalId: z.string().uuid() }).strict(),
   output: z.object({
     fromPaths: z.array(z.string()),
+    /**
+     * #1550 — `now`: the caller puts the saved rules live after this
+     * commit (`redirects.go_live_now` with `fromPaths`, as the approver).
+     */
+    goLive: z.enum(["next_publish", "now"]),
+    /**
+     * The pending changes this approval saved (address, id and revision):
+     * Go live now after it puts live exactly these `fromPath`s, bound to the
+     * id and revision, so a save in between is not put live. A rule already
+     * live as it is has no change here and nothing to put live.
+     */
+    changes: z.array(
+      z.object({ fromPath: z.string(), id: z.string(), revision: z.number().int() }),
+    ),
     /** Rules a page shares a path with; the page wins once it is published. */
     pageConflicts: z.array(z.object({ fromPath: z.string(), pageTitle: z.string() })),
     nextStep: z.string(),
@@ -340,7 +387,7 @@ const executeDefinition = defineOperation({
     const op = "redirects.execute_proposal";
     const rows = (await tx.execute(sql`
       SELECT payload, preview, status FROM redirect_pending_actions
-      WHERE id = ${input.proposalId}::uuid
+      WHERE id = ${input.proposalId}::uuid AND kind = 'set_external'
       FOR UPDATE
     `)) as unknown as {
       payload: unknown;
@@ -357,6 +404,17 @@ const executeDefinition = defineOperation({
       });
     }
     const payload = externalRedirectsInput.parse(row.payload);
+    // "Now" is Go live now: the approver needs the Publish live permission
+    // too. Refused before anything is saved; the proposal stays pending for
+    // someone who holds it.
+    if (payload.goLive === "now" && !(await actorHasPermission(tx, ctx, "deploy.trigger"))) {
+      return err({
+        kind: "HandlerError",
+        operation: op,
+        message:
+          "permission_denied: this proposal goes live now, without Publish live, which needs the Publish live permission (deploy.trigger) as well. Nothing was applied and the proposal stays pending — ask someone who holds it, or reject it and propose it for the next Publish live.",
+      });
+    }
     // Hosts and the hosting may have changed while the proposal waited.
     const problems = await externalRedirectProblems(tx, payload);
     if (problems.length > 0) {
@@ -368,42 +426,31 @@ const executeDefinition = defineOperation({
       };
     }
     // What the Owner saw is what gets replaced, or nothing is. The rows stay
-    // locked until the commit; a path that held none is guarded at the insert.
+    // locked until the commit.
     const now = await currentTargets(tx, payload, true);
-    const changedMessage = (paths: readonly string[]) => ({
-      kind: "HandlerError" as const,
-      operation: op,
-      message: `${paths.join(", ")} changed after this proposal was made, so applying it would overwrite that change. Nothing was applied: reject it and propose again (find_redirects shows the current rules).`,
-    });
     const changed = payload.redirects
       .map((r) => r.fromPath)
       .filter((p) => (now[p] ?? null) !== (row.preview.current[p] ?? null));
-    if (changed.length > 0) return err(changedMessage(changed));
-    for (const r of payload.redirects) {
-      // A table imported with `/`-terminated URLs may hold the other
-      // spelling; two rows for one address would stop every sync.
-      await tx.execute(sql`
-        DELETE FROM redirects
-        WHERE from_path = ANY(${textArray([...redirectFromPathSpellings(r.fromPath)])})
-          AND from_path <> ${r.fromPath}
-      `);
-      // A rule written since the check at a path that was free has no row
-      // lock to wait on: the conflict counts as a change, and all rolls back.
-      const replaces = now[r.fromPath] != null;
-      const written = (await tx.execute(sql`
-        INSERT INTO redirects (from_path, to_path, status_code, created_by)
-        VALUES (${r.fromPath}, ${r.url}, ${r.statusCode}, ${ctx.actorId}::uuid)
-        ON CONFLICT (from_path) DO UPDATE
-          SET to_path = EXCLUDED.to_path,
-              status_code = EXCLUDED.status_code,
-              created_by = EXCLUDED.created_by,
-              created_at = now()
-          WHERE ${replaces}
-        RETURNING 1 AS written
-      `)) as unknown as unknown[];
-      if (written.length === 0) throw new OperationAbortError(changedMessage([r.fromPath]));
+    if (changed.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: op,
+        message: `${changed.join(", ")} changed after this proposal was made, so applying it would overwrite that change. Nothing was applied: reject it and propose again (find_redirects shows the current rules).`,
+      });
     }
-    await requestRedirectSync(tx, ctx);
+    const written = await writeRedirectChanges(
+      tx,
+      payload.redirects.map((r) => ({
+        fromPath: r.fromPath,
+        toPath: r.url,
+        statusCode: r.statusCode,
+      })),
+      {
+        origin: "manual",
+        state: "staged",
+        owner: await ownerOfContext(tx, ctx, "redirects.execute_proposal"),
+      },
+    );
     await tx.execute(sql`
       UPDATE redirect_pending_actions
       SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
@@ -417,16 +464,36 @@ const executeDefinition = defineOperation({
       input,
       succeeded: true,
       entityId: input.proposalId,
-      resultSummary: payload.redirects.map((r) => `${r.fromPath} → ${r.url}`).join(", "),
+      resultSummary:
+        `${payload.goLive}: ${payload.redirects.map((r) => `${r.fromPath} → ${r.url}`).join(", ")}`.slice(
+          0,
+          500,
+        ),
     });
     const conflicts = await pageConflicts(ctx, tx, payload);
+    const changes = written.flatMap((o) =>
+      o.outcome === "pending" && o.changeId !== null && o.revision !== null
+        ? [{ fromPath: o.fromPath, id: o.changeId, revision: o.revision }]
+        : [],
+    );
+    const alreadyLive = written.filter((o) => o.outcome === "unchanged").map((o) => o.fromPath);
+    const saved =
+      changes.length === 0
+        ? "Already live as it is: nothing changed."
+        : `${
+            payload.goLive === "now"
+              ? "Saved; it goes live on the hosting now (Go live now)."
+              : "Saved Staged: staging serves it at once, the live site with the next Publish live."
+          }${alreadyLive.length > 0 ? ` Already live as it is: ${alreadyLive.join(", ")}.` : ""}`;
     return ok({
       fromPaths,
+      goLive: payload.goLive,
+      changes,
       pageConflicts: conflicts,
       nextStep:
         conflicts.length === 0
-          ? "Saved and being pushed to the hosting; Settings → Redirects shows when it is live."
-          : "Saved and being pushed to the hosting. A page shares a path with a rule: once it is published, visitors see the page. Remove the rule or move the page.",
+          ? saved
+          : `${saved} A page shares a path with a rule: once it is published, visitors see the page. Remove the rule or move the page.`,
     });
   },
 });
@@ -451,12 +518,26 @@ export const rejectRedirectProposalOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
+    const rejected = (await tx.execute(sql`
       UPDATE redirect_pending_actions
       SET status = 'rejected', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
           decision_reason = ${input.reason ?? null}
       WHERE id = ${input.proposalId}::uuid AND status = 'pending'
-    `);
+      RETURNING id
+    `)) as unknown as unknown[];
+    // #1550 — an approval that won the race (Go live now marks its proposal
+    // applied in the release's commit) is not rejected after the fact.
+    if (rejected.length === 0) {
+      const now = (await tx.execute(sql`
+        SELECT status FROM redirect_pending_actions WHERE id = ${input.proposalId}::uuid
+      `)) as unknown as { status: string }[];
+      return err({
+        kind: "HandlerError",
+        operation: "redirects.reject_proposal",
+        message: `Nothing was rejected: this proposal is ${now[0]?.status ?? "gone"} already.`,
+        refusal: true,
+      });
+    }
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -480,6 +561,8 @@ export const listPendingRedirectProposalsOp = defineOperation({
     proposals: z.array(
       z.object({
         id: z.string(),
+        /** #1550 — `set_external` (a target on another domain) or `go_live_now`. */
+        kind: z.enum(["set_external", "go_live_now"]),
         proposedBy: z.string(),
         payload: z.record(z.string(), z.unknown()),
         preview: z.record(z.string(), z.unknown()),
@@ -490,13 +573,15 @@ export const listPendingRedirectProposalsOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT id::text AS id, proposed_by::text AS proposed_by, payload, preview, status, created_at
+      SELECT id::text AS id, kind, proposed_by::text AS proposed_by, payload, preview, status,
+             created_at
       FROM redirect_pending_actions
       WHERE status = 'pending'
       ORDER BY created_at DESC
       LIMIT ${input.limit ?? 50}
     `)) as unknown as {
       id: string;
+      kind: "set_external" | "go_live_now";
       proposed_by: string;
       payload: unknown;
       preview: unknown;
@@ -506,6 +591,7 @@ export const listPendingRedirectProposalsOp = defineOperation({
     return ok({
       proposals: rows.map((r) => ({
         id: r.id,
+        kind: r.kind,
         proposedBy: r.proposed_by,
         payload: r.payload as Record<string, unknown>,
         preview: r.preview as Record<string, unknown>,

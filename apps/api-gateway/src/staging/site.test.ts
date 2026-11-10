@@ -117,7 +117,7 @@ function deps(over: Partial<StagingSiteDeps> = {}): StagingSiteDeps {
     provider: "gcp",
     storage: memoryStorage(),
     manifests: new ManifestCache(),
-    redirects: async () => [],
+    redirects: async () => ({ live: [], staged: [] }),
     failures: gateFailureLimiter(),
     api: async () =>
       new Response('{"ok":true}', { headers: { "content-type": "application/json" } }),
@@ -338,16 +338,30 @@ describe("#1330 staging gateway: serving the staged build", () => {
       { fromPath: "/about", toPath: "/elsewhere", statusCode: 301 },
       { fromPath: "/gone", toPath: "/", statusCode: 410 },
     ];
-    const redirect = await admitted("/old/?x=1", { redirects: async () => rows });
+    const redirect = await admitted("/old/?x=1", {
+      redirects: async () => ({ live: rows, staged: [] }),
+    });
     expect(redirect.status).toBe(301);
     expect(redirect.headers.get("location")).toBe("/about/?x=1");
     // A file of the build shadows its row.
-    expect((await admitted("/about/", { redirects: async () => rows })).status).toBe(200);
     expect(
-      (await admitted("/gone", { redirects: async () => rows, provider: "self-hosted" })).status,
+      (await admitted("/about/", { redirects: async () => ({ live: rows, staged: [] }) })).status,
+    ).toBe(200);
+    expect(
+      (
+        await admitted("/gone", {
+          redirects: async () => ({ live: rows, staged: [] }),
+          provider: "self-hosted",
+        })
+      ).status,
     ).toBe(410);
     expect(
-      (await admitted("/gone", { redirects: async () => rows, provider: "gcp-firebase" })).status,
+      (
+        await admitted("/gone", {
+          redirects: async () => ({ live: rows, staged: [] }),
+          provider: "gcp-firebase",
+        })
+      ).status,
     ).toBe(404);
   });
 
@@ -355,9 +369,66 @@ describe("#1330 staging gateway: serving the staged build", () => {
     const rows: RedirectTableRow[] = [
       { fromPath: "/termin", toPath: "https://calendar.example/book", statusCode: 302 },
     ];
-    const res = await admitted("/termin?x=1", { redirects: async () => rows });
+    const res = await admitted("/termin?x=1", {
+      redirects: async () => ({ live: rows, staged: [] }),
+    });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("https://calendar.example/book?x=1");
+  });
+
+  it("serves the staging view: Staged changes over the live rows, a change to a page the build lacks waits (#1550)", async () => {
+    const live: RedirectTableRow[] = [
+      { fromPath: "/promo", toPath: "/", statusCode: 302 },
+      { fromPath: "/retired", toPath: "/", statusCode: 301 },
+      { fromPath: "/campaign", toPath: "/", statusCode: 302 },
+    ];
+    const staged = [
+      // A change whose target the staged build serves: staging answers it.
+      {
+        id: "c1",
+        address: "/promo",
+        fromPath: "/promo",
+        toPath: "/about",
+        statusCode: 302,
+        automatic: false,
+      },
+      // A removal: the live rule is gone on staging.
+      {
+        id: "c2",
+        address: "/retired",
+        fromPath: "/retired",
+        toPath: null,
+        statusCode: null,
+        automatic: false,
+      },
+      // A target the staged build does not have: the live rule keeps answering.
+      {
+        id: "c3",
+        address: "/campaign",
+        fromPath: "/campaign",
+        toPath: "/not-staged",
+        statusCode: 302,
+        automatic: false,
+      },
+      // A new rule to a page the build lacks: nothing answers yet.
+      {
+        id: "c4",
+        address: "/new",
+        fromPath: "/new",
+        toPath: "/not-staged",
+        statusCode: 301,
+        automatic: false,
+      },
+    ];
+    const view = { redirects: async () => ({ live, staged }) };
+    const promo = await admitted("/promo", view);
+    expect(promo.status).toBe(302);
+    expect(promo.headers.get("location")).toBe("/about/");
+    expect((await admitted("/retired", view)).status).toBe(404);
+    const campaign = await admitted("/campaign", view);
+    expect(campaign.status).toBe(302);
+    expect(campaign.headers.get("location")).toBe("/");
+    expect((await admitted("/new", view)).status).toBe(404);
   });
 
   it("says so when nothing is staged yet, or the served slot holds another run", async () => {
