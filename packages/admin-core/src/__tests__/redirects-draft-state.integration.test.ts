@@ -18,13 +18,14 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { sql } from "drizzle-orm";
 import type { FilteredTool } from "../ai/chat-runner/tool-catalogue.js";
 import { attachGatedExecute } from "../ai/tools/gated-tools.js";
 import { proposeExternalRedirectTool } from "../ai/tools/propose-external-redirect.js";
 import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import { drainProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
 import { liveRedirectsFingerprint, loadLiveRedirectRows } from "../redirects/model.js";
-import { releaseRedirectChanges } from "../redirects/release.js";
+import { lockLiveRedirectWrites, releaseRedirectChanges } from "../redirects/release.js";
 import { retargetPendingRedirects } from "../redirects/write.js";
 import { registerAdminOps } from "../register.js";
 import {
@@ -319,6 +320,56 @@ describe("a save is a pending change, never live (#1550)", () => {
     expect(await liveRedirects(ADMIN_URL as string, `${P}-again`)).toEqual([
       { fromPath: `${P}-again`, toPath: "/", statusCode: 301 },
     ]);
+  });
+
+  it("a save that meets a release in flight decides on what the release committed", async () => {
+    await seedLiveRedirects(ADMIN_URL as string, SYSTEM_ID, [
+      { fromPath: `${P}-inflight`, toPath: "/", statusCode: 301 },
+    ]);
+    await op(OWNER, "redirects.delete_many", { fromPaths: [`${P}-inflight`] });
+    // A release of that Staged removal: its writes done, not yet committed.
+    let commit!: () => void;
+    const held = new Promise<void>((r) => {
+      commit = r;
+    });
+    let wrote!: () => void;
+    const written = new Promise<void>((r) => {
+      wrote = r;
+    });
+    const releasing = adapter.withAdminTransaction(SYS, async (tx) => {
+      await lockLiveRedirectWrites(tx);
+      await tx.execute(sql`
+        SELECT 1 FROM pending_redirects WHERE address = ${`${P}-inflight`} FOR UPDATE`);
+      await tx.execute(sql`DELETE FROM redirects WHERE address = ${`${P}-inflight`}`);
+      await tx.execute(sql`DELETE FROM pending_redirects WHERE address = ${`${P}-inflight`}`);
+      wrote();
+      await held;
+    });
+    await written;
+    // The editor deletes the rule again meanwhile: the save waits for the release.
+    const saving = execute(registry, adapter, OWNER, "redirects.delete_many", {
+      fromPaths: [`${P}-inflight`],
+    });
+    for (let waited = 0; ; waited += 25) {
+      const blocked = await asSystem(
+        ADMIN_URL as string,
+        async (tx) =>
+          (await tx`SELECT count(*)::int AS n FROM pg_stat_activity
+                    WHERE datname = current_database() AND wait_event_type = 'Lock'`) as {
+            n: number;
+          }[],
+      );
+      if ((blocked[0]?.n ?? 0) > 0) break;
+      if (waited > 5_000) throw new Error("the save never waited for the release");
+      await Bun.sleep(25);
+    }
+    commit();
+    await releasing;
+    expect((await saving).ok).toBe(true);
+    // No removal of a rule that is gone: the list still shows the address.
+    expect(await liveRedirects(ADMIN_URL as string, `${P}-inflight`)).toEqual([]);
+    expect(await pendingRedirects(ADMIN_URL as string, `${P}-inflight`)).toEqual([]);
+    await op(OWNER, "redirects.list", { query: `${P}-inflight` });
   });
 
   it("one pending change per address: a new one replaces the other chat's, and the result says so", async () => {

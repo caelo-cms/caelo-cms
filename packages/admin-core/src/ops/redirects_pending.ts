@@ -192,16 +192,19 @@ async function currentTargets(
   lock = false,
 ): Promise<Record<string, string | null>> {
   const addresses = textArray(input.redirects.map((r) => redirectAddress(r.fromPath)));
+  // Locked, the pending rows before the live ones, as every writer takes
+  // them (redirects/release.ts).
+  const pending = (await tx.execute(sql`
+    SELECT address, to_path, status_code FROM pending_redirects WHERE address = ANY(${addresses})
+    ORDER BY address
+    ${lock ? sql`FOR UPDATE` : sql``}
+  `)) as unknown as { address: string; to_path: string | null; status_code: number | null }[];
   const live = (await tx.execute(sql`
     SELECT address, to_path, status_code FROM redirects
     WHERE address = ANY(${addresses})
     ORDER BY from_path
     ${lock ? sql`FOR UPDATE` : sql``}
   `)) as unknown as { address: string; to_path: string; status_code: number }[];
-  const pending = (await tx.execute(sql`
-    SELECT address, to_path, status_code FROM pending_redirects WHERE address = ANY(${addresses})
-    ${lock ? sql`FOR UPDATE` : sql``}
-  `)) as unknown as { address: string; to_path: string | null; status_code: number | null }[];
   const byAddress = new Map<string, string | null>();
   for (const r of live) {
     if (!byAddress.has(r.address)) byAddress.set(r.address, `${r.to_path} (${r.status_code})`);

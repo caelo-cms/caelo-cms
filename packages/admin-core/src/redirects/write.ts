@@ -104,8 +104,14 @@ export async function writeRedirectChanges(
   }
   if (changes.length === 0) return [];
   const addresses = [...new Set(changes.map((c) => redirectAddress(c.fromPath)))];
-  const live = await liveRowsByAddress(tx, addresses);
+  // The pending rows first, then the live ones, both locked: the order every
+  // release takes them in (release.ts). A release in flight holds the
+  // pending row, so this waits for its commit and then reads the live rules
+  // it committed, never the ones it replaced (a removal saved against a
+  // rule a release just removed would be a removal of nothing). A live
+  // write without a pending row (the take-over, a rollback) waits for this.
   const pending = await pendingByAddress(tx, addresses, true);
+  const live = await liveRowsByAddress(tx, addresses, true);
   const titles = await chatTitles(
     tx,
     [...pending.values()].map((p) => p.chatSessionId),

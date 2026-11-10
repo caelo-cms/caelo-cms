@@ -222,9 +222,12 @@ export async function pendingByAddress(
   lock = false,
 ): Promise<Map<string, PendingRedirectRow>> {
   if (addresses.length === 0) return new Map();
+  // By address, as a release locks them: two writers of overlapping
+  // addresses take the rows in the same order.
   const rows = (await tx.execute(sql`
     SELECT ${PENDING_COLUMNS} FROM pending_redirects p
     WHERE p.address = ANY(${textArray([...addresses])})
+    ORDER BY p.address
     ${lock ? sql`FOR UPDATE OF p` : sql``}
   `)) as unknown as PendingDbRow[];
   return new Map(rows.map((r) => [r.address, pendingRowOf(r)]));

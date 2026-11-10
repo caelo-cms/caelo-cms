@@ -101,6 +101,11 @@ const rulesOf = (rows: readonly RedirectTableRow[]): LoggedRules =>
  * now never interleaves with a Publish live's finish, an Owner's
  * production build or a rollback. Long runs hold the lease itself
  * (live-release-lock.ts); this lock covers the seconds of the write.
+ *
+ * Within it, every writer of these tables locks an address's pending row
+ * before its live rows (a save in `writeRedirectChanges` too), so two of
+ * them wait for each other instead of deadlocking, and a save decides on
+ * the live rules a release committed, never on the ones it replaced.
  */
 export async function lockLiveRedirectWrites(tx: TransactionRunner): Promise<void> {
   await ensureLeaseRow(tx, LIVE_RELEASE_LEASE);
@@ -278,6 +283,9 @@ export async function takeOverRedirectsOnFirstPublishedPages(
     .flatMap((p) => redirectFromPathSpellings(p.path));
   if (spellings.length === 0) return 0;
   await lockLiveRedirectWrites(tx);
+  const addresses = [...new Set(spellings.map((s) => redirectAddress(s)))];
+  // The pending rows before the live ones, as every writer takes them.
+  await pendingByAddress(tx, addresses, true);
   const gone = (await tx.execute(sql`
     DELETE FROM redirects WHERE from_path = ANY(${textArray(spellings)})
     RETURNING from_path, to_path, status_code
@@ -286,9 +294,7 @@ export async function takeOverRedirectsOnFirstPublishedPages(
   // nothing is left to remove, and a removal without a live rule is no row
   // the redirects list can show.
   await tx.execute(sql`
-    DELETE FROM pending_redirects
-    WHERE address = ANY(${textArray([...new Set(spellings.map((s) => redirectAddress(s)))])})
-      AND to_path IS NULL
+    DELETE FROM pending_redirects WHERE address = ANY(${textArray(addresses)}) AND to_path IS NULL
   `);
   const byAddress = new Map<string, RedirectTableRow[]>();
   for (const r of gone) {
@@ -437,8 +443,9 @@ export async function rollBackRedirectReleases(
       `)) as unknown as { address: string; after_rules: unknown }[]
     ).map((r) => [r.address, loggedRulesSchema.parse(r.after_rules)]),
   );
-  const live = await liveRowsByAddress(tx, addresses, true);
+  // The pending rows before the live ones, as every writer takes them.
   const pending = await pendingByAddress(tx, addresses, true);
+  const live = await liveRowsByAddress(tx, addresses, true);
   const restored: string[] = [];
   const restaged: string[] = [];
   const skipped: { address: string; reason: string }[] = [];

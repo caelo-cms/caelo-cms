@@ -912,6 +912,7 @@ export const setRedirectChangesStateOp = defineOperation({
       (await tx.execute(sql`
         SELECT ${PENDING_COLUMNS} FROM pending_redirects p
         WHERE p.address = ANY(${textArray(addresses)})
+        ORDER BY p.address
         FOR UPDATE OF p
       `)) as unknown as PendingDbRow[]
     ).map(pendingRowOf);
