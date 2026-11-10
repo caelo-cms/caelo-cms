@@ -23,6 +23,7 @@
 
 import type { JobReporter } from "../reporting-jobs/job-reporter.js";
 import {
+  deferAttempt,
   faultWatchingReporter,
   isPassingReportFault,
   JobStoppedError,
@@ -166,15 +167,27 @@ export async function runQualityAuditJob(
     if (e instanceof JobStoppedError) throw e;
     failure = e;
   }
+  // A read still in flight means a check stopped waiting for it (it timed
+  // out first): the outcome raced the admin, whatever the read ends with.
+  // Let every read end, so a fault it ends with is seen, then give the
+  // attempt back.
+  const raced = watched.inFlight();
+  if (raced.length > 0) await watched.settled();
   const fault = watched.fault() ?? (isPassingReportFault(failure) ? failure : null);
-  if (fault !== null) {
-    // The admin was starting, busy or unreachable for one of the audit's
-    // reads: another attempt may get the answer. Give this one back with
-    // the reason; the next tick starts the next attempt, and after the last
-    // one the audit fails with that reason. Nothing spoiled is recorded.
-    const reason = (fault instanceof Error ? fault.message : String(fault)).slice(0, 1000);
-    await reporter.call("defer", { reason }).catch(() => undefined);
-    throw fault;
+  if (fault !== null || raced.length > 0) {
+    // The admin was starting, busy, unreachable or slower than a check for
+    // one of the audit's reads: another attempt may get the answer in time.
+    // Give this one back with the reason; the next tick starts the next
+    // attempt, and after the last one the audit fails with that reason.
+    // Nothing spoiled is recorded.
+    await deferAttempt(
+      reporter,
+      fault !== null
+        ? fault instanceof Error
+          ? fault.message
+          : String(fault)
+        : `a check stopped waiting for the admin's answer to ${[...new Set(raced)].join(", ")}`,
+    );
   }
   await reporter.call(
     "result",
