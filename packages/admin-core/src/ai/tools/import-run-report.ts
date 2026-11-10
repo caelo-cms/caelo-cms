@@ -107,6 +107,8 @@ interface Report {
   crawlScope: { pathPrefix?: string; locale?: string } | null;
   skippedOutOfScope: number;
   crawlSkipped: { url: string; reason: string }[];
+  // #1360 — renders against the budget, from the admin's own counter.
+  renderBudget: { used: number; budget: number; maxPages: number };
   pagesMissingScreenshot: number;
   // issue #423 — visual-ground-truth ledger (see imports.get_run_report).
   captureStats: { captured: number; failed: number; skipped: number };
@@ -292,6 +294,12 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
             .slice(0, 8)
             .map((s) => siteData(`${s.url} (${s.reason})`))
             .join("; ")}${v.crawlSkipped.length > 8 ? "; …" : ""}`
+        : "",
+      // #1360 — a spent render budget ended the crawl early. Stated from the
+      // admin's own counter, so it holds also when the capped skip list
+      // above is full of other skips.
+      v.renderBudget.used >= v.renderBudget.budget
+        ? `Render budget spent: the crawl used all ${v.renderBudget.budget} renders it may ask for (three per page of its page cap of ${v.renderBudget.maxPages}, plus 50) and ended with the pages it had. The URLs it found but did not crawl are skipped as "not crawled". Renders that make no page spend it too: links that redirect to a page already crawled, non-HTML responses, pages in another language. Tell the operator. To import the rest: propose_site_import with the missing pages in \`urls\` (each is rendered once).`
         : "",
       // issue #247/#423 — design ground truth status. The capture ledger
       // is always reported (n captured / n failed / n skipped — CLAUDE.md

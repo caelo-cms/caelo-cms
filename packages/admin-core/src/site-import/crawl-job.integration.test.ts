@@ -481,6 +481,12 @@ describe("a site import's crawl in its job (#1360)", () => {
       expect(notCrawled[0]?.reason).toContain(`used its ${renderBudget(maxPages)} renders`);
       expect(notCrawled.map((s) => s.url)).toContain(`${origin}/p0`);
       expect(await jobRow(runId)).toEqual({ state: "done", attempt: 1 });
+      // The run report says why the crawl ended, from the admin's own counter.
+      const ctx = { adapter, registry, chatSessionId: "crawl-job-test" } as ToolContext;
+      const report = await getImportRunReportTool.handler(SYSTEM, { runId }, ctx);
+      expect(report.content).toContain(
+        `Render budget spent: the crawl used all ${renderBudget(maxPages)} renders`,
+      );
     } finally {
       server.stop(true);
     }

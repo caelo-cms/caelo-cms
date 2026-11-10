@@ -105,8 +105,10 @@ export const claimCrawlOp = defineOperation({
 
 /**
  * Renders one crawl may ask for: each page once, the second pass twice
- * (one retry), and slack for redirects. A crawl past it is a job gone
- * wrong, not a site.
+ * (one retry), and slack for redirects. It bounds what a job can make the
+ * admin render. A crawl that spends it ends with the pages it has (#1360):
+ * renders that make no page spend it too (a redirect to a page already
+ * crawled, a non-HTML response, a page in another language).
  */
 export function renderBudget(maxPages: number): number {
   return 3 * maxPages + 50;
@@ -121,7 +123,10 @@ export const takeRenderOp = defineOperation({
   database: "cms_admin",
   input: z.object({ runId }).strict(),
   output: z.object({
-    /** `taken`: render it; `not-crawling`: the run ended; `over-budget`: refused. */
+    /**
+     * `taken`: render it; `not-crawling`: the run ended; `over-budget`: the
+     * run spent its budget, so nothing more is rendered and the crawl ends.
+     */
     state: z.enum(["taken", "not-crawling", "over-budget"]),
     budget: z.number().int().nullable(),
   }),

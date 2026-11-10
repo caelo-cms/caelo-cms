@@ -63,6 +63,7 @@ import {
   majorUnitsToMicrocents,
   roundsToZeroMicrocents,
 } from "./imports-cost.js";
+import { renderBudget } from "./imports-crawl.js";
 import {
   importCrawlScopeSchema,
   normalizeStoredCrawlScope,
@@ -2252,6 +2253,11 @@ export const getImportRunReportOp = defineOperation({
     /** issue #425 — skipped URLs with why (out-of-scope, wrong-locale,
      *  redirect duplicates), capped like `crawlErrors`. */
     crawlSkipped: z.array(z.object({ url: z.string(), reason: z.string() })),
+    /** #1360 — the crawl's renders against its budget, from the admin's own
+     *  counter. `used >= budget`: the crawl spent it and ended with the
+     *  pages it had, also when the capped `crawlSkipped` holds no
+     *  "not crawled" entry. */
+    renderBudget: z.object({ used: z.number(), budget: z.number(), maxPages: z.number() }),
     /** issue #247 — pages with NO source screenshot. Each also carries
      *  a screenshot_missing note; downstream verification (WS4) treats
      *  them as UNVERIFIED. */
@@ -2331,7 +2337,7 @@ export const getImportRunReportOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
       SELECT source_url, status, pages_seen, pages_extracted, crawl_state, crawl_scope,
-             site_design_tokens, boilerplate_summary
+             site_design_tokens, boilerplate_summary, max_pages, crawl_renders
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as Array<{
       source_url: string;
@@ -2342,6 +2348,8 @@ export const getImportRunReportOp = defineOperation({
       crawl_scope: unknown;
       site_design_tokens: unknown;
       boilerplate_summary: unknown;
+      max_pages: number;
+      crawl_renders: number;
     }>;
     const run = runRows[0];
     if (!run) {
@@ -2488,6 +2496,11 @@ export const getImportRunReportOp = defineOperation({
       crawlScope: normalizeStoredCrawlScope(run.crawl_scope),
       skippedOutOfScope,
       crawlSkipped,
+      renderBudget: {
+        used: run.crawl_renders,
+        budget: renderBudget(run.max_pages),
+        maxPages: run.max_pages,
+      },
       pagesMissingScreenshot: pages.filter((p) => p.screenshot_object_key === null).length,
       captureStats,
       siteDesignTokens: run.site_design_tokens ?? null,
