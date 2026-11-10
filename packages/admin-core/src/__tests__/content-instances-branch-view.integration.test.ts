@@ -16,7 +16,8 @@
  *   - #1042 — nested-ref validation reads the owning module's fields as
  *     the chat edited them.
  *   - #1062 — `content_instances.list_module_peers` returns only the
- *     instances of the modules a write touched (module-scoped read).
+ *     instances of the modules a write touched that hold a written value
+ *     (#1269: an index lookup, not the module's instances).
  *
  * Integration tier against a throwaway Postgres (never the dev DB).
  */
@@ -416,38 +417,70 @@ describe("#1042 — nested-ref validation reads the chat's module schema", () =>
   });
 });
 
-describe("#1062 — list_module_peers reads only the touched modules", () => {
-  it("resolves module ids, instance ids and the chat's placements; other modules are absent", async () => {
-    const pageId = await livePage("peers", ["P0"]);
-    const chat = await draftChat("peers");
-    // On the chat, position 0 becomes a hero: the placement resolves to hero.
-    await op(chat, "pages.set_modules", {
-      pageId,
-      blocks: [{ blockName: "content", moduleIds: [heroId] }],
-    });
-    type Peers = { instances: { moduleId: string; placementCount: number }[] };
-    const byPlacement = await op<Peers>(chat, "content_instances.list_module_peers", {
-      placements: [{ pageId, blockName: "content", position: 0 }],
-    });
-    expect(byPlacement.instances.length).toBeGreaterThan(0);
-    expect(new Set(byPlacement.instances.map((i) => i.moduleId))).toEqual(new Set([heroId]));
+describe("#1062 — list_module_peers reads only the touched modules' instances holding a written value", () => {
+  it("matches the written values, in the caller's view; other modules and other values are absent", async () => {
+    const same = `A repeated card title for the peer hint ${TS}`;
+    const pageId = await livePage("peers", [same, same, `A different card title ${TS}`]);
+    const other = await livePage("peers-2", [same]);
+    type Peers = { instances: { id: string; moduleId: string; values: { title?: string } }[] };
+    const matches = [{ field: "title", value: same }];
     const onMain = await op<Peers>(SYS, "content_instances.list_module_peers", {
-      placements: [{ pageId, blockName: "content", position: 0 }],
+      moduleIds: [cardId],
+      matches,
     });
-    expect(new Set(onMain.instances.map((i) => i.moduleId))).toEqual(new Set([cardId]));
-
-    const cardInstance = (
-      await op<{ instances: { id: string }[] }>(SYS, "content_instances.list", { pageId })
-    ).instances[0]?.id as string;
-    const byInstance = await op<Peers>(SYS, "content_instances.list_module_peers", {
-      contentInstanceIds: [cardInstance],
-    });
-    expect(byInstance.instances.every((i) => i.moduleId === cardId)).toBe(true);
-    const byModule = await op<Peers>(SYS, "content_instances.list_module_peers", {
+    expect(onMain.instances).toHaveLength(3);
+    expect(onMain.instances.every((i) => i.moduleId === cardId && i.values.title === same)).toBe(
+      true,
+    );
+    // Another module holds none of them.
+    const hero = await op<Peers>(SYS, "content_instances.list_module_peers", {
       moduleIds: [heroId],
+      matches,
     });
-    expect(byModule.instances.every((i) => i.moduleId === heroId)).toBe(true);
-    expect((await op<Peers>(SYS, "content_instances.list_module_peers", {})).instances).toEqual([]);
+    expect(hero.instances).toEqual([]);
+
+    // In a chat: the third card gets the same title, the copy on the other
+    // page another one. The chat's view decides; main is unchanged.
+    const chat = await draftChat("peers");
+    await op(chat, "page_module_content.set", {
+      pageId,
+      blockName: "content",
+      position: 2,
+      contentValues: { title: same },
+    });
+    await op(chat, "page_module_content.set", {
+      pageId: other,
+      blockName: "content",
+      position: 0,
+      contentValues: { title: `Changed in the chat ${TS}` },
+    });
+    const inChat = await op<Peers>(chat, "content_instances.list_module_peers", {
+      placements: [{ pageId, blockName: "content", position: 0 }],
+      matches,
+    });
+    expect(inChat.instances).toHaveLength(3);
+    expect(inChat.instances.every((i) => i.values.title === same)).toBe(true);
+    const mainAgain = await op<Peers>(SYS, "content_instances.list_module_peers", {
+      moduleIds: [cardId],
+      matches,
+    });
+    expect(mainAgain.instances.map((i) => i.id).sort()).toEqual(
+      onMain.instances.map((i) => i.id).sort(),
+    );
+
+    // Without a value to match there is nothing to read: refused.
+    const none = await run(SYS, "content_instances.list_module_peers", { moduleIds: [cardId] });
+    expect(none.ok).toBe(false);
+  });
+
+  it("the rebuild finds the value hashes the triggers kept exact (0658)", async () => {
+    const r = await op<{ rows: number; drift: { missing: number; extra: number } }>(
+      SYS,
+      "content_instances.rebuild_value_hashes",
+      {},
+    );
+    expect(r.drift).toEqual({ missing: 0, extra: 0 });
+    expect(r.rows).toBeGreaterThan(0);
   });
 });
 
