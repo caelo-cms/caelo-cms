@@ -117,7 +117,12 @@ describe("withFieldMarkupGuard — shared-content hint", () => {
     expect(r.content).toStartWith("written. 🎯 shared-content: `lead` of module");
     // Module-scoped: one peers read for MOD, never the whole library.
     expect(reads.map((x) => x.name)).toEqual(["content_instances.list_module_peers"]);
-    expect(reads[0]?.input).toEqual({ moduleIds: [MOD], contentInstanceIds: [], placements: [] });
+    expect(reads[0]?.input).toEqual({
+      moduleIds: [MOD],
+      contentInstanceIds: [],
+      placements: [],
+      matches: [{ field: "lead", value: LEAD }],
+    });
   });
 
   it("passes placement writes to the strict peer lookup as coordinates only", async () => {
@@ -150,6 +155,7 @@ describe("withFieldMarkupGuard — shared-content hint", () => {
       moduleIds: [],
       contentInstanceIds: [],
       placements: [{ pageId: PAGE, blockName: "content", position: 2 }],
+      matches: [{ field: "lead", value: LEAD }],
     });
     expect(r.content).toStartWith("written. 🎯 shared-content:");
   });
