@@ -10,7 +10,7 @@
  * failed check also needs deploy.trigger, like Publish live itself.
  */
 
-import { describeError } from "@caelo-cms/admin-core";
+import { describeError, executeBuild } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -58,9 +58,17 @@ export const actions: Actions = {
     );
     if (!proposal) return fail(404, { error: "proposal not found or no longer pending" });
     if (proposal.kind === "publish_anyway") requirePermission(locals, "deploy.trigger");
-    const r = await execute(registry, adapter, locals.ctx, "quality_audits.execute_proposal", {
-      proposalId,
-    });
+    // #1574 — publishing over the failed check runs inside the request a
+    // carrier job holds open (a closed tab does not stop it); accepting
+    // findings builds nothing.
+    const r =
+      proposal.kind === "publish_anyway"
+        ? await executeBuild({ adapter, registry }, locals.ctx, "quality_audits.execute_proposal", {
+            proposalId,
+          })
+        : await execute(registry, adapter, locals.ctx, "quality_audits.execute_proposal", {
+            proposalId,
+          });
     if (!r.ok) return fail(400, { error: describeError(r.error) });
     const v = r.value as { kind: string; accepted?: number };
     return {

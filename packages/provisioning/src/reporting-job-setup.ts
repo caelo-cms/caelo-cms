@@ -5,7 +5,8 @@
  * Google Cloud install (`gcp`, `gcp-firebase`): a Cloud Run job that runs
  * long, bounded work (a Stage's quality audit, #1359; a site import's crawl,
  * #1360) outside the admin and reports back to it by request, so the admin
- * only works inside requests (CLAUDE.md §11.B Tier 5). Run by the wizard
+ * only works inside requests (CLAUDE.md §11.B Tier 5) — or, the build
+ * carrier (#1574), holds the request a build runs in. Run by the wizard
  * after `pulumi up` and by `cms-provision upgrade`'s converge (and the
  * converge job), as the operator's or the provisioner's identity. App-roll
  * moves the job's image with the admin's (upgrade/admin-image-jobs.ts):
@@ -24,7 +25,8 @@
  *   - `roles/logging.logWriter`.
  *
  * plus its kind's own grants (the audit runner: {@link auditRunnerJobSpec};
- * the site-import crawler has none, {@link importCrawlJobSpec}).
+ * the site-import crawler and the build carrier have none,
+ * {@link importCrawlJobSpec}, {@link buildCarrierJobSpec}).
  * Nothing else: no Secret Manager, no Cloud SQL, no VPC egress. Passing IAP
  * reaches nothing by itself: the admin's report endpoint takes a report of
  * a kind only from that kind's account AND with the token the admin minted
@@ -48,6 +50,8 @@ import {
   auditJobResource,
   auditRunnerJobName,
   auditRunnerServiceAccountId,
+  buildCarrierJobName,
+  buildCarrierServiceAccountId,
   gcpBucketName,
   importCrawlJobName,
   importCrawlServiceAccountId,
@@ -185,6 +189,34 @@ export function importCrawlJobSpec(
     // admin-core JOB_TIMING.site_import.maxRunSeconds: a longer crawl goes
     // on in the next attempt, from its checkpoint.
     taskTimeoutSeconds: 6 * 3600,
+    readBuckets: [],
+    runJobs: [],
+  };
+}
+
+/**
+ * The build carrier (#1574): one Stage's, Publish live's or production
+ * build's request. It sends one report, `run`, and the admin runs the build
+ * inside that request on its own database and rights, so the carrier holds
+ * nothing beyond the shared grants: it reads nothing, fetches nothing,
+ * builds nothing. Smallest machine: it only waits for the answer.
+ */
+export function buildCarrierJobSpec(
+  target: Pick<ReportingJobTarget, "provider" | "env">,
+): ReportingJobSpec {
+  return {
+    label: "build carrier",
+    jobName: buildCarrierJobName(target.env),
+    serviceAccountId: buildCarrierServiceAccountId(target.env),
+    displayName: "Caelo build carrier",
+    description:
+      "Holds the admin request a Stage, Publish live or production build runs in, so the build ends when nobody waits for it; reports to the admin, nothing else.",
+    env: [`CAELO_PROVIDER=${target.provider}`],
+    cpu: "1",
+    memory: "512Mi",
+    // admin-core JOB_TIMING.build.maxRunSeconds: the admin's request limit
+    // (the build stops two minutes before it) plus room to start and end.
+    taskTimeoutSeconds: 3600 + 5 * 60,
     readBuckets: [],
     runJobs: [],
   };
@@ -388,4 +420,12 @@ export function ensureImportCrawlJob(
   deps: { run?: GcloudRunner; sleep?: Sleep } = {},
 ): Promise<ReportingJobResult> {
   return ensureReportingJob(target, importCrawlJobSpec(target), deps);
+}
+
+/** Ensure the build carrier (#1574). */
+export function ensureBuildCarrierJob(
+  target: ReportingJobTarget,
+  deps: { run?: GcloudRunner; sleep?: Sleep } = {},
+): Promise<ReportingJobResult> {
+  return ensureReportingJob(target, buildCarrierJobSpec(target), deps);
 }

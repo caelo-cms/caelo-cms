@@ -78,6 +78,7 @@ export async function main(env: Record<string, string | undefined> = process.env
       adminUrl: order.adminUrl,
       token: order.token,
       credential: serviceAccountIapCredential(order.adminUrl),
+      timeoutMs: JOB_TIMING[order.kind].reportTimeoutSeconds * 1000,
     }),
   );
   console.log(

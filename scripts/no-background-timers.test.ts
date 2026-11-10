@@ -45,6 +45,10 @@ const ALLOWED: Record<string, string> = {
     "a long Power-MCP tool call keeps its agent listed while the call runs",
   "packages/admin-core/src/reporting-jobs/run-job.ts":
     "a reporting job's lease renewal while its attempt runs (in the job's container; inside the admin only on self-hosted and development installs), cleared when the attempt ends",
+  "apps/admin/src/lib/server/reporting-jobs.ts":
+    "a long report's keep-alive (#1574: the build carrier's `run`), cleared when its answer is written or the job is gone",
+  "packages/admin-core/src/build-carrier/stop-watch.ts":
+    "a carried build's look for the operator's Stop on its order (#1574), cleared when the build ends",
   "packages/plugin-host/src/activation-lock.ts":
     "a plugin activation's lock renewal while the activation runs",
   "packages/plugin-host/src/change-consumers.ts":

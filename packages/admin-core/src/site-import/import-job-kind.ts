@@ -175,6 +175,9 @@ export const siteImportJobKind: ReportingJobKindDef = {
     aws: "issue #749: an ECS task per site import",
     azure: "issue #750: a Container Apps job per site import",
   },
+  // One crawl at a time in-process: crawls take turns at the one shared browser.
+  inProcess: "in-line",
+  unstarted: "start",
   actions: {
     start: {
       input: z.object({}).strict(),

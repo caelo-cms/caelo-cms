@@ -53,6 +53,7 @@ import { z } from "zod";
 import {
   auditRunnerServiceAccountEmail,
   auditServiceAccountEmail,
+  buildCarrierServiceAccountEmail,
   captureServiceAccountEmail,
   gatewayServiceAccountEmail,
   importCrawlServiceAccountEmail,
@@ -263,6 +264,12 @@ export function upgraderAccessChecks(target: {
       // #1360 — and the site-import crawler.
       need: "run the site-import crawler as its service account after moving it",
       resource: sa(importCrawlServiceAccountEmail(projectId, env)),
+      permissions: ["iam.serviceAccounts.actAs"],
+    },
+    {
+      // #1574 — and the build carrier.
+      need: "run the build carrier as its service account after moving it",
+      resource: sa(buildCarrierServiceAccountEmail(projectId, env)),
       permissions: ["iam.serviceAccounts.actAs"],
     },
     {

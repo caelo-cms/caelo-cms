@@ -331,6 +331,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   reporting_jobs: LEASE,
   reporting_job_uploads:
     "#1359: the parts of a job's report too large for one request, read by the action that names them",
+  build_orders:
+    "#1574: what a build carrier's request builds and how it ended, read by the request that waits for it; the deploy run is the build's record",
 
   import_runs: "site-import runs; reach editors as the op-classified `crawl` topic",
   import_pages: "crawled pages of a site import, before they become pages",

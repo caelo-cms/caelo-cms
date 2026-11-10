@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError, stageChatSessions } from "@caelo-cms/admin-core";
+import { carryStage, describeError, executeBuild } from "@caelo-cms/admin-core";
 import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -803,10 +803,17 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const r = await execute(registry, adapter, locals.ctx, "quality_audits.publish_anyway", {
-      auditRunId: String(form.get("auditRunId") ?? ""),
-      reason: String(form.get("reason") ?? ""),
-    });
+    // #1574 — inside the request a carrier job holds open, so a closed tab
+    // does not stop it mid-way.
+    const r = await executeBuild(
+      { adapter, registry },
+      locals.ctx,
+      "quality_audits.publish_anyway",
+      {
+        auditRunId: String(form.get("auditRunId") ?? ""),
+        reason: String(form.get("reason") ?? ""),
+      },
+    );
     if (!r.ok) return fail(400, { error: describeError(r.error) });
     return { published: true };
   },
@@ -822,8 +829,10 @@ export const actions: Actions = {
     // The whole flow — #553 classification before the merge, merge
     // (deferConsume), staging build, finalize only on build success, audit
     // enqueue — lives in admin-core's stageChatSessions, shared with the
-    // Open changes overview's multi-chat Stage (issue #620).
-    const staged = await stageChatSessions({ adapter, registry }, locals.ctx, [chatSessionId]);
+    // Open changes overview's multi-chat Stage (issue #620). #1574 — it runs
+    // inside the request a carrier job holds open: a closed tab does not
+    // stop it, and this request waits for it as before.
+    const staged = await carryStage({ adapter, registry }, locals.ctx, [chatSessionId]);
     if (!staged.ok) return fail(500, { error: staged.error.message });
     const summary = staged.value;
     const {
@@ -957,10 +966,16 @@ export const actions: Actions = {
       }
     }
 
-    const productionDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
-      targetName: "production",
-      ...(changedPageIds && changedPageIds.length > 0 ? { changedPageIds } : {}),
-    });
+    // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
+    const productionDeploy = await executeBuild(
+      { adapter, registry },
+      locals.ctx,
+      "deploy.trigger",
+      {
+        targetName: "production",
+        ...(changedPageIds && changedPageIds.length > 0 ? { changedPageIds } : {}),
+      },
+    );
     if (!productionDeploy.ok) {
       // run #10 D6 — stderr breadcrumb on the publish path (same
       // rationale as stageAndDeployStaging/#267): the inline alert and
@@ -1010,7 +1025,8 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const promote = await execute(registry, adapter, locals.ctx, "deploy.promote", {
+    // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
+    const promote = await executeBuild({ adapter, registry }, locals.ctx, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
     });

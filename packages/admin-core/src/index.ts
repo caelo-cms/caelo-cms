@@ -70,6 +70,9 @@ export {
   bugIntakeUrl,
   DEFAULT_BUG_INTAKE_URL,
 } from "./bug-forwarding/client.js";
+// #1574 — a Stage, Publish live or production build inside the request its
+// carrier job holds open, so it ends even when nobody waits for it.
+export { carryStage, executeBuild, type StageAnswer } from "./build-carrier/carry.js";
 export { stagingCaptureAccess } from "./capture/staging-access.js";
 // P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
 export { sweepChatImagesOnce } from "./chat-image-gc-worker.js";
@@ -267,13 +270,19 @@ export {
 export * from "./register.js";
 export type { ReleaseCheckOpts } from "./release-check-worker.js";
 // #1359 — reporting jobs: long work in a container job that reports back.
-export { handleJobReport, type ReportResponse } from "./reporting-jobs/dispatch.js";
+export {
+  type AdmittedReport,
+  admitJobReport,
+  handleJobReport,
+  type ReportResponse,
+} from "./reporting-jobs/dispatch.js";
 export { inProcessJobLauncher } from "./reporting-jobs/in-process.js";
 export { reportingJobKind } from "./reporting-jobs/kinds.js";
 export { setInProcessJobLauncher } from "./reporting-jobs/launcher.js";
 export {
   isReportingJobKind,
   JOB_TOKEN_HEADER,
+  KEEPALIVE_SECONDS,
   MAX_REPORT_BODY_BYTES,
   type ReportingJobKind,
 } from "./reporting-jobs/protocol.js";

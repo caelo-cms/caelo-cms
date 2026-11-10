@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 26;
+export const INFRA_CONTRACT_VERSION = 27;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -224,6 +224,20 @@ export const INFRA_CONTRACT_VERSION = 26;
 //       the admin. The new admin starts every crawl on that job and the
 //       app-roll moves its image, so an in-cloud upgrader must not roll an
 //       install onto it before it exists.
+//  27 — #1574: the build carrier (reporting-job-setup.ts), the job whose one
+//       report holds the admin request a Stage, Publish live or production
+//       build runs in when nobody else waits for it (an agent's Stage, a
+//       button whose tab closed), so the admin can run on request-billed
+//       CPU (#1361). Its service account (token creator on itself,
+//       logWriter, IAP access to the admin; nothing else: the build stays
+//       in the admin), the job `caelo-<env>-build`, the admin's
+//       run-with-overrides and viewer on it, the upgrader's actAs on its
+//       account, the account in the operator-access job's
+//       CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS and
+//       CAELO_BUILD_CARRIER_JOB / CAELO_BUILD_CARRIER_SERVICE_ACCOUNT on the
+//       admin. The new admin starts those builds on that job and the
+//       app-roll moves its image, so an in-cloud upgrader must not roll an
+//       install onto it before it exists.
 //
 // #1029 is deliberately NOT a bump. The upgrader job's stage 1 moves the job
 // onto the target's ops image with rights it has held on itself since
@@ -264,6 +278,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   24: "the admin's permission on Google Cloud load-balancer installs to read the static bucket's settings, without which Publish live could not set the site's security headers (#1454)",
   25: "the quality-audit runner: a job of its own that runs each Stage's quality audit and reports the result to the admin, its service account and grants (#1359)",
   26: "the site-import crawler: a job of its own that crawls each site import and reports every page to the admin, its service account and grants (#1360)",
+  27: "the build carrier: a job of its own that holds the request a Stage, Publish live or production build runs in when nobody else waits for it, its service account and grants (#1574)",
 };
 
 /**

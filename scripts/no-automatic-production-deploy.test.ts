@@ -55,6 +55,8 @@ const ALLOWED_CALLERS: Record<string, string> = {
   "packages/admin-core/src/ops/quality/gate.ts":
     "quality_audits.publish_anyway: a human's recorded decision to publish over a failed check",
   "packages/admin-core/src/stage/stage-chats.ts": "the Stage flow: builds staging only",
+  "packages/admin-core/src/build-carrier/run-order.ts":
+    "the build carrier's `run` (#1574): runs only the build a request above ordered, as that request's caller (so the ops' refusal of every non-human production request still decides); the tick never starts an order — one whose carrier never started is given up",
   "packages/admin-core/src/ai/tools/deploy-staging.ts":
     "the AI's deploy_staging tool: staging only (refuses production before calling)",
 };

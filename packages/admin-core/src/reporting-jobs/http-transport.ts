@@ -25,6 +25,7 @@ import {
 } from "../security/operator-access/google-iam.js";
 import type { ReportTransport } from "./job-reporter.js";
 import {
+  JOB_TIMING,
   JOB_TOKEN_HEADER,
   type ReportAnswer,
   type ReportingJobKind,
@@ -71,12 +72,16 @@ export function httpReportTransport(opts: {
   /** The IAP credential (`Authorization: Bearer …`). */
   readonly credential: () => Promise<string>;
   readonly fetch?: typeof fetch;
-  /** One report's budget; a source read of a large site takes a while (default 10 min). */
+  /**
+   * One report's budget (default: the kind's `reportTimeoutSeconds` — a
+   * source read of a large site takes a while, a build carrier's `run`
+   * holds its request for as long as the build runs).
+   */
   readonly timeoutMs?: number;
 }): ReportTransport {
   const url = `${reportOrigin(opts.adminUrl)}${reportPath(opts.kind)}`;
   const doFetch = opts.fetch ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
+  const timeoutMs = opts.timeoutMs ?? JOB_TIMING[opts.kind].reportTimeoutSeconds * 1000;
   return {
     label: url,
     async send(envelope) {
@@ -105,7 +110,15 @@ export function httpReportTransport(opts: {
           },
         };
       }
-      return { status: res.status, answer: parseAnswer(res.status, text) };
+      const answer = parseAnswer(res.status, text);
+      // A long action's stream answers 200 and carries a refusal's status
+      // inside (protocol.ts KEEPALIVE_SECONDS); the newlines before the
+      // answer are JSON whitespace.
+      const status =
+        res.status === 200 && !answer.ok && typeof answer.status === "number"
+          ? answer.status
+          : res.status;
+      return { status, answer };
     },
   };
 }

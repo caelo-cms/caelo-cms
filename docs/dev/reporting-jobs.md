@@ -1,8 +1,8 @@
 # Reporting jobs
 
-Issues #1359 and #1360 (#1140 category A). The admin only does work inside a request (CLAUDE.md §11.B Tier 5). Periodic work runs on the [scheduler tick](./scheduler-tick.md). Long, bounded work that one request cannot hold runs in a **reporting job**: a container job of its own that the admin starts once per piece of work and that reports back to the admin by request. Each report is a request, so it brings the CPU the admin needs to answer and record it. Nothing waits on an idle admin instance.
+Issues #1359, #1360 and #1574 (#1140 category A). The admin only does work inside a request (CLAUDE.md §11.B Tier 5). Periodic work runs on the [scheduler tick](./scheduler-tick.md). Long, bounded work that one request cannot hold runs in a **reporting job**: a container job of its own that the admin starts once per piece of work and that reports back to the admin by request. Each report is a request, so it brings the CPU the admin needs to answer and record it. Nothing waits on an idle admin instance.
 
-Two kinds run this way: the quality audit after a Stage (#1359) and a site import's crawl (#1360).
+Three kinds run this way: the quality audit after a Stage (#1359), a site import's crawl (#1360), and the build carrier (#1574), whose one report holds the request a build runs in.
 
 ## The pieces
 
@@ -10,7 +10,7 @@ Two kinds run this way: the quality audit after a Stage (#1359) and a site impor
 |---|---|
 | Wire format, timings, token | `packages/admin-core/src/reporting-jobs/protocol.ts` |
 | Leases and uploads (migration 0680) | `reporting_jobs`, `reporting_job_uploads`; ops in `packages/admin-core/src/ops/reporting_jobs.ts` |
-| What the admin does with a report | `reporting-jobs/dispatch.ts` (`handleJobReport`), per kind a `ReportingJobKindDef` (`reporting-jobs/kind.ts`, listed in `kinds.ts`) |
+| What the admin does with a report | `reporting-jobs/dispatch.ts` (`admitJobReport` admits it, `run` answers it; `handleJobReport` does both), per kind a `ReportingJobKindDef` (`reporting-jobs/kind.ts`, listed in `kinds.ts`) |
 | Report endpoint | `POST /api/internal/jobs/<kind>/report` (`apps/admin/src/routes/api/internal/jobs/[kind]/report/+server.ts`, auth in `apps/admin/src/lib/server/reporting-jobs.ts`) |
 | Starting an attempt | `reporting-jobs/launcher.ts` (`startReportingJob`) |
 | Restarting a dead attempt | `reporting-jobs/backstop.ts`, core task `core:reporting-jobs` (every tick) |
@@ -97,14 +97,40 @@ The crawl is the same code as before (site-importer `crawlSite`), driven by the 
 
 **Untrusted data, to the end.** What the crawl reports reaches the AI marked as crawled content: `get_import_page` (title, meta description, text, tokens), `read_page_more` and `query_page_html` on such a page, `list_import_pages` (source URLs, the run's error) and `get_import_run_report` (crawl errors, skips, notes, samples) wrap it in `<site-data>` (shared `siteData`), and the static system prompt says what that element means. The tools' own guidance stays outside it.
 
+## The build carrier (#1574)
+
+On request-billed CPU (#1361) a build would freeze the moment the request it runs in ends. A Stage nobody waits for in a request used to go on detached: an agent's `stage_changes` answers "still running" after about 50 s (#1204), and a button's request ends when its browser tab closes. Such a build now runs inside a request a small job holds open, the **build carrier**. The build itself stays in the admin, on its own database and rights; the carrier only carries the request (maintainer decision 2026-11-10; moving the generator into a job is a bigger change, kept for later).
+
+| Piece | Where |
+|---|---|
+| What to build, as whom, and how it ended (migration 0690) | `build_orders`; ops in `packages/admin-core/src/ops/build_orders.ts` |
+| Asking for a carried build, and waiting for it | `packages/admin-core/src/build-carrier/carry.ts` (`carryBuild`, `executeBuild`, `carryStage`) |
+| The kind, its one action `run` | `build-carrier/kind.ts`, `build-carrier/run-order.ts` |
+| The job's side | `build-carrier/job.ts`: one report, `run` |
+| Google Cloud setup | `buildCarrierJobSpec` in `packages/provisioning/src/reporting-job-setup.ts` (job `caelo-<env>-build`) |
+
+**Who carries their build.** An agent's `stage_changes` and `deploy_staging` (Power-MCP, `caelo_chat`, a subagent: no operator browser on the turn), and every button that builds: the editor's Stage, Publish live, publish anyway and production build, the Changes page's Stage, the pages list's Stage and Publish live, Settings → Deployments' build and promote, and the Approve of a deploy proposal or a publish-anyway proposal on their pending pages. The Live Edit chat's own Stage is not carried: it waits inside its turn, and the operator's Stop or a closed tab stops it with the turn (#1204). Approval cards inside a chat turn and the tick's plugin-data build run inside their own requests, as before.
+
+**One order, one report.** The request that asks for a build writes an order (`build_orders.create`: the Stage's chats, or the op and its input, and the caller's context as data), starts the order's carrier (`startReportingJob` of kind `build`) and waits for the outcome: an agent about a minute, then "still running" with `get_stage_status`; a button until the build ends. The order's id is the run's id, so `deploy.stage_status` shows the Stage as queued before its run row exists. The carrier sends one report, `run`. The admin takes the order (`build_orders.claim`, once), runs the build inside that request as the caller (the ops' own checks decide as in the caller's request: a human for production, its permissions), records the outcome (`build_orders.finish`) and answers. Whichever admin instance takes the carrier's request runs the build.
+
+**A long report.** `run` is a long action (`ReportingAction.long`). Once admitted, the endpoint answers at once with a `200` stream that sends a newline every 15 s (`KEEPALIVE_SECONDS`), so nothing between the job and the admin closes the request as idle, and ends with the answer's JSON (leading whitespace is valid JSON). A refusal's status rides inside the answer (`status`), and the job's transport reads it, so a 500 there is still a passing fault. The job waits up to `JOB_TIMING.build.reportTimeoutSeconds` for it, and the job's heartbeat keeps the lease while it waits.
+
+**When the request can no longer carry the build, it stops, with the reason.** The build's signal aborts when the carrier's request ends first (the job died, its connection dropped); when its run time is up (on Google Cloud 58 minutes, two before the admin's 3600 s request limit, so the build is never cut off silently mid-way); or when the operator stopped it (the waiting request passes the Stop on with `build_orders.request_stop`, and the running build looks for it every 2 s, `stop-watch.ts`). A stopped build ends as its op ends on an abort: the generator is killed, nothing more is published, and the run is recorded as failed with the reason. Publishing itself stays the op's own step, so nothing is left half-published.
+
+**One attempt, never late.** A carrier that dies ends its build. `JOB_TIMING.build.maxAttempts` is 1: when its lease runs out, the backstop gives the order up (`build_orders.give_up`). The order is recorded as failed with where the carrier ran and the next step ("Stage again", "start the build again", or check what production serves and Publish live again). A running run whose lease lapsed is marked failed with the same words; a run still building stops at its next look at the order. An order whose carrier never started (`build_orders.list_unstarted`: queued, no job, older than 2 minutes) is given up the same way and never started late (kind.ts `unstarted: "give-up"`): a build a person asked for minutes ago is not run behind their back, and the tick never starts a build (`scripts/no-automatic-production-deploy.test.ts`). A launch that fails fails the order at once, so the person who asked hears it now.
+
+**Where it runs.** Google Cloud: one execution of `caelo-<env>-build` per carried build, 1 vCPU / 512 MiB, task timeout 65 minutes. Self-hosted and development: the same carrier in the admin's process, each attempt at once (`inProcess: "at-once"`; two builds still take their turns at the publish leases), and in a test or a script without a registered launcher too: a build must run when asked. AWS and Azure: the order fails at once with #749 / #750.
+
+**Its identity.** `caelo-<env>-build@` holds the shared grants and nothing else: token creator on itself, IAP access to the admin, log writing. No bucket, no other job, no secret, no database, no VPC (`reporting-job-setup.test.ts` asserts it). It runs no browser and executes nothing it fetches; it fetches nothing at all. A compromised carrier can call `run` for its own order only (the token), which runs the build its caller ordered, once; it can withhold the call, and the order is then given up. It cannot change what is built or as whom: the order is the admin's own record, and the job never sees it.
+
 ## Self-hosted and development
 
-There is no extra machine. The admin registers the in-process launcher at boot (`setInProcessJobLauncher`, `hooks.server.ts`). Each attempt then runs the same job main inside the admin process, without the request waiting for it, and one attempt of a kind at a time (`in-line.ts`): two audits at once would share the CPU their Lighthouse runs measure, and two crawls would only take turns at the one shared browser. An attempt in line keeps renewing its lease. Its reports reach `handleJobReport` directly as text, so they pass the same caps, token check and schemas. The self-hosted admin keeps its CPU between requests. A process that dies mid-attempt leaves a lease that runs out, and the tick restarts the attempt. In a test or a script nothing registers the launcher: work is left for whoever drives it (`__tests__/fixtures/drain-audits.ts`).
+There is no extra machine. The admin registers the in-process launcher at boot (`setInProcessJobLauncher`, `hooks.server.ts`). Each attempt then runs the same job main inside the admin process, without the request waiting for it, and one attempt of a kind at a time for the kinds that are `in-line` (`in-line.ts`): two audits at once would share the CPU their Lighthouse runs measure, and two crawls would only take turns at the one shared browser. A build carrier's attempts start at once. An attempt in line keeps renewing its lease. Its reports reach `handleJobReport` directly as text, so they pass the same caps, token check and schemas. The self-hosted admin keeps its CPU between requests. A process that dies mid-attempt leaves a lease that runs out, and the tick restarts the attempt. In a test or a script nothing registers the launcher: work is left for whoever drives it (`__tests__/fixtures/drain-audits.ts`), except a carried build, which runs in-process.
 
 ## Adding a kind
 
 1. Add its name to `REPORTING_JOB_KINDS` and its timings to `JOB_TIMING` (`protocol.ts`).
-2. Declare its `ReportingJobKindDef`: its actions with their Zod inputs, `listUnstarted`, `giveUp`, its admin env vars. List it in `kinds.ts`.
+2. Declare its `ReportingJobKindDef`: its actions with their Zod inputs (`long` for one that holds its request while the admin works), `inProcess`, `unstarted`, `listUnstarted`, `giveUp`, its admin env vars. List it in `kinds.ts`.
 3. Write its job main (it talks only through its reporter) and list it in `job-mains.ts`.
 4. Provisioning: a `ReportingJobSpec` with its own service account and only the grants it needs, set up by the wizard and the converge. Add the job to `adminImageJobs`, the upgrader's actAs, the operator-access `iapServiceAccounts`, the cost table, and an infra-contract bump.
 5. Tests: its grants against `REPORTING_JOB_FORBIDDEN_ROLES`, its actions through `handleJobReport`, and a killed attempt restarted by the backstop.

@@ -98,17 +98,20 @@ export const beginRunInput = z
  * return (#1307), so a Stage whose process died reads as failed with the
  * restart hint instead of as running until someone starts another one.
  *
+ * @param message - what the run says (#1574: a build whose carrier job
+ *   died names that instead of an admin crash).
  * @returns the run's new `finished_at` when this call marked it failed,
  *   else null.
  */
 export async function failRunIfOrphanedInTx(
   tx: TransactionRunner,
   runId: string,
+  message: string = ORPHANED_RUN_MESSAGE,
 ): Promise<string | Date | null> {
   if (!(await deployRunIsOrphaned(tx, runId))) return null;
   const marked = (await tx.execute(sql`
     UPDATE deploy_runs
-    SET status = 'failed', finished_at = clock_timestamp(), error_message = ${ORPHANED_RUN_MESSAGE},
+    SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
         -- #1319 — a run that never succeeded never writes its planned audit.
         lease_expires_at = NULL, planned_audit = NULL
     WHERE id = ${runId}::uuid AND status = 'running'

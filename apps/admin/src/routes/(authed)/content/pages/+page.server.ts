@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError, stagingServedByGateway } from "@caelo-cms/admin-core";
+import { describeError, executeBuild, stagingServedByGateway } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -125,7 +125,8 @@ export const actions: Actions = {
 
     // #553 / #1319 — a Stage outside a chat has no branch to classify; its
     // audit (this page after the homepage) is queued with the build.
-    const stagingDeploy = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
+    // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
+    const stagingDeploy = await executeBuild({ adapter, registry }, locals.ctx, "deploy.trigger", {
       targetName: "staging",
       qualityAudit: { chatSessionId: null, branch: null, pageIds: [pageId] },
     });
@@ -248,7 +249,8 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const pageId = String(form.get("pageId") ?? "");
 
-    const promote = await execute(registry, adapter, locals.ctx, "deploy.promote", {
+    // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
+    const promote = await executeBuild({ adapter, registry }, locals.ctx, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
     });

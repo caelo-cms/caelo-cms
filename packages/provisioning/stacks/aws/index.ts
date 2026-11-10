@@ -455,13 +455,15 @@ new aws.cloudwatch.LogDelivery(
 // (quality/lighthouse-runner-select.ts) instead of measuring on its own
 // shared CPU. Nothing is staged on AWS before #749 either.
 //
-// FIXME(issue #749): no reporting-job task yet (#1359, #1360). On GCP a
-// Stage's whole quality audit and a site import's crawl each run in their own
-// job that reports back to the admin (src/reporting-job-setup.ts); the AWS
-// equivalent is an ECS task per audit or crawl behind admin-core
-// reporting-jobs/launcher.ts `JobLauncher`, reporting through the ALB's
-// Cognito gate. Until it exists the admin records every audit and every site
-// import as failed with that gap instead of running it on its own CPU.
+// FIXME(issue #749): no reporting-job task yet (#1359, #1360, #1574). On GCP
+// a Stage's whole quality audit and a site import's crawl each run in their
+// own job that reports back to the admin, and the build carrier holds the
+// request a build nobody else waits for runs in (src/reporting-job-setup.ts);
+// the AWS equivalent is an ECS task per audit, crawl or carried build behind
+// admin-core reporting-jobs/launcher.ts `JobLauncher`, reporting through the
+// ALB's Cognito gate. Until it exists the admin records every audit, every
+// site import and every carried build as failed with that gap instead of
+// running it on its own CPU.
 //
 // FIXME(issue #749): no capture task definition yet. On GCP every
 // server-side browser render (screenshots, external page renders, the

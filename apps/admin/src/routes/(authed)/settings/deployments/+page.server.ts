@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describeError } from "@caelo-cms/admin-core";
+import { describeError, executeBuild } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -84,7 +84,8 @@ export const actions: Actions = {
     const publishAnywayReason = String(form.get("publishAnywayReason") ?? "").trim();
     // #553 / #1319 — a staging rebuild from Ops is audited like any Stage
     // outside a chat; deploy.trigger queues the audit with the build.
-    const result = await execute(registry, adapter, locals.ctx, "deploy.trigger", {
+    // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
+    const result = await executeBuild({ adapter, registry }, locals.ctx, "deploy.trigger", {
       targetName,
       ...(publishAnywayReason ? { publishAnyway: { reason: publishAnywayReason } } : {}),
     });
@@ -101,7 +102,8 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const fromTarget = String(form.get("fromTarget") ?? "");
     const toTarget = String(form.get("toTarget") ?? "");
-    const result = await execute(registry, adapter, locals.ctx, "deploy.promote", {
+    // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
+    const result = await executeBuild({ adapter, registry }, locals.ctx, "deploy.promote", {
       fromTarget,
       toTarget,
     });

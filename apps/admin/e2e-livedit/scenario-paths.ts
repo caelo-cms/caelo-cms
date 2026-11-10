@@ -174,6 +174,10 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       // CI install; the GCP job shares the protocol, dispatch and lease).
       `${A}/reporting-jobs/**`,
       `${A}/ops/reporting_jobs.ts`,
+      // #1574 — the editor's Publish live (and an agent's Stage) run inside
+      // the request a build carrier holds open (in-process on the CI install).
+      `${A}/build-carrier/**`,
+      `${A}/ops/build_orders.ts`,
       `${A}/snapshots/**`,
       `${A}/deploy/**`,
       `${A}/draft.ts`,

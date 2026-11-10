@@ -29,8 +29,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 
-/** The kinds of reporting job: a Stage's audit (#1359), a site import's crawl (#1360). */
-export const REPORTING_JOB_KINDS = ["quality_audit", "site_import"] as const;
+/**
+ * The kinds of reporting job: a Stage's audit (#1359), a site import's crawl
+ * (#1360), and the carrier that holds a build's request open (#1574).
+ */
+export const REPORTING_JOB_KINDS = ["quality_audit", "site_import", "build"] as const;
 
 export type ReportingJobKind = (typeof REPORTING_JOB_KINDS)[number];
 
@@ -46,7 +49,16 @@ export interface JobTiming {
   readonly maxAttempts: number;
   /** The most one execution may run (its task timeout). */
   readonly maxRunSeconds: number;
+  /** How long the job waits for the answer to one report. */
+  readonly reportTimeoutSeconds: number;
 }
+
+/**
+ * The longest request the admin serves (its Cloud Run request timeout). A
+ * report that holds the request while the admin works (the build carrier's
+ * `run`) ends before it: past this, Cloud Run cuts the request off.
+ */
+export const ADMIN_REQUEST_LIMIT_SECONDS = 60 * 60;
 
 /** Both sides read the same timings: the admin leases, the job renews. */
 export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
@@ -58,6 +70,7 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
     renewEverySeconds: 60,
     maxAttempts: 3,
     maxRunSeconds: 60 * 60,
+    reportTimeoutSeconds: 10 * 60,
   },
   // A site import's crawl: minutes to hours (a page render in the capture
   // job takes up to two minutes). Every attempt resumes from the last
@@ -68,6 +81,19 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
     renewEverySeconds: 60,
     maxAttempts: 5,
     maxRunSeconds: 6 * 60 * 60,
+    reportTimeoutSeconds: 10 * 60,
+  },
+  // A build's carrier (#1574): one report, `run`, that holds the request
+  // while the admin builds, up to the admin's request limit. One attempt: a
+  // carrier that dies ends its build, which is recorded as failed (a second
+  // attempt would build again what the person asked for once).
+  build: {
+    firstLeaseSeconds: 5 * 60,
+    leaseSeconds: 3 * 60,
+    renewEverySeconds: 60,
+    maxAttempts: 1,
+    maxRunSeconds: ADMIN_REQUEST_LIMIT_SECONDS + 5 * 60,
+    reportTimeoutSeconds: ADMIN_REQUEST_LIMIT_SECONDS + 2 * 60,
   },
 };
 
@@ -241,7 +267,22 @@ export type ReportAnswer =
       readonly error: { readonly code: string; readonly message: string };
       /** Set on 429: when to send the report again. */
       readonly retryAfterSeconds?: number;
+      /**
+       * The status the admin answers with, when the answer of a long action
+       * arrives after the stream's own `200` (see {@link KEEPALIVE_SECONDS}).
+       */
+      readonly status?: number;
     };
+
+/**
+ * A long action (the build carrier's `run`) holds its request while the
+ * admin works: its answer is a stream that sends a newline this often, so
+ * nothing between the job and the admin closes the request as idle, and
+ * ends with the answer's JSON (leading whitespace is valid JSON). The
+ * stream's own status is `200`; an answer that is a refusal carries its
+ * status inside (`status`).
+ */
+export const KEEPALIVE_SECONDS = 15;
 
 /** A new attempt's token (32 random bytes). */
 export function mintJobToken(): string {
