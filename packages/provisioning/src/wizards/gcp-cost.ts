@@ -17,7 +17,6 @@ import {
   memoryQuantityMiB,
   parseSchedulerIntervalMinutes,
   RUNTIME_SECRETS,
-  SERVICE_CPU_IDLE,
 } from "../stack-contract.js";
 
 export interface CostLine {
@@ -78,8 +77,8 @@ const SCHEDULER_JOB_USD = 0.1;
  * #1140 — what the scheduler tick costs a month at `minutes` between ticks:
  * the Cloud Scheduler job (priced as paid — the 3 free jobs are shared
  * with every other project on the billing account) plus the Workflows
- * steps past the free tier. What the tick costs on the admin's side is
- * priced on the admin's own line ({@link adminKeptWarmByTicks}).
+ * steps past the free tier. On the admin's side a tick is a request of
+ * about a second, inside Cloud Run's free tier (the admin's own line).
  */
 export function schedulerTickMonthlyUsd(minutes: number): number {
   const ticks = Math.ceil((30 * 24 * 60) / parseSchedulerIntervalMinutes(minutes));
@@ -99,31 +98,21 @@ export function schedulerTickMonthlyUsd(minutes: number): number {
 }
 
 /**
- * Cloud Run instance-based billing (CPU always allocated) list rates, USD,
- * tier-1 region, cloud.google.com/run/pricing as of 2026-11. The free tier
- * is left out: it is shared by every service on the billing account.
+ * Cloud Run request-based billing (CPU only during requests) list rates,
+ * USD, tier-1 region, cloud.google.com/run/pricing as of 2026-11. The free
+ * tier is left out: it is shared by every service on the billing account.
  */
-const CLOUD_RUN_INSTANCE_PRICE = { vcpuSecond: 0.000018, gibSecond: 0.000002 } as const;
-
-/** Seconds in the 30-day month the table prices. */
-const MONTH_SECONDS = 30 * 24 * 60 * 60;
+const CLOUD_RUN_REQUEST_PRICE = { vcpuSecond: 0.000024, gibSecond: 0.0000025 } as const;
 
 /**
- * #1140 — whether the scheduler tick keeps a scale-to-zero admin instance
- * up around the clock. Cloud Run keeps an idle instance for up to 15
- * minutes after its last request, and the tick comes at most every 15
- * minutes, so with CPU always allocated (`SERVICE_CPU_IDLE.admin` false
- * until #1361) the instance never stops and is billed every second. With
- * request-billed CPU an idle instance costs nothing between ticks.
+ * #1361 — what one hour of open admin requests (1 vCPU, `gib` memory) costs
+ * at request-based list rates: editing time, the only time a scale-to-zero
+ * admin is billed. The scheduler's ticks (about a second each) and the
+ * idle instance between requests cost nothing (`SERVICE_CPU_IDLE.admin`).
  */
-export function adminKeptWarmByTicks(adminMinInstances: number): boolean {
-  return adminMinInstances === 0 && !SERVICE_CPU_IDLE.admin;
-}
-
-/** One always-on admin instance (1 vCPU, `gib` memory) a month at instance-based list rates. */
-export function alwaysOnAdminInstanceUsd(gib: number): number {
-  const perSecond = CLOUD_RUN_INSTANCE_PRICE.vcpuSecond + gib * CLOUD_RUN_INSTANCE_PRICE.gibSecond;
-  return Math.round(perSecond * MONTH_SECONDS);
+export function adminRequestHourUsd(gib: number): number {
+  const perSecond = CLOUD_RUN_REQUEST_PRICE.vcpuSecond + gib * CLOUD_RUN_REQUEST_PRICE.gibSecond;
+  return Math.round(perSecond * 3600 * 100) / 100;
 }
 
 /**
@@ -196,19 +185,16 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
     },
     {
       name: `Cloud Run admin (${adminMemory})`,
-      // FIXME(issue #1361): with request-billed CPU (SERVICE_CPU_IDLE) the
-      // ticks stop keeping the instance up and this line drops to ~$7 of
-      // editing sessions. Until then the scheduler tick (#1140) keeps one
-      // instance up around the clock, billed at the always-on rate.
-      monthlyUsd: adminKeptWarmByTicks(inputs.adminMinInstances)
-        ? alwaysOnAdminInstanceUsd(adminGiB)
-        : inputs.adminMinInstances === 0
-          ? 7
+      // #1361 — request-billed CPU (SERVICE_CPU_IDLE.admin): the admin is
+      // billed only while a request is open. Idle, and the scheduler's
+      // ticks of about a second, it costs about nothing.
+      monthlyUsd:
+        inputs.adminMinInstances === 0
+          ? 0
           : Math.round(1 + inputs.adminMinInstances * perMinInstanceUsd),
-      notes: adminKeptWarmByTicks(inputs.adminMinInstances)
-        ? `scale-to-zero, but CPU is always allocated and the scheduler tick (every ${schedulerMinutes} min) comes before Cloud Run's 15-minute idle shutdown, so one instance (1 vCPU, ${adminMemory}) runs around the clock until request-billed CPU lands (#1361)`
-        : inputs.adminMinInstances === 0
-          ? "scale-to-zero, request-billed CPU; ~$7/mo light editorial use, ticks inside the free tier"
+      notes:
+        inputs.adminMinInstances === 0
+          ? `scale-to-zero, CPU only during requests: ~$0 idle (the scheduler tick every ${schedulerMinutes} min stays in the free tier); editing adds ~$${adminRequestHourUsd(adminGiB).toFixed(2)} per hour of open requests, much of it in the free tier`
           : `${inputs.adminMinInstances} min-instance${inputs.adminMinInstances > 1 ? "s" : ""} (no cold start); the scheduler tick adds nothing, the instance is up anyway`,
     },
     {

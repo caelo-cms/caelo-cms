@@ -1,6 +1,6 @@
 # The scheduler tick
 
-Issue #1140. The admin does periodic work only inside a request, so the work runs on the CPU the request is billed for and never relies on an idle instance (CLAUDE.md §11.B Tier 5). One scheduler calls the admin every few minutes. That request runs every task that is due.
+Issue #1140. The admin does periodic work only inside a request, so the work runs on the CPU the request is billed for and never relies on an idle instance (CLAUDE.md §11.B Tier 5). Since #1361 the admin runs on request-billed CPU (`SERVICE_CPU_IDLE.admin`): between requests it gets next to no CPU. One scheduler calls the admin every few minutes. That request runs every task that is due.
 
 ## The pieces
 
@@ -58,4 +58,3 @@ No task may build or publish production (CLAUDE.md §2). `scripts/no-automatic-p
 
 - The quality audit's in-process worker: #1359.
 - The site-import crawl worker: #1360.
-- The flip of the admin to request-based CPU: #1361.

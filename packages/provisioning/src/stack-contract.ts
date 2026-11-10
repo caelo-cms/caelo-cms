@@ -1127,16 +1127,18 @@ export const DEFAULT_MCP_AUTH_PROXY_MAX_INSTANCES = 10;
  * `resources`, which is how both services ran with always-on CPU without
  * anyone choosing it — billed for every idle minute an instance stayed up.
  *
- * The gateway and the MCP-Auth-Proxy only do work inside requests. The
- * admin's periodic work and plugin workers run on the scheduler tick
- * (#1140), but the quality audit and the site-import crawl still run on
- * in-process timers that need CPU between requests (#1359, #1360), and the
- * plugin runtime heartbeat would read an idling instance as down.
+ * Every service only does work inside requests (CLAUDE.md §11.B Tier 5,
+ * #1140, #1361): the admin's periodic work and plugin workers run on the
+ * scheduler tick, the quality audit and the site-import crawl in container
+ * jobs that report back by request, the plugin runtime heartbeat at
+ * request start. So every one of them is billed only while a request is
+ * open — the admin idles at about nothing, which is the point: always-on
+ * CPU kept one admin instance billed around the clock on every install.
+ * An upgrade moves a service still on always-on CPU here (`planCpuIdle`,
+ * one way only).
  */
 export const SERVICE_CPU_IDLE: Readonly<Record<CloudRunSlug, boolean>> = {
-  // FIXME(issue #1361): true once nothing in the admin depends on CPU
-  // between requests (the category-A jobs, the heartbeat at request start).
-  admin: false,
+  admin: true,
   gateway: true,
   "staging-gateway": true,
   "mcp-auth-proxy": true,
