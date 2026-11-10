@@ -23,7 +23,8 @@ import type { LocaleRow, PageVariantRow } from "./index.js";
 export interface WriteHintState {
   readonly locales: ReadonlyMap<string, LocaleRow>;
   readonly prefixDefaultLocale: boolean;
-  readonly variants: readonly PageVariantRow[];
+  /** The variant rows of the home page's group (empty when it has none). */
+  readonly homeGroup: readonly PageVariantRow[];
   /** The page core serves at `/`. */
   readonly siteHomePageId: string | null;
 }
@@ -63,10 +64,10 @@ export function writeHints(state: WriteHintState, writes: readonly PluginWrite[]
     if (!l.is_default || state.prefixDefaultLocale) prefixed.set(l.code.toLowerCase(), l);
   }
   const homeGroup = state.siteHomePageId
-    ? state.variants.find((v) => v.page_id === state.siteHomePageId)?.group_id
+    ? state.homeGroup.find((v) => v.page_id === state.siteHomePageId)?.group_id
     : undefined;
   const localeHomes = new Map(
-    state.variants
+    state.homeGroup
       .filter((v) => homeGroup !== undefined && v.group_id === homeGroup)
       .map((v) => [v.page_id, v.locale_code]),
   );

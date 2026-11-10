@@ -105,8 +105,8 @@ const MODULES = [
   `${A}/ops/content/page-module-*.ts`,
   `${A}/ops/content/extract-module-*.ts`,
   `${A}/ops/content/preview*.ts`,
-  // #1212 — the whole-site view every preview renders against.
-  `${A}/site-view.ts`,
+  // #1212 — the whole-site view every preview renders against (#1270: and its delta).
+  `${A}/site-view*.ts`,
   `${A}/ai/tools/_mint-module.ts`,
   `${A}/ai/tools/_module-fields-schema.ts`,
   `${A}/ai/tools/add-module.ts`,

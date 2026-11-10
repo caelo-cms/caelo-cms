@@ -243,6 +243,25 @@ function snapshotBounds(snapshot: string): SnapshotBounds {
 }
 
 /**
+ * Has a reader at `later` seen every transaction `earlier` saw? Only then
+ * do the journal rows between the two ({@link readChanges} from `earlier`
+ * to `later`) carry a cached read at `earlier` forward to `later`; a
+ * reader whose snapshot is older than the cache (a long build
+ * transaction) must read afresh. The same test `checkJournalMark` makes
+ * in SQL, on the snapshot texts.
+ */
+export function snapshotFollows(earlier: string, later: string): boolean {
+  const e = snapshotBounds(earlier);
+  const l = snapshotBounds(later);
+  const eMax = BigInt(e.xmax);
+  if (eMax > BigInt(l.xmax)) return false;
+  const inFlightEarlier = new Set(e.xip);
+  // A transaction `earlier` saw committed (below its xmax, not in its
+  // xip) must not still be in flight for `later`.
+  return l.xip.every((x) => BigInt(x) >= eMax || inFlightEarlier.has(x));
+}
+
+/**
  * The journal rows a snapshot has not seen, as a FROM item: those of a
  * transaction at or after its xmax, or of one in flight when it was taken
  * (its xip list, all below xmax), plus `ownXid`'s when given. That is
@@ -609,6 +628,12 @@ export async function readChanges(
     readonly after: readonly [string, string, string] | null;
     readonly filter: JournalFilter;
     readonly limit: number;
+    /**
+     * The cursor's own xid ({@link JournalMark.ownXid}) when the cursor is a
+     * cached read's mark: Postgres leaves a transaction's own xid out of its
+     * snapshots, so its writes after the read would otherwise count as seen.
+     */
+    readonly ownXid?: string | null;
   },
 ): Promise<{
   changes: JournalChange[];
@@ -635,8 +660,8 @@ export async function readChanges(
              ec.site_snapshot_id::text AS site_snapshot_id,
              ec.prev_snapshot_id::text AS prev_snapshot_id, ec.op_name,
              ec.created_at::text AS created_at
-        FROM ${unseenRows(snapshotBounds(input.cursor))} ec, c
-       WHERE NOT pg_visible_in_snapshot(ec.xid, c.s)
+        FROM ${unseenRows(snapshotBounds(input.cursor), input.ownXid ?? null)} ec, c
+       WHERE (NOT pg_visible_in_snapshot(ec.xid, c.s) OR ec.xid = ${input.ownXid ?? null}::xid8)
          AND pg_visible_in_snapshot(ec.xid, c.t)
          ${
            after

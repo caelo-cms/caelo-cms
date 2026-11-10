@@ -214,4 +214,12 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     ctx: "chat",
     input: (r, tag) => ({ sourcePageId: r.write.pageId, newSlug: `copy-${tag}` }),
   },
+  // #1062 / #1269 — the repeated-value hint after every AI content write:
+  // the instances holding the written value, not the module's instances
+  // (the fixture's page module has one per page).
+  {
+    op: "content_instances.list_module_peers",
+    ctx: "chat",
+    input: (r) => ({ moduleIds: [r.moduleId], matches: [{ field: "heading", value: "Page 1" }] }),
+  },
 ];

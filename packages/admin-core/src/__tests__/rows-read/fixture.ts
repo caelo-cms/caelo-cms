@@ -389,6 +389,10 @@ export async function growFixture(
       // planner takes them for empty and scans them whole.
       "page_search_words",
       "draft_pending_page_words",
+      // The content value hashes (0658), filled by the instances' and the
+      // draft head's triggers during the bulk load.
+      "content_value_hashes",
+      "draft_pending_content_value_hashes",
     ]) {
       await tx.unsafe(`ANALYZE ${t}`);
     }
