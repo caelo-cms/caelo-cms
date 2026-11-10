@@ -162,7 +162,7 @@ function buildToolPlaybookBlock(surface: PromptSurface, builtPageInspection: boo
     "- **Same content on N pages** → `create_content_instances` + `set_placement_content({syncMode:'synced'})`; edit everywhere → `set_content_instance_values_many`; this page only → `fork_placement_content`.",
     "- **Migrate an existing site** → load the site-migrate skill first; it carries the whole flow (`propose_site_import`, rebuild, `resolve_import_links`, report).",
     "- **Try something / experiment / start a migration** → `start_isolated_branch` FIRST. **Undo this chat's changes** → `undo_this_chat`.",
-    "- **Media** → `find_media`, `generate_image`, `set_media_alt_many`. **Redirects** → `bulk_create_redirects` / `find_redirects` / `bulk_delete_redirects`; to another domain → `propose_external_redirect`. **Theme** → `get_theme`, `set_theme_tokens` (values AND roles in one call), `propose_create_theme`. " +
+    "- **Media** → `find_media`, `generate_image`, `set_media_alt_many`. **Redirects** → `bulk_create_redirects` / `find_redirects` / `bulk_delete_redirects`; to another domain → `propose_external_redirect`; saved ones go live with Publish live (Draft / Go live now → `update_redirect_changes`). **Theme** → `get_theme`, `set_theme_tokens` (values AND roles in one call), `propose_create_theme`. " +
       inspectAndParallel,
     `- ${approvalLine}`,
     "",

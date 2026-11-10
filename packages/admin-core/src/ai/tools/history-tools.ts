@@ -21,6 +21,7 @@ import type { listSnapshotsOp } from "../../ops/snapshots/list.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { makeListReadTool } from "./_list-read-tool.js";
 import { makeReadTool } from "./_make-read-tool.js";
+import { redirectReleaseNote } from "./_redirect-sync-note.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
 type OpValue<O extends { output: z.ZodType }> = z.infer<O["output"]>;
@@ -208,7 +209,7 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
 > = {
   name: "list_unpublished_changes",
   description:
-    "List what THIS chat changed that is not published yet (pages — SEO included, marked `· SEO` — modules, templates, layouts, theme, lists), split unstaged | staged. " +
+    "List what THIS chat changed that is not published yet (pages — SEO included, marked `· SEO` — modules, templates, layouts, theme, lists), split unstaged | staged; plus the site's pending redirect changes (going live, waiting for their target, Draft). " +
     "Use before saying work is ready to publish, to summarise what publishing ships, or to check an edit landed.",
   schema: unpublishedInput,
   inputSchema: z.toJSONSchema(unpublishedInput) as Record<string, unknown>,
@@ -236,11 +237,14 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
       ...renderRefs("staged", "global", v.staged.globals),
       ...renderRefs("staged", "list", v.staged.lists),
     ];
+    // #1550 — the site's pending redirect changes (a Draft, a Staged change
+    // and what waits for its target), whichever chat saved them.
+    const redirects = await redirectReleaseNote(ctx, toolCtx);
     return {
       ok: true,
       content:
-        lines.length > 0
-          ? lines.join("\n")
+        lines.length > 0 || redirects !== ""
+          ? `${lines.join("\n")}${redirects}`.trimStart()
           : "Nothing unpublished — this chat has no changes waiting to publish.",
       value: v,
     };

@@ -1,26 +1,34 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #1517 — a draft write never reaches the live site by accident.
+ * Issues #1517, #1550 — a draft write never reaches the live site.
  *
- * Redirects are live state: a write to the `redirects` table is pushed to
- * the hosting provider right after its commit (#1157), with no Stage and no
- * Publish live in between. So every code path that writes a redirect row,
- * runs a redirect op, or asks for the provider sync is an exact, reviewed
- * list here, each with the reason it may. A new caller (a content op that
- * grows a side effect, a plugin operation, a worker) fails this test until
- * someone decides it belongs, the same way
- * scripts/no-automatic-production-deploy.test.ts pins the production build.
+ * Redirects are draft state (#1550). A save — a rule in Settings →
+ * Redirects, an AI tool, a page rename, move or delete, a URL migration, a
+ * revert, a plugin — writes a pending change (`pending_redirects`, Draft or
+ * Staged) through one writer, `writeRedirectChanges`, and leaves the live
+ * table `redirects` alone. The live table changes in exactly four ways:
  *
- * Page writes reach the table through one gateway, `applyPathMoveEffects`
- * (plus the dead-URL 301 of `pages.delete` and the approved URL migration),
- * and the gateway leaves out every page only a chat's branch holds
- * (`branchOnlyPageIds`): such a page was never served, so its moves must not
- * delete a live rule, write a 301 or repoint chains. The integration suite
- * (draft-no-live-writes.integration.test.ts) proves it end to end.
+ * - Publish live (`deploy.promote`) and an Owner's production build
+ *   (`deploy.trigger`) release the Staged changes the build serves;
+ * - Go live now (`redirects.go_live_now`), a human's click with the Publish
+ *   live permission, or the approval of the AI's card for it;
+ * - a rollback restores what the rolled-back releases replaced;
+ * - the first Publish live of a page takes over a live rule on its URL.
+ *
+ * Each of those is one function in `redirects/release.ts`, the only source
+ * that writes the live table, and this test pins who calls them. The push to
+ * the hosting (`markRedirectsBehind`, `syncRedirects`) carries only the live
+ * table, so it is pinned too but reviewed for "pushes what is live", not for
+ * "decides what goes live". A new caller of any of it — a content op that
+ * grows a side effect, a plugin operation, a worker, the scheduler tick —
+ * fails here until someone decides it belongs, the same way
+ * scripts/no-automatic-production-deploy.test.ts pins the production build
+ * and Go live now's callers.
  *
  * Pure static scan over the workspace sources (tests, e2e suites and build
- * output excluded), in the style of no-automatic-production-deploy.test.ts.
+ * output excluded). The integration suites prove the behaviour end to end
+ * (redirects-draft-state, redirects-publish-live, draft-no-live-writes).
  */
 
 import { describe, expect, it } from "bun:test";
@@ -29,63 +37,67 @@ import { join, relative, resolve } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 
-const REDIRECT_OPS = "create|create_many|delete|delete_many|execute_proposal|sync_provider";
+const RELEASE = "packages/admin-core/src/redirects/release.ts";
+const WRITER = "packages/admin-core/src/redirects/write.ts";
 
-/** Every way a source can change the redirects table or push it live. */
-const LIVE_REDIRECT_WRITE: readonly RegExp[] = [
-  // SQL on the table itself.
-  /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+redirects\b/i,
-  // The provider push, and marking a target behind (which makes it push).
-  /\b(requestRedirectSync|markRedirectsBehind)\s*\(/,
-  // A redirect op's handler run on the caller's transaction.
-  /\b(createRedirectOp|createRedirectsManyOp|deleteRedirectOp|deleteRedirectsManyOp)\.handler\b/,
-  // A redirect op run through the Query API or a plugin's broker.
-  new RegExp(`\\bexecute\\s*\\([^;]{0,400}?["'\`]redirects\\.(${REDIRECT_OPS})["'\`]`),
-  new RegExp(`\\.call(?:<[^;]*?>)?\\s*\\(\\s*["'\`]redirects\\.(${REDIRECT_OPS})["'\`]`),
-  // The page-move gateway and the Publish live take-over.
-  /\b(applyPathMoveEffects|takeOverRedirectsOnFirstPublishedPages)\s*\(/,
-];
+/** SQL that writes the live redirects table. */
+const LIVE_TABLE_WRITE = /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+redirects\b/i;
 
-/** Every source that may write live redirects, and why it may. */
-const ALLOWED_WRITERS: Record<string, string> = {
-  "packages/admin-core/src/ops/redirects.ts":
-    "the redirects.* ops: writing a rule IS their purpose (routine, §11.A)",
-  "packages/admin-core/src/ops/redirects_pending.ts":
-    "redirects.execute_proposal: an external target the Owner approved",
-  "packages/admin-core/src/deploy/redirect-sync.ts":
-    "the sync model: requestRedirectSync / markRedirectsBehind and the push",
-  "packages/admin-core/src/redirect-sync-worker.ts":
-    "the post-commit runner and its retry: pushes what was saved",
-  "apps/admin/src/routes/(authed)/settings/redirects/+page.server.ts":
-    "Settings → Redirects: a human writing a rule or pressing Try again",
-  "packages/admin-core/src/ai/tools/bulk-create-redirects.ts":
-    "bulk_create_redirects: the AI writing a rule on purpose",
-  "packages/admin-core/src/ai/tools/bulk-delete-redirects.ts":
-    "bulk_delete_redirects: the AI deleting a rule on purpose",
-  "packages/admin-core/src/ops/content/path-moves.ts":
-    "the page-move gateway (main-line pages only, #1517) and the Publish live take-over",
-  "packages/admin-core/src/ops/content/pages.ts":
-    "pages.update slug change (through the gateway) and pages.delete's dead-URL 301 (never for a branch-only page)",
-  "packages/admin-core/src/ops/content/current-path.ts":
-    "pages.refresh_current_path and the merge's recompose, through the gateway",
-  "packages/admin-core/src/ops/content/page-moves.ts":
-    "move_pages on the main line, through the gateway",
-  "packages/admin-core/src/ops/snapshots/revert_page.ts":
-    "a page revert restores its URL, through the gateway",
-  "packages/admin-core/src/ops/snapshots/revert_site.ts":
-    "a site revert (approval-gated) restores URLs, through the gateway",
-  "packages/admin-core/src/ops/content/url_migrations.ts":
-    "an approved URL migration: the Owner's click moves live URLs with their 301s",
-  "packages/admin-core/src/ops/deploy-trigger.ts":
-    "a production build: first-published pages take their URL over; the build's own sync",
+/** The four live writers, all defined in redirects/release.ts. */
+const LIVE_RELEASE_CALL =
+  /\b(releaseRedirectChanges|takeOverRedirectsOnFirstPublishedPages|rollBackRedirectReleases)\s*\(/;
+
+/** Every source that runs a live writer, and why it may. */
+const LIVE_WRITERS: Record<string, string> = {
+  [RELEASE]: "defines the release, the first-publish take-over and the rollback",
   "packages/admin-core/src/ops/deploy-promote.ts":
-    "Publish live: first-published pages take their URL over; the release's own sync",
+    "Publish live: releases the Staged changes it confirmed; first-published pages take their URL over",
+  "packages/admin-core/src/ops/deploy-trigger.ts":
+    "an Owner's production build: releases the Staged changes it serves; the take-over",
   "packages/admin-core/src/ops/deploy-rollback.ts":
-    "rollback: the restored build gets the table pushed (no row written)",
+    "a rollback: restores what the rolled-back releases replaced and re-stages their changes",
+  "packages/admin-core/src/ops/redirects_release.ts":
+    "Go live now: a human with the Publish live permission, or the approval of the AI's card",
+};
+
+/** Pushing the live table to the hosting (never a pending change). */
+const PUSH_CALL = /\b(markRedirectsBehind|syncRedirects)\s*\(/;
+
+/** Every source that pushes the live table, and why it may. */
+const PUSHERS: Record<string, string> = {
+  "packages/admin-core/src/deploy/redirect-sync.ts": "the sync model and the push itself",
+  "packages/admin-core/src/redirect-sync-worker.ts":
+    "the scheduler tick's retry of a failed push: the live table as it is",
+  "packages/admin-core/src/ops/redirect_sync.ts": "Try again now: the live table as it is",
+  "packages/admin-core/src/ops/deploy-promote.ts": "Publish live's own push",
+  "packages/admin-core/src/ops/deploy-trigger.ts": "a production build's own push",
+  "packages/admin-core/src/ops/deploy-rollback.ts": "the rolled-back build's push",
+  "packages/admin-core/src/ops/redirects_release.ts": "Go live now's push",
   "packages/admin-core/src/plugin-data/build.ts":
-    "the plugin-data build re-releases the live build and pushes the table (no row written)",
-  "packages/plugins/international-site/src/index.ts":
-    "set_locales (approval-gated): the /<default locale> → / root redirect",
+    "the plugin-data build re-releases the live build and pushes the live table (no change applied)",
+  "packages/admin-core/src/deploy/static-publisher.ts": "the publisher interface",
+  "packages/admin-core/src/deploy/static-publisher-self-hosted.ts": "the provider push",
+  "packages/admin-core/src/deploy/static-publisher-gcs.ts": "the provider push",
+  "packages/admin-core/src/deploy/static-publisher-firebase.ts": "the provider push",
+  "packages/admin-core/src/deploy/static-publisher-aws.ts": "the provider push (not implemented)",
+  "packages/admin-core/src/deploy/static-publisher-azure.ts": "the provider push (not implemented)",
+};
+
+/**
+ * The one writer of pending changes (and the page move's in-place
+ * retarget, which keeps a change's state), and who saves through it.
+ */
+const PENDING_WRITE_CALL = /\b(writeRedirectChanges|retargetPendingRedirects)\s*\(/;
+
+const PENDING_WRITERS: Record<string, string> = {
+  [WRITER]: "defines the writer",
+  "packages/admin-core/src/ops/redirects.ts":
+    "the redirects.* ops: a rule saved on purpose (Draft or Staged; a plugin's always Staged)",
+  "packages/admin-core/src/ops/redirects_pending.ts": "an approved external target, saved Staged",
+  "packages/admin-core/src/ops/content/path-moves.ts":
+    "the page-move gateway: a rename, move or revert stages its 301s",
+  "packages/admin-core/src/ops/content/pages.ts": "pages.delete's dead-URL 301, Staged",
+  "packages/admin-core/src/ops/content/url_migrations.ts": "an approved URL migration, Staged",
 };
 
 /** The only sources that may run the page-move gateway (it filters drafts). */
@@ -128,59 +140,80 @@ const ALL_SOURCES = SOURCE_ROOTS.flatMap((root) => sources(resolve(REPO_ROOT, ro
   (path) => ({ path: relative(REPO_ROOT, path), text: readFileSync(path, "utf8") }),
 );
 
-const writes = (text: string) => LIVE_REDIRECT_WRITE.some((re) => re.test(text));
+const matching = (re: RegExp) =>
+  ALL_SOURCES.filter((s) => re.test(s.text))
+    .map((s) => s.path)
+    .sort();
 
-describe("no draft write reaches live redirects by accident (#1517)", () => {
+const textOf = (path: string) => ALL_SOURCES.find((s) => s.path === path)?.text ?? "";
+
+describe("no draft write reaches the live redirects (#1517, #1550)", () => {
   it("scans the real workspace", () => {
     expect(ALL_SOURCES.length).toBeGreaterThan(500);
-    expect(ALL_SOURCES.some((s) => s.path === "packages/admin-core/src/ops/redirects.ts")).toBe(
-      true,
-    );
+    expect(ALL_SOURCES.some((s) => s.path === RELEASE)).toBe(true);
   });
 
-  it("only the reviewed sources write redirect rows, run redirect ops or push the table", () => {
-    const writers = ALL_SOURCES.filter((s) => writes(s.text))
-      .map((s) => s.path)
-      .sort();
-    expect(writers).toEqual(Object.keys(ALLOWED_WRITERS).sort());
+  it("only redirects/release.ts writes the live table", () => {
+    expect(matching(LIVE_TABLE_WRITE)).toEqual([RELEASE]);
+  });
+
+  it("only Publish live, a production build, a rollback and Go live now run the live writers", () => {
+    expect(matching(LIVE_RELEASE_CALL)).toEqual(Object.keys(LIVE_WRITERS).sort());
+  });
+
+  it("the release applies Staged changes only, and only the confirmed revision", () => {
+    const release = textOf(RELEASE);
+    const body = release.slice(release.indexOf("export async function releaseRedirectChanges"));
+    // Locked by id AND revision AND state: a change saved again after the
+    // confirmation, or moved back to Draft, is not released.
+    expect(body).toMatch(/l\.revision = p\.revision/);
+    expect(body).toMatch(/p\.state = ANY/);
+  });
+
+  it("only the reviewed sources push the live table", () => {
+    expect(matching(PUSH_CALL)).toEqual(Object.keys(PUSHERS).sort());
+  });
+
+  it("every save goes through the one pending writer", () => {
+    expect(matching(PENDING_WRITE_CALL)).toEqual(Object.keys(PENDING_WRITERS).sort());
+    // An automatic change (a page's) is always Staged: the writer refuses
+    // anything else, so a page change cannot sit in Draft and miss its
+    // Publish live.
+    expect(textOf(WRITER)).toMatch(/opts\.origin !== "manual" && opts\.state !== "staged"/);
   });
 
   it("only the reviewed page ops run the page-move gateway", () => {
-    const callers = ALL_SOURCES.filter((s) => /\bapplyPathMoveEffects\s*\(/.test(s.text))
-      .map((s) => s.path)
-      .sort();
-    expect(callers).toEqual([...GATEWAY_CALLERS].sort());
+    expect(matching(/\bapplyPathMoveEffects\s*\(/)).toEqual([...GATEWAY_CALLERS].sort());
   });
 
-  it("the gateway leaves out pages only a chat's branch holds", () => {
-    const gateway =
-      ALL_SOURCES.find((s) => s.path === "packages/admin-core/src/ops/content/path-moves.ts")
-        ?.text ?? "";
+  it("the gateway leaves out pages only a chat's branch holds and stages what it writes", () => {
+    const gateway = textOf("packages/admin-core/src/ops/content/path-moves.ts");
     const body = gateway.slice(gateway.indexOf("export async function applyPathMoveEffects"));
     expect(body).toMatch(/await mainLineMoves\(/);
+    expect(body).toMatch(/state: "staged"/);
     expect(gateway).toMatch(/chat_branch_id IS NOT NULL/);
   });
 
   it("would catch a new caller of every kind", () => {
-    for (const text of [
-      "await tx.execute(sql`DELETE FROM redirects WHERE from_path = ${p}`);",
-      "await tx.execute(sql`insert into redirects (from_path) values (${p})`);",
-      "await requestRedirectSync(tx, ctx);",
-      "await createRedirectOp.handler(ctx, input, tx);",
-      'await execute(registry, adapter, { actorId, actorKind: "system" }, "redirects.create_many", {});',
-      'await cms.call<{ id: string }>("redirects.delete_many", { fromPaths });',
-      "await applyPathMoveEffects(ctx, tx, moves, 'auto');",
-    ]) {
-      expect(writes(text)).toBe(true);
+    for (const [re, text] of [
+      [LIVE_TABLE_WRITE, "await tx.execute(sql`DELETE FROM redirects WHERE from_path = ${p}`);"],
+      [LIVE_TABLE_WRITE, "await tx.execute(sql`insert into redirects (from_path) values (${p})`);"],
+      [LIVE_RELEASE_CALL, "await releaseRedirectChanges(tx, actor, refs, release, ['staged']);"],
+      [LIVE_RELEASE_CALL, "await rollBackRedirectReleases(tx, ctx, args);"],
+      [PUSH_CALL, "await markRedirectsBehind(tx);"],
+      [PENDING_WRITE_CALL, "await writeRedirectChanges(tx, changes, opts);"],
+      [PENDING_WRITE_CALL, "await retargetPendingRedirects(tx, retargets);"],
+    ] as const) {
+      expect(re.test(text)).toBe(true);
     }
-    // Reads, op definitions and audit names are not writes.
+    // Reads and the pending table are not live writes.
     for (const text of [
       "SELECT from_path FROM redirects WHERE from_path = ANY(${paths})",
-      'export const createRedirectOp = defineOperation({ name: "redirects.create",',
-      'operation: "redirects.create_many",',
-      'await execute(registry, adapter, ctx, "redirects.page_conflicts", lookup);',
+      "DELETE FROM pending_redirects WHERE id = ${id}::uuid",
+      "UPDATE redirect_pending_actions SET status = 'applied'",
+      "INSERT INTO redirect_release_log (kind) VALUES ('release')",
     ]) {
-      expect(writes(text)).toBe(false);
+      expect(LIVE_TABLE_WRITE.test(text)).toBe(false);
     }
   });
 });

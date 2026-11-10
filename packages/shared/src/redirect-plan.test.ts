@@ -8,6 +8,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   buildRedirectPlan,
+  findRedirectLoops,
   formatRedirectsFile,
   parseRedirectsFile,
   type RedirectTableRow,
@@ -144,6 +145,42 @@ describe("buildRedirectPlan", () => {
   });
 });
 
+describe("findRedirectLoops (#1550)", () => {
+  it("names each loop once, in chain order, whatever leads into it", () => {
+    expect(
+      findRedirectLoops(
+        [
+          row("/in", "/a"),
+          row("/a", "/b"),
+          row("/b", "/c/"),
+          row("/c", "/a"),
+          row("/self", "/self/"),
+        ],
+        NO_FILES,
+      ),
+    ).toEqual([["/a", "/b", "/c"], ["/self"]]);
+  });
+
+  it("finds what buildRedirectPlan refuses, and nothing it serves", () => {
+    const loop = [row("/a", "/b"), row("/b", "/a")];
+    expect(() => plan(loop)).toThrow(/loop/);
+    expect(findRedirectLoops(loop, NO_FILES)).toEqual([["/a", "/b"]]);
+    // A page at /b wins over its rule, so the build serves no loop.
+    expect(() => plan(loop, new Set(["b/index.html"]))).not.toThrow();
+    expect(findRedirectLoops(loop, new Set(["b/index.html"]))).toEqual([]);
+    // A chain ends at a gone row, a target with a query and an external one.
+    const ends = [
+      row("/g", "/gone"),
+      row("/gone", "/g", 410),
+      row("/q", "/r?x=1"),
+      row("/r", "/q"),
+      row("/x", "https://example.org/x"),
+    ];
+    expect(() => plan(ends)).not.toThrow();
+    expect(findRedirectLoops(ends, NO_FILES)).toEqual([]);
+  });
+});
+
 describe("redirectsToUnservedPaths (#1157)", () => {
   const served = new Set(["index.html", "live/index.html", "doc.pdf"]);
   it("reports redirects whose target the build does not serve, nothing else", () => {
@@ -165,6 +202,31 @@ describe("redirectsToUnservedPaths (#1157)", () => {
   it("judges a chain by its final hop", () => {
     const p = plan([row("/x", "/y"), row("/y", "/live")], served);
     expect(redirectsToUnservedPaths(p, served)).toEqual([]);
+  });
+
+  it("follows a target with a query through the rule on its path (#1550)", () => {
+    // The plan stops collapsing at `/alias?utm=x`, but `/alias`'s rule answers it.
+    const p = plan(
+      [
+        row("/old", "/alias?utm_source=campaign"),
+        row("/alias", "/live"),
+        row("/lost", "/nowhere?x=1"),
+        row("/gone-ref", "/gone?x=1"),
+        row("/gone", "/gone", 410),
+        row("/ring-a", "/ring-b?x=1"),
+        row("/ring-b", "/ring-a?y=1"),
+      ],
+      served,
+    );
+    expect(p.redirects.find((r) => r.fromPath === "/old")?.location).toBe(
+      "/alias?utm_source=campaign",
+    );
+    expect(redirectsToUnservedPaths(p, served).map((r) => r.fromPath)).toEqual([
+      "/lost",
+      "/gone-ref",
+      "/ring-a",
+      "/ring-b",
+    ]);
   });
 });
 

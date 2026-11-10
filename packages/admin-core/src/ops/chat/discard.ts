@@ -33,6 +33,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { loadChatBinding } from "../../draft.js";
 import { releaseChatLocks } from "../../locks.js";
+import { discardBranchRedirectChanges } from "../../redirects/lifecycle.js";
 import { undoDraftChat } from "./draft-ops.js";
 
 /** Core tables whose rows can be created on a branch (migrations 0089, 0093, 0350). */
@@ -152,6 +153,9 @@ export const discardChatBranchOp = defineOperation({
       droppedRows += rows.length;
     }
     droppedRows += await discardBranchPluginRows(tx, branchId);
+    // #1550 — the branch's pending redirect changes never reached the
+    // shared draft; they go with the branch.
+    droppedRows += await discardBranchRedirectChanges(tx, branchId);
 
     await releaseChatLocks(tx, input.chatSessionId);
     await tx.execute(sql`

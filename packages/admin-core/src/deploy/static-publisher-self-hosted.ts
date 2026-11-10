@@ -56,6 +56,8 @@ import {
   STATIC_FILES_MANIFEST_FILE,
   type StagedManifest,
   stagedHeaderFields,
+  stagedManifestKey,
+  stagedManifestSchema,
 } from "@caelo-cms/shared";
 import { BUILD_INTERNAL_FILES } from "@caelo-cms/static-generator";
 import { planRedirectSync } from "./redirect-sync-plan.js";
@@ -186,7 +188,46 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     return summary;
   },
 
+  async readStagedBuildFiles({ target, runId, location, outputRoot }) {
+    // #1330 — the manifest the staging gateway serves the build by.
+    const path = resolve(outputRoot, target.outDir, stagedManifestKey(location));
+    const text = await readFile(path, "utf8").catch((e: NodeJS.ErrnoException) => {
+      if (e.code === "ENOENT") return null;
+      throw e;
+    });
+    if (text === null) {
+      throw new Error(
+        `selfHostedStaticPublisher: the manifest of staged build ${runId} (${path}) is missing, so its files cannot be read. Stage again.`,
+      );
+    }
+    const manifest = stagedManifestSchema.parse(JSON.parse(text));
+    if (manifest.runId !== runId) {
+      throw new Error(
+        `selfHostedStaticPublisher: ${path} describes build ${manifest.runId}, not ${runId}. Stage again.`,
+      );
+    }
+    return new Set(Object.keys(manifest.files));
+  },
+
+  async readServedFiles({ target, outputRoot }) {
+    const served = await listFiles(resolve(outputRoot, target.outDir, "current"));
+    return served.size === 0 ? null : served;
+  },
+
   async syncRedirects({ target, rows, outputRoot }): Promise<RedirectSyncResult> {
+    // #1330 / #1550 — Caddy hands all of staging to the staging gateway,
+    // which serves the staging view from cms_public_staging; staging's
+    // `current/` answers nothing.
+    if (target.env !== "production") {
+      return {
+        outcome: "not-served",
+        redirectCount: 0,
+        goneCount: 0,
+        shadowedCount: 0,
+        unservedTargets: [],
+        location: "the staging gateway (published redirects table)",
+      };
+    }
     const currentDir = resolve(outputRoot, target.outDir, "current");
     const served = await listFiles(currentDir);
     if (served.size === 0) {

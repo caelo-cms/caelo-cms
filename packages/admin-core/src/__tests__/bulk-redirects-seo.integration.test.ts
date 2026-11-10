@@ -20,6 +20,7 @@ import { bulkDeleteRedirectsTool } from "../ai/tools/bulk-delete-redirects.js";
 import { bulkOptimizeSeoTool } from "../ai/tools/bulk-optimize-seo.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
+import { liveRedirects, ruleView } from "./fixtures/redirects.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -38,19 +39,13 @@ const PFX = "bulkrs";
 let templateId: string;
 const toolCtx = () => ({ adapter, registry }) as ToolContext;
 
+/**
+ * #1550 — the rules under `prefix` once their pending changes are live: a
+ * tool's save is a Staged change, the live table is untouched until Publish
+ * live.
+ */
 async function countRedirectsUnder(prefix: string): Promise<number> {
-  const sql = new SQL(ADMIN_URL!);
-  try {
-    return await sql.begin(async (tx) => {
-      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      const r = (await tx`
-        SELECT count(*)::int AS n FROM redirects WHERE from_path LIKE ${`${prefix}%`}
-      `) as unknown as { n: number }[];
-      return r[0]?.n ?? 0;
-    });
-  } finally {
-    await sql.end();
-  }
+  return (await ruleView(ADMIN_URL!, prefix)).length;
 }
 
 async function makePage(slug: string): Promise<string> {
@@ -75,6 +70,7 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`/${PFX}-%`}`;
       await tx`DELETE FROM redirects WHERE from_path LIKE ${`/${PFX}-%`}`;
       await tx`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}-%`})`;
       await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}-%`}`;
@@ -126,6 +122,8 @@ describe("bulk_create_redirects", () => {
     );
     expect(r.ok).toBe(true);
     expect(await countRedirectsUnder(`/${PFX}-`)).toBe(3);
+    // #1550 — saved Staged: nothing reached the live site.
+    expect(await liveRedirects(ADMIN_URL!, `/${PFX}-`)).toEqual([]);
   });
 });
 

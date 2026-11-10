@@ -31,9 +31,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, type TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { SQL as BunSQL } from "bun";
 import { type SQL, sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { collapseRedirectChainsSql } from "../ops/content/path-moves.js";
+import { rulesPointingAtSql } from "../ops/content/path-moves.js";
 import { liveLighthouseAcceptancesSql } from "../ops/quality/record-result.js";
 import { spentMicrocentsSql } from "../ops/security/mcp_tool_call.js";
 
@@ -57,6 +58,22 @@ beforeAll(() => {
 afterAll(async () => {
   await adapter.close();
 });
+
+/**
+ * Fixture SQL on a raw pool, outside any adapter transaction: it carries no
+ * op tag, so the query index gate does not count the fixture's own scans.
+ */
+async function fixture(run: (tx: BunSQL) => Promise<unknown>): Promise<void> {
+  const db = new BunSQL(ADMIN_URL as string);
+  try {
+    await db.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await run(tx as unknown as BunSQL);
+    });
+  } finally {
+    await db.end();
+  }
+}
 
 const dialect = new PgDialect();
 
@@ -123,14 +140,33 @@ describe("#1291 — hot paths plan an index scan", () => {
     expectIndexed(plans, "ai_calls", "ai_calls_chat_session_idx", "ai_calls_actor_idx");
   });
 
-  it("a page move collapses redirect chains by index", async () => {
-    const plans = await plansOf(
-      collapseRedirectChainsSql([
-        { from: "/a", to: "/b" },
-        { from: "/c", to: "/d" },
-      ]),
-    );
-    expectIndexed(plans, "redirects", "redirects_to_path_idx");
+  it("a page move finds the rules to collapse by index, live and pending (#1550)", async () => {
+    // Statistics of the production shape, as for any choice between two
+    // indexes: nearly every pending change is on the shared draft. On a
+    // table nobody analyzed, a generic plan takes the draft filter for a
+    // selective one and walks the branch index instead of the target.
+    const seed = "/t1291-seed-";
+    await fixture(async (tx) => {
+      await tx`
+        INSERT INTO actors (id, kind, display_name) VALUES (${SYS.actorId}::uuid, 'system', 'core-indexes')
+        ON CONFLICT DO NOTHING`;
+      await tx`
+        INSERT INTO pending_redirects (address, from_path, to_path, status_code, state, origin, actor_id)
+        SELECT ${seed}::text || i, ${seed}::text || i, '/t1291-target-' || i, 301, 'staged', 'manual',
+               ${SYS.actorId}::uuid
+        FROM generate_series(1, 1000) AS i`;
+      await tx.unsafe("ANALYZE pending_redirects");
+    });
+    try {
+      const plans = await plansOf(rulesPointingAtSql(["/a", "/c"]));
+      expectIndexed(plans, "redirects", "redirects_to_path_idx");
+      expectIndexed(plans, "pending_redirects", "pending_redirects_to_path_idx");
+    } finally {
+      await fixture(async (tx) => {
+        await tx`DELETE FROM pending_redirects WHERE address LIKE ${`${seed}%`}`;
+        await tx.unsafe("ANALYZE pending_redirects");
+      });
+    }
   });
 });
 

@@ -50,6 +50,13 @@ export const s3StaticPublisher: StaticPublisher = {
   async syncRedirects() {
     throw new Error(NOT_IMPLEMENTED);
   },
+  // #1550 — no staged or live build to read the files of.
+  async readStagedBuildFiles() {
+    throw new Error(NOT_IMPLEMENTED);
+  },
+  async readServedFiles() {
+    throw new Error(NOT_IMPLEMENTED);
+  },
   async readLiveFiles() {
     throw new Error(NOT_IMPLEMENTED);
   },

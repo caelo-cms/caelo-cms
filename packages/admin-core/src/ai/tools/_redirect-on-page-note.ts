@@ -13,6 +13,10 @@
  * that first ships it, so for one the note says so and warns against
  * deleting the rule early: the rule is live state, and deleting it now would
  * leave the live URL answering 404 until that Publish live.
+ *
+ * #1550 — a rule that is not live yet (a Staged or Draft change) is named
+ * with its state, and the warning against an early delete is for a live
+ * rule only.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -51,14 +55,39 @@ export async function redirectOnPageNote(
   return `\n${"paths" in lookup ? describeRulesOnPages(conflicts) : describePagesOnRules(conflicts)}`;
 }
 
+/**
+ * #1517, #1550 — rules on the URLs of pages that were never live: the
+ * Publish live that first ships a page takes its URL over. A live rule must
+ * not be deleted before then (`liveTail`); a pending one is not live yet.
+ */
+function describeNewPages(
+  fresh: readonly RedirectPageConflict[],
+  tail: string,
+  liveTail: string,
+): string[] {
+  const was = (c: readonly RedirectPageConflict[]) => (c.length === 1 ? "was" : "were");
+  const live = fresh.filter((c) => c.ruleState === "live");
+  const pending = fresh.filter((c) => c.ruleState !== "live");
+  return [
+    live.length > 0
+      ? `A redirect rule sits on the URL of ${pagesOf(live)}, which ${was(live)} never live: ${rulesOf(live)}. ${NEW_PAGE_TAKES_OVER} ${tail}${liveTail}`
+      : "",
+    pending.length > 0
+      ? `A redirect rule sits on the URL of ${pagesOf(pending)}, which ${was(pending)} never live: ${rulesOf(pending)}. ${NEW_PAGE_TAKES_OVER_PENDING} ${tail}`
+      : "",
+  ];
+}
+
 /** The note after a page write. */
 function describePagesOnRules(conflicts: readonly RedirectPageConflict[]): string {
   const fresh = conflicts.filter((c) => !c.pageLive);
   const live = conflicts.filter((c) => c.pageLive);
   return [
-    fresh.length > 0
-      ? `A redirect rule sits on the URL of ${pagesOf(fresh)}, which ${fresh.length === 1 ? "was" : "were"} never live: ${rulesOf(fresh)}. ${NEW_PAGE_TAKES_OVER} If the rule should keep the URL, give the page another slug (update_pages_many). Do not delete the rule before then: the live site would answer 404 at that URL until Publish live.`
-      : "",
+    ...describeNewPages(
+      fresh,
+      "If the rule should keep the URL, give the page another slug (update_pages_many).",
+      " Do not delete the rule before then: the live site would answer 404 at that URL until Publish live.",
+    ),
     live.length > 0
       ? `A redirect rule sits on the URL of ${pagesOf(live)}: ${rulesOf(live)}. ` +
         "The rule answers that URL until a build ships the page, so the page looks unreachable until then: a draft needs set_pages_status_many first, then a Stage for staging and Publish live for the live site. Once a build serves the page, the page wins and the rule does nothing; Stage reports the pair as an error. " +
@@ -74,9 +103,11 @@ function describeRulesOnPages(conflicts: readonly RedirectPageConflict[]): strin
   const fresh = conflicts.filter((c) => !c.pageLive);
   const live = conflicts.filter((c) => c.pageLive);
   return [
-    fresh.length > 0
-      ? `A redirect rule sits on the URL of ${pagesOf(fresh)}, which ${fresh.length === 1 ? "was" : "were"} never live: ${rulesOf(fresh)}. ${NEW_PAGE_TAKES_OVER} If the URL should keep redirecting, set the page to draft (set_pages_status_many) or move it (move_pages).`
-      : "",
+    ...describeNewPages(
+      fresh,
+      "If the URL should keep redirecting, set the page to draft (set_pages_status_many) or move it (move_pages).",
+      "",
+    ),
     live.length > 0
       ? `A redirect rule sits on the URL of ${pagesOf(live)}: ${rulesOf(live)}. ` +
         "A page wins over a rule: once a build serves the page, the rule does nothing, and Stage reports the pair as an error. " +
@@ -87,9 +118,13 @@ function describeRulesOnPages(conflicts: readonly RedirectPageConflict[]): strin
     .join("\n");
 }
 
-/** #1517 — what happens to a rule on the URL of a page that was never live. */
+/** #1517 — what happens to a live rule on the URL of a page that was never live. */
 const NEW_PAGE_TAKES_OVER =
   "The rule keeps answering that URL on the live site until the page is published and Publish live ships it; that Publish live deletes the rule, so the page takes its URL over with nothing to do.";
+
+/** #1550 — the same for a rule that is not live yet (Staged or Draft). */
+const NEW_PAGE_TAKES_OVER_PENDING =
+  "The rule is not live yet; the Publish live that first ships the page deletes it, so the page takes its URL over with nothing to do.";
 
 function pagesOf(conflicts: readonly RedirectPageConflict[]): string {
   const shown = conflicts
@@ -99,9 +134,12 @@ function pagesOf(conflicts: readonly RedirectPageConflict[]): string {
 }
 
 function rulesOf(conflicts: readonly RedirectPageConflict[]): string {
+  // #1550 — a pending rule says so: it is not on the live site yet.
+  const state = (c: RedirectPageConflict) =>
+    c.ruleState === "live" ? "" : c.ruleState === "staged" ? ", Staged" : ", Draft";
   return `${conflicts
     .slice(0, CONFLICTS_SHOWN)
-    .map((c) => `${c.fromPath} -> ${c.toPath} (${c.statusCode})`)
+    .map((c) => `${c.fromPath} -> ${c.toPath} (${c.statusCode}${state(c)})`)
     .join(", ")}${more(conflicts)}`;
 }
 

@@ -85,6 +85,9 @@ async function cleanup(): Promise<void> {
   await sqlSystem(async (tx) => {
     await tx.unsafe("DELETE FROM url_migration_pending_actions");
     await tx.unsafe(
+      "DELETE FROM pending_redirects WHERE from_path LIKE '/t390-%' OR from_path LIKE '/de/t390-%' OR to_path LIKE '/de/t390-%'",
+    );
+    await tx.unsafe(
       "DELETE FROM redirects WHERE from_path LIKE '/t390-%' OR to_path LIKE '/de/t390-%'",
     );
     await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (
@@ -178,8 +181,10 @@ describe("#390 — URL-diff engine", () => {
       const paths = (await tx.unsafe(
         `SELECT slug, current_path FROM pages WHERE slug LIKE 't390-%' ORDER BY slug`,
       )) as { slug: string; current_path: string }[];
+      // #1550 — the migration's 301 is Staged: live with the next Publish live.
       const redirects = (await tx.unsafe(
-        `SELECT from_path, to_path, status_code FROM redirects WHERE from_path = '/t390-alpha'`,
+        `SELECT from_path, to_path, status_code FROM pending_redirects
+         WHERE from_path = '/t390-alpha' AND state = 'staged' AND origin = 'url_migration'`,
       )) as { from_path: string; to_path: string; status_code: number }[];
       return { paths, redirects };
     });

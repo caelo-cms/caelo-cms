@@ -36,6 +36,7 @@ import { pendingSnapshotSql } from "../../draft.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
 import { applyListEntityRow } from "../../lists/store.js";
 import { releaseChatLocks } from "../../locks.js";
+import { mergeBranchRedirectChanges } from "../../redirects/lifecycle.js";
 import { applyPageSeoState } from "../../seo/page-seo.js";
 import {
   emitSnapshot,
@@ -1332,6 +1333,9 @@ export const mergeChatToMainOp = defineOperation({
     if (!merged.ok) return err(merged.error);
 
     const { siteSnapshotId, entityCount, includeAll, linkWarnings } = merged.value;
+    // #1550 — an isolated branch's pending redirect changes join the shared
+    // draft with its Stage merge: the Staged ones reach staging from now on.
+    await mergeBranchRedirectChanges(tx, merged.value.session.chat_branch_id);
 
     // Merge-time boundary for the pending-changes filters. Emitted as a
     // deterministic ISO string (not a driver-dependent Date/text row) so

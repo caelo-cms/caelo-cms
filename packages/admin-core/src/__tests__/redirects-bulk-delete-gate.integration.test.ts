@@ -20,6 +20,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { ruleView } from "./fixtures/redirects.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -41,20 +42,12 @@ const HUMAN: ExecutionContext = {
 
 const PFX = "/redirgate";
 
-/** Live redirect rows under our prefix. RLS needs caelo.actor_kind set. */
+/**
+ * Rules under our prefix once their pending changes are live (#1550: the
+ * seeded rules are Staged changes, and a delete of one is a pending change).
+ */
 async function countUnder(prefix: string): Promise<number> {
-  const sql = new SQL(ADMIN_URL!);
-  try {
-    return await sql.begin(async (tx) => {
-      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      const rows = (await tx`
-        SELECT count(*)::int AS n FROM redirects WHERE from_path LIKE ${`${prefix}%`}
-      `) as unknown as { n: number }[];
-      return rows[0]?.n ?? 0;
-    });
-  } finally {
-    await sql.end();
-  }
+  return (await ruleView(ADMIN_URL!, prefix)).length;
 }
 
 async function seed(n: number, prefix: string): Promise<void> {
@@ -73,6 +66,7 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`${PFX}%`}`;
       await tx`DELETE FROM redirects WHERE from_path LIKE ${`${PFX}%`}`;
     });
   } finally {

@@ -134,6 +134,9 @@ async function cleanup(): Promise<void> {
     await tx.unsafe('DROP SCHEMA IF EXISTS "plugin_t393_life" CASCADE');
     await tx.unsafe("DELETE FROM plugin_pending_actions");
     await tx.unsafe("DELETE FROM skills WHERE slug LIKE 't393-%'");
+    await tx.unsafe(
+      "DELETE FROM pending_redirects WHERE from_path LIKE '/t393-%' OR from_path LIKE '/de/t393-%'",
+    );
     await tx.unsafe("DELETE FROM redirects WHERE from_path LIKE '/t393-%'");
     await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (
       SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug LIKE 't393-%')
@@ -361,8 +364,9 @@ describe("#393 — lifecycle completion", () => {
       const page = (await tx.unsafe(`SELECT current_path FROM pages WHERE id = '${pageId}'`)) as {
         current_path: string;
       }[];
+      // #1550 — the 301 back is a Staged change, live with the next Publish live.
       const redirect = (await tx.unsafe(
-        `SELECT to_path FROM redirects WHERE from_path = '/de/t393-page'`,
+        `SELECT to_path FROM pending_redirects WHERE from_path = '/de/t393-page' AND state = 'staged'`,
       )) as { to_path: string }[];
       const schema = (await tx.unsafe(
         `SELECT COUNT(*)::int AS n FROM pg_namespace WHERE nspname = 'plugin_t393_life'`,

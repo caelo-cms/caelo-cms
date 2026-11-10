@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1157 — saved redirects go live on the hosting without a build, and a push
- * that failed is never silent. Pins:
- *   - Settings → Redirects shows, per target, whether the saved redirects are
- *     live; a failed push shows its error, the automatic retry and that
- *     target's "Try again now";
+ * #1157, #1550 — the live redirects reach the hosting without a build (a
+ * release or Go live now pushes them), and a push that failed is never
+ * silent. Pins:
+ *   - Settings → Redirects shows, per production target, whether the live
+ *     redirects are on the hosting; a failed push shows its error, the
+ *     automatic retry and that target's "Try again now";
  *   - the notification bell names it and links to Settings → Redirects.
  *
  * The failure is seeded as the sync leaves it (target behind, last error,
  * a failed attempt in the history): the suite's stack has no hosting to fail
  * against on demand. The spec owns only the production target's sync state
- * (it resets it before and after) and asserts only production's row: specs
- * running in parallel seed staging runs with no build on disk, so staging's
- * row may show a real failure at any time.
+ * (it resets it before and after); staging is never pushed, so it has no row.
  */
 
 import { expect, type Page, test } from "@playwright/test";
@@ -35,7 +34,7 @@ const FIXTURE = `
         failed_attempts = 1, next_attempt_at = now() + interval '1 hour',
         last_error = 'E2E: the URL-map update failed' WHERE target_id = \${prod[0].id}\`;
       await tx\`INSERT INTO redirect_syncs (target_id, trigger, status, revision, error_message, actor_id)
-        VALUES (\${prod[0].id}, 'save', 'failed', 1, 'E2E: the URL-map update failed', \${actor[0].id})\`;
+        VALUES (\${prod[0].id}, 'go_live', 'failed', 1, 'E2E: the URL-map update failed', \${actor[0].id})\`;
     }
   });
   await sql.end();
@@ -51,7 +50,7 @@ async function login(page: Page): Promise<void> {
   await page.waitForURL((url) => !url.pathname.startsWith("/login"));
 }
 
-test.describe("Redirects live on the hosting (#1157)", () => {
+test.describe("The live redirects on the hosting (#1157, #1550)", () => {
   test.describe.configure({ mode: "serial" });
   test.beforeAll(() => clearLoginRateBucket());
   test.afterAll(() => fixture("reset"));
@@ -62,7 +61,7 @@ test.describe("Redirects live on the hosting (#1157)", () => {
     await page.goto("/settings/redirects");
     const card = page.getByTestId("redirect-sync-status");
     const production = card.locator('[data-testid="redirect-sync-target"][data-env="production"]');
-    await expect(production).toContainText("Not live — push failed");
+    await expect(production).toContainText("Not on your hosting — push failed");
     await expect(production).toContainText("E2E: the URL-map update failed");
     await expect(production).toContainText("Retried automatically");
     await expect(production.getByRole("button", { name: "Try again now" })).toBeVisible();
@@ -70,7 +69,7 @@ test.describe("Redirects live on the hosting (#1157)", () => {
     // The count is part of the bell's name once it is hydrated and polled.
     await page.getByRole("button", { name: /^Notifications, \S+ pending$/ }).click();
     const notice = page.getByTestId("redirect-sync-notice");
-    await expect(notice).toContainText("Saved redirects are not live yet");
+    await expect(notice).toContainText("The live redirects are not on your hosting yet");
     await expect(notice).toHaveAttribute("href", "/settings/redirects");
   });
 
@@ -83,8 +82,8 @@ test.describe("Redirects live on the hosting (#1157)", () => {
       .locator('[data-testid="redirect-sync-target"][data-env="production"]');
     await production.getByRole("button", { name: "Try again now" }).click();
     // Production in the suite's stack has no build that cannot be served,
-    // so the retry succeeds ("Live" or "Nothing published yet").
-    await expect(page.getByText("Redirects are live on your hosting.").first()).toBeVisible();
+    // so the retry succeeds ("Up to date" or "Nothing published yet").
+    await expect(page.getByText("The live redirects are on your hosting.").first()).toBeVisible();
     await expect(production).not.toContainText("push failed");
     await expect(production.getByRole("button", { name: "Try again now" })).toHaveCount(0);
   });
@@ -93,8 +92,10 @@ test.describe("Redirects live on the hosting (#1157)", () => {
     fixture("reset");
     await login(page);
     await page.goto("/settings/redirects");
-    // Only production's state is this spec's: other specs seed staging runs
-    // without a build on disk, so staging may genuinely be failing meanwhile.
+    // Only production is pushed (#1550): staging is the staging gateway's.
+    await expect(
+      page.getByTestId("redirect-sync-status").locator('[data-env="staging"]'),
+    ).toHaveCount(0);
     const production = page
       .getByTestId("redirect-sync-status")
       .locator('[data-testid="redirect-sync-target"][data-env="production"]');

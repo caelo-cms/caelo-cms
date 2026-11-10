@@ -102,6 +102,7 @@ test.afterEach(async () => {
         await tx.unsafe("DELETE FROM plugin_international_site.page_variants");
         await tx.unsafe("DELETE FROM plugin_international_site.locales");
       }
+      await tx\`DELETE FROM pending_redirects WHERE from_path LIKE \${"/" + process.env.SRC + "%"} OR from_path LIKE \${"/de/" + process.env.SRC + "%"}\`;
       await tx\`DELETE FROM redirects WHERE from_path LIKE \${"/" + process.env.SRC + "%"} OR from_path LIKE \${"/de/" + process.env.SRC + "%"}\`;
       await tx\`DELETE FROM pages WHERE slug LIKE \${process.env.SRC + "%"} OR slug LIKE \${process.env.DE + "%"}\`;
       await tx\`DELETE FROM templates WHERE slug LIKE \${process.env.SRC + "%"}\`;

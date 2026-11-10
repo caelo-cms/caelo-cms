@@ -58,6 +58,7 @@ async function asSystem<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
 
 async function wipe(): Promise<void> {
   await asSystem(async (tx) => {
+    await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`/${PFX}%`}`;
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`/${PFX}%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`})`;
     await tx`UPDATE pages SET parent_page_id = NULL WHERE slug LIKE ${`${PFX}%`}`;
@@ -158,9 +159,14 @@ async function storedLinkState(pageId: string): Promise<string> {
   return JSON.stringify(rows);
 }
 
+/**
+ * The 301 a move left at `fromPath`: a Staged change (#1550), live with the
+ * Publish live that ships the move.
+ */
 async function redirectTo(fromPath: string): Promise<{ to: string; status: number } | null> {
   const rows = (await asSystem(
-    (tx) => tx`SELECT to_path, status_code FROM redirects WHERE from_path = ${fromPath}`,
+    (tx) => tx`SELECT to_path, status_code FROM pending_redirects
+               WHERE from_path = ${fromPath} AND state = 'staged' AND to_path IS NOT NULL`,
   )) as { to_path: string; status_code: number | string }[];
   const r = rows[0];
   return r ? { to: r.to_path, status: Number(r.status_code) } : null;

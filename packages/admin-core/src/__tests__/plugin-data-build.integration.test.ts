@@ -51,6 +51,7 @@ import { PLUGIN_DATA_ARCHIVES_KEPT } from "../plugin-data/build.js";
 import { runPluginDataBuildIfDue } from "../plugin-data/worker.js";
 import { releaseProjectionForTests, stagingPublicAdapter } from "../public-projection.js";
 import { registerAdminOps } from "../register.js";
+import { liveRedirects, pendingRedirects } from "./fixtures/redirects.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -207,6 +208,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM plugin_data_stale_pages`;
     await tx`UPDATE plugin_data_build_state SET visitor_event_watermark = 0, last_tick_at = NULL, last_outcome = NULL, last_message = NULL WHERE id = 1`;
     await tx`DELETE FROM deploy_runs`;
+    await tx`DELETE FROM pending_redirects WHERE from_path = '/t1155-old'`;
     await tx`DELETE FROM redirects WHERE from_path = '/t1155-old'`;
     await tx`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(slugs)})`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${tx(slugs)})`;
@@ -506,10 +508,15 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     });
 
     const live = await filesUnder(join(productionDir(), "current"));
-    // A saved redirect is not draft state (#1157): it is live on save, so
-    // the release re-syncs the redirect files over the build's own copy.
+    // #1550 — a saved redirect is draft state (Staged): the plugin-data
+    // build re-syncs the LIVE table over the build's own copy, never a
+    // pending change. The change stays Staged for the next Publish live.
     const redirectFiles = new Set(["_redirects", "_redirects.cloudflare", CADDY_REDIRECTS_FILE]);
-    expect(live.get(CADDY_REDIRECTS_FILE)?.toString("utf8")).toContain("/t1155-old");
+    expect(live.get(CADDY_REDIRECTS_FILE)?.toString("utf8")).not.toContain("/t1155-old");
+    expect(await liveRedirects(ADMIN_URL!, "/t1155-old")).toEqual([]);
+    expect(await pendingRedirects(ADMIN_URL!, "/t1155-old")).toEqual([
+      expect.objectContaining({ fromPath: "/t1155-old", state: "staged" }),
+    ]);
     // Same files as the published build serves (#1271: its internal files
     // — asset references, parity digests — never reach current/): no new page …
     const served = [...base.keys()].filter((p) => !BUILD_INTERNAL_FILES.has(p));

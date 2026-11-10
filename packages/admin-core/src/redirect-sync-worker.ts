@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1157 — runs the redirect sync after redirects writes and retries the
- * targets whose provider is behind.
+ * #1157 — retries the production targets whose provider is behind the live
+ * redirects.
  *
- * {@link registerRedirectSyncRunner} registers the post-commit runner every
- * redirects write uses (deploy/redirect-sync.ts `setRedirectSyncRunner`), so
- * a save pushes the table to the hosting provider before its request
- * answers. A push that failed leaves its target behind
+ * #1550 — a save no longer pushes anything (it is a pending change); the
+ * releases that change the live redirects (Publish live, an Owner's
+ * production build, Go live now, a rollback) push right after their commit.
+ * A push that failed leaves its target behind
  * (`redirect_sync_state.wanted_revision > synced_revision`) with a
  * `next_attempt_at` that backs off from 1 minute to an hour;
  * {@link retryRedirectSync} retries every target that is due, and pushes a
- * change whose own save could not (#1254: its row in `redirect_changes` is
+ * live change nobody pushed yet (#1254: its row in `redirect_changes` is
  * still unfolded). It is two indexed reads while everything is in sync.
  *
- * The runner is registered once per admin process from
- * apps/admin/src/hooks.server.ts; the retry runs on the scheduler tick
- * (#1140, scheduler/core-tasks.ts), every tick.
+ * The retry runs on the scheduler tick (#1140, scheduler/core-tasks.ts),
+ * every tick. Neither it nor the plugin-data build ever applies a pending
+ * change: they push the live table as it is.
  */
 
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
@@ -28,7 +28,6 @@ import {
   type RedirectSyncOutcome,
   type RedirectSyncTrigger,
   redirectChangesPending,
-  setRedirectSyncRunner,
 } from "./deploy/redirect-sync.js";
 
 interface RedirectSyncWorkerOpts {
@@ -36,7 +35,6 @@ interface RedirectSyncWorkerOpts {
   readonly registry: OperationRegistry;
 }
 
-let registered = false;
 let runs = 0;
 
 /** Run `redirects.sync_provider` as the system actor; throws when the op itself fails. */
@@ -57,33 +55,6 @@ async function runSync(
 }
 
 /**
- * #1254 — saves coalesce: at most one save sync runs per process and one
- * waits behind it. A save that commits while a sync runs joins the waiting
- * one, which starts after the running one ended — so it pushes every change
- * committed before it started, and each caller is answered by a push that
- * saw its own change. Without this, a save during another save's push would
- * find the lease taken by its sibling and answer "not live yet".
- */
-let saveRunning: Promise<RedirectSyncOutcome[]> | null = null;
-let saveQueued: Promise<RedirectSyncOutcome[]> | null = null;
-
-function coalescedSave(opts: RedirectSyncWorkerOpts): Promise<RedirectSyncOutcome[]> {
-  if (saveRunning === null) {
-    saveRunning = runSync(opts, "save").finally(() => {
-      saveRunning = null;
-    });
-    return saveRunning;
-  }
-  saveQueued ??= saveRunning
-    .catch(() => undefined)
-    .then(() => {
-      saveQueued = null;
-      return coalescedSave(opts);
-    });
-  return saveQueued;
-}
-
-/**
  * One retry: push changes nobody pushed yet (their save's sync was skipped
  * or never ran) and retry the targets that are behind and whose backoff
  * has elapsed. Throws when the sync op itself fails.
@@ -95,10 +66,12 @@ export async function retryRedirectSync(opts: RedirectSyncWorkerOpts): Promise<n
     { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: `redirect-sync-poll-${runs++}` },
     async (tx) => ({
       pending: await redirectChangesPending(tx),
+      // #1550 — production only: staging is served by the staging gateway.
       due: (await tx.execute(sql`
-        SELECT target_id::text AS target_id FROM redirect_sync_state
-        WHERE wanted_revision > synced_revision
-          AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+        SELECT s.target_id::text AS target_id FROM redirect_sync_state s
+        JOIN deploy_targets t ON t.id = s.target_id AND t.env = 'production'
+        WHERE s.wanted_revision > s.synced_revision
+          AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= now())
       `)) as unknown as { target_id: string }[],
     }),
   );
@@ -114,24 +87,6 @@ export async function retryRedirectSync(opts: RedirectSyncWorkerOpts): Promise<n
     });
   }
   return failed.length;
-}
-
-/**
- * Register the post-commit runner every redirects write uses. Idempotent —
- * a second call is a no-op.
- */
-export function registerRedirectSyncRunner(opts: RedirectSyncWorkerOpts): void {
-  if (registered) return;
-  registered = true;
-  setRedirectSyncRunner((trigger) =>
-    trigger === "save" ? coalescedSave(opts) : runSync(opts, trigger),
-  );
-}
-
-/** Test-only — unregister the runner. */
-export function unregisterRedirectSyncRunner(): void {
-  registered = false;
-  setRedirectSyncRunner(null);
 }
 
 /** What {@link refreshStaleLiveRelease} found and did. */

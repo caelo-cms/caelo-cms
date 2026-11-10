@@ -148,6 +148,7 @@ async function wipe(): Promise<void> {
   resetPluginHost();
   await withSystemSql(async (tx) => {
     await tx.unsafe(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
+    await tx`DELETE FROM pending_redirects WHERE from_path LIKE ${`%${PFX}%`}`;
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}%`}`;
     const byPluginActor = `SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`;
     await tx.unsafe(`DELETE FROM site_snapshots WHERE actor_id IN (${byPluginActor})`);

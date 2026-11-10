@@ -115,6 +115,7 @@ async function cleanup(): Promise<void> {
       await tx.unsafe(
         `DELETE FROM static_bakes WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${slug}')`,
       );
+      await tx.unsafe(`DELETE FROM pending_redirects WHERE actor_id IN (${pluginActors(slug)})`);
       await tx.unsafe(`DELETE FROM redirects WHERE created_by IN (${pluginActors(slug)})`);
       await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (${pluginActors(slug)})`);
       await tx.unsafe(`DELETE FROM site_snapshots WHERE actor_id IN (${pluginActors(slug)})`);

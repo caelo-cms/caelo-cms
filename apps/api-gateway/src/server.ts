@@ -106,7 +106,6 @@ import {
   GATEWAY_REFRESH_TOKEN_HEADER,
   gatewayRefreshAudience,
   gatewayRefreshPingsOn,
-  type RedirectTableRow,
   SESSION_ENTRY,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -166,6 +165,7 @@ import {
   gateFailureLimiter,
   handleStagingSiteRequest,
   ManifestCache,
+  type PublishedRedirects,
   type StagingSiteState,
 } from "./staging/site.js";
 import { type StagingStorage, stagingStorageFromEnv } from "./staging/storage.js";
@@ -480,7 +480,7 @@ async function refreshPingRequest(req: Request, requestId: string): Promise<Resp
 // ---------------------------------------------------------------------------
 
 let cachedStagingState: StagingSiteState | null = null;
-let cachedRedirects: readonly RedirectTableRow[] | null = null;
+let cachedRedirects: PublishedRedirects | null = null;
 
 async function loadStagingSiteState(adapter: DatabaseAdapter): Promise<StagingSiteState> {
   if (cachedStagingState && publishedCacheUsable()) return cachedStagingState;
@@ -540,23 +540,60 @@ async function loadStagingSiteState(adapter: DatabaseAdapter): Promise<StagingSi
   return state;
 }
 
-async function loadPublishedRedirects(
-  adapter: DatabaseAdapter,
-): Promise<readonly RedirectTableRow[]> {
+/**
+ * #1550 — the live rows and the shared draft's Staged changes, read in ONE
+ * statement: under READ COMMITTED each statement takes its own snapshot,
+ * so two reads could straddle a projection commit and pair the live rows of
+ * one publish with the changes of the next (a loop neither of them has).
+ */
+async function loadPublishedRedirects(adapter: DatabaseAdapter): Promise<PublishedRedirects> {
   if (cachedRedirects && publishedCacheUsable()) return cachedRedirects;
   const startedAt = publishedCacheGeneration();
   const rows = (await adapter.withPublicTransaction(
     SYSTEM_CTX,
     async (tx) =>
-      await tx.execute(
-        sql`SELECT from_path, to_path, status_code FROM published_redirects ORDER BY from_path`,
-      ),
-  )) as unknown as { from_path: string; to_path: string; status_code: number }[];
-  const redirects = rows.map((r) => ({
-    fromPath: r.from_path,
-    toPath: r.to_path,
-    statusCode: r.status_code,
-  }));
+      await tx.execute(sql`
+        SELECT 'live' AS kind, NULL::text AS id, NULL::text AS address, from_path, to_path,
+               status_code, NULL::boolean AS automatic, from_path AS sort_key
+        FROM published_redirects
+        UNION ALL
+        SELECT 'staged', id::text, address, from_path, to_path, status_code, automatic,
+               address
+        FROM published_redirect_changes
+        ORDER BY kind, sort_key
+      `),
+  )) as unknown as {
+    kind: "live" | "staged";
+    id: string | null;
+    address: string | null;
+    from_path: string;
+    to_path: string | null;
+    status_code: number | null;
+    automatic: boolean | null;
+  }[];
+  const live: PublishedRedirects["live"][number][] = [];
+  const staged: PublishedRedirects["staged"][number][] = [];
+  for (const r of rows) {
+    if (r.kind === "live") {
+      if (r.to_path === null || r.status_code === null) {
+        throw new Error(`published_redirects: the row for ${r.from_path} has no target`);
+      }
+      live.push({ fromPath: r.from_path, toPath: r.to_path, statusCode: r.status_code });
+    } else {
+      if (r.id === null || r.address === null || r.automatic === null) {
+        throw new Error(`published_redirect_changes: the change for ${r.from_path} is incomplete`);
+      }
+      staged.push({
+        id: r.id,
+        address: r.address,
+        fromPath: r.from_path,
+        toPath: r.to_path,
+        statusCode: r.status_code,
+        automatic: r.automatic,
+      });
+    }
+  }
+  const redirects: PublishedRedirects = { live, staged };
   if (mayCacheRead(startedAt)) cachedRedirects = redirects;
   return redirects;
 }

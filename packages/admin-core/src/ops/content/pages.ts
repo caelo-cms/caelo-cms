@@ -43,6 +43,8 @@ import { replacePageTerms } from "../../lists/page-terms.js";
 import { fitIssueDetails, resolvePageTypeForWrite } from "../../lists/page-type-resolve.js";
 import { loadListEntities } from "../../lists/store.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
+import { ownerOfContext } from "../../redirects/model.js";
+import { writeRedirectChanges } from "../../redirects/write.js";
 import {
   emitSnapshot,
   loadBranchedModuleStates,
@@ -54,7 +56,7 @@ import {
 import type { PageState } from "../../snapshots/state.js";
 import { buildPatchSet, buildWhere, jsonbParam } from "../../sql-helpers.js";
 import { decodeKeysetCursor, encodeKeysetCursor } from "../keyset-cursor.js";
-import { createRedirectOp } from "../redirects.js";
+import { redirectWriteIssue } from "../redirects.js";
 import { annotationDriftPaths, pendingUrlAnnotationPageIds } from "./branch-url-drift.js";
 import { loadSiteDesignations } from "./compose-paths.js";
 import { cloneContentInstancesDeep } from "./content-instance-clone.js";
@@ -461,7 +463,7 @@ export const listPagesOp = defineOperation({
  * not part of the live tree.
  */
 async function withTreeView(
-  tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
+  tx: TransactionRunner,
   ctx: ExecutionContext,
   pages: z.infer<typeof pageRowSchema>[],
   only: PageSelection | null = null,
@@ -826,7 +828,7 @@ function isRootSlug(slug: string): boolean {
  * pages the caller reclaimed on its own branch (2b).
  */
 async function branchDeletedPageIds(
-  tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
+  tx: TransactionRunner,
   chatBranchId: string,
   candidateIds: readonly string[],
 ): Promise<Set<string>> {
@@ -2090,16 +2092,16 @@ async function deletePageHandler(
     entityId: input.pageId,
     resultSummary: branched ? "branched soft-delete" : "soft-deleted",
   });
-  if (state) {
-    await emitSnapshot(tx, {
-      actorId: ctx.actorId,
-      opKind: "pages.delete",
-      description: `pages.delete slug=${state.slug}${branched ? " (branched)" : ""}`,
-      chatTaskId: ctx.chatTaskId ?? null,
-      chatBranchId: ctx.chatBranchId ?? null,
-      entities: [{ kind: "page", entityId: input.pageId, state }],
-    });
-  }
+  const snapshot = state
+    ? await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "pages.delete",
+        description: `pages.delete slug=${state.slug}${branched ? " (branched)" : ""}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
+        entities: [{ kind: "page", entityId: input.pageId, state }],
+      })
+    : null;
   // Dead-URL redirect, on this tx. `state` carries the page's slug
   // (delete doesn't change it). A failed 301 aborts the delete rather than
   // leaving the URL silently unredirected (§2 no-fallbacks).
@@ -2119,14 +2121,23 @@ async function deletePageHandler(
     if (oldPath === undefined) {
       throw new Error(`page delete aborted — page ${input.pageId} has no current_path`);
     }
-    const red = await createRedirectOp.handler(
-      ctx,
-      { fromPath: oldPath, toPath: input.redirectTo as string, statusCode: 301 },
-      tx,
-    );
-    if (!red.ok) {
-      throw new Error(`page delete aborted — redirect ${oldPath} → ${input.redirectTo} failed`);
+    const toPath = input.redirectTo as string;
+    // Re-checked here, not only in the input schema: pages.delete_many runs
+    // this handler directly, which skips the Validator's Zod parse.
+    const issue = await redirectWriteIssue(tx, oldPath, toPath);
+    if (issue) {
+      throw new Error(`page delete aborted — redirect ${oldPath} → ${toPath}: ${issue}`);
     }
+    // #1550 — an automatic change, Staged: the 301 goes live with the
+    // Publish live that ships the delete, never before (#1523). A chat's
+    // delete keeps its chat and branch, so its Undo takes the 301 back too,
+    // until the Stage that merges this delete (its snapshot) settles it.
+    await writeRedirectChanges(tx, [{ fromPath: oldPath, toPath, statusCode: 301 }], {
+      origin: "page_delete",
+      state: "staged",
+      owner: await ownerOfContext(tx, ctx, "pages.delete"),
+      causeSnapshotId: snapshot?.siteSnapshotId ?? null,
+    });
   }
   return ok({});
 }
