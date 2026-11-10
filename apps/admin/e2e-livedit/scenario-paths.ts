@@ -511,6 +511,11 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/static_files*.ts`,
   `${A}/ai/tools/static-file-tools.ts`,
   `${A}/ops/gateway.ts`,
+  // The admin's refresh pings to the gateways after a publish: sent only on
+  // Google Cloud, which no CI scenario runs on.
+  `${A}/gateway-refresh.ts`,
+  `${A}/ops/gateway-refresh.ts`,
+  `${SHARED}/gateway-refresh.ts`,
   `${A}/ops/staging_access.ts`,
   `${A}/ops/owner_settings_*.ts`,
   // #1337 — the Owner's mail caps, an owner-settings proposal like the above.

@@ -287,6 +287,7 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   deploy_targets: "deploy target configuration; read by the deploy ops",
   deploy_runs: "deploy runs; reach editors as the op-classified `deploys` topic",
   redirect_sync_state: RUNTIME,
+  gateway_refresh_state: RUNTIME,
   redirect_changes:
     "which transactions changed redirects, folded by the redirect sync; the journaled redirects table is the source",
   static_bakes: "derived build output of plugin-baked regions",

@@ -24,7 +24,10 @@
  *     still converge within one tick. Until the boot publish succeeded,
  *     the backstop retries it instead of a plain drain.
  *
- * The gateway hears a NOTIFY on cms_public and drops its caches.
+ * The gateway hears a NOTIFY on cms_public and drops its caches. On
+ * request-billed CPU that NOTIFY waits until the gateway has CPU again, so
+ * after a publish the admin also pings each gateway whose database it wrote
+ * (`afterPublish`, gateway-refresh.ts).
  *
  * Declarations come from the plugins this admin actually loaded (their
  * verified definitions), never from a manifest in the database. They are
@@ -181,9 +184,26 @@ export function createPublicProjectionPublisher(opts: {
   /** #1329 — the admin's adapter on cms_public_staging. */
   readonly stagingAdapter: DatabaseAdapter;
   readonly declarations?: () => VisitorProjectionDeclarations;
+  /**
+   * Run after every publish that succeeded, before the next one starts: the
+   * refresh pings to the gateways whose database it wrote
+   * (gateway-refresh.ts). Awaited, so a post-write drain returns only once
+   * its pings are answered or recorded; it never fails the publish.
+   */
+  readonly afterPublish?: (report: PublishReport) => Promise<void>;
 }): PublicProjectionPublisher {
   const dbs = projectionDatabases(opts.adapter, opts.stagingAdapter);
   const declarations = opts.declarations ?? loadedVisitorProjections;
+  const afterPublish = async (report: PublishReport): Promise<PublishReport> => {
+    if (opts.afterPublish) {
+      await opts.afterPublish(report).catch((e: unknown) => {
+        console.error(
+          `[public-projection] after-publish step failed (the publish stands): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    }
+    return report;
+  };
   let tail: Promise<unknown> = Promise.resolve();
   let waitingDrain: Promise<PublishReport> | null = null;
   let waitingFull: Promise<PublishReport> | null = null;
@@ -215,16 +235,16 @@ export function createPublicProjectionPublisher(opts: {
             `[public-projection] ${target}: no frozen release state yet — an active plugin is not loaded here, so the plugin registry stays as published until an instance that runs every active plugin boots, or the next Stage`,
           );
         }
-        return report;
+        return afterPublish(report);
       });
       waitingFull = full;
       return full;
     },
     drain: () => {
       if (waitingDrain !== null) return waitingDrain;
-      const drain = enqueue(() => {
+      const drain = enqueue(async () => {
         waitingDrain = null;
-        return drainPublicProjection(dbs);
+        return afterPublish(await drainPublicProjection(dbs));
       });
       waitingDrain = drain;
       return drain;

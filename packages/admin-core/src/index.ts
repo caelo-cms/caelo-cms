@@ -115,6 +115,13 @@ export {
   type EmailConfigRow,
   emailDeliveryProblem,
 } from "./email/transport.js";
+export {
+  createGatewayRefresher,
+  GATEWAY_REFRESH_TIMEOUT_MS,
+  type GatewayRefresher,
+  type IdTokenSource,
+  metadataIdTokens,
+} from "./gateway-refresh.js";
 export type { LinkNotice } from "./links/link-notice.js";
 // #1215 — live-refresh topics instead of editor timer polling.
 export {
