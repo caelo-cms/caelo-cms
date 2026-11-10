@@ -100,6 +100,7 @@ import {
   PhaseTimer,
   phaseTimingSchema,
   type Result,
+  readDocumentLanguage,
 } from "@caelo-cms/shared";
 import {
   bakeRegion,
@@ -308,7 +309,11 @@ async function bakeTarget(args: {
       notLive += wanted.size;
       continue;
     }
-    for (const region of findBakeRegions(body.toString("utf8"))) {
+    const text = body.toString("utf8");
+    // #1511 — the plugin formats what it bakes in the page's language, as
+    // published: the same `<html lang>` the full build read before it.
+    const lang = readDocumentLanguage(text);
+    for (const region of findBakeRegions(text)) {
       const key = `${region.slug}:${region.pageId}`;
       if (!wanted.has(key) || renders.has(key) || unknownLinks.has(key)) continue;
       const plugin = bySlug.get(region.slug);
@@ -325,10 +330,16 @@ async function bakeTarget(args: {
       };
       // A failing render fails the build (CLAUDE.md §2): an empty region
       // would remove the published items from the page.
+      if (lang === null) {
+        throw new Error(
+          `plugin-data build: the live page ${path} carries no <html lang>, so the ${region.slug} region of page ${region.pageId} cannot be rendered in its language; the next Publish live rebuilds it`,
+        );
+      }
       const html = await renderPluginOnLiveBuild(region.slug, region.pageId, {
         pageUrlStyle: target.pageUrlStyle ?? "directory",
         siteBaseUrl: manifest.data.siteBaseUrl ?? null,
         liveUrls,
+        lang,
       });
       if (html === null) unknownLinks.set(key, [...liveUrls.unknownPageIds]);
       else renders.set(key, html);

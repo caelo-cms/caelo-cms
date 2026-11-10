@@ -76,15 +76,21 @@ const HTML_WS = new Set(["\t", "\n", "\f", "\r", " "]);
 function stripLangAttributes(
   html: string,
   from: number,
-): { readonly attrs: string; readonly end: number } | null {
+): {
+  readonly attrs: string;
+  readonly end: number;
+  /** The first `lang` attribute's value (unquoted, entities left as written), if any. */
+  readonly lang: string | null;
+} | null {
   const n = html.length;
   let i = from;
   let attrs = "";
+  let lang: string | null = null;
   while (i < n) {
     const segmentStart = i;
     while (i < n && HTML_WS.has(html[i] as string)) i++;
     if (i >= n) return null;
-    if (html[i] === ">") return { attrs: attrs + html.slice(segmentStart, i), end: i + 1 };
+    if (html[i] === ">") return { attrs: attrs + html.slice(segmentStart, i), end: i + 1, lang };
     const nameStart = i;
     // An attribute name runs to whitespace, `=`, `>` or `/`; a stray `=`
     // or `/` is consumed as a one-character name so the scan always moves.
@@ -93,6 +99,7 @@ function stripLangAttributes(
     const name = html.slice(nameStart, i).toLowerCase();
     const afterName = i;
     while (i < n && HTML_WS.has(html[i] as string)) i++;
+    let value: string | null = null;
     if (html[i] === "=") {
       i++;
       while (i < n && HTML_WS.has(html[i] as string)) i++;
@@ -100,17 +107,39 @@ function stripLangAttributes(
       if (quote === '"' || quote === "'") {
         const close = html.indexOf(quote, i + 1);
         if (close === -1) return null;
+        value = html.slice(i + 1, close);
         i = close + 1;
       } else {
+        const valueStart = i;
         while (i < n && !HTML_WS.has(html[i] as string) && html[i] !== ">") i++;
+        value = html.slice(valueStart, i);
       }
     } else {
       // No value: the whitespace belongs to the next attribute.
       i = afterName;
     }
     if (name !== "lang") attrs += html.slice(segmentStart, i);
+    else if (lang === null) lang = value ?? "";
   }
   return null;
+}
+
+/**
+ * The language a rendered document carries: the `lang` of its `<html>`
+ * start tag, as {@link applyDocumentLanguage} wrote it. Plugin output
+ * spliced into a finished page (`staticRender`) reads the page's language
+ * here, so a static build and a plugin-data build — which only has the
+ * published file — hand the plugin the same value.
+ *
+ * @returns the tag, or `null` when the document has no `<html>` start tag,
+ *   no `lang`, or one that is not a language tag ({@link languageTagSchema}).
+ */
+export function readDocumentLanguage(html: string): string | null {
+  const open = HTML_TAG_OPENER_RE.exec(html);
+  if (!open) return null;
+  const tag = stripLangAttributes(html, open.index + "<html".length);
+  if (!tag || tag.lang === null) return null;
+  return languageTagSchema.safeParse(tag.lang).success ? tag.lang : null;
 }
 
 function escapeAttr(s: string): string {

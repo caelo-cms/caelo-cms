@@ -272,14 +272,17 @@ beforeAll(async () => {
       templateId,
     })
   ).pageId;
+  // #1511 — ONE comments module for every page: `{{page.id}}` names the
+  // rendering page, so each page (and each language version copied from it)
+  // bakes its own thread.
+  const comments = await module(
+    `${PFX}comments`,
+    '<section data-comments><div data-caelo-plugin="comments" data-page-id="{{page.id}}"></div></section>',
+  );
   for (const pageId of [homeId, aboutId]) {
     const placeholder = await module(
       `${PFX}switch-${pageId.slice(0, 8)}`,
       switcherPlaceholder(pageId),
-    );
-    const comments = await module(
-      `${PFX}comments-${pageId.slice(0, 8)}`,
-      `<div data-caelo-plugin="comments" data-page-id="${pageId}"><!-- loads here --></div>`,
     );
     await op(SYS, "pages.set_modules", {
       pageId,
@@ -318,6 +321,12 @@ beforeAll(async () => {
   for (const pageId of [homeId, aboutId, homeDeId, aboutDeId]) {
     await op(SYS, "pages.set_status", { pageId, status: "published" });
   }
+  // #1511 — the German version's own thread, dated in German.
+  await sqlSystem(async (tx) => {
+    await tx`
+      INSERT INTO comment_archive (public_row_id, page_id, author_name, content, status, submitted_at)
+      VALUES (gen_random_uuid(), ${aboutDeId}::uuid, 'Leserin', 'Danke', 'approved', '2026-03-05T10:00:00Z')`;
+  });
   // Builds refuse published pages without a meta description.
   await op(SYS, "pages_seo.autofill_many", {
     items: [homeId, aboutId, homeDeId, aboutDeId].map((pageId) => ({
@@ -358,7 +367,9 @@ describe("a comment thread on the published page (#1169)", () => {
   it("bakes the window with its count and links the client before the consent runtime", () => {
     const html = published("t605-about/index.html");
     expect([...html.matchAll(/<article /g)]).toHaveLength(50);
-    expect(html).toContain("Showing the newest 50 of 60 comments.");
+    expect(html).toMatch(/<div data-comment-thread data-cursor="[^"]+" data-total="60">/);
+    // #1511 — dates in the page's language (the site language here), as text crawlers read.
+    expect(html).toMatch(/<time datetime="[^"]+">[A-Z][a-z]+ \d{1,2}, \d{4}<\/time>/);
     expect(html).toMatch(/data-caelo-plugin="comments"[^>]*data-baked-at="/);
 
     // Both deferred, comments first: why its client waits for DOMContentLoaded.
@@ -372,7 +383,22 @@ describe("a comment thread on the published page (#1169)", () => {
     const html = published("t605-about/index.html");
     const src = /<script defer src="\/([^"]+)" data-caelo-plugin="comments"/.exec(html)?.[1];
     if (!src) throw new Error("no comments script linked");
-    expect(published(src)).toContain("/api/plugin/comments/list_approved");
+    const client = published(src);
+    expect(client).toContain('"/api/plugin/comments/"');
+    expect(client).toContain('"list_approved"');
+  });
+
+  it("one shared module bakes each page's own thread, dated in that page's language (#1511)", () => {
+    const de = published(`de/${PFX}ueber-uns/index.html`);
+    expect(de).toMatch(/<html[^>]* lang="de"/);
+    expect(de).toContain(`data-caelo-plugin="comments" data-page-id="${aboutDeId}"`);
+    expect(de).toContain('<span class="comment-author">Leserin</span>');
+    expect(de).toContain('<time datetime="2026-03-05T10:00:00.000Z">5. März 2026</time>');
+    // The English page's comments stay on the English page.
+    expect(de).not.toContain("Reader 1<");
+    expect(published("t605-about/index.html")).not.toContain("Leserin");
+    // No placeholder is left unbaked, and no template text reaches visitors.
+    expect(de).not.toContain("{{page.id}}");
   });
 
   it("links the client on a page without comments too, where it stops at once", () => {

@@ -332,7 +332,7 @@ describe("the immediate sections (#1329)", () => {
       const r = await adapter.runOperation(
         commentArchivePostTeamOp,
         { actorId: human, actorKind: "human", requestId: "t1329-post" },
-        { pageId, parentId: null, content: "Thanks for asking!" },
+        { pageId, content: "Thanks for asking!" },
       );
       expect(r.ok).toBe(true);
       await drainProjectionOnce(adapter, staging);
@@ -347,7 +347,7 @@ describe("the immediate sections (#1329)", () => {
       const notHuman = await adapter.runOperation(
         commentArchivePostTeamOp,
         { actorId: SYSTEM_ID, actorKind: "human", requestId: "t1329-system" },
-        { pageId, parentId: null, content: "forged" },
+        { pageId, content: "forged" },
       );
       expect(notHuman.ok).toBe(false);
     } finally {
