@@ -93,6 +93,7 @@ describe("confirmReleaseCandidate", () => {
     );
     expect(declined.ok).toBe(false);
     expect(declined.ok === false && declined.reason).toBe("declined");
+    expect(declined.ok === false && declined.message).toContain("upgrade to a stable release");
     expect(no.asked).toEqual(["Upgrade to release candidate v0.12.5-rc.1 anyway?"]);
   });
 
@@ -105,9 +106,15 @@ describe("confirmReleaseCandidate", () => {
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.reason).toBe("needs-flag");
     expect(r.ok === false && r.message).toContain(ACCEPT_RELEASE_CANDIDATE_FLAG);
+    expect(r.ok === false && r.message).toContain("To install it without a prompt");
     // The warning is shown either way; nothing is asked.
     expect(f.warned).toHaveLength(1);
     expect(f.asked).toEqual([]);
+    const upgrade = await confirmReleaseCandidate(
+      { version: "0.12.5-rc.1", action: "upgrade", interactive: false, accepted: false },
+      fakePrompt(true).prompt,
+    );
+    expect(upgrade.ok === false && upgrade.message).toContain("To upgrade to it without a prompt");
   });
 
   it("takes the flag as the confirmation, still showing the warning", async () => {

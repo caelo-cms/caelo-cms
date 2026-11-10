@@ -105,11 +105,12 @@ export async function confirmReleaseCandidate(
   const v = opts.version.replace(/^v/, "");
   prompt.warn(releaseCandidateWarning(v));
   if (opts.accepted) return { ok: true };
+  const verb = opts.action === "install" ? "install" : "upgrade to";
   if (!opts.interactive) {
     return {
       ok: false,
       reason: "needs-flag",
-      message: `Nothing was changed: v${v} is a release candidate. To ${opts.action} it without a prompt, pass ${ACCEPT_RELEASE_CANDIDATE_FLAG}.`,
+      message: `Nothing was changed: v${v} is a release candidate. To ${verb} it without a prompt, pass ${ACCEPT_RELEASE_CANDIDATE_FLAG}.`,
     };
   }
   const question =
@@ -120,7 +121,7 @@ export async function confirmReleaseCandidate(
   return {
     ok: false,
     reason: "declined",
-    message: `Nothing was changed. For an install you keep, ${opts.action} a stable release.`,
+    message: `Nothing was changed. For an install you keep, ${verb} a stable release.`,
   };
 }
 
