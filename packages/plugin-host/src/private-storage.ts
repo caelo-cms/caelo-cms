@@ -25,6 +25,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
   emitPluginRowSnapshot,
+  emitPluginRowSnapshots,
   loadBranchRowStates,
   type PluginRowOpKind,
   type PluginRowState,
@@ -216,6 +217,100 @@ export async function privateUpdate(
   return { ok: true, value: {} };
 }
 
+/**
+ * #1391 — one patch on many rows, as one change: every row or none (a row
+ * missing, deleted or on another branch refuses the whole call), and one
+ * snapshot header for all of them. On main it is one UPDATE and one
+ * snapshot insert; on a chat branch each row takes its `pluginRow` lock
+ * (as a single update does), the states come from two reads, and the new
+ * states go into one snapshot insert. Callers abort the transaction on a
+ * refusal, so a partial UPDATE never commits.
+ */
+export async function privateUpdateMany(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  t: Target,
+  rowIds: readonly string[],
+  patch: Readonly<Record<string, unknown>>,
+  sets: readonly ReturnType<typeof sql>[],
+  locker: PluginRowLocker | undefined,
+  operation: string,
+): Promise<Outcome<{ updated: number }>> {
+  if (!ctx.pluginId) throw new Error("plugin storage: no plugin id on the context");
+  const ref = { pluginId: ctx.pluginId, schema: t.schema, table: t.table };
+  const header = {
+    ...ref,
+    actorId: ctx.actorId,
+    opKind: "plugin_storage.update" as const,
+    chatBranchId: ctx.chatBranchId ?? null,
+    chatTaskId: ctx.chatTaskId ?? null,
+  };
+  if (ctx.chatBranchId) {
+    // In one order for every caller: each lock holds its row until commit,
+    // so two bulk writes over the same rows in opposite orders would
+    // otherwise deadlock instead of one of them getting the lock conflict.
+    for (const rowId of [...rowIds].sort()) {
+      const busy = await lock(tx, ctx, locker, operation, rowId);
+      if (busy) return { ok: false, message: busy };
+    }
+    const branch = await loadBranchRowStates(tx, {
+      pluginId: ctx.pluginId,
+      table: t.table,
+      chatBranchId: ctx.chatBranchId,
+      rowIds,
+    });
+    const liveIds = rowIds.filter((id) => !branch.has(id));
+    const live = new Map<string, PluginRowState>();
+    if (liveIds.length > 0) {
+      const rows = (await tx.execute(sql`
+        SELECT t.id::text AS id, to_jsonb(t) AS row FROM ${table(t)} t
+        WHERE t.id = ANY(${uuidArray(liveIds)})
+          AND (t."caelo_chat_branch_id" IS NULL OR t."caelo_chat_branch_id" = ${ctx.chatBranchId}::uuid)
+      `)) as unknown as { id: string; row: Record<string, unknown> }[];
+      for (const r of rows) live.set(r.id, rowToState(r.row));
+    }
+    const states: { rowId: string; state: PluginRowState }[] = [];
+    const missing: string[] = [];
+    for (const rowId of rowIds) {
+      const current = branch.get(rowId) ?? live.get(rowId);
+      if (!current || current.deletedAt !== null) {
+        missing.push(rowId);
+        continue;
+      }
+      states.push({
+        rowId,
+        state: {
+          schemaVersion: 1,
+          values: { ...current.values, ...patch, id: current.values.id },
+          deletedAt: null,
+          version: current.version + 1,
+        },
+      });
+    }
+    if (missing.length > 0) return notFoundMany(operation, missing);
+    await emitPluginRowSnapshots(tx, { ...header, rows: states });
+    return { ok: true, value: { updated: states.length } };
+  }
+  const rows = (await tx.execute(sql`
+    UPDATE ${table(t)} AS t
+    SET ${sql.join([...sets, sql`"caelo_version" = t."caelo_version" + 1`, sql`"caelo_updated_at" = now()`], sql`, `)}
+    WHERE t.id = ANY(${uuidArray(rowIds)}) AND t."caelo_deleted_at" IS NULL AND t."caelo_chat_branch_id" IS NULL
+    RETURNING t.id::text AS id, to_jsonb(t) AS row
+  `)) as unknown as { id: string; row: Record<string, unknown> }[];
+  if (rows.length !== rowIds.length) {
+    const found = new Set(rows.map((r) => r.id));
+    return notFoundMany(
+      operation,
+      rowIds.filter((id) => !found.has(id)),
+    );
+  }
+  await emitPluginRowSnapshots(tx, {
+    ...header,
+    rows: rows.map((r) => ({ rowId: r.id, state: rowToState(r.row) })),
+  });
+  return { ok: true, value: { updated: rows.length } };
+}
+
 export async function privateDelete(
   tx: TransactionRunner,
   ctx: ExecutionContext,
@@ -398,6 +493,18 @@ export async function privateGrantRefusal(
     return `the Owner has not granted (or has revoked) ${what} for this plugin version`;
   }
   return null;
+}
+
+function notFoundMany(
+  operation: string,
+  rowIds: readonly string[],
+): { ok: false; message: string } {
+  const named = rowIds.slice(0, 5).join(", ");
+  const more = rowIds.length > 5 ? ` and ${rowIds.length - 5} more` : "";
+  return {
+    ok: false,
+    message: `${operation}: rows ${named}${more} not found (or already deleted) — nothing was updated; list the table to get current ids and send the call again without them`,
+  };
 }
 
 function notFound(operation: string, rowId: string): { ok: false; message: string } {

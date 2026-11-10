@@ -134,8 +134,17 @@ export interface BuildPluginServices {
   staticRenderPlugins(): Promise<StaticRenderPlugin[]>;
   metaSignatureBatch(pluginSlug: string, pageIds: string[]): Promise<ReadonlyMap<string, string>>;
   metaSignature(pluginSlug: string, pageId: string): Promise<string>;
-  /** One placeholder's markup, its page links on the build's origin (#650). */
-  staticRender(pluginSlug: string, pageId: string, urlContext: PublicUrlContext): Promise<string>;
+  /**
+   * One placeholder's markup, its page links on the build's origin (#650),
+   * its dates and numbers in the page's language (#1511).
+   */
+  staticRender(pluginSlug: string, pageId: string, context: StaticRenderContext): Promise<string>;
+}
+
+/** What one `staticRender` of a build renders for: the origin, URL style and page language. */
+export interface StaticRenderContext extends PublicUrlContext {
+  /** The page's document language, as its `<html lang>` carries it. */
+  readonly lang: string;
 }
 
 /** The plugin host of THIS process — the admin's, where plugins run. */
@@ -176,12 +185,13 @@ export const localBuildPluginServices: BuildPluginServices = {
     runPluginMetaSignatureBatch({ invocation: renderInvocation(MAIN_RENDER), pluginSlug, pageIds }),
   metaSignature: (pluginSlug, pageId) =>
     runPluginMetaSignature({ invocation: renderInvocation(MAIN_RENDER), pluginSlug, pageId }),
-  staticRender: async (pluginSlug, pageId, urlContext) =>
+  staticRender: async (pluginSlug, pageId, context) =>
     (await runPluginStaticRender({
-      invocation: renderInvocation({ ...MAIN_RENDER, siteBaseUrl: urlContext.siteBaseUrl }),
+      invocation: renderInvocation({ ...MAIN_RENDER, siteBaseUrl: context.siteBaseUrl }),
       pluginSlug,
       pageId,
-      pageUrlStyle: urlContext.pageUrlStyle,
+      pageUrlStyle: context.pageUrlStyle,
+      lang: context.lang,
     })) ?? "",
 };
 
@@ -205,6 +215,8 @@ export async function renderPluginOnLiveBuild(
     /** The origin the live build recorded; null for a build that recorded none. */
     readonly siteBaseUrl: string | null;
     readonly liveUrls: LiveBuildUrls;
+    /** The `<html lang>` of the live page the region sits in (#1511). */
+    readonly lang: string;
   },
 ): Promise<string | null> {
   const scope = live.siteBaseUrl ? { ...MAIN_RENDER, siteBaseUrl: live.siteBaseUrl } : MAIN_RENDER;
@@ -216,6 +228,7 @@ export async function renderPluginOnLiveBuild(
         pluginSlug,
         pageId,
         pageUrlStyle: live.pageUrlStyle,
+        lang: live.lang,
         liveUrls: live.liveUrls,
       })) ?? "";
   } catch (e) {

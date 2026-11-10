@@ -63,6 +63,7 @@ export {
   readChanges,
   registerConsumer,
   releaseConsumer,
+  snapshotFollows,
   textArray,
   uuidArray,
 } from "./change-journal.js";

@@ -66,7 +66,8 @@ import {
 } from "./current-path.js";
 import { planPageMoves } from "./page-move-plan.js";
 import { executePageMoves } from "./page-moves.js";
-import { ancestorIdsOf, loadPageChains, loadPageTree, loadSubtreeIds } from "./page-tree.js";
+import { ancestorIdsOf, loadPageChains, loadScopedTree, loadSubtreeIds } from "./page-tree.js";
+import { normalisedPath, pagesNamedByLastSegment } from "./path-candidates.js";
 import { applyPathMoveEffects, branchOnlyPageIds } from "./path-moves.js";
 
 const pageRowSchema = z.object({
@@ -452,54 +453,6 @@ export const listPagesOp = defineOperation({
 });
 
 /**
- * On a branch, the pages that could carry one of `paths` once the
- * branch's pending renames and moves are applied, though their stored
- * `current_path` differs: a page's composed path ends in its own slug, so
- * the candidates are the visible pages and the branch's pending pages
- * whose slug is a path's last segment (indexed, 0596; the magic home
- * slugs for "/"). A URL-space root keeps its path when renamed, so the
- * stored path finds it. The caller keeps those whose composed path
- * matches. The cost is the pages sharing those slugs, never a subtree.
- *
- * A pending row of a URL plugin can give a page a path that does not end
- * in its slug (a locale root serves at its prefix, #1411). Those pages are
- * composed here and only an exact match is returned: the caller's LIMIT
- * runs before its path filter, so unrelated pages must not take its rows.
- * That composition costs the branch's pending rows of URL plugins.
- */
-async function pagesNamedByLastSegment(
-  tx: TransactionRunner,
-  branchId: string,
-  paths: readonly string[],
-): Promise<string[]> {
-  const slugs = new Set<string>();
-  for (const p of paths) {
-    const last = p
-      .split("/")
-      .filter((x) => x !== "")
-      .at(-1);
-    if (last === undefined) for (const h of ["", "home", "index"]) slugs.add(h);
-    else slugs.add(last);
-  }
-  const rows = (await tx.execute(sql`
-    SELECT id::text AS id FROM pages
-     WHERE slug = ANY(${textArray([...slugs])}) AND deleted_at IS NULL
-       AND (chat_branch_id IS NULL OR chat_branch_id = ${branchId}::uuid)
-    UNION
-    SELECT DISTINCT d.entity_id::text FROM draft_pending_entities d
-     WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'page'
-       AND d.slug = ANY(${textArray([...slugs])})
-  `)) as unknown as { id: string }[];
-  const annotated = await pendingUrlAnnotationPageIds(tx, branchId);
-  const { tree } = await loadPageChains(tx, branchId, annotated);
-  const wanted = new Set(paths);
-  const composedThere = [...(await annotationDriftPaths(tx, tree, annotated, branchId))]
-    .filter(([, path]) => wanted.has(normalisedPath(path)))
-    .map(([id]) => id);
-  return [...rows.map((r) => r.id), ...composedThere];
-}
-
-/**
  * 0263 — the tree half of pages.list for the returned pages: depth, and —
  * under a chat branch — the chat's view of every path its pending renames
  * / moves or plugin rows change (the live `current_path` of a main page
@@ -555,12 +508,6 @@ function pageSelectionOf(input: {
 }): PageSelection | null {
   if (input.pageIds === undefined && input.paths === undefined) return null;
   return { ids: input.pageIds ?? [], paths: new Set((input.paths ?? []).map(normalisedPath)) };
-}
-
-/** A path without query, fragment or trailing slash ("/" stays "/"). */
-function normalisedPath(path: string): string {
-  const bare = path.split(/[?#]/)[0] ?? path;
-  return bare.length > 1 ? bare.replace(/\/+$/, "") : bare;
 }
 
 export const getPageOp = defineOperation({
@@ -2055,7 +2002,8 @@ async function deletePageHandler(
   // 0263 — a page with child pages: their URLs hang off this one.
   // Refuse by default (the operator decides what happens to them), or
   // move them up / delete them first when the caller said so.
-  const tree = await loadPageTree(tx, ctx.chatBranchId ?? null);
+  // #1269 — the page, the pages below it and its ancestors: not the tree.
+  const { tree } = await loadScopedTree(tx, ctx.chatBranchId ?? null, [input.pageId]);
   const kids = tree.childrenOf.get(input.pageId) ?? [];
   if (kids.length > 0) {
     const mode = input.children ?? "refuse";
@@ -2362,11 +2310,13 @@ export const duplicatePageOp = defineOperation({
     // 0263/0264 — the copy is a sibling of the source by default (same
     // parent in the caller's view, so `/docs/a` duplicates to `/docs/b`);
     // its URL must be free in that view.
-    const dupTree = await loadPageTree(tx, ctx.chatBranchId ?? null);
+    // #1269 — the source's own node (its parent in the caller's view), not the tree.
     const dupParent =
       input.newParentPageId !== undefined
         ? input.newParentPageId
-        : (dupTree.byId.get(input.sourcePageId)?.parentPageId ?? null);
+        : ((await loadPageChains(tx, ctx.chatBranchId ?? null, [input.sourcePageId])).tree.byId.get(
+            input.sourcePageId,
+          )?.parentPageId ?? null);
     const dupTempId = crypto.randomUUID();
     const dupPlan = await planPageMoves(tx, renderScopeOf(ctx, tx), [
       { pageId: dupTempId, isNew: true, parentPageId: dupParent, newSlug: input.newSlug },
@@ -2800,7 +2750,12 @@ export const deletePagesManyOp = defineOperation({
     // 0263 — deepest pages first, so a batch that deletes a page AND all
     // its children needs no `children` decision: by the time the parent
     // comes up, its children are gone.
-    const tree = await loadPageTree(tx, ctx.chatBranchId ?? null);
+    // #1269 — the named pages' ancestor chains: their depth, not the tree.
+    const { tree } = await loadPageChains(
+      tx,
+      ctx.chatBranchId ?? null,
+      input.deletions.map((d) => d.pageId),
+    );
     const depthOf = (id: string): number =>
       tree.byId.has(id) ? ancestorIdsOf(tree, id).length : 0;
     const ordered = [...input.deletions].sort((a, b) => depthOf(b.pageId) - depthOf(a.pageId));
