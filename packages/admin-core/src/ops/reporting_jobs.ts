@@ -450,7 +450,7 @@ export const readReportingJobUploadOp = defineOperation({
       subjectId,
       attempt,
       uploadId: z.string().uuid(),
-      parts: z.number().int().min(1).max(64),
+      parts: z.number().int().min(1).max(MAX_UPLOAD_PARTS),
     })
     .strict(),
   output: z.object({ text: z.string() }),
