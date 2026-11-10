@@ -79,7 +79,7 @@ The job `caelo-<env>-import` runs the same entry point as `caelo-<env>-import@`.
 The crawl is the same code as before (site-importer `crawlSite`), driven by the job (`site-import/crawl-job.ts`; admin side `site-import/import-job-kind.ts`, wire in `import-job-wire.ts`):
 
 - **In the job:** the crawl loop, link discovery, extraction, and its own fetches of robots.txt and sitemaps (and of a page whose render failed), every one through the SSRF guard (site-importer `safe-fetch.ts`) with the admin's exemptions (`CAELO_IMPORTER_ALLOWED_HOSTS`, sent with `start`). It runs no browser and executes nothing it fetches.
-- **In the admin, per report:** each page's render, through the install's renderer (the capture job on Google Cloud, the one shared browser on a self-hosted admin) behind the same guard. The admin stores the screenshot under the run's prefix and answers with the HTML and the style samples; the pixels never travel to the job and back.
+- **In the admin, per report:** each page's render, through the install's renderer (the capture job on Google Cloud, the one shared browser on a self-hosted admin) behind the same guard. The admin stores the screenshot under the run's prefix and answers with the HTML and the style samples; the pixels never travel to the job and back. A render the admin reports as failed falls back to the job's own static fetch, as before; a render the admin cannot be asked for (unreachable or busy past the retries, refused) stops the attempt instead, so no page is kept without its JavaScript-built content. A passing fault gives the attempt back; a refusal fails the run with its reason.
 
 | Report | The admin |
 |---|---|
@@ -91,7 +91,7 @@ The crawl is the same code as before (site-importer `crawlSite`), driven by the 
 | `finish` | the run's design tokens from all pages' samples, then `imports.finish_crawl`: ready for review, the run report keeps the error and skip ledger |
 | `fail` | `imports.fail_crawl`: only a run that is still crawling |
 
-**Resume.** After every batch the job reports the frontier (compacted: the first entry of each URL it has not seen). A checkpoint counts only pages whose batch was written before it; a URL still in flight or a page not yet written goes back to the front of the queue, so a killed job loses no page (site-importer `crawler.ts`, #1360). A new attempt resumes there, and a page whose batch was still in flight is crawled again, its write idempotent (`UNIQUE(run_id, source_url)`).
+**Resume.** After every batch the job reports the frontier (compacted: the first entry of each URL it has not seen). A checkpoint counts only pages whose batch was written before it (the crawl streams its pages through `onBatch`); a URL still in flight or a page not yet written goes back to the front of the queue, so a killed job loses no page (site-importer `crawler.ts`, #1360). A new attempt resumes there, and a page whose batch was still in flight is crawled again, its write idempotent (`UNIQUE(run_id, source_url)`).
 
 **Untrusted data, to the end.** What the crawl reports reaches the AI marked as crawled content: `get_import_page` (title, meta description, text, tokens), `read_page_more` and `query_page_html` on such a page, `list_import_pages` (source URLs, the run's error) and `get_import_run_report` (crawl errors, skips, notes, samples) wrap it in `<site-data>` (shared `siteData`), and the static system prompt says what that element means. The tools' own guidance stays outside it.
 
