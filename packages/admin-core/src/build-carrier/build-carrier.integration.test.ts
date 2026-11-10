@@ -271,6 +271,32 @@ describe("a build inside the request its carrier holds open (#1574)", () => {
     expect(run?.lease).toBeNull();
   });
 
+  it("stops a build still running when its order is given up, saying so (not the operator's Stop)", async () => {
+    setEnv({ CAELO_TEST_STUB_GENERATOR: "hang", CAELO_TEST_STUB_HANG_MS: "20000" });
+    const id = crypto.randomUUID();
+    const pending = carryBuild(
+      deps(),
+      HUMAN,
+      { kind: "deploy.trigger", input: { targetName: "staging", repoRoot: testRoot } },
+      { id, launcher: endableCarrier(new AbortController().signal) },
+    );
+    await until(async () => (await runRow(id))?.status === "running", "the carried build");
+    // The backstop gave the order up (its carrier stopped reporting) while
+    // the build still ran in some admin request.
+    const given = await execute(registry, adapter, SYSTEM, "build_orders.give_up", {
+      id,
+      message: "its job stopped reporting.",
+    });
+    if (!given.ok) throw new Error(describeError(given.error));
+    const carried = await pending;
+    expect(carried.state).toBe("done");
+    await until(async () => (await runRow(id))?.status === "failed", "the stopped build");
+    const run = await runRow(id);
+    expect(run?.error_message).toContain("the build was given up");
+    expect(run?.error_message).not.toContain("the operator");
+    expect(run?.lease).toBeNull();
+  });
+
   it("gives up a carrier that dies without a word: the order and its run say where it ran and what next", async () => {
     setEnv({ CAELO_TEST_STUB_GENERATOR: undefined });
     const id = crypto.randomUUID();

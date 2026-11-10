@@ -89,7 +89,9 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
   // attempt would build again what the person asked for once).
   build: {
     firstLeaseSeconds: 5 * 60,
-    leaseSeconds: 3 * 60,
+    // A carrier that dies ends its build at once (its request ends); the
+    // lease is the backstop for a death the admin did not see.
+    leaseSeconds: 5 * 60,
     renewEverySeconds: 60,
     maxAttempts: 1,
     maxRunSeconds: ADMIN_REQUEST_LIMIT_SECONDS + 5 * 60,

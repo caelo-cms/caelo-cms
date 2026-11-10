@@ -54,13 +54,13 @@ export type BuildOrder =
  */
 export const orderActorSchema = z
   .object({
-    actorId: z.string().min(1).max(64),
+    actorId: z.string().min(1).max(200),
     actorKind: z.enum(["human", "ai", "system"]),
-    requestId: z.string().min(1).max(200),
-    chatBranchId: z.string().min(1).max(64).optional(),
-    chatTaskId: z.string().min(1).max(64).optional(),
-    parentChatSessionId: z.string().min(1).max(64).optional(),
-    parentAiCallId: z.string().min(1).max(64).optional(),
+    requestId: z.string().min(1).max(500),
+    chatBranchId: z.string().min(1).max(200).optional(),
+    chatTaskId: z.string().min(1).max(200).optional(),
+    parentChatSessionId: z.string().min(1).max(200).optional(),
+    parentAiCallId: z.string().min(1).max(200).optional(),
   })
   .strict();
 
@@ -74,7 +74,8 @@ export function actorOf(ctx: ExecutionContext): OrderActor {
   return orderActorSchema.parse({
     actorId: ctx.actorId,
     actorKind: ctx.actorKind,
-    requestId: ctx.requestId,
+    // A trace id only: a long one is cut, never a reason to refuse the build.
+    requestId: ctx.requestId.slice(0, 500) || "build-order",
     ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
     ...(ctx.chatTaskId ? { chatTaskId: ctx.chatTaskId } : {}),
     ...(ctx.parentChatSessionId ? { parentChatSessionId: ctx.parentChatSessionId } : {}),

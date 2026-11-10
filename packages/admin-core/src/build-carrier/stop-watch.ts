@@ -17,7 +17,9 @@ import { type AdminJobDeps, REPORTING_JOB_CTX } from "../reporting-jobs/kind.js"
 const STOP_POLL_MS = 2_000;
 
 /**
- * Abort `stop` once order `orderId` asks for a stop.
+ * Abort `stop` once order `orderId` asks for a stop: the operator's, or the
+ * backstop's when it gave the order up (its carrier stopped reporting) —
+ * each with its own reason, so the run says which.
  *
  * @returns the function that ends the watch.
  */
@@ -34,8 +36,13 @@ export function watchForStop(
     execute(deps.registry, deps.adapter, REPORTING_JOB_CTX, "build_orders.get", { id: orderId })
       .then((r) => {
         if (!r.ok) throw new Error(describeError(r.error));
-        const order = (r.value as { order: { stopRequested: boolean } | null }).order;
-        if (order?.stopRequested) stop.abort(new Error("the operator stopped it"));
+        const order = (r.value as { order: { state: string; stopRequested: boolean } | null })
+          .order;
+        if (order?.state === "done") {
+          stop.abort(new Error("its carrier job stopped reporting, and the build was given up"));
+        } else if (order?.stopRequested) {
+          stop.abort(new Error("the operator stopped it"));
+        }
       })
       .catch((e: unknown) => {
         console.error(
