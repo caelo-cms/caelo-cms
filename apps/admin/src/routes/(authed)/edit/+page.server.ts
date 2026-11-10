@@ -1041,15 +1041,21 @@ export const actions: Actions = {
       toRunId: string;
       buildId: string;
       securityHeadersNote?: string;
-      redirects: { wentLive: number; waiting: number };
+      redirects: { wentLive: number; waiting: number; heldBack: string | null };
     };
+    // #1550 — the operator learns when the listed redirect changes stayed
+    // Staged because one of them moved on during the Publish live.
+    const heldBack = v.redirects.heldBack
+      ? `The redirect changes stayed Staged: ${v.redirects.heldBack}. The next Publish live plans them again.`
+      : undefined;
+    const notice = [v.securityHeadersNote, heldBack].filter((n): n is string => !!n).join(" ");
     return {
       published: {
         targetName: "production",
         fromRunId: v.fromRunId,
         toRunId: v.toRunId,
         buildId: v.buildId,
-        notice: v.securityHeadersNote,
+        notice: notice || undefined,
         redirects: v.redirects,
       },
     };
