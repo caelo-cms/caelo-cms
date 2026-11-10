@@ -273,6 +273,40 @@ describe("streaming + checkpoint/resume (#192)", () => {
     expect(left).toHaveLength(6);
   });
 
+  it("#1360 review: an aborted signal ends the crawl at once: no URL is taken or waited for after it, nothing is flushed, the crawl rejects with the reason", async () => {
+    const many: Record<string, string> = {
+      "/": page(
+        "Home",
+        Array.from({ length: 50 }, (_, i) => `/q${i}`),
+      ),
+    };
+    for (let i = 0; i < 50; i++) many[`/q${i}`] = page(`Q${i}`);
+    const site = makeSite(many);
+    const halt = new AbortController();
+    const flushed: string[] = [];
+    // The root is fetched at once; every later start waits 10 s for its
+    // turn. Only an abort that wakes the waiting workers ends this within
+    // the test's timeout.
+    setTimeout(() => halt.abort(new Error("the attempt stopped")), 50);
+    const crawl = crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: site.fetcher,
+      throttleMs: 10_000,
+      maxPages: 100,
+      concurrency: 4,
+      signal: halt.signal,
+      onBatch: async (b) => {
+        flushed.push(...b.map((p) => p.url));
+      },
+      onCheckpoint: async () => {
+        flushed.push("checkpoint");
+      },
+    });
+    await expect(crawl).rejects.toThrow("the attempt stopped");
+    expect(site.fetched).toEqual(["https://site.example/"]);
+    expect(flushed).toEqual([]);
+  });
+
   it("#1360: a fetcher's skip is a skip at any depth, LIST mode's included", async () => {
     const site = makeSite(routes);
     const result = await crawlSite({

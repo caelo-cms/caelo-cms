@@ -436,6 +436,54 @@ describe("a site import's crawl in its job (#1360)", () => {
     }
   });
 
+  it("#1360 review: a render that fails on a later page stops the crawl at once; the attempt is given back without walking the rest of the frontier", async () => {
+    // 40 pages linked from the root, a start every 500 ms: walking the
+    // frontier after the failure would take about 20 s.
+    const site = fixtureSite(40);
+    try {
+      fixtureRenderer();
+      const runId = await createRun(`${site.origin}/`);
+      const outage = liveLauncher((r) => {
+        let asked = 0;
+        const flaky: JobReporter = {
+          kind: r.kind,
+          subjectId: r.subjectId,
+          attempt: r.attempt,
+          get stopped() {
+            return r.stopped;
+          },
+          async call<T>(action: string, payload?: unknown): Promise<T> {
+            if (action === "render" && ++asked > 1) {
+              throw new ReportError("the admin did not answer in time", 503, "unavailable");
+            }
+            return r.call<T>(action, payload);
+          },
+        };
+        return runSiteImportJob(flaky, { throttleMs: 500 });
+      });
+      const began = Date.now();
+      await startReportingJob(ADMIN(), "site_import", runId, outage);
+      expect(Date.now() - began).toBeLessThan(8_000);
+      expect((await runState(runId))?.status).toBe("crawling");
+      expect(await pagesOf(runId)).toEqual([]);
+      const released = await withSql(
+        async (tx) =>
+          (await tx`
+            SELECT last_error, lease_until <= now() AS released FROM reporting_jobs
+            WHERE kind = 'site_import' AND subject_id = ${runId}::uuid
+          `) as unknown as { last_error: string | null; released: boolean }[],
+      );
+      expect(released[0]?.released).toBe(true);
+      expect(released[0]?.last_error).toContain("did not answer in time");
+      // The next tick's attempt finishes the run, leaving no lease behind.
+      expect(await runReportingJobBackstop(ADMIN(), liveLauncher())).toBe("site_import: 1 started");
+      expect((await runState(runId))?.status).toBe("ready_for_review");
+      expect(await pagesOf(runId)).toHaveLength(41);
+    } finally {
+      site.server.stop(true);
+    }
+  });
+
   it("a site whose links redirect to its homepage spends the render budget: the crawl ends with what it has", async () => {
     // Every /rN redirects to the homepage: a rendered page that is a
     // duplicate and does not count toward the page cap.

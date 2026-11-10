@@ -77,6 +77,12 @@ export interface CrawlAttempt {
   stopped: boolean;
   /** The first report failure that stopped it, also one the crawler swallowed. */
   cause: unknown;
+  /**
+   * Aborted when the attempt stops: the crawler takes no next URL and waits
+   * out no throttle, so a stopped attempt does not walk its whole frontier
+   * before it is given back (#1360 review).
+   */
+  readonly abort: AbortController;
   /** Renders the run may still ask for (`start`'s `rendersLeft`). */
   rendersLeft: number;
   /** Why the crawl ends early: its render budget, once spent. */
@@ -100,6 +106,7 @@ export function reportedScreenshotter(
   attempt: CrawlAttempt = {
     stopped: false,
     cause: null,
+    abort: new AbortController(),
     rendersLeft: Number.POSITIVE_INFINITY,
     budgetSpent: null,
     budgetMessage: "the run used its render budget",
@@ -130,8 +137,7 @@ export function reportedScreenshotter(
           captureHtml: opts?.captureHtml === true,
         });
       } catch (e) {
-        if (attempt.cause === null) attempt.cause = e;
-        attempt.stopped = true;
+        haltAttempt(attempt, e);
         throw new CrawlHaltedError();
       }
       if (!answer.ok) {
@@ -213,6 +219,23 @@ function pageRow(p: CrawledPage): BatchReport["pages"][number] {
   };
 }
 
+/** Stops the attempt: keeps the first cause and tells the crawler. */
+function haltAttempt(attempt: CrawlAttempt, cause: unknown): void {
+  if (attempt.cause === null) attempt.cause = cause;
+  attempt.stopped = true;
+  if (!attempt.abort.signal.aborted) attempt.abort.abort(new CrawlHaltedError());
+}
+
+/** A report of the crawl's own: when it fails, the attempt stops at once. */
+async function reportOrHalt<T>(attempt: CrawlAttempt, send: () => Promise<T>): Promise<T> {
+  try {
+    return await send();
+  } catch (e) {
+    haltAttempt(attempt, e);
+    throw e;
+  }
+}
+
 function describe(e: unknown): string {
   return (e instanceof Error ? e.message : String(e)).slice(0, 1000) || "the crawl failed";
 }
@@ -251,19 +274,22 @@ async function crawl(
     // A spent render budget ends the crawl as a bounded result: the pages
     // it has, and every URL left in the skip ledger with the reason.
     stopWhen: () => attempt.budgetSpent,
+    signal: attempt.abort.signal,
     onBatch: async (pages) => {
       if (halted()) throw new CrawlHaltedError();
       const { captures, tokenlessCapturedUrls } = batchCaptures(pages, keyByUrl);
       for (const p of pages) keyByUrl.delete(p.url);
-      await reporter.call("batch", {
-        pages: pages.map(pageRow),
-        captures,
-        tokenlessCapturedUrls,
-      } satisfies BatchReport);
+      await reportOrHalt(attempt, () =>
+        reporter.call("batch", {
+          pages: pages.map(pageRow),
+          captures,
+          tokenlessCapturedUrls,
+        } satisfies BatchReport),
+      );
     },
     onCheckpoint: async (cp: CrawlCheckpoint) => {
       if (halted()) throw new CrawlHaltedError();
-      await reporter.call("checkpoint", compactCheckpoint(cp));
+      await reportOrHalt(attempt, () => reporter.call("checkpoint", compactCheckpoint(cp)));
     },
   });
   // issue #247 (WS1), #423 — the pages still without a screenshot get one
@@ -292,6 +318,7 @@ export async function runSiteImportJob(
   const attempt: CrawlAttempt = {
     stopped: false,
     cause: null,
+    abort: new AbortController(),
     rendersLeft: start.rendersLeft,
     budgetSpent: start.rendersLeft > 0 ? null : budgetMessage,
     budgetMessage,
@@ -303,10 +330,11 @@ export async function runSiteImportJob(
     error = e;
   }
   if (error === null && attempt.cause === null) return;
-  attempt.stopped = true;
-  // What stopped it: a report failure the crawler swallowed comes first,
-  // the halt it caused in the other workers after.
-  const cause = attempt.cause ?? error;
+  // Stops the crawler's workers still running (it does not cancel them
+  // when one fails). What stopped the attempt: a report failure the crawler
+  // swallowed comes first, the halt it caused in the other workers after.
+  haltAttempt(attempt, error);
+  const cause = attempt.cause;
   if (cause instanceof JobStoppedError) throw cause;
   if (isPassingReportFault(cause)) {
     // Give the attempt back with the reason; the next one resumes from the

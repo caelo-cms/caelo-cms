@@ -166,6 +166,13 @@ export interface CrawlOptions {
    * result; every URL not taken yet is recorded as skipped with the reason.
    */
   readonly stopWhen?: () => string | null;
+  /**
+   * #1360 — the caller abandons the crawl (its attempt stopped): no worker
+   * takes another URL or waits out the throttle for one, nothing more is
+   * flushed, and the crawl rejects with the signal's reason. Unlike
+   * `stopWhen`, which ends the crawl with its result.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -478,7 +485,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     const now = Date.now();
     const wait = Math.max(0, nextStartAt - now);
     nextStartAt = Math.max(now, nextStartAt) + throttle;
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    if (wait > 0) await abortableSleep(wait, opts.signal);
   };
 
   // Definite after the setup above; a const alias keeps the closure's type
@@ -511,6 +518,8 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       }
     }
     await politeWait();
+    // An abandoned crawl fetches nothing more, also after waiting its turn.
+    if (opts.signal?.aborted) return;
     let res: PageFetchResult;
     try {
       res = await pageFetcher(next.url);
@@ -666,6 +675,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   // synchronously before awaiting, so no URL is fetched twice.
   const worker = async (): Promise<void> => {
     while (pagesCrawled < maxPages) {
+      if (opts.signal?.aborted) return;
       const stop = opts.stopWhen?.() ?? null;
       if (stop !== null) {
         // The pages crawled so far stay the result; what was left is skipped.
@@ -694,6 +704,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       }
     }
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    opts.signal?.throwIfAborted();
     await flush();
 
     return { pages, seenCount: seen.size, pagesCrawled, errors, skipped, skippedOutOfScope, scope };
@@ -704,6 +715,23 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     // a dispose failure must not mask a crawl result or a real error.
     if (ownsScreenshotter) await screenshotter?.dispose().catch(() => undefined);
   }
+}
+
+/** Resolves after `ms`, or at once when `signal` aborts. */
+function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
