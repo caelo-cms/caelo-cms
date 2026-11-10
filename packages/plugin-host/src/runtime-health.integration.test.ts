@@ -687,9 +687,7 @@ describe("#1361 — the heartbeat rides request starts, never a timer", () => {
     });
     expect((await runtimeOf(slug)).map((r) => r.state)).toEqual(["loaded"]);
     // Another instance's heartbeat deleted the rows older than a day.
-    await withSystemSql(
-      (tx) => tx`DELETE FROM plugin_runtime WHERE plugin_slug = ${slug}`,
-    );
+    await withSystemSql((tx) => tx`DELETE FROM plugin_runtime WHERE plugin_slug = ${slug}`);
     // The next request start here reports it again.
     await runtimeHeartbeatOnce(infra, SYSTEM_ACTOR_ID);
     expect(await runtimeOf(slug)).toEqual([
