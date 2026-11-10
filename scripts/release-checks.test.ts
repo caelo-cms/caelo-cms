@@ -9,6 +9,7 @@ import {
   BREAKING_SUBJECT,
   breakingCommitsSince,
   changedPathsSince,
+  changelogBaseTag,
   checkInfraContract,
   checkOwnerAction,
   expectedLastContractVersion,
@@ -447,12 +448,30 @@ describe("setJsonVersionField", () => {
   });
 });
 
-describe("previousTag (changelog start)", () => {
+describe("previousTag", () => {
   const tags = ["0.10.64", "0.10.65", "0.11.0-rc.1", "0.9.0"];
   it("picks the newest tag of any kind below the release, by version", () => {
     expect(previousTag(tags, "0.10.66")).toBe("v0.10.65");
     expect(previousTag(tags, "0.11.0")).toBe("v0.11.0-rc.1");
     expect(previousTag(["0.10.65"], "0.10.65")).toBeNull();
+  });
+});
+
+describe("changelogBaseTag (changelog start)", () => {
+  const tags = ["0.10.64", "0.10.65", "0.11.0-rc.1", "0.11.0-rc.2", "0.9.0"];
+  it("starts a stable release at the previous stable one, past its candidates", () => {
+    // An install on 0.10.65 jumps straight to 0.11.0, so the notes it is
+    // shown must cover everything both candidates carried.
+    expect(changelogBaseTag(tags, "0.11.0")).toBe("v0.10.65");
+    expect(changelogBaseTag(tags, "0.10.66")).toBe("v0.10.65");
+  });
+  it("starts a release candidate at the tag right before it", () => {
+    expect(changelogBaseTag(tags, "0.11.0-rc.3")).toBe("v0.11.0-rc.2");
+    expect(changelogBaseTag(["0.10.65"], "0.11.0-rc.1")).toBe("v0.10.65");
+  });
+  it("has no start for the first release", () => {
+    expect(changelogBaseTag([], "0.1.0")).toBeNull();
+    expect(changelogBaseTag(["0.11.0-rc.1"], "0.11.0")).toBeNull();
   });
 });
 

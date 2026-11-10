@@ -62,7 +62,7 @@ continues the previous tag's, and exists only on its tag. So:
   `@latest`). If the plugin is listed in the directory, its tracked
   branch is `release-latest`.
 - **The changelog and the release checks find the previous release by
-  version** (`previousTag`, `previousStableTag`), never by ancestry: a
+  version** (`changelogBaseTag`, `previousStableTag`), never by ancestry: a
   tag is not on main's history.
 - **Code built from main reports `0.0.0`** (dev images, local runs). That
   is the honest answer for unreleased code; every published artifact is
@@ -291,11 +291,14 @@ What the script does, in order:
    `packages/plugins/<slug>/` with the dev key (or
    `CAELO_TIER1_PRIVATE_KEY` if set).
 5. Generates a `## v<X.Y.Z>` changelog stanza from conventional
-   commits since the previous tag (groups `feat:` / `fix:` /
+   commits since the changelog base (groups `feat:` / `fix:` /
    `refactor:` / `docs:` / `chore:` / `test:` / `other`; flags
-   `feat!:` / `fix!:` as ⚠ BREAKING) and prepends it to the previous
-   tag's `CHANGELOG.md` (main has none), so each tag carries the whole
-   history.
+   `feat!:` / `fix!:` as ⚠ BREAKING) and prepends it to that tag's
+   `CHANGELOG.md` (main has none), so each tag carries the whole
+   history. The base of a stable release is the previous stable
+   release, so its notes, which Settings → Updates shows, cover
+   everything its release candidates carried too. The base of a release
+   candidate is the tag right before it (`changelogBaseTag`).
 6. `git add` the bumped files + `git commit -m "chore(release): vX.Y.Z"`.
 7. `git tag -a vX.Y.Z -m "Caelo vX.Y.Z"`.
 
