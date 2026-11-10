@@ -98,3 +98,29 @@ export function launcherRecordsRelease(input: {
   if (input.deployed) return false;
   return input.requested || input.recorded === null || !input.recorded["mcp-auth-proxy"];
 }
+
+/**
+ * The release a wizard run is about to install, for the release-candidate
+ * confirmation: the one `--version` names, else in job mode the CLI's own
+ * release when the launcher records it for the new install (a release
+ * candidate's installer installs that candidate). Null when the run installs
+ * no new release: local mode without `--version` resolves `latest`, never a
+ * candidate, and a provisioned install keeps what it runs.
+ */
+export function releaseToConfirm(input: {
+  readonly decision: InstallVersionDecision;
+  readonly runMode: "job" | "local";
+  readonly cliVersion: string;
+  readonly deployed: boolean;
+  readonly recorded: ImageDigests | null;
+}): string | null {
+  if (input.decision.kind === "install") return input.decision.version;
+  if (input.decision.kind !== "none" || input.runMode !== "job") return null;
+  return launcherRecordsRelease({
+    deployed: input.deployed,
+    requested: false,
+    recorded: input.recorded,
+  })
+    ? input.cliVersion
+    : null;
+}

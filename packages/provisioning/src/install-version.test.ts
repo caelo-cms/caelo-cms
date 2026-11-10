@@ -6,6 +6,7 @@ import {
   decideInstallVersion,
   installRecordFromManifest,
   launcherRecordsRelease,
+  releaseToConfirm,
 } from "./install-version.js";
 
 const d = (c: string) => `sha256:${c.repeat(64)}`;
@@ -142,5 +143,61 @@ describe("launcherRecordsRelease", () => {
     expect(launcherRecordsRelease({ deployed: false, requested: false, recorded: full })).toBe(
       false,
     );
+  });
+});
+
+describe("releaseToConfirm (#1558 review)", () => {
+  const full = { admin: d("a"), gateway: d("b"), "mcp-auth-proxy": d("e") };
+  const none = { kind: "none" } as const;
+
+  it("names the release --version installs, in either run mode", () => {
+    for (const runMode of ["job", "local"] as const) {
+      expect(
+        releaseToConfirm({
+          decision: { kind: "install", version: "0.12.5-rc.1" },
+          runMode,
+          cliVersion: "0.12.4",
+          deployed: false,
+          recorded: null,
+        }),
+      ).toBe("0.12.5-rc.1");
+    }
+  });
+
+  it("names the CLI's own release when the job-mode launcher installs it", () => {
+    // `bunx @caelo-cms/provisioning@0.12.5-rc.1` in Cloud Shell, no --version.
+    expect(
+      releaseToConfirm({
+        decision: none,
+        runMode: "job",
+        cliVersion: "0.12.5-rc.1",
+        deployed: false,
+        recorded: null,
+      }),
+    ).toBe("0.12.5-rc.1");
+  });
+
+  it("names nothing when the run installs no new release", () => {
+    const base = { decision: none, cliVersion: "0.12.5-rc.1" } as const;
+    // Local mode without --version resolves `latest`, never a candidate.
+    expect(
+      releaseToConfirm({ ...base, runMode: "local", deployed: false, recorded: null }),
+    ).toBeNull();
+    // A provisioned install keeps what it runs; so does a complete record.
+    expect(
+      releaseToConfirm({ ...base, runMode: "job", deployed: true, recorded: null }),
+    ).toBeNull();
+    expect(
+      releaseToConfirm({ ...base, runMode: "job", deployed: false, recorded: full }),
+    ).toBeNull();
+    expect(
+      releaseToConfirm({
+        decision: { kind: "keep", version: "0.12.5-rc.1" },
+        runMode: "job",
+        cliVersion: "0.12.5-rc.1",
+        deployed: true,
+        recorded: full,
+      }),
+    ).toBeNull();
   });
 });

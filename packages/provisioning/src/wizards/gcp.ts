@@ -104,7 +104,7 @@ import {
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
-import { decideInstallVersion } from "../install-version.js";
+import { decideInstallVersion, releaseToConfirm } from "../install-version.js";
 import {
   ensureOperatorAccessSync,
   installIapAllowlist,
@@ -889,9 +889,11 @@ async function stepRegion(
  * `--version` (#1558): settle the release a new install runs, before
  * anything is created. Returns the version for the job-mode launcher, or
  * null without `--version`. A release candidate needs the operator's
- * confirmation (release-candidate.ts); in local mode the release's images
- * are resolved and cosign-verified here and recorded in install.json, where
- * the release choice of runGcpConverge picks them up.
+ * confirmation (release-candidate.ts), named or not: in job mode the
+ * launcher installs the CLI's own release, a candidate's installer that
+ * candidate. In local mode the named release's images are resolved and
+ * cosign-verified here and recorded in install.json, where the release
+ * choice of runGcpConverge picks them up.
  */
 async function stepRequestedRelease(
   installId: string,
@@ -900,12 +902,13 @@ async function stepRequestedRelease(
   runMode: RunMode,
   opts: GcpWizardOpts,
 ): Promise<string | null> {
+  const meta = readMetadata(installId);
+  const deployed = isStepDone(installId, `pulumi-up-${projectId}`);
   const decision = decideInstallVersion({
     requested: opts.version,
-    deployed: isStepDone(installId, `pulumi-up-${projectId}`),
-    recordedVersion: readMetadata(installId)?.releaseVersion,
+    deployed,
+    recordedVersion: meta?.releaseVersion,
   });
-  if (decision.kind === "none") return null;
   if (decision.kind === "refuse") {
     log.error(red(decision.error));
     cancel("Aborted — nothing was changed.");
@@ -915,26 +918,36 @@ async function stepRequestedRelease(
     log.info(`Release: ${bold(`v${decision.version}`)} ${dim("(this install runs it already)")}`);
     return decision.version;
   }
-  const { version } = decision;
-  const confirmed = await confirmReleaseCandidate(
-    {
-      version,
-      action: "install",
-      interactive: !opts.nonInteractive,
-      accepted: opts.acceptReleaseCandidate === true,
-    },
-    {
-      warn: (lines) => log.warn(yellow(lines.join("\n"))),
-      confirm: async (message) => {
-        const answer = await confirm({ message, initialValue: false });
-        return !isCancel(answer) && answer === true;
+  const installs = releaseToConfirm({
+    decision,
+    runMode,
+    cliVersion: CAELO_VERSION,
+    deployed,
+    recorded: meta ? recordedImageDigests(meta) : null,
+  });
+  if (installs !== null) {
+    const confirmed = await confirmReleaseCandidate(
+      {
+        version: installs,
+        action: "install",
+        interactive: !opts.nonInteractive,
+        accepted: opts.acceptReleaseCandidate === true,
       },
-    },
-  );
-  if (!confirmed.ok) {
-    cancel(confirmed.message);
-    process.exit(confirmed.reason === "declined" ? 0 : 1);
+      {
+        warn: (lines) => log.warn(yellow(lines.join("\n"))),
+        confirm: async (message) => {
+          const answer = await confirm({ message, initialValue: false });
+          return !isCancel(answer) && answer === true;
+        },
+      },
+    );
+    if (!confirmed.ok) {
+      cancel(confirmed.message);
+      process.exit(confirmed.reason === "declined" ? 0 : 1);
+    }
   }
+  if (decision.kind === "none") return null;
+  const { version } = decision;
   if (version !== CAELO_VERSION) {
     log.warn(
       yellow(
