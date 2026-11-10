@@ -68,6 +68,7 @@ import {
   type ReleaseImages,
 } from "./compose.js";
 import { MIGRATION_TARGETS } from "./migration-targets.js";
+import { resolveChannelVersion } from "./release-candidate.js";
 import { selfCommand } from "./self-command.js";
 import {
   type HostRunner,
@@ -516,14 +517,28 @@ function fail(
   return { ok: false, stage, error, previousRunning };
 }
 
-/** The tag to resolve and the version to record: explicit, channel, or newest stable. */
+/**
+ * The tag to resolve and the version to record: explicit, the channel's
+ * newest release (#1558: there is no moving channel tag to resolve), or the
+ * newest stable release.
+ */
 async function targetVersion(
   opts: SelfHostedUpgradeOpts,
   fetchImpl?: typeof fetch,
 ): Promise<{ ok: true; tag: string; version: string } | { ok: false; error: string }> {
-  if (opts.version || opts.channel === "rc" || opts.channel === "beta") {
-    const tag = releaseTag(opts);
+  if (opts.version) {
+    const tag = releaseTag({ version: opts.version });
     return { ok: true, tag, version: tag };
+  }
+  if (opts.channel === "rc" || opts.channel === "beta") {
+    const newest = await resolveChannelVersion(opts.channel, fetchImpl);
+    if (!newest.ok) {
+      return {
+        ok: false,
+        error: `Could not look up the newest ${opts.channel} release (${newest.reason}). Pass --version x.y.z.`,
+      };
+    }
+    return { ok: true, tag: newest.version, version: newest.version };
   }
   const latest = await fetchLatestReleaseTag(fetchImpl);
   if (!latest.ok) {

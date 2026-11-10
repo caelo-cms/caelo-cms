@@ -13,7 +13,11 @@
  * #1271 — given an `upload`, the generator streams every served file here
  * instead of writing it to the build directory, and each one goes straight
  * into the provider's staging version; the generator keeps a bounded window
- * of unacknowledged files, so neither process holds the site.
+ * of unacknowledged files, so neither process holds the site. Here a file is
+ * held once while the upload takes it: decoded as its line is read, and
+ * passed on without a copy. A few files grow with the site (the sitemap, the
+ * routing manifest, the render deps); each was held about four and a half
+ * times its size before.
  */
 
 import { spawn } from "node:child_process";
@@ -45,7 +49,8 @@ import { SYSTEM_ACTOR_ID } from "../audit.js";
 import { crossVariantLinkSchema } from "../links/link-notice.js";
 import { ProgressThrottle } from "./progress-throttle.js";
 import { type RenderFailure, renderFailureSchema } from "./render-failures.js";
-import type { BuildUpload } from "./static-publisher.js";
+import type { BuildUpload, BuildUploadFile } from "./static-publisher.js";
+import { LineSplitter } from "./stdout-lines.js";
 import { truncatedListSchema } from "./truncated-lists.js";
 import { unpublishedLinkTargetSchema } from "./unpublished-links.js";
 
@@ -151,6 +156,22 @@ interface SubprocessFile {
   contentType?: string;
   alwaysUpload?: true;
 }
+/**
+ * #1271 — a streamed file as the upload takes it: its bytes, decoded from
+ * the event's base64. Throws when the event carries no body text.
+ */
+function uploadFileOf(ev: SubprocessFile): BuildUploadFile {
+  if (typeof ev.body !== "string") {
+    throw new Error(`the generator streamed ${String(ev.relPath)} without its body`);
+  }
+  return {
+    relPath: ev.relPath,
+    body: Buffer.from(ev.body, "base64"),
+    ...(ev.contentType ? { contentType: ev.contentType } : {}),
+    ...(ev.alwaysUpload ? { alwaysUpload: true } : {}),
+  };
+}
+
 /** #605 — the generator asks the admin's plugin host (build-services.ts). */
 interface SubprocessPluginCall {
   kind: "plugin-call";
@@ -340,7 +361,6 @@ async function runGeneratorProcess(
     let serving = false;
     args.signal?.addEventListener("abort", onAbort, { once: true });
     const stderrChunks: Buffer[] = [];
-    let stdoutBuf = "";
     let finalEvent: GeneratorDone | SubprocessError | null = null;
 
     // The config is the first line; stdin then stays open for the answers
@@ -387,64 +407,74 @@ async function runGeneratorProcess(
       if (!child.stdin.destroyed) child.stdin.write(`${encodeBuildPayload(reply)}\n`);
     };
 
-    // #1271 — hand a streamed file to the upload and answer when it took it.
-    const takeFile = async (file: SubprocessFile): Promise<void> => {
-      let reply: Record<string, unknown>;
-      try {
-        if (!args.upload) throw new Error("the generator streamed a file but no upload is open");
-        await args.upload.put({
-          relPath: file.relPath,
-          body: Buffer.from(file.body, "base64"),
-          ...(file.contentType ? { contentType: file.contentType } : {}),
-          ...(file.alwaysUpload ? { alwaysUpload: true } : {}),
-        });
-        reply = { kind: "file-ack", id: file.id, ok: true };
-      } catch (e) {
-        reply = {
-          kind: "file-ack",
-          id: file.id,
-          ok: false,
-          message: e instanceof Error ? e.message : String(e),
-        };
-      }
+    // #1271 — answer a streamed file: taken, or why not.
+    const ackFile = (id: number, error: unknown): void => {
+      const reply =
+        error === null
+          ? { kind: "file-ack", id, ok: true }
+          : {
+              kind: "file-ack",
+              id,
+              ok: false,
+              message: error instanceof Error ? error.message : String(error),
+            };
       if (!child.stdin.destroyed) child.stdin.write(`${encodeBuildPayload(reply)}\n`);
     };
-
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdoutBuf += chunk.toString("utf8");
-      let nl = stdoutBuf.indexOf("\n");
-      while (nl !== -1) {
-        const line = stdoutBuf.slice(0, nl).trim();
-        stdoutBuf = stdoutBuf.slice(nl + 1);
-        nl = stdoutBuf.indexOf("\n");
-        if (line.length === 0) continue;
-        let ev: SubprocessEvent;
-        try {
-          ev = decodeBuildPayload(line) as SubprocessEvent;
-        } catch {
-          continue;
-        }
-        if (ev.kind === "plugin-call") {
-          void answerPluginCall(ev);
-        } else if (ev.kind === "file") {
-          void takeFile(ev);
-        } else if (ev.kind === "serving") {
-          serving = true;
-        } else if (ev.kind === "progress") {
-          progress.offer({ pagesDone: ev.pagesDone, pagesTotal: ev.pagesTotal });
-        } else if (ev.kind === "done") {
-          const done = subprocessDoneSchema.safeParse(ev);
-          finalEvent = done.success
-            ? done.data
-            : {
-                kind: "error",
-                message: `generator reported a malformed done event: ${done.error.message}`,
-              };
-        } else if (ev.kind === "error") {
-          finalEvent = ev;
-        }
+    // #1271 — hand a streamed file to the upload and answer when it took it.
+    // It arrives decoded (see the line handler): while the provider takes
+    // it, the admin holds the file's bytes, not its event as well.
+    const takeFile = async (id: number, file: BuildUploadFile): Promise<void> => {
+      try {
+        if (!args.upload) throw new Error("the generator streamed a file but no upload is open");
+        await args.upload.put(file);
+        ackFile(id, null);
+      } catch (e) {
+        ackFile(id, e);
       }
-    });
+    };
+
+    // #1271 — stdout as whole lines, each decoded once (stdout-lines.ts).
+    const stdoutLines = new LineSplitter();
+    const onLine = (text: string): void => {
+      const line = text.trim();
+      if (line.length === 0) return;
+      let ev: SubprocessEvent;
+      try {
+        ev = decodeBuildPayload(line) as SubprocessEvent;
+      } catch {
+        return;
+      }
+      if (ev.kind === "plugin-call") {
+        void answerPluginCall(ev);
+      } else if (ev.kind === "file") {
+        // Decoded here: once this handler returns, the event's base64 (a
+        // third larger than the bytes) and its line are garbage, and the
+        // upload's awaits hold the bytes only.
+        let file: BuildUploadFile;
+        try {
+          file = uploadFileOf(ev);
+        } catch (e) {
+          ackFile(ev.id, e);
+          return;
+        }
+        void takeFile(ev.id, file);
+      } else if (ev.kind === "serving") {
+        serving = true;
+      } else if (ev.kind === "progress") {
+        progress.offer({ pagesDone: ev.pagesDone, pagesTotal: ev.pagesTotal });
+      } else if (ev.kind === "done") {
+        const done = subprocessDoneSchema.safeParse(ev);
+        finalEvent = done.success
+          ? done.data
+          : {
+              kind: "error",
+              message: `generator reported a malformed done event: ${done.error.message}`,
+            };
+      } else if (ev.kind === "error") {
+        finalEvent = ev;
+      }
+    };
+    child.stdout.on("data", (chunk: Buffer) => stdoutLines.push(chunk, onLine));
     child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
 
     child.on("error", (e) => {

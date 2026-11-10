@@ -2,10 +2,12 @@
 
 /**
  * The Cloud Run jobs that run the admin image: the quality-audit job (#875,
- * admin-core quality/audit-task.ts) and the capture job (#1217, admin-core
- * capture/capture-task.ts). Each refuses an order from an admin on another
- * version, so every app-roll moves them onto the admin's new image right
- * after the services rolled, and a rollback moves them back.
+ * admin-core quality/audit-task.ts), the capture job (#1217, admin-core
+ * capture/capture-task.ts), the quality-audit runner (#1359) and the
+ * site-import crawler (#1360, both admin-core reporting-jobs/job-entry.ts).
+ * Each refuses an order from an admin on another version, so every app-roll
+ * moves them onto the admin's new image right after the services rolled,
+ * and a rollback moves them back.
  *
  * `run jobs update --image` changes nothing else of a job (identity, env,
  * parallelism), so this stays inside the app-roll's rights: the upgrader's
@@ -13,7 +15,12 @@
  */
 
 import type { GcloudRunner } from "../gcloud-retry.js";
-import { auditJobName, captureJobName } from "../gcp-names.js";
+import {
+  auditJobName,
+  auditRunnerJobName,
+  captureJobName,
+  importCrawlJobName,
+} from "../gcp-names.js";
 
 /** One job that follows the admin's image. */
 export interface AdminImageJob {
@@ -25,7 +32,12 @@ export interface AdminImageJob {
   readonly lagging: string;
 }
 
-/** The jobs that follow the admin's image, for one environment. */
+/**
+ * The jobs that follow the admin's image, for one environment. The
+ * quality-audit runner (#1359) comes after the audit job whose Lighthouse
+ * tasks it starts: each refuses work from another version, so the runner
+ * never runs on the new image while its tasks still run the old one.
+ */
 export function adminImageJobs(env: string): readonly AdminImageJob[] {
   return [
     { name: auditJobName(env), label: "quality-audit job", lagging: "Stage audits fail" },
@@ -33,6 +45,16 @@ export function adminImageJobs(env: string): readonly AdminImageJob[] {
       name: captureJobName(env),
       label: "capture job",
       lagging: "server-side screenshots fail",
+    },
+    {
+      name: auditRunnerJobName(env),
+      label: "quality-audit runner",
+      lagging: "Stage audits wait for it and fail after their last attempt",
+    },
+    {
+      name: importCrawlJobName(env),
+      label: "site-import crawler",
+      lagging: "site imports wait for it and fail after their last attempt",
     },
   ];
 }

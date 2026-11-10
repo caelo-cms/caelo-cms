@@ -63,7 +63,7 @@ import {
   readAssetReferences,
 } from "@caelo-cms/static-generator";
 import type { Bucket, File as GcsFile, Storage as StorageType } from "@google-cloud/storage";
-import { readBuildFiles, uniqueAssets } from "./build-files.js";
+import { bytesOfUpload, readBuildFiles, uniqueAssets } from "./build-files.js";
 import { applyGcpSiteHeaders, type GcpBackendBucketApi } from "./gcp-site-headers.js";
 import {
   adcComputeApi,
@@ -554,7 +554,7 @@ class GcsBuildUpload implements BuildUpload {
       throw new Error(`static-publisher-gcs: ${file.relPath} was written twice`);
     }
     this.#paths.add(file.relPath);
-    const body = Buffer.from(file.body);
+    const body = bytesOfUpload(file.body);
     if (file.relPath === "_redirects") this.#redirectsFile = body.toString("utf8");
     if (file.relPath === SECURITY_HEADERS_BUILD_FILE) {
       this.#siteHeaders = parseSiteHeaderSet(body.toString("utf8"));

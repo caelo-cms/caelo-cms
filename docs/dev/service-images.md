@@ -46,3 +46,31 @@ A service that takes untrusted traffic gets a minimal image: the API gateway tod
 2. Write the Dockerfile from the gateway's pattern: digest-pinned `FROM`s, a builder that runs `stage`, a distroless runtime with `USER 65532:65532` and an exec-form `ENTRYPOINT`.
 3. Add a matrix entry with `spec` and `sbom` to `release-images.yml`, and a boot smoke step for the service.
 4. Add the spec to knip's entry list.
+
+## Reproducible dependency layers (admin, ops; #1559)
+
+Releases stay in the registries for good: Cloud Run jobs pull their image every time they run, so deleting a release would break the jobs of every install still on it (#1558). A layer whose digest changes with every release is therefore uploaded and stored again with every release. The admin and ops images keep their `node_modules` in layers whose digest changes only when the dependencies do.
+
+- **Why the digests changed.** A fresh `bun install` gives every file a new timestamp. A plain `COPY --from=builder /repo/node_modules ./node_modules` also adds an `/app` entry dated at copy time. Between 0.12.3 and 0.12.4, the admin's two dependency layers (254 and 55 MiB compressed) differed only in timestamps: all 101,763 entries had the same path, type, mode, owner and content. In ops' 35 MiB-per-architecture layer, the 28,849 `node_modules` entries were the same too; only its CLI files changed.
+- **The rule.**
+  - The builder copies each tree under a staging root that holds its whole path: `/deps/root/app/node_modules`, `/deps/admin/app/apps/admin/node_modules`, `/deps/opt/caelo-ops/node_modules`.
+  - It gives every entry, parent directories included, one fixed time: `find /deps -exec touch -h -d @946684800 {} +`.
+  - The runtime stage copies the root with `COPY --link --from=builder /deps/<root>/ /`. With `--link` the layer is exactly that tree, built independently of the layers before it.
+  - Two builds of the same dependencies give byte-identical layers, whether or not the build cache still has them.
+  - The admin builder stages before `COPY . .`, so the step runs again only when a manifest or `bun.lock` changes.
+  - The time is arbitrary but must stay fixed. 2000-01-01 stays clear of the 1980 floor of ZIP-style timestamps.
+- **Why each piece is needed.**
+  - Fixing the timestamps alone is not enough: the copy still dates the `/app` entry it adds to.
+  - `COPY --link` of `/repo/node_modules` alone is not enough either: it creates `/app` with the build's time.
+  - Only a staging root whose top directory is copied as content gives a layer with no dated entry.
+  - Local BuildKit experiments (v0.34) showed all three.
+- **Why not BuildKit's `rewrite-timestamp`.** A fixed `SOURCE_DATE_EPOCH` would make every layer reproducible, but it would also give the admin's `build/client` one timestamp. adapter-node serves those files through sirv, whose ETag is size plus modification time. A file that changes but keeps its size, such as `_app/version.json`, would then keep its ETag across releases, and browsers would revalidate to the old file.
+- **One cache writer per scope.** A GitHub Actions cache scope keeps only its last export. In `release-images.yml` the build that runs before the push build (the ops boot smoke, the minimal images' checks) reads the scope but does not write it. The ops smoke build is amd64 only; its export used to wipe the push build's arm64 half. Every ops build then rebuilt its arm64 runtime chain (Node, the Pulumi/gcloud layer, the CLI), and every release carried about 369 MB of new arm64 layers. The push build reuses the earlier build's layers from the job's own builder anyway.
+- **What still changes with every release.**
+  - The admin: its `packages` and `apps/admin/build`, the version-stamped `package.json` and `bun.lock`, and SvelteKit's generated route types in `apps/admin/node_modules/$app`, in a small layer of their own.
+  - ops: its CLI and packages.
+  - The gateway and the MCP-Auth-Proxy are bundles that inline their dependencies, so their app layer is their code.
+  - The SBOM and provenance attestations buildx attaches to every image are new with every build: about 53 MB for ops (both architectures; gcloud's SDK makes its SBOM large), 5 MB for the admin, 2 MB for the gateway and proxy.
+- **Keeping it.**
+  - `scripts/reproducible-image-layers.test.ts` fails when a runtime stage copies a dependency tree any other way, or when the admin stages it after the source.
+  - To check the registry, compare the layers of two builds (the platform manifest plus its config `history`). The dependency layers of two builds without a `bun.lock` change must have equal digests.

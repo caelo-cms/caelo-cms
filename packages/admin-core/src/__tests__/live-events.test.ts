@@ -59,6 +59,9 @@ describe("liveTopicsOfOperation over the real op catalogue", () => {
       "imports.create_run",
       "imports.update_run_status",
       "imports.write_extracted_pages",
+      "imports.claim_crawl",
+      "imports.finish_crawl",
+      "imports.fail_crawl",
       "deploy.trigger",
       "deploy.start_trigger",
       "deploy.fail_run",
@@ -100,7 +103,9 @@ describe("liveTopicsOfOperation over the real op catalogue", () => {
     for (const n of [
       "chat.heartbeat_agent_run",
       "chat.renew_turn_lease",
-      "quality_audits.claim_next",
+      "reporting_jobs.authorize",
+      "quality_audits.sweep_unstarted",
+      "imports.sweep_unstarted_crawls",
       "deploy.renew_run_lease",
       "deploy.acquire_live_release",
     ]) {

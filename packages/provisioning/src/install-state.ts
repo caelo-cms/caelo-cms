@@ -488,6 +488,18 @@ export function stateStoreFor(installId: string): StateStore {
 }
 
 /**
+ * Drop this process's copies of the install's bucket documents, so the next
+ * read fetches install.json and progress.json from its ops bucket again: for
+ * a decision taken under a lock that another process may have changed them
+ * before (the install job's launcher, #1558). No-op for local state, which
+ * is read from disk every time.
+ */
+export function forgetCachedState(installId: string): void {
+  const backend = readLocalMetadata(installId)?.stateBackend;
+  if (backend?.kind === "gcs") gcsStores.delete(`${installId}\0${backend.bucket}`);
+}
+
+/**
  * The authoritative metadata of an install picked from {@link listInstalls}:
  * for an install whose state lives in its ops bucket, the bucket's copy
  * (another machine may have upgraded it since). Throws when that copy can't

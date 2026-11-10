@@ -60,7 +60,7 @@ import {
   hostingGzip,
   readAssetReferences,
 } from "@caelo-cms/static-generator";
-import { CPU_PARALLELISM, readBuildFiles, uniqueAssets } from "./build-files.js";
+import { bytesOfUpload, CPU_PARALLELISM, readBuildFiles, uniqueAssets } from "./build-files.js";
 import { readFirebaseBuiltFile } from "./firebase-channel-file.js";
 import {
   currentGatewayRewrite,
@@ -601,16 +601,15 @@ class FirebaseBuildUpload implements BuildUpload {
       throw new Error(`static-publisher-firebase: ${file.relPath} was written twice`);
     }
     this.#paths.add(file.relPath);
+    const raw = bytesOfUpload(file.body);
     // The redirects ride the version config, built at finish().
-    if (file.relPath === "_redirects")
-      this.#redirectsFile = Buffer.from(file.body).toString("utf8");
+    if (file.relPath === "_redirects") this.#redirectsFile = raw.toString("utf8");
     if (file.relPath === STATIC_FILES_MANIFEST_FILE) {
-      this.#staticFiles = parseStaticFilesManifest(Buffer.from(file.body).toString("utf8"));
+      this.#staticFiles = parseStaticFilesManifest(raw.toString("utf8"));
     }
     if (file.relPath === SECURITY_HEADERS_BUILD_FILE) {
-      this.#siteHeaders = parseSiteHeaderSet(Buffer.from(file.body).toString("utf8"));
+      this.#siteHeaders = parseSiteHeaderSet(raw.toString("utf8"));
     }
-    const raw = Buffer.from(file.body);
     const { body, sha256 } = await gzipAndHashBytes(raw);
     // #1330 — the slot keeps the plain bytes; the gzip hash names them.
     const type = file.contentType ?? contentTypeFor(file.relPath);

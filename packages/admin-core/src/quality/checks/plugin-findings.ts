@@ -4,11 +4,13 @@
  * Epic #1107 — plugin contributions to the Stage audit (docs/lists.md §9
  * hook 5): one site check per active plugin that declares an
  * `auditFindingsOperation`, id `plugin.<slug>`, its findings filed as
- * `plugin.<slug>/<rule>` in the same report as core's checks. The plugin
- * host asks the plugin through the broker (plugin-host
- * `audit-findings.ts`); this file only maps the answer onto the findings
- * contract the runner validates (a finding naming a page outside the
- * staged build fails the check loudly, like any check's).
+ * `plugin.<slug>/<rule>` in the same report as core's checks. Each call
+ * reaches the plugin through the broker (plugin-host `audit-findings.ts`
+ * `pluginAuditFindingsCall`; from the audit's job by a report to the admin,
+ * #1359); this file runs the calls ({@link collectPluginFindings}) and maps
+ * the answers onto the findings contract the runner validates (a finding
+ * naming a page outside the staged build fails the check loudly, like any
+ * check's).
  *
  * The contributors are read per audit, not once per process: activating
  * or archiving a plugin changes what the next Stage's audit runs without
@@ -20,7 +22,11 @@
  * `sitemap.xml` once. Findings from several calls are filed once each.
  */
 
-import type { PluginAuditFinding, PluginAuditPageFacts } from "@caelo-cms/plugin-sdk";
+import type {
+  PluginAuditFinding,
+  PluginAuditFindingsArgs,
+  PluginAuditPageFacts,
+} from "@caelo-cms/plugin-sdk";
 import type { SiteCheck, StagedPage } from "./check.js";
 import type { Finding } from "./findings.js";
 import { siteHostsOf } from "./links-analysis.js";
@@ -39,6 +45,64 @@ export interface PluginAuditSource {
   ): Promise<readonly PluginAuditFinding[]>;
   /** The site's public URLs and domains: what counts as a same-site URL in the facts. */
   siteUrls(): Promise<readonly string[]>;
+}
+
+/** One validated answer of a plugin's `auditFindingsOperation`. */
+export interface PluginAuditAnswer {
+  readonly findings: readonly PluginAuditFinding[];
+  readonly factBatches?: readonly (readonly string[])[];
+}
+
+/**
+ * One call of plugin `slug`'s `auditFindingsOperation`: plugin-host
+ * `pluginAuditFindingsCall` in the admin; in the audit's job, a report
+ * that asks the admin to make it (#1359).
+ */
+export type PluginAuditCall = (
+  args: PluginAuditFindingsArgs,
+  label: string,
+) => Promise<PluginAuditAnswer>;
+
+/**
+ * Ask a plugin for its findings about the staged pages: the first call
+ * carries the pages; when its answer names `factBatches`, every batch is
+ * read through `facts` and the operation is called again per batch with
+ * those facts. The findings of every call are returned in call order (the
+ * check files identical ones once).
+ *
+ * @throws when a call fails, a batch names a page outside `pages`, or a
+ *   batch call asks for batches again — the plugin's check then fails
+ *   loudly instead of reading as "no findings".
+ */
+export async function collectPluginFindings(
+  call: PluginAuditCall,
+  slug: string,
+  pages: readonly { readonly pageId: string; readonly path: string }[],
+  facts: (pageIds: readonly string[]) => Promise<readonly PluginAuditPageFacts[]>,
+): Promise<PluginAuditFinding[]> {
+  const pageArgs = pages.map((p) => ({ pageId: p.pageId, path: p.path }));
+  const first = await call({ pages: pageArgs }, "pages");
+  const out = [...first.findings];
+  const staged = new Set(pages.map((p) => p.pageId));
+  for (const [i, batch] of (first.factBatches ?? []).entries()) {
+    const outside = batch.find((id) => !staged.has(id));
+    if (outside) {
+      throw new Error(
+        `audit findings: plugin "${slug}" asked for the facts of page ${outside}, which is not a page of the staged build`,
+      );
+    }
+    const answer = await call(
+      { pages: pageArgs, facts: await facts(batch) },
+      `facts batch ${i + 1}`,
+    );
+    if (answer.factBatches) {
+      throw new Error(
+        `audit findings: plugin "${slug}" requested factBatches again in facts batch ${i + 1} — batches are requested by the first call only`,
+      );
+    }
+    out.push(...answer.findings);
+  }
+  return out;
 }
 
 /** Plugin calls go through the sandbox: allow more than a pure check's default. */

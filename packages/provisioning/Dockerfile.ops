@@ -81,10 +81,20 @@ RUN rm -rf node_modules packages/*/node_modules && \
 # to the database through @caelo-cms/query-api. Both run from src/ (they
 # are not published, so they have no dist/), as does provisioning's `bun`
 # export condition the updater imports through.
+#
+# #1559 — node_modules goes to a staging root of its own, which holds its
+# whole path (/deps/opt/caelo-ops/node_modules), with one fixed timestamp on
+# every entry: the runtime stage copies it with `COPY --link`, so the layer
+# is the same bytes in every build of the same dependencies, instead of new
+# timestamps (and a new ~35 MB digest per architecture) on every release.
+# The builder runs on the build platform, so both architectures share it.
+# The time is the admin image's (apps/admin/Dockerfile).
 RUN mkdir -p /opt/caelo-ops/packages/shared /opt/caelo-ops/packages/provisioning \
-             /opt/caelo-ops/packages/query-api /opt/caelo-ops/packages/platform-updater && \
+             /opt/caelo-ops/packages/query-api /opt/caelo-ops/packages/platform-updater \
+             /deps/opt/caelo-ops && \
     cp package.json /opt/caelo-ops/ && \
-    cp -a node_modules /opt/caelo-ops/ && \
+    cp -a node_modules /deps/opt/caelo-ops/ && \
+    find /deps -exec touch -h -d @946684800 {} + && \
     cp -a packages/shared/package.json packages/shared/dist packages/shared/src /opt/caelo-ops/packages/shared/ && \
     cp -a packages/provisioning/package.json packages/provisioning/dist packages/provisioning/src \
           packages/provisioning/stacks packages/provisioning/caddy \
@@ -152,6 +162,9 @@ RUN set -eu && \
     node --version && pulumi version && cosign version >/dev/null && \
     gcloud version 2>/dev/null | grep -qx "Google Cloud SDK ${GCLOUD_VERSION}"
 
+# #1559 — the dependency tree as its own reproducible layer (staged in the
+# builder), then the CLI and its packages, which change with every release.
+COPY --link --from=builder /deps/ /
 COPY --from=builder /opt/caelo-ops /opt/caelo-ops
 # #1338 — the CA bundles of verify-full database URLs (the upgrader and
 # converge jobs connect to Cloud SQL; packages/shared database-tls.ts).

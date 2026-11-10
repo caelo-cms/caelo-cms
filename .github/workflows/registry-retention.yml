@@ -28,10 +28,12 @@
 # creation time and serves (incl. scale-from-zero) from its own copy,
 # not from the registry.
 #
-# The GCP Artifact Registry mirror has the equivalent rules applied
-# server-side as native cleanup policies — no workflow needed; see
-# docs/maintainer-public-registry-setup.md ("Retention") and
-# docs/maintainer-ar-cleanup-policy.json.
+# The GCP Artifact Registry mirror receives no dev images at all (#1558):
+# releases and release candidates only, the candidates deleted after 14
+# days by native cleanup policies applied server-side — no workflow
+# needed; see docs/maintainer-public-registry-setup.md ("Retention") and
+# docs/maintainer-ar-cleanup-policy.json. Release candidates stay here in
+# GHCR, where self-hosted test installs pull them.
 
 name: registry-retention
 

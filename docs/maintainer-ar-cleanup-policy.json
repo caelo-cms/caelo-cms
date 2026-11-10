@@ -9,6 +9,15 @@
     }
   },
   {
+    "name": "delete-release-candidates-after-14d",
+    "action": { "type": "Delete" },
+    "condition": {
+      "tagState": "TAGGED",
+      "tagPrefixes": ["rc-"],
+      "olderThan": "14d"
+    }
+  },
+  {
     "name": "delete-untagged-after-7d",
     "action": { "type": "Delete" },
     "condition": {

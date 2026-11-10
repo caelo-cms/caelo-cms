@@ -338,6 +338,17 @@ import {
   writeExtractedPagesOp,
 } from "./ops/imports.js";
 import {
+  addCrawlPageNoteOp,
+  claimCrawlOp,
+  failCrawlOp,
+  finishCrawlOp,
+  isCrawlingOp,
+  listCaptureTargetsOp,
+  saveCrawlCheckpointOp,
+  sweepUnstartedCrawlsOp,
+  takeRenderOp,
+} from "./ops/imports-crawl.js";
+import {
   getLinkMigrationReportOp,
   migrateLinksToReferencesOp,
   revertLinkMigrationOp,
@@ -495,7 +506,7 @@ import {
   releaseChatNotificationOp,
   retryAuditOp,
 } from "./ops/quality/gate.js";
-import { claimNextAuditOp, enqueueAuditOp } from "./ops/quality/lifecycle.js";
+import { claimAuditOp, enqueueAuditOp, sweepUnstartedAuditsOp } from "./ops/quality/lifecycle.js";
 import {
   beginExecuteQualityProposalOp,
   endExecuteQualityProposalOp,
@@ -530,6 +541,17 @@ import {
   proposeGoLiveOp,
   releasePlanOp,
 } from "./ops/redirects_release.js";
+import {
+  authorizeReportingJobOp,
+  beginReportingJobAttemptOp,
+  finishReportingJobOp,
+  listExpiredReportingJobsOp,
+  putReportingJobUploadPartOp,
+  readReportingJobUploadOp,
+  recordReportingJobLaunchOp,
+  releaseReportingJobOp,
+  sweepReportingJobsOp,
+} from "./ops/reporting_jobs.js";
 import {
   executeRoleProposalOp,
   listPendingRoleProposalsOp,
@@ -919,7 +941,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // #553 quality gate (Lighthouse audits after a substantial Stage)
   registry.register(classifyStageOp);
   registry.register(enqueueAuditOp);
-  registry.register(claimNextAuditOp);
+  registry.register(claimAuditOp);
+  registry.register(sweepUnstartedAuditsOp);
   registry.register(recordAuditResultOp);
   registry.register(listAuditsOp);
   registry.register(getAuditOp);
@@ -1376,6 +1399,16 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // issue #247 — run-level computed-style token aggregate.
   registry.register(setRunDesignTokensOp);
   registry.register(writeExtractedPagesOp);
+  // #1360 — the crawl's side of a run, reported by its job.
+  registry.register(claimCrawlOp);
+  registry.register(takeRenderOp);
+  registry.register(isCrawlingOp);
+  registry.register(saveCrawlCheckpointOp);
+  registry.register(listCaptureTargetsOp);
+  registry.register(addCrawlPageNoteOp);
+  registry.register(finishCrawlOp);
+  registry.register(failCrawlOp);
+  registry.register(sweepUnstartedCrawlsOp);
   registry.register(acceptImportedPageOp);
   registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);
@@ -1440,6 +1473,16 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // #1140 — the scheduler tick's due-table (system only).
   registry.register(scheduledTasksClaimOp);
   registry.register(scheduledTasksFinishOp);
+  // #1359 — reporting jobs: long work in a container job that reports back.
+  registry.register(beginReportingJobAttemptOp);
+  registry.register(recordReportingJobLaunchOp);
+  registry.register(authorizeReportingJobOp);
+  registry.register(releaseReportingJobOp);
+  registry.register(finishReportingJobOp);
+  registry.register(listExpiredReportingJobsOp);
+  registry.register(putReportingJobUploadPartOp);
+  registry.register(readReportingJobUploadOp);
+  registry.register(sweepReportingJobsOp);
   // #1337 — the public mail outboxes' drain (system-only).
   registry.register(claimMailOutboxOp);
   registry.register(completeMailOutboxOp);

@@ -47,6 +47,7 @@
         "src/healthcheck.ts",
         "src/security/operator-access/sync-job.ts",
         "src/quality/lighthouse-child.ts",
+        "src/reporting-jobs/job-entry.ts",
         "scripts/lighthouse-smoke.ts",
         "src/__tests__/*.bench.ts",
         "src/__tests__/fixtures/change-journal-instance.ts"

@@ -432,6 +432,14 @@ const logWorkspace = new azure.operationalinsights.Workspace(`${namePrefix}-logs
 // instead of measuring on its own shared CPU. Nothing is staged on Azure
 // before #750 either.
 //
+// FIXME(issue #750): no reporting-job Container Apps job yet (#1359, #1360).
+// On GCP a Stage's whole quality audit and a site import's crawl each run in
+// their own job that reports back to the admin (src/reporting-job-setup.ts);
+// the Azure equivalent is a Container Apps job execution per audit or crawl
+// behind admin-core reporting-jobs/launcher.ts `JobLauncher`, reporting
+// through Easy Auth. Until it exists the admin records every audit and every
+// site import as failed with that gap instead of running it on its own CPU.
+//
 // FIXME(issue #750): no capture Container Apps job yet. On GCP every
 // server-side browser render (screenshots, external page renders, the
 // site-import crawl) runs in its own short-lived container (#1217,

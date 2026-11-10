@@ -132,7 +132,7 @@ import {
   withBuiltLinks,
 } from "../links/link-notice.js";
 import { loadedVisitorProjections } from "../public-projection.js";
-import { kickQualityAuditWorker } from "../quality/audit-worker.js";
+import { startQualityAuditJob } from "../quality/start-audit-job.js";
 import { loadStagedChanges } from "../redirects/model.js";
 import {
   releaseRedirectChanges,
@@ -602,6 +602,8 @@ export const finishTriggerOp = defineOperation({
     redirectsApplied: z.number().int(),
     /** Why none went live although some were listed (they stay Staged). */
     redirectsHeldBack: z.string().nullable(),
+    /** #1359 — the Stage's audit when it was queued (its job starts next); null otherwise. */
+    queuedAuditRunId: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
     // Refusals throw OperationAbortError: nothing of this step may commit,
@@ -719,6 +721,7 @@ export const finishTriggerOp = defineOperation({
     // left a succeeded Stage with no audit and Publish live blocked with
     // nothing to retry. The row was decided before the build
     // (deploy.start_trigger), so this is a plain insert of checked values.
+    let queuedAuditRunId: string | null = null;
     if (planned?.success) {
       const queued = await insertPlannedAudit(tx, ctx, {
         deployRunId: input.runId,
@@ -726,6 +729,7 @@ export const finishTriggerOp = defineOperation({
         input: { deployRunId: input.runId, ...(input.qualityAudit ?? {}) },
       });
       if (!queued.ok) refuse(describeError(queued.error));
+      else if (queued.value.status === "queued") queuedAuditRunId = queued.value.auditRunId;
     }
     // #1157 — a production build read the live redirects when it started;
     // the provider must serve them as they are now (this build's changes
@@ -740,6 +744,7 @@ export const finishTriggerOp = defineOperation({
       stagingUrl: host ? `https://${host}/` : null,
       redirectsApplied,
       redirectsHeldBack,
+      queuedAuditRunId,
     });
   },
 });
@@ -1102,9 +1107,11 @@ async function runTrigger(
     if (heldBack !== null) {
       redirectNote ??= `The Staged redirect changes stay Staged: ${heldBack}; the next Publish live plans them again.`;
     }
-    // The audit row committed with the run; wake this instance's worker
-    // instead of waiting for its next pass.
-    if (plan.target.env === "staging") kickQualityAuditWorker();
+    // #1359 — the audit row committed with the run; start its job now,
+    // inside this request, instead of waiting for the next tick.
+    const queuedAuditRunId = (finished.value as { queuedAuditRunId: string | null })
+      .queuedAuditRunId;
+    if (queuedAuditRunId) await startQualityAuditJob({ adapter, registry }, queuedAuditRunId);
     // The run is recorded; now put the live redirects on the build
     // production serves, in a transaction of its own. A failure is recorded
     // and retried by the redirect-sync worker (the target stays behind).

@@ -2,13 +2,13 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
+  auditClaimedRun,
   type ClaimedAuditRun,
-  processClaimedRun,
   resolveStagingOrigin,
   stagedPageUrl,
   stagedUrlOfPage,
   toDisplayUrl,
-} from "../audit-worker.js";
+} from "../audit-run.js";
 import { testCheckRegistry } from "../checks/__tests__/fixtures/test-checks.js";
 import { sampleMetrics } from "./fixtures/sample-metrics.js";
 
@@ -178,38 +178,13 @@ describe("toDisplayUrl (#650)", () => {
   });
 });
 
-describe("processClaimedRun on gcp-firebase (#650, #1330)", () => {
-  it("runs Lighthouse against the loopback copy of the slot but records only the staging host", async () => {
-    const recorded: unknown[] = [];
+describe("auditClaimedRun on gcp-firebase (#650, #1330)", () => {
+  it("runs Lighthouse against the loopback copy of the slot but reports only the staging host", async () => {
     const jobs: unknown[] = [];
     const fetched: string[] = [];
-    const registry = {
-      lookup: () => ({
-        ok: true,
-        value: {
-          name: "quality_audits.record_result",
-          actorScope: ["human", "ai", "system"],
-          database: "cms_admin",
-          input: { safeParse: (v: unknown) => ({ success: true, data: v }) },
-          output: { safeParse: (v: unknown) => ({ success: true, data: v }) },
-          handler: async (_c: unknown, input: unknown) => {
-            recorded.push(input);
-            return { ok: true, value: { status: "recorded" } };
-          },
-        },
-      }),
-    };
-    const adapter = {
-      runOperation: async (
-        op: { handler: (c: unknown, i: unknown, tx: unknown) => unknown },
-        ctx: unknown,
-        input: unknown,
-      ) => op.handler(ctx, input, {}),
-    };
-    await processClaimedRun(
+    const report = await auditClaimedRun(
+      run({ stagingLocation: "_slots/a", stagingOrigin: "https://staging.example.com" }),
       {
-        registry: registry as never,
-        adapter: adapter as never,
         env: {
           provider: "gcp-firebase",
           loopbackSource: () => ({ read: async () => null }),
@@ -265,12 +240,13 @@ describe("processClaimedRun on gcp-firebase (#650, #1330)", () => {
           };
         },
       },
-      run({ stagingLocation: "_slots/a", stagingOrigin: "https://staging.example.com" }),
     );
     expect(JSON.stringify(jobs)).toMatch(/http:\/\/127\.0\.0\.1:\d+\//);
     expect(fetched).toHaveLength(1);
     expect(fetched[0]).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
-    const text = JSON.stringify(recorded);
+    expect(report.baseUrl).toBe("https://staging.example.com");
+    expect(report.outcome.kind).toBe("completed");
+    const text = JSON.stringify(report);
     // The registered page check's finding is reported too.
     expect(text).toContain("test-meta/placeholder-description");
     expect(text).not.toContain("127.0.0.1");

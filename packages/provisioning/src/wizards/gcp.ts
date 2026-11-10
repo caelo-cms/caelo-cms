@@ -30,7 +30,12 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CLOUD_SQL_CA_BUNDLE, verifyFullQuery } from "@caelo-cms/shared";
+import {
+  CAELO_VERSION,
+  CLOUD_SQL_CA_BUNDLE,
+  provisioningCommand,
+  verifyFullQuery,
+} from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { checkAdcImpersonation } from "../adc-impersonation.js";
@@ -75,7 +80,9 @@ import {
   serviceAccountExists,
 } from "../gcloud.js";
 import {
+  auditRunnerServiceAccountEmail,
   GCP_STACK_ENV,
+  importCrawlServiceAccountEmail,
   schedulerServiceAccountEmail,
   upgraderServiceAccountEmail,
 } from "../gcp-names.js";
@@ -99,6 +106,7 @@ import {
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
+import { decideInstallVersion, releaseToConfirm } from "../install-version.js";
 import {
   ensureOperatorAccessSync,
   installIapAllowlist,
@@ -115,12 +123,18 @@ import {
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
 import {
+  confirmReleaseCandidate,
+  isPrereleaseVersion,
+  RELEASE_CANDIDATE_RETENTION_DAYS,
+} from "../release-candidate.js";
+import {
   checkRemoteMcpIdentityEnv,
   ensureRemoteMcpEdge,
   findRemoteMcpTarget,
   type RemoteMcpTarget,
   resolveStackRemoteMcpIdentity,
 } from "../remote-mcp.js";
+import { ensureAuditRunnerJob, ensureImportCrawlJob } from "../reporting-job-setup.js";
 import type { RunMode } from "../run-mode.js";
 import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
@@ -151,6 +165,7 @@ import {
   releaseImageRef,
   releaseVersionForDigest,
   resolveOpsImageRef,
+  resolveReleaseImages,
   verifyCosignAll,
 } from "../upgrade/release-images.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
@@ -179,6 +194,13 @@ export interface GcpWizardOpts {
    * install job in the project. Default `local`.
    */
   runMode?: RunMode;
+  /**
+   * #1558 — `--version`: the release a new install runs (a release candidate
+   * included) instead of the newest stable one. See install-version.ts.
+   */
+  version?: string;
+  /** #1558 — `--accept-release-candidate`: confirms a release candidate without a prompt. */
+  acceptReleaseCandidate?: boolean;
 }
 
 export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
@@ -205,6 +227,14 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // install.json.
   const region = await stepRegion(opts, projectId, meta);
   if (meta) writeMetadata(installId, { ...meta, projectId, region });
+
+  // === 2.7. The release to install: `--version` (#1558) ===
+  // Settled before anything is created: a release candidate is confirmed
+  // here, and in local mode the release's images are resolved and
+  // cosign-verified now, so a mistyped or deleted release stops the run with
+  // nothing changed. In job mode the launcher verifies the release's signed
+  // manifest instead.
+  const version = await stepRequestedRelease(installId, projectId, provider, runMode, opts);
 
   // === 3. Project create ===
   await stepProjectCreate(installId, projectId, opts.domain);
@@ -299,6 +329,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
       region,
       provisionerEmail: saEmail,
       nonInteractive: opts.nonInteractive,
+      ...(version ? { version } : {}),
     });
     return;
   }
@@ -395,8 +426,13 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   }
   const imageDigests = choice.digests;
   if (choice.source !== "latest") {
+    const admin = dim(`${imageDigests.admin.slice(0, 19)}...`);
+    // A record on an install that has not been provisioned yet comes from
+    // `--version` or an earlier run that stopped (#1558).
     log.info(
-      `Keeping the release this install runs (admin ${dim(`${imageDigests.admin.slice(0, 19)}...`)}). Change versions with ${bold("upgrade")}.`,
+      deployed
+        ? `Keeping the release this install runs (admin ${admin}). Change versions with ${bold("upgrade")}.`
+        : `Installing the release recorded for this install${meta.releaseVersion ? ` (v${meta.releaseVersion})` : ""} (admin ${admin}).`,
     );
   }
 
@@ -578,6 +614,23 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // Before the upgrader, which gets actAs on the job's service account.
   await stepAuditJob(projectId, region, provider);
 
+  // === 11.32. The quality-audit runner: a Stage's audit in its own job (#1359) ===
+  // After the audit job (it starts its Lighthouse tasks), before the
+  // upgrader (actAs on its account) and operator access (keeps it on IAP).
+  await stepReportingJob(projectId, region, provider, ownerEmail, {
+    starting: "Setting up the quality-audit runner (audits outside the admin)...",
+    ready: "Quality-audit runner ready",
+    ensure: ensureAuditRunnerJob,
+  });
+
+  // === 11.33. The site-import crawler: a site import's crawl in its own job (#1360) ===
+  // Before the upgrader and operator access, for the same reasons.
+  await stepReportingJob(projectId, region, provider, ownerEmail, {
+    starting: "Setting up the site-import crawler (crawls outside the admin)...",
+    ready: "Site-import crawler ready",
+    ensure: ensureImportCrawlJob,
+  });
+
   // === 11.35. The capture job: server-side screenshots outside the admin (#1217) ===
   // Before the upgrader as well, which gets actAs on its service account.
   await stepCaptureJob(projectId, region, provider);
@@ -609,7 +662,12 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     provider,
     ownerEmail,
     keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
-    keepScheduler ? [schedulerServiceAccountEmail(projectId, GCP_STACK_ENV)] : [],
+    [
+      ...(keepScheduler ? [schedulerServiceAccountEmail(projectId, GCP_STACK_ENV)] : []),
+      // #1359 / #1360 — set up above (a failure stops the wizard there).
+      auditRunnerServiceAccountEmail(projectId, GCP_STACK_ENV),
+      importCrawlServiceAccountEmail(projectId, GCP_STACK_ENV),
+    ],
   );
 
   // === 11.6. Remote MCP (#806): LB rules (gcp) + a check of the identity env ===
@@ -684,10 +742,11 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
  * fresh release doesn't trigger a new Cloud Run revision because the
  * image reference in the stack (":latest") is unchanged.
  *
- * `latest` = newest release — the same channel `cms-provision upgrade`
- * defaults to. Deliberately NOT the `:main` dev tag: fresh installs
- * start on a released version, and the per-merge dev images are pruned
- * after 7 days (docs/maintainer-public-registry-setup.md, "Retention").
+ * `latest` = newest stable release — the same channel `cms-provision
+ * upgrade` defaults to. The mirror holds releases and release candidates
+ * only (#1558; docs/maintainer-public-registry-setup.md, "Retention"), and
+ * `latest` never names a release candidate. `--version` installs a named
+ * release instead (install-version.ts).
  */
 async function resolveImageDigests(): Promise<ImageDigests> {
   // The Caelo public image registry — not the install region.
@@ -849,6 +908,125 @@ async function stepRegion(
     process.exit(0);
   }
   return choice as string;
+}
+
+/**
+ * `--version` (#1558): settle the release a new install runs, before
+ * anything is created. Returns the version for the job-mode launcher, or
+ * null without `--version`. A release candidate needs the operator's
+ * confirmation (release-candidate.ts), named or not: in job mode the
+ * launcher installs the CLI's own release, a candidate's installer that
+ * candidate. In local mode the named release's images are resolved and
+ * cosign-verified here and recorded in install.json, where the release
+ * choice of runGcpConverge picks them up.
+ */
+async function stepRequestedRelease(
+  installId: string,
+  projectId: string,
+  provider: "gcp" | "gcp-firebase",
+  runMode: RunMode,
+  opts: GcpWizardOpts,
+): Promise<string | null> {
+  const meta = readMetadata(installId);
+  const deployed = isStepDone(installId, `pulumi-up-${projectId}`);
+  const decision = decideInstallVersion({
+    requested: opts.version,
+    deployed,
+    recordedVersion: meta?.releaseVersion,
+  });
+  if (decision.kind === "refuse") {
+    log.error(red(decision.error));
+    cancel("Aborted — nothing was changed.");
+    process.exit(1);
+  }
+  if (decision.kind === "keep") {
+    log.info(`Release: ${bold(`v${decision.version}`)} ${dim("(this install runs it already)")}`);
+    return decision.version;
+  }
+  const installs = releaseToConfirm({
+    decision,
+    runMode,
+    cliVersion: CAELO_VERSION,
+    deployed,
+    recorded: meta ? recordedImageDigests(meta) : null,
+  });
+  if (installs !== null) {
+    const confirmed = await confirmReleaseCandidate(
+      {
+        version: installs,
+        action: "install",
+        // A pipe or CI run without --non-interactive cannot answer either.
+        interactive: !opts.nonInteractive && process.stdin.isTTY === true,
+        accepted: opts.acceptReleaseCandidate === true,
+      },
+      {
+        warn: (lines) => log.warn(yellow(lines.join("\n"))),
+        confirm: async (message) => {
+          const answer = await confirm({ message, initialValue: false });
+          return !isCancel(answer) && answer === true;
+        },
+      },
+    );
+    if (!confirmed.ok) {
+      cancel(confirmed.message);
+      process.exit(confirmed.reason === "declined" ? 0 : 1);
+    }
+  }
+  if (decision.kind === "none") return null;
+  const { version } = decision;
+  if (version !== CAELO_VERSION) {
+    log.warn(
+      yellow(
+        `This installer is v${CAELO_VERSION}, not v${version}. To install v${version} exactly as released, run its own installer: ${provisioningCommand(version, ["--provider", provider, "--version", version])}`,
+      ),
+    );
+  }
+  if (runMode === "job") {
+    log.info(
+      `Release: ${bold(`v${version}`)} — the install job checks its signed release manifest before it starts.`,
+    );
+    return version;
+  }
+  await stepResolveRelease(installId, version);
+  return version;
+}
+
+/**
+ * Resolve `version`'s images in the public mirror (the upgrade path's
+ * resolver), verify their signatures and record them with the version, so
+ * the converge deploys exactly that release (#1558).
+ */
+async function stepResolveRelease(installId: string, version: string): Promise<void> {
+  const s = spinner();
+  s.start(`Resolving the v${version} release images...`);
+  const resolved = await resolveReleaseImages(version);
+  if (!resolved.ok) {
+    s.stop(red(`Could not resolve the v${version} release images`));
+    log.error(
+      isPrereleaseVersion(version)
+        ? `${resolved.error}\nA release candidate's images are deleted from the registry ${RELEASE_CANDIDATE_RETENTION_DAYS} days after it was published.`
+        : resolved.error,
+    );
+    cancel("Aborted — nothing was changed.");
+    process.exit(1);
+  }
+  const { admin, gateway } = resolved.images;
+  const proxy = resolved.images["mcp-auth-proxy"];
+  s.stop(green(`v${version}: admin ${dim(`${admin.digest.slice(0, 19)}...`)}`));
+  const verified = await verifyCosignAll([
+    { slug: "admin", digest: admin.digest },
+    { slug: "gateway", digest: gateway.digest },
+    { slug: "mcp-auth-proxy", digest: proxy.digest },
+  ]);
+  if (!verified) {
+    cancel(`Aborted — the v${version} images' signatures did not verify; nothing was changed.`);
+    process.exit(1);
+  }
+  recordImageDigests(
+    installId,
+    { admin: admin.digest, gateway: gateway.digest, "mcp-auth-proxy": proxy.digest },
+    version,
+  );
 }
 
 async function stepProjectCreate(
@@ -1318,6 +1496,57 @@ async function stepAuditJob(
     process.exit(1);
   }
   s.stop(green(`Quality-audit job ready (${r.done.length} steps)`));
+}
+
+/**
+ * #1359 / #1360 — set up a reporting job (reporting-job-setup.ts) on the
+ * deployed admin's image: the quality-audit runner (a Stage's whole audit)
+ * or the site-import crawler (a site import's crawl), each reporting back
+ * through IAP. A failure stops the wizard: without it that work fails.
+ * Idempotent, so it runs on every wizard pass.
+ */
+async function stepReportingJob(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+  ownerEmail: string,
+  job: {
+    readonly starting: string;
+    readonly ready: string;
+    readonly ensure: typeof ensureAuditRunnerJob;
+  },
+): Promise<void> {
+  const s = spinner();
+  s.start(job.starting);
+  const image = await resolveAdminImage({ projectId, region, env: GCP_STACK_ENV });
+  const resolved = image.ok
+    ? await resolveOperatorAccessTarget({
+        provider,
+        projectId,
+        region,
+        env: GCP_STACK_ENV,
+        ownerEmail,
+      })
+    : null;
+  const r = !image.ok
+    ? { ok: false as const, done: [], error: image.error }
+    : !resolved?.ok
+      ? { ok: false as const, done: [], error: resolved?.error ?? "no IAP resource" }
+      : await job.ensure({
+          provider,
+          projectId,
+          region,
+          env: GCP_STACK_ENV,
+          adminImageRef: image.imageRef,
+          resource: resolved.target.resource,
+        });
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.error}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green(`${job.ready} (${r.done.length} steps)`));
 }
 
 /**
