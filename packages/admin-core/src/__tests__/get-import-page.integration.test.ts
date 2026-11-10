@@ -17,6 +17,7 @@ import { SQL } from "bun";
 import { getPageInspection } from "../ai/tools/_page-inspection-cache.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { getImportPageTool } from "../ai/tools/get-import-page.js";
+import { queryPageHtmlTool } from "../ai/tools/query-page-html.js";
 import { readPageMoreTool } from "../ai/tools/read-page-more.js";
 import { registerAdminOps } from "../register.js";
 
@@ -160,6 +161,13 @@ describe("imports.get_page_gist + get_import_page tool", () => {
       chatSessionId: "gist-test-session",
     } as ToolContext);
     expect(more.content).toMatch(/<site-data>[\s\S]*Our Pricing[\s\S]*<\/site-data>/);
+    // …and so do the parts of it a query pulls out.
+    const query = await queryPageHtmlTool.handler(
+      SYSTEM,
+      { pageRef: pageRef as string, keyword: "Our Pricing" },
+      { adapter, registry, chatSessionId: "gist-test-session" } as ToolContext,
+    );
+    expect(query.content).toMatch(/\(\d+ match\(es\)\)\n<site-data>[\s\S]*Our Pricing/);
   });
 
   it("tool surfaces Markdown + tokens + a pageRef + a screenshot hint — but NEVER raw page-builder HTML", async () => {

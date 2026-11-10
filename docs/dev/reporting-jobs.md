@@ -93,7 +93,7 @@ The crawl is the same code as before (site-importer `crawlSite`), driven by the 
 
 **Resume.** After every batch the job reports the frontier (compacted: the first entry of each URL it has not seen). A checkpoint counts only pages whose batch was written before it; a URL still in flight or a page not yet written goes back to the front of the queue, so a killed job loses no page (site-importer `crawler.ts`, #1360). A new attempt resumes there, and a page whose batch was still in flight is crawled again, its write idempotent (`UNIQUE(run_id, source_url)`).
 
-**Untrusted data, to the end.** What the crawl reports reaches the AI marked as crawled content: `get_import_page` (title, meta description, text, tokens), `read_page_more` on such a page, `list_import_pages` (source URLs, the run's error) and `get_import_run_report` (crawl errors, skips, notes, samples) wrap it in `<site-data>` (shared `siteData`), and the static system prompt says what that element means. The tools' own guidance stays outside it.
+**Untrusted data, to the end.** What the crawl reports reaches the AI marked as crawled content: `get_import_page` (title, meta description, text, tokens), `read_page_more` and `query_page_html` on such a page, `list_import_pages` (source URLs, the run's error) and `get_import_run_report` (crawl errors, skips, notes, samples) wrap it in `<site-data>` (shared `siteData`), and the static system prompt says what that element means. The tools' own guidance stays outside it.
 
 ## Self-hosted and development
 
