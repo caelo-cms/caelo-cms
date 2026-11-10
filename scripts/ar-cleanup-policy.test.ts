@@ -63,6 +63,30 @@ function deleteRulesMatching(tags: readonly string[], ageDays: number): string[]
     .map((p) => p.name);
 }
 
+/** One version of a package, newest first in a list. */
+interface Version {
+  readonly tags: readonly string[];
+  readonly ageDays: number;
+}
+
+/**
+ * Whether Artifact Registry deletes `versions[index]` (versions newest
+ * first): a delete rule matches it and no keep rule keeps it. Keep beats
+ * delete ("If an artifact matches the criteria in both the delete policy and
+ * the keep policy, the artifact is kept").
+ */
+function deleted(versions: readonly Version[], index: number): boolean {
+  const v = versions[index];
+  if (!v) throw new Error(`no version ${index}`);
+  const kept = policies.some(
+    (p) =>
+      p.action.type === "Keep" &&
+      p.mostRecentVersions !== undefined &&
+      index < p.mostRecentVersions.keepCount,
+  );
+  return !kept && deleteRulesMatching(v.tags, v.ageDays).length > 0;
+}
+
 /** The tags release-images.yml gives each kind of build (its metadata-action config). */
 const STABLE_TAGS = ["0.12.4", "0.12", "latest"];
 const OLDER_STABLE_TAGS = ["0.12.3"];
@@ -96,6 +120,34 @@ describe("docs/maintainer-ar-cleanup-policy.json (#1558)", () => {
     for (const tag of STABLE_TAGS) {
       for (const prefix of prefixes) expect(tag.startsWith(prefix)).toBe(false);
     }
+  });
+
+  it("with every rule together: an old candidate goes, a release never does", () => {
+    // Ten newer releases, then the 15-day-old candidate, then old releases.
+    const releases = (n: number, from: number): Version[] =>
+      Array.from({ length: n }, (_, i) => ({ tags: [`0.13.${from + i}`], ageDays: i }));
+    const versions: Version[] = [
+      ...releases(10, 0),
+      { tags: RC_TAGS, ageDays: RELEASE_CANDIDATE_RETENTION_DAYS + 1 },
+      { tags: STABLE_TAGS, ageDays: 400 },
+      { tags: OLDER_STABLE_TAGS, ageDays: 900 },
+    ];
+    expect(versions.map((_, i) => deleted(versions, i))).toEqual([
+      ...Array(10).fill(false),
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  it("lets keep win in an idle stretch: a candidate among the 10 newest outlives 14 days", () => {
+    // Documented (docs/maintainer-public-registry-setup.md, "Retention"): the
+    // keep rule can only hold a candidate longer, never delete one sooner.
+    const versions: Version[] = [
+      { tags: RC_TAGS, ageDays: 30 },
+      { tags: STABLE_TAGS, ageDays: 31 },
+    ];
+    expect(deleted(versions, 0)).toBe(false);
   });
 
   it("keeps its backstop for idle weeks: the 10 most recent versions of each package", () => {

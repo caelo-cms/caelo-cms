@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { chooseImageDigests } from "./deployed-release.js";
 import {
   decideInstallVersion,
   installRecordFromManifest,
   launcherRecordsRelease,
+  OLDEST_INSTALLABLE_RELEASE,
   releaseToConfirm,
 } from "./install-version.js";
 
@@ -57,6 +61,21 @@ describe("decideInstallVersion (#1558)", () => {
       recordedVersion: undefined,
     });
     expect(unknown.kind === "refuse" && unknown.error).toContain("already runs a release");
+  });
+
+  it("refuses a release from before the MCP-Auth-Proxy, which this installer deploys", () => {
+    for (const requested of ["0.11.0", "0.11.9", "0.10.69"]) {
+      const r = decideInstallVersion({ requested, deployed: false, recordedVersion: undefined });
+      expect(r.kind).toBe("refuse");
+      expect(r.kind === "refuse" && r.error).toContain(`v${OLDEST_INSTALLABLE_RELEASE} or later`);
+    }
+    expect(
+      decideInstallVersion({
+        requested: OLDEST_INSTALLABLE_RELEASE,
+        deployed: false,
+        recordedVersion: undefined,
+      }).kind,
+    ).toBe("install");
   });
 
   it("refuses anything that is not a release version", () => {
@@ -200,4 +219,130 @@ describe("releaseToConfirm (#1558 review)", () => {
       }),
     ).toBeNull();
   });
+});
+
+describe("recordLaunchRelease (#1558 review: under the launch lock)", () => {
+  // installRoot() resolves ~ through os.homedir(), which reads HOME once at
+  // process start: each case runs in a child bun process with its own HOME
+  // (as install-state.test.ts does), its ops bucket a directory there.
+  const PROJECT = "acme-site";
+  const INSTALL_ID = "gcp-acme-site";
+  const meta = {
+    installId: INSTALL_ID,
+    provider: "gcp",
+    projectId: PROJECT,
+    domain: "acme.example",
+    ownerEmail: "owner@acme.example",
+    region: "europe-west1",
+    createdAt: "2026-11-10T00:00:00.000Z",
+    stateBackend: {
+      kind: "gcs",
+      bucket: `${PROJECT}-caelo-ops`,
+      kmsKey: `projects/${PROJECT}/locations/europe-west1/keyRings/caelo/cryptoKeys/pulumi-state`,
+    },
+  };
+  const rc = {
+    digests: { admin: d("1"), gateway: d("2"), "mcp-auth-proxy": d("3") },
+    version: "0.12.5-rc.1",
+  };
+  const other = { admin: d("a"), gateway: d("b"), "mcp-auth-proxy": d("e") };
+  const fresh = { lastCompletedStep: null, steps: {} };
+  const provisioned = {
+    lastCompletedStep: `pulumi-up-${PROJECT}`,
+    steps: { [`pulumi-up-${PROJECT}`]: {} },
+  };
+
+  /**
+   * Run `steps` (JS; `m` is install-state, `v` install-version, `put(file,
+   * value)` writes the bucket) in a child process whose HOME holds the
+   * install's local mirror and whose gcloud is the bucket directory.
+   */
+  function inChild(
+    start: { readonly install: unknown; readonly progress: unknown },
+    steps: string,
+  ): { readonly out: unknown; readonly install: Record<string, unknown> } {
+    const home = mkdtempSync(join(tmpdir(), "caelo-launch-"));
+    try {
+      const mirror = join(home, `.caelo-${INSTALL_ID}`);
+      const objects = join(home, "bucket");
+      mkdirSync(mirror, { recursive: true });
+      mkdirSync(objects);
+      writeFileSync(join(mirror, "install.json"), JSON.stringify(meta));
+      writeFileSync(join(objects, "install.json"), JSON.stringify(start.install));
+      writeFileSync(join(objects, "progress.json"), JSON.stringify(start.progress));
+      const script = `
+        const { existsSync, readFileSync, writeFileSync } = await import("node:fs");
+        const m = await import(${JSON.stringify(resolve(import.meta.dir, "install-state.ts"))});
+        const v = await import(${JSON.stringify(resolve(import.meta.dir, "install-version.ts"))});
+        const objects = ${JSON.stringify(objects)};
+        const at = (url) => objects + "/" + url.split("/").pop();
+        const put = (file, value) => writeFileSync(objects + "/" + file, JSON.stringify(value));
+        m.setStateStoreGcloud((args, input) => {
+          const [, verb, a, b] = args;
+          if (verb === "cat") {
+            return existsSync(at(a))
+              ? { ok: true, stdout: readFileSync(at(a), "utf8"), stderr: "", exitCode: 0 }
+              : { ok: false, stdout: "", stderr: "One or more URLs matched no objects.", exitCode: 1 };
+          }
+          if (verb === "cp" && a === "-") {
+            writeFileSync(at(b), input ?? "");
+            return { ok: true, stdout: "", stderr: "", exitCode: 0 };
+          }
+          throw new Error("unexpected gcloud " + args.join(" "));
+        });
+        const ID = ${JSON.stringify(INSTALL_ID)};
+        const PROJECT = ${JSON.stringify(PROJECT)};
+        const RC = ${JSON.stringify(rc)};
+        ${steps}`;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        env: { ...process.env, HOME: home },
+        stderr: "pipe",
+      });
+      expect(new TextDecoder().decode(child.stderr)).toBe("");
+      expect(child.exitCode).toBe(0);
+      return {
+        out: JSON.parse(new TextDecoder().decode(child.stdout)),
+        install: JSON.parse(readFileSync(join(objects, "install.json"), "utf8")),
+      };
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  it("records the named release on an install that is not provisioned yet", () => {
+    const r = inChild(
+      { install: meta, progress: fresh },
+      `console.log(JSON.stringify(v.recordLaunchRelease(ID, PROJECT, "0.12.5-rc.1", RC)));`,
+    );
+    expect(r.out).toEqual({ ok: true });
+    expect(r.install.imageDigests).toEqual(rc.digests);
+    expect(r.install.releaseVersion).toBe("0.12.5-rc.1");
+  }, 30_000);
+
+  it("decides from the bucket as it is now, not from this process's first read", () => {
+    // The launcher read the install while it was new; then another
+    // launcher's job provisioned it with 0.12.4 before this one got the lock.
+    const r = inChild(
+      { install: meta, progress: fresh },
+      `const before = [m.readMetadata(ID).releaseVersion ?? null, m.isStepDone(ID, "pulumi-up-" + PROJECT)];
+       put("install.json", ${JSON.stringify({ ...meta, imageDigests: other, releaseVersion: "0.12.4" })});
+       put("progress.json", ${JSON.stringify(provisioned)});
+       console.log(JSON.stringify({ before, result: v.recordLaunchRelease(ID, PROJECT, "0.12.5-rc.1", RC) }));`,
+    );
+    const out = r.out as { before: unknown; result: { ok: boolean; error?: string } };
+    expect(out.before).toEqual([null, false]);
+    expect(out.result.ok).toBe(false);
+    expect(out.result.error).toContain("already runs v0.12.4");
+    expect(r.install.releaseVersion).toBe("0.12.4");
+    expect(r.install.imageDigests).toEqual(other);
+  }, 30_000);
+
+  it("keeps another launcher's complete record when no version was named", () => {
+    const r = inChild(
+      { install: { ...meta, imageDigests: other, releaseVersion: "0.12.4" }, progress: fresh },
+      `console.log(JSON.stringify(v.recordLaunchRelease(ID, PROJECT, undefined, RC)));`,
+    );
+    expect(r.out).toEqual({ ok: true });
+    expect(r.install.imageDigests).toEqual(other);
+  }, 30_000);
 });

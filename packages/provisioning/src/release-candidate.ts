@@ -7,8 +7,9 @@
  * is cut to test a release on a scratch install before any install is
  * offered it. In Caelo's Google Cloud registry, the mirror Cloud Run pulls
  * from, its images carry the marker tag `rc-<version>` and a cleanup rule
- * deletes them {@link RELEASE_CANDIDATE_RETENTION_DAYS} days after they
- * were published (docs/maintainer-ar-cleanup-policy.json). Cloud Run
+ * deletes them once they are {@link RELEASE_CANDIDATE_RETENTION_DAYS} days
+ * old (docs/maintainer-ar-cleanup-policy.json; the registry's keep-10 rule
+ * can only hold one longer, never shorter). Cloud Run
  * services keep running on the copy they imported at deploy time, but Cloud
  * Run jobs pull their image each time they run, so from then on such an
  * install loses its in-product updates (the upgrader's first stage runs the
@@ -59,7 +60,7 @@ export function releaseCandidateWarning(version: string): string[] {
   const v = version.replace(/^v/, "");
   return [
     `v${v} is a release candidate, meant for test installs only.`,
-    `Caelo's Google Cloud registry deletes a release candidate's images ${RELEASE_CANDIDATE_RETENTION_DAYS} days after it was published.`,
+    `Caelo's Google Cloud registry keeps a release candidate's images for ${RELEASE_CANDIDATE_RETENTION_DAYS} days after it was published, then deletes them.`,
     "The Cloud Run services keep running on their own copy of the image, but the install's Cloud Run jobs (update, converge, quality audit, page capture) pull their image each time they run.",
     "From then on the install can no longer update from Settings → Updates or audit a Stage; only an upgrade from a terminal moves it on to a newer release.",
   ];

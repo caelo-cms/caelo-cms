@@ -930,7 +930,8 @@ async function stepRequestedRelease(
       {
         version: installs,
         action: "install",
-        interactive: !opts.nonInteractive,
+        // A pipe or CI run without --non-interactive cannot answer either.
+        interactive: !opts.nonInteractive && process.stdin.isTTY === true,
         accepted: opts.acceptReleaseCandidate === true,
       },
       {

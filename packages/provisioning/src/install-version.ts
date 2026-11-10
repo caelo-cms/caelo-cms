@@ -16,9 +16,25 @@
  */
 
 import { provisioningCommand } from "@caelo-cms/shared";
-import type { ImageDigests } from "./install-state.js";
-import { manifestServiceImages, type ReleaseManifest } from "./release-manifest.js";
+import {
+  forgetCachedState,
+  type ImageDigests,
+  isStepDone,
+  readMetadata,
+  recordedImageDigests,
+  recordImageDigests,
+} from "./install-state.js";
+import { compareSemver, manifestServiceImages, type ReleaseManifest } from "./release-manifest.js";
 import { canonicalReleaseTag } from "./upgrade/release-images.js";
+
+/**
+ * The oldest release `--version` installs: the first with its own
+ * MCP-Auth-Proxy image (#1328). This installer deploys the proxy next to the
+ * admin and the gateway, so it has nothing to deploy for an older release,
+ * and the release choice refuses a record without one
+ * (deployed-release.ts chooseImageDigests).
+ */
+export const OLDEST_INSTALLABLE_RELEASE = "0.11.10";
 
 /** What `--version` means for one wizard run. */
 export type InstallVersionDecision =
@@ -51,8 +67,14 @@ export function decideInstallVersion(input: {
     };
   }
   const version = tag.replace(/^v/, "");
+  if (input.deployed && input.recordedVersion === version) return { kind: "keep", version };
+  if (compareSemver(version, OLDEST_INSTALLABLE_RELEASE) < 0) {
+    return {
+      kind: "refuse",
+      error: `v${version} predates the MCP-Auth-Proxy (#1328), which this installer deploys next to the admin and the gateway: --version installs v${OLDEST_INSTALLABLE_RELEASE} or later.`,
+    };
+  }
   if (!input.deployed) return { kind: "install", version };
-  if (input.recordedVersion === version) return { kind: "keep", version };
   const runs = input.recordedVersion ? `v${input.recordedVersion}` : "a release";
   return {
     kind: "refuse",
@@ -97,6 +119,47 @@ export function launcherRecordsRelease(input: {
 }): boolean {
   if (input.deployed) return false;
   return input.requested || input.recorded === null || !input.recorded["mcp-auth-proxy"];
+}
+
+/**
+ * Record the release the install job about to start deploys: under the
+ * launcher's lock, from the install's bucket as it is now (another launcher
+ * may have recorded a release, or an earlier job taken the install past its
+ * first `pulumi up`, since this process first read it). A named version an
+ * install provisioned since the wizard's check does not run is refused, as
+ * the wizard refuses it up front ({@link decideInstallVersion}).
+ *
+ * @param requested - `--version`, or undefined for the CLI's own release.
+ * @param record - the verified release ({@link installRecordFromManifest}).
+ */
+export function recordLaunchRelease(
+  installId: string,
+  projectId: string,
+  requested: string | undefined,
+  record: { readonly digests: ImageDigests; readonly version: string },
+): { readonly ok: true } | { readonly ok: false; readonly error: string } {
+  forgetCachedState(installId);
+  const current = readMetadata(installId);
+  if (!current) return { ok: false, error: `No install.json for install '${installId}'.` };
+  const deployed = isStepDone(installId, `pulumi-up-${projectId}`);
+  if (requested !== undefined) {
+    const again = decideInstallVersion({
+      requested,
+      deployed,
+      recordedVersion: current.releaseVersion,
+    });
+    if (again.kind === "refuse") return { ok: false, error: again.error };
+  }
+  if (
+    launcherRecordsRelease({
+      deployed,
+      requested: requested !== undefined,
+      recorded: recordedImageDigests(current),
+    })
+  ) {
+    recordImageDigests(installId, record.digests, record.version);
+  }
+  return { ok: true };
 }
 
 /**

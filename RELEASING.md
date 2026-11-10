@@ -613,8 +613,10 @@ The release pipeline:
   `:0.6` or `:latest` (docker/metadata-action writes only `{{version}}` for
   a pre-release). The release manifest gets the same two tags.
 - Mirrors images and manifest to the GCP Artifact Registry, whose cleanup
-  policy deletes them 14 days after they were published (by the `rc-`
-  marker; [`docs/maintainer-public-registry-setup.md`](docs/maintainer-public-registry-setup.md),
+  policy deletes them by the `rc-` marker once they are 14 days old (a
+  candidate still among the 10 newest versions of its package stays until
+  newer ones push it out;
+  [`docs/maintainer-public-registry-setup.md`](docs/maintainer-public-registry-setup.md),
   "Retention"). GHCR keeps them.
 - Marks the GitHub Release as pre-release. Settings → Updates reads
   `releases/latest`, which skips pre-releases, so no install is offered

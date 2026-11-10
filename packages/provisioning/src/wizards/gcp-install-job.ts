@@ -40,13 +40,10 @@ import {
   currentMetadata,
   type InstallMetadata,
   installRoot,
-  isStepDone,
   readLocalMetadata,
   readMetadata,
-  recordedImageDigests,
-  recordImageDigests,
 } from "../install-state.js";
-import { installRecordFromManifest, launcherRecordsRelease } from "../install-version.js";
+import { installRecordFromManifest, recordLaunchRelease } from "../install-version.js";
 import { issueOwnerSetup } from "../owner-setup-token.js";
 import { fetchVerifiedReleaseManifest } from "../release-manifest.js";
 import { selfCommand } from "../self-command.js";
@@ -351,19 +348,11 @@ export async function launchInstallJob(opts: {
     cancel(record.error);
     process.exit(1);
   }
-  if (
-    launcherRecordsRelease({
-      deployed: isStepDone(installId, `pulumi-up-${projectId}`),
-      requested: opts.version !== undefined,
-      recorded: recordedImageDigests(meta),
-    })
-  ) {
-    recordImageDigests(installId, record.digests, record.version);
-  }
 
   // One launcher at a time decides and starts: two terminals resuming the
   // same install would otherwise both start an execution before either
-  // recorded it. Under the lock the decision is taken again.
+  // recorded it. Under the lock the decision is taken again, and only the
+  // launcher that starts the job records its release.
   const bucket = opsBucketName(projectId);
   let release: () => void;
   try {
@@ -382,6 +371,15 @@ export async function launchInstallJob(opts: {
         await followToTheEnd(meta, now.status.execution);
       } else await showResult(meta);
       return;
+    }
+    // #1558 — the release the job deploys, recorded from the bucket as it is
+    // now: another launcher may have recorded one, or an earlier job taken
+    // the install past its first `pulumi up`, since this process read it.
+    const recorded = recordLaunchRelease(installId, projectId, opts.version, record);
+    if (!recorded.ok) {
+      release();
+      cancel(recorded.error);
+      process.exit(1);
     }
     // Automatic DNS in the job (dns/cloudflare.ts) when this shell has a
     // Cloudflare token: it goes to Secret Manager and is mounted into the
