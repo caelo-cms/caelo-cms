@@ -75,7 +75,7 @@ export function commentsModuleHints(html: string): string[] {
     const pageId = shape[1] ?? "";
     if (UUID_RE.test(pageId)) {
       out.push(
-        "The placeholder names one page by id, so this module only works on that page. Use data-page-id=\"{{page.id}}\": then ONE module serves every page it is placed on (place it with add_module target 'template' for all pages of a template, or in the layout for every page, future ones included).",
+        "The placeholder names one page by id, so this module only works on that page. Use data-page-id=\"{{page.id}}\": then ONE module serves every page it is placed on (place it with add_module target 'template' for all pages of a template, or in the layout for every page that uses it, pages created later included).",
       );
     } else if (pageId !== "{{page.id}}") {
       out.push('Set data-page-id="{{page.id}}" on the comments placeholder.');
