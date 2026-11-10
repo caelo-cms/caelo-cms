@@ -6,8 +6,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { indexCheckedQuery } from "@caelo-cms/plugin-sdk";
 import type { ChromeDeps } from "./chrome-ops.js";
-import type { PageVariantRow } from "./index.js";
+import plugin, { type PageVariantRow } from "./index.js";
 import { type ListChange, reconcileScopeOf } from "./list-reconcile.js";
 import { targetOfAddress } from "./list-translation.js";
 
@@ -19,10 +20,10 @@ const CI = "00000000-0000-4000-8000-0000000000c1";
 /** Deps whose store holds `variants` and whose core answers `instancesOf`. */
 function depsWith(variants: PageVariantRow[], instancesOfModule: string[] = []): ChromeDeps {
   return {
-    q: {
-      list: async (_table: string, filter?: { anyOf?: { id?: string[] } }) =>
-        variants.filter((v) => filter?.anyOf?.id?.includes(v.id) ?? false),
-    },
+    q: indexCheckedQuery(plugin, "adminSchema", {
+      list: async (_table: string, filter: { anyOf?: { id?: string[] } } = {}) =>
+        variants.filter((v) => filter.anyOf?.id?.includes(v.id) ?? false),
+    }),
     cms: {
       call: async (op: string) => {
         if (op === "pages.list_shared_content") return { listInstances: [] };
