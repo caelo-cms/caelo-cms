@@ -126,7 +126,10 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
       process.exit(1);
     }
     const { prepareJobModeInstall } = await import("./wizards/gcp-install-job.js");
-    const prep = await prepareJobModeInstall(opts.projectId ? { projectId: opts.projectId } : {});
+    const prep = await prepareJobModeInstall({
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
+      ...(opts.version ? { version: opts.version } : {}),
+    });
     if (prep.kind === "handled") {
       outro(bold("Done."));
       return;
@@ -138,7 +141,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   const existing = opts.nonInteractive || runMode === "job" ? [] : listInstalls();
   const picked =
     existing.length > 0 && !opts.provider && !opts.domain && !opts.ownerEmail
-      ? await pickInstallToResume(existing)
+      ? await pickInstallToResume(existing, opts)
       : null;
   // #696 — the bucket's copy for an install whose state lives there: another
   // machine may have changed its domain or owner since this mirror was written.
@@ -281,7 +284,10 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
  * inputs prompts. Returning an install means resume — every input
  * (provider, domain, owner, project) carries over from metadata.
  */
-async function pickInstallToResume(installs: InstallMetadata[]): Promise<InstallMetadata | null> {
+async function pickInstallToResume(
+  installs: InstallMetadata[],
+  release: Pick<WizardOptions, "version" | "acceptReleaseCandidate">,
+): Promise<InstallMetadata | null> {
   const first = installs[0];
   // v0.5.14 — added per-install "Upgrade" entries that route to
   // upgradeCommand (Cloud Run image roll) without re-running the
@@ -330,7 +336,12 @@ async function pickInstallToResume(installs: InstallMetadata[]): Promise<Install
     // available via `cms-provision upgrade --version vX.Y.Z`. The picked
     // install is passed on: without it upgrade would choose again (and,
     // before that was fixed, took the first ~/.caelo-* it found).
-    await upgradeCommand({ installId: target.installId });
+    // #1558 — a `--version` given to the wizard is the upgrade's target.
+    await upgradeCommand({
+      installId: target.installId,
+      ...(release.version ? { version: release.version } : {}),
+      ...(release.acceptReleaseCandidate ? { acceptReleaseCandidate: true } : {}),
+    });
     process.exit(0);
   }
   const installId = choice.startsWith("resume:") ? choice.slice("resume:".length) : choice;

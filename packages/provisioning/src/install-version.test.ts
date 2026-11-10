@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chooseImageDigests } from "./deployed-release.js";
 import {
+  attachedInstallVersionProblem,
   decideInstallVersion,
   installRecordFromManifest,
   launcherRecordsRelease,
@@ -162,6 +163,23 @@ describe("launcherRecordsRelease", () => {
     expect(launcherRecordsRelease({ deployed: false, requested: false, recorded: full })).toBe(
       false,
     );
+  });
+});
+
+describe("attachedInstallVersionProblem (#1558 review)", () => {
+  // A project whose install job runs or finished is followed or shown, never
+  // passed through the wizard's check: --version is settled here instead.
+  it("lets the job's own release through, and a run without --version", () => {
+    expect(attachedInstallVersionProblem("v0.12.5-rc.1", "0.12.5-rc.1")).toBeNull();
+    expect(attachedInstallVersionProblem(undefined, "0.12.4")).toBeNull();
+  });
+
+  it("refuses another release with the upgrade command instead of ignoring it", () => {
+    const problem = attachedInstallVersionProblem("0.12.5", "0.12.4") ?? "";
+    expect(problem).toContain("already runs v0.12.4");
+    expect(problem).toContain("bunx @caelo-cms/provisioning@0.12.5 upgrade --version 0.12.5");
+    expect(attachedInstallVersionProblem("0.12.5", undefined)).toContain("already runs a release");
+    expect(attachedInstallVersionProblem("latest", "0.12.4")).toContain("not a release version");
   });
 });
 

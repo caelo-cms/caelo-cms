@@ -122,6 +122,22 @@ export function launcherRecordsRelease(input: {
 }
 
 /**
+ * Why `--version` cannot apply to a project whose install job runs or has
+ * finished, or null. Such a run attaches to the job or shows its result
+ * instead of running the wizard again, so it never reaches the wizard's
+ * check: the job installs (or installed) the release it recorded, and a
+ * different named release is refused here with the upgrade command.
+ */
+export function attachedInstallVersionProblem(
+  requested: string | undefined,
+  recordedVersion: string | undefined,
+): string | null {
+  if (requested === undefined) return null;
+  const decision = decideInstallVersion({ requested, deployed: true, recordedVersion });
+  return decision.kind === "refuse" ? decision.error : null;
+}
+
+/**
  * Record the release the install job about to start deploys: under the
  * launcher's lock, from the install's bucket as it is now (another launcher
  * may have recorded a release, or an earlier job taken the install past its

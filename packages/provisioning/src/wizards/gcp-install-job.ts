@@ -43,7 +43,11 @@ import {
   readLocalMetadata,
   readMetadata,
 } from "../install-state.js";
-import { installRecordFromManifest, recordLaunchRelease } from "../install-version.js";
+import {
+  attachedInstallVersionProblem,
+  installRecordFromManifest,
+  recordLaunchRelease,
+} from "../install-version.js";
 import { issueOwnerSetup } from "../owner-setup-token.js";
 import { fetchVerifiedReleaseManifest } from "../release-manifest.js";
 import { selfCommand } from "../self-command.js";
@@ -455,9 +459,14 @@ export type JobModePreparation =
  * followed and one whose job finished is shown, without re-running the
  * bootstrap. Otherwise the wizard continues (new install, or a re-run of an
  * unfinished bootstrap).
+ *
+ * @param opts.version - `--version` (#1558): refused before following or
+ *   showing a job that installs another release, since neither path reaches
+ *   the wizard's own check.
  */
 export async function prepareJobModeInstall(opts: {
   projectId?: string;
+  version?: string;
 }): Promise<JobModePreparation> {
   const account = await activeAccount();
   if (!account) {
@@ -493,6 +502,13 @@ export async function prepareJobModeInstall(opts: {
   log.success(`Found install ${bold(meta.installId)} (${meta.domain}) in ${projectId}.`);
   if (!meta.region) return { kind: "existing", meta };
   const decision = await decide(gcloud, realSyncGcloud, { projectId, region: meta.region });
+  if (decision.kind === "attach" || decision.kind === "done") {
+    const problem = attachedInstallVersionProblem(opts.version, meta.releaseVersion);
+    if (problem) {
+      cancel(problem);
+      process.exit(1);
+    }
+  }
   if (decision.kind === "attach") {
     announceHandoff(projectId);
     await followToTheEnd(meta, decision.status.execution);
