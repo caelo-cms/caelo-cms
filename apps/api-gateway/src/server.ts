@@ -73,6 +73,12 @@
  * activates anything itself. Its OperationRegistry holds only the core
  * operations visitor paths call, all on cms_public (plugin-host
  * gateway-ops.ts).
+ *
+ * The gateway runs on request-billed CPU (#1141, #1361): it does nothing
+ * between requests, and a request that starts after an idle stretch
+ * confirms the published state it caches before it answers from it
+ * (published-changes.ts), because a publish notification may still wait in
+ * the socket.
  */
 
 import { createHash } from "node:crypto";
@@ -143,6 +149,7 @@ import {
   onPublishedChange,
   publishedCacheGeneration,
   publishedCacheUsable,
+  servePublishedRequest,
 } from "./published-changes.js";
 import {
   gateFailureLimiter,
@@ -288,6 +295,25 @@ async function sectionPublished(tx: TransactionRunner, section: string): Promise
     sql`SELECT 1 AS ok FROM published_projection_sections WHERE section = ${section}`,
   )) as unknown as unknown[];
   return rows.length > 0;
+}
+
+/**
+ * #1361 — the projection's section versions as one string: every publish
+ * rewrites the rows of the sections it published (a new `xmin`) in the
+ * transaction that notifies, and removes a section it unpublishes, so two
+ * equal strings mean no publish committed in between
+ * (published-changes.ts `servePublishedRequest`).
+ */
+async function readProjectionVersions(adapter: DatabaseAdapter): Promise<string> {
+  const rows = (await adapter.withPublicTransaction(
+    SYSTEM_CTX,
+    async (tx) =>
+      await tx.execute(sql`
+        SELECT coalesce(string_agg(section || ':' || xmin::text, ',' ORDER BY section), '') AS v
+        FROM published_projection_sections
+      `),
+  )) as unknown as { v: string }[];
+  return rows[0]?.v ?? "";
 }
 
 export function invalidateGatewaySettings(): void {
@@ -701,7 +727,15 @@ export async function handleRequest(
   // the staging proxy builds itself.
   const requestId = crypto.randomUUID();
   try {
-    return withJsonSecurityHeaders(await routeRequest(req, conn, requestId));
+    const adapter = cachedAdapter;
+    // #1361 — a notification may wait in the socket of an instance that had
+    // no CPU between requests; confirm the published state before serving
+    // from it (published-changes.ts).
+    const response = await servePublishedRequest(
+      adapter && readsPublishedState(req) ? () => readProjectionVersions(adapter) : null,
+      () => routeRequest(req, conn, requestId),
+    );
+    return withJsonSecurityHeaders(response);
   } catch (e) {
     // The last boundary: a database failure in the rate limit, the captcha
     // or the request pipeline is still answered in the visitor error shape,
@@ -711,6 +745,29 @@ export async function handleRequest(
       log: `unhandled: ${describeFailure(e)}`,
     });
   }
+}
+
+/**
+ * #1361 — whether `req` may answer from cached published state, which a
+ * request that starts after an idle stretch confirms first
+ * (`servePublishedRequest`). Not `/healthz` or the upgrade's health check,
+ * not a path that names no visitor route (a 404 whatever the state), and
+ * not while the gateway's feature is known to be off from memory: E14 a
+ * answers that without the database, so a request that comes while the
+ * notification turning it on still waits gets the fixed 404 once more.
+ */
+function readsPublishedState(req: Request): boolean {
+  const url = new URL(req.url);
+  if (url.pathname === "/healthz") return false;
+  // The staging gate: every staging request but /healthz reads it.
+  if (stagingSite) return !(cachedStagingState?.host === null && publishedCacheUsable());
+  if (req.method === "GET" && url.pathname === GATEWAY_HEALTH_PATH) return false;
+  if (featureOff()) return false;
+  return (
+    (req.method === "GET" && url.pathname === "/api/captcha/challenge") ||
+    (req.method === "POST" && parsePluginPath(url.pathname) !== null) ||
+    parseMailLinkPath(url.pathname) !== null
+  );
 }
 
 async function routeRequest(

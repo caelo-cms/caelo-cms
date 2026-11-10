@@ -80,10 +80,10 @@ import { resetPluginRuntimeStats } from "./plugin-runtime-stats.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { provisionPluginPublicSchemas } from "./public-schemas.js";
 import {
+  configureRuntimeHeartbeat,
   inPhase,
   PluginLoadError,
   PluginNotInReleaseError,
-  startRuntimeHeartbeat,
   stopRuntimeHeartbeat,
 } from "./runtime-health.js";
 import { runSandbox } from "./sandbox-runtime.js";
@@ -303,7 +303,8 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   setHostSystemActorId(opts.systemActorId);
   setContextFactory(makePluginContext);
   bootOpts = opts;
-  startRuntimeHeartbeat(opts.infra, opts.systemActorId);
+  // #1361 — confirmed at request start, not on a timer (runtime-health.ts).
+  configureRuntimeHeartbeat(opts.infra, opts.systemActorId);
 
   const loaded: Array<{ slug: string; version: string; tier: 1 | 2 }> = [];
   const inactive: Array<{ slug: string; version: string; status: string }> = [];

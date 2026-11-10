@@ -10,14 +10,45 @@
  * plugins, never a timer per plugin — so a worker runs at its cron's
  * cadence rounded up to the tick (newsletter `drain_sends`, every minute,
  * runs every tick).
+ *
+ * The plugins' change consumers ride the tick too (#1361): every tick
+ * drains them, so a retry that came due, or a consumer another instance's
+ * claim held, is delivered on a quiet site without a timer.
  */
 
-import { pluginWorkerScheduler, type ScheduledWorker } from "@caelo-cms/plugin-host";
+import {
+  drainChangeConsumersOnTick,
+  pluginWorkerScheduler,
+  type ScheduledWorker,
+} from "@caelo-cms/plugin-host";
+import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SCHEDULED_TASK_KEY } from "../ops/scheduled_tasks.js";
 import type { ScheduledTask } from "./task.js";
 
 /** A plugin worker's run may take this long before another tick may start it again. */
 export const PLUGIN_WORKER_LEASE_SECONDS = 5 * 60;
+
+/** The due-table key of the change consumers' drain. */
+export const PLUGIN_CHANGE_CONSUMERS_TASK_KEY = "core:plugin-change-consumers";
+
+/**
+ * #1361 — the plugins' change consumers, drained every tick (plugin-host
+ * change-consumers.ts `drainChangeConsumersOnTick`). Starts the consumer
+ * loop on an instance whose boot could not start it. A consumer that
+ * backs off after failures is the plugin's problem, recorded in its health,
+ * and named in the summary; the task itself fails only when the drain does.
+ */
+export function pluginChangeConsumersTask(infra: {
+  readonly adapter: DatabaseAdapter;
+  readonly registry: OperationRegistry;
+}): ScheduledTask {
+  return {
+    key: PLUGIN_CHANGE_CONSUMERS_TASK_KEY,
+    cadence: { everySeconds: 0 },
+    leaseSeconds: PLUGIN_WORKER_LEASE_SECONDS,
+    run: () => drainChangeConsumersOnTick(infra),
+  };
+}
 
 /** The due-table key of a plugin worker. */
 export function pluginWorkerTaskKey(w: Pick<ScheduledWorker, "pluginSlug" | "workerName">): string {

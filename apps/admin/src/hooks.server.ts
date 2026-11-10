@@ -57,12 +57,12 @@ import {
   bootstrap as bootstrapPluginHost,
   dropPluginPublicSchemas,
   type EmailTransport,
+  ensureChangeConsumers,
   ensureDevSignedManifests,
   hostInstanceId,
   type AIProvider as PluginHostAIProvider,
+  pluginHostRequestStart,
   type SnapshotEmitter,
-  startChangeConsumers,
-  syncPluginHost,
 } from "@caelo-cms/plugin-host";
 import { execute, withBranchVisibilityScope } from "@caelo-cms/query-api";
 import { type ExecutionContext, servableRedirectTargetIssue } from "@caelo-cms/shared";
@@ -265,9 +265,10 @@ async function bootPluginHost(): Promise<void> {
     );
   });
   // #1267 — plugins' change consumers, woken by the change journal on any
-  // instance; one instance runs each consumer at a time (its claim).
-  startChangeConsumers({ adapter, registry }).catch((e) =>
-    console.error("[hooks] plugin change consumers did not start", e),
+  // instance; one instance runs each consumer at a time (its claim). A start
+  // that failed here is retried by the next scheduler tick (#1361).
+  ensureChangeConsumers({ adapter, registry }).catch((e) =>
+    console.error("[hooks] plugin change consumers did not start (the next tick retries)", e),
   );
   // #724 rollout E — after the plugin host, so plugins' link hooks take
   // part, and after the gateway projection, which must not wait on a
@@ -531,8 +532,13 @@ function bootstrapDevSchedulerClock(): void {
   if (devClockBootstrapped) return;
   devClockBootstrapped = true;
   if (process.env.NODE_ENV === "production" || process.env.CAELO_SCHEDULER_CLOCK === "off") return;
+  // The endpoint's request passes the plugin host's request start first
+  // (handleRequest below); the dev clock does the same.
   const tick = () =>
-    void runAdminSchedulerTick().catch((e: unknown) => {
+    void (async () => {
+      await pluginHostRequestStart();
+      await runAdminSchedulerTick();
+    })().catch((e: unknown) => {
       console.error(
         `[scheduler] dev clock tick failed: ${e instanceof Error ? e.message : String(e)}`,
       );
@@ -623,9 +629,12 @@ const handleRequest: Handle = async ({ event, resolve }) => {
   // #1008 — wait for the shared plugin-host boot, then follow plugin
   // decisions made through any instance (throttled state check; reconciles
   // only when the plugin rows changed), so this request renders and
-  // dispatches on the database's plugin state.
+  // dispatches on the database's plugin state. #1361 — the same request
+  // start confirms this instance's plugin runtime rows when they are stale
+  // and runs a change-consumer retry that came due: the admin gets CPU only
+  // while it serves a request, so none of this rides a timer.
   await bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
-  await syncPluginHost();
+  await pluginHostRequestStart();
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   await seedSiteBaseUrl();
   await seedStagingHost();

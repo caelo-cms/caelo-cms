@@ -18,9 +18,11 @@
  *     (admin-core scheduler/clock.ts) posts with the internal HMAC token,
  *     scope `scheduler.tick`.
  *
- * Either credential reaches the same tick: the core maintenance tasks and
- * every active plugin worker (admin-core scheduler/), run inside the
- * request so they use the CPU the request is billed for.
+ * Either credential reaches the same tick: the core maintenance tasks, the
+ * plugins' change consumers and every active plugin worker (admin-core
+ * scheduler/), run inside the request so they use the CPU the request is
+ * billed for. Like every admin request, the tick first passes the plugin
+ * host's request start (hooks.server.ts, #1361).
  */
 
 import { hostname } from "node:os";
@@ -31,6 +33,7 @@ import {
   IAP_ASSERTION_HEADER,
   iapVerifier,
   type PublicProjectionPublisher,
+  pluginChangeConsumersTask,
   pluginWorkerTasks,
   runSchedulerTick,
   type SchedulerTickReport,
@@ -133,7 +136,9 @@ export async function runAdminSchedulerTick(
   return runSchedulerTick({
     adapter,
     registry,
-    tasks: [...core, ...pluginWorkerTasks()],
+    // #1361 — the change consumers before the workers: on a quiet site
+    // their drain has nothing to do and costs a few small transactions.
+    tasks: [...core, pluginChangeConsumersTask({ adapter, registry }), ...pluginWorkerTasks()],
     holder: `${instance}/${ticks++}`.slice(0, 200),
   });
 }

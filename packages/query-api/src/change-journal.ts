@@ -459,17 +459,40 @@ export async function finishConsumerRebuild(
   name: string,
   opts: { readonly holder?: string } = {},
 ): Promise<void> {
+  if (opts.holder !== undefined) {
+    if (!(await finishConsumerRebuildIfHeld(tx, name, opts.holder))) {
+      throw new Error(
+        `finishConsumerRebuild(${name}): this instance's claim lapsed or was taken over during the rebuild; the rebuild stays pending and runs again`,
+      );
+    }
+    return;
+  }
   const rows = (await tx.execute(sql`
     UPDATE change_consumers SET rebuild_pending = false, updated_at = now()
-     WHERE name = ${name} AND ${claimHeld(opts.holder)}
+     WHERE name = ${name}
     RETURNING 1
   `)) as unknown as unknown[];
-  if (rows.length === 0) {
-    if (opts.holder === undefined) throw unknownConsumer(name);
-    throw new Error(
-      `finishConsumerRebuild(${name}): this instance's claim lapsed or was taken over during the rebuild; the rebuild stays pending and runs again`,
-    );
-  }
+  if (rows.length === 0) throw unknownConsumer(name);
+}
+
+/**
+ * {@link finishConsumerRebuild} for a claim holder, answering instead of
+ * throwing: false (and nothing changes) when `holder`'s claim lapsed or
+ * was taken over during the rebuild, which then stays pending.
+ *
+ * @returns whether the consumer is marked rebuilt
+ */
+export async function finishConsumerRebuildIfHeld(
+  tx: TransactionRunner,
+  name: string,
+  holder: string,
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    UPDATE change_consumers SET rebuild_pending = false, updated_at = now()
+     WHERE name = ${name} AND ${claimHeld(holder)}
+    RETURNING 1
+  `)) as unknown as unknown[];
+  return rows.length > 0;
 }
 
 /** Whether the consumer's derived state still has to be rebuilt ({@link beginConsumerRebuild}). */
@@ -721,6 +744,27 @@ export async function commitChanges(
   token: string,
   opts: { readonly holder?: string } = {},
 ): Promise<void> {
+  if (!(await commitChangesIfCurrent(tx, name, token, opts))) {
+    throw new Error(
+      `commitChanges(${name}): the cursor moved since this batch was polled, or this instance's claim lapsed — another instance may be consuming it; the batch stays uncommitted and is delivered again`,
+    );
+  }
+}
+
+/**
+ * {@link commitChanges}, answering instead of throwing when the batch is no
+ * longer this consumer's to store: the cursor moved since it was polled, or
+ * the holder's claim lapsed or was taken over. Then nothing changes and the
+ * answer is false. A token of another consumer still throws.
+ *
+ * @returns whether the batch was stored
+ */
+export async function commitChangesIfCurrent(
+  tx: TransactionRunner,
+  name: string,
+  token: string,
+  opts: { readonly holder?: string } = {},
+): Promise<boolean> {
   let parsed: Token;
   try {
     parsed = JSON.parse(token) as Token;
@@ -742,11 +786,7 @@ export async function commitChanges(
        AND ${claimHeld(opts.holder)}
     RETURNING 1
   `)) as unknown as unknown[];
-  if (rows.length === 0) {
-    throw new Error(
-      `commitChanges(${name}): the cursor moved since this batch was polled, or this instance's claim lapsed — another instance may be consuming it; the batch stays uncommitted and is delivered again`,
-    );
-  }
+  return rows.length > 0;
 }
 
 /**

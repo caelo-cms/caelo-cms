@@ -15,6 +15,7 @@ import {
   type LiveRefreshReason,
   liveFetch,
 } from "./live-refresh.js";
+import { OPERATOR_IDLE_MS } from "./presence.js";
 
 interface Pending {
   readonly url: string;
@@ -26,6 +27,7 @@ function fakeEnv() {
   const requests: Pending[] = [];
   let visible = true;
   let now = 0;
+  let idle = 0;
   let focusListener: (() => void) | null = null;
   const env: LiveHubEnv = {
     fetch: (url, init) =>
@@ -41,6 +43,7 @@ function fakeEnv() {
       }),
     now: () => now,
     isVisible: () => visible,
+    idleMs: () => idle,
     onFocus: (listener) => {
       focusListener = listener;
       return () => {
@@ -53,6 +56,10 @@ function fakeEnv() {
     requests,
     setVisible: (v: boolean) => {
       visible = v;
+    },
+    /** How long nobody has used the tab. */
+    setIdle: (ms: number) => {
+      idle = ms;
     },
     advance: (ms: number) => {
       now += ms;
@@ -149,6 +156,37 @@ describe("live-refresh hub", () => {
     await settle();
     expect(bar.calls).toEqual(["focus"]);
     expect(f.requests).toHaveLength(1);
+  });
+
+  it("#1361: stops waiting once nobody used the tab for OPERATOR_IDLE_MS; the operator's return re-reads and resumes", async () => {
+    const f = fakeEnv();
+    const hub = createLiveHub(f.env);
+    // A long crawl: the surface waits on it the whole time.
+    const crawl = consumer(["crawl"], () => true);
+    hub.register(crawl.consumer);
+    await settle();
+    expect(f.requests).toHaveLength(1);
+    f.requests[0]?.answer([]);
+    await settle();
+    expect(f.requests).toHaveLength(2);
+
+    // The operator walked away from a visible tab: the current wait ends
+    // and no new one is held, however long the crawl still runs.
+    f.setIdle(OPERATOR_IDLE_MS);
+    f.requests[1]?.answer([]);
+    await settle();
+    expect(f.requests).toHaveLength(2);
+    hub.kick();
+    await settle();
+    expect(f.requests).toHaveLength(2);
+
+    // Back (an input after the idle stretch): re-read, then wait again.
+    f.setIdle(0);
+    f.advance(OPERATOR_IDLE_MS);
+    f.focus();
+    await settle();
+    expect(crawl.calls.at(-1)).toBe("focus");
+    expect(f.requests).toHaveLength(3);
   });
 
   it("an open chat stream stands in for the wait", async () => {

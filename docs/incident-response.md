@@ -105,7 +105,9 @@ stays what the Owner decided, and the failure is recorded instead (#1008).
 `/settings/plugins` shows it as "Not loading" with the reason; the same data:
 
 ```sql
--- What each running server makes of each plugin (heartbeat within 2 min = live).
+-- What each running server makes of each plugin (heartbeat within 2 min = it served
+-- a request lately; a server confirms its rows at request start, so an idle one
+-- is missing here until its next request, #1361).
 SELECT plugin_slug, instance_id, state, heartbeat_at
 FROM plugin_runtime WHERE heartbeat_at > now() - interval '2 minutes' ORDER BY plugin_slug;
 

@@ -614,8 +614,10 @@ export class DatabaseAdapter {
    * plugin, an unapproved comment, a rotated cookie secret or a closed
    * staging gate is therefore live on the public side when the admin call
    * returns — not whenever an interval timer next gets CPU (Cloud Run
-   * throttles CPU outside requests, and scales to zero). The publisher's
-   * own poll and the boot/migration publish remain as crash recovery.
+   * throttles CPU outside requests, and scales to zero). The scheduler
+   * tick's backstop and the boot/migration publish remain as crash
+   * recovery (#1140, #1361: a drain that failed here is retried by the
+   * next write's drain or the next tick, never by a timer).
    */
   setProjectionPublisher(publish: (() => Promise<unknown>) | null): void {
     this.#projectionPublisher = publish;
@@ -833,7 +835,7 @@ export class DatabaseAdapter {
       try {
         await this.#publishAfterCommit();
       } catch (thrown) {
-        publishFailure = `The change is saved, but the public site does not serve it yet: publishing it failed (${thrown instanceof Error ? thrown.message : String(thrown)}). Do not repeat the change; it is published automatically within seconds once the public database answers.`;
+        publishFailure = `The change is saved, but the public site does not serve it yet: publishing it failed (${thrown instanceof Error ? thrown.message : String(thrown)}). Do not repeat the change; it is published automatically with the next change or within a few minutes (the scheduler tick) once the public database answers.`;
       }
     }
     // #1215 — change hints (the editor's live refresh) hear a handler that

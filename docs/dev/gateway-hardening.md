@@ -14,6 +14,12 @@ Every public service is provisioned on every install at zero minimum instances, 
 
 The gateways know it from published state they hold in memory while the published-state LISTEN holds (below): after the admin's publish notification the next request reads the registry or the staging row once (behind the in-memory limiter), and every request after it is answered from memory. A read that failed, or that a newer notification overtook, decides nothing: the request takes the full pipeline (plugin-host `servesVisitorOperations`, api-gateway `featureOff`). So the Owner activating a visitor-facing plugin turns the live gateway on with no redeploy. Creating and removing the services from Settings → Updates (E14 b) comes later.
 
+## Cached published state on request-billed CPU (#1361)
+
+The gateways run with CPU only while they serve a request (Cloud Run `cpuIdle`). A publish notification that arrives between requests waits in the socket until CPU comes back with the next request, and that request could read a cache the notification drops before the LISTEN callback runs: a closed staging gate, a revoked plugin, a rotated cookie secret. So a request that starts while no other request is in flight confirms the published state before it answers from memory (`servePublishedRequest`, `published-changes.ts`). It reads the projection's section versions once: every publish rewrites the `published_projection_sections` rows of the sections it published in the transaction that notifies, so their `xmin` values change. When they differ from the last confirmation, every cache is dropped, as the notification will drop them. Requests that start together share one confirmation, and one that fails drops the caches, so the request reads through.
+
+A request that starts while another is in flight had CPU throughout, so its notifications were handled. It confirms only once the last confirmation is older than 30 s (`CONFIRM_MAX_AGE_MS`), which also bounds what a LISTEN connection that died without a word could hide. Requests that answer from no cached state do not confirm: `/healthz`, the health check, a path that names no route, and a gateway whose feature is known to be off (E14 a stays free of database reads). A request that comes while the notification turning the feature on still waits gets the fixed 404 once more.
+
 ## Order of a visitor request
 
 `apps/api-gateway/src/server.ts` checks, in this order, and stops at the first refusal:

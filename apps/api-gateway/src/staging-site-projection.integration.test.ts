@@ -21,7 +21,7 @@ import {
   stagedManifestKey,
 } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { listenForPublishedChanges } from "./published-changes.js";
+import { listenForPublishedChanges, onPublishedChange } from "./published-changes.js";
 import {
   handleRequest,
   invalidateGatewaySettings,
@@ -244,6 +244,72 @@ describe("#1339 E14 a: the staging gateway while no staging host is set", () => 
       await asSystem(
         ADMIN_URL,
         (tx) => tx`UPDATE staging_access SET staging_host = 'staging.example.com' WHERE id = 1`,
+      );
+      await publish();
+    }
+  });
+});
+
+describe("#1361 a gate change whose notification still waits in the socket", () => {
+  it("is enforced on the next request: an idle instance confirms the published state first", async () => {
+    // The staging gateway runs on request-billed CPU: a NOTIFY that arrives
+    // between requests is handled only once CPU comes back. This LISTEN
+    // receives the notification and holds it, as such an instance does at
+    // the moment the next request starts.
+    const held: string[] = [];
+    const throttled = new Proxy(gateway, {
+      get(target, prop) {
+        if (prop === "listen") {
+          return (...args: Parameters<DatabaseAdapter["listen"]>) => {
+            const [pool, channel, callbacks] = args;
+            return target.listen(pool, channel, {
+              ...callbacks,
+              onNotify: (payload) => void held.push(payload),
+            });
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    // As the gateway boots (server.ts main): a notification, or a
+    // confirmation that finds a publish, drops the caches.
+    onPublishedChange(invalidateGatewaySettings);
+    const listening = await listenForPublishedChanges(throttled);
+    const token = await signStagingToken(
+      GATE_SECRET,
+      "session",
+      Math.floor(Date.now() / 1000) + 600,
+    );
+    const cookie = `__session=${sessionCookieValue(
+      new Map([
+        [SESSION_ENTRY.staging, { value: token, expiresAt: Math.floor(Date.now() / 1000) + 600 }],
+      ]),
+    )}`;
+    try {
+      // Admitted, and the gate is now cached (the LISTEN is acknowledged).
+      expect((await handleRequest(req("staging.example.com", "/about/", { cookie }))).status).toBe(
+        200,
+      );
+      // The Owner turns the session entry off. The publish notifies; this
+      // instance has not handled it.
+      await asSystem(
+        ADMIN_URL,
+        (tx) => tx`UPDATE staging_access SET cookie_enabled = false WHERE id = 1`,
+      );
+      await publishProjectionOnce(adapter, staging, { declarations: new Map() });
+      const deadline = Date.now() + 5_000;
+      while (held.length === 0 && Date.now() < deadline) await Bun.sleep(20);
+      expect(held.length).toBeGreaterThan(0);
+      // Served from the cached gate this was a 200.
+      expect((await handleRequest(req("staging.example.com", "/about/", { cookie }))).status).toBe(
+        403,
+      );
+    } finally {
+      await listening.unlisten();
+      await asSystem(
+        ADMIN_URL,
+        (tx) => tx`UPDATE staging_access SET cookie_enabled = true WHERE id = 1`,
       );
       await publish();
     }

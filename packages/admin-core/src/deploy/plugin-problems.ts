@@ -17,6 +17,7 @@
  */
 
 import {
+  LIVE_WINDOW_MS,
   pluginNotRunningReason,
   pluginRunsHere,
   reconcilePluginHostNow,
@@ -31,9 +32,6 @@ export const deployPluginProblem = z.object({
   reason: z.string(),
 });
 export type DeployPluginProblem = z.infer<typeof deployPluginProblem>;
-
-/** Live window for another server's runtime row (heartbeat: 30 s). */
-const LIVE_WINDOW = "2 minutes";
 
 /**
  * Bring this server's plugin host in line with the plugin rows before a
@@ -64,6 +62,12 @@ export async function reconcilePluginsForBuild(): Promise<string | null> {
  * every active row must then be running here — so a change another
  * instance made a moment ago, or a host that never finished booting, cannot
  * let a build through.
+ *
+ * Another server counts while it served a request within the live window
+ * (#1361: it confirms its rows at request start; the admin has no CPU for
+ * a timer between requests). One that idled longer serves nobody, so its
+ * row neither blocks nor passes anything: an idle server is never read as
+ * a failed one.
  */
 export async function activePluginProblems(tx: TransactionRunner): Promise<DeployPluginProblem[]> {
   const active = (await tx.execute(sql`
@@ -83,7 +87,8 @@ export async function activePluginProblems(tx: TransactionRunner): Promise<Deplo
     FROM plugin_runtime r
     JOIN plugins p ON p.slug = r.plugin_slug AND p.status = 'active'
     JOIN plugin_errors e ON e.id = r.error_id
-    WHERE r.state = 'error' AND r.heartbeat_at > now() - ${LIVE_WINDOW}::interval
+    WHERE r.state = 'error'
+      AND r.heartbeat_at > now() - ${LIVE_WINDOW_MS}::int * interval '1 millisecond'
     ORDER BY r.plugin_slug, e.last_seen_at DESC
   `)) as unknown as { plugin_slug: string; message: string }[];
   for (const row of elsewhere) {

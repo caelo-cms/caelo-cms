@@ -196,8 +196,9 @@ export function createPublicProjectionPublisher(opts: {
   const publisher: PublicProjectionPublisher = {
     publishAll: () => {
       // Same coalescing as drain: while the lock or the database is down the
-      // timer retries a failed full publish every tick, and each tick must
-      // join the one already queued instead of adding one more to replay.
+      // scheduler tick's backstop retries a failed full publish every tick,
+      // and each tick must join the one already queued instead of adding one
+      // more to replay.
       if (waitingFull !== null) return waitingFull;
       const full = enqueue(async () => {
         waitingFull = null;

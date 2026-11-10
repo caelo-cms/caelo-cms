@@ -183,7 +183,7 @@ interface ReloadedHealth {
 export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadInput>> = {
   name: "reload_plugin",
   description:
-    "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow within seconds (`get_plugin`). " +
+    "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow on their next request (`get_plugin`). " +
     "Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`), nor health `awaiting_approval` (`propose_approve_plugin_release`).",
   schema: reloadInput,
   handler: async (ctx, input, toolCtx) => {
@@ -202,7 +202,7 @@ export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadIn
       : "unknown";
     return {
       ok: true,
-      content: `Reload of "${input.slug}" requested on every server. Health now: ${now}. Other servers follow within seconds; get_plugin shows their state.`,
+      content: `Reload of "${input.slug}" requested on every server. Health now: ${now}. Other servers follow on their next request; get_plugin shows their state.`,
     };
   },
 };

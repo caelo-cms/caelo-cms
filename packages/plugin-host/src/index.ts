@@ -41,7 +41,10 @@ export {
   type DrainLimits,
   type DrainReport,
   drainChangeConsumers,
+  drainChangeConsumersOnTick,
+  ensureChangeConsumers,
   pluginChangeFilter,
+  resumeDueChangeConsumers,
   startChangeConsumers,
 } from "./change-consumers.js";
 export {
@@ -241,6 +244,8 @@ export {
   pluginRenderFailedSlug,
   reportPluginRenderFailure,
 } from "./render-failures.js";
+// #1361 — the plugin host's part of every admin request's start.
+export { pluginHostRequestStart } from "./request-start.js";
 export {
   applyPluginRowState,
   discardBranchPluginRows,
@@ -250,7 +255,13 @@ export {
   type PluginRowState,
   withPluginScope,
 } from "./row-snapshots.js";
-export { hostInstanceId, stopRuntimeHeartbeat } from "./runtime-health.js";
+export {
+  HEARTBEAT_REFRESH_MS,
+  hostInstanceId,
+  LIVE_WINDOW_MS,
+  refreshRuntimeHeartbeat,
+  stopRuntimeHeartbeat,
+} from "./runtime-health.js";
 export {
   pluginWorkerScheduler,
   type ScheduledWorker,

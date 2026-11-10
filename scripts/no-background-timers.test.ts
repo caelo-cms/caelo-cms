@@ -46,7 +46,7 @@ const ALLOWED: Record<string, string> = {
   "packages/plugin-host/src/activation-lock.ts":
     "a plugin activation's lock renewal while the activation runs",
   "packages/plugin-host/src/change-consumers.ts":
-    "a change consumer's claim renewal while its drain runs",
+    "a change consumer's claim renewal while its drain runs (a hint: the commit takes the claim back, #1361)",
   // Dev and test runs only: no scheduler calls them.
   "apps/admin/src/hooks.server.ts":
     "the dev/test scheduler clock (bootstrapDevSchedulerClock): never with NODE_ENV=production, where the install's scheduler calls the tick",
@@ -55,10 +55,6 @@ const ALLOWED: Record<string, string> = {
     "FIXME(issue #1359): the quality audit moves into a container job that reports back",
   "packages/admin-core/src/site-import/crawl-worker.ts":
     "FIXME(issue #1360): the site-import crawl moves into a container job that reports back",
-  "packages/plugin-host/src/runtime-health.ts":
-    "FIXME(issue #1361): the plugin runtime heartbeat refreshes at request start instead",
-  "packages/plugin-host/src/reconcile.ts":
-    "FIXME(issue #1361): the plugin-host sync for an instance without requests moves to request start and the tick",
 };
 
 const ROOTS = [
@@ -135,5 +131,25 @@ describe("no background timer does the admin's work (#1140)", () => {
     expect(scheduler).toBeDefined();
     expect(TIMER.test(scheduler ?? "")).toBe(false);
     expect(scheduler).toContain("paused: true");
+  });
+
+  it("the plugin host keeps nothing current on a timer: request start and the tick do (#1361)", () => {
+    const text = (path: string) => SCANNED.find((s) => s.path === path)?.text ?? "";
+    // The runtime heartbeat and the plugin-row sync start no timer at all.
+    for (const path of [
+      "packages/plugin-host/src/runtime-health.ts",
+      "packages/plugin-host/src/reconcile.ts",
+    ]) {
+      expect(text(path)).not.toMatch(/\bset(Interval|Timeout)\s*\(/);
+    }
+    // The change consumers' only timeout is a wake-up's 50 ms coalescing,
+    // which runs on the CPU of whatever woke it; a retry rides the next
+    // request start or tick instead of a timer.
+    expect(
+      text("packages/plugin-host/src/change-consumers.ts").match(/\bsetTimeout\s*\(/g),
+    ).toEqual(["setTimeout("]);
+    expect(text("packages/plugin-host/src/request-start.ts")).toContain(
+      "resumeDueChangeConsumers()",
+    );
   });
 });
