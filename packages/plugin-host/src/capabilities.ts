@@ -482,7 +482,13 @@ function makeScopedQuery(
         }
         if (k === "anyOf" && v !== null && typeof v === "object" && !Array.isArray(v)) {
           // Name the plugin's schema in the error; the op re-checks values.
-          assertDeclared("list", table, columns, Object.keys(v));
+          // `id` is host-owned but listable (#1269).
+          assertDeclared(
+            "list",
+            table,
+            columns,
+            Object.keys(v).filter((c) => c !== "id"),
+          );
         }
         if (k === "orderBy") {
           if (typeof v !== "string") throw new Error(`${scope.label}.list: orderBy must be string`);

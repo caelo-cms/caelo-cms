@@ -663,7 +663,11 @@ provides five neutral hooks:
    named ops of the `lists` read domain (`lists.list` with
    `includeItems`, `lists.get`, `list_types.list` / `get`,
    `page_types.list` / `get`) and `pages.list_shared_content`
-   (`listInstances`: which pages each local list is placed on).
+   (`listInstances`: which pages each local list is placed on — for
+   given instances with `listInstanceIds`, or for the instances on given
+   pages with `listPageIds`, so a consumer asks about what a change
+   names, #1269). A plugin reads rows of its own tables that a change
+   names by `anyOf: { id: [...] }`.
 5. **Audit contributions**: a plugin names one of its operations as
    `auditFindingsOperation` (manifest field; shipped and runtime-installed
    plugins alike, no capability). Each Stage audit calls it once through

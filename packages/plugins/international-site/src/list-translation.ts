@@ -356,7 +356,15 @@ export function collectSources(input: SourceInput): ListSourceSnapshot {
     );
   }
   for (const ci of input.instances) {
-    if (ci.locales.size === 0) continue;
+    // #1269 — an instance no other language shows (on no default-language
+    // page, or on none of another language) offers nothing to translate,
+    // but its values still exist: its stored translations are kept, not
+    // orphaned. Only a removed instance, field or entry orphans them, so a
+    // change consumer re-checks exactly the instances a change names.
+    const into =
+      ci.locales.size > 0
+        ? out
+        : { units: [], entries: [], existing: out.existing, internalLinks: new Set<string>() };
     for (const lf of ci.listFields) {
       const type = input.listTypes.get(lf.listType);
       if (!type) {
@@ -367,7 +375,7 @@ export function collectSources(input: SourceInput): ListSourceSnapshot {
       const raw = ci.values[lf.name] ?? lf.default;
       if (!Array.isArray(raw)) continue;
       const key = `instance:${ci.id}:${lf.name}`;
-      targets.set(key, { key, label: `${ci.label}, list "${lf.name}"` });
+      if (into === out) targets.set(key, { key, label: `${ci.label}, list "${lf.name}"` });
       walkTree(
         type,
         raw as ListItem[],
@@ -378,7 +386,7 @@ export function collectSources(input: SourceInput): ListSourceSnapshot {
           entryAddress: (itemId) => `instance/${ci.id}/${lf.name}/item/${itemId}`,
           vocabularyListId: null,
         },
-        out,
+        into,
       );
     }
   }
@@ -458,6 +466,22 @@ export function collectSources(input: SourceInput): ListSourceSnapshot {
     internalLinks: out.internalLinks,
     pluginSources: new Set((input.pluginSources ?? []).map((s) => s.name)),
   };
+}
+
+/**
+ * The target a value row's address belongs to (stored in its `target`
+ * column, #1269).
+ *
+ * @throws on an address of no known shape — a row nothing could reconcile.
+ */
+export function targetOfAddress(address: string): string {
+  const m = /^(list|instance|source)\/([^/]+)\//.exec(address);
+  if (!m) {
+    throw new Error(
+      `international-site: list translation address "${address}" names no list, instance or plugin source`,
+    );
+  }
+  return `${m[1]}:${m[2]}`;
 }
 
 /** True when a unit / entry is translated into `locale`. */
