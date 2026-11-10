@@ -57,8 +57,9 @@ import {
   type EmbedScan,
   gatedCategoryKeys,
   guardsByModule,
+  rejudgeAll,
+  rejudgeChanged,
   scanEmbeds,
-  syncGuards,
   verdictFor,
 } from "./guards.js";
 import { defaultPlaceholder, editorNotice } from "./placeholder.js";
@@ -69,7 +70,6 @@ import {
   adminQueryOf,
   bumpPolicyVersion,
   categoriesOf,
-  cmsOf,
   type GuardRow,
   settingsOf,
 } from "./storage.js";
@@ -187,36 +187,6 @@ const moduleChangesArgs = z.object({
     .min(1)
     .max(500),
 });
-
-/**
- * The modules a batch of journal changes may have changed what they reach:
- * changed modules, and the modules of changed content instances (a live
- * instance row names its module; a branch snapshot is looked up). `null`
- * when a table was truncated: everything is rejudged.
- */
-async function changedModuleIds(
-  ctx: PluginContextTier1,
-  changes: z.infer<typeof moduleChangesArgs>["changes"],
-): Promise<string[] | null> {
-  if (changes.some((c) => c.op === "truncate")) return null;
-  const moduleIds = new Set<string>();
-  const unresolved = new Set<string>();
-  for (const c of changes) {
-    if (c.kind === "module") moduleIds.add(c.rowId);
-    else if (c.kind === "content_instance") {
-      if (c.parentId) moduleIds.add(c.parentId);
-      else unresolved.add(c.rowId);
-    }
-  }
-  if (unresolved.size > 0) {
-    const { instances } = await cmsOf(ctx).call<{ instances: Array<{ moduleId: string }> }>(
-      "content_instances.list",
-      { ids: [...unresolved] },
-    );
-    for (const i of instances) moduleIds.add(i.moduleId);
-  }
-  return [...moduleIds];
-}
 
 /** A module the render-time gate withholds now, and why. */
 interface Withheld {
@@ -354,6 +324,8 @@ export default definePlugin<PluginContextTier1>({
       placeholder_module_slug: "string",
       /** Last change to the cookie declaration; the date the privacy page shows. */
       declaration_updated_at: "timestamp",
+      /** #1269 — when `value_hosts` was first filled on main (value-hosts.ts). */
+      value_hosts_filled_at: "timestamp_nullable",
       created_at: "timestamp",
     },
     /**
@@ -368,6 +340,18 @@ export default definePlugin<PluginContextTier1>({
       detected_hosts: "jsonb",
       status: "enum:pending,gated,allowed",
       decided_by: "string",
+      created_at: "timestamp",
+    },
+    /**
+     * #1269 — the third-party hosts in content values: one row per
+     * instance, key and host (value-hosts.ts), so a verdict reads no
+     * instance. An instance without an external URL has no row.
+     */
+    value_hosts: {
+      module_id: "uuid",
+      instance_id: "uuid",
+      key: "string",
+      host: "string",
       created_at: "timestamp",
     },
     tags: {
@@ -405,6 +389,7 @@ export default definePlugin<PluginContextTier1>({
       settings: [["created_at"]],
       categories: [["position"], ["created_at"]],
       module_guards: [["status", "category_key"], ["created_at"]],
+      value_hosts: [["instance_id"], ["module_id"]],
       tags: [["name"], ["category_key", "enabled"]],
     },
   },
@@ -500,9 +485,9 @@ export default definePlugin<PluginContextTier1>({
     lines: "all",
   },
 
-  /** Keeps the scan current without anyone remembering to run it. */
   workers: [
-    { name: "consent-embed-scan", cron: "*/5 * * * *", operationName: "scan_modules" },
+    // No scheduled embed scan (#1269): the change consumer judges every
+    // committed module and instance change, and its rebuild the rest.
     // Keeping consent evidence forever is itself a data-protection
     // problem, so the window is enforced rather than documented.
     { name: "consent-log-retention", cron: "17 3 * * *", operationName: "prune_log" },
@@ -520,8 +505,8 @@ export default definePlugin<PluginContextTier1>({
     // tell this plugin about them: judge them all once, so the render
     // hooks (which read verdicts only) see them from the first preview.
     // Not on every boot — that would rescan the whole site on each cold
-    // start; the scheduled scan is the backstop for later gaps.
-    if (firstActivation) await syncGuards(ctx);
+    // start; the change consumer keeps them current after this.
+    if (firstActivation) await rejudgeAll(ctx, true);
   },
 
   buildAssets: async (ctx) => {
@@ -797,23 +782,26 @@ export default definePlugin<PluginContextTier1>({
     }),
 
     /**
-     * Scan changed modules for third-party hosts and record a verdict.
-     *
-     * Runs on a schedule rather than on demand because the operator
-     * edits a module and deploys minutes later; a scan that only ran
-     * when someone remembered would be a scan that ran after the
-     * request went out.
+     * The change consumer's rebuild (#1267): every instance's value
+     * hosts and every module's verdict, from source.
      */
-    scan_modules: async (ctx) => syncGuards(ctx),
+    scan_modules: async (ctx) => rejudgeAll(ctx, true),
 
     /**
      * The change consumer (#1267): committed module and content-instance
      * changes, one branch per call, in that branch's scope — on a chat's
      * branch the rewritten guards stay on that branch and publish with it.
+     * #1269 — only the changed instances and their modules are read.
      */
     module_changes: async (ctx, args) => {
-      const ids = await changedModuleIds(ctx, moduleChangesArgs.parse(args).changes);
-      return ids === null ? syncGuards(ctx) : syncGuards(ctx, ids);
+      const { chatBranchId, changes } = moduleChangesArgs.parse(args);
+      const settings = await settingsOf(adminQueryOf(ctx));
+      // Until the stored value hosts are filled (the first batch after
+      // the upgrade) or after a truncate, everything is rejudged.
+      if (!settings.value_hosts_filled_at || changes.some((c) => c.op === "truncate")) {
+        return rejudgeAll(ctx, chatBranchId === null);
+      }
+      return rejudgeChanged(ctx, changes);
     },
 
     // Read-only: reports the verdict every module would get now, stored

@@ -20,8 +20,12 @@
  *   persisted). Only those modules are re-read and their guards
  *   rewritten, so a draft's verdicts live on the draft and publish with it.
  * - `scan_modules` — the consumer's rebuild (first activation, or a cursor
- *   behind the journal's retention) and the scheduled worker rescan the
- *   whole site on main.
+ *   behind the journal's retention) rescans the whole site on main.
+ *
+ * #1269 — a module's verdict needs the hosts in its placements' values;
+ * those are stored per instance (value-hosts.ts) where an instance change
+ * arrives, so neither a module change nor an instance change reads the
+ * module's other instances.
  *
  * Render hooks then read verdicts only (`gatedCategoryKeys`,
  * `guardsByModule`): no module or content-instance list on the render
@@ -30,8 +34,9 @@
  */
 
 import type { PluginAdminQuery, PluginContextTier1 } from "@caelo-cms/plugin-sdk";
-import { moduleHosts } from "./scan.js";
-import { adminQueryOf, cmsOf, type GuardRow } from "./storage.js";
+import { moduleSourceHosts } from "./scan.js";
+import { adminQueryOf, cmsOf, type GuardRow, settingsOf } from "./storage.js";
+import { refreshValueHosts, valueHostsOfModules } from "./value-hosts.js";
 
 /**
  * Which consent category a set of third-party hosts falls under, or
@@ -224,27 +229,27 @@ export async function scanEmbeds(
   // default, and a placement can point the same module at a
   // different vendor through its content values. Scanning the HTML
   // alone would therefore find nothing on exactly the modules that
-  // matter most.
-  const { instances } = await cms.call<{
-    instances: Array<{ moduleId: string; values: unknown }>;
-  }>("content_instances.list", filter);
-  const valuesByModule = new Map<string, unknown[]>();
-  for (const inst of instances) {
-    const bucket = valuesByModule.get(inst.moduleId) ?? [];
-    bucket.push(inst.values ?? {});
-    valuesByModule.set(inst.moduleId, bucket);
-  }
+  // matter most. Those values' hosts are stored per instance
+  // (value-hosts.ts, #1269): judging a module reads no instance.
+  const sources = new Map(modules.map((m) => [m.id, moduleSourceHosts(m)]));
+  const valueHosts = await valueHostsOfModules(
+    q,
+    new Map([...sources].map(([id, src]) => [id, src.keys])),
+  );
   const guards = await guardsByModule(
     q,
     modules.map((m) => m.id),
   );
-  return modules.map((m) => ({
-    moduleId: m.id,
-    moduleSlug: m.slug,
-    siteChrome: m.kind === "chrome",
-    hosts: moduleHosts({ ...m, contentValues: valuesByModule.get(m.id) ?? [] }),
-    guard: guards.get(m.id),
-  }));
+  return modules.map((m) => {
+    const hosts = new Set([...(sources.get(m.id)?.hosts ?? []), ...(valueHosts.get(m.id) ?? [])]);
+    return {
+      moduleId: m.id,
+      moduleSlug: m.slug,
+      siteChrome: m.kind === "chrome",
+      hosts: [...hosts].sort(),
+      guard: guards.get(m.id),
+    };
+  });
 }
 
 /**
@@ -290,4 +295,50 @@ export async function syncGuards(
     flagged += 1;
   }
   return { flagged, cleared };
+}
+
+/**
+ * #1269 — rejudge the whole site: every instance's value hosts from its
+ * values, then every module's verdict. The consumer's rebuild, the first
+ * activation, and the first batch after the upgrade that introduced the
+ * stored value hosts (until it ran, a module's value hosts are unknown,
+ * so no batch may judge from them). Records that the rows are filled
+ * once it ran on main.
+ */
+export async function rejudgeAll(
+  ctx: PluginContextTier1,
+  onMain: boolean,
+): Promise<{ flagged: number; cleared: number; valueRows: number }> {
+  const { changed } = await refreshValueHosts(ctx, "all");
+  const judged = await syncGuards(ctx);
+  if (onMain) {
+    const q = adminQueryOf(ctx);
+    const settings = await settingsOf(q);
+    if (!settings.value_hosts_filled_at) {
+      await q.update("settings", settings.id, {
+        value_hosts_filled_at: new Date().toISOString(),
+      });
+    }
+  }
+  return { ...judged, valueRows: changed };
+}
+
+/**
+ * #1269 — the batch's part: the changed instances' value hosts, then the
+ * verdicts of their modules and of the changed modules. A module's other
+ * instances are not read.
+ */
+export async function rejudgeChanged(
+  ctx: PluginContextTier1,
+  changes: ReadonlyArray<{ kind: string; rowId: string; parentId: string | null }>,
+): Promise<{ flagged: number; cleared: number; valueRows: number }> {
+  const instanceIds = changes.filter((c) => c.kind === "content_instance").map((c) => c.rowId);
+  const refreshed = await refreshValueHosts(ctx, instanceIds);
+  const moduleIds = new Set(refreshed.moduleIds);
+  for (const c of changes) {
+    if (c.kind === "module") moduleIds.add(c.rowId);
+    else if (c.kind === "content_instance" && c.parentId) moduleIds.add(c.parentId);
+  }
+  const judged = await syncGuards(ctx, [...moduleIds]);
+  return { ...judged, valueRows: refreshed.changed };
 }

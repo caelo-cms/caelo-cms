@@ -261,6 +261,30 @@ export function moduleHosts(module: {
   fields?: unknown;
   contentValues: ReadonlyArray<unknown>;
 }): string[] {
+  const source = moduleSourceHosts(module);
+  const found = new Set(source.hosts);
+  for (const values of module.contentValues) {
+    const byKey = valueHostsByKey(values);
+    for (const key of source.keys) for (const host of byKey.get(key) ?? []) found.add(host);
+  }
+  return [...found].sort();
+}
+
+/**
+ * #1269 — the half of {@link moduleHosts} that needs no content: the hosts
+ * a module reaches from its markup, CSS, JavaScript and field defaults,
+ * and the content keys (`{{key}}` in a loading attribute or CSS URL)
+ * whose values it loads. A module's hosts are these plus, for every
+ * placement's values, `valueHostsByKey(values)` under those keys — which
+ * the plugin stores per content instance, so judging a module reads no
+ * instance.
+ */
+export function moduleSourceHosts(module: {
+  html: string;
+  css: string;
+  js: string;
+  fields?: unknown;
+}): { hosts: string[]; keys: string[] } {
   const hasJs = module.js.trim().length > 0;
   const fieldDefaults = Array.isArray(module.fields)
     ? module.fields.map((f) => {
@@ -268,14 +292,15 @@ export function moduleHosts(module: {
         return typeof field.name === "string" ? { [field.name]: field.default } : {};
       })
     : [];
-  const sources = [...fieldDefaults, ...module.contentValues];
+  const keys = new Set<string>();
   const urls: string[] = [];
   const addValue = (raw: string): void => {
     let resolved = false;
     for (const m of raw.matchAll(PLACEHOLDER_RE)) {
       resolved = true;
       const name = (m[1] ?? "").split(".").at(-1) ?? "";
-      for (const src of sources) stringsUnder(src, name, urls);
+      keys.add(name);
+      for (const src of fieldDefaults) stringsUnder(src, name, urls);
     }
     if (!resolved || raw.replace(PLACEHOLDER_RE, "").trim().length > 0) urls.push(raw);
   };
@@ -304,13 +329,48 @@ export function moduleHosts(module: {
 
   const found = new Set<string>();
   for (const url of urls) {
-    const trimmed = url.trim();
-    if (trimmed.length === 0 || isFirstParty(trimmed)) continue;
-    const host = hostOf(trimmed);
+    const host = externalHostOf(url);
     if (host) found.add(host);
   }
   for (const host of externalHosts({ js: module.js })) found.add(host);
-  return [...found].sort();
+  return { hosts: [...found].sort(), keys: [...keys].sort() };
+}
+
+/**
+ * #1269 — per key of a content value (at any depth), the external hosts
+ * of the strings stored under it: what `{{key}}` resolves to wherever a
+ * module loads it (see {@link moduleSourceHosts}).
+ */
+export function valueHostsByKey(values: unknown): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const v of value) walk(v);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [k, v] of Object.entries(value)) {
+      const strings: string[] = [];
+      collectStrings(v, strings);
+      for (const str of strings) {
+        const host = externalHostOf(str);
+        if (!host) continue;
+        const set = out.get(k) ?? new Set<string>();
+        set.add(host);
+        out.set(k, set);
+      }
+      walk(v);
+    }
+  };
+  walk(values);
+  return out;
+}
+
+/** The third-party host a URL string contacts, or null (first party, relative, not a URL). */
+function externalHostOf(url: string): string | null {
+  const trimmed = url.trim();
+  if (trimmed.length === 0 || isFirstParty(trimmed)) return null;
+  return hostOf(trimmed);
 }
 
 /** A stored verdict about one module, as far as the gate needs it. */

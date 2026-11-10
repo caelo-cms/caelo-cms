@@ -109,6 +109,8 @@ interface ModuleFixture {
 let store: MemoryStore;
 let cmsCalls: string[];
 let modules: ModuleFixture[];
+/** Content instances the fake core returns (#1269). */
+let instances: { id: string; moduleId: string; values: unknown }[] = [];
 
 function moduleId(n: number): string {
   return `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -119,7 +121,7 @@ function makeCtx(): PluginContextTier1 {
     adminQuery: store.query,
     consentPurposes: { list: async () => [] },
     cms: {
-      call: async (op: string, input: { moduleIds?: string[] }) => {
+      call: async (op: string, input: { moduleIds?: string[]; ids?: string[] }) => {
         cmsCalls.push(op);
         if (op === "modules.list") {
           return {
@@ -128,7 +130,11 @@ function makeCtx(): PluginContextTier1 {
               : modules,
           };
         }
-        if (op === "content_instances.list") return { instances: [] };
+        if (op === "content_instances.list") {
+          return {
+            instances: input.ids ? instances.filter((i) => input.ids?.includes(i.id)) : instances,
+          };
+        }
         if (op === "pages.list") return { pages: [] };
         throw new Error(`unexpected core op ${op}`);
       },
@@ -148,6 +154,7 @@ function seedPluginRows(): void {
     retention_days: 365,
     placeholder_module_slug: "consent-placeholder",
     declaration_updated_at: "2026-01-01T00:00:00.000Z",
+    value_hosts_filled_at: "2026-01-01T00:00:00.000Z",
   });
   for (const c of DEFAULT_CATEGORIES) {
     store.seed("categories", {
@@ -185,6 +192,7 @@ beforeEach(() => {
   store = new MemoryStore();
   cmsCalls = [];
   modules = [];
+  instances = [];
   seedPluginRows();
 });
 
@@ -324,13 +332,13 @@ describe("module_changes keeps verdicts current on writes (#1214, change journal
         parentId: null,
       })),
     });
-    expect(out).toEqual({ flagged: 1, cleared: 2 });
+    expect(out).toEqual({ flagged: 1, cleared: 2, valueRows: 0 });
     const guards = await allGuards(store.query as never);
     expect(guards.map((g) => [g.module_id, g.status, g.category_key])).toEqual([
       [moduleId(1), "gated", "marketing"],
     ]);
-    // Only the changed modules were read, never the whole site.
-    expect(cmsCalls).toEqual(["modules.list", "content_instances.list"]);
+    // Only the changed modules were read: no instance, never the whole site.
+    expect(cmsCalls).toEqual(["modules.list"]);
   });
 
   it("keeps the operator's ruling while the hosts are unchanged", async () => {
@@ -352,6 +360,64 @@ describe("module_changes keeps verdicts current on writes (#1214, change journal
     ).toEqual({
       flagged: 0,
       cleared: 0,
+      valueRows: 0,
     });
+  });
+
+  it("#1269 — an instance change stores its value hosts; a module change judges from them", async () => {
+    const video = moduleId(5);
+    const ci = "20000000-0000-4000-8000-000000000001";
+    modules = [
+      {
+        id: video,
+        slug: "video",
+        kind: "content",
+        html: '<iframe src="{{url}}"></iframe>',
+        css: "",
+        js: "",
+        fields: [{ name: "url" }],
+      },
+    ];
+    instances = [{ id: ci, moduleId: video, values: { url: "https://www.youtube.com/embed/x" } }];
+    const first = await ops.module_changes?.(makeCtx(), {
+      chatBranchId: null,
+      changes: [{ kind: "content_instance", op: "update", rowId: ci, parentId: video }],
+    });
+    expect(first).toEqual({ flagged: 1, cleared: 0, valueRows: 1 });
+    expect(store.rows("value_hosts").map((r) => [r.instance_id, r.key, r.host])).toEqual([
+      [ci, "url", "www.youtube.com"],
+    ]);
+    const guards = await guardsByModule(store.query as never, [video]);
+    expect(guards.get(video)?.detected_hosts).toEqual(["www.youtube.com"]);
+    // A markup edit of the module reads the stored hosts, not its instances.
+    cmsCalls = [];
+    expect(
+      await ops.module_changes?.(makeCtx(), {
+        chatBranchId: null,
+        changes: [{ kind: "module", op: "update", rowId: video, parentId: null }],
+      }),
+    ).toEqual({ flagged: 0, cleared: 0, valueRows: 0 });
+    expect(cmsCalls).toEqual(["modules.list"]);
+    // The instance removed: its rows go, and the module reaches nobody.
+    instances = [];
+    expect(
+      await ops.module_changes?.(makeCtx(), {
+        chatBranchId: null,
+        changes: [{ kind: "content_instance", op: "delete", rowId: ci, parentId: null }],
+      }),
+    ).toEqual({ flagged: 0, cleared: 1, valueRows: 1 });
+    expect(store.rows("value_hosts")).toEqual([]);
+  });
+
+  it("#1269 — the first batch after the upgrade rejudges every instance and records the fill", async () => {
+    const settings = store.rows("settings")[0] as Record<string, unknown>;
+    settings.value_hosts_filled_at = null;
+    modules = [];
+    await ops.module_changes?.(makeCtx(), {
+      chatBranchId: null,
+      changes: [{ kind: "module", op: "update", rowId: moduleId(9), parentId: null }],
+    });
+    expect(cmsCalls).toContain("content_instances.list");
+    expect(store.rows("settings")[0]?.value_hosts_filled_at).not.toBeNull();
   });
 });
