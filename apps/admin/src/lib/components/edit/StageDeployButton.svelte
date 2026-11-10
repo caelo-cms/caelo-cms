@@ -24,6 +24,7 @@
    */
   import { pluginApprovals } from "#lib/plugin-approvals.svelte.js";
   import { Check, ChevronDown, ExternalLink, LoaderCircle } from "lucide-svelte";
+  import { tick } from "svelte";
   import { enhance, type SubmitFunction } from "$app/forms";
   import StateDot from "#lib/components/StateDot.svelte";
   import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
@@ -343,6 +344,10 @@
     const any =
       plan.goingLive.length + plan.waiting.length + plan.draft.length > 0 || plan.problem !== null;
     if (!any) {
+      // Bound to "none": a redirect saved after this check waits for the
+      // next Publish live, as it would after a confirmation.
+      confirmedRedirects = "[]";
+      await tick();
       publishForm?.requestSubmit();
       return;
     }
@@ -407,6 +412,8 @@
       bind:this={publishForm}
     >
       <input type="hidden" name="_csrf" value={csrfToken} />
+      <!-- #1550 — the redirect changes this Publish live was planned with (none: "[]"). -->
+      <input type="hidden" name="redirectChanges" value={confirmedRedirects} />
       <Button
         type="submit"
         size="sm"

@@ -113,13 +113,13 @@ export const pageConflictsRedirectOp = defineOperation({
     const byAddress = new Map([...bySpelling].map(([s, p]) => [redirectAddress(s), p]));
     const addresses = textArray([...byAddress.keys()]);
     const rows = (await tx.execute(sql`
-      SELECT caelo_redirect_address(r.from_path) AS address, r.from_path, r.to_path,
+      SELECT r.address, r.from_path, r.to_path,
              r.status_code, 'live' AS state
       FROM redirects r
-      WHERE caelo_redirect_address(r.from_path) = ANY(${addresses})
+      WHERE r.address = ANY(${addresses})
         AND NOT EXISTS (
           SELECT 1 FROM pending_redirects p
-          WHERE p.address = caelo_redirect_address(r.from_path) AND ${SHARED_DRAFT_PENDING}
+          WHERE p.address = r.address AND ${SHARED_DRAFT_PENDING}
         )
       UNION ALL
       SELECT p.address, p.from_path, p.to_path, p.status_code, p.state

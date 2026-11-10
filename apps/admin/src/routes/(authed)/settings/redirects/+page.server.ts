@@ -135,8 +135,12 @@ export const actions: Actions = {
         proposalId: (proposed.value as { proposalId: string }).proposalId,
       });
       if (!applied.ok) return fail(400, { error: messageOf(applied.error, "create failed") });
-      if (goLive === "now") {
-        const refused = await goLiveNow(locals, [fromPath]);
+      const saved = applied.value as {
+        nextStep: string;
+        changes: { id: string; revision: number }[];
+      };
+      if (goLive === "now" && saved.changes.length > 0) {
+        const refused = await goLiveNow(locals, [fromPath], saved.changes);
         if (refused) {
           return fail(409, {
             error: `Redirect ${fromPath} → ${toPath} is saved and goes live with the next Publish live, but it could not go live now: ${refused}`,
@@ -146,7 +150,7 @@ export const actions: Actions = {
       }
       return {
         ok: true,
-        message: `Redirect ${fromPath} → ${toPath} created. ${(applied.value as { nextStep: string }).nextStep}`,
+        message: `Redirect ${fromPath} → ${toPath} created. ${saved.nextStep}`,
       };
     }
     // Same rule as the op's schema, surfaced here so the form shows the
@@ -162,7 +166,16 @@ export const actions: Actions = {
       goLive: goLive === "later" ? "later" : "next_publish",
     });
     if (!r.ok) return fail(400, { error: messageOf(r.error, "create failed") });
-    const change = (r.value as { change: { outcome: string; replaced: string | null } }).change;
+    const change = (
+      r.value as {
+        change: {
+          outcome: string;
+          replaced: string | null;
+          changeId: string | null;
+          revision: number | null;
+        };
+      }
+    ).change;
     // #1447 — a page at this URL replaces the redirect once it is published
     // (it may still be a draft); say so now rather than at the next Stage.
     const onPages = await execute(registry, adapter, locals.ctx, "redirects.page_conflicts", {
@@ -179,8 +192,12 @@ export const actions: Actions = {
     if (change.outcome === "unchanged") {
       return { ok: true, message: `Redirect ${fromPath} → ${toPath} is already live as it is.` };
     }
-    if (goLive === "now") {
-      const refused = await goLiveNow(locals, [fromPath]);
+    if (goLive === "now" && change.changeId !== null && change.revision !== null) {
+      const refused = await goLiveNow(
+        locals,
+        [fromPath],
+        [{ id: change.changeId, revision: change.revision }],
+      );
       if (refused) {
         return fail(409, {
           error: `Redirect ${fromPath} → ${toPath} is saved and goes live with the next Publish live, but it could not go live now: ${refused}`,

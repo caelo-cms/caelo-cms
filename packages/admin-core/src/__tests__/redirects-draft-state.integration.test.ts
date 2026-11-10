@@ -18,7 +18,10 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import { drainProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
+import { liveRedirectsFingerprint, loadLiveRedirectRows } from "../redirects/model.js";
+import { releaseRedirectChanges } from "../redirects/release.js";
 import { registerAdminOps } from "../register.js";
 import {
   liveRedirects,
@@ -178,7 +181,13 @@ describe("a save is a pending change, never live (#1550)", () => {
       { redirects: [{ fromPath: `${P}-a`, toPath: "/t1550-live" }] },
     );
     expect(staged.changes).toEqual([
-      { fromPath: `${P}-a`, outcome: "pending", state: "staged", replaced: null } as never,
+      expect.objectContaining({
+        fromPath: `${P}-a`,
+        outcome: "pending",
+        state: "staged",
+        revision: 1,
+        replaced: null,
+      }),
     ]);
     await op(OWNER, "redirects.create_many", {
       redirects: [{ fromPath: `${P}-b`, toPath: "/t1550-live" }],
@@ -365,14 +374,22 @@ describe("Go live now (#1550)", () => {
     const log = await asSystem(
       ADMIN_URL as string,
       async (tx) =>
-        (await tx`SELECT kind, run_id, after_to_path FROM redirect_release_log
+        (await tx`SELECT kind, run_id, before_rules, after_rules FROM redirect_release_log
                 WHERE address = ${`${P}-now`}`) as {
           kind: string;
           run_id: string | null;
-          after_to_path: string;
+          before_rules: unknown;
+          after_rules: unknown;
         }[],
     );
-    expect(log).toEqual([{ kind: "go_live_now", run_id: null, after_to_path: "/t1550-live" }]);
+    expect(log).toEqual([
+      {
+        kind: "go_live_now",
+        run_id: null,
+        before_rules: [],
+        after_rules: [{ fromPath: `${P}-now`, toPath: "/t1550-live", statusCode: 302 }],
+      },
+    ]);
   });
 
   it("refuses an automatic change, a target the live build lacks and a path a live page answers, all at once", async () => {
@@ -444,6 +461,163 @@ describe("Go live now (#1550)", () => {
         }[],
     );
     expect(status[0]?.status).toBe("applied");
+  });
+
+  it("an approval puts live the change its card showed: a change saved since refuses it", async () => {
+    await op(AI, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-bound`, toPath: "/t1550-live" }],
+    });
+    const { proposalId } = await op<{ proposalId: string }>(AI, "redirects.propose_go_live", {
+      fromPaths: [`${P}-bound`],
+    });
+    // Someone changes the rule while the card waits.
+    await op(OWNER, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-bound`, toPath: "/" }],
+      upsert: true,
+    });
+    const why = await refusal(OWNER, "redirects.execute_go_live", { proposalId, repoRoot: root });
+    expect(why).toContain("changed after it was proposed");
+    expect(await liveRedirects(ADMIN_URL as string, P)).toEqual([]);
+    // The proposal stays pending for a reject; the newer change stays Staged.
+    expect(await pendingRedirects(ADMIN_URL as string, `${P}-bound`)).toEqual([
+      expect.objectContaining({ toPath: "/", state: "staged" }),
+    ]);
+  });
+
+  it("waits for no release: while a Publish live holds the live site it refuses, and writes nothing", async () => {
+    await op(OWNER, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-busy`, toPath: "/t1550-live" }],
+    });
+    const run = crypto.randomUUID();
+    await asSystem(ADMIN_URL as string, async (tx) => {
+      await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+               VALUES (${run}::uuid, ${productionTargetId}::uuid, ${SYSTEM_ID}::uuid, 'running',
+                       now() + interval '10 minutes')`;
+      await tx`UPDATE deploy_leases SET holder_run_id = ${run}::uuid, holder_sync_id = NULL,
+                 acquired_at = now(), expires_at = now() + interval '10 minutes'
+               WHERE name = 'live-release'`;
+    });
+    try {
+      const why = await refusal(OWNER, "redirects.go_live_now", {
+        fromPaths: [`${P}-busy`],
+        repoRoot: root,
+      });
+      expect(why).toContain("releasing the live site right now");
+      expect(await liveRedirects(ADMIN_URL as string, P)).toEqual([]);
+    } finally {
+      await asSystem(ADMIN_URL as string, async (tx) => {
+        await tx`UPDATE deploy_leases SET holder_run_id = NULL, acquired_at = NULL, expires_at = NULL
+                 WHERE name = 'live-release'`;
+        await tx`DELETE FROM deploy_runs WHERE id = ${run}::uuid`;
+      });
+    }
+  });
+
+  it("a release applies its plan whole or not at all: a moved-on change or live table holds all back", async () => {
+    await op(OWNER, "redirects.create_many", {
+      redirects: [
+        { fromPath: `${P}-chain-a`, toPath: `${P}-chain-b` },
+        { fromPath: `${P}-chain-b`, toPath: "/t1550-live" },
+      ],
+    });
+    const pending = await asSystem(
+      ADMIN_URL as string,
+      async (tx) =>
+        (await tx`SELECT id::text AS id, revision::int AS revision FROM pending_redirects
+                  WHERE from_path LIKE ${`${P}-chain-%`} ORDER BY address`) as {
+          id: string;
+          revision: number;
+        }[],
+    );
+    const refs = pending.map((p) => ({ id: p.id, revision: p.revision }));
+    const fingerprint = await adapter.withAdminTransaction(SYS, async (tx) =>
+      liveRedirectsFingerprint(await loadLiveRedirectRows(tx)),
+    );
+    // The second change is kept as a draft after the plan: the first one
+    // alone would chain into a rule the live site does not have.
+    await op(OWNER, "redirects.set_changes_state", {
+      fromPaths: [`${P}-chain-b`],
+      action: "keep_as_draft",
+    });
+    const movedOn = await adapter.withAdminTransaction(SYS, (tx) =>
+      releaseRedirectChanges(
+        tx,
+        SYSTEM_ID,
+        refs,
+        { kind: "go_live_now" },
+        {
+          states: ["staged"],
+          liveFingerprint: fingerprint,
+        },
+      ),
+    );
+    expect(movedOn.released).toBe(false);
+    await op(OWNER, "redirects.set_changes_state", {
+      fromPaths: [`${P}-chain-b`],
+      action: "include",
+    });
+    const current = await asSystem(
+      ADMIN_URL as string,
+      async (tx) =>
+        (await tx`SELECT id::text AS id, revision::int AS revision FROM pending_redirects
+                  WHERE from_path LIKE ${`${P}-chain-%`} ORDER BY address`) as {
+          id: string;
+          revision: number;
+        }[],
+    );
+    // A live rule changed after the plan: its chains may not hold.
+    await seedLiveRedirects(ADMIN_URL as string, SYSTEM_ID, [
+      { fromPath: `${P}-other`, toPath: "/", statusCode: 301 },
+    ]);
+    const liveChanged = await adapter.withAdminTransaction(SYS, (tx) =>
+      releaseRedirectChanges(
+        tx,
+        SYSTEM_ID,
+        current,
+        { kind: "go_live_now" },
+        {
+          states: ["staged"],
+          liveFingerprint: fingerprint,
+        },
+      ),
+    );
+    expect(liveChanged.released).toBe(false);
+    expect(await liveRedirects(ADMIN_URL as string, `${P}-chain`)).toEqual([]);
+    expect(await pendingRedirects(ADMIN_URL as string, `${P}-chain`)).toHaveLength(2);
+  });
+});
+
+describe("a page move retargets pending changes in place (#1550)", () => {
+  it("a Draft pointing at a moved page stays a manual Draft; a live rule gets an automatic Staged change", async () => {
+    await op(OWNER, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-campaign`, toPath: "/t1550-about" }],
+      goLive: "later",
+    });
+    await seedLiveRedirects(ADMIN_URL as string, SYSTEM_ID, [
+      { fromPath: `${P}-legacy`, toPath: "/t1550-about", statusCode: 301 },
+    ]);
+    await adapter.withAdminTransaction(SYS, (tx) =>
+      applyPathMoveEffects(
+        SYS,
+        tx,
+        [{ pageId: crypto.randomUUID(), from: "/t1550-about", to: "/t1550-company" }],
+        "skip",
+      ),
+    );
+    expect(await pendingRedirects(ADMIN_URL as string, P)).toEqual([
+      expect.objectContaining({
+        fromPath: `${P}-campaign`,
+        toPath: "/t1550-company",
+        state: "draft",
+        origin: "manual",
+      }),
+      expect.objectContaining({
+        fromPath: `${P}-legacy`,
+        toPath: "/t1550-company",
+        state: "staged",
+        origin: "page_move",
+      }),
+    ]);
   });
 });
 

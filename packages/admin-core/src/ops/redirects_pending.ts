@@ -193,8 +193,8 @@ async function currentTargets(
 ): Promise<Record<string, string | null>> {
   const addresses = textArray(input.redirects.map((r) => redirectAddress(r.fromPath)));
   const live = (await tx.execute(sql`
-    SELECT caelo_redirect_address(from_path) AS address, to_path, status_code FROM redirects
-    WHERE caelo_redirect_address(from_path) = ANY(${addresses})
+    SELECT address, to_path, status_code FROM redirects
+    WHERE address = ANY(${addresses})
     ORDER BY from_path
     ${lock ? sql`FOR UPDATE` : sql``}
   `)) as unknown as { address: string; to_path: string; status_code: number }[];
@@ -367,6 +367,11 @@ const executeDefinition = defineOperation({
      * commit (`redirects.go_live_now` with `fromPaths`, as the approver).
      */
     goLive: z.enum(["next_publish", "now"]),
+    /**
+     * The pending changes this approval saved (id and revision): Go live now
+     * after it binds to exactly these, so a save in between is not put live.
+     */
+    changes: z.array(z.object({ id: z.string(), revision: z.number().int() })),
     /** Rules a page shares a path with; the page wins once it is published. */
     pageConflicts: z.array(z.object({ fromPath: z.string(), pageTitle: z.string() })),
     nextStep: z.string(),
@@ -426,7 +431,7 @@ const executeDefinition = defineOperation({
         message: `${changed.join(", ")} changed after this proposal was made, so applying it would overwrite that change. Nothing was applied: reject it and propose again (find_redirects shows the current rules).`,
       });
     }
-    await writeRedirectChanges(
+    const written = await writeRedirectChanges(
       tx,
       payload.redirects.map((r) => ({
         fromPath: r.fromPath,
@@ -462,6 +467,11 @@ const executeDefinition = defineOperation({
     return ok({
       fromPaths,
       goLive: payload.goLive,
+      changes: written.flatMap((o) =>
+        o.changeId !== null && o.revision !== null
+          ? [{ id: o.changeId, revision: o.revision }]
+          : [],
+      ),
       pageConflicts: conflicts,
       nextStep:
         conflicts.length === 0

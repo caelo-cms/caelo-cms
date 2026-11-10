@@ -50,7 +50,11 @@ import {
   type RedirectOrigin,
   SHARED_DRAFT_PENDING,
 } from "../../redirects/model.js";
-import { type RedirectChangeInput, writeRedirectChanges } from "../../redirects/write.js";
+import {
+  type RedirectChangeInput,
+  retargetPendingRedirects,
+  writeRedirectChanges,
+} from "../../redirects/write.js";
 import type { PathMove } from "./current-path.js";
 
 /** What a move set changed besides the paths themselves. */
@@ -70,14 +74,15 @@ export interface PathMoveEffects {
 export function rulesPointingAtSql(oldPaths: readonly string[]): SQL {
   const targets = textArray([...oldPaths]);
   return sql`
-    SELECT caelo_redirect_address(r.from_path) AS address, r.from_path, r.to_path, r.status_code
+    SELECT r.address, r.from_path, r.to_path, r.status_code,
+           NULL::text AS change_id
     FROM redirects r
     WHERE r.to_path = ANY(${targets})
       AND NOT EXISTS (
-        SELECT 1 FROM pending_redirects p WHERE p.address = caelo_redirect_address(r.from_path)
+        SELECT 1 FROM pending_redirects p WHERE p.address = r.address
       )
     UNION ALL
-    SELECT p.address, p.from_path, p.to_path, p.status_code
+    SELECT p.address, p.from_path, p.to_path, p.status_code, p.id::text AS change_id
     FROM pending_redirects p
     WHERE p.to_path = ANY(${targets}) AND ${SHARED_DRAFT_PENDING}
   `;
@@ -148,8 +153,8 @@ export async function applyPathMoveEffects(
   const newAddresses = new Set(real.map((m) => redirectAddress(m.to)));
   const atNew = await pendingByAddress(tx, [...newAddresses]);
   const liveAtNew = (await tx.execute(sql`
-    SELECT DISTINCT caelo_redirect_address(from_path) AS address FROM redirects
-    WHERE caelo_redirect_address(from_path) = ANY(${textArray([...newAddresses])})
+    SELECT DISTINCT address FROM redirects
+    WHERE address = ANY(${textArray([...newAddresses])})
   `)) as unknown as { address: string }[];
   const ruledAtNew = new Set([
     ...liveAtNew.map((r) => r.address),
@@ -171,12 +176,20 @@ export async function applyPathMoveEffects(
     from_path: string;
     to_path: string;
     status_code: number;
+    change_id: string | null;
   }[];
+  const retargets: { id: string; address: string; toPath: string }[] = [];
   for (const r of pointing) {
     const to = newPathOf.get(r.to_path);
     // A rule on a new path is being removed above; never point it anywhere.
     if (to === undefined || newAddresses.has(r.address)) continue;
-    changes.push({ fromPath: r.from_path, toPath: to, statusCode: r.status_code });
+    if (r.change_id !== null) {
+      // #1550 — a pending change is retargeted in place: it keeps its
+      // state, origin and owner (a Draft nobody included stays a Draft).
+      retargets.push({ id: r.change_id, address: r.address, toPath: to });
+    } else {
+      changes.push({ fromPath: r.from_path, toPath: to, statusCode: r.status_code });
+    }
   }
 
   // The old URLs' 301s last: a later change of an address replaces an
@@ -190,6 +203,13 @@ export async function applyPathMoveEffects(
     changes.push({ fromPath: m.from, toPath: m.to, statusCode: 301 });
     redirectsCreated += 1;
   }
+  // An address this write gives a change of its own (an old URL's 301)
+  // takes that change instead.
+  const written = new Set(changes.map((c) => redirectAddress(c.fromPath)));
+  await retargetPendingRedirects(
+    tx,
+    retargets.filter((r) => !written.has(r.address)),
+  );
   await writeRedirectChanges(tx, changes, {
     origin,
     state: "staged",

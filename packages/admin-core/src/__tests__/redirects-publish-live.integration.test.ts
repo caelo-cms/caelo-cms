@@ -28,7 +28,12 @@ import { setDeployBridge } from "../ops/deploy.js";
 import type { RedirectReleasePlan } from "../ops/redirects_release.js";
 import { retryRedirectSync } from "../redirect-sync-worker.js";
 import { registerAdminOps } from "../register.js";
-import { liveRedirects, pendingRedirects, wipeRedirects } from "./fixtures/redirects.js";
+import {
+  liveRedirects,
+  pendingRedirects,
+  seedLiveRedirects,
+  wipeRedirects,
+} from "./fixtures/redirects.js";
 import { ensureRoleUser } from "./fixtures/role-user.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
@@ -304,7 +309,10 @@ describe("redirects go live with Publish live (#1550)", () => {
     const back = await op<{
       redirects: { restored: number; restaged: number; skipped: unknown[] };
     }>(OWNER, "deploy.rollback", { targetName: "production", runId: firstRelease, repoRoot: root });
-    expect(back.redirects.skipped).toEqual([]);
+    // Go live now's change stays live, and the rollback says so.
+    expect(back.redirects.skipped).toEqual([
+      { address: `${P}-urgent`, reason: "it went live with Go live now, which a rollback keeps" },
+    ]);
     expect(await liveRedirects(ADMIN_URL as string, P)).toEqual([
       { fromPath: `${P}-urgent`, toPath: `/${TARGET}`, statusCode: 301 },
     ]);
@@ -317,9 +325,78 @@ describe("redirects go live with Publish live (#1550)", () => {
       [`${P}-go`, "staged"],
       [`${P}-wait`, "staged"],
     ]);
+    // Staged again as it was, but no chat's unstaged work: no Undo takes it away.
     expect(await pendingRedirects(ADMIN_URL as string, `/${A}`)).toEqual([
-      expect.objectContaining({ fromPath: `/${A}`, state: "staged", origin: "page_move" }),
+      expect.objectContaining({
+        fromPath: `/${A}`,
+        state: "staged",
+        origin: "page_move",
+        chatSessionId: null,
+      }),
     ]);
+  });
+
+  it("a rollback to a release an earlier rollback undid brings its redirects back, every spelling", async () => {
+    // Imported with both spellings of one address, live since before.
+    await seedLiveRedirects(ADMIN_URL as string, OWNER_ID, [
+      { fromPath: `${P}-dual`, toPath: "/", statusCode: 301 },
+      { fromPath: `${P}-dual/`, toPath: "/", statusCode: 301 },
+    ]);
+    await stage();
+    const base = (await publishLive([])).toRunId;
+    await op(OWNER, "redirects.create_many", {
+      redirects: [
+        { fromPath: `${P}-again`, toPath: `/${TARGET}` },
+        { fromPath: `${P}-dual`, toPath: `/${TARGET}` },
+      ],
+      upsert: true,
+    });
+    await stage();
+    const plan = await op<RedirectReleasePlan>(OWNER, "redirects.release_plan", {});
+    const mine = plan.goingLive.filter((c) => [`${P}-again`, `${P}-dual`].includes(c.fromPath));
+    expect(mine).toHaveLength(2);
+    const next = (await publishLive(mine.map((c) => ({ id: c.id, revision: c.revision })))).toRunId;
+    const view = async () =>
+      (await liveRedirects(ADMIN_URL as string, `${P}-`)).filter((r) =>
+        /-(again|dual)\/?$/.test(r.fromPath),
+      );
+    expect(await view()).toEqual([
+      { fromPath: `${P}-again`, toPath: `/${TARGET}`, statusCode: 301 },
+      { fromPath: `${P}-dual`, toPath: `/${TARGET}`, statusCode: 301 },
+    ]);
+
+    // Back to the release before: both stored spellings come back.
+    await op(OWNER, "deploy.rollback", { targetName: "production", runId: base, repoRoot: root });
+    expect(await view()).toEqual([
+      { fromPath: `${P}-dual`, toPath: "/", statusCode: 301 },
+      { fromPath: `${P}-dual/`, toPath: "/", statusCode: 301 },
+    ]);
+    expect(
+      (await pendingRedirects(ADMIN_URL as string, `${P}-`))
+        .filter((c) => /-(again|dual)$/.test(c.fromPath))
+        .map((c) => [c.fromPath, c.toPath, c.state]),
+    ).toEqual([
+      [`${P}-again`, `/${TARGET}`, "staged"],
+      [`${P}-dual`, `/${TARGET}`, "staged"],
+    ]);
+
+    // The operator drops the re-staged changes, then restores the release
+    // the rollback undid: its redirects come back from the log.
+    await op(OWNER, "redirects.set_changes_state", {
+      fromPaths: [`${P}-again`, `${P}-dual`],
+      action: "discard",
+    });
+    await op(OWNER, "deploy.rollback", { targetName: "production", runId: next, repoRoot: root });
+    expect(await view()).toEqual([
+      { fromPath: `${P}-again`, toPath: `/${TARGET}`, statusCode: 301 },
+      { fromPath: `${P}-dual`, toPath: `/${TARGET}`, statusCode: 301 },
+    ]);
+    // A rollback's own write is no change to re-stage.
+    expect(
+      (await pendingRedirects(ADMIN_URL as string, `${P}-`)).filter((c) =>
+        /-(again|dual)$/.test(c.fromPath),
+      ),
+    ).toEqual([]);
   });
 });
 

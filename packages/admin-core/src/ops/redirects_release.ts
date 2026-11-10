@@ -27,6 +27,7 @@
  * one is refused.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   defineOperation,
   defineReadOperation,
@@ -34,9 +35,11 @@ import {
   type ErrorDetail,
   execute,
   handlerErrorFromDetails,
+  type QueryError,
   textArray,
 } from "@caelo-cms/query-api";
 import {
+  type ExecutionContext,
   err,
   isExternalRedirectTarget,
   ok,
@@ -48,6 +51,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { claimLiveReleaseForSync, releaseLiveReleaseForSync } from "../deploy/live-release-lock.js";
 import { resolveOutputRoot } from "../deploy/output-root.js";
 import {
   markRedirectsBehind,
@@ -61,6 +65,7 @@ import {
   stagedBuildFiles,
 } from "../redirects/build-files.js";
 import {
+  liveRedirectsFingerprint,
   loadDraftChanges,
   loadLiveRedirectRows,
   loadStagedChanges,
@@ -70,7 +75,7 @@ import {
   pendingRowOf,
   plannedChangeOf,
 } from "../redirects/model.js";
-import { releaseRedirectChanges } from "../redirects/release.js";
+import { type ReleasedRedirect, releaseRedirectChanges } from "../redirects/release.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { requiresApproverPermission } from "./_approver-permission.js";
 import {
@@ -122,6 +127,12 @@ const releasePlanOutput = z.object({
   rows: z
     .array(z.object({ fromPath: z.string(), toPath: z.string(), statusCode: z.number().int() }))
     .nullable(),
+  /**
+   * The live table the plan was made against (`liveRedirectsFingerprint`);
+   * a release of `goingLive` passes it on and applies nothing when the
+   * table changed since. Null when nothing was planned.
+   */
+  liveFingerprint: z.string().nullable(),
 });
 
 /** What {@link releasePlanOp} returns. */
@@ -204,7 +215,7 @@ export const releasePlanOp = defineReadOperation({
     });
     const liveByAddress = new Map(read.live.map((r) => [redirectAddress(r.fromPath), r]));
     const draft = read.drafts.map((c) => plannedOf(c, liveByAddress));
-    const nothing = { goingLive: [], waiting: [], draft, rows: null };
+    const nothing = { goingLive: [], waiting: [], draft, rows: null, liveFingerprint: null };
     if (read.candidates.length === 0) {
       return ok({
         stagedRunId: read.build?.runId ?? null,
@@ -277,6 +288,7 @@ export const releasePlanOp = defineReadOperation({
       draft,
       problem: null,
       rows: input.includeRows ? [...release.rows] : null,
+      liveFingerprint: liveRedirectsFingerprint(read.live),
     });
   },
 });
@@ -329,10 +341,8 @@ async function goLiveCandidates(
   return { rows: out, problems };
 }
 
-/** A Go live now that found its changes moved on between the check and the write. */
-class MovedOnError extends Error {
-  override readonly name = "MovedOnError";
-}
+/** How long Go live now may hold the live-release lease for its check and write. */
+const GO_LIVE_LEASE_MS = 5 * 60_000;
 
 const goLiveOutput = z.object({
   /** The changes that are live now. */
@@ -352,6 +362,169 @@ const goLiveOutput = z.object({
     }),
   ),
 });
+
+type GoLiveInput = {
+  readonly fromPaths: readonly string[];
+  readonly changes?: readonly { readonly id: string; readonly revision: number }[] | undefined;
+  readonly repoRoot?: string | undefined;
+};
+
+type GoLiveTx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
+
+/**
+ * Go live now's check and write, while it holds the live-release lease (so
+ * no Publish live, rollback or plugin-data build changes the live build or
+ * table in between): the changes, as they are (or as `changes` names them),
+ * against the live table and every production target's live files; then
+ * all of them live, or none.
+ */
+async function goLiveUnderLease(
+  ctx: ExecutionContext,
+  input: GoLiveInput,
+  tx: GoLiveTx,
+  op: string,
+): Promise<
+  | {
+      readonly ok: true;
+      readonly applied: readonly ReleasedRedirect[];
+      readonly targetIds: string[];
+    }
+  | { readonly ok: false; readonly error: QueryError }
+> {
+  const checked = await tx.transaction(async (t) => ({
+    ...(await goLiveCandidates(t, input.fromPaths)),
+    live: await loadLiveRedirectRows(t),
+    targets: await loadProductionTargets(t),
+  }));
+  if (checked.problems.length > 0) {
+    return {
+      ok: false,
+      error: handlerErrorFromDetails(op, checked.problems, { lead: "Nothing went live." }),
+    };
+  }
+  // An approval binds the changes its card showed: a change saved since is
+  // not what the approver decided on.
+  if (input.changes) {
+    const listed = new Map(input.changes.map((c) => [c.id.toLowerCase(), c.revision]));
+    const moved = checked.rows.filter((r) => listed.get(r.id) !== r.revision);
+    if (moved.length > 0 || listed.size !== checked.rows.length) {
+      return {
+        ok: false,
+        error: {
+          kind: "HandlerError",
+          operation: op,
+          message: `Nothing went live: ${moved.map((r) => r.fromPath).join(", ") || "a change of this proposal"} changed after it was proposed, so it is not the change that was approved. Reject this proposal and propose Go live now again.`,
+          conflict: true,
+        },
+      };
+    }
+  }
+  if (checked.targets.length === 0) {
+    return {
+      ok: false,
+      error: {
+        kind: "HandlerError",
+        operation: op,
+        message: "this install has no production target, so nothing can go live",
+        refusal: true,
+      },
+    };
+  }
+  const outputRoot = resolveOutputRoot(input.repoRoot);
+  const problems: ErrorDetail[] = [];
+  for (const target of checked.targets) {
+    const files = await liveBuildFiles(target, outputRoot);
+    if (files === null) {
+      return {
+        ok: false,
+        error: {
+          kind: "HandlerError",
+          operation: op,
+          message: `nothing is live on ${target.name} yet, so there is no live site to put a redirect in front of. The change stays Staged and goes live with the first Publish live.`,
+          refusal: true,
+        },
+      };
+    }
+    let release: ReturnType<typeof planRedirectRelease>;
+    try {
+      release = planRedirectRelease({
+        live: checked.live,
+        changes: checked.rows.map(plannedChangeOf),
+        servedFiles: files,
+        pageUrlStyle: target.pageUrlStyle ?? "directory",
+      });
+    } catch (e) {
+      return {
+        ok: false,
+        error: {
+          kind: "HandlerError",
+          operation: op,
+          message: `Nothing went live: with these changes the live redirects could not be served (${e instanceof Error ? e.message : String(e)}).`,
+        },
+      };
+    }
+    const waiting = new Set(release.waiting.map((w) => w.id));
+    for (const [i, p] of input.fromPaths.entries()) {
+      const row = checked.rows.find((r) => r.address === redirectAddress(p));
+      if (!row || row.toPath === null) continue;
+      if (redirectPathServed(row.address, files)) {
+        problems.push({
+          path: ["fromPaths", i],
+          message: `a live page answers ${p}, so the rule would do nothing there (the page wins over a redirect)`,
+          next: "move or unpublish the page first, or keep the change for after it",
+        });
+      } else if (waiting.has(row.id) && !isExternalRedirectTarget(row.toPath)) {
+        problems.push({
+          path: ["fromPaths", i],
+          message: `its target ${row.toPath} is not on the live site yet`,
+          next: "it goes live with the Publish live that ships that page; keep it Staged",
+        });
+      }
+    }
+  }
+  if (problems.length > 0) {
+    return {
+      ok: false,
+      error: handlerErrorFromDetails(op, problems, { lead: "Nothing went live." }),
+    };
+  }
+  const targetIds = checked.targets.map((t) => t.id);
+  const written = await tx.transaction(async (t) => {
+    const released = await releaseRedirectChanges(
+      t,
+      ctx.actorId,
+      checked.rows.map((r) => ({ id: r.id, revision: r.revision })),
+      { kind: "go_live_now" },
+      { states: ["draft", "staged"], liveFingerprint: liveRedirectsFingerprint(checked.live) },
+    );
+    if (!released.released) return released;
+    await markRedirectsBehind(t, targetIds);
+    await recordAudit(t, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: op,
+      input: { fromPaths: input.fromPaths },
+      succeeded: true,
+      resultSummary: released.applied
+        .map((r) => `${r.fromPath} → ${r.toPath ?? "(removed)"}`)
+        .join(", ")
+        .slice(0, 500),
+    });
+    return released;
+  });
+  if (!written.released) {
+    return {
+      ok: false,
+      error: {
+        kind: "HandlerError",
+        operation: op,
+        message: `Nothing went live: ${written.reason} while it was checked. Look at it again (find_redirects) and Go live now again.`,
+        conflict: true,
+      },
+    };
+  }
+  return { ok: true, applied: written.applied, targetIds };
+}
 
 export const goLiveNowOp = defineOperation({
   name: "redirects.go_live_now",
@@ -373,6 +546,11 @@ export const goLiveNowOp = defineOperation({
     .object({
       /** The from paths of manual pending changes (Draft or Staged). */
       fromPaths: fromPathsSchema,
+      /**
+       * Exactly these changes (id and revision), as an approval card or a
+       * saved proposal showed them: a change saved since refuses the call.
+       */
+      changes: z.array(changeRefSchema).max(500).optional(),
       /** Where relative out_dirs resolve (deploy ops' `repoRoot`). */
       repoRoot: z.string().optional(),
     })
@@ -380,19 +558,8 @@ export const goLiveNowOp = defineOperation({
   output: goLiveOutput,
   handler: async (ctx, input, tx) => {
     const op = "redirects.go_live_now";
-    const checked = await tx.transaction(async (t) => {
-      if (!(await actorHasPermission(t, ctx, "deploy.trigger"))) {
-        return { refused: true as const };
-      }
-      const candidates = await goLiveCandidates(t, input.fromPaths);
-      return {
-        refused: false as const,
-        ...candidates,
-        live: await loadLiveRedirectRows(t),
-        targets: await loadProductionTargets(t),
-      };
-    });
-    if (checked.refused) {
+    const permitted = await tx.transaction((t) => actorHasPermission(t, ctx, "deploy.trigger"));
+    if (!permitted) {
       return err({
         kind: "HandlerError",
         operation: op,
@@ -401,108 +568,36 @@ export const goLiveNowOp = defineOperation({
         refusal: true,
       });
     }
-    if (checked.problems.length > 0) {
-      return err(handlerErrorFromDetails(op, checked.problems, { lead: "Nothing went live." }));
-    }
-    if (checked.targets.length === 0) {
-      return err({
-        kind: "HandlerError",
-        operation: op,
-        message: "this install has no production target, so nothing can go live",
-        refusal: true,
-      });
-    }
-    const outputRoot = resolveOutputRoot(input.repoRoot);
-    const problems: ErrorDetail[] = [];
-    for (const target of checked.targets) {
-      const files = await liveBuildFiles(target, outputRoot);
-      if (files === null) {
-        return err({
-          kind: "HandlerError",
-          operation: op,
-          message: `nothing is live on ${target.name} yet, so there is no live site to put a redirect in front of. The change stays Staged and goes live with the first Publish live.`,
-          refusal: true,
-        });
-      }
-      let release: ReturnType<typeof planRedirectRelease>;
-      try {
-        release = planRedirectRelease({
-          live: checked.live,
-          changes: checked.rows.map(plannedChangeOf),
-          servedFiles: files,
-          pageUrlStyle: target.pageUrlStyle ?? "directory",
-        });
-      } catch (e) {
-        return err({
-          kind: "HandlerError",
-          operation: op,
-          message: `Nothing went live: with these changes the live redirects could not be served (${e instanceof Error ? e.message : String(e)}).`,
-        });
-      }
-      const waiting = new Set(release.waiting.map((w) => w.id));
-      for (const [i, p] of input.fromPaths.entries()) {
-        const row = checked.rows.find((r) => r.address === redirectAddress(p));
-        if (!row || row.toPath === null) continue;
-        if (redirectPathServed(row.address, files)) {
-          problems.push({
-            path: ["fromPaths", i],
-            message: `a live page answers ${p}, so the rule would do nothing there (the page wins over a redirect)`,
-            next: "move or unpublish the page first, or keep the change for after it",
-          });
-        } else if (waiting.has(row.id) && !isExternalRedirectTarget(row.toPath)) {
-          problems.push({
-            path: ["fromPaths", i],
-            message: `its target ${row.toPath} is not on the live site yet`,
-            next: "it goes live with the Publish live that ships that page; keep it Staged",
-          });
-        }
-      }
-    }
-    if (problems.length > 0) {
-      return err(handlerErrorFromDetails(op, problems, { lead: "Nothing went live." }));
-    }
-    const targetIds = checked.targets.map((t) => t.id);
-    let applied: Awaited<ReturnType<typeof releaseRedirectChanges>>;
-    try {
-      applied = await tx.transaction(async (t) => {
-        const released = await releaseRedirectChanges(
-          t,
-          ctx.actorId,
-          checked.rows.map((r) => ({ id: r.id, revision: r.revision })),
-          { kind: "go_live_now" },
-          ["draft", "staged"],
-        );
-        if (released.length !== checked.rows.length) throw new MovedOnError();
-        await markRedirectsBehind(t, targetIds);
-        await recordAudit(t, {
-          actorId: ctx.actorId,
-          requestId: ctx.requestId,
-          operation: op,
-          input: { fromPaths: input.fromPaths },
-          succeeded: true,
-          resultSummary: released
-            .map((r) => `${r.fromPath} → ${r.toPath ?? "(removed)"}`)
-            .join(", ")
-            .slice(0, 500),
-        });
-        return released;
-      });
-    } catch (e) {
-      if (!(e instanceof MovedOnError)) throw e;
+    // The live-release lease orders Go live now with Publish live, rollback
+    // and the plugin-data build: none of them changes the live build or the
+    // live table while Go live now checks and writes.
+    const claimId = randomUUID();
+    const claimed = await tx.transaction((t) =>
+      claimLiveReleaseForSync(t, { syncId: claimId, ttlMs: GO_LIVE_LEASE_MS }),
+    );
+    if (!claimed) {
       return err({
         kind: "HandlerError",
         operation: op,
         message:
-          "Nothing went live: one of these changes was saved again while it was checked. Look at it again (find_redirects) and Go live now again.",
+          "Nothing went live: a Publish live, a rollback or a push to the hosting is releasing the live site right now. Go live now again in a minute.",
         conflict: true,
       });
     }
+    let done: Awaited<ReturnType<typeof goLiveUnderLease>>;
+    try {
+      done = await goLiveUnderLease(ctx, input, tx, op);
+    } finally {
+      await tx.transaction((t) => releaseLiveReleaseForSync(t, claimId));
+    }
+    if (!done.ok) return err(done.error);
     const outcomes = await syncRedirects(tx, ctx, {
       trigger: "go_live",
-      ...(input.repoRoot ? { outputRoot } : {}),
+      targetIds: done.targetIds,
+      ...(input.repoRoot ? { outputRoot: resolveOutputRoot(input.repoRoot) } : {}),
     });
     return ok({
-      applied: applied.map((r) => ({
+      applied: done.applied.map((r) => ({
         fromPath: r.fromPath,
         toPath: r.toPath,
         statusCode: r.statusCode,
@@ -514,7 +609,13 @@ export const goLiveNowOp = defineOperation({
   },
 });
 
-const goLivePayload = z.object({ fromPaths: fromPathsSchema.max(100) }).strict();
+const goLivePayload = z
+  .object({
+    fromPaths: fromPathsSchema.max(100),
+    /** The changes the card showed (id and revision): the approval applies exactly these. */
+    changes: z.array(changeRefSchema).max(100),
+  })
+  .strict();
 
 export const proposeGoLiveOp = defineOperation({
   name: "redirects.propose_go_live",
@@ -522,7 +623,7 @@ export const proposeGoLiveOp = defineOperation({
   // §11.A — the AI proposes Go live now; the operator approves the card.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: goLivePayload,
+  input: z.object({ fromPaths: fromPathsSchema.max(100) }).strict(),
   output: z.object({ proposalId: z.string(), preview: z.record(z.string(), z.unknown()) }),
   handler: async (ctx, input, tx) => {
     const op = "redirects.propose_go_live";
@@ -544,9 +645,12 @@ export const proposeGoLiveOp = defineOperation({
         state: r.state,
       })),
       effect:
-        "Live on the hosting right after approval, without Publish live. Approving needs the Publish live permission.",
+        "Live on the hosting right after approval, without Publish live. Approving needs the Publish live permission; a change saved after this proposal refuses the approval.",
     };
-    const payload = { fromPaths: rows.map((r) => r.fromPath) };
+    const payload = {
+      fromPaths: rows.map((r) => r.fromPath),
+      changes: rows.map((r) => ({ id: r.id, revision: r.revision })),
+    };
     const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
     const payloadHash = await hashProposalPayload({ kind: "go_live_now", ...payload });
     try {
@@ -612,6 +716,7 @@ const executeGoLiveDefinition = defineStepwiseOperation({
     const payload = goLivePayload.parse(row.payload);
     const applied = await execute(steps.registry, steps.adapter, ctx, "redirects.go_live_now", {
       fromPaths: payload.fromPaths,
+      changes: payload.changes,
       ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
     });
     // Refused: the proposal stays pending, the card shows why; reject it or

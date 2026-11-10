@@ -179,14 +179,21 @@ export function attachGatedExecute(
         }
       }
       if (gated.afterApply === "redirects-go-live-now") {
-        const saved = appliedValue as { goLive?: string; fromPaths?: string[] };
-        if (saved.goLive === "now" && saved.fromPaths && saved.fromPaths.length > 0) {
+        const saved = appliedValue as {
+          goLive?: string;
+          fromPaths?: string[];
+          changes?: { id: string; revision: number }[];
+        };
+        if (saved.goLive === "now" && saved.changes && saved.changes.length > 0) {
           // #1550 — the approver asked for these live now: Go live now as
           // the approver, after the apply committed (it reads the live
           // build's files and pushes to the hosting). A refusal leaves the
           // rules Staged and says why.
+          // Bound to the changes the approval saved: a save in between is not
+          // the change that was approved.
           const live = await execute(registry, adapter, ownerCtxLive, "redirects.go_live_now", {
-            fromPaths: saved.fromPaths,
+            fromPaths: saved.fromPaths ?? [],
+            changes: saved.changes,
           });
           return {
             ok: true,

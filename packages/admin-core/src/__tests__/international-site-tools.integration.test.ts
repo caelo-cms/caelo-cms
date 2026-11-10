@@ -52,6 +52,9 @@ async function cleanup(): Promise<void> {
   await sqlSystem(async (tx) => {
     await tx.unsafe('DROP SCHEMA IF EXISTS "plugin_international_site" CASCADE');
     await tx.unsafe(
+      "DELETE FROM pending_redirects WHERE from_path LIKE '/t396-%' OR from_path LIKE '/de/t396-%'",
+    );
+    await tx.unsafe(
       "DELETE FROM redirects WHERE from_path LIKE '/t396-%' OR from_path LIKE '/de/t396-%'",
     );
     // Actors stay (their audit + snapshot rows reference them — same
@@ -197,11 +200,12 @@ describe("#396 — international-site AI tools", () => {
     });
     expect(unlinked.path).toBe("/t396-preise");
     expect(unlinked.pathMoved).toBe(true);
+    // #1550 — the move's 301 is Staged: live with the Publish live that ships it.
     const redirect = await sqlSystem(
       async (tx) =>
-        (await tx.unsafe(`SELECT to_path FROM redirects WHERE from_path = '/de/t396-preise'`)) as {
-          to_path: string;
-        }[],
+        (await tx.unsafe(
+          `SELECT to_path FROM pending_redirects WHERE from_path = '/de/t396-preise' AND state = 'staged'`,
+        )) as { to_path: string }[],
     );
     expect(redirect[0]?.to_path).toBe("/t396-preise");
   });

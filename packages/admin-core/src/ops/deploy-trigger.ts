@@ -590,6 +590,8 @@ export const finishTriggerOp = defineOperation({
         .array(z.object({ id: z.string().uuid(), revision: z.number().int().min(1) }).strict())
         .max(20_000)
         .default([]),
+      /** The live table that plan was made against (redirects.release_plan's `liveFingerprint`). */
+      redirectLiveFingerprint: z.string().nullable().default(null),
     })
     .strict(),
   output: z.object({
@@ -598,6 +600,8 @@ export const finishTriggerOp = defineOperation({
     stagingUrl: z.string().nullable(),
     /** #1550 — how many redirect changes a production build put live. */
     redirectsApplied: z.number().int(),
+    /** Why none went live although some were listed (they stay Staged). */
+    redirectsHeldBack: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
     // Refusals throw OperationAbortError: nothing of this step may commit,
@@ -659,16 +663,24 @@ export const finishTriggerOp = defineOperation({
     // #1550 — and the redirect changes it ships go live with it, before
     // the run is stamped finished (a rollback to this run keeps them).
     let redirectsApplied = 0;
+    let redirectsHeldBack: string | null = null;
     if (input.env === "production") {
-      redirectsApplied = (
-        await releaseRedirectChanges(
-          tx,
-          ctx.actorId,
-          input.redirectChanges,
-          { kind: "release", runId: input.runId },
-          ["staged"],
-        )
-      ).length;
+      // All of the plan, or none when a listed change or the live table
+      // moved on since it was made.
+      if (input.redirectChanges.length > 0) {
+        const released =
+          input.redirectLiveFingerprint === null
+            ? ({ released: false, reason: "they were listed without a plan" } as const)
+            : await releaseRedirectChanges(
+                tx,
+                ctx.actorId,
+                input.redirectChanges,
+                { kind: "release", runId: input.runId },
+                { states: ["staged"], liveFingerprint: input.redirectLiveFingerprint },
+              );
+        if (released.released) redirectsApplied = released.applied.length;
+        else redirectsHeldBack = released.reason;
+      }
       await takeOverRedirectsOnFirstPublishedPages(
         ctx,
         tx,
@@ -727,6 +739,7 @@ export const finishTriggerOp = defineOperation({
       draftPages: await mainDraftPages(tx),
       stagingUrl: host ? `https://${host}/` : null,
       redirectsApplied,
+      redirectsHeldBack,
     });
   },
 });
@@ -1043,6 +1056,7 @@ async function runTrigger(
     // plan that cannot be made leaves them Staged (the build is live
     // already): the next Publish live takes them.
     let redirectChanges: { id: string; revision: number }[] = [];
+    let redirectFingerprint: string | null = null;
     let redirectNote: string | null = null;
     if (plan.target.env === "production" && plan.redirectChanges.length > 0) {
       const planned = await execute(registry, adapter, sys, "redirects.release_plan", {
@@ -1057,6 +1071,7 @@ async function runTrigger(
         if (p.problem !== null)
           redirectNote = `The Staged redirect changes stay Staged: ${p.problem}`;
         redirectChanges = p.goingLive.map((c) => ({ id: c.id, revision: c.revision }));
+        redirectFingerprint = p.liveFingerprint;
       }
       if (redirectNote !== null)
         console.error("[deploy] production build", { runId, redirectNote });
@@ -1080,8 +1095,13 @@ async function runTrigger(
       securityHeaders: built.securityHeaders,
       linkNotice,
       redirectChanges,
+      redirectLiveFingerprint: redirectFingerprint,
     });
     if (!finished.ok) return await fail(describeError(finished.error));
+    const heldBack = (finished.value as { redirectsHeldBack: string | null }).redirectsHeldBack;
+    if (heldBack !== null) {
+      redirectNote ??= `The Staged redirect changes stay Staged: ${heldBack}; the next Publish live plans them again.`;
+    }
     // The audit row committed with the run; wake this instance's worker
     // instead of waiting for its next pass.
     if (plan.target.env === "staging") kickQualityAuditWorker();

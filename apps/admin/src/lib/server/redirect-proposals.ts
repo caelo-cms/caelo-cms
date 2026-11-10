@@ -38,13 +38,22 @@ export function messageOf(error: unknown, fallback: string): string {
 }
 
 /**
- * Go live now for `fromPaths` as the signed-in human. Null when it went
- * live (also when a push failed: it is live in Caelo and retried, and the
- * text says so); otherwise the refusal's text.
+ * Go live now for `fromPaths` as the signed-in human. `changes` (id and
+ * revision) binds it to what a save or an approval just wrote: a save in
+ * between refuses it. Null when it went live (also when a push failed: it
+ * is live in Caelo and retried, and the text says so); otherwise the
+ * refusal's text.
  */
-export async function goLiveNow(locals: App.Locals, fromPaths: string[]): Promise<string | null> {
+export async function goLiveNow(
+  locals: App.Locals,
+  fromPaths: string[],
+  changes?: readonly { id: string; revision: number }[],
+): Promise<string | null> {
   const { adapter, registry } = getQueryContext();
-  const r = await execute(registry, adapter, locals.ctx, "redirects.go_live_now", { fromPaths });
+  const r = await execute(registry, adapter, locals.ctx, "redirects.go_live_now", {
+    fromPaths,
+    ...(changes ? { changes } : {}),
+  });
   if (!r.ok) return messageOf(r.error, "Go live now failed");
   const failed = (
     r.value as { targets: { status: string; error: string | null }[] }
@@ -91,9 +100,14 @@ export async function approveRedirectProposal(
     proposalId,
   });
   if (!r.ok) return fail(400, { error: messageOf(r.error, "approve failed") });
-  const v = r.value as { nextStep: string; goLive: string; fromPaths: string[] };
-  if (v.goLive === "now") {
-    const refused = await goLiveNow(locals, v.fromPaths);
+  const v = r.value as {
+    nextStep: string;
+    goLive: string;
+    fromPaths: string[];
+    changes: { id: string; revision: number }[];
+  };
+  if (v.goLive === "now" && v.changes.length > 0) {
+    const refused = await goLiveNow(locals, v.fromPaths, v.changes);
     if (refused) {
       return fail(409, {
         error: `Approved and saved; it goes live with the next Publish live, but it could not go live now: ${refused}`,

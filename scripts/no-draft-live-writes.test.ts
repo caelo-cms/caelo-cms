@@ -83,8 +83,11 @@ const PUSHERS: Record<string, string> = {
   "packages/admin-core/src/deploy/static-publisher-azure.ts": "the provider push (not implemented)",
 };
 
-/** The one writer of pending changes, and who saves through it. */
-const PENDING_WRITE_CALL = /\bwriteRedirectChanges\s*\(/;
+/**
+ * The one writer of pending changes (and the page move's in-place
+ * retarget, which keeps a change's state), and who saves through it.
+ */
+const PENDING_WRITE_CALL = /\b(writeRedirectChanges|retargetPendingRedirects)\s*\(/;
 
 const PENDING_WRITERS: Record<string, string> = {
   [WRITER]: "defines the writer",
@@ -199,6 +202,7 @@ describe("no draft write reaches the live redirects (#1517, #1550)", () => {
       [LIVE_RELEASE_CALL, "await rollBackRedirectReleases(tx, ctx, args);"],
       [PUSH_CALL, "await markRedirectsBehind(tx);"],
       [PENDING_WRITE_CALL, "await writeRedirectChanges(tx, changes, opts);"],
+      [PENDING_WRITE_CALL, "await retargetPendingRedirects(tx, retargets);"],
     ] as const) {
       expect(re.test(text)).toBe(true);
     }

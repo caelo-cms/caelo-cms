@@ -23,6 +23,7 @@
  *   path?" use it (`redirects.page_conflicts`, link canonicalisation).
  */
 
+import { createHash } from "node:crypto";
 import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
@@ -174,6 +175,18 @@ export async function loadLiveRedirectRows(tx: TransactionRunner): Promise<Redir
   return rows.map((r) => ({ fromPath: r.from_path, toPath: r.to_path, statusCode: r.status_code }));
 }
 
+/**
+ * A fingerprint of the live table: a release plan records the one it was
+ * made against, and the release refuses to apply the plan when the table
+ * changed since (the plan's chains may no longer hold).
+ */
+export function liveRedirectsFingerprint(rows: readonly RedirectTableRow[]): string {
+  const lines = rows
+    .map((r) => `${r.fromPath}\t${r.toPath}\t${r.statusCode}`)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return createHash("sha256").update(lines.join("\n")).digest("hex");
+}
+
 /** The live rows of `addresses` (both spellings), by address. */
 export async function liveRowsByAddress(
   tx: TransactionRunner,
@@ -183,8 +196,8 @@ export async function liveRowsByAddress(
   const out = new Map<string, (RedirectTableRow & { readonly id: string })[]>();
   if (addresses.length === 0) return out;
   const rows = (await tx.execute(sql`
-    SELECT id::text AS id, caelo_redirect_address(from_path) AS address, from_path, to_path, status_code
-    FROM redirects WHERE caelo_redirect_address(from_path) = ANY(${textArray([...addresses])})
+    SELECT id::text AS id, address, from_path, to_path, status_code
+    FROM redirects WHERE address = ANY(${textArray([...addresses])})
     ORDER BY from_path
     ${lock ? sql`FOR UPDATE` : sql``}
   `)) as unknown as {

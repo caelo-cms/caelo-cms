@@ -107,6 +107,9 @@ const changeOutcomeSchema = z.object({
   /** `pending`: saved as a pending change. `unchanged`: equals the live rule, nothing pending. */
   outcome: z.enum(["pending", "unchanged"]),
   state: z.enum(["draft", "staged"]).nullable(),
+  /** The pending change as saved (id and revision): what Go live now right after binds to. */
+  changeId: z.string().nullable(),
+  revision: z.number().int().nullable(),
   /** The pending change this one replaced (and the chat that made it), as one line. */
   replaced: z.string().nullable(),
 });
@@ -116,6 +119,8 @@ function outcomeOf(o: RedirectChangeOutcome): z.infer<typeof changeOutcomeSchema
     fromPath: o.fromPath,
     outcome: o.outcome,
     state: o.state,
+    changeId: o.changeId,
+    revision: o.revision,
     replaced: describeReplaced(o),
   };
 }
@@ -140,10 +145,10 @@ async function pendingViewAddresses(
   if (addresses.length === 0) return new Map();
   const list = textArray([...addresses]);
   const rows = (await tx.execute(sql`
-    SELECT caelo_redirect_address(r.from_path) AS address, r.from_path FROM redirects r
-    WHERE caelo_redirect_address(r.from_path) = ANY(${list})
+    SELECT r.address, r.from_path FROM redirects r
+    WHERE r.address = ANY(${list})
       AND NOT EXISTS (
-        SELECT 1 FROM pending_redirects p WHERE p.address = caelo_redirect_address(r.from_path)
+        SELECT 1 FROM pending_redirects p WHERE p.address = r.address
       )
     UNION ALL
     SELECT p.address, p.from_path FROM pending_redirects p
@@ -203,7 +208,7 @@ export const createRedirectOp = defineOperation({
     if (!outcome) throw new Error("redirects.create: the writer returned no outcome");
     const live = (await tx.execute(sql`
       SELECT id::text AS id FROM redirects
-      WHERE caelo_redirect_address(from_path) = ${outcome.address} ORDER BY from_path LIMIT 1
+      WHERE address = ${outcome.address} ORDER BY from_path LIMIT 1
     `)) as unknown as { id: string }[];
     const redirectId = outcome.changeId ?? live[0]?.id;
     if (!redirectId) {
@@ -437,7 +442,7 @@ function rulesFromSql(addresses: SQL): SQL {
     FROM (${addresses}) a
     LEFT JOIN LATERAL (
       SELECT id::text AS id, from_path, to_path, status_code, created_by, created_at
-      FROM redirects WHERE caelo_redirect_address(from_path) = a.address
+      FROM redirects WHERE address = a.address
       ORDER BY from_path LIMIT 1
     ) r ON true
     LEFT JOIN pending_redirects p ON p.address = a.address
@@ -445,7 +450,7 @@ function rulesFromSql(addresses: SQL): SQL {
 }
 
 const allAddressesSql = sql`
-  SELECT caelo_redirect_address(from_path) AS address FROM redirects
+  SELECT address FROM redirects
   UNION
   SELECT address FROM pending_redirects
 `;

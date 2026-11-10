@@ -447,11 +447,16 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/redirects.ts`,
   // A redirect to another domain, AI-proposed and Owner-approved (#1358).
   `${A}/ops/redirects_pending.ts`,
-  // Saved redirects sync to the hosting provider on save (#1157).
+  // The live redirects reach the hosting (#1157), pushed by a release.
   `${A}/ops/redirect_sync.ts`,
   `${A}/redirect-sync-worker.ts`,
   `${SHARED}/redirect-plan.ts`,
   `${SHARED}/redirect-target.ts`,
+  // Redirects as draft state (#1550): the pending changes, the release plan,
+  // Go live now and the release log. No scenario saves or publishes one.
+  `${A}/ops/redirects_release.ts`,
+  `${A}/redirects/**`,
+  `${SHARED}/redirect-release.ts`,
   `${A}/ops/ai_providers_pending.ts`,
   `${SHARED}/theme-importers/**`,
   `${A}/ops/snapshot_pending.ts`,

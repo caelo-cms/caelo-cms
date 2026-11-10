@@ -230,7 +230,7 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   plugin_errors: LOG,
   redirect_syncs: LOG,
   redirect_release_log:
-    "#1550: what each release did to the live redirects, per address; read by a rollback, nothing is derived from it",
+    "#1550: every write of the live redirects, per address (release, take-over, Go live now, rollback); a rollback reads it, nothing is derived from it",
   operator_access_sync_runs: LOG,
   link_migration_runs: LOG,
   comment_archive:

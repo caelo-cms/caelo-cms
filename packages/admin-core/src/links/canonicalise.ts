@@ -126,7 +126,7 @@ export async function loadLinkTargetLookup(
     WHERE r.status_code IN (301, 308)
       AND NOT EXISTS (
         SELECT 1 FROM pending_redirects p
-        WHERE p.address = caelo_redirect_address(r.from_path) AND ${SHARED_DRAFT_PENDING}
+        WHERE p.address = r.address AND ${SHARED_DRAFT_PENDING}
       )
     UNION ALL
     SELECT p.from_path, p.to_path FROM pending_redirects p

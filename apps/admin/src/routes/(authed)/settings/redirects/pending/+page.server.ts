@@ -8,10 +8,13 @@
  */
 
 import { redirect } from "@sveltejs/kit";
+import { requirePermission } from "#lib/server/guards.js";
 import { approveRedirectProposal, rejectRedirectProposal } from "#lib/server/redirect-proposals.js";
 import type { Actions, PageServerLoad } from "./$types";
 
-export const load: PageServerLoad = () => {
+export const load: PageServerLoad = ({ locals }) => {
+  // The same guard as Settings → Redirects, where the visit lands.
+  requirePermission(locals, "content.read");
   throw redirect(303, "/settings/redirects");
 };
 

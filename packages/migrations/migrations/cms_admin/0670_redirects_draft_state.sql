@@ -12,8 +12,9 @@
 --   caelo_redirect_address(path)  the address a from path belongs to: the
 --                                 path without its trailing slash, so `/x`
 --                                 and `/x/` are one address (as the redirect
---                                 plan answers them). An index on `redirects`
---                                 serves the lookups by address.
+--                                 plan answers them). `redirects.address`
+--                                 stores it, indexed, for the lookups by
+--                                 address.
 --   pending_redirects             at most one pending change per address: a
 --                                 create or change (`to_path` set) or a
 --                                 removal (`to_path` NULL), Draft or Staged,
@@ -25,12 +26,14 @@
 --                                 `chat_branch_id`: NULL or the shared draft
 --                                 joins the staging view; an isolated branch
 --                                 keeps its changes until its Stage merge.
---   redirect_release_log          what each release did to the live state,
---                                 per address: the live state before and
---                                 after, and the change it applied. A
---                                 rollback restores `before` and makes the
---                                 change Staged again; Go live now's entries
---                                 are history only (they stay live).
+--   redirect_release_log          every write of the live state, per
+--                                 address: the live rules before and after
+--                                 and the change applied (a release, its
+--                                 first-publish take-over, Go live now, a
+--                                 rollback). A rollback reconstructs from it
+--                                 the live state as of the run it restores
+--                                 and makes the rolled-back changes Staged
+--                                 again; Go live now's changes stay live.
 --
 -- The staging view (live state plus the shared draft's Staged changes) is
 -- published into cms_public_staging (`published_redirect_changes`, 0671):
@@ -50,7 +53,13 @@ CREATE OR REPLACE FUNCTION caelo_redirect_address(path text) RETURNS text
     SELECT CASE WHEN length(path) > 1 THEN COALESCE(NULLIF(rtrim(path, '/'), ''), '/') ELSE path END
   $$;
 
-CREATE INDEX IF NOT EXISTS redirects_address_idx ON redirects (caelo_redirect_address(from_path));
+-- The address as a stored column: a lookup by address must be an index
+-- condition under the table's RLS policy, and an expression with rtrim()
+-- (not leakproof) can never be one there. The previous release's INSERTs
+-- name their columns, so the generated column fills itself during the roll.
+ALTER TABLE redirects
+  ADD COLUMN address text GENERATED ALWAYS AS (caelo_redirect_address(from_path)) STORED;
+CREATE INDEX redirects_address_idx ON redirects (address);
 
 CREATE TABLE pending_redirects (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -81,39 +90,35 @@ CREATE INDEX pending_redirects_to_path_idx ON pending_redirects (to_path);
 
 CREATE TABLE redirect_release_log (
   id                     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  -- The release: a Publish live, an Owner's production build. NULL for Go live now.
+  -- The run that wrote: a Publish live, an Owner's production build, a
+  -- rollback. NULL for Go live now.
   run_id                 uuid NULL REFERENCES deploy_runs(id) ON DELETE CASCADE,
-  kind                   text NOT NULL CHECK (kind IN ('release', 'take_over', 'go_live_now')),
+  kind                   text NOT NULL
+                         CHECK (kind IN ('release', 'take_over', 'go_live_now', 'rollback')),
   address                text NOT NULL CHECK (address LIKE '/%'),
-  before_from_path       text NULL,
-  before_to_path         text NULL,
-  before_status_code     int  NULL,
-  after_from_path        text NULL,
-  after_to_path          text NULL,
-  after_status_code      int  NULL,
-  -- The change applied: who made it and why, so a rollback re-stages it as it was.
-  origin                 text NOT NULL
+  -- The live rules of the address before and after the write: every
+  -- stored spelling (`/x` and `/x/` of an imported table), as
+  -- [{fromPath, toPath, statusCode}].
+  before_rules           jsonb NOT NULL CHECK (jsonb_typeof(before_rules) = 'array'),
+  after_rules            jsonb NOT NULL CHECK (jsonb_typeof(after_rules) = 'array'),
+  -- The change applied, so a rollback re-stages it as it was. A rollback
+  -- applies none.
+  origin                 text NULL
                          CHECK (origin IN ('manual', 'page_move', 'page_delete', 'url_migration', 'revert', 'plugin')),
-  change_actor_id        uuid NOT NULL REFERENCES actors(id),
+  change_actor_id        uuid NULL REFERENCES actors(id),
   change_chat_session_id uuid NULL REFERENCES chat_sessions(id) ON DELETE SET NULL,
   applied_by             uuid NOT NULL REFERENCES actors(id),
   applied_at             timestamptz NOT NULL DEFAULT clock_timestamp(),
-  rolled_back_by_run_id  uuid NULL REFERENCES deploy_runs(id) ON DELETE SET NULL,
-  rolled_back_at         timestamptz NULL,
   CHECK ((kind = 'go_live_now') = (run_id IS NULL)),
-  CHECK ((before_to_path IS NULL) = (before_status_code IS NULL)),
-  CHECK ((before_to_path IS NULL) = (before_from_path IS NULL)),
-  CHECK ((after_to_path IS NULL) = (after_status_code IS NULL)),
-  CHECK ((after_to_path IS NULL) = (after_from_path IS NULL))
+  CHECK ((kind = 'rollback') = (origin IS NULL)),
+  CHECK ((kind = 'rollback') = (change_actor_id IS NULL))
 );
 CREATE INDEX redirect_release_log_run_idx ON redirect_release_log (run_id);
-CREATE INDEX redirect_release_log_open_idx ON redirect_release_log (applied_at DESC)
-  WHERE rolled_back_at IS NULL;
+CREATE INDEX redirect_release_log_applied_idx ON redirect_release_log (applied_at);
 CREATE INDEX redirect_release_log_address_idx ON redirect_release_log (address, applied_at DESC);
 CREATE INDEX redirect_release_log_change_actor_idx ON redirect_release_log (change_actor_id);
 CREATE INDEX redirect_release_log_change_chat_idx ON redirect_release_log (change_chat_session_id);
 CREATE INDEX redirect_release_log_applied_by_idx ON redirect_release_log (applied_by);
-CREATE INDEX redirect_release_log_rolled_back_by_idx ON redirect_release_log (rolled_back_by_run_id);
 
 DO $$
 DECLARE t text;

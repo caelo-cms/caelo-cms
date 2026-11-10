@@ -7,7 +7,9 @@
  * Settings form, the approved external rule, and every page write that
  * moves a URL (`applyPathMoveEffects`, a delete's dead-URL 301, an approved
  * URL migration, a revert, the `international-site` locale-root redirect
- * through `redirects.create`). None of them touches the live state.
+ * through `redirects.create`), and the chain collapse of a page move
+ * retargets pending changes in place ({@link retargetPendingRedirects}).
+ * None of them touches the live state.
  *
  * One pending change per address: a new change replaces the old one (the
  * outcome names it and the chat that made it, also across branches,
@@ -20,6 +22,7 @@
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { redirectAddress } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { jsonbParam } from "../sql-helpers.js";
 import {
   liveRowsByAddress,
   type PendingRedirectRow,
@@ -60,6 +63,8 @@ export interface RedirectChangeOutcome {
    */
   readonly outcome: "pending" | "unchanged";
   readonly changeId: string | null;
+  /** The pending change's revision: what a later step binds to (Go live now after an approval). */
+  readonly revision: number | null;
   readonly state: RedirectChangeState | null;
   /** The pending change this one replaced, when it held something else or another chat made it. */
   readonly replaced: ReplacedRedirectChange | null;
@@ -126,6 +131,7 @@ export async function writeRedirectChanges(
         fromPath: c.fromPath,
         outcome: "unchanged",
         changeId: null,
+        revision: null,
         state: null,
         replaced,
       });
@@ -152,11 +158,12 @@ export async function writeRedirectChanges(
                pending_redirects.chat_branch_id)
           IS DISTINCT FROM (EXCLUDED.from_path, EXCLUDED.to_path, EXCLUDED.status_code,
                EXCLUDED.state, EXCLUDED.origin, EXCLUDED.chat_session_id, EXCLUDED.chat_branch_id)
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
+      RETURNING id::text AS id, revision::text AS revision
+    `)) as unknown as { id: string; revision: string }[];
     // No row back: the same change was pending already (nothing to bump).
     const changeId = written[0]?.id ?? before?.id;
-    if (!changeId)
+    const revision = written[0] ? Number(written[0].revision) : before?.revision;
+    if (!changeId || revision === undefined)
       throw new Error(`writeRedirectChanges: ${address} has no pending row after the write`);
     pending.set(address, {
       id: changeId,
@@ -166,7 +173,7 @@ export async function writeRedirectChanges(
       statusCode: c.statusCode,
       state: opts.state,
       origin: opts.origin,
-      revision: (before?.revision ?? 0) + 1,
+      revision,
       actorId: opts.owner.actorId,
       chatSessionId: opts.owner.chatSessionId,
       chatBranchId: opts.owner.chatBranchId,
@@ -178,11 +185,37 @@ export async function writeRedirectChanges(
       fromPath,
       outcome: "pending",
       changeId,
+      revision,
       state: opts.state,
       replaced,
     });
   }
   return outcomes;
+}
+
+/**
+ * #1550 — a page move retargets the pending changes that point at a moved
+ * page (the chain collapse of `applyPathMoveEffects`) in place: each keeps
+ * its state, origin and owner, so a Draft stays a Draft that nobody
+ * included, and a manual change stays one the operator can keep as a
+ * draft. Each gets a new revision, like any other save.
+ *
+ * @returns how many changes were retargeted.
+ */
+export async function retargetPendingRedirects(
+  tx: TransactionRunner,
+  retargets: readonly { readonly id: string; readonly toPath: string }[],
+): Promise<number> {
+  if (retargets.length === 0) return 0;
+  const moved = (await tx.execute(sql`
+    UPDATE pending_redirects p
+    SET to_path = r.to_path, revision = p.revision + 1, updated_at = now()
+    FROM jsonb_to_recordset(${jsonbParam(retargets.map((r) => ({ id: r.id, to_path: r.toPath })))})
+      AS r(id uuid, to_path text)
+    WHERE p.id = r.id AND p.to_path IS DISTINCT FROM r.to_path
+    RETURNING 1
+  `)) as unknown as unknown[];
+  return moved.length;
 }
 
 function replacedOf(
