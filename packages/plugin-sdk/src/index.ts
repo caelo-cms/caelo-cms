@@ -82,6 +82,7 @@ export {
 } from "@caelo-cms/shared/lists-model";
 export * from "./admin-panels.js";
 export * from "./editor-toolbar.js";
+export * from "./index-coverage.js";
 export * from "./indexes.js";
 export * from "./mail-templates.js";
 export * from "./public-surface.js";
@@ -1617,6 +1618,33 @@ export interface PluginQuery {
   update<TableName extends string>(
     table: TableName,
     id: string,
+    patch: Record<string, unknown>,
+  ): Promise<void>;
+  /**
+   * One patch on many rows (#1391): every listed row gets the same
+   * columns, in one call and one statement. Every row or none: a missing
+   * or deleted id refuses the whole call and names the ids. Up to 1000
+   * ids per call (split a longer list); an empty list does nothing.
+   * Prefer it to a loop of `update` whenever a pass sets the same value
+   * on several rows: 10,000 single updates cost minutes of database time,
+   * the same rows in ten calls seconds.
+   *
+   * On `ctx.adminQuery` (private rows) the call is one change: one
+   * snapshot for all rows, one undo step, and from a chat it lands on the
+   * chat's branch like `update`. On `ctx.query` (public, visitor data) it
+   * writes the live rows directly, with no snapshot or undo, like `update`
+   * there.
+   *
+   * @example
+   * ```ts
+   * await ctx.adminQuery.updateMany("page_variants", staleIds, {
+   *   translation_status: "needs_update",
+   * });
+   * ```
+   */
+  updateMany<TableName extends string>(
+    table: TableName,
+    ids: readonly string[],
     patch: Record<string, unknown>,
   ): Promise<void>;
   delete<TableName extends string>(table: TableName, id: string): Promise<void>;

@@ -49,6 +49,7 @@ import {
   mcpIapServiceAccountEmail,
   operatorAccessJobResource,
   runServiceAccountEmail,
+  STATIC_BUCKET_METADATA_ROLE,
   schedulerServiceAccountEmail,
   stagingGatewayServiceAccountEmail,
   staticPublisherServiceAccountId,
@@ -1695,6 +1696,17 @@ const GCP_ONLY: readonly IamInvariant[] = [
     target: { kind: "bucket", bucket: "static" },
     onFailure: "abort",
     why: "Confirm-publish copies the staged build into the static bucket",
+  },
+  {
+    stackResource: "admin-static-bucket-read",
+    // Why a bucket role beside objectAdmin: Compute checks the bucket a
+    // backend bucket references as the caller on every patch, and Publish
+    // live patches the backend bucket's page headers (#1454, contract 24).
+    role: STATIC_BUCKET_METADATA_ROLE,
+    member: "run-sa",
+    target: { kind: "bucket", bucket: "static" },
+    onFailure: "abort",
+    why: "Publish live and rollback write the build's page headers to the static backend bucket, which Compute allows only to a caller that may read the bucket it serves",
   },
   {
     stackResource: "admin-staging-rw",

@@ -17,6 +17,7 @@ import {
   type FirebaseCall,
   syncFirebaseRedirects,
 } from "../firebase-redirect-sync.js";
+import { SECURITY_HEADER_ENTRIES, VERSION_CONFIG_HEADERS } from "../firebase-version-headers.js";
 
 const SITE = "s";
 
@@ -122,7 +123,7 @@ const PRODUCTION: DeployTarget = {
 };
 
 const LIVE_CONFIG = {
-  headers: [{ glob: "**", headers: { "X-Content-Type-Options": "nosniff" } }],
+  headers: [...VERSION_CONFIG_HEADERS] as unknown[],
   rewrites: [{ glob: "/api/**", run: { serviceId: "gw", region: "europe-west1" } }],
   redirects: [] as unknown[],
 };
@@ -204,6 +205,32 @@ describe("syncFirebaseRedirects (#1157)", () => {
     ]);
     expect(live.config.headers).toEqual(LIVE_CONFIG.headers);
     // And once current, nothing more to release.
+    expect((await sync()).outcome).toBe("unchanged");
+  });
+
+  it("a served version with the v0.12.1 header patterns is re-released with the whole-path ones", async () => {
+    await sync();
+    // What a v0.12.1 release stored: the unanchored patterns anchored at
+    // both ends, so nosniff reached only `/` and the SVG CSP no path.
+    const live = fake.served("live");
+    const cache = VERSION_CONFIG_HEADERS.slice(0, 2);
+    live.config = {
+      ...live.config,
+      headers: [
+        ...cache,
+        { regex: "^\\.ico$", headers: { "Content-Type": "image/x-icon" } },
+        { regex: "^/$", headers: { "X-Content-Type-Options": "nosniff" } },
+        { regex: "^\\.[sS][vV][gG]$", headers: { "Content-Security-Policy": "x" } },
+      ],
+    };
+    const redirectsBefore = live.config.redirects;
+    // Same redirects, but the stale headers alone are a change.
+    const result = await sync();
+    expect(result.outcome).toBe("applied");
+    const after = fake.served("live");
+    expect(after.config.headers).toEqual([...VERSION_CONFIG_HEADERS]);
+    expect(after.config.headers).toContainEqual(SECURITY_HEADER_ENTRIES[0]);
+    expect(after.config.redirects).toEqual(redirectsBefore);
     expect((await sync()).outcome).toBe("unchanged");
   });
 

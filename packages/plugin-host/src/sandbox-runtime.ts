@@ -132,6 +132,11 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
       const a = z.tuple([table, id, record]).parse(args);
       return ctx.query.update(...a);
     }
+    case "query.updateMany": {
+      // The op caps the list at UPDATE_MANY_MAX; the bridge only checks the shape.
+      const a = z.tuple([table, z.array(id), record]).parse(args);
+      return ctx.query.updateMany(...a);
+    }
     case "query.delete": {
       const a = z.tuple([table, id]).parse(args);
       return ctx.query.delete(...a);

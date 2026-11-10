@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { AiWorkItem, PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { type AiWorkItem, indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 const rows = [
@@ -35,11 +35,11 @@ function harness(opts: {
         };
   const ctx = {
     invocation: { origin: "chat", actorId: "a", aiDelegated: opts.delegated },
-    query: {
+    query: indexCheckedQuery(plugin, "schema", {
       list: async () => {
         return opts.empty ? [] : rows;
       },
-    },
+    }),
     ai,
   } as unknown as PluginContextTier1;
   return { ctx, state };

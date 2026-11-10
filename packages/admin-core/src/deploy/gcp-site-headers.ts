@@ -17,7 +17,16 @@
  * enforced CSP names `'self'` for page scripts instead of per-build hashes.
  *
  * Rights: `compute.backendBuckets.get` and `.update` in the
- * `caeloUrlMapRedirects` role (contract 23).
+ * `caeloUrlMapRedirects` role (contract 23), and `storage.buckets.get` on the
+ * static bucket through `roles/storage.bucketViewer` (contract 24): Compute
+ * checks the bucket a backend bucket serves as the caller on every patch,
+ * also one that changes only the headers. Without it the patch is accepted
+ * and its operation ends in `GCS_BUCKET_ACCESS_DENIED`. provisioning's
+ * gcp-site-headers-access.test.ts ties each call below to its permission.
+ *
+ * A failed write leaves the bucket's list as it was, and every Publish live
+ * and rollback compares it with its build's, so once the cause is fixed the
+ * next one puts the right headers on.
  */
 
 import { gcpBackendBucketHeaders, type SiteHeaderSet } from "@caelo-cms/shared";
@@ -87,9 +96,24 @@ export async function applyGcpSiteHeaders(args: {
   }
   const errors = op.error?.errors ?? [];
   if (errors.length > 0) {
+    const detail = errors.map((e) => `${e.code ?? "?"}: ${e.message ?? ""}`).join("; ");
+    const cause = errors.some((e) => e.code === GCS_BUCKET_ACCESS_DENIED)
+      ? BUCKET_ACCESS_NEXT_STEP
+      : "Publish live again once the cause is fixed.";
     throw new Error(
-      `gcp-site-headers: updating backend bucket ${name} failed: ${errors.map((e) => `${e.code ?? "?"}: ${e.message ?? ""}`).join("; ")}. The files are live with the previous headers; publish again once the cause is fixed.`,
+      `gcp-site-headers: updating backend bucket ${name} failed: ${detail}. The files are live with the previous headers. ${cause}`,
     );
   }
   return true;
 }
+
+/** The operation error Compute reports when the caller may not read the served bucket. */
+const GCS_BUCKET_ACCESS_DENIED = "GCS_BUCKET_ACCESS_DENIED";
+
+/**
+ * What to do about {@link GCS_BUCKET_ACCESS_DENIED}: the grant is a cloud-setup
+ * step (contract 24) the admin cannot make itself, and publishing again
+ * before it fails the same way.
+ */
+const BUCKET_ACCESS_NEXT_STEP =
+  "The admin's service account may not read the static bucket's settings (storage.buckets.get, granted as roles/storage.bucketViewer on that bucket by Caelo's cloud-setup step 24). The Owner installs the update that carries it from Settings → Updates (or runs the upgrade from a terminal); then Publish live again, which puts this build's headers on.";

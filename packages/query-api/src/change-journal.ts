@@ -109,14 +109,26 @@ export interface JournalFilter {
   readonly branchOnlyKinds?: readonly string[];
 }
 
-/** `ARRAY[...]` bound as ONE parameter (rule 7: no per-element bind lists). */
+/** `values` as a Postgres array literal: every element quoted, `"` and `\` escaped. */
+function arrayLiteral(values: readonly string[]): string {
+  return `{${values.map((v) => `"${v.replace(/["\\]/g, (c) => `\\${c}`)}"`).join(",")}}`;
+}
+
+/**
+ * `ARRAY[...]` bound as ONE parameter (rule 7: no per-element bind lists),
+ * as an array literal cast to `text[]`. The planner sees its elements, so
+ * `col = ANY(...)` is estimated from the column's statistics and can be
+ * an index condition. The earlier form, `ARRAY(SELECT
+ * jsonb_array_elements_text(...))`, was a subquery: an unknown value at
+ * plan time, which hid how few rows a kind filter keeps (#1269).
+ */
 export function textArray(values: readonly string[]) {
-  return sql`ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(values)}::text)::jsonb))`;
+  return sql`${arrayLiteral(values)}::text[]`;
 }
 
 /** {@link textArray} for uuids. */
 export function uuidArray(values: readonly string[]) {
-  return sql`ARRAY(SELECT jsonb_array_elements_text((${JSON.stringify(values)}::text)::jsonb)::uuid)`;
+  return sql`${arrayLiteral(values)}::uuid[]`;
 }
 
 /** Every operation a journal row can carry. */
@@ -209,38 +221,84 @@ function filterSql(filter: JournalFilter, alias = "ec") {
   return sql.join(parts, sql` AND `);
 }
 
+/** The bounds of a `pg_snapshot` that decide which journal rows it has not seen. */
+interface SnapshotBounds {
+  /** First xid the snapshot has not seen started (xid8, as text). */
+  readonly xmax: string;
+  /** Xids in flight when it was taken, all below xmax (xid8, as text). */
+  readonly xip: readonly string[];
+}
+
+const SNAPSHOT_TEXT = /^(\d{1,20}):(\d{1,20}):((?:\d{1,20})(?:,\d{1,20})*)?$/;
+
 /**
- * The journal rows the snapshot in `cte.s` has not seen, as a FROM item:
- * those of a transaction at or after its xmax, or of one in flight when it
- * was taken (its xip list, all below xmax). That is exactly
- * `NOT pg_visible_in_snapshot` for the rows a reader can see, read through
- * the primary key: two index ranges, the bounds as scalar subqueries
- * Postgres evaluates once (a join filter on the CTE's column, or one OR of
- * both, made it walk the whole key in order). The old `xid >= xmin` scan
- * re-read every row between xmin and xmax on every read — everything
- * delivered since the oldest transaction open at the cursor — so a long
- * transaction (a plugin's first rebuild, a build) made every consumer's
- * poll after every write re-read the journal since it began (#1392: 894 s
- * of the scale gate's database time, 42,000 buffers per read). Callers
- * keep the exact visibility test. Their kind filter applies inside each
- * range through `(kind, xid)` (0602), and a group that counts no inserts
- * reads the non-insert partial index (0650): rows of other kinds, and the
- * inserts such a reader ignores, cost nothing.
+ * The bounds of a snapshot in `pg_snapshot` text form (`xmin:xmax:xip,…`).
+ * Throws on anything else: a cursor or mark is only ever written by this
+ * module, so a malformed one is a bug to surface, not to read around.
  */
-function unseenRows(cte: string, opts: { readonly withOwn?: boolean } = {}) {
-  const c = sql.raw(cte);
-  return sql`(SELECT * FROM entity_changes WHERE xid >= (SELECT pg_snapshot_xmax(s) FROM ${c})
-              UNION ALL
-              SELECT * FROM entity_changes
-               WHERE xid = ANY(ARRAY(SELECT pg_snapshot_xip(s) FROM ${c}))
-              ${
-                // The marked transaction's own rows: Postgres counts its own
-                // xid as visible in its snapshots, but a later write by it
-                // must still invalidate (see JournalMark.ownXid).
-                opts.withOwn
-                  ? sql`UNION ALL SELECT * FROM entity_changes WHERE xid = (SELECT own FROM ${c})`
-                  : sql``
-              })`;
+function snapshotBounds(snapshot: string): SnapshotBounds {
+  const m = SNAPSHOT_TEXT.exec(snapshot);
+  if (!m?.[2]) throw new Error(`change journal: not a pg_snapshot: ${JSON.stringify(snapshot)}`);
+  return { xmax: m[2], xip: m[3] ? m[3].split(",") : [] };
+}
+
+/**
+ * Has a reader at `later` seen every transaction `earlier` saw? Only then
+ * do the journal rows between the two ({@link readChanges} from `earlier`
+ * to `later`) carry a cached read at `earlier` forward to `later`; a
+ * reader whose snapshot is older than the cache (a long build
+ * transaction) must read afresh. The same test `checkJournalMark` makes
+ * in SQL, on the snapshot texts.
+ */
+export function snapshotFollows(earlier: string, later: string): boolean {
+  const e = snapshotBounds(earlier);
+  const l = snapshotBounds(later);
+  const eMax = BigInt(e.xmax);
+  if (eMax > BigInt(l.xmax)) return false;
+  const inFlightEarlier = new Set(e.xip);
+  // A transaction `earlier` saw committed (below its xmax, not in its
+  // xip) must not still be in flight for `later`.
+  return l.xip.every((x) => BigInt(x) >= eMax || inFlightEarlier.has(x));
+}
+
+/**
+ * The journal rows a snapshot has not seen, as a FROM item: those of a
+ * transaction at or after its xmax, or of one in flight when it was taken
+ * (its xip list, all below xmax), plus `ownXid`'s when given. That is
+ * exactly `NOT pg_visible_in_snapshot` for the rows a reader can see, read
+ * through the primary key as at most three index ranges.
+ *
+ * The bounds are statement parameters, never values the statement derives
+ * from the snapshot (a CTE column, a scalar subquery over it): Postgres
+ * plans with a parameter's value, so it sees that hardly any row lies past
+ * xmax and takes the index. Derived inside the statement, the bounds were
+ * unknown to the planner; it assumed a third of the journal matched, and
+ * under the EXISTS of a freshness check (planned for its first match) a
+ * sequential scan looked cheapest. A fresh check has no match, so it read
+ * the whole journal, three times: the scale gate's 8-second check, 17,600
+ * buffers per call over 328,000 rows (#1269).
+ *
+ * The old `xid >= xmin` scan re-read every row between xmin and xmax on
+ * every read, so a long transaction (a plugin's first rebuild, a build)
+ * made every consumer's poll re-read the journal since it began (#1392).
+ * Callers keep the exact visibility test. Their kind filter applies inside
+ * each range through `(kind, xid)` (0602), and a group that counts no
+ * inserts reads the non-insert partial index (0650).
+ */
+function unseenRows(bounds: SnapshotBounds, ownXid: string | null = null) {
+  const ranges = [sql`SELECT * FROM entity_changes WHERE xid >= ${bounds.xmax}::xid8`];
+  if (bounds.xip.length > 0) {
+    ranges.push(
+      sql`SELECT * FROM entity_changes WHERE xid = ANY(${arrayLiteral(bounds.xip)}::xid8[])`,
+    );
+  }
+  // The marked transaction's own rows: Postgres counts its own xid as
+  // visible in its snapshots, but a later write by it must still
+  // invalidate (see JournalMark.ownXid).
+  if (ownXid !== null) {
+    ranges.push(sql`SELECT * FROM entity_changes WHERE xid = ${ownXid}::xid8`);
+  }
+  return sql`(${sql.join(ranges, sql` UNION ALL `)})`;
 }
 
 /**
@@ -296,6 +354,7 @@ export async function checkJournalMark(
   cached: Pick<JournalMark, "snapshot" | "ownXid"> | null,
   filter: JournalFilter,
 ): Promise<JournalCheck> {
+  const ownXid = cached?.ownXid ?? null;
   const rows = (await tx.execute(sql`
     WITH c AS (SELECT ${cached?.snapshot ?? null}::pg_snapshot AS s, ${cached?.ownXid ?? null}::xid8 AS own),
          r AS (SELECT pg_current_snapshot() AS s, pg_current_xact_id_if_assigned() AS own)
@@ -310,7 +369,7 @@ export async function checkJournalMark(
                WHERE x.xid < pg_snapshot_xmax(c.s) AND pg_visible_in_snapshot(x.xid, c.s)
             )
             AND NOT EXISTS (
-              SELECT 1 FROM ${unseenRows("c", { withOwn: true })} ec
+              SELECT 1 FROM ${cached ? unseenRows(snapshotBounds(cached.snapshot), ownXid) : sql`(SELECT * FROM entity_changes WHERE false)`} ec
                WHERE (NOT pg_visible_in_snapshot(ec.xid, c.s) OR ec.xid = c.own)
                  AND ${filterSql(filter)}
             )
@@ -569,6 +628,12 @@ export async function readChanges(
     readonly after: readonly [string, string, string] | null;
     readonly filter: JournalFilter;
     readonly limit: number;
+    /**
+     * The cursor's own xid ({@link JournalMark.ownXid}) when the cursor is a
+     * cached read's mark: Postgres leaves a transaction's own xid out of its
+     * snapshots, so its writes after the read would otherwise count as seen.
+     */
+    readonly ownXid?: string | null;
   },
 ): Promise<{
   changes: JournalChange[];
@@ -595,8 +660,8 @@ export async function readChanges(
              ec.site_snapshot_id::text AS site_snapshot_id,
              ec.prev_snapshot_id::text AS prev_snapshot_id, ec.op_name,
              ec.created_at::text AS created_at
-        FROM ${unseenRows("c")} ec, c
-       WHERE NOT pg_visible_in_snapshot(ec.xid, c.s)
+        FROM ${unseenRows(snapshotBounds(input.cursor), input.ownXid ?? null)} ec, c
+       WHERE (NOT pg_visible_in_snapshot(ec.xid, c.s) OR ec.xid = ${input.ownXid ?? null}::xid8)
          AND pg_visible_in_snapshot(ec.xid, c.t)
          ${
            after

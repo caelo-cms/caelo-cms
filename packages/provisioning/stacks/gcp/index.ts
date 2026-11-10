@@ -667,6 +667,19 @@ new gcp.storage.BucketIAMMember(
   },
   opts,
 );
+// #1454, contract 24 — Publish live patches the static backend bucket's page
+// headers, and Compute lets only a caller that may read the referenced
+// Cloud Storage bucket patch it (`storage.buckets.get`, which objectAdmin
+// lacks). This bucket only (STATIC_BUCKET_METADATA_ROLE, gcp-names.ts).
+new gcp.storage.BucketIAMMember(
+  `${namePrefix}-admin-static-bucket-read`,
+  {
+    bucket: staticBucket.name,
+    role: "roles/storage.bucketViewer",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
 new gcp.storage.BucketIAMMember(
   `${namePrefix}-admin-staging-rw`,
   {

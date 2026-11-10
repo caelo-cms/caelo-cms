@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 23;
+export const INFRA_CONTRACT_VERSION = 24;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -192,6 +192,14 @@ export const INFRA_CONTRACT_VERSION = 23;
 //       `caeloUrlMapRedirects` role gains `compute.backendBuckets.get` and
 //       `.update`, a custom-role change the in-cloud upgrader may not make.
 //       Other providers have nothing to converge for it.
+//  24 — #1454 follow-up: those two were not enough. Compute checks the
+//       Cloud Storage bucket a backend bucket references as the caller on
+//       every patch, so the patch's operation ended in
+//       `GCS_BUCKET_ACCESS_DENIED` (a v0.12.1 install). The admin's run SA
+//       gets `roles/storage.bucketViewer` (`storage.buckets.get`) on the
+//       static bucket only, an IAM binding the in-cloud upgrader may not
+//       make (stack-contract.ts `admin-static-bucket-read`). Other providers
+//       have nothing to converge for it.
 //
 // #1029 is deliberately NOT a bump. The upgrader job's stage 1 moves the job
 // onto the target's ops image with rights it has held on itself since
@@ -229,6 +237,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   21: "the gateways' scale-out and connection pool kept inside the database connection budget, and on Google Cloud load-balancer installs the gateway open to visitors and the sign-in and staging routes repaired (#1463)",
   22: "per-path Cloud Armor rules for the visitor and staging gateways on Google Cloud load-balancer installs: a tighter ban on sign-up, login and password reset, a captcha throttle, the general ban only on the visitor API, and fewer false positives from the OWASP rules (#1339)",
   23: "the admin's permission on Google Cloud load-balancer installs to set the site's security headers on the static backend bucket at Publish live (#1454)",
+  24: "the admin's permission on Google Cloud load-balancer installs to read the static bucket's settings, without which Publish live could not set the site's security headers (#1454)",
 };
 
 /**

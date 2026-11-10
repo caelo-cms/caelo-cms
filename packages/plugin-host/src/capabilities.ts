@@ -48,7 +48,7 @@ import { makePluginPrivateFiles } from "./private-files.js";
 import { validatePublicRows } from "./public-row-schema.js";
 import { isPublicSideHost, makeProjectedAdminQuery } from "./published-state.js";
 import { makePluginSiteMedia } from "./site-media.js";
-import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
+import { registerPluginStorageOps, STORAGE_OPS, UPDATE_MANY_MAX } from "./storage-ops.js";
 
 export interface MakePluginContextOpts {
   readonly plugin: LoadedPlugin;
@@ -529,6 +529,32 @@ function makeScopedQuery(
         throw new Error(`${scope.label}.update: patch must include at least one declared column`);
       }
       await run(ops.update, { schema: schemaName, table: tableStr, columns, id, patch });
+    },
+
+    updateMany: async (table, ids, patch) => {
+      const tableStr = table as string;
+      assertAuthoring("updateMany");
+      const columns = tableColumns("updateMany", tableStr);
+      const keys = Object.keys(patch).filter((k) => k !== "id");
+      assertDeclared("updateMany", tableStr, columns, keys);
+      if (keys.length === 0) {
+        throw new Error(
+          `${scope.label}.updateMany: patch must include at least one declared column`,
+        );
+      }
+      if (ids.length === 0) return;
+      if (ids.length > UPDATE_MANY_MAX) {
+        throw new Error(
+          `${scope.label}.updateMany: at most ${UPDATE_MANY_MAX} ids per call — split the list into several calls`,
+        );
+      }
+      await run(ops.updateMany, {
+        schema: schemaName,
+        table: tableStr,
+        columns,
+        ids: [...ids],
+        patch,
+      });
     },
 
     delete: async (table, id) => {

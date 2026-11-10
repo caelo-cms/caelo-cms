@@ -7,7 +7,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PluginContextTier1, PluginQuery, PluginQueryFilter } from "@caelo-cms/plugin-sdk";
+import {
+  indexCheckedQuery,
+  type PluginContextTier1,
+  type PluginQuery,
+  type PluginQueryFilter,
+} from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 import { SENDS_PER_TICK } from "./send-runs.js";
 
@@ -82,8 +87,10 @@ function harness(opts: { withAdmin?: boolean; baseUrl?: boolean } = {}) {
   const mails: Array<{ to: string; subject: string; html: string; unsubscribeUrl?: string }> = [];
   const ctx = {
     invocation: { origin: "approved", actorId: "11111111-1111-4111-8111-111111111111" },
-    query: pub.handle(),
-    ...(opts.withAdmin === false ? {} : { adminQuery: priv.handle() }),
+    query: indexCheckedQuery(plugin, "schema", pub.handle()),
+    ...(opts.withAdmin === false
+      ? {}
+      : { adminQuery: indexCheckedQuery(plugin, "adminSchema", priv.handle()) }),
     email: {
       send: async (m: (typeof mails)[number]) => {
         mails.push(m);
@@ -308,7 +315,7 @@ describe("_drain_sends (#635)", () => {
     const h = harness();
     const id = await seed(h, ["a@example.com"]);
     await op(h.ctx, "send_campaign", await approval(h.ctx, id));
-    const admin = h.priv.handle();
+    const admin = indexCheckedQuery(plugin, "adminSchema", h.priv.handle());
     // The other worker's claim lands between our read of the cursor and
     // our swap.
     await admin.insert("send_progress", { id: (h.priv.rows("send_runs")[0] as Row).id, cursor: 0 });

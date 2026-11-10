@@ -78,7 +78,7 @@ export const ALLOWED: readonly AllowedRule[] = [
   {
     table: "public.users",
     op: "public_mail_deliveries.reserve_many",
-    filter: "(lower(email) = ANY ((InitPlan ?).col1))",
+    filter: "(lower(email) = ANY (?))",
     reason: FIXED_SIZE(
       "The admin's team (cms_admin users, a handful of rows), matched case-insensitively against staging mail recipients (#1337). lower() is not LEAKPROOF, so under the FORCEd RLS no expression index could serve it (docs/dev/rls-and-the-planner.md).",
     ),
@@ -141,8 +141,7 @@ export const ALLOWED: readonly AllowedRule[] = [
   {
     table: "plugin_*.*",
     op: "plugin_storage.list",
-    filter:
-      "(caelo_deleted_at IS NULL) AND (caelo_chat_branch_id IS NULL) AND (id <> ALL ((InitPlan ?).col1))",
+    filter: "(caelo_deleted_at IS NULL) AND (caelo_chat_branch_id IS NULL) AND (id <> ALL (?))",
     reason:
       "A plugin's unfiltered private list on a branch: every live row minus the rows the branch overlays (private-storage.ts privateListSql). A whole-table read the plugin asked for; the exclusion selects nearly every row.",
   },

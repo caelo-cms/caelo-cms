@@ -306,10 +306,12 @@ export const mediaListOp = defineOperation({
     totalCount: z.number().int(),
   }),
   handler: async (_ctx, input, tx) => {
+    // The id tiebreak keeps `offset` pages stable (#1538): rows with equal
+    // keys could otherwise swap between two calls and show twice.
     const orderBy =
       input.sort === "most_used"
-        ? sql`ORDER BY usage_count DESC, last_used_at DESC NULLS LAST, created_at DESC`
-        : sql`ORDER BY created_at DESC`;
+        ? sql`ORDER BY usage_count DESC, last_used_at DESC NULLS LAST, created_at DESC, id`
+        : sql`ORDER BY created_at DESC, id`;
 
     // Build WHERE clause incrementally. Only `query` and `mime` are
     // user-controlled filter inputs; both are Zod-bounded.

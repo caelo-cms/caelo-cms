@@ -30,7 +30,8 @@ import type { getPluginOp } from "../../ops/plugins/registry.js";
 import type { aggregateAiCallsOp, aggregatePluginAiSpendOp } from "../../ops/security/ai_calls.js";
 import type { aggregateAuditByOpPrefixOp } from "../../ops/security/ai_calls_by_op.js";
 import { describeError, toolError } from "./_describe-error.js";
-import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
+import { makeReadTool } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 type OpValue<O extends { output: z.ZodType }> = z.infer<O["output"]>;
@@ -322,12 +323,16 @@ export const listGatewayRequestsTool = makeListReadTool<
       onlyErrors: z.boolean().optional().describe("Only status >= 400."),
     })
     .strict(),
-  buildOpInput: (input) => ({
-    ...(input.pluginSlug ? { pluginSlug: input.pluginSlug } : {}),
-    ...(input.onlyErrors !== undefined ? { onlyErrors: input.onlyErrors } : {}),
-    // The op caps at 500; the list params page within what it returns.
-    limit: Math.min(500, (input.offset ?? 0) + (input.limit ?? 50)),
-  }),
+  paging: {
+    kind: "offset",
+    maxLimit: 200,
+    // The op drops log rows that fail validation (cms_public is untrusted):
+    // count them as read, so a dropped row never ends the list early.
+    scanned: (value) => {
+      const v = value as OpValue<typeof listGatewayRequestsOp>;
+      return v.rows.length + v.droppedRows;
+    },
+  },
   rows: (value) => (value as OpValue<typeof listGatewayRequestsOp>).rows,
   label: "requests",
   columns: [
@@ -360,6 +365,8 @@ export const listRateLimitProfilesTool = makeListReadTool<
   description:
     "List named rate-limit profiles (per-visitor max per window) + how many plugin endpoints use each. Read before `tune_rate_limit` so the proposal fits the limits in use.",
   opName: "gateway.list_rate_limit_profiles",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: noInput,
   rows: (value) => (value as OpValue<typeof listRateLimitProfilesOp>).profiles,
   label: "profiles",
@@ -409,11 +416,11 @@ export const listBugReportsTool = makeListReadTool<
       kind: z.enum(["defect", "suggestion"]).optional(),
     })
     .strict(),
-  buildOpInput: (input) => ({
-    ...(input.status ? { status: input.status } : {}),
-    ...(input.kind ? { kind: input.kind } : {}),
-    limit: Math.min(200, (input.offset ?? 0) + (input.limit ?? 50)),
-  }),
+  paging: {
+    kind: "offset",
+    maxLimit: 200,
+    total: (value) => (value as OpValue<typeof listBugReportsOp>).total,
+  },
   rows: (value) => (value as OpValue<typeof listBugReportsOp>).reports,
   label: "bug_reports",
   columns: [

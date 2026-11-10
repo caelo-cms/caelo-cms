@@ -259,8 +259,8 @@ export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit
 export * from "./rate-limit.js";
 // #1157 — the post-commit redirect sync every redirects write runs.
 export {
+  refreshStaleLiveReleaseAtBoot,
   registerRedirectSyncRunner,
-  repointStaleGatewayRewriteAtBoot,
   retireLegacyStagingPreviewsAtBoot,
 } from "./redirect-sync-worker.js";
 export * from "./register.js";

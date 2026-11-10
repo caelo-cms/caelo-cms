@@ -7,7 +7,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { isPublicOperationError, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import {
+  indexCheckedQuery,
+  isPublicOperationError,
+  type PluginContextTier1,
+} from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 const SLUG = "secret-partner-intake";
@@ -27,13 +31,13 @@ function harness(form: typeof FORM | null) {
   const inserted: unknown[] = [];
   const ctx = {
     invocation: { origin: "visitor", actorId: "v" },
-    query: {
+    query: indexCheckedQuery(plugin, "schema", {
       list: async () => (form ? [form] : []),
       insert: async (_table: string, row: unknown) => {
         inserted.push(row);
         return { id: "44444444-4444-4444-8444-444444444444" };
       },
-    },
+    }),
   } as unknown as PluginContextTier1;
   return { ctx, inserted };
 }

@@ -339,3 +339,34 @@ export const URL_MAP_REDIRECTS_PERMISSIONS: readonly string[] = [
   "compute.backendServices.use",
   "compute.globalOperations.get",
 ];
+
+/**
+ * #1454, contract 24 — the predefined role the admin's run SA holds on the
+ * `gcp` static bucket, and on that bucket only, for `storage.buckets.get`.
+ * Compute checks the Cloud Storage bucket a backend bucket references as the
+ * caller on every `backendBuckets.patch`, also one that changes only the
+ * custom response headers: without it the patch is accepted and its
+ * operation ends in `GCS_BUCKET_ACCESS_DENIED` (a v0.12.1 install, contract
+ * 23). `roles/storage.objectAdmin` covers objects, never the bucket itself.
+ * The role's other permission, `storage.buckets.list`, is checked on the
+ * project, so a bucket binding grants nothing by it; it reads no IAM policy.
+ */
+export const STATIC_BUCKET_METADATA_ROLE = "roles/storage.bucketViewer";
+
+/**
+ * #1454 — every permission the admin uses to put a build's page headers on
+ * the static backend bucket (admin-core gcp-site-headers.ts), by where it is
+ * granted: list the URL maps to find the bucket, read it, patch it and wait
+ * for the operation; and read the Cloud Storage bucket the patch references.
+ */
+export const GCP_SITE_HEADERS_PERMISSIONS = {
+  /** Through the project custom role {@link urlMapRedirectsRoleId}. */
+  project: [
+    "compute.urlMaps.list",
+    "compute.backendBuckets.get",
+    "compute.backendBuckets.update",
+    "compute.globalOperations.get",
+  ],
+  /** Through {@link STATIC_BUCKET_METADATA_ROLE} on the static bucket. */
+  staticBucket: ["storage.buckets.get"],
+} as const;

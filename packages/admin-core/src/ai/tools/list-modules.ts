@@ -25,7 +25,7 @@ import {
   type ModuleUsage,
 } from "../../ops/content/module-placements.js";
 import { describeError, toolError } from "./_describe-error.js";
-import { LIST_DEFAULT_LIMIT, listParamsSchema, renderToonList } from "./_make-read-tool.js";
+import { LIST_DEFAULT_LIMIT, listParamsSchema, renderToonList } from "./_list-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listModulesInput = z

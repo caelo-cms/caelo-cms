@@ -17,27 +17,21 @@
  * column), so it is the declaration as provisioned.
  */
 
-import type { PluginStorageZone } from "@caelo-cms/plugin-sdk";
-import { PLUGIN_INDEX_MAX_COLUMNS } from "@caelo-cms/plugin-sdk";
+import {
+  type IndexLeads,
+  type ListIndexAccess,
+  listIndexRefusal,
+  readsByColumn,
+} from "@caelo-cms/plugin-sdk";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import type { ListPlan } from "./private-storage.js";
 
-/** The columns one `list()` reads by, as the host parsed its filter. */
-export interface ListIndexAccess {
-  readonly equals: ReadonlyArray<string>;
-  /**
-   * The `equals` columns compared with `null` — an `IS NULL`, which a
-   * hash index cannot answer (it only supports `=`). Omitted: none.
-   */
-  readonly isNull?: ReadonlyArray<string>;
-  readonly anyOf: ReadonlyArray<string>;
-  readonly orderBy: string | null;
-  /** `since` or `before` — both range over `created_at`. */
-  readonly createdAtRange: boolean;
-}
+// The rule itself is the SDK's, so a plugin's unit tests apply exactly
+// what this host applies (`indexCheckedQuery`, #1536).
+export { type IndexLeads, type ListIndexAccess, listIndexRefusal, readsByColumn };
 
-/** The columns a parsed `list` filter reads by. */
+/** The columns a parsed `list` filter reads by (the SDK's `listAccessOfFilter` on the raw filter). */
 export function listAccessOf(plan: ListPlan): ListIndexAccess {
   return {
     equals: plan.equals.map(([k]) => k),
@@ -46,22 +40,6 @@ export function listAccessOf(plan: ListPlan): ListIndexAccess {
     orderBy: plan.orderBy,
     createdAtRange: plan.since !== null || plan.before !== null,
   };
-}
-
-/** Does the read filter, order or range at all? (A `limit`-only read needs no index.) */
-export function readsByColumn(access: ListIndexAccess): boolean {
-  return (
-    access.equals.length > 0 ||
-    access.anyOf.length > 0 ||
-    access.orderBy !== null ||
-    access.createdAtRange
-  );
-}
-
-/** The first columns of a table's indexes: all of them, and the btree ones (which can also deliver an order). */
-export interface IndexLeads {
-  readonly any: ReadonlySet<string>;
-  readonly ordered: ReadonlySet<string>;
 }
 
 /**
@@ -88,45 +66,4 @@ export async function indexLeadColumns(
     any: new Set(rows.map((r) => r.col)),
     ordered: new Set(rows.filter((r) => r.ordered).map((r) => r.col)),
   };
-}
-
-/**
- * Why no index can drive this read, or null when one can. The message
- * names the index to declare and where.
- *
- * @param label error prefix, e.g. `plugin_storage.list`
- * @param leads the first columns of the table's indexes ({@link indexLeadColumns});
- *   a filter may be driven by any index, an order only by a btree one
- */
-export function listIndexRefusal(args: {
-  readonly label: string;
-  readonly zone: PluginStorageZone;
-  readonly table: string;
-  readonly leads: IndexLeads;
-  readonly access: ListIndexAccess;
-}): string | null {
-  const { access } = args;
-  const filtered = [...new Set([...access.equals, ...access.anyOf])];
-  const ordered = [
-    ...(access.createdAtRange ? ["created_at"] : []),
-    ...(access.orderBy !== null ? [access.orderBy] : []),
-  ].filter((c, i, all) => !filtered.includes(c) && all.indexOf(c) === i);
-  // A filtered read must be driven by a filter column: ordering by an
-  // indexed column (say `id`, to page) would still walk the whole index
-  // and test every row. Only an unfiltered read is driven by its order.
-  const driving = filtered.length > 0 ? filtered : ordered;
-  if (driving.length === 0) return null;
-  // A btree index serves equality, IS NULL and order; a hash index only `=`.
-  const isNull = new Set(access.isNull ?? []);
-  const usable = (c: string) =>
-    filtered.length > 0 && !isNull.has(c) ? args.leads.any.has(c) : args.leads.ordered.has(c);
-  if (driving.some(usable)) return null;
-  const suggestion = [...filtered, ...ordered].slice(0, PLUGIN_INDEX_MAX_COLUMNS);
-  return (
-    `${args.label}: no index covers this read of "${args.table}" (it ${filtered.length > 0 ? "filters" : "orders"} by ${driving.join(", ")}). ` +
-    `Declare one in the plugin's manifest — indexes: { ${args.zone}: { ${args.table}: [${JSON.stringify(suggestion)}] } } — ` +
-    "and ship it as a new version. A filtered read needs an index whose first column is one of its filter columns; an unfiltered ordered or since/before read one led by its order column (created_at for since/before). id" +
-    (args.zone === "adminSchema" ? " and ref: columns are" : " is") +
-    " indexed automatically."
-  );
 }
