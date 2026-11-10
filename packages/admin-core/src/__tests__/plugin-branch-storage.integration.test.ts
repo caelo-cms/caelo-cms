@@ -102,6 +102,11 @@ const plugin = definePlugin({
       const a = args as { id: string; from: string; to: string };
       return q(ctx).compareAndSwap("notes", a.id, { label: a.from }, { label: a.to });
     },
+    relabel_many: async (ctx, args) => {
+      const a = args as { ids: string[]; label: string };
+      await q(ctx).updateMany("notes", a.ids, { label: a.label });
+      return {};
+    },
     remove: async (ctx, args) => {
       await q(ctx).delete("notes", (args as { id: string }).id);
       return {};
@@ -468,6 +473,66 @@ describe("branch-aware plugin storage", () => {
     // Main never saw the branch write.
     expect(await labels(MAIN)).toContain("cas-base");
     expect((await liveRows()).find((r) => r.id === id)?.label).toBe("cas-base");
+  });
+
+  it("updates many rows in a chat on its branch under one header, every row or none (#1391)", async () => {
+    const ids: string[] = [];
+    for (const label of ["um-1", "um-2", "um-3"]) {
+      const added = await call(MAIN, "add", { label });
+      if (!added.ok) throw new Error(added.error.message);
+      ids.push(idOf(added.value));
+    }
+    const g = await newChat("g");
+    // One row already edited in the chat: the bulk write starts from that state.
+    expect((await call(g.invocation, "rename", { id: ids[0], label: "um-1-chat" })).ok).toBe(true);
+    const missing = [crypto.randomUUID(), crypto.randomUUID()];
+    const refused = await call(g.invocation, "relabel_many", {
+      ids: [missing[0], ...ids, missing[1]],
+      label: "um-x",
+    });
+    expect(refused.ok).toBe(false);
+    // Every missing row is named, so one retry can drop them all.
+    if (!refused.ok) for (const id of missing) expect(refused.error.message).toContain(id);
+    expect(await labels(g.invocation)).not.toContain("um-x");
+
+    const done = await call(g.invocation, "relabel_many", { ids, label: "um-bulk" });
+    if (!done.ok) throw new Error(done.error.message);
+    expect((await labels(g.invocation)).filter((l) => l === "um-bulk")).toHaveLength(3);
+    // Main and the live rows never saw the branch write.
+    expect(await labels(MAIN)).toEqual(expect.arrayContaining(["um-1", "um-2", "um-3"]));
+    const live = await liveRows();
+    expect(ids.map((id) => live.find((r) => r.id === id)?.label)).toEqual(["um-1", "um-2", "um-3"]);
+    const headers = await withSystemSql(
+      async (tx) =>
+        (await tx`
+          SELECT h.id, count(*)::int AS n FROM site_snapshots h
+          JOIN plugin_row_snapshots prs ON prs.site_snapshot_id = h.id
+          WHERE h.chat_branch_id = ${g.chatBranchId}::uuid AND prs.row_id = ANY(${ids}::uuid[])
+          GROUP BY h.id ORDER BY n
+        `) as { n: number }[],
+    );
+    // The single rename, then one header for the three rows of the bulk write.
+    expect(headers.map((h) => h.n)).toEqual([1, 3]);
+  });
+
+  it("runs two bulk writes over the same rows in opposite orders without a deadlock (#1391)", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const added = await call(MAIN, "add", { label: `ud-${i}` });
+      if (!added.ok) throw new Error(added.error.message);
+      ids.push(idOf(added.value));
+    }
+    const h = await newChat("h");
+    const results = await Promise.all([
+      call(h.invocation, "relabel_many", { ids, label: "ud-a" }),
+      call(h.invocation, "relabel_many", { ids: [...ids].reverse(), label: "ud-b" }),
+    ]);
+    // Both wait their turn on the rows; neither is aborted as a deadlock.
+    expect(results.map((r) => (r.ok ? "ok" : r.error.message))).toEqual(["ok", "ok"]);
+    const seen = await labels(h.invocation);
+    const final = seen.filter((l) => l === "ud-a" || l === "ud-b");
+    expect(final).toHaveLength(6);
+    expect(new Set(final).size).toBe(1);
   });
 
   it("pages by id and filters by anyOf across a chat's overlay, each row once (#1213)", async () => {

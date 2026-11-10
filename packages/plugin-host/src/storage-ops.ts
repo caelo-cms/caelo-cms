@@ -32,6 +32,7 @@ import {
   OperationAbortError,
   type OperationDefinition,
   type OperationRegistry,
+  uuidArray,
 } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -51,6 +52,7 @@ import {
   privateList,
   privateStorageRefusal,
   privateUpdate,
+  privateUpdateMany,
 } from "./private-storage.js";
 
 /** Identifiers interpolated into SQL: lowercase, underscore, ≤63 chars. */
@@ -73,6 +75,21 @@ const updateInput = z
   .object({ ...base, id: z.string().uuid(), patch: z.record(z.string(), z.unknown()) })
   .strict();
 const deleteInput = z.object({ ...base, id: z.string().uuid() }).strict();
+
+/** #1391 — rows one `update_many` writes at most: the ceiling of one read. */
+export const UPDATE_MANY_MAX = 1000;
+const updateManyInput = z
+  .object({
+    ...base,
+    // Lowercase and once each: the handler matches them to returned ids.
+    ids: z
+      .array(z.string().uuid())
+      .min(1)
+      .max(UPDATE_MANY_MAX)
+      .transform((ids) => [...new Set(ids.map((id) => id.toLowerCase()))]),
+    patch: z.record(z.string(), z.unknown()),
+  })
+  .strict();
 const casInput = z
   .object({
     ...base,
@@ -118,6 +135,29 @@ function casFragments(
     }
   }
   return { conditions, sets };
+}
+
+/**
+ * The assignments of an update patch, or the reason it is refused: `id`
+ * is skipped (never updated), host-owned, undeclared and undefined values
+ * are refused, and at least one column must remain.
+ */
+function patchFragments(
+  op: string,
+  columns: Readonly<Record<string, string>>,
+  raw: Readonly<Record<string, unknown>>,
+): { patch: Record<string, unknown>; sets: ReturnType<typeof sql>[] } | string {
+  const sets: ReturnType<typeof sql>[] = [];
+  const patch: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (k === "id") continue; // never update id
+    const problem = checkColumn(op, columns, k) ?? undefinedValueProblem(op, "patch", k, v);
+    if (problem) return problem;
+    sets.push(sql`${sql.raw(`"${k}"`)} = ${valueSql(columns, k, v)}`);
+    patch[k] = v;
+  }
+  if (sets.length === 0) return `${op}: patch must include at least one declared column`;
+  return { patch, sets };
 }
 
 type Zone = "private" | "public";
@@ -416,18 +456,9 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
         const refused = await privateStorageRefusal(tx, ctx);
         if (refused) return fail(op, `${op}: ${refused}`);
       }
-      const sets: ReturnType<typeof sql>[] = [];
-      const patch: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(input.patch)) {
-        if (k === "id") continue; // never update id
-        const problem =
-          checkColumn(op, input.columns, k) ?? undefinedValueProblem(op, "patch", k, v);
-        if (problem) return fail(op, problem);
-        sets.push(sql`${sql.raw(`"${k}"`)} = ${valueSql(input.columns, k, v)}`);
-        patch[k] = v;
-      }
-      if (sets.length === 0)
-        return fail(op, `${op}: patch must include at least one declared column`);
+      const parsed = patchFragments(op, input.columns, input.patch);
+      if (typeof parsed === "string") return fail(op, parsed);
+      const { patch, sets } = parsed;
       if (zone === "private") {
         return settle(op, await privateUpdate(tx, ctx, input, input.id, patch, sets, locker, op));
       }
@@ -435,6 +466,48 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
         sql`UPDATE ${table(input.schema, input.table)} SET ${sql.join(sets, sql`, `)} WHERE id = ${input.id}::uuid`,
       );
       return ok({});
+    },
+  });
+
+  const updateMany = defineOperation({
+    name: `${family}.update_many`,
+    readScope: "request",
+    // Why plugin-only: see insert.
+    actorScope: ["plugin"],
+    database,
+    input: updateManyInput,
+    output: z.object({ updated: z.number().int() }),
+    handler: async (ctx, input, tx) => {
+      const op = `${family}.update_many`;
+      const denied = pluginOnly(ctx, op);
+      if (denied) return denied;
+      if (zone === "private") {
+        const refused = await privateStorageRefusal(tx, ctx);
+        if (refused) return fail(op, `${op}: ${refused}`);
+      }
+      const parsed = patchFragments(op, input.columns, input.patch);
+      if (typeof parsed === "string") return fail(op, parsed);
+      const { patch, sets } = parsed;
+      if (zone === "private") {
+        return settle(
+          op,
+          await privateUpdateMany(tx, ctx, input, input.ids, patch, sets, locker, op),
+        );
+      }
+      const rows = (await tx.execute(
+        sql`UPDATE ${table(input.schema, input.table)} SET ${sql.join(sets, sql`, `)} WHERE id = ANY(${uuidArray(input.ids)}) RETURNING id::text AS id`,
+      )) as unknown as { id: string }[];
+      if (rows.length !== input.ids.length) {
+        // Every row or none, as in the private zone: the UPDATE rolls back.
+        const found = new Set(rows.map((r) => r.id));
+        const missing = input.ids.filter((id) => !found.has(id));
+        throw new OperationAbortError({
+          kind: "HandlerError",
+          operation: op,
+          message: `${op}: rows ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? ` and ${missing.length - 5} more` : ""} not found — nothing was updated; list the table to get current ids and send the call again without them`,
+        });
+      }
+      return ok({ updated: rows.length });
     },
   });
 
@@ -504,7 +577,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
     },
   });
 
-  return [insert, list, update, remove, compareAndSwap];
+  return [insert, list, update, updateMany, remove, compareAndSwap];
 }
 
 /** Operation names by zone, for the host broker. */
@@ -513,6 +586,7 @@ export const STORAGE_OPS = {
     insert: "plugin_storage.insert",
     list: "plugin_storage.list",
     update: "plugin_storage.update",
+    updateMany: "plugin_storage.update_many",
     delete: "plugin_storage.delete",
     compareAndSwap: "plugin_storage.compare_and_swap",
   },
@@ -520,6 +594,7 @@ export const STORAGE_OPS = {
     insert: "plugin_public_storage.insert",
     list: "plugin_public_storage.list",
     update: "plugin_public_storage.update",
+    updateMany: "plugin_public_storage.update_many",
     delete: "plugin_public_storage.delete",
     compareAndSwap: "plugin_public_storage.compare_and_swap",
   },

@@ -47,7 +47,7 @@ import {
 import { type ListingGroup, pageListingSuffix } from "./_page-listing-guard.js";
 import { pluginWriteHintsSuffix } from "./_plugin-write-hints.js";
 import {
-  hasRepeatCandidates,
+  repeatCandidates,
   repeatedValueHints,
   type ValueInstance,
 } from "./_repeated-value-guard.js";
@@ -349,7 +349,8 @@ export async function repeatedValueSuffix(
     (scope.moduleIds?.length ?? 0) +
     (scope.contentInstanceIds?.length ?? 0) +
     (scope.placements?.length ?? 0);
-  if (targets === 0 || !hasRepeatCandidates(written)) return "";
+  const matches = repeatCandidates(written);
+  if (targets === 0 || matches.length === 0) return "";
   const res = await execute(
     toolCtx.registry,
     toolCtx.adapter,
@@ -359,6 +360,8 @@ export async function repeatedValueSuffix(
       moduleIds: [...new Set(scope.moduleIds ?? [])],
       contentInstanceIds: [...new Set(scope.contentInstanceIds ?? [])],
       placements: scope.placements ?? [],
+      // Past the op's bound the hint is lost, not the write.
+      matches: matches.slice(0, 200),
     },
   );
   // A failed read only loses the hint; the write it comments on succeeded.
