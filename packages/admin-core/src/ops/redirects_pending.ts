@@ -368,10 +368,14 @@ const executeDefinition = defineOperation({
      */
     goLive: z.enum(["next_publish", "now"]),
     /**
-     * The pending changes this approval saved (id and revision): Go live now
-     * after it binds to exactly these, so a save in between is not put live.
+     * The pending changes this approval saved (address, id and revision):
+     * Go live now after it puts live exactly these `fromPath`s, bound to the
+     * id and revision, so a save in between is not put live. A rule already
+     * live as it is has no change here and nothing to put live.
      */
-    changes: z.array(z.object({ id: z.string(), revision: z.number().int() })),
+    changes: z.array(
+      z.object({ fromPath: z.string(), id: z.string(), revision: z.number().int() }),
+    ),
     /** Rules a page shares a path with; the page wins once it is published. */
     pageConflicts: z.array(z.object({ fromPath: z.string(), pageTitle: z.string() })),
     nextStep: z.string(),
@@ -460,18 +464,24 @@ const executeDefinition = defineOperation({
         ),
     });
     const conflicts = await pageConflicts(ctx, tx, payload);
+    const changes = written.flatMap((o) =>
+      o.outcome === "pending" && o.changeId !== null && o.revision !== null
+        ? [{ fromPath: o.fromPath, id: o.changeId, revision: o.revision }]
+        : [],
+    );
+    const alreadyLive = written.filter((o) => o.outcome === "unchanged").map((o) => o.fromPath);
     const saved =
-      payload.goLive === "now"
-        ? "Saved; it goes live on the hosting now (Go live now)."
-        : "Saved Staged: staging serves it at once, the live site with the next Publish live.";
+      changes.length === 0
+        ? "Already live as it is: nothing changed."
+        : `${
+            payload.goLive === "now"
+              ? "Saved; it goes live on the hosting now (Go live now)."
+              : "Saved Staged: staging serves it at once, the live site with the next Publish live."
+          }${alreadyLive.length > 0 ? ` Already live as it is: ${alreadyLive.join(", ")}.` : ""}`;
     return ok({
       fromPaths,
       goLive: payload.goLive,
-      changes: written.flatMap((o) =>
-        o.changeId !== null && o.revision !== null
-          ? [{ id: o.changeId, revision: o.revision }]
-          : [],
-      ),
+      changes,
       pageConflicts: conflicts,
       nextStep:
         conflicts.length === 0

@@ -181,8 +181,7 @@ export function attachGatedExecute(
       if (gated.afterApply === "redirects-go-live-now") {
         const saved = appliedValue as {
           goLive?: string;
-          fromPaths?: string[];
-          changes?: { id: string; revision: number }[];
+          changes?: { fromPath: string; id: string; revision: number }[];
         };
         if (saved.goLive === "now" && saved.changes && saved.changes.length > 0) {
           // #1550 — the approver asked for these live now: Go live now as
@@ -190,18 +189,31 @@ export function attachGatedExecute(
           // build's files and pushes to the hosting). A refusal leaves the
           // rules Staged and says why.
           // Bound to the changes the approval saved: a save in between is not
-          // the change that was approved.
+          // the change that was approved, and a rule already live as it is
+          // has no change (its path would refuse the whole batch).
           const live = await execute(registry, adapter, ownerCtxLive, "redirects.go_live_now", {
-            fromPaths: saved.fromPaths ?? [],
-            changes: saved.changes,
+            fromPaths: saved.changes.map((c) => c.fromPath),
+            changes: saved.changes.map(({ id, revision }) => ({ id, revision })),
           });
+          const pushFailed = live.ok
+            ? (live.value as { targets: { targetName: string; status: string }[] }).targets
+                .filter((t) => t.status === "failed")
+                .map((t) => t.targetName)
+            : [];
           return {
             ok: true,
             status: APPLIED_STATUS,
             value: {
               ...(appliedValue as Record<string, unknown>),
               ...(live.ok
-                ? { wentLiveNow: true }
+                ? {
+                    wentLiveNow: true,
+                    ...(pushFailed.length > 0
+                      ? {
+                          warning: `Live in Caelo, but the push to the hosting failed (${pushFailed.join(", ")}) and is retried automatically: visitors keep getting the previous rule until it lands. Do not say it is live on the site yet.`,
+                        }
+                      : {}),
+                  }
                 : {
                     wentLiveNow: false,
                     warning: `Saved Staged, but it could not go live now: ${describePersistError(live.error)} It goes live with the next Publish live.`,

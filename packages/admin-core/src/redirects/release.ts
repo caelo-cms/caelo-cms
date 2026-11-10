@@ -29,6 +29,7 @@
 import { type TransactionRunner, textArray, uuidArray } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
+  findRedirectLoops,
   type RedirectTableRow,
   redirectAddress,
   redirectFromPathSpellings,
@@ -333,6 +334,51 @@ function sameRules(a: LoggedRules, b: LoggedRules): boolean {
 }
 
 /**
+ * Review on #1554 — hold back the restorations that would close a loop in
+ * the table the rollback leaves, and say why. That table combines the
+ * restored addresses with every address the rollback keeps (a Go live now
+ * change, a newer pending change, a rule nobody released), so each part
+ * was servable and the whole need not be: a kept `/b → /a` and a restored
+ * `/a → /b` loop, and the hosting refuses such a table on every retry. A
+ * held-back address keeps its live rule (and its change stays live).
+ * Checked as if no page shadowed a rule: the rollback reads no file list of
+ * the build it restores, and the next Publish live may drop that page.
+ * Removes the held-back addresses from `restorations`.
+ */
+function holdBackLoopingRestorations(
+  liveRows: readonly RedirectTableRow[],
+  restorations: Map<string, { readonly target: LoggedRules }>,
+): { address: string; reason: string }[] {
+  const held: { address: string; reason: string }[] = [];
+  for (;;) {
+    const rows = [
+      ...liveRows.filter((r) => !restorations.has(redirectAddress(r.fromPath))),
+      ...[...restorations.values()].flatMap((r) => r.target),
+    ];
+    const looping = findRedirectLoops(rows, new Set()).flatMap((cycle) =>
+      cycle
+        .filter((address) => restorations.has(address))
+        .map((address) => {
+          // Told from the held-back address: "/a → /b → /a".
+          const at = cycle.indexOf(address);
+          const loop = [...cycle.slice(at), ...cycle.slice(0, at), address].join(" → ");
+          return { address, loop };
+        }),
+    );
+    // A loop no restoration is part of is the live table's own, not this
+    // rollback's; the sync reports it as before.
+    if (looping.length === 0) return held;
+    for (const { address, loop } of looping) {
+      if (!restorations.delete(address)) continue;
+      held.push({
+        address,
+        reason: `restoring it would make the redirects ${loop} a loop, so it keeps its live rule`,
+      });
+    }
+  }
+}
+
+/**
  * Roll the live redirects back with a rollback to `restoreRunId`. Every
  * address a later live write changed (a release, its take-over, a rollback)
  * gets the live state it had as of that run, reconstructed from the log —
@@ -340,7 +386,8 @@ function sameRules(a: LoggedRules, b: LoggedRules): boolean {
  * release's redirects too. The change the rolled-back releases made to the
  * address is Staged again, so it goes live with the next Publish live that
  * ships it. Skipped and reported: an address with a newer pending change,
- * and one a Go live now changed since (its change stays live).
+ * one a Go live now changed since (its change stays live), and one whose
+ * restored rule would close a loop with what stays live.
  */
 export async function rollBackRedirectReleases(
   tx: TransactionRunner,
@@ -388,6 +435,11 @@ export async function rollBackRedirectReleases(
   const restaged: string[] = [];
   const skipped: { address: string; reason: string }[] = [];
   const entries: LogEntry[] = [];
+  // What each address gets back; written after the loop check below.
+  const restorations = new Map<
+    string,
+    { readonly current: LoggedRules; readonly target: LoggedRules; readonly group: LogRow[] }
+  >();
   for (const [address, group] of byAddress) {
     const first = group[0];
     const newest = group[group.length - 1];
@@ -407,6 +459,12 @@ export async function rollBackRedirectReleases(
     }
     const target = asOf.get(address) ?? loggedRulesSchema.parse(first.before_rules);
     if (sameRules(current, target)) continue;
+    restorations.set(address, { current, target, group });
+  }
+  if (restorations.size > 0) {
+    skipped.push(...holdBackLoopingRestorations(await loadLiveRedirectRows(tx), restorations));
+  }
+  for (const [address, { current, target, group }] of restorations) {
     await tx.execute(sql`
       DELETE FROM redirects WHERE address = ${address}
     `);

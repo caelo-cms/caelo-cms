@@ -8,6 +8,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   buildRedirectPlan,
+  findRedirectLoops,
   formatRedirectsFile,
   parseRedirectsFile,
   type RedirectTableRow,
@@ -141,6 +142,42 @@ describe("buildRedirectPlan", () => {
     const rows = [row("/z", "/1"), row("/a", "/2")];
     expect(plan(rows).redirects.map((r) => r.fromPath)).toEqual(["/z", "/a"]);
     expect(plan(rows)).toEqual(plan([...rows]));
+  });
+});
+
+describe("findRedirectLoops (#1550)", () => {
+  it("names each loop once, in chain order, whatever leads into it", () => {
+    expect(
+      findRedirectLoops(
+        [
+          row("/in", "/a"),
+          row("/a", "/b"),
+          row("/b", "/c/"),
+          row("/c", "/a"),
+          row("/self", "/self/"),
+        ],
+        NO_FILES,
+      ),
+    ).toEqual([["/a", "/b", "/c"], ["/self"]]);
+  });
+
+  it("finds what buildRedirectPlan refuses, and nothing it serves", () => {
+    const loop = [row("/a", "/b"), row("/b", "/a")];
+    expect(() => plan(loop)).toThrow(/loop/);
+    expect(findRedirectLoops(loop, NO_FILES)).toEqual([["/a", "/b"]]);
+    // A page at /b wins over its rule, so the build serves no loop.
+    expect(() => plan(loop, new Set(["b/index.html"]))).not.toThrow();
+    expect(findRedirectLoops(loop, new Set(["b/index.html"]))).toEqual([]);
+    // A chain ends at a gone row, a target with a query and an external one.
+    const ends = [
+      row("/g", "/gone"),
+      row("/gone", "/g", 410),
+      row("/q", "/r?x=1"),
+      row("/r", "/q"),
+      row("/x", "https://example.org/x"),
+    ];
+    expect(() => plan(ends)).not.toThrow();
+    expect(findRedirectLoops(ends, NO_FILES)).toEqual([]);
   });
 });
 

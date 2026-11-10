@@ -37,30 +37,54 @@ export function messageOf(error: unknown, fallback: string): string {
     : fallback;
 }
 
+/** What a Go live now did: live in Caelo (with the hosting pushes that failed), or refused. */
+export type GoLiveNowOutcome =
+  | { readonly live: true; readonly pushFailed: string | null }
+  | { readonly live: false; readonly refused: string };
+
 /**
  * Go live now for `fromPaths` as the signed-in human. `changes` (id and
  * revision) binds it to what a save or an approval just wrote: a save in
- * between refuses it. Null when it went live (also when a push failed: it
- * is live in Caelo and retried, and the text says so); otherwise the
- * refusal's text.
+ * between refuses it.
  */
 export async function goLiveNow(
   locals: App.Locals,
-  fromPaths: string[],
+  fromPaths: readonly string[],
   changes?: readonly { id: string; revision: number }[],
-): Promise<string | null> {
+): Promise<GoLiveNowOutcome> {
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "redirects.go_live_now", {
-    fromPaths,
-    ...(changes ? { changes } : {}),
+    fromPaths: [...fromPaths],
+    // The op takes exactly id and revision; a saved change carries its path too.
+    ...(changes ? { changes: changes.map(({ id, revision }) => ({ id, revision })) } : {}),
   });
-  if (!r.ok) return messageOf(r.error, "Go live now failed");
+  if (!r.ok) return { live: false, refused: messageOf(r.error, "Go live now failed") };
+  return { live: true, pushFailed: failedHostingPushes(r.value) };
+}
+
+/**
+ * The hosting pushes of a Go live now result that failed, as one line, or
+ * null when every target took the table.
+ */
+function failedHostingPushes(value: unknown): string | null {
   const failed = (
-    r.value as { targets: { status: string; error: string | null }[] }
+    value as { targets: { targetName: string; status: string; error: string | null }[] }
   ).targets.filter((t) => t.status === "failed");
-  return failed.length === 0
-    ? null
-    : `It is live in Caelo, but the push to your hosting failed and is retried: ${failed.map((t) => t.error).join("; ")}`;
+  if (failed.length === 0) return null;
+  return failed.map((t) => (t.error ? `${t.targetName}: ${t.error}` : t.targetName)).join("; ");
+}
+
+/**
+ * The form result of a Go live now that ran: `liveMessage`, or — when a
+ * hosting push failed — an error, because visitors keep getting the
+ * previous rule until the retried push lands, although the change is live
+ * in Caelo.
+ */
+export function goLiveResult(pushFailed: string | null, liveMessage: string) {
+  if (pushFailed === null) return { ok: true as const, message: liveMessage };
+  return fail(502, {
+    error: `It is live in Caelo, but the push to your hosting failed (${pushFailed}). It is retried automatically; until it lands, visitors keep getting the previous rule.`,
+  });
 }
 
 /** The pending redirect proposals. */
@@ -92,7 +116,7 @@ export async function approveRedirectProposal(
       proposalId,
     });
     if (!r.ok) return fail(409, { error: messageOf(r.error, "approve failed") });
-    return { ok: true, message: "Approved: live on your site now." };
+    return goLiveResult(failedHostingPushes(r.value), "Approved: live on your site now.");
   }
   requireApproverPermission(locals, registry, "redirects.execute_proposal");
   if (proposal.payload.goLive === "now") requirePermission(locals, "deploy.trigger");
@@ -103,16 +127,22 @@ export async function approveRedirectProposal(
   const v = r.value as {
     nextStep: string;
     goLive: string;
-    fromPaths: string[];
-    changes: { id: string; revision: number }[];
+    changes: { fromPath: string; id: string; revision: number }[];
   };
+  // Only the saved changes go live now: a rule already live as it is has
+  // none, and asking for its path would refuse the whole batch.
   if (v.goLive === "now" && v.changes.length > 0) {
-    const refused = await goLiveNow(locals, v.fromPaths, v.changes);
-    if (refused) {
+    const live = await goLiveNow(
+      locals,
+      v.changes.map((c) => c.fromPath),
+      v.changes,
+    );
+    if (!live.live) {
       return fail(409, {
-        error: `Approved and saved; it goes live with the next Publish live, but it could not go live now: ${refused}`,
+        error: `Approved and saved; it goes live with the next Publish live, but it could not go live now: ${live.refused}`,
       });
     }
+    return goLiveResult(live.pushFailed, v.nextStep);
   }
   return { ok: true, message: v.nextStep };
 }

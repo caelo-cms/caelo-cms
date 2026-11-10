@@ -398,6 +398,64 @@ describe("redirects go live with Publish live (#1550)", () => {
       ),
     ).toEqual([]);
   });
+
+  it("a rollback holds back a restoration that would loop with a rule Go live now keeps", async () => {
+    const ring = async () =>
+      (await op<RedirectReleasePlan>(OWNER, "redirects.release_plan", {})).goingLive
+        .filter((c) => c.fromPath.startsWith(`${P}-ring-`))
+        .map((c) => ({ id: c.id, revision: c.revision }));
+    // The release the rollback goes back to: a → b → the target.
+    await op(OWNER, "redirects.create_many", {
+      redirects: [
+        { fromPath: `${P}-ring-a`, toPath: `${P}-ring-b` },
+        { fromPath: `${P}-ring-b`, toPath: `/${TARGET}` },
+      ],
+    });
+    await stage();
+    const first = (await publishLive(await ring())).toRunId;
+    // The next release points a at the target and removes b.
+    await op(OWNER, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-ring-a`, toPath: `/${TARGET}` }],
+      upsert: true,
+    });
+    const listed = await op<{ redirects: { id: string; fromPath: string }[] }>(
+      OWNER,
+      "redirects.list",
+      { query: `${P}-ring-b` },
+    );
+    // The search matches targets too (a → b): delete b's rule only.
+    await op(OWNER, "redirects.delete_many", {
+      redirectIds: listed.redirects.filter((r) => r.fromPath === `${P}-ring-b`).map((r) => r.id),
+    });
+    await stage();
+    await publishLive(await ring());
+    expect(await liveRedirects(ADMIN_URL as string, `${P}-ring-`)).toEqual([
+      { fromPath: `${P}-ring-a`, toPath: `/${TARGET}`, statusCode: 301 },
+    ]);
+    // Then b → a goes live with Go live now: b → a → the target, no loop.
+    await op(OWNER, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-ring-b`, toPath: `${P}-ring-a` }],
+    });
+    await op(OWNER, "redirects.go_live_now", { fromPaths: [`${P}-ring-b`], repoRoot: root });
+
+    // Restoring a → b next to the kept b → a would be a loop: a keeps its rule.
+    const back = await op<{
+      redirects: { skipped: { address: string; reason: string }[] };
+    }>(OWNER, "deploy.rollback", { targetName: "production", runId: first, repoRoot: root });
+    expect(back.redirects.skipped.filter((s) => s.address.startsWith(`${P}-ring-`))).toEqual([
+      { address: `${P}-ring-b`, reason: "it went live with Go live now, which a rollback keeps" },
+      {
+        address: `${P}-ring-a`,
+        reason: `restoring it would make the redirects ${P}-ring-a → ${P}-ring-b → ${P}-ring-a a loop, so it keeps its live rule`,
+      },
+    ]);
+    expect(await liveRedirects(ADMIN_URL as string, `${P}-ring-`)).toEqual([
+      { fromPath: `${P}-ring-a`, toPath: `/${TARGET}`, statusCode: 301 },
+      { fromPath: `${P}-ring-b`, toPath: `${P}-ring-a`, statusCode: 301 },
+    ]);
+    // The hosting took the table: the push after the rollback had no loop to refuse.
+    expect(await liveSnippet()).toContain(`${P}-ring-b`);
+  });
 });
 
 describe("Publish live refuses a release it cannot serve (#1550)", () => {

@@ -28,6 +28,7 @@ import { getQueryContext } from "#lib/server/query.js";
 import {
   approveRedirectProposal,
   goLiveNow,
+  goLiveResult,
   listRedirectProposals,
   messageOf,
   rejectRedirectProposal,
@@ -137,16 +138,26 @@ export const actions: Actions = {
       if (!applied.ok) return fail(400, { error: messageOf(applied.error, "create failed") });
       const saved = applied.value as {
         nextStep: string;
-        changes: { id: string; revision: number }[];
+        changes: { fromPath: string; id: string; revision: number }[];
       };
-      if (goLive === "now" && saved.changes.length > 0) {
-        const refused = await goLiveNow(locals, [fromPath], saved.changes);
-        if (refused) {
+      if (saved.changes.length === 0) {
+        return { ok: true, message: `Redirect ${fromPath} → ${toPath} is already live as it is.` };
+      }
+      if (goLive === "now") {
+        const live = await goLiveNow(
+          locals,
+          saved.changes.map((c) => c.fromPath),
+          saved.changes,
+        );
+        if (!live.live) {
           return fail(409, {
-            error: `Redirect ${fromPath} → ${toPath} is saved and goes live with the next Publish live, but it could not go live now: ${refused}`,
+            error: `Redirect ${fromPath} → ${toPath} is saved and goes live with the next Publish live, but it could not go live now: ${live.refused}`,
           });
         }
-        return { ok: true, message: `Redirect ${fromPath} → ${toPath} is live on your site now.` };
+        return goLiveResult(
+          live.pushFailed,
+          `Redirect ${fromPath} → ${toPath} is live on your site now.`,
+        );
       }
       return {
         ok: true,
@@ -193,20 +204,20 @@ export const actions: Actions = {
       return { ok: true, message: `Redirect ${fromPath} → ${toPath} is already live as it is.` };
     }
     if (goLive === "now" && change.changeId !== null && change.revision !== null) {
-      const refused = await goLiveNow(
+      const live = await goLiveNow(
         locals,
         [fromPath],
         [{ id: change.changeId, revision: change.revision }],
       );
-      if (refused) {
+      if (!live.live) {
         return fail(409, {
-          error: `Redirect ${fromPath} → ${toPath} is saved and goes live with the next Publish live, but it could not go live now: ${refused}`,
+          error: `Redirect ${fromPath} → ${toPath} is saved and goes live with the next Publish live, but it could not go live now: ${live.refused}`,
         });
       }
-      return {
-        ok: true,
-        message: `Redirect ${fromPath} → ${toPath} is live on your site now.${pageNote}`,
-      };
+      return goLiveResult(
+        live.pushFailed,
+        `Redirect ${fromPath} → ${toPath} is live on your site now.${pageNote}`,
+      );
     }
     return {
       ok: true,
@@ -232,9 +243,9 @@ export const actions: Actions = {
     if (!/^[0-9a-f-]{36}$/i.test(changeId) || !Number.isInteger(revision) || revision < 1) {
       return fail(400, { error: "The change to put live is missing; reload the page." });
     }
-    const refused = await goLiveNow(locals, fromPaths, [{ id: changeId, revision }]);
-    if (refused) return fail(409, { error: refused });
-    return { ok: true, message: `${fromPaths.join(", ")}: live on your site now.` };
+    const live = await goLiveNow(locals, fromPaths, [{ id: changeId, revision }]);
+    if (!live.live) return fail(409, { error: live.refused });
+    return goLiveResult(live.pushFailed, `${fromPaths.join(", ")}: live on your site now.`);
   },
   approve: async ({ request, locals }) => {
     const form = await request.formData();

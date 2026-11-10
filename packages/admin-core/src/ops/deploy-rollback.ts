@@ -214,7 +214,9 @@ export const startRollbackOp = defineOperation({
 
 export const finishRollbackOp = defineOperation({
   name: "deploy.finish_rollback",
-  readScope: "request",
+  // Why site-wide: a production rollback checks the whole live redirect
+  // table it leaves for loops before it restores a rule (#1550).
+  readScope: "site",
   // Why human-only: the record step of deploy.rollback (itself human +
   // system, CMS_REQUIREMENTS §6), run as the rollback's caller.
   actorScope: ["human", "system"],

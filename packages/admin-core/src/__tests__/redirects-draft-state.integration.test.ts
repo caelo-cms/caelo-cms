@@ -18,6 +18,9 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import type { FilteredTool } from "../ai/chat-runner/tool-catalogue.js";
+import { attachGatedExecute } from "../ai/tools/gated-tools.js";
+import { proposeExternalRedirectTool } from "../ai/tools/propose-external-redirect.js";
 import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import { drainProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
 import { liveRedirectsFingerprint, loadLiveRedirectRows } from "../redirects/model.js";
@@ -481,6 +484,85 @@ describe("Go live now (#1550)", () => {
     // The proposal stays pending for a reject; the newer change stays Staged.
     expect(await pendingRedirects(ADMIN_URL as string, `${P}-bound`)).toEqual([
       expect.objectContaining({ toPath: "/", state: "staged" }),
+    ]);
+  });
+
+  it("an external approval 'now' puts live the rules it saved, not a rule already live as it is", async () => {
+    await seedLiveRedirects(ADMIN_URL as string, OWNER_ID, [
+      { fromPath: `${P}-ext-same`, toPath: "https://calendar.example/a", statusCode: 302 },
+    ]);
+    const { proposalId } = await op<{ proposalId: string }>(AI, "redirects.propose_external", {
+      redirects: [
+        { fromPath: `${P}-ext-same`, url: "https://calendar.example/a", statusCode: 302 },
+        { fromPath: `${P}-ext-new`, url: "https://calendar.example/b", statusCode: 302 },
+      ],
+      goLive: "now",
+    });
+    const saved = await op<{
+      fromPaths: string[];
+      changes: { fromPath: string; id: string; revision: number }[];
+      nextStep: string;
+    }>(OWNER, "redirects.execute_proposal", { proposalId });
+    expect(saved.fromPaths).toEqual([`${P}-ext-same`, `${P}-ext-new`]);
+    expect(saved.changes.map((c) => c.fromPath)).toEqual([`${P}-ext-new`]);
+    expect(saved.nextStep).toContain(`Already live as it is: ${P}-ext-same`);
+    // Every proposed path would refuse the whole batch: one has nothing pending.
+    const refs = saved.changes.map(({ id, revision }) => ({ id, revision }));
+    expect(
+      await refusal(OWNER, "redirects.go_live_now", {
+        fromPaths: saved.fromPaths,
+        changes: refs,
+        repoRoot: root,
+      }),
+    ).toContain(`${P}-ext-same`);
+    await op(OWNER, "redirects.go_live_now", {
+      fromPaths: saved.changes.map((c) => c.fromPath),
+      changes: refs,
+      repoRoot: root,
+    });
+    expect(await liveRedirects(ADMIN_URL as string, P)).toEqual([
+      { fromPath: `${P}-ext-new`, toPath: "https://calendar.example/b", statusCode: 302 },
+      { fromPath: `${P}-ext-same`, toPath: "https://calendar.example/a", statusCode: 302 },
+    ]);
+  });
+
+  it("the in-chat approval of an external 'now' puts its saved rules live past one already live", async () => {
+    await seedLiveRedirects(ADMIN_URL as string, OWNER_ID, [
+      { fromPath: `${P}-chat-same`, toPath: "https://calendar.example/a", statusCode: 302 },
+    ]);
+    const tool = attachGatedExecute(
+      {
+        name: proposeExternalRedirectTool.name,
+        description: proposeExternalRedirectTool.description,
+        inputSchema: proposeExternalRedirectTool.inputSchema,
+        gated: proposeExternalRedirectTool.gated,
+      } as FilteredTool,
+      registry,
+      adapter,
+      AI,
+      OWNER,
+    );
+    // The approval's Go live now reads the live build where the deploy ops write it.
+    const outputRoot = process.env.CAELO_OUTPUT_ROOT;
+    process.env.CAELO_OUTPUT_ROOT = root;
+    try {
+      const r = (await tool.execute?.({
+        redirects: [
+          { fromPath: `${P}-chat-same`, url: "https://calendar.example/a", statusCode: 302 },
+          { fromPath: `${P}-chat-new`, url: "https://calendar.example/b", statusCode: 302 },
+        ],
+        goLive: "now",
+      })) as { ok: boolean; value: { wentLiveNow?: boolean; warning?: string } };
+      expect(r.ok).toBe(true);
+      expect(r.value.wentLiveNow).toBe(true);
+      expect(r.value.warning).toBeUndefined();
+    } finally {
+      if (outputRoot === undefined) delete process.env.CAELO_OUTPUT_ROOT;
+      else process.env.CAELO_OUTPUT_ROOT = outputRoot;
+    }
+    expect(await liveRedirects(ADMIN_URL as string, `${P}-chat-`)).toEqual([
+      { fromPath: `${P}-chat-new`, toPath: "https://calendar.example/b", statusCode: 302 },
+      { fromPath: `${P}-chat-same`, toPath: "https://calendar.example/a", statusCode: 302 },
     ]);
   });
 

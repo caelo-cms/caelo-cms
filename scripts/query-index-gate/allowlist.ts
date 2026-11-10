@@ -121,12 +121,6 @@ export const ALLOWED: readonly AllowedRule[] = [
       "A rollback resets the bake mark of every stale page (#1155): a whole-table update by design, run once per rollback.",
   },
   {
-    table: "public.redirects",
-    op: "redirects.*",
-    reason:
-      "The operator/AI redirect search (ILIKE '%…%'). #1291 tried a pg_trgm GIN index: under the table's RLS policy ~~* is not leakproof, so it can never become an index condition for admin_role. Operator search, not a per-request path.",
-  },
-  {
     table: "public.font_assets",
     op: "fonts.find",
     reason:
