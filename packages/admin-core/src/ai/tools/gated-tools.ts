@@ -36,6 +36,8 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { untrustedToolResult } from "@caelo-cms/shared";
+import { executeBuild } from "../../build-carrier/carry.js";
+import { BUILD_ORDER_KINDS, type BuildOpName } from "../../build-carrier/order.js";
 import {
   approverPermissionsOf,
   isApproverPermissionRefusal,
@@ -53,6 +55,16 @@ import { credentialFreeResult } from "./credential-free-result.js";
  * says "the Owner approves" — so it told the operator to approve something
  * already applied and parked follow-up work behind it (PR #624 real-AI run).
  */
+/**
+ * The build op an executor runs, when it builds (#1574: `deploy.execute_proposal`,
+ * `quality_audits.execute_proposal`, …), else null.
+ */
+function buildExecutor(op: string): BuildOpName | null {
+  return op !== "stage" && (BUILD_ORDER_KINDS as readonly string[]).includes(op)
+    ? (op as BuildOpName)
+    : null;
+}
+
 const APPLIED_STATUS =
   "APPROVED by the operator in this chat and APPLIED — nothing is pending any more; do not ask for approval again.";
 
@@ -118,9 +130,16 @@ export function attachGatedExecute(
       }
       // 2. Apply as the approving human (live-commit) — the approved
       //    mutation. The executor checks the approver's permission first.
-      const applied = await execute(registry, adapter, ownerCtxLive, gated.executeOp, {
-        proposalId,
-      });
+      //    #1361 — an executor that builds (an approved Publish live,
+      //    rollback or publish anyway) runs as a carried build (#1574). The
+      //    turn waits for it as before, but the build runs inside the
+      //    request its carrier holds open: a tab closed mid-build stops the
+      //    turn, not the build, and on request-billed CPU a build left
+      //    without any request would stall.
+      const build = buildExecutor(gated.executeOp);
+      const applied = build
+        ? await executeBuild({ registry, adapter }, ownerCtxLive, build, { proposalId })
+        : await execute(registry, adapter, ownerCtxLive, gated.executeOp, { proposalId });
       if (!applied.ok) {
         if (
           applied.error.kind === "HandlerError" &&
@@ -144,7 +163,15 @@ export function attachGatedExecute(
       // #971 — from here on only the AI-visible shape of the output exists:
       // a credential the apply produced is a handoff the approver collects
       // in the admin, never a value the model (or an MCP client) reads.
-      const appliedValue = credentialFreeResult(tool.name, applied.value);
+      // A build that had no carrier ran inside this turn's request instead,
+      // and says so: the operator must keep the tab open next time.
+      const carrierWarning = "warning" in applied ? applied.warning : undefined;
+      const appliedValue = credentialFreeResult(
+        tool.name,
+        carrierWarning
+          ? { ...(applied.value as Record<string, unknown>), warning: carrierWarning }
+          : applied.value,
+      );
       // 3. Post-commit step, if the domain declared one. The apply
       //    transaction is closed by now, which is the whole reason this
       //    is not folded into `execute_proposal`.
