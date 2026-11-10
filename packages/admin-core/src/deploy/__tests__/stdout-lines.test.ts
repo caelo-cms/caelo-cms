@@ -36,29 +36,38 @@ describe("LineSplitter", () => {
     expect(linesOf([bytes.subarray(0, cut), bytes.subarray(cut)])).toEqual(['{"title":"Größe"}']);
   });
 
-  it("keeps nothing of a line once its handler returned", () => {
-    // A streamed file's line (24 MiB of base64 here), in 64 KiB chunks as
-    // the pipe delivers them, then the next event's start.
+  it("keeps nothing of a line once its handler returned", async () => {
+    // A streamed file's line (24 MiB of base64 here), then the next event's start.
     const size = 24 * 1024 * 1024;
     const splitter = new LineSplitter();
-    let seen = 0;
-    const live = (): number => {
-      Bun.gc(true);
-      return heapStats().heapSize;
-    };
     const before = live();
-    {
-      const bytes = Buffer.alloc(size + 1, "QUJD");
-      bytes[size] = 0x0a;
-      for (let at = 0; at < bytes.length; at += 65_536) {
-        // A copy per chunk, like a pipe read: nothing shares the big buffer.
-        splitter.push(Buffer.from(bytes.subarray(at, at + 65_536)), (line) => {
-          seen = line.length;
-        });
-      }
-    }
+    const seen = feedLine(splitter, size);
     splitter.push(Buffer.from('{"kind":"pro'), () => undefined);
+    // Read from a fresh stack, so no frame of this test can hold the line.
+    await Bun.sleep(0);
     expect(seen).toBe(size);
     expect(live() - before).toBeLessThan(1024 * 1024);
   });
 });
+
+/** This process's live memory in bytes, after a full collection. */
+function live(): number {
+  Bun.gc(true);
+  return heapStats().heapSize;
+}
+
+/**
+ * Push one line of `size` bytes in 64 KiB chunks, each a copy as a pipe read
+ * is (nothing shares the big buffer); returns the length handed on.
+ */
+function feedLine(splitter: LineSplitter, size: number): number {
+  const bytes = Buffer.alloc(size + 1, "QUJD");
+  bytes[size] = 0x0a;
+  let seen = 0;
+  for (let at = 0; at < bytes.length; at += 65_536) {
+    splitter.push(Buffer.from(bytes.subarray(at, at + 65_536)), (line) => {
+      seen = line.length;
+    });
+  }
+  return seen;
+}
