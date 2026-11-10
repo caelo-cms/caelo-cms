@@ -24,7 +24,12 @@
  * their own transaction.
  */
 
-import { assertChatOpenForWrite, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
+import {
+  assertChatOpenForWrite,
+  type TransactionRunner,
+  textArray,
+  uuidArray,
+} from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
 /** A plugin row's state as snapshotted. `values` holds every non-host column. */
@@ -114,14 +119,44 @@ export async function emitPluginRowSnapshot(
     readonly state: PluginRowState;
   },
 ): Promise<void> {
+  await emitPluginRowSnapshots(tx, {
+    ...input,
+    rows: [{ rowId: input.rowId, state: input.state }],
+  });
+}
+
+/**
+ * #1391 — write the snapshots of several rows of one table under ONE
+ * `site_snapshots` header, in one statement. A bulk write is one change
+ * (one undo step, like a core `*_many` op), and its cost is one header
+ * and one insert instead of one of each per row: the journal and draft
+ * head triggers on both tables run per statement.
+ */
+export async function emitPluginRowSnapshots(
+  tx: TransactionRunner,
+  input: Omit<PluginRowRef, "rowId"> & {
+    readonly actorId: string;
+    readonly opKind: PluginRowOpKind;
+    readonly chatBranchId: string | null;
+    readonly chatTaskId: string | null;
+    readonly rows: ReadonlyArray<{ readonly rowId: string; readonly state: PluginRowState }>;
+  },
+): Promise<void> {
+  if (input.rows.length === 0) return;
+  assertIdent(input.schema, "schema");
+  assertIdent(input.table, "table");
   // #1102 — a closed chat takes no more changes; nothing of the write is kept.
   if (input.chatTaskId) await assertChatOpenForWrite(tx, input.chatTaskId, input.opKind);
+  const only = input.rows.length === 1 ? input.rows[0] : undefined;
+  const description = only
+    ? `${input.opKind} ${input.schema}.${input.table} ${only.rowId}`
+    : `${input.opKind} ${input.schema}.${input.table} (${input.rows.length} rows)`;
   const header = (await tx.execute(sql`
     INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
     VALUES (
       ${input.actorId}::uuid,
       ${input.opKind},
-      ${`${input.opKind} ${input.schema}.${input.table} ${input.rowId}`},
+      ${description},
       ${input.chatTaskId},
       ${input.chatBranchId}
     )
@@ -129,7 +164,21 @@ export async function emitPluginRowSnapshot(
   `)) as unknown as { id: string }[];
   const siteSnapshotId = header[0]?.id;
   if (!siteSnapshotId) throw new Error("plugin row snapshot: no site_snapshots id returned");
-  await insertPluginRowSnapshot(tx, siteSnapshotId, input, input.state);
+  if (only) {
+    await insertPluginRowSnapshot(tx, siteSnapshotId, { ...input, rowId: only.rowId }, only.state);
+    return;
+  }
+  // Two array parameters, however many rows (rule 7, docs/dev/state-and-changes.md).
+  await tx.execute(sql`
+    INSERT INTO plugin_row_snapshots
+      (site_snapshot_id, plugin_id, schema_name, table_name, row_id, state)
+    SELECT ${siteSnapshotId}::uuid, ${input.pluginId}::uuid, ${input.schema}, ${input.table},
+           r.row_id, r.state::jsonb
+    FROM unnest(
+      ${uuidArray(input.rows.map((r) => r.rowId))},
+      ${textArray(input.rows.map((r) => JSON.stringify(r.state)))}
+    ) AS r(row_id, state)
+  `);
 }
 
 /**
