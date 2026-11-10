@@ -785,23 +785,39 @@ async function readSnapshot(
     );
   }
   if (want.has("redirects")) {
-    snap.redirects = await rows(
+    // #1550 — the staging view: the live rows with the Staged changes of the
+    // shared draft (main and the site draft; an isolated branch's changes
+    // join at its Stage merge; Draft changes are served nowhere). Read in ONE
+    // statement: under READ COMMITTED a second read could already see a
+    // release the first did not, and publish a pairing the admin never held
+    // (a loop staging would answer with an error until the next projection).
+    const both = await rows(
       tx,
-      sql`SELECT id::text AS id, from_path, to_path, status_code FROM redirects ORDER BY from_path`,
-    );
-    // #1550 — the staging view: the live rows above with the Staged changes
-    // of the shared draft (main and the site draft; an isolated branch's
-    // changes join at its Stage merge). Draft changes are served nowhere.
-    snap.redirectChanges = await rows(
-      tx,
-      sql`SELECT id::text AS id, address, from_path, to_path, status_code,
-                 origin <> 'manual' AS automatic
+      sql`SELECT 'live' AS kind, id::text AS id, NULL::text AS address, from_path, to_path,
+                 status_code, NULL::boolean AS automatic, from_path AS sort_key
+          FROM redirects
+          UNION ALL
+          SELECT 'staged', id::text, address, from_path, to_path, status_code,
+                 origin <> 'manual', address
           FROM pending_redirects
           WHERE state = 'staged'
             AND (chat_branch_id IS NULL
                  OR chat_branch_id = (SELECT branch_id FROM site_draft WHERE id = 1))
-          ORDER BY address`,
+          ORDER BY kind, sort_key`,
     );
+    snap.redirects = both
+      .filter((r) => r.kind === "live")
+      .map(({ id, from_path, to_path, status_code }) => ({ id, from_path, to_path, status_code }));
+    snap.redirectChanges = both
+      .filter((r) => r.kind === "staged")
+      .map(({ id, address, from_path, to_path, status_code, automatic }) => ({
+        id,
+        address,
+        from_path,
+        to_path,
+        status_code,
+        automatic,
+      }));
   }
   if (want.has("plugins")) {
     const pointed = await readPointedReleases(tx);
