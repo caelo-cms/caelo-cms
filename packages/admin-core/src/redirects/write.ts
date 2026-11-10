@@ -76,6 +76,12 @@ export interface WriteRedirectChangesOptions {
   /** Automatic changes are always Staged (the table refuses a Draft one). */
   readonly state: RedirectChangeState;
   readonly owner: RedirectChangeOwner;
+  /**
+   * The snapshot of the chat's page write that caused these changes (a
+   * delete's 301): the Stage that merges that write settles them, also when
+   * the chat only rode along with another chat's selection.
+   */
+  readonly causeSnapshotId?: string | null;
 }
 
 function sameRule(
@@ -149,15 +155,16 @@ export async function writeRedirectChanges(
     const written = (await tx.execute(sql`
       INSERT INTO pending_redirects
         (address, from_path, to_path, status_code, state, origin, actor_id, chat_session_id,
-         chat_branch_id)
+         chat_branch_id, cause_snapshot_id)
       VALUES (${address}, ${fromPath}, ${c.toPath}, ${c.statusCode}, ${opts.state}, ${opts.origin},
               ${opts.owner.actorId}::uuid, ${opts.owner.chatSessionId}::uuid,
-              ${opts.owner.chatBranchId}::uuid)
+              ${opts.owner.chatBranchId}::uuid, ${opts.causeSnapshotId ?? null}::uuid)
       ON CONFLICT (address) DO UPDATE
         SET from_path = EXCLUDED.from_path, to_path = EXCLUDED.to_path,
             status_code = EXCLUDED.status_code, state = EXCLUDED.state, origin = EXCLUDED.origin,
             actor_id = EXCLUDED.actor_id, chat_session_id = EXCLUDED.chat_session_id,
             chat_branch_id = EXCLUDED.chat_branch_id,
+            cause_snapshot_id = EXCLUDED.cause_snapshot_id,
             revision = pending_redirects.revision + 1, updated_at = now()
         WHERE (pending_redirects.from_path, pending_redirects.to_path, pending_redirects.status_code,
                pending_redirects.state, pending_redirects.origin, pending_redirects.chat_session_id,
@@ -166,11 +173,25 @@ export async function writeRedirectChanges(
                EXCLUDED.state, EXCLUDED.origin, EXCLUDED.chat_session_id, EXCLUDED.chat_branch_id)
       RETURNING id::text AS id, revision::text AS revision
     `)) as unknown as { id: string; revision: string }[];
-    // No row back: the same change was pending already (nothing to bump).
-    const changeId = written[0]?.id ?? before?.id;
-    const revision = written[0] ? Number(written[0].revision) : before?.revision;
-    if (!changeId || revision === undefined)
+    // No row back: the same change was pending already (nothing to bump) —
+    // read before, or inserted by a concurrent identical save after this
+    // one's read found no row to lock: read that row back.
+    let kept = written[0]
+      ? { id: written[0].id, revision: Number(written[0].revision) }
+      : before
+        ? { id: before.id, revision: before.revision }
+        : null;
+    if (kept === null) {
+      const same = (await tx.execute(sql`
+        SELECT id::text AS id, revision::text AS revision FROM pending_redirects
+        WHERE address = ${address} FOR UPDATE
+      `)) as unknown as { id: string; revision: string }[];
+      kept = same[0] ? { id: same[0].id, revision: Number(same[0].revision) } : null;
+    }
+    if (kept === null)
       throw new Error(`writeRedirectChanges: ${address} has no pending row after the write`);
+    const changeId = kept.id;
+    const revision = kept.revision;
     pending.set(address, {
       id: changeId,
       address,

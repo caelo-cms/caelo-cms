@@ -178,11 +178,22 @@ export const releasePlanOp = defineReadOperation({
        * release).
        */
       against: z.enum(["staged", "live"]).default("staged"),
+      /**
+       * `against: "live"`: the production target whose served files the
+       * plan reads — the one the build just went live on (an install may
+       * have several, each with its own files).
+       */
+      productionTarget: z.string().min(1).max(80).optional(),
       /** Also return the served table (`rows`): the Stage audit's links check reads it. */
       includeRows: z.boolean().default(false),
       repoRoot: z.string().optional(),
     })
-    .strict(),
+    .strict()
+    .refine((v) => v.against !== "live" || v.productionTarget !== undefined, {
+      message:
+        'against: "live" plans against one production target: name it in productionTarget (the one the build went live on)',
+      path: ["productionTarget"],
+    }),
   output: releasePlanOutput,
   handler: async (_ctx, input, reads) => {
     const read = await reads.read(async (tx) => {
@@ -240,9 +251,16 @@ export const releasePlanOp = defineReadOperation({
         files = await stagedBuildFiles(read.build, outputRoot);
         pageUrlStyle = read.build.pageUrlStyle;
       } else {
-        const target = read.production[0];
-        const served = target ? await liveBuildFiles(target, outputRoot) : null;
-        if (!target || served === null) {
+        const target = read.production.find((t) => t.name === input.productionTarget);
+        if (!target) {
+          return ok({
+            stagedRunId: null,
+            ...nothing,
+            problem: `${input.productionTarget} is not a production target of this install, so the redirect changes cannot be checked against its files.`,
+          });
+        }
+        const served = await liveBuildFiles(target, outputRoot);
+        if (served === null) {
           return ok({
             stagedRunId: null,
             ...nothing,

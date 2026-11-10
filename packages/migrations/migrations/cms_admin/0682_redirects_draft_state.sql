@@ -76,6 +76,10 @@ CREATE TABLE pending_redirects (
   actor_id        uuid NOT NULL REFERENCES actors(id),
   chat_session_id uuid NULL REFERENCES chat_sessions(id) ON DELETE SET NULL,
   chat_branch_id  uuid NULL,
+  -- The snapshot of the chat's page write that caused an automatic change
+  -- (a delete's 301): the Stage that merges that write settles the change,
+  -- also when the chat only rode along with another chat's selection.
+  cause_snapshot_id uuid NULL,
   created_at      timestamptz NOT NULL DEFAULT now(),
   updated_at      timestamptz NOT NULL DEFAULT now(),
   CHECK ((to_path IS NULL) = (status_code IS NULL)),
@@ -87,6 +91,7 @@ CREATE INDEX pending_redirects_branch_idx ON pending_redirects (chat_branch_id);
 CREATE INDEX pending_redirects_chat_idx ON pending_redirects (chat_session_id);
 CREATE INDEX pending_redirects_actor_idx ON pending_redirects (actor_id);
 CREATE INDEX pending_redirects_to_path_idx ON pending_redirects (to_path);
+CREATE INDEX pending_redirects_cause_idx ON pending_redirects (cause_snapshot_id);
 
 CREATE TABLE redirect_release_log (
   id                     uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -1067,6 +1067,9 @@ async function runTrigger(
       const planned = await execute(registry, adapter, sys, "redirects.release_plan", {
         changes: plan.redirectChanges,
         against: "live",
+        // The target this build went live on: another production target
+        // serves other files.
+        productionTarget: plan.target.name,
         ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
       });
       if (!planned.ok) {

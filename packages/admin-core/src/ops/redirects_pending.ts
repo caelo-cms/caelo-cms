@@ -445,7 +445,11 @@ const executeDefinition = defineOperation({
         toPath: r.url,
         statusCode: r.statusCode,
       })),
-      { origin: "manual", state: "staged", owner: await ownerOfContext(tx, ctx) },
+      {
+        origin: "manual",
+        state: "staged",
+        owner: await ownerOfContext(tx, ctx, "redirects.execute_proposal"),
+      },
     );
     await tx.execute(sql`
       UPDATE redirect_pending_actions

@@ -26,7 +26,7 @@ import { applyPathMoveEffects } from "../ops/content/path-moves.js";
 import { drainProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
 import { liveRedirectsFingerprint, loadLiveRedirectRows } from "../redirects/model.js";
 import { lockLiveRedirectWrites, releaseRedirectChanges } from "../redirects/release.js";
-import { retargetPendingRedirects } from "../redirects/write.js";
+import { retargetPendingRedirects, writeRedirectChanges } from "../redirects/write.js";
 import { registerAdminOps } from "../register.js";
 import {
   liveRedirects,
@@ -117,6 +117,23 @@ async function published(url: string): Promise<{ live: string[]; staged: string[
                 ORDER BY address`) as { r: string }[]
     ).map((r) => r.r),
   }));
+}
+
+/** Until a transaction of this database waits for a lock another one holds. */
+async function untilAWriteWaits(): Promise<void> {
+  for (let waited = 0; waited <= 5_000; waited += 25) {
+    const blocked = await asSystem(
+      ADMIN_URL as string,
+      async (tx) =>
+        (await tx`SELECT count(*)::int AS n FROM pg_stat_activity
+                  WHERE datname = current_database() AND wait_event_type = 'Lock'`) as {
+          n: number;
+        }[],
+    );
+    if ((blocked[0]?.n ?? 0) > 0) return;
+    await Bun.sleep(25);
+  }
+  throw new Error("no write ever waited for the held transaction");
 }
 
 async function syncChangeRows(): Promise<number> {
@@ -350,19 +367,7 @@ describe("a save is a pending change, never live (#1550)", () => {
     const saving = execute(registry, adapter, OWNER, "redirects.delete_many", {
       fromPaths: [`${P}-inflight`],
     });
-    for (let waited = 0; ; waited += 25) {
-      const blocked = await asSystem(
-        ADMIN_URL as string,
-        async (tx) =>
-          (await tx`SELECT count(*)::int AS n FROM pg_stat_activity
-                    WHERE datname = current_database() AND wait_event_type = 'Lock'`) as {
-            n: number;
-          }[],
-      );
-      if ((blocked[0]?.n ?? 0) > 0) break;
-      if (waited > 5_000) throw new Error("the save never waited for the release");
-      await Bun.sleep(25);
-    }
+    await untilAWriteWaits();
     commit();
     await releasing;
     expect((await saving).ok).toBe(true);
@@ -370,6 +375,41 @@ describe("a save is a pending change, never live (#1550)", () => {
     expect(await liveRedirects(ADMIN_URL as string, `${P}-inflight`)).toEqual([]);
     expect(await pendingRedirects(ADMIN_URL as string, `${P}-inflight`)).toEqual([]);
     await op(OWNER, "redirects.list", { query: `${P}-inflight` });
+  });
+
+  it("two identical saves of a new address at once both succeed, with one change", async () => {
+    const change = { fromPath: `${P}-twice`, toPath: "/t1550-live", statusCode: 301 } as const;
+    // The first save: written, not yet committed.
+    let commit!: () => void;
+    const held = new Promise<void>((r) => {
+      commit = r;
+    });
+    let wrote!: () => void;
+    const written = new Promise<void>((r) => {
+      wrote = r;
+    });
+    const first = adapter.withAdminTransaction(SYS, async (tx) => {
+      await writeRedirectChanges(tx, [change], {
+        origin: "manual",
+        state: "staged",
+        owner: { actorId: OWNER_ID, chatSessionId: null, chatBranchId: null },
+      });
+      wrote();
+      await held;
+    });
+    await written;
+    // The second found no row to lock, so its insert waits on the first's.
+    const second = execute(registry, adapter, OWNER, "redirects.create_many", {
+      redirects: [{ fromPath: change.fromPath, toPath: change.toPath }],
+    });
+    await untilAWriteWaits();
+    commit();
+    await first;
+    const r = await second;
+    expect(r.ok ? null : JSON.stringify(r.error)).toBeNull();
+    expect(await pendingRedirects(ADMIN_URL as string, `${P}-twice`)).toEqual([
+      expect.objectContaining({ toPath: "/t1550-live", state: "staged" }),
+    ]);
   });
 
   it("one pending change per address: a new one replaces the other chat's, and the result says so", async () => {
@@ -399,6 +439,25 @@ describe("a save is a pending change, never live (#1550)", () => {
     expect(await pendingRedirects(ADMIN_URL as string, P)).toEqual([
       expect.objectContaining({ fromPath: `${P}-promo`, toPath: "/", statusCode: 302 }),
     ]);
+  });
+
+  it("a discarded chat saves no redirect change, like a page write", async () => {
+    const chat = await op<{ chatSessionId: string; chatBranchId: string }>(
+      SYS,
+      "chat.create_session",
+      { title: "t1550 Discarded" },
+    );
+    const chatCtx: ExecutionContext = {
+      ...SYS,
+      chatBranchId: chat.chatBranchId,
+      chatTaskId: chat.chatSessionId,
+    };
+    await op(SYS, "chat.discard_branch", { chatSessionId: chat.chatSessionId });
+    const why = await refusal(chatCtx, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-discarded`, toPath: "/t1550-live" }],
+    });
+    expect(why).toContain("this chat was discarded");
+    expect(await pendingRedirects(ADMIN_URL as string, `${P}-discarded`)).toEqual([]);
   });
 
   it("Undo of a chat removes its pending changes and never touches the live rules", async () => {
@@ -619,6 +678,37 @@ describe("Go live now (#1550)", () => {
     expect(await liveRedirects(ADMIN_URL as string, P)).toEqual([
       { fromPath: `${P}-decided`, toPath: "/t1550-live", statusCode: 301 },
     ]);
+  });
+
+  it("plans a production build against the production target it names, never another one", async () => {
+    await op(OWNER, "redirects.create_many", {
+      redirects: [{ fromPath: `${P}-on-target`, toPath: "/t1550-live" }],
+    });
+    const [target] = await asSystem(
+      ADMIN_URL as string,
+      async (tx) =>
+        (await tx`SELECT name FROM deploy_targets WHERE id = ${productionTargetId}::uuid`) as {
+          name: string;
+        }[],
+    );
+    if (!target) throw new Error("no production target");
+    const planned = await op<{ goingLive: { fromPath: string }[]; problem: string | null }>(
+      SYS,
+      "redirects.release_plan",
+      { against: "live", productionTarget: target.name, repoRoot: root },
+    );
+    expect(planned.problem).toBeNull();
+    expect(planned.goingLive.map((c) => c.fromPath)).toContain(`${P}-on-target`);
+    const elsewhere = await op<{ goingLive: unknown[]; problem: string | null }>(
+      SYS,
+      "redirects.release_plan",
+      { against: "live", productionTarget: "t1550-not-a-target", repoRoot: root },
+    );
+    expect(elsewhere.goingLive).toEqual([]);
+    expect(elsewhere.problem).toContain("is not a production target");
+    expect(
+      await refusal(SYS, "redirects.release_plan", { against: "live", repoRoot: root }),
+    ).toContain("productionTarget");
   });
 
   it("proposes Go live now for as many changes as one tool call saves (500)", async () => {

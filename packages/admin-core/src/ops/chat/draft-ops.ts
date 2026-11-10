@@ -135,7 +135,7 @@ async function finalizeDraftSelection(
   // #1550 — the automatic redirect changes of the staged page writes (a
   // delete's 301) belong to the staged state now: a later Undo of these
   // chats, which drops only unstaged work, leaves them.
-  await settleStagedChatRedirectChanges(tx, chatSessionIds, stagedAt);
+  await settleStagedChatRedirectChanges(tx, chatSessionIds, stagedAt, headerIds);
   await releaseIdleDraftLocks(tx, branchId);
   return staged;
 }

@@ -202,7 +202,7 @@ export const createRedirectOp = defineOperation({
       {
         origin,
         state: stateOfGoLive(input.goLive),
-        owner: await ownerOfContext(tx, ctx),
+        owner: await ownerOfContext(tx, ctx, "redirects.create"),
       },
     );
     if (!outcome) throw new Error("redirects.create: the writer returned no outcome");
@@ -648,7 +648,7 @@ export const deleteRedirectOp = defineOperation({
     const [outcome] = await writeRedirectChanges(tx, removalsOf([fromPath]), {
       origin: "manual",
       state: stateOfGoLive(input.goLive),
-      owner: await ownerOfContext(tx, ctx),
+      owner: await ownerOfContext(tx, ctx, "redirects.delete"),
     });
     if (!outcome) throw new Error("redirects.delete: the writer returned no outcome");
     await recordAudit(tx, {
@@ -747,7 +747,7 @@ export const createRedirectsManyOp = defineOperation({
     const outcomes = await writeRedirectChanges(tx, writes, {
       origin: "manual",
       state: stateOfGoLive(input.goLive),
-      owner: await ownerOfContext(tx, ctx),
+      owner: await ownerOfContext(tx, ctx, "redirects.create_many"),
     });
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -864,7 +864,7 @@ export const deleteRedirectsManyOp = defineOperation({
     const outcomes = await writeRedirectChanges(tx, removals, {
       origin: "manual",
       state: stateOfGoLive(input.goLive),
-      owner: await ownerOfContext(tx, ctx),
+      owner: await ownerOfContext(tx, ctx, "redirects.delete_many"),
     });
     await recordAudit(tx, {
       actorId: ctx.actorId,

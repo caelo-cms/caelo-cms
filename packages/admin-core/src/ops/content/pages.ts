@@ -2092,16 +2092,16 @@ async function deletePageHandler(
     entityId: input.pageId,
     resultSummary: branched ? "branched soft-delete" : "soft-deleted",
   });
-  if (state) {
-    await emitSnapshot(tx, {
-      actorId: ctx.actorId,
-      opKind: "pages.delete",
-      description: `pages.delete slug=${state.slug}${branched ? " (branched)" : ""}`,
-      chatTaskId: ctx.chatTaskId ?? null,
-      chatBranchId: ctx.chatBranchId ?? null,
-      entities: [{ kind: "page", entityId: input.pageId, state }],
-    });
-  }
+  const snapshot = state
+    ? await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "pages.delete",
+        description: `pages.delete slug=${state.slug}${branched ? " (branched)" : ""}`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
+        entities: [{ kind: "page", entityId: input.pageId, state }],
+      })
+    : null;
   // Dead-URL redirect, on this tx. `state` carries the page's slug
   // (delete doesn't change it). A failed 301 aborts the delete rather than
   // leaving the URL silently unredirected (§2 no-fallbacks).
@@ -2130,11 +2130,13 @@ async function deletePageHandler(
     }
     // #1550 — an automatic change, Staged: the 301 goes live with the
     // Publish live that ships the delete, never before (#1523). A chat's
-    // delete keeps its chat and branch, so its Undo takes the 301 back too.
+    // delete keeps its chat and branch, so its Undo takes the 301 back too,
+    // until the Stage that merges this delete (its snapshot) settles it.
     await writeRedirectChanges(tx, [{ fromPath: oldPath, toPath, statusCode: 301 }], {
       origin: "page_delete",
       state: "staged",
-      owner: await ownerOfContext(tx, ctx),
+      owner: await ownerOfContext(tx, ctx, "pages.delete"),
+      causeSnapshotId: snapshot?.siteSnapshotId ?? null,
     });
   }
   return ok({});

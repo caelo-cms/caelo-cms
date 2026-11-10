@@ -59,17 +59,30 @@ export async function mergeBranchRedirectChanges(
 /**
  * A Stage of draft chats finished: the automatic changes their page writes
  * caused before the merge (`stagedAt`) belong to the staged state now, no
- * longer to the chat's unstaged work an Undo removes.
+ * longer to the chat's unstaged work an Undo removes. So do the automatic
+ * changes of every merged page write (`mergedHeaderIds`, the change's
+ * `cause_snapshot_id`), also of a chat that only rode along with the
+ * selection because it changed the same page: its later Undo leaves a
+ * staged delete's 301.
  */
 export async function settleStagedChatRedirectChanges(
   tx: TransactionRunner,
   chatSessionIds: readonly string[],
   stagedAt: string,
+  mergedHeaderIds: readonly string[],
 ): Promise<void> {
-  if (chatSessionIds.length === 0) return;
-  await tx.execute(sql`
-    UPDATE pending_redirects SET chat_session_id = NULL
-    WHERE chat_session_id = ANY(${uuidArray([...chatSessionIds])})
-      AND origin <> 'manual' AND created_at <= ${stagedAt}::timestamptz
-  `);
+  if (chatSessionIds.length > 0) {
+    await tx.execute(sql`
+      UPDATE pending_redirects SET chat_session_id = NULL
+      WHERE chat_session_id = ANY(${uuidArray([...chatSessionIds])})
+        AND origin <> 'manual' AND created_at <= ${stagedAt}::timestamptz
+    `);
+  }
+  if (mergedHeaderIds.length > 0) {
+    await tx.execute(sql`
+      UPDATE pending_redirects SET chat_session_id = NULL
+      WHERE cause_snapshot_id = ANY(${uuidArray([...mergedHeaderIds])})
+        AND origin <> 'manual' AND chat_session_id IS NOT NULL
+    `);
+  }
 }

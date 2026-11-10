@@ -24,7 +24,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
+import { assertChatOpenForWrite, type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
   type PendingRedirectChange,
@@ -151,13 +151,20 @@ export function plannedChangeOf(r: PendingRedirectRow): PendingRedirectChange {
 /**
  * The owner of a write by `ctx`: its actor, its chat (a subagent's task
  * resolves to its parent chat, `caelo_chat_owner`) and its branch.
+ *
+ * A chat's write is refused once the chat is discarded or archived, like a
+ * page write's snapshot (`assertChatOpenForWrite`, named `operation`): its
+ * shared lock on the chat row makes a discard wait for a save in flight,
+ * and a save after the discard never brings back a change it removed.
  */
 export async function ownerOfContext(
   tx: TransactionRunner,
   ctx: ExecutionContext,
+  operation: string,
 ): Promise<RedirectChangeOwner> {
   let chatSessionId: string | null = null;
   if (ctx.chatTaskId) {
+    await assertChatOpenForWrite(tx, ctx.chatTaskId, operation);
     const rows = (await tx.execute(sql`
       SELECT caelo_chat_owner(${ctx.chatTaskId}::uuid)::text AS chat_session_id
       FROM chat_sessions WHERE id = ${ctx.chatTaskId}::uuid

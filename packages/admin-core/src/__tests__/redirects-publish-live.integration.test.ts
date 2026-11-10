@@ -57,7 +57,8 @@ const A = "t1550pg-a";
 const TARGET = "t1550pg-target";
 const LATER = "t1550pg-later";
 const TAKEOVER = "t1550pg-takeover";
-const SLUGS = [HOME, A, `${A}-renamed`, TARGET, LATER, TAKEOVER];
+const RIDE = "t1550pg-ride";
+const SLUGS = [HOME, A, `${A}-renamed`, TARGET, LATER, TAKEOVER, RIDE];
 const P = "/t1550pl";
 
 let adapter: DatabaseAdapter;
@@ -476,6 +477,53 @@ describe("redirects go live with Publish live (#1550)", () => {
       query: TAKEOVER,
     });
     expect(listed.redirects).toEqual([]);
+  });
+});
+
+describe("a Stage settles the redirect changes of the page writes it merged (#1550)", () => {
+  it("a delete's 301 of a chat that rode along with the selection survives that chat's Undo", async () => {
+    const pageId = await page(RIDE, "published");
+    const chat = async (title: string) => {
+      const v = await op<{ chatSessionId: string; chatBranchId: string }>(
+        SYS,
+        "chat.create_session",
+        { title },
+      );
+      const ctx: ExecutionContext = {
+        actorId: SYS.actorId,
+        actorKind: "ai",
+        requestId: `t1550-${title}`,
+        chatBranchId: v.chatBranchId,
+        chatTaskId: v.chatSessionId,
+      };
+      return { id: v.chatSessionId, ctx };
+    };
+    const a = await chat("t1550 rides A");
+    const b = await chat("t1550 rides B");
+    await op(a.ctx, "pages.update", { pageId, title: "Ridden" });
+    // B deletes the page A edited, with a 301 (its first try meets A's newer change).
+    const del = { pageId, disposition: "redirect", redirectTo: `/${TARGET}` };
+    if (!(await execute(registry, adapter, b.ctx, "pages.delete", del)).ok) {
+      await op(b.ctx, "pages.delete", del);
+    }
+    expect(await pendingRedirects(ADMIN_URL as string, `/${RIDE}`)).toEqual([
+      expect.objectContaining({ toPath: `/${TARGET}`, chatSessionId: b.id }),
+    ]);
+    // Staging A merges B's delete too: B changed the same page after A.
+    const merged = await op<{ alsoIncludes: { title: string }[] }>(
+      SYS,
+      "chat.merge_draft_to_main",
+      { chatSessionIds: [a.id] },
+    );
+    expect(merged.alsoIncludes.map((x) => x.title)).toContain("t1550 rides B");
+    expect(await pendingRedirects(ADMIN_URL as string, `/${RIDE}`)).toEqual([
+      expect.objectContaining({ toPath: `/${TARGET}`, chatSessionId: null }),
+    ]);
+    // B's Undo drops its unstaged work; the staged delete keeps its 301.
+    await op(SYS, "chat.undo_changes", { chatSessionId: b.id });
+    expect(await pendingRedirects(ADMIN_URL as string, `/${RIDE}`)).toEqual([
+      expect.objectContaining({ toPath: `/${TARGET}`, origin: "page_delete" }),
+    ]);
   });
 });
 
