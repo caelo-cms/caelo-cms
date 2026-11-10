@@ -39,6 +39,8 @@ import { z } from "zod";
 import type { SupportedProvider } from "./adapter.js";
 import {
   auditJobResource,
+  auditRunnerJobResource,
+  auditRunnerServiceAccountEmail,
   captureJobResource,
   convergeJobResource,
   gatewayServiceAccountEmail,
@@ -387,6 +389,16 @@ export const AUDIT_RESULTS_BUCKET_ENV_VAR = "CAELO_AUDIT_RESULTS_BUCKET";
 export const CAPTURE_JOB_ENV_VAR = "CAELO_CAPTURE_JOB";
 export const CAPTURE_BUCKET_ENV_VAR = "CAELO_CAPTURE_BUCKET";
 export const MEDIA_BUCKET_ENV_VAR = "CAELO_MEDIA_BUCKET";
+
+/**
+ * #1359 — the admin env vars naming the quality-audit runner job (the
+ * whole audit of a Stage, a reporting job: reporting-job-setup.ts) and the
+ * one service account whose reports the admin takes for it (admin-core
+ * quality/audit-job-kind.ts). `upgrade` leaves them untouched when it could
+ * not set the job up.
+ */
+export const AUDIT_RUNNER_JOB_ENV_VAR = "CAELO_AUDIT_RUNNER_JOB";
+export const AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR = "CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT";
 
 /**
  * #1140 — the admin env var naming the service account of the scheduler
@@ -1450,6 +1462,16 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     { name: CAPTURE_JOB_ENV_VAR, value: captureJobResource(projectId, inputs.region, env) },
     { name: CAPTURE_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "capture") },
     { name: MEDIA_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "media") },
+    // #1359 — the job a Stage's quality audit runs in, and the only IAP
+    // identity whose reports the admin takes for it (reporting-job-setup.ts).
+    {
+      name: AUDIT_RUNNER_JOB_ENV_VAR,
+      value: auditRunnerJobResource(projectId, inputs.region, env),
+    },
+    {
+      name: AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR,
+      value: auditRunnerServiceAccountEmail(projectId, env),
+    },
     // #1140 — the only IAP identity the admin's scheduler tick endpoint
     // accepts (scheduler-setup.ts).
     {

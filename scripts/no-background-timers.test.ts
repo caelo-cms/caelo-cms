@@ -43,6 +43,8 @@ const ALLOWED: Record<string, string> = {
     "the redirect sync's lease renewal while it pushes to the provider",
   "packages/admin-core/src/ops/security/mcp_power.ts":
     "a long Power-MCP tool call keeps its agent listed while the call runs",
+  "packages/admin-core/src/reporting-jobs/run-job.ts":
+    "a reporting job's lease renewal while its attempt runs (in the job's container; inside the admin only on self-hosted and development installs), cleared when the attempt ends",
   "packages/plugin-host/src/activation-lock.ts":
     "a plugin activation's lock renewal while the activation runs",
   "packages/plugin-host/src/change-consumers.ts":
@@ -53,8 +55,6 @@ const ALLOWED: Record<string, string> = {
   "apps/admin/src/hooks.server.ts":
     "the dev/test scheduler clock (bootstrapDevSchedulerClock): never with NODE_ENV=production, where the install's scheduler calls the tick",
   // Tracked moves (#1140 follow-ups).
-  "packages/admin-core/src/quality/audit-worker.ts":
-    "FIXME(issue #1359): the quality audit moves into a container job that reports back",
   "packages/admin-core/src/site-import/crawl-worker.ts":
     "FIXME(issue #1360): the site-import crawl moves into a container job that reports back",
 };

@@ -69,9 +69,9 @@ export function parseLiveTopics(
 }
 
 // Write ops per topic. Heartbeats (`chat.heartbeat_agent_run`,
-// `chat.renew_turn_lease`) and the audit worker's idle `claim_next` are left
-// out on purpose: they commit on a clock, and a hint on a clock is the very
-// polling this replaces.
+// `chat.renew_turn_lease`, a reporting job's `reporting_jobs.authorize`) and
+// the tick's `quality_audits.sweep_unstarted` are left out on purpose: they
+// commit on a clock, and a hint on a clock is the very polling this replaces.
 const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   "chat.register_agent_run": ["agents"],
   "chat.finish_agent_run": ["agents"],
@@ -109,6 +109,8 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   "chat.finalize_draft_stage": ["quality", "deploys"],
   "chat.publish": ["quality", "deploys"],
   "quality_audits.enqueue": ["quality"],
+  // #1359 — the audit's job took the run: queued → running.
+  "quality_audits.claim": ["quality"],
   "quality_audits.record_result": ["quality"],
   "quality_audits.retry": ["quality"],
   "quality_audits.claim_chat_notification": ["quality"],

@@ -193,7 +193,7 @@ function fakeInstall(events: string[], overrides: [RegExp, Answer][] = []) {
     [new RegExp(`describe ${GCP_PROXY} .*--format=json`), ok(GCP_PROXY_JSON)],
     [/describe (\S+) .*status\.url/, (l) => ok(`https://${l.split(" ")[3]}-xyz.a.run.app\n`)],
     [
-      /^run jobs describe caelo-production-(audit|capture) .*containers\[0\]\.image/,
+      /^run jobs describe caelo-production-(audit|audit-run|capture) .*containers\[0\]\.image/,
       ok(`${OLD_ADMIN_IMAGE}\n`),
     ],
     [/^sql instances list/, ok(`${SQL}\n`)],
@@ -332,7 +332,7 @@ const CONVERGE_WRITE =
   /add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|service-accounts create|secrets create|secrets versions add|services enable|roles create|roles update|roles undelete|firewall-rules delete|users assign-roles/;
 /** Calls that move a service or run migrations — app-roll-only. */
 const APP_ROLL_WRITE =
-  /^run services update |^run services update-traffic|jobs execute caelo-migrate|^run jobs update caelo-production-(audit|capture) /;
+  /^run services update |^run services update-traffic|jobs execute caelo-migrate|^run jobs update caelo-production-(audit|audit-run|capture) /;
 /** Any gcloud call that changes something. */
 const ANY_WRITE =
   /\b(create|update|update-traffic|delete|add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|execute|enable|add|restore)\b/;
@@ -433,6 +433,64 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(
       events.some((e) => /services update caelo-production-admin.*CAELO_AUDIT_JOB=/.test(e)),
     ).toBe(false);
+  });
+
+  it("#1359 — sets up the quality-audit runner after the audit job, keeps it on IAP, tells the admin, then moves it with the admin", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const lighthouseJob = indexOf(events, /^gcloud run jobs deploy caelo-production-audit /);
+    const runGrant = indexOf(
+      events,
+      /^gcloud run jobs add-iam-policy-binding caelo-production-audit .*--member=serviceAccount:caelo-production-audit-run@acme\.iam\.gserviceaccount\.com --role=roles\/run\.jobsExecutorWithOverrides/,
+    );
+    const deploy = indexOf(events, /^gcloud run jobs deploy caelo-production-audit-run /);
+    const iap = indexOf(
+      events,
+      /^gcloud iap web add-iam-policy-binding .*--member=serviceAccount:caelo-production-audit-run@acme\.iam\.gserviceaccount\.com/,
+    );
+    const opAccess = indexOf(
+      events,
+      /^gcloud run jobs deploy caelo-production-operator-access-sync /,
+    );
+    const adminRoll = indexOf(events, new RegExp(`^gcloud run services update ${ADMIN} `));
+    const move = indexOf(events, /^gcloud run jobs update caelo-production-audit-run /);
+    expect(lighthouseJob < runGrant && runGrant < deploy).toBe(true);
+    expect(iap < opAccess && opAccess < adminRoll && adminRoll < move).toBe(true);
+    expect(events[deploy]).toContain(`--image=${OLD_ADMIN_IMAGE}`);
+    expect(events[deploy]).toContain(
+      "--service-account=caelo-production-audit-run@acme.iam.gserviceaccount.com",
+    );
+    expect(events[move]).toContain(`--image=${IMAGES.admin.imageRef}`);
+    expect(events[opAccess]).toContain(
+      "CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS=caelo-production-scheduler@acme.iam.gserviceaccount.com,caelo-production-audit-run@acme.iam.gserviceaccount.com",
+    );
+    expect(events[adminRoll]).toContain(
+      "CAELO_AUDIT_RUNNER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit-run",
+    );
+    expect(events[adminRoll]).toContain(
+      "CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT=caelo-production-audit-run@acme.iam.gserviceaccount.com",
+    );
+    expect(lines).toContain("done: Quality-audit runner ready (Stage audits run in their own job)");
+  });
+
+  it("#1359 — a failed runner setup leaves the converge incomplete, the admin's runner env untouched, and an earlier runner on IAP", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events, {
+      overrides: [[/^run jobs deploy caelo-production-audit-run/, fail("PERMISSION_DENIED")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("Quality-audit runner not set up"))).toBe(true);
+    expect(
+      events.some((e) => /services update caelo-production-admin.*CAELO_AUDIT_RUNNER_JOB=/.test(e)),
+    ).toBe(false);
+    // Its account exists from this run's earlier steps: the sync keeps it.
+    const opAccess = indexOf(
+      events,
+      /^gcloud run jobs deploy caelo-production-operator-access-sync /,
+    );
+    expect(events[opAccess]).toContain("caelo-production-audit-run@acme.iam.gserviceaccount.com");
   });
 
   it("sets up the capture job on the CURRENT admin image before the roll, then moves it with the admin (#1217)", async () => {

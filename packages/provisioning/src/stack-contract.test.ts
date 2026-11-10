@@ -108,6 +108,10 @@ describe("adminEnvContract", () => {
       CAELO_AUDIT_RESULTS_BUCKET: "acme-caelo-production-audit-results",
       CAELO_CAPTURE_BUCKET: "acme-caelo-production-capture",
       CAELO_CAPTURE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-capture",
+      // #1359 — the job a Stage's audit runs in, and whose reports the admin takes.
+      CAELO_AUDIT_RUNNER_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-audit-run",
+      CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT: "caelo-production-audit-run@acme.iam.gserviceaccount.com",
       CAELO_STATIC_BUCKET: "acme-caelo-production-static",
       CAELO_STAGING_BUCKET: "acme-caelo-production-staging",
       // #1330 — every provider serves staging at its own host now.
@@ -156,6 +160,10 @@ describe("adminEnvContract", () => {
       CAELO_AUDIT_RESULTS_BUCKET: "acme-caelo-production-audit-results",
       CAELO_CAPTURE_BUCKET: "acme-caelo-production-capture",
       CAELO_CAPTURE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-capture",
+      // #1359 — the job a Stage's audit runs in, and whose reports the admin takes.
+      CAELO_AUDIT_RUNNER_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-audit-run",
+      CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT: "caelo-production-audit-run@acme.iam.gserviceaccount.com",
       CAELO_FIREBASE_SITE: "caelo-production-site-abc123",
       CAELO_GATEWAY_SERVICE: "caelo-production-gateway-1a2b3c4",
       CAELO_GATEWAY_REGION: "europe-west1",

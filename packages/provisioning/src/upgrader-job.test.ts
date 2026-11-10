@@ -516,6 +516,7 @@ describe("runUpgraderJob", () => {
         "iam projects/acme",
         "iam projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
         "iam projects/acme/serviceAccounts/caelo-mcp@acme.iam.gserviceaccount.com",
+        "iam projects/acme/serviceAccounts/caelo-production-audit-run@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-audit@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-capture@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-gateway-sa@acme.iam.gserviceaccount.com",

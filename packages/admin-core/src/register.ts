@@ -495,7 +495,7 @@ import {
   releaseChatNotificationOp,
   retryAuditOp,
 } from "./ops/quality/gate.js";
-import { claimNextAuditOp, enqueueAuditOp } from "./ops/quality/lifecycle.js";
+import { claimAuditOp, enqueueAuditOp, sweepUnstartedAuditsOp } from "./ops/quality/lifecycle.js";
 import {
   beginExecuteQualityProposalOp,
   endExecuteQualityProposalOp,
@@ -523,6 +523,17 @@ import {
   proposeExternalRedirectsOp,
   rejectRedirectProposalOp,
 } from "./ops/redirects_pending.js";
+import {
+  authorizeReportingJobOp,
+  beginReportingJobAttemptOp,
+  finishReportingJobOp,
+  listExpiredReportingJobsOp,
+  putReportingJobUploadPartOp,
+  readReportingJobUploadOp,
+  recordReportingJobLaunchOp,
+  releaseReportingJobOp,
+  sweepReportingJobsOp,
+} from "./ops/reporting_jobs.js";
 import {
   executeRoleProposalOp,
   listPendingRoleProposalsOp,
@@ -912,7 +923,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // #553 quality gate (Lighthouse audits after a substantial Stage)
   registry.register(classifyStageOp);
   registry.register(enqueueAuditOp);
-  registry.register(claimNextAuditOp);
+  registry.register(claimAuditOp);
+  registry.register(sweepUnstartedAuditsOp);
   registry.register(recordAuditResultOp);
   registry.register(listAuditsOp);
   registry.register(getAuditOp);
@@ -1425,6 +1437,16 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // #1140 — the scheduler tick's due-table (system only).
   registry.register(scheduledTasksClaimOp);
   registry.register(scheduledTasksFinishOp);
+  // #1359 — reporting jobs: long work in a container job that reports back.
+  registry.register(beginReportingJobAttemptOp);
+  registry.register(recordReportingJobLaunchOp);
+  registry.register(authorizeReportingJobOp);
+  registry.register(releaseReportingJobOp);
+  registry.register(finishReportingJobOp);
+  registry.register(listExpiredReportingJobsOp);
+  registry.register(putReportingJobUploadPartOp);
+  registry.register(readReportingJobUploadOp);
+  registry.register(sweepReportingJobsOp);
   // #1337 — the public mail outboxes' drain (system-only).
   registry.register(claimMailOutboxOp);
   registry.register(completeMailOutboxOp);

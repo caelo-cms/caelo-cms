@@ -35,7 +35,7 @@
  *        card never re-renders the groups it just accepted.
  */
 
-import { describeError, verifyCsrfToken } from "@caelo-cms/admin-core";
+import { describeError, startQualityAuditJob, verifyCsrfToken } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
@@ -141,7 +141,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
   if (body?.action === "retry") {
     const r = await execute(registry, adapter, locals.ctx, "quality_audits.retry", {});
     if (!r.ok) return json({ ok: false, error: describeError(r.error) }, { status: 409 });
-    return json({ ok: true, ...(r.value as object) });
+    const retried = r.value as { auditRunId: string; status: string };
+    // #1359 — the audit runs in its own job; start it now, not at the next tick.
+    if (retried.status === "queued") {
+      await startQualityAuditJob({ adapter, registry }, retried.auditRunId);
+    }
+    return json({ ok: true, ...retried });
   }
 
   if (body?.action === "ack" && typeof body.auditRunId === "string") {

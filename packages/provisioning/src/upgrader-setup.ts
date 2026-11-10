@@ -79,6 +79,7 @@ import { ensureCloudSqlIamUser } from "./cloudsql-iam-user.js";
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
+  auditRunnerServiceAccountEmail,
   auditServiceAccountEmail,
   captureServiceAccountEmail,
   gatewayServiceAccountEmail,
@@ -386,6 +387,11 @@ export async function ensureUpgraderJob(
       account: captureServiceAccountEmail(projectId, env),
       role: "roles/iam.serviceAccountUser",
       why: "the app-roll moves the capture job, which runs as it, onto the new image",
+    },
+    {
+      account: auditRunnerServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "the app-roll moves the quality-audit runner, which runs as it, onto the new image",
     },
     {
       account: mcpIapServiceAccountEmail(projectId),

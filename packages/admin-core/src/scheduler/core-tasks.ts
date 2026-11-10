@@ -11,6 +11,7 @@
  * | redirect sync retry          | every tick  |
  * | bug forwarding (send)        | every tick  |
  * | public mail outboxes (#1337) | every tick  |
+ * | reporting jobs (#1359)       | every tick  |
  * | plugin-data build (#1155)    | 5 minutes   |
  * | update scheduler             | 15 minutes  |
  * | release check                | hourly      |
@@ -19,6 +20,7 @@
  * | bug forwarding (status)      | 6 hours     |
  * | proposal + staging-bucket GC | daily       |
  * | chat-image GC                | daily       |
+ * | reporting-job rows GC        | daily       |
  *
  * Every-tick tasks come first: they are cheap, and the order decides which
  * tasks wait when a tick's budget runs out.
@@ -47,6 +49,7 @@ import type { PublicProjectionPublisher } from "../public-projection.js";
 import { sweepExpiredRateLimitBuckets } from "../rate-limit-gc-worker.js";
 import { retryRedirectSync } from "../redirect-sync-worker.js";
 import { type ReleaseCheckOpts, runReleaseCheck } from "../release-check-worker.js";
+import { runReportingJobBackstop, sweepFinishedReportingJobs } from "../reporting-jobs/backstop.js";
 import { DEFAULT_TASK_LEASE_SECONDS, type ScheduledTask } from "./task.js";
 
 const MINUTE = 60;
@@ -136,6 +139,9 @@ export function coreScheduledTasks(deps: CoreTaskDeps): ScheduledTask[] {
       });
       return describeDrain(reports);
     }),
+    // #1359 — restart a reporting job (the quality audit's) whose lease ran
+    // out, start one for work that has none. Every tick: an audit waits.
+    task("reporting-jobs", 0, () => runReportingJobBackstop({ adapter, registry })),
     task("plugin-data-build", 5 * MINUTE, async () => {
       // The due-table spaces the runs; the op's own spacing would only
       // skip a run the tick already decided is due.
@@ -186,6 +192,10 @@ export function coreScheduledTasks(deps: CoreTaskDeps): ScheduledTask[] {
       return r.deletedObjects + r.clearedRows > 0
         ? `${r.deletedObjects} image(s) deleted, ${r.clearedRows} message(s) cleared`
         : undefined;
+    }),
+    task("reporting-jobs-gc", 24 * HOUR, async () => {
+      const deleted = await sweepFinishedReportingJobs({ adapter, registry });
+      return deleted > 0 ? `${deleted} finished job row(s) deleted` : undefined;
     }),
   );
   return tasks;

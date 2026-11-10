@@ -247,6 +247,35 @@ export function auditServiceAccountEmail(projectId: string, env: string): string
 }
 
 /**
+ * #1359 — Cloud Run job that runs a Stage's whole quality audit (the
+ * findings checks and the Lighthouse fan-out to {@link auditJobName}) and
+ * reports back to the admin, one execution per audit (reporting-job-setup.ts).
+ */
+export function auditRunnerJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-audit-run`;
+}
+
+/** Full resource name of the audit runner job, as the admin's env carries it. */
+export function auditRunnerJobResource(projectId: string, region: string, env: string): string {
+  return `projects/${projectId}/locations/${region}/jobs/${auditRunnerJobName(env)}`;
+}
+
+/**
+ * Account id of the audit runner's own service account: reads the staged
+ * build and the Lighthouse results, runs the Lighthouse job, and reports to
+ * the admin through IAP — no database, no secret (reporting-job-setup.ts).
+ * `caelo-production-audit-run` is 26 of the 30 characters an id may have.
+ */
+export function auditRunnerServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-audit-run`;
+}
+
+/** Email of the audit runner's service account. */
+export function auditRunnerServiceAccountEmail(projectId: string, env: string): string {
+  return `${auditRunnerServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+}
+
+/**
  * #1217 — Cloud Run job that runs every server-side browser render
  * (screenshots, rendered HTML) of the install, one execution per render, so
  * no Chromium runs in the admin (capture-job-setup.ts).

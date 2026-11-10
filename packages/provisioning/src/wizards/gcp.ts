@@ -80,6 +80,7 @@ import {
   serviceAccountExists,
 } from "../gcloud.js";
 import {
+  auditRunnerServiceAccountEmail,
   GCP_STACK_ENV,
   schedulerServiceAccountEmail,
   upgraderServiceAccountEmail,
@@ -132,6 +133,7 @@ import {
   type RemoteMcpTarget,
   resolveStackRemoteMcpIdentity,
 } from "../remote-mcp.js";
+import { ensureAuditRunnerJob } from "../reporting-job-setup.js";
 import type { RunMode } from "../run-mode.js";
 import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
@@ -611,6 +613,11 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // Before the upgrader, which gets actAs on the job's service account.
   await stepAuditJob(projectId, region, provider);
 
+  // === 11.32. The quality-audit runner: a Stage's audit in its own job (#1359) ===
+  // After the audit job (it starts its Lighthouse tasks), before the
+  // upgrader (actAs on its account) and operator access (keeps it on IAP).
+  await stepAuditRunnerJob(projectId, region, provider, ownerEmail);
+
   // === 11.35. The capture job: server-side screenshots outside the admin (#1217) ===
   // Before the upgrader as well, which gets actAs on its service account.
   await stepCaptureJob(projectId, region, provider);
@@ -642,7 +649,11 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     provider,
     ownerEmail,
     keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
-    keepScheduler ? [schedulerServiceAccountEmail(projectId, GCP_STACK_ENV)] : [],
+    [
+      ...(keepScheduler ? [schedulerServiceAccountEmail(projectId, GCP_STACK_ENV)] : []),
+      // #1359 — set up above (a failure stops the wizard there).
+      auditRunnerServiceAccountEmail(projectId, GCP_STACK_ENV),
+    ],
   );
 
   // === 11.6. Remote MCP (#806): LB rules (gcp) + a check of the identity env ===
@@ -1471,6 +1482,51 @@ async function stepAuditJob(
     process.exit(1);
   }
   s.stop(green(`Quality-audit job ready (${r.done.length} steps)`));
+}
+
+/**
+ * #1359 — set up the quality-audit runner (reporting-job-setup.ts) on the
+ * deployed admin's image: the job a Stage's whole audit runs in, reporting
+ * back through IAP. A failure stops the wizard: without it every Stage
+ * audit fails. Idempotent, so it runs on every wizard pass.
+ */
+async function stepAuditRunnerJob(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+  ownerEmail: string,
+): Promise<void> {
+  const s = spinner();
+  s.start("Setting up the quality-audit runner (audits outside the admin)...");
+  const image = await resolveAdminImage({ projectId, region, env: GCP_STACK_ENV });
+  const resolved = image.ok
+    ? await resolveOperatorAccessTarget({
+        provider,
+        projectId,
+        region,
+        env: GCP_STACK_ENV,
+        ownerEmail,
+      })
+    : null;
+  const r = !image.ok
+    ? { ok: false as const, done: [], error: image.error }
+    : !resolved?.ok
+      ? { ok: false as const, done: [], error: resolved?.error ?? "no IAP resource" }
+      : await ensureAuditRunnerJob({
+          provider,
+          projectId,
+          region,
+          env: GCP_STACK_ENV,
+          adminImageRef: image.imageRef,
+          resource: resolved.target.resource,
+        });
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.error}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green(`Quality-audit runner ready (${r.done.length} steps)`));
 }
 
 /**

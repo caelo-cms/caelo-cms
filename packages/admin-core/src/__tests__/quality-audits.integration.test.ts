@@ -7,7 +7,8 @@
  *     templates, new pages) via `quality_audits.classify_stage`;
  *   - enqueue rules (first Stage, previous audit not clean, chat-less
  *     deploys, skipped runs, non-staging runs refused);
- *   - the claim → record lifecycle incl. supersession and the stale sweep;
+ *   - the claim → record lifecycle incl. supersession, and the audits the
+ *     backstop starts (#1359: queued without a job, left by an older release);
  *   - #727 "optimum": every value below 100 is a problem, acceptances
  *     apply live at the value accepted and only ratchet up;
  *   - read ops + the AI read tools; actor scopes.
@@ -28,8 +29,10 @@ import {
   listQualityAuditsTool,
 } from "../ai/tools/quality-audit-tools.js";
 import { recordedRuns, sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
+import { reportedCheckSources, runQualityAuditJob } from "../quality/audit-job.js";
+import { qualityAuditJobKind } from "../quality/audit-job-kind.js";
+import type { ClaimedAuditRun } from "../quality/audit-run.js";
 import type { AuditTaskBatch, AuditTaskResult } from "../quality/audit-task-protocol.js";
-import { drainAuditQueue } from "../quality/audit-worker.js";
 import { testCheckRegistry } from "../quality/checks/__tests__/fixtures/test-checks.js";
 import { reduceRun } from "../quality/lighthouse-extract.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
@@ -37,6 +40,16 @@ import type { AuditJobResult } from "../quality/lighthouse-runner.js";
 import { type AuditTaskLauncher, createParallelAuditRunner } from "../quality/parallel-runner.js";
 import { type FailingAudit, QUALITY_CATEGORIES, type QualityCategory } from "../quality/ratchet.js";
 import { registerAdminOps } from "../register.js";
+import { runReportingJobBackstop } from "../reporting-jobs/backstop.js";
+import { handleJobReport } from "../reporting-jobs/dispatch.js";
+import { httpReportTransport } from "../reporting-jobs/http-transport.js";
+import { inProcessReportTransport, runInProcessAttempt } from "../reporting-jobs/in-process.js";
+import { runOrder } from "../reporting-jobs/job-entry.js";
+import { createJobReporter, type ReportTransport } from "../reporting-jobs/job-reporter.js";
+import { startReportingJob } from "../reporting-jobs/launcher.js";
+import { JOB_TOKEN_HEADER, type JobOrder } from "../reporting-jobs/protocol.js";
+import { runJobAttempt } from "../reporting-jobs/run-job.js";
+import { claimNextQueuedAudit, drainAuditQueue } from "./fixtures/drain-audits.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -173,21 +186,9 @@ function pageResult(
   };
 }
 
-async function claim(): Promise<{
-  auditRunId: string;
-  deployRunId: string;
-  performanceRuns: number;
-  pages: { pageId: string }[];
-} | null> {
-  const v = await op<{
-    run: {
-      auditRunId: string;
-      deployRunId: string;
-      performanceRuns: number;
-      pages: { pageId: string }[];
-    } | null;
-  }>(SYS, "quality_audits.claim_next", {});
-  return v.run;
+/** Claim the oldest audit without a job, as its job's `start` would (#1359). */
+async function claim(): Promise<ClaimedAuditRun | null> {
+  return claimNextQueuedAudit({ adapter, registry });
 }
 
 /** #727 — a completed audit whose page checks found nothing to report. */
@@ -539,21 +540,9 @@ describe("quality audit lifecycle + ratchet", () => {
     await withSql(
       (tx) => tx`UPDATE site_defaults SET not_found_page_id = ${aboutId}::uuid WHERE id = 1`,
     );
-    let run: {
-      auditRunId: string;
-      pages: unknown[];
-      checkPages: { pageId: string; isNotFoundPage: boolean }[];
-    } | null;
+    let run: ClaimedAuditRun | null;
     try {
-      run = (
-        await op<{
-          run: {
-            auditRunId: string;
-            pages: unknown[];
-            checkPages: { pageId: string; isNotFoundPage: boolean }[];
-          };
-        }>(SYS, "quality_audits.claim_next", {})
-      ).run;
+      run = await claim();
     } finally {
       await withSql(
         (tx) =>
@@ -660,25 +649,46 @@ describe("quality audit lifecycle + ratchet", () => {
     expect(got.run.errorMessage).toContain("status 404");
   });
 
-  it("a run left running by a dead process is closed as interrupted", async () => {
+  it("a run a release before #1359 left running gets a job, and its give-up is recorded", async () => {
     await op(SYS, "quality_audits.enqueue", {
       deployRunId: await deployRun("staging", 80),
       chatSessionId: null,
       branch: null,
     });
+    // Claimed without a job: what the in-process worker of an older release did.
     const run = await claim();
+    const unstarted = async () =>
+      (await op<{ auditRunIds: string[] }>(SYS, "quality_audits.sweep_unstarted", { limit: 50 }))
+        .auditRunIds;
+    // Fresh, it may still run on an admin of that release (a roll).
+    expect(await unstarted()).not.toContain(run?.auditRunId);
     await withSql(async (tx) => {
       await tx`UPDATE quality_audit_runs SET started_at = now() - interval '2 hours' WHERE id = ${run?.auditRunId}::uuid`;
     });
-    expect(await claim()).toBeNull();
-    const got = await op<{ run: { status: string; errorCode: string } }>(
+    // Past that worker's 30 minutes it is the backstop's to start, and its
+    // job resumes it instead of losing the audit.
+    expect(await unstarted()).toContain(run?.auditRunId);
+    expect(
+      (await op<{ state: string }>(SYS, "quality_audits.claim", { auditRunId: run?.auditRunId }))
+        .state,
+    ).toBe("resumed");
+    // Every attempt died: the backstop records it as failed, with the reason.
+    await qualityAuditJobKind.giveUp(
+      { adapter, registry },
+      run?.auditRunId as string,
+      "the quality audit's job stopped 3 time(s) without finishing",
+    );
+    const got = await op<{ run: { status: string; errorCode: string; errorMessage: string } }>(
       SYS,
       "quality_audits.get",
-      {
-        auditRunId: run?.auditRunId,
-      },
+      { auditRunId: run?.auditRunId },
     );
-    expect(got.run).toMatchObject({ status: "errored", errorCode: "interrupted" });
+    expect(got.run).toMatchObject({
+      status: "errored",
+      errorCode: "job-failed",
+      errorMessage: "the quality audit's job stopped 3 time(s) without finishing",
+    });
+    expect(await unstarted()).not.toContain(run?.auditRunId);
   });
   it("a Stage whose audit was never recorded makes the next Stage audit", async () => {
     await deployRun("staging", 85); // its enqueue "failed": no audit row
@@ -899,7 +909,8 @@ describe("read surfaces", () => {
     // quality_audits.enqueue is AI-scoped since issue #620 (the AI's Stage
     // flow enqueues the audit of its own build; no tool exposes its input).
     for (const [name, input] of [
-      ["quality_audits.claim_next", {}],
+      ["quality_audits.claim", { auditRunId: "00000000-0000-4000-8000-000000000001" }],
+      ["quality_audits.sweep_unstarted", { limit: 1 }],
       [
         "quality_audits.record_result",
         {
@@ -994,4 +1005,492 @@ describe("data deleted while an audit runs", () => {
       problemCount: 0,
     });
   });
+});
+
+describe("the audit's job: lease, restart and give-up (#1359)", () => {
+  /** Lighthouse that measures every page at 100. */
+  const allGood = async (job: AuditJob): Promise<AuditJobResult> => ({
+    ok: true,
+    pages: job.pages.map((p) => ({ ...pageResult(p.pageId, {}), url: p.url })),
+    pageErrors: [],
+  });
+  const ADMIN = () => ({ adapter, registry });
+
+  /** A launcher that records each attempt's order and runs it as `run` says. */
+  function launcher(run: (order: JobOrder) => Promise<void> | void) {
+    const orders: JobOrder[] = [];
+    return {
+      orders,
+      launcher: {
+        label: "the test",
+        launch: async (order: JobOrder) => {
+          orders.push(order);
+          await run(order);
+          return `test-execution-${order.attempt}`;
+        },
+      },
+    };
+  }
+
+  /** Attempts that run the audit's job here, against `server`. */
+  function liveLauncher(server: { port: number | undefined }) {
+    return launcher(async (order) => {
+      await runInProcessAttempt(ADMIN(), order, (reporter) =>
+        runQualityAuditJob(reporter, {
+          checks: testCheckRegistry(async () => {
+            throw new Error("runJob replaces the Lighthouse runner");
+          }),
+          env: { provider: "", stagingBaseUrl: `http://127.0.0.1:${server.port}` },
+          runJob: allGood,
+        }),
+      );
+    });
+  }
+
+  // Pages of this describe's own: the ones before it delete the homepage
+  // ("every page gone"), and an audit without pages measures nothing.
+  const jobPageIds: string[] = [];
+  beforeAll(async () => {
+    for (const slug of ["job-page-a", "job-page-b", "job-page-c"]) {
+      const created = await op<{ pageId: string }>(SYS, "pages.create", {
+        slug: `${PFX}${slug}`,
+        title: slug,
+        templateId,
+        status: "published",
+      });
+      jobPageIds.push(created.pageId);
+    }
+  });
+
+  /** A queued audit of this describe's pages, its Stage `minutes` into the test day (later Stages supersede earlier ones). */
+  async function queuedAudit(
+    minutes: number,
+  ): Promise<{ deployRunId: string; auditRunId: string }> {
+    const deployRunId = await deployRun("staging", minutes);
+    const queued = await op<{ auditRunId: string }>(SYS, "quality_audits.enqueue", {
+      deployRunId,
+      chatSessionId: null,
+      branch: null,
+      pageIds: jobPageIds,
+    });
+    return { deployRunId, auditRunId: queued.auditRunId };
+  }
+
+  async function expireLease(auditRunId: string): Promise<void> {
+    await withSql(async (tx) => {
+      await tx`UPDATE reporting_jobs SET lease_until = now() - interval '1 second'
+               WHERE kind = 'quality_audit' AND subject_id = ${auditRunId}::uuid`;
+    });
+  }
+
+  const status = async (auditRunId: string) =>
+    (
+      await op<{ run: { status: string; errorCode: string | null; errorMessage: string | null } }>(
+        SYS,
+        "quality_audits.get",
+        { auditRunId },
+      )
+    ).run;
+
+  it("a killed job is restarted by the tick's backstop, and the audit finishes", async () => {
+    const { deployRunId, auditRunId } = await queuedAudit(300);
+    const server = stagedServer(deployRunId);
+    try {
+      // Attempt 1 starts and dies before its first report.
+      const dead = launcher(() => {});
+      expect((await startReportingJob(ADMIN(), "quality_audit", auditRunId, dead)).outcome).toBe(
+        "started",
+      );
+      const live = liveLauncher(server);
+      // While its lease holds, the backstop leaves it alone.
+      await runReportingJobBackstop(ADMIN(), live);
+      expect(live.orders).toEqual([]);
+      expect((await status(auditRunId)).status).toBe("queued");
+      // Its lease runs out: the next tick starts attempt 2, which finishes.
+      await expireLease(auditRunId);
+      expect(await runReportingJobBackstop(ADMIN(), live)).toBe("quality_audit: 1 started");
+      expect(live.orders.map((o) => o.attempt)).toEqual([2]);
+      expect((await status(auditRunId)).status).toBe("passed");
+      // The dead attempt's token admits nothing any more: it would stop.
+      const late = await handleJobReport(ADMIN(), {
+        kind: "quality_audit",
+        token: dead.orders[0]?.token ?? null,
+        bodyText: JSON.stringify({ subjectId: auditRunId, attempt: 1, action: "heartbeat" }),
+      });
+      expect(late.status).toBe(409);
+      // Nothing left to do for the backstop.
+      expect(await runReportingJobBackstop(ADMIN(), live)).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it("after its last attempt dies, the audit is recorded as failed with where it ran", async () => {
+    const { auditRunId } = await queuedAudit(310);
+    const dead = launcher(() => {});
+    await startReportingJob(ADMIN(), "quality_audit", auditRunId, dead);
+    for (let attempt = 2; attempt <= 3; attempt += 1) {
+      await expireLease(auditRunId);
+      await runReportingJobBackstop(ADMIN(), dead);
+    }
+    expect(dead.orders.map((o) => o.attempt)).toEqual([1, 2, 3]);
+    await expireLease(auditRunId);
+    expect(await runReportingJobBackstop(ADMIN(), dead)).toBe("quality_audit: 1 given-up");
+    const run = await status(auditRunId);
+    expect(run).toMatchObject({ status: "errored", errorCode: "job-failed" });
+    expect(run.errorMessage).toContain("stopped 3 time(s)");
+    expect(run.errorMessage).toContain("test-execution-3");
+    expect(await runReportingJobBackstop(ADMIN(), dead)).toBeUndefined();
+  });
+
+  it("a launch that failed is retried by the next tick", async () => {
+    const { deployRunId, auditRunId } = await queuedAudit(320);
+    const server = stagedServer(deployRunId);
+    try {
+      const failing = {
+        label: "Cloud Run job caelo-production-audit-run",
+        launch: async (): Promise<string> => {
+          throw new Error("PERMISSION_DENIED: run.jobs.runWithOverrides");
+        },
+      };
+      const first = await startReportingJob(ADMIN(), "quality_audit", auditRunId, {
+        launcher: failing,
+      });
+      expect(first).toMatchObject({ outcome: "launch-failed", attempt: 1 });
+      const live = liveLauncher(server);
+      await runReportingJobBackstop(ADMIN(), live);
+      expect(live.orders.map((o) => o.attempt)).toEqual([2]);
+      expect((await status(auditRunId)).status).toBe("passed");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it("a queued audit whose start was lost gets its job from the backstop", async () => {
+    const { deployRunId, auditRunId } = await queuedAudit(330);
+    const server = stagedServer(deployRunId);
+    try {
+      const live = liveLauncher(server);
+      expect(await runReportingJobBackstop(ADMIN(), live)).toBe("quality_audit: 1 started");
+      expect(live.orders.map((o) => [o.subjectId, o.attempt])).toEqual([[auditRunId, 1]]);
+      expect((await status(auditRunId)).status).toBe("passed");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it("the job of an audit a newer Stage replaced stops at its first report", async () => {
+    const { auditRunId } = await queuedAudit(340);
+    const parked = launcher(() => {});
+    await startReportingJob(ADMIN(), "quality_audit", auditRunId, parked);
+    // A newer Stage succeeds while the job's container starts.
+    await deployRun("staging", 350);
+    const order = parked.orders[0] as JobOrder;
+    let audited = false;
+    expect(
+      await runInProcessAttempt(ADMIN(), order, async (reporter) => {
+        await runQualityAuditJob(reporter, {
+          checks: testCheckRegistry(async () => {
+            audited = true;
+            throw new Error("must not run");
+          }),
+        });
+      }),
+    ).toBe("completed");
+    expect(audited).toBe(false);
+    expect((await status(auditRunId)).status).toBe("superseded");
+    const late = await handleJobReport(ADMIN(), {
+      kind: "quality_audit",
+      token: order.token,
+      bodyText: JSON.stringify({ subjectId: auditRunId, attempt: 1, action: "heartbeat" }),
+    });
+    expect(late.status).toBe(409);
+  });
+
+  it("reports over HTTP as a job container does, its large result in parts", async () => {
+    const { deployRunId, auditRunId } = await queuedAudit(370);
+    const staged = stagedServer(deployRunId);
+    // The report endpoint as apps/admin serves it, IAP aside: the body as
+    // text in, the answer streamed out.
+    const admin = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: async (req) => {
+        const kind = new URL(req.url).pathname.split("/")[4] ?? "";
+        const r = await handleJobReport(ADMIN(), {
+          kind,
+          token: req.headers.get(JOB_TOKEN_HEADER),
+          bodyText: await req.text(),
+        });
+        return new Response(new Blob([JSON.stringify(r.answer)]).stream(), {
+          status: r.status,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    try {
+      const parked = launcher(() => {});
+      await startReportingJob(ADMIN(), "quality_audit", auditRunId, parked);
+      const order = parked.orders[0] as JobOrder;
+      // Enough findings that the result is larger than one report carries.
+      const checks = testCheckRegistry(allGood);
+      checks.register(
+        {
+          id: "test-noise",
+          title: "Noise (test)",
+          scope: "page",
+          run: () =>
+            Array.from({ length: 499 }, (_, i) => ({
+              ruleId: "test-noise/noise",
+              severity: "warning" as const,
+              // 499 findings (the most one call gives) of 1 KB on each of three pages: two parts.
+              message: `Noise: ${"x".repeat(980)} ${i}`,
+            })),
+        },
+        { kind: "core" },
+      );
+      const actions: string[] = [];
+      const transport = httpReportTransport({
+        kind: "quality_audit",
+        adminUrl: `http://127.0.0.1:${admin.port}`,
+        token: order.token,
+        credential: async () => "iap-credential",
+        fetch: (async (url: string, init: RequestInit) => {
+          actions.push((JSON.parse(String(init.body)) as { action: string }).action);
+          return fetch(url, init);
+        }) as unknown as typeof fetch,
+      });
+      expect(
+        await runOrder(order, transport, {
+          main: (reporter) =>
+            runQualityAuditJob(reporter, {
+              checks,
+              env: { provider: "", stagingBaseUrl: `http://127.0.0.1:${staged.port}` },
+              runJob: allGood,
+            }),
+        }),
+      ).toBe("completed");
+      expect(actions[0]).toBe("start");
+      expect(actions).toContain("upload-part");
+      expect(actions.at(-1)).toBe("result");
+      const got = await op<{
+        run: { status: string; checkSummary: { findingCounts: { warning: number } } };
+      }>(SYS, "quality_audits.get", { auditRunId });
+      expect(got.run.status).toBe("passed");
+      expect(got.run.checkSummary.findingCounts.warning).toBeGreaterThanOrEqual(3 * 499);
+    } finally {
+      staged.stop(true);
+      admin.stop(true);
+    }
+  });
+
+  it("a result sent again because its answer was lost is recorded once and ends the job", async () => {
+    const { deployRunId, auditRunId } = await queuedAudit(380);
+    const server = stagedServer(deployRunId);
+    try {
+      const live = liveLauncher(server);
+      await startReportingJob(ADMIN(), "quality_audit", auditRunId, live);
+      expect((await status(auditRunId)).status).toBe("passed");
+      // As if the admin recorded the result but died before it closed the job.
+      await withSql(async (tx) => {
+        await tx`UPDATE reporting_jobs SET state = 'running', finished_at = NULL
+                 WHERE kind = 'quality_audit' AND subject_id = ${auditRunId}::uuid`;
+      });
+      const order = live.orders[0] as JobOrder;
+      const again = await handleJobReport(ADMIN(), {
+        kind: "quality_audit",
+        token: order.token,
+        bodyText: JSON.stringify({
+          subjectId: auditRunId,
+          attempt: order.attempt,
+          action: "result",
+          payload: { baseUrl: null, outcome: { kind: "failed", code: "x", message: "late" } },
+        }),
+      });
+      expect(again).toEqual({
+        status: 200,
+        answer: { ok: true, value: { status: "passed", problemCount: 0 } },
+      });
+      expect((await status(auditRunId)).status).toBe("passed");
+      const closed = await handleJobReport(ADMIN(), {
+        kind: "quality_audit",
+        token: order.token,
+        bodyText: JSON.stringify({
+          subjectId: auditRunId,
+          attempt: order.attempt,
+          action: "heartbeat",
+        }),
+      });
+      expect(closed.status).toBe(409);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  it("an install that cannot run the job records the audit as failed at once, never runs it in the admin", async () => {
+    // Later than every Stage above: an older one would be superseded instead.
+    const { auditRunId } = await queuedAudit(390);
+    const r = await startReportingJob(ADMIN(), "quality_audit", auditRunId, {
+      env: { CAELO_PROVIDER: "aws" },
+    });
+    expect(r.outcome).toBe("given-up");
+    const run = await status(auditRunId);
+    expect(run).toMatchObject({ status: "errored", errorCode: "job-failed" });
+    expect(run.errorMessage).toContain("#749");
+  });
+
+  it("a read the admin cannot answer in time gives the attempt back; nothing spoiled is recorded", async () => {
+    const { deployRunId, auditRunId } = await queuedAudit(400);
+    const staged = stagedServer(deployRunId);
+    try {
+      const sent: string[] = [];
+      const flaky = launcher(async (order) => {
+        // The admin answers every `source` read 503, past the job's retries.
+        const inner = inProcessReportTransport(ADMIN(), order);
+        const busy: ReportTransport = {
+          label: "a busy admin",
+          async send(envelope) {
+            sent.push(envelope.action);
+            if (envelope.action !== "source") return inner.send(envelope);
+            return {
+              status: 503,
+              answer: {
+                ok: false,
+                error: { code: "unavailable", message: "the admin is starting" },
+              },
+            };
+          },
+        };
+        const reporter = createJobReporter(order, busy, { retryBudgetMs: 0 });
+        await runJobAttempt(
+          reporter,
+          (r) =>
+            runQualityAuditJob(r, {
+              // A check that reads a source, and turns its failure into a
+              // check error the way every findings check does.
+              checks: (rep) => {
+                const checks = testCheckRegistry(allGood);
+                checks.register(
+                  {
+                    id: "test-source",
+                    title: "Reads the modules (test)",
+                    scope: "page",
+                    run: async () => {
+                      await reportedCheckSources(rep).structure.modules();
+                      return [];
+                    },
+                  },
+                  { kind: "core" },
+                );
+                return checks;
+              },
+              env: { provider: "", stagingBaseUrl: `http://127.0.0.1:${staged.port}` },
+              runJob: allGood,
+            }),
+          60_000,
+        ).catch(() => undefined);
+      });
+      await startReportingJob(ADMIN(), "quality_audit", auditRunId, flaky);
+      expect(sent).toContain("defer");
+      expect(sent).not.toContain("result");
+      // Not recorded as failed: the next attempt audits it again.
+      expect((await status(auditRunId)).status).toBe("running");
+      const row = await withSql(
+        async (tx) =>
+          (await tx`
+            SELECT last_error, lease_until <= now() AS released FROM reporting_jobs
+            WHERE kind = 'quality_audit' AND subject_id = ${auditRunId}::uuid
+          `) as unknown as { last_error: string | null; released: boolean }[],
+      );
+      expect(row[0]?.released).toBe(true);
+      expect(row[0]?.last_error).toContain("the admin is starting");
+    } finally {
+      staged.stop(true);
+    }
+  });
+
+  // Codex on #1562: a check that times out before its read ends must not
+  // let the job record the read's trouble as the audit's result.
+  for (const [label, minutes, answer, reason] of [
+    ["fails after the check gave up", 410, "fail", "the admin is starting"],
+    [
+      "answers after the check gave up",
+      420,
+      "late",
+      "stopped waiting for the admin's answer to source",
+    ],
+  ] as const) {
+    it(`a read that ${label} gives the attempt back; nothing raced is recorded`, async () => {
+      const { deployRunId, auditRunId } = await queuedAudit(minutes);
+      const staged = stagedServer(deployRunId);
+      try {
+        const sent: string[] = [];
+        const slow = launcher(async (order) => {
+          // Every `source` read takes longer than the check waits for it.
+          const inner = inProcessReportTransport(ADMIN(), order);
+          const lagging: ReportTransport = {
+            label: "a slow admin",
+            async send(envelope) {
+              sent.push(envelope.action);
+              if (envelope.action !== "source") return inner.send(envelope);
+              await new Promise((r) => setTimeout(r, 300));
+              if (answer === "late") return inner.send(envelope);
+              return {
+                status: 503,
+                answer: {
+                  ok: false,
+                  error: { code: "unavailable", message: "the admin is starting" },
+                },
+              };
+            },
+          };
+          const reporter = createJobReporter(order, lagging, { retryBudgetMs: 0 });
+          expect(
+            await runJobAttempt(
+              reporter,
+              (r) =>
+                runQualityAuditJob(r, {
+                  checks: (rep) => {
+                    const checks = testCheckRegistry(allGood);
+                    checks.register(
+                      {
+                        id: "test-references",
+                        title: "Reads the reference issues (test)",
+                        scope: "site",
+                        // Gives up long before the read ends.
+                        timeoutMs: 50,
+                        run: async () => {
+                          await reportedCheckSources(rep).references.issues(10);
+                          return [];
+                        },
+                      },
+                      { kind: "core" },
+                    );
+                    return checks;
+                  },
+                  env: { provider: "", stagingBaseUrl: `http://127.0.0.1:${staged.port}` },
+                  runJob: allGood,
+                }),
+              60_000,
+            ),
+          ).toBe("deferred");
+        });
+        await startReportingJob(ADMIN(), "quality_audit", auditRunId, slow);
+        expect(sent).toContain("defer");
+        expect(sent).not.toContain("result");
+        expect((await status(auditRunId)).status).toBe("running");
+        const row = await withSql(
+          async (tx) =>
+            (await tx`
+              SELECT last_error, lease_until <= now() AS released FROM reporting_jobs
+              WHERE kind = 'quality_audit' AND subject_id = ${auditRunId}::uuid
+            `) as unknown as { last_error: string | null; released: boolean }[],
+        );
+        expect(row[0]?.released).toBe(true);
+        expect(row[0]?.last_error).toContain(reason);
+      } finally {
+        staged.stop(true);
+      }
+    });
+  }
 });

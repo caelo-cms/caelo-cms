@@ -12,7 +12,7 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { registerAdminOps } from "@caelo-cms/admin-core";
+import { collectPluginFindings, registerAdminOps } from "@caelo-cms/admin-core";
 import type { PluginAuditPageFacts } from "@caelo-cms/plugin-sdk";
 import { definePlugin, manifestFromDefinition } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
@@ -20,9 +20,9 @@ import { SQL } from "bun";
 import {
   auditFindingContributors,
   bootstrap,
-  collectPluginAuditFindings,
   collectPluginWriteHints,
   type PluginHostInfra,
+  pluginAuditFindingsCall,
   resetPluginHost,
   writeHintContributors,
 } from "./index.js";
@@ -44,6 +44,22 @@ const factsOf = async (ids: readonly string[]) =>
 const NO_FACTS = async () => {
   throw new Error("this plugin asks for no facts");
 };
+
+/**
+ * Core's quality runner over this host's single calls: the batching runs
+ * in admin-core (since #1359 inside the audit's job), each call here.
+ */
+const collect = (
+  slug: string,
+  pages: readonly { pageId: string; path: string }[],
+  facts: (ids: readonly string[]) => Promise<readonly PluginAuditPageFacts[]>,
+) =>
+  collectPluginFindings(
+    (args, label) => pluginAuditFindingsCall(slug, args, label),
+    slug,
+    pages,
+    facts,
+  );
 
 let adapter: DatabaseAdapter;
 let infra: PluginHostInfra;
@@ -129,7 +145,7 @@ describe("#1107 — plugin audit contributions", () => {
       }),
     );
     expect(auditFindingContributors()).toEqual(["t1107d-translations"]);
-    const findings = await collectPluginAuditFindings(
+    const findings = await collect(
       "t1107d-translations",
       [{ pageId: PAGE, path: "/docs" }],
       NO_FACTS,
@@ -149,13 +165,13 @@ describe("#1107 — plugin audit contributions", () => {
         findings: [{ rule: "Bad Rule", severity: "fatal" }],
       })),
     );
-    await expect(collectPluginAuditFindings("t1107d-broken", [], NO_FACTS)).rejects.toThrow(
+    await expect(collect("t1107d-broken", [], NO_FACTS)).rejects.toThrow(
       /t1107d-broken\.audit_findings \(pages\) failed/,
     );
-    await expect(collectPluginAuditFindings("t1107d-malformed", [], NO_FACTS)).rejects.toThrow(
+    await expect(collect("t1107d-malformed", [], NO_FACTS)).rejects.toThrow(
       /returned an invalid answer/,
     );
-    await expect(collectPluginAuditFindings("t1107d-absent", [], NO_FACTS)).rejects.toThrow(
+    await expect(collect("t1107d-absent", [], NO_FACTS)).rejects.toThrow(
       /not active or declares no auditFindingsOperation/,
     );
   });
@@ -194,7 +210,7 @@ describe("#1107 — plugin audit contributions", () => {
       { pageId: PAGE, path: "/a" },
       { pageId: OTHER, path: "/b" },
     ];
-    const findings = await collectPluginAuditFindings("t1107d-facts", pages, factsOf);
+    const findings = await collect("t1107d-facts", pages, factsOf);
     expect(calls).toHaveLength(3);
     expect((calls[2] as { facts: { pageId: string }[] }).facts.map((f) => f.pageId)).toEqual([
       OTHER,
@@ -208,9 +224,9 @@ describe("#1107 — plugin audit contributions", () => {
 
   it("refuses a batch naming a page outside the staged build", async () => {
     await boot(contributor("t1107d-stray", () => ({ findings: [], factBatches: [[OTHER]] })));
-    await expect(
-      collectPluginAuditFindings("t1107d-stray", [{ pageId: PAGE, path: "/a" }], factsOf),
-    ).rejects.toThrow(/not a page of the staged build/);
+    await expect(collect("t1107d-stray", [{ pageId: PAGE, path: "/a" }], factsOf)).rejects.toThrow(
+      /not a page of the staged build/,
+    );
   });
 
   it("collects write hints from the plugins that give them, and reports a failing one", async () => {
