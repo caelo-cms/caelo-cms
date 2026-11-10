@@ -9,6 +9,8 @@
  * comment, or a page that is no page id, is refused at the contract instead
  * of being cut or stored where moderation can never archive it. Moderation
  * input is validated too, and a bulk decision says which comments failed.
+ *
+ * #1529 — a comment names no parent: the contract refuses one.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -81,7 +83,9 @@ describe("the submit contract (#1511)", () => {
       { ...COMMENT, content: "x".repeat(4001) },
       { ...COMMENT, pageId: "not-a-page" },
       { ...COMMENT, pageId: "../../etc" },
-      { ...COMMENT, parentId: "<script>" },
+      // #1529 — no reply, however well-formed the parent.
+      { ...COMMENT, parentId: "22222222-2222-4222-8222-222222222222" },
+      { ...COMMENT, parentId: null },
       { ...COMMENT, captchaToken: "x" },
       { ...COMMENT, extra: true },
     ]) {
@@ -94,6 +98,7 @@ describe("the submit contract (#1511)", () => {
     const h = harness();
     await submit(h.ctx, { ...COMMENT, authorName: "  Ann  ", content: ` ${"y".repeat(3998)} ` });
     expect(h.state.inserts[0]).toMatchObject({ author_name: "Ann", content: "y".repeat(3998) });
+    expect(h.state.inserts[0]).not.toHaveProperty("parent_id");
   });
 
   it("refuses an empty name or comment as a visitor refusal", async () => {
@@ -108,7 +113,10 @@ describe("moderation input (#1511)", () => {
   it("refuses a decision that is not one of the three, and a malformed id", async () => {
     const moderate = plugin.operations.moderate;
     if (!moderate) throw new Error("moderate missing");
-    const ctx = { cms: { call: async () => ({}) }, query: { list: async () => [] } };
+    const ctx = {
+      cms: { call: async () => ({}) },
+      query: indexCheckedQuery(plugin, "schema", { list: async () => [] }),
+    };
     await expect(
       moderate(ctx as unknown as PluginContextTier1, { commentId: PAGE, decision: "publish" }),
     ).rejects.toThrow();
@@ -128,12 +136,11 @@ describe("moderation input (#1511)", () => {
           return { archiveId: "a" };
         },
       },
-      query: {
+      query: indexCheckedQuery(plugin, "schema", {
         list: async (_t: string, f: { id: string }) => [
           {
             id: f.id,
             page_id: PAGE,
-            parent_id: "",
             author_name: "A",
             content: "c",
             status: "pending",
@@ -143,7 +150,7 @@ describe("moderation input (#1511)", () => {
         delete: async (_t: string, id: string) => {
           deleted.push(id);
         },
-      },
+      }),
     } as unknown as PluginContextTier1;
     const bulk = plugin.operations.bulk_moderate;
     if (!bulk) throw new Error("bulk_moderate missing");

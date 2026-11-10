@@ -15,8 +15,14 @@
  * plugin bakes data only (`render.ts`), dates in the page's language, and
  * its runtime binds to the module by attribute (`runtime.ts`).
  *
+ * #1529 — a comment answers nobody in particular: the visitor contract
+ * takes no parent, so nothing on a page reads as a reply to an unrelated
+ * comment while threads are not shown. Threads come later as a feature
+ * of their own; the archive keeps every `parent_id` it already holds.
+ *
  * Schema (cms_public.plugin_comments.*):
- *   comments — page_id + parent_id (3-level threads) + author + status
+ *   comments — page_id + author + content + status (`parent_id` is set
+ *              only on rows a version before 1.3.0 stored)
  *   comment_meta — page_id + last_approved_at + count (delta-fetch since)
  */
 
@@ -40,13 +46,11 @@ import {
 import { COMMENTS_SKILLS } from "./skills.js";
 import { writeHints } from "./write-hints.js";
 
-const MAX_THREAD_DEPTH = 3;
-
 /**
  * Comments in the bake and in one page of the visitor feed (#1169). A thread
- * longer than this keeps its page light: the HTML carries the newest ones
- * plus a line with the total, and the rest loads on demand. Crawlers read no
- * JS output, so they get exactly that: these comments and the count.
+ * longer than this keeps its page light: the HTML carries the newest ones,
+ * and the rest loads on demand. Crawlers read no JS output, so they get
+ * exactly these comments.
  */
 const THREAD_PAGE_SIZE = 50;
 
@@ -127,8 +131,6 @@ function parseVerdict(raw: string): { verdict: string; decision: ModerationDecis
 const submitInput = z
   .object({
     pageId: z.string().uuid(),
-    /** The approved comment this replies to (its id as `list_approved` returns it). */
-    parentId: z.string().uuid().nullable().optional(),
     authorName: z.string().max(MAX_AUTHOR_LENGTH),
     content: z.string().max(MAX_CONTENT_LENGTH),
     [HONEYPOT_FIELD_NAME]: z.string().max(500).optional(),
@@ -152,10 +154,9 @@ const listApprovedInput = z
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** One approved comment as `comment_archive.list_for_page` returns it. */
+/** One approved comment as `comment_archive.list_for_page` returns it (the fields read here). */
 interface ApprovedComment {
   publicRowId: string;
-  parentId: string | null;
   authorName: string;
   content: string;
   submittedAt: string;
@@ -175,7 +176,6 @@ async function approvedComments(
     limit: number;
     since?: string | undefined;
     before?: ThreadCursor | undefined;
-    commentId?: string | undefined;
   },
 ): Promise<ThreadPage> {
   if (!ctx.cms || !UUID_RE.test(pageId)) return { comments: [], nextCursor: null };
@@ -186,7 +186,6 @@ async function approvedComments(
       limit: number;
       since?: string;
       before?: ThreadCursor;
-      commentId?: string;
     },
     ThreadPage
   >("comment_archive.list_for_page", {
@@ -195,19 +194,7 @@ async function approvedComments(
     limit: page.limit,
     ...(page.since ? { since: page.since } : {}),
     ...(page.before ? { before: page.before } : {}),
-    ...(page.commentId ? { commentId: page.commentId } : {}),
   });
-}
-
-/** One approved comment of a page by either of its ids, or null. */
-async function approvedComment(
-  ctx: PluginContextTier1,
-  pageId: string,
-  commentId: string,
-): Promise<ApprovedComment | null> {
-  if (!UUID_RE.test(commentId)) return null;
-  const page = await approvedComments(ctx, pageId, { limit: 1, commentId });
-  return page.comments[0] ?? null;
 }
 
 interface ThreadStats {
@@ -301,6 +288,8 @@ async function archiveAndDeletePublic(
   >("comment_archive.insert", {
     publicRowId: row.id,
     pageId: row.page_id,
+    // Only a row stored before 1.3.0 can name a parent (#1529); the archive
+    // keeps it for the threads a later version may show.
     parentId: row.parent_id && row.parent_id.length > 0 ? row.parent_id : null,
     authorName: row.author_name,
     content: row.content,
@@ -410,35 +399,8 @@ export default definePlugin<PluginContextTier1>({
       if (!input.content.trim()) throw new PublicOperationError("submit: content empty");
       if (!input.authorName.trim()) throw new PublicOperationError("submit: authorName required");
 
-      // Enforce thread depth. A reply goes to an APPROVED comment of this
-      // page (#1332): the inbox is visitor-written and not readable on the
-      // public side, so the chain is walked through the published thread,
-      // one ancestor by id per step: any window of the thread can cut the
-      // chain and pass a reply the cap should stop (#1169). A chain that
-      // cannot be read to its root is refused, never taken for complete.
-      if (input.parentId) {
-        let depth = 1;
-        let cursor: string | null = input.parentId;
-        while (cursor && depth <= MAX_THREAD_DEPTH) {
-          const ancestor: ApprovedComment | null = await approvedComment(ctx, input.pageId, cursor);
-          if (!ancestor) {
-            throw new PublicOperationError(
-              depth === 1
-                ? "submit: the comment you reply to is not on this page"
-                : "submit: this thread is no longer complete, so it takes no more replies",
-            );
-          }
-          cursor = ancestor.parentId;
-          depth += 1;
-        }
-        if (depth > MAX_THREAD_DEPTH) {
-          throw new PublicOperationError(`submit: thread depth exceeds ${MAX_THREAD_DEPTH}`);
-        }
-      }
-
       const r = await ctx.query.insert("comments", {
         page_id: input.pageId,
-        parent_id: input.parentId ?? "",
         author_name: input.authorName.trim(),
         content: input.content.trim(),
         status: "pending",
@@ -457,14 +419,12 @@ export default definePlugin<PluginContextTier1>({
         since: input.since,
         before: input.before,
       });
-      // Reshape to the legacy `CommentRow` shape so the Web Component +
-      // tests don't need to know reads moved to cms_admin.
+      // The visitor feed's row shape, which the browser runtime reads.
       return {
         nextCursor: page.nextCursor,
         comments: page.comments.map((c) => ({
           id: c.publicRowId,
           page_id: input.pageId,
-          parent_id: "",
           author_name: c.authorName,
           content: c.content,
           status: "approved" as const,

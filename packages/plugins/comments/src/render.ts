@@ -32,7 +32,7 @@ import { escapeHtml } from "@caelo-cms/plugin-component-kit";
 
 /** One approved comment as the bake shows it. */
 export interface BakedComment {
-  /** The id visitors' replies and the runtime's dedupe use (the public row id). */
+  /** The id the runtime dedupes by (the public row id). */
   readonly id: string;
   readonly authorName: string;
   readonly content: string;
