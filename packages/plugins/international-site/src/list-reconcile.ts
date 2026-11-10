@@ -515,7 +515,8 @@ export async function reconcileScopeOf(
   const touches = (c: ListChange, column: string) =>
     c.op !== "update" || c.changedColumns == null || c.changedColumns.includes(column);
   for (const c of changes) {
-    if (c.op === "truncate") return { whole: `a ${c.table ?? c.kind} truncate names no rows` };
+    if (c.op === "truncate")
+      return { whole: `emptying ${c.table ?? c.kind} as a whole names no single row` };
     switch (c.kind) {
       case "list":
         lists.add(c.rowId);
