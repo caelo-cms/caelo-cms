@@ -257,6 +257,7 @@ export {
 } from "./row-snapshots.js";
 export {
   HEARTBEAT_REFRESH_MS,
+  holdRuntimeHeartbeat,
   hostInstanceId,
   LIVE_WINDOW_MS,
   refreshRuntimeHeartbeat,

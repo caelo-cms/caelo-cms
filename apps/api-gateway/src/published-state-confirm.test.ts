@@ -7,16 +7,18 @@
  * The gateway runs on request-billed CPU: between requests the instance has
  * no CPU, so a NOTIFY that arrives then is handled only once the next
  * request brings CPU back, possibly after that request read its cache. A
- * request that starts on an idle instance therefore confirms the published
- * state first (published-changes.ts `servePublishedRequest`). Here the
- * LISTEN is a fake that acknowledges the subscription and never delivers a
- * notification — the throttled instance, frozen at its worst moment.
+ * request that starts on an idle instance therefore marks the published
+ * state unconfirmed, and the request confirms it before its first read of
+ * cached state (published-changes.ts). Here the LISTEN is a fake that
+ * acknowledges the subscription and never delivers a notification — the
+ * throttled instance, frozen at its worst moment.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import type { DatabaseAdapter, ListenCallbacks } from "@caelo-cms/query-api";
 import {
   CONFIRM_MAX_AGE_MS,
+  confirmPublishedState,
   listenForPublishedChanges,
   mayCacheRead,
   onPublishedChange,
@@ -60,14 +62,24 @@ async function readGate(): Promise<string> {
   return value;
 }
 
+let clock = 1_000_000;
+
+/** One gateway request: the cheap gates pass, then confirm, then the cached read. */
+function request(
+  read: () => Promise<string> = readVersions,
+  serve: () => Promise<string> = readGate,
+): Promise<string> {
+  return servePublishedRequest(async () => {
+    await confirmPublishedState(read, clock);
+    return serve();
+  });
+}
+
 /** A publish: the source and its versions change; the notification never arrives here. */
 function publishWithoutNotification(value: string, version: string): void {
   published = value;
   versions = version;
 }
-
-let clock = 1_000_000;
-const now = () => clock;
 
 beforeEach(async () => {
   resetPublishedStateConfirmation();
@@ -77,93 +89,114 @@ beforeEach(async () => {
   sourceReads = 0;
   cached = null;
   clock = 1_000_000;
-  await listenForPublishedChanges(silentListen);
-});
-
-afterEach(() => {
   callbacks = null;
+  await listenForPublishedChanges(silentListen);
 });
 
 describe("#1361 — a request after an idle stretch confirms the published state", () => {
   it("drops a cache whose notification is still waiting, and reads the new state", async () => {
-    expect(await servePublishedRequest(readVersions, readGate, now)).toBe("gate: open");
+    expect(await request()).toBe("gate: open");
     // Nothing published since: the next request (idle again) serves the cache.
-    expect(await servePublishedRequest(readVersions, readGate, now)).toBe("gate: open");
+    expect(await request()).toBe("gate: open");
     expect(sourceReads).toBe(1);
     expect(versionReads).toBe(2);
 
     publishWithoutNotification("gate: closed", "staging_site:101");
     // Without the confirmation this answered "gate: open" from the cache.
-    expect(await servePublishedRequest(readVersions, readGate, now)).toBe("gate: closed");
+    expect(await request()).toBe("gate: closed");
     expect(sourceReads).toBe(2);
   });
 
   it("a section the publish removed changes the versions too", async () => {
     versions = "settings:7,staging_site:100";
-    await servePublishedRequest(readVersions, readGate, now);
+    await request();
     publishWithoutNotification("no settings", "staging_site:100");
-    expect(await servePublishedRequest(readVersions, readGate, now)).toBe("no settings");
+    expect(await request()).toBe("no settings");
   });
 
-  it("a request that starts while another is in flight trusts the LISTEN until the confirmation ages", async () => {
-    await servePublishedRequest(readVersions, readGate, now);
+  it("while requests keep coming the LISTEN is trusted, until the confirmation ages", async () => {
     let release = (): void => undefined;
+    // A long request (a stream) starts on an idle instance and reads no
+    // published state itself.
     const long = servePublishedRequest(
-      readVersions,
       () =>
         new Promise<string>((resolve) => {
           release = () => resolve("long done");
         }),
-      now,
     );
-    await Bun.sleep(0);
-    const before = versionReads;
-    // The instance has CPU while `long` runs: notifications are handled.
-    expect(await servePublishedRequest(readVersions, readGate, now)).toBe("gate: open");
-    expect(versionReads).toBe(before);
+    // The first request that reads published state after that idle start
+    // confirms it; the next ones, with CPU all along, trust the LISTEN.
+    expect(await request()).toBe("gate: open");
+    const confirmed = versionReads;
+    expect(confirmed).toBe(1);
+    expect(await request()).toBe("gate: open");
+    expect(versionReads).toBe(confirmed);
     // A LISTEN that died without a word hides a publish at most this long.
     clock += CONFIRM_MAX_AGE_MS;
     publishWithoutNotification("gate: closed", "staging_site:102");
-    expect(await servePublishedRequest(readVersions, readGate, now)).toBe("gate: closed");
-    expect(versionReads).toBe(before + 1);
+    expect(await request()).toBe("gate: closed");
+    expect(versionReads).toBe(confirmed + 1);
     release();
     expect(await long).toBe("long done");
   });
 
-  it("requests that start together wait for one confirmation", async () => {
-    await servePublishedRequest(readVersions, readGate, now);
+  it("a request that joins one which started on an idle instance confirms too, before its own read", async () => {
+    await request();
     publishWithoutNotification("gate: closed", "staging_site:103");
+    // The first request starts on an idle instance and is still in its cheap
+    // gates when the second one starts.
+    let pass = (): void => undefined;
+    const gates = new Promise<void>((resolve) => {
+      pass = resolve;
+    });
+    const first = servePublishedRequest(async () => {
+      await gates;
+      await confirmPublishedState(readVersions, clock);
+      return readGate();
+    });
+    // Not idle any more, but the published state is still unconfirmed.
+    expect(await request()).toBe("gate: closed");
+    pass();
+    expect(await first).toBe("gate: closed");
+  });
+
+  it("requests that confirm together wait for one read", async () => {
+    await request();
+    publishWithoutNotification("gate: closed", "staging_site:104");
     let answer = (_v: string): void => undefined;
     const slowVersions = () =>
       new Promise<string>((resolve) => {
         versionReads += 1;
         answer = resolve;
       });
-    const first = servePublishedRequest(slowVersions, readGate, now);
-    // Starts while the first is in flight, before its confirmation came back.
-    const second = servePublishedRequest(slowVersions, readGate, now);
+    const before = versionReads;
+    const first = request(slowVersions);
+    const second = request(slowVersions);
     await Bun.sleep(0);
-    expect(versionReads).toBe(2); // the setup request's, then the shared one
+    expect(versionReads).toBe(before + 1);
     answer(versions);
     expect(await first).toBe("gate: closed");
     expect(await second).toBe("gate: closed");
   });
 
-  it("a confirmation that fails drops the caches: the request reads through", async () => {
-    await servePublishedRequest(readVersions, readGate, now);
+  it("a confirmation that fails drops the caches: the request reads through, the next one tries again", async () => {
+    await request();
     published = "gate: closed";
     const failing = async (): Promise<string> => {
       throw new Error("database unreachable");
     };
-    expect(await servePublishedRequest(failing, readGate, now)).toBe("gate: closed");
+    expect(await request(failing)).toBe("gate: closed");
+    const before = versionReads;
+    await request();
+    expect(versionReads).toBe(before + 1);
   });
 
   it("confirms nothing for a request that reads no published state, or while the LISTEN is down", async () => {
-    await servePublishedRequest(null, async () => "healthz", now);
+    await servePublishedRequest(async () => "healthz");
     expect(versionReads).toBe(0);
     callbacks?.onLost(new Error("connection reset"));
     expect(publishedCacheUsable()).toBe(false);
-    await servePublishedRequest(readVersions, readGate, now);
+    await request();
     expect(versionReads).toBe(0);
   });
 });

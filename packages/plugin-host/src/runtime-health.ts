@@ -616,12 +616,13 @@ export const LIVE_WINDOW_MS = 120_000;
 const STALE_ROW_RETENTION = "1 day";
 
 /**
- * #1361 — the heartbeat rides requests, never a timer: the admin runs on
- * request-billed CPU, so a timer would not fire while the instance idles
- * and its rows would read as gone even though it would serve the next
- * request. The plugin host's request start (`pluginHostRequestStart`)
- * confirms them once they are older than {@link HEARTBEAT_REFRESH_MS}; the
- * scheduler tick is a request too.
+ * #1361 — the heartbeat rides requests, never an idle timer: the admin
+ * runs on request-billed CPU, so a timer would not fire while the instance
+ * idles and its rows would read as gone even though it would serve the
+ * next request. The plugin host's request start (`pluginHostRequestStart`)
+ * confirms them once they are older than {@link HEARTBEAT_REFRESH_MS} (the
+ * scheduler tick is a request too), and a request that runs for long keeps
+ * them confirmed ({@link holdRuntimeHeartbeat}).
  */
 let heartbeat: {
   readonly infra: PluginHostInfra;
@@ -664,11 +665,51 @@ export function refreshRuntimeHeartbeat(now: number = Date.now()): Promise<void>
   return running;
 }
 
+/** Admin requests in flight on this instance ({@link holdRuntimeHeartbeat}). */
+let held = 0;
+let renewal: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * #1361 — keep this instance's rows confirmed for as long as it serves a
+ * request: a chat turn, a Stage or a scheduler tick runs for minutes, and
+ * the other servers must count this one as live meanwhile (plugin health,
+ * the Publish-live gate) although no request starts here. Request-scoped:
+ * the renewal runs only while a request is in flight — which is when the
+ * instance has CPU — and stops with the last one.
+ *
+ * @returns the release, for when the request's response is sent (idempotent)
+ */
+export function holdRuntimeHeartbeat(): () => void {
+  held += 1;
+  if (!renewal) {
+    renewal = setInterval(() => void refreshRuntimeHeartbeat(), HEARTBEAT_REFRESH_MS);
+    renewal.unref?.();
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    held = Math.max(0, held - 1);
+    if (held === 0 && renewal) {
+      clearInterval(renewal);
+      renewal = null;
+    }
+  };
+}
+
+/** Whether a request holds the heartbeat's renewal now (tests). */
+export function runtimeHeartbeatRenewing(): boolean {
+  return renewal !== null;
+}
+
 /** Forget the heartbeat and this instance's outcomes (tests, shutdown). */
 export function stopRuntimeHeartbeat(): void {
   heartbeat = null;
   unsavedOutcomes.clear();
   currentOutcomes.clear();
+  if (renewal) clearInterval(renewal);
+  renewal = null;
+  held = 0;
 }
 
 /**

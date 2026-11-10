@@ -40,11 +40,13 @@ import {
 import {
   clearPluginRuntime,
   HEARTBEAT_REFRESH_MS,
+  holdRuntimeHeartbeat,
   hostInstanceId,
   recordPluginError,
   recordPluginRuntime,
   refreshRuntimeHeartbeat,
   runtimeHeartbeatOnce,
+  runtimeHeartbeatRenewing,
   unsavedRuntimeSlugs,
 } from "./runtime-health.js";
 
@@ -674,6 +676,18 @@ describe("#1361 — the heartbeat rides request starts, never a timer", () => {
     expect(await ageOf()).toBeGreaterThan(500);
     await refreshRuntimeHeartbeat(t0 + HEARTBEAT_REFRESH_MS);
     expect(await ageOf()).toBeLessThan(5);
+  });
+
+  it("a request in flight holds the renewal; the last one to end stops it", () => {
+    expect(runtimeHeartbeatRenewing()).toBe(false);
+    const chatTurn = holdRuntimeHeartbeat();
+    const tick = holdRuntimeHeartbeat();
+    expect(runtimeHeartbeatRenewing()).toBe(true);
+    chatTurn();
+    chatTurn();
+    expect(runtimeHeartbeatRenewing()).toBe(true);
+    tick();
+    expect(runtimeHeartbeatRenewing()).toBe(false);
   });
 
   it("writes again a row another instance deleted while this one idled longer than a day", async () => {

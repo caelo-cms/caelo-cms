@@ -173,10 +173,17 @@ const SYSTEM_ONLY = ["system"] as const;
  * plugin off still has it loaded, and a journal wake-up must not run its
  * consumer there — nor create again the consumer its deactivation dropped,
  * which would skip the rebuild a later activation needs.
+ *
+ * The row is share-locked for the rest of the claim's transaction: the
+ * status change that switches the plugin off waits for it, so its trigger
+ * (cms_admin 0430, `caelo_drop_inactive_plugin_consumers`) sees and drops
+ * a consumer this transaction creates; and a claim that comes after the
+ * change reads the new status. Both take the plugin row before the
+ * consumer row, so they cannot deadlock.
  */
 async function pluginActive(tx: TransactionRunner, pluginId: string): Promise<boolean> {
   const rows = (await tx.execute(sql`
-    SELECT 1 AS ok FROM plugins WHERE id = ${pluginId}::uuid AND status = 'active'
+    SELECT 1 AS ok FROM plugins WHERE id = ${pluginId}::uuid AND status = 'active' FOR SHARE
   `)) as unknown as unknown[];
   return rows.length > 0;
 }

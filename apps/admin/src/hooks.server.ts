@@ -59,6 +59,7 @@ import {
   type EmailTransport,
   ensureChangeConsumers,
   ensureDevSignedManifests,
+  holdRuntimeHeartbeat,
   hostInstanceId,
   type AIProvider as PluginHostAIProvider,
   pluginHostRequestStart,
@@ -71,6 +72,7 @@ import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
 import { bootstrapE2eOperatorAccess } from "#lib/server/google-iap.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
+import { releaseWhenSent } from "#lib/server/request-lifetime.js";
 import { runAdminSchedulerTick, setSchedulerProjectionPublisher } from "#lib/server/scheduler.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
@@ -597,8 +599,21 @@ export const init: ServerInit = async () => {
  * #1392 — every request runs in its own branch-visibility scope: the ops
  * of one request (a preview, one MCP tool call, a chat turn) ask
  * `caelo_branch_visible` once per branch, and no verdict outlives it.
+ *
+ * #1361 — and holds the plugin runtime heartbeat until its response is
+ * sent (an event stream until its end), so a server busy with a long
+ * request keeps counting as live for the other servers.
  */
-export const handle: Handle = (input) => withBranchVisibilityScope(() => handleRequest(input));
+export const handle: Handle = (input) =>
+  withBranchVisibilityScope(async () => {
+    const release = holdRuntimeHeartbeat();
+    try {
+      return releaseWhenSent(await handleRequest(input), release);
+    } catch (e) {
+      release();
+      throw e;
+    }
+  });
 
 const handleRequest: Handle = async ({ event, resolve }) => {
   // #684 — the Settings section moved from /security; keep every old link,

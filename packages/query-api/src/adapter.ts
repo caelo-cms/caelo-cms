@@ -835,7 +835,7 @@ export class DatabaseAdapter {
       try {
         await this.#publishAfterCommit();
       } catch (thrown) {
-        publishFailure = `The change is saved, but the public site does not serve it yet: publishing it failed (${thrown instanceof Error ? thrown.message : String(thrown)}). Do not repeat the change; it is published automatically with the next change or within a few minutes (the scheduler tick) once the public database answers.`;
+        publishFailure = `The change is saved, but the public site does not serve it yet: publishing it failed (${thrown instanceof Error ? thrown.message : String(thrown)}). Do not repeat the change; it is published automatically with the next change, or on the next scheduler tick, once the public database answers.`;
       }
     }
     // #1215 — change hints (the editor's live refresh) hear a handler that

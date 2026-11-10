@@ -47,6 +47,8 @@ const ALLOWED: Record<string, string> = {
     "a plugin activation's lock renewal while the activation runs",
   "packages/plugin-host/src/change-consumers.ts":
     "a change consumer's claim renewal while its drain runs (a hint: the commit takes the claim back, #1361)",
+  "packages/plugin-host/src/runtime-health.ts":
+    "the plugin runtime heartbeat's renewal while an admin request is in flight (a chat turn, a Stage, a tick), stopped with the last one (#1361)",
   // Dev and test runs only: no scheduler calls them.
   "apps/admin/src/hooks.server.ts":
     "the dev/test scheduler clock (bootstrapDevSchedulerClock): never with NODE_ENV=production, where the install's scheduler calls the tick",
@@ -133,15 +135,22 @@ describe("no background timer does the admin's work (#1140)", () => {
     expect(scheduler).toContain("paused: true");
   });
 
-  it("the plugin host keeps nothing current on a timer: request start and the tick do (#1361)", () => {
+  it("the plugin host keeps nothing current on an idle timer: request start and the tick do (#1361)", () => {
     const text = (path: string) => SCANNED.find((s) => s.path === path)?.text ?? "";
-    // The runtime heartbeat and the plugin-row sync start no timer at all.
-    for (const path of [
-      "packages/plugin-host/src/runtime-health.ts",
-      "packages/plugin-host/src/reconcile.ts",
-    ]) {
-      expect(text(path)).not.toMatch(/\bset(Interval|Timeout)\s*\(/);
-    }
+    // The plugin-row sync starts no timer at all.
+    expect(text("packages/plugin-host/src/reconcile.ts")).not.toMatch(
+      /\bset(Interval|Timeout)\s*\(/,
+    );
+    // The heartbeat's one interval is the renewal a request in flight holds
+    // (holdRuntimeHeartbeat, released by the admin's handle when the
+    // response is sent); it has no timeout either.
+    const health = text("packages/plugin-host/src/runtime-health.ts");
+    expect(health.match(/\bsetInterval\s*\(/g)).toEqual(["setInterval("]);
+    expect(health).not.toMatch(/\bsetTimeout\s*\(/);
+    expect(health).toMatch(/export function holdRuntimeHeartbeat\(\)[\s\S]*?setInterval\(/);
+    const hooks = text("apps/admin/src/hooks.server.ts");
+    expect(hooks).toContain("const release = holdRuntimeHeartbeat();");
+    expect(hooks).toContain("releaseWhenSent(await handleRequest(input), release)");
     // The change consumers' only timeout is a wake-up's 50 ms coalescing,
     // which runs on the CPU of whatever woke it; a retry rides the next
     // request start or tick instead of a timer.

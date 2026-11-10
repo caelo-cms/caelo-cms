@@ -34,14 +34,17 @@
  * the socket until CPU returns — with the next request, which could read a
  * cache the notification drops before the LISTEN callback ran (a closed
  * staging gate, a revoked plugin, a rotated cookie secret). So a request
- * that reads published state and starts while no other request is in
- * flight first confirms it ({@link servePublishedRequest}): one read of
+ * that starts while no other request is in flight marks the published
+ * state unconfirmed ({@link servePublishedRequest}), and the first request
+ * to read it then confirms it ({@link confirmPublishedState}): one read of
  * the projection's section versions, which every publish rewrites in the
  * transaction that notifies, compared with the last confirmation. A
- * difference drops every cache, as the notification will. A request that
- * starts while another is in flight had CPU all along, so its
- * notifications were handled; it confirms only once the last confirmation
- * is older than {@link CONFIRM_MAX_AGE_MS}, which also bounds what a LISTEN
+ * difference drops every cache, as the notification will. server.ts calls
+ * it after the cheap per-client gates (the in-memory budget, the staging
+ * gate's failure budget), so junk is shed before this read too. While
+ * requests keep coming the instance had CPU all along and its notifications
+ * were handled; it confirms again only once the last confirmation is older
+ * than {@link CONFIRM_MAX_AGE_MS}, which also bounds what a LISTEN
  * connection that died without a word could hide.
  */
 
@@ -51,8 +54,8 @@ import type { DatabaseAdapter, ListenHandle } from "@caelo-cms/query-api";
 export const GATEWAY_PROJECTION_CHANNEL = "caelo_gateway_settings";
 
 /**
- * How long a confirmation of the published state holds for requests that
- * start while another one is in flight (see the module docblock).
+ * How long a confirmation of the published state holds while requests keep
+ * coming (see the module docblock).
  */
 export const CONFIRM_MAX_AGE_MS = 30_000;
 
@@ -61,6 +64,12 @@ let generation = 0;
 const invalidators = new Set<() => void>();
 /** Requests this instance serves right now ({@link servePublishedRequest}). */
 let inFlight = 0;
+/**
+ * A notification may have been missed since the last confirmation: set
+ * when a request starts on an idle instance (it had no CPU before), cleared
+ * by a confirmation. True at boot: nothing is confirmed yet.
+ */
+let mayHaveMissed = true;
 /** The section versions the last confirmation saw; null before the first. */
 let confirmedVersions: string | null = null;
 let confirmedAt = Number.NEGATIVE_INFINITY;
@@ -96,45 +105,44 @@ function invalidateAll(): void {
 }
 
 /**
- * Serve one request: count it in flight while `serve` runs, and when it
- * reads published state, confirm that state first if the instance may have
- * idled (no CPU, see the module docblock) — or the last confirmation is
- * older than {@link CONFIRM_MAX_AGE_MS}. Concurrent requests share one
- * confirmation; one that fails drops every cache, so the request reads
- * through instead of trusting what it could not confirm.
- *
- * @param readVersions - the projection's section versions as one string
- *   (`readProjectionVersions` in server.ts; equal strings mean no publish
- *   committed in between), or null for a request that answers from no
- *   cached published state: `/healthz`, a path that names no route, and a
- *   gateway whose feature is known to be off (E14 a answers from memory,
- *   without the database)
- * @param now - milliseconds since the epoch (tests)
+ * Serve one request, counting it in flight while `serve` runs. A request
+ * that starts while none is in flight marks the published state
+ * unconfirmed: the instance had no CPU before it, so a notification may
+ * still wait in the socket ({@link confirmPublishedState}).
  */
-export async function servePublishedRequest<T>(
-  readVersions: (() => Promise<string>) | null,
-  serve: () => Promise<T>,
-  now: () => number = Date.now,
-): Promise<T> {
-  const wasIdle = inFlight === 0;
+export async function servePublishedRequest<T>(serve: () => Promise<T>): Promise<T> {
+  if (inFlight === 0) mayHaveMissed = true;
   inFlight += 1;
   try {
-    if (readVersions) await confirmPublishedState(readVersions, wasIdle, now());
     return await serve();
   } finally {
     inFlight -= 1;
   }
 }
 
-function confirmPublishedState(
+/**
+ * Confirm the published state before answering from memory: when the
+ * instance may have missed a notification since the last confirmation (it
+ * idled, {@link servePublishedRequest}), or that confirmation is older than
+ * {@link CONFIRM_MAX_AGE_MS}. Call it right before the first read of cached
+ * state that decides the answer, after the cheap per-client gates.
+ * Concurrent requests share one confirmation; one that fails drops every
+ * cache, so the request reads through instead of trusting what it could
+ * not confirm, and the next request tries again.
+ *
+ * @param readVersions - the projection's section versions as one string
+ *   (`readProjectionVersions` in server.ts); equal strings mean no publish
+ *   committed in between
+ * @param now - milliseconds since the epoch (tests)
+ */
+export function confirmPublishedState(
   readVersions: () => Promise<string>,
-  wasIdle: boolean,
-  now: number,
+  now: number = Date.now(),
 ): Promise<void> {
   // Nothing is cached while the LISTEN is down: every request reads through.
   if (!subscribed) return Promise.resolve();
   if (confirming) return confirming;
-  if (!wasIdle && now - confirmedAt < CONFIRM_MAX_AGE_MS) return Promise.resolve();
+  if (!mayHaveMissed && now - confirmedAt < CONFIRM_MAX_AGE_MS) return Promise.resolve();
   const run = (async () => {
     try {
       const versions = await readVersions();
@@ -145,6 +153,9 @@ function confirmPublishedState(
         confirmedVersions = versions;
       }
       confirmedAt = now;
+      // The confirming request is in flight, so no request started on an
+      // idle instance meanwhile: nothing can have been missed since.
+      mayHaveMissed = false;
     } catch (e) {
       invalidateAll();
       console.warn(
@@ -161,6 +172,7 @@ function confirmPublishedState(
 /** Forget the confirmation state and the request count (tests). */
 export function resetPublishedStateConfirmation(): void {
   inFlight = 0;
+  mayHaveMissed = true;
   confirmedVersions = null;
   confirmedAt = Number.NEGATIVE_INFINITY;
   confirming = null;
