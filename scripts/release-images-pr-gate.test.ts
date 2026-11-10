@@ -311,6 +311,87 @@ describe("release-images.yml — issue #54 PR-gate contract", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1558 — the GCP Artifact Registry mirror receives release builds only.
+//
+// A push to main publishes to GHCR (`:main`, `:main-<sha7>`), never to the
+// mirror Cloud Run installs pull from: nothing installs a main build, and
+// each one added ~0.5 GB there. Release builds are `v*` tag refs — release.yml
+// calls this workflow on a release or release-candidate tag. The gate is the
+// ref, not the event: in a workflow_call `github.event_name` is the caller's
+// (`push` for both a tag push and a push to main).
+// ---------------------------------------------------------------------------
+
+/** The release-build condition every AR-mirror step carries in its `if:`. */
+const RELEASE_REF_GATE = "startsWith(github.ref, 'refs/tags/v')";
+
+/** Steps that write to or check the AR mirror. */
+const AR_MIRROR_STEP_NAMES = [
+  "Authenticate to GCP via Workload Identity Federation",
+  "Configure docker for GCP AR push",
+  "Install oras (referrer-aware registry copy)",
+  "Mirror image (+ signatures) to GCP public AR",
+  "Verify the mirrored image is signed (gate)",
+] as const;
+
+/** Steps that publish to GHCR — main builds included, so never tag-gated. */
+const GHCR_STEP_NAMES = [
+  "Log in to GHCR",
+  "Install cosign",
+  "Sign image with cosign (keyless / OIDC)",
+  "Verify the signed image (sanity check)",
+] as const;
+
+describe("release-images.yml — releases only reach the AR mirror (#1558)", () => {
+  const steps = workflowDoc.jobs.build.steps;
+  const byName = (name: string) => {
+    const step = steps.find((s) => s.name === name);
+    if (!step) throw new Error(`step \`${name}\` not found in workflow`);
+    return step;
+  };
+
+  it.each(AR_MIRROR_STEP_NAMES.map((name) => [name]))(
+    "W7: AR step `%s` runs for a v* tag ref only, still behind the publish gate",
+    (name) => {
+      const ifClause = byName(name).if ?? "";
+      expect(ifClause).toContain(RELEASE_REF_GATE);
+      expect(ifClause).toContain(PUBLISH_EVENT_GATE);
+      expect(ifClause).toContain("vars.GCP_PUBLIC_REGISTRY_WIF_PROVIDER != ''");
+    },
+  );
+
+  it("W7: every step that touches the AR mirror is in that list", () => {
+    // A new mirror step (another registry login, a tag fix-up) must be gated
+    // too; finding it by the registry or its credential keeps the list honest.
+    const touchesAr = steps.filter((s) =>
+      /docker\.pkg\.dev|GCP_PUBLIC_REGISTRY|AR_BASE/.test(JSON.stringify(s)),
+    );
+    expect(touchesAr.map((s) => s.name).sort()).toEqual([...AR_MIRROR_STEP_NAMES].sort());
+  });
+
+  it.each(GHCR_STEP_NAMES.map((name) => [name]))(
+    "W7: GHCR step `%s` still publishes main builds (no tag-ref gate)",
+    (name) => {
+      expect(byName(name).if ?? "").not.toContain("refs/tags");
+    },
+  );
+
+  it("W7: the build pushes on main as before; only the mirror is tag-gated", () => {
+    const body = extractStepBody(workflow, "Build + push");
+    expect(body).not.toContain("refs/tags");
+  });
+
+  it("W8: a release candidate gets the marker tag rc-<version> the cleanup policy deletes", () => {
+    const meta = extractStepBody(workflow, "Compute tags + labels");
+    // prefix= is applied after metadata-action's pre-release {{version}}
+    // fallback, so the tag is rc-0.12.5-rc.1; enabled for a pre-release tag only.
+    expect(meta).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+      "type=semver,pattern={{version}},prefix=rc-,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-') }}",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ruleset contract — `.github/rulesets/main.json`.
 //
 // The ruleset is JSON; parse it and walk to the

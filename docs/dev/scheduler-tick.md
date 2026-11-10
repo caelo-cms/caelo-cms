@@ -43,7 +43,7 @@ The tick's `core:plugin-change-consumers` task drains every change consumer and 
 
 - **Core maintenance:** add an entry to `coreScheduledTasks`, with a `core:<name>` key and a cadence. The body resolves with an optional one-line summary, or throws with a message that names the cause. Do not add a `setInterval`: `scripts/no-background-timers.test.ts` fails on any new one.
 - **A plugin's periodic work:** declare it in `manifest.workers[]` with a cron pattern. It runs at that cadence, rounded up to the tick. A run must finish within its 5-minute lease, so the plugin chunks larger work (the `_run_pending_units` pattern). A worker that recomputes published rows from visitor data declares `publicDatabases: "each"`: it runs once against cms_public and once against cms_public_staging, each run seeing only that database (#1333). A failed run fails the task row.
-- **Long work** (minutes, a browser, a crawl) does not belong on the tick. It runs in a container job that reports back by request (#1359, #1360).
+- **Long work** (minutes, a browser, a crawl) does not belong on the tick. It runs in a reporting job, a container job that reports back by request ([reporting-jobs.md](./reporting-jobs.md)); the tick only restarts one whose lease ran out (`core:reporting-jobs`).
 
 No task may build or publish production (CLAUDE.md §2). `scripts/no-automatic-production-deploy.test.ts` pins that, and pins the plugin-data task as the one caller of `runPluginDataBuildIfDue`.
 
@@ -53,8 +53,3 @@ No task may build or publish production (CLAUDE.md §2). `scripts/no-automatic-p
 - **Self-hosted:** the `caelo-scheduler` Compose service runs `packages/admin-core/src/scheduler/clock.ts` from the admin image. It posts with a fresh internal token. It does no work itself and reaches no database.
 - **AWS / Azure:** nothing yet. The admin task itself does not exist (#749 / #750). The same shape will be an EventBridge Scheduler rule or a Container Apps job that calls the same endpoint.
 - **Dev and test runs** (`NODE_ENV` other than `production`) have no scheduler. There the admin ticks itself every 5 minutes (`bootstrapDevSchedulerClock` in `hooks.server.ts`). `CAELO_SCHEDULER_CLOCK=off` turns that off.
-
-## What is not on the tick yet
-
-- The quality audit's in-process worker: #1359.
-- The site-import crawl worker: #1360.

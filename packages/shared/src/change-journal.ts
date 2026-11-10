@@ -328,6 +328,9 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   platform_update_requests: "update requests, run by the upgrader job",
   platform_update_scheduler: RUNTIME,
   scheduled_tasks: RUNTIME,
+  reporting_jobs: LEASE,
+  reporting_job_uploads:
+    "#1359: the parts of a job's report too large for one request, read by the action that names them",
 
   import_runs: "site-import runs; reach editors as the op-classified `crawl` topic",
   import_pages: "crawled pages of a site import, before they become pages",

@@ -3,7 +3,7 @@
 /**
  * Issue #727 — read the rendered HTML of every page of the staged build,
  * for the findings checks. Fetched from the same staged origin Lighthouse
- * audits (audit-worker.ts `resolveStagingOrigin`), so the checks see
+ * audits (audit-run.ts `resolveStagingOrigin`), so the checks see
  * exactly what Publish live would ship.
  *
  * A page that cannot be read is an error, never "no findings": a published

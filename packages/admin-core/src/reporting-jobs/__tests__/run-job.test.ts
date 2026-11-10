@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Issue #1359 — one attempt: the lease is renewed while the main works and
+ * not a moment longer; a stop from the admin ends it as `stopped`; on
+ * another version the job defers instead of reporting with a protocol the
+ * admin may not have.
+ */
+
+import { describe, expect, it } from "bun:test";
+import { runOrder } from "../job-entry.js";
+import {
+  createJobReporter,
+  deferAttempt,
+  faultWatchingReporter,
+  JobStoppedError,
+  ReportError,
+  type ReportTransport,
+} from "../job-reporter.js";
+import type { JobOrder, ReportEnvelope } from "../protocol.js";
+import { runJobAttempt } from "../run-job.js";
+
+const ORDER: JobOrder = {
+  version: "0.12.0",
+  kind: "quality_audit",
+  subjectId: "00000000-0000-4000-8000-000000001359",
+  attempt: 1,
+  token: "t".repeat(43),
+};
+
+function recording(answer: unknown = {}): ReportTransport & { sent: ReportEnvelope[] } {
+  const sent: ReportEnvelope[] = [];
+  return {
+    label: "test",
+    sent,
+    async send(envelope) {
+      sent.push(envelope);
+      return { status: 200, answer: { ok: true, value: answer } };
+    },
+  };
+}
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+describe("runJobAttempt", () => {
+  it("renews the lease while the main works, and stops renewing when it returns", async () => {
+    const t = recording();
+    const reporter = createJobReporter(ORDER, t);
+    const outcome = await runJobAttempt(reporter, () => wait(80), 15);
+    expect(outcome).toBe("completed");
+    const beats = t.sent.filter((e) => e.action === "heartbeat").length;
+    expect(beats).toBeGreaterThanOrEqual(2);
+    await wait(60);
+    expect(t.sent.filter((e) => e.action === "heartbeat").length).toBe(beats);
+  });
+
+  it("renews the lease while a report of the main waits for a slow answer", async () => {
+    // A large source read can take the admin minutes: the heartbeat does not
+    // queue behind it, so the lease of a living job never runs out meanwhile.
+    const sent: ReportEnvelope[] = [];
+    const t: ReportTransport = {
+      label: "test",
+      async send(envelope) {
+        sent.push(envelope);
+        if (envelope.action === "source") await wait(100);
+        return { status: 200, answer: { ok: true, value: {} } };
+      },
+    };
+    const reporter = createJobReporter(ORDER, t);
+    await runJobAttempt(reporter, (r) => r.call("source", { what: "pageIndex" }), 15);
+    const sourceAt = sent.findIndex((e) => e.action === "source");
+    const beatsWhileWaiting = sent.slice(sourceAt + 1).filter((e) => e.action === "heartbeat");
+    expect(beatsWhileWaiting.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("ends as stopped when the admin ended the attempt", async () => {
+    const reporter = createJobReporter(ORDER, recording());
+    const outcome = await runJobAttempt(
+      reporter,
+      async () => {
+        throw new JobStoppedError("stale", "a newer attempt replaced this one");
+      },
+      1000,
+    );
+    expect(outcome).toBe("stopped");
+  });
+
+  it("lets any other failure through: the attempt died, the backstop restarts it", async () => {
+    const t = recording();
+    const reporter = createJobReporter(ORDER, t);
+    await expect(
+      runJobAttempt(
+        reporter,
+        async () => {
+          throw new Error("out of memory");
+        },
+        5,
+      ),
+    ).rejects.toThrow("out of memory");
+    await wait(30);
+    expect(t.sent.filter((e) => e.action === "heartbeat")).toHaveLength(0);
+  });
+});
+
+describe("deferAttempt and faultWatchingReporter", () => {
+  it("a main that gives its attempt back ends as deferred, with the reason reported", async () => {
+    const t = recording();
+    const reporter = createJobReporter(ORDER, t);
+    const outcome = await runJobAttempt(
+      reporter,
+      (r) => deferAttempt(r, "the admin did not answer in time"),
+      60_000,
+    );
+    expect(outcome).toBe("deferred");
+    const defer = t.sent.find((e) => e.action === "defer");
+    expect(defer?.payload).toEqual({ reason: "the admin did not answer in time" });
+  });
+
+  it("knows the calls still in flight, and the first passing fault, also a swallowed one", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const t: ReportTransport = {
+      label: "test",
+      async send(envelope) {
+        if (envelope.action === "source") {
+          await gate;
+          return {
+            status: 503,
+            answer: { ok: false, error: { code: "unavailable", message: "starting" } },
+          };
+        }
+        return { status: 200, answer: { ok: true, value: {} } };
+      },
+    };
+    const watched = faultWatchingReporter(createJobReporter(ORDER, t, { retryBudgetMs: 0 }));
+    // A caller that stops waiting (a check that timed out) swallows the call.
+    void watched.reporter.call("source", {}).catch(() => undefined);
+    await watched.reporter.call("heartbeat");
+    expect(watched.inFlight()).toEqual(["source"]);
+    expect(watched.fault()).toBeNull();
+    release();
+    await watched.settled();
+    expect(watched.inFlight()).toEqual([]);
+    expect(watched.fault()).toBeInstanceOf(ReportError);
+  });
+});
+
+describe("runOrder", () => {
+  it("defers to the next attempt when the job's image lags the admin", async () => {
+    const t = recording();
+    let ran = false;
+    const outcome = await runOrder(ORDER, t, {
+      version: "0.11.9",
+      main: async () => {
+        ran = true;
+      },
+    });
+    expect(outcome).toBe("deferred");
+    expect(ran).toBe(false);
+    expect(t.sent).toHaveLength(1);
+    const deferral = t.sent[0] as ReportEnvelope;
+    expect(deferral.action).toBe("defer");
+    expect((deferral.payload as { reason: string }).reason).toContain("0.11.9");
+  });
+
+  it("runs the kind's main on the admin's own version", async () => {
+    const t = recording();
+    const outcome = await runOrder(ORDER, t, {
+      version: "0.12.0",
+      main: async (r) => {
+        await r.call("start");
+      },
+    });
+    expect(outcome).toBe("completed");
+    expect(t.sent.map((e) => e.action)).toEqual(["start"]);
+  });
+});

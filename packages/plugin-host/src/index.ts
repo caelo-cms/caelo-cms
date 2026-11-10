@@ -14,9 +14,9 @@ export { externalArtifactDigest, releaseManifestDigest } from "@caelo-cms/plugin
 export type { ContentVariantPage, ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
 export { pluginManifest } from "@caelo-cms/plugin-sdk";
 export {
-  type AuditPageFactsReader,
   auditFindingContributors,
-  collectPluginAuditFindings,
+  type PluginAuditFindings,
+  pluginAuditFindingsCall,
 } from "./audit-findings.js";
 export { type BakedDataPlugin, bakedDataPlugin, bakedDataVisitorTrigger } from "./baked-data.js";
 export { bakedDataPageIds, MAX_BAKED_PAGES_PER_CALL } from "./baked-data-pages.js";

@@ -10,6 +10,9 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import type { ToolContext } from "../ai/tools/dispatch.js";
+import { getImportRunReportTool } from "../ai/tools/import-run-report.js";
+import { renderBudget } from "../ops/imports-crawl.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -202,5 +205,49 @@ describe("migration report (#197)", () => {
     const dead = v.notes.find((n) => n.category === "dead_link");
     expect(typo).toMatchObject({ applied: 1, suggested: 0 });
     expect(dead).toMatchObject({ applied: 0, suggested: 1 });
+  });
+
+  it("#1360: a crawl that spent its render budget says so, also when the skip list is full of other skips", async () => {
+    const ctx = { adapter, registry, chatSessionId: "issue197-report" } as ToolContext;
+    // The run above rendered nothing: no budget line.
+    const unspent = await execute(registry, adapter, AI, "imports.get_run_report", { runId });
+    expect((unspent.value as { renderBudget: unknown }).renderBudget).toEqual({
+      used: 0,
+      budget: renderBudget(10),
+      maxPages: 10,
+    });
+    const quiet = await getImportRunReportTool.handler(AI, { runId }, ctx);
+    expect(quiet.content).not.toContain("Render budget spent");
+
+    // A redirect-heavy site: the capped skip list holds only redirect
+    // duplicates, none of the crawl's "not crawled" entries.
+    const spentRun = crypto.randomUUID();
+    const skipped = Array.from({ length: 200 }, (_, i) => ({
+      url: `https://issue197.example/budget/r${i}`,
+      reason: "redirect-duplicate: final URL https://issue197.example/budget/ already crawled",
+    }));
+    await sqlc.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`
+        INSERT INTO import_runs (id, source_url, depth, max_pages, status, proposed_by,
+                                 crawl_renders, crawl_state)
+        VALUES (${spentRun}::uuid, 'https://issue197.example/budget/', 1, 50,
+                'ready_for_review', ${SYSTEM.actorId}::uuid, ${renderBudget(50)},
+                (${JSON.stringify({ errors: [], skipped, skippedOutOfScope: 0 })}::text)::jsonb)
+      `;
+    });
+    const spent = await execute(registry, adapter, AI, "imports.get_run_report", {
+      runId: spentRun,
+    });
+    expect((spent.value as { renderBudget: unknown }).renderBudget).toEqual({
+      used: renderBudget(50),
+      budget: renderBudget(50),
+      maxPages: 50,
+    });
+    const loud = await getImportRunReportTool.handler(AI, { runId: spentRun }, ctx);
+    expect(loud.content).toContain(
+      `Render budget spent: the crawl used all ${renderBudget(50)} renders it may ask for (three per page of its page cap of 50, plus 50)`,
+    );
+    expect(loud.content).toContain("propose_site_import with the missing pages in `urls`");
   });
 });

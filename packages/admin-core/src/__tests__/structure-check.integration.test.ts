@@ -37,7 +37,6 @@ import type { ToolContext } from "../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
-import { drainAuditQueue } from "../quality/audit-worker.js";
 import { linkSourcesFromOps, referenceSourcesFromOps } from "../quality/checks/links-sources.js";
 import { createCoreCheckRegistry } from "../quality/checks/registry.js";
 import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
@@ -45,6 +44,7 @@ import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
 import { localBuildSource } from "../quality/staged-origin.js";
 import { registerAdminOps } from "../register.js";
+import { drainAuditQueue } from "./fixtures/drain-audits.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 

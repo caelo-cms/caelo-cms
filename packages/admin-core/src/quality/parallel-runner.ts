@@ -176,7 +176,7 @@ export function planConfirmationTasks(
 }
 
 /**
- * A Lighthouse runner (the `runJob` shape `audit-worker.ts` takes) that fans
+ * A Lighthouse runner (the `runJob` shape `audit-run.ts` takes) that fans
  * the job out to parallel tasks through `launcher`: one batch with every
  * page's first runs, then — only when a page's runs disagree (#1370) — a
  * second batch with its confirmation runs, so it can be scored by the

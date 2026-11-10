@@ -36,6 +36,10 @@ export interface GcpFirebaseWizardOpts {
   region?: string;
   /** #696 — see {@link GcpWizardOpts.runMode}. */
   runMode?: RunMode;
+  /** #1558 — see {@link GcpWizardOpts.version}. */
+  version?: string;
+  /** #1558 — see {@link GcpWizardOpts.acceptReleaseCandidate}. */
+  acceptReleaseCandidate?: boolean;
 }
 
 export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise<void> {
@@ -67,6 +71,8 @@ export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise
     nonInteractive: opts.nonInteractive,
     ...(opts.region ? { region: opts.region } : {}),
     ...(opts.runMode ? { runMode: opts.runMode } : {}),
+    ...(opts.version ? { version: opts.version } : {}),
+    ...(opts.acceptReleaseCandidate ? { acceptReleaseCandidate: true } : {}),
     provider: "gcp-firebase",
   });
 }

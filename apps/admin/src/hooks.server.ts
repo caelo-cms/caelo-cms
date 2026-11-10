@@ -15,7 +15,7 @@ process.on("uncaughtException", (e) => {
 // adapter-node answers SIGTERM/SIGINT by closing the HTTP server, letting
 // in-flight requests finish, then emitting `sveltekit:shutdown` and waiting
 // for the event loop to drain. Ours never drains: the bootstrapped workers
-// below (quality audit, site import, plugin host) hold timers and pg
+// below (the plugin host, an in-process reporting job) hold timers and pg
 // pools. Without this exit, Cloud Run and `docker stop` fall back to
 // SIGKILL after their grace period. The workers keep no in-memory state the
 // database does not already hold, so exiting once requests are done is safe.
@@ -38,6 +38,7 @@ import {
   generateKekHex,
   getActiveProvider,
   getMediaStorage,
+  inProcessJobLauncher,
   lockPluginRow,
   makePluginImageProvider,
   makePluginTextProvider,
@@ -45,12 +46,11 @@ import {
   refreshStaleLiveReleaseAtBoot,
   registerRedirectSyncRunner,
   retireLegacyStagingPreviewsAtBoot,
+  setInProcessJobLauncher,
   setStagingCaptureAccess,
   stagingCaptureAccess,
   stagingServedByGateway,
   startLiveFanOut,
-  startQualityAuditWorker,
-  startSiteImportWorker,
   transformPluginImage,
 } from "@caelo-cms/admin-core";
 import {
@@ -426,29 +426,18 @@ function seedSiteBaseUrl(): Promise<void> {
   return siteBaseUrlSeed;
 }
 
-// #553 — quality-audit worker. Lighthouse runs against the staged build
-// after a substantial Stage; the worker claims queued audit runs (written by
-// the Stage flow's quality_audits.enqueue) and records the results. Runs
-// the audit itself in a child process, so this process only waits on it.
-let qualityAuditBootstrapped = false;
-function bootstrapQualityAudits(): void {
-  if (qualityAuditBootstrapped) return;
-  qualityAuditBootstrapped = true;
+// #1359 — reporting jobs (the quality audit after a Stage) run in a job of
+// their own on cloud installs, which reports back to this admin by request.
+// Self-hosted and development installs have no such job: there this process
+// runs the same job main itself, started by the Stage request and the tick's
+// backstop. On a cloud install the launcher ignores it (admin-core
+// reporting-jobs/launcher.ts).
+let reportingJobsBootstrapped = false;
+function bootstrapReportingJobs(): void {
+  if (reportingJobsBootstrapped) return;
+  reportingJobsBootstrapped = true;
   const { adapter, registry } = getQueryContext();
-  startQualityAuditWorker({ adapter, registry });
-}
-
-// #1360 — the site-import crawl worker (P14) still polls in-process until
-// it moves into a container job of its own (#1140 category A). Every other
-// maintenance loop runs on the scheduler tick (lib/server/scheduler.ts).
-let siteImportBootstrapped = false;
-function bootstrapSiteImport(): void {
-  if (siteImportBootstrapped) return;
-  siteImportBootstrapped = true;
-  const { adapter, registry } = getQueryContext();
-  // issue #198 — hand the importer worker the media storage so crawl
-  // screenshots persist (review side-by-sides + parity references).
-  startSiteImportWorker({ adapter, registry, screenshotStorage: getMediaStorage() });
+  setInProcessJobLauncher((kind) => inProcessJobLauncher({ adapter, registry }, kind));
 }
 
 // #817 — once per process: an upgrade the Owner ran from Cloud Shell never
@@ -637,12 +626,11 @@ const handleRequest: Handle = async ({ event, resolve }) => {
   // task failures (plugin manifest invalid, bootstrap token DB write)
   // land in Cloud Run stderr instead of disappearing into the void.
   bootstrapE2eOperatorAccess();
-  bootstrapSiteImport();
   bootstrapSupersedeUpdateRequests();
   bootstrapMcpBridge();
   bootstrapLiveFanOut();
   bootstrapRedirectSync();
-  bootstrapQualityAudits();
+  bootstrapReportingJobs();
   bootstrapDevSchedulerClock();
   // #1008 — wait for the shared plugin-host boot, then follow plugin
   // decisions made through any instance (throttled state check; reconciles

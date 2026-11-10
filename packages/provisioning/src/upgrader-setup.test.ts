@@ -88,6 +88,10 @@ describe("ensureUpgraderJob", () => {
         "iam service-accounts add-iam-policy-binding caelo-mcp@acme.iam.gserviceaccount.com → roles/iam.serviceAccountTokenCreator",
         "iam service-accounts add-iam-policy-binding caelo-production-audit@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-production-capture@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
+        // #1359 — the app-roll moves the quality-audit runner too.
+        "iam service-accounts add-iam-policy-binding caelo-production-audit-run@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
+        // #1360 — and the site-import crawler.
+        "iam service-accounts add-iam-policy-binding caelo-production-import@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → roles/storage.objectUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → projects/acme/roles/caeloUpgraderOpsList",
       ].sort(),

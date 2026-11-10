@@ -118,9 +118,6 @@ RUN set -e && \
       echo "Copied ${ENTRY} → ${DEST}"; \
     done
 
-# Now the source.
-COPY . .
-
 # Build-time `bun` shim. Caelo source no longer value-imports "bun"
 # (uses globalThis.Bun directly), but vendor code does — drizzle-orm's
 # bun-sql/driver.js does `import { SQL } from "bun"` and we can't edit
@@ -132,11 +129,36 @@ COPY . .
 #     accessed lazily by drizzle, no errors at module-load time.
 #   - At RUNTIME under Bun: globalThis.Bun is the real built-in, so
 #     drizzle's `new SQL(url)` calls Bun's real constructor.
+# Written before the source is copied: it is part of the dependency tree
+# staged below (#1559), and .dockerignore keeps every node_modules out of
+# the build context, so `COPY . .` never touches it.
 RUN mkdir -p /repo/node_modules/bun && \
     printf '{"name":"bun","version":"0.0.0-shim","type":"module","main":"index.js"}\n' \
       > /repo/node_modules/bun/package.json && \
     printf 'const G = globalThis;\nexport const SQL = G.Bun?.SQL;\nexport const Glob = G.Bun?.Glob;\nexport default G.Bun ?? {};\n' \
       > /repo/node_modules/bun/index.js
+
+# #1559 — the dependency trees the runtime stage copies, staged as
+# reproducible layers. A fresh install gives every file a new timestamp, so
+# the image's two node_modules layers (about 310 MB compressed) got new
+# digests on every release, although their content is the same unless
+# bun.lock changes. Here, before the source arrives (so this step re-runs
+# only when the manifests or bun.lock change), each tree is copied under a
+# staging root that holds its whole path from `/`, and every entry gets one
+# fixed timestamp, the parent directories included. The runtime stage copies
+# each staging root with `COPY --link`, so the layer is exactly this tree:
+# the same bytes, and the same digest, in every build of the same
+# dependencies. Any fixed time works; 2000-01-01 stays clear of the 1980
+# floor of ZIP-style timestamps. Nothing later in the build writes into
+# these trees except SvelteKit's generated `$app` types (copied on their
+# own in the runtime stage) and Vite's empty `.vite-temp` directory.
+RUN mkdir -p /deps/root/app /deps/admin/app/apps/admin && \
+    cp -a /repo/node_modules /deps/root/app/node_modules && \
+    cp -a /repo/apps/admin/node_modules /deps/admin/app/apps/admin/node_modules && \
+    find /deps -exec touch -h -d @946684800 {} +
+
+# Now the source.
+COPY . .
 
 # Build @caelo-cms/shared first. Vite (running under Node) resolves
 # `@caelo-cms/shared` via the symlinked workspace's package.json
@@ -217,18 +239,28 @@ WORKDIR /app
 COPY --from=builder /repo/package.json ./package.json
 COPY --from=builder /repo/bun.lock ./bun.lock
 
-# Repo-root node_modules (.bun/ cache + hoisted shared packages).
-COPY --from=builder /repo/node_modules ./node_modules
+# Repo-root node_modules (hoisted shared packages): the staged tree, which
+# brings /app/node_modules with it (#1559, see the builder). `--link` makes
+# the layer exactly that tree, independent of the layers before it, so a
+# release whose dependencies did not change reuses its digest. Copying
+# /repo/node_modules here instead would put a dated /app entry in the layer.
+COPY --link --from=builder /deps/root/ /
 
 # Workspace source the runtime needs (the bundled SSR output references
 # packages/* + plugin manifests at runtime).
 COPY --from=builder /repo/packages ./packages
 
 # The pre-built SvelteKit admin output + its package.json + nested
-# node_modules (admin-specific deps like clsx, bits-ui, etc.).
+# node_modules (admin-specific deps like clsx, bits-ui, etc.; staged and
+# linked like the root tree, #1559).
 COPY --from=builder /repo/apps/admin/package.json ./apps/admin/package.json
 COPY --from=builder /repo/apps/admin/build ./apps/admin/build
-COPY --from=builder /repo/apps/admin/node_modules ./apps/admin/node_modules
+COPY --link --from=builder /deps/admin/ /
+# SvelteKit writes the admin's generated route types into node_modules/$app
+# during the build. They follow the routes, not the dependencies, so they
+# get a small layer of their own (`\$` keeps `$app` from being read as a
+# build variable).
+COPY --from=builder /repo/apps/admin/node_modules/\$app ./apps/admin/node_modules/\$app
 
 # v0.2.78 — bundle the static-generator source so deploy.trigger's
 # subprocess (`bun run apps/static-generator/src/cli.ts`) finds it

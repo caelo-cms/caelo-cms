@@ -8,10 +8,13 @@
  *                                 classification plus the install-wide
  *                                 rules) whether Lighthouse runs, and on
  *                                 which pages.
- *   quality_audits.claim_next     the in-admin worker takes the oldest queued
- *                                 run (multi-instance safe), superseding runs
- *                                 whose build staging no longer serves.
- *   quality_audits.record_result  the worker reports the outcome
+ *   quality_audits.claim          the audit's job (#1359) takes the run it was
+ *                                 started for — or resumes it, when a job
+ *                                 that died is replaced — superseding it
+ *                                 when staging no longer serves its build.
+ *   quality_audits.sweep_unstarted the scheduler tick's backstop: audits that
+ *                                 should run and have no job.
+ *   quality_audits.record_result  the job reports the outcome
  *                                 (record-result.ts).
  *
  * #727 — every Stage is audited: the cheap findings checks (quality/checks)
@@ -49,7 +52,10 @@ export const QUALITY_AUDIT_PAGE_CAP = 5;
  *  and the median of `MEDIAN_RUNS` scores it (#1370, run-selection.ts). */
 const PERFORMANCE_RUNS = 3;
 
-/** A `running` audit older than this belongs to a process that died. */
+/**
+ * A `running` audit without a job, older than this, was claimed by the
+ * in-process worker of a release before #1359, which has stopped.
+ */
 const STALE_RUNNING_MINUTES = 30;
 
 /** Statuses after which a Stage counts as cleanly audited. */
@@ -431,7 +437,7 @@ export const enqueueAuditOp = defineOperation({
 
 /**
  * A page the audit loads. #802 — the designated 404 page is built as
- * `/404.html`, never at its own path, so the worker must load it there
+ * `/404.html`, never at its own path, so the audit must load it there
  * (`isNotFoundPage`); its `currentPath` stays the page's identity in reports.
  */
 const claimedAuditPage = z.object({
@@ -461,114 +467,187 @@ const claimedRunSchema = z.object({
   checkPages: z.array(claimedAuditPage),
 });
 
-export const claimNextAuditOp = defineOperation({
-  name: "quality_audits.claim_next",
-  readScope: "request",
-  // Why human-only: worker-internal — only the in-admin audit worker
-  // (system) takes queued runs; humans and the AI retry by re-staging.
+/**
+ * Supersede the queued or running audits whose build staging no longer
+ * serves: a newer staging build of the same target succeeded. Staging
+ * serves only its newest build, so such an audit can no longer measure
+ * what it was queued for; the newer Stage's audit already folded its
+ * pages in (`previous_not_clean`). `only` narrows it to one audit.
+ */
+async function supersedeOutdated(tx: Tx, only: string | null): Promise<string[]> {
+  const rows = (await tx.execute(sql`
+    UPDATE quality_audit_runs q
+       SET status = 'superseded', finished_at = now()
+     WHERE q.status IN ('queued', 'running')
+       ${only === null ? sql`` : sql`AND q.id = ${only}::uuid`}
+       AND EXISTS (
+         SELECT 1 FROM deploy_runs newer
+         JOIN deploy_targets t ON t.id = newer.target_id
+         JOIN deploy_runs mine ON mine.id = q.deploy_run_id
+         WHERE t.env = 'staging' AND newer.status = 'succeeded'
+           AND newer.target_id = mine.target_id AND newer.started_at > mine.started_at
+       )
+    RETURNING q.id::text AS id
+  `)) as unknown as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
+/** What one claimed audit reads: its pages and where its build lies. */
+async function loadClaimedRun(
+  tx: Tx,
+  row: { id: string; deploy_run_id: string; performance_runs: number; target_page_ids: string[] },
+): Promise<Result<z.infer<typeof claimedRunSchema>, QueryError>> {
+  const runInfo = (await tx.execute(sql`
+    SELECT t.page_url_style, r.publish_summary->>'stagingLocation' AS staging_location,
+           (SELECT 'https://' || s.staging_host FROM staging_access s
+             WHERE s.id = 1 AND s.staging_host IS NOT NULL) AS staging_origin,
+           t.env, t.out_dir
+    FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+    WHERE r.id = ${row.deploy_run_id}::uuid
+  `)) as unknown as {
+    page_url_style: "directory" | "no-extension";
+    staging_location: string | null;
+    staging_origin: string | null;
+    env: string;
+    out_dir: string;
+  }[];
+  const info = runInfo[0];
+  if (!info) {
+    // Same transaction as the claim, and runs cascade with their deploy
+    // run — unreachable unless the schema changed under us.
+    return err({
+      kind: "HandlerError",
+      operation: "quality_audits.claim",
+      message: `deploy run ${row.deploy_run_id} of audit ${row.id} has no target`,
+      internal: true,
+    });
+  }
+  const pages = (await tx.execute(sql`
+    SELECT t.id::text AS page_id, p.current_path,
+           (sd.not_found_page_id IS NOT NULL AND sd.not_found_page_id = p.id) AS is_not_found
+    FROM unnest(${uuidArray(row.target_page_ids)}) WITH ORDINALITY AS t(id, ord)
+    JOIN pages p ON p.id = t.id
+    LEFT JOIN site_defaults sd ON sd.id = 1
+    WHERE p.status = 'published' AND p.deleted_at IS NULL
+    ORDER BY t.ord
+  `)) as unknown as AuditPageRow[];
+  // The staged build holds exactly the published pages of main
+  // (deploy/draft-pages.ts); a page published or deleted since the build
+  // shows up as a page staging does not serve / a dropped result.
+  const checkPages = (await tx.execute(sql`
+    SELECT p.id::text AS page_id, p.current_path,
+           (sd.not_found_page_id IS NOT NULL AND sd.not_found_page_id = p.id) AS is_not_found
+    FROM pages p
+    LEFT JOIN site_defaults sd ON sd.id = 1
+    WHERE p.status = 'published' AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
+    ORDER BY (p.current_path = '/') DESC, p.current_path
+  `)) as unknown as AuditPageRow[];
+  return ok({
+    auditRunId: row.id,
+    deployRunId: row.deploy_run_id,
+    performanceRuns: row.performance_runs,
+    pageUrlStyle: info.page_url_style,
+    stagingLocation: info.staging_location,
+    stagingOrigin: info.staging_origin,
+    env: info.env,
+    outDir: info.out_dir,
+    pages: pages.map(toClaimedAuditPage),
+    checkPages: checkPages.map(toClaimedAuditPage),
+  });
+}
+
+export const claimAuditOp = defineOperation({
+  name: "quality_audits.claim",
+  // Why site-wide: a claimed audit carries every published page of the
+  // staged build, which its findings checks read.
+  readScope: "site",
+  // Why human-only: job-internal — the quality audit's job claims the run
+  // it was started for (#1359, quality/audit-job-kind.ts); humans and the
+  // AI retry with quality_audits.retry or by re-staging.
   actorScope: ["system"],
   database: "cms_admin",
-  input: z.object({}).strict(),
-  output: z.object({ run: claimedRunSchema.nullable(), superseded: z.number().int() }),
-  handler: async (_ctx, _input, tx) => {
-    await tx.execute(sql`
-      UPDATE quality_audit_runs
-         SET status = 'errored', finished_at = now(), error_code = 'interrupted',
-             error_message = ${`the audit was still running after ${STALE_RUNNING_MINUTES} minutes — the admin process that ran it stopped. Re-stage to audit again.`}
-       WHERE status = 'running' AND started_at < now() - make_interval(mins => ${STALE_RUNNING_MINUTES})
-    `);
-    // Staging serves only its newest build: a queued audit of an older one
-    // can no longer measure what it was queued for. The newer Stage's
-    // enqueue already folded these pages in (previous_not_clean).
-    const superseded = (await tx.execute(sql`
-      UPDATE quality_audit_runs q
-         SET status = 'superseded', finished_at = now()
-       WHERE q.status = 'queued'
-         AND EXISTS (
-           SELECT 1 FROM deploy_runs newer
-           JOIN deploy_targets t ON t.id = newer.target_id
-           JOIN deploy_runs mine ON mine.id = q.deploy_run_id
-           WHERE t.env = 'staging' AND newer.status = 'succeeded'
-             AND newer.target_id = mine.target_id AND newer.started_at > mine.started_at
-         )
-      RETURNING q.id
-    `)) as unknown as { id: string }[];
-    const claimed = (await tx.execute(sql`
-      UPDATE quality_audit_runs
-         SET status = 'running', started_at = now()
-       WHERE id = (
-         SELECT id FROM quality_audit_runs WHERE status = 'queued'
-         ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
-       )
-      RETURNING id::text AS id, deploy_run_id::text AS deploy_run_id, performance_runs,
-                target_page_ids::text[] AS target_page_ids
+  input: z.object({ auditRunId: z.string().uuid() }).strict(),
+  output: z.object({
+    /**
+     * `claimed`: queued until now; `resumed`: already running — a job
+     * that died is being replaced, or a release before #1359 claimed it;
+     * `superseded`: a newer Stage replaced its build; `settled`: it ended
+     * already; `missing`: it was deleted.
+     */
+    state: z.enum(["claimed", "resumed", "superseded", "settled", "missing"]),
+    run: claimedRunSchema.nullable(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT id::text AS id, status, deploy_run_id::text AS deploy_run_id, performance_runs,
+             target_page_ids::text[] AS target_page_ids
+      FROM quality_audit_runs WHERE id = ${input.auditRunId}::uuid
+      FOR UPDATE
     `)) as unknown as {
       id: string;
+      status: string;
       deploy_run_id: string;
       performance_runs: number;
       target_page_ids: string[];
     }[];
-    const row = claimed[0];
-    if (!row) return ok({ run: null, superseded: superseded.length });
-    const runInfo = (await tx.execute(sql`
-      SELECT t.page_url_style, r.publish_summary->>'stagingLocation' AS staging_location,
-             (SELECT 'https://' || s.staging_host FROM staging_access s
-               WHERE s.id = 1 AND s.staging_host IS NOT NULL) AS staging_origin,
-             t.env, t.out_dir
-      FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
-      WHERE r.id = ${row.deploy_run_id}::uuid
-    `)) as unknown as {
-      page_url_style: "directory" | "no-extension";
-      staging_location: string | null;
-      staging_origin: string | null;
-      env: string;
-      out_dir: string;
-    }[];
-    const info = runInfo[0];
-    if (!info) {
-      // Same transaction as the claim, and runs cascade with their deploy
-      // run — unreachable unless the schema changed under us.
-      return err({
-        kind: "HandlerError",
-        operation: "quality_audits.claim_next",
-        message: `deploy run ${row.deploy_run_id} of audit ${row.id} has no target`,
-      });
+    const row = rows[0];
+    if (!row) return ok({ state: "missing" as const, run: null });
+    if (row.status !== "queued" && row.status !== "running") {
+      return ok({ state: "settled" as const, run: null });
     }
-    const pages = (await tx.execute(sql`
-      SELECT t.id::text AS page_id, p.current_path,
-             (sd.not_found_page_id IS NOT NULL AND sd.not_found_page_id = p.id) AS is_not_found
-      FROM unnest(${uuidArray(row.target_page_ids)}) WITH ORDINALITY AS t(id, ord)
-      JOIN pages p ON p.id = t.id
-      LEFT JOIN site_defaults sd ON sd.id = 1
-      WHERE p.status = 'published' AND p.deleted_at IS NULL
-      ORDER BY t.ord
-    `)) as unknown as AuditPageRow[];
-    // The staged build holds exactly the published pages of main
-    // (deploy/draft-pages.ts); a page published or deleted since the build
-    // shows up as a page staging does not serve / a dropped result.
-    const checkPages = (await tx.execute(sql`
-      SELECT p.id::text AS page_id, p.current_path,
-             (sd.not_found_page_id IS NOT NULL AND sd.not_found_page_id = p.id) AS is_not_found
-      FROM pages p
-      LEFT JOIN site_defaults sd ON sd.id = 1
-      WHERE p.status = 'published' AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
-      ORDER BY (p.current_path = '/') DESC, p.current_path
-    `)) as unknown as AuditPageRow[];
+    if ((await supersedeOutdated(tx, row.id)).length > 0) {
+      return ok({ state: "superseded" as const, run: null });
+    }
+    if (row.status === "queued") {
+      await tx.execute(sql`
+        UPDATE quality_audit_runs SET status = 'running', started_at = now()
+         WHERE id = ${row.id}::uuid
+      `);
+    }
+    const run = await loadClaimedRun(tx, row);
+    if (!run.ok) return run;
     return ok({
-      run: {
-        auditRunId: row.id,
-        deployRunId: row.deploy_run_id,
-        performanceRuns: row.performance_runs,
-        pageUrlStyle: info.page_url_style,
-        stagingLocation: info.staging_location,
-        stagingOrigin: info.staging_origin,
-        env: info.env,
-        outDir: info.out_dir,
-        pages: pages.map(toClaimedAuditPage),
-        checkPages: checkPages.map(toClaimedAuditPage),
-      },
-      superseded: superseded.length,
+      state: row.status === "queued" ? ("claimed" as const) : ("resumed" as const),
+      run: run.value,
     });
+  },
+});
+
+export const sweepUnstartedAuditsOp = defineOperation({
+  name: "quality_audits.sweep_unstarted",
+  readScope: "request",
+  // Why human-only: the scheduler tick's backstop (#1359) — it finds the
+  // audits whose job was never started and starts them.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ limit: z.number().int().min(1).max(50) }).strict(),
+  output: z.object({
+    /** Audits that should run and have no job, oldest first. */
+    auditRunIds: z.array(z.string()),
+    /** How many outdated ones this sweep superseded instead. */
+    superseded: z.number().int(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const superseded = await supersedeOutdated(tx, null);
+    // A queued audit whose start was lost (the Stage request died right
+    // after recording it, the launch failed before any lease was taken),
+    // and a running one claimed by the in-process worker of a release
+    // before #1359 that stopped — given that worker's own 30 minutes, so an
+    // admin still on that release during the roll keeps its audit.
+    const rows = (await tx.execute(sql`
+      SELECT q.id::text AS id
+      FROM quality_audit_runs q
+      WHERE (q.status = 'queued'
+             OR (q.status = 'running'
+                 AND q.started_at < now() - make_interval(mins => ${STALE_RUNNING_MINUTES})))
+        AND NOT EXISTS (
+          SELECT 1 FROM reporting_jobs j
+          WHERE j.kind = 'quality_audit' AND j.subject_id = q.id
+        )
+      ORDER BY q.created_at
+      LIMIT ${input.limit}
+    `)) as unknown as { id: string }[];
+    return ok({ auditRunIds: rows.map((r) => r.id), superseded: superseded.length });
   },
 });
 

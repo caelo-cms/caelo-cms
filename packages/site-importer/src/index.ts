@@ -56,12 +56,14 @@ export {
   stripTrailingSlashes,
 } from "./crawl-scope.js";
 export {
+  CRAWL_SKIP,
   type CrawlCheckpoint,
   type CrawledPage,
   type CrawlFetchResult,
   type CrawlOptions,
   type CrawlResult,
   crawlSite,
+  isCrawlSkipError,
   type ListModeResolution,
   resolveListModeUrls,
 } from "./crawler.js";

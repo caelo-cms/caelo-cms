@@ -41,6 +41,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [dev/capture-job.md](./dev/capture-job.md) — server-side screenshots and page renders outside the admin: the GCP capture job, the signed hand-over of a branch preview, the one-at-a-time in-process browser on self-hosted installs (#1217).
 - [dev/connection-budget.md](./dev/connection-budget.md) — how every pool's size derives from the server's `max_connections`: the named reserves (gateway, generator, jobs, the #1267 LISTEN connection), the per-adapter numbers, why pools are not just raised (#1254), and the MCP back-pressure when they are full anyway (#1375).
 - [dev/scheduler-tick.md](./dev/scheduler-tick.md) — the admin's periodic work on one scheduler tick: the due-table, core tasks and plugin workers, who calls the tick on each provider, adding a task (#1140).
+- [dev/reporting-jobs.md](./dev/reporting-jobs.md) — long work in a container job that reports back by request: the attempt token and lease, the report endpoint behind IAP, the tick's backstop, the in-process runner of self-hosted installs, the threat model; the quality audit's runner (#1359).
 - [dev/live-refresh.md](./dev/live-refresh.md) — how the editor stays current without timer polling: live topics over the chat stream and `/api/live-events`, the client hub, adding a live surface (#1215).
 - [dev/ai-tool-texts.md](./dev/ai-tool-texts.md) — what stays in an AI tool description and what lives only in the error; the AI-facing error shape (`errors[]` with absolute paths, `failureKind`, no resend wording, no Postgres internals) (#1277); kept failed calls fixed with `retry_tool_call` (#1275).
 - [internal/bug-intake.md](./internal/bug-intake.md) — how to operate a bug intake (setup, signed image, configuration) that files one GitHub issue per defect.
@@ -69,7 +70,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 ## Releases and operations
 
 - [dev/staging-gateway-provisioning.md](./dev/staging-gateway-provisioning.md) — the staging gateway per provider (#1330, #1331): service, account and rights, staging storage, the second Firebase Hosting site / the load-balancer host rule / Caddy, who creates what, DNS.
-- [dev/service-images.md](./dev/service-images.md) — minimal service images (the gateway, #1327): a Bun bundle on a digest-pinned distroless base, non-root, no shell, allowlisted content, bundle SBOM and licences, the Trivy gate and boot smoke, and how to add one.
+- [dev/service-images.md](./dev/service-images.md) — minimal service images (the gateway, #1327): a Bun bundle on a digest-pinned distroless base, non-root, no shell, allowlisted content, bundle SBOM and licences, the Trivy gate and boot smoke, and how to add one; reproducible dependency layers for the admin and ops images (#1559).
 - [dev/release-manifest.md](./dev/release-manifest.md) — the signed release manifest and the `caelo-ops` image.
 - [dev/upgrader-smoke.md](./dev/upgrader-smoke.md) — the real-GCP upgrader smoke test (release gate + post-install verify via Settings → Updates) and its one-time setup.
 - [dev/converge-job-self-grant.md](./dev/converge-job-self-grant.md) — the converge job grants its own account the project roles its signed release names (`INSTALL_JOB_ROLES`): the allowlist, the stages, the timeline, and what an install on v0.11.10 sees.

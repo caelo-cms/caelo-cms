@@ -1,30 +1,42 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #247 (WS1) — captureImportGroundTruth is the always-on design
- * ground-truth pass: source screenshot + computed-style token sampling
- * in one render session, and a LOUD `screenshot_missing` /
- * `design_tokens_missing` note wherever a page ends up without stored
- * ground truth (no silent skips — F9 regression class). Also keeps the
- * #198 persistence coverage. Real Postgres ops; screenshotter and storage are
- * injected fakes — Chromium has no place in a unit lane.
+ * issue #247 (WS1), #423, #1360 — the site import's design ground truth as
+ * the crawl's job reports it: the second pass renders every page still
+ * without a screenshot (one retry) and the admin stores the pixels; every
+ * page that ends up without stored ground truth carries a LOUD
+ * `screenshot_missing` / `design_tokens_missing` note (no silent skips, the
+ * F9 regression class). The batch report lands the crawl's own captures in
+ * one bulk write. Also keeps the #198 persistence coverage.
+ *
+ * Real Postgres ops behind the real report dispatch (an in-process reporter
+ * of a started `site_import` job); the admin's renderer and media storage
+ * are injected fakes — Chromium has no place in an integration lane.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
-import type {
-  CrawledPage,
-  ElementStyleSample,
-  Screenshot,
-  Screenshotter,
-} from "@caelo-cms/site-importer";
-import { registerAdminOps } from "../register.js";
+import type { ExecutionContext, MediaStorageAdapter } from "@caelo-cms/shared";
 import {
-  captureImportGroundTruth,
-  persistBatchCapture,
-  writeRunDesignTokenAggregate,
-} from "./ground-truth.js";
+  deriveDesignTokens,
+  type ElementStyleSample,
+  type Screenshot,
+  type Screenshotter,
+} from "@caelo-cms/site-importer";
+import { setExternalScreenshotterForTests } from "../ai/tools/_external-screenshotter.js";
+import { setMediaStorage } from "../media/storage.js";
+import { registerAdminOps } from "../register.js";
+import { inProcessReportTransport } from "../reporting-jobs/in-process.js";
+import {
+  createJobReporter,
+  type JobReporter,
+  ReportError,
+} from "../reporting-jobs/job-reporter.js";
+import { startReportingJob } from "../reporting-jobs/launcher.js";
+import type { JobOrder } from "../reporting-jobs/protocol.js";
+import { reportedGroundTruthSink, reportedScreenshotter } from "./crawl-job.js";
+import { captureMissingGroundTruth, writeRunDesignTokenAggregate } from "./ground-truth.js";
+import { screenshotKey } from "./import-job-kind.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -32,6 +44,7 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
+const ADMIN = () => ({ adapter, registry });
 
 const SYSTEM: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -39,13 +52,53 @@ const SYSTEM: ExecutionContext = {
   requestId: "issue247-ground-truth",
 };
 
+/** The admin's media storage, in memory; `failing` makes every put throw. */
+function memoryMedia(failing = false): MediaStorageAdapter & { objects: Map<string, Uint8Array> } {
+  const objects = new Map<string, Uint8Array>();
+  const get = async (key: string) => {
+    const o = objects.get(key);
+    if (!o) throw new Error(`no object ${key}`);
+    return o;
+  };
+  return {
+    objects,
+    async put(key, body) {
+      if (failing) throw new Error("bucket offline");
+      objects.set(key, body);
+    },
+    get,
+    size: async (key) => (await get(key)).byteLength,
+    async openStream(key) {
+      const body = await get(key);
+      return { body: new Blob([body]).stream(), sizeBytes: body.byteLength };
+    },
+    async delete(key) {
+      objects.delete(key);
+    },
+    exists: async (key) => objects.has(key),
+    totalSizeBytes: async () => [...objects.values()].reduce((n, o) => n + o.byteLength, 0),
+  };
+}
+
+let media = memoryMedia();
+
 beforeAll(() => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
 });
 
+beforeEach(() => {
+  media = memoryMedia();
+  setMediaStorage(media);
+});
+
+afterEach(() => {
+  setExternalScreenshotterForTests(null);
+});
+
 afterAll(async () => {
+  setExternalScreenshotterForTests(null);
   await adapter.close();
 });
 
@@ -77,16 +130,22 @@ const shot = (fill: number, styleSamples?: ElementStyleSample[]): Screenshot => 
   ...(styleSamples ? { styleSamples } : {}),
 });
 
-/** Source captures return samples when asked. */
-function fakeScreenshotter(): Screenshotter {
-  return {
-    async capture(_url, opts) {
-      return shot(1, opts?.sampleStyles ? SAMPLES : undefined);
+/** The admin's renderer: `capture` as given, nothing else. */
+function renderer(capture: Screenshotter["capture"]): void {
+  const s: Screenshotter = {
+    capture,
+    renderHtml: async () => {
+      throw new Error("the crawl renders with capture only");
+    },
+    query: async () => {
+      throw new Error("the crawl renders with capture only");
     },
     async dispose() {},
   };
+  setExternalScreenshotterForTests(async () => s);
 }
 
+/** A crawling run with these pages, as the crawl's batches leave it. */
 async function makeRun(sourceUrl: string, pageUrls: string[]): Promise<string> {
   const run = await execute(registry, adapter, SYSTEM, "imports.create_run", {
     sourceUrl,
@@ -95,6 +154,7 @@ async function makeRun(sourceUrl: string, pageUrls: string[]): Promise<string> {
   });
   if (!run.ok) throw new Error(JSON.stringify(run.error));
   const runId = (run.value as { runId: string }).runId;
+  if (pageUrls.length === 0) return runId;
   const wrote = await execute(registry, adapter, SYSTEM, "imports.write_extracted_pages", {
     runId,
     pages: pageUrls.map((u, i) => ({
@@ -108,6 +168,32 @@ async function makeRun(sourceUrl: string, pageUrls: string[]): Promise<string> {
   });
   if (!wrote.ok) throw new Error(JSON.stringify(wrote.error));
   return runId;
+}
+
+/** The reporter of a freshly started attempt of the run's crawl job. */
+async function reporterFor(runId: string): Promise<JobReporter> {
+  const orders: JobOrder[] = [];
+  const parked = {
+    label: "the test",
+    launch: async (order: JobOrder) => {
+      orders.push(order);
+      return "test-execution";
+    },
+  };
+  expect(
+    (await startReportingJob(ADMIN(), "site_import", runId, { launcher: parked })).outcome,
+  ).toBe("started");
+  const order = orders[0] as JobOrder;
+  return createJobReporter(order, inProcessReportTransport(ADMIN(), order));
+}
+
+/** The second pass, through the job's reports. */
+async function secondPass(runId: string) {
+  const reporter = await reporterFor(runId);
+  return captureMissingGroundTruth(
+    reportedGroundTruthSink(reporter),
+    reportedScreenshotter(reporter),
+  );
 }
 
 interface ReportShape {
@@ -124,48 +210,41 @@ async function report(runId: string): Promise<ReportShape> {
   return r.value as ReportShape;
 }
 
-describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
-  it("stores screenshot keys, per-page sampled tokens and the run-level aggregate", async () => {
-    const runId = await makeRun("https://issue247.example/", ["https://issue247.example/"]);
-    const stored = new Map<string, Uint8Array>();
-    const result = await captureImportGroundTruth({
-      runId,
-      adapter,
-      registry,
-      screenshotter: fakeScreenshotter(),
-      screenshotStorage: {
-        async put(key, body) {
-          stored.set(key, body);
-        },
-      },
-    });
-    expect(result.captured).toBe(1);
-    expect(result.failed).toBe(0);
+interface PageRow {
+  id: string;
+  sourceUrl: string;
+  screenshotObjectKey: string | null;
+  sampledDesignTokens: {
+    palette: { value: string; count: number }[];
+    roles: Record<string, Record<string, string>>;
+  } | null;
+}
 
-    const got = await execute(registry, adapter, SYSTEM, "imports.get", { runId });
-    if (!got.ok) throw new Error(JSON.stringify(got.error));
-    const page = (
-      got.value as {
-        pages: {
-          id: string;
-          screenshotObjectKey: string | null;
-          sampledDesignTokens: {
-            palette: { value: string; count: number }[];
-            roles: Record<string, Record<string, string>>;
-          } | null;
-        }[];
-      }
-    ).pages[0];
+async function pagesOf(runId: string): Promise<PageRow[]> {
+  const got = await execute(registry, adapter, SYSTEM, "imports.get", { runId });
+  if (!got.ok) throw new Error(JSON.stringify(got.error));
+  return (got.value as { pages: PageRow[] }).pages;
+}
+
+describe("the second pass, reported by the crawl's job (#247, #1360; keeps #198 persistence)", () => {
+  it("stores the screenshot under the run's prefix, the page's sampled tokens and, at the end, the run's aggregate", async () => {
+    const url = "https://issue247.example/";
+    const runId = await makeRun(url, [url]);
+    renderer(async (_url, opts) => shot(1, opts?.sampleStyles ? SAMPLES : undefined));
+    const result = await secondPass(runId);
+    expect(result).toEqual({ captured: 1, failed: 0 });
+
+    const [page] = await pagesOf(runId);
     if (!page) throw new Error("page missing");
-    expect(page.screenshotObjectKey).toBe(`import-screenshots/${runId}/${page.id}-source.png`);
-    // The source object actually landed, with the right bytes.
-    expect(stored.get(page.screenshotObjectKey ?? "")?.[0]).toBe(1);
-
-    // issue #247 — computed-style ground truth landed on the page…
-    expect(page.sampledDesignTokens).not.toBeNull();
+    expect(page.screenshotObjectKey).toBe(screenshotKey(runId, url));
+    expect(page.screenshotObjectKey?.startsWith(`import-screenshots/${runId}/src-`)).toBe(true);
+    // The pixels landed in the admin's storage, never in the job.
+    expect(media.objects.get(page.screenshotObjectKey ?? "")?.[0]).toBe(1);
     expect(page.sampledDesignTokens?.roles.body?.backgroundColor).toBe("#ffffff");
     expect(page.sampledDesignTokens?.roles.button?.backgroundColor).toBe("#dc2626");
-    // …and aggregated onto the run.
+
+    // The run's aggregate is the admin's, from row state (the finish report).
+    await writeRunDesignTokenAggregate({ runId, adapter, registry });
     const rep = await report(runId);
     expect(rep.pagesMissingScreenshot).toBe(0);
     const site = rep.siteDesignTokens as {
@@ -176,252 +255,173 @@ describe("captureImportGroundTruth (#247, keeps #198 persistence)", () => {
     expect(site.roles.body?.color).toBe("#111111");
   });
 
-  it("retries a transient capture failure once, without a note", async () => {
-    const runId = await makeRun("https://issue247-retry.example/", [
-      "https://issue247-retry.example/",
-    ]);
-    let sourceAttempts = 0;
-    const flaky: Screenshotter = {
-      async capture(_url, opts) {
-        sourceAttempts += 1;
-        if (sourceAttempts === 1) throw new Error("transient network blip");
-        return shot(1, opts?.sampleStyles ? SAMPLES : undefined);
-      },
-      async dispose() {},
-    };
-    const result = await captureImportGroundTruth({
-      runId,
-      adapter,
-      registry,
-      screenshotter: flaky,
-      screenshotStorage: { async put() {} },
+  it("retries a transient render failure once, without a note", async () => {
+    const url = "https://issue247-retry.example/";
+    const runId = await makeRun(url, [url]);
+    let attempts = 0;
+    renderer(async (_url, opts) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("transient network blip");
+      return shot(1, opts?.sampleStyles ? SAMPLES : undefined);
     });
-    expect(sourceAttempts).toBe(2);
-    expect(result.captured).toBe(1);
+    expect((await secondPass(runId)).captured).toBe(1);
+    expect(attempts).toBe(2);
     const rep = await report(runId);
     expect(rep.pagesMissingScreenshot).toBe(0);
     expect(rep.notes.find((n) => n.category === "screenshot_missing")).toBeUndefined();
   });
 
-  it("a persistently failing capture records a screenshot_missing note and leaves the page UNVERIFIED", async () => {
-    const runId = await makeRun("https://issue247-dead.example/", [
-      "https://issue247-dead.example/",
-    ]);
-    const dead: Screenshotter = {
-      async capture() {
-        throw new Error("net::ERR_NAME_NOT_RESOLVED");
-      },
-      async dispose() {},
-    };
-    const result = await captureImportGroundTruth({
-      runId,
-      adapter,
-      registry,
-      screenshotter: dead,
-      screenshotStorage: { async put() {} },
+  it("a persistently failing render records a screenshot_missing note and leaves the page UNVERIFIED", async () => {
+    const url = "https://issue247-dead.example/";
+    const runId = await makeRun(url, [url]);
+    renderer(async () => {
+      throw new Error("net::ERR_NAME_NOT_RESOLVED");
     });
-    expect(result.captured).toBe(0);
-    expect(result.failed).toBe(1);
-    const got = await execute(registry, adapter, SYSTEM, "imports.get", { runId });
-    if (!got.ok) throw new Error(JSON.stringify(got.error));
-    const page = (got.value as { pages: { screenshotObjectKey: string | null }[] }).pages[0];
-    // No screenshot — UNVERIFIED, not silently "done".
+    expect(await secondPass(runId)).toEqual({ captured: 0, failed: 1 });
+    const [page] = await pagesOf(runId);
     expect(page?.screenshotObjectKey).toBeNull();
     const rep = await report(runId);
     expect(rep.pagesMissingScreenshot).toBe(1);
     expect(rep.notes.find((n) => n.category === "screenshot_missing")?.suggested).toBe(1);
   });
 
-  it("an unavailable screenshotter notes EVERY page instead of silently skipping (F9)", async () => {
-    const runId = await makeRun("https://issue247-nopw.example/", [
-      "https://issue247-nopw.example/",
-      "https://issue247-nopw.example/about",
-    ]);
-    const result = await captureImportGroundTruth({
-      runId,
-      adapter,
-      registry,
-      screenshotter: null,
-      screenshotStorage: { async put() {} },
+  it("an install without a renderer notes EVERY page, asking the admin once (F9)", async () => {
+    const home = "https://issue247-nopw.example/";
+    const runId = await makeRun(home, [home, `${home}about`]);
+    let asked = 0;
+    setExternalScreenshotterForTests(async () => {
+      asked += 1;
+      return null;
     });
-    expect(result.captured).toBe(0);
-    expect(result.failed).toBe(2);
+    expect(await secondPass(runId)).toEqual({ captured: 0, failed: 2 });
+    expect(asked).toBe(1);
     const rep = await report(runId);
     expect(rep.pagesMissingScreenshot).toBe(2);
     expect(rep.notes.find((n) => n.category === "screenshot_missing")?.suggested).toBe(2);
   });
 
-  it("a failing storage sink degrades to NULL keys plus a loud note, never a failed diff", async () => {
-    const runId = await makeRun("https://issue247-dark.example/", [
-      "https://issue247-dark.example/",
-    ]);
-    const result = await captureImportGroundTruth({
-      runId,
-      adapter,
-      registry,
-      screenshotter: fakeScreenshotter(),
-      screenshotStorage: {
-        async put() {
-          throw new Error("bucket offline");
-        },
-      },
-    });
-    expect(result.captured).toBe(1);
-    const got = await execute(registry, adapter, SYSTEM, "imports.get", { runId });
-    if (!got.ok) throw new Error(JSON.stringify(got.error));
-    const page = (
-      got.value as {
-        pages: {
-          screenshotObjectKey: string | null;
-          sampledDesignTokens: unknown;
-        }[];
-      }
-    ).pages[0];
+  it("a failing store degrades to a NULL key plus a loud note; the tokens still land", async () => {
+    media = memoryMedia(true);
+    setMediaStorage(media);
+    const url = "https://issue247-dark.example/";
+    const runId = await makeRun(url, [url]);
+    renderer(async (_url, opts) => shot(1, opts?.sampleStyles ? SAMPLES : undefined));
+    expect((await secondPass(runId)).captured).toBe(1);
+    const [page] = await pagesOf(runId);
     expect(page?.screenshotObjectKey).toBeNull();
-    // Tokens still landed — they don't depend on the object store.
     expect(page?.sampledDesignTokens).not.toBeNull();
-    // issue #247 — the dropped pixels are LOUD, not a silent NULL key.
     const rep = await report(runId);
     expect(rep.pagesMissingScreenshot).toBe(1);
     expect(rep.notes.find((n) => n.category === "screenshot_missing")?.suggested).toBe(1);
   });
 });
 
-/** Minimal CrawledPage for the crawl-time persistence path (#423). */
-function crawled(url: string, slug: string, styleSamples?: ElementStyleSample[]): CrawledPage {
+/** One extracted page as the crawl's batch report carries it. */
+function row(url: string, slug: string) {
   return {
-    url,
+    sourceUrl: url,
     proposedSlug: slug,
-    title: slug,
-    modules: [],
-    commentsStripped: 0,
-    themeTokens: {},
+    proposedTitle: slug,
+    proposedModules: [],
+    proposedThemeTokens: {},
     signature: slug,
     pageCss: "",
-    ...(styleSamples ? { styleSamples } : {}),
+    commentsStripped: 0,
   };
 }
 
-async function pagesOf(runId: string): Promise<
-  Array<{
-    id: string;
-    sourceUrl: string;
-    screenshotObjectKey: string | null;
-    sampledDesignTokens: unknown;
-  }>
-> {
-  const got = await execute(registry, adapter, SYSTEM, "imports.get", { runId });
-  if (!got.ok) throw new Error(JSON.stringify(got.error));
-  return (
-    got.value as {
-      pages: Array<{
-        id: string;
-        sourceUrl: string;
-        screenshotObjectKey: string | null;
-        sampledDesignTokens: unknown;
-      }>;
-    }
-  ).pages;
-}
-
-describe("crawl-time capture persistence + scoped ground-truth pass (#423)", () => {
-  it("persistBatchCapture lands keys + tokens in one bulk write and notes sampleless pages", async () => {
+describe("the crawl's batch report and the scoped second pass (#423, #1360)", () => {
+  it("lands the batch's pages, keys and tokens in one report and notes its sampleless pages", async () => {
     const home = "https://issue423-batch.example/";
     const about = "https://issue423-batch.example/about";
-    const runId = await makeRun(home, [home, about]);
-    const keys = new Map([
-      [home, `import-screenshots/${runId}/src-aaaa.png`],
-      [about, `import-screenshots/${runId}/src-bbbb.png`],
-    ]);
-    await persistBatchCapture({
-      runId,
-      adapter,
-      registry,
-      // `about` rendered but returned zero samples — must be noted loudly,
-      // because the scoped after-pass skips keyed pages and would never
-      // see it.
-      pages: [crawled(home, "home", SAMPLES), crawled(about, "about", [])],
-      screenshotKeyByUrl: keys,
+    const runId = await makeRun(home, []);
+    const reporter = await reporterFor(runId);
+    const tokens = deriveDesignTokens(SAMPLES);
+    await reporter.call("batch", {
+      pages: [row(home, "home"), row(about, "about")],
+      captures: [
+        {
+          sourceUrl: home,
+          screenshotObjectKey: screenshotKey(runId, home),
+          sampledDesignTokens: tokens,
+        },
+        { sourceUrl: about, screenshotObjectKey: screenshotKey(runId, about) },
+      ],
+      // `about` rendered but gave no samples: the scoped second pass skips
+      // keyed pages and would never note it.
+      tokenlessCapturedUrls: [about],
     });
 
     const pages = await pagesOf(runId);
     const homePage = pages.find((p) => p.sourceUrl === home);
     const aboutPage = pages.find((p) => p.sourceUrl === about);
-    expect(homePage?.screenshotObjectKey).toBe(keys.get(home) ?? "");
+    expect(homePage?.screenshotObjectKey).toBe(screenshotKey(runId, home));
     expect(homePage?.sampledDesignTokens).not.toBeNull();
-    expect(aboutPage?.screenshotObjectKey).toBe(keys.get(about) ?? "");
+    expect(aboutPage?.screenshotObjectKey).toBe(screenshotKey(runId, about));
     expect(aboutPage?.sampledDesignTokens).toBeNull();
 
     const rep = await report(runId);
     expect(rep.captureStats).toEqual({ captured: 2, failed: 0, skipped: 0 });
-    expect(rep.pagesMissingScreenshot).toBe(0);
     expect(rep.notes.find((n) => n.category === "design_tokens_missing")?.suggested).toBe(1);
-
-    // The run-level aggregate comes from row state — one page had tokens.
     expect(rep.siteDesignTokens).toBeNull();
     await writeRunDesignTokenAggregate({ runId, adapter, registry });
-    const after = await report(runId);
-    expect((after.siteDesignTokens as { pageCount: number }).pageCount).toBe(1);
+    expect(((await report(runId)).siteDesignTokens as { pageCount: number }).pageCount).toBe(1);
   });
 
-  it("persistBatchCapture fails LOUDLY when a capture matches no import_pages row", async () => {
+  it("refuses LOUDLY a capture that matches no page of the batch, and a key outside the run", async () => {
     const home = "https://issue423-unmatched.example/";
-    const runId = await makeRun(home, [home]);
-    await expect(
-      persistBatchCapture({
-        runId,
-        adapter,
-        registry,
-        pages: [crawled("https://issue423-unmatched.example/ghost", "ghost", SAMPLES)],
-        screenshotKeyByUrl: new Map([
-          ["https://issue423-unmatched.example/ghost", "import-screenshots/x/src-dead.png"],
-        ]),
-      }),
-    ).rejects.toThrow("matched no import_pages row");
+    const runId = await makeRun(home, []);
+    const reporter = await reporterFor(runId);
+    const ghost = "https://issue423-unmatched.example/ghost";
+    const unmatched = reporter.call("batch", {
+      pages: [row(home, "home")],
+      captures: [{ sourceUrl: ghost, screenshotObjectKey: screenshotKey(runId, ghost) }],
+      tokenlessCapturedUrls: [],
+    });
+    await expect(unmatched).rejects.toBeInstanceOf(ReportError);
+    await expect(unmatched).rejects.toThrow("matched no import_pages row");
+
+    const otherRun = "00000000-0000-4000-8000-000000001360";
+    const foreign = reporter.call("batch", {
+      pages: [row(home, "home")],
+      captures: [{ sourceUrl: home, screenshotObjectKey: screenshotKey(otherRun, home) }],
+      tokenlessCapturedUrls: [],
+    });
+    await expect(foreign).rejects.toThrow("is not one of this run's");
   });
 
-  it("onlyPagesMissingScreenshot: skips crawl-captured pages, retries keyless ones, caller owns the aggregate", async () => {
+  it("the scoped pass renders only the keyless pages; the admin aggregates over all of them", async () => {
     const home = "https://issue423-scoped.example/";
     const about = "https://issue423-scoped.example/about";
     const runId = await makeRun(home, [home, about]);
-    // Crawl-time capture succeeded for the home page only.
-    await persistBatchCapture({
-      runId,
-      adapter,
-      registry,
-      pages: [crawled(home, "home", SAMPLES)],
-      screenshotKeyByUrl: new Map([[home, `import-screenshots/${runId}/src-home.png`]]),
+    const reporter = await reporterFor(runId);
+    const tokens = deriveDesignTokens(SAMPLES);
+    // The crawl's own render stored the home page's screenshot only.
+    await reporter.call("batch", {
+      pages: [row(home, "home")],
+      captures: [
+        {
+          sourceUrl: home,
+          screenshotObjectKey: screenshotKey(runId, home),
+          sampledDesignTokens: tokens,
+        },
+      ],
+      tokenlessCapturedUrls: [],
     });
-
-    const captureCalls: string[] = [];
-    const counting: Screenshotter = {
-      async capture(url, opts) {
-        captureCalls.push(url);
-        return shot(2, opts?.sampleStyles ? SAMPLES : undefined);
-      },
-      async dispose() {},
-    };
-    const result = await captureImportGroundTruth({
-      runId,
-      adapter,
-      registry,
-      screenshotter: counting,
-      onlyPagesMissingScreenshot: true,
-      screenshotStorage: { async put() {} },
+    const rendered: string[] = [];
+    renderer(async (url, opts) => {
+      rendered.push(url);
+      return shot(2, opts?.sampleStyles ? SAMPLES : undefined);
     });
-    // Only the keyless page was re-rendered.
-    expect(captureCalls).toEqual([about]);
-    expect(result.captured).toBe(1);
-    expect(result.failed).toBe(0);
-
-    const pages = await pagesOf(runId);
-    const aboutPage = pages.find((p) => p.sourceUrl === about);
-    expect(aboutPage?.screenshotObjectKey).toBe(
-      `import-screenshots/${runId}/${aboutPage?.id}-source.png`,
+    const result = await captureMissingGroundTruth(
+      reportedGroundTruthSink(reporter),
+      reportedScreenshotter(reporter),
     );
+    expect(rendered).toEqual([about]);
+    expect(result).toEqual({ captured: 1, failed: 0 });
+    const aboutPage = (await pagesOf(runId)).find((p) => p.sourceUrl === about);
+    expect(aboutPage?.screenshotObjectKey).toBe(screenshotKey(runId, about));
 
-    // The scoped pass must NOT write the aggregate (it saw only a subset);
-    // the caller aggregates from row state over BOTH pages.
     let rep = await report(runId);
     expect(rep.siteDesignTokens).toBeNull();
     await writeRunDesignTokenAggregate({ runId, adapter, registry });
@@ -430,59 +430,37 @@ describe("crawl-time capture persistence + scoped ground-truth pass (#423)", () 
     expect(rep.captureStats).toEqual({ captured: 2, failed: 0, skipped: 0 });
   });
 
-  it("onlyPagesMissingScreenshot with nothing missing performs zero captures", async () => {
+  it("with nothing missing, the second pass renders nothing", async () => {
     const home = "https://issue423-done.example/";
-    const runId = await makeRun(home, [home]);
-    await persistBatchCapture({
-      runId,
-      adapter,
-      registry,
-      pages: [crawled(home, "home", SAMPLES)],
-      screenshotKeyByUrl: new Map([[home, `import-screenshots/${runId}/src-home.png`]]),
+    const runId = await makeRun(home, []);
+    const reporter = await reporterFor(runId);
+    await reporter.call("batch", {
+      pages: [row(home, "home")],
+      captures: [{ sourceUrl: home, screenshotObjectKey: screenshotKey(runId, home) }],
+      tokenlessCapturedUrls: [home],
     });
     let calls = 0;
-    const tracking: Screenshotter = {
-      async capture() {
-        calls += 1;
-        throw new Error("should not be called");
-      },
-      async dispose() {},
-    };
-    const result = await captureImportGroundTruth({
-      runId,
-      adapter,
-      registry,
-      screenshotter: tracking,
-      onlyPagesMissingScreenshot: true,
-      screenshotStorage: { async put() {} },
+    renderer(async () => {
+      calls += 1;
+      throw new Error("should not be called");
     });
+    const result = await captureMissingGroundTruth(
+      reportedGroundTruthSink(reporter),
+      reportedScreenshotter(reporter),
+    );
     expect(calls).toBe(0);
     expect(result).toEqual({ captured: 0, failed: 0 });
   });
 
-  it("captureStats: keyless+unnoted counts as skipped (silent degradation signal), noted as failed", async () => {
+  it("captureStats: keyless and unnoted counts as skipped (the silent-degradation signal), noted as failed", async () => {
     const home = "https://issue423-stats.example/";
-    const about = "https://issue423-stats.example/about";
-    const runId = await makeRun(home, [home, about]);
-    // Nothing captured, nothing noted yet → all skipped (the loud signal).
+    const runId = await makeRun(home, [home, `${home}about`]);
     let rep = await report(runId);
     expect(rep.captureStats).toEqual({ captured: 0, failed: 0, skipped: 2 });
-
-    // The ground-truth pass fails persistently → loud notes → failed.
-    const dead: Screenshotter = {
-      async capture() {
-        throw new Error("net::ERR_NAME_NOT_RESOLVED");
-      },
-      async dispose() {},
-    };
-    await captureImportGroundTruth({
-      runId,
-      adapter,
-      registry,
-      screenshotter: dead,
-      onlyPagesMissingScreenshot: true,
-      screenshotStorage: { async put() {} },
+    renderer(async () => {
+      throw new Error("net::ERR_NAME_NOT_RESOLVED");
     });
+    await secondPass(runId);
     rep = await report(runId);
     expect(rep.captureStats).toEqual({ captured: 0, failed: 2, skipped: 0 });
   });

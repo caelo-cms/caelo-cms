@@ -1,42 +1,33 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #553 — the quality-audit worker. Runs inside the admin process
- * (CLAUDE.md §11.B Tier 5: background workers share the admin's compute),
- * bootstrapped from apps/admin/src/hooks.server.ts like the redeploy and GC
- * workers.
+ * Issue #553 / #1359 — audit one claimed run: resolve where the staged
+ * build can be read, run the registered checks (#727,
+ * quality/checks/registry.ts) — the cheap findings checks over every page,
+ * and Lighthouse when the Stage needs it — and shape the outcome for
+ * `quality_audits.record_result`. Every failure path ends in an outcome
+ * too: an audit never stays silently unrun.
  *
- * It polls for queued audit runs (`quality_audits.claim_next`, safe across
- * several admin instances), and the Stage flow kicks it right after
- * enqueueing so an audit starts without waiting for the next poll. For
- * each run it resolves the staged build's origin, runs the registered
- * checks (#727, quality/checks/registry.ts) — the cheap findings checks
- * over every page, and Lighthouse in the child process when the Stage
- * needs it — and reports through `quality_audits.record_result`. Every
- * failure path reports too: an audit never stays silently unrun.
+ * Since #1359 this runs in the quality audit's own job, not in the admin
+ * process between requests (quality/audit-job.ts; CLAUDE.md §11.B Tier 5):
+ * a Cloud Run job on Google Cloud, the admin's own process on self-hosted
+ * and development installs. It reads nothing from the database itself:
+ * the check sources come in as functions (the job asks the admin for
+ * them), and the outcome goes back as a value the job reports.
  *
- * One audit at a time per process. On cloud installs the Lighthouse runs
- * themselves leave the admin (#875, lighthouse-runner-select.ts): every run
- * gets its own container, in parallel, so no run shares a CPU with another
- * or with the editor's requests. Self-hosted runs them in the in-process
- * child, one after another.
+ * The Lighthouse runs themselves leave even the job on cloud installs
+ * (#875, lighthouse-runner-select.ts): every run gets its own container,
+ * in parallel, so no run shares a CPU with another. Self-hosted runs them
+ * in the in-process child, one after another.
  */
 
 import { existsSync } from "node:fs";
-import { auditFindingContributors, collectPluginAuditFindings } from "@caelo-cms/plugin-host";
-import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
 import { NOT_FOUND_PAGE_FILE } from "@caelo-cms/static-generator";
 import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { localBuildArchiveDir } from "../ops/deploy-common.js";
-import { linkSourcesFromOps, referenceSourcesFromOps } from "./checks/links-sources.js";
-import { type PluginAuditSource, withPluginAuditChecks } from "./checks/plugin-findings.js";
-import { type CheckRegistry, createCoreCheckRegistry } from "./checks/registry.js";
+import type { CheckRegistry, LighthouseRunner } from "./checks/registry.js";
 import { runChecksOnStagedBuild } from "./checks/run-staged.js";
-import { structureSourcesFromOps } from "./checks/structure-sources.js";
-import type { AuditJob } from "./lighthouse-protocol.js";
 import type { AuditJobResult } from "./lighthouse-runner.js";
-import { lighthouseRunnerFromEnv } from "./lighthouse-runner-select.js";
 import type { StagedBuildSource } from "./staged-build-source.js";
 import {
   localBuildSource,
@@ -45,15 +36,7 @@ import {
   stagingSlotSource,
 } from "./staged-origin.js";
 
-const WORKER_CTX: ExecutionContext = {
-  actorId: "00000000-0000-0000-0000-00000000ffff",
-  actorKind: "system",
-  requestId: "quality-audit-worker",
-};
-
-const DEFAULT_INTERVAL_MS = 15_000;
-
-/** A run as `quality_audits.claim_next` hands it out. */
+/** A run as `quality_audits.claim` hands it out. */
 export interface ClaimedAuditRun {
   readonly auditRunId: string;
   readonly deployRunId: string;
@@ -258,107 +241,66 @@ export function stagedUrlOfPage(
   return stagedPageUrl(baseUrl, page.currentPath, style);
 }
 
-interface WorkerDeps {
-  readonly adapter: DatabaseAdapter;
-  readonly registry: OperationRegistry;
-  /** The checks to run; core's (Lighthouse + core findings checks) when
-   *  omitted. The plugin `checks` composition point (#727) passes one with plugin checks added. */
-  readonly checks?: CheckRegistry;
-  /** Override the Lighthouse runner (tests). */
-  readonly runJob?: (job: AuditJob) => Promise<AuditJobResult>;
+/** What one audit needs besides the run: its checks and how it reaches staging. */
+export interface AuditRunDeps {
+  /** The checks to run: core's and the active plugins' (audit-job.ts builds them). */
+  readonly checks: CheckRegistry;
+  /** Override the Lighthouse runner (tests); the registry's otherwise. */
+  readonly runJob?: LighthouseRunner;
   /** Override the page fetch of the findings checks (tests). */
   readonly fetchPage?: typeof fetch;
   /** Override provider env (tests). */
   readonly env?: OriginEnv;
 }
 
-let coreChecks: CheckRegistry | null = null;
+/** What one audit ends with: `quality_audits.record_result`'s input without the run id. */
+export interface AuditReport {
+  /** The staging origin the report names (null when it could not be resolved). */
+  readonly baseUrl: string | null;
+  readonly outcome:
+    | {
+        readonly kind: "completed";
+        readonly pages: unknown[];
+        readonly pageErrors: unknown[];
+        readonly checks: unknown;
+      }
+    | { readonly kind: "failed"; readonly code: string; readonly message: string };
+}
+
+function failed(baseUrl: string | null, code: string, message: string): AuditReport {
+  return { baseUrl, outcome: { kind: "failed", code, message } };
+}
 
 /**
- * Plugin audit contributions through the plugin host broker (epic #1107).
- * The site's URLs come from the same read as the links check's, so a
- * URL is same-site in a plugin's page facts exactly when it is for core.
+ * Audit one claimed run end to end and return what to record. Throws only
+ * on a bug; every expected failure is a `failed` outcome.
  */
-function hostPluginAudit(deps: WorkerDeps): PluginAuditSource {
-  const links = linkSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX);
-  return {
-    contributors: auditFindingContributors,
-    findings: collectPluginAuditFindings,
-    siteUrls: () => links.siteUrls(),
-  };
-}
-
-/** Core's registry, built once per process (one adapter per process). */
-function defaultChecks(deps: WorkerDeps): CheckRegistry {
-  coreChecks ??= createCoreCheckRegistry({
-    lighthouse: lighthouseRunnerFromEnv(process.env),
-    structure: structureSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
-    links: linkSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
-    references: referenceSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
-  });
-  return coreChecks;
-}
-
-async function record(
-  deps: WorkerDeps,
-  auditRunId: string,
-  baseUrl: string | null,
-  outcome:
-    | { kind: "completed"; pages: unknown[]; pageErrors: unknown[]; checks: unknown }
-    | { kind: "failed"; code: string; message: string },
-): Promise<void> {
-  const r = await execute(deps.registry, deps.adapter, WORKER_CTX, "quality_audits.record_result", {
-    auditRunId,
-    baseUrl,
-    outcome,
-  });
-  if (!r.ok) {
-    // The run stays `running` and is closed as `interrupted` by the stale
-    // sweep; log loudly so the cause is in the server log.
-    console.error("[quality-audit-worker] record_result failed", { auditRunId, error: r.error });
-  } else if ((r.value as { status: string }).status === "discarded") {
-    console.log(
-      `[quality-audit-worker] audit ${auditRunId} was deleted while it ran; result dropped`,
-    );
-  }
-}
-
-/** Audit one claimed run end to end. Exported for tests. */
-export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun): Promise<void> {
+export async function auditClaimedRun(
+  run: ClaimedAuditRun,
+  deps: AuditRunDeps,
+): Promise<AuditReport> {
   const env = deps.env ?? {
     provider: process.env.CAELO_PROVIDER,
     stagingBaseUrl: process.env.CAELO_STAGING_BASE_URL,
   };
   if (run.pages.length === 0 && run.checkPages.length === 0) {
-    await record(deps, run.auditRunId, null, {
-      kind: "failed",
-      code: "no-pages",
-      message:
-        "none of the pages selected for this audit is published on staging any more — Stage again to audit the current pages",
-    });
-    return;
+    return failed(
+      null,
+      "no-pages",
+      "none of the pages selected for this audit is published on staging any more — Stage again to audit the current pages",
+    );
   }
-  // Plugin contributions are read per audit: activation changes them.
-  const checks = deps.checks ?? withPluginAuditChecks(defaultChecks(deps), hostPluginAudit(deps));
+  const { checks } = deps;
   const runLighthouse = deps.runJob ?? checks.lighthouse()?.run;
   if (run.pages.length > 0 && !runLighthouse) {
-    await record(deps, run.auditRunId, null, {
-      kind: "failed",
-      code: "lighthouse-unavailable",
-      message:
-        "this Stage needs a Lighthouse audit but no Lighthouse check is registered in this admin process — a Caelo bug; report it with bug_report",
-    });
-    return;
+    return failed(
+      null,
+      "lighthouse-unavailable",
+      "this Stage needs a Lighthouse audit but no Lighthouse check is registered for the audit — a Caelo bug; report it with bug_report",
+    );
   }
   const origin = await resolveStagingOrigin(run, env);
-  if (!origin.ok) {
-    await record(deps, run.auditRunId, null, {
-      kind: "failed",
-      code: origin.code,
-      message: origin.message,
-    });
-    return;
-  }
+  if (!origin.ok) return failed(null, origin.code, origin.message);
   const pageUrl = (page: ClaimedAuditPage) =>
     stagedUrlOfPage(origin.baseUrl, page, run.pageUrlStyle);
   let result: AuditJobResult | null = null;
@@ -395,118 +337,47 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
   const displayText = (text: string) =>
     origin.displayBaseUrl ? text.split(trimTrailingSlashes(origin.baseUrl)).join(shown) : text;
   if (result && !result.ok) {
-    await record(deps, run.auditRunId, shown, {
-      kind: "failed",
-      code: result.failure.code,
-      message: displayText(result.failure.message),
-    });
-    return;
+    return failed(shown, result.failure.code, displayText(result.failure.message));
   }
-  await record(deps, run.auditRunId, shown, {
-    kind: "completed",
-    pages: (result?.pages ?? []).map((p) => ({
-      pageId: p.pageId,
-      url: display(p.url),
-      ...(p.finalUrl ? { finalUrl: display(p.finalUrl) } : {}),
-      // #667 — flagged resource URLs move to the shown origin with the page
-      // URL, so findings compare and read consistently (a same-site asset on
-      // the preview channel must not look third-party next to the page).
-      measurement: {
-        ...p.measurement,
-        failingAudits: p.measurement.failingAudits.map((a) =>
-          a.elements
-            ? {
-                ...a,
-                elements: a.elements.map((el) => (el.url ? { ...el, url: display(el.url) } : el)),
-              }
-            : a,
-        ),
-      },
-      performanceRuns: [...p.performanceRuns],
-    })),
-    pageErrors: (result?.pageErrors ?? []).map((e) => ({
-      ...e,
-      url: display(e.url),
-      message: displayText(e.message),
-    })),
-    checks: {
-      ...checked,
-      pages: checked.pages.map((p) => ({ ...p, url: display(p.url) })),
-      findings: checked.findings.map((f) => ({ ...f, message: displayText(f.message) })),
-      errors: checked.errors.map((e) => ({
+  return {
+    baseUrl: shown,
+    outcome: {
+      kind: "completed",
+      pages: (result?.pages ?? []).map((p) => ({
+        pageId: p.pageId,
+        url: display(p.url),
+        ...(p.finalUrl ? { finalUrl: display(p.finalUrl) } : {}),
+        // #667 — flagged resource URLs move to the shown origin with the page
+        // URL, so findings compare and read consistently (a same-site asset on
+        // the preview channel must not look third-party next to the page).
+        measurement: {
+          ...p.measurement,
+          failingAudits: p.measurement.failingAudits.map((a) =>
+            a.elements
+              ? {
+                  ...a,
+                  elements: a.elements.map((el) => (el.url ? { ...el, url: display(el.url) } : el)),
+                }
+              : a,
+          ),
+        },
+        performanceRuns: [...p.performanceRuns],
+      })),
+      pageErrors: (result?.pageErrors ?? []).map((e) => ({
         ...e,
-        ...(e.url ? { url: display(e.url) } : {}),
+        url: display(e.url),
         message: displayText(e.message),
       })),
+      checks: {
+        ...checked,
+        pages: checked.pages.map((p) => ({ ...p, url: display(p.url) })),
+        findings: checked.findings.map((f) => ({ ...f, message: displayText(f.message) })),
+        errors: checked.errors.map((e) => ({
+          ...e,
+          ...(e.url ? { url: display(e.url) } : {}),
+          message: displayText(e.message),
+        })),
+      },
     },
-  });
-}
-
-/**
- * Claim and process queued runs until none is left. Returns how many runs
- * were processed. Exported for tests; the worker loop calls it.
- */
-export async function drainAuditQueue(deps: WorkerDeps): Promise<number> {
-  let processed = 0;
-  for (;;) {
-    const claimed = await execute(
-      deps.registry,
-      deps.adapter,
-      WORKER_CTX,
-      "quality_audits.claim_next",
-      {},
-    );
-    if (!claimed.ok) {
-      console.error("[quality-audit-worker] claim_next failed", claimed.error);
-      return processed;
-    }
-    const run = (claimed.value as { run: ClaimedAuditRun | null }).run;
-    if (!run) return processed;
-    try {
-      await processClaimedRun(deps, run);
-    } catch (e) {
-      await record(deps, run.auditRunId, null, {
-        kind: "failed",
-        code: "worker-crashed",
-        message: e instanceof Error ? e.message : String(e),
-      });
-    }
-    processed += 1;
-  }
-}
-
-let timer: ReturnType<typeof setInterval> | null = null;
-let draining: Promise<number> | null = null;
-let workerDeps: WorkerDeps | null = null;
-
-/** Run one drain unless one is in flight (never two audits at once). */
-function tick(): void {
-  if (!workerDeps || draining) return;
-  draining = drainAuditQueue(workerDeps)
-    .catch((e) => {
-      console.error("[quality-audit-worker] drain failed", e);
-      return 0;
-    })
-    .finally(() => {
-      draining = null;
-    });
-}
-
-/**
- * Start the worker. Idempotent — a second call is a no-op. Call once from
- * the admin's hooks.server.ts.
- */
-export function startQualityAuditWorker(deps: WorkerDeps & { readonly intervalMs?: number }): void {
-  if (timer) return;
-  workerDeps = deps;
-  // FIXME(issue #1359): the audit moves into a container job that reports back (#1140 category A).
-  timer = setInterval(tick, deps.intervalMs ?? DEFAULT_INTERVAL_MS);
-  timer.unref?.();
-  tick();
-}
-
-/** Wake the worker now (the Stage flow calls this after enqueueing). A
- *  no-op when the worker is not started in this process. */
-export function kickQualityAuditWorker(): void {
-  tick();
+  };
 }

@@ -51,9 +51,11 @@
 
 import { z } from "zod";
 import {
+  auditRunnerServiceAccountEmail,
   auditServiceAccountEmail,
   captureServiceAccountEmail,
   gatewayServiceAccountEmail,
+  importCrawlServiceAccountEmail,
   mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
@@ -249,6 +251,18 @@ export function upgraderAccessChecks(target: {
       // #1217 — the capture job follows the admin's image the same way.
       need: "run the capture job as its service account after moving it",
       resource: sa(captureServiceAccountEmail(projectId, env)),
+      permissions: ["iam.serviceAccounts.actAs"],
+    },
+    {
+      // #1359 — so does the quality-audit runner.
+      need: "run the quality-audit runner as its service account after moving it",
+      resource: sa(auditRunnerServiceAccountEmail(projectId, env)),
+      permissions: ["iam.serviceAccounts.actAs"],
+    },
+    {
+      // #1360 — and the site-import crawler.
+      need: "run the site-import crawler as its service account after moving it",
+      resource: sa(importCrawlServiceAccountEmail(projectId, env)),
       permissions: ["iam.serviceAccounts.actAs"],
     },
     {

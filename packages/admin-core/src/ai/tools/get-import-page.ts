@@ -25,6 +25,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { siteData } from "@caelo-cms/shared";
 import {
   type BoilerplateStripTarget,
   collapseDuplicateNavs,
@@ -149,7 +150,7 @@ function sourceMetaDescriptionLine(source: string | null): string {
   if (source.trim().length === 0) {
     return "Source meta description: (the source page has none) — write one from the page's content with autofill_page_seo_many before the Stage.";
   }
-  return `Source meta description: ${source} — carry it over (shortened to at most 160 characters if longer) with autofill_page_seo_many before the Stage.`;
+  return `Source meta description: ${siteData(source)} — carry it over (shortened to at most 160 characters if longer) with autofill_page_seo_many before the Stage.`;
 }
 
 export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
@@ -265,6 +266,8 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
       url: g.sourceUrl ?? `import:${g.importPageId}`,
       html: g.html,
       markdown,
+      // #1360 — crawled by the import's job: its reads stay marked.
+      crawled: true,
     });
     const { text, nextCursor } = sliceMarkdown(markdown, 0);
     // In content-only mode a fully-filtered token dump must stay LOUD —
@@ -278,10 +281,10 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
     const tokensDisplay = tokensEmptyAfterFilter
       ? `(none of this page's stored tokens are referenced by its content — ${droppedPresetTokens} unreferenced preset entries dropped, see Stripped section; fullPage: true returns the raw dump)`
       : tokens
-        ? JSON.stringify(tokens, null, 2).slice(0, 2000)
+        ? siteData(JSON.stringify(tokens, null, 2).slice(0, 2000))
         : "(none captured on this run)";
     const sections = [
-      `# Imported page — ${g.sourceUrl ?? g.importPageId}`,
+      `# Imported page — ${g.sourceUrl ? siteData(g.sourceUrl) : g.importPageId}`,
       // issue #422 — always emit the RESOLVED staging id (even when the
       // caller passed a built page id): it is the one id every follow-up
       // call takes (build_page.importPageId, check_page_content_inventory,
@@ -289,12 +292,12 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
       `Import page id: ${g.importPageId} (run ${g.runId}) — pass this as build_page's page.importPageId and to the verification/notes tools.`,
       `Page handle: ${pageRef} — reuse with read_page_more({ pageRef, cursor }) / query_page_html({ pageRef, ... }); no re-fetch.`,
       `Proposed slug: ${g.proposedSlug ?? "(none)"}`,
-      `Proposed title: ${g.proposedTitle ?? "(none)"}`,
+      `Proposed title: ${g.proposedTitle ? siteData(g.proposedTitle) : "(none)"}`,
       sourceMetaDescriptionLine(g.sourceMetaDescription),
       "",
       ...strippedSection,
       "## Page text (Markdown)",
-      text.length > 0 ? text : "(no readable text captured for this page)",
+      text.length > 0 ? siteData(text) : "(no readable text captured for this page)",
       nextCursor !== null
         ? `\n[truncated — ${markdown.length - text.length} more chars. Call read_page_more({ pageRef, cursor: ${nextCursor} }) for the rest.]`
         : "",
