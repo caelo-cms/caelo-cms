@@ -9,8 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import { SERVICE_CPU_IDLE } from "../stack-contract.js";
 import {
-  adminKeptWarmByTicks,
-  alwaysOnAdminInstanceUsd,
+  adminRequestHourUsd,
   type CostEstimateInputs,
   estimateGcpCost,
   schedulerTickMonthlyUsd,
@@ -74,21 +73,20 @@ describe("cost table: scheduler tick (#1140)", () => {
     expect(fast?.name).toContain("every 1 min");
   });
 
-  it("prices the admin kept up around the clock while its CPU is always allocated (#1361)", () => {
-    // The tick (at most every 15 minutes) beats Cloud Run's 15-minute idle
-    // shutdown, so a scale-to-zero admin never stops.
-    expect(SERVICE_CPU_IDLE.admin).toBe(false);
-    expect(adminKeptWarmByTicks(0)).toBe(true);
-    // 2,592,000 s x (1 vCPU x $0.000018 + 2 GiB x $0.000002).
-    expect(alwaysOnAdminInstanceUsd(2)).toBe(57);
+  it("prices an idle scale-to-zero admin at about nothing: CPU only during requests (#1361)", () => {
+    // Before #1361 the admin had always-on CPU, and the tick (at most every
+    // 15 minutes) beat Cloud Run's 15-minute idle shutdown: one instance was
+    // billed around the clock (~$57 a month at 2 GiB).
+    expect(SERVICE_CPU_IDLE.admin).toBe(true);
     const admin = estimateGcpCost(inputs).lines.find((l) => l.name.startsWith("Cloud Run admin"));
-    expect(admin?.monthlyUsd).toBe(57);
-    expect(admin?.notes).toContain("around the clock");
-    expect(admin?.notes).toContain("#1361");
+    expect(admin?.monthlyUsd).toBe(0);
+    expect(admin?.notes).toContain("~$0 idle");
+    // 3,600 s x (1 vCPU x $0.000024 + 2 GiB x $0.0000025).
+    expect(adminRequestHourUsd(2)).toBe(0.1);
+    expect(admin?.notes).toContain("~$0.10 per hour of open requests");
   });
 
   it("adds nothing on the admin with a min instance, which is up anyway", () => {
-    expect(adminKeptWarmByTicks(1)).toBe(false);
     const admin = estimateGcpCost({ ...inputs, adminMinInstances: 1 }).lines.find((l) =>
       l.name.startsWith("Cloud Run admin"),
     );

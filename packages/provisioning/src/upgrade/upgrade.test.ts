@@ -1299,7 +1299,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(bad.calls.some((c) => /^sql backups create/.test(c))).toBe(false);
   });
 
-  it("moves the gateway to request-based CPU in its image roll; the admin keeps its CPU", async () => {
+  it("moves every service to request-based CPU in its image roll, the admin included (#1361)", async () => {
     const events: string[] = [];
     const { deps, calls } = upgradeDeps(events);
     expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
@@ -1313,7 +1313,8 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(gateway).toContain("--cpu-throttling");
     expect(staging).toContain("--cpu-throttling");
     expect(proxy).toContain("--cpu-throttling");
-    expect(admin).not.toContain("cpu-throttling");
+    // In the same revision as the new image: no extra update, no contract step.
+    expect(admin).toContain("--cpu-throttling");
     expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(4);
   });
 
