@@ -8,7 +8,9 @@
  * served version's files by hash (populateFiles asks for no upload: every
  * hash is already in the site's storage) and copies its config with only the
  * redirects replaced — and the `/api/**` rewrite pointed at the current
- * gateway (firebase-gateway-rewrite.ts, #1328) — then releases it on the
+ * gateway (firebase-gateway-rewrite.ts, #1328) and the fixed headers
+ * (nosniff, SVG CSP, favicon type) set to the current ones
+ * (firebase-version-headers.ts) — then releases it on the
  * channel the version was served on — the live channel for production, the served preview channel for
  * staging (#650). Nothing is built and no page changes.
  *
@@ -17,10 +19,12 @@
  * cached per version: a burst of saves (a slug change on the draft adds a
  * redirect every time) lists a large site once.
  *
- * A plan the version already serves, with the rewrite already current,
- * creates no release. A stale rewrite alone is reason enough to release:
- * that is how a converge that moved the gateway (#1328) reaches the live
- * site's `/api/**` on the next sync. Rights: the admin's
+ * A plan the version already serves, with the rewrite and the fixed headers
+ * already current, creates no release. A stale rewrite or stale fixed
+ * headers alone are reason enough to release: that is how a converge that
+ * moved the gateway (#1328) reaches the live site's `/api/**`, and how a
+ * release that fixes a security header reaches the live site, on the next
+ * sync (the admin's boot runs one when either is stale). Rights: the admin's
  * run SA already holds `roles/firebasehosting.admin` (gcp-firebase stack) —
  * the same calls Stage and Publish live make.
  */
@@ -29,6 +33,11 @@ import type { RedirectTableRow } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { hasCurrentGatewayRewrite, withCurrentGatewayRewrite } from "./firebase-gateway-rewrite.js";
 import { firebaseRedirectsFromPlan, sameFirebaseRedirects } from "./firebase-redirects.js";
+import {
+  type FirebaseVersionConfig,
+  hasCurrentFixedHeaders,
+  withCurrentFixedHeaders,
+} from "./firebase-version-headers.js";
 import { planRedirectSync } from "./redirect-sync-plan.js";
 import type { RedirectSyncResult } from "./static-publisher.js";
 
@@ -38,9 +47,8 @@ export type FirebaseCall = <T>(
   init?: { method?: string; body?: string },
 ) => Promise<T>;
 
-interface VersionConfig {
+interface VersionConfig extends FirebaseVersionConfig {
   readonly redirects?: readonly unknown[];
-  readonly [key: string]: unknown;
 }
 
 /** Served file lists by version name (versions are immutable). */
@@ -127,13 +135,19 @@ export async function syncFirebaseRedirects(args: {
     shadowedCount: sync.shadowedCount,
     unservedTargets: sync.unservedTargets,
   };
-  if (sameFirebaseRedirects(config.redirects, redirects) && hasCurrentGatewayRewrite(config)) {
+  if (
+    sameFirebaseRedirects(config.redirects, redirects) &&
+    hasCurrentGatewayRewrite(config) &&
+    hasCurrentFixedHeaders(config)
+  ) {
     return { outcome: "unchanged", ...counts, location: servedVersion };
   }
 
   const created = await call<{ name: string }>(`sites/${site}/versions`, {
     method: "POST",
-    body: JSON.stringify({ config: withCurrentGatewayRewrite({ ...config, redirects }) }),
+    body: JSON.stringify({
+      config: withCurrentGatewayRewrite(withCurrentFixedHeaders({ ...config, redirects })),
+    }),
   });
   const newId = created.name.split("/").pop() ?? "";
   const populate = await call<{ uploadRequiredHashes?: string[] }>(

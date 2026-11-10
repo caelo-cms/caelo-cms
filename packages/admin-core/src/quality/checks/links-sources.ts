@@ -21,6 +21,8 @@ import { readSiteUrls, structureSourcesFromOps } from "./structure-sources.js";
 
 /** Rows per `redirects.list` page (the op's maximum). */
 const REDIRECT_PAGE = 1000;
+/** `pages.list`'s maximum `pageIds`. */
+const PAGES_PER_LIST = 1000;
 /** `links.check_references`' maximum `limit`. */
 const REPORTED_DRAFT_LINKS = 500;
 
@@ -72,11 +74,12 @@ export function linkSourcesFromOps(
     layouts: structure.layouts,
     async redirects() {
       const rows: RedirectRow[] = [];
+      let cursor: string | null = null;
       for (;;) {
         const page = (await run("redirects.list", {
           limit: REDIRECT_PAGE,
-          offset: rows.length,
-        })) as { redirects: RedirectRow[]; totalCount: number };
+          ...(cursor === null ? {} : { cursor }),
+        })) as { redirects: RedirectRow[]; nextCursor: string | null };
         rows.push(
           ...page.redirects.map((r) => ({
             fromPath: r.fromPath,
@@ -84,7 +87,8 @@ export function linkSourcesFromOps(
             statusCode: r.statusCode,
           })),
         );
-        if (page.redirects.length < REDIRECT_PAGE || rows.length >= page.totalCount) return rows;
+        if (page.nextCursor === null) return rows;
+        cursor = page.nextCursor;
       }
     },
     async reportedDraftLinks() {
@@ -105,6 +109,16 @@ export function linkSourcesFromOps(
           ? [{ targetPath: i.targetPath, pageIds: i.pageIds, origin }]
           : [];
       });
+    },
+    async neverLivePageIds(pageIds) {
+      const neverLive = new Set<string>();
+      for (let i = 0; i < pageIds.length; i += PAGES_PER_LIST) {
+        const r = (await run("pages.list", {
+          pageIds: pageIds.slice(i, i + PAGES_PER_LIST),
+        })) as { pages: { id: string; firstPublishedAt: string | null }[] };
+        for (const p of r.pages) if (p.firstPublishedAt === null) neverLive.add(p.id);
+      }
+      return neverLive;
     },
     siteUrls: () => readSiteUrls((op, input) => run(op, input)),
   };

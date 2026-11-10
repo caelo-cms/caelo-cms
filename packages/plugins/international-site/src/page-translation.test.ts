@@ -10,8 +10,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { ListTypeDef, PluginAdminQuery } from "@caelo-cms/plugin-sdk";
-import type { LocaleRow } from "./index.js";
+import { indexCheckedQuery, type ListTypeDef, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
+import plugin, { type LocaleRow } from "./index.js";
 import {
   type PreparedPageTranslation,
   pageSlotsOf,
@@ -244,7 +244,7 @@ describe("writePageTranslation", () => {
       calls,
       statuses,
       deps: {
-        q: {
+        q: indexCheckedQuery(plugin, "adminSchema", {
           list: async (_t: string, filter: { anyOf: { page_id: string[] } }) =>
             filter.anyOf.page_id.flatMap((page_id) => {
               const locale_code = opts.languages?.[page_id];
@@ -253,7 +253,7 @@ describe("writePageTranslation", () => {
           update: async (_t: string, _id: string, data: unknown) => {
             statuses.push(data);
           },
-        } as unknown as PluginAdminQuery,
+        }) as unknown as PluginAdminQuery,
         cms: {
           call: async <O>(op: string, input: unknown): Promise<O> => {
             calls.push([op, input]);

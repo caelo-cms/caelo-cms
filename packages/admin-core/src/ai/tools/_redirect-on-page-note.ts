@@ -8,6 +8,11 @@
  * and comes back when the page leaves the build. Which of the two should own
  * the URL is the writer's call, so the tool asks at once instead of leaving
  * it to the next Stage (`links/redirect-shadows-page`).
+ *
+ * #1517 — a page that was never live takes its URL over at the Publish live
+ * that first ships it, so for one the note says so and warns against
+ * deleting the rule early: the rule is live state, and deleting it now would
+ * leave the live URL answering 404 until that Publish live.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -48,21 +53,43 @@ export async function redirectOnPageNote(
 
 /** The note after a page write. */
 function describePagesOnRules(conflicts: readonly RedirectPageConflict[]): string {
-  return (
-    `A redirect rule sits on the URL of ${pagesOf(conflicts)}: ${rulesOf(conflicts)}. ` +
-    "The rule answers that URL until a build ships the page, so the page looks unreachable until then: a draft needs set_pages_status_many first, then a Stage for staging and Publish live for the live site. Once a build serves the page, the page wins and the rule does nothing; Stage reports the pair as an error. " +
-    `Next step: if the page stays at this URL, ${deleteCall(conflicts)}; if the rule should keep the URL, give the page another slug (update_pages_many).`
-  );
+  const fresh = conflicts.filter((c) => !c.pageLive);
+  const live = conflicts.filter((c) => c.pageLive);
+  return [
+    fresh.length > 0
+      ? `A redirect rule sits on the URL of ${pagesOf(fresh)}, which ${fresh.length === 1 ? "was" : "were"} never live: ${rulesOf(fresh)}. ${NEW_PAGE_TAKES_OVER} If the rule should keep the URL, give the page another slug (update_pages_many). Do not delete the rule before then: the live site would answer 404 at that URL until Publish live.`
+      : "",
+    live.length > 0
+      ? `A redirect rule sits on the URL of ${pagesOf(live)}: ${rulesOf(live)}. ` +
+        "The rule answers that URL until a build ships the page, so the page looks unreachable until then: a draft needs set_pages_status_many first, then a Stage for staging and Publish live for the live site. Once a build serves the page, the page wins and the rule does nothing; Stage reports the pair as an error. " +
+        `Next step: if the page stays at this URL, ${deleteCall(live)}; if the rule should keep the URL, give the page another slug (update_pages_many).`
+      : "",
+  ]
+    .filter((t) => t !== "")
+    .join("\n");
 }
 
 /** The note after a redirect write. */
 function describeRulesOnPages(conflicts: readonly RedirectPageConflict[]): string {
-  return (
-    `A redirect rule sits on the URL of ${pagesOf(conflicts)}: ${rulesOf(conflicts)}. ` +
-    "A page wins over a rule: once a build serves the page, the rule does nothing, and Stage reports the pair as an error. " +
-    `Next step: if the page stays, ${deleteCall(conflicts)}; if the URL should redirect, set the page to draft (set_pages_status_many) or move it (move_pages).`
-  );
+  const fresh = conflicts.filter((c) => !c.pageLive);
+  const live = conflicts.filter((c) => c.pageLive);
+  return [
+    fresh.length > 0
+      ? `A redirect rule sits on the URL of ${pagesOf(fresh)}, which ${fresh.length === 1 ? "was" : "were"} never live: ${rulesOf(fresh)}. ${NEW_PAGE_TAKES_OVER} If the URL should keep redirecting, set the page to draft (set_pages_status_many) or move it (move_pages).`
+      : "",
+    live.length > 0
+      ? `A redirect rule sits on the URL of ${pagesOf(live)}: ${rulesOf(live)}. ` +
+        "A page wins over a rule: once a build serves the page, the rule does nothing, and Stage reports the pair as an error. " +
+        `Next step: if the page stays, ${deleteCall(live)}; if the URL should redirect, set the page to draft (set_pages_status_many) or move it (move_pages).`
+      : "",
+  ]
+    .filter((t) => t !== "")
+    .join("\n");
 }
+
+/** #1517 — what happens to a rule on the URL of a page that was never live. */
+const NEW_PAGE_TAKES_OVER =
+  "The rule keeps answering that URL on the live site until the page is published and Publish live ships it; that Publish live deletes the rule, so the page takes its URL over with nothing to do.";
 
 function pagesOf(conflicts: readonly RedirectPageConflict[]): string {
   const shown = conflicts

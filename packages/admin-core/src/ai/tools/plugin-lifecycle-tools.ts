@@ -25,8 +25,8 @@ import { proposeRevokeCapabilityInput } from "../../ops/plugins/capability_propo
 import { awaitingApprovalReason } from "../../ops/plugins/health.js";
 import { proposeApproveReleaseInput } from "../../ops/plugins/release_approval.js";
 import { describeError, toolError } from "./_describe-error.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
-import { makeListReadTool } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 
@@ -48,6 +48,8 @@ export const listPluginGrantsTool = makeListReadTool<z.infer<typeof listGrantsIn
   description:
     "Capabilities the Owner granted to runtime-installed plugins: one row per grant, current version vs pending update, plugin status (`disabled` = holds grants, not running). Use before `propose_revoke_plugin_capability` or when asked what a plugin may do.",
   opName: "plugins.list_capability_grants",
+  // The op returns every row of a bounded domain: the tool pages in memory.
+  paging: { kind: "complete" },
   input: listGrantsInput,
   label: "grants",
   rows: (value) => (value as { grants: GrantRow[] }).grants,
@@ -98,6 +100,8 @@ export const listPluginInstallationsTool = makeListReadTool<Record<string, never
     description:
       "Runtime-installed plugin packages by version: artifact status (pending = awaiting Owner review at /settings/plugins/installations), origin (AI-authored | uploaded), plugin status. Use after `submit_plugin` to tell the operator whether a package or update still awaits review. Approving it + choosing grants is the Owner's decision, never yours.",
     opName: "plugins.list_installations",
+    // The op returns every row of a bounded domain: the tool pages in memory.
+    paging: { kind: "complete" },
     input: z.object({}).strict(),
     // The op rows carry every version's full source; keep them out of the transcript.
     includeValue: false,

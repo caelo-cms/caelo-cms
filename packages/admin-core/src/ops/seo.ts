@@ -591,7 +591,13 @@ export const pagesSeoListStaleOp = defineOperation({
   readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ limit: z.number().int().positive().max(200).default(50) }).strict(),
+  input: z
+    .object({
+      limit: z.number().int().positive().max(200).default(50),
+      /** #1538 — rows to skip, newest first, so a reader reaches every stale page. */
+      offset: z.number().int().min(0).default(0),
+    })
+    .strict(),
   output: z.object({
     pages: z.array(
       z.object({
@@ -621,8 +627,8 @@ export const pagesSeoListStaleOp = defineOperation({
       WHERE p.deleted_at IS NULL
         ${branchFilter}
         AND (s.optimized_at IS NULL OR s.meta_description = '')
-      ORDER BY p.created_at DESC
-      LIMIT ${input.limit}
+      ORDER BY p.created_at DESC, p.id DESC
+      LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as {
       page_id: string;
       slug: string;

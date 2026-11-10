@@ -154,6 +154,8 @@ export const listAuditsOp = defineOperation({
       /** Only runs an editor published over ("publish anyway"). */
       publishOverrideOnly: z.boolean().default(false),
       limit: z.number().int().min(1).max(200).default(20),
+      /** #1538 — runs to skip, newest first, so a reader reaches older audits. */
+      offset: z.number().int().min(0).default(0),
     })
     .strict(),
   output: z.object({ runs: z.array(runSummarySchema) }),
@@ -168,8 +170,8 @@ export const listAuditsOp = defineOperation({
       SELECT ${RUN_COLUMNS}
       FROM quality_audit_runs q
       WHERE TRUE${sql.join(filters, sql``)}
-      ORDER BY q.created_at DESC
-      LIMIT ${input.limit}
+      ORDER BY q.created_at DESC, q.id DESC
+      LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as RunDbRow[];
     return ok({ runs: rows.map(toRunSummary) });
   },
@@ -368,6 +370,8 @@ export const listAcceptancesOp = defineOperation({
       query: z.string().max(200).optional(),
       includeRevoked: z.boolean().default(false),
       limit: z.number().int().min(1).max(500).default(100),
+      /** #1538 — rows to skip, newest first, so a reader reaches every acceptance. */
+      offset: z.number().int().min(0).default(0),
     })
     .strict(),
   output: z.object({ acceptances: z.array(acceptanceSchema) }),
@@ -388,8 +392,8 @@ export const listAcceptancesOp = defineOperation({
       FROM quality_acceptances a
       LEFT JOIN pages p ON p.id = a.page_id
       WHERE (a.page_id IS NULL OR p.deleted_at IS NULL)${sql.join(filters, sql``)}
-      ORDER BY a.accepted_at DESC
-      LIMIT ${input.limit}
+      ORDER BY a.accepted_at DESC, a.id DESC
+      LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as {
       id: string;
       page_id: string | null;

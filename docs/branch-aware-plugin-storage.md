@@ -41,9 +41,11 @@ Plugin storage becomes a core Query API operation family, executed with the invo
 |---|---|
 | `plugin_storage.list` | Read rows of one declared table (equality filters, `since`, order, limit) |
 | `plugin_storage.insert` / `update` / `delete` | Single-row writes |
-| `plugin_public_storage.*` | The same four for the public zone |
+| `plugin_storage.update_many` | One patch on up to 1000 rows: every row or none, one snapshot header for all of them (#1391) |
+| `plugin_storage.compare_and_swap` | One row, only while expected values still match |
+| `plugin_public_storage.*` | The same for the public zone |
 
-- **Two zones, two families.** `plugin_storage.*` for the private zone (the plugin's `cms_admin` schema) and `plugin_public_storage.*` for the public zone (`cms_public.<slug>`). A batch operation was not needed by any plugin yet and was left out. `ctx.adminQuery` and `ctx.query` keep their SDK shape and become thin brokers over these operations; the host no longer issues SQL for plugins (§14.7).
+- **Two zones, two families.** `plugin_storage.*` for the private zone (the plugin's `cms_admin` schema) and `plugin_public_storage.*` for the public zone (`cms_public.<slug>`). The one batch write is `update_many` (#1391): `international-site`'s staleness rebuild flags thousands of variants, and one write with its own snapshot per row took minutes of database time on a small instance, because the journal and draft-head triggers on the snapshot tables run once per statement. `ctx.adminQuery` and `ctx.query` keep their SDK shape and become thin brokers over these operations; the host no longer issues SQL for plugins (§14.7).
 - **Scoping is enforced twice:** the operation rejects tables not declared by the calling plugin, and RLS on `caelo.plugin_id` stays the backstop.
 - **`ctx.cms.call` inherits the invocation's branch and task**, so core writes a plugin makes from a chat are branched, locked and snapshotted like the AI's own, and its core reads see branch state. Audit records the plugin and the operator it acted for.
 

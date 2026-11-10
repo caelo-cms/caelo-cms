@@ -279,7 +279,10 @@ export async function resolveCurrentPathsDryRun(
  * data change, so it stays routine (§11.A test) — unlike a
  * contribution-SET change, which fans out site-wide and goes through
  * propose_url_migration. When the path moves, the old URL gets the
- * same 301 treatment a slug change gets.
+ * same 301 treatment a slug change gets — for a page on the main line. A
+ * page only a chat's branch holds (a fresh variant) just stores its path
+ * (#1517, applyPathMoveEffects): it was never served, and a redirect rule
+ * on its new URL keeps answering until Publish live first ships it.
  */
 export const refreshCurrentPathOp = defineOperation({
   name: "pages.refresh_current_path",
@@ -377,7 +380,7 @@ export const refreshCurrentPathOp = defineOperation({
     }
     const moved = newPath !== oldPath;
     // The page and, when nested children derive their path from it, its
-    // descendants: each gets the full move treatment.
+    // descendants: each main-line page gets the full move treatment.
     await applyPathMoveEffects(ctx, tx, recomputed.moves, input.redirectFromOld);
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -423,8 +426,11 @@ export async function composeLivePathsBeforePluginMerge(
  *   post-merge state when the merge takes every plugin row the branch
  *   holds (the caller guarantees that).
  *
- * Pages that only now became live (created on the branch) get their
- * path but no move effects: their old path was never public.
+ * Pages that only now joined the main line (created on the branch) get
+ * their path but no move effects: their old path was never public, and a
+ * redirect rule on their new path stays — the live site does not serve them
+ * before Publish live, which takes the URL over (#1517,
+ * takeOverRedirectsOnFirstPublishedPages).
  *
  * @returns the pages whose live path moved.
  */

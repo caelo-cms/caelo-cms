@@ -14,7 +14,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError, toolError } from "./_describe-error.js";
-import { renderToonList, rowsWithinCharCap, type ToonColumn } from "./_make-read-tool.js";
+import { renderToonList, rowsWithinCharCap, type ToonColumn } from "./_list-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 

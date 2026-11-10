@@ -46,7 +46,7 @@ describe("mediaSecurityHeaders", () => {
 
 describe("SVG_PATH_PATTERN", () => {
   it("matches .svg paths in any case and nothing else", () => {
-    for (const p of ["/_assets/logo.0123456789abcdef.svg", "/_assets/LOGO.SVG", "icon.Svg"]) {
+    for (const p of ["/_assets/logo.0123456789abcdef.svg", "/_assets/LOGO.SVG", "/icon.Svg"]) {
       expect(new RegExp(SVG_PATH_PATTERN).test(p)).toBe(true);
     }
     for (const p of ["/_assets/logo.svgz", "/_assets/svg/logo.png", "/about/", "/x.svg/"]) {
@@ -56,5 +56,16 @@ describe("SVG_PATH_PATTERN", () => {
 
   it("uses no inline flags or lookaround, so RE2 (Firebase Hosting) accepts it", () => {
     expect(SVG_PATH_PATTERN).not.toMatch(/\(\?/);
+  });
+
+  it("is anchored at both ends: Firebase Hosting matches a header regex against the whole path", () => {
+    expect(SVG_PATH_PATTERN.startsWith("^/")).toBe(true);
+    expect(SVG_PATH_PATTERN.endsWith("$")).toBe(true);
+    // Anchored, a search and a whole-path match agree.
+    for (const p of ["/a.svg", "/x/a.SVG", "/a.svg/", "/a.svgz", "a.svg"]) {
+      expect(new RegExp(SVG_PATH_PATTERN).test(p)).toBe(
+        new RegExp(`^(?:${SVG_PATH_PATTERN})$`).test(p),
+      );
+    }
   });
 });

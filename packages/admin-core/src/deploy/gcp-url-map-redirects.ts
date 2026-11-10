@@ -180,7 +180,7 @@ export async function adcComputeApi(): Promise<GcpComputeApi & GcpBackendBucketA
       const detail = (await res.text()).slice(0, 2000);
       const hint =
         res.status === 403
-          ? " The admin's service account lacks the caeloUrlMapRedirects role; run `cms-provision upgrade` (it grants it), then publish again."
+          ? " The admin's service account lacks a permission of its caeloUrlMapRedirects role. The Owner installs the pending cloud-setup update from Settings → Updates (or runs the upgrade from a terminal), which grants it; then publish again."
           : "";
       throw new Error(
         `gcp-url-map-redirects: ${method} ${path} → HTTP ${res.status}: ${detail}.${hint}`,

@@ -19,7 +19,8 @@ import type { getSnapshotWithEntitiesOp } from "../../ops/snapshots/get.js";
 import type { moduleImpactOp } from "../../ops/snapshots/impact.js";
 import type { listSnapshotsOp } from "../../ops/snapshots/list.js";
 import { describeError, toolError } from "./_describe-error.js";
-import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
+import { makeReadTool } from "./_make-read-tool.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
 type OpValue<O extends { output: z.ZodType }> = z.infer<O["output"]>;
@@ -52,10 +53,7 @@ export const listSnapshotsTool = makeListReadTool<
     "USE FOR: the snapshotId a `propose_revert_*` needs; 'what changed here lately?'. Inspect one -> `get_snapshot`.",
   opName: "snapshots.list",
   input: snapshotFilters,
-  buildOpInput: (input) => {
-    const { filter: _f, limit, offset, full: _full, ...filters } = input;
-    return { ...filters, limit: Math.min(200, (offset ?? 0) + (limit ?? 50)) };
-  },
+  paging: { kind: "offset", maxLimit: 100 },
   rows: (value) => (value as OpValue<typeof listSnapshotsOp>).snapshots,
   label: "snapshots",
   columns: [

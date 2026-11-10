@@ -3,13 +3,13 @@
 /**
  * P8 — `find_redirects` (2026-07: makeListReadTool — TOON output). The
  * uniform `filter` param maps to the op's server-side substring query so
- * matching runs over the WHOLE table, not one fetched page.
+ * matching runs over the WHOLE table, not one fetched page. #1538 — the op
+ * pages by keyset cursor (ordered by fromPath) and counts every matching
+ * row, so `next cursor` reaches every rule of a table of any size.
  */
 
-import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
-import { makeListReadTool } from "./_make-read-tool.js";
-import type { ToolContext } from "./dispatch.js";
+import { makeListReadTool } from "./_list-read-tool.js";
 
 const findRedirectsInput = z
   .object({
@@ -28,18 +28,18 @@ export const findRedirectsTool = makeListReadTool<
     "Search redirects (TOON rows: fromPath, toPath, status). Pre-flight before `bulk_delete_redirects` so the user sees what goes.",
   opName: "redirects.list",
   input: findRedirectsInput,
-  listParamDescriptions: {
-    filter: "Substring of fromPath / toPath, searched across the whole table.",
-    limit: "Default 50, max 200.",
+  paging: {
+    kind: "cursor",
+    maxLimit: 500,
+    nextCursor: (value) => (value as { nextCursor: string | null }).nextCursor,
+    total: (value) => (value as { totalCount: number }).totalCount,
   },
-  buildOpInput: (
-    input: { statusCode?: number; filter?: string; limit?: number; full?: boolean },
-    _ctx: ExecutionContext,
-    _toolCtx: ToolContext,
-  ) => ({
+  listParamDescriptions: {
+    filter: "Substring of fromPath / toPath (whole table).",
+  },
+  buildOpInput: (input) => ({
     ...(input.filter !== undefined ? { query: input.filter } : {}),
     ...(input.statusCode !== undefined ? { statusCode: input.statusCode } : {}),
-    limit: input.full ? 200 : Math.min(input.limit ?? 50, 200),
   }),
   label: "redirects",
   rows: (value) =>

@@ -13,9 +13,10 @@
  * of the module's HTML — values that never differ are not fields.
  *
  * A warning on an already-successful write, never a gate (same contract
- * as the markup guard it rides with). The comparison set is module-scoped:
- * `content_instances.list_module_peers` reads only the instances of the
- * modules the write touched, so a write never scans the whole library
+ * as the markup guard it rides with). The comparison set is module- and
+ * value-scoped: `content_instances.list_module_peers` reads only the
+ * instances of the modules the write touched that hold a written value
+ * (an index lookup, #1269), so a write never scans a module or the library
  * (epic #1003 — 50k pages).
  */
 
@@ -51,11 +52,27 @@ function valueKey(value: unknown): string | null {
   return null;
 }
 
-/** Whether a write carries any value the guard could hint about. */
-export function hasRepeatCandidates(
+/**
+ * The written field values worth a hint, each once: what
+ * `content_instances.list_module_peers` matches instances against.
+ */
+export function repeatCandidates(
   written: readonly Readonly<Record<string, unknown>>[],
-): boolean {
-  return written.some((v) => Object.values(v).some((x) => valueKey(x) !== null));
+): { field: string; value: unknown }[] {
+  const seen = new Map<string, { field: string; value: unknown }>();
+  for (const values of written) {
+    for (const [field, value] of Object.entries(values)) {
+      const key = valueKey(value);
+      // Trimmed like the key: whitespace variants of one value are one candidate.
+      if (key !== null) {
+        seen.set(`${field}\u0000${key}`, {
+          field,
+          value: typeof value === "string" ? value.trim() : value,
+        });
+      }
+    }
+  }
+  return [...seen.values()];
 }
 
 /**

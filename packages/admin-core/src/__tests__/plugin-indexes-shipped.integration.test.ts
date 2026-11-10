@@ -11,6 +11,13 @@
  * index, so a Seq Scan on the plugin's table means no index serves the
  * read. The SQL is the one the storage operations run (`publicListSql` /
  * `privateListSql`), and each shape must also pass the host's read rule.
+ *
+ * The list is kept by hand, so it misses a read added later (#1536). The
+ * plugins' unit tests therefore run every fake store through the SDK's
+ * `indexCheckedQuery`, which applies the same rule to indexes derived
+ * from the manifest; the last block here pins that derivation to what the
+ * catalog holds after provisioning, so a unit test refuses exactly what
+ * the host refuses.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -30,7 +37,12 @@ import intlPlugin from "@caelo-cms/plugin-international-site";
 import newsletterPlugin from "@caelo-cms/plugin-newsletter";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
 import { adminSchemaFromSpec, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
-import type { PluginQueryFilter, PluginSchemaMap, PluginTableKinds } from "@caelo-cms/plugin-sdk";
+import {
+  declaredIndexLeads,
+  type PluginQueryFilter,
+  type PluginSchemaMap,
+  type PluginTableKinds,
+} from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, type TransactionRunner } from "@caelo-cms/query-api";
 import { SQL as BunSQL } from "bun";
 import { sql } from "drizzle-orm";
@@ -466,6 +478,29 @@ describe("#1292 — shipped plugins' reads use an index", () => {
       new Set(Object.keys(PLUGINS).filter((p) => p !== "control")),
     );
   });
+
+  for (const [plugin, def] of Object.entries(PLUGINS)) {
+    for (const zone of ["schema", "adminSchema"] as const) {
+      for (const [table, columns] of Object.entries(def[zone] ?? {})) {
+        it(`#1536 ${plugin} ${zone}.${table}: the manifest's index leads are the catalog's`, async () => {
+          const inTx = <T>(fn: (tx: TransactionRunner) => Promise<T>): Promise<T> =>
+            zone === "schema"
+              ? adapter.withPublicTransaction(SYSTEM, fn)
+              : adapter.withAdminTransaction(SYSTEM, fn);
+          const catalog = await inTx((tx) => indexLeadColumns(tx, schemaOf(plugin), table));
+          const declared = declaredIndexLeads({
+            zone,
+            columns,
+            indexes: def.indexes as Parameters<typeof declaredIndexLeads>[0]["indexes"],
+            table,
+          });
+          const sorted = (s: ReadonlySet<string>) => [...s].sort();
+          expect(sorted(declared.any)).toEqual(sorted(catalog.any));
+          expect(sorted(declared.ordered)).toEqual(sorted(catalog.ordered));
+        });
+      }
+    }
+  }
 
   it("control: without the declaration the host refuses the read and the plan scans the table", async () => {
     const found = await plan("control", "schema", "public_users", { email: "a@b.c" });

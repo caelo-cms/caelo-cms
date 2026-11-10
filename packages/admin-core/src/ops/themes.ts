@@ -1163,6 +1163,8 @@ export const listThemeHistoryOp = defineOperation({
     .object({
       themeSlug: slugSchema.optional(),
       limit: z.number().int().min(1).max(100).default(20),
+      /** #1538 — entries to skip, newest first, so a reader reaches older edits. */
+      offset: z.number().int().min(0).default(0),
     })
     .strict(),
   output: z.object({ entries: z.array(historyEntrySchema), themeId: z.string() }),
@@ -1196,8 +1198,8 @@ export const listThemeHistoryOp = defineOperation({
         JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
         JOIN actors a ON a.id = ss.actor_id
       WHERE ts.theme_id = ${target.id}::uuid
-      ORDER BY ss.created_at DESC
-      LIMIT ${input.limit}
+      ORDER BY ss.created_at DESC, ts.id DESC
+      LIMIT ${input.limit} OFFSET ${input.offset}
     `)) as unknown as Array<{
       snapshot_id: string;
       created_at: string | Date;

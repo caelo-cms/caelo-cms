@@ -262,6 +262,9 @@ const SOURCE_HASH_BACKFILL_PROGRESS_KEY = "source_hash_backfill_progress";
  */
 const SOURCE_HASH_BACKFILL_BATCH = 100;
 
+/** Variants one rebuild write flags at most (the storage's `updateMany` ceiling). */
+const REBUILD_WRITE_BATCH = 1000;
+
 /** The fingerprint a stored `source_hash` holds, without the backfill prefix. */
 function storedFingerprint(hash: string | null): string | null {
   if (hash === null) return null;
@@ -882,11 +885,14 @@ async function linkPageIntoGroup(
   // would keep its parent chain, and children under a root would stop
   // extending their parent's URL. Refuse before writing anything.
   if ((await siteHomePageId(cms)) === groupPageId) {
-    const listed = await cms.call<{
-      pages: { id: string; currentPath: string; parentPageId: string | null }[];
-    }>("pages.list", {});
-    const target = listed.pages.find((p) => p.id === pageId);
-    const children = listed.pages.filter((p) => p.parentPageId === pageId);
+    // #1269 — the page and the pages below it, not the site.
+    type Listed = { pages: { id: string; currentPath: string; parentPageId: string | null }[] };
+    const [own, below] = await Promise.all([
+      cms.call<Listed>("pages.list", { pageIds: [pageId] }),
+      cms.call<Listed>("pages.list", { underPageId: pageId }),
+    ]);
+    const target = own.pages[0];
+    const children = below.pages.filter((p) => p.parentPageId === pageId);
     if (target?.parentPageId) {
       throw new Error(
         `page ${target.currentPath} sits under another page, but the home page's ${localeCode} counterpart is that locale's root — move it to the top level first (move_pages with parent null), then link it`,
@@ -1524,14 +1530,23 @@ export default definePlugin<PluginContextTier1>({
       const q = adminQueryOf(ctx);
       const reg = await refreshLocaleCache(q, ctx);
       if (reg.rows.length < 2) return { hints: [] };
-      const variants = (await listAll(q, "page_variants")) as PageVariantRow[];
+      // #1269 — the hints need the home page's language versions only: read
+      // its variant group, not the variant table (a read per 1000 rows on
+      // every AI write, the scale gate's heaviest load).
+      const homePageId = await siteHomePageId(cmsOf(ctx));
+      const home = homePageId
+        ? (await loadVariantsByPage(q, [homePageId], ctx)).get(homePageId)
+        : undefined;
+      const homeGroup = home
+        ? ((await loadGroupMembers(q, [home.group_id], ctx)).get(home.group_id) ?? [home])
+        : [];
       return {
         hints: writeHints(
           {
             locales: reg.byCode,
             prefixDefaultLocale: reg.prefixDefaultLocale,
-            variants,
-            siteHomePageId: await siteHomePageId(cmsOf(ctx)),
+            homeGroup,
+            siteHomePageId: homePageId,
           },
           writes as PluginWrite[],
         ),
@@ -1831,10 +1846,15 @@ export default definePlugin<PluginContextTier1>({
       const homePageId = await siteHomePageId(cms);
       const isLocaleRoot = homePageId === sourcePageId;
 
-      const pages = await cms.call<{
+      // #1269 — the source page (its parent only for the error), never the whole site:
+      // the gate's agents call this per page, and each whole read cost the
+      // 50k-page site plus the branch overlay of every pending page.
+      type Listed = {
         pages: { id: string; slug: string; currentPath: string; parentPageId: string | null }[];
-      }>("pages.list", {});
-      const source = pages.pages.find((p) => p.id === sourcePageId);
+      };
+      const pageOf = async (id: string) =>
+        (await cms.call<Listed>("pages.list", { pageIds: [id] })).pages[0];
+      const source = await pageOf(sourcePageId);
       const sourceSlug = source?.slug;
       if (!source || !sourceSlug) {
         throw new Error(`source page ${sourcePageId} not found — check intl_status for page ids`);
@@ -1851,7 +1871,7 @@ export default definePlugin<PluginContextTier1>({
           ctx,
         );
         if (variantParentId === null) {
-          const parent = pages.pages.find((p) => p.id === source.parentPageId);
+          const parent = await pageOf(source.parentPageId);
           const parentPath = parent?.currentPath ?? source.parentPageId;
           // The suggested call must itself succeed: it carries a slug
           // unless the parent is the home (whose counterpart takes none).
@@ -1934,10 +1954,11 @@ export default definePlugin<PluginContextTier1>({
         });
         linked = { ...linked, path: path.path };
       }
-      // #1447 — a move onto the URL takes any redirect rule there over, but a
-      // copy that needed no move (no locale prefix) lands next to the rule.
+      // #1447 / #1517 — a rule on the new page's URL keeps answering on the
+      // live site until Publish live first ships the page and takes the URL
+      // over; the variant is a draft, so name the rule instead.
       const { conflicts } = await cms.call<{
-        conflicts: { fromPath: string; toPath: string }[];
+        conflicts: { fromPath: string; toPath: string; pageLive: boolean }[];
       }>("redirects.page_conflicts", { pageIds: [duplicated.pageId] });
       return {
         pageId: duplicated.pageId,
@@ -1946,7 +1967,7 @@ export default definePlugin<PluginContextTier1>({
         ...linked,
         ...(conflicts.length > 0
           ? {
-              redirectOnThisUrl: `The redirect ${conflicts.map((c) => `${c.fromPath} -> ${c.toPath}`).join(", ")} sits on this URL. It answers there until the page is published and a build ships it; then the page wins and Stage reports the pair as an error. If the page stays here, remove it: bulk_delete_redirects({ fromPaths: ${JSON.stringify(conflicts.map((c) => c.fromPath))} }).`,
+              redirectOnThisUrl: `The redirect ${conflicts.map((c) => `${c.fromPath} -> ${c.toPath}`).join(", ")} sits on this URL. It keeps answering on the live site until the variant is published and Publish live ships it; that Publish live deletes the rule, so the page takes its URL over with nothing to do. Do not delete the rule before then (the live URL would answer 404 until Publish live). If the rule should keep the URL, give the variant another slug (update_pages_many).`,
             }
           : {}),
         // #644 — the clone still carries the source language; name the
@@ -2426,15 +2447,24 @@ export default definePlugin<PluginContextTier1>({
       const rows = (await listAll(q, "page_variants", {
         translation_status: "up_to_date",
       })) as unknown as PageVariantRow[];
+      const stale: string[] = [];
       for (const row of rows) {
         const current = await sourceHashOf(row.group_id);
         // No source to compare with (none, or deleted): left as it is.
         if (current === null) continue;
         const same = (stored: string | null) => storedFingerprint(stored) === current.hash;
         if (await staysUpToDate(deps, row, current, same)) continue;
-        await q.update("page_variants", row.id, { translation_status: "needs_update" });
-        marked += 1;
+        stale.push(row.id);
       }
+      // #1391 — one write per thousand variants, not one per variant: on a
+      // large site every variant can be stale (translations from before
+      // their fingerprints), and a write each took minutes of database time.
+      for (let i = 0; i < stale.length; i += REBUILD_WRITE_BATCH) {
+        await q.updateMany("page_variants", stale.slice(i, i + REBUILD_WRITE_BATCH), {
+          translation_status: "needs_update",
+        });
+      }
+      marked += stale.length;
       marked += await refreshChromeStaleness(deps);
       const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
       await supersedeSourceHashBackfill(q);

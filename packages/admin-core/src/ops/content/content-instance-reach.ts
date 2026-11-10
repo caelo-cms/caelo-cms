@@ -190,6 +190,67 @@ export async function countPlacementsInView(
 }
 
 /**
+ * #1269 — {@link countPlacementsInView} capped at `cap` per instance, for a
+ * caller that only needs to know whether an instance has `cap` or more
+ * placements (the repeated-value hint: private or shared). Reads at most
+ * `cap` live placements per instance on pages without a pending layout on
+ * the branch, plus the placements of the branch's pending layouts that
+ * reference one: a shared instance on 50,000 pages costs `cap` rows, not
+ * its placements. Equal to min(countPlacementsInView, cap).
+ */
+export async function countPlacementsAtMost(
+  tx: Tx,
+  contentInstanceIds: readonly string[],
+  branchId: string | null,
+  cap: number,
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (contentInstanceIds.length === 0) return counts;
+  const notOverlaid = branchId
+    ? sql`AND NOT EXISTS (
+        SELECT 1 FROM draft_pending_entities d
+         WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'pageLayout'
+           AND d.entity_id = pm.page_id)`
+    : sql``;
+  const live = (await tx.execute(sql`
+    SELECT c.id::text AS content_instance_id, count(x.page_id)::int AS n
+      FROM unnest(${uuidArray(contentInstanceIds)}) AS c(id)
+      CROSS JOIN LATERAL (
+        SELECT pm.page_id FROM page_modules pm
+         WHERE pm.content_instance_id = c.id ${notOverlaid}
+         LIMIT ${cap}) x
+     GROUP BY c.id
+  `)) as unknown as { content_instance_id: string; n: number }[];
+  for (const r of live) counts.set(r.content_instance_id, r.n);
+  if (branchId !== null) {
+    const pendingPages = (await tx.execute(
+      pendingRefCandidatesSql({ kind: "pageLayout", branchId, ids: contentInstanceIds }),
+    )) as unknown as { entity_id: string }[];
+    if (pendingPages.length > 0) {
+      const wanted = new Set(contentInstanceIds);
+      const overlaid = (await tx.execute(
+        headOverlaySql({
+          kind: "pageLayout",
+          table: "page_layout_snapshots",
+          branchId,
+          ids: pendingPages.map((r) => r.entity_id),
+        }),
+      )) as unknown as { entity_id: string; state: unknown }[];
+      for (const page of overlaid) {
+        for (const block of (page.state as PageLayoutState).blocks) {
+          for (const pl of block.placements ?? []) {
+            if (!wanted.has(pl.contentInstanceId)) continue;
+            counts.set(pl.contentInstanceId, (counts.get(pl.contentInstanceId) ?? 0) + 1);
+          }
+        }
+      }
+    }
+  }
+  for (const [id, n] of counts) counts.set(id, Math.min(n, cap));
+  return counts;
+}
+
+/**
  * The content instances (live + the caller's branch view, deleted ones
  * excluded) that list each of `contentInstanceIds` in a `module` /
  * `module-list` field, keyed by child id. A child with no placement of

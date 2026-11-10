@@ -13,11 +13,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import {
-  IMPORT_RUNS_LIST_MAX,
-  importRunEventInput,
-  type listImportRunsOp,
-} from "../../ops/imports.js";
+import { importRunEventInput, type listImportRunsOp } from "../../ops/imports.js";
 import type { mediaListUsagesOp } from "../../ops/media.js";
 import {
   type pagesSeoGetManyOp,
@@ -26,7 +22,8 @@ import {
 } from "../../ops/seo.js";
 import type { listPinDefaultsOp } from "../../ops/skills/engagement.js";
 import { describeError, toolError } from "./_describe-error.js";
-import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
+import { makeListReadTool } from "./_list-read-tool.js";
+import { makeReadTool } from "./_make-read-tool.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 type OpValue<O extends { output: z.ZodType }> = z.infer<O["output"]>;
@@ -138,7 +135,7 @@ export const listStaleSeoPagesTool = makeListReadTool<
     "List pages whose SEO was never optimized or whose meta description is empty (newest first) — the dashboard's 'needs SEO' tile. Then: empty, never-autofilled -> `autofill_page_seo_many`; re-optimize with context -> `bulk_optimize_seo`; exact values -> `set_page_seo_many`.",
   opName: "pages_seo.list_stale",
   input: z.object({}).strict(),
-  buildOpInput: (input) => ({ limit: Math.min(200, (input.offset ?? 0) + (input.limit ?? 50)) }),
+  paging: { kind: "offset", maxLimit: 100 },
   rows: (value) => (value as OpValue<typeof pagesSeoListStaleOp>).pages,
   label: "stale_seo_pages",
   columns: [
@@ -210,7 +207,7 @@ export const listImportRunsTool = makeListReadTool<
   opName: "imports.list",
   input: z.object({ status: runStatusFilter.optional() }).strict(),
   buildOpInput: (input) => (input.status ? { status: input.status } : {}),
-  serverPaging: { maxLimit: IMPORT_RUNS_LIST_MAX },
+  paging: { kind: "offset", maxLimit: 200 },
   rows: (value) => (value as OpValue<typeof listImportRunsOp>).runs,
   label: "import_runs",
   columns: [

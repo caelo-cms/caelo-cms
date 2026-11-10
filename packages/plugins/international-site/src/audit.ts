@@ -63,6 +63,11 @@ const auditArgs = z
  * as the source ("Marketing" is that in German and English). A translator
  * decided that; comparing the page with its source cannot tell (#1323).
  *
+ * Read per language: the table's index leads with `locale_code`
+ * (`["locale_code", "address"]`), so a read by address alone is one no
+ * index can drive, and the host refuses it (#1292, #1536). A language
+ * version only ever holds translations of its non-default languages.
+ *
  * @param pageId any page of the site.
  */
 export async function pluginTextsKeptAsIs(
@@ -77,13 +82,18 @@ export async function pluginTextsKeptAsIs(
     pageProps: [],
     pluginSources,
   });
-  const rows = (await listWhereAnyOf(
-    deps.q,
-    "list_value_translations",
-    "address",
-    units.map((u) => u.address),
-    {},
-  )) as unknown as ValueTranslationRow[];
+  const addresses = units.map((u) => u.address);
+  const translated = [...deps.locales.values()].filter((l) => !l.is_default);
+  // One language after the other: each read holds a connection, and the
+  // audit already runs its other reads beside this one (loadAuditState).
+  const rows: ValueTranslationRow[] = [];
+  for (const l of translated) {
+    rows.push(
+      ...((await listWhereAnyOf(deps.q, "list_value_translations", "address", addresses, {
+        locale_code: l.code,
+      })) as unknown as ValueTranslationRow[]),
+    );
+  }
   const unitByAddress = new Map(units.map((u) => [u.address, u]));
   const out = new Map<string, Set<string>>();
   for (const r of rows) {

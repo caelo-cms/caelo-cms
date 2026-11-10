@@ -64,6 +64,8 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
   input: z
     .object({
       limit: z.number().int().min(1).max(200).optional(),
+      /** #1538 — rows to skip, newest first, so a reader reaches every proposal. */
+      offset: z.number().int().min(0).default(0),
     })
     .strict(),
   output: z.object({
@@ -231,8 +233,8 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
       LEFT JOIN chat_sessions c ON c.id::text = p.chat_session_id
       LEFT JOIN mcp_approval_handoffs h
         ON h.proposal_id::text = p.id AND h.domain = p.domain
-      ORDER BY p.proposed_at DESC
-      LIMIT ${limit}
+      ORDER BY p.proposed_at DESC, p.domain, p.id
+      LIMIT ${limit} OFFSET ${input.offset}
     `)) as unknown as Array<{
       domain: string;
       kind: string;

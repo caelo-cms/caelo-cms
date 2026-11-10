@@ -27,6 +27,7 @@ import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { lockPluginRow } from "../locks.js";
 import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
@@ -105,6 +106,7 @@ async function cleanup(): Promise<void> {
     await tx.unsafe(
       "UPDATE site_defaults SET home_page_id = NULL, not_found_page_id = NULL WHERE id = 1",
     );
+    await tx.unsafe("DELETE FROM chat_sessions WHERE title LIKE 't395-%'");
     await tx.unsafe("DELETE FROM pages WHERE slug LIKE 't395-%'");
     await tx.unsafe("DELETE FROM templates WHERE slug LIKE 't395-%'");
     await tx.unsafe("DELETE FROM layouts WHERE slug LIKE 't395-%'");
@@ -114,7 +116,8 @@ async function cleanup(): Promise<void> {
 async function bootPlugin(): Promise<void> {
   resetPluginHost();
   const report = await bootstrap({
-    infra: { adapter, registry },
+    // A chat's variant rows are branch writes, which take a row lock.
+    infra: { adapter, registry, lockPluginRow },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [{ definition: intlPlugin }],
@@ -452,7 +455,7 @@ describe("create_variant — the slug the caller cannot invent", () => {
     expect(path[0]?.current_path).toBe("/de");
   });
 
-  it("takes over a redirect rule stored with a trailing slash on the variant's URL (#1447)", async () => {
+  it("takes over a redirect rule stored with a trailing slash on a main-line variant's URL (#1447)", async () => {
     const sourceId = await seedPage("t395-rule-source");
     await sqlSystem((tx) =>
       tx.unsafe(
@@ -480,6 +483,96 @@ describe("create_variant — the slug the caller cannot invent", () => {
     expect(left).toHaveLength(0);
   });
 
+  // #1517 — a variant a chat creates exists only on the chat's branch: its
+  // URL is not served anywhere yet, so the live rule there must keep
+  // answering. No delete, no 301 from the never-public pre-link path; the
+  // result names the rule, and the Publish live that first ships the page
+  // takes the URL over (deploy-promote-seo.integration.test.ts).
+  it("leaves a live rule on a chat-branch variant's URL alone and names it (#1517)", async () => {
+    const sourceId = await seedPage("t395-chat-source");
+    const kidSource = await execute(registry, adapter, SYS_CTX, "pages.create", {
+      slug: "t395-chat-kid",
+      title: "t395-chat-kid",
+      parentPageId: sourceId,
+      pageType: "home",
+    });
+    if (!kidSource.ok) throw new Error(JSON.stringify(kidSource.error));
+    const kidSourceId = (kidSource.value as { pageId: string }).pageId;
+    await sqlSystem((tx) =>
+      tx.unsafe(
+        `INSERT INTO redirects (from_path, to_path, status_code, created_by)
+         VALUES ('/de/t395-chat/', '/de/t395-chat-guide/', 301, '${SYSTEM_ACTOR_ID}')`,
+      ),
+    );
+    const session = await execute(registry, adapter, HUMAN_CTX, "chat.create_session", {
+      title: "t395-chat",
+    });
+    if (!session.ok) throw new Error(JSON.stringify(session.error));
+    const { chatSessionId, chatBranchId } = session.value as {
+      chatSessionId: string;
+      chatBranchId: string;
+    };
+
+    // A chat call acts for a person who may write content.
+    const operator = "5e1d7a3c-1517-4c1e-9a1e-0000000015a7";
+    await ensureRoleUser(ADMIN_URL, operator, "owner");
+    const invocation = {
+      origin: "chat" as const,
+      actorId: operator,
+      operatorActorId: operator,
+      chatBranchId,
+      chatTaskId: chatSessionId,
+    };
+    // Everything the provider sync would push: the rows and their change log.
+    const liveState = () =>
+      sqlSystem(async (tx) => ({
+        rows: await tx.unsafe(
+          "SELECT from_path, to_path, status_code, created_at FROM redirects ORDER BY from_path",
+        ),
+        changes: await tx.unsafe("SELECT count(*)::int AS n FROM redirect_changes"),
+      }));
+    const before = await liveState();
+
+    const created = await runPluginOperation({
+      invocation,
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: sourceId, localeCode: "de", slug: "t395-chat" },
+    });
+    // The child's variant joins the locale under the new parent: a move from
+    // its pre-link path, which was never public either (the #1517 report's
+    // /de/empco/detection -> /en/empco/detection 301s).
+    const kid = await runPluginOperation({
+      invocation,
+      pluginSlug: "international-site",
+      operationName: "create_variant",
+      args: { sourcePageId: kidSourceId, localeCode: "de", slug: "t395-chat-kid" },
+    });
+    if (!kid.ok) throw new Error(JSON.stringify(kid.error));
+    expect((kid.value as { path: string }).path).toBe("/de/t395-chat/t395-chat-kid");
+    expect(await liveState()).toEqual(before);
+
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const value = created.value as { pageId: string; path: string; redirectOnThisUrl?: string };
+    expect(value.path).toBe("/de/t395-chat");
+    expect(value.redirectOnThisUrl).toContain("/de/t395-chat/ -> /de/t395-chat-guide/");
+    expect(value.redirectOnThisUrl).toContain("Publish live");
+    const rows = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          "SELECT from_path, to_path FROM redirects WHERE from_path LIKE '/t395-chat%' OR from_path LIKE '/de/t395-chat%' ORDER BY from_path",
+        )) as { from_path: string; to_path: string }[],
+    );
+    expect(rows).toEqual([{ from_path: "/de/t395-chat/", to_path: "/de/t395-chat-guide/" }]);
+    const page = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT chat_branch_id::text AS branch FROM pages WHERE id = '${value.pageId}'`,
+        )) as { branch: string | null }[],
+    );
+    expect(page[0]?.branch).toBe(chatBranchId);
+  });
+
   it("names a rule a variant lands on without moving: its locale has no prefix (#1447)", async () => {
     const sourceId = await seedPage("t395-rule-plain");
     await sqlAsPlugin(async (tx) => {
@@ -503,7 +596,7 @@ describe("create_variant — the slug the caller cannot invent", () => {
 
     if (!created.ok) throw new Error(JSON.stringify(created.error));
     expect((created.value as { redirectOnThisUrl?: string }).redirectOnThisUrl).toContain(
-      'bulk_delete_redirects({ fromPaths: ["/t395-rule-fr"] })',
+      "/t395-rule-fr -> /t395-rule-target",
     );
     await sqlAsPlugin(async (tx) => {
       await tx.unsafe(

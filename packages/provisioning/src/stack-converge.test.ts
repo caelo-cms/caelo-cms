@@ -848,6 +848,8 @@ describe("ensureStackInvariants", () => {
             members: [RUN_SA, "serviceAccount:caelo-prod-publisher@acme.iam.gserviceaccount.com"],
           },
           { role: "roles/storage.objectViewer", members: ["allUsers"] },
+          // #1454, contract 24 — the static bucket's settings, for the header patch.
+          { role: "roles/storage.bucketViewer", members: [RUN_SA] },
         ]),
       ],
       "run services get-iam-policy": [
@@ -929,6 +931,50 @@ describe("ensureStackInvariants", () => {
       const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
       expect(report.mustAbort).toBe(false);
       expect(report.outcomes.find((o) => o.id.startsWith("Cloud CDN"))?.status).toBe("failed");
+    });
+
+    // #1454 regression: contract 23 gave the admin the Compute rights for the
+    // header patch, but the patch's operation ended in GCS_BUCKET_ACCESS_DENIED
+    // because the admin may not read the static bucket it references.
+    it("grants a contract-23 install's admin storage.buckets.get on the static bucket only", async () => {
+      const contract23Storage = policy([
+        {
+          role: "roles/storage.objectAdmin",
+          members: [RUN_SA, "serviceAccount:caelo-prod-publisher@acme.iam.gserviceaccount.com"],
+        },
+        { role: "roles/storage.objectViewer", members: ["allUsers"] },
+      ]);
+      const answers = {
+        ...fullGcp(),
+        "storage buckets get-iam-policy": [contract23Storage],
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
+      };
+      const { run, calls } = fakeGcloud(answers);
+      const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
+      expect(report.mustAbort).toBe(false);
+      expect(calls.filter((c) => c.includes("add-iam-policy-binding"))).toEqual([
+        `storage buckets add-iam-policy-binding gs://acme-caelo-production-static --project=acme --member=${RUN_SA} --role=roles/storage.bucketViewer --quiet --format=none`,
+      ]);
+    });
+
+    it("aborts before any traffic shift when the static bucket read cannot be granted", async () => {
+      const answers = {
+        ...fullGcp(),
+        "storage buckets get-iam-policy": [
+          policy([
+            {
+              role: "roles/storage.objectAdmin",
+              members: [RUN_SA, "serviceAccount:caelo-prod-publisher@acme.iam.gserviceaccount.com"],
+            },
+            { role: "roles/storage.objectViewer", members: ["allUsers"] },
+          ]),
+        ],
+        "storage buckets add-iam-policy-binding": [fail("PERMISSION_DENIED")],
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
+      };
+      const { run } = fakeGcloud(answers);
+      const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
+      expect(report.mustAbort).toBe(true);
     });
 
     it("addresses buckets, secrets and the static-publisher SA by the stack's names", async () => {

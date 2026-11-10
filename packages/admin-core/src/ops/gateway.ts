@@ -208,6 +208,8 @@ export const listGatewayRequestsOp = defineOperation({
   input: z
     .object({
       limit: z.number().int().min(1).max(500).default(100),
+      /** #1538 — rows to skip, newest first, so a reader reaches older requests. */
+      offset: z.number().int().min(0).default(0),
       pluginSlug: z.string().optional(),
       onlyErrors: z.boolean().default(false),
     })
@@ -236,14 +238,14 @@ export const listGatewayRequestsOp = defineOperation({
     if (input.pluginSlug) filters.push(sql`plugin_slug = ${input.pluginSlug}`);
     if (input.onlyErrors) filters.push(sql`status_code >= 400`);
     const where = filters.length === 0 ? sql.raw("") : sql`WHERE ${sql.join(filters, sql` AND `)}`;
-    const limitSql = sql.raw(`LIMIT ${input.limit}`);
+    const limitSql = sql.raw(`LIMIT ${input.limit} OFFSET ${input.offset}`);
     const raw = (await tx.execute(sql`
       SELECT id::text AS id, plugin_slug, operation, status_code, duration_ms,
              body_bytes, was_rate_limited, was_honeypot_caught, captcha_passed,
              error_kind, created_at
       FROM gateway_request_log
       ${where}
-      ORDER BY created_at DESC
+      ORDER BY created_at DESC, id DESC
       ${limitSql}
     `)) as unknown as unknown[];
     const { rows, dropped } = parseUntrustedRows(

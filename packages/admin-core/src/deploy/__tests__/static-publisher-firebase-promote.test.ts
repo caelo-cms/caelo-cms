@@ -39,6 +39,11 @@ import {
   fakeStagingBucket,
 } from "../../__tests__/fixtures/fake-staging-bucket.js";
 import { FakeChannelLifetimes } from "../../__tests__/fixtures/firebase-channel-lifetime.js";
+import {
+  SECURITY_HEADER_ENTRIES,
+  VERSION_CONFIG_HEADERS,
+  withCurrentFixedHeaders,
+} from "../firebase-version-headers.js";
 import { setStagingBucketForTests } from "../staging-slots.js";
 
 /** The build's page headers, as the generator writes them on every build (#1454). */
@@ -368,9 +373,7 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
       servedStagingLocation: null,
     });
     const staged = fake.versions.get("v1");
-    const { VERSION_CONFIG_HEADERS, siteHeaderEntry } = await import(
-      "../static-publisher-firebase.js"
-    );
+    const { siteHeaderEntry } = await import("../static-publisher-firebase.js");
     // #555's cache entries, the page headers (#1454) and the staging-only
     // robots entry, nothing else.
     expect(staged!.config.headers).toEqual([
@@ -424,9 +427,7 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
     expect(live.config.redirects).toEqual(staged.config.redirects);
     // #555 — the live release keeps exactly the immutable (content-hashed)
     // and short-cache (pages, robots, sitemap) entries.
-    const { VERSION_CONFIG_HEADERS, siteHeaderEntry } = await import(
-      "../static-publisher-firebase.js"
-    );
+    const { siteHeaderEntry } = await import("../static-publisher-firebase.js");
     // Promote moves the security entries last; the patterns are disjoint, so
     // the order does not matter to Hosting.
     expect(unordered(live.config.headers)).toEqual(
@@ -487,9 +488,7 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
     });
     const live = fake.liveVersion();
     expect(robotsHeaders(live.config)).toEqual([]);
-    const { VERSION_CONFIG_HEADERS, siteHeaderEntry } = await import(
-      "../static-publisher-firebase.js"
-    );
+    const { siteHeaderEntry } = await import("../static-publisher-firebase.js");
     // Promote moves the security entries last; the patterns are disjoint, so
     // the order does not matter to Hosting.
     expect(unordered(live.config.headers)).toEqual(
@@ -684,9 +683,7 @@ describe("firebaseHostingPublisher — security headers (#891)", () => {
       },
       { "/index.html": "abc" },
     );
-    const { firebaseHostingPublisher, SECURITY_HEADER_ENTRIES } = await import(
-      "../static-publisher-firebase.js"
-    );
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await firebaseHostingPublisher.promoteToProduction({
       sourceLocation: fake.lastFinalized,
       sourceRunId: "pre-891",
@@ -697,16 +694,99 @@ describe("firebaseHostingPublisher — security headers (#891)", () => {
     });
     expect(fake.liveVersion().config.headers).toEqual([
       { regex: "^/_assets/", headers: { "Cache-Control": "public, max-age=3600" } },
+      VERSION_CONFIG_HEADERS[2],
       ...SECURITY_HEADER_ENTRIES,
     ]);
   });
+
+  // The fixed entries of a v0.12.1 version as Hosting stored them: the
+  // unanchored patterns anchored at both ends, so nosniff reached only `/`
+  // and the SVG CSP no path.
+  const V0121_HEADERS = [
+    { regex: "^\\.ico$", headers: { "Content-Type": "image/x-icon" } },
+    { regex: "^/$", headers: { "X-Content-Type-Options": "nosniff" } },
+    {
+      regex: "^\\.[sS][vV][gG]$",
+      headers: { "Content-Security-Policy": "default-src 'none'; sandbox" },
+    },
+  ];
+
+  it("Publish live of a version staged with the v0.12.1 patterns goes live with the whole-path ones", async () => {
+    fake.seedVersion(
+      "runid-v0121",
+      { headers: [...V0121_HEADERS, { glob: "**", headers: { "X-Robots-Tag": "noindex" } }] },
+      { "/index.html": "abc" },
+    );
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.promoteToProduction({
+      sourceLocation: fake.lastFinalized,
+      sourceRunId: "v0121",
+      sourceBuildDir: buildDir,
+      fromTarget: STAGING,
+      toTarget: PRODUCTION,
+      siteBaseUrl: SITE_BASE_URL,
+    });
+    expect(fake.liveVersion().config.headers).toEqual([
+      VERSION_CONFIG_HEADERS[2],
+      ...SECURITY_HEADER_ENTRIES,
+    ]);
+  });
+
+  it("rollback to a version released with the v0.12.1 patterns goes live with the whole-path ones", async () => {
+    fake.seedVersion("runid-v0121-live", { headers: V0121_HEADERS }, { "/index.html": "abc" });
+    const sourceLocation = fake.channels.get("runid-v0121-live")?.[0];
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.rollback({
+      targetBuildId: "v0121-live",
+      sourceBuildDir: buildDir,
+      target: PRODUCTION,
+      siteBaseUrl: SITE_BASE_URL,
+      ...(sourceLocation ? { sourceLocation } : {}),
+    });
+    expect(fake.liveVersion().config.headers).toEqual([
+      VERSION_CONFIG_HEADERS[2],
+      ...SECURITY_HEADER_ENTRIES,
+    ]);
+  });
+
+  it("the plugin-data release of a v0.12.1 live version carries the whole-path ones", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-1",
+      target: STAGING,
+      servedStagingLocation: null,
+    });
+    const promoted = await firebaseHostingPublisher.promoteToProduction({
+      sourceLocation: fake.lastFinalized,
+      sourceRunId: "run-1",
+      sourceBuildDir: buildDir,
+      fromTarget: STAGING,
+      toTarget: PRODUCTION,
+      siteBaseUrl: SITE_BASE_URL,
+    });
+    // The live version as v0.12.1 left it.
+    const before = fake.liveVersion();
+    const current = before.config.headers ?? [];
+    const fixedRegexes = new Set<string | undefined>(
+      [VERSION_CONFIG_HEADERS[2], ...SECURITY_HEADER_ENTRIES].map((e) => e.regex),
+    );
+    before.config = {
+      ...before.config,
+      headers: [...current.filter((e) => !fixedRegexes.has(e.regex)), ...V0121_HEADERS],
+    };
+    await firebaseHostingPublisher.publishPluginData({
+      target: PRODUCTION,
+      live: { runId: "p1", buildId: "run-1", location: promoted.location, localBuildDir: "" },
+      runId: "pd-1",
+      files: new Map([["about/index.html", Buffer.from("<html>baked</html>")]]),
+    });
+    expect(unordered(fake.liveVersion().config.headers)).toEqual(unordered(current));
+  });
 });
 
-describe("withSecurityHeaders", () => {
-  it("replaces stale security entries (case-insensitive) and keeps everything else", async () => {
-    const { withSecurityHeaders, SECURITY_HEADER_ENTRIES } = await import(
-      "../static-publisher-firebase.js"
-    );
+describe("withCurrentFixedHeaders", () => {
+  it("replaces stale fixed entries (case-insensitive) and keeps everything else", () => {
     const cache = { glob: "/**/*.html", headers: { "Cache-Control": "public, max-age=60" } };
     const config = {
       rewrites: [{ glob: "/api/**" }],
@@ -714,15 +794,16 @@ describe("withSecurityHeaders", () => {
         cache,
         { glob: "**/*.svg", headers: { "content-security-policy": "default-src *" } },
         { glob: "**", headers: { "x-content-type-options": "nosniff" } },
+        { glob: "**/*.ico", headers: { "content-type": "image/x-icon" } },
       ],
     };
-    expect(withSecurityHeaders(config)).toEqual({
+    expect(withCurrentFixedHeaders(config)).toEqual({
       rewrites: [{ glob: "/api/**" }],
-      headers: [cache, ...SECURITY_HEADER_ENTRIES],
+      headers: [cache, VERSION_CONFIG_HEADERS[2], ...SECURITY_HEADER_ENTRIES],
     });
     // Idempotent: a config that already has them is left as it is.
-    const once = withSecurityHeaders(config);
-    expect(withSecurityHeaders(once)).toEqual(once);
+    const once = withCurrentFixedHeaders(config);
+    expect(withCurrentFixedHeaders(once)).toEqual(once);
   });
 });
 
