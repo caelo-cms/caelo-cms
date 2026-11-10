@@ -12,6 +12,7 @@ export function previewContext(ctx: PluginContext | PluginContextTier1): PluginC
       list: handle.list.bind(handle),
       insert: forbidden,
       update: forbidden,
+      updateMany: forbidden,
       compareAndSwap: forbidden,
       delete: forbidden,
     });

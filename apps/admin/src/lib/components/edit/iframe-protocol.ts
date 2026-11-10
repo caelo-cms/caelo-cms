@@ -71,6 +71,15 @@ export function newPreviewChannel(): string {
 
 const readySchema = z.object({ kind: z.literal("caelo:ready") });
 
+/**
+ * #1361 — the operator used the preview. Input in the sandboxed frame never
+ * reaches the editor's window, whose live waits last only while the
+ * operator uses the tab (`lib/live/presence.ts`); sent at most every
+ * `FRAME_INPUT_INTERVAL_MS`. A script of the previewed site can send it
+ * too: all it can do is keep a visible tab counted as attended.
+ */
+const activitySchema = z.object({ kind: z.literal("caelo:activity") });
+
 const navigatedSchema = z.object({
   kind: z.literal("caelo:navigated"),
   pageId: z.string().min(1).max(100),
@@ -189,6 +198,7 @@ const pagePathsQuerySchema = z.object({
 /** Every message the preview may send the editor. Unknown keys are stripped. */
 export const iframeToParentSchema = z.discriminatedUnion("kind", [
   readySchema,
+  activitySchema,
   navigatedSchema,
   navigateSchema,
   elementReferencedSchema,

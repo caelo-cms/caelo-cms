@@ -29,12 +29,15 @@
  *   - disabled, loaded            → stop it (tools, workers, dispatch)
  *   - anything else, or no row    → unload it completely
  *
- * The read is a handful of rows, throttled, and runs before admin requests
- * (`apps/admin` hooks) and on a timer — Cloud Run throttles CPU between
- * requests, so the request path is what makes it reliable there. Paths
- * that must not act on a stale view (the Publish-live gate) force it. A
- * failing plugin is retried only when the rows change (an Owner's "Reload
- * on all servers" touches its row), never in a loop.
+ * The read is a handful of rows, throttled, and runs at the start of every
+ * admin request (`pluginHostRequestStart`, `apps/admin` hooks), the
+ * scheduler tick's included — never on a timer (#1361): the admin gets CPU
+ * only while it serves a request, and an instance that serves none does
+ * nothing a stale view could spoil (a change consumer's claim refuses a
+ * plugin that is no longer active, change-consumers.ts). Paths that must
+ * not act on a stale view (the Publish-live gate) force it. A failing
+ * plugin is retried only when the rows change (an Owner's "Reload on all
+ * servers" touches its row), never in a loop.
  */
 
 import { createHash } from "node:crypto";
@@ -47,14 +50,11 @@ import { clearPluginRuntime, recordPluginRuntime } from "./runtime-health.js";
 
 /** Minimum gap between two state reads (per instance). */
 const CHECK_INTERVAL_MS = 2_000;
-/** The background check, for instances that serve no requests for a while. */
-const TIMER_INTERVAL_MS = 30_000;
 
 /** The fingerprint this instance reconciled at; null before the first. */
 let reconciledAt: string | null = null;
 let lastCheck = 0;
 let inflight: Promise<unknown | null> | null = null;
-let timer: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Active plugins that do not run on THIS instance, with the reason —
@@ -156,7 +156,6 @@ export async function reconcilePluginHostNow(): Promise<void> {
 function runSync(force: boolean): Promise<unknown | null> {
   const host = pluginHostBootstrapped();
   if (!host) return Promise.resolve(null);
-  armTimer();
   // A forced call must see rows newer than any run already in flight.
   if (inflight && !force) return inflight;
   const now = Date.now();
@@ -182,19 +181,8 @@ function runSync(force: boolean): Promise<unknown | null> {
   return run;
 }
 
-function armTimer(): void {
-  if (timer) return;
-  // FIXME(issue #1361): an instance without requests follows the plugin rows from request start and the tick.
-  timer = setInterval(() => {
-    void syncPluginHost();
-  }, TIMER_INTERVAL_MS);
-  timer.unref?.();
-}
-
-/** Stop the background check and forget the reconcile state (tests). */
+/** Forget the reconcile state (tests). */
 export function resetPluginHostSync(): void {
-  if (timer) clearInterval(timer);
-  timer = null;
   reconciledAt = null;
   lastCheck = 0;
   notRunningHere.clear();

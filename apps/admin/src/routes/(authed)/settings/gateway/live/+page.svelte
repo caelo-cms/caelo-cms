@@ -3,9 +3,14 @@
   /**
    * P13 ideas-pass — live gateway analytics. SSE-driven; one frame
    * every 5s. Top stat cards + per-op table + 60-min sparkline.
+   *
+   * #1361 — the stream is open only while someone is at the tab
+   * (lib/live/live-stream.ts): an open stream bills the admin for as long
+   * as it is open.
    */
   import { Activity, AlertCircle, Bug, Shield } from "lucide-svelte";
-  import { onDestroy, onMount } from "svelte";
+  import { onMount } from "svelte";
+  import { openWhilePresent, type PresentStreamState } from "#lib/live/live-stream.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import {
     Card,
@@ -44,29 +49,22 @@
   }
 
   let frame = $state<Frame | null>(null);
-  let connected = $state(false);
-  let source: EventSource | null = null;
+  let stream = $state<PresentStreamState>("connecting");
 
-  onMount(() => {
-    source = new EventSource("/settings/gateway/live");
-    source.onopen = () => {
-      connected = true;
-    };
-    source.onerror = () => {
-      connected = false;
-    };
-    source.onmessage = (ev) => {
-      try {
-        frame = JSON.parse(ev.data) as Frame;
-      } catch {
-        /* ignore */
-      }
-    };
-  });
-
-  onDestroy(() => {
-    source?.close();
-  });
+  onMount(() =>
+    openWhilePresent("/settings/gateway/live", {
+      onState: (state) => {
+        stream = state;
+      },
+      onMessage: (data) => {
+        try {
+          frame = JSON.parse(data) as Frame;
+        } catch {
+          /* ignore */
+        }
+      },
+    }),
+  );
 
   function sparkline(buckets: Array<{ bucketAt: string; requests: number }>, w = 200, h = 40): string {
     if (buckets.length === 0) return "";
@@ -84,14 +82,18 @@
     <h1 class="flex items-center gap-2 text-2xl font-semibold tracking-tight">
       <Activity class="size-6" />
       Live gateway analytics
-      {#if connected}
+      {#if stream === "live"}
         <Badge>live</Badge>
+      {:else if stream === "paused"}
+        <Badge variant="secondary" title="Resumes when you use this tab">paused</Badge>
+      {:else if stream === "connecting"}
+        <Badge variant="secondary">connecting</Badge>
       {:else}
         <Badge variant="destructive">disconnected</Badge>
       {/if}
     </h1>
     <p class="text-sm text-muted-foreground">
-      Rolling 60-minute window; refreshes every 5s via SSE. Returns to
+      Rolling 60-minute window; refreshes every 5s while this tab is in use. Returns to
       <a href="/settings/gateway" class="underline">/settings/gateway</a> for the full request log.
     </p>
   </div>

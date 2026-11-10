@@ -18,6 +18,7 @@ import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 
@@ -34,6 +35,10 @@ const SYS_CTX: ExecutionContext = {
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
+/** #1269 — the `pages.list` inputs while recording (null = not recording). */
+let pageListInputs: unknown[] | null = null;
+/** #1269 — the filters of the plugin's page_variants reads while recording. */
+let variantReadFilters: (Record<string, unknown> | undefined)[] | null = null;
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -66,11 +71,20 @@ async function cleanup(): Promise<void> {
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  const runOperation = adapter.runOperation.bind(adapter);
+  adapter.runOperation = ((o, ctx, input) => {
+    if (o.name === "pages.list") pageListInputs?.push(input);
+    const read = input as { table?: string; filter?: Record<string, unknown> };
+    if (o.name === "plugin_storage.list" && read.table === "page_variants") {
+      variantReadFilters?.push(read.filter);
+    }
+    return runOperation(o, ctx, input);
+  }) as typeof adapter.runOperation;
   registry = new OperationRegistry();
   registerAdminOps(registry);
   await cleanup();
   const report = await bootstrap({
-    infra: { adapter, registry },
+    infra: { adapter, registry, lockPluginRow },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [{ definition: intlPlugin }],
@@ -83,7 +97,7 @@ afterAll(async () => {
   await adapter.close();
 });
 
-async function seedPage(slug: string): Promise<string> {
+async function seedPage(slug: string, parentPageId?: string): Promise<string> {
   const templateId = await sqlSystem(async (tx) => {
     const lay = (await tx.unsafe(
       `INSERT INTO layouts (slug, display_name, html, css) VALUES ('${slug}-lay', 'L', '<html></html>', '') RETURNING id::text AS id`,
@@ -100,6 +114,7 @@ async function seedPage(slug: string): Promise<string> {
     slug,
     title: slug,
     templateId,
+    ...(parentPageId ? { parentPageId } : {}),
   });
   if (!created.ok) throw new Error(JSON.stringify(created.error));
   return (created.value as { pageId: string }).pageId;
@@ -204,6 +219,156 @@ describe("#396 — international-site AI tools", () => {
         }[],
     );
     expect(redirect[0]?.to_path).toBe("/t396-preise");
+  });
+
+  it("#1269 — create_variant reads the pages it names, never the whole site", async () => {
+    const parentId = await seedPage("t396-docs");
+    const childId = await seedPage("t396-setup", parentId);
+    pageListInputs = [];
+    try {
+      // The parent has no German counterpart yet: refused, naming the parent's path.
+      const refused = await runPluginOperation({
+        invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+        pluginSlug: "international-site",
+        operationName: "create_variant",
+        args: { sourcePageId: childId, localeCode: "de", slug: "t396-einrichtung" },
+      });
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) expect(refused.error.message).toContain("sits under /t396-docs");
+      const parent = await op<{ path: string }>("create_variant", {
+        sourcePageId: parentId,
+        localeCode: "de",
+        slug: "t396-doku",
+      });
+      expect(parent.path).toBe("/de/t396-doku");
+      const child = await op<{ path: string }>("create_variant", {
+        sourcePageId: childId,
+        localeCode: "de",
+        slug: "t396-einrichtung",
+      });
+      expect(child.path).toBe("/de/t396-doku/t396-einrichtung");
+      expect(pageListInputs.length).toBeGreaterThan(0);
+      for (const input of pageListInputs) {
+        const i = input as { pageIds?: string[]; underPageId?: string; limit?: number };
+        expect(i.pageIds !== undefined || i.underPageId !== undefined).toBe(true);
+      }
+    } finally {
+      pageListInputs = null;
+    }
+  });
+
+  it("#1269 — write_hints reads the home page's language versions, not the variant table", async () => {
+    const homeId = await seedPage("t396-start");
+    const prior = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe("SELECT home_page_id::text AS id FROM site_defaults WHERE id = 1")) as {
+          id: string | null;
+        }[],
+    );
+    if (prior.length === 0) throw new Error("no site_defaults row");
+    await sqlSystem((tx) =>
+      tx.unsafe(`UPDATE site_defaults SET home_page_id = '${homeId}' WHERE id = 1`),
+    );
+    try {
+      const root = await op<{ pageId: string }>("create_variant", {
+        sourcePageId: homeId,
+        localeCode: "de",
+      });
+      variantReadFilters = [];
+      const r = await op<{ hints: string[] }>("write_hints", {
+        writes: [
+          { kind: "values", moduleId: null, values: { switch: `caelo:page/${root.pageId}` } },
+        ],
+      });
+      expect(r.hints).toHaveLength(1);
+      expect(r.hints[0]).toContain("Deutsch home page");
+      expect(variantReadFilters.length).toBeGreaterThan(0);
+      for (const filter of variantReadFilters) {
+        const keys = Object.keys(filter ?? {});
+        expect(keys.some((k) => k === "page_id" || k === "group_id" || k === "anyOf")).toBe(true);
+      }
+    } finally {
+      variantReadFilters = null;
+      const before = prior[0]?.id;
+      await sqlSystem((tx) =>
+        tx.unsafe(
+          `UPDATE site_defaults SET home_page_id = ${before ? `'${before}'` : "NULL"} WHERE id = 1`,
+        ),
+      );
+    }
+  });
+
+  it("#1269 — a page a chat's pending variant row makes the /de root holds /de in that chat", async () => {
+    const homeId = await seedPage("t396-home-1269");
+    const rootId = await seedPage("t396-startseite");
+    const prior = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe("SELECT home_page_id::text AS id FROM site_defaults WHERE id = 1")) as {
+          id: string | null;
+        }[],
+    );
+    if (prior.length === 0) throw new Error("no site_defaults row");
+    await sqlSystem((tx) =>
+      tx.unsafe(`UPDATE site_defaults SET home_page_id = '${homeId}' WHERE id = 1`),
+    );
+    try {
+      const owner = crypto.randomUUID();
+      await sqlSystem(async (tx) => {
+        await tx`INSERT INTO actors (id, kind, display_name) VALUES (${owner}::uuid, 'human', 'Owner')`;
+        await tx`INSERT INTO users (id, email, password_hash) VALUES (${owner}::uuid, ${`${owner}@t1269.test`}, 'test-only')`;
+        await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${owner}::uuid, id FROM roles WHERE name = 'owner'`;
+      });
+      const session = await execute(registry, adapter, SYS_CTX, "chat.create_session", {
+        isolation: "experiment",
+        title: "t396-annotated",
+      });
+      if (!session.ok) throw new Error(JSON.stringify(session.error));
+      const { chatSessionId, chatBranchId } = session.value as {
+        chatSessionId: string;
+        chatBranchId: string;
+      };
+      // In the chat the page joins the home's German group: a pending row
+      // makes it the German root, served at /de there (still /t396-startseite live).
+      const linked = await runPluginOperation({
+        invocation: {
+          origin: "chat",
+          actorId: owner,
+          operatorActorId: owner,
+          chatBranchId,
+          chatTaskId: chatSessionId,
+        },
+        pluginSlug: "international-site",
+        operationName: "link_page_variants",
+        args: { groupPageId: homeId, pageId: rootId, localeCode: "de" },
+      });
+      if (!linked.ok) throw new Error(`${linked.error.kind}: ${linked.error.message}`);
+      const chatCtx: ExecutionContext = { ...SYS_CTX, chatBranchId, chatTaskId: chatSessionId };
+      const templateId =
+        (
+          (await sqlSystem(
+            (tx) => tx`SELECT template_id::text AS t FROM pages WHERE id = ${homeId}::uuid`,
+          )) as { t: string }[]
+        )[0]?.t ?? "";
+      // A top-level page "de" would serve at the same /de in the chat.
+      const clash = await execute(registry, adapter, chatCtx, "pages.create", {
+        slug: "de",
+        title: "clash",
+        templateId,
+      });
+      expect(clash.ok).toBe(false);
+      if (!clash.ok) {
+        expect(String((clash.error as { message?: string }).message)).toContain(
+          "page already exists at /de",
+        );
+      }
+    } finally {
+      const before = prior[0]?.id;
+      await sqlSystem((tx) =>
+        tx.unsafe(
+          `UPDATE site_defaults SET home_page_id = ${before ? `'${before}'` : "NULL"} WHERE id = 1`,
+        ),
+      );
+    }
   });
 
   it("set_locales ships approval-gated; the other tools stay routine", () => {

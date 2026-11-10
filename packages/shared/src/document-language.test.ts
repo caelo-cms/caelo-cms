@@ -4,6 +4,7 @@ import { describe, expect, it } from "bun:test";
 import {
   applyDocumentLanguage,
   languageTagSchema,
+  readDocumentLanguage,
   resolveDocumentLanguage,
 } from "./document-language.js";
 
@@ -113,6 +114,40 @@ describe("languageTagSchema", () => {
   it("rejects malformed tags", () => {
     for (const tag of ["", "e", "en_US", "en-", "-en", 'en" onload="x', "x".repeat(36)]) {
       expect(languageTagSchema.safeParse(tag).success).toBe(false);
+    }
+  });
+});
+
+describe("readDocumentLanguage", () => {
+  it("reads what applyDocumentLanguage wrote, whatever the layout carried", () => {
+    for (const layout of [
+      "<!doctype html><html><head></head></html>",
+      '<!doctype html><html class="x" lang="fr"><head></head></html>',
+      "<head></head><body></body>",
+    ]) {
+      expect(readDocumentLanguage(applyDocumentLanguage(layout, "de-AT"))).toBe("de-AT");
+    }
+  });
+
+  it("reads quoted, single-quoted and unquoted values, the first one winning", () => {
+    expect(readDocumentLanguage("<html lang='pt-BR'>")).toBe("pt-BR");
+    expect(readDocumentLanguage('<html data-x="a>b" lang=en>')).toBe("en");
+    expect(readDocumentLanguage('<html lang="de" lang="en">')).toBe("de");
+  });
+
+  it("is null without a language, never a guess", () => {
+    for (const html of [
+      "<p>no document</p>",
+      "<html><head></head></html>",
+      "<html lang>",
+      '<html lang="">',
+      '<html lang="en" ',
+      '<html data-lang="en">',
+      '<html xml:lang="en">',
+      '<html lang="en&quot; onload=&quot;x">',
+      '<html-widget lang="en">',
+    ]) {
+      expect(readDocumentLanguage(html)).toBeNull();
     }
   });
 });

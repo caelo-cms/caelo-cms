@@ -195,6 +195,19 @@ export function hasHostContribution(): boolean {
 }
 
 /**
+ * True when every page's composed path ends in its own slug: no active
+ * plugin reformats the slug (`slug-format`) or composes the whole path
+ * (`full-path`). Then the pages that can hold a path are found by its last
+ * segment (#1269); otherwise only composing them tells.
+ */
+export function pathEndsInSlug(): boolean {
+  return (
+    urlContributionsRegistry.bySlot("slug-format") === null &&
+    urlContributionsRegistry.bySlot("full-path") === null
+  );
+}
+
+/**
  * Compose a page's public URL from the active contributions. Pure —
  * annotations must already be attached to `page`.
  */

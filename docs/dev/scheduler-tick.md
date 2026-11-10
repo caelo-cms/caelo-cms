@@ -11,6 +11,7 @@ Issue #1140. The admin does periodic work only inside a request, so the work run
 | The tick | `runSchedulerTick` (`packages/admin-core/src/scheduler/tick.ts`) |
 | Core tasks and their cadences | `coreScheduledTasks` (`packages/admin-core/src/scheduler/core-tasks.ts`) |
 | Plugin workers | `pluginWorkerTasks` (`packages/admin-core/src/scheduler/plugin-workers.ts`), over the registry in `packages/plugin-host/src/scheduler.ts` |
+| Plugin change consumers | `pluginChangeConsumersTask` (same file): `core:plugin-change-consumers`, every tick |
 | Due-table | `scheduled_tasks` (migration 0550), ops `scheduled_tasks.claim` / `scheduled_tasks.finish` |
 | Interval | install knob `schedulerIntervalMinutes`, 1–15, default 5 |
 
@@ -25,6 +26,18 @@ For each task, in order:
 The tick stops claiming once its budget (4 minutes) is spent. Tasks it did not reach stay unclaimed and run on the next tick. Every-tick tasks come first, because they are cheap.
 
 A task that throws is recorded as `failed` on its row and runs again at its next due time. It never stops the tick, and the scheduler gets a 200. A failing due-table op (the database) fails the tick, and the scheduler's next call retries.
+
+## Every request starts the same way (#1361)
+
+The tick is an ordinary request: before it runs, `hooks.server.ts` calls the plugin host's request start (`pluginHostRequestStart`, `packages/plugin-host/src/request-start.ts`), as for every admin request:
+
+- the instance follows the plugin rows (`syncPluginHost`, throttled to one read per 2 s);
+- it confirms its plugin runtime rows once they are older than 30 s (`refreshRuntimeHeartbeat`), so plugin health keeps counting a server that serves;
+- it starts a change-consumer retry that came due (`resumeDueChangeConsumers`: a failed batch's backoff ended, a claim another instance held lapsed), without waiting for it.
+
+None of this has an idle timer. On request-billed CPU a timer would not fire between requests, and an instance that serves no request does nothing a stale view could spoil. While a request is in flight (a chat turn, a Stage, the tick itself), the admin's `handle` holds the heartbeat (`holdRuntimeHeartbeat`, released when the response body ends or the client goes away: an event stream, a streamed page, a media download; at once for a page SvelteKit rendered whole; a load's own `fetch` during SSR holds nothing of its own), and the heartbeat is renewed every 30 s, so a busy server keeps counting as live for the others. Plugin health counts the server that answers a health read whatever its heartbeat says. A server that idled past the 2-minute live window counts neither as running nor as failing, so idling is never read as "not running" and never blocks Publish live (#1008).
+
+The tick's `core:plugin-change-consumers` task drains every change consumer and waits for the drain. So a quiet site also delivers a retry, a consumer whose claim another instance held, or a wake-up the LISTEN never got. A consumer in its failure backoff still waits it out; the task's summary names it. On an instance whose boot could not start the consumer loop, the task starts it.
 
 ## Adding a task
 
@@ -44,4 +57,4 @@ No task may build or publish production (CLAUDE.md §2). `scripts/no-automatic-p
 ## What is not on the tick yet
 
 - The site-import crawl worker: #1360. (The quality audit runs in its reporting job since #1359.)
-- The plugin runtime heartbeat and the plugin-host sync timer, plus the flip of the admin to request-based CPU: #1361.
+- The flip of the admin to request-based CPU: #1361.

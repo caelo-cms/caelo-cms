@@ -37,7 +37,7 @@ const STATE: WriteHintState = {
     ["en", en],
   ]),
   prefixDefaultLocale: false,
-  variants: [row(HOME_DE, "de"), row(HOME_EN, "en")],
+  homeGroup: [row(HOME_DE, "de"), row(HOME_EN, "en")],
   siteHomePageId: HOME_DE,
 };
 

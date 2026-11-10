@@ -39,10 +39,14 @@ import {
 } from "./index.js";
 import {
   clearPluginRuntime,
+  HEARTBEAT_REFRESH_MS,
+  holdRuntimeHeartbeat,
   hostInstanceId,
   recordPluginError,
   recordPluginRuntime,
+  refreshRuntimeHeartbeat,
   runtimeHeartbeatOnce,
+  runtimeHeartbeatRenewing,
   unsavedRuntimeSlugs,
 } from "./runtime-health.js";
 
@@ -628,5 +632,84 @@ describe("#1008 — a failing load never switches a plugin off", () => {
     expect(refused).toBeInstanceOf(Error);
     expect(String((refused as Error).message)).toContain("plugins_status_check");
     expect(await statusOf(slug)).toBe("active");
+  });
+});
+
+describe("#1361 — the heartbeat rides request starts, never a timer", () => {
+  it("a request start confirms stale rows once per interval; concurrent starts share one beat", async () => {
+    const slug = `${PREFIX}request-start`;
+    await boot({
+      slug,
+      version: "0.1.0",
+      tier: 1,
+      schema: {},
+      operations: { noop: async () => ({}) },
+    });
+    const ageOf = async () =>
+      (
+        (await withSystemSql(
+          (tx) => tx`SELECT extract(epoch FROM now() - heartbeat_at)::float8 AS age
+                     FROM plugin_runtime WHERE plugin_slug = ${slug}`,
+        )) as { age: number }[]
+      )[0]?.age ?? Number.NaN;
+    const idle = () =>
+      withSystemSql(
+        (tx) => tx`UPDATE plugin_runtime SET heartbeat_at = now() - interval '10 minutes'
+                   WHERE plugin_slug = ${slug}`,
+      );
+
+    // The instance idled: nothing refreshed its row meanwhile.
+    await idle();
+    await Bun.sleep(50);
+    expect(await ageOf()).toBeGreaterThan(500);
+
+    // The first request start after it confirms the row; two at once share one beat.
+    const t0 = Date.now();
+    const first = refreshRuntimeHeartbeat(t0);
+    expect(refreshRuntimeHeartbeat(t0)).toBe(first);
+    await first;
+    expect(await ageOf()).toBeLessThan(5);
+
+    // Within the interval a request start leaves it; after it, it confirms again.
+    await idle();
+    await refreshRuntimeHeartbeat(t0 + HEARTBEAT_REFRESH_MS - 1);
+    expect(await ageOf()).toBeGreaterThan(500);
+    await refreshRuntimeHeartbeat(t0 + HEARTBEAT_REFRESH_MS);
+    expect(await ageOf()).toBeLessThan(5);
+  });
+
+  it("a request in flight holds the renewal; the last one to end stops it", () => {
+    expect(runtimeHeartbeatRenewing()).toBe(false);
+    const chatTurn = holdRuntimeHeartbeat();
+    const tick = holdRuntimeHeartbeat();
+    expect(runtimeHeartbeatRenewing()).toBe(true);
+    chatTurn();
+    chatTurn();
+    expect(runtimeHeartbeatRenewing()).toBe(true);
+    tick();
+    expect(runtimeHeartbeatRenewing()).toBe(false);
+  });
+
+  it("writes again a row another instance deleted while this one idled longer than a day", async () => {
+    const slug = `${PREFIX}idled-a-day`;
+    await boot({
+      slug,
+      version: "0.1.0",
+      tier: 1,
+      schema: {},
+      operations: { noop: async () => ({}) },
+    });
+    expect((await runtimeOf(slug)).map((r) => r.state)).toEqual(["loaded"]);
+    // Another instance's heartbeat deleted the rows older than a day.
+    await withSystemSql((tx) => tx`DELETE FROM plugin_runtime WHERE plugin_slug = ${slug}`);
+    // The next request start here reports it again.
+    await runtimeHeartbeatOnce(infra, SYSTEM_ACTOR_ID);
+    expect(await runtimeOf(slug)).toEqual([
+      { instance_id: hostInstanceId(), state: "loaded", error_id: null },
+    ]);
+    // A plugin that stopped running here is not written back.
+    await clearPluginRuntime({ infra, systemActorId: SYSTEM_ACTOR_ID, slug });
+    await runtimeHeartbeatOnce(infra, SYSTEM_ACTOR_ID);
+    expect(await runtimeOf(slug)).toEqual([]);
   });
 });

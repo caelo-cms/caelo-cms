@@ -110,6 +110,12 @@ export interface ScaleGateReport {
     readonly settle: readonly SlowPlanGroup[] | null;
     readonly load: readonly SlowPlanGroup[] | null;
   };
+  /**
+   * #1270 — the site view's whole reads during the load, per reason, from
+   * the admin log (`[site-view] whole read`); null without `--admin-log`.
+   * Every other stale view was carried forward by the journal.
+   */
+  readonly siteViewWholeReads: Readonly<Record<string, number>> | null;
   /** #1390 — the shipped plugins and what went wrong in their background work. */
   readonly plugins: {
     readonly expected: readonly string[];
@@ -133,6 +139,18 @@ export interface ScaleGateReport {
  * answers it (the operator-facing message of `PoolAcquireTimeoutError`).
  */
 export const POOL_EXHAUSTED = /PoolAcquireTimeoutError|pool had no free connection/;
+
+const SITE_VIEW_WHOLE_READ = /\[site-view\] whole read \([^)]*\): (.+)$/;
+
+/** #1270 — the site view's whole reads in `log`, per reason (branch ids left out). */
+export function countSiteViewWholeReads(log: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const line of log.split("\n")) {
+    const reason = SITE_VIEW_WHOLE_READ.exec(line)?.[1]?.trim();
+    if (reason) out[reason] = (out[reason] ?? 0) + 1;
+  }
+  return out;
+}
 
 /** A call the admin refused (429) that could not be sent again before the deadline. */
 const NOT_RUN = Symbol("not run");
@@ -337,6 +355,17 @@ export function reportTable(r: ScaleGateReport): string {
     ...slowPlanLines("settling the plugins", r.slowPlans.settle),
     ...slowPlanLines("the load", r.slowPlans.load),
     ...pluginLines,
+    "",
+    `Site view whole reads during the load: ${
+      r.siteViewWholeReads === null
+        ? "not counted (no --admin-log)"
+        : Object.keys(r.siteViewWholeReads).length === 0
+          ? "none"
+          : Object.entries(r.siteViewWholeReads)
+              .sort((a, b) => b[1] - a[1])
+              .map(([reason, n]) => `${n} × ${reason}`)
+              .join("; ")
+    }.`,
     "",
     `Variants created: ${r.variantsCreated}. Pool-acquire timeouts: ${r.poolAcquireTimeouts}. Lock waits > 100 ms: ${r.lockWaitsOver100ms}. Overall: ${r.pass ? "pass" : "FAIL"}.`,
   ].join("\n");
@@ -803,6 +832,9 @@ async function main(): Promise<void> {
     lockWaitsOver100ms,
     dbCpu,
     dbStatements: { settle: settleStatements, load: loadStatements },
+    siteViewWholeReads: adminLog
+      ? countSiteViewWholeReads(readFileSync(adminLog).subarray(adminLogStart).toString("utf8"))
+      : null,
     slowPlans: {
       settle: slowPlansBetween(pgLog, pgSettleStart, pgLogStart),
       load: slowPlansBetween(pgLog, pgLogStart),
