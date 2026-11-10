@@ -6,7 +6,7 @@
 -- runner.ts retargetVisitorRole), so both have one schema; only
 -- cms_public_staging gets rows.
 --
--- Redirects are draft state now (cms_admin 0682): `published_redirects`
+-- Redirects are draft state now (cms_admin 0683): `published_redirects`
 -- keeps the live rows, and this table carries the Staged changes of the
 -- shared draft, one per address — a create or change (`to_path` set) or a
 -- removal (`to_path` NULL). The staging gateway serves the live rows with

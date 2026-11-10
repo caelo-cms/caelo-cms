@@ -6,7 +6,7 @@ Decision 2026-10-26 (#1140, #1157): nothing reaches production through a build t
 
 An **address** is a from path, both trailing-slash spellings together: a rule answers its path with and without the slash (`redirectFromPathSpellings`). Each address has a **live state** (a target and status code, or none) and at most one **pending change**: a create, a change or a removal, in state **Draft** (served nowhere, held back by every Publish live) or **Staged** (served by staging, live with the next Publish live). A change's origin is `manual` (a person or the AI chose it) or automatic: `page_move` (a rename, a move, the merge's recompose), `page_delete`, `url_migration`, `revert` or `plugin` (the `international-site` plugin's locale-root redirect). It also records the actor, the chat session (for Undo) and the branch.
 
-Storage (cms_admin migration 0682, cms_public 0683):
+Storage (cms_admin migration 0683, cms_public 0683):
 
 - `redirects` — the live state, as before, plus a stored generated `address` column (indexed: a lookup by address must be an index condition under the table's RLS policy, which an expression with `rtrim()` can never be). Only a release writes it (below).
 - `pending_redirects` — one row per address (`address` unique: the from path without its trailing slash, `caelo_redirect_address`), `to_path` NULL for a removal, `state`, `origin`, `revision` (bumped on every save, so a confirmation binds a version), `actor_id`, `chat_session_id`, `chat_branch_id`. An automatic change cannot be Draft (a CHECK, and the writer refuses it). Journaled (`pending_redirect`, branch-aware).
@@ -61,7 +61,7 @@ Code: `packages/admin-core/src/deploy/redirect-sync.ts` (model, recording), `Sta
 3. Every attempt is recorded (`redirect_syncs`, audit row `redirects.sync_provider`), and a successful one sets `synced_revision`. A failure leaves the target behind (`wanted_revision > synced_revision`). It shows in Settings → Redirects and in the notification bell, the redirect tools' results say "the live redirects are NOT on the hosting yet" with the error, and the scheduler tick retries it with backoff (1 minute, doubling, at most 1 hour). Settings → Redirects also has "Try again now".
 4. A served-build change re-pushes the live table (triggers `build`, `publish`, `rollback`): the build carries the table as it was when it was staged.
 
-The update itself creates no pending change: existing rows stay live and visitors see no change. Migration 0682 deletes the sync state of non-production targets, which nothing pushes any more.
+The update itself creates no pending change: existing rows stay live and visitors see no change. Migration 0683 deletes the sync state of non-production targets, which nothing pushes any more.
 
 Per provider:
 

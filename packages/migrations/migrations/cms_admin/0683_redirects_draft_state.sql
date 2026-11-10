@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0682 — issue #1550: redirects are draft state (Draft, Staged, Live, and
+-- 0683 — issue #1550: redirects are draft state (Draft, Staged, Live, and
 -- Go live now). Docs: docs/dev/redirects-and-settings-sync.md.
 --
 -- `redirects` keeps its meaning: the LIVE state, what the hosting provider
