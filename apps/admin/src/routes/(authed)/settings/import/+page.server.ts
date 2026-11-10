@@ -4,6 +4,7 @@
  * P14 — Site Import Wizard list / new-run.
  */
 
+import { startSiteImportJob } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
@@ -46,9 +47,12 @@ export const actions: Actions = {
     });
     if (!r.ok) return fail(400, { error: r.error.kind });
     const v = r.value as { runId: string };
+    // #1360 — the crawl runs in its own job; a start that fails here is
+    // retried by the next scheduler tick.
+    await startSiteImportJob({ adapter, registry }, v.runId);
     return {
       ok: true,
-      message: `Crawl queued (run ${v.runId.slice(0, 8)}). Open the row to follow progress; the worker picks it up within 10s.`,
+      message: `Crawl started (run ${v.runId.slice(0, 8)}). Open the row to follow progress.`,
     };
   },
 };

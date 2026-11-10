@@ -8,6 +8,7 @@
  * slice by slice.
  */
 
+import { siteData } from "@caelo-cms/shared";
 import { z } from "zod";
 import {
   getPageInspection,
@@ -68,7 +69,9 @@ export const readPageMoreTool: ToolDefinitionWithHandler<ReadPageMoreInput> = {
         : "\n\n[end of page.]";
     return {
       ok: true,
-      content: `## Page text (Markdown) — ${entry.url} [from char ${cursor}]\n${text}${tail}`,
+      content: entry.crawled
+        ? `## Page text (Markdown) — ${siteData(entry.url)} [from char ${cursor}]\n${siteData(text)}${tail}`
+        : `## Page text (Markdown) — ${entry.url} [from char ${cursor}]\n${text}${tail}`,
     };
   },
 };

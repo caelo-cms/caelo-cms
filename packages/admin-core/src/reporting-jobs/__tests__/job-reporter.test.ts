@@ -10,6 +10,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   createJobReporter,
+  isPassingReportFault,
   JobStoppedError,
   ReportError,
   type ReportTransport,
@@ -57,6 +58,53 @@ const refusal = (status: number, code: string, retryAfterSeconds?: number): Repl
     ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
   },
 });
+
+/**
+ * An admin like the real one: it holds parts by upload id, reads an upload
+ * once (also when the action then fails), and fails the action with a 500
+ * `failures` times before it runs it.
+ */
+function readOnceAdmin(failures: number) {
+  const held = new Map<string, Map<number, string>>();
+  const log: string[] = [];
+  const actions: ReportEnvelope[] = [];
+  let failuresLeft = failures;
+  let mostHeld = 0;
+  const reply = (r: Reply) => r as { status: number; answer: ReportAnswer };
+  const transport: ReportTransport = {
+    label: "test",
+    async send(envelope) {
+      if (envelope.action === "upload-part") {
+        const p = envelope.payload as { uploadId: string; part: number; data: string };
+        const parts = held.get(p.uploadId) ?? new Map<number, string>();
+        parts.set(p.part, p.data);
+        held.set(p.uploadId, parts);
+        mostHeld = Math.max(
+          mostHeld,
+          [...held.values()].reduce((n, m) => n + m.size, 0),
+        );
+        log.push("part");
+        return reply(okReply());
+      }
+      if (!envelope.upload) return reply(okReply());
+      actions.push(envelope);
+      const parts = held.get(envelope.upload.uploadId);
+      if (parts?.size !== envelope.upload.parts) {
+        log.push("gone");
+        return reply(refusal(400, "incomplete-upload"));
+      }
+      held.delete(envelope.upload.uploadId);
+      if (failuresLeft > 0) {
+        failuresLeft -= 1;
+        log.push("failed");
+        return reply(refusal(500, "failed"));
+      }
+      log.push("ran");
+      return reply(okReply("recorded"));
+    },
+  };
+  return { transport, log, actions, mostHeld: () => mostHeld };
+}
 
 function clock() {
   let t = 0;
@@ -125,7 +173,48 @@ describe("createJobReporter", () => {
     expect(await r.call("result", big)).toBe("recorded");
     const actions = t.sent.filter((e) => e.action === "result");
     expect(actions).toHaveLength(2);
-    expect(actions[0]?.upload?.uploadId).not.toBe(actions[1]?.upload?.uploadId);
+    // The same upload: a part sent again replaces itself.
+    expect(actions[0]?.upload?.uploadId).toBe(actions[1]?.upload?.uploadId as string);
+    const parts = t.sent.filter((e) => e.action === "upload-part");
+    expect(parts).toHaveLength(2 * (actions[0]?.upload?.parts ?? 0));
+  });
+
+  it("#1359 review: an uploaded action that fails after the admin read its parts is sent again with its parts, as often as the budget allows", async () => {
+    const c = clock();
+    const admin = readOnceAdmin(2);
+    const r = createJobReporter(ORDER, admin.transport, { sleep: c.sleep, now: c.now });
+    const big = { blob: "x".repeat(INLINE_PAYLOAD_CHARS * 2) };
+    expect(await r.call("batch", big)).toBe("recorded");
+    const n = admin.actions[0]?.upload?.parts ?? 0;
+    const parts = Array.from({ length: n }, () => "part");
+    expect(admin.log).toEqual([
+      ...parts,
+      "failed",
+      "gone",
+      ...parts,
+      "failed",
+      "gone",
+      ...parts,
+      "ran",
+    ]);
+    // One upload throughout: the run never holds more than one copy.
+    expect(new Set(admin.actions.map((e) => e.upload?.uploadId)).size).toBe(1);
+    expect(admin.mostHeld()).toBe(n);
+  });
+
+  it("#1359 review: an uploaded action that keeps failing ends on its own failure, a passing fault, not on the parts its retry found gone", async () => {
+    const c = clock();
+    const admin = readOnceAdmin(Number.POSITIVE_INFINITY);
+    const r = createJobReporter(ORDER, admin.transport, { sleep: c.sleep, now: c.now });
+    const big = { blob: "x".repeat(INLINE_PAYLOAD_CHARS * 2) };
+    const e = await r.call("batch", big).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ReportError);
+    expect((e as ReportError).status).toBe(500);
+    expect((e as ReportError).code).toBe("failed");
+    expect(isPassingReportFault(e)).toBe(true);
+    // Retried for the whole budget, not given up after two failures.
+    expect(admin.log.filter((l) => l === "failed").length).toBeGreaterThan(5);
+    expect(c.now()).toBeLessThanOrEqual(3 * 60_000);
   });
 
   it("retries a starting or busy admin, waiting as a 429 asks", async () => {

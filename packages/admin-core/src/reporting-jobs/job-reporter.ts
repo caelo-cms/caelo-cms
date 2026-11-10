@@ -158,6 +158,17 @@ function retryable(status: number): boolean {
   return status === 429 || status === 502 || status === 503 || status === 504 || status === 500;
 }
 
+/** One send of a report: its answer, or why not and whether to send it again. */
+type SendOutcome =
+  | { readonly ok: true; readonly value: unknown }
+  | {
+      readonly ok: false;
+      readonly error: ReportError;
+      readonly retry: boolean;
+      /** How long the admin asked to wait (429's Retry-After). */
+      readonly waitMs?: number;
+    };
+
 /** A reporter for one attempt over `transport`. */
 export function createJobReporter(
   order: JobOrder,
@@ -169,48 +180,61 @@ export function createJobReporter(
   const budget = options.retryBudgetMs ?? 3 * 60_000;
   let stopped: JobStoppedError | null = null;
 
-  async function send(envelope: ReportEnvelope): Promise<unknown> {
-    const deadline = now() + budget;
-    let delay = 1000;
-    for (;;) {
-      if (stopped) throw stopped;
-      let status: number;
-      let answer: ReportAnswer;
-      try {
-        ({ status, answer } = await transport.send(envelope));
-      } catch (e) {
-        if (now() + delay > deadline) {
-          throw new ReportError(
-            `could not reach the admin through ${transport.label} for ${Math.round(budget / 1000)} s: ${e instanceof Error ? e.message : String(e)}`,
-            0,
-            "unreachable",
-          );
-        }
-        await sleep(delay);
-        delay = Math.min(delay * 2, 30_000);
-        continue;
-      }
-      if (answer.ok) return answer.value;
-      if (status === 409) {
-        stopped = new JobStoppedError(answer.error.code, answer.error.message);
-        throw stopped;
-      }
-      if (retryable(status)) {
-        const wait =
-          answer.retryAfterSeconds !== undefined ? answer.retryAfterSeconds * 1000 : delay;
-        if (now() + wait <= deadline) {
-          await sleep(wait);
-          delay = Math.min(delay * 2, 30_000);
-          continue;
-        }
-      }
-      throw new ReportError(
+  async function sendOnce(envelope: ReportEnvelope): Promise<SendOutcome> {
+    if (stopped) throw stopped;
+    let status: number;
+    let answer: ReportAnswer;
+    try {
+      ({ status, answer } = await transport.send(envelope));
+    } catch (e) {
+      return {
+        ok: false,
+        retry: true,
+        error: new ReportError(
+          `could not reach the admin through ${transport.label} for ${Math.round(budget / 1000)} s: ${e instanceof Error ? e.message : String(e)}`,
+          0,
+          "unreachable",
+        ),
+      };
+    }
+    if (answer.ok) return { ok: true, value: answer.value };
+    if (status === 409) {
+      stopped = new JobStoppedError(answer.error.code, answer.error.message);
+      throw stopped;
+    }
+    return {
+      ok: false,
+      retry: retryable(status),
+      ...(answer.retryAfterSeconds !== undefined
+        ? { waitMs: answer.retryAfterSeconds * 1000 }
+        : {}),
+      error: new ReportError(
         `the admin refused "${envelope.action}" (HTTP ${status}, ${answer.error.code}): ${answer.error.message}`,
         status,
         answer.error.code,
-      );
+      ),
+    };
+  }
+
+  /**
+   * Runs `sendIt` again while it fails in a way worth retrying, for at most
+   * the retry budget, then fails with its last failure: a passing fault
+   * stays one.
+   */
+  async function retried(sendIt: () => Promise<SendOutcome>): Promise<unknown> {
+    const deadline = now() + budget;
+    let delay = 1000;
+    for (;;) {
+      const outcome = await sendIt();
+      if (outcome.ok) return outcome.value;
+      const wait = outcome.waitMs ?? delay;
+      if (!outcome.retry || now() + wait > deadline) throw outcome.error;
+      await sleep(wait);
+      delay = Math.min(delay * 2, 30_000);
     }
   }
+
+  const send = (envelope: ReportEnvelope): Promise<unknown> => retried(() => sendOnce(envelope));
 
   const base = { subjectId: order.subjectId, attempt: order.attempt };
   return {
@@ -233,21 +257,36 @@ export function createJobReporter(
           "too-large",
         );
       }
-      const uploaded = async (): Promise<T> => {
-        const uploadId = randomUUID();
+      // One upload id for the call: a part sent again replaces itself, so a
+      // retry never adds to what the run holds.
+      const uploadId = randomUUID();
+      const envelope: ReportEnvelope = {
+        ...base,
+        action,
+        upload: { uploadId, parts: parts.length },
+      };
+      const sendParts = async (): Promise<void> => {
         for (const [part, data] of parts.entries()) {
           await send({ ...base, action: "upload-part", payload: { uploadId, part, data } });
         }
-        return (await send({ ...base, action, upload: { uploadId, parts: parts.length } })) as T;
       };
-      try {
-        return await uploaded();
-      } catch (e) {
-        // The admin reads an upload once; when the action failed after
-        // that (and its retry found the parts gone), send them once more.
-        if (e instanceof ReportError && e.code === "incomplete-upload") return uploaded();
-        throw e;
-      }
+      await sendParts();
+      // The admin reads an upload once, also when the action then fails or
+      // its answer is lost. A retry that finds the parts gone sends them
+      // again and the action after them, as often as the retry budget
+      // allows, so the failure the budget ends on is the action's own: a
+      // passing fault stays one (#1359).
+      return (await retried(async () => {
+        const outcome = await sendOnce(envelope);
+        if (outcome.ok || outcome.error.code !== "incomplete-upload") return outcome;
+        await sendParts();
+        const again = await sendOnce(envelope);
+        // Gone right after they were sent (a request delivered twice): worth
+        // another try within the budget, not a verdict.
+        return !again.ok && again.error.code === "incomplete-upload"
+          ? { ...again, retry: true }
+          : again;
+      })) as T;
     },
   };
 }

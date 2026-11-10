@@ -94,6 +94,18 @@ describe("authorizeJobReport (#1359)", () => {
     expect(await status(authorizeJobReport(reportRequest({}), "quality_audit", env))).toBe(401);
   });
 
+  it("#1360: each kind takes reports from its own job only — the crawler is not the audit runner", async () => {
+    const crawler = "caelo-production-import@p.iam.gserviceaccount.com";
+    const both = { ...env, CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT: crawler };
+    const as = (email: string) =>
+      reportRequest({
+        [IAP_ASSERTION_HEADER]: signIapTestAssertionForTests(KEY, { aud: AUDIENCE, email }),
+      });
+    expect(await status(authorizeJobReport(as(crawler), "site_import", both))).toBe("ok");
+    expect(await status(authorizeJobReport(as(RUNNER_SA), "site_import", both))).toBe(401);
+    expect(await status(authorizeJobReport(as(crawler), "quality_audit", both))).toBe(401);
+  });
+
   it("takes no report over HTTP where the jobs run inside the admin (no runner account set)", async () => {
     const assertion = signIapTestAssertionForTests(KEY, { aud: AUDIENCE, email: RUNNER_SA });
     expect(

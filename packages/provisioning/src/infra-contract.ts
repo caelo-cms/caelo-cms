@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 25;
+export const INFRA_CONTRACT_VERSION = 26;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -213,6 +213,17 @@ export const INFRA_CONTRACT_VERSION = 25;
 //       starts every Stage audit on that job and the app-roll moves its
 //       image, so an in-cloud upgrader must not roll an install onto it
 //       before it exists.
+//  26 — #1360: the site-import crawler (reporting-job-setup.ts), the job a
+//       site import's crawl runs in instead of the admin's process. Its
+//       service account (token creator on itself, logWriter, IAP access to
+//       the admin; no bucket, no other job: the admin renders every page),
+//       the job `caelo-<env>-import`, the admin's run-with-overrides and
+//       viewer on it, the upgrader's actAs on its account, the account in
+//       the operator-access job's CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS
+//       and CAELO_IMPORT_CRAWL_JOB / CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT on
+//       the admin. The new admin starts every crawl on that job and the
+//       app-roll moves its image, so an in-cloud upgrader must not roll an
+//       install onto it before it exists.
 //
 // #1029 is deliberately NOT a bump. The upgrader job's stage 1 moves the job
 // onto the target's ops image with rights it has held on itself since
@@ -252,6 +263,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   23: "the admin's permission on Google Cloud load-balancer installs to set the site's security headers on the static backend bucket at Publish live (#1454)",
   24: "the admin's permission on Google Cloud load-balancer installs to read the static bucket's settings, without which Publish live could not set the site's security headers (#1454)",
   25: "the quality-audit runner: a job of its own that runs each Stage's quality audit and reports the result to the admin, its service account and grants (#1359)",
+  26: "the site-import crawler: a job of its own that crawls each site import and reports every page to the admin, its service account and grants (#1360)",
 };
 
 /**

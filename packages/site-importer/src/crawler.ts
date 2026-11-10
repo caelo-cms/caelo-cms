@@ -160,6 +160,31 @@ export interface CrawlOptions {
   readonly batchSize?: number;
   /** Parallel fetches. Default 4. */
   readonly concurrency?: number;
+  /**
+   * #1360 — a reason to end the crawl early, asked before each next URL
+   * (a render budget the caller spent). The pages crawled so far stay the
+   * result; every URL not taken yet is recorded as skipped with the reason.
+   */
+  readonly stopWhen?: () => string | null;
+  /**
+   * #1360 — the caller abandons the crawl (its attempt stopped): no worker
+   * takes another URL or waits out the throttle for one, nothing more is
+   * flushed, and the crawl rejects with the signal's reason. Unlike
+   * `stopWhen`, which ends the crawl with its result.
+   */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * #1360 — what a fetcher throws to skip one page on purpose: the crawl
+ * records it in the skip ledger with the error's message and goes on, at
+ * any depth, and does not fetch the page another way instead.
+ */
+export const CRAWL_SKIP = "CrawlSkip" as const;
+
+/** Whether `err` asks the crawl to skip its page (see {@link CRAWL_SKIP}). */
+export function isCrawlSkipError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === CRAWL_SKIP;
 }
 
 export interface CrawledPage {
@@ -404,25 +429,52 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
 
   const pages: CrawledPage[] = [];
   let batch: CrawledPage[] = [];
+  /** The requested URL of each page in `batch`, in order. */
+  let batchKeys: string[] = [];
   let sinceFlush = 0;
 
+  // issue #1360 — what a streaming checkpoint must not count as done. A URL
+  // is marked seen when a worker takes it, but its page is written only when
+  // a later flush hands it to `onBatch`; meanwhile other workers keep
+  // crawling. A checkpoint that called those URLs seen would resume without
+  // them, and their pages would be lost for good. So with `onBatch` a
+  // checkpoint puts back in front of the queue every URL still in flight and
+  // every page not yet written (with the final URL a redirect marked seen),
+  // and counts only the written pages. Without `onBatch` the pages are the
+  // result itself, and a checkpoint keeps meaning progress.
+  const inFlight = new Map<string, { url: string; depth: number }>();
+  const unwritten = new Map<
+    string,
+    { readonly entry: { url: string; depth: number }; readonly finalUrl?: string }
+  >();
+
   const flush = async (): Promise<void> => {
+    // Counted from the start of this flush: a worker that finishes a page
+    // while it is written does not start a second flush of one page.
+    sinceFlush = 0;
     if (opts.onBatch && batch.length > 0) {
       const toSend = batch;
+      const keys = batchKeys;
       batch = [];
+      batchKeys = [];
       await opts.onBatch(toSend);
+      for (const k of keys) unwritten.delete(k);
     }
     if (opts.onCheckpoint) {
+      const pending = opts.onBatch
+        ? [...inFlight.values(), ...[...unwritten.values()].map((u) => u.entry)]
+        : [];
+      const notSeen = new Set(pending.map((e) => e.url));
+      for (const u of unwritten.values()) if (u.finalUrl) notSeen.add(u.finalUrl);
       await opts.onCheckpoint({
-        queue: [...queue],
-        seen: [...seen],
-        pagesCrawled,
+        queue: [...pending, ...queue],
+        seen: [...seen].filter((u) => !notSeen.has(u)),
+        pagesCrawled: pagesCrawled - unwritten.size,
         errors: [...errors],
         skipped: [...skipped],
         skippedOutOfScope,
       });
     }
-    sinceFlush = 0;
   };
 
   // Shared polite gate: request STARTS are spaced by `throttle` across
@@ -433,7 +485,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     const now = Date.now();
     const wait = Math.max(0, nextStartAt - now);
     nextStartAt = Math.max(now, nextStartAt) + throttle;
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    if (wait > 0) await abortableSleep(wait, opts.signal);
   };
 
   // Definite after the setup above; a const alias keeps the closure's type
@@ -441,6 +493,15 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   const pageFetcher = fetcher;
 
   const processOne = async (next: { url: string; depth: number }): Promise<void> => {
+    inFlight.set(next.url, next);
+    try {
+      await processPage(next);
+    } finally {
+      inFlight.delete(next.url);
+    }
+  };
+
+  const processPage = async (next: { url: string; depth: number }): Promise<void> => {
     // issue #425 — the scope's path-prefix rule decides PRE-fetch, at the
     // single point every URL passes through (crawl root, frontier links,
     // sitemap seeds, LIST entries alike): out-of-scope URLs are recorded
@@ -457,6 +518,8 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       }
     }
     await politeWait();
+    // An abandoned crawl fetches nothing more, also after waiting its turn.
+    if (opts.signal?.aborted) return;
     let res: PageFetchResult;
     try {
       res = await pageFetcher(next.url);
@@ -464,6 +527,10 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       // A blocked ROOT URL means the whole crawl is pointless — fail the
       // run loudly (no-fallbacks pre-1.0) instead of returning an empty
       // "ready for review" result. Blocked in-site links merely record.
+      if (isCrawlSkipError(e)) {
+        recordSkip(next.url, (e as Error).message, false);
+        return;
+      }
       if (next.depth === 0 && isExternalUrlBlockedError(e)) throw e;
       errors.push({ url: next.url, reason: (e as Error).message });
       return;
@@ -577,8 +644,11 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     }
     pagesCrawled += 1;
     sinceFlush += 1;
-    if (opts.onBatch) batch.push(page);
-    else pages.push(page);
+    if (opts.onBatch) {
+      batch.push(page);
+      batchKeys.push(next.url);
+      unwritten.set(next.url, { entry: next, ...(redirected ? { finalUrl } : {}) });
+    } else pages.push(page);
 
     // Enqueue same-domain links if depth allows.
     if (next.depth < depth) {
@@ -605,6 +675,15 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   // synchronously before awaiting, so no URL is fetched twice.
   const worker = async (): Promise<void> => {
     while (pagesCrawled < maxPages) {
+      if (opts.signal?.aborted) return;
+      const stop = opts.stopWhen?.() ?? null;
+      if (stop !== null) {
+        // The pages crawled so far stay the result; what was left is skipped.
+        for (const left of queue.splice(0)) {
+          if (!seen.has(left.url)) recordSkip(left.url, `not crawled: ${stop}`, false);
+        }
+        return;
+      }
       const next = queue.shift();
       if (!next) return;
       if (seen.has(next.url)) continue;
@@ -625,6 +704,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       }
     }
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    opts.signal?.throwIfAborted();
     await flush();
 
     return { pages, seenCount: seen.size, pagesCrawled, errors, skipped, skippedOutOfScope, scope };
@@ -635,6 +715,23 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     // a dispose failure must not mask a crawl result or a real error.
     if (ownsScreenshotter) await screenshotter?.dispose().catch(() => undefined);
   }
+}
+
+/** Resolves after `ms`, or at once when `signal` aborts. */
+function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
@@ -700,7 +797,7 @@ function makeCaptureFetcher(
       // A blocked URL is a hard stop — the same SSRF policy would reject it
       // on the fallback path too, less clearly. Everything else degrades to
       // the content-only fallback below.
-      if (isExternalUrlBlockedError(e)) throw e;
+      if (isExternalUrlBlockedError(e) || isCrawlSkipError(e)) throw e;
       shot = null;
     }
 

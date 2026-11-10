@@ -63,6 +63,7 @@ import {
   majorUnitsToMicrocents,
   roundsToZeroMicrocents,
 } from "./imports-cost.js";
+import { renderBudget } from "./imports-crawl.js";
 import {
   importCrawlScopeSchema,
   normalizeStoredCrawlScope,
@@ -87,7 +88,7 @@ const tokenFrequency = z.object({ value: z.string().max(500), count: z.number().
 // -card / -button). Bounded like the role records so stored jsonb can
 // never balloon.
 const spacingScale = z.record(z.string().max(40), z.string().max(80));
-const pageDesignTokensSchema: z.ZodType<PageDesignTokens> = z.object({
+export const pageDesignTokensSchema: z.ZodType<PageDesignTokens> = z.object({
   palette: z.array(tokenFrequency).max(16),
   backgrounds: z.array(tokenFrequency).max(16),
   fontFamilies: z.array(tokenFrequency).max(16),
@@ -859,7 +860,7 @@ export const rejectImportProposalOp = defineOperation({
 export const updateImportRunStatusOp = defineOperation({
   name: "imports.update_run_status",
   readScope: "request",
-  // Why system-only: crawl-worker write-back; the AI reads run state, it does not author it.
+  // Why system-only: the crawl's write-back; the AI reads run state, it does not author it.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -1003,20 +1004,27 @@ export const logImportRunEventsOp = defineOperation({
 });
 
 /**
- * The crawl worker writes ONE import page's captured ground truth: the
- * source screenshot's object key + the computed-style design-token sample
- * taken in the same render session. Both are recorded COALESCE-style so a
- * later capture never clobbers an earlier one with a null.
+ * The crawl's second pass records ONE import page's captured ground truth
+ * (#1360: reported by the crawl's job): the source screenshot's object key
+ * + the computed-style design-token sample taken in the same render
+ * session. Both are recorded COALESCE-style so a later capture never
+ * clobbers an earlier one with a null.
  */
 export const updatePageCaptureOp = defineOperation({
   name: "imports.update_page_capture",
   readScope: "request",
-  // Why system-only: crawl-worker write-back of observed screenshots/tokens — ground truth the AI
+  // Why system-only: the crawl's write-back of observed screenshots/tokens — ground truth the AI
   // reads, never writes.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
     .object({
+      /**
+       * #1360 — the crawl's run: the crawl's job names pages by id, and a
+       * page of another run, or of a run that stopped crawling, is none of
+       * its business.
+       */
+      runId: z.string().uuid(),
       importPageId: z.string().uuid(),
       screenshotObjectKey: z.string().max(500).optional(),
       /** issue #247 — per-page computed-style token summary, sampled
@@ -1024,27 +1032,33 @@ export const updatePageCaptureOp = defineOperation({
       sampledDesignTokens: pageDesignTokensSchema.optional(),
     })
     .strict(),
-  output: z.object({}),
+  output: z.object({
+    /** False when no page matched (another run's, deleted, or the run ended). */
+    updated: z.boolean(),
+  }),
   handler: async (_ctx, input, tx) => {
-    await tx.execute(sql`
-      UPDATE import_pages
-         SET screenshot_object_key = COALESCE(${input.screenshotObjectKey ?? null}, screenshot_object_key),
+    const rows = (await tx.execute(sql`
+      UPDATE import_pages p
+         SET screenshot_object_key = COALESCE(${input.screenshotObjectKey ?? null}, p.screenshot_object_key),
              -- (::text)::jsonb keeps bun-postgres on the text path (see
              -- the add_page_notes comment for the double-encode trap).
              sampled_design_tokens = COALESCE(
                (${input.sampledDesignTokens ? JSON.stringify(input.sampledDesignTokens) : null}::text)::jsonb,
-               sampled_design_tokens
+               p.sampled_design_tokens
              )
-       WHERE id = ${input.importPageId}::uuid
-    `);
-    return ok({});
+        FROM import_runs r
+       WHERE p.id = ${input.importPageId}::uuid AND p.run_id = ${input.runId}::uuid
+         AND r.id = p.run_id AND r.status = 'crawling'
+       RETURNING p.id
+    `)) as unknown as { id: string }[];
+    return ok({ updated: rows.length > 0 });
   },
 });
 
 /**
  * issue #423 — bulk capture persistence for the crawl-time ground truth.
  * The crawler captures screenshot + computed-style tokens in the SAME
- * render session that yields each page's HTML; the crawl worker's batch
+ * render session that yields each page's HTML; the crawl's batch
  * flush lands them here in ONE call per batch (CLAUDE.md §11 bulk-first),
  * keyed by the run's UNIQUE(run_id, source_url) so no import_pages id is
  * needed at write time. Returns the resolved ids so the caller can attach
@@ -1057,7 +1071,7 @@ export const updatePageCaptureOp = defineOperation({
 export const setPageCapturesByUrlOp = defineOperation({
   name: "imports.set_page_captures_by_url",
   readScope: "request",
-  // Why system-only: crawl-worker write-back of observed captures — ground truth the AI reads,
+  // Why system-only: the crawl's write-back of observed captures — ground truth the AI reads,
   // never writes.
   actorScope: ["system"],
   database: "cms_admin",
@@ -1074,7 +1088,7 @@ export const setPageCapturesByUrlOp = defineOperation({
             })
             .strict()
             // A bare sourceUrl would COALESCE both columns to themselves —
-            // a silent no-op UPDATE that hides a crawl-worker bug (§2).
+            // a silent no-op UPDATE that hides a crawl bug (§2).
             .refine(
               (c) => c.screenshotObjectKey !== undefined || c.sampledDesignTokens !== undefined,
               {
@@ -1124,7 +1138,7 @@ export const setPageCapturesByUrlOp = defineOperation({
 export const setRunDesignTokensOp = defineOperation({
   name: "imports.set_run_design_tokens",
   readScope: "request",
-  // Why system-only: crawl-worker write-back of the observed design tokens — ground truth the AI
+  // Why system-only: the crawl's write-back of the observed design tokens — ground truth the AI
   // reads, never writes.
   actorScope: ["system"],
   database: "cms_admin",
@@ -1416,7 +1430,7 @@ export const getImportPageGistOp = defineOperation({
 export const writeExtractedPagesOp = defineOperation({
   name: "imports.write_extracted_pages",
   readScope: "request",
-  // Why system-only: crawl-worker write-back of the extracted pages — ground truth the AI reads,
+  // Why system-only: the crawl's write-back of the extracted pages — ground truth the AI reads,
   // never writes.
   actorScope: ["system"],
   database: "cms_admin",
@@ -1759,7 +1773,7 @@ export const acceptImportedPagesOp = defineOperation({
 });
 
 // issue #247 — `screenshot_missing` / `design_tokens_missing` are
-// SYSTEM-written by the crawl worker's ground-truth capture pass (a
+// SYSTEM-written by the crawl's ground-truth capture pass (a
 // page without a source screenshot is UNVERIFIED, loudly — CLAUDE.md §2
 // no-fallbacks). The AI-facing add_import_page_notes tool deliberately
 // keeps the original five: the model reports content findings, it never
@@ -2239,6 +2253,11 @@ export const getImportRunReportOp = defineOperation({
     /** issue #425 — skipped URLs with why (out-of-scope, wrong-locale,
      *  redirect duplicates), capped like `crawlErrors`. */
     crawlSkipped: z.array(z.object({ url: z.string(), reason: z.string() })),
+    /** #1360 — the crawl's renders against its budget, from the admin's own
+     *  counter. `used >= budget`: the crawl spent it and ended with the
+     *  pages it had, also when the capped `crawlSkipped` holds no
+     *  "not crawled" entry. */
+    renderBudget: z.object({ used: z.number(), budget: z.number(), maxPages: z.number() }),
     /** issue #247 — pages with NO source screenshot. Each also carries
      *  a screenshot_missing note; downstream verification (WS4) treats
      *  them as UNVERIFIED. */
@@ -2318,7 +2337,7 @@ export const getImportRunReportOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
       SELECT source_url, status, pages_seen, pages_extracted, crawl_state, crawl_scope,
-             site_design_tokens, boilerplate_summary
+             site_design_tokens, boilerplate_summary, max_pages, crawl_renders
       FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
     `)) as unknown as Array<{
       source_url: string;
@@ -2329,6 +2348,8 @@ export const getImportRunReportOp = defineOperation({
       crawl_scope: unknown;
       site_design_tokens: unknown;
       boilerplate_summary: unknown;
+      max_pages: number;
+      crawl_renders: number;
     }>;
     const run = runRows[0];
     if (!run) {
@@ -2475,6 +2496,11 @@ export const getImportRunReportOp = defineOperation({
       crawlScope: normalizeStoredCrawlScope(run.crawl_scope),
       skippedOutOfScope,
       crawlSkipped,
+      renderBudget: {
+        used: run.crawl_renders,
+        budget: renderBudget(run.max_pages),
+        maxPages: run.max_pages,
+      },
       pagesMissingScreenshot: pages.filter((p) => p.screenshot_object_key === null).length,
       captureStats,
       siteDesignTokens: run.site_design_tokens ?? null,

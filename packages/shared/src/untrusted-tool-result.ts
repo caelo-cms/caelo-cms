@@ -53,3 +53,20 @@ export function untrustedToolResultValue(content: string): unknown {
   }
   return JSON.parse(lines[2] as string);
 }
+
+/** The element that marks content crawled from another website (#1360). */
+export const SITE_DATA_TAG = "site-data";
+
+/**
+ * Mark `text` as crawled from another website, for the admin AI (#1360): a
+ * site import's pages, titles, URLs and what its crawl reported about them
+ * come from a job that read third-party pages, so any of it may be an
+ * attempt to instruct the AI. Inline, so the tool's own guidance around it
+ * stays Caelo's; the static system prompt says what the element means. A
+ * closing tag inside the text is escaped, so crawled text cannot end the
+ * element early and go on as if it were outside it; everything else stays
+ * as it is, so the HTML and Markdown the AI rebuilds from stay readable.
+ */
+export function siteData(text: string): string {
+  return `<${SITE_DATA_TAG}>${text.replace(/<\/(site-data)/gi, "<\\/$1")}</${SITE_DATA_TAG}>`;
+}

@@ -83,6 +83,7 @@ import {
   auditServiceAccountEmail,
   captureServiceAccountEmail,
   gatewayServiceAccountEmail,
+  importCrawlServiceAccountEmail,
   mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
@@ -392,6 +393,11 @@ export async function ensureUpgraderJob(
       account: auditRunnerServiceAccountEmail(projectId, env),
       role: "roles/iam.serviceAccountUser",
       why: "the app-roll moves the quality-audit runner, which runs as it, onto the new image",
+    },
+    {
+      account: importCrawlServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "the app-roll moves the site-import crawler, which runs as it, onto the new image",
     },
     {
       account: mcpIapServiceAccountEmail(projectId),

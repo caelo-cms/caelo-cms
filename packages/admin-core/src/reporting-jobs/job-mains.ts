@@ -9,10 +9,12 @@
  */
 
 import { runQualityAuditJob } from "../quality/audit-job.js";
+import { runSiteImportJob } from "../site-import/crawl-job.js";
 import type { ReportingJobKind } from "./protocol.js";
 import type { JobMain } from "./run-job.js";
 
 /** The main function of each kind. */
 export const JOB_MAINS: Readonly<Record<ReportingJobKind, JobMain>> = {
   quality_audit: (reporter) => runQualityAuditJob(reporter),
+  site_import: (reporter) => runSiteImportJob(reporter),
 };

@@ -8,7 +8,13 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { type CrawlCheckpoint, type CrawledPage, crawlSite, USER_AGENT } from "./crawler.js";
+import {
+  CRAWL_SKIP,
+  type CrawlCheckpoint,
+  type CrawledPage,
+  crawlSite,
+  USER_AGENT,
+} from "./crawler.js";
 import { isPathAllowed, parseRobotsTxt } from "./robots.js";
 import { discoverSitemapUrls, extractLocValues } from "./sitemap.js";
 
@@ -199,6 +205,150 @@ describe("streaming + checkpoint/resume (#192)", () => {
     for (const seenUrl of mid.seen) {
       expect(siteB.fetched).not.toContain(seenUrl);
     }
+  });
+
+  it("#1360: a checkpoint keeps the pages still in flight or not yet written, so a killed crawl loses none", async () => {
+    // Slow pages: while one worker flushes a batch, the others are still
+    // fetching, and pages land in the next batch after the checkpoint.
+    const site = makeSite(routes);
+    const slow = async (url: string) => {
+      await new Promise((r) => setTimeout(r, url.endsWith("/p0") ? 1 : 15));
+      return site.fetcher(url);
+    };
+    const written: string[] = [];
+    let mid: CrawlCheckpoint | null = null;
+    let writtenAtMid: string[] = [];
+    await crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: slow,
+      throttleMs: 0,
+      maxPages: 50,
+      batchSize: 2,
+      concurrency: 4,
+      onBatch: async (b) => {
+        written.push(...b.map((p) => p.url));
+      },
+      onCheckpoint: async (cp) => {
+        if (mid === null && cp.pagesCrawled > 0 && cp.pagesCrawled < 10) {
+          mid = structuredClone(cp);
+          writtenAtMid = [...written];
+        }
+      },
+    });
+    const cp = mid as CrawlCheckpoint | null;
+    if (!cp) throw new Error("no mid-crawl checkpoint");
+    // Only what was written counts as crawled.
+    expect(cp.pagesCrawled).toBe(writtenAtMid.length);
+    for (const url of cp.seen) expect(writtenAtMid).toContain(url);
+    // The job died right after that checkpoint: what it had written is
+    // kept, and the next attempt crawls every other page.
+    const resumed = await crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: makeSite(routes).fetcher,
+      throttleMs: 0,
+      maxPages: 50,
+      resumeFrom: cp,
+    });
+    const all = new Set([...writtenAtMid, ...resumed.pages.map((p) => p.url)]);
+    expect(all.size).toBe(10);
+    expect(resumed.pagesCrawled).toBe(10);
+  });
+
+  it("#1360: stopWhen ends the crawl with its pages and records what was left as skipped", async () => {
+    const site = makeSite(routes);
+    let fetched = 0;
+    const result = await crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: async (url) => {
+        fetched += 1;
+        return site.fetcher(url);
+      },
+      throttleMs: 0,
+      maxPages: 50,
+      concurrency: 1,
+      stopWhen: () => (fetched >= 4 ? "the budget is spent" : null),
+    });
+    expect(result.pagesCrawled).toBe(4);
+    const left = result.skipped.filter((s) => s.reason === "not crawled: the budget is spent");
+    expect(left).toHaveLength(6);
+  });
+
+  it("#1360 review: an aborted signal ends the crawl at once: no URL is taken or waited for after it, nothing is flushed, the crawl rejects with the reason", async () => {
+    const many: Record<string, string> = {
+      "/": page(
+        "Home",
+        Array.from({ length: 50 }, (_, i) => `/q${i}`),
+      ),
+    };
+    for (let i = 0; i < 50; i++) many[`/q${i}`] = page(`Q${i}`);
+    const site = makeSite(many);
+    const halt = new AbortController();
+    const flushed: string[] = [];
+    // The root is fetched at once; every later start waits 10 s for its
+    // turn. Only an abort that wakes the waiting workers ends this within
+    // the test's timeout.
+    setTimeout(() => halt.abort(new Error("the attempt stopped")), 50);
+    const crawl = crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: site.fetcher,
+      throttleMs: 10_000,
+      maxPages: 100,
+      concurrency: 4,
+      signal: halt.signal,
+      onBatch: async (b) => {
+        flushed.push(...b.map((p) => p.url));
+      },
+      onCheckpoint: async () => {
+        flushed.push("checkpoint");
+      },
+    });
+    await expect(crawl).rejects.toThrow("the attempt stopped");
+    expect(site.fetched).toEqual(["https://site.example/"]);
+    expect(flushed).toEqual([]);
+  });
+
+  it("#1360: a fetcher's skip is a skip at any depth, LIST mode's included", async () => {
+    const site = makeSite(routes);
+    const result = await crawlSite({
+      sourceUrl: "https://site.example/",
+      urls: ["https://site.example/p0", "https://site.example/p1"],
+      fetcher: async (url) => {
+        if (url.endsWith("/p0")) {
+          throw Object.assign(new Error("out of renders"), { code: CRAWL_SKIP });
+        }
+        return site.fetcher(url);
+      },
+      throttleMs: 0,
+    });
+    // LIST mode fetches the chosen URLs and the source; the skipped one is neither crawled nor an error.
+    const crawled = result.pages.map((p) => p.url);
+    expect(crawled).toContain("https://site.example/p1");
+    expect(crawled).not.toContain("https://site.example/p0");
+    expect(result.skipped).toContainEqual({
+      url: "https://site.example/p0",
+      reason: "out of renders",
+    });
+    expect(result.errors).toEqual([]);
+  });
+
+  it("#1360 review: without onBatch a checkpoint still means progress (the pages are the result)", async () => {
+    const site = makeSite(routes);
+    const checkpoints: CrawlCheckpoint[] = [];
+    const result = await crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: site.fetcher,
+      throttleMs: 0,
+      maxPages: 50,
+      batchSize: 3,
+      onCheckpoint: async (cp) => {
+        checkpoints.push(structuredClone(cp));
+      },
+    });
+    expect(result.pages).toHaveLength(10);
+    const last = checkpoints.at(-1);
+    expect(last?.pagesCrawled).toBe(10);
+    expect(last?.seen).toHaveLength(10);
+    expect(last?.queue).toEqual([]);
   });
 });
 

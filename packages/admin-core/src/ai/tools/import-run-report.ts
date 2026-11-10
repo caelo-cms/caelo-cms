@@ -9,6 +9,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { siteData } from "@caelo-cms/shared";
 import { z } from "zod";
 import { formatMicrocentsAsMoney } from "../../ops/imports-cost.js";
 import { describeError, toolError } from "./_describe-error.js";
@@ -106,6 +107,8 @@ interface Report {
   crawlScope: { pathPrefix?: string; locale?: string } | null;
   skippedOutOfScope: number;
   crawlSkipped: { url: string; reason: string }[];
+  // #1360 — renders against the budget, from the admin's own counter.
+  renderBudget: { used: number; budget: number; maxPages: number };
   pagesMissingScreenshot: number;
   // issue #423 — visual-ground-truth ledger (see imports.get_run_report).
   captureStats: { captured: number; failed: number; skipped: number };
@@ -246,7 +249,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
     }
 
     const lines = [
-      `# Migration report — ${v.sourceUrl} (${v.status})`,
+      `# Migration report — ${siteData(v.sourceUrl)} (${v.status})`,
       costLine,
       calibrationLine,
       `Pages: ${v.acceptedPages} built of ${v.pagesExtracted} extracted (${v.pagesSeen} URLs seen).`,
@@ -256,7 +259,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       v.crawlErrors.length > 0
         ? `Crawl errors (${v.crawlErrors.length}): ${v.crawlErrors
             .slice(0, 8)
-            .map((e) => `${e.url} (${e.reason})`)
+            .map((e) => siteData(`${e.url} (${e.reason})`))
             .join("; ")}${v.crawlErrors.length > 8 ? "; …" : ""}`
         : "Crawl errors: none.",
       // Epic #724 — always stated, like the crawl errors: a link that
@@ -264,7 +267,10 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       v.internalLinks.unresolved.length > 0
         ? `Internal links matching no page (${v.internalLinks.unresolved.length}): ${v.internalLinks.unresolved
             .slice(0, 12)
-            .map((u) => `"${u.value}" in ${u.entityKind} ${u.entityId} (${u.location})`)
+            .map(
+              (u) =>
+                `${siteData(u.value)} in ${u.entityKind} ${u.entityId} (${siteData(u.location)})`,
+            )
             .join(
               "; ",
             )}${v.internalLinks.unresolved.length > 12 ? "; …" : ""}. ${v.internalLinks.nextStep ?? ""}`
@@ -286,8 +292,14 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       v.crawlSkipped.length > 0
         ? `Skipped URLs (${v.crawlSkipped.length} recorded): ${v.crawlSkipped
             .slice(0, 8)
-            .map((s) => `${s.url} (${s.reason})`)
+            .map((s) => siteData(`${s.url} (${s.reason})`))
             .join("; ")}${v.crawlSkipped.length > 8 ? "; …" : ""}`
+        : "",
+      // #1360 — a spent render budget ended the crawl early. Stated from the
+      // admin's own counter, so it holds also when the capped skip list
+      // above is full of other skips.
+      v.renderBudget.used >= v.renderBudget.budget
+        ? `Render budget spent: the crawl used all ${v.renderBudget.budget} renders it may ask for (three per page of its page cap of ${v.renderBudget.maxPages}, plus 50) and ended with the pages it had. The URLs it found but did not crawl are skipped as "not crawled". Renders that make no page spend it too: links that redirect to a page already crawled, non-HTML responses, pages in another language. Tell the operator. To import the rest: propose_site_import with the missing pages in \`urls\` (each is rendered once).`
         : "",
       // issue #247/#423 — design ground truth status. The capture ledger
       // is always reported (n captured / n failed / n skipped — CLAUDE.md
@@ -303,7 +315,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
         ? `WARNING: ${v.pagesMissingScreenshot} page(s) have NO stored source screenshot (see notes/screenshot_missing) — they are UNVERIFIED: nothing confirms their rebuild matches the original. Tell the operator plainly.`
         : "Source screenshots: every page has one.",
       v.siteDesignTokens
-        ? `Sampled design tokens (computed-style ground truth) are stored on this run: ${JSON.stringify(v.siteDesignTokens).slice(0, 1500)} — these are the crawl's measured design ground truth; cite THESE values (not guesses) when discussing the site's colors/fonts.`
+        ? `Sampled design tokens (computed-style ground truth) are stored on this run: ${siteData(JSON.stringify(v.siteDesignTokens).slice(0, 1500))} — these are the crawl's measured design ground truth; cite THESE values (not guesses) when discussing the site's colors/fonts.`
         : "No sampled design tokens on this run (fetch-only crawl) — theme values came from the inline-CSS extractor.",
       // issue #248 (WS2) — surface detected boilerplate: blocks that
       // should be ONE shared module, not copied per page.
@@ -312,14 +324,17 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
             .slice(0, 8)
             .map(
               (c) =>
-                `<${c.tag}> ×${c.pageCount} → ${c.suggestedPlacement} ("${c.sampleText.slice(0, 48)}")`,
+                `<${c.tag}> ×${c.pageCount} → ${c.suggestedPlacement} (${siteData(c.sampleText.slice(0, 48))})`,
             )
             .join("; ")}`
         : "",
       ...v.notes.map(
         (n) =>
           `Notes/${n.category}: ${n.applied} fixed, ${n.suggested} suggested. Samples: ${n.samples
-            .map((s) => `"${s.note}" (${s.applied ? "fixed" : "suggested"}, ${s.sourceUrl})`)
+            .map(
+              (s) =>
+                `${siteData(s.note)} (${s.applied ? "fixed" : "suggested"}, ${siteData(s.sourceUrl)})`,
+            )
             .join("; ")}`,
       ),
       // issue #28 — the run's error/warning LEDGER. Every problem hit during
@@ -330,7 +345,8 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
         ? `ERROR/WARNING LEDGER — ${v.eventCounts.error} error(s), ${v.eventCounts.warning} warning(s), ${v.eventCounts.info} info logged during this migration. Surface these to the operator (report them verbatim; never claim a clean migration while errors are present):\n${v.events
             .slice(0, 40)
             .map(
-              (e) => `- [${e.severity.toUpperCase()}${e.phase ? `/${e.phase}` : ""}] ${e.message}`,
+              (e) =>
+                `- [${e.severity.toUpperCase()}${e.phase ? `/${e.phase}` : ""}] ${siteData(e.message)}`,
             )
             .join(
               "\n",

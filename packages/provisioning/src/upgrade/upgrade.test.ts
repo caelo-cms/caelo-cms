@@ -193,7 +193,7 @@ function fakeInstall(events: string[], overrides: [RegExp, Answer][] = []) {
     [new RegExp(`describe ${GCP_PROXY} .*--format=json`), ok(GCP_PROXY_JSON)],
     [/describe (\S+) .*status\.url/, (l) => ok(`https://${l.split(" ")[3]}-xyz.a.run.app\n`)],
     [
-      /^run jobs describe caelo-production-(audit|audit-run|capture) .*containers\[0\]\.image/,
+      /^run jobs describe caelo-production-(audit|audit-run|import|capture) .*containers\[0\]\.image/,
       ok(`${OLD_ADMIN_IMAGE}\n`),
     ],
     [/^sql instances list/, ok(`${SQL}\n`)],
@@ -332,7 +332,7 @@ const CONVERGE_WRITE =
   /add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|service-accounts create|secrets create|secrets versions add|services enable|roles create|roles update|roles undelete|firewall-rules delete|users assign-roles/;
 /** Calls that move a service or run migrations — app-roll-only. */
 const APP_ROLL_WRITE =
-  /^run services update |^run services update-traffic|jobs execute caelo-migrate|^run jobs update caelo-production-(audit|audit-run|capture) /;
+  /^run services update |^run services update-traffic|jobs execute caelo-migrate|^run jobs update caelo-production-(audit|audit-run|import|capture) /;
 /** Any gcloud call that changes something. */
 const ANY_WRITE =
   /\b(create|update|update-traffic|delete|add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|execute|enable|add|restore)\b/;
@@ -491,6 +491,57 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
       /^gcloud run jobs deploy caelo-production-operator-access-sync /,
     );
     expect(events[opAccess]).toContain("caelo-production-audit-run@acme.iam.gserviceaccount.com");
+  });
+
+  it("#1360 — sets up the site-import crawler with no grant beyond reporting, keeps it on IAP, tells the admin, then moves it with the admin", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const crawler = "caelo-production-import@acme.iam.gserviceaccount.com";
+    const deploy = indexOf(events, /^gcloud run jobs deploy caelo-production-import /);
+    const iap = indexOf(
+      events,
+      /^gcloud iap web add-iam-policy-binding .*--member=serviceAccount:caelo-production-import@acme\.iam\.gserviceaccount\.com/,
+    );
+    const opAccess = indexOf(
+      events,
+      /^gcloud run jobs deploy caelo-production-operator-access-sync /,
+    );
+    const adminRoll = indexOf(events, new RegExp(`^gcloud run services update ${ADMIN} `));
+    const move = indexOf(events, /^gcloud run jobs update caelo-production-import /);
+    expect(iap < opAccess && opAccess < adminRoll && adminRoll < move).toBe(true);
+    expect(events[deploy]).toContain(`--image=${OLD_ADMIN_IMAGE}`);
+    expect(events[deploy]).toContain(`--service-account=${crawler}`);
+    expect(events[move]).toContain(`--image=${IMAGES.admin.imageRef}`);
+    // The crawler starts no job and reads no bucket: the admin renders.
+    expect(
+      events.some(
+        (e) =>
+          e.includes(`--member=serviceAccount:${crawler}`) &&
+          /(run jobs|storage buckets) add-iam-policy-binding/.test(e),
+      ),
+    ).toBe(false);
+    expect(events[opAccess]).toContain(crawler);
+    expect(events[adminRoll]).toContain(
+      "CAELO_IMPORT_CRAWL_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-import",
+    );
+    expect(events[adminRoll]).toContain(`CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT=${crawler}`);
+    expect(lines).toContain(
+      "done: Site-import crawler ready (site imports crawl in their own job)",
+    );
+  });
+
+  it("#1360 — a failed crawler setup leaves the converge incomplete and the admin's crawler env untouched", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events, {
+      overrides: [[/^run jobs deploy caelo-production-import/, fail("PERMISSION_DENIED")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("Site-import crawler not set up"))).toBe(true);
+    expect(
+      events.some((e) => /services update caelo-production-admin.*CAELO_IMPORT_CRAWL_JOB=/.test(e)),
+    ).toBe(false);
   });
 
   it("sets up the capture job on the CURRENT admin image before the roll, then moves it with the admin (#1217)", async () => {

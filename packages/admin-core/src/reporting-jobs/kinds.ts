@@ -7,11 +7,13 @@
  */
 
 import { qualityAuditJobKind } from "../quality/audit-job-kind.js";
+import { siteImportJobKind } from "../site-import/import-job-kind.js";
 import type { ReportingJobKindDef } from "./kind.js";
 import { FOUNDATION_ACTIONS, type ReportingJobKind } from "./protocol.js";
 
 const KINDS: Readonly<Record<ReportingJobKind, ReportingJobKindDef>> = {
   quality_audit: qualityAuditJobKind,
+  site_import: siteImportJobKind,
 };
 
 // The shared actions are answered before a kind's own (dispatch.ts): a kind

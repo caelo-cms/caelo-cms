@@ -56,5 +56,4 @@ No task may build or publish production (CLAUDE.md §2). `scripts/no-automatic-p
 
 ## What is not on the tick yet
 
-- The site-import crawl worker: #1360. (The quality audit runs in its reporting job since #1359.)
 - The flip of the admin to request-based CPU: #1361.

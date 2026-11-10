@@ -87,7 +87,7 @@ describe("the gateway's import graph reaches no admin-only code (#635)", () => {
   });
 
   it("would catch an admin-only import (the walker follows workspace packages)", () => {
-    const probe = reachable([resolve(REPO, "packages/admin-core/src/site-import/crawl-worker.ts")]);
+    const probe = reachable([resolve(REPO, "packages/admin-core/src/site-import/crawl-job.ts")]);
     expect([...probe.keys()].some((f) => f.includes("/packages/site-importer/"))).toBe(true);
   });
 
