@@ -18,6 +18,7 @@ import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
 
@@ -86,7 +87,7 @@ beforeAll(async () => {
   registerAdminOps(registry);
   await cleanup();
   const report = await bootstrap({
-    infra: { adapter, registry },
+    infra: { adapter, registry, lockPluginRow },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [{ definition: intlPlugin }],
@@ -292,6 +293,79 @@ describe("#396 — international-site AI tools", () => {
       }
     } finally {
       variantReadFilters = null;
+      const before = prior[0]?.id;
+      await sqlSystem((tx) =>
+        tx.unsafe(
+          `UPDATE site_defaults SET home_page_id = ${before ? `'${before}'` : "NULL"} WHERE id = 1`,
+        ),
+      );
+    }
+  });
+
+  it("#1269 — a page a chat's pending variant row makes the /de root holds /de in that chat", async () => {
+    const homeId = await seedPage("t396-home-1269");
+    const rootId = await seedPage("t396-startseite");
+    const prior = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe("SELECT home_page_id::text AS id FROM site_defaults WHERE id = 1")) as {
+          id: string | null;
+        }[],
+    );
+    if (prior.length === 0) throw new Error("no site_defaults row");
+    await sqlSystem((tx) =>
+      tx.unsafe(`UPDATE site_defaults SET home_page_id = '${homeId}' WHERE id = 1`),
+    );
+    try {
+      const owner = crypto.randomUUID();
+      await sqlSystem(async (tx) => {
+        await tx`INSERT INTO actors (id, kind, display_name) VALUES (${owner}::uuid, 'human', 'Owner')`;
+        await tx`INSERT INTO users (id, email, password_hash) VALUES (${owner}::uuid, ${`${owner}@t1269.test`}, 'test-only')`;
+        await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${owner}::uuid, id FROM roles WHERE name = 'owner'`;
+      });
+      const session = await execute(registry, adapter, SYS_CTX, "chat.create_session", {
+        isolation: "experiment",
+        title: "t396-annotated",
+      });
+      if (!session.ok) throw new Error(JSON.stringify(session.error));
+      const { chatSessionId, chatBranchId } = session.value as {
+        chatSessionId: string;
+        chatBranchId: string;
+      };
+      // In the chat the page joins the home's German group: a pending row
+      // makes it the German root, served at /de there (still /t396-startseite live).
+      const linked = await runPluginOperation({
+        invocation: {
+          origin: "chat",
+          actorId: owner,
+          operatorActorId: owner,
+          chatBranchId,
+          chatTaskId: chatSessionId,
+        },
+        pluginSlug: "international-site",
+        operationName: "link_page_variants",
+        args: { groupPageId: homeId, pageId: rootId, localeCode: "de" },
+      });
+      if (!linked.ok) throw new Error(`${linked.error.kind}: ${linked.error.message}`);
+      const chatCtx: ExecutionContext = { ...SYS_CTX, chatBranchId, chatTaskId: chatSessionId };
+      const templateId =
+        (
+          (await sqlSystem(
+            (tx) => tx`SELECT template_id::text AS t FROM pages WHERE id = ${homeId}::uuid`,
+          )) as { t: string }[]
+        )[0]?.t ?? "";
+      // A top-level page "de" would serve at the same /de in the chat.
+      const clash = await execute(registry, adapter, chatCtx, "pages.create", {
+        slug: "de",
+        title: "clash",
+        templateId,
+      });
+      expect(clash.ok).toBe(false);
+      if (!clash.ok) {
+        expect(String((clash.error as { message?: string }).message)).toContain(
+          "page already exists at /de",
+        );
+      }
+    } finally {
       const before = prior[0]?.id;
       await sqlSystem((tx) =>
         tx.unsafe(

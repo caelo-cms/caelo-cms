@@ -13,7 +13,11 @@
  */
 
 import { validateSelectedGrants } from "@caelo-cms/plugin-sandbox";
-import { type PluginCapability, pluginManifest } from "@caelo-cms/plugin-sdk";
+import {
+  type PluginCapability,
+  type PluginToolPermission,
+  pluginManifest,
+} from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 import { EXTERNAL_OPS, registerExternalPluginOps } from "./external-ops.js";
@@ -115,7 +119,7 @@ export async function operatorHasPermission(
   infra: PluginHostInfra,
   systemActorId: string,
   actorId: string,
-  permission: "content.write" | "settings.write" | "deploy.trigger",
+  permission: PluginToolPermission,
 ): Promise<boolean> {
   registerExternalPluginOps(infra.registry);
   const r = await execute(

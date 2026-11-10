@@ -60,9 +60,11 @@ describe("remote ↔ served build plugin calls", () => {
       siteBaseUrl: "https://staging.example.com",
       pageUrlStyle: "directory",
     } as const;
-    expect(await remote.staticRender("international-site", "p1", urlContext)).toEqual({
+    // #1511 — and the page's language with them.
+    const renderContext = { ...urlContext, lang: "de" };
+    expect(await remote.staticRender("international-site", "p1", renderContext)).toEqual({
       m: "staticRender",
-      args: ["international-site", "p1", urlContext],
+      args: ["international-site", "p1", renderContext],
     } as unknown as string);
     expect(await remote.resolveListSources(["p1"], urlContext)).toEqual({
       m: "resolveListSources",

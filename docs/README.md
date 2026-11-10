@@ -25,7 +25,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [plugin-live-preview.md](./plugin-live-preview.md) — plugin preview documents shown in Live Edit.
 - [plugin-admin-panels.md](./plugin-admin-panels.md) — plugins' admin pages, declared as data and rendered only while the plugin is active.
 - [plugin-editor-toolbar.md](./plugin-editor-toolbar.md) — plugin places in the live editor's top bar (`editorToolbar`), declared as data, read-only on the chat's draft.
-- [plugin-baked-data.md](./plugin-baked-data.md) — how visitor plugin data (comments, ratings) reaches the static HTML through plugin-data builds that publish nothing else (#1155), and how a plugin declares `bakedData`.
+- [plugin-baked-data.md](./plugin-baked-data.md) — how visitor plugin data (comments, ratings) reaches the static HTML through plugin-data builds that publish nothing else (#1155), how a plugin declares `bakedData`, and why a region carries data in the page language while its words live in the module (#1511).
 - [live-edit-references.md](./live-edit-references.md) — right-click / selection references and Ask AI in the Live Edit preview, and what the AI receives.
 - [inspect-tooling-redesign.md](./inspect-tooling-redesign.md) — gist-first inspection of external pages and on-demand HTML queries.
 - [dev/rls-and-the-planner.md](./dev/rls-and-the-planner.md) — how row-level security changes plans: write setting tests as `caelo_setting_is` / `caelo_setting_in` (a plain `current_setting(...) = 'x'` policy is estimated at 0.5 % of the rows), and why `ILIKE '%q%'` can never use an index under RLS (#1297).

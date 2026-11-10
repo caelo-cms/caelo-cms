@@ -73,6 +73,12 @@
  * activates anything itself. Its OperationRegistry holds only the core
  * operations visitor paths call, all on cms_public (plugin-host
  * gateway-ops.ts).
+ *
+ * The gateway runs on request-billed CPU (#1141, #1361): it does nothing
+ * between requests, and a request that starts after an idle stretch
+ * confirms the published state it caches before it answers from it
+ * (published-changes.ts), because a publish notification may still wait in
+ * the socket.
  */
 
 import { createHash } from "node:crypto";
@@ -138,11 +144,14 @@ import { addJsonSecurityHeaders, withJsonSecurityHeaders } from "./middleware/se
 import { signCookieValue } from "./middleware/signed-cookie.js";
 import { GATEWAY_PLUGINS_ROOT } from "./plugins-root.js";
 import {
+  confirmOffAnswer,
+  confirmPublishedState,
   listenForPublishedChanges,
   mayCacheRead,
   onPublishedChange,
   publishedCacheGeneration,
   publishedCacheUsable,
+  servePublishedRequest,
 } from "./published-changes.js";
 import {
   gateFailureLimiter,
@@ -291,6 +300,35 @@ async function sectionPublished(tx: TransactionRunner, section: string): Promise
   return rows.length > 0;
 }
 
+/**
+ * #1361 — the projection's section versions as one string: every publish
+ * rewrites the rows of the sections it published (a new `xmin`) in the
+ * transaction that notifies, and removes a section it unpublishes, so two
+ * equal strings mean no publish committed in between
+ * (published-changes.ts `servePublishedRequest`).
+ */
+async function readProjectionVersions(adapter: DatabaseAdapter): Promise<string> {
+  const rows = (await adapter.withPublicTransaction(
+    SYSTEM_CTX,
+    async (tx) =>
+      await tx.execute(sql`
+        SELECT coalesce(string_agg(section || ':' || xmin::text, ',' ORDER BY section), '') AS v
+        FROM published_projection_sections
+      `),
+  )) as unknown as { v: string }[];
+  return rows[0]?.v ?? "";
+}
+
+/** {@link confirmPublishedState} against this gateway's own projection. */
+function confirmPublishedStateOn(adapter: DatabaseAdapter): Promise<void> {
+  return confirmPublishedState(() => readProjectionVersions(adapter));
+}
+
+/** {@link confirmOffAnswer} against this gateway's own projection. */
+function confirmOffAnswerOn(adapter: DatabaseAdapter): Promise<void> {
+  return confirmOffAnswer(() => readProjectionVersions(adapter));
+}
+
 export function invalidateGatewaySettings(): void {
   cachedSettings = null;
   cachedStagingState = null;
@@ -316,8 +354,14 @@ let visitorApiOff: boolean | null = null;
  * projection), cached until the next publish notification. A sync that
  * failed or was overtaken by a notification leaves it unknown, and the
  * request takes the full pipeline (which answers the registry's own 503).
+ *
+ * #1361 — while the answer is unknown (after a notification, at boot) this
+ * reads the database before the request is read (E14 a), so it confirms the
+ * published state first: otherwise the confirmation after the cheap gates
+ * would drop what it learns here.
  */
-async function learnVisitorApiOff(): Promise<boolean> {
+async function learnVisitorApiOff(adapter: DatabaseAdapter): Promise<boolean> {
+  if (visitorApiOff === null) await confirmPublishedStateOn(adapter);
   const startedAt = publishedCacheGeneration();
   await syncDispatchPlugins();
   const serves = servesVisitorOperations();
@@ -723,7 +767,10 @@ export async function handleRequest(
   // the staging proxy builds itself.
   const requestId = crypto.randomUUID();
   try {
-    return withJsonSecurityHeaders(await routeRequest(req, conn, requestId));
+    // #1361 — counted in flight: a request that starts on an idle instance
+    // marks the published state unconfirmed (published-changes.ts).
+    const response = await servePublishedRequest(() => routeRequest(req, conn, requestId));
+    return withJsonSecurityHeaders(response);
   } catch (e) {
     // The last boundary: a database failure in the rate limit, the captcha
     // or the request pipeline is still answered in the visitor error shape,
@@ -763,13 +810,7 @@ async function stagingRequest(
     return errorResponse("ServiceUnavailable", 503, requestId, { log: "gateway not bootstrapped" });
   }
   const adapter = cachedAdapter;
-  // The published state first: E14 a — with no staging host set the staging
-  // site is off, the fixed 404 before anything of the request is read (from
-  // memory while the LISTEN holds, else one read of the projection row).
-  let state: StagingSiteState;
-  try {
-    state = await loadStagingSiteState(adapter);
-  } catch (e) {
+  const unavailable = (e: unknown): Response => {
     console.error(
       `[api-gateway] request ${requestId}: staging site unavailable — ${describeFailure(e)}`,
     );
@@ -782,15 +823,44 @@ async function stagingRequest(
         "X-Request-Id": requestId,
       },
     });
+  };
+  // The published state first: E14 a — with no staging host set the staging
+  // site is off, the fixed 404 before anything of the request is read (from
+  // memory while the LISTEN holds, else one read of the projection row).
+  // #1361 — an answer from memory is confirmed at most once per
+  // CONFIRM_MAX_AGE_MS: a staging host set while this instance idled is
+  // served from its first request after that.
+  let state: StagingSiteState;
+  try {
+    state = await loadStagingSiteState(adapter);
+    if (state.host === null) {
+      await confirmOffAnswerOn(adapter);
+      state = await loadStagingSiteState(adapter);
+    }
+  } catch (e) {
+    return unavailable(e);
   }
   if (state.host === null) return errorResponse("NotFound", 404, requestId);
   // The allowlist and the failure budget match the address the rate limits bucket by.
   const client = requestClientAddress(req, conn, requestId);
   if (!client.ok) return client.response;
+  const clientKey = rateLimitAddress(client.value);
+  // #1361 — the gate decides on published state: confirm it first, after the
+  // per-client failure budget (a client that used it up gets its 429 from
+  // memory), and take the state again in case a publish dropped it.
+  if (site.failures.peek(clientKey).allowed) {
+    try {
+      await confirmPublishedStateOn(adapter);
+      state = await loadStagingSiteState(adapter);
+    } catch (e) {
+      return unavailable(e);
+    }
+    if (state.host === null) return errorResponse("NotFound", 404, requestId);
+  }
   return handleStagingSiteRequest(req, {
     state,
     clientIp: client.value,
-    clientKey: rateLimitAddress(client.value),
+    clientKey,
     provider: process.env.CAELO_PROVIDER,
     storage: site.storage,
     manifests: site.manifests,
@@ -823,12 +893,15 @@ async function visitorRequest(
   }
 
   // ---- E14 a: no visitor plugin active, the fixed 404 before anything of
-  // the request is read. Known from memory while the LISTEN holds; not
-  // known yet (the first request after a publish or boot, or the LISTEN is
-  // down): one registry read decides, shared by concurrent requests and at
-  // most one per SYNC_TTL_MS (plugin-host syncDispatchPlugins). ----
+  // the request is read. Known from memory while the LISTEN holds, that
+  // answer confirmed at most once per CONFIRM_MAX_AGE_MS (#1361: a plugin
+  // activated while this instance idled); not known yet (the first request
+  // after a publish or boot, or the LISTEN is down): one registry read
+  // decides, shared by concurrent requests and at most one per
+  // SYNC_TTL_MS (plugin-host syncDispatchPlugins). ----
+  if (featureOff() && cachedAdapter) await confirmOffAnswerOn(cachedAdapter);
   if (featureOff()) return errorResponse("NotFound", 404, requestId);
-  if (cachedAdapter && (await learnVisitorApiOff())) {
+  if (cachedAdapter && (await learnVisitorApiOff(cachedAdapter))) {
     return errorResponse("NotFound", 404, requestId);
   }
 
@@ -841,6 +914,7 @@ async function visitorRequest(
     if (!address.ok) return address.response;
     const limited = memoryRateLimited(address.value, requestId);
     if (limited) return limited;
+    if (cachedAdapter) await confirmPublishedStateOn(cachedAdapter);
     await syncDispatchPlugins();
     const link = mailLinkOf(loadedPlugins.bySlug(mailLink.slug)?.definition, mailLink.operation);
     if (!link) return errorResponse("NotFound", 404, requestId);
@@ -863,6 +937,9 @@ async function visitorRequest(
     return errorResponse("ServiceUnavailable", 503, requestId, { log: "gateway not bootstrapped" });
   }
   const adapter = cachedAdapter;
+  // #1361 — the cheap gates above passed: confirm the published state the
+  // rest answers from (settings, registry, rate-limit specs, consent rule).
+  await confirmPublishedStateOn(adapter);
   if (oneClick) return mailOneClick(req, url, oneClick, requestId);
   let settings: GatewaySettings;
   try {

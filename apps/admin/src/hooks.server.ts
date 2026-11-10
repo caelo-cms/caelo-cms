@@ -56,12 +56,13 @@ import {
   bootstrap as bootstrapPluginHost,
   dropPluginPublicSchemas,
   type EmailTransport,
+  ensureChangeConsumers,
   ensureDevSignedManifests,
+  holdRuntimeHeartbeat,
   hostInstanceId,
   type AIProvider as PluginHostAIProvider,
+  pluginHostRequestStart,
   type SnapshotEmitter,
-  startChangeConsumers,
-  syncPluginHost,
 } from "@caelo-cms/plugin-host";
 import { execute, withBranchVisibilityScope } from "@caelo-cms/query-api";
 import { type ExecutionContext, servableRedirectTargetIssue } from "@caelo-cms/shared";
@@ -70,6 +71,7 @@ import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
 import { bootstrapE2eOperatorAccess } from "#lib/server/google-iap.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
+import { releaseWhenSent } from "#lib/server/request-lifetime.js";
 import { runAdminSchedulerTick, setSchedulerProjectionPublisher } from "#lib/server/scheduler.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
@@ -264,9 +266,10 @@ async function bootPluginHost(): Promise<void> {
     );
   });
   // #1267 — plugins' change consumers, woken by the change journal on any
-  // instance; one instance runs each consumer at a time (its claim).
-  startChangeConsumers({ adapter, registry }).catch((e) =>
-    console.error("[hooks] plugin change consumers did not start", e),
+  // instance; one instance runs each consumer at a time (its claim). A start
+  // that failed here is retried by the next scheduler tick (#1361).
+  ensureChangeConsumers({ adapter, registry }).catch((e) =>
+    console.error("[hooks] plugin change consumers did not start (the next tick retries)", e),
   );
   // #724 rollout E — after the plugin host, so plugins' link hooks take
   // part, and after the gateway projection, which must not wait on a
@@ -529,8 +532,13 @@ function bootstrapDevSchedulerClock(): void {
   if (devClockBootstrapped) return;
   devClockBootstrapped = true;
   if (process.env.NODE_ENV === "production" || process.env.CAELO_SCHEDULER_CLOCK === "off") return;
+  // The endpoint's request passes the plugin host's request start first
+  // (handleRequest below); the dev clock does the same.
   const tick = () =>
-    void runAdminSchedulerTick().catch((e: unknown) => {
+    void (async () => {
+      await pluginHostRequestStart();
+      await runAdminSchedulerTick();
+    })().catch((e: unknown) => {
       console.error(
         `[scheduler] dev clock tick failed: ${e instanceof Error ? e.message : String(e)}`,
       );
@@ -589,8 +597,24 @@ export const init: ServerInit = async () => {
  * #1392 — every request runs in its own branch-visibility scope: the ops
  * of one request (a preview, one MCP tool call, a chat turn) ask
  * `caelo_branch_visible` once per branch, and no verdict outlives it.
+ *
+ * #1361 — and holds the plugin runtime heartbeat until its response body
+ * is sent (an event stream, a streamed page, a media download until its
+ * end), so a server busy with a long request keeps counting as live for
+ * the other servers. A sub-request (a load's own `fetch` during SSR) runs
+ * inside a request that holds it already, and its body may go unread.
  */
-export const handle: Handle = (input) => withBranchVisibilityScope(() => handleRequest(input));
+export const handle: Handle = (input) =>
+  withBranchVisibilityScope(async () => {
+    if (input.event.isSubRequest) return handleRequest(input);
+    const release = holdRuntimeHeartbeat();
+    try {
+      return releaseWhenSent(await handleRequest(input), release);
+    } catch (e) {
+      release();
+      throw e;
+    }
+  });
 
 const handleRequest: Handle = async ({ event, resolve }) => {
   // #684 — the Settings section moved from /security; keep every old link,
@@ -621,9 +645,12 @@ const handleRequest: Handle = async ({ event, resolve }) => {
   // #1008 — wait for the shared plugin-host boot, then follow plugin
   // decisions made through any instance (throttled state check; reconciles
   // only when the plugin rows changed), so this request renders and
-  // dispatches on the database's plugin state.
+  // dispatches on the database's plugin state. #1361 — the same request
+  // start confirms this instance's plugin runtime rows when they are stale
+  // and runs a change-consumer retry that came due: the admin gets CPU only
+  // while it serves a request, so none of this rides a timer.
   await bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
-  await syncPluginHost();
+  await pluginHostRequestStart();
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   await seedSiteBaseUrl();
   await seedStagingHost();

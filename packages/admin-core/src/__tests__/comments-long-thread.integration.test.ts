@@ -96,7 +96,7 @@ function listApproved(ctx: PluginContextTier1, args: Record<string, unknown>) {
 function bake(): Promise<string> {
   const render = commentsPlugin.staticRender;
   if (!render) throw new Error("staticRender missing");
-  return render(adminCtx(), { pageId, pageUrlStyle: "directory" }) as Promise<string>;
+  return render(adminCtx(), { pageId, pageUrlStyle: "directory", lang: "en" }) as Promise<string>;
 }
 
 function signature(): Promise<string> {
@@ -166,14 +166,16 @@ describe("a thread longer than the bake (#1169)", () => {
   it("bakes the newest comments and says how many exist", async () => {
     const html = await bake();
     expect([...html.matchAll(/<article /g)]).toHaveLength(PAGE_SIZE);
-    expect(html).toContain(`Showing the newest ${PAGE_SIZE} of ${THREAD_LENGTH} comments.`);
-    expect(html).toContain(`<header>Author ${THREAD_LENGTH} · `);
-    expect(html).not.toContain("<header>Author 1 · ");
+    expect(html).toContain(`data-total="${THREAD_LENGTH}"`);
+    expect(html).toContain(`<span class="comment-author">Author ${THREAD_LENGTH}</span>`);
+    expect(html).not.toContain('<span class="comment-author">Author 1</span>');
   });
 
   it("the bake plus the visitor's pages hold every approved comment, each once", async () => {
     const html = await bake();
-    const reached = [...html.matchAll(/<header>(Author \d+) · /g)].map((m) => m[1] as string);
+    const reached = [...html.matchAll(/<span class="comment-author">(Author \d+)<\/span>/g)].map(
+      (m) => m[1] as string,
+    );
     const line = /data-cursor="([^"]+)"/.exec(html)?.[1]?.replaceAll("&quot;", '"');
     let before = line ? (JSON.parse(line) as VisitorPage["nextCursor"]) : null;
     expect(before).not.toBeNull();
@@ -213,94 +215,76 @@ describe("a thread longer than the bake (#1169)", () => {
   });
 });
 
-describe("a reply's depth (#1169)", () => {
-  const ROOT = "aaaaaaaa-0000-4000-8000-000000000001";
-  const CHILD = "aaaaaaaa-0000-4000-8000-000000000002";
-  const GRANDCHILD = "aaaaaaaa-0000-4000-8000-000000000003";
-  const ORPHAN = "aaaaaaaa-0000-4000-8000-000000000004";
-  const GONE = "aaaaaaaa-0000-4000-8000-000000000005";
-  const TEAM_REPLY = "aaaaaaaa-0000-4000-8000-000000000006";
-  const inserted: unknown[] = [];
+describe("a visitor's comment answers nobody (#1529)", () => {
+  // An approved comment a version before 1.3.0 stored as a reply.
+  const LEGACY_REPLY = "aaaaaaaa-0000-4000-8000-000000000007";
+  const inserted: Record<string, unknown>[] = [];
 
-  /** `submit` as the gateway runs it: the thread read from the published copy. */
-  function submitReply(parentId: string) {
+  /** `submit` as the gateway runs it, its inbox insert recorded. */
+  function submit(args: Record<string, unknown>) {
     const op = commentsPlugin.operations.submit;
     if (!op) throw new Error("submit missing");
     const ctx = {
       ...gatewayCtx(),
       query: {
-        insert: async (_table: string, row: unknown) => {
+        insert: async (_table: string, row: Record<string, unknown>) => {
           inserted.push(row);
           return { id: "new" };
         },
       },
     } as unknown as PluginContextTier1;
-    return Promise.resolve(op(ctx, { pageId, parentId, authorName: "Eve", content: "Reply" }));
+    return Promise.resolve(op(ctx, args));
   }
 
   beforeAll(async () => {
     await admin(async (tx) => {
-      const old = "2020-01-01 00:00:00+00";
-      await tx`
-        INSERT INTO comment_archive
-          (public_row_id, page_id, parent_id, author_name, content, status, submitted_at, archived_at)
-        VALUES
-          (${ROOT}::uuid, ${pageId}::uuid, NULL, 'Root', 'r', 'approved', ${old}::timestamptz, ${old}::timestamptz),
-          (${CHILD}::uuid, ${pageId}::uuid, ${ROOT}::uuid, 'Child', 'c', 'approved', ${old}::timestamptz, ${old}::timestamptz),
-          (${ORPHAN}::uuid, ${pageId}::uuid, ${GONE}::uuid, 'Orphan', 'o', 'approved', ${old}::timestamptz, ${old}::timestamptz)`;
-      // More approvals than any window of the thread holds.
-      await tx`
-        INSERT INTO comment_archive
-          (public_row_id, page_id, author_name, content, status, submitted_at, archived_at)
-        SELECT gen_random_uuid(), ${pageId}::uuid, 'Filler', 'f', 'approved', now(), now()
-        FROM generate_series(1, 520)`;
       await tx`
         INSERT INTO comment_archive
           (public_row_id, page_id, parent_id, author_name, content, status, submitted_at)
-        VALUES (${GRANDCHILD}::uuid, ${pageId}::uuid, ${CHILD}::uuid, 'Grandchild', 'g', 'approved', now())`;
-      // A team reply names its parent by archive id (comment_archive.post_team).
-      await tx`
-        INSERT INTO comment_archive
-          (public_row_id, page_id, parent_id, author_name, content, status, submitted_at)
-        SELECT ${TEAM_REPLY}::uuid, ${pageId}::uuid, id, 'Team', 't', 'approved', now()
-        FROM comment_archive WHERE public_row_id = ${CHILD}::uuid`;
+        SELECT ${LEGACY_REPLY}::uuid, ${pageId}::uuid, id, 'Earlier reply', 'r', 'approved', now()
+        FROM comment_archive WHERE page_id = ${pageId}::uuid LIMIT 1`;
     });
     await drainProjectionOnce(adapter, staging);
   });
 
   afterAll(async () => {
     await admin(async (tx) => {
-      await tx`DELETE FROM comment_archive
-               WHERE page_id = ${pageId}::uuid
-                 AND (author_name = 'Filler' OR parent_id IS NOT NULL OR public_row_id = ${ROOT}::uuid)`;
+      await tx`DELETE FROM comment_archive WHERE public_row_id = ${LEGACY_REPLY}::uuid`;
     });
     await drainProjectionOnce(adapter, staging);
   });
 
-  it("refuses a level past the cap, even with its ancestors far below the newest comments", async () => {
-    await expect(submitReply(GRANDCHILD)).rejects.toThrow("thread depth exceeds 3");
+  it("refuses a parent at the declared contract, so no handler ever sees one", async () => {
+    const contract = commentsPlugin.publicOperations?.find((o) => o.name === "submit")?.input;
+    const comment = { pageId, authorName: "Eve", content: "Reply" };
+    expect(contract?.safeParse(comment).success).toBe(true);
+    expect(contract?.safeParse({ ...comment, parentId: LEGACY_REPLY }).success).toBe(false);
+    expect(contract?.safeParse({ ...comment, parentId: null }).success).toBe(false);
+    await expect(submit({ ...comment, parentId: LEGACY_REPLY })).rejects.toThrow();
     expect(inserted).toEqual([]);
   });
 
-  it("walks a team reply's parent, which is named by archive id", async () => {
-    await expect(submitReply(TEAM_REPLY)).rejects.toThrow("thread depth exceeds 3");
-    expect(inserted).toEqual([]);
+  it("stores a top-level comment, naming no parent", async () => {
+    await expect(submit({ pageId, authorName: "Eve", content: "Hello" })).resolves.toMatchObject({
+      status: "pending",
+    });
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).not.toHaveProperty("parent_id");
   });
 
-  it("accepts a reply to a comment older than every window", async () => {
-    await expect(submitReply(CHILD)).resolves.toMatchObject({ status: "pending" });
-    await expect(submitReply(ROOT)).resolves.toMatchObject({ status: "pending" });
-  });
-
-  it("refuses a chain it cannot read to its root", async () => {
-    await expect(submitReply(ORPHAN)).rejects.toThrow("thread");
-  });
-
-  it("refuses a parent that is not on this page, and a malformed one", async () => {
-    await expect(submitReply("bbbbbbbb-0000-4000-8000-000000000000")).rejects.toThrow(
-      "not on this page",
+  it("keeps a stored parent and shows that comment as one of the thread", async () => {
+    const page = await listApproved(gatewayCtx(), {});
+    const shown = page.comments.find((c) => c.id === LEGACY_REPLY);
+    expect(shown?.author_name).toBe("Earlier reply");
+    expect(shown).not.toHaveProperty("parent_id");
+    // The archive still holds the parent (#1529: threads may show it later).
+    const stored = await admin(
+      (tx) =>
+        tx`SELECT parent_id FROM comment_archive WHERE public_row_id = ${LEGACY_REPLY}::uuid` as Promise<
+          { parent_id: string | null }[]
+        >,
     );
-    await expect(submitReply("not-a-uuid")).rejects.toThrow("not on this page");
+    expect(stored[0]?.parent_id).not.toBeNull();
   });
 });
 

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setSystemTime } from "bun:test";
 import { chatChipSchema } from "@caelo-cms/shared";
+import { FRAME_INPUT_INTERVAL_MS, PRESENCE_INPUT_EVENTS } from "../../live/presence.js";
 import {
   EDIT_AFFORDANCES_SCRIPT,
   EDIT_OVERLAY_COLOR,
   EDIT_UI_CSS,
   REFERENCE_LIMITS,
 } from "./edit-affordances-script.js";
+import { previewMessage } from "./iframe-protocol.js";
 import { INJECT_SCRIPT } from "./inject-script.js";
 
 describe("edit affordance UI (#916)", () => {
@@ -85,6 +87,8 @@ function bootRuntime(search = `?branch=b1&channel=${CHANNEL}`): {
   };
   /** Click an arbitrary fake element; returns what was posted to the editor. */
   clickElement: (target: unknown) => { defaultPrevented: boolean; posted: unknown[] };
+  /** Run every document listener of `kind`; returns what was posted to the editor. */
+  fire: (kind: string) => unknown[];
 } {
   // Every listener per kind, like the DOM: the editing affordances add
   // click listeners of their own next to the browse-mode one.
@@ -154,8 +158,43 @@ function bootRuntime(search = `?branch=b1&channel=${CHANNEL}`): {
       });
       return { defaultPrevented, posted: posted.slice(before) };
     },
+    fire(kind) {
+      const before = posted.length;
+      for (const fn of listeners.get(kind) ?? []) fn({ key: "a", target: null });
+      return posted.slice(before);
+    },
   };
 }
+
+describe("#1361 — the preview reports the operator's input (Codex review of #1557)", () => {
+  it("posts caelo:activity on input, at most once per interval, the first after a pause at once", () => {
+    // Input in this sandboxed frame never reaches the editor's window, which
+    // holds its live waits only while the operator uses the tab.
+    const activity = [{ kind: "caelo:activity", channel: CHANNEL }];
+    setSystemTime(new Date("2026-11-10T10:00:00Z"));
+    try {
+      const runtime = bootRuntime();
+      expect(runtime.fire("pointermove")).toEqual(activity);
+      setSystemTime(new Date(Date.now() + FRAME_INPUT_INTERVAL_MS - 1));
+      for (const type of PRESENCE_INPUT_EVENTS) expect(runtime.fire(type)).toEqual([]);
+      setSystemTime(new Date(Date.now() + 1));
+      expect(runtime.fire("keydown")).toEqual(activity);
+      for (const type of PRESENCE_INPUT_EVENTS) expect(runtime.fire(type)).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  it("is a message the editor accepts from its preview", () => {
+    const preview = {} as Window;
+    const msg = previewMessage(
+      { source: preview, origin: "null", data: { kind: "caelo:activity", channel: CHANNEL } },
+      preview,
+      CHANNEL,
+    );
+    expect(msg).toEqual({ kind: "caelo:activity" });
+  });
+});
 
 describe("an editor notice's Ask AI button", () => {
   it("adds the module it stands in for to the chat, with the notice as context", () => {

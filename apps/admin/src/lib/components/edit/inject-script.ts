@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { FRAME_INPUT_INTERVAL_MS, PRESENCE_INPUT_EVENTS } from "../../live/presence.js";
 import { EDIT_AFFORDANCES_SCRIPT } from "./edit-affordances-script.js";
 import { FIELD_EDIT_SCRIPT } from "./field-edit-script.js";
 import { LINK_IMAGE_EDIT_SCRIPT } from "./link-image-edit-script.js";
@@ -18,7 +19,10 @@ import { LINK_IMAGE_EDIT_SCRIPT } from "./link-image-edit-script.js";
  *      clicks always behave like the live site. `FIELD_EDIT_SCRIPT` adds
  *      in-place text editing of marked fields (#917), `LINK_IMAGE_EDIT_SCRIPT`
  *      link and image editing (#918).
- *   4. Listen for `{kind: "caelo:reload"}` (answered with a
+ *   4. `postMessage({kind: "caelo:activity"})` on the operator's input,
+ *      at most every `FRAME_INPUT_INTERVAL_MS` (#1361): input in here never
+ *      reaches the editor's window, which bounds its live waits by it.
+ *   5. Listen for `{kind: "caelo:reload"}` (answered with a
  *      `caelo:navigate` to the current page, scroll position included),
  *      and for `caelo:page-paths` (link-target suggestions, #918: the
  *      answer to the link editor's `caelo:page-paths-query`, #1269).
@@ -74,6 +78,22 @@ export const INJECT_SCRIPT = `
   } else {
     document.addEventListener("DOMContentLoaded", announce);
   }
+
+  // --- operator input (#1361) -------------------------------------------
+  // The editor holds its live waits only while the operator uses the tab
+  // (lib/live/presence.ts), and input in this frame never reaches its
+  // window. Report it, at most once per interval: the first input after a
+  // quiet stretch at once, which is the one that counts as a return.
+  var inputReportedAt = -Infinity;
+  function reportInput() {
+    var now = Date.now();
+    if (now - inputReportedAt < ${FRAME_INPUT_INTERVAL_MS}) return;
+    inputReportedAt = now;
+    postToEditor({ kind: "caelo:activity" });
+  }
+  ${JSON.stringify(PRESENCE_INPUT_EVENTS)}.forEach(function (type) {
+    document.addEventListener(type, reportInput, { capture: true, passive: true });
+  });
 
   function findModuleAncestor(el) {
     var cur = el;

@@ -250,6 +250,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       pluginSlug: "international-site",
       pageId: de.pageId,
       pageUrlStyle: "directory",
+      lang: "de",
     });
     expect(html).toContain('aria-label="Language"');
     expect(html).toContain(`<a href="${BASE}/t398-pricing/" hreflang="en">English</a>`);
@@ -264,6 +265,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       pluginSlug: "international-site",
       pageId: soloId,
       pageUrlStyle: "directory",
+      lang: "en",
     });
     expect(solo).toBe("");
 

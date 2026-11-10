@@ -200,6 +200,20 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     ctx: "chat",
     input: (r, tag) => ({ pageId: r.write.pageId, title: `Write target (${tag})` }),
   },
+  // #1269 — a rename and a copy plan their URLs on the part of the tree
+  // they touch (the subtree, the ancestors, the pages that could hold the
+  // new path), not the tree: create_variant duplicates once per language.
+  {
+    label: "pages.update {slug}",
+    op: "pages.update",
+    ctx: "chat",
+    input: (r, tag) => ({ pageId: r.write.pageId, slug: `write-target-${tag}` }),
+  },
+  {
+    op: "pages.duplicate",
+    ctx: "chat",
+    input: (r, tag) => ({ sourcePageId: r.write.pageId, newSlug: `copy-${tag}` }),
+  },
   // #1062 / #1269 — the repeated-value hint after every AI content write:
   // the instances holding the written value, not the module's instances
   // (the fixture's page module has one per page).

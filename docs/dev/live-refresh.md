@@ -35,8 +35,25 @@ A waiting surface still re-reads itself once when a wait comes back empty: the w
 
 - `liveHub.register({ topics, refresh, waiting? })` adds a surface; the returned function removes it (return it from a Svelte `$effect`).
 - `refresh` must carry its own in-flight guard: wrap the read in `coalescedRefresh` (`lib/components/edit/coalesced-refresh.ts`).
-- `waiting()` is true while the surface waits on work in progress that no action of this tab will announce. The hub holds at most one wait, only while the tab is visible, never while this tab's chat stream is open, and never retries a failed wait on a timer (the next focus, visibility change or own action resumes it).
+- `waiting()` is true while the surface waits on work in progress that no action of this tab will announce. The hub holds at most one wait, only while someone is at the tab (below), never while this tab's chat stream is open, and never retries a failed wait on a timer (the next focus, visibility change or own action resumes it).
 - Every live read uses `liveFetch`, which adds `AbortSignal.timeout`, so a slow admin never stacks requests from one tab.
+
+## Nobody at the tab, nothing held open (#1361)
+
+On request-billed CPU an admin instance is billed for as long as any request is open on it. A wait held for a tab nobody looks at would bill the admin for as long as the waited-on work runs: a crawl of hours, an external agent's session. So the hub holds a wait only while someone is at the tab (`apps/admin/src/lib/live/presence.ts`): the tab is visible and was used (pointer, keyboard, touch, wheel, focus) within `OPERATOR_IDLE_MS` (10 minutes). Input in an editor's preview counts too: it runs in a sandboxed frame whose events never reach the editor's window, so the preview reports the operator's input itself (`caelo:activity`, at most every 30 s and the first one after a pause at once; `inject-script.ts`). After 10 minutes without use, the current wait ends on its 10 s and no new one starts. The operator's return re-reads every surface and resumes the wait at once: the tab becomes visible, the window gets focus, or the first input after the idle stretch. Presence keeps no timer. Input events keep the clock, and the hub asks it whenever it is about to wait again.
+
+The same holds for the one stream that is not a chat turn, Settings → Gateway → Live: it uses `openWhilePresent` (`lib/live/live-stream.ts`). The server ends each stream after 2 minutes with an `end` event. The page reopens it at once while someone is there, and otherwise when the operator is back. Hiding the tab closes it at once, and the badge says `paused`.
+
+What a tab still holds while nobody works:
+
+| Request | How long, while nobody works |
+|---|---|
+| `/api/live-events` | at most 10 s past the moment the tab was hidden or `OPERATOR_IDLE_MS` without input |
+| Settings → Gateway → Live stream | until hidden, or until the next `end` (≤ 2 min) past `OPERATOR_IDLE_MS` |
+| Chat stream | only while a turn runs; a turn that waits for an approval ends, and the click starts a new request |
+| CSRF token renewal | one short request per 30 min (an allowed exception of `no-timer-polling.test.ts`) |
+
+Remote MCP holds nothing open between calls either: its endpoint is stateless and answers a `GET` (the optional server-to-client stream) with 405 (`apps/admin/src/lib/server/mcp-remote.ts`).
 
 ## Adding a live surface
 
