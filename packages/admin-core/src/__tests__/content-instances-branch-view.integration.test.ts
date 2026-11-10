@@ -422,16 +422,18 @@ describe("#1062 — list_module_peers reads only the touched modules' instances 
     const same = `A repeated card title for the peer hint ${TS}`;
     const pageId = await livePage("peers", [same, same, `A different card title ${TS}`]);
     const other = await livePage("peers-2", [same]);
+    // The same prose with surrounding white space is the same copy (the guard trims).
+    await livePage("peers-ws", [`\n  ${same} \t`]);
     type Peers = { instances: { id: string; moduleId: string; values: { title?: string } }[] };
     const matches = [{ field: "title", value: same }];
     const onMain = await op<Peers>(SYS, "content_instances.list_module_peers", {
       moduleIds: [cardId],
       matches,
     });
-    expect(onMain.instances).toHaveLength(3);
-    expect(onMain.instances.every((i) => i.moduleId === cardId && i.values.title === same)).toBe(
-      true,
-    );
+    expect(onMain.instances).toHaveLength(4);
+    expect(
+      onMain.instances.every((i) => i.moduleId === cardId && i.values.title?.trim() === same),
+    ).toBe(true);
     // Another module holds none of them.
     const hero = await op<Peers>(SYS, "content_instances.list_module_peers", {
       moduleIds: [heroId],
@@ -458,8 +460,8 @@ describe("#1062 — list_module_peers reads only the touched modules' instances 
       placements: [{ pageId, blockName: "content", position: 0 }],
       matches,
     });
-    expect(inChat.instances).toHaveLength(3);
-    expect(inChat.instances.every((i) => i.values.title === same)).toBe(true);
+    expect(inChat.instances).toHaveLength(4);
+    expect(inChat.instances.every((i) => i.values.title?.trim() === same)).toBe(true);
     const mainAgain = await op<Peers>(SYS, "content_instances.list_module_peers", {
       moduleIds: [cardId],
       matches,

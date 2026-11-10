@@ -35,7 +35,7 @@ import {
   loadContentInstanceBranchStates,
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
-import { countPlacementsInView } from "./content-instance-reach.js";
+import { countPlacementsAtMost } from "./content-instance-reach.js";
 
 const MAX_TARGETS = 200;
 /** Field values one call matches (a write's distinct values worth a hint). */
@@ -70,6 +70,7 @@ const peerSchema = z.object({
   id: z.string(),
   moduleId: z.string(),
   moduleDisplayName: z.string(),
+  /** Capped at 2: the hint only tells private (0–1) from shared (2+). */
   placementCount: z.number().int().nonnegative(),
   values: z.record(z.string(), z.unknown()),
 });
@@ -118,7 +119,7 @@ export const listModulePeersOp = defineOperation({
       sql.join(
         input.matches.map(
           (m) =>
-            sql`(${sql.raw(alias)}.field = ${m.field} AND ${sql.raw(alias)}.hash = md5(((${JSON.stringify(m.value)}::text)::jsonb)::text))`,
+            sql`(${sql.raw(alias)}.field = ${m.field} AND ${sql.raw(alias)}.hash = md5(caelo_content_value_norm((${JSON.stringify(m.value)}::text)::jsonb)::text))`,
         ),
         sql` OR `,
       );
@@ -153,17 +154,20 @@ export const listModulePeersOp = defineOperation({
     const states = branchId
       ? await loadContentInstanceBranchStates(tx, ids, branchId)
       : new Map<string, never>();
+    // Compared as the guard compares: strings trimmed (caelo_content_value_norm).
+    const norm = (v: unknown): string => stableJson(typeof v === "string" ? v.trim() : v);
     const holds = (values: Record<string, unknown>): boolean =>
-      input.matches.some(
-        (m) => m.field in values && stableJson(values[m.field]) === stableJson(m.value),
-      );
+      input.matches.some((m) => m.field in values && norm(values[m.field]) === norm(m.value));
     const valuesOf = (r: PeerRow): Record<string, unknown> =>
       states.get(r.id)?.values ?? ((r.values ?? {}) as Record<string, unknown>);
     const live = rows.filter((r) => !states.get(r.id)?.deletedAt && holds(valuesOf(r)));
-    const counts = await countPlacementsInView(
+    // The hint tells private from shared: two placements decide, so a
+    // shared match on many pages costs two rows, not its placements.
+    const counts = await countPlacementsAtMost(
       tx,
       live.map((r) => r.id),
       branchId,
+      2,
     );
     return ok({
       instances: live.map((r) => {

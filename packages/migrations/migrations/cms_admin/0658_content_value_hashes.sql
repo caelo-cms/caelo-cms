@@ -29,8 +29,9 @@
 --                                       pending instances.
 --
 -- The hash is md5 of the value's jsonb text (keys in jsonb's canonical
--- order), so a lookup hashes the written value the same way and confirms
--- each candidate on its values. Short values are left out: the hint is
+-- order), a string first trimmed like the guard trims it
+-- (`caelo_content_value_norm`), so a lookup hashes the written value the
+-- same way and confirms each candidate on its values. Short values are left out: the hint is
 -- about copied prose and lists, never "Learn more".
 --
 -- Rebuild: `caelo_content_value_hashes_rebuild()` (the system op
@@ -43,14 +44,30 @@
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
 
-/** The hashed field values of `vals`: md5 of each top-level value of 20+ characters. */
+/**
+ * A field value as the hint compares it: a string without the leading and
+ * trailing white space JavaScript's String.prototype.trim removes (the
+ * guard's `valueKey`), any other value as it is.
+ */
+CREATE FUNCTION caelo_content_value_norm(v jsonb) RETURNS jsonb
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+AS $fn$
+  SELECT CASE WHEN jsonb_typeof(v) = 'string'
+    THEN to_jsonb(regexp_replace(v #>> '{}',
+      '^[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+|[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$',
+      '', 'g'))
+    ELSE v END
+$fn$;
+
+/** The hashed field values of `vals`: md5 of each normalised top-level value of 20+ characters. */
 CREATE FUNCTION caelo_content_value_hashes(vals jsonb)
   RETURNS TABLE (field text, hash text)
 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 AS $fn$
-  SELECT e.key, md5(e.value::text)
+  SELECT e.key, md5(n.v::text)
     FROM jsonb_each(CASE WHEN jsonb_typeof(vals) = 'object' THEN vals ELSE '{}'::jsonb END) e
-   WHERE length(e.value::text) >= 20
+   CROSS JOIN LATERAL (SELECT caelo_content_value_norm(e.value) AS v) n
+   WHERE length(n.v::text) >= 20
 $fn$;
 
 CREATE TABLE content_value_hashes (

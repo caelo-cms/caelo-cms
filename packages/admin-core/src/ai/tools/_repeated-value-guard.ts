@@ -63,7 +63,13 @@ export function repeatCandidates(
   for (const values of written) {
     for (const [field, value] of Object.entries(values)) {
       const key = valueKey(value);
-      if (key !== null) seen.set(`${field}\u0000${key}`, { field, value });
+      // Trimmed like the key: whitespace variants of one value are one candidate.
+      if (key !== null) {
+        seen.set(`${field}\u0000${key}`, {
+          field,
+          value: typeof value === "string" ? value.trim() : value,
+        });
+      }
     }
   }
   return [...seen.values()];
