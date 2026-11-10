@@ -247,7 +247,7 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
     }
 
     const lines = [
-      `# Migration report — ${v.sourceUrl} (${v.status})`,
+      `# Migration report — ${siteData(v.sourceUrl)} (${v.status})`,
       costLine,
       calibrationLine,
       `Pages: ${v.acceptedPages} built of ${v.pagesExtracted} extracted (${v.pagesSeen} URLs seen).`,
@@ -265,7 +265,10 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
       v.internalLinks.unresolved.length > 0
         ? `Internal links matching no page (${v.internalLinks.unresolved.length}): ${v.internalLinks.unresolved
             .slice(0, 12)
-            .map((u) => `"${u.value}" in ${u.entityKind} ${u.entityId} (${u.location})`)
+            .map(
+              (u) =>
+                `${siteData(u.value)} in ${u.entityKind} ${u.entityId} (${siteData(u.location)})`,
+            )
             .join(
               "; ",
             )}${v.internalLinks.unresolved.length > 12 ? "; …" : ""}. ${v.internalLinks.nextStep ?? ""}`
@@ -334,7 +337,8 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
         ? `ERROR/WARNING LEDGER — ${v.eventCounts.error} error(s), ${v.eventCounts.warning} warning(s), ${v.eventCounts.info} info logged during this migration. Surface these to the operator (report them verbatim; never claim a clean migration while errors are present):\n${v.events
             .slice(0, 40)
             .map(
-              (e) => `- [${e.severity.toUpperCase()}${e.phase ? `/${e.phase}` : ""}] ${e.message}`,
+              (e) =>
+                `- [${e.severity.toUpperCase()}${e.phase ? `/${e.phase}` : ""}] ${siteData(e.message)}`,
             )
             .join(
               "\n",

@@ -106,7 +106,7 @@ export const listImportPagesTool: ToolDefinitionWithHandler<Input> = {
     }
     const v = r.value as ListResult;
     const lines = [
-      `# Import run ${v.run.sourceUrl} — status: ${v.run.status} (${v.run.pagesExtracted} extracted of ${v.run.pagesSeen} URLs seen)`,
+      `# Import run ${siteData(v.run.sourceUrl)} — status: ${v.run.status} (${v.run.pagesExtracted} extracted of ${v.run.pagesSeen} URLs seen)`,
     ];
     if (v.run.errorMessage) lines.push(`Run error: ${siteData(v.run.errorMessage)}`);
     if (v.run.status === "crawling" || v.run.status === "proposed") {

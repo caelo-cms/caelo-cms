@@ -161,6 +161,7 @@ describe("imports.get_page_gist + get_import_page tool", () => {
       chatSessionId: "gist-test-session",
     } as ToolContext);
     expect(more.content).toMatch(/<site-data>[\s\S]*Our Pricing[\s\S]*<\/site-data>/);
+    expect(more.content).toMatch(/^## Page text \(Markdown\) — <site-data>[^<]+<\/site-data>/);
     // …and so do the parts of it a query pulls out.
     const query = await queryPageHtmlTool.handler(
       SYSTEM,
@@ -168,6 +169,7 @@ describe("imports.get_page_gist + get_import_page tool", () => {
       { adapter, registry, chatSessionId: "gist-test-session" } as ToolContext,
     );
     expect(query.content).toMatch(/\(\d+ match\(es\)\)\n<site-data>[\s\S]*Our Pricing/);
+    expect(query.content).toMatch(/ on <site-data>[^<]+<\/site-data> \(/);
   });
 
   it("tool surfaces Markdown + tokens + a pageRef + a screenshot hint — but NEVER raw page-builder HTML", async () => {

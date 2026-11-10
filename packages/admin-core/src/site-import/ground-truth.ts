@@ -27,6 +27,7 @@ import {
   aggregateSiteDesignTokens,
   type CrawledPage,
   deriveDesignTokens,
+  EXTERNAL_URL_BLOCKED,
   type PageDesignTokens,
   type Screenshot,
   type Screenshotter,
@@ -78,6 +79,20 @@ export class RendererUnavailableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RendererUnavailableError";
+  }
+}
+
+/**
+ * The crawl's attempt has stopped (a report failed, the crawl failed, or
+ * the admin ended the attempt): every later render fails at once. Coded as
+ * the SSRF guard's refusal, so the crawler neither fetches the page itself
+ * instead nor goes on with it; the second pass stops without a note.
+ */
+export class CrawlHaltedError extends Error {
+  readonly code = EXTERNAL_URL_BLOCKED;
+  constructor() {
+    super("the crawl's attempt has stopped");
+    this.name = "CrawlHaltedError";
   }
 }
 
@@ -243,7 +258,7 @@ export async function captureMissingGroundTruth(
     try {
       return await screenshotter.capture(url, { external: true, sampleStyles: true });
     } catch (e) {
-      if (e instanceof RendererUnavailableError) throw e;
+      if (e instanceof RendererUnavailableError || e instanceof CrawlHaltedError) throw e;
       return await screenshotter.capture(url, { external: true, sampleStyles: true });
     }
   };
@@ -252,6 +267,8 @@ export async function captureMissingGroundTruth(
     try {
       shot = await captureWithRetry(p.sourceUrl);
     } catch (e) {
+      // The attempt stopped: nothing about this page is known, so no note.
+      if (e instanceof CrawlHaltedError) throw e;
       if (e instanceof RendererUnavailableError) {
         // Pre-#247 this returned silently and the run looked "done" with
         // zero screenshots (F9): every page left reads as UNVERIFIED.

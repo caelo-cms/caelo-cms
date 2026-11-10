@@ -408,14 +408,15 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   let batchKeys: string[] = [];
   let sinceFlush = 0;
 
-  // issue #1360 — what a checkpoint must not count as done. A URL is marked
-  // seen when a worker takes it, but its page is written only when a later
-  // flush hands it to `onBatch`; meanwhile other workers keep crawling. A
-  // checkpoint that called those URLs seen would resume without them, and
-  // their pages would be lost for good. So a checkpoint puts back in front
-  // of the queue every URL still in flight and every page not yet written
-  // (with the final URL a redirect marked seen), and counts only the
-  // written pages.
+  // issue #1360 — what a streaming checkpoint must not count as done. A URL
+  // is marked seen when a worker takes it, but its page is written only when
+  // a later flush hands it to `onBatch`; meanwhile other workers keep
+  // crawling. A checkpoint that called those URLs seen would resume without
+  // them, and their pages would be lost for good. So with `onBatch` a
+  // checkpoint puts back in front of the queue every URL still in flight and
+  // every page not yet written (with the final URL a redirect marked seen),
+  // and counts only the written pages. Without `onBatch` the pages are the
+  // result itself, and a checkpoint keeps meaning progress.
   const inFlight = new Map<string, { url: string; depth: number }>();
   const unwritten = new Map<
     string,
@@ -435,7 +436,9 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       for (const k of keys) unwritten.delete(k);
     }
     if (opts.onCheckpoint) {
-      const pending = [...inFlight.values(), ...[...unwritten.values()].map((u) => u.entry)];
+      const pending = opts.onBatch
+        ? [...inFlight.values(), ...[...unwritten.values()].map((u) => u.entry)]
+        : [];
       const notSeen = new Set(pending.map((e) => e.url));
       for (const u of unwritten.values()) if (u.finalUrl) notSeen.add(u.finalUrl);
       await opts.onCheckpoint({
@@ -613,8 +616,8 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     if (opts.onBatch) {
       batch.push(page);
       batchKeys.push(next.url);
+      unwritten.set(next.url, { entry: next, ...(redirected ? { finalUrl } : {}) });
     } else pages.push(page);
-    unwritten.set(next.url, { entry: next, ...(redirected ? { finalUrl } : {}) });
 
     // Enqueue same-domain links if depth allows.
     if (next.depth < depth) {

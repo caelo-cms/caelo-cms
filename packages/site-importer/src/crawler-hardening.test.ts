@@ -247,6 +247,26 @@ describe("streaming + checkpoint/resume (#192)", () => {
     expect(all.size).toBe(10);
     expect(resumed.pagesCrawled).toBe(10);
   });
+
+  it("#1360 review: without onBatch a checkpoint still means progress (the pages are the result)", async () => {
+    const site = makeSite(routes);
+    const checkpoints: CrawlCheckpoint[] = [];
+    const result = await crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: site.fetcher,
+      throttleMs: 0,
+      maxPages: 50,
+      batchSize: 3,
+      onCheckpoint: async (cp) => {
+        checkpoints.push(structuredClone(cp));
+      },
+    });
+    expect(result.pages).toHaveLength(10);
+    const last = checkpoints.at(-1);
+    expect(last?.pagesCrawled).toBe(10);
+    expect(last?.seen).toHaveLength(10);
+    expect(last?.queue).toEqual([]);
+  });
 });
 
 describe("scale (#192)", () => {

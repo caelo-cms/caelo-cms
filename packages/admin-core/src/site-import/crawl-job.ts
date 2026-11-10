@@ -36,10 +36,15 @@ import {
   EXTERNAL_URL_BLOCKED,
   type Screenshot,
 } from "@caelo-cms/site-importer";
-import { type JobReporter, JobStoppedError, ReportError } from "../reporting-jobs/job-reporter.js";
+import {
+  isPassingReportFault,
+  type JobReporter,
+  JobStoppedError,
+} from "../reporting-jobs/job-reporter.js";
 import { compactCheckpoint } from "./crawl-checkpoint.js";
 import {
   batchCaptures,
+  CrawlHaltedError,
   captureMissingGroundTruth,
   type GroundTruthSink,
   type KeyedScreenshotter,
@@ -62,13 +67,14 @@ export interface CrawlJobDeps {
 }
 
 /**
- * The crawl has stopped (it failed, gave its attempt back, or the admin
- * ended it): what its other workers still ask for fails at once. Coded as
- * the SSRF guard's refusal so the crawler does not fall back to fetching
- * the page itself; the workers then drain their queue without a request.
+ * One attempt's stop: once set, the crawler's other workers (it does not
+ * cancel them when one fails) ask for nothing more, and `cause` is what
+ * stopped it.
  */
-function haltedError(): Error {
-  return Object.assign(new Error("the crawl has stopped"), { code: EXTERNAL_URL_BLOCKED });
+export interface CrawlAttempt {
+  stopped: boolean;
+  /** The first report failure that stopped it, also one the crawler swallowed. */
+  cause: unknown;
 }
 
 /**
@@ -76,11 +82,14 @@ function haltedError(): Error {
  * the admin to render and store the page. Only captures are asked for;
  * after the admin said it has no renderer, no page asks again.
  *
- * @param halted - true once the crawl has stopped (see {@link haltedError}).
+ * A render the admin could not be asked for (unreachable, busy, refused)
+ * stops the attempt instead of failing one page: the crawler would fetch
+ * the page statically instead and keep a page without its JavaScript-built
+ * content. The attempt is given back or failed with that cause.
  */
 export function reportedScreenshotter(
   reporter: JobReporter,
-  halted: () => boolean = () => reporter.stopped,
+  attempt: CrawlAttempt = { stopped: false, cause: null },
 ): KeyedScreenshotter {
   const keys = new WeakMap<Screenshot, { key: string | null; error: string | null }>();
   let unavailable: string | null = null;
@@ -89,13 +98,20 @@ export function reportedScreenshotter(
   };
   return {
     async capture(url, opts) {
-      if (halted()) throw haltedError();
+      if (attempt.stopped || reporter.stopped) throw new CrawlHaltedError();
       if (unavailable !== null) throw new RendererUnavailableError(unavailable);
-      const answer = await reporter.call<RenderAnswer>("render", {
-        url,
-        sampleStyles: opts?.sampleStyles === true,
-        captureHtml: opts?.captureHtml === true,
-      });
+      let answer: RenderAnswer;
+      try {
+        answer = await reporter.call<RenderAnswer>("render", {
+          url,
+          sampleStyles: opts?.sampleStyles === true,
+          captureHtml: opts?.captureHtml === true,
+        });
+      } catch (e) {
+        if (attempt.cause === null) attempt.cause = e;
+        attempt.stopped = true;
+        throw new CrawlHaltedError();
+      }
       if (!answer.ok) {
         if (answer.reason === "unavailable") {
           unavailable = answer.message;
@@ -170,11 +186,6 @@ function pageRow(p: CrawledPage): BatchReport["pages"][number] {
   };
 }
 
-/** A fault that another attempt may not meet: the admin was not reached, or was busy. */
-function isPassingFault(e: unknown): boolean {
-  return e instanceof ReportError && (e.status === 0 || e.status === 429 || e.status >= 500);
-}
-
 function describe(e: unknown): string {
   return (e instanceof Error ? e.message : String(e)).slice(0, 1000) || "the crawl failed";
 }
@@ -183,9 +194,10 @@ async function crawl(
   reporter: JobReporter,
   start: Extract<CrawlStart, { kind: "crawl" }>,
   deps: CrawlJobDeps,
-  halted: () => boolean,
+  attempt: CrawlAttempt,
 ): Promise<void> {
-  const screenshotter = reportedScreenshotter(reporter, halted);
+  const screenshotter = reportedScreenshotter(reporter, attempt);
+  const halted = () => attempt.stopped || reporter.stopped;
   // issue #423 — the render already stored each page's screenshot; the
   // crawl remembers only where, keyed by the page's final URL.
   const keyByUrl = new Map<string, string>();
@@ -210,7 +222,7 @@ async function crawl(
     ...(start.resumeFrom ? { resumeFrom: start.resumeFrom } : {}),
     onPageCapture,
     onBatch: async (pages) => {
-      if (halted()) throw haltedError();
+      if (halted()) throw new CrawlHaltedError();
       const { captures, tokenlessCapturedUrls } = batchCaptures(pages, keyByUrl);
       for (const p of pages) keyByUrl.delete(p.url);
       await reporter.call("batch", {
@@ -220,7 +232,7 @@ async function crawl(
       } satisfies BatchReport);
     },
     onCheckpoint: async (cp: CrawlCheckpoint) => {
-      if (halted()) throw haltedError();
+      if (halted()) throw new CrawlHaltedError();
       await reporter.call("checkpoint", compactCheckpoint(cp));
     },
   });
@@ -246,21 +258,24 @@ export async function runSiteImportJob(
     console.log(`[site-import-job] ${reporter.subjectId}: nothing to crawl (${start.reason})`);
     return;
   }
-  // The crawler's other workers outlive a failure of one of them (it does
-  // not cancel them): once this attempt stops, they must not go on.
-  let stopped = false;
-  const halted = () => stopped || reporter.stopped;
+  const attempt: CrawlAttempt = { stopped: false, cause: null };
+  let error: unknown = null;
   try {
-    await crawl(reporter, start, deps, halted);
+    await crawl(reporter, start, deps, attempt);
   } catch (e) {
-    stopped = true;
-    if (e instanceof JobStoppedError) throw e;
-    if (isPassingFault(e)) {
-      // Give the attempt back with the reason; the next one resumes from
-      // the checkpoint. When even this report fails, the lease runs out.
-      await reporter.call("defer", { reason: describe(e) }).catch(() => undefined);
-      throw e;
-    }
-    await reporter.call("fail", { message: describe(e) });
+    error = e;
   }
+  if (error === null && attempt.cause === null) return;
+  attempt.stopped = true;
+  // What stopped it: a report failure the crawler swallowed comes first,
+  // the halt it caused in the other workers after.
+  const cause = attempt.cause ?? error;
+  if (cause instanceof JobStoppedError) throw cause;
+  if (isPassingReportFault(cause)) {
+    // Give the attempt back with the reason; the next one resumes from the
+    // checkpoint. When even this report fails, the lease runs out.
+    await reporter.call("defer", { reason: describe(cause) }).catch(() => undefined);
+    throw cause;
+  }
+  await reporter.call("fail", { message: describe(cause) });
 }

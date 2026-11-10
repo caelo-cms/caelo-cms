@@ -245,6 +245,8 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
     const page = await resolveHtml(toolInput, sessionId);
     if (!page.ok) return page;
     const mark = (text: string) => (page.crawled ? siteData(text) : text);
+    // A crawled page's own URL is crawled content too.
+    const where = mark(page.url);
 
     if (toolInput.cssSelector !== undefined || toolInput.xpath !== undefined) {
       const screenshotter = await getExternalScreenshotter({
@@ -276,13 +278,13 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
       if (matches.length === 0) {
         return {
           ok: true,
-          content: `query_page_html: no elements match \`${sel}\` on ${page.url}.`,
+          content: `query_page_html: no elements match \`${sel}\` on ${where}.`,
         };
       }
       const blocks = matches.map((m, i) => `### Match ${i + 1}\n\`\`\`html\n${m}\n\`\`\``);
       return {
         ok: true,
-        content: `## query_page_html — \`${sel}\` on ${page.url} (${matches.length} match(es))\n${mark(blocks.join("\n\n"))}`,
+        content: `## query_page_html — \`${sel}\` on ${where} (${matches.length} match(es))\n${mark(blocks.join("\n\n"))}`,
       };
     }
 
@@ -296,13 +298,13 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
       if (windows.length === 0) {
         return {
           ok: true,
-          content: `query_page_html: "${toolInput.keyword}" not found on ${page.url}.`,
+          content: `query_page_html: "${toolInput.keyword}" not found on ${where}.`,
         };
       }
       const blocks = windows.map((w, i) => `### Match ${i + 1}\n\`\`\`html\n${w}\n\`\`\``);
       return {
         ok: true,
-        content: `## query_page_html — "${toolInput.keyword}" on ${page.url} (${windows.length} match(es))\n${mark(blocks.join("\n\n"))}`,
+        content: `## query_page_html — "${toolInput.keyword}" on ${where} (${windows.length} match(es))\n${mark(blocks.join("\n\n"))}`,
       };
     }
 
@@ -319,7 +321,7 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
       return {
         ok: true,
         content:
-          `## query_page_html — HTML of ${page.url} for you to extract "${toolInput.describe}" from\n` +
+          `## query_page_html — HTML of ${where} for you to extract "${toolInput.describe}" from\n` +
           "Extraction is your AI work on this connection (the install's model is not used). " +
           "To keep your context small, prefer `keyword`, `cssSelector` or `xpath` once you know what to look for.\n" +
           mark(`\`\`\`html\n${cappedHtml}\n\`\`\``),
@@ -364,20 +366,20 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
         ok: false,
         content:
           result.failure === "refused"
-            ? `query_page_html(describe): the extraction model declined this request for ${page.url}, and asking again gets the same answer. Use \`keyword\`, \`cssSelector\` or \`xpath\` instead.`
-            : `query_page_html(describe): the answer for ${page.url} did not fit the extraction limit. Ask for less, or use \`keyword\`, \`cssSelector\` or \`xpath\`.`,
+            ? `query_page_html(describe): the extraction model declined this request for ${where}, and asking again gets the same answer. Use \`keyword\`, \`cssSelector\` or \`xpath\` instead.`
+            : `query_page_html(describe): the answer for ${where} did not fit the extraction limit. Ask for less, or use \`keyword\`, \`cssSelector\` or \`xpath\`.`,
       };
     }
     const obj = result.object as { found: boolean; result: string } | undefined;
     if (!obj?.found || obj.result.trim().length === 0) {
       return {
         ok: true,
-        content: `query_page_html(describe): the extraction model did not find "${toolInput.describe}" on ${page.url}.`,
+        content: `query_page_html(describe): the extraction model did not find "${toolInput.describe}" on ${where}.`,
       };
     }
     return {
       ok: true,
-      content: `## query_page_html — extracted "${toolInput.describe}" from ${page.url}\n${mark(obj.result)}`,
+      content: `## query_page_html — extracted "${toolInput.describe}" from ${where}\n${mark(obj.result)}`,
     };
   },
 };
