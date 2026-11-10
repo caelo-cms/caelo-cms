@@ -86,7 +86,7 @@ The crawl is the same code as before (site-importer `crawlSite`), driven by the 
 | Report | The admin |
 |---|---|
 | `start` | `imports.claim_crawl`: source, depth, page cap, LIST mode's URLs, the scope, the stored checkpoint. A malformed list or scope fails the run (no fallback) |
-| `render` | `imports.take_render` (the run must be crawling, at most `3 × page cap + 50` renders), then renders and stores the screenshot at `import-screenshots/<run>/src-<sha256(url)>.png` |
+| `render` | `imports.take_render` (the run must be crawling, at most `3 × page cap + 50` renders), then renders and stores the screenshot at `import-screenshots/<run>/src-<sha256(url)>.png`. Past the budget it answers `budget`: the job then takes no next URL, finishes with the pages it has and records every URL left in the skip ledger (redirects, duplicates and non-HTML pages are rendered too, and do not count toward the cap). The job counts the budget itself from `start`, so a well-behaved crawl never meets the answer |
 | `batch` | `imports.write_extracted_pages`, then the captures in one bulk write (`imports.set_page_captures_by_url`): every key must be one of this run's |
 | `checkpoint` | `imports.save_crawl_checkpoint`, after a strict schema with caps |
 | `capture-targets`, `page-capture`, `page-note` | the second pass over the pages still without a screenshot (`imports.list_capture_targets`, `imports.update_page_capture`, `imports.add_crawl_page_note`), only for pages of this crawling run |

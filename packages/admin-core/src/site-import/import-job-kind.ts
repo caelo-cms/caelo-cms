@@ -25,6 +25,7 @@ import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
 import { getExternalScreenshotter } from "../ai/tools/_external-screenshotter.js";
 import { getMediaStorage } from "../media/storage.js";
+import { renderBudget } from "../ops/imports-crawl.js";
 import {
   ActionRefusal,
   type AdminJobDeps,
@@ -111,9 +112,13 @@ async function render(
     throw new ActionRefusal("the run is not crawling any more; it renders nothing");
   }
   if (taken.state === "over-budget") {
-    throw new ActionRefusal(
-      `the run used its ${taken.budget} renders (three per page of its page cap); the crawl asks for more than any crawl needs`,
-    );
+    // A bounded crawl's end, not a fault: the job ends the crawl with the
+    // pages it has and records the rest as skipped.
+    return {
+      ok: false,
+      reason: "budget",
+      message: `the run used its ${taken.budget} renders (three per page of its page cap, plus 50)`,
+    };
   }
   // The renderer guards every URL with the admin's own exemptions (#191):
   // the job cannot widen them.
@@ -183,6 +188,7 @@ export const siteImportJobKind: ReportingJobKindDef = {
             explicitUrls: unknown;
             crawlScope: unknown;
             crawlState: unknown;
+            crawlRenders: number;
           } | null;
         }>(deps, "imports.claim_crawl", { runId });
         if (claimed.state !== "claimed" || !claimed.run) {
@@ -217,6 +223,8 @@ export const siteImportJobKind: ReportingJobKindDef = {
           scope,
           resumeFrom: parseStoredCheckpoint(run.crawlState),
           allowedHosts: [...importerAllowedHosts()],
+          renderBudget: renderBudget(run.maxPages),
+          rendersLeft: Math.max(0, renderBudget(run.maxPages) - run.crawlRenders),
         };
         return { value };
       },

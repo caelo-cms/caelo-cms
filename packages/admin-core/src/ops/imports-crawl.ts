@@ -59,12 +59,15 @@ export const claimCrawlOp = defineOperation({
         crawlScope: z.unknown(),
         crawlState: z.unknown(),
         status: z.string(),
+        /** Renders the run asked for so far (its budget: `renderBudget`). */
+        crawlRenders: z.number().int(),
       })
       .nullable(),
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT source_url, depth, max_pages, explicit_urls, crawl_scope, crawl_state, status
+      SELECT source_url, depth, max_pages, explicit_urls, crawl_scope, crawl_state, status,
+             crawl_renders
       FROM import_runs WHERE id = ${input.runId}::uuid
       FOR UPDATE
     `)) as unknown as {
@@ -75,6 +78,7 @@ export const claimCrawlOp = defineOperation({
       crawl_scope: unknown;
       crawl_state: unknown;
       status: string;
+      crawl_renders: number;
     }[];
     const row = rows[0];
     if (!row) return ok({ state: "missing" as const, run: null });
@@ -93,6 +97,7 @@ export const claimCrawlOp = defineOperation({
         crawlScope: row.crawl_scope,
         crawlState: row.crawl_state,
         status: row.status,
+        crawlRenders: row.crawl_renders,
       },
     });
   },

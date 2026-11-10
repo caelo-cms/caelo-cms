@@ -37,6 +37,7 @@ import {
   type Screenshot,
 } from "@caelo-cms/site-importer";
 import {
+  deferAttempt,
   isPassingReportFault,
   type JobReporter,
   JobStoppedError,
@@ -49,6 +50,7 @@ import {
   type GroundTruthSink,
   type KeyedScreenshotter,
   type PageCapture,
+  RenderBudgetSpentError,
   RendererUnavailableError,
 } from "./ground-truth.js";
 import type {
@@ -75,6 +77,12 @@ export interface CrawlAttempt {
   stopped: boolean;
   /** The first report failure that stopped it, also one the crawler swallowed. */
   cause: unknown;
+  /** Renders the run may still ask for (`start`'s `rendersLeft`). */
+  rendersLeft: number;
+  /** Why the crawl ends early: its render budget, once spent. */
+  budgetSpent: string | null;
+  /** What `budgetSpent` says once the budget runs out. */
+  readonly budgetMessage: string;
 }
 
 /**
@@ -89,7 +97,13 @@ export interface CrawlAttempt {
  */
 export function reportedScreenshotter(
   reporter: JobReporter,
-  attempt: CrawlAttempt = { stopped: false, cause: null },
+  attempt: CrawlAttempt = {
+    stopped: false,
+    cause: null,
+    rendersLeft: Number.POSITIVE_INFINITY,
+    budgetSpent: null,
+    budgetMessage: "the run used its render budget",
+  },
 ): KeyedScreenshotter {
   const keys = new WeakMap<Screenshot, { key: string | null; error: string | null }>();
   let unavailable: string | null = null;
@@ -100,6 +114,14 @@ export function reportedScreenshotter(
     async capture(url, opts) {
       if (attempt.stopped || reporter.stopped) throw new CrawlHaltedError();
       if (unavailable !== null) throw new RendererUnavailableError(unavailable);
+      // The run's render budget bounds the crawl (#1360): a page past it is
+      // skipped, and the crawl ends with what it has.
+      if (attempt.budgetSpent !== null) throw new RenderBudgetSpentError(attempt.budgetSpent);
+      if (attempt.rendersLeft <= 0) {
+        attempt.budgetSpent = attempt.budgetMessage;
+        throw new RenderBudgetSpentError(attempt.budgetSpent);
+      }
+      attempt.rendersLeft -= 1;
       let answer: RenderAnswer;
       try {
         answer = await reporter.call<RenderAnswer>("render", {
@@ -113,6 +135,11 @@ export function reportedScreenshotter(
         throw new CrawlHaltedError();
       }
       if (!answer.ok) {
+        if (answer.reason === "budget") {
+          attempt.rendersLeft = 0;
+          attempt.budgetSpent = answer.message;
+          throw new RenderBudgetSpentError(answer.message);
+        }
         if (answer.reason === "unavailable") {
           unavailable = answer.message;
           throw new RendererUnavailableError(answer.message);
@@ -221,6 +248,9 @@ async function crawl(
     ...(deps.textFetcher ? { textFetcher: deps.textFetcher } : {}),
     ...(start.resumeFrom ? { resumeFrom: start.resumeFrom } : {}),
     onPageCapture,
+    // A spent render budget ends the crawl as a bounded result: the pages
+    // it has, and every URL left in the skip ledger with the reason.
+    stopWhen: () => attempt.budgetSpent,
     onBatch: async (pages) => {
       if (halted()) throw new CrawlHaltedError();
       const { captures, tokenlessCapturedUrls } = batchCaptures(pages, keyByUrl);
@@ -258,7 +288,14 @@ export async function runSiteImportJob(
     console.log(`[site-import-job] ${reporter.subjectId}: nothing to crawl (${start.reason})`);
     return;
   }
-  const attempt: CrawlAttempt = { stopped: false, cause: null };
+  const budgetMessage = `the run used its ${start.renderBudget} renders (three per page of its page cap, plus 50)`;
+  const attempt: CrawlAttempt = {
+    stopped: false,
+    cause: null,
+    rendersLeft: start.rendersLeft,
+    budgetSpent: start.rendersLeft > 0 ? null : budgetMessage,
+    budgetMessage,
+  };
   let error: unknown = null;
   try {
     await crawl(reporter, start, deps, attempt);
@@ -274,8 +311,7 @@ export async function runSiteImportJob(
   if (isPassingReportFault(cause)) {
     // Give the attempt back with the reason; the next one resumes from the
     // checkpoint. When even this report fails, the lease runs out.
-    await reporter.call("defer", { reason: describe(cause) }).catch(() => undefined);
-    throw cause;
+    await deferAttempt(reporter, describe(cause));
   }
   await reporter.call("fail", { message: describe(cause) });
 }

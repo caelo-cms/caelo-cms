@@ -25,6 +25,7 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import {
   aggregateSiteDesignTokens,
+  CRAWL_SKIP,
   type CrawledPage,
   deriveDesignTokens,
   EXTERNAL_URL_BLOCKED,
@@ -79,6 +80,19 @@ export class RendererUnavailableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RendererUnavailableError";
+  }
+}
+
+/**
+ * The run used its render budget (#1360): the crawl skips the page and
+ * takes no next one, the second pass notes every page left. Not a fault:
+ * the crawl ends with the pages it has.
+ */
+export class RenderBudgetSpentError extends RendererUnavailableError {
+  readonly code = CRAWL_SKIP;
+  constructor(message: string) {
+    super(message);
+    this.name = "RenderBudgetSpentError";
   }
 }
 
@@ -271,12 +285,14 @@ export async function captureMissingGroundTruth(
       if (e instanceof CrawlHaltedError) throw e;
       if (e instanceof RendererUnavailableError) {
         // Pre-#247 this returned silently and the run looked "done" with
-        // zero screenshots (F9): every page left reads as UNVERIFIED.
+        // zero screenshots (F9): every page left reads as UNVERIFIED. No
+        // renderer, or (#1360) the run's render budget spent.
+        const why = e.message.endsWith(".") ? e.message : `${e.message}.`;
         for (const rest of targets.slice(i)) {
           await sink.note(
             rest.importPageId,
             "screenshot_missing",
-            `Source screenshot NOT captured: ${e.message} This page is UNVERIFIED until a source screenshot exists.`,
+            `Source screenshot NOT captured: ${why} This page is UNVERIFIED until a source screenshot exists.`,
           );
         }
         return { captured, failed: failed + targets.length - i };

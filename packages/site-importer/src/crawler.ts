@@ -160,6 +160,24 @@ export interface CrawlOptions {
   readonly batchSize?: number;
   /** Parallel fetches. Default 4. */
   readonly concurrency?: number;
+  /**
+   * #1360 — a reason to end the crawl early, asked before each next URL
+   * (a render budget the caller spent). The pages crawled so far stay the
+   * result; every URL not taken yet is recorded as skipped with the reason.
+   */
+  readonly stopWhen?: () => string | null;
+}
+
+/**
+ * #1360 — what a fetcher throws to skip one page on purpose: the crawl
+ * records it in the skip ledger with the error's message and goes on, at
+ * any depth, and does not fetch the page another way instead.
+ */
+export const CRAWL_SKIP = "CrawlSkip" as const;
+
+/** Whether `err` asks the crawl to skip its page (see {@link CRAWL_SKIP}). */
+export function isCrawlSkipError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === CRAWL_SKIP;
 }
 
 export interface CrawledPage {
@@ -500,6 +518,10 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       // A blocked ROOT URL means the whole crawl is pointless — fail the
       // run loudly (no-fallbacks pre-1.0) instead of returning an empty
       // "ready for review" result. Blocked in-site links merely record.
+      if (isCrawlSkipError(e)) {
+        recordSkip(next.url, (e as Error).message, false);
+        return;
+      }
       if (next.depth === 0 && isExternalUrlBlockedError(e)) throw e;
       errors.push({ url: next.url, reason: (e as Error).message });
       return;
@@ -644,6 +666,14 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   // synchronously before awaiting, so no URL is fetched twice.
   const worker = async (): Promise<void> => {
     while (pagesCrawled < maxPages) {
+      const stop = opts.stopWhen?.() ?? null;
+      if (stop !== null) {
+        // The pages crawled so far stay the result; what was left is skipped.
+        for (const left of queue.splice(0)) {
+          if (!seen.has(left.url)) recordSkip(left.url, `not crawled: ${stop}`, false);
+        }
+        return;
+      }
       const next = queue.shift();
       if (!next) return;
       if (seen.has(next.url)) continue;
@@ -739,7 +769,7 @@ function makeCaptureFetcher(
       // A blocked URL is a hard stop — the same SSRF policy would reject it
       // on the fallback path too, less clearly. Everything else degrades to
       // the content-only fallback below.
-      if (isExternalUrlBlockedError(e)) throw e;
+      if (isExternalUrlBlockedError(e) || isCrawlSkipError(e)) throw e;
       shot = null;
     }
 

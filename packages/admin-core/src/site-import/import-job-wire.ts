@@ -43,6 +43,12 @@ export type CrawlStart =
       readonly resumeFrom: CrawlCheckpoint | null;
       /** The SSRF guard's exemptions, as the admin has them (#191). */
       readonly allowedHosts: readonly string[];
+      /**
+       * The run's render budget and what is left of it (earlier attempts
+       * count). A crawl that spends it ends with the pages it has.
+       */
+      readonly renderBudget: number;
+      readonly rendersLeft: number;
     };
 
 const url = z.string().url().max(4000);
@@ -74,8 +80,11 @@ export type RenderAnswer =
     }
   | {
       readonly ok: false;
-      /** `blocked`: the SSRF guard refused the URL; `unavailable`: no renderer on this install. */
-      readonly reason: "blocked" | "unavailable" | "failed";
+      /**
+       * `blocked`: the SSRF guard refused the URL; `unavailable`: no renderer
+       * on this install; `budget`: the run used its render budget.
+       */
+      readonly reason: "blocked" | "unavailable" | "failed" | "budget";
       readonly message: string;
     };
 

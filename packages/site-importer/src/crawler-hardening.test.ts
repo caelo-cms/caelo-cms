@@ -8,7 +8,13 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { type CrawlCheckpoint, type CrawledPage, crawlSite, USER_AGENT } from "./crawler.js";
+import {
+  CRAWL_SKIP,
+  type CrawlCheckpoint,
+  type CrawledPage,
+  crawlSite,
+  USER_AGENT,
+} from "./crawler.js";
 import { isPathAllowed, parseRobotsTxt } from "./robots.js";
 import { discoverSitemapUrls, extractLocValues } from "./sitemap.js";
 
@@ -246,6 +252,49 @@ describe("streaming + checkpoint/resume (#192)", () => {
     const all = new Set([...writtenAtMid, ...resumed.pages.map((p) => p.url)]);
     expect(all.size).toBe(10);
     expect(resumed.pagesCrawled).toBe(10);
+  });
+
+  it("#1360: stopWhen ends the crawl with its pages and records what was left as skipped", async () => {
+    const site = makeSite(routes);
+    let fetched = 0;
+    const result = await crawlSite({
+      sourceUrl: "https://site.example/",
+      fetcher: async (url) => {
+        fetched += 1;
+        return site.fetcher(url);
+      },
+      throttleMs: 0,
+      maxPages: 50,
+      concurrency: 1,
+      stopWhen: () => (fetched >= 4 ? "the budget is spent" : null),
+    });
+    expect(result.pagesCrawled).toBe(4);
+    const left = result.skipped.filter((s) => s.reason === "not crawled: the budget is spent");
+    expect(left).toHaveLength(6);
+  });
+
+  it("#1360: a fetcher's skip is a skip at any depth, LIST mode's included", async () => {
+    const site = makeSite(routes);
+    const result = await crawlSite({
+      sourceUrl: "https://site.example/",
+      urls: ["https://site.example/p0", "https://site.example/p1"],
+      fetcher: async (url) => {
+        if (url.endsWith("/p0")) {
+          throw Object.assign(new Error("out of renders"), { code: CRAWL_SKIP });
+        }
+        return site.fetcher(url);
+      },
+      throttleMs: 0,
+    });
+    // LIST mode fetches the chosen URLs and the source; the skipped one is neither crawled nor an error.
+    const crawled = result.pages.map((p) => p.url);
+    expect(crawled).toContain("https://site.example/p1");
+    expect(crawled).not.toContain("https://site.example/p0");
+    expect(result.skipped).toContainEqual({
+      url: "https://site.example/p0",
+      reason: "out of renders",
+    });
+    expect(result.errors).toEqual([]);
   });
 
   it("#1360 review: without onBatch a checkpoint still means progress (the pages are the result)", async () => {

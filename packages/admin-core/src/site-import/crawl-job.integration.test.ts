@@ -124,7 +124,7 @@ function fixtureRenderer(): Map<string, number> {
         bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
         width: 1440,
         height: 900,
-        finalUrl: url,
+        finalUrl: res.url || url,
         finalStatus: res.status,
         contentType: res.headers.get("content-type") ?? "text/html",
         ...(opts?.captureHtml ? { renderedHtml: html } : {}),
@@ -436,6 +436,56 @@ describe("a site import's crawl in its job (#1360)", () => {
     }
   });
 
+  it("a site whose links redirect to its homepage spends the render budget: the crawl ends with what it has", async () => {
+    // Every /rN redirects to the homepage: a rendered page that is a
+    // duplicate and does not count toward the page cap.
+    const redirects = 70;
+    const links = [
+      ...Array.from({ length: redirects }, (_, i) => `<a href="/r${i}">Link ${i}</a>`),
+      '<a href="/p0">The one other page</a>',
+    ].join("");
+    const html = (title: string) =>
+      `<!doctype html><html><head><title>${title}</title></head><body><main><h1>${title}</h1>${links}</main></body></html>`;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        const { pathname } = new URL(req.url);
+        if (pathname === "/robots.txt") return new Response("User-agent: *\nAllow: /\n");
+        if (pathname === "/") {
+          return new Response(html("Home"), { headers: { "content-type": "text/html" } });
+        }
+        if (pathname === "/p0") {
+          return new Response(html("Page 0"), { headers: { "content-type": "text/html" } });
+        }
+        if (/^\/r\d+$/.test(pathname)) return Response.redirect(new URL("/", req.url), 302);
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const renders = fixtureRenderer();
+      const origin = `http://127.0.0.1:${server.port}`;
+      const maxPages = 2;
+      const runId = await createRun(`${origin}/`, maxPages);
+      await startReportingJob(ADMIN(), "site_import", runId, liveLauncher());
+      // Finished, not failed: the pages it got, and what it left in the ledger.
+      const run = await runState(runId);
+      expect(run?.status).toBe("ready_for_review");
+      expect(run?.error_message).toBeNull();
+      expect([...renders.values()].reduce((a, b) => a + b, 0)).toBe(renderBudget(maxPages));
+      const pages = await pagesOf(runId);
+      expect(pages.map((p) => p.source_url)).toEqual([`${origin}/`]);
+      const ledger = run?.crawl_state as { skipped: { url: string; reason: string }[] };
+      const notCrawled = ledger.skipped.filter((s) => s.reason.startsWith("not crawled: "));
+      expect(notCrawled.length).toBeGreaterThan(0);
+      expect(notCrawled[0]?.reason).toContain(`used its ${renderBudget(maxPages)} renders`);
+      expect(notCrawled.map((s) => s.url)).toContain(`${origin}/p0`);
+      expect(await jobRow(runId)).toEqual({ state: "done", attempt: 1 });
+    } finally {
+      server.stop(true);
+    }
+  });
+
   it("a job that keeps dying is given up: the run fails with where it ran", async () => {
     fixtureRenderer();
     const runId = await createRun("https://issue1360-dead.example/");
@@ -644,14 +694,14 @@ describe("what a crawl's job may report (#1360)", () => {
     await withSql(async (tx) => {
       await tx`UPDATE import_runs SET crawl_renders = ${renderBudget(10)} WHERE id = ${runId}::uuid`;
     });
-    const over = await refusal(
-      reporter.call("render", {
-        url: "https://issue1360-budget.example/",
-        sampleStyles: true,
-        captureHtml: true,
-      }),
-    );
-    expect(over.status).toBe(422);
+    // Past the budget the admin renders nothing more, and answers so: a
+    // bounded crawl's end, which the job turns into a finished run.
+    const over = await reporter.call<{ ok: boolean; reason?: string; message?: string }>("render", {
+      url: "https://issue1360-budget.example/",
+      sampleStyles: true,
+      captureHtml: true,
+    });
+    expect(over).toMatchObject({ ok: false, reason: "budget" });
     expect(over.message).toContain(`used its ${renderBudget(10)} renders`);
 
     await execute(registry, adapter, SYSTEM, "imports.fail_crawl", {
