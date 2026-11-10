@@ -25,6 +25,7 @@ import {
   CONFIRM_MAX_AGE_MS,
   listenForPublishedChanges,
   onPublishedChange,
+  resetPublishedStateConfirmation,
 } from "./published-changes.js";
 import {
   handleRequest,
@@ -372,6 +373,8 @@ describe("#1361 a staging host set while the instance idles", () => {
       );
     } finally {
       setSystemTime();
+      // That confirmation is dated 30 s ahead; nothing after this test may rely on it.
+      resetPublishedStateConfirmation();
       await listening.unlisten();
       await asSystem(
         ADMIN_URL,
