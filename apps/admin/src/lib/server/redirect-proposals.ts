@@ -76,15 +76,18 @@ function failedHostingPushes(value: unknown): string | null {
 
 /**
  * The form result of a Go live now that ran: `liveMessage`, or — when a
- * hosting push failed — an error, because visitors keep getting the
- * previous rule until the retried push lands, although the change is live
- * in Caelo.
+ * hosting push failed — that failure as a warning. The save or approval
+ * stands (it is live in Caelo, and a chat card shows its proposal applied),
+ * but visitors keep getting the previous rule until the retried push
+ * lands, so it is never reported as "live on your site".
  */
 export function goLiveResult(pushFailed: string | null, liveMessage: string) {
   if (pushFailed === null) return { ok: true as const, message: liveMessage };
-  return fail(502, {
-    error: `It is live in Caelo, but the push to your hosting failed (${pushFailed}). It is retried automatically; until it lands, visitors keep getting the previous rule.`,
-  });
+  return {
+    ok: true as const,
+    warning: true as const,
+    message: `It is live in Caelo, but the push to your hosting failed (${pushFailed}). It is retried automatically; until it lands, visitors keep getting the previous rule.`,
+  };
 }
 
 /** The pending redirect proposals. */

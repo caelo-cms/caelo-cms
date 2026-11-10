@@ -149,7 +149,10 @@
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {/if}
   {#if form?.ok}
-    <Alert><AlertDescription>{form.message ?? "Saved."}</AlertDescription></Alert>
+    <!-- #1550 — a Go live now whose hosting push failed is live in Caelo only. -->
+    <Alert variant={form.warning ? "destructive" : "default"}>
+      <AlertDescription>{form.message ?? "Saved."}</AlertDescription>
+    </Alert>
   {/if}
 
   {#if data.proposals.length > 0}
