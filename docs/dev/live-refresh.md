@@ -16,7 +16,7 @@ An idle tab (no turn running, nothing in progress) makes **no request at all**. 
 
 ## Where topics come from
 
-Every operation that commits is classified **by name** (`liveTopicsOfOperation`, shared) through the Query API's `observeCommittedOperations` hook, so no handler has to remember to announce its change. Only write ops are listed; reads and clock-driven writes (heartbeats, lease renewals, the audit worker's idle `claim_next`) announce nothing, because a hint on a clock is polling again. `packages/admin-core/src/__tests__/live-events.test.ts` checks the classification against the real op catalogue.
+Every operation that commits is classified **by name** (`liveTopicsOfOperation`, shared) through the Query API's `observeCommittedOperations` hook, so no handler has to remember to announce its change. Only write ops are listed; reads and clock-driven writes (heartbeats, lease renewals, a reporting job's `reporting_jobs.authorize`, the tick's `quality_audits.sweep_unstarted`) announce nothing, because a hint on a clock is polling again. `packages/admin-core/src/__tests__/live-events.test.ts` checks the classification against the real op catalogue.
 
 The `draft` topic is not classified by name: it comes from the change journal ([state-and-changes.md](./state-and-changes.md), #1267). Whenever a committed write changed a journaled row — a chat's or an MCP agent's write, a Stage, an undo, a settings change — every instance publishes `draft`, and never for a write that changed nothing. Server code that needs the changed rows themselves (the preview's invalidation, #1270) subscribes with `subscribeEntityChanges`; tabs hear only the topic. The changes pill (#1268) and the preview (#1270) are its first client surfaces.
 

@@ -22,6 +22,7 @@ import {
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import type { PerformanceMetrics } from "../quality/lighthouse-metrics.js";
 import { registerAdminOps } from "../register.js";
+import { claimNextQueuedAudit } from "./fixtures/drain-audits.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -109,9 +110,7 @@ async function claimedRun(minutes: number, pageIds: string[]): Promise<string> {
     branch: null,
     pageIds,
   });
-  const run = (
-    await op<{ run: { auditRunId: string } | null }>(SYS, "quality_audits.claim_next", {})
-  ).run;
+  const run = await claimNextQueuedAudit({ adapter, registry });
   if (!run) throw new Error("nothing to claim");
   return run.auditRunId;
 }
@@ -425,9 +424,7 @@ describe("Lighthouse metrics per audited page", () => {
       },
       stagedBy: "live_edit_ai",
     });
-    const chatRun = (
-      await op<{ run: { auditRunId: string } | null }>(SYS, "quality_audits.claim_next", {})
-    ).run?.auditRunId;
+    const chatRun = (await claimNextQueuedAudit({ adapter, registry }))?.auditRunId;
     if (!chatRun) throw new Error("nothing to claim");
     const homeAt = (scores: Record<string, number>) => ({
       ...lighthousePage(homeId, sampleMetrics()),

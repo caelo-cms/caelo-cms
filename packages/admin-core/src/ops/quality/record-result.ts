@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #553 / #727 — `quality_audits.record_result`: the audit worker
+ * Issue #553 / #727 — `quality_audits.record_result`: the audit's job (#1359)
  * reports one audit run's outcome and the op settles it.
  *
  * A completed audit carries two parts:
@@ -172,6 +172,16 @@ const completedOutcome = z
   })
   .strict();
 
+/**
+ * An audit's outcome as `quality_audits.record_result` takes it: completed
+ * with what was measured, or failed with the reason. #1359 — the audit's
+ * job reports exactly this (quality/audit-job-kind.ts `result`).
+ */
+export const auditOutcomeSchema = z.discriminatedUnion("kind", [
+  completedOutcome,
+  z.object({ kind: z.literal("failed"), code: z.string(), message: z.string().min(1) }).strict(),
+]);
+
 function failureOf(
   lighthouseErrors: readonly z.infer<typeof pageErrorInput>[],
   checkErrors: readonly { message: string }[],
@@ -334,8 +344,9 @@ async function recordCompleted(
 export const recordAuditResultOp = defineOperation({
   name: "quality_audits.record_result",
   readScope: "request",
-  // Why human-only: worker-internal — the audit outcome comes from the
-  // in-admin audit worker (system); nobody else may write scores or findings.
+  // Why human-only: job-internal — the audit outcome comes from the
+  // audit's job through its report (system, #1359); nobody else may write
+  // scores or findings.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -344,12 +355,7 @@ export const recordAuditResultOp = defineOperation({
       /** Staging origin the pages were fetched from (null when it could
        *  not even be resolved). */
       baseUrl: z.string().nullable(),
-      outcome: z.discriminatedUnion("kind", [
-        completedOutcome,
-        z
-          .object({ kind: z.literal("failed"), code: z.string(), message: z.string().min(1) })
-          .strict(),
-      ]),
+      outcome: auditOutcomeSchema,
     })
     .strict(),
   output: z.object({
@@ -368,7 +374,7 @@ export const recordAuditResultOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "quality_audits.record_result",
-        message: `audit run ${input.auditRunId} is ${current.status}, not running — results are only recorded once, by the worker that claimed it`,
+        message: `audit run ${input.auditRunId} is ${current.status}, not running — results are only recorded once, by the job that claimed it`,
       });
     }
 

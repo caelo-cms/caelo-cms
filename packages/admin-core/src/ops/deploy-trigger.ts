@@ -128,7 +128,7 @@ import {
   withBuiltLinks,
 } from "../links/link-notice.js";
 import { loadedVisitorProjections } from "../public-projection.js";
-import { kickQualityAuditWorker } from "../quality/audit-worker.js";
+import { startQualityAuditJob } from "../quality/start-audit-job.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
@@ -563,6 +563,8 @@ export const finishTriggerOp = defineOperation({
     draftPages: draftPagesSummary,
     /** #1330 — `https://<staging host>/` for a Stage while a host is set; null otherwise. */
     stagingUrl: z.string().nullable(),
+    /** #1359 — the Stage's audit when it was queued (its job starts next); null otherwise. */
+    queuedAuditRunId: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
     // Refusals throw OperationAbortError: nothing of this step may commit,
@@ -659,6 +661,7 @@ export const finishTriggerOp = defineOperation({
     // left a succeeded Stage with no audit and Publish live blocked with
     // nothing to retry. The row was decided before the build
     // (deploy.start_trigger), so this is a plain insert of checked values.
+    let queuedAuditRunId: string | null = null;
     if (planned?.success) {
       const queued = await insertPlannedAudit(tx, ctx, {
         deployRunId: input.runId,
@@ -666,6 +669,7 @@ export const finishTriggerOp = defineOperation({
         input: { deployRunId: input.runId, ...(input.qualityAudit ?? {}) },
       });
       if (!queued.ok) refuse(describeError(queued.error));
+      else if (queued.value.status === "queued") queuedAuditRunId = queued.value.auditRunId;
     }
     // #1157 — the build read the redirects table when it started; a
     // redirect saved since then was pushed to what the target served before
@@ -677,6 +681,7 @@ export const finishTriggerOp = defineOperation({
     return ok({
       draftPages: await mainDraftPages(tx),
       stagingUrl: host ? `https://${host}/` : null,
+      queuedAuditRunId,
     });
   },
 });
@@ -1007,9 +1012,11 @@ async function runTrigger(
       linkNotice,
     });
     if (!finished.ok) return await fail(describeError(finished.error));
-    // The audit row committed with the run; wake this instance's worker
-    // instead of waiting for its next pass.
-    if (plan.target.env === "staging") kickQualityAuditWorker();
+    // #1359 — the audit row committed with the run; start its job now,
+    // inside this request, instead of waiting for the next tick.
+    const queuedAuditRunId = (finished.value as { queuedAuditRunId: string | null })
+      .queuedAuditRunId;
+    if (queuedAuditRunId) await startQualityAuditJob({ adapter, registry }, queuedAuditRunId);
     // The run is recorded; now put the redirects table on the build the
     // target serves, in a transaction of its own. A failure is recorded and
     // retried by the redirect-sync worker (the target stays behind); it

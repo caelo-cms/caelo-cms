@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   auditFindingContributors,
   bootstrap,
-  collectPluginAuditFindings,
+  pluginAuditFindingsCall,
   resetPluginHost,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
@@ -25,7 +25,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { StagedPage } from "../quality/checks/check.js";
-import { withPluginAuditChecks } from "../quality/checks/plugin-findings.js";
+import { collectPluginFindings, withPluginAuditChecks } from "../quality/checks/plugin-findings.js";
 import { CheckRegistry } from "../quality/checks/registry.js";
 import { runFindingChecks } from "../quality/checks/runner.js";
 import { registerAdminOps } from "../register.js";
@@ -182,7 +182,13 @@ describe("international-site Stage audit", () => {
     expect(auditFindingContributors()).toContain("international-site");
     const checks = withPluginAuditChecks(new CheckRegistry(), {
       contributors: () => ["international-site"],
-      findings: collectPluginAuditFindings,
+      findings: (slug, pages, facts) =>
+        collectPluginFindings(
+          (args, label) => pluginAuditFindingsCall(slug, args, label),
+          slug,
+          pages,
+          facts,
+        ),
       siteUrls: async () => [BASE],
     });
     const out = await runFindingChecks(checks.findingChecks(), staged, {

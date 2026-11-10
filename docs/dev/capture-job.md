@@ -32,7 +32,7 @@ The admin signs as its own service account through IAM `signBlob` (Cloud Run hol
 
 Alternatives we rejected:
 
-- **A job identity IAP admits** (like `caelo-mcp`) and a signed endpoint on the admin: the job would hold a credential that passes the admin's first line of defence while rendering hostile pages, and every render would again load the admin.
+- **A job identity IAP admits** (like `caelo-mcp`) and a signed endpoint on the admin: the job would hold a credential that passes the admin's first line of defence while rendering hostile pages, and every render would again load the admin. The reporting jobs of #1359 do pass IAP, because they run no browser and execute nothing they fetch; every render they need stays here ([reporting-jobs.md](./reporting-jobs.md), threat model).
 - **The job reading the media bucket with its own identity** (as the audit job reads the staged build): every draft and reference image of the site would be readable from a container that runs third-party JavaScript.
 - **Media inlined into the document as `data:` URIs**: an image-heavy page would put tens of MB of base64 through the admin's memory, the cost this issue removes.
 

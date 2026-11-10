@@ -41,12 +41,17 @@ import { ensureConvergeJob } from "../converge-job-setup.js";
 import { ensureGatewayArmorRules } from "../gateway-armor.js";
 import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
-import { schedulerServiceAccountEmail, upgraderServiceAccountEmail } from "../gcp-names.js";
+import {
+  auditRunnerServiceAccountEmail,
+  schedulerServiceAccountEmail,
+  upgraderServiceAccountEmail,
+} from "../gcp-names.js";
 import type { InstallMetadata } from "../install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import { ensureRemoteMcpEdge, resolveRemoteMcpIdentity } from "../remote-mcp.js";
+import { ensureAuditRunnerJob } from "../reporting-job-setup.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -59,6 +64,8 @@ import { selfCommand } from "../self-command.js";
 import {
   AUDIT_JOB_ENV_VAR,
   AUDIT_RESULTS_BUCKET_ENV_VAR,
+  AUDIT_RUNNER_JOB_ENV_VAR,
+  AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR,
   CAPTURE_BUCKET_ENV_VAR,
   CAPTURE_JOB_ENV_VAR,
   type CloudRunEnvVar,
@@ -382,6 +389,62 @@ export function startConverge(
     );
     incomplete = true;
     leaveUntouched.push(AUDIT_JOB_ENV_VAR, AUDIT_RESULTS_BUCKET_ENV_VAR);
+  }
+
+  /** The audit runner is set up this run, or its account exists from an earlier one. */
+  let auditRunnerOnIap = false;
+
+  async function auditRunnerJob(): Promise<void> {
+    // #1359 — the job a Stage's whole quality audit runs in; it reports
+    // back to the admin through IAP (reporting-job-setup.ts). After the
+    // audit job, on whose Lighthouse tasks it gets its run grant. Deployed
+    // with the admin's CURRENT image, like the audit job: the app-roll moves
+    // both onto the new one. A failure costs Stage audits, so it warns and
+    // the admin keeps its current env.
+    const s = r.step("Ensuring the quality-audit runner (audits outside the admin)...");
+    const image = await resolveAdminImage(
+      { projectId: install.projectId, region: install.region, env: install.env },
+      { run },
+    );
+    const resource = image.ok ? await adminIapResource() : null;
+    const ar = !image.ok
+      ? { ok: false as const, done: [], error: image.error }
+      : !resource
+        ? { ok: false as const, done: [], error: "the admin's IAP resource was not found" }
+        : await ensureAuditRunnerJob(
+            {
+              provider: install.provider,
+              projectId: install.projectId,
+              region: install.region,
+              env: install.env,
+              adminImageRef: image.imageRef,
+              resource,
+            },
+            runDeps,
+          );
+    for (const step of ar.done) r.info(`  ${step}`);
+    if (ar.ok) {
+      auditRunnerOnIap = true;
+      s.done("Quality-audit runner ready (Stage audits run in their own job)");
+      return;
+    }
+    s.warned(`Quality-audit runner not set up: ${ar.error}`);
+    r.warn(
+      "The upgrade continues; Stage audits fail after their last attempt until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    // An account set up by an earlier run keeps its IAP access, or the next
+    // operator-access sync would cut off a runner that still works.
+    const exists = await run([
+      "iam",
+      "service-accounts",
+      "describe",
+      auditRunnerServiceAccountEmail(install.projectId, install.env),
+      `--project=${install.projectId}`,
+      "--format=value(email)",
+    ]);
+    auditRunnerOnIap = exists.ok;
+    incomplete = true;
+    leaveUntouched.push(AUDIT_RUNNER_JOB_ENV_VAR, AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR);
   }
 
   async function captureJob(): Promise<void> {
@@ -863,13 +926,16 @@ export function startConverge(
                   ],
                 }
               : {}),
-            ...(schedulerReady || schedulerAccountExists
-              ? {
-                  iapServiceAccounts: [
-                    schedulerServiceAccountEmail(install.projectId, install.env),
-                  ],
-                }
-              : {}),
+            // #1140 / #1359 — the scheduler and the reporting jobs pass the
+            // admin's IAP as themselves; the sync keeps them there.
+            iapServiceAccounts: [
+              ...(schedulerReady || schedulerAccountExists
+                ? [schedulerServiceAccountEmail(install.projectId, install.env)]
+                : []),
+              ...(auditRunnerOnIap
+                ? [auditRunnerServiceAccountEmail(install.projectId, install.env)]
+                : []),
+            ],
           },
           runDeps,
         )
@@ -898,6 +964,7 @@ export function startConverge(
       await mcpAccess();
       await urlMapRedirectsAccess();
       await auditJob();
+      await auditRunnerJob();
       await captureJob();
       await remoteMcpEdge();
       await gatewayArmor();

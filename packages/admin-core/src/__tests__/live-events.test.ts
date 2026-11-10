@@ -100,7 +100,8 @@ describe("liveTopicsOfOperation over the real op catalogue", () => {
     for (const n of [
       "chat.heartbeat_agent_run",
       "chat.renew_turn_lease",
-      "quality_audits.claim_next",
+      "reporting_jobs.authorize",
+      "quality_audits.sweep_unstarted",
       "deploy.renew_run_lease",
       "deploy.acquire_live_release",
     ]) {

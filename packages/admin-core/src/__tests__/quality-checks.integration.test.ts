@@ -27,7 +27,6 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
-import { drainAuditQueue } from "../quality/audit-worker.js";
 import {
   PLACEHOLDER_RULE,
   testCheckRegistry,
@@ -39,6 +38,7 @@ import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
 import { localBuildSource } from "../quality/staged-origin.js";
 import { registerAdminOps } from "../register.js";
+import { claimNextQueuedAudit, drainAuditQueue } from "./fixtures/drain-audits.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -121,7 +121,7 @@ const noLighthouse = async (): Promise<AuditJobResult> => {
   throw new Error("this Stage must not run Lighthouse");
 };
 
-/** Run the worker over the queue (the real audit-worker path). */
+/** Run the queued audits through their jobs, in this process (the real job path, #1359). */
 async function audit(
   runJob: (job: AuditJob) => Promise<AuditJobResult>,
   checks?: CheckRegistry,
@@ -341,9 +341,10 @@ describe("the per-rule ratchet", () => {
       targetName: "staging",
       repoRoot: testRoot,
     });
-    const claimed = await op<{ run: { auditRunId: string } }>(SYS, "quality_audits.claim_next", {});
+    const claimed = await claimNextQueuedAudit({ adapter, registry });
+    if (!claimed) throw new Error("the Stage queued no audit");
     await op(SYS, "quality_audits.record_result", {
-      auditRunId: claimed.run.auditRunId,
+      auditRunId: claimed.auditRunId,
       baseUrl: "http://staging.test",
       outcome: {
         kind: "completed",
@@ -369,7 +370,7 @@ describe("the per-rule ratchet", () => {
         },
       },
     });
-    return claimed.run.auditRunId;
+    return claimed.auditRunId;
   }
 
   const img = (n: number) =>

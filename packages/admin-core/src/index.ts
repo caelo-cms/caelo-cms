@@ -254,8 +254,9 @@ export {
   previewDocumentHeaders,
 } from "./preview-document.js";
 export * from "./public-projection.js";
-// #553 — quality-audit worker (Lighthouse after a substantial Stage).
-export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
+// #1359 — a queued quality audit's job (the audit runs in it, not in the admin).
+export { collectPluginFindings } from "./quality/checks/plugin-findings.js";
+export { startQualityAuditJob } from "./quality/start-audit-job.js";
 export * from "./rate-limit.js";
 // #1157 — the post-commit redirect sync every redirects write runs.
 export {
@@ -265,6 +266,17 @@ export {
 } from "./redirect-sync-worker.js";
 export * from "./register.js";
 export type { ReleaseCheckOpts } from "./release-check-worker.js";
+// #1359 — reporting jobs: long work in a container job that reports back.
+export { handleJobReport, type ReportResponse } from "./reporting-jobs/dispatch.js";
+export { inProcessJobLauncher } from "./reporting-jobs/in-process.js";
+export { reportingJobKind } from "./reporting-jobs/kinds.js";
+export { setInProcessJobLauncher } from "./reporting-jobs/launcher.js";
+export {
+  isReportingJobKind,
+  JOB_TOKEN_HEADER,
+  MAX_REPORT_BODY_BYTES,
+  type ReportingJobKind,
+} from "./reporting-jobs/protocol.js";
 // #1140 — the scheduler tick: the core maintenance tasks, the plugin
 // workers, and the tick that runs what is due.
 export { mintTickToken } from "./scheduler/clock.js";

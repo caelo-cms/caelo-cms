@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 24;
+export const INFRA_CONTRACT_VERSION = 25;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -200,6 +200,19 @@ export const INFRA_CONTRACT_VERSION = 24;
 //       static bucket only, an IAM binding the in-cloud upgrader may not
 //       make (stack-contract.ts `admin-static-bucket-read`). Other providers
 //       have nothing to converge for it.
+//  25 — #1359: the quality-audit runner (reporting-job-setup.ts), the job a
+//       Stage's whole audit runs in instead of the admin's process. Its
+//       service account (token creator on itself, logWriter, IAP access to
+//       the admin, object viewer on the staging and audit-results buckets,
+//       run-with-overrides and viewer on the Lighthouse job), the job
+//       `caelo-<env>-audit-run`, the admin's run-with-overrides and viewer
+//       on it, the upgrader's actAs on its account, the operator-access
+//       job's CAELO_OPERATOR_ACCESS_IAP_SERVICE_ACCOUNTS (so its sync keeps
+//       the account on IAP) and CAELO_AUDIT_RUNNER_JOB /
+//       CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT on the admin. The new admin
+//       starts every Stage audit on that job and the app-roll moves its
+//       image, so an in-cloud upgrader must not roll an install onto it
+//       before it exists.
 //
 // #1029 is deliberately NOT a bump. The upgrader job's stage 1 moves the job
 // onto the target's ops image with rights it has held on itself since
@@ -238,6 +251,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   22: "per-path Cloud Armor rules for the visitor and staging gateways on Google Cloud load-balancer installs: a tighter ban on sign-up, login and password reset, a captcha throttle, the general ban only on the visitor API, and fewer false positives from the OWASP rules (#1339)",
   23: "the admin's permission on Google Cloud load-balancer installs to set the site's security headers on the static backend bucket at Publish live (#1454)",
   24: "the admin's permission on Google Cloud load-balancer installs to read the static bucket's settings, without which Publish live could not set the site's security headers (#1454)",
+  25: "the quality-audit runner: a job of its own that runs each Stage's quality audit and reports the result to the admin, its service account and grants (#1359)",
 };
 
 /**

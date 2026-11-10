@@ -18,6 +18,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { proposeAcceptInput, proposePublishAnywayInput } from "../../ops/quality/pending.js";
+import { startQualityAuditJob } from "../../quality/start-audit-job.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
 import { makeReadTool } from "./_make-read-tool.js";
@@ -84,6 +85,13 @@ export const retryQualityAuditTool: ToolDefinitionWithHandler<z.infer<typeof ret
       return toolError(r.error, `quality_audits.retry failed: ${describeError(r.error)}`);
     }
     const v = r.value as { auditRunId: string; deployRunId: string; status: string };
+    // #1359 — the audit runs in its own job; start it now, not at the next tick.
+    if (v.status === "queued") {
+      await startQualityAuditJob(
+        { adapter: toolCtx.adapter, registry: toolCtx.registry },
+        v.auditRunId,
+      );
+    }
     return {
       ok: true,
       content:
