@@ -48,6 +48,7 @@ import {
   provisionerServiceAccountEmail,
 } from "./provisioner-identity.js";
 import { assertRegionUnchanged } from "./regions.js";
+import { confirmReleaseCandidate, resolveChannelVersion } from "./release-candidate.js";
 import type { ReleaseManifest } from "./release-manifest.js";
 import {
   type HttpFetch,
@@ -407,9 +408,70 @@ interface UpgradeOpts {
    * so it works on a machine (or a fresh Cloud Shell) with no local copy.
    */
   readonly project?: string;
+  /**
+   * #1558 — `--accept-release-candidate`: an upgrade to a release candidate
+   * goes ahead without the prompt (where none can ask, it needs this).
+   */
+  readonly acceptReleaseCandidate?: boolean;
 }
 
-export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
+/** {@link UpgradeOpts} once the target is an exact version or `latest` (#1558). */
+type SettledUpgradeOpts = Omit<UpgradeOpts, "channel">;
+
+/**
+ * Settle the release an upgrade rolls to, before any install is touched:
+ * `--channel rc|beta` becomes its newest release (the registry has no moving
+ * channel tag), and a release candidate needs the operator's confirmation
+ * (release-candidate.ts). Null when the upgrade must not start; the reason
+ * is printed and the exit code set.
+ */
+async function settleUpgradeTarget(opts: UpgradeOpts): Promise<SettledUpgradeOpts | null> {
+  const { channel, ...settled } = opts;
+  let version = settled.version;
+  if (version === undefined && (channel === "rc" || channel === "beta")) {
+    const newest = await resolveChannelVersion(channel);
+    if (!newest.ok) {
+      log.error(
+        red(
+          `Could not look up the newest ${channel} release (${newest.reason}). Nothing was changed; pass --version x.y.z instead.`,
+        ),
+      );
+      process.exitCode = 1;
+      return null;
+    }
+    log.info(
+      `--channel ${channel}: the newest ${channel} or stable release is v${newest.version}.`,
+    );
+    version = newest.version;
+  }
+  if (version !== undefined) {
+    const decision = await confirmReleaseCandidate(
+      {
+        version,
+        action: "upgrade",
+        interactive: process.stdin.isTTY === true,
+        accepted: opts.acceptReleaseCandidate === true,
+      },
+      {
+        warn: (lines) => log.warn(yellow(lines.join("\n"))),
+        confirm: async (message) => {
+          const answer = await confirm({ message, initialValue: false });
+          return !isCancel(answer) && answer === true;
+        },
+      },
+    );
+    if (!decision.ok) {
+      cancel(decision.message);
+      process.exitCode = decision.reason === "declined" ? 0 : 1;
+      return null;
+    }
+  }
+  return { ...settled, ...(version !== undefined ? { version } : {}) };
+}
+
+export async function upgradeCommand(options: UpgradeOpts = {}): Promise<void> {
+  const opts = await settleUpgradeTarget(options);
+  if (!opts) return;
   if (opts.project) {
     if (!(await gcpPreflight({ cosign: false }))) {
       process.exitCode = 1;
@@ -520,7 +582,7 @@ async function upgradeKeylessProvisioner(installId: string, projectId: string): 
 async function upgradeInstall(
   installId: string,
   meta: InstallMetadata,
-  opts: UpgradeOpts,
+  opts: SettledUpgradeOpts,
 ): Promise<boolean> {
   // #656 — earlier installers checkpointed database URLs with role
   // passwords (and the setup link) into progress.json. Scrub them first,
@@ -581,7 +643,7 @@ async function upgradeInstall(
 async function upgradeLockedInstall(
   installId: string,
   meta: InstallMetadata,
-  opts: UpgradeOpts,
+  opts: SettledUpgradeOpts,
   provider: "gcp" | "gcp-firebase",
   projectId: string,
 ): Promise<boolean> {

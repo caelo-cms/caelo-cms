@@ -30,7 +30,12 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CLOUD_SQL_CA_BUNDLE, verifyFullQuery } from "@caelo-cms/shared";
+import {
+  CAELO_VERSION,
+  CLOUD_SQL_CA_BUNDLE,
+  provisioningCommand,
+  verifyFullQuery,
+} from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { checkAdcImpersonation } from "../adc-impersonation.js";
@@ -99,6 +104,7 @@ import {
   writeMetadata,
   writeSecret,
 } from "../install-state.js";
+import { decideInstallVersion, releaseToConfirm } from "../install-version.js";
 import {
   ensureOperatorAccessSync,
   installIapAllowlist,
@@ -114,6 +120,11 @@ import {
 } from "../provisioner-identity.js";
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
+import {
+  confirmReleaseCandidate,
+  isPrereleaseVersion,
+  RELEASE_CANDIDATE_RETENTION_DAYS,
+} from "../release-candidate.js";
 import {
   checkRemoteMcpIdentityEnv,
   ensureRemoteMcpEdge,
@@ -151,6 +162,7 @@ import {
   releaseImageRef,
   releaseVersionForDigest,
   resolveOpsImageRef,
+  resolveReleaseImages,
   verifyCosignAll,
 } from "../upgrade/release-images.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
@@ -179,6 +191,13 @@ export interface GcpWizardOpts {
    * install job in the project. Default `local`.
    */
   runMode?: RunMode;
+  /**
+   * #1558 — `--version`: the release a new install runs (a release candidate
+   * included) instead of the newest stable one. See install-version.ts.
+   */
+  version?: string;
+  /** #1558 — `--accept-release-candidate`: confirms a release candidate without a prompt. */
+  acceptReleaseCandidate?: boolean;
 }
 
 export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
@@ -205,6 +224,14 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // install.json.
   const region = await stepRegion(opts, projectId, meta);
   if (meta) writeMetadata(installId, { ...meta, projectId, region });
+
+  // === 2.7. The release to install: `--version` (#1558) ===
+  // Settled before anything is created: a release candidate is confirmed
+  // here, and in local mode the release's images are resolved and
+  // cosign-verified now, so a mistyped or deleted release stops the run with
+  // nothing changed. In job mode the launcher verifies the release's signed
+  // manifest instead.
+  const version = await stepRequestedRelease(installId, projectId, provider, runMode, opts);
 
   // === 3. Project create ===
   await stepProjectCreate(installId, projectId, opts.domain);
@@ -299,6 +326,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
       region,
       provisionerEmail: saEmail,
       nonInteractive: opts.nonInteractive,
+      ...(version ? { version } : {}),
     });
     return;
   }
@@ -395,8 +423,13 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   }
   const imageDigests = choice.digests;
   if (choice.source !== "latest") {
+    const admin = dim(`${imageDigests.admin.slice(0, 19)}...`);
+    // A record on an install that has not been provisioned yet comes from
+    // `--version` or an earlier run that stopped (#1558).
     log.info(
-      `Keeping the release this install runs (admin ${dim(`${imageDigests.admin.slice(0, 19)}...`)}). Change versions with ${bold("upgrade")}.`,
+      deployed
+        ? `Keeping the release this install runs (admin ${admin}). Change versions with ${bold("upgrade")}.`
+        : `Installing the release recorded for this install${meta.releaseVersion ? ` (v${meta.releaseVersion})` : ""} (admin ${admin}).`,
     );
   }
 
@@ -684,10 +717,11 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
  * fresh release doesn't trigger a new Cloud Run revision because the
  * image reference in the stack (":latest") is unchanged.
  *
- * `latest` = newest release — the same channel `cms-provision upgrade`
- * defaults to. Deliberately NOT the `:main` dev tag: fresh installs
- * start on a released version, and the per-merge dev images are pruned
- * after 7 days (docs/maintainer-public-registry-setup.md, "Retention").
+ * `latest` = newest stable release — the same channel `cms-provision
+ * upgrade` defaults to. The mirror holds releases and release candidates
+ * only (#1558; docs/maintainer-public-registry-setup.md, "Retention"), and
+ * `latest` never names a release candidate. `--version` installs a named
+ * release instead (install-version.ts).
  */
 async function resolveImageDigests(): Promise<ImageDigests> {
   // The Caelo public image registry — not the install region.
@@ -849,6 +883,125 @@ async function stepRegion(
     process.exit(0);
   }
   return choice as string;
+}
+
+/**
+ * `--version` (#1558): settle the release a new install runs, before
+ * anything is created. Returns the version for the job-mode launcher, or
+ * null without `--version`. A release candidate needs the operator's
+ * confirmation (release-candidate.ts), named or not: in job mode the
+ * launcher installs the CLI's own release, a candidate's installer that
+ * candidate. In local mode the named release's images are resolved and
+ * cosign-verified here and recorded in install.json, where the release
+ * choice of runGcpConverge picks them up.
+ */
+async function stepRequestedRelease(
+  installId: string,
+  projectId: string,
+  provider: "gcp" | "gcp-firebase",
+  runMode: RunMode,
+  opts: GcpWizardOpts,
+): Promise<string | null> {
+  const meta = readMetadata(installId);
+  const deployed = isStepDone(installId, `pulumi-up-${projectId}`);
+  const decision = decideInstallVersion({
+    requested: opts.version,
+    deployed,
+    recordedVersion: meta?.releaseVersion,
+  });
+  if (decision.kind === "refuse") {
+    log.error(red(decision.error));
+    cancel("Aborted — nothing was changed.");
+    process.exit(1);
+  }
+  if (decision.kind === "keep") {
+    log.info(`Release: ${bold(`v${decision.version}`)} ${dim("(this install runs it already)")}`);
+    return decision.version;
+  }
+  const installs = releaseToConfirm({
+    decision,
+    runMode,
+    cliVersion: CAELO_VERSION,
+    deployed,
+    recorded: meta ? recordedImageDigests(meta) : null,
+  });
+  if (installs !== null) {
+    const confirmed = await confirmReleaseCandidate(
+      {
+        version: installs,
+        action: "install",
+        // A pipe or CI run without --non-interactive cannot answer either.
+        interactive: !opts.nonInteractive && process.stdin.isTTY === true,
+        accepted: opts.acceptReleaseCandidate === true,
+      },
+      {
+        warn: (lines) => log.warn(yellow(lines.join("\n"))),
+        confirm: async (message) => {
+          const answer = await confirm({ message, initialValue: false });
+          return !isCancel(answer) && answer === true;
+        },
+      },
+    );
+    if (!confirmed.ok) {
+      cancel(confirmed.message);
+      process.exit(confirmed.reason === "declined" ? 0 : 1);
+    }
+  }
+  if (decision.kind === "none") return null;
+  const { version } = decision;
+  if (version !== CAELO_VERSION) {
+    log.warn(
+      yellow(
+        `This installer is v${CAELO_VERSION}, not v${version}. To install v${version} exactly as released, run its own installer: ${provisioningCommand(version, ["--provider", provider, "--version", version])}`,
+      ),
+    );
+  }
+  if (runMode === "job") {
+    log.info(
+      `Release: ${bold(`v${version}`)} — the install job checks its signed release manifest before it starts.`,
+    );
+    return version;
+  }
+  await stepResolveRelease(installId, version);
+  return version;
+}
+
+/**
+ * Resolve `version`'s images in the public mirror (the upgrade path's
+ * resolver), verify their signatures and record them with the version, so
+ * the converge deploys exactly that release (#1558).
+ */
+async function stepResolveRelease(installId: string, version: string): Promise<void> {
+  const s = spinner();
+  s.start(`Resolving the v${version} release images...`);
+  const resolved = await resolveReleaseImages(version);
+  if (!resolved.ok) {
+    s.stop(red(`Could not resolve the v${version} release images`));
+    log.error(
+      isPrereleaseVersion(version)
+        ? `${resolved.error}\nA release candidate's images are deleted from the registry ${RELEASE_CANDIDATE_RETENTION_DAYS} days after it was published.`
+        : resolved.error,
+    );
+    cancel("Aborted — nothing was changed.");
+    process.exit(1);
+  }
+  const { admin, gateway } = resolved.images;
+  const proxy = resolved.images["mcp-auth-proxy"];
+  s.stop(green(`v${version}: admin ${dim(`${admin.digest.slice(0, 19)}...`)}`));
+  const verified = await verifyCosignAll([
+    { slug: "admin", digest: admin.digest },
+    { slug: "gateway", digest: gateway.digest },
+    { slug: "mcp-auth-proxy", digest: proxy.digest },
+  ]);
+  if (!verified) {
+    cancel(`Aborted — the v${version} images' signatures did not verify; nothing was changed.`);
+    process.exit(1);
+  }
+  recordImageDigests(
+    installId,
+    { admin: admin.digest, gateway: gateway.digest, "mcp-auth-proxy": proxy.digest },
+    version,
+  );
 }
 
 async function stepProjectCreate(
