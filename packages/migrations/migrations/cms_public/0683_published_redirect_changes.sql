@@ -1,12 +1,12 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0671 — issue #1550: the staging view of the redirects. Runs in both
+-- 0683 — issue #1550: the staging view of the redirects. Runs in both
 -- public databases (migrate.ts `public` and `public-staging`; the staging
 -- run grants to the staging gateway's own login instead of public_role,
 -- runner.ts retargetVisitorRole), so both have one schema; only
 -- cms_public_staging gets rows.
 --
--- Redirects are draft state now (cms_admin 0670): `published_redirects`
+-- Redirects are draft state now (cms_admin 0682): `published_redirects`
 -- keeps the live rows, and this table carries the Staged changes of the
 -- shared draft, one per address — a create or change (`to_path` set) or a
 -- removal (`to_path` NULL). The staging gateway serves the live rows with

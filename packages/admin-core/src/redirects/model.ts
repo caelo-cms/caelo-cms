@@ -10,7 +10,7 @@
  *   `release.ts`), so the provider sync, its revision triggers and the
  *   production readers keep their meaning.
  * - An address (a from path, both trailing-slash spellings together) has at
- *   most one PENDING change in `pending_redirects` (migration 0670): a
+ *   most one PENDING change in `pending_redirects` (migration 0682): a
  *   create or change (`toPath` set) or a removal, Draft or Staged, manual or
  *   automatic. `write.ts` is its one writer.
  * - The STAGING view is the live state with the shared draft's Staged

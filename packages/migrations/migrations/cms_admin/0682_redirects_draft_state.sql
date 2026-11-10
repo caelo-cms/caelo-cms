@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0670 — issue #1550: redirects are draft state (Draft, Staged, Live, and
+-- 0682 — issue #1550: redirects are draft state (Draft, Staged, Live, and
 -- Go live now). Docs: docs/dev/redirects-and-settings-sync.md.
 --
 -- `redirects` keeps its meaning: the LIVE state, what the hosting provider
@@ -36,7 +36,7 @@
 --                                 again; Go live now's changes stay live.
 --
 -- The staging view (live state plus the shared draft's Staged changes) is
--- published into cms_public_staging (`published_redirect_changes`, 0671):
+-- published into cms_public_staging (`published_redirect_changes`, 0683):
 -- a write of pending_redirects marks the `redirects` projection section.
 --
 -- The update itself creates no pending change and moves no row: existing
@@ -140,7 +140,7 @@ END $$;
 SELECT caelo_journal_attach('pending_redirects', 'pending_redirect', 'id', 'row', 'id', '',
                             'chat_branch_id');
 
--- The staging view follows every pending change (0671 publishes it).
+-- The staging view follows every pending change (0683 publishes it).
 DROP TRIGGER IF EXISTS caelo_projection_pending_redirects ON pending_redirects;
 CREATE TRIGGER caelo_projection_pending_redirects
   AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON pending_redirects FOR EACH STATEMENT
