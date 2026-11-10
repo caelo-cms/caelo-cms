@@ -15,9 +15,13 @@
  *     (`transient` / `plugin` / `core`). A core problem is reported to the
  *     bug intake the first time its fingerprint is seen.
  *   - `plugin_runtime` — per instance and plugin: loaded, or failed to load
- *     (pointing at the error). Each instance heartbeats its rows; health
- *     readers only count recent heartbeats, so a stopped instance drops
- *     out without anyone cleaning up after it.
+ *     (pointing at the error). Each instance confirms its rows at the start
+ *     of a request once they are older than {@link HEARTBEAT_REFRESH_MS}
+ *     (#1361: the admin gets CPU only while it serves a request, so a timer
+ *     would not run between them); health readers count the rows of
+ *     servers that served a request recently, and their own, so a stopped
+ *     or idling instance drops out without anyone cleaning up after it and
+ *     is never read as one that failed.
  *
  * Recording is best effort in one direction only: if the database cannot
  * take the record (it may be the very thing that is failing), the problem
@@ -483,6 +487,15 @@ const CLEARED = Symbol("cleared");
 const unsavedOutcomes = new Map<string, RuntimeOutcome | typeof CLEARED>();
 
 /**
+ * What this instance runs, per plugin: the latest outcome it decided. #1361
+ * — an instance on request-billed CPU may idle for longer than
+ * {@link STALE_ROW_RETENTION}, and another instance's heartbeat then
+ * deletes its rows; the next heartbeat here writes each missing row again,
+ * so a server that serves always reports what it runs.
+ */
+const currentOutcomes = new Map<string, RuntimeOutcome>();
+
+/**
  * Say what this instance runs for `slug`: loaded, or failed to load with
  * `errorId`. When the database refuses, the outcome is kept and the next
  * heartbeat writes it again — the load outcome itself is already decided
@@ -500,6 +513,7 @@ export async function recordPluginRuntime(opts: {
     errorId: opts.errorId,
     seq: nextOutcomeSeq(),
   };
+  currentOutcomes.set(opts.slug, outcome);
   unsavedOutcomes.set(opts.slug, outcome);
   await writeOutcome(opts.infra, opts.systemActorId, opts.slug, outcome);
 }
@@ -573,6 +587,7 @@ export async function clearPluginRuntime(opts: {
   systemActorId: string;
   slug: string;
 }): Promise<void> {
+  currentOutcomes.delete(opts.slug);
   unsavedOutcomes.set(opts.slug, CLEARED);
   await writeOutcome(opts.infra, opts.systemActorId, opts.slug, CLEARED);
 }
@@ -582,32 +597,119 @@ export function unsavedRuntimeSlugs(): string[] {
   return [...unsavedOutcomes.keys()];
 }
 
-/** How often an instance confirms its rows are still current. */
-export const HEARTBEAT_MS = 30_000;
+/**
+ * How old this instance's confirmation may get before the next request
+ * renews it. Health counts another server for {@link LIVE_WINDOW_MS}, four
+ * times as long, so a server that keeps serving never drops out between
+ * two of its requests.
+ */
+export const HEARTBEAT_REFRESH_MS = 30_000;
+/**
+ * How long a server counts as live after it last confirmed its rows: the
+ * window of `plugins.list` / `plugins.get` health and the Publish-live gate
+ * (admin-core). A server that served no request for this long is idle or
+ * gone; either way it serves nobody, so it counts neither as running nor as
+ * failing. The server answering a health read always counts itself.
+ */
+export const LIVE_WINDOW_MS = 120_000;
 /** Rows older than this belong to stopped instances and are deleted. */
 const STALE_ROW_RETENTION = "1 day";
 
-let heartbeat: ReturnType<typeof setInterval> | null = null;
+/**
+ * #1361 — the heartbeat rides requests, never an idle timer: the admin
+ * runs on request-billed CPU, so a timer would not fire while the instance
+ * idles and its rows would read as gone even though it would serve the
+ * next request. The plugin host's request start (`pluginHostRequestStart`)
+ * confirms them once they are older than {@link HEARTBEAT_REFRESH_MS} (the
+ * scheduler tick is a request too), and a request that runs for long keeps
+ * them confirmed ({@link holdRuntimeHeartbeat}).
+ */
+let heartbeat: {
+  readonly infra: PluginHostInfra;
+  readonly systemActorId: string;
+  lastAttemptAt: number;
+  running: Promise<void> | null;
+} | null = null;
 
 /**
- * Start this instance's heartbeat (idempotent). Each beat writes the
- * outcomes the database refused earlier, refreshes this instance's rows and
- * deletes rows of instances that stopped long ago.
+ * Set up this instance's heartbeat (idempotent): what a request start uses
+ * to confirm this instance's rows ({@link refreshRuntimeHeartbeat}). Starts
+ * no timer.
  */
-export function startRuntimeHeartbeat(infra: PluginHostInfra, systemActorId: string): void {
+export function configureRuntimeHeartbeat(infra: PluginHostInfra, systemActorId: string): void {
   if (heartbeat) return;
-  // FIXME(issue #1361): refreshed at request start instead, so an idle instance never reads as down.
-  heartbeat = setInterval(() => {
-    void runtimeHeartbeatOnce(infra, systemActorId);
-  }, HEARTBEAT_MS);
-  heartbeat.unref?.();
+  heartbeat = { infra, systemActorId, lastAttemptAt: 0, running: null };
 }
 
-/** Stop the heartbeat and forget unwritten outcomes (tests, shutdown). */
+/**
+ * Confirm this instance's runtime rows when the last confirmation is older
+ * than {@link HEARTBEAT_REFRESH_MS}: write the outcomes the database refused
+ * earlier, refresh the heartbeat and the in-process stats, delete the rows
+ * of instances that stopped long ago. Concurrent requests share one beat;
+ * a beat that failed is logged and tried again after the same interval, so
+ * a database that is down is not asked once per request. A no-op before
+ * the host booted.
+ *
+ * @param now - milliseconds since the epoch (tests)
+ */
+export function refreshRuntimeHeartbeat(now: number = Date.now()): Promise<void> {
+  const beat = heartbeat;
+  if (!beat) return Promise.resolve();
+  if (beat.running) return beat.running;
+  if (now - beat.lastAttemptAt < HEARTBEAT_REFRESH_MS) return Promise.resolve();
+  beat.lastAttemptAt = now;
+  const running = runtimeHeartbeatOnce(beat.infra, beat.systemActorId).finally(() => {
+    if (beat.running === running) beat.running = null;
+  });
+  beat.running = running;
+  return running;
+}
+
+/** Admin requests in flight on this instance ({@link holdRuntimeHeartbeat}). */
+let held = 0;
+let renewal: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * #1361 — keep this instance's rows confirmed for as long as it serves a
+ * request: a chat turn, a Stage or a scheduler tick runs for minutes, and
+ * the other servers must count this one as live meanwhile (plugin health,
+ * the Publish-live gate) although no request starts here. Request-scoped:
+ * the renewal runs only while a request is in flight — which is when the
+ * instance has CPU — and stops with the last one.
+ *
+ * @returns the release, for when the request's response is sent (idempotent)
+ */
+export function holdRuntimeHeartbeat(): () => void {
+  held += 1;
+  if (!renewal) {
+    renewal = setInterval(() => void refreshRuntimeHeartbeat(), HEARTBEAT_REFRESH_MS);
+    renewal.unref?.();
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    held = Math.max(0, held - 1);
+    if (held === 0 && renewal) {
+      clearInterval(renewal);
+      renewal = null;
+    }
+  };
+}
+
+/** Whether a request holds the heartbeat's renewal now (tests). */
+export function runtimeHeartbeatRenewing(): boolean {
+  return renewal !== null;
+}
+
+/** Forget the heartbeat and this instance's outcomes (tests, shutdown). */
 export function stopRuntimeHeartbeat(): void {
-  if (heartbeat) clearInterval(heartbeat);
   heartbeat = null;
   unsavedOutcomes.clear();
+  currentOutcomes.clear();
+  if (renewal) clearInterval(renewal);
+  renewal = null;
+  held = 0;
 }
 
 /**
@@ -636,7 +738,7 @@ async function writeRuntimeStats(tx: TransactionRunner): Promise<void> {
   `);
 }
 
-/** One heartbeat; exported so tests need not wait {@link HEARTBEAT_MS}. */
+/** One heartbeat, whatever its age; exported so tests need not wait {@link HEARTBEAT_REFRESH_MS}. */
 export async function runtimeHeartbeatOnce(
   infra: PluginHostInfra,
   systemActorId: string,
@@ -644,21 +746,33 @@ export async function runtimeHeartbeatOnce(
   for (const [slug, outcome] of [...unsavedOutcomes]) {
     await writeOutcome(infra, systemActorId, slug, outcome);
   }
+  let present: Set<string>;
   try {
-    await infra.adapter.withAdminTransaction(
+    present = await infra.adapter.withAdminTransaction(
       systemCtx(systemActorId, "plugin-runtime-heartbeat"),
       async (tx) => {
-        await tx.execute(sql`
+        const refreshed = (await tx.execute(sql`
           UPDATE plugin_runtime SET heartbeat_at = now() WHERE instance_id = ${INSTANCE_ID}
-        `);
+          RETURNING plugin_slug
+        `)) as unknown as { plugin_slug: string }[];
         await writeRuntimeStats(tx);
         await tx.execute(sql`
           DELETE FROM plugin_runtime
           WHERE heartbeat_at < now() - ${STALE_ROW_RETENTION}::interval
         `);
+        return new Set(refreshed.map((r) => r.plugin_slug));
       },
     );
   } catch (e) {
     console.error(`[plugin-host] plugin runtime heartbeat failed: ${describeLoadError(e)}`);
+    return;
+  }
+  // A row another instance deleted while this one idled (#1361): write the
+  // outcome again, through the same queue as any other write, so a newer
+  // outcome or a clear decided meanwhile wins.
+  for (const [slug, outcome] of [...currentOutcomes]) {
+    if (present.has(slug) || unsavedOutcomes.has(slug)) continue;
+    unsavedOutcomes.set(slug, outcome);
+    await writeOutcome(infra, systemActorId, slug, outcome);
   }
 }

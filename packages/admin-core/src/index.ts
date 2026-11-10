@@ -269,7 +269,7 @@ export type { ReleaseCheckOpts } from "./release-check-worker.js";
 // workers, and the tick that runs what is due.
 export { mintTickToken } from "./scheduler/clock.js";
 export { type CoreTaskDeps, coreScheduledTasks } from "./scheduler/core-tasks.js";
-export { pluginWorkerTasks } from "./scheduler/plugin-workers.js";
+export { pluginChangeConsumersTask, pluginWorkerTasks } from "./scheduler/plugin-workers.js";
 export type { ScheduledTask, TaskCadence } from "./scheduler/task.js";
 export {
   runSchedulerTick,

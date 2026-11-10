@@ -16,11 +16,19 @@
  *
  * While a consumer WAITS on work in progress that no stream of this tab
  * reports (an audit running, an external agent working, a crawl, a deploy)
- * and the tab is visible, the hub holds one request to `/api/live-events`,
- * which the server answers with the first matching topic or after 10 s.
- * After an empty answer the waiting consumers re-read themselves once, since
- * a change committed on another admin instance announces nothing here. An
- * idle tab — nothing waiting, no turn — makes no request at all.
+ * and someone is at the tab, the hub holds one request to
+ * `/api/live-events`, which the server answers with the first matching
+ * topic or after 10 s. After an empty answer the waiting consumers re-read
+ * themselves once, since a change committed on another admin instance
+ * announces nothing here. An idle tab — nothing waiting, no turn — makes no
+ * request at all.
+ *
+ * "Someone is at the tab" (#1361, presence.ts): it is visible and was used
+ * within `OPERATOR_IDLE_MS`. The admin runs on request-billed CPU, so a
+ * wait held for a tab nobody looks at — left open on a long crawl, say —
+ * would bill an instance for as long as the work runs. The hub stops at the
+ * end of the current wait and resumes, re-reading everything, the moment
+ * the operator is back.
  *
  * Every request the hub makes has a deadline (`AbortSignal.timeout`), there
  * is never more than one wait on the wire, and a failed wait is not retried
@@ -28,6 +36,7 @@
  */
 
 import type { LiveTopic } from "@caelo-cms/shared";
+import { browserPresence, OPERATOR_IDLE_MS } from "./presence.js";
 
 /** Deadline of a live surface's own read (pending, agents, quality …). */
 export const LIVE_READ_TIMEOUT_MS = 15_000;
@@ -66,7 +75,12 @@ export interface LiveHubEnv {
   readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
   readonly now: () => number;
   readonly isVisible: () => boolean;
-  /** Subscribe to "the tab became visible / the window got focus". */
+  /** Milliseconds since the operator last used the tab (presence.ts). */
+  readonly idleMs: () => number;
+  /**
+   * Subscribe to "the operator is back": the tab became visible, the window
+   * got focus, or the first input after an idle stretch.
+   */
   readonly onFocus: (listener: () => void) => () => void;
 }
 
@@ -131,7 +145,11 @@ export function createLiveHub(env: LiveHubEnv): LiveHub {
   };
 
   const shouldWait = () =>
-    !suspended && openStreams === 0 && env.isVisible() && waitingConsumers().length > 0;
+    !suspended &&
+    openStreams === 0 &&
+    env.isVisible() &&
+    env.idleMs() < OPERATOR_IDLE_MS &&
+    waitingConsumers().length > 0;
 
   async function runWait(): Promise<void> {
     if (waitRunning) return;
@@ -219,19 +237,9 @@ export function createLiveHub(env: LiveHubEnv): LiveHub {
 const browserEnv: LiveHubEnv = {
   fetch: (url, init) => fetch(url, init),
   now: () => Date.now(),
-  isVisible: () => typeof document === "undefined" || document.visibilityState === "visible",
-  onFocus(listener) {
-    if (typeof window === "undefined") return () => undefined;
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") listener();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", listener);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("focus", listener);
-    };
-  },
+  isVisible: () => browserPresence.isVisible(),
+  idleMs: () => browserPresence.idleMs(),
+  onFocus: (listener) => browserPresence.onReturn(listener),
 };
 
 /** The tab's hub. */

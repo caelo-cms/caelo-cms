@@ -10,6 +10,13 @@
  * problem, folded by fingerprint. Only rows with a recent heartbeat count,
  * so instances that stopped drop out by themselves.
  *
+ * #1361 — "recent" means the server served a request lately: the admin
+ * runs on request-billed CPU, so an instance confirms its rows at request
+ * start (`HEARTBEAT_REFRESH_MS`), never on a timer. A server that idled
+ * longer than the live window counts neither as running nor as failing;
+ * the one answering this read always counts itself, however long it idled
+ * before, so idling never reads as "not running".
+ *
  * The AI reads this through `list_plugins` / `get_plugin` and can explain a
  * failing plugin to the operator without a round trip; the Owner sees it on
  * /settings/plugins.
@@ -22,6 +29,7 @@
  * records so the plugin does not silently vanish.
  */
 
+import { hostInstanceId, LIVE_WINDOW_MS } from "@caelo-cms/plugin-host";
 import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -151,8 +159,16 @@ export function awaitingApprovalReason(
 export const pluginDiscoveryFailure = pluginErrorSummary.extend({ slug: z.string() });
 type PluginDiscoveryFailure = z.infer<typeof pluginDiscoveryFailure>;
 
-/** A server whose heartbeat is older than this is gone (heartbeat: 30 s). */
-const LIVE_WINDOW = "2 minutes";
+/**
+ * The runtime rows (aliased `r`) of the servers that count: those that
+ * confirmed them within the live window — they served a request lately —
+ * and the one running this read, which is up whatever its heartbeat says
+ * (#1361).
+ */
+function liveServer(r: SQL): SQL {
+  return sql`(${r}.heartbeat_at > now() - ${LIVE_WINDOW_MS}::int * interval '1 millisecond'
+              OR ${r}.instance_id = ${hostInstanceId()})`;
+}
 const RECENT_WINDOW = "7 days";
 const RECENT_LIMIT = 5;
 const COST_OPS_LIMIT = 10;
@@ -248,13 +264,13 @@ export async function readPluginHealth(
   const slugArray = textArray(slugs);
 
   const servers = (await tx.execute(sql`
-    SELECT plugin_slug,
-           count(*) FILTER (WHERE state = 'loaded')::int AS loaded,
-           count(*) FILTER (WHERE state = 'error')::int AS failing
-    FROM plugin_runtime
-    WHERE plugin_slug = ANY(${slugArray})
-      AND heartbeat_at > now() - ${LIVE_WINDOW}::interval
-    GROUP BY plugin_slug
+    SELECT r.plugin_slug,
+           count(*) FILTER (WHERE r.state = 'loaded')::int AS loaded,
+           count(*) FILTER (WHERE r.state = 'error')::int AS failing
+    FROM plugin_runtime r
+    WHERE r.plugin_slug = ANY(${slugArray})
+      AND ${liveServer(sql`r`)}
+    GROUP BY r.plugin_slug
   `)) as unknown as { plugin_slug: string; loaded: number; failing: number }[];
 
   const problems = (await tx.execute(sql`
@@ -265,7 +281,7 @@ export async function readPluginHealth(
     JOIN plugin_errors e ON e.id = r.error_id
     WHERE r.plugin_slug = ANY(${slugArray})
       AND r.state = 'error'
-      AND r.heartbeat_at > now() - ${LIVE_WINDOW}::interval
+      AND ${liveServer(sql`r`)}
     ORDER BY r.plugin_slug, e.last_seen_at DESC
   `)) as unknown as ErrorRow[];
 
@@ -285,12 +301,12 @@ export async function readPluginHealth(
   `)) as unknown as ErrorRow[];
 
   const backoffs = (await tx.execute(sql`
-    SELECT DISTINCT ON (plugin_slug) plugin_slug, consumer_backoff
-    FROM plugin_runtime
-    WHERE plugin_slug = ANY(${slugArray})
-      AND consumer_backoff IS NOT NULL
-      AND heartbeat_at > now() - ${LIVE_WINDOW}::interval
-    ORDER BY plugin_slug, (consumer_backoff->>'consecutiveFailures')::int DESC NULLS LAST
+    SELECT DISTINCT ON (r.plugin_slug) r.plugin_slug, r.consumer_backoff
+    FROM plugin_runtime r
+    WHERE r.plugin_slug = ANY(${slugArray})
+      AND r.consumer_backoff IS NOT NULL
+      AND ${liveServer(sql`r`)}
+    ORDER BY r.plugin_slug, (r.consumer_backoff->>'consecutiveFailures')::int DESC NULLS LAST
   `)) as unknown as { plugin_slug: string; consumer_backoff: unknown }[];
 
   // Summed over the live servers; each row is that server's total since it started.
@@ -302,7 +318,7 @@ export async function readPluginHealth(
            min(r.op_cost_since) AS since
     FROM plugin_runtime r, jsonb_each(r.op_cost) c
     WHERE r.plugin_slug = ANY(${slugArray})
-      AND r.heartbeat_at > now() - ${LIVE_WINDOW}::interval
+      AND ${liveServer(sql`r`)}
     GROUP BY r.plugin_slug, c.key
   `)) as unknown as {
     plugin_slug: string;

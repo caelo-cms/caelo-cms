@@ -40,9 +40,12 @@ import {
   bootstrap,
   changeConsumerName,
   drainChangeConsumers,
+  drainChangeConsumersOnTick,
+  ensureChangeConsumers,
   loadedPlugins,
   type PluginHostInfra,
   resetPluginHost,
+  resumeDueChangeConsumers,
   runPluginOperation,
   startChangeConsumers,
 } from "./index.js";
@@ -192,6 +195,19 @@ function listenerId(): string {
 async function drain(): Promise<void> {
   const reports = await drainChangeConsumers(infra);
   for (const r of reports) if (r.error) throw new Error(`${r.slug}: ${r.error}`);
+}
+
+/** Whether a change of `rowId` reached the listener. */
+function delivered(rowId: string): boolean {
+  return received.flatMap((r) => r.changes).some((c) => c.rowId === rowId);
+}
+
+async function until(cond: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting");
+    await Bun.sleep(25);
+  }
 }
 
 async function note(slug: string, body: string): Promise<string> {
@@ -413,7 +429,99 @@ describe("#1267 — a plugin's change consumer", () => {
     expect(received.flatMap((r) => r.changes).length).toBeGreaterThan(0);
   }, 30_000);
 
-  it("takes over from a holder that died mid-batch without any new write", async () => {
+  it("#1361: a drain that stalled past its claim stores its batch when nobody took the consumer over", async () => {
+    await drain();
+    const m = await op<{ moduleId: string }>(SYS, "modules.create", {
+      slug: `${PFX}stalled`,
+      displayName: "Stalled",
+      html: "<p>stalled</p>",
+    });
+    received.length = 0;
+    // The request that ran the drain ended: on request-billed CPU no
+    // renewal ran (none here), and the 1 s claim lapsed meanwhile.
+    duringDispatch = () => Bun.sleep(1_300);
+    const reports = await drainChangeConsumers(infra, "t1267c-listener", {
+      claimMs: 1_000,
+      claimRenewMs: 60_000,
+    });
+    expect(reports[0]?.error).toBeUndefined();
+    expect(reports[0]?.skipped).toBe(false);
+    expect(delivered(m.moduleId)).toBe(true);
+    // Stored: delivered once, nothing recorded against the plugin.
+    received.length = 0;
+    await drain();
+    expect(delivered(m.moduleId)).toBe(false);
+    const recorded = await withSystemSql(
+      (tx) =>
+        tx`SELECT message FROM plugin_errors WHERE plugin_slug = 't1267c-listener' AND message LIKE '%claim%'`,
+    );
+    expect(recorded).toEqual([]);
+  }, 30_000);
+
+  it("#1361: a stalled drain stores nothing once another instance took the consumer over, and records no failure", async () => {
+    await drain();
+    const name = changeConsumerName(listenerId());
+    const m = await op<{ moduleId: string }>(SYS, "modules.create", {
+      slug: `${PFX}taken-over`,
+      displayName: "Taken over",
+      html: "<p>taken over</p>",
+    });
+    received.length = 0;
+    duringDispatch = async () => {
+      await Bun.sleep(1_100);
+      // Another instance takes the lapsed consumer over and works on it.
+      await adapter.withAdminTransaction(SYS, (tx) =>
+        claimConsumer(tx, name, "another-instance", 30_000),
+      );
+    };
+    const reports = await drainChangeConsumers(infra, "t1267c-listener", {
+      claimMs: 1_000,
+      claimRenewMs: 60_000,
+    });
+    expect(reports[0]?.skipped).toBe(true);
+    expect(reports[0]?.error).toBeUndefined();
+    // Not stored here: once the other instance gives it back, it arrives again.
+    await adapter.withAdminTransaction(SYS, (tx) => releaseConsumer(tx, name, "another-instance"));
+    received.length = 0;
+    await drain();
+    expect(delivered(m.moduleId)).toBe(true);
+  }, 30_000);
+
+  it("#1361: runs no consumer of a plugin the database has switched off, and creates none", async () => {
+    await drain();
+    const id = listenerId();
+    const name = changeConsumerName(id);
+    // The Owner switched the plugin off through another instance, which
+    // dropped its consumer; this instance has not followed the plugin rows
+    // yet (it served no request since), so it still has the plugin loaded.
+    await withSystemSql(async (tx) => {
+      await tx`UPDATE plugins SET status = 'disabled' WHERE id = ${id}::uuid`;
+      await tx`DELETE FROM change_consumers WHERE name = ${name}`;
+    });
+    try {
+      const m = await op<{ moduleId: string }>(SYS, "modules.create", {
+        slug: `${PFX}while-off`,
+        displayName: "While off",
+        html: "<p>while off</p>",
+      });
+      received.length = 0;
+      const reports = await drainChangeConsumers(infra, "t1267c-listener");
+      expect(reports[0]?.skipped).toBe(true);
+      expect(delivered(m.moduleId)).toBe(false);
+      const consumers = await withSystemSql(
+        (tx) => tx`SELECT 1 FROM change_consumers WHERE name = ${name}`,
+      );
+      expect(consumers).toEqual([]);
+    } finally {
+      await withSystemSql((tx) => tx`UPDATE plugins SET status = 'active' WHERE id = ${id}::uuid`);
+    }
+    // Active again, its consumer is new: the rebuild runs, nothing is skipped.
+    const before = rebuilds;
+    await drain();
+    expect(rebuilds).toBe(before + 1);
+  });
+
+  it("takes over from a holder that died mid-batch at the next request start, without any new write", async () => {
     await drain();
     const name = changeConsumerName(listenerId());
     const m = await op<{ moduleId: string }>(SYS, "modules.create", {
@@ -432,21 +540,21 @@ describe("#1267 — a plugin's change consumer", () => {
     try {
       // The wake-up of the LISTEN connection finds the claim held and skips.
       await loop.drain();
-      expect(received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId)).toBe(false);
-      const deadline = Date.now() + 10_000;
-      while (
-        !received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId) &&
-        Date.now() < deadline
-      ) {
-        await Bun.sleep(50);
-      }
-      expect(received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId)).toBe(true);
+      expect(delivered(m.moduleId)).toBe(false);
+      // #1361 — no timer: an instance without requests has no CPU for one.
+      // Nothing happens until something runs the retry.
+      expect(resumeDueChangeConsumers()).toBe(false);
+      await Bun.sleep(1_500);
+      expect(delivered(m.moduleId)).toBe(false);
+      // The next request start finds the takeover retry due and drains.
+      expect(resumeDueChangeConsumers()).toBe(true);
+      await until(() => delivered(m.moduleId));
     } finally {
       await loop.stop();
     }
   }, 20_000);
 
-  it("retries a failed drain with a backoff and delivers without any new write", async () => {
+  it("retries a failed drain once its backoff ended, at the next request start, without any new write", async () => {
     await drain();
     received.length = 0;
     const loop = await startChangeConsumers(infra);
@@ -459,19 +567,48 @@ describe("#1267 — a plugin's change consumer", () => {
         displayName: "Transient",
         html: "<p>transient</p>",
       });
-      const deadline = Date.now() + 15_000;
-      while (
-        !received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId) &&
-        Date.now() < deadline
-      ) {
-        await Bun.sleep(50);
-      }
-      // The NOTIFY's drain failed (failNext was consumed); the backoff retry
-      // delivered it — no write happened in between.
+      // The NOTIFY's drain failed (failNext was consumed) and backs off 1 s.
+      await until(() => loop.backingOff().includes("t1267c-listener"));
       expect(failNext).toBe(false);
-      expect(received.flatMap((r) => r.changes).some((c) => c.rowId === m.moduleId)).toBe(true);
+      expect(loop.resumeIfDue()).toBe(false);
+      await Bun.sleep(1_500);
+      // No timer delivered it in the meantime (#1361).
+      expect(delivered(m.moduleId)).toBe(false);
+      expect(loop.resumeIfDue()).toBe(true);
+      await until(() => delivered(m.moduleId));
+      await until(() => loop.backingOff().length === 0);
     } finally {
       await loop.stop();
+    }
+  }, 30_000);
+
+  it("the scheduler tick starts the loop where it is not running, drains, and names a consumer that backs off", async () => {
+    await drain();
+    received.length = 0;
+    // A change no wake-up delivered here: no loop runs (as on an instance
+    // whose boot could not start it), so its NOTIFY reached nobody.
+    const m = await op<{ moduleId: string }>(SYS, "modules.create", {
+      slug: `${PFX}tick`,
+      displayName: "Tick",
+      html: "<p>tick</p>",
+    });
+    expect(delivered(m.moduleId)).toBe(false);
+    try {
+      expect(await drainChangeConsumersOnTick(infra)).toBeUndefined();
+      expect(delivered(m.moduleId)).toBe(true);
+      // A consumer that fails waits out its backoff; the tick does not run
+      // it early, and says so.
+      const loop = await ensureChangeConsumers(infra);
+      failNext = true;
+      await op(SYS, "modules.create", {
+        slug: `${PFX}tick-fail`,
+        displayName: "Tick fail",
+        html: "<p>tick fail</p>",
+      });
+      await until(() => loop.backingOff().includes("t1267c-listener"));
+      expect(await drainChangeConsumersOnTick(infra)).toContain("t1267c-listener");
+    } finally {
+      await (await ensureChangeConsumers(infra)).stop();
     }
   }, 30_000);
 

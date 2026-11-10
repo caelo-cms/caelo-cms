@@ -12,9 +12,10 @@
  *
  * - it is not re-run before its backoff ends, however many writes arrive;
  * - a healthy consumer next to it receives every write meanwhile;
- * - its batch stayed uncommitted, so it is retried when the backoff ends
- *   (by the timer, with no write) and delivers everything; success resets
- *   the backoff, so the next write reaches it at once;
+ * - its batch stayed uncommitted, so it is retried once the backoff ended
+ *   (by the next request start, with no write: #1361, no timer) and
+ *   delivers everything; success resets the backoff, so the next write
+ *   reaches it at once;
  * - plugin health (`plugins.get`) shows the backoff and the time of the
  *   core operations it called, written with the runtime heartbeat.
  */
@@ -212,6 +213,8 @@ describe("#1390 — a failing change consumer backs off against NOTIFY wake-ups"
         await until("the healthy consumer gets a write in the backoff", () =>
           healthyReceived.has(id),
         );
+        // A request start inside the backoff runs nothing either.
+        expect(loop.resumeIfDue()).toBe(false);
         await Bun.sleep(150);
       }
       expect(during.length).toBeGreaterThanOrEqual(3);
@@ -230,13 +233,17 @@ describe("#1390 — a failing change consumer backs off against NOTIFY wake-ups"
       // The healthy neighbour has no backoff.
       expect((await healthOf("t1390b-healthy")).consumerBackoff).toBeNull();
 
-      // The cause goes away. No further write: the timer retries the batch
-      // once the backoff ends, and it was never committed, so everything
-      // written meanwhile arrives.
+      // The cause goes away. No further write: the first request start after
+      // the backoff ended retries the batch (#1361 — no timer, which a
+      // request-billed instance would not run between requests), and it
+      // was never committed, so everything written meanwhile arrives.
       failing = false;
       await until(
         "the retry delivers the uncommitted batch",
-        () => [first, ...during].every((id) => failingReceived.has(id)),
+        () => {
+          loop.resumeIfDue();
+          return [first, ...during].every((id) => failingReceived.has(id));
+        },
         BACKOFF_MS * 3,
       );
       expect(failingAttempts.length).toBe(2);
@@ -267,11 +274,13 @@ describe("#1390 — a failing change consumer backs off against NOTIFY wake-ups"
       await writeModule();
       // An attempt is counted when the operation starts; its failure is
       // recorded after it throws — wait for the second recorded failure.
+      // Requests keep coming meanwhile: each start runs a retry that is due.
       let health = await healthOf("t1390b-failing");
       const deadline = Date.now() + 10_000;
       while ((health.consumerBackoff?.consecutiveFailures ?? 0) < 2) {
         if (Date.now() > deadline) throw new Error("timed out waiting for two recorded failures");
         await Bun.sleep(50);
+        loop.resumeIfDue();
         health = await healthOf("t1390b-failing");
       }
       expect(health.consumerBackoff?.consecutiveFailures).toBe(2);
