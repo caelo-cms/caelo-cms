@@ -23,6 +23,8 @@ An incident spans signals until two minutes (`INCIDENT_QUIET_MS`) pass without o
 - **One write at a time:** a signal during a write marks the report dirty, and the write repeats once it finished.
 - **Failed writes:** a failed write (the pool is still full) waits for the next signal. There is no timer (CLAUDE.md §11.B Tier 5).
 - **No self-feeding:** failures of the capture's own operations are no signals, so a report write that waits out the pool deadline does not feed the incident it reports.
+- **Forwarded when finished:** a report is forwarded only `INCIDENT_FORWARD_DELAY_MS` after its last write, which is the quiet window plus one minute. `ai_bug_reports.create` takes `forwardAfterSeconds` for automatic reports, and `update_incident` pushes `next_forward_at` while the report is still queued. So the Caelo team gets the finished report, not its first draft.
+- **Joined calls count too:** a render-time plugin read joins its caller's transaction as a savepoint. When it fails, it reports its own trouble, because the op that ran it answers with an error Result and the holder may never throw.
 - **Stable fingerprint:** `whatHappened` stays the same for the same first sign, so the bug intake's fingerprint (#901) merges the same stall across incidents and installs. The numbers live in `evidence`.
 
 ## What the report contains
@@ -49,7 +51,7 @@ The snapshot reads `pg_stat_activity` under a 5-second statement timeout of its 
 
 ## Privacy
 
-- **Statement text:** it is stripped of every literal (`sanitizeStatement`) and cut to one line.
+- **Statement text:** it is stripped of every literal, dollar-quoted body and comment, then cut to one line. `sanitizeStatement` is a scanner that reads `E'…'` escapes and `$tag$` the way Postgres does. When a literal is left open because the text was cut, the rest of the statement is dropped.
 - **Parameters:** they never appear, because Bun sends every value as a bound parameter.
 - **Content:** no content value or visitor data is read.
 - **Forwarding:** the bug forwarder redacts the text once more before anything leaves the install, and forwards only after the Owner opted in (#901).
