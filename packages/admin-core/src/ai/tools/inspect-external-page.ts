@@ -36,7 +36,7 @@
  *                  WS1 computed-style sampler (when Playwright is present).
  */
 
-import { formatGenesisInventory, inventoryGenesisDraft } from "@caelo-cms/shared";
+import { formatGenesisInventory, inventoryGenesisDraft, siteData } from "@caelo-cms/shared";
 import {
   deriveDesignTokens,
   type ElementStyleSample,
@@ -233,7 +233,7 @@ function formatLinks(links: readonly OutboundLink[]): string {
       lines.push(`- ${l.text ? `"${l.text}" → ` : ""}${l.href}${rel}`);
     }
   }
-  return lines.length > 0 ? lines.join("\n") : "(no outbound links found)";
+  return lines.length > 0 ? siteData(lines.join("\n")) : "(no outbound links found)";
 }
 
 /** Inline same-host stylesheets, then run the genesis inventory — the
@@ -260,7 +260,9 @@ async function staticDesignFactBase(
     }
   }
   const inventory = formatGenesisInventory(inventoryGenesisDraft(html + css));
-  return notes.length > 0 ? `${inventory}\nStylesheet notes: ${notes.join("; ")}` : inventory;
+  return siteData(
+    notes.length > 0 ? `${inventory}\nStylesheet notes: ${notes.join("; ")}` : inventory,
+  );
 }
 
 export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
@@ -443,8 +445,11 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     const enabled = Object.entries(f)
       .filter(([, on]) => on)
       .map(([name]) => name);
+    // #1566 — everything read from the page is marked as another website's
+    // content (shared `siteData`, explained in the static system prompt);
+    // the labels, counters and next steps around it stay Caelo's own.
     const sections: string[] = [
-      `# External page inspection — ${finalUrl}`,
+      `# External page inspection — ${siteData(finalUrl)}`,
       `Facets: ${enabled.join(", ")}`,
       ...(cleanupLine !== null ? [cleanupLine] : []),
       "",
@@ -458,19 +463,18 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
       const meta = extractPageMeta(markdownHtml, finalUrl);
       const hreflang =
         meta.hreflangAlternates.length > 0
-          ? meta.hreflangAlternates.map((a) => `${a.hreflang} → ${a.href}`).join(", ")
+          ? siteData(meta.hreflangAlternates.map((a) => `${a.hreflang} → ${a.href}`).join(", "))
           : "(none)";
+      const value = (v: string) => (v ? siteData(v) : "(none)");
       sections.push(
         "## Meta",
-        `Title: ${meta.title || "(none)"}`,
-        meta.metaDescription
-          ? `Meta description: ${meta.metaDescription}`
-          : "Meta description: (none)",
-        `Lang: ${meta.lang || "(none)"}`,
-        `Canonical: ${meta.canonical || "(none)"}`,
+        `Title: ${value(meta.title)}`,
+        `Meta description: ${value(meta.metaDescription)}`,
+        `Lang: ${value(meta.lang)}`,
+        `Canonical: ${value(meta.canonical)}`,
         `Hreflang alternates: ${hreflang}`,
         "Headings outline:",
-        meta.headings.length > 0 ? meta.headings.join("\n") : "(no h1–h3 headings)",
+        meta.headings.length > 0 ? siteData(meta.headings.join("\n")) : "(no h1–h3 headings)",
         "",
       );
     }
@@ -484,7 +488,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
       const { text, nextCursor } = sliceMarkdown(fullMarkdown, 0);
       sections.push(
         "## Page text (Markdown)",
-        text.length > 0 ? text : "(no readable text extracted)",
+        text.length > 0 ? siteData(text) : "(no readable text extracted)",
         nextCursor !== null
           ? `\n[truncated — ${fullMarkdown.length - text.length} more chars. Call read_page_more({ pageRef, cursor: ${nextCursor} }) for the rest.]`
           : "",
@@ -515,7 +519,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
         f.images
           ? "## Alt-text inventory (aria-labels; img alts are in the image/asset inventory)"
           : "## Alt-text inventory",
-        lines.length > 0 ? lines.join("\n") : emptyNote,
+        lines.length > 0 ? siteData(lines.join("\n")) : emptyNote,
         "",
       );
     }
@@ -535,7 +539,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
       const truncated = ranked.length > IMAGE_INVENTORY_TOP_N;
       sections.push(
         "## Image / asset inventory (source URLs)",
-        assetLines.length > 0 ? assetLines.join("\n") : "(no asset references found)",
+        assetLines.length > 0 ? siteData(assetLines.join("\n")) : "(no asset references found)",
         truncated ? `(showing top ${IMAGE_INVENTORY_TOP_N} of ${ranked.length})` : "",
         assetLines.length > 0
           ? "Import the ones you need with import_media_from_urls({ urls: [...] })."
@@ -569,7 +573,7 @@ export const inspectExternalPageTool: ToolDefinitionWithHandler<Input> = {
     if (f.tokens && styleSamples && styleSamples.length > 0) {
       sections.push(
         "## Computed-style design tokens (rendered)",
-        JSON.stringify(deriveDesignTokens(styleSamples), null, 2),
+        siteData(JSON.stringify(deriveDesignTokens(styleSamples), null, 2)),
         "",
       );
       renderedTokensEmitted = true;

@@ -16,6 +16,7 @@
  * sitemap is SAMPLED, never enumerated to thousands.
  */
 
+import { siteData } from "@caelo-cms/shared";
 import {
   classifyPageTypes,
   discoverSitemapUrls,
@@ -157,16 +158,20 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
     if (map.types.length === 0) {
       return {
         ok: true,
-        content: `# Page-type map — ${rf.finalUrl}\n\nNo page types found in the homepage nav/footer or sitemap sample (${sitemapNote}). The nav is now read from the RENDERED DOM, so if it's still empty the menu may only build on interaction (a hamburger that expands on click) or the site keys navigation off something other than links — inspect the homepage (\`{screenshot:true}\`) or ask the operator which sections the site has.`,
+        content: `# Page-type map — ${siteData(rf.finalUrl)}\n\nNo page types found in the homepage nav/footer or sitemap sample (${sitemapNote}). The nav is now read from the RENDERED DOM, so if it's still empty the menu may only build on interaction (a hamburger that expands on click) or the site keys navigation off something other than links — inspect the homepage (\`{screenshot:true}\`) or ask the operator which sections the site has.`,
       };
     }
 
     // issue #425 — the scope is stated loudly, with the out-of-scope
     // count, so a scoped sampling pass is auditable at a glance.
     const outOfScopeCount = map.filtered.filter((f) => f.reason.startsWith("out-of-scope")).length;
+    // #1566 — the types, URLs and link evidence come from the site's own
+    // navigation and sitemap: marked as another website's content.
     const lines: string[] = [
-      `# Page-type map — ${rf.finalUrl}`,
-      map.activeLocale ? `Active locale: /${map.activeLocale}` : "No locale prefix on this URL.",
+      `# Page-type map — ${siteData(rf.finalUrl)}`,
+      map.activeLocale
+        ? `Active locale: ${siteData(`/${map.activeLocale}`)}`
+        : "No locale prefix on this URL.",
       map.scopePathPrefix !== ""
         ? `Scope: only ${map.scopePathPrefix}/ — ${outOfScopeCount} out-of-scope URL(s) filtered (listed below).`
         : "Scope: none (whole site considered).",
@@ -176,16 +181,16 @@ export const mapExternalPageTypesTool: ToolDefinitionWithHandler<Input> = {
     ];
     map.types.forEach((t, i) => {
       lines.push(
-        `${i + 1}. type="${t.type}" [${t.source}${t.collection ? `, collection ×${t.memberCount}` : ""}]`,
-        `   sample: ${t.sampleUrl}`,
-        `   why: ${t.evidence}`,
+        `${i + 1}. type=${siteData(t.type)} [${t.source}${t.collection ? `, collection ×${t.memberCount}` : ""}]`,
+        `   sample: ${siteData(t.sampleUrl)}`,
+        `   why: ${siteData(t.evidence)}`,
       );
     });
     if (map.filtered.length > 0) {
       lines.push(
         "",
         `## Filtered as noise (${map.filtered.length}) — NOT page types`,
-        ...map.filtered.slice(0, 20).map((x) => `- ${x.url} (${x.reason})`),
+        ...map.filtered.slice(0, 20).map((x) => `- ${siteData(`${x.url} (${x.reason})`)}`),
         map.filtered.length > 20 ? `- …and ${map.filtered.length - 20} more` : "",
       );
     }

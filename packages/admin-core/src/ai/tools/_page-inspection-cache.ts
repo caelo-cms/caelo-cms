@@ -5,6 +5,9 @@
  * rendered ONCE and follow-up tools reuse it via a `pageRef` handle
  * (docs/inspect-tooling-redesign.md §3).
  *
+ * Every entry is another website's page, read live or by a site import's
+ * crawl, so every read of one marks its content `siteData` (#1360, #1566).
+ *
  * `inspect_external_page` stores the fetched HTML + extracted Markdown
  * here and returns the `pageRef`; `read_page_more` paginates the cached
  * Markdown and `query_page_html` (Phase 2) will run selectors against the
@@ -23,11 +26,6 @@ export interface PageInspection {
    *  render happened for this page. query_page_html prefers it over the
    *  static `html` so selectors run against the real DOM. */
   readonly renderedHtml?: string;
-  /**
-   * #1360 — a site import's stored page, crawled by its job: every read of
-   * it marks the text as crawled content (shared `siteData`).
-   */
-  readonly crawled?: true;
 }
 
 const CACHE_CAP = 32;
