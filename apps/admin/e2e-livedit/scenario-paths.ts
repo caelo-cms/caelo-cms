@@ -527,6 +527,10 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/mcp_*.ts`,
   // #1375 — the MCP back-pressure gate answers HTTP before any AI turn runs.
   `${A}/mcp-back-pressure.ts`,
+  // #1595 — the incident report of a database stall: system-only, filed
+  // from adapter failures; no AI turn calls it.
+  `${A}/incident/**`,
+  `${A}/ops/diagnostics.ts`,
   `${A}/ops/credential_handoffs.ts`,
   `${SHARED}/static-files.ts`,
   `${SHARED}/cloud-shell-install.ts`,

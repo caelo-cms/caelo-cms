@@ -38,8 +38,40 @@ describe("sanitizeStatement", () => {
       sanitizeStatement(
         "SELECT * FROM users WHERE email = 'owner@example.com'  AND note = E'it''s' AND x = $$secret$$",
       ),
-    ).toBe("SELECT * FROM users WHERE email = '?' AND note = '?' AND x = '?'");
+    ).toBe("SELECT * FROM users WHERE email = '?' AND note = E'?' AND x = '?'");
     expect(sanitizeStatement("SELECT $tag$ body $tag$")).toBe("SELECT '?'");
+  });
+
+  it("reads escapes, numbered tags and comments the way Postgres does", () => {
+    // `\'` does not close an E-string; a plain string's `\` is just a character.
+    expect(sanitizeStatement("SELECT E'prefix\\'confidential customer notes', 1")).toBe(
+      "SELECT E'?', 1",
+    );
+    expect(sanitizeStatement("SELECT 'a\\', 'confidential'")).toBe("SELECT '?', '?'");
+    expect(sanitizeStatement("SELECT $tag1$confidential customer notes$tag1$ AS x")).toBe(
+      "SELECT '?' AS x",
+    );
+    expect(sanitizeStatement("SELECT 1 /* confidential */ -- confidential\nFROM t")).toBe(
+      "SELECT 1 FROM t",
+    );
+    // Parameters and names with `$` or a trailing E are not quotes.
+    expect(sanitizeStatement("SELECT name$x FROM t WHERE id = $1 AND type'x' = $2")).toBe(
+      "SELECT name$x FROM t WHERE id = $1 AND type'?' = $2",
+    );
+  });
+
+  it("drops everything after a literal or comment the cut left open", () => {
+    for (const cut of [
+      "UPDATE t SET note = 'confidential customer no",
+      "UPDATE t SET note = E'it\\'s confidential",
+      "UPDATE t SET note = $body$confidential",
+      "SELECT 1 /* confidential",
+      "SELECT 1 -- confidential",
+    ]) {
+      const out = sanitizeStatement(cut) ?? "";
+      expect(out).not.toContain("confidential");
+    }
+    expect(sanitizeStatement("UPDATE t SET note = 'confidential")).toBe("UPDATE t SET note = '?'");
   });
 
   it("hides what the role may not read", () => {

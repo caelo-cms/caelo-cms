@@ -43,6 +43,13 @@ import {
 /** Quiet time after which the next signal opens a new incident. */
 export const INCIDENT_QUIET_MS = 120_000;
 
+/**
+ * How long after its last write an incident report waits before the bug
+ * forwarder may send it: longer than {@link INCIDENT_QUIET_MS}, so the
+ * report that leaves the install is the finished one.
+ */
+export const INCIDENT_FORWARD_DELAY_MS = INCIDENT_QUIET_MS + 60_000;
+
 /** How long MCP refusals alone must last before they are reported. */
 export const SUSTAINED_REFUSAL_MS = 30_000;
 

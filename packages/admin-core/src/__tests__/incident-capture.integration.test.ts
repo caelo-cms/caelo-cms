@@ -17,6 +17,7 @@ import {
   DatabaseAdapter,
   type DatabaseTrouble,
   execute,
+  joinHeldTransaction,
   OperationRegistry,
 } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -156,6 +157,28 @@ describe("database trouble", () => {
       holder: "test.slow-read",
     });
   });
+
+  it("reaches them from a joined call whose holder still commits", async () => {
+    const seen: DatabaseTrouble[] = [];
+    const off = adapter.onDatabaseTrouble((t) => seen.push(t));
+    try {
+      await adapter.withAdminTransaction(
+        SYSTEM,
+        async () => {
+          // A render-time plugin read joins the holder as a savepoint; the
+          // op that ran it answers with an error Result, so nothing throws
+          // past the holder.
+          await joinHeldTransaction(() => timeOut("test.joined-read"));
+        },
+        { holder: "test.holder" },
+      );
+    } finally {
+      off();
+    }
+    expect(seen.map((t) => [t.kind, t.holder])).toEqual([
+      ["statement_timeout", "test.joined-read"],
+    ]);
+  });
 });
 
 describe("the incident capture", () => {
@@ -194,7 +217,13 @@ describe("ai_bug_reports.update_incident", () => {
     });
     if (!created.ok) throw new Error(JSON.stringify(created.error));
     const reportId = (created.value as { id: string }).id;
-    const input = { reportId, evidence: "rewritten", severity: "blocking", blockedTask: true };
+    const input = {
+      reportId,
+      evidence: "rewritten",
+      severity: "blocking",
+      blockedTask: true,
+      forwardAfterSeconds: 180,
+    };
     const bySystem = await execute(
       registry,
       adapter,
@@ -205,5 +234,66 @@ describe("ai_bug_reports.update_incident", () => {
     expect(bySystem.ok && (bySystem.value as { updated: boolean }).updated).toBe(false);
     const byAi = await execute(registry, adapter, AI, "ai_bug_reports.update_incident", input);
     expect(byAi.ok).toBe(false);
+  });
+});
+
+describe("forwarding an incident report", () => {
+  /** Seconds until the report may be forwarded (null when it is not queued). */
+  async function forwardsIn(reportId: string): Promise<number | null> {
+    return adapter.withAdminTransaction(SYSTEM, async (tx) => {
+      const rows = (await tx.execute(sql`
+        SELECT EXTRACT(EPOCH FROM (next_forward_at - now()))::int AS s
+        FROM ai_bug_reports WHERE id = ${reportId}::uuid AND forwarding_state = 'queued'
+      `)) as unknown as { s: number | null }[];
+      return rows[0]?.s ?? null;
+    });
+  }
+
+  it("waits until the incident is over, counted from the last write", async () => {
+    await adapter.withAdminTransaction(SYSTEM, async (tx) => {
+      await tx.execute(
+        sql`UPDATE telemetry_settings SET bug_forwarding_enabled = true WHERE id = 1`,
+      );
+    });
+    try {
+      const created = await execute(registry, adapter, SYSTEM, "ai_bug_reports.create", {
+        kind: "defect",
+        title: "Admin stalled: database calls timed out",
+        whatHappened: "The admin stalled on its database.",
+        expected: "y",
+        source: "auto",
+        forwardAfterSeconds: 180,
+      });
+      if (!created.ok) throw new Error(JSON.stringify(created.error));
+      const reportId = (created.value as { id: string }).id;
+      expect(await forwardsIn(reportId)).toBeGreaterThanOrEqual(170);
+      const updated = await execute(registry, adapter, SYSTEM, "ai_bug_reports.update_incident", {
+        reportId,
+        evidence: "grown",
+        severity: "blocking",
+        blockedTask: true,
+        forwardAfterSeconds: 600,
+      });
+      expect(updated.ok).toBe(true);
+      expect(await forwardsIn(reportId)).toBeGreaterThanOrEqual(590);
+    } finally {
+      await adapter.withAdminTransaction(SYSTEM, async (tx) => {
+        await tx.execute(
+          sql`UPDATE telemetry_settings SET bug_forwarding_enabled = false WHERE id = 1`,
+        );
+      });
+    }
+  });
+
+  it("is only for automatic reports", async () => {
+    const r = await execute(registry, adapter, SYSTEM, "ai_bug_reports.create", {
+      kind: "defect",
+      title: "t",
+      whatHappened: "x",
+      expected: "y",
+      source: "ai",
+      forwardAfterSeconds: 60,
+    });
+    expect(r.ok).toBe(false);
   });
 });

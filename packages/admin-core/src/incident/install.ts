@@ -15,7 +15,7 @@ import {
 } from "@caelo-cms/query-api";
 import { CAELO_VERSION, type ExecutionContext } from "@caelo-cms/shared";
 import { describeError } from "../ai/tools/_describe-error.js";
-import { IncidentCapture, setIncidentCapture } from "./capture.js";
+import { INCIDENT_FORWARD_DELAY_MS, IncidentCapture, setIncidentCapture } from "./capture.js";
 import type { DatabaseActivity } from "./evidence.js";
 
 /** One capture per adapter, however often the boot runs. */
@@ -23,6 +23,8 @@ const installed = new WeakMap<
   DatabaseAdapter,
   { readonly capture: IncidentCapture; readonly uninstall: () => void }
 >();
+
+const FORWARD_AFTER_SECONDS = Math.ceil(INCIDENT_FORWARD_DELAY_MS / 1000);
 
 const CTX: ExecutionContext = {
   actorId: SYSTEM_ACTOR_ID,
@@ -61,6 +63,7 @@ export function installIncidentCapture(opts: {
           source: "auto",
           chatSessionId: null,
           suspectedTool: null,
+          forwardAfterSeconds: FORWARD_AFTER_SECONDS,
           ...draft,
         })
       ).id,
@@ -70,6 +73,7 @@ export function installIncidentCapture(opts: {
         evidence: draft.evidence,
         severity: draft.severity,
         blockedTask: draft.blockedTask,
+        forwardAfterSeconds: FORWARD_AFTER_SECONDS,
       });
     },
     detach: (work) => {

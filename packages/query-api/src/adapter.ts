@@ -475,10 +475,13 @@ export class DatabaseAdapter {
     const raw = pool === "admin" ? this.#adminRaw : this.#publicRaw;
     if (raw === null) throw new AdminDatabaseUnavailableError(holder);
     const plan = this.#guard.plan(pool, holder);
-    if (plan.kind === "join") return this.#joinHeld(pool, plan.outer, plan.marker, fn);
     const startedAt = Date.now();
     try {
-      return await this.#ownTransaction(pool, raw, holder, plan.marker, fn);
+      // A joined call reports its own failure: the op that ran it turns the
+      // error into a Result, so the holder's transaction may never throw.
+      return plan.kind === "join"
+        ? await this.#joinHeld(pool, plan.outer, plan.marker, fn)
+        : await this.#ownTransaction(pool, raw, holder, plan.marker, fn);
     } catch (thrown) {
       this.#reportTrouble(pool, holder, thrown, startedAt);
       throw thrown;

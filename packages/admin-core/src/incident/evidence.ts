@@ -108,19 +108,79 @@ const seconds = (ms: number | null): string =>
 
 const iso = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 
+/** A character that continues an identifier (so a `$` or `E` after it is part of the name). */
+const IDENT_CHAR = /[A-Za-z0-9_$]/;
+
+/** A dollar-quote opening at the start of the text: `$$` or `$tag$`. */
+const DOLLAR_TAG = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/;
+
 /**
- * A statement as the report may show it: string literals replaced, white
- * space collapsed, cut to a line. Null for text the role may not read.
+ * Index of the quote closing the string literal opened at `start`, or -1
+ * when the text ends first. `backslash` is an E'…' string, where `\'` does
+ * not close it; in every string `''` is an escaped quote.
+ */
+function closingQuote(text: string, start: number, backslash: boolean): number {
+  for (let j = start + 1; j < text.length; j++) {
+    const ch = text[j];
+    if (backslash && ch === "\\") {
+      j++;
+    } else if (ch === "'") {
+      if (text[j + 1] !== "'") return j;
+      j++;
+    }
+  }
+  return -1;
+}
+
+/**
+ * A statement as the report may show it: every string literal, dollar-quoted
+ * body and comment removed, white space collapsed, cut to a line. Null for
+ * text the role may not read.
+ *
+ * A scanner, not a pattern: E'…' strings with backslash escapes, `''`
+ * inside a string and `$tag$` bodies are what a pattern misreads, and the
+ * text arrives cut (`track_activity_query_size`, the op's `left()`), so a
+ * literal may never close. An unclosed literal or comment ends the text
+ * there: whatever follows its opening is dropped, never shown.
  */
 export function sanitizeStatement(text: string | null): string | null {
   if (text === null) return null;
-  const trimmed = text.trim();
-  if (trimmed === "" || trimmed === "<insufficient privilege>") return null;
-  return trimmed
-    .replace(/\$([A-Za-z_]*)\$[\s\S]*?\$\1\$/g, "'?'")
-    .replace(/[Ee]?'(?:[^']|'')*'/g, "'?'")
-    .replace(/\s+/g, " ")
-    .slice(0, 240);
+  const s = text.trim();
+  if (s === "" || s === "<insufficient privilege>") return null;
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i] as string;
+    const prev = i > 0 ? (s[i - 1] as string) : "";
+    if (c === "-" && s[i + 1] === "-") {
+      const end = s.indexOf("\n", i);
+      if (end < 0) break;
+      out += " ";
+      i = end + 1;
+    } else if (c === "/" && s[i + 1] === "*") {
+      const end = s.indexOf("*/", i + 2);
+      if (end < 0) break;
+      out += " ";
+      i = end + 2;
+    } else if (c === "'") {
+      // E'…' (or e'…') when the E is not the end of a longer name.
+      const backslash = /[Ee]/.test(prev) && !IDENT_CHAR.test(i > 1 ? (s[i - 2] as string) : "");
+      const end = closingQuote(s, i, backslash);
+      out += "'?'";
+      if (end < 0) break;
+      i = end + 1;
+    } else if (c === "$" && !IDENT_CHAR.test(prev) && DOLLAR_TAG.test(s.slice(i, i + 64))) {
+      const tag = (s.slice(i, i + 64).match(DOLLAR_TAG) as RegExpMatchArray)[0];
+      const end = s.indexOf(tag, i + tag.length);
+      out += "'?'";
+      if (end < 0) break;
+      i = end + tag.length;
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out.replace(/\s+/g, " ").trim().slice(0, 240);
 }
 
 /** Sessions that are blocked by nobody but block someone: the start of a lock queue. */
