@@ -535,6 +535,57 @@ describe("branch-aware plugin storage", () => {
     expect(new Set(final).size).toBe(1);
   });
 
+  it("a later write wins even when its transaction began first (#1573)", async () => {
+    // Snapshot headers used to be dated by transaction start. A write whose
+    // transaction began first and got the row's lock second dated itself
+    // before the write it built on, so the chat kept seeing the older value
+    // (and two writes begun in the same microsecond tied, each row going to
+    // the random snapshot id: the mixed labels of the test above).
+    const rows: string[] = [];
+    for (const label of ["ul-w", "ul-x"]) {
+      const added = await call(MAIN, "add", { label });
+      if (!added.ok) throw new Error(added.error.message);
+      rows.push(idOf(added.value));
+    }
+    const [w, x] = [...rows].sort() as [string, string];
+    const h = await newChat("h");
+    // The chat's first write to `w` creates its lock row.
+    expect((await call(h.invocation, "rename", { id: w, label: "ul-w1" })).ok).toBe(true);
+
+    const sql = new SQL(ADMIN_URL!);
+    const reserved = await sql.reserve();
+    try {
+      // Hold `w`'s lock row, so the late call (w first, then x, in id
+      // order) starts its transaction and waits there.
+      await reserved.unsafe("BEGIN");
+      await reserved.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await reserved`
+        SELECT 1 FROM chat_entity_locks
+        WHERE entity_kind = 'pluginRow' AND entity_id = ${w}::uuid FOR UPDATE
+      `;
+      const late = call(h.invocation, "relabel_many", { ids: [w, x], label: "ul-late" });
+      for (let i = 0; i < 200; i += 1) {
+        const [waiting] = (await sql`
+          SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'
+        `) as { n: number }[];
+        if ((waiting?.n ?? 0) > 0) break;
+        await Bun.sleep(10);
+      }
+      // Meanwhile a second call writes `x` to the end.
+      const early = await call(h.invocation, "relabel_many", { ids: [x], label: "ul-early" });
+      expect(early.ok).toBe(true);
+      await reserved.unsafe("COMMIT");
+      expect((await late).ok).toBe(true);
+    } finally {
+      reserved.release();
+      await sql.end();
+    }
+    // The late call read "ul-early" and wrote over it: its value stands.
+    const seen = await labels(h.invocation);
+    expect(seen.filter((l) => l.startsWith("ul-"))).toEqual(["ul-late", "ul-late"]);
+  });
+
   it("pages by id and filters by anyOf across a chat's overlay, each row once (#1213)", async () => {
     for (const label of ["p-1", "p-2", "p-3", "p-4", "p-5"]) {
       expect((await call(MAIN, "add", { label })).ok).toBe(true);
