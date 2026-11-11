@@ -20,6 +20,8 @@ export interface SettingsRow {
   placeholder_module_slug: string;
   /** Last change to anything the cookie declaration shows (tags, policy). */
   declaration_updated_at: string | Date;
+  /** #1269 — when the stored value hosts were first filled on main; null before. */
+  value_hosts_filled_at?: string | Date | null;
 }
 
 export interface GuardRow {

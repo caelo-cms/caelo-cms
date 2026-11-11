@@ -202,7 +202,8 @@ describe("#1214 — verdicts follow the write that changed the module", () => {
       args: {},
     });
     if (!rebuilt.ok) throw new Error(JSON.stringify(rebuilt.error));
-    expect(rebuilt.value).toEqual({ flagged: 0, cleared: 0 });
+    // #1269 — and the stored value hosts are exactly what the instances hold.
+    expect(rebuilt.value).toEqual({ flagged: 0, cleared: 0, valueRows: 0 });
     expect(await mainGuards()).toEqual(maintained);
   });
 });
