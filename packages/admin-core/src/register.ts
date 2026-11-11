@@ -22,7 +22,11 @@ import {
   recordBugForwardResultOp,
   setBugForwardingOp,
 } from "./ops/ai/bug-forwarding.js";
-import { createBugReportOp, listBugReportsOp } from "./ops/ai/bug-reports.js";
+import {
+  createBugReportOp,
+  listBugReportsOp,
+  updateIncidentBugReportOp,
+} from "./ops/ai/bug-reports.js";
 import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
 import {
   executeAiProvidersProposalOp,
@@ -261,6 +265,7 @@ import {
 import { getDeployRunOriginOp } from "./ops/deploy-run-origin.js";
 import { stageStatusOp } from "./ops/deploy-stage-status.js";
 import { finishTriggerOp, startTriggerOp, triggerDeployOp } from "./ops/deploy-trigger.js";
+import { databaseActivityOp } from "./ops/diagnostics.js";
 import { hostingStatusOp, reconnectHostingDomainOp } from "./ops/domain_hosting.js";
 import {
   executeDomainProposalOp,
@@ -1305,6 +1310,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(bugClustersToRefreshOp);
   registry.register(recordBugClusterStatusOp);
   registry.register(listBugReportsOp);
+  // #1595 — an admin stall files one report, with the database's session list.
+  registry.register(updateIncidentBugReportOp);
+  registry.register(databaseActivityOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
   registry.register(setEmailConfigOp);

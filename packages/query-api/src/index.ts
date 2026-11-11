@@ -69,6 +69,12 @@ export {
 } from "./change-journal.js";
 export { assertChatOpenForWrite } from "./chat-write-guard.js";
 export {
+  classifyDatabaseTrouble,
+  type DatabaseTrouble,
+  type DatabaseTroubleKind,
+  type DatabaseTroubleListener,
+} from "./database-trouble.js";
+export {
   type ErrorDetail,
   type ErrorPathSegment,
   errorDetailsOf,

@@ -148,6 +148,42 @@ export const createBugReportOp = defineOperation({
   },
 });
 
+/**
+ * #1595 — rewrite the evidence of an incident report as the incident grows
+ * (incident/capture.ts). Only an automatic report that nobody marked fixed
+ * or invalid changes; its fingerprint and the version that filed it stay.
+ */
+export const updateIncidentBugReportOp = defineOperation({
+  name: "ai_bug_reports.update_incident",
+  readScope: "request",
+  // Why system-only: only the incident capture rewrites the report it
+  // filed itself; a report the AI or a person filed is never rewritten.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      reportId: z.string().uuid(),
+      evidence: z.string().max(8000),
+      severity: bugReportSeverity,
+      blockedTask: z.boolean(),
+    })
+    .strict(),
+  output: z.object({ updated: z.boolean() }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE ai_bug_reports
+      SET evidence = ${input.evidence},
+          severity = ${input.severity},
+          blocked_task = ${input.blockedTask}
+      WHERE id = ${input.reportId}::uuid
+        AND source = 'auto'
+        AND status IN ('new', 'triaged')
+      RETURNING id
+    `)) as unknown as { id: string }[];
+    return ok({ updated: rows.length > 0 });
+  },
+});
+
 const listBugReportsInput = z
   .object({
     status: z.enum(["new", "triaged", "fixed", "invalid"]).optional(),

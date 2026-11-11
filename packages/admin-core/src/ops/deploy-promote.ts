@@ -600,7 +600,13 @@ async function runPromote(
     });
     // Unrecorded, the run's lease lapses and the next run marks it failed.
     if (!r.ok) console.error("[deploy] could not record the failed run", { runId, error: r.error });
-    logRunTimings("publish-live", runId, timer, { status: "failed" });
+    logRunTimings(
+      "publish-live",
+      runId,
+      timer,
+      { status: "failed" },
+      { message: stored, refusal: false },
+    );
     return refused(reply);
   };
   /** Proof, right before an irreversible provider step, that every lease is still this run's. */

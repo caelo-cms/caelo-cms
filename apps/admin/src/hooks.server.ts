@@ -40,6 +40,7 @@ import {
   getActiveProvider,
   getMediaStorage,
   inProcessJobLauncher,
+  installIncidentCapture,
   lockPluginRow,
   makePluginImageProvider,
   makePluginTextProvider,
@@ -148,6 +149,10 @@ function bootstrapPlugins(): Promise<void> {
 
 async function bootPluginHost(): Promise<void> {
   const { adapter, stagingAdapter, registry } = getQueryContext();
+  // #1595 — from the first request on, an admin stall files one bug
+  // report with the database's session list (before the plugin host, whose
+  // boot is itself a heavy database user).
+  installIncidentCapture({ adapter, registry });
   // P11.5 audit fix #3 — wire emitSnapshot + aiProvider so plugins that
   // declare those capabilities get working handles. Plugin's
   // requestedCapabilities still gates which handles are actually attached

@@ -11,6 +11,7 @@ import type { ExecutionContext, PhaseTimer } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { resolveOutputRoot } from "../deploy/output-root.js";
+import { noteIncidentSignal } from "../incident/capture.js";
 
 /**
  * The directory a target's builds are written to. v0.2.78 — on Cloud Run
@@ -82,7 +83,12 @@ export async function runStartedAt(tx: TransactionRunner): Promise<string> {
   return at;
 }
 
-/** One log line per finished run with its step timings (Cloud Logging / docker logs). */
+/**
+ * One log line per finished run with its step timings (Cloud Logging /
+ * docker logs). A failed run that was not a refusal is also evidence for an
+ * open incident report (#1595: the capture keeps it only while the database
+ * is in trouble).
+ */
 export function logRunTimings(
   kind: "stage" | "build" | "publish-live",
   runId: string,
@@ -94,11 +100,24 @@ export function logRunTimings(
     /** #1271 — the generator subprocess's peak resident memory over the build. */
     generatorPeakRssMb?: number;
   },
+  failure?: { readonly message: string; readonly refusal: boolean },
 ): void {
   console.info(
     `[deploy] ${kind} ${extra.status} in ${timer.totalMs()} ms`,
     JSON.stringify({ runId, ...extra, totalMs: timer.totalMs(), phases: timer.phases() }),
   );
+  if (extra.status === "failed" && failure !== undefined && !failure.refusal) {
+    noteIncidentSignal({
+      kind: "build_failed",
+      build: {
+        kind,
+        runId,
+        totalMs: timer.totalMs(),
+        message: failure.message,
+        phases: timer.phases(),
+      },
+    });
+  }
 }
 
 /**

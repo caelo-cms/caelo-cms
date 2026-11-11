@@ -24,6 +24,7 @@
  */
 
 import { POOL_BUSY_RETRY_AFTER_MS, type PoolPressure, type QueryError } from "@caelo-cms/query-api";
+import { noteIncidentSignal } from "./incident/capture.js";
 
 /** How long the oldest waiter must have waited before MCP calls are refused. */
 export const MCP_SATURATION_WAIT_MS = 1_000;
@@ -114,6 +115,8 @@ export function mcpBackPressureResponse(
   if (!pathname.startsWith("/api/mcp/")) return null;
   const verdict = mcpBackPressure(pressure);
   if (!verdict.busy) return null;
+  // #1595 — refusals that last become part of an incident report.
+  noteIncidentSignal({ kind: "mcp_refused" });
   if (now - lastLoggedAt >= LOG_EVERY_MS) {
     lastLoggedAt = now;
     console.warn("[mcp] back-pressure: the admin database pool is saturated; MCP calls get 429", {

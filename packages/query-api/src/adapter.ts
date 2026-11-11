@@ -34,6 +34,7 @@ import {
   namedBranches,
   rememberedFirstInvisible,
 } from "./branch-access.js";
+import { classifyDatabaseTrouble, type DatabaseTroubleListener } from "./database-trouble.js";
 import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } from "./errors.js";
 import {
   type AnyOperationDefinition,
@@ -403,6 +404,8 @@ export class DatabaseAdapter {
   readonly #guard = new PoolGuard();
   /** Issue #1375 — who waits for and who holds each pool's connections. */
   readonly #demand: Record<PoolName, PoolDemand>;
+  /** Issue #1595 — told of every transaction that failed on database trouble. */
+  readonly #troubleListeners = new Set<DatabaseTroubleListener>();
   #verifyPromise: Promise<void> | null = null;
   #projectionPublisher: (() => Promise<unknown>) | null = null;
   readonly #onStatement: ((statement: string) => void) | null;
@@ -473,7 +476,58 @@ export class DatabaseAdapter {
     if (raw === null) throw new AdminDatabaseUnavailableError(holder);
     const plan = this.#guard.plan(pool, holder);
     if (plan.kind === "join") return this.#joinHeld(pool, plan.outer, plan.marker, fn);
-    const marker = plan.marker;
+    const startedAt = Date.now();
+    try {
+      return await this.#ownTransaction(pool, raw, holder, plan.marker, fn);
+    } catch (thrown) {
+      this.#reportTrouble(pool, holder, thrown, startedAt);
+      throw thrown;
+    }
+  }
+
+  /**
+   * Issue #1595 — subscribe to the transactions of this adapter that fail on
+   * database trouble (database-trouble.ts). For the admin's incident
+   * capture; the listener runs synchronously and must not throw.
+   *
+   * @returns a function that unsubscribes.
+   */
+  onDatabaseTrouble(listener: DatabaseTroubleListener): () => void {
+    this.#troubleListeners.add(listener);
+    return () => {
+      this.#troubleListeners.delete(listener);
+    };
+  }
+
+  /** Errors already handed to the trouble listeners (an error crosses both pools' transactions). */
+  readonly #reportedTrouble = new WeakSet<object>();
+
+  #reportTrouble(pool: PoolName, holder: string, thrown: unknown, startedAt: number): void {
+    if (this.#troubleListeners.size === 0) return;
+    if (typeof thrown === "object" && thrown !== null) {
+      if (this.#reportedTrouble.has(thrown)) return;
+      this.#reportedTrouble.add(thrown);
+    }
+    const kind = classifyDatabaseTrouble(thrown);
+    if (kind === null) return;
+    const trouble = { kind, pool, holder, elapsedMs: Date.now() - startedAt };
+    for (const listener of this.#troubleListeners) {
+      try {
+        listener(trouble);
+      } catch (e) {
+        console.error("[query-api] a database-trouble listener failed", e);
+      }
+    }
+  }
+
+  /** {@link #transaction} on a connection of its own (not joined). */
+  async #ownTransaction<T>(
+    pool: PoolName,
+    raw: SQL,
+    holder: string,
+    marker: HeldTransaction,
+    fn: (tx: TransactionRunner, joined: boolean) => Promise<T>,
+  ): Promise<T> {
     const reserved = await this.#reserve(pool, raw, holder);
     const endHold = this.#demand[pool].beginHold(holder);
     try {
