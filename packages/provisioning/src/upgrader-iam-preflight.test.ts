@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { HttpFetch } from "./runtime-secrets.js";
+import { ROLL_ORDER, rollServiceAccount } from "./upgrade/app-roll.js";
 import {
   type IamResource,
   type IamTester,
@@ -29,6 +30,7 @@ import {
   UPGRADER_PROJECT_ROLES,
   UPGRADER_RUN_ROLE,
   UPGRADER_SQL_BACKUP_ROLE,
+  upgraderAccountGrants,
 } from "./upgrader-setup.js";
 
 const TARGET = { projectId: "acme", region: "europe-west1", env: "production" };
@@ -64,49 +66,16 @@ function setupGrants(): Map<string, Set<string>> {
   // (no run.developer: it would hold runWithOverrides on the provisioner's jobs).
   for (const perm of UPGRADER_RUN_ROLE.permissions) project.add(perm);
   const bucketList = new Set(UPGRADER_OPS_LIST_ROLE.permissions);
-  return new Map([
+  // #1596 — the per-account grants come from upgrader-setup.ts itself, not
+  // from a copy here: a copy missed the staging gateway exactly as the setup
+  // did, so the "fresh setup passes" check below passed while every app-roll
+  // on an install with a staging gateway failed.
+  const accounts = upgraderAccountGrants(p, TARGET.env).map(
+    (g) => [`projects/${p}/serviceAccounts/${g.account}`, of(g.role)] as const,
+  );
+  return new Map<string, Set<string>>([
     [`projects/${p}`, project],
-    [
-      `projects/${p}/serviceAccounts/caelo-production-run-sa@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountUser"),
-    ],
-    [
-      `projects/${p}/serviceAccounts/caelo-production-gateway-sa@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountUser"),
-    ],
-    // #1328 — the MCP-Auth-Proxy's revisions run as its own account.
-    [
-      `projects/${p}/serviceAccounts/caelo-production-mcp-proxy-sa@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountUser"),
-    ],
-    [
-      `projects/${p}/serviceAccounts/caelo-production-upgrader@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountUser"),
-    ],
-    [
-      `projects/${p}/serviceAccounts/caelo-mcp@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountTokenCreator"),
-    ],
-    [
-      `projects/${p}/serviceAccounts/caelo-production-audit@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountUser"),
-    ],
-    [
-      `projects/${p}/serviceAccounts/caelo-production-capture@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountUser"),
-    ],
-    [
-      `projects/${p}/serviceAccounts/caelo-production-audit-run@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountUser"),
-    ],
-    [
-      `projects/${p}/serviceAccounts/caelo-production-import@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountUser"),
-    ],
-    [
-      `projects/${p}/serviceAccounts/caelo-production-build@${p}.iam.gserviceaccount.com`,
-      of("roles/iam.serviceAccountUser"),
-    ],
+    ...accounts,
     // The project-level caeloUpgraderRun reaches the job too.
     [`projects/${p}/locations/europe-west1/jobs/caelo-production-upgrader`, project],
     [`gs://${p}-caelo-ops`, bucketList],
@@ -256,6 +225,44 @@ describe("upgraderAccessChecks", () => {
       [proxySa, ["iam.serviceAccounts.actAs"]],
     ]);
     expect(preflightMissingReason(r.missing, UPGRADER_PREFLIGHT_VOICE)).toContain("MCP-Auth-Proxy");
+  });
+
+  it("#1596: the staging gateway's account is checked, since every app-roll rolls the staging gateway", async () => {
+    const stagingSa =
+      "projects/acme/serviceAccounts/caelo-production-stg-gw-sa@acme.iam.gserviceaccount.com";
+    const grants = setupGrants();
+    grants.delete(stagingSa);
+    const r = await runIamPreflight(upgraderAccessChecks(TARGET), tester(grants));
+    expect(r.kind).toBe("missing");
+    if (r.kind !== "missing") return;
+    expect(r.missing.map((m) => [resourceName(m.check.resource), m.missing])).toEqual([
+      [stagingSa, ["iam.serviceAccounts.actAs"]],
+    ]);
+    expect(preflightMissingReason(r.missing, UPGRADER_PREFLIGHT_VOICE)).toContain(
+      "staging gateway",
+    );
+  });
+
+  it("#1596: every service the app-roll rolls runs as an account setup grants actAs on and the self-check checks", () => {
+    const granted = new Set(
+      upgraderAccountGrants(TARGET.projectId, TARGET.env)
+        .filter((g) => g.role === "roles/iam.serviceAccountUser")
+        .map((g) => g.account),
+    );
+    const checked = new Set(
+      upgraderAccessChecks(TARGET)
+        .filter(
+          (c) =>
+            c.resource.kind === "service-account" &&
+            c.permissions.includes("iam.serviceAccounts.actAs"),
+        )
+        .map((c) => (c.resource.kind === "service-account" ? c.resource.email : "")),
+    );
+    for (const slug of ROLL_ORDER) {
+      const account = rollServiceAccount(slug, TARGET.projectId, TARGET.env);
+      expect({ slug, granted: granted.has(account) }).toEqual({ slug, granted: true });
+      expect({ slug, checked: checked.has(account) }).toEqual({ slug, checked: true });
+    }
   });
 
   it("never needs a permission only a forbidden role would give (no compute, no IAM admin)", () => {

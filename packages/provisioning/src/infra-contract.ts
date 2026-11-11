@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 27;
+export const INFRA_CONTRACT_VERSION = 28;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -224,6 +224,13 @@ export const INFRA_CONTRACT_VERSION = 27;
 //       the admin. The new admin starts every crawl on that job and the
 //       app-roll moves its image, so an in-cloud upgrader must not roll an
 //       install onto it before it exists.
+//  28 — #1596: the upgrader's actAs on the staging gateway's account. The
+//       app-roll rolls the staging gateway since v0.12.0 (#1330), but the
+//       setup never granted it, so every in-product app-roll on an install
+//       with a staging gateway failed at that service and rolled back. No
+//       new resource: the bump makes every install take its next release
+//       through the converge job, which runs the setup that now grants it,
+//       so app-roll updates work again after that one converge.
 //  27 — #1574: the build carrier (reporting-job-setup.ts), the job whose one
 //       report holds the admin request a Stage, Publish live or production
 //       build runs in when nobody else waits for it (an agent's Stage, a
@@ -279,6 +286,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   25: "the quality-audit runner: a job of its own that runs each Stage's quality audit and reports the result to the admin, its service account and grants (#1359)",
   26: "the site-import crawler: a job of its own that crawls each site import and reports every page to the admin, its service account and grants (#1360)",
   27: "the build carrier: a job of its own that holds the request a Stage, Publish live or production build runs in when nobody else waits for it, its service account and grants (#1574)",
+  28: "the upgrader's right to run the staging gateway as its service account, so updates from Settings → Updates roll every service (#1596)",
 };
 
 /**

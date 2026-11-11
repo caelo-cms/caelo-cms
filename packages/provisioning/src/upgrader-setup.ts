@@ -30,14 +30,15 @@
  *     PULUMI_*) and so act as the provisioner (#883 review). The custom role
  *     has no `runWithOverrides` and no `*.setIamPolicy`. Updating another
  *     job (the converge job's image, say) additionally needs `actAs` on its
- *     service account, which the upgrader holds only on the admin, gateway,
- *     MCP-Auth-Proxy and its own. A grant of `roles/run.developer` left by an earlier
+ *     service account, which the upgrader holds only on the accounts
+ *     `upgraderAccountGrants` lists. A grant of `roles/run.developer` left by an earlier
  *     setup is removed.
- *   - `roles/iam.serviceAccountUser` on exactly the admin's, the
- *     gateway's and the MCP-Auth-Proxy's (#1328) runtime service accounts (a revision runs as them), on
- *     itself (its own job) and on the quality-audit and capture jobs'
- *     accounts (the app-roll moves those jobs' images, #875, #1217) — not
- *     on the project.
+ *   - `roles/iam.serviceAccountUser` on exactly the runtime accounts of the
+ *     services the app-roll rolls (admin, gateway, staging gateway #1596,
+ *     MCP-Auth-Proxy #1328: a revision runs as them), on itself (its own job)
+ *     and on the accounts of the jobs the app-roll moves onto the new image
+ *     (quality audit, capture, audit runner, crawler, build carrier) — not
+ *     on the project (`upgraderAccountGrants`).
  *   - the custom role `caeloUpgraderSqlBackup`: create/read Cloud SQL
  *     backups and read the instance — no restore, no instance changes.
  *   - `roles/cloudsql.instanceUser` + a Cloud SQL IAM database user that
@@ -88,6 +89,7 @@ import {
   mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
+  stagingGatewayServiceAccountEmail,
   upgraderJobName,
   upgraderServiceAccountEmail,
   upgraderServiceAccountId,
@@ -236,6 +238,82 @@ export function installStateCondition(bucket: string): string {
   return `expression=resource.name.startsWith("projects/_/buckets/${bucket}/objects/${OPS_INSTALL_PREFIX}/"),title=caelo-upgrader-install-state,description=Only the install metadata under ${OPS_INSTALL_PREFIX}/`;
 }
 
+/** One grant the upgrader holds on a single service account. */
+export interface UpgraderAccountGrant {
+  readonly account: string;
+  readonly role: string;
+  readonly why: string;
+}
+
+/**
+ * The upgrader's grants on single service accounts: `actAs` on the account
+ * of every service the app-roll rolls and of every job it moves onto a new
+ * image (a revision or execution runs as that account), on its own job's
+ * account, and token creation on caelo-mcp for the health check.
+ *
+ * #1596 — the staging gateway (#1330) was rolled since v0.12.0 but missing
+ * here, so every in-product app-roll on an install with a staging gateway
+ * failed at that service and rolled back. upgrader-iam-preflight.test.ts
+ * pins this list to `ROLL_ORDER`, so a new rolled service cannot be left out
+ * again.
+ */
+export function upgraderAccountGrants(projectId: string, env: string): UpgraderAccountGrant[] {
+  const sa = upgraderServiceAccountEmail(projectId, env);
+  return [
+    {
+      account: runServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "admin revisions + the migration job run as it",
+    },
+    {
+      account: gatewayServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "gateway revisions run as it",
+    },
+    {
+      account: stagingGatewayServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "staging gateway revisions run as it (#1330, #1596)",
+    },
+    {
+      account: mcpAuthProxyServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "MCP-Auth-Proxy revisions run as it (#1328)",
+    },
+    { account: sa, role: "roles/iam.serviceAccountUser", why: "the job updates its own image" },
+    {
+      account: auditServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "the app-roll moves the quality-audit job, which runs as it, onto the new image",
+    },
+    {
+      account: captureServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "the app-roll moves the capture job, which runs as it, onto the new image",
+    },
+    {
+      account: auditRunnerServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "the app-roll moves the quality-audit runner, which runs as it, onto the new image",
+    },
+    {
+      account: importCrawlServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "the app-roll moves the site-import crawler, which runs as it, onto the new image",
+    },
+    {
+      account: buildCarrierServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "the app-roll moves the build carrier, which runs as it, onto the new image",
+    },
+    {
+      account: mcpIapServiceAccountEmail(projectId),
+      role: "roles/iam.serviceAccountTokenCreator",
+      why: "the health check signs its IAP credential as caelo-mcp",
+    },
+  ];
+}
+
 /** Ensure the upgrader job and everything it needs. Never throws for a gcloud failure. */
 export async function ensureUpgraderJob(
   target: UpgraderSetupTarget,
@@ -363,54 +441,7 @@ export async function ensureUpgraderJob(
   }
 
   // 4. Resource-level grants on single service accounts.
-  const onAccounts: { account: string; role: string; why: string }[] = [
-    {
-      account: runServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "admin revisions + the migration job run as it",
-    },
-    {
-      account: gatewayServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "gateway revisions run as it",
-    },
-    {
-      account: mcpAuthProxyServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "MCP-Auth-Proxy revisions run as it (#1328)",
-    },
-    { account: sa, role: "roles/iam.serviceAccountUser", why: "the job updates its own image" },
-    {
-      account: auditServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "the app-roll moves the quality-audit job, which runs as it, onto the new image",
-    },
-    {
-      account: captureServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "the app-roll moves the capture job, which runs as it, onto the new image",
-    },
-    {
-      account: auditRunnerServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "the app-roll moves the quality-audit runner, which runs as it, onto the new image",
-    },
-    {
-      account: importCrawlServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "the app-roll moves the site-import crawler, which runs as it, onto the new image",
-    },
-    {
-      account: buildCarrierServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "the app-roll moves the build carrier, which runs as it, onto the new image",
-    },
-    {
-      account: mcpIapServiceAccountEmail(projectId),
-      role: "roles/iam.serviceAccountTokenCreator",
-      why: "the health check signs its IAP credential as caelo-mcp",
-    },
-  ];
+  const onAccounts = upgraderAccountGrants(projectId, env);
   for (const g of onAccounts) {
     const r = await retry([
       "iam",
