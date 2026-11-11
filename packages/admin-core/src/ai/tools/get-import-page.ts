@@ -266,8 +266,6 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
       url: g.sourceUrl ?? `import:${g.importPageId}`,
       html: g.html,
       markdown,
-      // #1360 — crawled by the import's job: its reads stay marked.
-      crawled: true,
     });
     const { text, nextCursor } = sliceMarkdown(markdown, 0);
     // In content-only mode a fully-filtered token dump must stay LOUD —

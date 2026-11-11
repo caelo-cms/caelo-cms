@@ -69,9 +69,8 @@ export const readPageMoreTool: ToolDefinitionWithHandler<ReadPageMoreInput> = {
         : "\n\n[end of page.]";
     return {
       ok: true,
-      content: entry.crawled
-        ? `## Page text (Markdown) — ${siteData(entry.url)} [from char ${cursor}]\n${siteData(text)}${tail}`
-        : `## Page text (Markdown) — ${entry.url} [from char ${cursor}]\n${text}${tail}`,
+      // Another website's page, live or crawled (#1566): marked either way.
+      content: `## Page text (Markdown) — ${siteData(entry.url)} [from char ${cursor}]\n${siteData(text)}${tail}`,
     };
   },
 };
