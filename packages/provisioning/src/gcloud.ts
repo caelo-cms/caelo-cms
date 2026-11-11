@@ -17,6 +17,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { z } from "zod";
 
 export interface GcloudResult {
   ok: boolean;
@@ -174,22 +175,52 @@ export interface BillingAccount {
   open: boolean;
 }
 
-export async function listBillingAccounts(): Promise<BillingAccount[]> {
+/** The billing accounts the signed-in account can see, or why gcloud could not list them. */
+export type BillingAccountsResult =
+  | { readonly ok: true; readonly accounts: BillingAccount[] }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * List the billing accounts the signed-in account can see (#1580). A failed
+ * or unreadable listing is an error, never an empty list: "no open billing
+ * account" would send the operator to open one when gcloud merely failed.
+ */
+export async function listBillingAccounts(): Promise<BillingAccountsResult> {
   const r = await gcloud(["billing", "accounts", "list", "--format=json"]);
-  if (!r.ok) return [];
-  try {
-    const rows = JSON.parse(r.stdout) as Array<{
-      name: string;
-      displayName: string;
-      open: boolean;
-    }>;
-    return rows.map((row) => ({
+  if (!r.ok) {
+    return { ok: false, error: `gcloud billing accounts list: ${gcloudErrorLine(r.stderr)}` };
+  }
+  return parseBillingAccounts(r.stdout);
+}
+
+/** Parse `gcloud billing accounts list --format=json`. */
+export function parseBillingAccounts(stdout: string): BillingAccountsResult {
+  const rows = BillingAccountRows.safeParse(parseJsonOrNull(stdout));
+  if (!rows.success) {
+    return {
+      ok: false,
+      error: "gcloud billing accounts list printed no list of billing accounts (--format=json).",
+    };
+  }
+  return {
+    ok: true,
+    accounts: rows.data.map((row) => ({
       id: row.name.replace(/^billingAccounts\//, ""),
       displayName: row.displayName,
       open: row.open,
-    }));
+    })),
+  };
+}
+
+const BillingAccountRows = z.array(
+  z.object({ name: z.string(), displayName: z.string(), open: z.boolean() }),
+);
+
+function parseJsonOrNull(text: string): unknown {
+  try {
+    return JSON.parse(text);
   } catch {
-    return [];
+    return null;
   }
 }
 

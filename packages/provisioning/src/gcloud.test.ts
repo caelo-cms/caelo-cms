@@ -8,6 +8,7 @@ import {
   isGcloudAuthError,
   isGcloudNotFound,
   PROVISIONER_ROLE_LIST,
+  parseBillingAccounts,
   projectDisplayName,
 } from "./gcloud.js";
 
@@ -212,4 +213,38 @@ describe("isGcloudNotFound — one list of every service's wording", () => {
   ])("does not read %p as missing", (stderr) => {
     expect(isGcloudNotFound(stderr)).toBe(false);
   });
+});
+
+describe("parseBillingAccounts (#1580)", () => {
+  it("reads gcloud's JSON list into ids without the resource-name prefix", () => {
+    const stdout = JSON.stringify([
+      {
+        name: "billingAccounts/0A1B2C-3D4E5F-60718A",
+        displayName: "Agency",
+        open: true,
+        masterBillingAccount: "",
+      },
+      { name: "billingAccounts/999999-888888-777777", displayName: "Old card", open: false },
+    ]);
+    expect(parseBillingAccounts(stdout)).toEqual({
+      ok: true,
+      accounts: [
+        { id: "0A1B2C-3D4E5F-60718A", displayName: "Agency", open: true },
+        { id: "999999-888888-777777", displayName: "Old card", open: false },
+      ],
+    });
+  });
+
+  it("reads an empty list as no accounts", () => {
+    expect(parseBillingAccounts("[]")).toEqual({ ok: true, accounts: [] });
+  });
+
+  it.each(["", "not json", '{"name":"billingAccounts/x"}', '[{"name":"billingAccounts/x"}]'])(
+    "reads %p as an error, never as no accounts",
+    (stdout) => {
+      const r = parseBillingAccounts(stdout);
+      expect(r.ok).toBe(false);
+      expect(r.ok ? "" : r.error).toContain("gcloud billing accounts list");
+    },
+  );
 });

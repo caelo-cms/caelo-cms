@@ -92,6 +92,7 @@ import { INSTALL_JOB_NAME, INSTALL_JOB_ROLES } from "../install-job.js";
 import {
   adoptStateBackend,
   ensureInstallDir,
+  getStepPayload,
   type ImageDigests,
   type InstallMetadata,
   installRoot,
@@ -175,6 +176,7 @@ import {
 } from "../upgrade/release-images.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
+import { BILLING_ACCOUNT_FLAG, chooseBillingAccount, sameBillingAccount } from "./gcp-billing.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { promptProjectId } from "./gcp-prompts.js";
 import { GCP_STACK_KNOB_DEFAULTS, PulumiUpDeclinedError, pulumiUpGcp } from "./gcp-pulumi.js";
@@ -206,6 +208,12 @@ export interface GcpWizardOpts {
   version?: string;
   /** #1558 — `--accept-release-candidate`: confirms a release candidate without a prompt. */
   acceptReleaseCandidate?: boolean;
+  /**
+   * #1580 — `--billing-account` (parsed, gcloud's spelling): the billing
+   * account the new project is linked to. Needed with `nonInteractive` when
+   * the signed-in account has several open ones; must be one of them.
+   */
+  billingAccountId?: string;
 }
 
 export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
@@ -241,11 +249,16 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   // manifest instead.
   const version = await stepRequestedRelease(installId, projectId, provider, runMode, opts);
 
+  // === 2.8. Billing account (#1580) ===
+  // Chosen before the project exists, so a wrong --billing-account stops the
+  // run with nothing created.
+  const billing = await stepBillingChoice(installId, projectId, opts);
+
   // === 3. Project create ===
   await stepProjectCreate(installId, projectId, opts.domain);
 
   // === 4. Billing link ===
-  await stepBillingLink(installId, projectId, opts.nonInteractive);
+  await stepBillingLink(installId, projectId, billing);
 
   // === 5. Enable APIs ===
   await stepEnableApis(installId, projectId, provider);
@@ -1073,57 +1086,101 @@ async function stepProjectCreate(
   markStepDone(installId, stepName, { created: true });
 }
 
+/** The checkpoint of the billing link; its payload records the linked account. */
+function billingStepName(projectId: string): string {
+  return `billing-link-${projectId}`;
+}
+
+/**
+ * Settle the billing account before the project is created (#1580), so a
+ * wrong `--billing-account` stops the run with nothing changed.
+ *
+ * @returns the account to link, or null when the link is already done
+ */
+async function stepBillingChoice(
+  installId: string,
+  projectId: string,
+  opts: { readonly billingAccountId?: string; readonly nonInteractive: boolean },
+): Promise<BillingAccount | null> {
+  const stepName = billingStepName(projectId);
+  if (isStepDone(installId, stepName)) {
+    const linked = getStepPayload<{ billingAccountId?: string }>(
+      installId,
+      stepName,
+    )?.billingAccountId;
+    if (
+      opts.billingAccountId !== undefined &&
+      linked !== undefined &&
+      !sameBillingAccount(linked, opts.billingAccountId)
+    ) {
+      // A re-run never relinks: the project has billed to `linked` since
+      // the first run, and a silent switch is not what a resume is for.
+      log.error(
+        red(
+          `${projectId} is already linked to billing account ${linked}; ${BILLING_ACCOUNT_FLAG} ${opts.billingAccountId} would not change that. Drop the flag, or link the other account at https://console.cloud.google.com/billing/linkedaccount?project=${projectId} and re-run.`,
+        ),
+      );
+      cancel("Aborted.");
+      process.exit(1);
+    }
+    return null;
+  }
+  const listed = await listBillingAccounts();
+  if (!listed.ok) {
+    log.error(red(listed.error));
+    log.warn(`Check the gcloud sign-in (gcloud auth list), then re-run ${bold(selfCommand())}.`);
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  const choice = chooseBillingAccount({
+    accounts: listed.accounts,
+    requested: opts.billingAccountId,
+    nonInteractive: opts.nonInteractive,
+  });
+  if (choice.kind === "refuse") {
+    log.error(red(choice.message));
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  if (choice.kind === "use") {
+    log.info(
+      `Billing account: ${bold(choice.account.displayName)} ${dim(`(${choice.account.id})`)}`,
+    );
+    return choice.account;
+  }
+  const picked = await select<string>({
+    message: "Pick a billing account",
+    options: choice.open.map((a) => ({
+      value: a.id,
+      label: a.displayName,
+      hint: a.id,
+    })),
+  });
+  if (isCancel(picked)) {
+    cancel("Cancelled.");
+    process.exit(0);
+  }
+  const found = choice.open.find((a) => a.id === picked);
+  if (!found) {
+    cancel("Picked account not found in list — internal error.");
+    process.exit(1);
+  }
+  return found;
+}
+
+/**
+ * Link the project to the account {@link stepBillingChoice} settled; null
+ * means the checkpoint records the link already.
+ */
 async function stepBillingLink(
   installId: string,
   projectId: string,
-  nonInteractive: boolean,
+  chosen: BillingAccount | null,
 ): Promise<void> {
-  const stepName = `billing-link-${projectId}`;
-  if (isStepDone(installId, stepName)) {
+  const stepName = billingStepName(projectId);
+  if (chosen === null) {
     log.success(`Billing already linked ${dim("(checkpoint)")}`);
     return;
-  }
-  const accounts = await listBillingAccounts();
-  const open = accounts.filter((a) => a.open);
-  if (open.length === 0) {
-    log.error(red("No open billing accounts found."));
-    log.warn(
-      `Open one at https://console.cloud.google.com/billing then re-run ${bold(selfCommand())}.`,
-    );
-    cancel("Aborted.");
-    process.exit(1);
-  }
-  let chosen: BillingAccount;
-  if (open.length === 1) {
-    [chosen] = open as [BillingAccount];
-    log.info(`Billing account: ${bold(chosen.displayName)} ${dim(`(${chosen.id})`)}`);
-  } else if (nonInteractive) {
-    log.error(
-      red(
-        `Multiple billing accounts but --non-interactive passed. Re-run with --billing-account=<id> (one of: ${open.map((a) => a.id).join(", ")}).`,
-      ),
-    );
-    cancel("Aborted.");
-    process.exit(1);
-  } else {
-    const choice = await select<string>({
-      message: "Pick a billing account",
-      options: open.map((a) => ({
-        value: a.id,
-        label: a.displayName,
-        hint: a.id,
-      })),
-    });
-    if (isCancel(choice)) {
-      cancel("Cancelled.");
-      process.exit(0);
-    }
-    const found = open.find((a) => a.id === (choice as string));
-    if (!found) {
-      cancel("Picked account not found in list — internal error.");
-      process.exit(1);
-    }
-    chosen = found;
   }
   const s = spinner();
   s.start(`Linking billing ${chosen.id}...`);
