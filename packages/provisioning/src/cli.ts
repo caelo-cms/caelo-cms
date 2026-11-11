@@ -1749,7 +1749,7 @@ async function waitForDomainMappingCert(target: {
  * §11.C — interactive wizard. Loaded lazily so the bare-CLI startup
  * cost stays small (clack + kleur are pulled in only when needed).
  * Reads `--provider`, `--domain`, `--owner-email`, `--project-id`, `--region`,
- * `--scheduler-interval-minutes` (#1140), `--version` and
+ * `--billing-account` (#1580), `--scheduler-interval-minutes` (#1140), `--version` and
  * `--accept-release-candidate` (#1558), `--non-interactive` and the run mode (`--local` / `--install-job`, default:
  * the install job in Cloud Shell, local elsewhere — run-mode.ts) from argv.
  */
@@ -1773,6 +1773,20 @@ async function wizardCommand(): Promise<void> {
     console.error("--version needs a release version, e.g. --version 0.12.5-rc.1");
     process.exit(2);
   }
+  const { BILLING_ACCOUNT_FLAG, parseBillingAccountId } = await import("./wizards/gcp-billing.js");
+  const billingArg = arg("billing-account");
+  let billingAccountId: string | undefined;
+  try {
+    if (billingArg === undefined && process.argv.includes(BILLING_ACCOUNT_FLAG)) {
+      throw new Error(
+        `${BILLING_ACCOUNT_FLAG} needs a billing account id, e.g. ${BILLING_ACCOUNT_FLAG} 012345-6789AB-CDEF01`,
+      );
+    }
+    billingAccountId = billingArg === undefined ? undefined : parseBillingAccountId(billingArg);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(2);
+  }
   await runWizard({
     ...(schedulerIntervalMinutes !== undefined ? { schedulerIntervalMinutes } : {}),
     runMode: chooseRunMode(process.argv, process.env),
@@ -1787,6 +1801,7 @@ async function wizardCommand(): Promise<void> {
     ...(process.argv.includes(ACCEPT_RELEASE_CANDIDATE_FLAG)
       ? { acceptReleaseCandidate: true }
       : {}),
+    ...(billingAccountId !== undefined ? { billingAccountId } : {}),
   });
 }
 

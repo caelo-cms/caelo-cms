@@ -54,6 +54,7 @@ import { selfCommand } from "../self-command.js";
 import { attachInstall } from "../state-attach.js";
 import { hasLocalPulumiState, opsBucketName } from "../state-backend.js";
 import { GcsStateStore, realSyncGcloud, type SyncGcloud } from "../state-store.js";
+import { requestedBillingProblem } from "./gcp-billing.js";
 import { promptProjectId } from "./gcp-prompts.js";
 
 /** Side effects of the tail loop, injectable for tests. */
@@ -463,10 +464,13 @@ export type JobModePreparation =
  * @param opts.version - `--version` (#1558): refused before following or
  *   showing a job that installs another release, since neither path reaches
  *   the wizard's own check.
+ * @param opts.billingAccountId - `--billing-account` (#1580): refused the
+ *   same way when the project is linked to another billing account.
  */
 export async function prepareJobModeInstall(opts: {
   projectId?: string;
   version?: string;
+  billingAccountId?: string;
 }): Promise<JobModePreparation> {
   const account = await activeAccount();
   if (!account) {
@@ -503,7 +507,9 @@ export async function prepareJobModeInstall(opts: {
   if (!meta.region) return { kind: "existing", meta };
   const decision = await decide(gcloud, realSyncGcloud, { projectId, region: meta.region });
   if (decision.kind === "attach" || decision.kind === "done") {
-    const problem = attachedInstallVersionProblem(opts.version, meta.releaseVersion);
+    const problem =
+      attachedInstallVersionProblem(opts.version, meta.releaseVersion) ??
+      (await requestedBillingProblem(projectId, opts.billingAccountId));
     if (problem) {
       cancel(problem);
       process.exit(1);

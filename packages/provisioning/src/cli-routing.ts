@@ -181,8 +181,9 @@ export const CLI_COMMANDS: readonly CliCommandDoc[] = [
 /** The text `cms-provision --help` prints, built from {@link CLI_COMMANDS}. */
 export function cliUsage(): string {
   return (
-    `Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r> [--version x.y.z[-rc.N]] [--scheduler-interval-minutes 1-15]] [--local|--install-job] | <${CLI_COMMANDS.map((c) => c.name).join("|")}> [options]\n` +
+    `Usage: cms-provision [wizard] [--provider <name> --domain <d> [--staging-domain <host>] --owner-email <e> --region <r> [--billing-account <id>] [--version x.y.z[-rc.N]] [--scheduler-interval-minutes 1-15]] [--local|--install-job] | <${CLI_COMMANDS.map((c) => c.name).join("|")}> [options]\n` +
     "With several installs on this machine, pick one with --install <install-id or domain> (status, upgrade and backup also take --install all); in a terminal you are asked otherwise.\n" +
+    "--billing-account links a new Google Cloud project to that billing account (the id `gcloud billing accounts list` prints); with --non-interactive it is needed when the signed-in account has several open ones.\n" +
     "--version installs the release it names (otherwise the newest stable one). A release candidate (x.y.z-rc.N) is for test installs only: Caelo's Google Cloud registry keeps its images for 14 days, so installing or upgrading to one there asks for confirmation (--accept-release-candidate in a script).\n" +
     "Pass --no-wizard with no sub-command to print this usage instead of the wizard."
   );
