@@ -37,14 +37,13 @@ import {
   type ListSourceSnapshot,
   type ListTranslationFinding,
   PLUGIN_SLUG,
-  type ReconcileRow,
-  reconcile,
   type SourceInstance,
   type SourcePageProps,
   type SourceUnit,
   type StoredTranslation,
   statusSummary,
   type TranslationIndex,
+  targetOfAddress,
   unitStatus,
 } from "./list-translation.js";
 import { listAll } from "./store-reads.js";
@@ -124,13 +123,6 @@ async function readAll<T>(deps: ChromeDeps, table: string): Promise<T[]> {
   return (await listAll(deps.q, table)) as unknown as T[];
 }
 
-/** A stored timestamp as an ISO string (the store may hand back a Date). */
-function iso(v: unknown): string | null {
-  if (v === null || v === undefined) return null;
-  const d = v instanceof Date ? v : new Date(String(v));
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
 /** A path without query, fragment or trailing slash ("/" stays "/"). */
 export function normalisePath(href: string): string {
   const bare = href.split(/[?#]/)[0] ?? href;
@@ -159,7 +151,9 @@ export interface ModuleInfo {
  * languages. An instance that renders only on pages of other languages
  * (a variant page's own copy, made by create_variant / translate_variant)
  * already holds that language's text — translating it again would hide
- * its entries as "missing" on the very pages it was written for.
+ * its entries as "missing" on the very pages it was written for. Such an
+ * instance comes back with no locales: nothing to translate, its values
+ * still existing (#1269).
  */
 export function localListSources(input: {
   readonly instances: readonly InstanceInfo[];
@@ -174,14 +168,13 @@ export function localListSources(input: {
   const moduleById = new Map(input.modules.map((m) => [m.id, m]));
   const sourceInstances: SourceInstance[] = [];
   for (const ci of input.instances) {
-    const pageIds = input.pagesOfInstance.get(ci.id);
-    if (!pageIds) continue;
-    const pageLocales = pageIds.map(input.localeOfPage);
-    if (defaultCode === null || !pageLocales.includes(defaultCode)) continue;
-    const locales = new Set(
-      pageLocales.filter((l): l is string => l !== null && nonDefault.includes(l)),
-    );
-    if (locales.size === 0) continue;
+    const pageLocales = (input.pagesOfInstance.get(ci.id) ?? []).map(input.localeOfPage);
+    // Shown on no default-language page: nothing to translate (empty
+    // locales), but its values still exist — see collectSources.
+    const locales =
+      defaultCode !== null && pageLocales.includes(defaultCode)
+        ? new Set(pageLocales.filter((l): l is string => l !== null && nonDefault.includes(l)))
+        : new Set<string>();
     const listFields = (moduleById.get(ci.moduleId)?.fields ?? []).flatMap((f) => {
       const o = f as {
         name?: unknown;
@@ -577,7 +570,13 @@ export async function writeListTranslations(
         deps,
         "list_value_translations",
         { locale_code: locale.code, address },
-        { value, source_hash: unit.hash, status: "translated", orphaned_at: null },
+        {
+          target: targetOfAddress(address),
+          value,
+          source_hash: unit.hash,
+          status: "translated",
+          orphaned_at: null,
+        },
       );
       written += 1;
     } else if (unit.store === "pageProp" && unit.pageProp) {
@@ -720,122 +719,6 @@ export function listStatus(
     [...deps.locales.values()].filter((l) => !l.is_default).map((l) => l.code),
     state.index,
   );
-}
-
-/**
- * The worker's half: persist the statuses the source implies (added →
- * `missing` rows, changed → `needs_update`, gone → `orphaned`, back →
- * restored) and garbage-collect orphaned rows once a production build
- * that started after the removal succeeded. Runs on the main line.
- *
- * @param lastLiveAt start of the newest succeeded production build, or null.
- * @returns how many rows changed.
- */
-export async function reconcileListTranslations(
-  deps: ChromeDeps,
-  lastLiveAt: string | null,
-): Promise<{ updated: number; inserted: number; collected: number }> {
-  const state = await loadListTranslationState(deps);
-  const locales = [...deps.locales.values()].filter((l) => !l.is_default).map((l) => l.code);
-  const rows: (ReconcileRow & { table: string })[] = [
-    ...state.values.map((r) => ({
-      table: "list_value_translations",
-      id: r.id,
-      locale: r.locale_code,
-      address: r.address,
-      hasValue: r.value !== null,
-      hash: r.source_hash,
-      status: r.status,
-      orphanedAt: iso(r.orphaned_at),
-    })),
-    ...state.terms.map((r) => ({
-      table: "term_translations",
-      id: r.id,
-      locale: r.locale_code,
-      address: `list/${r.list_id}/item/${r.item_id}/name`,
-      hasValue: r.name !== null && r.slug !== null,
-      hash: r.source_hash,
-      status: r.status,
-      orphanedAt: iso(r.orphaned_at),
-    })),
-    ...state.props.map((r) => ({
-      table: "page_prop_translations",
-      id: r.id,
-      locale: r.locale_code,
-      address: `page/${r.page_id}/props/${r.field}`,
-      hasValue: r.value !== null,
-      hash: r.source_hash,
-      status: r.status,
-      orphanedAt: iso(r.orphaned_at),
-    })),
-  ];
-  const tableOf = new Map(rows.map((r) => [r.id, r.table]));
-  const now = new Date().toISOString();
-  const plan = reconcile(state.snapshot, locales, rows, now);
-  const liveAt = lastLiveAt === null ? null : Date.parse(lastLiveAt);
-  const isLive = (orphanedAt: string | null): boolean =>
-    liveAt !== null && orphanedAt !== null && Date.parse(orphanedAt) < liveAt;
-  let collected = 0;
-  let updatedCount = 0;
-  for (const u of plan.updates) {
-    const table = tableOf.get(u.id) as string;
-    const row = rows.find((r) => r.id === u.id);
-    // Removed AND live: the removal reached production after it happened.
-    const orphanedAt = u.orphanedAt ?? row?.orphanedAt ?? null;
-    if (u.status === "orphaned" && isLive(orphanedAt)) {
-      await deps.q.delete(table, u.id);
-      collected += 1;
-      continue;
-    }
-    await deps.q.update(table, u.id, { status: u.status, orphaned_at: u.orphanedAt });
-    updatedCount += 1;
-  }
-  // Rows already orphaned (no update this round) are collected too.
-  if (liveAt !== null) {
-    const updated = new Set(plan.updates.map((u) => u.id));
-    for (const r of rows) {
-      if (updated.has(r.id) || r.status !== "orphaned") continue;
-      if (isLive(r.orphanedAt)) {
-        await deps.q.delete(r.table, r.id);
-        collected += 1;
-      }
-    }
-  }
-  for (const ins of plan.inserts) {
-    const u = ins.unit;
-    if (u.store === "value") {
-      await deps.q.insert("list_value_translations", {
-        locale_code: ins.locale,
-        address: u.address,
-        value: null,
-        source_hash: null,
-        status: "missing",
-        orphaned_at: null,
-      });
-    } else if (u.store === "term" && u.term) {
-      await deps.q.insert("term_translations", {
-        locale_code: ins.locale,
-        list_id: u.term.listId,
-        item_id: u.term.itemId,
-        name: null,
-        slug: null,
-        source_hash: null,
-        status: "missing",
-        orphaned_at: null,
-      });
-    } else if (u.store === "pageProp" && u.pageProp) {
-      await deps.q.insert("page_prop_translations", {
-        locale_code: ins.locale,
-        page_id: u.pageProp.pageId,
-        field: u.pageProp.field,
-        value: null,
-        source_hash: null,
-        status: "missing",
-        orphaned_at: null,
-      });
-    }
-  }
-  return { updated: updatedCount, inserted: plan.inserts.length, collected };
 }
 
 /**

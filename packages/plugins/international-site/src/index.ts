@@ -71,6 +71,7 @@ import {
 } from "./chrome-ops.js";
 import { languageToolbarState } from "./editor-toolbar.js";
 import { chromeLinkLocations } from "./link-locations.js";
+import { reconcileListTranslations, reconcileScopeOf } from "./list-reconcile.js";
 import { resolveListOverlays } from "./list-resolve.js";
 import { entryStates, LIST_EXT_FIELD_SCHEMA } from "./list-translation.js";
 import {
@@ -78,7 +79,6 @@ import {
   listFindings,
   listStatus,
   loadListTranslationState,
-  reconcileListTranslations,
   setListItemVisibility,
 } from "./list-translation-ops.js";
 import { EVERY_LANGUAGE, setNeutralTerms } from "./neutral-terms.js";
@@ -234,6 +234,8 @@ const stalenessChangesArgs = z.object({
         op: z.enum(["insert", "update", "delete", "truncate"]),
         rowId: z.string(),
         parentId: z.string().nullable(),
+        table: z.string().nullable().optional(),
+        changedColumns: z.array(z.string()).nullable().optional(),
       }),
     )
     .max(500),
@@ -1310,6 +1312,10 @@ export default definePlugin<PluginContextTier1>({
     list_value_translations: {
       locale_code: "string",
       address: "text",
+      // #1269 — the list, instance or plugin source the address belongs to
+      // (`list:<id>`, `instance:<id>`, `source:<name>`; list-reconcile.ts),
+      // so a reconcile reads one target's rows, a removed entry's included.
+      target: "text",
       value: "text",
       source_hash: "text",
       status: "enum:translated,needs_update,missing,orphaned",
@@ -1365,10 +1371,12 @@ export default definePlugin<PluginContextTier1>({
       neutral_terms: [["locale_code", "term"]],
       style_guides: [["locale_code"]],
       settings: [["key"]],
-      list_value_translations: [["locale_code", "address"]],
+      // #1269 — the change consumer reads one target's rows (by target,
+      // list or page, every language) and the orphaned rows by status.
+      list_value_translations: [["locale_code", "address"], ["target"], ["status"]],
       list_item_visibility: [["locale_code", "address"]],
-      term_translations: [["locale_code", "list_id", "item_id"]],
-      page_prop_translations: [["locale_code", "page_id", "field"]],
+      term_translations: [["locale_code", "list_id", "item_id"], ["list_id"], ["status"]],
+      page_prop_translations: [["locale_code", "page_id", "field"], ["page_id"], ["status"]],
     },
   },
   requestedCapabilities: [
@@ -2421,8 +2429,19 @@ export default definePlugin<PluginContextTier1>({
       const deps = await chromeDepsOf(ctx);
       let marked = await markSiblingsStale(deps, sourcePageIds);
       if (chromeTouched) marked += await refreshChromeStaleness(deps);
-      const lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
-      return { marked, scanned: changes.length, lists };
+      // #1269 — the list translations of what the batch names, not the site.
+      // A structural change takes the whole reconcile; the result says why.
+      const scoped = await reconcileScopeOf(deps, changes);
+      const lists = await reconcileListTranslations(
+        deps,
+        await lastLiveBuildAt(deps),
+        "whole" in scoped ? "all" : scoped.scope,
+      );
+      return {
+        marked,
+        scanned: changes.length,
+        lists: { ...lists, whole: "whole" in scoped ? scoped.whole : null },
+      };
     },
 
     /**
@@ -2496,6 +2515,10 @@ export default definePlugin<PluginContextTier1>({
       "list",
       "list_type",
     ],
+    // #1269 — a variant written names the pages whose list translations
+    // to re-check; a language added or removed re-checks all of them
+    // (list-reconcile.ts).
+    ownTables: ["page_variants", "locales"],
     lines: "main",
   },
   workers: [

@@ -1593,7 +1593,8 @@ export interface PluginQueryFilter {
    * #1213 — rows whose column holds one of the listed values, per column
    * (AND-combined with every other filter). 1–1000 non-null scalar values
    * per column; jsonb columns are refused. One read instead of one read
-   * per value.
+   * per value. `id` may be listed too (#1269): the rows a change of the
+   * plugin's own tables names (`PluginChange.rowId`).
    */
   readonly anyOf?: Readonly<Record<string, ReadonlyArray<string | number | boolean>>>;
   /**

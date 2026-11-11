@@ -127,8 +127,18 @@ export const listSharedContentOp = defineOperation({
        * then come back empty.
        */
       listInstanceIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
+      /**
+       * #1269 — only the `listInstances` part, for the instances placed on
+       * these pages (each with every page it is placed on): a change
+       * consumer asking about the pages a batch changed instead of every
+       * instance of the site. Not with `listInstanceIds`.
+       */
+      listPageIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
     })
-    .strict(),
+    .strict()
+    .refine((i) => !(i.listInstanceIds && i.listPageIds), {
+      message: "pass listInstanceIds or listPageIds, not both",
+    }),
   output: z.object({
     layoutPlacements: z.array(
       z.object({
@@ -173,11 +183,17 @@ export const listSharedContentOp = defineOperation({
       branchId
         ? sql`(${sql.raw(alias)}.chat_branch_id IS NULL OR ${sql.raw(alias)}.chat_branch_id = ${branchId}::uuid)`
         : sql`${sql.raw(alias)}.chat_branch_id IS NULL`;
-    if (input.listInstanceIds) {
+    if (input.listInstanceIds || input.listPageIds) {
       return ok({
         layoutPlacements: [],
         sharedInstances: [],
-        listInstances: await listInstancePages(tx, visible, input.listInstanceIds),
+        listInstances: await listInstancePages(
+          tx,
+          visible,
+          input.listInstanceIds
+            ? { instanceIds: input.listInstanceIds }
+            : { pageIds: input.listPageIds ?? [] },
+        ),
       });
     }
     const layoutRows = await withBranchedModules(
@@ -282,14 +298,25 @@ export const listSharedContentOp = defineOperation({
 
 /**
  * The `listInstances` part: every content instance holding a local list,
- * with the pages it is placed on — of the whole site, or of `ids` only.
+ * with the pages it is placed on — of the whole site, of the instances
+ * `only.instanceIds`, or of the instances placed on `only.pageIds` (each
+ * still with all of its pages).
  */
 async function listInstancePages(
   tx: TransactionRunner,
   visible: (alias: string) => SQL,
-  ids: readonly string[] | null,
+  only: { instanceIds: readonly string[] } | { pageIds: readonly string[] } | null,
 ): Promise<{ contentInstanceId: string; pageIds: string[] }[]> {
-  const only = ids === null ? sql`` : sql`AND pm.content_instance_id = ANY(${uuidArray(ids)})`;
+  const scope =
+    only === null
+      ? sql``
+      : "instanceIds" in only
+        ? sql`AND pm.content_instance_id = ANY(${uuidArray(only.instanceIds)})`
+        : sql`AND pm.content_instance_id IN (
+            SELECT on_page.content_instance_id FROM page_modules on_page
+            WHERE on_page.page_id = ANY(${uuidArray(only.pageIds)})
+              AND on_page.content_instance_id IS NOT NULL
+          )`;
   const listRows = (await tx.execute(sql`
     SELECT pm.content_instance_id::text AS id,
            array_agg(DISTINCT pm.page_id::text) AS page_ids
@@ -299,7 +326,7 @@ async function listInstancePages(
     JOIN pages p ON p.id = pm.page_id
     WHERE ci.deleted_at IS NULL AND ${visible("ci")}
       AND p.deleted_at IS NULL AND ${visible("p")}
-      ${only}
+      ${scope}
       AND EXISTS (
         SELECT 1 FROM jsonb_array_elements(
           CASE WHEN jsonb_typeof(m.fields) = 'array' THEN m.fields ELSE '[]'::jsonb END
