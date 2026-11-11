@@ -337,7 +337,8 @@ async function markPublished(
   await tx.execute(sql`
     INSERT INTO published_projection_sections (section, published_at)
     VALUES (${section}, ${gen.readAt}::timestamptz)
-    ON CONFLICT (section) DO UPDATE SET published_at = EXCLUDED.published_at
+    ON CONFLICT (section) DO UPDATE
+      SET published_at = GREATEST(published_projection_sections.published_at, EXCLUDED.published_at)
   `);
   await tx.execute(sql`SELECT pg_notify(${GATEWAY_PROJECTION_CHANNEL}, ${section})`);
 }
@@ -383,44 +384,87 @@ type ProjectionUnit =
   | "comments";
 
 /**
- * #1594 — may this publish write `unit` in this public database? It may
- * when nothing newer was written there: no publisher with a later read
- * (`published_projection_generations`, raised only, never deleted — so a
- * section that was removed cannot come back from an older read), and no
- * publisher of the previous release that wrote after this read (its
- * `published_at` is its write time; during a roll it does not claim).
+ * Lock `section`'s row of `published_projection_sections` for this
+ * transaction — creating it, marked with this read, when there is none —
+ * and answer when it was last marked (null when this call created it).
  *
- * The claim's row lock is held until this transaction commits, so a
- * concurrent publisher of the same unit waits for it and then sees the
- * newer generation. This replaces holding the cms_admin projection lock
- * across the public writes, which kept an admin connection idle in its
- * transaction for as long as both public databases took (#1594: ended by
- * Postgres' idle-in-transaction timeout during a stall).
+ * Every publisher marks the sections it wrote in that row, publishers of
+ * the previous release included (`INSERT … ON CONFLICT DO UPDATE` at the
+ * end of their write), so holding it is the one lock both releases take
+ * (#1594 review): a previous-release publisher that writes the section
+ * meanwhile waits here until this transaction commits, and its write then
+ * lands after this one. A row created here is never left marked with
+ * nothing written: the caller writes the section (it found no one newer).
+ */
+async function lockMarker(
+  tx: ProjectionTx,
+  section: ProjectionUnit,
+  gen: Generation,
+): Promise<string | null> {
+  const created = await rows(
+    tx,
+    sql`
+      INSERT INTO published_projection_sections (section, published_at)
+      VALUES (${section}, ${gen.readAt}::timestamptz)
+      ON CONFLICT (section) DO NOTHING
+      RETURNING section
+    `,
+  );
+  if (created.length > 0) return null;
+  const [row] = (await rows(
+    tx,
+    sql`SELECT published_at::text AS at FROM published_projection_sections
+        WHERE section = ${section} FOR UPDATE`,
+  )) as unknown as { at: string }[];
+  return row?.at ?? null;
+}
+
+/** Whether timestamp `a` is later than `b` (database text; compared in SQL). */
+async function later(tx: ProjectionTx, a: string, b: string): Promise<boolean> {
+  const [row] = (await rows(
+    tx,
+    sql`SELECT ${a}::timestamptz > ${b}::timestamptz AS later`,
+  )) as unknown as { later: boolean }[];
+  return row?.later === true;
+}
+
+/**
+ * #1594 — may this publish write the whole unit `unit` in this public
+ * database? It may when nothing newer was written there:
+ *
+ *   - no publisher with a later read: `published_projection_generations`
+ *     is raised to this generation, or the claim fails. The row is never
+ *     deleted, so a section that a newer publish removed (a cleared cookie
+ *     secret) cannot come back from an older read; its row lock serialises
+ *     two publishers of the unit;
+ *   - no publisher of the previous release (which does not claim) that
+ *     wrote the unit after this read: under the marker's lock
+ *     ({@link lockMarker}), a mark later than this read can only be one,
+ *     since every current publisher with a later read has a larger
+ *     generation and failed the claim above.
+ *
+ * A whole unit is rewritten from the state its publisher read, so a
+ * publish of a later read covers everything an earlier one carried.
  */
 async function claimUnit(
   tx: ProjectionTx,
-  unit: ProjectionUnit,
+  unit: Exclude<ProjectionUnit, "comments">,
   gen: Generation,
 ): Promise<boolean> {
   const claimed = await rows(
     tx,
     sql`
-      INSERT INTO published_projection_generations (unit, generation)
-      VALUES (${unit}, ${gen.generation}::bigint)
-      ON CONFLICT (unit) DO UPDATE SET generation = EXCLUDED.generation
+      INSERT INTO published_projection_generations (unit, generation, read_at)
+      VALUES (${unit}, ${gen.generation}::bigint, ${gen.readAt}::timestamptz)
+      ON CONFLICT (unit) DO UPDATE
+        SET generation = EXCLUDED.generation, read_at = EXCLUDED.read_at
         WHERE published_projection_generations.generation < EXCLUDED.generation
       RETURNING unit
     `,
   );
   if (claimed.length === 0) return false;
-  const newer = await rows(
-    tx,
-    sql`
-      SELECT 1 AS newer FROM published_projection_sections
-      WHERE section = ${unit} AND published_at > ${gen.readAt}::timestamptz
-    `,
-  );
-  return newer.length === 0;
+  const marked = await lockMarker(tx, unit, gen);
+  return marked === null || !(await later(tx, marked, gen.readAt));
 }
 
 // ---------------------------------------------------------------------------
@@ -1018,6 +1062,73 @@ async function writeStagingSite(
   `);
 }
 
+/**
+ * #1594 — write the comments `snap` carries, each only where no publish of
+ * a later read wrote that comment (`published_comment_generations`, one
+ * row per comment, raised only). Comments are published one by one as
+ * moderation changes them, so a later publish does not cover an earlier
+ * one: it may carry other comments. A full resync claims every comment it
+ * knows and every one published now.
+ *
+ * Previous-release publishers keep no generations; under the marker's
+ * lock, a mark later than both this read and the newest current publisher's
+ * read is theirs, and the comments are left to the next drain (the caller
+ * keeps their outbox rows).
+ *
+ * @returns how many comments a per-entity publish changed (0 for a full
+ *   resync), or null when the comments were left alone.
+ */
+async function writeComments(
+  tx: ProjectionTx,
+  snap: Snapshot,
+  gen: Generation,
+): Promise<number | null> {
+  const marked = await lockMarker(tx, "comments", gen);
+  const [current] = (await rows(
+    tx,
+    sql`SELECT read_at::text AS at FROM published_projection_generations
+        WHERE unit = 'comments' FOR UPDATE`,
+  )) as unknown as { at: string }[];
+  if (
+    marked !== null &&
+    (await later(tx, marked, gen.readAt)) &&
+    (current === undefined || (await later(tx, marked, current.at)))
+  ) {
+    return null;
+  }
+  await tx.execute(sql`
+    INSERT INTO published_projection_generations (unit, generation, read_at)
+    VALUES ('comments', ${gen.generation}::bigint, ${gen.readAt}::timestamptz)
+    ON CONFLICT (unit) DO UPDATE SET
+      generation = GREATEST(published_projection_generations.generation, EXCLUDED.generation),
+      read_at = GREATEST(published_projection_generations.read_at, EXCLUDED.read_at)
+  `);
+  const carried = snap.allComments
+    ? new Map(snap.allComments.map((r) => [String(r.id), r] as const))
+    : snap.commentChanges;
+  const candidates = snap.allComments
+    ? sql`SELECT id FROM unnest(${uuidArray([...carried.keys()])}) AS c(id)
+          UNION SELECT id FROM published_comments`
+    : sql`SELECT id FROM unnest(${uuidArray([...carried.keys()])}) AS c(id)`;
+  const claimed = (await rows(
+    tx,
+    sql`
+      INSERT INTO published_comment_generations (id, generation)
+      SELECT id, ${gen.generation}::bigint FROM (${candidates}) AS candidates ORDER BY id
+      ON CONFLICT (id) DO UPDATE SET generation = EXCLUDED.generation
+        WHERE published_comment_generations.generation < EXCLUDED.generation
+      RETURNING id::text AS id
+    `,
+  )) as unknown as { id: string }[];
+  const ids = claimed.map((r) => r.id);
+  if (ids.length > 0) {
+    await tx.execute(sql`DELETE FROM published_comments WHERE id = ANY(${uuidArray(ids)})`);
+    const approved = ids.map((id) => carried.get(id) ?? null).filter((r): r is Row => r !== null);
+    await insertRows(tx, "published_comments", COMMENT_COLUMNS, COMMENT_RECORDSET, approved);
+  }
+  return snap.allComments ? 0 : snap.commentChanges.size;
+}
+
 async function writeSnapshot(
   tx: ProjectionTx,
   target: PublicTarget,
@@ -1028,7 +1139,10 @@ async function writeSnapshot(
   const sections: ProjectionSection[] = [];
   const skipped: ProjectionUnit[] = [];
   /** Claim `unit` when the snapshot carries it (see {@link claimUnit}). */
-  const may = async (unit: ProjectionUnit, carried: boolean): Promise<boolean> => {
+  const may = async (
+    unit: Exclude<ProjectionUnit, "comments">,
+    carried: boolean,
+  ): Promise<boolean> => {
     if (!carried) return false;
     if (await claimUnit(tx, unit, gen)) return true;
     skipped.push(unit);
@@ -1099,25 +1213,14 @@ async function writeSnapshot(
   const release = snap.releases?.[target];
   if (release && (await may("plugins", true))) sections.push(...(await writeRelease(tx, release)));
   let comments = 0;
-  const carriesComments = snap.allComments !== undefined || snap.commentChanges.size > 0;
-  if (!(await may("comments", carriesComments))) {
-    // Not carried, or a newer publish wrote it.
-  } else if (snap.allComments) {
-    await replaceAll(
-      tx,
-      "published_comments",
-      COMMENT_COLUMNS,
-      COMMENT_RECORDSET,
-      snap.allComments,
-    );
-    sections.push("comments");
-  } else if (snap.commentChanges.size > 0) {
-    const ids = [...snap.commentChanges.keys()];
-    await tx.execute(sql`DELETE FROM published_comments WHERE id = ANY(${uuidArray(ids)})`);
-    const approved = [...snap.commentChanges.values()].filter((r): r is Row => r !== null);
-    await insertRows(tx, "published_comments", COMMENT_COLUMNS, COMMENT_RECORDSET, approved);
-    comments = ids.length;
-    sections.push("comments");
+  if (snap.allComments !== undefined || snap.commentChanges.size > 0) {
+    const written = await writeComments(tx, snap, gen);
+    if (written === null) {
+      skipped.push("comments");
+    } else {
+      comments = written;
+      sections.push("comments");
+    }
   }
   for (const s of sections) await markPublished(tx, s, gen);
   return { sections, comments, skipped };
@@ -1215,6 +1318,13 @@ export async function publishPublicProjection(
   return writeAndConsume(dbs, read);
 }
 
+/** The write units an outbox section feeds ({@link readSnapshot}); a plugin's own rows feed none. */
+function unitsOfSection(section: string): readonly string[] {
+  if (section === "staging") return ["staging", "staging_site"];
+  if (section.startsWith("plugin:")) return [];
+  return [section];
+}
+
 /** What a publisher read under the projection lock (#1594). */
 interface PublishRead {
   readonly gen: Generation;
@@ -1235,7 +1345,14 @@ async function writeAndConsume(
   read: PublishRead,
 ): Promise<PublishReport> {
   const written = await writeAll(dbs, read.snap, read.gen);
-  await dbs.readAdmin((tx) => consumeOutbox(tx, read.outbox.ids));
+  // A unit left alone in either database keeps its outbox rows: the next
+  // drain publishes it again from the state then (a newer publish usually
+  // covered it already, and then that is a cheap repeat).
+  const leftAlone = new Set([...written.superseded.live, ...written.superseded.staging]);
+  const consumed = read.outbox.rows
+    .filter((r) => !unitsOfSection(r.section).some((u) => leftAlone.has(u)))
+    .map((r) => r.id);
+  await dbs.readAdmin((tx) => consumeOutbox(tx, consumed));
   return {
     sections: written.sections,
     comments: written.comments,
@@ -1248,6 +1365,8 @@ async function writeAndConsume(
 interface OutboxBatch {
   /** Exactly the outbox ids read (and only those are consumed). */
   readonly ids: readonly string[];
+  /** The same rows with the section each names. */
+  readonly rows: readonly { readonly id: string; readonly section: string }[];
   readonly count: number;
   readonly sections: Set<ProjectionSection>;
   readonly commentIds: Set<string>;
@@ -1335,7 +1454,13 @@ async function readOutbox(tx: ProjectionTx): Promise<OutboxBatch> {
       sections.add(r.section as ProjectionSection);
     }
   }
-  return { ids: found.map((r) => r.id), count: found.length, sections, commentIds };
+  return {
+    ids: found.map((r) => r.id),
+    rows: found.map((r) => ({ id: r.id, section: r.section })),
+    count: found.length,
+    sections,
+    commentIds,
+  };
 }
 
 /**

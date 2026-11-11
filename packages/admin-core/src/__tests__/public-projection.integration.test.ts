@@ -635,4 +635,119 @@ describe("no admin transaction is open while the public databases are written (#
     await drainPublicProjection(real);
     expect(await publishedRateLimit(PUBLIC_URL as string)).toBe(53);
   });
+
+  /** Publisher A: reads now, stalls before its public writes until `resume()`. */
+  function stalledPublisher() {
+    const real = projectionDatabases(adapter, staging);
+    let resume!: () => void;
+    const resumed = new Promise<void>((r) => {
+      resume = r;
+    });
+    let stalled!: () => void;
+    const reachedWrite = new Promise<void>((r) => {
+      stalled = r;
+    });
+    let first = true;
+    const slow = {
+      ...real,
+      writePublic: async (...args: Parameters<typeof real.writePublic>) => {
+        if (first) {
+          first = false;
+          stalled();
+          await resumed;
+        }
+        await real.writePublic(...args);
+      },
+    };
+    return { real, slow, reachedWrite, resume: () => resume() };
+  }
+
+  async function addComment(author: string, status: string): Promise<void> {
+    await admin(async (tx) => {
+      await tx`
+        INSERT INTO comment_archive (public_row_id, page_id, author_name, content, status, submitted_at)
+        VALUES (gen_random_uuid(), ${pageId}::uuid, ${author}, 'c', ${status}, now())`;
+    });
+  }
+  async function setStatus(author: string, status: string): Promise<void> {
+    await admin(async (tx) => {
+      await tx`UPDATE comment_archive SET status = ${status} WHERE page_id = ${pageId}::uuid AND author_name = ${author}`;
+    });
+  }
+  async function publishedAuthors(url: string): Promise<string[]> {
+    const rows = (await onDb(
+      url,
+      async (tx) =>
+        await tx`SELECT author_name FROM published_comments WHERE page_id = ${pageId}::uuid ORDER BY author_name`,
+    )) as { author_name: string }[];
+    return rows.map((r) => r.author_name);
+  }
+
+  it("comments are versioned one by one: a newer publish of other comments keeps an older one's", async () => {
+    await addComment("Older", "approved");
+    const a = stalledPublisher();
+    const older = drainPublicProjection(a.slow);
+    await a.reachedWrite;
+    // A newer publish carries a different comment only: A's row is not in
+    // its batch (as when A's batch ended at the 5,000-row limit and B's
+    // started after it).
+    await addComment("Newer", "approved");
+    await admin(async (tx) => {
+      await tx`DELETE FROM public_projection_outbox
+               WHERE section = 'comments'
+                 AND entity_id IN (SELECT id FROM comment_archive
+                                   WHERE page_id = ${pageId}::uuid AND author_name = 'Older')`;
+    });
+    await drainPublicProjection(a.real, { lockWait: { waitMs: 5_000 } });
+    a.resume();
+    await older;
+    for (const url of [PUBLIC_URL as string, STAGING_URL as string]) {
+      expect(await publishedAuthors(url)).toEqual(["Newer", "Older"]);
+    }
+    expect(await outboxSections()).toEqual([]);
+  });
+
+  it("an older read does not bring back a comment a newer publish took down", async () => {
+    await addComment("Moderated", "approved");
+    await drainPublicProjection(projectionDatabases(adapter, staging));
+    await setStatus("Moderated", "spam");
+    const a = stalledPublisher();
+    // A reads the spam verdict... then the comment is approved again and
+    // rejected once more, each published by a newer read.
+    await setStatus("Moderated", "approved");
+    const older = drainPublicProjection(a.slow);
+    await a.reachedWrite;
+    await setStatus("Moderated", "rejected");
+    await drainPublicProjection(a.real, { lockWait: { waitMs: 5_000 } });
+    a.resume();
+    await older;
+    for (const url of [PUBLIC_URL as string, STAGING_URL as string]) {
+      expect(await publishedAuthors(url)).not.toContain("Moderated");
+    }
+  });
+
+  it("a unit a previous-release publisher wrote after this read is left alone, and stays queued", async () => {
+    await setRateLimit(61);
+    const a = stalledPublisher();
+    const older = drainPublicProjection(a.slow);
+    await a.reachedWrite;
+    // A publisher of the previous release (no generations) writes the unit
+    // in both public databases, as its markPublished does: now() at its write.
+    for (const url of [PUBLIC_URL as string, STAGING_URL as string]) {
+      await onDb(url, async (tx) => {
+        await tx`UPDATE published_rate_limits SET per_visitor_max = 62 WHERE plugin_slug = ${P}`;
+        await tx`INSERT INTO published_projection_sections (section, published_at) VALUES ('rate_limits', clock_timestamp())
+                 ON CONFLICT (section) DO UPDATE SET published_at = clock_timestamp()`;
+      });
+    }
+    a.resume();
+    const report = await older;
+    expect(report.superseded).toEqual({ live: ["rate_limits"], staging: ["rate_limits"] });
+    expect(await publishedRateLimit(PUBLIC_URL as string)).toBe(62);
+    // Its outbox row stays, so the next drain republishes from the source.
+    expect(await outboxSections()).toEqual(["rate_limits"]);
+    await drainPublicProjection(a.real);
+    expect(await publishedRateLimit(PUBLIC_URL as string)).toBe(61);
+    expect(await outboxSections()).toEqual([]);
+  });
 });
