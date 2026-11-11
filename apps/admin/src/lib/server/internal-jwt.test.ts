@@ -7,7 +7,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { INTERNAL_TOKEN_HEADER, requireInternalAuth, signInternalToken } from "./internal-jwt.js";
+import { INTERNAL_TOKEN_HEADER, internalAuthRefusal, signInternalToken } from "./internal-jwt.js";
 
 const saved = process.env.CAELO_INTERNAL_SECRET;
 beforeAll(() => {
@@ -23,7 +23,7 @@ async function token(scope: string): Promise<string> {
   return signInternalToken({ iat: now, exp: now + 60_000, scope });
 }
 
-describe("requireInternalAuth", () => {
+describe("internalAuthRefusal", () => {
   it("accepts the token in its own header while Authorization carries the IAP JWT", async () => {
     const req = new Request("https://admin.test/api/internal/staging/provision", {
       method: "POST",
@@ -32,27 +32,31 @@ describe("requireInternalAuth", () => {
         [INTERNAL_TOKEN_HEADER]: await token("staging.provision"),
       },
     });
-    const payload = await requireInternalAuth(req, "staging.provision");
-    expect(payload.scope).toBe("staging.provision");
+    expect(await internalAuthRefusal(req, "staging.provision")).toBeNull();
   });
 
-  it("still accepts a bearer token, and rejects a token for another scope", async () => {
+  it("still accepts a bearer token", async () => {
     const bearer = new Request("https://admin.test/x", {
       headers: { authorization: `Bearer ${await token("provisioning-outputs.sync")}` },
     });
-    expect((await requireInternalAuth(bearer, "provisioning-outputs.sync")).scope).toBe(
-      "provisioning-outputs.sync",
-    );
+    expect(await internalAuthRefusal(bearer, "provisioning-outputs.sync")).toBeNull();
+  });
+
+  // #1563 — returned, never thrown: SvelteKit answers a thrown Response with a 500.
+  it("returns a 401 naming the reason for a token of another scope", async () => {
     const wrong = new Request("https://admin.test/x", {
       headers: { [INTERNAL_TOKEN_HEADER]: await token("provisioning-outputs.sync") },
     });
-    let thrown: unknown = null;
-    try {
-      await requireInternalAuth(wrong, "staging.provision");
-    } catch (e) {
-      thrown = e;
-    }
-    expect(thrown).toBeInstanceOf(Response);
-    expect((thrown as Response).status).toBe(401);
+    const refusal = await internalAuthRefusal(wrong, "staging.provision");
+    expect(refusal?.status).toBe(401);
+    expect(refusal?.headers.get("content-type")).toBe("application/json");
+    expect(await refusal?.json()).toEqual({ ok: false, error: "scope-mismatch" });
+  });
+
+  it("returns a 401 for a request without a token", async () => {
+    const none = new Request("https://admin.test/x", { method: "POST" });
+    const refusal = await internalAuthRefusal(none, "staging.provision");
+    expect(refusal?.status).toBe(401);
+    expect(await refusal?.json()).toEqual({ ok: false, error: "missing-bearer" });
   });
 });
