@@ -11,11 +11,17 @@
  *     string per image per step before).
  */
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { CHAT_MAX_ATTACHMENT_BYTES, type MediaStorageAdapter } from "@caelo-cms/shared";
+import sharp from "sharp";
 import { getMediaStorage, setMediaStorage } from "../../media/storage.js";
-import { createMediaAttachmentLoader } from "../chat-runner/attachments.js";
+import {
+  buildProviderHistory,
+  createMediaAttachmentLoader,
+  type HistoryMessage,
+} from "../chat-runner/attachments.js";
+import { TOOL_IMAGE_MAX_EDGE } from "../chat-runner/tool-image.js";
 import type { ChatMessageInput } from "../provider.js";
 import { toSDKMessages } from "../providers/_sdk-shared.js";
 
@@ -60,6 +66,23 @@ afterEach(() => {
   if (previous) setMediaStorage(previous);
 });
 
+/** A real 8×8 WebP: the loader decodes every image to check its edge (#1592). */
+let tinyWebp: Uint8Array;
+/** A 1200×4800 PNG: under the byte cap, over the edge the model sees. */
+let tallPng: Uint8Array;
+beforeAll(async () => {
+  tinyWebp = new Uint8Array(
+    await sharp({ create: { width: 8, height: 8, channels: 3, background: "#336699" } })
+      .webp()
+      .toBuffer(),
+  );
+  tallPng = new Uint8Array(
+    await sharp({ create: { width: 1200, height: 4800, channels: 3, background: "#e2e8f0" } })
+      .png()
+      .toBuffer(),
+  );
+});
+
 const loaderFor = () =>
   createMediaAttachmentLoader({} as OperationRegistry, {} as DatabaseAdapter, {
     ...HUMAN,
@@ -69,7 +92,7 @@ const loaderFor = () =>
 describe("createMediaAttachmentLoader (#1216)", () => {
   it("reads a chat image once per turn and shares the base64 string", async () => {
     const { adapter, reads } = countingStorage({
-      "chat-images/2026-10-28/abc.webp": new Uint8Array([1, 2, 3]),
+      "chat-images/2026-10-28/abc.webp": tinyWebp,
     });
     useStorage(adapter);
     const load = loaderFor();
@@ -90,6 +113,63 @@ describe("createMediaAttachmentLoader (#1216)", () => {
     const r = await loaderFor()({ storageKey: key, mime: "image/png" });
     expect("failed" in r ? r.failed : "").toContain("exceeds");
     expect(reads).toEqual([]);
+  });
+
+  it("fits an image over the model's edge before it reaches the history (#1592)", async () => {
+    const key = "chat-images/2026-11-11/tall.png";
+    useStorage(countingStorage({ [key]: tallPng }).adapter);
+    const r = await loaderFor()({ storageKey: key, mime: "image/png" });
+    if (!("base64" in r)) throw new Error(`expected an image, got ${JSON.stringify(r)}`);
+    const meta = await sharp(Buffer.from(r.base64, "base64")).metadata();
+    expect(Math.max(meta.width ?? 0, meta.height ?? 0)).toBe(TOOL_IMAGE_MAX_EDGE);
+  });
+
+  it("turns bytes that are no image into a note instead of an image part (#1592)", async () => {
+    const key = "chat-images/2026-11-11/broken.png";
+    useStorage(countingStorage({ [key]: new Uint8Array([1, 2, 3]) }).adapter);
+    const r = await loaderFor()({ storageKey: key, mime: "image/png" });
+    expect("failed" in r ? r.failed : "").toContain("not a readable image");
+  });
+});
+
+describe("a history with an oversized attachment (#1592)", () => {
+  it("replays every image within the edge, so the next turn is not refused", async () => {
+    const key = "chat-images/2026-11-11/full-page.png";
+    useStorage(countingStorage({ [key]: tallPng }).adapter);
+    const history: HistoryMessage[] = [
+      {
+        role: "user",
+        content: "Here is the page I mean.",
+        toolCalls: null,
+        toolCallId: null,
+        thinkingBlocks: null,
+        attachments: [{ storageKey: key, mime: "image/png" }],
+      },
+      {
+        role: "assistant",
+        content: "I see it.",
+        toolCalls: null,
+        toolCallId: null,
+        thinkingBlocks: null,
+      },
+      {
+        role: "user",
+        content: "Change the headline.",
+        toolCalls: null,
+        toolCallId: null,
+        thinkingBlocks: null,
+      },
+    ];
+    const messages = await buildProviderHistory(history, loaderFor());
+    const images = messages.flatMap((m) =>
+      (m.additionalContent ?? []).filter((p) => p.type === "image"),
+    );
+    expect(images).toHaveLength(1);
+    for (const image of images) {
+      if (image.type !== "image") continue;
+      const meta = await sharp(Buffer.from(image.base64, "base64")).metadata();
+      expect(Math.max(meta.width ?? 0, meta.height ?? 0)).toBeLessThanOrEqual(TOOL_IMAGE_MAX_EDGE);
+    }
   });
 });
 

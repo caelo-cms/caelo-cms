@@ -70,3 +70,27 @@ export async function shrinkToolImage(image: ToolImage): Promise<ToolImage> {
   if (!smallest) throw new Error("tool image could not be encoded");
   return { base64: smallest.toString("base64"), mediaType: "image/webp" };
 }
+
+/**
+ * #1592 — an image as the model may receive it, for images that were not
+ * shrunk when they were stored: operator attachments and tool images
+ * stored before #1216. The provider refuses a whole request when one of
+ * its many images exceeds its dimension limit, and every image in the
+ * history rides along on every later turn, so one oversized attachment
+ * would refuse the chat for good.
+ *
+ * An image within {@link TOOL_IMAGE_MAX_EDGE} comes back unchanged, byte
+ * for byte, so a replayed history keeps its prompt cache. A larger one is
+ * fitted by {@link shrinkToolImage}, which encodes the same input to the
+ * same bytes on every turn. The model loses nothing: the provider scales
+ * every image to that edge before the model sees it.
+ *
+ * Throws when the bytes are not a decodable image.
+ */
+export async function fitModelImage(image: ToolImage): Promise<ToolImage> {
+  const meta = await sharp(Buffer.from(image.base64, "base64")).metadata();
+  const longEdge = Math.max(meta.width ?? 0, meta.height ?? 0);
+  if (longEdge === 0) throw new Error(`image (${image.mediaType}) has no dimensions`);
+  if (longEdge <= TOOL_IMAGE_MAX_EDGE) return image;
+  return shrinkToolImage(image);
+}
