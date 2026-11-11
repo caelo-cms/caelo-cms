@@ -212,6 +212,42 @@ export function parseBillingAccounts(stdout: string): BillingAccountsResult {
   };
 }
 
+/** The billing account a project is linked to: its id, or null when none is. */
+export type ProjectBillingResult =
+  | { readonly ok: true; readonly accountId: string | null }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * The billing account a project is linked to, as Google Cloud records it
+ * (#1580); the source of truth over any checkpoint, which a link changed in
+ * the Cloud Console would leave stale.
+ */
+export async function projectBillingAccount(projectId: string): Promise<ProjectBillingResult> {
+  const r = await gcloud(["billing", "projects", "describe", projectId, "--format=json"]);
+  if (!r.ok) {
+    return {
+      ok: false,
+      error: `gcloud billing projects describe ${projectId}: ${gcloudErrorLine(r.stderr)}`,
+    };
+  }
+  return parseProjectBillingInfo(r.stdout);
+}
+
+/** Parse `gcloud billing projects describe --format=json`; an empty account name is no link. */
+export function parseProjectBillingInfo(stdout: string): ProjectBillingResult {
+  const info = ProjectBillingInfo.safeParse(parseJsonOrNull(stdout));
+  if (!info.success) {
+    return {
+      ok: false,
+      error: "gcloud billing projects describe printed no billing info (--format=json).",
+    };
+  }
+  const name = info.data.billingAccountName ?? "";
+  return { ok: true, accountId: name === "" ? null : name.replace(/^billingAccounts\//, "") };
+}
+
+const ProjectBillingInfo = z.object({ billingAccountName: z.string().optional() });
+
 const BillingAccountRows = z.array(
   z.object({ name: z.string(), displayName: z.string(), open: z.boolean() }),
 );

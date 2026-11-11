@@ -92,7 +92,6 @@ import { INSTALL_JOB_NAME, INSTALL_JOB_ROLES } from "../install-job.js";
 import {
   adoptStateBackend,
   ensureInstallDir,
-  getStepPayload,
   type ImageDigests,
   type InstallMetadata,
   installRoot,
@@ -176,7 +175,7 @@ import {
 } from "../upgrade/release-images.js";
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
-import { BILLING_ACCOUNT_FLAG, chooseBillingAccount, sameBillingAccount } from "./gcp-billing.js";
+import { chooseBillingAccount, requestedBillingProblem } from "./gcp-billing.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { promptProjectId } from "./gcp-prompts.js";
 import { GCP_STACK_KNOB_DEFAULTS, PulumiUpDeclinedError, pulumiUpGcp } from "./gcp-pulumi.js";
@@ -1104,22 +1103,9 @@ async function stepBillingChoice(
 ): Promise<BillingAccount | null> {
   const stepName = billingStepName(projectId);
   if (isStepDone(installId, stepName)) {
-    const linked = getStepPayload<{ billingAccountId?: string }>(
-      installId,
-      stepName,
-    )?.billingAccountId;
-    if (
-      opts.billingAccountId !== undefined &&
-      linked !== undefined &&
-      !sameBillingAccount(linked, opts.billingAccountId)
-    ) {
-      // A re-run never relinks: the project has billed to `linked` since
-      // the first run, and a silent switch is not what a resume is for.
-      log.error(
-        red(
-          `${projectId} is already linked to billing account ${linked}; ${BILLING_ACCOUNT_FLAG} ${opts.billingAccountId} would not change that. Drop the flag, or link the other account at https://console.cloud.google.com/billing/linkedaccount?project=${projectId} and re-run.`,
-        ),
-      );
+    const problem = await requestedBillingProblem(projectId, opts.billingAccountId);
+    if (problem) {
+      log.error(red(problem));
       cancel("Aborted.");
       process.exit(1);
     }

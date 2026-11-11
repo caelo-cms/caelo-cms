@@ -135,6 +135,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
     const prep = await prepareJobModeInstall({
       ...(opts.projectId ? { projectId: opts.projectId } : {}),
       ...(opts.version ? { version: opts.version } : {}),
+      ...(opts.billingAccountId ? { billingAccountId: opts.billingAccountId } : {}),
     });
     if (prep.kind === "handled") {
       outro(bold("Done."));

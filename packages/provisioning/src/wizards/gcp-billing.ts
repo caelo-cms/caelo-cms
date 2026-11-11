@@ -12,7 +12,11 @@
  * script has nobody to pick for it.
  */
 
-import type { BillingAccount } from "../gcloud.js";
+import {
+  type BillingAccount,
+  type ProjectBillingResult,
+  projectBillingAccount,
+} from "../gcloud.js";
 
 /** The installer flag that names the billing account. */
 export const BILLING_ACCOUNT_FLAG = "--billing-account";
@@ -98,6 +102,47 @@ export function chooseBillingAccount(input: {
 export function sameBillingAccount(a: string, b: string): boolean {
   const norm = (id: string) => id.replace(/^billingAccounts\//, "").toUpperCase();
   return norm(a) === norm(b);
+}
+
+/**
+ * Refuse a `--billing-account` that names another account than the one the
+ * project is linked to. A re-run never relinks: the project has billed to
+ * that account since the first run, and resuming, following or showing an
+ * install is no place to switch it silently.
+ *
+ * @param input.linked the project's account ({@link projectBillingAccount}),
+ *   null when it has none yet (the billing step links it)
+ * @returns the message to stop with, or null when the flag fits
+ */
+export function linkedBillingProblem(input: {
+  readonly projectId: string;
+  readonly linked: string | null;
+  readonly requested: string | undefined;
+}): string | null {
+  const { projectId, linked, requested } = input;
+  if (requested === undefined || linked === null || sameBillingAccount(linked, requested)) {
+    return null;
+  }
+  return `${projectId} is already linked to billing account ${linked}; ${BILLING_ACCOUNT_FLAG} ${requested} would not change that. Drop the flag, or link the other account at https://console.cloud.google.com/billing/linkedaccount?project=${projectId} and re-run.`;
+}
+
+/**
+ * Check `--billing-account` against the project's billing link as Google
+ * Cloud records it, for every path that does not link billing itself: a
+ * resumed bootstrap whose link is done, and job mode following or showing
+ * an install job (#1580 review).
+ *
+ * @returns the message to stop with, or null; no gcloud call without the flag
+ */
+export async function requestedBillingProblem(
+  projectId: string,
+  requested: string | undefined,
+  describe: (projectId: string) => Promise<ProjectBillingResult> = projectBillingAccount,
+): Promise<string | null> {
+  if (requested === undefined) return null;
+  const linked = await describe(projectId);
+  if (!linked.ok) return linked.error;
+  return linkedBillingProblem({ projectId, linked: linked.accountId, requested });
 }
 
 function describeAccounts(accounts: readonly BillingAccount[]): string {

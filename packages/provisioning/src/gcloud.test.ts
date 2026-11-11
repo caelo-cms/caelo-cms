@@ -9,6 +9,7 @@ import {
   isGcloudNotFound,
   PROVISIONER_ROLE_LIST,
   parseBillingAccounts,
+  parseProjectBillingInfo,
   projectDisplayName,
 } from "./gcloud.js";
 
@@ -247,4 +248,35 @@ describe("parseBillingAccounts (#1580)", () => {
       expect(r.ok ? "" : r.error).toContain("gcloud billing accounts list");
     },
   );
+});
+
+describe("parseProjectBillingInfo (#1580)", () => {
+  it("reads the linked account's id without the resource-name prefix", () => {
+    const stdout = JSON.stringify({
+      billingAccountName: "billingAccounts/0A1B2C-3D4E5F-60718A",
+      billingEnabled: true,
+      name: "projects/p/billingInfo",
+      projectId: "p",
+    });
+    expect(parseProjectBillingInfo(stdout)).toEqual({
+      ok: true,
+      accountId: "0A1B2C-3D4E5F-60718A",
+    });
+  });
+
+  it("reads an empty account name as no link", () => {
+    const stdout = JSON.stringify({
+      billingAccountName: "",
+      billingEnabled: false,
+      projectId: "p",
+    });
+    expect(parseProjectBillingInfo(stdout)).toEqual({ ok: true, accountId: null });
+    expect(parseProjectBillingInfo('{"projectId":"p"}')).toEqual({ ok: true, accountId: null });
+  });
+
+  it.each(["", "not json", "[]", '{"billingAccountName":42}'])("reads %p as an error", (stdout) => {
+    const r = parseProjectBillingInfo(stdout);
+    expect(r.ok).toBe(false);
+    expect(r.ok ? "" : r.error).toContain("gcloud billing projects describe");
+  });
 });

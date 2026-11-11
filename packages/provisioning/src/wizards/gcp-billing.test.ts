@@ -4,7 +4,13 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { BillingAccount } from "../gcloud.js";
-import { chooseBillingAccount, parseBillingAccountId, sameBillingAccount } from "./gcp-billing.js";
+import {
+  chooseBillingAccount,
+  linkedBillingProblem,
+  parseBillingAccountId,
+  requestedBillingProblem,
+  sameBillingAccount,
+} from "./gcp-billing.js";
 
 const AGENCY: BillingAccount = { id: "0A1B2C-3D4E5F-60718A", displayName: "Agency", open: true };
 const CLIENT: BillingAccount = { id: "111111-222222-333333", displayName: "Client", open: true };
@@ -124,6 +130,68 @@ describe("sameBillingAccount", () => {
   it("ignores letter case and the resource-name prefix", () => {
     expect(sameBillingAccount("billingAccounts/0a1b2c-3d4e5f-60718a", AGENCY.id)).toBe(true);
     expect(sameBillingAccount(AGENCY.id, CLIENT.id)).toBe(false);
+  });
+});
+
+describe("linkedBillingProblem", () => {
+  const base = { projectId: "caelo-site", linked: AGENCY.id };
+
+  it("lets the run go on without the flag, without a link yet, or with the linked account", () => {
+    expect(linkedBillingProblem({ ...base, requested: undefined })).toBeNull();
+    expect(linkedBillingProblem({ ...base, linked: null, requested: CLIENT.id })).toBeNull();
+    expect(linkedBillingProblem({ ...base, requested: "0a1b2c-3d4e5f-60718a" })).toBeNull();
+  });
+
+  it("refuses another account and says how to change the link", () => {
+    const message = linkedBillingProblem({ ...base, requested: CLIENT.id }) ?? "";
+    expect(message).toContain(`caelo-site is already linked to billing account ${AGENCY.id}`);
+    expect(message).toContain(`--billing-account ${CLIENT.id} would not change that`);
+    expect(message).toContain("console.cloud.google.com/billing/linkedaccount?project=caelo-site");
+  });
+});
+
+describe("requestedBillingProblem", () => {
+  it("asks Google Cloud nothing without the flag", async () => {
+    let asked = 0;
+    const describe = async () => {
+      asked += 1;
+      return { ok: true as const, accountId: AGENCY.id };
+    };
+    expect(await requestedBillingProblem("caelo-site", undefined, describe)).toBeNull();
+    expect(asked).toBe(0);
+  });
+
+  it("compares the flag with the link Google Cloud records", async () => {
+    const describe = async () => ({ ok: true as const, accountId: AGENCY.id });
+    expect(await requestedBillingProblem("caelo-site", AGENCY.id, describe)).toBeNull();
+    expect(await requestedBillingProblem("caelo-site", CLIENT.id, describe)).toContain(
+      "is already linked to billing account",
+    );
+  });
+
+  it("stops with gcloud's error when the link cannot be read", async () => {
+    const error = "gcloud billing projects describe caelo-site: PERMISSION_DENIED";
+    const describe = async () => ({ ok: false as const, error });
+    expect(await requestedBillingProblem("caelo-site", CLIENT.id, describe)).toBe(error);
+  });
+});
+
+describe("job mode (#1580 review)", () => {
+  it("checks the flag before it follows or shows an install job", () => {
+    // Following a running job and showing a finished one return before the
+    // wizard's billing step, so the check has to come first there.
+    const source = readFileSync(join(import.meta.dir, "gcp-install-job.ts"), "utf8");
+    const prep = source.slice(source.indexOf("export async function prepareJobModeInstall("));
+    const check = prep.indexOf("requestedBillingProblem(projectId, opts.billingAccountId)");
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(prep.indexOf("await followToTheEnd("));
+    expect(check).toBeLessThan(prep.indexOf("await showResult("));
+  });
+
+  it("hands the flag to the job-mode preparation", () => {
+    const wizard = readFileSync(join(import.meta.dir, "..", "wizard.ts"), "utf8");
+    const call = wizard.slice(wizard.indexOf("await prepareJobModeInstall({"));
+    expect(call.slice(0, call.indexOf("});"))).toContain("billingAccountId: opts.billingAccountId");
   });
 });
 
