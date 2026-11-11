@@ -107,9 +107,11 @@ const TRIGGERED = {
 };
 
 describe("deploy_staging", () => {
+  // The Live Edit chat's call builds in its own turn; an agent's is carried
+  // (#1574, build-carrier/build-carrier.integration.test.ts).
   it("rebuilds the single staging target without the model naming it", async () => {
     const h = harness({ "deploy.list_targets": () => TARGETS, "deploy.trigger": () => TRIGGERED });
-    const r = await run(deployStagingTool, {}, h.toolCtx);
+    const r = await run(deployStagingTool, {}, { ...h.toolCtx, operatorBrowserAttached: true });
     expect(r.ok).toBe(true);
     expect(h.calls.find((c) => c.op === "deploy.trigger")?.input).toEqual({
       targetName: "staging",

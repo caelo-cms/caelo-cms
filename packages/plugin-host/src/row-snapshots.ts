@@ -151,14 +151,23 @@ export async function emitPluginRowSnapshots(
   const description = only
     ? `${input.opKind} ${input.schema}.${input.table} ${only.rowId}`
     : `${input.opKind} ${input.schema}.${input.table} (${input.rows.length} rows)`;
+  // created_at is the moment of THIS write (clock_timestamp), as in core's
+  // emitSnapshot, not the transaction start (the column default now()): the
+  // draft head and every branch read take a row's newest state by
+  // `header_created_at DESC` (#1573). A row's `pluginRow` lock serializes
+  // two writes to it, but by transaction start a write whose transaction
+  // began first and got the lock second would date itself before the write
+  // it built on and stay invisible, and two transactions that began in the
+  // same microsecond would tie, leaving each row to the random snapshot id.
   const header = (await tx.execute(sql`
-    INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
+    INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id, created_at)
     VALUES (
       ${input.actorId}::uuid,
       ${input.opKind},
       ${description},
       ${input.chatTaskId},
-      ${input.chatBranchId}
+      ${input.chatBranchId},
+      clock_timestamp()
     )
     RETURNING id::text AS id
   `)) as unknown as { id: string }[];

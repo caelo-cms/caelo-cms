@@ -76,6 +76,7 @@ import { resolveOutputRoot } from "../deploy/output-root.js";
 import { markRedirectsBehind } from "../deploy/redirect-sync.js";
 import { loadStaticPublisher, type PublishSummary } from "../deploy/static-publisher.js";
 import { forgetAllBakes } from "../plugin-data/stale-pages.js";
+import { rollBackRedirectReleases } from "../redirects/release.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { rowToTarget, runStartedAt, TARGET_COLUMNS, type TargetDbRow } from "./deploy-common.js";
 import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
@@ -95,11 +96,23 @@ const rollbackInput = z
     newRunId: z.string().uuid().optional(),
   })
   .strict();
+/**
+ * #1550 — what the rollback did to the live redirects: addresses whose
+ * live rule came back, changes made Staged again, and addresses left as
+ * they are because they changed since (with why).
+ */
+const rollbackRedirectsSchema = z.object({
+  restored: z.number().int(),
+  restaged: z.number().int(),
+  skipped: z.array(z.object({ address: z.string(), reason: z.string() })),
+});
+
 const rollbackOutput = z.object({
   buildId: z.string(),
   newRunId: z.string(),
   /** #1454 — set when the restored build carries no page headers. */
   securityHeadersNote: z.string().optional(),
+  redirects: rollbackRedirectsSchema,
 });
 
 const leaseTtl = z.number().int().min(1_000).max(3_600_000);
@@ -201,7 +214,9 @@ export const startRollbackOp = defineOperation({
 
 export const finishRollbackOp = defineOperation({
   name: "deploy.finish_rollback",
-  readScope: "request",
+  // Why site-wide: a production rollback checks the whole live redirect
+  // table it leaves for loops before it restores a rule (#1550).
+  readScope: "site",
   // Why human-only: the record step of deploy.rollback (itself human +
   // system, CMS_REQUIREMENTS §6), run as the rollback's caller.
   actorScope: ["human", "system"],
@@ -216,7 +231,7 @@ export const finishRollbackOp = defineOperation({
     })
     .strict(),
   output: z.discriminatedUnion("recorded", [
-    z.object({ recorded: z.literal(true) }),
+    z.object({ recorded: z.literal(true), redirects: rollbackRedirectsSchema }),
     /** The lease lapsed while the provider released: the run is recorded failed with `message`. */
     z.object({ recorded: z.literal(false), message: z.string() }),
   ]),
@@ -287,13 +302,31 @@ export const finishRollbackOp = defineOperation({
     // back with it (the drain after this commit publishes it). A run from
     // before #1329 released no frozen state; live keeps the one it has.
     if (projectionRunId !== null) await pointLiveRelease(tx, projectionRunId);
+    // #1550 — the redirects of the rolled-back releases go back with them:
+    // the live state they replaced returns, and their changes are Staged
+    // again (they go live with the next Publish live that ships them). A
+    // change that went live with Go live now stays live.
+    const redirects =
+      run.env === "production"
+        ? await rollBackRedirectReleases(tx, ctx, {
+            restoreRunId: input.restoreRunId,
+            rollbackRunId: input.runId,
+          })
+        : { restored: [], restaged: [], skipped: [] };
     // #1157 — the rolled-back build carries the redirects of its own time;
     // the provider must serve the table as it is now. #1254 — marked here,
     // pushed by deploy.rollback after this transaction commits.
     await markRedirectsBehind(tx, [input.targetId]);
     // #1155 — the build put back may lack any bake made since it ran.
     if (run.env === "production") await forgetAllBakes(tx);
-    return ok({ recorded: true as const });
+    return ok({
+      recorded: true as const,
+      redirects: {
+        restored: redirects.restored.length,
+        restaged: redirects.restaged.length,
+        skipped: [...redirects.skipped],
+      },
+    });
   },
 });
 
@@ -342,6 +375,11 @@ async function runRollback(
 
   /** Set when the run released but lost its lease first (deploy.finish_rollback). */
   let lostMessage: string | null = null;
+  let redirects: z.infer<typeof rollbackRedirectsSchema> = {
+    restored: 0,
+    restaged: 0,
+    skipped: [],
+  };
   try {
     // A CDN purge, Publish live, plugin-data build or redirect push must not
     // release another version mid-rollback; it waits outside any transaction.
@@ -395,8 +433,11 @@ async function runRollback(
         `the old build is live, but recording the rollback failed: ${describeError(finished.error)}. Settings → Deployments may not show it as live; roll back again to record it.`,
       );
     }
-    const record = finished.value as { recorded: true } | { recorded: false; message: string };
+    const record = finished.value as
+      | { recorded: true; redirects: z.infer<typeof rollbackRedirectsSchema> }
+      | { recorded: false; message: string };
     if (!record.recorded) lostMessage = record.message;
+    else redirects = record.redirects;
   } catch (e) {
     // A throw past the steps above is a bug; the run still ends failed and
     // releases its lease instead of waiting for it to lapse.
@@ -426,6 +467,7 @@ async function runRollback(
     buildId: plan.buildId,
     newRunId: runId,
     ...(plan.restoredHasSecurityHeaders ? {} : { securityHeadersNote: NO_BUILD_HEADERS_NOTE }),
+    redirects,
   });
 }
 

@@ -24,9 +24,12 @@
  *   5. Admitted `/api/*` goes to the visitor routes, against this gateway's
  *      own database (cms_public_staging): staging forms, comments and votes
  *      never reach live data (#763 N4).
- *   6. Admitted GET/HEAD of anything else: the redirects table (published
- *      into the staging database, #1157; the live page wins), then the file
- *      from the served build's manifest, then the build's 404 page.
+ *   6. Admitted GET/HEAD of anything else: the staging view of the
+ *      redirects (#1550: the live rows with the shared draft's Staged
+ *      changes, published into the staging database; a change whose target
+ *      the staged build does not serve waits, `planRedirectRelease`; the
+ *      live page wins), then the file from the served build's manifest,
+ *      then the build's 404 page.
  *
  * Files are streamed from staging storage (staging/storage.ts). Pages and
  * other text are rendered for the live host (one build, promoted by a copy
@@ -42,7 +45,6 @@
 
 import { createHash } from "node:crypto";
 import {
-  buildRedirectPlan,
   decideStagingAccess,
   goneStatusOnProvider,
   isHtmlContentType,
@@ -52,6 +54,8 @@ import {
   NOSNIFF,
   originRewritePairs,
   originRewriteStream,
+  type PendingRedirectChange,
+  planRedirectRelease,
   type RedirectPlan,
   type RedirectTableRow,
   readSessionCookie,
@@ -97,6 +101,16 @@ export interface ServedBuild {
   readonly buildOrigin: string | null;
 }
 
+/**
+ * #1550 — the redirects as the admin published them into the staging
+ * database: the live rows (`published_redirects`) and the Staged changes
+ * of the shared draft (`published_redirect_changes`).
+ */
+export interface PublishedRedirects {
+  readonly live: readonly RedirectTableRow[];
+  readonly staged: readonly PendingRedirectChange[];
+}
+
 /** What the gateway serves staging from, published into cms_public_staging (`published_staging_site`). */
 export interface StagingSiteState {
   /** The staging host (`staging_access.staging_host`); null until set. */
@@ -119,8 +133,8 @@ export interface StagingSiteDeps {
   readonly provider: string | undefined;
   readonly storage: StagingStorage;
   readonly manifests: ManifestCache;
-  /** The published redirects table (cached by the caller like every projection read). */
-  readonly redirects: () => Promise<readonly RedirectTableRow[]>;
+  /** The published redirects (cached by the caller like every projection read). */
+  readonly redirects: () => Promise<PublishedRedirects>;
   readonly failures: MemoryRateLimiter;
   /** The visitor routes (`/api/*`) of this gateway. */
   readonly api: (req: Request) => Promise<Response>;
@@ -174,8 +188,8 @@ export function gatePage(
 interface LoadedBuild {
   readonly manifest: StagedManifest;
   readonly files: ReadonlySet<string>;
-  /** Redirect plan by the redirects rows it was built from. */
-  plan: { readonly rows: readonly RedirectTableRow[]; readonly plan: RedirectPlan } | null;
+  /** Redirect plan by the published redirects it was built from. */
+  plan: { readonly input: PublishedRedirects; readonly plan: RedirectPlan } | null;
   /** #1454 — see {@link pageHeadersFor}. */
   pageHeaders?: { readonly host: string; readonly headers: Readonly<Record<string, string>> };
 }
@@ -263,15 +277,22 @@ function pageHeadersFor(
   return out;
 }
 
-function redirectPlanFor(build: LoadedBuild, rows: readonly RedirectTableRow[]): RedirectPlan {
-  if (build.plan?.rows !== rows) {
+/**
+ * #1550 — the staging view's plan against the served build: the live rows
+ * with every Staged change the build can serve (a change whose target it
+ * does not serve waits, like at Publish live). Computed once per build and
+ * published table.
+ */
+function redirectPlanFor(build: LoadedBuild, input: PublishedRedirects): RedirectPlan {
+  if (build.plan?.input !== input) {
     build.plan = {
-      rows,
-      plan: buildRedirectPlan({
-        rows,
-        pageUrlStyle: build.manifest.pageUrlStyle,
+      input,
+      plan: planRedirectRelease({
+        live: input.live,
+        changes: input.staged,
         servedFiles: build.files,
-      }),
+        pageUrlStyle: build.manifest.pageUrlStyle,
+      }).plan,
     };
   }
   return build.plan.plan;

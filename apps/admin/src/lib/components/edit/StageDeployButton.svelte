@@ -24,6 +24,7 @@
    */
   import { pluginApprovals } from "#lib/plugin-approvals.svelte.js";
   import { Check, ChevronDown, ExternalLink, LoaderCircle } from "lucide-svelte";
+  import { tick } from "svelte";
   import { enhance, type SubmitFunction } from "$app/forms";
   import StateDot from "#lib/components/StateDot.svelte";
   import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
@@ -295,6 +296,66 @@
     pluginApprovals.dialogOpen = true;
   }
 
+  /** #1550 — a pending redirect change, as the release plan lists it. */
+  interface PlannedRedirect {
+    id: string;
+    revision: number;
+    fromPath: string;
+    toPath: string | null;
+    origin: string;
+    reason?: "target" | "page";
+  }
+  interface RedirectPlan {
+    goingLive: PlannedRedirect[];
+    waiting: PlannedRedirect[];
+    draft: PlannedRedirect[];
+    problem: string | null;
+  }
+  /**
+   * #1550 — the Publish live confirmation: the redirect changes going live
+   * with it, waiting for their target and staying in draft. Only shown when
+   * there are any; the confirmed `goingLive` list rides the form, so a
+   * change saved after the confirmation waits for the next Publish live.
+   */
+  let redirectPlan = $state<RedirectPlan | null>(null);
+  let redirectConfirmOpen = $state(false);
+  let publishForm = $state<HTMLFormElement | null>(null);
+  let confirmedRedirects = $state("");
+  const redirectLine = (r: PlannedRedirect) =>
+    r.toPath === null ? `${r.fromPath} (removed)` : `${r.fromPath} → ${r.toPath}`;
+
+  /** Publish live's click: confirm the redirect changes first when there are any. */
+  async function confirmRedirectsFirst(event: MouseEvent): Promise<void> {
+    openApprovalInstead(event);
+    if (event.defaultPrevented) return;
+    event.preventDefault();
+    confirmedRedirects = "";
+    publishError = null;
+    let plan: RedirectPlan;
+    try {
+      const res = await fetch("/api/redirects/release-plan", { headers: { accept: "application/json" } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      plan = (await res.json()) as RedirectPlan;
+    } catch (e) {
+      // Loud, never a Publish live without its confirmation.
+      publishError = `Nothing was published: the redirect changes of this Publish live could not be read (${e instanceof Error ? e.message : String(e)}). Try again.`;
+      return;
+    }
+    const any =
+      plan.goingLive.length + plan.waiting.length + plan.draft.length > 0 || plan.problem !== null;
+    if (!any) {
+      // Bound to "none": a redirect saved after this check waits for the
+      // next Publish live, as it would after a confirmation.
+      confirmedRedirects = "[]";
+      await tick();
+      publishForm?.requestSubmit();
+      return;
+    }
+    redirectPlan = plan;
+    confirmedRedirects = JSON.stringify(plan.goingLive.map((c) => ({ id: c.id, revision: c.revision })));
+    redirectConfirmOpen = true;
+  }
+
   /** Publish live's form submit, shared by the button and the Live menu's override. */
   const publishEnhance: SubmitFunction = () => {
     publishing = true;
@@ -348,8 +409,11 @@
       action="?/promoteToProduction"
       use:enhance={publishEnhance}
       class="contents"
+      bind:this={publishForm}
     >
       <input type="hidden" name="_csrf" value={csrfToken} />
+      <!-- #1550 — the redirect changes this Publish live was planned with (none: "[]"). -->
+      <input type="hidden" name="redirectChanges" value={confirmedRedirects} />
       <Button
         type="submit"
         size="sm"
@@ -358,7 +422,7 @@
         disabled={publishState.disabled}
         title={publishState.tooltip}
         data-testid={testid}
-        onclick={openApprovalInstead}
+        onclick={confirmRedirectsFirst}
       >
         {#if publishing}
           <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" />Publishing…
@@ -1001,6 +1065,73 @@
         </Button>
         <Button type="submit" size="sm" variant="destructive" disabled={staging || publishing} data-testid="publish-anyway-submit">
           {publishing ? "Publishing…" : "Publish anyway"}
+        </Button>
+      </DialogFooter>
+    </form>
+  </DialogContent>
+</Dialog>
+
+<!-- #1550 — the Publish live confirmation's redirect list: what goes live
+     with this Publish live, what waits for its target and what stays in
+     draft. The confirmed list rides the form, so exactly it goes live. -->
+<Dialog bind:open={redirectConfirmOpen}>
+  <DialogContent class="sm:max-w-lg">
+    <DialogHeader>
+      <DialogTitle>Publish live with these redirects?</DialogTitle>
+      <DialogDescription>
+        Redirects go live with Publish live. A change saved after you confirm waits for the next one.
+      </DialogDescription>
+    </DialogHeader>
+    {#if redirectPlan}
+      <div class="max-h-80 space-y-3 overflow-y-auto text-sm" data-testid="publish-redirects">
+        {#if redirectPlan.problem}
+          <p class="text-red-700 dark:text-red-300" role="alert">{redirectPlan.problem}</p>
+        {/if}
+        {#if redirectPlan.goingLive.length > 0}
+          <div data-testid="publish-redirects-going">
+            <p class="font-medium">Going live ({redirectPlan.goingLive.length})</p>
+            <ul class="font-mono text-xs">
+              {#each redirectPlan.goingLive as r (r.id)}<li>{redirectLine(r)}</li>{/each}
+            </ul>
+          </div>
+        {/if}
+        {#if redirectPlan.waiting.length > 0}
+          <div data-testid="publish-redirects-waiting">
+            <p class="font-medium">Waiting for their target ({redirectPlan.waiting.length})</p>
+            <p class="text-xs text-muted-foreground">
+              Their target is not in the staged build yet; they go live with the Publish live that ships it.
+            </p>
+            <ul class="font-mono text-xs">
+              {#each redirectPlan.waiting as r (r.id)}<li>{redirectLine(r)}</li>{/each}
+            </ul>
+          </div>
+        {/if}
+        {#if redirectPlan.draft.length > 0}
+          <div data-testid="publish-redirects-draft">
+            <p class="font-medium">Staying in draft ({redirectPlan.draft.length})</p>
+            <ul class="font-mono text-xs">
+              {#each redirectPlan.draft as r (r.id)}<li>{redirectLine(r)}</li>{/each}
+            </ul>
+          </div>
+        {/if}
+      </div>
+    {/if}
+    <form
+      method="post"
+      action="?/promoteToProduction"
+      use:enhance={(input) => {
+        redirectConfirmOpen = false;
+        return publishEnhance(input);
+      }}
+    >
+      <input type="hidden" name="_csrf" value={csrfToken} />
+      <input type="hidden" name="redirectChanges" value={confirmedRedirects} />
+      <DialogFooter>
+        <Button type="button" variant="outline" size="sm" onclick={() => (redirectConfirmOpen = false)}>
+          Cancel
+        </Button>
+        <Button type="submit" size="sm" variant="decide" disabled={staging || publishing} data-testid="publish-redirects-confirm">
+          Publish live
         </Button>
       </DialogFooter>
     </form>

@@ -184,12 +184,74 @@ export function buildRedirectPlan(args: BuildRedirectPlanArgs): RedirectPlan {
 }
 
 /**
+ * #1550 — the loops among `rows`, each as the bare from paths of its cycle
+ * in chain order: what {@link buildRedirectPlan} refuses as a loop, found
+ * without refusing. A caller that combines rules from several sources (a
+ * rollback restores some addresses and keeps others live) holds back the
+ * rules that close a loop instead of committing a table no host can serve.
+ * Chains follow the plan's rules: a row the build serves a page for is left
+ * out, and a chain ends at a 410, an external target, a target with a query
+ * or fragment, or a path no row answers. Rows are not validated here
+ * (`buildRedirectPlan` does that); of two spellings of one address the
+ * first counts.
+ *
+ * @example
+ *   findRedirectLoops(
+ *     [
+ *       { fromPath: "/a", toPath: "/b", statusCode: 301 },
+ *       { fromPath: "/b", toPath: "/a/", statusCode: 301 },
+ *     ],
+ *     new Set(),
+ *   )
+ *   // → [["/a", "/b"]]
+ */
+export function findRedirectLoops(
+  rows: readonly RedirectTableRow[],
+  servedFiles: ReadonlySet<string>,
+): string[][] {
+  const live = new Map<string, NormalisedRow>();
+  for (const row of rows) {
+    const bare = stripTrailingSlash(row.fromPath);
+    if (live.has(bare) || servedByBuild(bare, servedFiles)) continue;
+    live.set(bare, { bare, toPath: row.toPath, statusCode: row.statusCode });
+  }
+  const loops: string[][] = [];
+  // A path whose chain was walked once: its loop, if any, is recorded, so
+  // every path is walked once and every loop found once.
+  const settled = new Set<string>();
+  for (const start of live.values()) {
+    const chain: string[] = [];
+    const onChain = new Map<string, number>();
+    let row: NormalisedRow | undefined = start;
+    while (row && row.statusCode !== GONE_STATUS && !settled.has(row.bare)) {
+      const at = onChain.get(row.bare);
+      if (at !== undefined) {
+        loops.push(chain.slice(at));
+        break;
+      }
+      onChain.set(row.bare, chain.length);
+      chain.push(row.bare);
+      if (/[?#]/.test(row.toPath) || isExternalRedirectTarget(row.toPath)) break;
+      row = live.get(stripTrailingSlash(row.toPath));
+    }
+    for (const bare of chain) settled.add(bare);
+  }
+  return loops;
+}
+
+/**
  * The planned redirects whose Location is a same-site path the build does
- * not serve (#1157; an external address is the destination's business). Redirects reach the live site on save, pages only with
- * Publish live, so a redirect to a page that is still a draft answers 404 at
- * its target until that page is published. Callers report these; they are
- * not an error. Paths under `/api/` are answered by the gateway, not the
- * build, and are never reported.
+ * not serve (#1157; an external address is the destination's business), so
+ * a redirect to a page that is still a draft answers 404 at its target
+ * until that page is published. Callers report these, and a release keeps
+ * such a change waiting (#1550). Paths under `/api/` are answered by the
+ * gateway, not the build, and are never reported.
+ *
+ * #1550 — a Location with a query or fragment ends the plan's chain
+ * collapse (it is another URL than the path a rule matches), but every
+ * serving layer matches a rule by the path alone: `/alias?utm=x` follows
+ * the rule on `/alias`. So a path another planned rule answers is served
+ * when that rule's own Location is (a gone rule's is not).
  *
  * @example
  *   redirectsToUnservedPaths(plan, new Set(["index.html"]))
@@ -199,13 +261,37 @@ export function redirectsToUnservedPaths(
   plan: RedirectPlan,
   servedFiles: ReadonlySet<string>,
 ): PlannedRedirect[] {
-  return plan.redirects.filter((r) => {
-    if (isExternalRedirectTarget(r.location)) return false;
-    const path = pathBeforeQuery(r.location);
-    if (path === "/api" || path.startsWith("/api/")) return false;
-    if (looksLikeFile(path)) return !servedFiles.has(path.slice(1));
-    return !servedByBuild(stripTrailingSlash(path), servedFiles);
-  });
+  const byFromPath = new Map(plan.redirects.map((r) => [r.fromPath, r]));
+  const reachable = (location: string, seen: Set<string>): boolean => {
+    if (isExternalRedirectTarget(location)) return true;
+    const path = pathBeforeQuery(location);
+    if (path === "/api" || path.startsWith("/api/")) return true;
+    const bare = stripTrailingSlash(path);
+    if (looksLikeFile(path) ? servedFiles.has(path.slice(1)) : servedByBuild(bare, servedFiles)) {
+      return true;
+    }
+    // A rule answers the path: served when its own Location is. `seen`
+    // ends a loop, which serves nothing.
+    const next = byFromPath.get(bare);
+    if (next === undefined || seen.has(bare)) return false;
+    seen.add(bare);
+    return reachable(next.location, seen);
+  };
+  return plan.redirects.filter((r) => !reachable(r.location, new Set([r.fromPath])));
+}
+
+/**
+ * #1550 — whether a file of the build answers `path` (a same-site path, its
+ * query and fragment ignored): the page's directory index, the bare-slug
+ * page, or the file itself. The same test the plan uses to let a page win
+ * over a rule.
+ *
+ * @example
+ *   redirectPathServed("/about/", new Set(["about/index.html"])) // → true
+ *   redirectPathServed("/gone", new Set(["index.html"]))          // → false
+ */
+export function redirectPathServed(path: string, servedFiles: ReadonlySet<string>): boolean {
+  return servedByBuild(stripTrailingSlash(pathBeforeQuery(path)), servedFiles);
 }
 
 /**

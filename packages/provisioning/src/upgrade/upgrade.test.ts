@@ -544,6 +544,57 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     ).toBe(false);
   });
 
+  it("#1574 — sets up the build carrier with no grant beyond reporting, keeps it on IAP, tells the admin, then moves it with the admin", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const carrier = "caelo-production-build@acme.iam.gserviceaccount.com";
+    const deploy = indexOf(events, /^gcloud run jobs deploy caelo-production-build /);
+    const iap = indexOf(
+      events,
+      /^gcloud iap web add-iam-policy-binding .*--member=serviceAccount:caelo-production-build@acme\.iam\.gserviceaccount\.com/,
+    );
+    const opAccess = indexOf(
+      events,
+      /^gcloud run jobs deploy caelo-production-operator-access-sync /,
+    );
+    const adminRoll = indexOf(events, new RegExp(`^gcloud run services update ${ADMIN} `));
+    const move = indexOf(events, /^gcloud run jobs update caelo-production-build /);
+    expect(iap < opAccess && opAccess < adminRoll && adminRoll < move).toBe(true);
+    expect(events[deploy]).toContain(`--image=${OLD_ADMIN_IMAGE}`);
+    expect(events[deploy]).toContain(`--service-account=${carrier}`);
+    expect(events[move]).toContain(`--image=${IMAGES.admin.imageRef}`);
+    // The carrier starts no job and reads no bucket: the build is the admin's.
+    expect(
+      events.some(
+        (e) =>
+          e.includes(`--member=serviceAccount:${carrier}`) &&
+          /(run jobs|storage buckets) add-iam-policy-binding/.test(e),
+      ),
+    ).toBe(false);
+    expect(events[opAccess]).toContain(carrier);
+    expect(events[adminRoll]).toContain(
+      "CAELO_BUILD_CARRIER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-build",
+    );
+    expect(events[adminRoll]).toContain(`CAELO_BUILD_CARRIER_SERVICE_ACCOUNT=${carrier}`);
+    expect(lines).toContain("done: Build carrier ready (a build nobody waits for still ends)");
+  });
+
+  it("#1574 — a failed carrier setup leaves the converge incomplete and the admin's carrier env untouched", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events, {
+      overrides: [[/^run jobs deploy caelo-production-build/, fail("PERMISSION_DENIED")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("Build carrier not set up"))).toBe(true);
+    expect(
+      events.some((e) =>
+        /services update caelo-production-admin.*CAELO_BUILD_CARRIER_JOB=/.test(e),
+      ),
+    ).toBe(false);
+  });
+
   it("sets up the capture job on the CURRENT admin image before the roll, then moves it with the admin (#1217)", async () => {
     const events: string[] = [];
     const { deps, lines } = upgradeDeps(events);
@@ -1248,7 +1299,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(bad.calls.some((c) => /^sql backups create/.test(c))).toBe(false);
   });
 
-  it("moves the gateway to request-based CPU in its image roll; the admin keeps its CPU", async () => {
+  it("moves every service to request-based CPU in its image roll, the admin included (#1361)", async () => {
     const events: string[] = [];
     const { deps, calls } = upgradeDeps(events);
     expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
@@ -1262,7 +1313,8 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(gateway).toContain("--cpu-throttling");
     expect(staging).toContain("--cpu-throttling");
     expect(proxy).toContain("--cpu-throttling");
-    expect(admin).not.toContain("cpu-throttling");
+    // In the same revision as the new image: no extra update, no contract step.
+    expect(admin).toContain("--cpu-throttling");
     expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(4);
   });
 

@@ -48,8 +48,13 @@ describe("planCpuIdle", () => {
 });
 
 describe("the stacks set cpuIdle", () => {
-  it("the gateway runs request-billed", () => {
-    expect(SERVICE_CPU_IDLE.gateway).toBe(true);
+  it("every service runs request-billed, the admin included (#1361)", () => {
+    expect(SERVICE_CPU_IDLE).toEqual({
+      admin: true,
+      gateway: true,
+      "staging-gateway": true,
+      "mcp-auth-proxy": true,
+    });
   });
 
   for (const provider of ["gcp", "gcp-firebase"]) {

@@ -26,6 +26,7 @@ import {
 import {
   err,
   ok,
+  redirectAddress,
   STATIC_FILE_CONTENT_TYPES,
   STATIC_FILE_MAX_BATCH,
   STATIC_FILE_MAX_BYTES,
@@ -134,8 +135,13 @@ export async function staticFileWriteProblems(
     SELECT DISTINCT current_path FROM pages
     WHERE current_path = ANY(${textArray(urlForms(paths))}) AND deleted_at IS NULL
   `)) as unknown as { current_path: string }[];
+  // #1550 — a pending rule (Draft or Staged) takes the path too: it goes
+  // live with a Publish live or Go live now.
   const redirects = (await tx.execute(sql`
     SELECT from_path FROM redirects WHERE from_path = ANY(${textArray(urlForms(paths))})
+    UNION
+    SELECT from_path FROM pending_redirects
+    WHERE address = ANY(${textArray(paths.map((p) => redirectAddress(p)))}) AND to_path IS NOT NULL
   `)) as unknown as { from_path: string }[];
   const allPaths = new Set([...existing.map((f) => f.path), ...paths]);
   for (const [i, file] of files.entries()) {

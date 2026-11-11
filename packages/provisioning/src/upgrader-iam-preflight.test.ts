@@ -103,6 +103,10 @@ function setupGrants(): Map<string, Set<string>> {
       `projects/${p}/serviceAccounts/caelo-production-import@${p}.iam.gserviceaccount.com`,
       of("roles/iam.serviceAccountUser"),
     ],
+    [
+      `projects/${p}/serviceAccounts/caelo-production-build@${p}.iam.gserviceaccount.com`,
+      of("roles/iam.serviceAccountUser"),
+    ],
     // The project-level caeloUpgraderRun reaches the job too.
     [`projects/${p}/locations/europe-west1/jobs/caelo-production-upgrader`, project],
     [`gs://${p}-caelo-ops`, bucketList],
@@ -224,6 +228,20 @@ describe("upgraderAccessChecks", () => {
     expect(preflightMissingReason(r.missing, UPGRADER_PREFLIGHT_VOICE)).toContain(
       "site-import crawler",
     );
+  });
+
+  it("#1574: the build carrier's account is checked too, since every app-roll moves that job", async () => {
+    const carrierSa =
+      "projects/acme/serviceAccounts/caelo-production-build@acme.iam.gserviceaccount.com";
+    const grants = setupGrants();
+    grants.delete(carrierSa);
+    const r = await runIamPreflight(upgraderAccessChecks(TARGET), tester(grants));
+    expect(r.kind).toBe("missing");
+    if (r.kind !== "missing") return;
+    expect(r.missing.map((m) => [resourceName(m.check.resource), m.missing])).toEqual([
+      [carrierSa, ["iam.serviceAccounts.actAs"]],
+    ]);
+    expect(preflightMissingReason(r.missing, UPGRADER_PREFLIGHT_VOICE)).toContain("build carrier");
   });
 
   it("#1328: the MCP-Auth-Proxy's account is checked, since every app-roll rolls the proxy", async () => {

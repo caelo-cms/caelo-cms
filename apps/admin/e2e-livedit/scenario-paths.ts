@@ -174,6 +174,10 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       // CI install; the GCP job shares the protocol, dispatch and lease).
       `${A}/reporting-jobs/**`,
       `${A}/ops/reporting_jobs.ts`,
+      // #1574 — the editor's Publish live (and an agent's Stage) run inside
+      // the request a build carrier holds open (in-process on the CI install).
+      `${A}/build-carrier/**`,
+      `${A}/ops/build_orders.ts`,
       `${A}/snapshots/**`,
       `${A}/deploy/**`,
       `${A}/draft.ts`,
@@ -451,11 +455,16 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/redirects.ts`,
   // A redirect to another domain, AI-proposed and Owner-approved (#1358).
   `${A}/ops/redirects_pending.ts`,
-  // Saved redirects sync to the hosting provider on save (#1157).
+  // The live redirects reach the hosting (#1157), pushed by a release.
   `${A}/ops/redirect_sync.ts`,
   `${A}/redirect-sync-worker.ts`,
   `${SHARED}/redirect-plan.ts`,
   `${SHARED}/redirect-target.ts`,
+  // Redirects as draft state (#1550): the pending changes, the release plan,
+  // Go live now and the release log. No scenario saves or publishes one.
+  `${A}/ops/redirects_release.ts`,
+  `${A}/redirects/**`,
+  `${SHARED}/redirect-release.ts`,
   `${A}/ops/ai_providers_pending.ts`,
   `${SHARED}/theme-importers/**`,
   `${A}/ops/snapshot_pending.ts`,
@@ -506,6 +515,11 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/static_files*.ts`,
   `${A}/ai/tools/static-file-tools.ts`,
   `${A}/ops/gateway.ts`,
+  // The admin's refresh pings to the gateways after a publish: sent only on
+  // Google Cloud, which no CI scenario runs on.
+  `${A}/gateway-refresh.ts`,
+  `${A}/ops/gateway-refresh.ts`,
+  `${SHARED}/gateway-refresh.ts`,
   `${A}/ops/staging_access.ts`,
   `${A}/ops/owner_settings_*.ts`,
   // #1337 — the Owner's mail caps, an owner-settings proposal like the above.

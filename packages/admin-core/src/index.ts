@@ -70,6 +70,9 @@ export {
   bugIntakeUrl,
   DEFAULT_BUG_INTAKE_URL,
 } from "./bug-forwarding/client.js";
+// #1574 — a Stage, Publish live or production build inside the request its
+// carrier job holds open, so it ends even when nobody waits for it.
+export { carryStage, executeBuild, type StageAnswer } from "./build-carrier/carry.js";
 export { stagingCaptureAccess } from "./capture/staging-access.js";
 // P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
 export { sweepChatImagesOnce } from "./chat-image-gc-worker.js";
@@ -115,6 +118,13 @@ export {
   type EmailConfigRow,
   emailDeliveryProblem,
 } from "./email/transport.js";
+export {
+  createGatewayRefresher,
+  GATEWAY_REFRESH_TIMEOUT_MS,
+  type GatewayRefresher,
+  type IdTokenSource,
+  metadataIdTokens,
+} from "./gateway-refresh.js";
 export type { LinkNotice } from "./links/link-notice.js";
 // #1215 — live-refresh topics instead of editor timer polling.
 export {
@@ -173,6 +183,9 @@ export {
   type PluginUninstallFinalizer,
 } from "./ops/plugins/uninstall.js";
 export type { RedirectSyncTargetStatus } from "./ops/redirect_sync.js";
+// #1550 — redirects as draft state: the list rows and what Publish live ships.
+export type { RedirectRule } from "./ops/redirects.js";
+export type { PlannedRedirectChange, RedirectReleasePlan } from "./ops/redirects_release.js";
 export * from "./ops/roles.js";
 // Issue #806 — remote MCP: the credential an /api/mcp/remote/* request
 // carries into the mcp.* ops, and its request-time resolution.
@@ -258,22 +271,27 @@ export * from "./public-projection.js";
 export { collectPluginFindings } from "./quality/checks/plugin-findings.js";
 export { startQualityAuditJob } from "./quality/start-audit-job.js";
 export * from "./rate-limit.js";
-// #1157 — the post-commit redirect sync every redirects write runs.
+// #1157 — the live redirects on the hosting: the boot refresh of a stale live release.
 export {
   refreshStaleLiveReleaseAtBoot,
-  registerRedirectSyncRunner,
   retireLegacyStagingPreviewsAtBoot,
 } from "./redirect-sync-worker.js";
 export * from "./register.js";
 export type { ReleaseCheckOpts } from "./release-check-worker.js";
 // #1359 — reporting jobs: long work in a container job that reports back.
-export { handleJobReport, type ReportResponse } from "./reporting-jobs/dispatch.js";
+export {
+  type AdmittedReport,
+  admitJobReport,
+  handleJobReport,
+  type ReportResponse,
+} from "./reporting-jobs/dispatch.js";
 export { inProcessJobLauncher } from "./reporting-jobs/in-process.js";
 export { reportingJobKind } from "./reporting-jobs/kinds.js";
 export { setInProcessJobLauncher } from "./reporting-jobs/launcher.js";
 export {
   isReportingJobKind,
   JOB_TOKEN_HEADER,
+  KEEPALIVE_SECONDS,
   MAX_REPORT_BODY_BYTES,
   type ReportingJobKind,
 } from "./reporting-jobs/protocol.js";

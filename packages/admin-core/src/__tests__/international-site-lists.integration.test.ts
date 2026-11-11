@@ -9,7 +9,7 @@
  * not running — no variants: the stored values render.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
   drainChangeConsumers,
@@ -45,6 +45,8 @@ let registry: OperationRegistry;
 let restoreBase: (() => Promise<void>) | null = null;
 let restoreLang: (() => Promise<void>) | null = null;
 const ids = { list: "", vocab: "", en: "", de: "", about: "", target: "", nav: "" };
+/** #1269 — the core and store reads while recording (null = not recording). */
+let opReads: { name: string; input: unknown }[] | null = null;
 
 /** Scripted translator: "DE:<source>" for every offered path (see international-site-chrome). */
 type Schema = {
@@ -225,6 +227,11 @@ function navType(noteTranslate: boolean) {
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  const runOperation = adapter.runOperation.bind(adapter);
+  adapter.runOperation = ((o, ctx, input) => {
+    opReads?.push({ name: o.name, input });
+    return runOperation(o, ctx, input);
+  }) as typeof adapter.runOperation;
   registry = new OperationRegistry();
   registerAdminOps(registry);
   await cleanup();
@@ -369,7 +376,23 @@ afterAll(async () => {
   await adapter.close();
 });
 
+/**
+ * #1269 — maintained == rebuilt: after every tick (which reconciles only
+ * what its changes name), the whole reconcile finds nothing to change.
+ */
+async function expectNoDrift(): Promise<void> {
+  await tick();
+  const r = await op<{ lists: { updated: number; inserted: number } }>(
+    "rebuild_translation_staleness",
+  );
+  expect({ updated: r.lists.updated, inserted: r.lists.inserted }).toEqual({
+    updated: 0,
+    inserted: 0,
+  });
+}
+
 describe("international-site lists — change handling", () => {
+  afterEach(expectNoDrift);
   it("added entries are missing and hidden in German until translated; English is untouched", async () => {
     expect(await menu(ids.en)).toEqual(["Pricing", "About", "Status"]);
     expect(await menu(ids.de)).toEqual([]);
@@ -520,6 +543,195 @@ describe("international-site lists — change handling", () => {
     await sysOp("list_types.upsert_many", { listTypes: [navType(false)] });
   });
 });
+
+/** Whether a read input names what it reads (an id list, a page, a cap…). */
+function names(input: unknown, keys: readonly string[]): boolean {
+  const o = (input ?? {}) as Record<string, unknown>;
+  return keys.some((k) => o[k] !== undefined);
+}
+
+const TRANSLATION_TABLES = new Set([
+  "page_variants",
+  "list_value_translations",
+  "term_translations",
+  "page_prop_translations",
+]);
+
+describe("international-site lists — #1269 the change consumer reconciles what a change names", () => {
+  afterEach(expectNoDrift);
+
+  it("a list edit reads that list's translations, not every page, instance or variant", async () => {
+    opReads = [];
+    try {
+      await patch([{ op: "update", itemId: E(2), values: { label: "About us", note: "t1269" } }]);
+      await tick();
+    } finally {
+      const reads = opReads;
+      opReads = null;
+      expect(reads.some((r) => r.name === "lists.list")).toBe(true);
+      for (const r of reads) {
+        if (r.name === "pages.list") expect(names(r.input, ["pageIds", "limit"])).toBe(true);
+        if (r.name === "content_instances.list") {
+          expect(names(r.input, ["ids", "moduleIds"])).toBe(true);
+        }
+        if (r.name === "pages.list_shared_content") {
+          expect(names(r.input, ["listInstanceIds", "listPageIds"])).toBe(true);
+        }
+        const read = r.input as { table?: string; filter?: Record<string, unknown> };
+        if (r.name === "plugin_storage.list" && TRANSLATION_TABLES.has(read.table ?? "")) {
+          const { orderBy, orderDir, limit, afterId, ...filter } = read.filter ?? {};
+          expect(Object.keys(filter).length).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  it("an instance's local list: shown in German → missing; unplaced there → kept; deleted → orphaned", async () => {
+    const fields = JSON.stringify([
+      { name: "items", kind: "list", listType: TYPE, bind: "local", label: "Items" },
+    ]);
+    const values = JSON.stringify({
+      items: [{ id: E(21), node: "entry", values: { label: "Local one" } }],
+    });
+    const ciId = await sqlSystem(async (tx) => {
+      const mod = (await tx`
+        INSERT INTO modules (slug, display_name, type, html, fields)
+        VALUES (${`${PFX}-local`}, 'Local', ${`${PFX}-local`},
+                '<ul>{{#items}}<li>{{label}}</li>{{/items}}</ul>', (${fields}::text)::jsonb)
+        RETURNING id::text AS id`) as unknown as { id: string }[];
+      const ci = (await tx`
+        INSERT INTO content_instances (module_id, "values")
+        VALUES (${mod[0]?.id}::uuid, (${values}::text)::jsonb)
+        RETURNING id::text AS id`) as unknown as { id: string }[];
+      for (const pageId of [ids.en, ids.de]) {
+        await tx`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+                 VALUES (${pageId}::uuid, 'content', 5, ${mod[0]?.id}::uuid, ${ci[0]?.id}::uuid, 'synced')`;
+      }
+      return ci[0]?.id ?? "";
+    });
+    const address = `instance/${ciId}/items/item/${E(21)}/label`;
+    const row = async () =>
+      (await rows("list_value_translations")).find(
+        (r) => r.address === address && r.locale_code === "de",
+      );
+    await tick();
+    expect((await row())?.status).toBe("missing");
+    expect((await row())?.target).toBe(`instance:${ciId}`);
+    await expectNoDrift();
+
+    // Removed or restored with its module: orphaned, then back.
+    await sqlSystem(
+      (tx) =>
+        tx`UPDATE modules SET deleted_at = now() WHERE id = (SELECT module_id FROM content_instances WHERE id = ${ciId}::uuid)`,
+    );
+    await tick();
+    expect(await orphanedOrCollected(await row())).toBe(true);
+    await expectNoDrift();
+    await sqlSystem(
+      (tx) =>
+        tx`UPDATE modules SET deleted_at = NULL WHERE id = (SELECT module_id FROM content_instances WHERE id = ${ciId}::uuid)`,
+    );
+    await tick();
+    expect((await row())?.status).toBe("missing");
+    await expectNoDrift();
+
+    // Off the German page: nothing to translate any more, the row is kept.
+    await sqlSystem(
+      (tx) =>
+        tx`DELETE FROM page_modules WHERE page_id = ${ids.de}::uuid AND content_instance_id = ${ciId}::uuid`,
+    );
+    await tick();
+    expect((await row())?.status).toBe("missing");
+    await expectNoDrift();
+
+    // Removed: its rows are orphaned.
+    await sqlSystem(
+      (tx) => tx`UPDATE content_instances SET deleted_at = now() WHERE id = ${ciId}::uuid`,
+    );
+    await tick();
+    expect(await orphanedOrCollected(await row())).toBe(true);
+    // The later tests render these pages: take the placement off again.
+    await sqlSystem((tx) => tx`DELETE FROM page_modules WHERE content_instance_id = ${ciId}::uuid`);
+  });
+
+  it("a language added gets its rows for every list, without a list change", async () => {
+    const locales = [
+      { code: "en", displayName: "English", urlStrategy: "subdirectory", isDefault: true },
+      { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+    ];
+    await op("set_locales", {
+      locales: [
+        ...locales,
+        { code: "fr", displayName: "Français", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    await tick();
+    const fr = (await rows("list_value_translations")).find(
+      (r) => r.address === labelAddr(1) && r.locale_code === "fr",
+    );
+    expect(fr?.status).toBe("missing");
+    await expectNoDrift();
+    await op("set_locales", { locales });
+  });
+
+  it("collecting orphans re-checks their targets: an entry restored since keeps its translation", async () => {
+    const about = {
+      id: E(2),
+      node: "entry",
+      values: { label: "About us", note: "t1269", link: { href: `caelo:page/${ids.about}` } },
+    };
+    await patch([{ op: "remove", itemId: E(2) }]);
+    await tick();
+    const before = await valueRow(labelAddr(2));
+    expect(await orphanedOrCollected(before)).toBe(true);
+    // A production build after the removal, and the entry back — but the
+    // batch that restores it is not delivered yet: an unrelated batch
+    // reaches the collector first.
+    await sqlSystem(async (tx) => {
+      const t = (await tx`INSERT INTO deploy_targets (name, env, out_dir)
+        VALUES (${`${PFX}-prod2`}, 'production', '/tmp/t1114i') RETURNING id::text AS id`) as unknown as {
+        id: string;
+      }[];
+      await tx`INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at)
+        VALUES (${t[0]?.id}::uuid, ${SYSTEM_ACTOR_ID}::uuid, 'succeeded', now() + interval '1 second', now() + interval '2 seconds')`;
+    });
+    await patch([{ op: "add", position: 1, item: about }]);
+    await op("translation_staleness_tick", {
+      chatBranchId: null,
+      changes: [{ kind: "page", op: "update", rowId: ids.about, parentId: null }],
+    });
+    if (before) {
+      // It was still orphaned (not yet collected): the collector restored it.
+      const after = await valueRow(labelAddr(2));
+      expect(after?.status).not.toBe("orphaned");
+      expect(after?.value).toBe(before.value);
+    }
+  });
+});
+
+/** A German value row by address. */
+async function valueRow(address: string): Promise<Record<string, unknown> | undefined> {
+  return (await rows("list_value_translations")).find(
+    (r) => r.address === address && r.locale_code === "de",
+  );
+}
+
+/**
+ * A removed entry's row is orphaned — or already collected, when a
+ * production build that started after the removal exists (other test
+ * files seed production runs dated ahead).
+ */
+async function orphanedOrCollected(r: Record<string, unknown> | undefined): Promise<boolean> {
+  if (r?.status === "orphaned") return true;
+  if (r !== undefined) return false;
+  const ahead = (await sqlSystem(
+    (tx) => tx`SELECT EXISTS (
+      SELECT 1 FROM deploy_runs dr JOIN deploy_targets dt ON dt.id = dr.target_id
+      WHERE dt.env = 'production' AND dr.status = 'succeeded' AND dr.started_at > now() - interval '1 minute'
+    ) AS ahead`,
+  )) as unknown as { ahead: boolean }[];
+  return ahead[0]?.ahead === true;
+}
 
 describe("international-site lists — tools", () => {
   it("apply_translations by address writes a dictated wording and refuses unknown addresses", async () => {

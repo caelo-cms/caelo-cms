@@ -1151,6 +1151,32 @@ describe("firebaseHostingPublisher — a build streamed into the version (#1271)
     await rm(dir, { recursive: true, force: true });
   });
 
+  it("hands the staging slot the bytes it was given, not a copy of them", async () => {
+    // A copy held every streamed file twice while it was taken, and a few
+    // build files grow with the site (render deps: 2.7 MB at 10k pages).
+    const handed: Uint8Array[] = [];
+    setStagingBucketForTests(
+      fakeStagingBucket({
+        onSave: (_name, body) => {
+          if (typeof body !== "string") handed.push(body);
+        },
+      }).bucket,
+    );
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    const upload = await firebaseHostingPublisher.openBuildUpload!({
+      runId: "run-bytes",
+      target: STAGING,
+    });
+    // Larger than any buffer pool, so a copy would land in memory of its own.
+    const bytes = Buffer.alloc(256 * 1024, '{"pageId":"p","deps":["caelo:list/l"]},');
+    await upload.put({ relPath: "render-deps.json", body: bytes });
+    expect(handed).toHaveLength(1);
+    // The same memory (a copy would be equal bytes elsewhere).
+    expect(handed[0]?.buffer === bytes.buffer).toBe(true);
+    expect(handed[0]?.byteOffset).toBe(bytes.byteOffset);
+    await upload.abort();
+  });
+
   it("an aborted upload deletes its unfinished version", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     const upload = await firebaseHostingPublisher.openBuildUpload!({

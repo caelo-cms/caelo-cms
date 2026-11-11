@@ -480,6 +480,20 @@ describe("plugin storage through named operations (§14.7, step 2)", () => {
     }
   });
 
+  it("#1269 — reads the rows a change names by id with `anyOf`", async () => {
+    const ids: string[] = [];
+    for (const label of ["by-id-a", "by-id-b"]) {
+      const added = await call("add", { label });
+      if (!added.ok) throw new Error(added.error.message);
+      ids.push((added.value as { id: string }).id);
+    }
+    const listed = await call("list_any", { anyOf: { id: [ids[1]] } });
+    if (!listed.ok) throw new Error(listed.error.message);
+    expect((listed.value as { label: string }[]).map((r) => r.label)).toEqual(["by-id-b"]);
+    // Only row ids: anything else is a caller bug.
+    expect((await call("list_any", { anyOf: { id: ["not-an-id"] } })).ok).toBe(false);
+  });
+
   it("refuses a plugin write to a host-owned column", async () => {
     const r = await call("write_host_column");
     expect(r.ok).toBe(false);

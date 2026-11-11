@@ -40,6 +40,8 @@ export interface GcpFirebaseWizardOpts {
   version?: string;
   /** #1558 — see {@link GcpWizardOpts.acceptReleaseCandidate}. */
   acceptReleaseCandidate?: boolean;
+  /** #1580 — see {@link GcpWizardOpts.billingAccountId}. */
+  billingAccountId?: string;
 }
 
 export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise<void> {
@@ -73,6 +75,7 @@ export async function runGcpFirebaseWizard(opts: GcpFirebaseWizardOpts): Promise
     ...(opts.runMode ? { runMode: opts.runMode } : {}),
     ...(opts.version ? { version: opts.version } : {}),
     ...(opts.acceptReleaseCandidate ? { acceptReleaseCandidate: true } : {}),
+    ...(opts.billingAccountId ? { billingAccountId: opts.billingAccountId } : {}),
     provider: "gcp-firebase",
   });
 }

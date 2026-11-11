@@ -276,8 +276,17 @@ function parseAnyOf(
     return `${op}: anyOf must be an object of column → list of values`;
   }
   for (const [column, values] of Object.entries(raw)) {
-    const problem = checkColumn(op, columns, column);
+    // #1269 — `id` is host-owned but listable: a plugin reads the rows a
+    // change of its own tables names (a change carries only the row id).
+    const problem = column === "id" ? null : checkColumn(op, columns, column);
     if (problem) return problem;
+    if (
+      column === "id" &&
+      Array.isArray(values) &&
+      values.some((v) => typeof v !== "string" || !UUID_RE.test(v))
+    ) {
+      return `${op}: anyOf.id lists row ids only`;
+    }
     if (columns[column] === "jsonb")
       return `${op}: anyOf cannot match the jsonb column "${column}"`;
     if (!Array.isArray(values) || values.length > ANY_OF_MAX) {

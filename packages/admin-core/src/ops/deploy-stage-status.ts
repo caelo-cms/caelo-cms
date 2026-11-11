@@ -84,7 +84,11 @@ export const stageStatusOp = defineOperation({
        ORDER BY r.started_at DESC
        LIMIT ${input.deployRunId ? 1 : input.limit}
     `)) as unknown as StageRunDbRow[];
-    if (read.length === 0) return ok({ runs: [] });
+    if (read.length === 0) {
+      // #1574 — a carried Stage whose build has no run yet: its carrier is
+      // starting, or the Stage is merging the chats' changes.
+      return ok({ runs: input.deployRunId ? await orderedStage(tx, input.deployRunId) : [] });
+    }
     // #1307 — a Stage whose process died (its lease lapsed) answers failed
     // with the restart hint, not running with an estimate: the AI polled
     // such a run for hours. The row is corrected on the way.
@@ -107,6 +111,71 @@ export const stageStatusOp = defineOperation({
     return ok({ runs: rows.map((r) => toStageStatus(r, history)) });
   },
 });
+
+/**
+ * #1574 — the Stage order `id` while it has no run row: queued (its
+ * carrier is starting, or it merges the chats' changes), or failed before
+ * its build started (the merge failed, the carrier never ran). Empty when
+ * no Stage order has this id.
+ */
+async function orderedStage(
+  tx: Parameters<typeof settleOrphanedRuns>[0],
+  id: string,
+): Promise<StageStatusRun[]> {
+  // A Stage, or a rebuild of a STAGING target (deploy_staging); never a
+  // production build, which is no Stage.
+  const rows = (await tx.execute(sql`
+    SELECT o.state, o.outcome, o.created_at, o.finished_at, clock_timestamp() AS now,
+           COALESCE(o.input ->> 'targetName', 'staging') AS target_name
+      FROM build_orders o
+     WHERE o.id = ${id}::uuid
+       AND (o.kind = 'stage'
+            OR (o.kind = 'deploy.trigger'
+                AND EXISTS (SELECT 1 FROM deploy_targets t
+                             WHERE t.name = o.input ->> 'targetName' AND t.env = 'staging')))
+  `)) as unknown as {
+    state: "queued" | "running" | "done";
+    outcome: { ok?: boolean; error?: unknown } | null;
+    created_at: string | Date;
+    finished_at: string | Date | null;
+    now: string | Date;
+    target_name: string;
+  }[];
+  const order = rows[0];
+  // A Stage that succeeded has its run row; one without could only be read mid-commit.
+  if (!order || order.outcome?.ok === true) return [];
+  const startedAt = iso(order.created_at);
+  const finishedAt = order.finished_at === null ? null : iso(order.finished_at);
+  const failed = order.state === "done";
+  return [
+    {
+      runId: id,
+      targetName: order.target_name,
+      status: failed ? "failed" : "queued",
+      phase: failed ? "failed" : "queued",
+      pagesDone: null,
+      pagesTotal: null,
+      startedAt,
+      finishedAt,
+      elapsedMs: Math.max(0, Date.parse(finishedAt ?? iso(order.now)) - Date.parse(startedAt)),
+      error: failed ? describeOrderError(order.outcome?.error) : null,
+      failedPhase: failed ? "before the build" : null,
+      eta: null,
+      etaUnavailable: failed
+        ? null
+        : "the Stage's build has not started yet (it merges the chats' changes, or its carrier is starting)",
+    },
+  ];
+}
+
+/** The failure an order recorded, in its own words. */
+function describeOrderError(error: unknown): string {
+  if (typeof error === "object" && error !== null) {
+    const e = error as { message?: unknown; error?: { message?: unknown } };
+    if (typeof e.message === "string") return e.message;
+  }
+  return "the Stage stopped before its build started";
+}
 
 function toStageStatus(r: StageRunDbRow, history: readonly PhaseTiming[][]): StageStatusRun {
   const progress: StageProgress | null =

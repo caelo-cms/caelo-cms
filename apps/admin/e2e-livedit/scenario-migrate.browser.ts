@@ -63,6 +63,7 @@ function resetToUntouchedInstall(): void {
           await tx\`DELETE FROM import_pages\`;
           await tx\`DELETE FROM import_runs\`;
           await tx\`DELETE FROM genesis_drafts\`;
+          await tx\`DELETE FROM pending_redirects WHERE from_path LIKE '/blog/%' OR from_path LIKE '/produkte/%'\`;
           await tx\`DELETE FROM redirects WHERE from_path LIKE '/blog/%' OR from_path LIKE '/produkte/%'\`;
         });
         await sql.end();
@@ -165,8 +166,10 @@ test.describe("e2e-livedit migration — keep-design end to end", () => {
         const templates = await tx\`
           SELECT count(DISTINCT template_id)::int AS n FROM pages WHERE deleted_at IS NULL
         \`;
+        // #1550 — the migration's redirects are pending changes until Publish live.
         const redirects = await tx\`
-          SELECT from_path, to_path FROM redirects WHERE from_path LIKE '%.html'
+          SELECT from_path, to_path FROM pending_redirects
+          WHERE from_path LIKE '%.html' AND to_path IS NOT NULL
         \`;
         const notes = await tx\`
           SELECT count(*)::int AS n FROM import_pages WHERE notes IS NOT NULL

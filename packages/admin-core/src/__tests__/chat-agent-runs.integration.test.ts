@@ -83,6 +83,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM chat_messages WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE 't664%')`;
     await tx`DELETE FROM ai_calls WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE 't664%')`;
     await tx`DELETE FROM chat_sessions WHERE title LIKE 't664%'`;
+    await tx`DELETE FROM pending_redirects WHERE from_path LIKE '/t664-%'`;
     await tx`DELETE FROM redirects WHERE from_path LIKE '/t664-%'`;
   });
 }
@@ -912,7 +913,9 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
     );
     expect(write.ok).toBe(true);
     const exists = await withSql(async (tx) => {
-      const rows = (await tx`SELECT 1 FROM redirects WHERE from_path = '/t664-d'`) as unknown[];
+      // #1550 — a save is a Staged change, not a live row.
+      const rows =
+        (await tx`SELECT 1 FROM pending_redirects WHERE from_path = '/t664-d'`) as unknown[];
       return rows.length > 0;
     });
     expect(exists).toBe(true);

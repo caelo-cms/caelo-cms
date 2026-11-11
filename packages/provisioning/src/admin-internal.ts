@@ -68,7 +68,7 @@ export interface AdminInternalDeps {
 export interface AdminInternalCall {
   /** Path under the admin origin, e.g. `/api/internal/owner-reset`. */
   readonly endpoint: string;
-  /** Scope the endpoint's `requireInternalAuth` checks. */
+  /** Scope the endpoint's `internalAuthRefusal` checks. */
   readonly scope: string;
   readonly body: Record<string, unknown>;
   /** The issue that added the endpoint, named when an older admin answers 404. */

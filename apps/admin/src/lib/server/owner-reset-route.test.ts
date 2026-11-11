@@ -31,19 +31,18 @@ async function tokenFor(scope: string): Promise<string> {
   return signInternalToken({ iat, exp: iat + 60_000, scope });
 }
 
-/** Call the handler the way SvelteKit does; a thrown Response is the answer. */
+/**
+ * Call the handler the way SvelteKit does: the returned Response is the
+ * answer, and anything thrown would be a 500 there, so it fails the test
+ * (#1563).
+ */
 async function post(headers: Record<string, string>, body: string): Promise<Response> {
   const request = new Request("http://admin.test/api/internal/owner-reset", {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body,
   });
-  try {
-    return await POST({ request } as unknown as Parameters<typeof POST>[0]);
-  } catch (thrown) {
-    if (thrown instanceof Response) return thrown;
-    throw thrown;
-  }
+  return POST({ request } as unknown as Parameters<typeof POST>[0]);
 }
 
 describe("POST /api/internal/owner-reset", () => {

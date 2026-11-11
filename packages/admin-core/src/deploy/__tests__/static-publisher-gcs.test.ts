@@ -1302,4 +1302,19 @@ describe("gcsStaticPublisher — a build streamed into the staging prefix (#1271
     expect(list.files).toEqual(["_redirects", SECURITY_HEADERS_BUILD_FILE, "en/about"]);
     await rm(dir, { recursive: true, force: true });
   });
+
+  it("saves the bytes it was given, not a copy of them", async () => {
+    // A copy held every streamed file twice while it was taken, and a few
+    // build files grow with the site (render deps: 2.7 MB at 10k pages).
+    const gcs = await publisher();
+    const upload = await gcs.openBuildUpload!({ runId: "run-bytes", target: TARGET });
+    // Larger than any buffer pool, so a copy would land in memory of its own.
+    const bytes = Buffer.alloc(256 * 1024, '{"pageId":"p","deps":["caelo:list/l"]},');
+    await upload.put({ relPath: "render-deps.json", body: bytes });
+    const saved = stagingBucket.files.get("run-bytes/render-deps.json")?.body;
+    // The same memory (a copy would be equal bytes elsewhere).
+    expect(saved?.buffer === bytes.buffer).toBe(true);
+    expect(saved?.byteOffset).toBe(bytes.byteOffset);
+    await upload.abort();
+  });
 });

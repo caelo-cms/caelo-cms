@@ -29,6 +29,10 @@
  *                            plugins, the quality gate or a publish-anyway
  *                            decision), the run row committed as `running`
  *                            with its lease
+ *   redirects.release_plan   #1550 — which Staged redirect changes go live
+ *                            with this build: the confirmed ones (or all
+ *                            Staged at the click) whose target the build
+ *                            serves, read against the build's own files
  *   deploy.acquire_live_release        the live-release lease (waits outside
  *                            any transaction for a rollback or plugin-data
  *                            build that is releasing right now)
@@ -36,10 +40,11 @@
  *   deploy.renew_run_lease   the fence: proof the run still holds every lease,
  *                            right before the provider release
  *   (provider release)       no transaction
- *   deploy.finish_promote    record the run (first publication and the
- *                            redirect rules those pages take over, bakes,
- *                            the publish-anyway decision), release the
- *                            leases, mark the target's redirects behind
+ *   deploy.finish_promote    record the run (the planned redirect changes
+ *                            go live, first publication and the redirect
+ *                            rules those pages take over, bakes, the
+ *                            publish-anyway decision), release the leases,
+ *                            mark the target's redirects behind
  *   redirects.sync_provider  push the redirects (after the run is recorded)
  *   deploy.fail_run          on every failure or abort before the release
  *
@@ -96,9 +101,12 @@ import {
 import { markRedirectsBehind } from "../deploy/redirect-sync.js";
 import { loadStaticPublisher, type StaticPublisher } from "../deploy/static-publisher.js";
 import { rewindBakesToRun } from "../plugin-data/stale-pages.js";
+import {
+  releaseRedirectChanges,
+  takeOverRedirectsOnFirstPublishedPages,
+} from "../redirects/release.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { stampFirstPublished } from "./content/first-published.js";
-import { takeOverRedirectsOnFirstPublishedPages } from "./content/path-moves.js";
 import {
   logRunTimings,
   productionNeedsHuman,
@@ -113,6 +121,7 @@ import { beginRunInTx } from "./deploy-run-lifecycle.js";
 import { actorHasPermission } from "./quality/_permissions.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import { recordProductionOverride } from "./quality/production-gate.js";
+import type { RedirectReleasePlan } from "./redirects_release.js";
 
 /** A human's decision to publish over the staged build's FAILED quality check (#553). */
 const publishAnywaySchema = z
@@ -142,7 +151,22 @@ const promoteInput = z.object({
    * failed Publish live leaves the gate closed and the trail clean.
    */
   publishAnyway: publishAnywaySchema.optional(),
+  /**
+   * #1550 — the Staged redirect changes the Publish live confirmation
+   * listed as going live (`redirects.release_plan`), by id and revision:
+   * exactly these go live, minus any whose target the build does not
+   * serve; a change saved after the confirmation waits for the next
+   * Publish live. Omitted: the click is the confirmation, every change
+   * Staged at that moment.
+   */
+  redirectChanges: z
+    .array(z.object({ id: z.string().uuid(), revision: z.number().int().min(1) }).strict())
+    .max(20_000)
+    .optional(),
 });
+
+/** One change of {@link promoteInput}'s `redirectChanges`. */
+const redirectChangeRef = z.object({ id: z.string().uuid(), revision: z.number().int().min(1) });
 
 const promoteOutput = z.object({
   fromRunId: z.string(),
@@ -150,6 +174,15 @@ const promoteOutput = z.object({
   buildId: z.string(),
   /** #1454 — set when the staged build carries no page headers. */
   securityHeadersNote: z.string().optional(),
+  /**
+   * #1550 — the redirect changes this Publish live put live, the Staged ones
+   * left waiting, and why none went live when a change moved on during it.
+   */
+  redirects: z.object({
+    wentLive: z.number().int(),
+    waiting: z.number().int(),
+    heldBack: z.string().nullable(),
+  }),
 });
 
 /** What deploy.start_promote hands the rest of the run. */
@@ -191,7 +224,7 @@ export const startPromoteOp = defineOperation({
   // deploy.trigger). No AI tool wraps it.
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: promoteInput.omit({ runId: true, repoRoot: true }).extend({
+  input: promoteInput.omit({ runId: true, repoRoot: true, redirectChanges: true }).extend({
     runId: z.string().uuid(),
     leaseTtlMs: z.number().int().min(1_000).max(3_600_000),
   }),
@@ -364,9 +397,21 @@ export const finishPromoteOp = defineOperation({
       caeloVersion: z.string().nullable(),
       override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
       phaseTimings: z.array(phaseTimingSchema),
+      /**
+       * #1550 — the Staged redirect changes the build serves (redirects.release_plan's
+       * `goingLive`); none when absent.
+       */
+      redirectChanges: z.array(redirectChangeRef).max(20_000).default([]),
+      /** The live table that plan was made against (redirects.release_plan's `liveFingerprint`). */
+      redirectLiveFingerprint: z.string().nullable().default(null),
     })
     .strict(),
-  output: z.object({}),
+  output: z.object({
+    /** #1550 — how many of the listed redirect changes went live. */
+    redirectsApplied: z.number().int(),
+    /** Why none went live although some were listed (they stay Staged for the next Publish live). */
+    redirectsHeldBack: z.string().nullable(),
+  }),
   handler: async (ctx, input, tx) => {
     const refuse = (message: string): never => {
       throw new OperationAbortError({ kind: "HandlerError", operation: "deploy.promote", message });
@@ -422,13 +467,33 @@ export const finishPromoteOp = defineOperation({
     // Released first: this transaction keeps the row locked until it
     // commits, so nobody else publishes in between.
     await releaseLiveRelease(tx, input.runId);
+    let redirectsApplied = 0;
+    let redirectsHeldBack: string | null = null;
     if (input.env === "production") {
+      // #1550 — the redirect changes this build ships go live with it, in
+      // the transaction that records it: all of the plan, or none when a
+      // listed change or the live table moved on since it was made.
+      if (input.redirectChanges.length > 0) {
+        const released =
+          input.redirectLiveFingerprint === null
+            ? ({ released: false, reason: "they were listed without a plan" } as const)
+            : await releaseRedirectChanges(
+                tx,
+                ctx.actorId,
+                input.redirectChanges,
+                { kind: "release", runId: input.runId },
+                { states: ["staged"], liveFingerprint: input.redirectLiveFingerprint },
+              );
+        if (released.released) redirectsApplied = released.applied.length;
+        else redirectsHeldBack = released.reason;
+      }
       // Epic #1107 — the pages of the build it ships get their
       // first_published_at — the staged run's start, which the build rendered.
       // #1517 — those pages take their URLs over from redirect rules there.
       await takeOverRedirectsOnFirstPublishedPages(
         ctx,
         tx,
+        input.runId,
         await stampFirstPublished(tx, input.fromRunId),
       );
       // #1155 — the promoted build baked its plugin data when it was
@@ -459,13 +524,13 @@ export const finishPromoteOp = defineOperation({
           lease_expires_at = NULL
       WHERE id = ${input.runId}::uuid
     `);
-    // #1157 — the build carries the redirects table as it was at its
-    // Stage; redirects saved since then must stay live. The target is
-    // behind until the table as saved now is put on the build it serves —
-    // after this commit (deploy.promote), so no provider I/O runs inside
-    // this transaction.
+    // #1157 — the build carries the live redirects as they were at its
+    // Stage; the provider must serve them as they are now (this release's
+    // changes included). The target is behind until then — pushed after
+    // this commit (deploy.promote), so no provider I/O runs inside this
+    // transaction.
     await markRedirectsBehind(tx, [input.targetId]);
-    return ok({});
+    return ok({ redirectsApplied, redirectsHeldBack });
   },
 });
 
@@ -551,6 +616,37 @@ async function runPromote(
     });
 
   try {
+    // #1550 — which Staged redirect changes go live with this build:
+    // exactly the confirmed ones (or every one Staged at this click), minus
+    // the ones whose target the build does not serve. Decided before
+    // anything is released, against the build's own files.
+    let redirectChanges: z.infer<typeof redirectChangeRef>[] = [];
+    let redirectsWaiting = 0;
+    let redirectFingerprint: string | null = null;
+    let redirectsHeldBack: string | null = null;
+    if (plan.to.env === "production") {
+      const planned = await execute(registry, adapter, sys, "redirects.release_plan", {
+        fromTarget: plan.from.name,
+        stagedRunId: plan.fromRunId,
+        against: "staged",
+        ...(input.redirectChanges ? { changes: input.redirectChanges } : {}),
+        ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
+      });
+      if (!planned.ok) {
+        return await fail(
+          `the redirects going live could not be planned: ${describeError(planned.error)}. Nothing was published; Publish live again.`,
+        );
+      }
+      const p = planned.value as RedirectReleasePlan;
+      if (p.problem !== null) {
+        return await fail(
+          `${p.problem} Nothing was published: fix it (Settings → Redirects shows the rules), then Publish live again.`,
+        );
+      }
+      redirectChanges = p.goingLive.map((c) => ({ id: c.id, revision: c.revision }));
+      redirectsWaiting = p.waiting.length;
+    }
+    const redirectsPlanned = redirectChanges.length;
     timer.lap("prepare");
     // A rollback, plugin-data build or CDN purge must not release another
     // version mid-publish. Staging is not touched: it keeps serving its slot.
@@ -617,6 +713,28 @@ async function runPromote(
     timer.include("publish", publishPhases ?? []);
     timer.lap("publish");
 
+    // #1550 — planned again right before the release is recorded, under the
+    // live-release lease: a change saved, kept as a draft or discarded since
+    // the first plan, and the live table as it is now, decide. The finish
+    // applies this plan whole, or none of it when anything moved on since.
+    if (redirectChanges.length > 0) {
+      const final = await execute(registry, adapter, sys, "redirects.release_plan", {
+        fromTarget: plan.from.name,
+        stagedRunId: plan.fromRunId,
+        against: "staged",
+        changes: redirectChanges,
+        ...(input.repoRoot ? { repoRoot: input.repoRoot } : {}),
+      });
+      const p = final.ok ? (final.value as RedirectReleasePlan) : null;
+      if (p === null || p.problem !== null) {
+        redirectsHeldBack = p?.problem ?? (final.ok ? null : describeError(final.error));
+        redirectChanges = [];
+      } else {
+        redirectChanges = p.goingLive.map((c) => ({ id: c.id, revision: c.revision }));
+        redirectFingerprint = p.liveFingerprint;
+      }
+    }
+
     timer.lap("finish");
     const finished = await execute(registry, adapter, ctx, "deploy.finish_promote", {
       runId,
@@ -631,12 +749,20 @@ async function runPromote(
       caeloVersion: plan.stagedCaeloVersion,
       override: plan.override,
       phaseTimings: timer.phases(),
+      redirectChanges,
+      redirectLiveFingerprint: redirectFingerprint,
     });
     if (!finished.ok) {
       return await fail(
         `the new build is live, but recording it failed: ${describeError(finished.error)}. Settings → Deployments may not show it as live; Publish live again to record it.`,
       );
     }
+    const recorded = finished.value as {
+      redirectsApplied: number;
+      redirectsHeldBack: string | null;
+    };
+    const redirectsApplied = recorded.redirectsApplied;
+    redirectsHeldBack ??= recorded.redirectsHeldBack;
     // The run is recorded; now put the redirects table on the build the
     // target serves, in a transaction of its own. A failure is recorded and
     // retried by the redirect-sync worker (the target stays behind); the
@@ -659,6 +785,11 @@ async function runPromote(
       toRunId: runId,
       buildId: published.destinationBuildId,
       ...(plan.stagedHasSecurityHeaders ? {} : { securityHeadersNote: NO_BUILD_HEADERS_NOTE }),
+      redirects: {
+        wentLive: redirectsApplied,
+        waiting: redirectsWaiting + (redirectsPlanned - redirectsApplied),
+        heldBack: redirectsHeldBack,
+      },
     });
   } catch (e) {
     // A throw past the steps above is a bug; the run still ends failed and

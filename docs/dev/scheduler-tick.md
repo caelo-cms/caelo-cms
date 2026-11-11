@@ -1,6 +1,6 @@
 # The scheduler tick
 
-Issue #1140. The admin does periodic work only inside a request, so the work runs on the CPU the request is billed for and never relies on an idle instance (CLAUDE.md §11.B Tier 5). One scheduler calls the admin every few minutes. That request runs every task that is due.
+Issue #1140. The admin does periodic work only inside a request, so the work runs on the CPU the request is billed for and never relies on an idle instance (CLAUDE.md §11.B Tier 5). Since #1361 the admin runs on request-billed CPU (`SERVICE_CPU_IDLE.admin`): between requests it gets next to no CPU. One scheduler calls the admin every few minutes. That request runs every task that is due.
 
 ## The pieces
 
@@ -53,7 +53,3 @@ No task may build or publish production (CLAUDE.md §2). `scripts/no-automatic-p
 - **Self-hosted:** the `caelo-scheduler` Compose service runs `packages/admin-core/src/scheduler/clock.ts` from the admin image. It posts with a fresh internal token. It does no work itself and reaches no database.
 - **AWS / Azure:** nothing yet. The admin task itself does not exist (#749 / #750). The same shape will be an EventBridge Scheduler rule or a Container Apps job that calls the same endpoint.
 - **Dev and test runs** (`NODE_ENV` other than `production`) have no scheduler. There the admin ticks itself every 5 minutes (`bootstrapDevSchedulerClock` in `hooks.server.ts`). `CAELO_SCHEDULER_CLOCK=off` turns that off.
-
-## What is not on the tick yet
-
-- The flip of the admin to request-based CPU: #1361.

@@ -63,6 +63,7 @@ import type {
 } from "../provider.js";
 import { repairToolCallPairing } from "./history-repair.js";
 import { rewriteRetiredToolReferences } from "./retired-tool-references.js";
+import { fitModelImage } from "./tool-image.js";
 import type { AccumulatedToolCall } from "./types.js";
 
 /** Provider payload guard — a base64-inflated 20MB PNG breaks calls. */
@@ -74,8 +75,10 @@ export type AttachmentImageLoader = (
 
 /**
  * Default loader: media.get for the storage key, media storage for the
- * bytes. Uses the ORIGINAL variant — the model should judge the design
- * mockup at full fidelity, not a webp thumbnail.
+ * bytes. Uses the ORIGINAL variant, not a webp thumbnail, so the model judges
+ * a design mockup at the fidelity it can see. #1592: an image larger than
+ * the edge the provider scales to is fitted to it, because one oversized
+ * image in the history refuses every later request.
  *
  * #1216 — one loader serves one turn: each image is read and encoded at
  * most once (a content-addressed screenshot that several messages
@@ -122,12 +125,39 @@ async function loadChatImage(
     if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
       return { failed: `chat image ${storageKey} exceeds the provider byte cap` };
     }
-    return { type: "image", base64: Buffer.from(bytes).toString("base64"), mediaType: mime };
+    return await modelImagePart(bytes, mime, `chat image ${storageKey}`);
   } catch (e) {
     return {
       failed: `chat image ${storageKey} is gone from storage: ${
         e instanceof Error ? e.message : String(e)
       }`,
+    };
+  }
+}
+
+/**
+ * #1592 — the image part for loaded bytes, fitted to the edge the model
+ * sees ({@link fitModelImage}). Bytes that are no decodable image become a
+ * text note: the provider would refuse the whole request for them.
+ */
+async function modelImagePart(
+  bytes: Uint8Array,
+  mime: ImagePart["mediaType"],
+  label: string,
+): Promise<ImagePart | { failed: string }> {
+  try {
+    const fitted = await fitModelImage({
+      base64: Buffer.from(bytes).toString("base64"),
+      mediaType: mime,
+    });
+    return {
+      type: "image",
+      base64: fitted.base64,
+      mediaType: fitted.mediaType as ImagePart["mediaType"],
+    };
+  } catch (e) {
+    return {
+      failed: `${label} is not a readable image: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
 }
@@ -161,11 +191,11 @@ async function loadMediaAsset(
     const bytes = await getMediaStorage().get(asset.storageKey);
     if (bytes.byteLength > MAX_ATTACHMENT_BYTES)
       return { failed: `image ${assetId} exceeds the provider byte cap` };
-    return {
-      type: "image",
-      base64: Buffer.from(bytes).toString("base64"),
-      mediaType: asset.mime as (typeof CHAT_IMAGE_MIMES)[number],
-    };
+    return await modelImagePart(
+      bytes,
+      asset.mime as (typeof CHAT_IMAGE_MIMES)[number],
+      `image ${assetId}`,
+    );
   } catch (e) {
     return {
       failed: `storage read failed for ${assetId}: ${e instanceof Error ? e.message : String(e)}`,

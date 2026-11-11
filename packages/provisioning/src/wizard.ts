@@ -91,6 +91,12 @@ export interface WizardOptions {
   version?: string;
   /** #1558 — `--accept-release-candidate`: confirms a release candidate without a prompt. */
   acceptReleaseCandidate?: boolean;
+  /**
+   * #1580 — `--billing-account` (already parsed): the billing account a new
+   * GCP project is linked to; skips the picker. Needed with `nonInteractive`
+   * when the signed-in account has several open billing accounts.
+   */
+  billingAccountId?: string;
 }
 
 export async function runWizard(opts: WizardOptions = {}): Promise<void> {
@@ -129,6 +135,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
     const prep = await prepareJobModeInstall({
       ...(opts.projectId ? { projectId: opts.projectId } : {}),
       ...(opts.version ? { version: opts.version } : {}),
+      ...(opts.billingAccountId ? { billingAccountId: opts.billingAccountId } : {}),
     });
     if (prep.kind === "handled") {
       outro(bold("Done."));
@@ -232,6 +239,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
     ...(opts.version ? { version: opts.version } : {}),
     ...(opts.acceptReleaseCandidate ? { acceptReleaseCandidate: true } : {}),
   };
+  const billing = opts.billingAccountId ? { billingAccountId: opts.billingAccountId } : {};
   switch (provider) {
     case "gcp":
       await runGcpWizard({
@@ -243,6 +251,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         ...(opts.region ? { region: opts.region } : {}),
         runMode,
         ...release,
+        ...billing,
       });
       break;
     case "gcp-firebase":
@@ -255,6 +264,7 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         ...(opts.region ? { region: opts.region } : {}),
         runMode,
         ...release,
+        ...billing,
       });
       break;
     case "self-hosted":

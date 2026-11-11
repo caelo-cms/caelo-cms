@@ -8,6 +8,12 @@
  * reaches the same function directly (in-process.ts). Both pass the body as
  * text, so the same caps and the same parsing apply to both.
  *
+ * Two steps (#1574): `admitJobReport` checks everything a report brings and
+ * answers a refusal with its status; the admitted report's `run` then runs
+ * the action. Between them the endpoint learns whether the action is long
+ * (the build carrier's `run`) and answers it as a stream that keeps the
+ * request busy; the action's signal aborts when the job's request ended.
+ *
  * Everything a job sends is checked here before anything acts on it: the
  * envelope, the attempt and its token (`reporting_jobs.authorize`), the
  * rate, and the action's own schema. A job is the admin's own code, but it
@@ -81,35 +87,65 @@ class OpFailure extends Error {
   }
 }
 
-/** Handle one report. Never throws: every failure is an answer. */
-export async function handleJobReport(
+/**
+ * A report the admin admitted: its envelope, token, rate and input passed.
+ * What is left is the action itself.
+ */
+export interface AdmittedReport {
+  /**
+   * The action holds its request while the admin works (kind.ts `long`):
+   * the endpoint answers it as a stream that keeps the request busy.
+   */
+  readonly long: boolean;
+  /**
+   * Run the action and answer. Never throws: every failure is an answer.
+   *
+   * @param signal - aborts when the job's request ended before the answer.
+   */
+  run(signal?: AbortSignal): Promise<ReportResponse>;
+}
+
+/** An admission: the report's runner, or the answer that refuses it. */
+export type ReportAdmission =
+  | { readonly admitted: AdmittedReport }
+  | { readonly refused: ReportResponse };
+
+/**
+ * Admit one report: everything before its action runs (the envelope, the
+ * attempt and its token, the rate, an upload's parts, the action's input).
+ * Never throws: every refusal is an answer, with its status.
+ */
+export async function admitJobReport(
   deps: AdminJobDeps,
   request: ReportRequest,
-): Promise<ReportResponse> {
+): Promise<ReportAdmission> {
+  const refusal = (r: ReportResponse): ReportAdmission => ({ refused: r });
   if (!isReportingJobKind(request.kind)) {
-    return refused(404, "unknown-kind", `no reporting job of kind "${request.kind}"`);
+    return refusal(refused(404, "unknown-kind", `no reporting job of kind "${request.kind}"`));
   }
   const def = reportingJobKind(request.kind);
   if (Buffer.byteLength(request.bodyText, "utf8") > MAX_REPORT_BODY_BYTES) {
-    return refused(
-      413,
-      "too-large",
-      `a report carries at most ${MAX_REPORT_BODY_BYTES} bytes; send larger inputs in parts (upload-part)`,
+    return refusal(
+      refused(
+        413,
+        "too-large",
+        `a report carries at most ${MAX_REPORT_BODY_BYTES} bytes; send larger inputs in parts (upload-part)`,
+      ),
     );
   }
   let json: unknown;
   try {
     json = JSON.parse(request.bodyText);
   } catch {
-    return refused(400, "bad-json", "the report is not JSON");
+    return refusal(refused(400, "bad-json", "the report is not JSON"));
   }
   const parsed = reportEnvelopeSchema.safeParse(json);
   if (!parsed.success) {
-    return refused(400, "bad-envelope", issuesOf(parsed.error));
+    return refusal(refused(400, "bad-envelope", issuesOf(parsed.error)));
   }
   const envelope = parsed.data;
   if (!request.token || !TOKEN.test(request.token)) {
-    return refused(401, "missing-token", "the report carries no attempt token");
+    return refusal(refused(401, "missing-token", "the report carries no attempt token"));
   }
   try {
     const admitted = (await op(deps, "reporting_jobs.authorize", {
@@ -123,11 +159,11 @@ export async function handleJobReport(
     if (!admitted.admitted) {
       switch (admitted.reason) {
         case "stale":
-          return refused(409, "stale", "a newer attempt replaced this one: stop");
+          return refusal(refused(409, "stale", "a newer attempt replaced this one: stop"));
         case "finished":
-          return refused(409, "finished", `the ${def.label} is over: stop`);
+          return refusal(refused(409, "finished", `the ${def.label} is over: stop`));
         case "rate-limited":
-          return {
+          return refusal({
             status: 429,
             answer: {
               ok: false,
@@ -137,35 +173,61 @@ export async function handleJobReport(
               },
               retryAfterSeconds: admitted.retryAfterSeconds ?? 60,
             },
-          };
+          });
         default:
-          return refused(401, "not-admitted", "no such attempt, or not its token");
+          return refusal(refused(401, "not-admitted", "no such attempt, or not its token"));
       }
     }
-    return await runAction(deps, def, envelope);
+    return await prepareAction(deps, def, envelope);
   } catch (e) {
-    if (e instanceof ActionRefusal) return refused(422, "refused", e.message.slice(0, 2000));
-    const message = e instanceof Error ? e.message : String(e);
-    console.error(
-      `[reporting-jobs] ${def.kind} ${envelope.subjectId} ${envelope.action}:`,
-      message,
-    );
-    return refused(500, "failed", message.slice(0, 2000));
+    return refusal(failure(def, envelope, e));
   }
 }
 
-async function runAction(
+/**
+ * Handle one report: admit it, then run its action (a job inside the
+ * admin's process, and tests). Never throws: every failure is an answer.
+ */
+export async function handleJobReport(
+  deps: AdminJobDeps,
+  request: ReportRequest,
+  signal?: AbortSignal,
+): Promise<ReportResponse> {
+  const admission = await admitJobReport(deps, request);
+  if ("refused" in admission) return admission.refused;
+  return admission.admitted.run(signal);
+}
+
+/** The answer to an action that threw: a refusal is a 422, anything else a 500. */
+function failure(def: ReportingJobKindDef, envelope: ReportEnvelope, e: unknown): ReportResponse {
+  if (e instanceof ActionRefusal) return refused(422, "refused", e.message.slice(0, 2000));
+  const message = e instanceof Error ? e.message : String(e);
+  console.error(`[reporting-jobs] ${def.kind} ${envelope.subjectId} ${envelope.action}:`, message);
+  return refused(500, "failed", message.slice(0, 2000));
+}
+
+/** An admission whose answer is ready (the shared actions, a refused input). */
+function answeredNow(response: ReportResponse): ReportAdmission {
+  return { admitted: { long: false, run: async () => response } };
+}
+
+/**
+ * The shared actions run here, at admission (they are short). A kind's own
+ * action is checked here (its upload read, its input parsed) and runs when
+ * the endpoint calls `run`.
+ */
+async function prepareAction(
   deps: AdminJobDeps,
   def: ReportingJobKindDef,
   envelope: ReportEnvelope,
-): Promise<ReportResponse> {
+): Promise<ReportAdmission> {
   const { subjectId, attempt } = envelope;
   switch (envelope.action) {
     case "heartbeat":
-      return answered({});
+      return answeredNow(answered({}));
     case "upload-part": {
       const part = uploadPartSchema.safeParse(envelope.payload);
-      if (!part.success) return refused(400, "bad-input", issuesOf(part.error));
+      if (!part.success) return answeredNow(refused(400, "bad-input", issuesOf(part.error)));
       try {
         await op(deps, "reporting_jobs.put_upload_part", {
           kind: def.kind,
@@ -175,15 +237,15 @@ async function runAction(
         });
       } catch (e) {
         if (e instanceof OpFailure && isRefusal(e.error)) {
-          return refused(413, "too-large", describeError(e.error));
+          return answeredNow(refused(413, "too-large", describeError(e.error)));
         }
         throw e;
       }
-      return answered({});
+      return answeredNow(answered({}));
     }
     case "defer": {
       const d = deferSchema.safeParse(envelope.payload);
-      if (!d.success) return refused(400, "bad-input", issuesOf(d.error));
+      if (!d.success) return answeredNow(refused(400, "bad-input", issuesOf(d.error)));
       await op(deps, "reporting_jobs.release", {
         kind: def.kind,
         subjectId,
@@ -191,14 +253,16 @@ async function runAction(
         // Read as "the last attempt deferred: …" when the work is given up.
         reason: `deferred: ${d.data.reason}`,
       });
-      return answered({});
+      return answeredNow(answered({}));
     }
     default:
       break;
   }
   const action = def.actions[envelope.action];
   if (!action) {
-    return refused(404, "unknown-action", `a ${def.label} job has no action "${envelope.action}"`);
+    return answeredNow(
+      refused(404, "unknown-action", `a ${def.label} job has no action "${envelope.action}"`),
+    );
   }
   let raw: unknown = envelope.payload ?? {};
   if (envelope.upload) {
@@ -215,29 +279,40 @@ async function runAction(
       ).text;
     } catch (e) {
       if (e instanceof OpFailure && isRefusal(e.error)) {
-        return refused(400, "incomplete-upload", describeError(e.error));
+        return answeredNow(refused(400, "incomplete-upload", describeError(e.error)));
       }
       throw e;
     }
     try {
       raw = JSON.parse(text);
     } catch {
-      return refused(400, "bad-json", "the uploaded input is not JSON");
+      return answeredNow(refused(400, "bad-json", "the uploaded input is not JSON"));
     }
   }
   const input = action.input.safeParse(raw);
-  if (!input.success) return refused(400, "bad-input", issuesOf(input.error));
-  const result = await action.handle(deps, subjectId, input.data);
-  if (result.done) {
-    await op(deps, "reporting_jobs.finish", {
-      kind: def.kind,
-      subjectId,
-      attempt,
-      outcome: result.done.outcome,
-      note: result.done.note ?? null,
-    });
-  }
-  return answered(result.value);
+  if (!input.success) return answeredNow(refused(400, "bad-input", issuesOf(input.error)));
+  return {
+    admitted: {
+      long: action.long === true,
+      async run(signal) {
+        try {
+          const result = await action.handle(deps, subjectId, input.data, signal ? { signal } : {});
+          if (result.done) {
+            await op(deps, "reporting_jobs.finish", {
+              kind: def.kind,
+              subjectId,
+              attempt,
+              outcome: result.done.outcome,
+              note: result.done.note ?? null,
+            });
+          }
+          return answered(result.value);
+        } catch (e) {
+          return failure(def, envelope, e);
+        }
+      },
+    },
+  };
 }
 
 function isRefusal(error: QueryError): boolean {

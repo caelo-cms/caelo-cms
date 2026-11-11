@@ -24,11 +24,11 @@
  * still being built, on this instance or any other.
  */
 
-import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
 import { ok, phaseTimingSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { deployRunIsOrphaned } from "../deploy/deploy-run-lock.js";
+import { deployRunIsOrphaned, lockBuildOrderInTx } from "../deploy/deploy-run-lock.js";
 import {
   acquireLiveRelease,
   releaseLiveRelease,
@@ -98,17 +98,20 @@ export const beginRunInput = z
  * return (#1307), so a Stage whose process died reads as failed with the
  * restart hint instead of as running until someone starts another one.
  *
+ * @param message - what the run says (#1574: a build whose carrier job
+ *   died names that instead of an admin crash).
  * @returns the run's new `finished_at` when this call marked it failed,
  *   else null.
  */
 export async function failRunIfOrphanedInTx(
   tx: TransactionRunner,
   runId: string,
+  message: string = ORPHANED_RUN_MESSAGE,
 ): Promise<string | Date | null> {
   if (!(await deployRunIsOrphaned(tx, runId))) return null;
   const marked = (await tx.execute(sql`
     UPDATE deploy_runs
-    SET status = 'failed', finished_at = clock_timestamp(), error_message = ${ORPHANED_RUN_MESSAGE},
+    SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
         -- #1319 — a run that never succeeded never writes its planned audit.
         lease_expires_at = NULL, planned_audit = NULL
     WHERE id = ${runId}::uuid AND status = 'running'
@@ -173,15 +176,53 @@ export async function settleOrphanedRuns<R extends RunStateRow>(
 }
 
 /**
+ * Whether `runId` is the id of a build order that ended (given up), read
+ * under the order's lock, which this transaction then holds. A run without
+ * an order (every run that is not carried) takes no lock: an order is
+ * written before its run starts, so none can appear for it later.
+ */
+async function buildOrderEnded(tx: TransactionRunner, runId: string): Promise<boolean> {
+  const ordered = (await tx.execute(sql`
+    SELECT 1 AS ordered FROM build_orders WHERE id = ${runId}::uuid
+  `)) as unknown as { ordered: number }[];
+  if (ordered.length === 0) return false;
+  await lockBuildOrderInTx(tx, runId);
+  // A statement after the lock: it sees what a give-up committed meanwhile.
+  const order = (await tx.execute(sql`
+    SELECT state FROM build_orders WHERE id = ${runId}::uuid
+  `)) as unknown as { state: string }[];
+  return order[0]?.state === "done";
+}
+
+/**
  * Sweep runs that died mid-build, then insert `input`'s row as running.
  * Runs in the caller's (start step's) transaction.
  *
+ * #1574 — a run whose build order was given up never starts: the order
+ * already ended (its waiting request heard the outcome), and a build that
+ * began now would go live behind that answer. A carried build's run takes
+ * its order's id (build-carrier/run-order.ts). The order's state is read
+ * under the lock its give-up takes too, held until this transaction has
+ * committed the run (deploy-run-lock.ts `lockBuildOrderInTx`): a give-up
+ * either ended the order first, and the run is refused, or waits and then
+ * sees the run, and asks it to stop.
+ *
  * @returns the ids of the runs marked failed.
+ * @throws OperationAbortError when the run's build order was given up.
  */
 export async function beginRunInTx(
   tx: TransactionRunner,
   input: z.infer<typeof beginRunInput>,
 ): Promise<string[]> {
+  if (await buildOrderEnded(tx, input.runId)) {
+    throw new OperationAbortError({
+      kind: "HandlerError",
+      operation: "deploy.start_run",
+      message:
+        "this build's order was given up before its run started (its build carrier stopped), so nothing was built or published. Start it again.",
+      refusal: true,
+    });
+  }
   const running = (await tx.execute(sql`
     SELECT id::text AS id FROM deploy_runs WHERE status = 'running' AND id <> ${input.runId}::uuid
   `)) as unknown as { id: string }[];

@@ -482,12 +482,12 @@ export const endExecuteDeployProposalOp = requiresApproverPermission(
  */
 async function runExecuteDeployProposal(
   ctx: ExecutionContext,
-  input: { proposalId: string },
+  input: { proposalId: string; runId?: string | undefined },
   steps: OperationSteps,
 ): Promise<Result<{ runId: string | null; warning?: string }, QueryError>> {
   const { registry, adapter } = steps;
   // The run's id (Publish live or rollback), minted now so the claim names it.
-  const claimedRunId = randomUUID();
+  const claimedRunId = input.runId ?? randomUUID();
   const begun = await execute(registry, adapter, ctx, "deploy.begin_execute_proposal", {
     proposalId: input.proposalId,
     runId: claimedRunId,
@@ -516,13 +516,22 @@ async function runExecuteDeployProposal(
     );
   } else {
     // The propose-time preview captured `restoreRunId`; the Owner's click
-    // reproduces what they previewed.
-    applied = await execute(registry, adapter, ctx, "deploy.rollback", {
-      targetName: (plan.payload as { target: string }).target,
-      runId: plan.restoreRunId,
-      newRunId: claimedRunId,
-      ...(typeof plan.payload.repoRoot === "string" ? { repoRoot: plan.payload.repoRoot } : {}),
-    });
+    // reproduces what they previewed. The stop goes with it, as with a
+    // promote: a carried rollback whose carrier is gone must not take the
+    // live release later (#1574).
+    applied = await execute(
+      registry,
+      adapter,
+      ctx,
+      "deploy.rollback",
+      {
+        targetName: (plan.payload as { target: string }).target,
+        runId: plan.restoreRunId,
+        newRunId: claimedRunId,
+        ...(typeof plan.payload.repoRoot === "string" ? { repoRoot: plan.payload.repoRoot } : {}),
+      },
+      steps.signal ? { signal: steps.signal } : {},
+    );
   }
   const runId = applied.ok
     ? plan.proposalKind === "promote"
@@ -559,7 +568,16 @@ const executeDeployProposalOpDefinition = defineStepwiseOperation({
   // never approve or reject its own proposal.
   actorScope: ["human", "system"],
   database: "cms_admin",
-  input: z.object({ proposalId: z.string().uuid() }).strict(),
+  input: z
+    .object({
+      proposalId: z.string().uuid(),
+      /**
+       * #1574 — the id the claim gives its run: a carried build passes its
+       * order's id, so the order and its run share one. Default: a fresh id.
+       */
+      runId: z.string().uuid().optional(),
+    })
+    .strict(),
   output: z.object({
     runId: z.string().nullable(),
     /** #1454 — what the AI relays and the queue page shows. */
@@ -633,6 +651,11 @@ export const listPendingDeployProposalsOp = defineOperation({
   input: z
     .object({
       limit: z.number().int().min(1).max(200).optional(),
+      /**
+       * #1574 — only this proposal, if it is still pending: an approval's
+       * carried build checks it before it starts a job (build-carrier/preflight.ts).
+       */
+      proposalId: z.string().uuid().optional(),
     })
     .strict(),
   output: z.object({ proposals: z.array(proposalRowSchema) }),
@@ -653,6 +676,7 @@ export const listPendingDeployProposalsOp = defineOperation({
         applied_run_id::text           AS applied_run_id
       FROM deploy_pending_actions
       WHERE status = 'pending'
+        ${input.proposalId ? sql`AND id = ${input.proposalId}::uuid` : sql``}
       ORDER BY created_at DESC
       LIMIT ${limit}
     `)) as unknown as ProposalDbRow[];

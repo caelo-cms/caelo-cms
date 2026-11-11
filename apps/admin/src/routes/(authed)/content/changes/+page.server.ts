@@ -11,7 +11,7 @@
  * are listed read-only so nobody is surprised by a takeover.
  */
 
-import { describeError, stageChatSessions } from "@caelo-cms/admin-core";
+import { carryStage, describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -109,7 +109,8 @@ export const actions: Actions = {
       });
     }
 
-    const staged = await stageChatSessions({ adapter, registry }, locals.ctx, requested);
+    // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
+    const staged = await carryStage({ adapter, registry }, locals.ctx, requested);
     if (!staged.ok) {
       const chat = stageable.find((c) => c.chatSessionId === staged.error.chatSessionId);
       return fail(500, {
@@ -144,6 +145,8 @@ export const actions: Actions = {
         pluginProblemWarning,
         linkNoticeWarning,
       },
+      // #1574 — built without the build carrier (the layout's toast says so).
+      ...(staged.warning ? { carrierWarning: staged.warning } : {}),
     };
   },
 

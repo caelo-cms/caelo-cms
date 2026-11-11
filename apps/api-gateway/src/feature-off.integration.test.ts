@@ -10,7 +10,7 @@
  * admin's publish notifies, and the next request reads the registry again.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, setSystemTime } from "bun:test";
 import {
   publishProjectionOnce,
   releaseProjectionForTests,
@@ -24,9 +24,24 @@ import {
 } from "@caelo-cms/plugin-host";
 import { definePlugin, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, type ListenHandle, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  GATEWAY_REFRESH_PATH,
+  GATEWAY_REFRESH_TOKEN_HEADER,
+  gatewayRefreshAudience,
+} from "@caelo-cms/shared";
 import { GATEWAY_DATABASE_ROLES, gatewayDatabaseUrls } from "./database-env.js";
 import { listenForPublishedChanges, onPublishedChange } from "./published-changes.js";
-import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./server.js";
+import {
+  idTokenTestKey,
+  signIdTokenForTests,
+  testRefreshPingVerifier,
+} from "./refresh-ping.test-helpers.js";
+import {
+  handleRequest,
+  invalidateGatewaySettings,
+  setGatewayAdapter,
+  setRefreshPingVerifier,
+} from "./server.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -151,6 +166,49 @@ describe("E14 a: the live gateway with no visitor-facing plugin active", () => {
   it("keeps the liveness probe and the upgrade's health check", async () => {
     expect((await handleRequest(bare("GET", "/healthz"))).status).toBe(200);
     expect((await handleRequest(bare("GET", "/api/_caelo/health"))).status).toBe(200);
+  });
+
+  it("asks the database nothing because of visitor traffic, however long it idles", async () => {
+    // The switched-off recheck of #1555 read once per 30 s here; E14 a has
+    // the answer from memory, and only the admin's ping changes it.
+    reads = 0;
+    try {
+      for (const idle of [31_000, 3_600_000]) {
+        setSystemTime(new Date(Date.now() + idle));
+        expect((await handleRequest(bare("POST", `/api/plugin/${SLUG}/save`))).status).toBe(404);
+        expect((await handleRequest(bare("GET", "/api/captcha/challenge"))).status).toBe(404);
+      }
+    } finally {
+      setSystemTime();
+    }
+    expect(reads).toBe(0);
+  });
+
+  it("takes the admin's ping, and refuses a forged one without a read", async () => {
+    const key = idTokenTestKey("google-key-1");
+    const audience = gatewayRefreshAudience("test", "live");
+    setRefreshPingVerifier(testRefreshPingVerifier(key, audience));
+    const ping = (token: string) =>
+      handleRequest(
+        new Request(`http://localhost${GATEWAY_REFRESH_PATH}`, {
+          method: "POST",
+          headers: { [GATEWAY_REFRESH_TOKEN_HEADER]: token },
+        }),
+      );
+    try {
+      reads = 0;
+      const forged = signIdTokenForTests(idTokenTestKey(key.kid), { aud: audience });
+      expect((await ping(forged)).status).toBe(404);
+      expect(reads).toBe(0);
+      // The admin's ping reads the registry again, and the gateway stays off.
+      expect((await ping(signIdTokenForTests(key, { aud: audience }))).status).toBe(200);
+      expect(reads).toBeGreaterThan(0);
+      reads = 0;
+      expect((await handleRequest(bare("GET", "/api/captcha/challenge"))).status).toBe(404);
+      expect(reads).toBe(0);
+    } finally {
+      setRefreshPingVerifier(null);
+    }
   });
 
   it("turns on when the Owner activates a visitor-facing plugin, with no redeploy", async () => {

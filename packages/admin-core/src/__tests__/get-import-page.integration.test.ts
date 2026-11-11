@@ -153,8 +153,9 @@ describe("imports.get_page_gist + get_import_page tool", () => {
     expect(guidance).toBeDefined();
     expect(guidance).not.toContain("site-data");
     const pageRef = c.match(/pg_[a-z0-9]+/)?.[0];
-    expect(getPageInspection(pageRef as string)?.crawled).toBe(true);
-    // The rest of the same page stays marked when it is read on.
+    expect(getPageInspection(pageRef as string)).not.toBeNull();
+    // The rest of the same page stays marked when it is read on: every
+    // cached page is another website's (#1566), not only a crawl's.
     const more = await readPageMoreTool.handler(SYSTEM, { pageRef: pageRef as string, cursor: 0 }, {
       adapter,
       registry,

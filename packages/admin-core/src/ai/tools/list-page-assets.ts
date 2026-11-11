@@ -11,6 +11,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { siteData } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -73,12 +74,14 @@ export const listPageAssetsTool: ToolDefinitionWithHandler<z.infer<typeof listPa
           "If the run's pages have not been crawled/extracted yet, there is no stored HTML to scan.",
       };
     }
+    // #1566 — the URLs and alt texts come from the crawled pages' HTML.
+    const assets = v.assets.map(
+      (a) =>
+        `- ${a.url} (×${a.count} on ${a.pages} page${a.pages === 1 ? "" : "s"})${a.alt ? ` (alt="${a.alt}")` : ""}`,
+    );
     const lines = [
       `${v.total} distinct asset(s) across ${v.pagesScanned} crawled page(s)${input.search ? ` matching "${input.search}"` : ""} (showing ${v.assets.length}):`,
-      ...v.assets.map(
-        (a) =>
-          `- ${a.url} (×${a.count} on ${a.pages} page${a.pages === 1 ? "" : "s"})${a.alt ? ` (alt="${a.alt}")` : ""}`,
-      ),
+      siteData(assets.join("\n")),
       "Import the ones you need with import_media_from_urls({ urls: [...] }).",
     ];
     return { ok: true, content: lines.join("\n") };

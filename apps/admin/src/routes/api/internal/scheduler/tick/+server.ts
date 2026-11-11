@@ -22,7 +22,9 @@ import { json, type RequestHandler } from "@sveltejs/kit";
 import { authorizeSchedulerTick, runAdminSchedulerTick } from "#lib/server/scheduler.js";
 
 export const POST: RequestHandler = async ({ request }) => {
-  const via = await authorizeSchedulerTick(request);
+  const auth = await authorizeSchedulerTick(request);
+  if (!auth.ok) return auth.refusal;
+  const { via } = auth;
   const report = await runAdminSchedulerTick();
   const failed = report.ran.filter((r) => r.outcome !== "ok");
   if (failed.length > 0) {

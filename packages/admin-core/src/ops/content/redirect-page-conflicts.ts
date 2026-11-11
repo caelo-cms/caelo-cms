@@ -11,14 +11,23 @@
  * the rule).
  *
  * Pages come from `pages.list`, so a chat sees its own pending renames, moves
- * and deletes. Rules are live state, so they are read directly. O(request):
- * `pages.list` selects by id or path, and `redirects.from_path` is unique.
+ * and deletes. #1550 — rules come from the pending view (the live rule, or
+ * the address's pending change of the shared draft, Draft ones too): what
+ * will answer once everything saved goes live, with its state. O(request):
+ * `pages.list` selects by id or path, and both tables are looked up by
+ * address.
  */
 
 import { defineOperation, type TransactionRunner, textArray } from "@caelo-cms/query-api";
-import { type ExecutionContext, ok, redirectFromPathSpellings } from "@caelo-cms/shared";
+import {
+  type ExecutionContext,
+  ok,
+  redirectAddress,
+  redirectFromPathSpellings,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { SHARED_DRAFT_PENDING } from "../../redirects/model.js";
 import { loadSiteDesignations } from "./compose-paths.js";
 import { listPagesOp } from "./pages.js";
 
@@ -42,6 +51,8 @@ const redirectPageConflictSchema = z.object({
    * the live site.
    */
   pageLive: z.boolean(),
+  /** #1550 — the rule's state: live, or a pending change (Staged / Draft). */
+  ruleState: z.enum(["live", "staged", "draft"]),
 });
 
 export type RedirectPageConflict = z.infer<typeof redirectPageConflictSchema>;
@@ -99,14 +110,32 @@ export const pageConflictsRedirectOp = defineOperation({
     if (!pages.ok) return pages;
     const bySpelling = pages.value;
     if (bySpelling.size === 0) return ok({ conflicts: [] });
+    const byAddress = new Map([...bySpelling].map(([s, p]) => [redirectAddress(s), p]));
+    const addresses = textArray([...byAddress.keys()]);
     const rows = (await tx.execute(sql`
-      SELECT from_path, to_path, status_code FROM redirects
-      WHERE from_path = ANY(${textArray([...bySpelling.keys()])})
-      ORDER BY from_path
-    `)) as unknown as { from_path: string; to_path: string; status_code: number }[];
+      SELECT r.address, r.from_path, r.to_path,
+             r.status_code, 'live' AS state
+      FROM redirects r
+      WHERE r.address = ANY(${addresses})
+        AND NOT EXISTS (
+          SELECT 1 FROM pending_redirects p
+          WHERE p.address = r.address AND ${SHARED_DRAFT_PENDING}
+        )
+      UNION ALL
+      SELECT p.address, p.from_path, p.to_path, p.status_code, p.state
+      FROM pending_redirects p
+      WHERE p.address = ANY(${addresses}) AND p.to_path IS NOT NULL AND ${SHARED_DRAFT_PENDING}
+      ORDER BY 2
+    `)) as unknown as {
+      address: string;
+      from_path: string;
+      to_path: string;
+      status_code: number;
+      state: "live" | "staged" | "draft";
+    }[];
     return ok({
       conflicts: rows.flatMap((r) => {
-        const page = bySpelling.get(r.from_path);
+        const page = byAddress.get(r.address);
         if (!page) return [];
         return [
           {
@@ -118,6 +147,7 @@ export const pageConflictsRedirectOp = defineOperation({
             pageTitle: page.title,
             pageStatus: page.status,
             pageLive: page.firstPublishedAt !== null,
+            ruleState: r.state,
           },
         ];
       }),

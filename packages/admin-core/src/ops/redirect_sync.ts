@@ -3,13 +3,16 @@
 /**
  * #1157 — the redirect sync ops (deploy/redirect-sync.ts has the model).
  *
- *  redirects.sync_provider — push the redirects table to the hosting provider
- *                            of every staging / production target, without a
- *                            build. Runs after every redirects write, from the
- *                            retry worker and from Settings → Redirects' "Try
- *                            again".
- *  redirects.sync_status   — per target: is the provider serving the saved
- *                            table, the last attempt, the error of a failing one.
+ *  redirects.sync_provider — push the LIVE redirects to the hosting provider
+ *                            of every production target, without a build.
+ *                            Runs after every release that changes them
+ *                            (#1550: Publish live, an Owner's production
+ *                            build, Go live now, a rollback), from the retry
+ *                            worker and from Settings → Redirects' "Try again".
+ *  redirects.sync_status   — per production target: is the provider serving
+ *                            the live table, the last attempt, the error of a
+ *                            failing one. Staging is served by the staging
+ *                            gateway from cms_public_staging (#1330).
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -39,11 +42,10 @@ const outcomeSchema = z.object({
 export const syncRedirectsProviderOp = defineOperation({
   name: "redirects.sync_provider",
   readScope: "request",
-  // Why human-only: it decides nothing — it pushes the table the redirect
-  // writes already saved. Every AI redirect write runs it after its commit
-  // (and reports the outcome in the tool result), the worker retries a
-  // failure, and the operator's "Try again" is the manual path; an AI tool
-  // would only duplicate the automatic retry.
+  // Why human-only: it decides nothing — it pushes the live table a release
+  // already recorded. Every release runs it after its commit, the worker
+  // retries a failure, and the operator's "Try again" is the manual path;
+  // an AI tool would only duplicate the automatic retry.
   actorScope: ["human", "system"],
   database: "cms_admin",
   // #1254 — the provider push is network I/O: no transaction may stay open
@@ -52,12 +54,14 @@ export const syncRedirectsProviderOp = defineOperation({
   input: z
     .object({
       /**
-       * `build`: a Stage changed the build its target serves (deploy.trigger,
-       * #1211); `publish`: a Publish live or plugin-data build did (#1225);
-       * `rollback`: deploy.rollback put an older build back.
+       * `build`: an Owner's production build changed the build its target
+       * serves (deploy.trigger, #1211); `publish`: a Publish live or
+       * plugin-data build did (#1225); `rollback`: deploy.rollback put an
+       * older build back; `go_live`: Go live now changed the live table
+       * (#1550).
        */
       trigger: z
-        .enum(["save", "build", "publish", "rollback", "retry", "manual"])
+        .enum(["build", "publish", "rollback", "retry", "manual", "go_live"])
         .default("manual"),
       /** Only these deploy targets (the retry worker passes the ones that are due). */
       targetIds: z.array(z.string().uuid()).max(100).optional(),
@@ -80,8 +84,10 @@ const targetStatusSchema = z.object({
   targetId: z.string(),
   targetName: z.string(),
   env: z.enum(["staging", "production"]),
-  /** True when the provider serves the redirects table as saved. */
+  /** True when the provider serves the live redirects as recorded. */
   inSync: z.boolean(),
+  /** #1550 — whether a build was ever released there (Go live now needs a live site). */
+  live: z.boolean(),
   failedAttempts: z.number().int(),
   nextAttemptAt: z.string().nullable(),
   lastError: z.string().nullable(),
@@ -120,6 +126,10 @@ export const redirectSyncStatusOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT t.id::text AS id, t.name, t.env,
              EXISTS (SELECT 1 FROM redirect_changes) AS changes_pending,
+             EXISTS (
+               SELECT 1 FROM deploy_runs d
+               WHERE d.target_id = t.id AND d.status = 'succeeded' AND d.build_id IS NOT NULL
+             ) AS live,
              COALESCE(s.wanted_revision, 0) AS wanted, COALESCE(s.synced_revision, 0) AS synced,
              COALESCE(s.failed_attempts, 0) AS failed_attempts,
              s.next_attempt_at, s.last_error,
@@ -133,13 +143,14 @@ export const redirectSyncStatusOp = defineOperation({
         SELECT * FROM redirect_syncs r WHERE r.target_id = t.id
         ORDER BY r.finished_at DESC, r.id DESC LIMIT 1
       ) l ON true
-      WHERE t.env IN ('staging', 'production')
-      ORDER BY (t.env = 'production') DESC, t.name
+      WHERE t.env = 'production'
+      ORDER BY t.name
     `)) as unknown as {
       id: string;
       name: string;
       env: "staging" | "production";
       changes_pending: boolean;
+      live: boolean;
       wanted: number | string;
       synced: number | string;
       failed_attempts: number;
@@ -164,6 +175,7 @@ export const redirectSyncStatusOp = defineOperation({
         env: r.env,
         // #1254 — a change not folded yet is as behind as a failed push.
         inSync: !r.changes_pending && Number(r.wanted) <= Number(r.synced),
+        live: r.live,
         failedAttempts: r.failed_attempts,
         nextAttemptAt: iso(r.next_attempt_at),
         lastError: r.last_error,

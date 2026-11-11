@@ -23,11 +23,12 @@
  */
 
 import { MAIN_RENDER, type UrlCompositionView } from "@caelo-cms/plugin-host";
-import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { type RedirectChangeInput, writeRedirectChanges } from "../../redirects/write.js";
 import { requiresApproverPermission } from "../_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
@@ -35,7 +36,7 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "../_propose-helpers.js";
-import { createRedirectOp } from "../redirects.js";
+import { redirectWriteIssue } from "../redirects.js";
 import { resolveCurrentPathsDryRun } from "./current-path.js";
 
 export interface UrlMigrationDiffEntry {
@@ -53,7 +54,7 @@ export interface UrlMigrationDiffEntry {
  * fresh side as if a plugin were gone (the uninstall diff, #585).
  */
 export async function computeUrlMigrationDiff(
-  tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
+  tx: TransactionRunner,
   view?: UrlCompositionView,
 ): Promise<UrlMigrationDiffEntry[]> {
   const pages = (await tx.execute(sql`
@@ -90,13 +91,17 @@ export async function computeUrlMigrationDiff(
  * Shared by url_migrations.execute_proposal and the gated plugin
  * uninstall (#393), which must move URLs back when a URL-contributing
  * plugin is removed.
+ *
+ * #1550 — the 301s are automatic changes, Staged: they go live with the
+ * Publish live that ships the moved URLs, never before.
  */
 export async function applyUrlMigrationDiff(
-  ctx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[0],
-  tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
+  ctx: ExecutionContext,
+  tx: TransactionRunner,
   diff: ReadonlyArray<UrlMigrationDiffEntry>,
 ): Promise<{ redirectsCreated: number }> {
   let redirectsCreated = 0;
+  const changes: RedirectChangeInput[] = [];
   for (const entry of diff) {
     const updated = (await tx.execute(sql`
       UPDATE pages
@@ -109,18 +114,18 @@ export async function applyUrlMigrationDiff(
         `url migration aborted — page ${entry.pageId} no longer sits at ${entry.from} (stale proposal; re-propose)`,
       );
     }
-    const red = await createRedirectOp.handler(
-      ctx,
-      { fromPath: entry.from, toPath: entry.to, statusCode: 301 },
-      tx,
-    );
-    if (!red.ok) {
-      throw new Error(
-        `url migration aborted — redirect ${entry.from} → ${entry.to} failed to land`,
-      );
+    const issue = await redirectWriteIssue(tx, entry.from, entry.to);
+    if (issue) {
+      throw new Error(`url migration aborted — redirect ${entry.from} → ${entry.to}: ${issue}`);
     }
+    changes.push({ fromPath: entry.from, toPath: entry.to, statusCode: 301 });
     redirectsCreated += 1;
   }
+  await writeRedirectChanges(tx, changes, {
+    origin: "url_migration",
+    state: "staged",
+    owner: { actorId: ctx.actorId, chatSessionId: null, chatBranchId: null },
+  });
   return { redirectsCreated };
 }
 

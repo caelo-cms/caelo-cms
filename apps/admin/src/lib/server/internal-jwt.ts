@@ -81,21 +81,22 @@ export async function signInternalToken(payload: InternalTokenPayload): Promise<
   return `${Buffer.from(message).toString(ENCODING)}.${sig}`;
 }
 
-export interface VerifyResult {
-  readonly ok: boolean;
-  readonly reason?:
-    | "missing-secret"
-    | "malformed"
-    | "bad-signature"
-    | "expired"
-    | "future-iat"
-    | "scope-mismatch";
-  readonly payload?: InternalTokenPayload;
-}
+/** Why {@link verifyInternalToken} refused a token; the 401's JSON names it. */
+export type InternalTokenRefusalReason =
+  | "missing-secret"
+  | "malformed"
+  | "bad-signature"
+  | "expired"
+  | "future-iat"
+  | "scope-mismatch";
+
+export type VerifyResult =
+  | { readonly ok: true; readonly payload: InternalTokenPayload }
+  | { readonly ok: false; readonly reason: InternalTokenRefusalReason };
 
 /**
  * Verify a token. Used by every /api/internal/* +server.ts endpoint
- * via `requireInternalAuth(event, "<scope>")`.
+ * via `internalAuthRefusal(request, "<scope>")`.
  */
 export async function verifyInternalToken(
   token: string,
@@ -150,14 +151,26 @@ function constantTimeEquals(a: string, b: string): boolean {
 }
 
 /**
- * Extract + verify the bearer token from a SvelteKit request. Throws a
- * 401 Response if missing/invalid. Caller is expected to `throw` the
- * result inside a +server.ts handler.
+ * Check the internal bearer token of a request for `expectedScope`.
+ *
+ * The refusal is returned, never thrown (#1563): SvelteKit answers a thrown
+ * plain `Response` with a 500 "Internal Error", so a caller with a missing,
+ * expired or wrong-scope token would read a refusal as a crash, and one that
+ * retries on 5xx would retry it. The endpoint returns what this returns:
+ *
+ * ```ts
+ * const refusal = await internalAuthRefusal(request, SCOPE);
+ * if (refusal) return refusal;
+ * ```
+ *
+ * @returns null when the token is valid for `expectedScope`; otherwise the
+ *   401 to answer with, its JSON naming the reason (`missing-bearer`,
+ *   `scope-mismatch`, …)
  */
-export async function requireInternalAuth(
+export async function internalAuthRefusal(
   request: Request,
   expectedScope: string,
-): Promise<InternalTokenPayload> {
+): Promise<Response | null> {
   // #678 — behind Google IAP (gcp / gcp-firebase) `Authorization` carries
   // the IAP credential the request needed to reach the admin at all, so
   // the internal token rides in its own header there. Same shape as the
@@ -165,18 +178,14 @@ export async function requireInternalAuth(
   const dedicated = request.headers.get(INTERNAL_TOKEN_HEADER)?.trim();
   const auth = dedicated ? `Bearer ${dedicated}` : (request.headers.get("authorization") ?? "");
   const m = /^Bearer\s+(.+)$/i.exec(auth);
-  if (!m) {
-    throw new Response(JSON.stringify({ ok: false, error: "missing-bearer" }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
-  }
+  if (!m) return unauthorized("missing-bearer");
   const r = await verifyInternalToken(m[1] ?? "", expectedScope);
-  if (!r.ok) {
-    throw new Response(JSON.stringify({ ok: false, error: r.reason }), {
-      status: 401,
-      headers: { "content-type": "application/json" },
-    });
-  }
-  return r.payload as InternalTokenPayload;
+  return r.ok ? null : unauthorized(r.reason);
+}
+
+function unauthorized(reason: InternalTokenRefusalReason | "missing-bearer"): Response {
+  return new Response(JSON.stringify({ ok: false, error: reason }), {
+    status: 401,
+    headers: { "content-type": "application/json" },
+  });
 }
