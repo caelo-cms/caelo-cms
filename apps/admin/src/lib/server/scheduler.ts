@@ -40,7 +40,7 @@ import {
 } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext, PlatformUpdateAgentStatus } from "@caelo-cms/shared";
-import { requireInternalAuth } from "#lib/server/internal-jwt.js";
+import { internalAuthRefusal } from "#lib/server/internal-jwt.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { releaseManifestReader } from "#lib/server/release-check.js";
 import { convergeTrigger, upgraderTrigger } from "#lib/server/upgrader.js";
@@ -58,8 +58,14 @@ const SYSTEM_CTX: ExecutionContext = {
   requestId: "scheduler",
 };
 
+/** Who {@link authorizeSchedulerTick} let in, or the 401 to answer with. */
+export type SchedulerTickAuth =
+  | { readonly ok: true; readonly via: "scheduler-identity" | "internal-token" }
+  | { readonly ok: false; readonly refusal: Response };
+
 /**
- * Let the tick through, or throw a 401 Response.
+ * Let the tick through, or hand back the 401 to answer with (returned, not
+ * thrown: SvelteKit answers a thrown `Response` with a 500, #1563).
  *
  * The scheduler's IAP identity is checked first: through IAP the workflow's
  * `Authorization` header carries its IAP credential, which is not an
@@ -69,17 +75,17 @@ const SYSTEM_CTX: ExecutionContext = {
 export async function authorizeSchedulerTick(
   request: Request,
   env: Record<string, string | undefined> = process.env,
-): Promise<"scheduler-identity" | "internal-token"> {
+): Promise<SchedulerTickAuth> {
   const schedulerAccount = env[SCHEDULER_SERVICE_ACCOUNT_ENV]?.trim().toLowerCase();
   const assertion = request.headers.get(IAP_ASSERTION_HEADER);
   if (schedulerAccount && assertion) {
     const verified = await iapVerifier()(assertion);
     if (verified.ok && verified.identity.email.toLowerCase() === schedulerAccount) {
-      return "scheduler-identity";
+      return { ok: true, via: "scheduler-identity" };
     }
   }
-  await requireInternalAuth(request, SCHEDULER_TICK_SCOPE);
-  return "internal-token";
+  const refusal = await internalAuthRefusal(request, SCHEDULER_TICK_SCOPE);
+  return refusal ? { ok: false, refusal } : { ok: true, via: "internal-token" };
 }
 
 let projectionPublisher: PublicProjectionPublisher | null = null;

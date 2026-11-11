@@ -52,14 +52,10 @@ const tickRequest = (headers: Record<string, string>) =>
     headers,
   });
 
-async function status(p: Promise<unknown>): Promise<number | "ok"> {
-  try {
-    await p;
-    return "ok";
-  } catch (e) {
-    if (e instanceof Response) return e.status;
-    throw e;
-  }
+/** The refusal's status, or who was let in. A thrown value fails the test (#1563). */
+async function status(p: ReturnType<typeof authorizeSchedulerTick>): Promise<number | string> {
+  const auth = await p;
+  return auth.ok ? auth.via : auth.refusal.status;
 }
 
 describe("authorizeSchedulerTick (#1140)", () => {
@@ -67,7 +63,7 @@ describe("authorizeSchedulerTick (#1140)", () => {
     const assertion = signIapTestAssertionForTests(KEY, { aud: AUDIENCE, email: SCHEDULER_SA });
     // Through IAP `Authorization` carries the workflow's IAP credential, not an internal token.
     const req = tickRequest({ [IAP_ASSERTION_HEADER]: assertion, authorization: "Bearer jwt" });
-    expect(await authorizeSchedulerTick(req, env)).toBe("scheduler-identity");
+    expect(await status(authorizeSchedulerTick(req, env))).toBe("scheduler-identity");
   });
 
   it("refuses another IAP identity without the internal token", async () => {
@@ -97,7 +93,7 @@ describe("authorizeSchedulerTick (#1140)", () => {
   it("accepts the self-hosted clock's token", async () => {
     const token = await mintTickToken(SECRET);
     expect(
-      await authorizeSchedulerTick(tickRequest({ authorization: `Bearer ${token}` }), {}),
+      await status(authorizeSchedulerTick(tickRequest({ authorization: `Bearer ${token}` }), {})),
     ).toBe("internal-token");
   });
 

@@ -16,7 +16,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { json, type RequestHandler } from "@sveltejs/kit";
-import { requireInternalAuth } from "#lib/server/internal-jwt.js";
+import { internalAuthRefusal } from "#lib/server/internal-jwt.js";
 import { getQueryContext } from "#lib/server/query.js";
 
 const SCOPE = "provisioning-outputs.sync";
@@ -33,7 +33,8 @@ interface RequestBody {
 }
 
 export const POST: RequestHandler = async ({ request }) => {
-  await requireInternalAuth(request, SCOPE);
+  const refusal = await internalAuthRefusal(request, SCOPE);
+  if (refusal) return refusal;
 
   const body = (await request.json()) as RequestBody;
   if (
