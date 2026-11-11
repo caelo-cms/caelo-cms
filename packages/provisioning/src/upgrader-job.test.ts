@@ -524,6 +524,7 @@ describe("runUpgraderJob", () => {
         "iam projects/acme/serviceAccounts/caelo-production-import@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-run-sa@acme.iam.gserviceaccount.com",
+        "iam projects/acme/serviceAccounts/caelo-production-stg-gw-sa@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-upgrader@acme.iam.gserviceaccount.com",
         "iam projects/caelo-website/locations/europe-west1/repositories/caelo-cms-images",
       ].sort(),

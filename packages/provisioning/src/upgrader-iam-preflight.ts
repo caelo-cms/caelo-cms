@@ -60,6 +60,7 @@ import {
   mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
+  stagingGatewayServiceAccountEmail,
   upgraderJobName,
   upgraderServiceAccountEmail,
 } from "./gcp-names.js";
@@ -228,6 +229,13 @@ export function upgraderAccessChecks(target: {
     {
       need: "run the gateway as its service account",
       resource: sa(gatewayServiceAccountEmail(projectId, env)),
+      permissions: ["iam.serviceAccounts.actAs"],
+    },
+    {
+      // #1596 — rolled since v0.12.0 (#1330) but never checked, so a run
+      // without the grant failed halfway through the roll instead of here.
+      need: "run the staging gateway as its service account",
+      resource: sa(stagingGatewayServiceAccountEmail(projectId, env)),
       permissions: ["iam.serviceAccounts.actAs"],
     },
     {

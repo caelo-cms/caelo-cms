@@ -81,6 +81,8 @@ describe("ensureUpgraderJob", () => {
         "projects add-iam-policy-binding acme → roles/logging.logWriter",
         "projects add-iam-policy-binding acme → projects/acme/roles/caeloUpgraderSqlBackup",
         "iam service-accounts add-iam-policy-binding caelo-production-run-sa@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
+        // #1596 — the app-roll rolls the staging gateway, whose revisions run as it.
+        "iam service-accounts add-iam-policy-binding caelo-production-stg-gw-sa@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-production-gateway-sa@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         // #1328 — the MCP-Auth-Proxy's revisions run as its own account.
         "iam service-accounts add-iam-policy-binding caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
