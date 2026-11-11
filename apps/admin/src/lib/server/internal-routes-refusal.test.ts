@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { POST as ownerReset } from "../../routes/api/internal/owner-reset/+server.js";
 import { POST as outputsSync } from "../../routes/api/internal/provisioning-outputs/sync/+server.js";
@@ -71,10 +71,11 @@ describe("apps/admin/src", () => {
     const root = join(import.meta.dir, "..", "..");
     const offenders: string[] = [];
     const walk = (dir: string) => {
-      for (const name of readdirSync(dir)) {
-        const path = join(dir, name);
-        if (statSync(path).isDirectory()) walk(path);
-        else if (/\.(ts|js|svelte)$/.test(name) && !name.endsWith(".test.ts")) {
+      // Dirents, not a stat per path: the read is the only access to a file.
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (/\.(ts|js|svelte)$/.test(entry.name) && !entry.name.endsWith(".test.ts")) {
           if (/throw\s+new\s+Response\s*\(/.test(readFileSync(path, "utf8"))) {
             offenders.push(relative(root, path));
           }
