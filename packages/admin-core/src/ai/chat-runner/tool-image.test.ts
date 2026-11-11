@@ -9,7 +9,12 @@
 
 import { describe, expect, it } from "bun:test";
 import sharp from "sharp";
-import { shrinkToolImage, TOOL_IMAGE_MAX_BYTES, TOOL_IMAGE_MAX_EDGE } from "./tool-image.js";
+import {
+  fitModelImage,
+  shrinkToolImage,
+  TOOL_IMAGE_MAX_BYTES,
+  TOOL_IMAGE_MAX_EDGE,
+} from "./tool-image.js";
 
 /** A page-like full-page capture: bands, cards and rules over 1440×6000. */
 async function fullPageScreenshotPng(): Promise<Buffer> {
@@ -88,6 +93,51 @@ describe("shrinkToolImage", () => {
         base64: Buffer.from("not an image").toString("base64"),
         mediaType: "image/png",
       }),
+    ).rejects.toThrow();
+  });
+});
+
+/**
+ * #1592 — images that were not shrunk at storage (operator attachments,
+ * tool images from before #1216) are fitted when they are loaded for the
+ * model: the provider refuses a whole request for one oversized image, and
+ * a history image rides along on every later turn.
+ */
+describe("fitModelImage", () => {
+  it("fits a tall attachment to the model's edge, keeping the aspect ratio", async () => {
+    const tall = await sharp({
+      create: { width: 1200, height: 4800, channels: 3, background: "#e2e8f0" },
+    })
+      .png()
+      .toBuffer();
+    const out = await fitModelImage({ base64: tall.toString("base64"), mediaType: "image/png" });
+    const meta = await sharp(Buffer.from(out.base64, "base64")).metadata();
+    expect(meta.height).toBe(TOOL_IMAGE_MAX_EDGE);
+    expect(meta.width).toBe(392);
+  });
+
+  it("returns an image within the edge byte for byte (the replayed history keeps its cache)", async () => {
+    const small = await sharp({
+      create: { width: 1568, height: 900, channels: 3, background: "#1d4ed8" },
+    })
+      .jpeg()
+      .toBuffer();
+    const input = { base64: small.toString("base64"), mediaType: "image/jpeg" };
+    const out = await fitModelImage(input);
+    expect(out).toBe(input);
+  });
+
+  it("fits the same oversized input to the same bytes on every turn", async () => {
+    const png = await fullPageScreenshotPng();
+    const input = { base64: png.toString("base64"), mediaType: "image/png" };
+    const a = await fitModelImage(input);
+    const b = await fitModelImage(input);
+    expect(a.base64).toBe(b.base64);
+  });
+
+  it("throws on bytes that are no image", async () => {
+    await expect(
+      fitModelImage({ base64: Buffer.from([1, 2, 3]).toString("base64"), mediaType: "image/png" }),
     ).rejects.toThrow();
   });
 });
