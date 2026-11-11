@@ -103,13 +103,13 @@ const RUN = {
  * saw. No progress and no plugin call reach the registry or the adapter, so
  * plain objects stand in for them.
  *
- * Loading the intake starts work that lands on later turns of the event loop:
- * plugin-host → font-service → fontverter instantiates wawoff2's two
- * WebAssembly modules, which adds ~64 MB of heap on the first turn after the
- * import, or during it. So the probe first lets the loop run until two
- * readings in a row agree. The file's share is then the heap while the upload
- * holds it minus the heap once the build is over and the file let go: neither
- * reading carries anything the process did before the build.
+ * Loading the intake can start work that lands on later turns of the event
+ * loop: until #1579, plugin-host → font-service → fontverter instantiated
+ * wawoff2's two WebAssembly modules, which added ~64 MB of heap on the first
+ * turn after the import, or during it. So the probe first lets the loop run
+ * until two readings in a row agree. The file's share is then the heap while
+ * the upload holds it minus the heap once the build is over and the file let
+ * go: neither reading carries anything the process did before the build.
  */
 const PROBE = `
 import { heapStats } from "bun:jsc";

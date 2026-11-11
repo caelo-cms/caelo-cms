@@ -54,10 +54,22 @@ import {
   expectedOutputAxes,
   isFullAxisSpec,
 } from "@caelo-cms/shared";
-import fontverter from "fontverter";
-import subsetFont from "subset-font";
 import { openFont } from "./inspect.js";
+import { onFirstUse } from "./on-first-use.js";
 import { planSlices, UNICODE_SUBSETS } from "./unicode-subsets.js";
+
+/*
+ * The WOFF2 toolchain loads when a face's delivery is derived, never with
+ * this package (#1579). fontverter loads wawoff2, Emscripten output that sets
+ * up two 16 MiB WebAssembly memories as it loads (~65 MB of heap, ~17 MB
+ * resident and 25-60 ms on a laptop), and subset-font loads fontverter
+ * itself. Every process that imports font-service would pay that at start:
+ * the admin (through plugin-host), its build subprocess, the static
+ * generator. Deriving delivery files is rare (a font is added, or the
+ * toolchain tag moves), so the processes that never do it never load it.
+ */
+const loadFontverter = onFirstUse(() => import("fontverter"));
+const loadSubsetFont = onFirstUse(() => import("subset-font"));
 
 /** Slice name used when the face is delivered unsplit (fsType forbids subsetting). */
 export const FULL_FACE_SUBSET = "full";
@@ -308,8 +320,8 @@ export async function deriveWebDelivery(
       format === "woff2"
         ? source
         : new Uint8Array(
-            await step(sourceSha256, FULL_FACE_SUBSET, () =>
-              fontverter.convert(Buffer.from(source), "woff2"),
+            await step(sourceSha256, FULL_FACE_SUBSET, async () =>
+              (await loadFontverter()).convert(Buffer.from(source), "woff2"),
             ),
           );
     verifyDeliveredSlice(sourceSha256, FULL_FACE_SUBSET, bytes, expectedAxes, null);
@@ -319,7 +331,9 @@ export async function deriveWebDelivery(
   const sfnt =
     format === "ttf" || format === "otf"
       ? Buffer.from(source)
-      : await step(sourceSha256, "source", () => fontverter.convert(Buffer.from(source), "sfnt"));
+      : await step(sourceSha256, "source", async () =>
+          (await loadFontverter()).convert(Buffer.from(source), "sfnt"),
+        );
 
   // Only code points that map to a real glyph: format-4 cmaps end with a
   // U+FFFF segment pointing at .notdef, which is not a character the face
@@ -334,8 +348,8 @@ export async function deriveWebDelivery(
   for (const slice of plan) {
     const text = slice.codePoints.map((cp) => String.fromCodePoint(cp)).join("");
     const bytes = new Uint8Array(
-      await step(sourceSha256, slice.name, () =>
-        subsetFont(sfnt, text, {
+      await step(sourceSha256, slice.name, async () =>
+        (await loadSubsetFont())(sfnt, text, {
           targetFormat: "woff2",
           preserveNameIds: PRESERVED_NAME_IDS,
           ...(variationAxes === undefined ? {} : { variationAxes }),
