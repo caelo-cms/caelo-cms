@@ -44,6 +44,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [dev/reporting-jobs.md](./dev/reporting-jobs.md) — long work in a container job that reports back by request: the attempt token and lease, the report endpoint behind IAP, the tick's backstop, the in-process runner of self-hosted installs, the threat model; the quality audit's runner (#1359).
 - [dev/live-refresh.md](./dev/live-refresh.md) — how the editor stays current without timer polling: live topics over the chat stream and `/api/live-events`, the client hub, adding a live surface (#1215).
 - [dev/ai-tool-texts.md](./dev/ai-tool-texts.md) — what stays in an AI tool description and what lives only in the error; the AI-facing error shape (`errors[]` with absolute paths, `failureKind`, no resend wording, no Postgres internals) (#1277); kept failed calls fixed with `retry_tool_call` (#1275).
+- [dev/incident-reports.md](./dev/incident-reports.md) — an admin stall files one automatic bug report per incident: the signals (timeouts, pool waits, MCP refusals, failed builds), the database session snapshot with who blocks whom and a plain-language diagnosis, and what never goes into it (#1595).
 - [internal/bug-intake.md](./internal/bug-intake.md) — how to operate a bug intake (setup, signed image, configuration) that files one GitHub issue per defect.
 
 ## AI internals

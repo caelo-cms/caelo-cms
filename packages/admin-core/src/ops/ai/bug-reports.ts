@@ -59,9 +59,22 @@ const createBugReportInput = z
     // 'ai' = the model filed it via the bug_report tool; 'auto' = the
     // chat-runner auto-captured a failed tool result. Default 'ai'.
     source: z.enum(["ai", "auto"]).default("ai"),
+    /**
+     * #1595 — an automatic report that is still being written (an incident
+     * report) is forwarded only this long after its last write, so the
+     * Caelo team receives the finished report, not its first draft.
+     */
+    forwardAfterSeconds: z.number().int().min(0).max(3600).optional(),
   })
   .strict()
   .superRefine((input, ctx) => {
+    if (input.forwardAfterSeconds !== undefined && input.source !== "auto") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["forwardAfterSeconds"],
+        message: "only an automatic report is forwarded late; leave it out.",
+      });
+    }
     if (input.kind !== "suggestion") return;
     if (input.severity !== undefined) {
       ctx.addIssue({
@@ -138,13 +151,57 @@ export const createBugReportOp = defineOperation({
         CASE WHEN (SELECT bug_forwarding_enabled FROM telemetry_settings WHERE id = 1)
              THEN 'queued' ELSE 'local_only' END,
         CASE WHEN (SELECT bug_forwarding_enabled FROM telemetry_settings WHERE id = 1)
-             THEN now() END
+             THEN now() + make_interval(secs => ${input.forwardAfterSeconds ?? 0}) END
       )
       RETURNING id::text AS id, forwarding_state AS "forwardingState"
     `)) as unknown as Array<{ id: string; forwardingState: BugForwardingState }>;
     const row = rows[0];
     if (!row) throw new Error("ai_bug_reports INSERT returned no row");
     return ok(row);
+  },
+});
+
+/**
+ * #1595 — rewrite the evidence of an incident report as the incident grows
+ * (incident/capture.ts). Only an automatic report that nobody marked fixed
+ * or invalid changes; its fingerprint and the version that filed it stay.
+ * A report still waiting to be forwarded waits `forwardAfterSeconds` from
+ * this write on, so what is forwarded is the report once the incident
+ * ended (the delay outlasts the incident's quiet window); one already sent
+ * keeps its sent state.
+ */
+export const updateIncidentBugReportOp = defineOperation({
+  name: "ai_bug_reports.update_incident",
+  readScope: "request",
+  // Why system-only: only the incident capture rewrites the report it
+  // filed itself; a report the AI or a person filed is never rewritten.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      reportId: z.string().uuid(),
+      evidence: z.string().max(8000),
+      severity: bugReportSeverity,
+      blockedTask: z.boolean(),
+      forwardAfterSeconds: z.number().int().min(0).max(3600),
+    })
+    .strict(),
+  output: z.object({ updated: z.boolean() }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE ai_bug_reports
+      SET evidence = ${input.evidence},
+          severity = ${input.severity},
+          blocked_task = ${input.blockedTask},
+          next_forward_at = CASE WHEN forwarding_state = 'queued'
+                                 THEN now() + make_interval(secs => ${input.forwardAfterSeconds})
+                                 ELSE next_forward_at END
+      WHERE id = ${input.reportId}::uuid
+        AND source = 'auto'
+        AND status IN ('new', 'triaged')
+      RETURNING id
+    `)) as unknown as { id: string }[];
+    return ok({ updated: rows.length > 0 });
   },
 });
 

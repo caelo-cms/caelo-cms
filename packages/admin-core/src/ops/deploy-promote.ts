@@ -588,10 +588,16 @@ async function runPromote(
   const stop = steps.signal ? AbortSignal.any([steps.signal, heartbeat.lost]) : heartbeat.lost;
   let publisher: StaticPublisher | null = null;
 
-  /** Record the failure (releasing every lease) and answer with `reply`. */
+  /**
+   * Record the failure (releasing every lease) and answer with `reply`.
+   * `refusal` marks a deliberate stop (a redirect problem, a busy release
+   * slot, a cancelled or fenced release), which is no evidence of a stalled
+   * database (#1595).
+   */
   const fail = async (
     stored: string,
     reply: string = stored,
+    refusal = false,
   ): Promise<Result<z.infer<typeof promoteOutput>, QueryError>> => {
     const r = await execute(registry, adapter, sys, "deploy.fail_run", {
       runId,
@@ -600,7 +606,7 @@ async function runPromote(
     });
     // Unrecorded, the run's lease lapses and the next run marks it failed.
     if (!r.ok) console.error("[deploy] could not record the failed run", { runId, error: r.error });
-    logRunTimings("publish-live", runId, timer, { status: "failed" });
+    logRunTimings("publish-live", runId, timer, { status: "failed" }, { message: stored, refusal });
     return refused(reply);
   };
   /** Proof, right before an irreversible provider step, that every lease is still this run's. */
@@ -639,9 +645,8 @@ async function runPromote(
       }
       const p = planned.value as RedirectReleasePlan;
       if (p.problem !== null) {
-        return await fail(
-          `${p.problem} Nothing was published: fix it (Settings → Redirects shows the rules), then Publish live again.`,
-        );
+        const message = `${p.problem} Nothing was published: fix it (Settings → Redirects shows the rules), then Publish live again.`;
+        return await fail(message, message, true);
       }
       redirectChanges = p.goingLive.map((c) => ({ id: c.id, revision: c.revision }));
       redirectsWaiting = p.waiting.length;
@@ -660,7 +665,7 @@ async function runPromote(
       busyMessage: (heldBy) =>
         `${heldBy ? `another Publish live, rollback or plugin-data build (run ${heldBy})` : "a redirect push or a release of the previous Caelo version (during the update)"} kept releasing the live site for ${Math.round(LIVE_RELEASE_WAIT_MS / 60_000)} minutes, so nothing was published. Publish live again once it finished (Settings → Deployments shows it).`,
     });
-    if (!live.ok) return await fail(live.message);
+    if (!live.ok) return await fail(live.message, live.message, true);
     heartbeat.expectLiveRelease(true);
     timer.lap("lock-wait");
     try {
@@ -706,7 +711,7 @@ async function runPromote(
       });
     } catch (e) {
       timer.lap("publish");
-      if (e instanceof ReleaseRefusedError) return await fail(e.message);
+      if (e instanceof ReleaseRefusedError) return await fail(e.message, e.message, true);
       return await fail(`promotion failed: ${e instanceof Error ? e.message : String(e)}`);
     }
     const { phases: publishPhases, ...published } = summary;

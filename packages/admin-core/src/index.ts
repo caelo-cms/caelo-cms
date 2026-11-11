@@ -125,6 +125,8 @@ export {
   type IdTokenSource,
   metadataIdTokens,
 } from "./gateway-refresh.js";
+// issue #1375 — MCP back-pressure: 429 + Retry-After on a saturated admin pool.
+export * from "./incident/install.js";
 export type { LinkNotice } from "./links/link-notice.js";
 // #1215 — live-refresh topics instead of editor timer polling.
 export {
@@ -142,7 +144,6 @@ export {
   waitForLiveTopics,
 } from "./live-events.js";
 export { lockPluginRow } from "./locks.js";
-// issue #1375 — MCP back-pressure: 429 + Retry-After on a saturated admin pool.
 export * from "./mcp-back-pressure.js";
 export { assertDurableMediaRoot, type MediaStorageSetup } from "./media/durable-root.js";
 export * from "./media/pipeline.js";

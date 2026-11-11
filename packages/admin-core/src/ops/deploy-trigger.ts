@@ -838,7 +838,7 @@ async function runTrigger(
     if (!r.ok) console.error("[deploy] could not record the failed run", { runId, error: r.error });
     // A given-up upload serves nothing (no-op once publishStaging finished it).
     await upload?.abort();
-    logRunTimings(runKind, runId, timer, { status: "failed" });
+    logRunTimings(runKind, runId, timer, { status: "failed" }, { message: stored, refusal });
     return err({
       kind: "HandlerError",
       operation: "deploy.trigger",
