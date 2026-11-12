@@ -31,6 +31,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { renderReportSchema } from "../../deploy/render-failures.js";
 import { linkNoticeSchema } from "../../links/link-notice.js";
 import {
   type ChatAuditSummary,
@@ -65,11 +66,14 @@ const gateSchema = z.object({
     "problems",
     "errored",
     "links",
+    "render",
   ]),
   auditRunId: z.string().nullable(),
   message: z.string(),
   /** #1240 — state `links`: the links that keep this build from going live. */
   linkNotice: linkNoticeSchema.nullable(),
+  /** #1604 — state `render`: the content the staged build could not render. */
+  renderReport: renderReportSchema.nullable(),
   canPublishAnyway: z.boolean(),
   openProblemCount: z.number().int(),
   /** #1207 — the open problems grouped by rule, largest groups first (at most 5). */
@@ -105,6 +109,7 @@ function gateView(
       auditRunId: g.auditRunId,
       message: g.message,
       linkNotice: g.linkNotice ?? null,
+      renderReport: g.renderReport ?? null,
       canPublishAnyway: g.canPublishAnyway,
       openProblemCount: g.openProblems.length,
       topProblems: topProblemGroups(groups),

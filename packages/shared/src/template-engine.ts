@@ -60,8 +60,9 @@
  * exists and whose rest does not (`{{cta.label}}` on a link field),
  * `field-value-empty:<path>` for a path into a `link` field with no value,
  * `field-value-malformed:<field>` for a `link` value of no link shape.
- * Unlike `field-not-declared` these stop a Stage: an unknown `{{name}}` can
- * be literal copy, a broken path cannot.
+ * Unlike `field-not-declared` these block Publish live: an unknown
+ * `{{name}}` can be literal copy, a broken path cannot. A Stage reports
+ * them instead of stopping (#1604).
  * Epic #724: `link-target-missing:page/<id>` / `…:media/<id>` for an
  * internal reference (`caelo:page/<id>`, `caelo:media/<id>`) whose
  * target does not exist, `link-resolver-unavailable:<kind>/<id>` for

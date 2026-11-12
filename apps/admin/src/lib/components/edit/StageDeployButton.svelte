@@ -628,6 +628,24 @@
             Fix in chat
           </Button>
         {/if}
+        {#if gate.state === "render"}
+          <!-- #1604 — content the Stage could not render: only a repair and
+               a new Stage open the gate, never an acceptance. -->
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="quality-repair-render-in-chat"
+            onclick={() => {
+              stagingMenuOpen = false;
+              askInChat(
+                "Repair the spots the staged build could not render, then Stage again.",
+              );
+            }}
+          >
+            Repair in chat
+          </Button>
+        {/if}
         {#if gate.state === "errored" || gate.state === "missing"}
           <Button
             type="button"

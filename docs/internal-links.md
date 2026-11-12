@@ -23,7 +23,7 @@ It is a plain string, so `link`/`url` fields, `link` values in list entries (loc
 | Humanise a read | `packages/admin-core/src/links/humanise.ts` |
 | Resolve at render time (preview, live edit, static build) | `createSiteLinkIndex` in `link-refs.ts`; the chat's view of the site is loaded by `packages/admin-core/src/links/link-targets.ts` |
 | Same-language target on a locale page | the `link-resolve` composition point (`packages/plugin-host/src/link-resolve.ts`), implemented by the international-site plugin (rollout D) |
-| Missing or unpublished target | stays raw, reported in `missingSlots` as `link-target-missing:<kind>/<id>`; the build refuses a missing target and lists unpublished ones in `unpublishedLinkTargets` |
+| Missing or unpublished target | stays raw, reported in `missingSlots` as `link-target-missing:<kind>/<id>`; a production build refuses a missing target, a Stage builds it as the preview shows it and records it (Publish live refuses it, #1604), and both list unpublished ones in `unpublishedLinkTargets` |
 
 A link to no page is refused at write time with an AI-actionable message (CLAUDE.md §2 and §11). There is no fallback that guesses a path.
 

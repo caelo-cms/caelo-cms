@@ -29,7 +29,12 @@ import {
   JobStoppedError,
 } from "../reporting-jobs/job-reporter.js";
 import { type AuditStart, type PageIndexWire, pageIndexFromWire } from "./audit-job-wire.js";
-import { type AuditReport, auditClaimedRun, type OriginEnv } from "./audit-run.js";
+import {
+  type AuditReport,
+  auditClaimedRun,
+  type ClaimedAuditRun,
+  type OriginEnv,
+} from "./audit-run.js";
 import type { LinkSources } from "./checks/links.js";
 import {
   collectPluginFindings,
@@ -43,6 +48,7 @@ import {
   createCoreCheckRegistry,
   type LighthouseRunner,
 } from "./checks/registry.js";
+import type { RenderSources } from "./checks/render.js";
 import type { StructureSources } from "./checks/structure.js";
 import { lighthouseRunnerFromEnv } from "./lighthouse-runner-select.js";
 
@@ -121,14 +127,33 @@ export function reportedPluginAudit(
   };
 }
 
+/**
+ * #1604 — the content the audited run's build could not render, as the
+ * claim handed it over. A claim from a release before #1604 carries none
+ * (its builds stopped on such a spot instead), so there is nothing to report.
+ */
+export function claimedRenderSources(run: ClaimedAuditRun): RenderSources {
+  return {
+    failures: async () => ({
+      failures: run.renderFailures ?? [],
+      total: run.renderFailureCount ?? 0,
+    }),
+  };
+}
+
 /** Core's checks over reported sources, plus one check per contributing plugin. */
-function auditChecks(reporter: JobReporter, contributors: readonly string[]): CheckRegistry {
+function auditChecks(
+  reporter: JobReporter,
+  run: ClaimedAuditRun,
+  contributors: readonly string[],
+): CheckRegistry {
   const sources = reportedCheckSources(reporter);
   const core = createCoreCheckRegistry({
     lighthouse: lighthouseRunnerFromEnv(process.env),
     structure: sources.structure,
     links: sources.links,
     references: sources.references,
+    render: claimedRenderSources(run),
   });
   return withPluginAuditChecks(
     core,
@@ -156,7 +181,7 @@ export async function runQualityAuditJob(
     const checks =
       typeof deps.checks === "function"
         ? deps.checks(watched.reporter)
-        : (deps.checks ?? auditChecks(watched.reporter, start.pluginContributors));
+        : (deps.checks ?? auditChecks(watched.reporter, start.run, start.pluginContributors));
     report = await auditClaimedRun(start.run, {
       checks,
       ...(deps.runJob ? { runJob: deps.runJob } : {}),

@@ -109,6 +109,7 @@ import {
   assertNoRenderFailures,
   type RenderFailure,
   renderFailuresOf,
+  stagedRenderFailures,
 } from "./nested-modules-pass.js";
 import {
   NOT_FOUND_PAGE_FILE,
@@ -245,6 +246,16 @@ export interface GenerateResult {
    * of more matches. A warning at Stage; paginating the list fixes it.
    */
   readonly truncatedLists: readonly TruncatedListReport[];
+  /**
+   * #1604 — the content a staging build could not render (the first
+   * `REPORTED_RENDER_FAILURES`, in build order). Its pages shipped with
+   * the broken spot as the editor preview shows it; the run records these
+   * and Publish live refuses the build. Always empty outside a full
+   * staging build: every other build stops on a render failure.
+   */
+  readonly renderFailures: readonly RenderFailure[];
+  /** How many render failures the build had in all (`renderFailures` lists the first). */
+  readonly renderFailureCount: number;
 }
 
 /** One page linking to a page this build does not ship. */
@@ -636,6 +647,13 @@ async function buildSite(
     incremental && !unscannedPreviousBuild
       ? incrementalPageIds(change, previousDeps, listData)
       : null;
+  // #1604 — a Stage never stops on the site's content: a full staging build
+  // writes every page, with a spot it could not render as the editor
+  // preview shows it, and reports the failures for the run to record
+  // (Publish live refuses such a build). Every other build stops on one,
+  // and so does an incremental staging build: its report could not speak
+  // for the pages it leaves alone.
+  const reportsRenderFailures = target.env === "staging" && pagesToBuild === null;
 
   // P13 ideas-pass — incremental whitelist filter when caller supplied
   // changedPageIds. Empty list / undefined = full-site build.
@@ -1210,8 +1228,8 @@ async function buildSite(
     pagesDone += chunk.pageCount;
     // A render failure anywhere fails the build: the remaining pages are
     // still composed, so the error names every failure, but nothing more
-    // is written.
-    if (renderFailures.length > 0) {
+    // is written. A full staging build writes on and reports them (#1604).
+    if (renderFailures.length > 0 && !reportsRenderFailures) {
       args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
       return;
     }
@@ -1365,7 +1383,10 @@ async function buildSite(
   // P13 — every fresh plugin bake of the build, upserted in one order.
   await bakes.flush(tx);
 
-  assertNoRenderFailures(renderFailures);
+  const reportedRenderFailures = reportsRenderFailures
+    ? stagedRenderFailures(renderFailures)
+    : null;
+  if (reportedRenderFailures === null) assertNoRenderFailures(renderFailures);
   // A `list-resolve` overlay entry the resolver refused (unknown address,
   // structural change) is the plugin's fault, not the site's: the stored
   // value rendered instead, and the plugin's error channel says so
@@ -1566,6 +1587,8 @@ async function buildSite(
     unpublishedLinkTargets,
     crossVariantLinks,
     truncatedLists,
+    renderFailures: reportedRenderFailures?.failures ?? [],
+    renderFailureCount: reportedRenderFailures?.total ?? 0,
     securityHeaders,
   };
 }

@@ -181,7 +181,10 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     const pluginNote = describeStagedPluginProblems(v.pluginProblems);
     // #1240 — staged, reviewable, and refused by Publish live until fixed.
     const linkNote = v.linkNotice?.aiText;
-    const drafts = `${draftNote ? ` ${draftNote}` : ""}${unpublishedNote ? ` ${unpublishedNote}` : ""}${linkNote ? ` ${linkNote}` : ""}${truncatedNote ? ` ${truncatedNote}` : ""}${pluginNote ? ` ${pluginNote} Tell the operator.` : ""}`;
+    // #1604 — content the build could not render: staged anyway, shown as
+    // the preview shows it, and refused by Publish live until repaired.
+    const renderNote = v.renderReport ? `${v.renderReport.aiText} Repair them now.` : null;
+    const drafts = `${renderNote ? ` ${renderNote}` : ""}${draftNote ? ` ${draftNote}` : ""}${unpublishedNote ? ` ${unpublishedNote}` : ""}${linkNote ? ` ${linkNote}` : ""}${truncatedNote ? ` ${truncatedNote}` : ""}${pluginNote ? ` ${pluginNote} Tell the operator.` : ""}`;
     if (v.mergedEntityCount === 0) {
       return {
         ok: true,

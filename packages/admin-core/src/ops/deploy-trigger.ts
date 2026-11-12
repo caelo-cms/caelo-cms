@@ -107,7 +107,12 @@ import {
   reconcilePluginsForBuild,
 } from "../deploy/plugin-problems.js";
 import { markRedirectsBehind } from "../deploy/redirect-sync.js";
-import { describeRenderFailures } from "../deploy/render-failures.js";
+import {
+  describeRenderFailures,
+  type RenderFault,
+  renderReportSchema,
+  stagedRenderReport,
+} from "../deploy/render-failures.js";
 import { liveSiteOrigin, readStagingHost, stagingGateSecret } from "../deploy/staging-domain.js";
 import {
   releaseStagingPublication,
@@ -263,6 +268,13 @@ const triggerOutput = z.object({
    */
   truncatedLists: z.array(truncatedListSchema),
   /**
+   * #1604 — the content a Stage's build could not render: staging shows
+   * those spots as the editor preview does, the run records them, and
+   * Publish live refuses this build until they are repaired. Null for a
+   * build that rendered everything (every other build stops instead).
+   */
+  renderReport: renderReportSchema.nullable(),
+  /**
    * #1008 — active plugins that were not running when this build ran,
    * so it lacks their output. A Stage warning; such a Stage is never
    * published, and a production build refuses instead.
@@ -401,6 +413,8 @@ export const startTriggerOp = defineOperation({
     // #1240 — every build, whatever it merged: a page published in the panel
     // leaves a Stage nothing to merge, and a rebuild merges nothing at all, so
     // the merge's gate alone let them reach the generator's render gate.
+    // #1604 — a production build refuses a link to something deleted here;
+    // a Stage reports it (its build records it, Publish live refuses it).
     let linkWarnings: string[] = [];
     let linkNotice: LinkNotice | null = null;
     if (target.env === "staging" || target.env === "production") {
@@ -582,6 +596,8 @@ export const finishTriggerOp = defineOperation({
       securityHeaders: siteHeaderSetSchema,
       /** #1240 — the language links this build rendered; null: none. */
       linkNotice: linkNoticeSchema.nullable(),
+      /** #1604 — the content a Stage's build could not render; null: none. */
+      renderReport: renderReportSchema.nullable(),
       /**
        * #1550 — a production build: the Staged redirect changes the new
        * build serves (redirects.release_plan's `goingLive`); empty otherwise.
@@ -712,6 +728,7 @@ export const finishTriggerOp = defineOperation({
           site_url = ${input.buildOrigin},
           security_headers = ${jsonbParam(input.securityHeaders)},
           link_notice = ${input.linkNotice === null ? sql`NULL` : jsonbParam(input.linkNotice)},
+          render_report = ${input.renderReport === null ? sql`NULL` : jsonbParam(input.renderReport)},
           lease_expires_at = NULL, planned_audit = NULL
       WHERE id = ${input.runId}::uuid
     `);
@@ -761,17 +778,40 @@ async function reportGateDisagreement(
   sys: ExecutionContext,
   whatHappened: string,
 ): Promise<void> {
+  await reportRenderFault(
+    steps,
+    sys,
+    {
+      title: "The link check and the build disagreed about a link",
+      expected:
+        "The reference check before a build reports every link the build cannot render, in the same language view.",
+    },
+    whatHappened,
+  );
+}
+
+/**
+ * A build that stopped on a Caelo bug (#1240: a link the check before it
+ * should have refused; #1604: a render without its context), filed into
+ * the bug intake (#901). A failure to file must not change the build's
+ * own outcome.
+ */
+async function reportRenderFault(
+  steps: OperationSteps,
+  sys: ExecutionContext,
+  fault: RenderFault,
+  whatHappened: string,
+): Promise<void> {
   const r = await execute(steps.registry, steps.adapter, sys, "ai_bug_reports.create", {
-    title: "The link check and the build disagreed about a link",
+    title: fault.title,
     whatHappened: whatHappened.slice(0, 4000),
-    expected:
-      "The reference check before a build reports every link the build cannot render, in the same language view.",
+    expected: fault.expected,
     suspectedTool: "deploy.trigger",
     severity: "degraded",
     kind: "defect",
     source: "auto",
   });
-  if (!r.ok) console.error("[deploy] could not file the link disagreement", { error: r.error });
+  if (!r.ok) console.error("[deploy] could not file the render fault", { error: r.error });
 }
 
 /** The body of deploy.trigger (see the module comment). */
@@ -934,7 +974,7 @@ async function runTrigger(
       // in their words, and a link among them is a Caelo fault.
       if (subprocess.renderFailures && subprocess.renderFailures.length > 0) {
         const text = describeRenderFailures(subprocess.renderFailures);
-        if (text.caeloFault) await reportGateDisagreement(steps, sys, text.ai);
+        if (text.caeloFault) await reportRenderFault(steps, sys, text.caeloFault, text.ai);
         await fail(subprocess.message, text.operator);
         return err({
           kind: "HandlerError",
@@ -956,6 +996,12 @@ async function runTrigger(
     const built = subprocess.result;
     // #1240 — the build is the truth about its own files: Publish live
     // refuses what it rendered, and a link the check missed is a Caelo bug.
+    // #1604 — a Stage's build reports the content it could not render
+    // instead of stopping; the run records it and Publish live refuses it.
+    const renderReport =
+      plan.target.env === "staging"
+        ? stagedRenderReport(built.renderFailures, built.renderFailureCount)
+        : null;
     const missedLinks = linksTheCheckMissed(plan.linkNotice, built.crossVariantLinks);
     const linkNotice = withBuiltLinks(plan.linkNotice, missedLinks);
     if (missedLinks.length > 0) {
@@ -1102,6 +1148,7 @@ async function runTrigger(
         plan.target.env === "staging" ? (input.qualityAudit ?? OUTSIDE_CHAT_AUDIT) : null,
       securityHeaders: built.securityHeaders,
       linkNotice,
+      renderReport,
       redirectChanges,
       redirectLiveFingerprint: redirectFingerprint,
     });
@@ -1155,6 +1202,7 @@ async function runTrigger(
       linkWarnings: plan.linkWarnings,
       linkNotice,
       truncatedLists: built.truncatedLists,
+      renderReport,
       pluginProblems: plan.pluginProblems,
       ...(redirectNote !== null ? { redirectsNote: redirectNote } : {}),
     });

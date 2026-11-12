@@ -82,7 +82,7 @@ for await (const line of console) {
   }
   console.log(JSON.stringify({ kind: "done", pageCount: 1, fileCount: 1, durationMs: 1,
     phases: [], buildDir, peakRssMb: 1, unpublishedLinkTargets: [], crossVariantLinks: [],
-    truncatedLists: [], securityHeaders: ${JSON.stringify(SITE_HEADERS)} }));
+    truncatedLists: [], renderFailures: [], renderFailureCount: 0, securityHeaders: ${JSON.stringify(SITE_HEADERS)} }));
   process.exit(0);
 }
 `;

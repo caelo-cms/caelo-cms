@@ -126,6 +126,7 @@ export const actions: Actions = {
       truncatedListWarning,
       pluginProblemWarning,
       linkNoticeWarning,
+      renderWarning,
     } = await describeStagedBuild(locals.ctx, staged.value, null);
     return {
       staged: {
@@ -144,6 +145,7 @@ export const actions: Actions = {
         truncatedListWarning,
         pluginProblemWarning,
         linkNoticeWarning,
+        renderWarning,
       },
       // #1574 — built without the build carrier (the layout's toast says so).
       ...(staged.warning ? { carrierWarning: staged.warning } : {}),

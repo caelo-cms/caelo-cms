@@ -162,6 +162,7 @@ async function stageAndAudit(title: string): Promise<string> {
       structure: structureSourcesFromOps(registry, adapter, SYS),
       links: linkSourcesFromOps(registry, adapter, SYS),
       references: referenceSourcesFromOps(registry, adapter, SYS),
+      render: { failures: async () => ({ failures: [], total: 0 }) },
     }),
     env: {
       provider: "aws",
