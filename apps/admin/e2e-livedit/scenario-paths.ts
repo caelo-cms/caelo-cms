@@ -201,6 +201,8 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       // #1288 — what stage_changes and get_quality_audit say about a Stage
       // that outlasts their wait.
       `${SHARED}/stage-status.ts`,
+      // #1604 — which render failures a Stage reports and which stop it.
+      `${SHARED}/render-failure-markers.ts`,
       `${A}/public-projection.ts`,
       `${A}/theme-document-input.ts`,
       `${A}/rate-limit.ts`,

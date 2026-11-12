@@ -152,6 +152,12 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
     };
   }
   switch (kind) {
+    case "plugin-list-unavailable":
+    case "list-source-unavailable":
+      return {
+        tool: "list_plugins",
+        hint: `${mod} iterates a list a plugin offers, and that plugin is not running: the operator activates it again at Settings → Plugins, or remove the module from the page (remove_module_from).`,
+      };
     case "field-path-unknown":
       return {
         tool: "update_modules_many",
