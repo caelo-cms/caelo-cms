@@ -136,8 +136,37 @@ describe("#1291 — hot paths plan an index scan", () => {
   });
 
   it("the MCP cost cap ORs two index lookups on ai_calls", async () => {
-    const plans = await plansOf(spentMicrocentsSql(ID, ID, { mcpTokenId: ID }));
-    expectIndexed(plans, "ai_calls", "ai_calls_chat_session_idx", "ai_calls_actor_idx");
+    // Statistics of the production shape: AI calls of many actors. The
+    // actor arm (`actor_id = $2 AND created_at >= …`) could be served by
+    // ai_calls_created_idx too, and which index the planner takes depends
+    // on what ANALYZE last saw. Without this seed that is whatever earlier
+    // test files left behind: TRUNCATE keeps a table's statistics, and
+    // after an autoanalyze over calls of one actor, `actor_id = $2` reads
+    // as unselective and the smaller created_at index wins.
+    const seedActors = "00000000-0000-0000-1291-%";
+    await fixture(async (tx) => {
+      await tx`
+        INSERT INTO actors (id, kind, display_name)
+        SELECT ('00000000-0000-0000-1291-' || lpad(i::text, 12, '0'))::uuid, 'system', 'core-indexes-' || i
+        FROM generate_series(1, 20) AS i
+        ON CONFLICT DO NOTHING`;
+      await tx`
+        INSERT INTO ai_calls (actor_id, provider, model, input_tokens, output_tokens, created_at)
+        SELECT ('00000000-0000-0000-1291-' || lpad(i::text, 12, '0'))::uuid, 'core-indexes', 'core-indexes',
+               1, 1, now() - (i * 50 + n) * interval '1 hour'
+        FROM generate_series(1, 20) AS i, generate_series(1, 50) AS n`;
+      await tx.unsafe("ANALYZE ai_calls");
+    });
+    try {
+      const plans = await plansOf(spentMicrocentsSql(ID, ID, { mcpTokenId: ID }));
+      expectIndexed(plans, "ai_calls", "ai_calls_chat_session_idx", "ai_calls_actor_idx");
+    } finally {
+      await fixture(async (tx) => {
+        await tx`DELETE FROM ai_calls WHERE actor_id::text LIKE ${seedActors}`;
+        await tx`DELETE FROM actors WHERE id::text LIKE ${seedActors}`;
+        await tx.unsafe("ANALYZE ai_calls");
+      });
+    }
   });
 
   it("a page move finds the rules to collapse by index, live and pending (#1550)", async () => {
