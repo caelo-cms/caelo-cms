@@ -109,6 +109,7 @@ import {
   assertNoRenderFailures,
   type RenderFailure,
   renderFailuresOf,
+  stagedRenderFailures,
 } from "./nested-modules-pass.js";
 import {
   NOT_FOUND_PAGE_FILE,
@@ -245,6 +246,16 @@ export interface GenerateResult {
    * of more matches. A warning at Stage; paginating the list fixes it.
    */
   readonly truncatedLists: readonly TruncatedListReport[];
+  /**
+   * #1604 — the content a staging build could not render (the first
+   * `REPORTED_RENDER_FAILURES`, in build order). Its pages shipped with
+   * the broken spot as the editor preview shows it; the run records these
+   * and Publish live refuses the build. Always empty outside a full
+   * staging build: every other build stops on a render failure.
+   */
+  readonly renderFailures: readonly RenderFailure[];
+  /** How many render failures the build had in all (`renderFailures` lists the first). */
+  readonly renderFailureCount: number;
 }
 
 /** One page linking to a page this build does not ship. */
@@ -480,6 +491,29 @@ export function envNoindexBuildError(sourceBuildId: string): Error {
 }
 
 /**
+ * #605 — the pages that still carry a section marker of a plugin data list
+ * (`{{#name}}`, `{{^name}}`, `{{/name}}`), with the list names, sorted.
+ *
+ * @param listNames every data-list name a plugin declared, running or not.
+ */
+export function pluginMarkerHits<P extends { readonly pageSlug: string; readonly html: string }>(
+  pages: ReadonlyArray<P>,
+  listNames: ReadonlyArray<string>,
+): { readonly page: P; readonly names: readonly string[] }[] {
+  if (listNames.length === 0) return [];
+  const names = new Set(listNames);
+  const hits: { page: P; names: string[] }[] = [];
+  for (const page of pages) {
+    const found = new Set<string>();
+    for (const m of page.html.matchAll(/\{\{\s*[#^/]\s*([A-Za-z0-9_.-]+)\s*\}\}/g)) {
+      if (m[1] && names.has(m[1])) found.add(m[1]);
+    }
+    if (found.size > 0) hits.push({ page, names: [...found].sort() });
+  }
+  return hits;
+}
+
+/**
  * #605 — throw when any page still carries a section marker of a plugin
  * data list (`{{#name}}`, `{{^name}}`, `{{/name}}`). Exported for tests.
  *
@@ -489,16 +523,9 @@ export function assertNoPluginMarkers(
   pages: ReadonlyArray<{ readonly pageSlug: string; readonly html: string }>,
   listNames: ReadonlyArray<string>,
 ): void {
-  if (listNames.length === 0) return;
-  const names = new Set(listNames);
-  const found: string[] = [];
-  for (const page of pages) {
-    const hits = new Set<string>();
-    for (const m of page.html.matchAll(/\{\{\s*[#^/]\s*([A-Za-z0-9_.-]+)\s*\}\}/g)) {
-      if (m[1] && names.has(m[1])) hits.add(m[1]);
-    }
-    if (hits.size > 0) found.push(`page "${page.pageSlug}": ${[...hits].sort().join(", ")}`);
-  }
+  const found = pluginMarkerHits(pages, listNames).map(
+    (h) => `page "${h.page.pageSlug}": ${h.names.join(", ")}`,
+  );
   if (found.length > 0) {
     throw new BuildRefusal(
       `static-generator: ${found.length} page(s) would ship raw plugin data-list markers — ${found.join("; ")}. ` +
@@ -636,6 +663,13 @@ async function buildSite(
     incremental && !unscannedPreviousBuild
       ? incrementalPageIds(change, previousDeps, listData)
       : null;
+  // #1604 — a Stage never stops on the site's content: a full staging build
+  // writes every page, with a spot it could not render as the editor
+  // preview shows it, and reports the failures for the run to record
+  // (Publish live refuses such a build). Every other build stops on one,
+  // and so does an incremental staging build: its report could not speak
+  // for the pages it leaves alone.
+  const reportsRenderFailures = target.env === "staging" && pagesToBuild === null;
 
   // P13 ideas-pass — incremental whitelist filter when caller supplied
   // changedPageIds. Empty list / undefined = full-site build.
@@ -711,6 +745,8 @@ async function buildSite(
     incremental: pagesToBuild !== null,
   });
   if (notFoundError !== null) throw new BuildRefusal(notFoundError);
+  // #1604 — the page a staging build's plugin-list failure names, by path.
+  const pagePathOf = new Map(pageRows.map((p) => [p.page_id, p.current_path]));
   const outputPathOf = (p: PageRow): string =>
     builtPageOutputPath(
       { pageId: p.page_id, currentPath: p.current_path },
@@ -1210,8 +1246,8 @@ async function buildSite(
     pagesDone += chunk.pageCount;
     // A render failure anywhere fails the build: the remaining pages are
     // still composed, so the error names every failure, but nothing more
-    // is written.
-    if (renderFailures.length > 0) {
+    // is written. A full staging build writes on and reports them (#1604).
+    if (renderFailures.length > 0 && !reportsRenderFailures) {
       args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
       return;
     }
@@ -1254,8 +1290,28 @@ async function buildSite(
       // markup is guaranteed to find it already in the document.
       for (const p of pages) p.html = injectPluginAssets(p.html, clientAssets, "linked");
       // #605 — a plugin list-source section that survived composition means
-      // the page would ship raw `{{#source}}` markers to visitors.
-      assertNoPluginMarkers(pages, pluginListNames);
+      // the page would ship raw `{{#source}}` markers to visitors. #1604 — a
+      // full staging build ships them as the preview shows them and reports
+      // them with its render failures (Publish live refuses the build).
+      if (reportsRenderFailures) {
+        for (const hit of pluginMarkerHits(pages, pluginListNames)) {
+          renderFailures.push(
+            ...hit.names.map((name) => ({
+              pageId: hit.page.pageId,
+              pageTitle: hit.page.pageTitle,
+              pagePath: pagePathOf.get(hit.page.pageId) ?? `/${hit.page.relPath}`,
+              blockName: null,
+              moduleSlug: null,
+              field: null,
+              reason: `plugin-list-unavailable:${name}`,
+              target: null,
+              line: `page "${hit.page.pageSlug}": plugin data list "${name}" — the plugin that offers it is not running`,
+            })),
+          );
+        }
+      } else {
+        assertNoPluginMarkers(pages, pluginListNames);
+      }
     });
     // issue #158 — minify the composer's inline CSS/JS last, after every
     // pass that still rewrites inside them (media URLs, plugin assets).
@@ -1365,7 +1421,10 @@ async function buildSite(
   // P13 — every fresh plugin bake of the build, upserted in one order.
   await bakes.flush(tx);
 
-  assertNoRenderFailures(renderFailures);
+  const reportedRenderFailures = reportsRenderFailures
+    ? stagedRenderFailures(renderFailures)
+    : null;
+  if (reportedRenderFailures === null) assertNoRenderFailures(renderFailures);
   // A `list-resolve` overlay entry the resolver refused (unknown address,
   // structural change) is the plugin's fault, not the site's: the stored
   // value rendered instead, and the plugin's error channel says so
@@ -1566,6 +1625,8 @@ async function buildSite(
     unpublishedLinkTargets,
     crossVariantLinks,
     truncatedLists,
+    renderFailures: reportedRenderFailures?.failures ?? [],
+    renderFailureCount: reportedRenderFailures?.total ?? 0,
     securityHeaders,
   };
 }

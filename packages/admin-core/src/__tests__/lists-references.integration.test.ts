@@ -4,17 +4,20 @@
  * Epic #1107 part D — reference integrity for lists against a real
  * Postgres (docs/lists.md §11):
  *
- *   - a shared list deleted in one chat while main still binds it refuses
- *     that chat's Stage, naming the module, the field and the page;
- *   - a page term whose vocabulary entry a chat removed refuses the Stage;
- *   - a query's `terms` pointing at a removed entry refuses the Stage;
+ *   - a shared list deleted in one chat while main still binds it is named
+ *     by that chat's Stage, with the module, the field and the page;
+ *   - a page term whose vocabulary entry a chat removed is named by the Stage;
+ *   - a query's `terms` pointing at a removed entry is named by the Stage;
  *   - a migration chat writes a menu linking a page its import run builds
  *     later: the link is recorded against the list and resolves into a
  *     page reference once the page exists.
  *
  * The deletes race a binding made on main after the chat read the list
  * (the delete op itself refuses while the list is bound in its view):
- * the Stage merge is where the two meet, and the gate stops it.
+ * the Stage merge is where the two meet. Since #1604 a Stage never fails on
+ * the site's content: the merge goes through and its warnings name each
+ * problem, blocking ones first; the staging build records what it could not
+ * render and Publish live refuses it (stage-render-report.integration.test.ts).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -54,10 +57,11 @@ async function op<T>(ctx: ExecutionContext, name: string, input: unknown): Promi
   return r.value as T;
 }
 
-async function stageRefusal(chatSessionId: string): Promise<string> {
+/** #1604 — the Stage merge goes through and names the problem: its warnings, joined. */
+async function stageWarnings(chatSessionId: string): Promise<string> {
   const r = await execute(registry, adapter, SYS, "chat.merge_to_main", { chatSessionId });
-  if (r.ok) throw new Error("Stage unexpectedly went through");
-  return "message" in r.error ? String(r.error.message) : JSON.stringify(r.error);
+  if (!r.ok) throw new Error(`the Stage merge refused: ${JSON.stringify(r.error)}`);
+  return (r.value as { linkWarnings: string[] }).linkWarnings.join(" | ");
 }
 
 async function experiment(title: string): Promise<{ id: string; ctx: ExecutionContext }> {
@@ -180,7 +184,7 @@ afterAll(async () => {
 });
 
 describe("#1107 reference integrity — Stage gate", () => {
-  it("a list deleted while still bound refuses the Stage, naming module, field and page", async () => {
+  it("a list deleted while still bound is named by the Stage: module, field and page", async () => {
     const slug = `${PFX}-nav`;
     await op(SYS, "lists.upsert_many", {
       lists: [
@@ -217,31 +221,28 @@ describe("#1107 reference integrity — Stage gate", () => {
         },
       ],
     });
-    const message = await stageRefusal(chat.id);
-    expect(message).toStartWith("Stage refused");
-    expect(message).toContain("Reference to a deleted list");
+    const message = await stageWarnings(chat.id);
+    expect(message).toStartWith("Reference to a deleted list");
     expect(message).toContain(`field "nav" of module "${PFX} Header"`);
     expect(message).toContain(`"/${PFX}-docs"`);
     expect(message).toContain("set_page_module_content_many");
-    // Rolled back: the list is still live on main.
-    expect((await getList(SYS, slug)).id).toBe(list.id);
   });
 
-  it("a page term whose vocabulary entry a chat removed refuses the Stage", async () => {
+  it("a page term whose vocabulary entry a chat removed is named by the Stage", async () => {
     const vocab = await vocabulary(`${PFX}-topics`);
     const chat = await experiment("remove-term");
     await op(chat.ctx, "lists.patch_items_many", {
       lists: [{ slug: `${PFX}-topics`, patches: [{ op: "remove", itemId: vocab.bId }] }],
     });
     await taggedPage("tagged", vocab.id, [vocab.a, vocab.b]);
-    const message = await stageRefusal(chat.id);
+    const message = await stageWarnings(chat.id);
     expect(message).toContain("Term of a removed vocabulary entry");
     expect(message).toContain(`in the terms of page "/${PFX}-tagged"`);
     expect(message).toContain(`entry ${vocab.bId}`);
     expect(message).toContain("update_pages_many");
   });
 
-  it("a query term pointing at a removed vocabulary entry refuses the Stage", async () => {
+  it("a query term pointing at a removed vocabulary entry is named by the Stage", async () => {
     const vocab = await vocabulary(`${PFX}-subjects`);
     const typeSlug = `${PFX}-feed`;
     await op(SYS, "list_types.upsert_many", {
@@ -303,7 +304,7 @@ describe("#1107 reference integrity — Stage gate", () => {
         },
       ],
     });
-    const message = await stageRefusal(chat.id);
+    const message = await stageWarnings(chat.id);
     expect(message).toContain("Term of a removed vocabulary entry");
     expect(message).toContain(`in shared list "Topic feeds"`);
     expect(message).toContain(`entry ${feeds.items[0]?.id}`);

@@ -844,6 +844,7 @@ export const actions: Actions = {
       truncatedListWarning,
       pluginProblemWarning,
       linkNoticeWarning,
+      renderWarning,
     } = await describeStagedBuild(locals.ctx, summary, pageId || null);
 
     return {
@@ -861,6 +862,7 @@ export const actions: Actions = {
         truncatedListWarning,
         pluginProblemWarning,
         linkNoticeWarning,
+        renderWarning,
         // Issue #620 — other chats' changes to the same things rode along.
         alsoIncludes: summary.alsoIncludes.map((a) => a.title),
       },

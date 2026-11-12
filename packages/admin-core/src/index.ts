@@ -82,6 +82,7 @@ export {
   type DeployPluginProblem,
   describeStagedPluginProblems,
 } from "./deploy/plugin-problems.js";
+export type { RenderReport } from "./deploy/render-failures.js";
 // #842 — reading a staged GCS run (admin staging preview).
 export {
   readStagedBuildFiles,

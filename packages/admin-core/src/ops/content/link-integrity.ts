@@ -11,15 +11,16 @@
  * resolver the render uses (links/reference-integrity.ts).
  *
  *   - {@link stageReferenceGate}: run by the Stage merge right after its
- *     replay, inside the merge transaction. A missing target refuses the
- *     merge, so nothing reaches main; the static build would refuse it
- *     anyway, and here the refusal names every place and the tool that
- *     fixes it. Draft targets, targets without a same-language version
- *     (#1240) and legacy literal paths come back as warnings.
+ *     replay, inside the merge transaction. A Stage never fails on the
+ *     site's content (#1604): every problem comes back as a warning, a
+ *     missing target first. The staging build shows such a link as the
+ *     editor preview does and records it, and Publish live refuses it (the
+ *     run's render report, the audit's `references` check).
  *   - {@link buildReferenceGate}: the same check where every build starts
  *     (`deploy.start_trigger`). A merge can only see what it merges: a
  *     page published in the panel changes the live row and leaves a chat
- *     nothing to merge, and a rebuild merges nothing at all (#1240).
+ *     nothing to merge, and a rebuild merges nothing at all (#1240). A
+ *     production build refuses a missing target here; a Stage reports it.
  *   - `links.check_references`: the read op behind the AI's `check_links`
  *     tool (chat and Power-MCP) and the Publish-live quality check
  *     (quality/checks/references.ts).
@@ -149,8 +150,8 @@ async function activeImportTargets(
   };
 }
 
-/** Most blocking issues one Stage refusal lists (check_links has them all). */
-const STAGE_MESSAGE_ISSUES = 8;
+/** Most blocking issues one production-build refusal lists (check_links has them all). */
+const REFUSAL_MESSAGE_ISSUES = 8;
 /** Most warnings a merge result carries. */
 const STAGE_WARNINGS = 50;
 
@@ -179,7 +180,9 @@ export function stagePluginScope(
 }
 
 /**
- * The Stage gate: main line after the merge's replay, Stage policy.
+ * The Stage gate: main line after the merge's replay, Stage policy. It
+ * refuses only when the check cannot run (no deploy target); every content
+ * problem is a warning (#1604).
  * Call inside the merge transaction, after the replay.
  *
  * @param opts.pluginRowsMerged whether the merge replayed plugin rows
@@ -201,22 +204,20 @@ export async function stageReferenceGate(
     if (e instanceof ReferenceCheckUnavailable) return { ok: false, message: e.message };
     throw e;
   }
-  const blocking = issues.filter((i) => i.severity === "block");
-  if (blocking.length > 0) return { ok: false, message: refusalMessage(blocking) };
   return { ok: true, warnings: stageWarnings(issues) };
 }
 
-/** The refusal of a site whose stored references point at nothing. */
+/** The refusal of a production build whose stored references point at nothing. */
 function refusalMessage(blocking: readonly ReferenceIssue[]): string {
   const listed = blocking
-    .slice(0, STAGE_MESSAGE_ISSUES)
+    .slice(0, REFUSAL_MESSAGE_ISSUES)
     .map((i, n) => `(${n + 1}) ${i.message}`)
     .join(" ");
   const more =
-    blocking.length > STAGE_MESSAGE_ISSUES
-      ? ` …and ${blocking.length - STAGE_MESSAGE_ISSUES} more (check_links lists every one).`
+    blocking.length > REFUSAL_MESSAGE_ISSUES
+      ? ` …and ${blocking.length - REFUSAL_MESSAGE_ISSUES} more (check_links lists every one).`
       : "";
-  return `Stage refused — ${blocking.length} stored reference(s) point at a page, file, list, vocabulary entry or module that does not exist, so the build would ship broken links or content: ${listed}${more} Fix each one with the tool it names, then Stage again.`;
+  return `Build refused — ${blocking.length} stored reference(s) point at a page, file, list, vocabulary entry or module that does not exist, so the build would ship broken links or content: ${listed}${more} Fix each one with the tool it names, Stage again, then Publish live.`;
 }
 
 /** A link with no same-language target on a published page (#1240). */
@@ -224,10 +225,15 @@ function shipsAcrossLanguages(i: ReferenceIssue): boolean {
   return i.problem === "variant-missing" && i.shipped;
 }
 
-/** Warnings besides the language links, which the link notice reports. */
+/**
+ * Warnings besides the language links, which the link notice reports. A
+ * Stage's blocking problems (a missing target) come first: Publish live
+ * refuses them (#1604).
+ */
 function stageWarnings(issues: readonly ReferenceIssue[]): string[] {
   return issues
     .filter((i) => !shipsAcrossLanguages(i))
+    .sort((a, b) => Number(b.severity === "block") - Number(a.severity === "block"))
     .slice(0, STAGE_WARNINGS)
     .map((i) => i.message);
 }
@@ -262,12 +268,15 @@ export type BuildReferenceGate =
 
 /**
  * The check where a build starts, over the main line it renders. Every
- * Stage and rebuild passes here, whatever it merged, so nothing the check
- * can name reaches the generator's render gate.
+ * Stage and rebuild passes here, whatever it merged.
  *
  * Production refuses only what the generator cannot render (a deleted
- * target, a link with no same-language page). A draft target renders, and
- * whether one may ship is the quality gate's decision: an Owner can accept it.
+ * target, a link with no same-language page), so nothing the check can
+ * name reaches a production build's render gate. A draft target renders,
+ * and whether one may ship is the quality gate's decision: an Owner can
+ * accept it. A Stage refuses nothing of the site's content (#1604): its
+ * problems are warnings, the build renders them as the editor preview
+ * does and records them, and Publish live refuses that build.
  *
  * Call inside a transaction, on the main line.
  */
@@ -285,7 +294,7 @@ export async function buildReferenceGate(
   const blocking = issues.filter(
     (i) => i.severity === "block" && i.problem !== "unpublished-target",
   );
-  if (blocking.length > 0) {
+  if (blocking.length > 0 && env === "production") {
     const language = blocking.filter(shipsAcrossLanguages);
     const notice = buildLinkNotice(language, await noticePages(tx, language));
     return {

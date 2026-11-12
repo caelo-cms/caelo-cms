@@ -7,8 +7,9 @@
  *     field default of layout chrome, layout HTML, template HTML, nav set)
  *     reports a link to a deleted page as blocking, with its place and tool;
  *   - a chat's draft is checked as its preview shows it (branch overlay);
- *   - a missing target refuses the Stage merge and nothing reaches main;
- *     fixing the link in the same chat lets the Stage through;
+ *   - a missing target is named by the Stage merge, which goes through
+ *     (#1604: a Stage never fails on the site's content; Publish live
+ *     refuses it), and fixing the link in the same chat clears it;
  *   - a link to an unpublished page is a Stage warning and blocks Publish
  *     live (the `references` quality check reports an error);
  *   - the `check_links` tool output (chat catalogue).
@@ -322,32 +323,22 @@ describe("reference integrity — long copy stays out of the model (#1240, #1271
 });
 
 describe("reference integrity — Stage gate", () => {
-  it("a missing target refuses the Stage merge, nothing reaches main; fixing the link lets it through", async () => {
+  it("#1604 — a missing target is named by the Stage merge, which goes through; fixing the link clears it", async () => {
     const target = await promoPage(SYS, `${PFX}-t2`, "published", "https://example.com/y");
     const linker = await promoPage(SYS, `${PFX}-l2`, "published", `/${PFX}-t2`);
     const chat = await experiment("stage-block");
     await run(chat.ctx, "pages.delete", { pageId: target.pageId });
 
-    const refused = await execute(registry, adapter, SYS, "chat.merge_to_main", {
+    const staged = await execute(registry, adapter, SYS, "chat.merge_to_main", {
       chatSessionId: chat.chatSessionId,
     });
-    expect(refused.ok).toBe(false);
-    if (refused.ok) return;
-    const message = "message" in refused.error ? String(refused.error.message) : "";
-    expect(message).toStartWith("Stage refused");
-    expect(message).toContain(`"/${PFX}-l2"`);
-    expect(message).toContain("set_page_module_content_many");
+    if (!staged.ok) throw new Error(`the Stage merge refused: ${JSON.stringify(staged.error)}`);
+    const warnings = (staged.value as { linkWarnings: string[] }).linkWarnings;
+    // The blocking problem comes first, with the page and the fixing tool.
+    expect(warnings[0]).toContain(`"/${PFX}-l2"`);
+    expect(warnings[0]).toContain("set_page_module_content_many");
 
-    // Rolled back: the target page is still live on main.
-    const live = await admin(
-      async (tx) =>
-        (await tx`SELECT deleted_at FROM pages WHERE id = ${target.pageId}::uuid`) as {
-          deleted_at: Date | null;
-        }[],
-    );
-    expect(live[0]?.deleted_at).toBeNull();
-
-    // The chat removes the link; the same Stage now goes through.
+    // The chat removes the link; the next Stage has nothing to report about it.
     await run(chat.ctx, "content_instances.set_values", {
       id: linker.contentInstanceId,
       values: { cta_href: "https://example.com/elsewhere" },
@@ -355,7 +346,12 @@ describe("reference integrity — Stage gate", () => {
     const merged = await execute(registry, adapter, SYS, "chat.merge_to_main", {
       chatSessionId: chat.chatSessionId,
     });
-    expect(merged.ok).toBe(true);
+    if (!merged.ok) throw new Error(JSON.stringify(merged.error));
+    expect(
+      (merged.value as { linkWarnings: string[] }).linkWarnings.some((w) =>
+        w.includes(`"/${PFX}-l2"`),
+      ),
+    ).toBe(false);
   });
 
   it("an unpublished target warns at Stage and blocks Publish live", async () => {

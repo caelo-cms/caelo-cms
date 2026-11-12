@@ -44,11 +44,16 @@ const gateTool = makeReadTool<Record<string, never>>({
         message: string;
         auditRunId: string | null;
         linkNotice: { aiText: string } | null;
+        renderReport: { aiText: string } | null;
       } | null;
     };
     if (!v.deployRunId || !v.gate) return "Nothing is staged yet — Stage first.";
     if (v.gate.open) {
       return `Publish live is open (${v.gate.state}).${v.gate.message ? ` ${v.gate.message}` : ""}`;
+    }
+    // #1604 — no acceptance or publish-anyway opens it: repair, then Stage.
+    if (v.gate.renderReport) {
+      return `Publish live is BLOCKED (render): ${v.gate.renderReport.aiText} Accepting findings or publish_despite_failed_audit does not apply to these.`;
     }
     if (v.gate.linkNotice) return `Publish live is BLOCKED (links): ${v.gate.linkNotice.aiText}`;
     const pending = v.gate.state === "running" || v.gate.state === "queued";

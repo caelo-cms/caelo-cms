@@ -526,8 +526,11 @@ A dotted path whose head exists and whose rest does not (`{{link.nope}}`,
 raw too, but it is no copy: it pushes `field-path-unknown:<path>`, a path
 into a `link` field with no value pushes `field-value-empty:<path>`, and a
 `link` value of no link shape `field-value-malformed:<field>` (#1433). All
-three show in the preview's missing list and stop a Stage, unlike
-`field-not-declared`, because an unknown `{{name}}` can be literal copy.
+three show in the preview's missing list and block Publish live, unlike
+`field-not-declared`, because an unknown `{{name}}` can be literal copy. A
+Stage goes through and reports them (#1604): staging shows the raw
+placeholder, the Stage's audit names each one (`render/*`), and Publish
+live refuses the build until they are repaired.
 `modules.create` and `modules.update` refuse the first kind at write, with
 the form that works; inside a list section only the render knows the keys.
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import type { RenderReport } from "../../deploy/render-failures.js";
 import type { LinkNotice } from "../../links/link-notice.js";
 import {
   AUTO_FIX_COST_CAP_MICROCENTS,
@@ -584,6 +585,56 @@ describe("a build that links across languages (#1240)", () => {
   it("closes a gate with no audit too, and leaves a clean build alone", () => {
     expect(decideGate(null, NONE, notice).state).toBe("links");
     expect(decideGate(audit({ status: "passed" }), NONE, null).open).toBe(true);
+  });
+});
+
+describe("a build with content it could not render (#1604)", () => {
+  const report: RenderReport = {
+    total: 2,
+    failures: [
+      {
+        pageId: "p-home",
+        pageTitle: "Home",
+        pagePath: "/",
+        blockName: "header",
+        moduleSlug: "site-header-x",
+        field: null,
+        reason: "field-path-unknown:signin_link.label",
+        target: null,
+        line: 'page "home" module "site-header-x" (block header): field-path-unknown:signin_link.label',
+      },
+    ],
+    operatorText: "Staged, but 2 spots could not be rendered …",
+    aiText: "for the AI",
+  };
+
+  it("closes the gate whatever the audit says, an acceptance included", () => {
+    const accepted = accepting({
+      checks: new Map([[checkKey(null, "render/field-path-unknown"), 5]]),
+    });
+    for (const status of ["passed", "skipped"] as const) {
+      const d = decideGate(audit({ status }), accepted, null, report);
+      expect(d).toMatchObject({ open: false, state: "render", canPublishAnyway: false });
+      expect(d.renderReport).toBe(report);
+      expect(d.message).toContain("2 spots it could not render");
+      expect(d.message).toContain("the header of Home (/)");
+      expect(d.message).not.toMatch(/site-header-x|field-path-unknown/);
+    }
+  });
+
+  it("offers no publish anyway over a failed audit, and closes before the link notice", () => {
+    const notice: LinkNotice = {
+      targets: [],
+      linkingPages: [],
+      operatorText: "links",
+      aiText: "links",
+      fixLabel: "x",
+      fixPrompt: "x",
+    };
+    const d = decideGate(audit({ status: "errored" }), NONE, notice, report);
+    expect(d.state).toBe("render");
+    expect(d.canPublishAnyway).toBe(false);
+    expect(decideGate(null, NONE, null, report).state).toBe("render");
   });
 });
 

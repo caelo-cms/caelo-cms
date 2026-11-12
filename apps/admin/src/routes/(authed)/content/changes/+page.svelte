@@ -78,6 +78,9 @@
         {#if form.staged.truncatedListWarning}
           {form.staged.truncatedListWarning}
         {/if}
+        {#if form.staged.renderWarning}
+          <strong data-testid="stage-render-warning">{form.staged.renderWarning}</strong>
+        {/if}
         {#if form.staged.linkNoticeWarning}
           <strong data-testid="stage-link-notice">{form.staged.linkNoticeWarning}</strong>
         {/if}
