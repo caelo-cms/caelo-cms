@@ -506,3 +506,248 @@ describe("the projection lock never holds a waiting connection (2026-11-02 incid
     }
   });
 });
+
+describe("no admin transaction is open while the public databases are written (#1594)", () => {
+  async function setRateLimit(n: number): Promise<void> {
+    await admin(async (tx) => {
+      await tx`UPDATE plugin_rate_limit_overrides SET per_visitor_max = ${n} WHERE plugin_slug = ${P}`;
+    });
+  }
+  async function publishedRateLimit(url: string): Promise<number | undefined> {
+    const rows = (await onDb(
+      url,
+      async (tx) =>
+        await tx`SELECT per_visitor_max FROM published_rate_limits WHERE plugin_slug = ${P}`,
+    )) as { per_visitor_max: number }[];
+    return rows[0]?.per_visitor_max;
+  }
+
+  it("reads, commits, then writes: the admin side is closed during every public write", async () => {
+    await setRateLimit(31);
+    const real = projectionDatabases(adapter, staging);
+    let openAdmin = 0;
+    const openDuringWrites: number[] = [];
+    const watched = {
+      ...real,
+      readAdmin: async <T>(fn: Parameters<typeof real.readAdmin<T>>[0]): Promise<T> => {
+        openAdmin += 1;
+        try {
+          return await real.readAdmin(fn);
+        } finally {
+          openAdmin -= 1;
+        }
+      },
+      writePublic: async (...args: Parameters<typeof real.writePublic>) => {
+        openDuringWrites.push(openAdmin);
+        await real.writePublic(...args);
+      },
+    };
+    const report = await drainPublicProjection(watched);
+    expect(report.sections.live).toContain("rate_limits");
+    expect(openDuringWrites).toEqual([0, 0]);
+    expect(await outboxSections()).toEqual([]);
+    expect(await publishedRateLimit(PUBLIC_URL as string)).toBe(31);
+  });
+
+  it("an older read never overwrites a newer publish, in either public database", async () => {
+    await setRateLimit(41);
+    const real = projectionDatabases(adapter, staging);
+    // Publisher A reads 41, then stalls before its public writes (a slow
+    // public database, a saturated pool).
+    let resume!: () => void;
+    const resumed = new Promise<void>((r) => {
+      resume = r;
+    });
+    let stalled!: () => void;
+    const reachedWrite = new Promise<void>((r) => {
+      stalled = r;
+    });
+    let first = true;
+    const slow = {
+      ...real,
+      writePublic: async (...args: Parameters<typeof real.writePublic>) => {
+        if (first) {
+          first = false;
+          stalled();
+          await resumed;
+        }
+        await real.writePublic(...args);
+      },
+    };
+    const older = drainPublicProjection(slow);
+    await reachedWrite;
+    // Meanwhile the source changes and publisher B (another instance)
+    // publishes the newer state: the lock is free, A is not holding it.
+    await setRateLimit(42);
+    const newer = await drainPublicProjection(real, { lockWait: { waitMs: 5_000 } });
+    expect(newer.sections.live).toContain("rate_limits");
+    resume();
+    const report = await older;
+    expect(report.superseded).toEqual({ live: ["rate_limits"], staging: ["rate_limits"] });
+    expect(report.sections).toEqual({ live: [], staging: [] });
+    expect(await publishedRateLimit(PUBLIC_URL as string)).toBe(42);
+    expect(await publishedRateLimit(STAGING_URL as string)).toBe(42);
+    expect(await outboxSections()).toEqual([]);
+  });
+
+  it("a section a newer publish removed does not come back from an older read", async () => {
+    await setRateLimit(51);
+    const real = projectionDatabases(adapter, staging);
+    let resume!: () => void;
+    const resumed = new Promise<void>((r) => {
+      resume = r;
+    });
+    let stalled!: () => void;
+    const reachedWrite = new Promise<void>((r) => {
+      stalled = r;
+    });
+    let first = true;
+    const slow = {
+      ...real,
+      writePublic: async (...args: Parameters<typeof real.writePublic>) => {
+        if (first) {
+          first = false;
+          stalled();
+          await resumed;
+        }
+        await real.writePublic(...args);
+      },
+    };
+    const older = drainPublicProjection(slow);
+    await reachedWrite;
+    await setRateLimit(52);
+    await drainPublicProjection(real, { lockWait: { waitMs: 5_000 } });
+    // The newer publish took the section away (as a cleared cookie secret
+    // takes `settings` away): its published mark is gone.
+    for (const url of [PUBLIC_URL as string, STAGING_URL as string]) {
+      await onDb(url, async (tx) => {
+        await tx`DELETE FROM published_projection_sections WHERE section = 'rate_limits'`;
+        await tx`DELETE FROM published_rate_limits WHERE plugin_slug = ${P}`;
+      });
+    }
+    resume();
+    const report = await older;
+    expect(report.superseded).toEqual({ live: ["rate_limits"], staging: ["rate_limits"] });
+    expect(await publishedRateLimit(PUBLIC_URL as string)).toBeUndefined();
+    expect(await publishedRateLimit(STAGING_URL as string)).toBeUndefined();
+    // Put the section back for the files that run after this one.
+    await setRateLimit(53);
+    await drainPublicProjection(real);
+    expect(await publishedRateLimit(PUBLIC_URL as string)).toBe(53);
+  });
+
+  /** Publisher A: reads now, stalls before its public writes until `resume()`. */
+  function stalledPublisher() {
+    const real = projectionDatabases(adapter, staging);
+    let resume!: () => void;
+    const resumed = new Promise<void>((r) => {
+      resume = r;
+    });
+    let stalled!: () => void;
+    const reachedWrite = new Promise<void>((r) => {
+      stalled = r;
+    });
+    let first = true;
+    const slow = {
+      ...real,
+      writePublic: async (...args: Parameters<typeof real.writePublic>) => {
+        if (first) {
+          first = false;
+          stalled();
+          await resumed;
+        }
+        await real.writePublic(...args);
+      },
+    };
+    return { real, slow, reachedWrite, resume: () => resume() };
+  }
+
+  async function addComment(author: string, status: string): Promise<void> {
+    await admin(async (tx) => {
+      await tx`
+        INSERT INTO comment_archive (public_row_id, page_id, author_name, content, status, submitted_at)
+        VALUES (gen_random_uuid(), ${pageId}::uuid, ${author}, 'c', ${status}, now())`;
+    });
+  }
+  async function setStatus(author: string, status: string): Promise<void> {
+    await admin(async (tx) => {
+      await tx`UPDATE comment_archive SET status = ${status} WHERE page_id = ${pageId}::uuid AND author_name = ${author}`;
+    });
+  }
+  async function publishedAuthors(url: string): Promise<string[]> {
+    const rows = (await onDb(
+      url,
+      async (tx) =>
+        await tx`SELECT author_name FROM published_comments WHERE page_id = ${pageId}::uuid ORDER BY author_name`,
+    )) as { author_name: string }[];
+    return rows.map((r) => r.author_name);
+  }
+
+  it("comments are versioned one by one: a newer publish of other comments keeps an older one's", async () => {
+    await addComment("Older", "approved");
+    const a = stalledPublisher();
+    const older = drainPublicProjection(a.slow);
+    await a.reachedWrite;
+    // A newer publish carries a different comment only: A's row is not in
+    // its batch (as when A's batch ended at the 5,000-row limit and B's
+    // started after it).
+    await addComment("Newer", "approved");
+    await admin(async (tx) => {
+      await tx`DELETE FROM public_projection_outbox
+               WHERE section = 'comments'
+                 AND entity_id IN (SELECT id FROM comment_archive
+                                   WHERE page_id = ${pageId}::uuid AND author_name = 'Older')`;
+    });
+    await drainPublicProjection(a.real, { lockWait: { waitMs: 5_000 } });
+    a.resume();
+    await older;
+    for (const url of [PUBLIC_URL as string, STAGING_URL as string]) {
+      expect(await publishedAuthors(url)).toEqual(["Newer", "Older"]);
+    }
+    expect(await outboxSections()).toEqual([]);
+  });
+
+  it("an older read does not bring back a comment a newer publish took down", async () => {
+    await addComment("Moderated", "approved");
+    await drainPublicProjection(projectionDatabases(adapter, staging));
+    await setStatus("Moderated", "spam");
+    const a = stalledPublisher();
+    // A reads the spam verdict... then the comment is approved again and
+    // rejected once more, each published by a newer read.
+    await setStatus("Moderated", "approved");
+    const older = drainPublicProjection(a.slow);
+    await a.reachedWrite;
+    await setStatus("Moderated", "rejected");
+    await drainPublicProjection(a.real, { lockWait: { waitMs: 5_000 } });
+    a.resume();
+    await older;
+    for (const url of [PUBLIC_URL as string, STAGING_URL as string]) {
+      expect(await publishedAuthors(url)).not.toContain("Moderated");
+    }
+  });
+
+  it("a unit a previous-release publisher wrote after this read is left alone, and stays queued", async () => {
+    await setRateLimit(61);
+    const a = stalledPublisher();
+    const older = drainPublicProjection(a.slow);
+    await a.reachedWrite;
+    // A publisher of the previous release (no generations) writes the unit
+    // in both public databases, as its markPublished does: now() at its write.
+    for (const url of [PUBLIC_URL as string, STAGING_URL as string]) {
+      await onDb(url, async (tx) => {
+        await tx`UPDATE published_rate_limits SET per_visitor_max = 62 WHERE plugin_slug = ${P}`;
+        await tx`INSERT INTO published_projection_sections (section, published_at) VALUES ('rate_limits', clock_timestamp())
+                 ON CONFLICT (section) DO UPDATE SET published_at = clock_timestamp()`;
+      });
+    }
+    a.resume();
+    const report = await older;
+    expect(report.superseded).toEqual({ live: ["rate_limits"], staging: ["rate_limits"] });
+    expect(await publishedRateLimit(PUBLIC_URL as string)).toBe(62);
+    // Its outbox row stays, so the next drain republishes from the source.
+    expect(await outboxSections()).toEqual(["rate_limits"]);
+    await drainPublicProjection(a.real);
+    expect(await publishedRateLimit(PUBLIC_URL as string)).toBe(61);
+    expect(await outboxSections()).toEqual([]);
+  });
+});
