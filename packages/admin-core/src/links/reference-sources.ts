@@ -25,7 +25,8 @@
  *
  * Bounded: one query per entity kind (plus one overlay query per kind on a
  * branch), independent of the number of pages — the same shape as the
- * static build's loaders.
+ * static build's loaders. The pages are read once (`loadPageRows`), and the
+ * reference check hands the same rows to its link targets (#1594).
  */
 
 import { collectPluginLinkLocations, MAIN_RENDER, withPluginScope } from "@caelo-cms/plugin-host";
@@ -38,7 +39,7 @@ import {
 } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { headOverlaySql } from "../draft.js";
-import { loadPagesInView } from "../lists/pages-view.js";
+import { loadPageRows, type PageRows, pagesInViewOf } from "../lists/pages-view.js";
 import { loadListEntities } from "../lists/store.js";
 import { effectiveLayoutModulesSql } from "../ops/content/layout-overlay.js";
 import {
@@ -270,13 +271,14 @@ export async function loadReferenceSources(
      * the merge just made main) and core reads the values in-transaction.
      */
     readonly pluginScopeBranchId?: string | null;
+    /** The scope's page rows, when the caller read them already (`loadPageRows`). */
+    readonly pageRows?: PageRows;
   } = {},
 ): Promise<ReferenceSourceModel> {
-  const pageRows = (await tx.execute(sql`
-    SELECT p.id::text AS id, p.template_id::text AS template_id
-    FROM pages p WHERE p.deleted_at IS NULL AND ${visible("p", branchId)}
-  `)) as unknown as { id: string; template_id: string }[];
-  const pageTemplates = new Map(pageRows.map((r) => [r.id, r.template_id]));
+  const pageRows = opts.pageRows ?? (await loadPageRows(tx, branchId));
+  const pageTemplates = new Map(
+    pageRows.rows.filter((r) => r.deleted_at === null).map((r) => [r.id, r.template_id]),
+  );
 
   const placementRows = (await tx.execute(sql`
     SELECT pm.page_id::text AS page_id, pm.block_name, pm.module_id::text AS module_id,
@@ -405,10 +407,7 @@ export async function loadReferenceSources(
     ]),
   );
   const pageData = new Map<string, SourcePageData>(
-    (await loadPagesInView(tx, branchId)).map((p) => [
-      p.id,
-      { properties: p.properties, terms: p.terms },
-    ]),
+    pagesInViewOf(pageRows).map((p) => [p.id, { properties: p.properties, terms: p.terms }]),
   );
 
   return {

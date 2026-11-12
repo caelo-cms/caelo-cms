@@ -21,6 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { sql as drizzleSql } from "drizzle-orm";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import {
   checkStageAuditTool,
@@ -28,6 +29,7 @@ import {
   listQualityAcceptancesTool,
   listQualityAuditsTool,
 } from "../ai/tools/quality-audit-tools.js";
+import { buildReferenceGate } from "../ops/content/link-integrity.js";
 import { recordedRuns, sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { reportedCheckSources, runQualityAuditJob } from "../quality/audit-job.js";
 import { qualityAuditJobKind } from "../quality/audit-job-kind.js";
@@ -49,6 +51,7 @@ import { createJobReporter, type ReportTransport } from "../reporting-jobs/job-r
 import { startReportingJob } from "../reporting-jobs/launcher.js";
 import { JOB_TOKEN_HEADER, type JobOrder } from "../reporting-jobs/protocol.js";
 import { runJobAttempt } from "../reporting-jobs/run-job.js";
+import { jsonbParam } from "../sql-helpers.js";
 import { claimNextQueuedAudit, drainAuditQueue } from "./fixtures/drain-audits.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -100,22 +103,33 @@ async function wipe(): Promise<void> {
   });
 }
 
-/** Insert a deploy run on a seeded target; minutes orders runs in time. */
+/**
+ * Insert a deploy run on a seeded target; minutes orders runs in time. A
+ * staging run records the site's link check for its audit, as
+ * deploy.start_trigger does (#1594).
+ */
 async function deployRun(
   target: "staging" | "production",
   minutes: number,
   status: "succeeded" | "failed" = "succeeded",
 ): Promise<string> {
-  return withSql(async (tx) => {
-    const rows = (await tx`
+  return adapter.withAdminTransaction(SYS, async (tx) => {
+    const rows = (await tx.execute(drizzleSql`
       INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at)
       SELECT id, ${SYSTEM_ID}::uuid, ${status},
              now() - interval '1 day' + make_interval(mins => ${minutes}), now()
       FROM deploy_targets WHERE name = ${target}
       RETURNING id::text AS id
-    `) as unknown as { id: string }[];
+    `)) as unknown as { id: string }[];
     const id = rows[0]?.id;
     if (!id) throw new Error("deploy run seed");
+    if (target === "staging" && status === "succeeded") {
+      const links = await buildReferenceGate(tx, "staging");
+      if (!links.ok || links.audit === null) throw new Error("deploy run seed: link check");
+      await tx.execute(drizzleSql`
+        UPDATE deploy_runs SET reference_check = ${jsonbParam(links.audit)} WHERE id = ${id}::uuid
+      `);
+    }
     return id;
   });
 }

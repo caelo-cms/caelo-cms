@@ -19,14 +19,23 @@
  *   - {@link buildReferenceGate}: the same check where every build starts
  *     (`deploy.start_trigger`). A merge can only see what it merges: a
  *     page published in the panel changes the live row and leaves a chat
- *     nothing to merge, and a rebuild merges nothing at all (#1240).
+ *     nothing to merge, and a rebuild merges nothing at all (#1240). A
+ *     staging build records the same read under the Publish policy for its
+ *     quality audit ({@link RecordedReferenceCheck}, #1594): the audit
+ *     reports what the build rendered and reads the site no second time.
  *   - `links.check_references`: the read op behind the AI's `check_links`
- *     tool (chat and Power-MCP) and the Publish-live quality check
- *     (quality/checks/references.ts).
+ *     tool (chat and Power-MCP).
  *   - `links.publish_notice`: what a publish click tells the operator.
+ *
+ * Each check reads its scope once (`loadReferences`) and scans that read
+ * per environment.
  */
 
-import { hasLinkResolveContributors, resolveLinkVariants } from "@caelo-cms/plugin-host";
+import {
+  hasLinkResolveContributors,
+  type ResolvedLinkVariants,
+  resolveLinkVariants,
+} from "@caelo-cms/plugin-host";
 import { defineOperation, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { createSiteLinkIndex, err, normaliseLinkPath, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -45,11 +54,82 @@ import {
   type ReferenceIssue,
   scanReferenceIntegrity,
 } from "../../links/reference-integrity.js";
-import { loadReferenceSources } from "../../links/reference-sources.js";
+import { loadReferenceSources, type ReferenceSourceModel } from "../../links/reference-sources.js";
+import { loadPageRows } from "../../lists/pages-view.js";
 import { loadPublishPageUrlStyle } from "./public-urls.js";
 
 /** Thrown when the site has no default deploy target (no URL style). */
 export class ReferenceCheckUnavailable extends Error {}
+
+/**
+ * One scope's link sources and link targets, read once. Every scan of the
+ * scope (a gate's environment, the audit's Publish policy, the op's page
+ * paths) runs over it, so a check that answers two questions does not read
+ * the site twice (#1594).
+ */
+interface LoadedReferences {
+  readonly model: ReferenceSourceModel;
+  readonly lookup: Awaited<ReturnType<typeof loadLinkTargetLookup>>;
+  readonly pageUrlStyle: NonNullable<Awaited<ReturnType<typeof loadPublishPageUrlStyle>>>;
+  readonly pageVariants: ResolvedLinkVariants | undefined;
+}
+
+/**
+ * Read every stored link of one scope and every page and file it can
+ * point at. The pages are read once, for the targets and the sources.
+ *
+ * @param opts.branchId the scope (null = main line).
+ * @param opts.pluginScopeBranchId the scope plugins answer in, when it
+ *   differs (the Stage merge: main read in-transaction, plugins asked as
+ *   the merged branch — see loadReferenceSources).
+ */
+async function loadReferences(
+  tx: TransactionRunner,
+  opts: { readonly branchId: string | null; readonly pluginScopeBranchId?: string | null },
+): Promise<LoadedReferences> {
+  const pageUrlStyle = await loadPublishPageUrlStyle(tx);
+  if (pageUrlStyle === null) {
+    throw new ReferenceCheckUnavailable(
+      "no default deploy target — the link check needs the page URL style of the target Publish serves. " +
+        "Next step: run the cms_admin migrations (they seed the production target) or mark a deploy target as default under Ops → Deploy.",
+    );
+  }
+  const pluginScope =
+    opts.pluginScopeBranchId === undefined ? opts.branchId : opts.pluginScopeBranchId;
+  const pageRows = await loadPageRows(tx, opts.branchId);
+  const lookup = await loadLinkTargetLookup(
+    tx,
+    opts.branchId,
+    [],
+    await activeImportTargets(tx, pluginScope),
+    { pageRows },
+  );
+  const model = await loadReferenceSources(tx, opts.branchId, {
+    pluginScopeBranchId: pluginScope,
+    pageRows,
+  });
+  const pageVariants =
+    lookup.targets.pages.length > 0 && hasLinkResolveContributors()
+      ? await resolveLinkVariants(
+          lookup.targets.pages.map((p) => p.id),
+          { chatBranchId: pluginScope },
+        )
+      : undefined;
+  return { model, lookup, pageUrlStyle, pageVariants };
+}
+
+/** The issues of a loaded scope under one environment's policy. */
+function scanReferences(loaded: LoadedReferences, env: ReferenceCheckEnv): ReferenceIssue[] {
+  const { model, lookup, pageUrlStyle, pageVariants } = loaded;
+  const index = createSiteLinkIndex({
+    pages: lookup.targets.pages,
+    media: lookup.targets.media,
+    env,
+    pageUrlStyle,
+    ...(pageVariants ? { pageVariants } : {}),
+  });
+  return scanReferenceIntegrity({ model, lookup, targets: lookup.targets, index, env });
+}
 
 /**
  * Check every stored link of one scope.
@@ -67,39 +147,7 @@ export async function checkReferences(
     readonly pluginScopeBranchId?: string | null;
   },
 ): Promise<ReferenceIssue[]> {
-  const pageUrlStyle = await loadPublishPageUrlStyle(tx);
-  if (pageUrlStyle === null) {
-    throw new ReferenceCheckUnavailable(
-      "no default deploy target — the link check needs the page URL style of the target Publish serves. " +
-        "Next step: run the cms_admin migrations (they seed the production target) or mark a deploy target as default under Ops → Deploy.",
-    );
-  }
-  const pluginScope =
-    opts.pluginScopeBranchId === undefined ? opts.branchId : opts.pluginScopeBranchId;
-  const lookup = await loadLinkTargetLookup(
-    tx,
-    opts.branchId,
-    [],
-    await activeImportTargets(tx, pluginScope),
-  );
-  const model = await loadReferenceSources(tx, opts.branchId, {
-    pluginScopeBranchId: pluginScope,
-  });
-  const pageVariants =
-    lookup.targets.pages.length > 0 && hasLinkResolveContributors()
-      ? await resolveLinkVariants(
-          lookup.targets.pages.map((p) => p.id),
-          { chatBranchId: pluginScope },
-        )
-      : undefined;
-  const index = createSiteLinkIndex({
-    pages: lookup.targets.pages,
-    media: lookup.targets.media,
-    env: opts.env,
-    pageUrlStyle,
-    ...(pageVariants ? { pageVariants } : {}),
-  });
-  return scanReferenceIntegrity({ model, lookup, targets: lookup.targets, index, env: opts.env });
+  return scanReferences(await loadReferences(tx, opts), opts.env);
 }
 
 /**
@@ -257,6 +305,12 @@ export type BuildReferenceGate =
       readonly warnings: string[];
       /** Staging: the language links this build renders; Publish live refuses them. */
       readonly notice: LinkNotice | null;
+      /**
+       * Staging: the same read under the Publish policy, which the Stage's
+       * quality audit reports (`deploy_runs.reference_check`). Null for a
+       * production build: it has no audit.
+       */
+      readonly audit: RecordedReferenceCheck | null;
     }
   | { readonly ok: false; readonly message: string };
 
@@ -269,19 +323,24 @@ export type BuildReferenceGate =
  * target, a link with no same-language page). A draft target renders, and
  * whether one may ship is the quality gate's decision: an Owner can accept it.
  *
+ * A staging build also scans the same read under the Publish policy for its
+ * quality audit (#1594): the audit reports the links of the state the build
+ * rendered, and reads the site no second time.
+ *
  * Call inside a transaction, on the main line.
  */
 export async function buildReferenceGate(
   tx: TransactionRunner,
   env: ReferenceCheckEnv,
 ): Promise<BuildReferenceGate> {
-  let issues: ReferenceIssue[];
+  let loaded: LoadedReferences;
   try {
-    issues = await checkReferences(tx, { branchId: null, env });
+    loaded = await loadReferences(tx, { branchId: null });
   } catch (e) {
     if (e instanceof ReferenceCheckUnavailable) return { ok: false, message: e.message };
     throw e;
   }
+  const issues = scanReferences(loaded, env);
   const blocking = issues.filter(
     (i) => i.severity === "block" && i.problem !== "unpublished-target",
   );
@@ -301,6 +360,10 @@ export async function buildReferenceGate(
     ok: true,
     warnings: stageWarnings(issues),
     notice: buildLinkNotice(language, await noticePages(tx, language)),
+    audit:
+      env === "staging"
+        ? recordForAudit(scanReferences(loaded, "production"), pathsOf(loaded))
+        : null,
   };
 }
 
@@ -327,6 +390,72 @@ const issueSchema = z.object({
   fix: z.object({ tool: z.string(), hint: z.string() }),
 });
 
+type IssueView = z.infer<typeof issueSchema>;
+
+/** Page id → path in the loaded scope. */
+function pathsOf(loaded: LoadedReferences): ReadonlyMap<string, string> {
+  return new Map(loaded.lookup.targets.pages.map((p) => [p.id, p.path]));
+}
+
+/** An issue as the op returns it and the audit record keeps it: with the scope's paths. */
+function issueView(i: ReferenceIssue, paths: ReadonlyMap<string, string>): IssueView {
+  return {
+    ...i,
+    place: { ...i.place },
+    pageIds: [...i.pageIds],
+    pagePaths: i.pageIds.map((id) => paths.get(id) ?? id),
+    targetPath: i.targetPageId === null ? null : (paths.get(i.targetPageId) ?? null),
+  };
+}
+
+/** Most issues the audit record keeps per list: what one `links.check_references` call returns. */
+export const RECORDED_REFERENCE_ISSUES = 500;
+
+/**
+ * The problems of a link the staged build renders to a page a visitor of
+ * live may not get: a draft target, or no page in the linking page's
+ * language (#1240, staging renders the target in its own language).
+ */
+const DRAFT_LINK_PROBLEMS: ReadonlySet<ReferenceIssue["problem"]> = new Set([
+  "unpublished-target",
+  "variant-missing",
+]);
+
+/**
+ * A staging build's link check under the Publish policy, recorded with the
+ * run for its quality audit (#1594, `deploy_runs.reference_check`).
+ */
+export const recordedReferenceCheckSchema = z
+  .object({
+    /** Every issue, blocks first, cut at {@link RECORDED_REFERENCE_ISSUES}. */
+    issues: z.array(issueSchema).max(RECORDED_REFERENCE_ISSUES),
+    /** True when the check found more issues than `issues` keeps. */
+    truncated: z.boolean(),
+    /**
+     * The draft and language links among them, cut the same way: the staged
+     * build's `links` check skips what these already report.
+     */
+    draftLinks: z.array(issueSchema).max(RECORDED_REFERENCE_ISSUES),
+  })
+  .strict();
+
+/** A parsed {@link recordedReferenceCheckSchema}. */
+export type RecordedReferenceCheck = z.infer<typeof recordedReferenceCheckSchema>;
+
+function recordForAudit(
+  issues: readonly ReferenceIssue[],
+  paths: ReadonlyMap<string, string>,
+): RecordedReferenceCheck {
+  return {
+    issues: issues.slice(0, RECORDED_REFERENCE_ISSUES).map((i) => issueView(i, paths)),
+    truncated: issues.length > RECORDED_REFERENCE_ISSUES,
+    draftLinks: issues
+      .filter((i) => DRAFT_LINK_PROBLEMS.has(i.problem))
+      .slice(0, RECORDED_REFERENCE_ISSUES)
+      .map((i) => issueView(i, paths)),
+  };
+}
+
 export const checkReferencesInput = z
   .object({
     /**
@@ -342,7 +471,7 @@ export const checkReferencesInput = z
     includeWarnings: z.boolean().default(true),
     /** Only these problems (all when absent). */
     problems: z.array(problemSchema).min(1).optional(),
-    limit: z.number().int().min(1).max(500).default(100),
+    limit: z.number().int().min(1).max(RECORDED_REFERENCE_ISSUES).default(100),
   })
   .strict();
 
@@ -366,9 +495,9 @@ export const checkReferencesOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const branchId = ctx.chatBranchId ?? null;
     const env: ReferenceCheckEnv = input.for === "stage" ? "staging" : "production";
-    let issues: ReferenceIssue[];
+    let loaded: LoadedReferences;
     try {
-      issues = await checkReferences(tx, { branchId, env });
+      loaded = await loadReferences(tx, { branchId });
     } catch (e) {
       if (e instanceof ReferenceCheckUnavailable) {
         return err({
@@ -379,8 +508,9 @@ export const checkReferencesOp = defineOperation({
       }
       throw e;
     }
-    const lookup = await loadLinkTargetLookup(tx, branchId);
-    const paths = new Map(lookup.targets.pages.map((p) => [p.id, p.path]));
+    const issues = scanReferences(loaded, env);
+    const { lookup } = loaded;
+    const paths = pathsOf(loaded);
     let pageFilter: string | null = input.pageId ?? null;
     if (input.pagePath !== undefined) {
       const id = lookup.pageIdForPath(
@@ -409,13 +539,7 @@ export const checkReferencesOp = defineOperation({
       scope: branchId ? ("draft" as const) : ("main" as const),
       blocking: matching.filter((i) => i.severity === "block").length,
       warnings: matching.filter((i) => i.severity === "warning").length,
-      issues: matching.slice(0, input.limit).map((i) => ({
-        ...i,
-        place: { ...i.place },
-        pageIds: [...i.pageIds],
-        pagePaths: i.pageIds.map((id) => paths.get(id) ?? id),
-        targetPath: i.targetPageId === null ? null : (paths.get(i.targetPageId) ?? null),
-      })),
+      issues: matching.slice(0, input.limit).map((i) => issueView(i, paths)),
       truncated: matching.length > input.limit,
     });
   },

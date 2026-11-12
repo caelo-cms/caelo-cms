@@ -12,7 +12,9 @@
  *     printed as text are never flagged;
  *   - a link through the redirect table is a `links/redirect-chain`
  *     warning; a page nothing links to is a `links/orphan-page` warning;
- *   - fixing the link opens the gate on the next Stage.
+ *   - fixing the link opens the gate on the next Stage;
+ *   - #1594: the stored-link issues are the ones the build recorded where it
+ *     started, and an audit whose build recorded none fails loudly.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -24,13 +26,11 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
-import { linkSourcesFromOps, referenceSourcesFromOps } from "../quality/checks/links-sources.js";
-import { createCoreCheckRegistry } from "../quality/checks/registry.js";
-import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
 import { localBuildSource } from "../quality/staged-origin.js";
 import { registerAdminOps } from "../register.js";
+import { coreChecksOverOps } from "./fixtures/core-checks-over-ops.js";
 import { drainAuditQueue } from "./fixtures/drain-audits.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
@@ -117,6 +117,13 @@ const cleanLighthouse = async (job: AuditJob): Promise<AuditJobResult> => ({
 
 /** Build staging, queue a findings-only audit for it, run the real worker. */
 async function stageAndAudit(title: string): Promise<string> {
+  const runId = await stage(title);
+  await audit();
+  return runId;
+}
+
+/** Build staging and queue a findings-only audit for it. */
+async function stage(title: string): Promise<string> {
   const chatSessionId = (
     await op<{ chatSessionId: string }>(HUMAN, "chat.create_session", {
       isolation: "experiment",
@@ -140,23 +147,22 @@ async function stageAndAudit(title: string): Promise<string> {
   // file where the build serves media, so the probe finds a real file.
   await mkdir(join(buildDir, "media"), { recursive: true });
   await writeFile(join(buildDir, IMAGE.slice(1)), "RIFF0000WEBP");
+  return built.runId;
+}
+
+/** Run every queued audit with the real worker. */
+async function audit(): Promise<void> {
   await drainAuditQueue({
     adapter,
     registry,
     runJob: cleanLighthouse,
-    checks: createCoreCheckRegistry({
-      lighthouse: cleanLighthouse,
-      structure: structureSourcesFromOps(registry, adapter, SYS),
-      links: linkSourcesFromOps(registry, adapter, SYS),
-      references: referenceSourcesFromOps(registry, adapter, SYS),
-    }),
+    checks: coreChecksOverOps({ registry, adapter }, SYS, cleanLighthouse),
     env: {
       provider: "aws",
       loopbackSource: (run) =>
         localBuildSource(join(testRoot, "output", "staging", "builds", run.deployRunId)),
     },
   });
-  return built.runId;
 }
 
 interface AuditRead {
@@ -346,5 +352,46 @@ describe("the core links check (#849)", () => {
       got.pages.flatMap((p) => p.checkFindings).filter((f) => f.ruleId === "links/orphan-page"),
     ).toEqual([]);
     expect(await gate()).toMatchObject({ open: true, state: "clean" });
+  });
+});
+
+describe("the audit reports the stored links its build recorded (#1594)", () => {
+  it("judges the state the build rendered, not a later one", async () => {
+    const runId = await stage("recorded");
+    // After the build started: a stored link to a page that does not exist.
+    const gone = crypto.randomUUID();
+    await legacyBody(pageIds.lonely, `<p>See <a href="caelo:page/${gone}">the old page</a>.</p>`);
+    try {
+      const now = await op<{ blocking: number; issues: { problem: string }[] }>(
+        SYS,
+        "links.check_references",
+        { for: "publish", includeWarnings: false },
+      );
+      expect(now.issues.map((i) => i.problem)).toContain("missing-target");
+
+      await audit();
+      const got = await op<AuditRead>(AI, "quality_audits.get", { deployRunId: runId });
+      // The build's stored links were whole: its legacy literals stay
+      // warnings, and the link written later is no finding of this audit.
+      expect(got.run.status).toBe("passed");
+      expect(
+        got.pages
+          .flatMap((p) => p.checkFindings)
+          .filter((f) => f.ruleId.startsWith("references/") && f.severity === "error"),
+      ).toEqual([]);
+    } finally {
+      await legacyBody(pageIds.lonely, "<p>Nobody links here.</p>");
+    }
+  });
+
+  it("an audit whose build recorded no link check fails loudly instead of reading the site", async () => {
+    const runId = await stage("unrecorded");
+    await withSql(
+      (tx) => tx`UPDATE deploy_runs SET reference_check = NULL WHERE id = ${runId}::uuid`,
+    );
+    await audit();
+    const got = await op<AuditRead>(AI, "quality_audits.get", { deployRunId: runId });
+    expect(got.run.status).toBe("errored");
+    expect(got.run.errorMessage).toContain(`staged build ${runId} recorded no link check`);
   });
 });

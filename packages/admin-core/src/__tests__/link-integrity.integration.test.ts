@@ -11,10 +11,17 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import {
+  DatabaseAdapter,
+  execute,
+  OperationRegistry,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { checkReferences } from "../ops/content/link-integrity.js";
+import type { SQL as DrizzleSQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { buildReferenceGate, checkReferences } from "../ops/content/link-integrity.js";
 import { registerAdminOps } from "../register.js";
 
 /** Entry ids of the local lists (epic #1107). */
@@ -245,6 +252,52 @@ async function brokenLiterals(): Promise<string[]> {
   );
   return issues.filter((i) => i.problem === "broken-literal").map((i) => i.target.slice(1, -1));
 }
+
+/** `tx` with every statement it runs written to `statements`. */
+function recording(tx: TransactionRunner, statements: string[]): TransactionRunner {
+  const dialect = new PgDialect();
+  return new Proxy(tx, {
+    get(target, key) {
+      if (key === "execute") {
+        return (q: DrizzleSQL) => {
+          statements.push(dialect.sqlToQuery(q).sql);
+          return target.execute(q);
+        };
+      }
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+describe("one read per check (#1594)", () => {
+  it("a staging build reads the pages once, for its gate and for its audit's Publish policy", async () => {
+    const statements: string[] = [];
+    const gate = await adapter.withAdminTransaction(systemCtx, (tx) =>
+      buildReferenceGate(recording(tx, statements), "staging"),
+    );
+    if (!gate.ok) throw new Error(`the gate refused: ${gate.message}`);
+    // One statement selects the site's pages: the targets and the sources
+    // share it, and the audit's scan reuses it (the placements only join).
+    expect(statements.filter((q) => /\bFROM pages p\b/.test(q))).toHaveLength(1);
+
+    // The audit's record is the Publish policy of that same read: what the
+    // check reports for Publish live, with the scope's paths.
+    const publish = await adapter.withAdminTransaction(systemCtx, (tx) =>
+      checkReferences(tx, { branchId: null, env: "production" }),
+    );
+    expect(gate.audit?.issues.map((i) => i.message)).toEqual(publish.map((i) => i.message));
+    const literal = gate.audit?.issues.find((i) => i.target === `"/${TARGET_SLUG}"`);
+    expect(literal?.pagePaths).toEqual([`/${LINKER_SLUG}`]);
+  });
+
+  it("a production build records nothing: it has no audit", async () => {
+    const gate = await adapter.withAdminTransaction(systemCtx, (tx) =>
+      buildReferenceGate(tx, "production"),
+    );
+    expect(gate).toMatchObject({ ok: true, audit: null });
+  });
+});
 
 describe("reference integrity over legacy literal links (#846 field kinds)", () => {
   it("flags internal links (HTML + content values) that resolve to no page, and NOT valid ones", async () => {

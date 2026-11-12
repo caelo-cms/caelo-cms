@@ -534,6 +534,7 @@ import {
 } from "./ops/quality/pending.js";
 import { getAuditOp, listAcceptancesOp, listAuditsOp } from "./ops/quality/read.js";
 import { recordAuditResultOp } from "./ops/quality/record-result.js";
+import { auditReferenceCheckOp } from "./ops/quality/reference-check.js";
 import { redirectSyncStatusOp, syncRedirectsProviderOp } from "./ops/redirect_sync.js";
 import {
   createRedirectOp,
@@ -958,6 +959,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(classifyStageOp);
   registry.register(enqueueAuditOp);
   registry.register(claimAuditOp);
+  registry.register(auditReferenceCheckOp);
   registry.register(sweepUnstartedAuditsOp);
   registry.register(recordAuditResultOp);
   registry.register(listAuditsOp);
