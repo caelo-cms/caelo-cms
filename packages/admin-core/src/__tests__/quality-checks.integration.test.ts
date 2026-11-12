@@ -27,17 +27,17 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
+import type { AuditJobDeps } from "../quality/audit-job.js";
 import {
   PLACEHOLDER_RULE,
   testCheckRegistry,
 } from "../quality/checks/__tests__/fixtures/test-checks.js";
-import { linkSourcesFromOps, referenceSourcesFromOps } from "../quality/checks/links-sources.js";
-import { type CheckRegistry, createCoreCheckRegistry } from "../quality/checks/registry.js";
-import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
 import type { AuditJobResult } from "../quality/lighthouse-runner.js";
 import { localBuildSource } from "../quality/staged-origin.js";
 import { registerAdminOps } from "../register.js";
+import type { JobReporter } from "../reporting-jobs/job-reporter.js";
+import { coreChecksOverOps } from "./fixtures/core-checks-over-ops.js";
 import { claimNextQueuedAudit, drainAuditQueue } from "./fixtures/drain-audits.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
@@ -124,7 +124,7 @@ const noLighthouse = async (): Promise<AuditJobResult> => {
 /** Run the queued audits through their jobs, in this process (the real job path, #1359). */
 async function audit(
   runJob: (job: AuditJob) => Promise<AuditJobResult>,
-  checks?: CheckRegistry,
+  checks?: AuditJobDeps["checks"],
 ): Promise<void> {
   await drainAuditQueue({
     adapter,
@@ -460,23 +460,22 @@ describe("the per-rule ratchet", () => {
 
 describe("a broken check", () => {
   it("fails the audit loudly, offers publish anyway, and leaves acceptances alone", async () => {
-    const checks = createCoreCheckRegistry({
-      lighthouse: noLighthouse,
-      structure: structureSourcesFromOps(registry, adapter, SYS),
-      links: linkSourcesFromOps(registry, adapter, SYS),
-      references: referenceSourcesFromOps(registry, adapter, SYS),
-    });
-    checks.register(
-      {
-        id: "flaky",
-        title: "A plugin check that throws",
-        scope: "site",
-        run: () => {
-          throw new Error("boom");
+    const core = coreChecksOverOps({ registry, adapter }, SYS, noLighthouse);
+    const checks = (reporter: JobReporter) => {
+      const registered = core(reporter);
+      registered.register(
+        {
+          id: "flaky",
+          title: "A plugin check that throws",
+          scope: "site",
+          run: () => {
+            throw new Error("boom");
+          },
         },
-      },
-      { kind: "plugin", slug: "flaky-plugin" },
-    );
+        { kind: "plugin", slug: "flaky-plugin" },
+      );
+      return registered;
+    };
     const before = await withSql(
       async (tx) =>
         (await tx`SELECT count(*)::int AS n FROM quality_acceptances WHERE revoked_at IS NULL`) as unknown as {

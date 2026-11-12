@@ -19,8 +19,8 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
-import { checkReferences } from "../ops/content/link-integrity.js";
-import { referenceSourcesFromOps } from "../quality/checks/links-sources.js";
+import { buildReferenceGate, checkReferences } from "../ops/content/link-integrity.js";
+import { referenceSourcesOf } from "../quality/checks/links-sources.js";
 import { createReferencesCheck } from "../quality/checks/references.js";
 import { registerAdminOps } from "../register.js";
 
@@ -399,8 +399,15 @@ describe("reference integrity — Stage gate", () => {
     expect(publish.blocking).toBe(1);
     expect(publish.issues[0]?.pageIds).toEqual([linker.pageId]);
 
-    // The Publish-live quality check reports it as an error on the page.
-    const check = createReferencesCheck(referenceSourcesFromOps(registry, adapter, SYS));
+    // The Publish-live quality check reports it as an error on the page: the
+    // Stage's audit reads what a staging build recorded where it started
+    // (#1594), the Publish policy of the same read.
+    const built = await adapter.withAdminTransaction(SYS, (tx) =>
+      buildReferenceGate(tx, "staging"),
+    );
+    if (!built.ok || built.audit === null) throw new Error("a staging build records its check");
+    const recorded = built.audit;
+    const check = createReferencesCheck(referenceSourcesOf(async () => recorded));
     if (check.scope !== "site") throw new Error("site check expected");
     const findings = await check.run({
       pages: [
