@@ -15,7 +15,7 @@
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
-    "google-auth-library": "^11.3.2"
+    "google-auth-library": "^11.3.3"
   },
   "devDependencies": {
     "@caelo-cms/admin-core": "workspace:*",
