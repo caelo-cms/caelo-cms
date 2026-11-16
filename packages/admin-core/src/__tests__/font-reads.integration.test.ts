@@ -5,11 +5,12 @@
  *
  * - a preview reads each bound face's bytes once (cold process cache) or
  *   not at all (warm), never once per typography role;
- * - the site-wide font usage scan does not run while the scanned rows are
- *   unchanged, runs again after any change to them, and the cached result
- *   always equals what an uncached scan under the reader's snapshot gives —
- *   including writes made later in the scanning transaction, rolled-back
- *   writes, and a write that commits after another transaction cached;
+ * - the site's texts are read whole once per process; a change to them is
+ *   carried forward by re-reading only the rows it names (#1270), and the
+ *   cached result always equals what an uncached read under the reader's
+ *   snapshot gives (maintained == rebuilt) — including writes made later in
+ *   the scanning transaction, rolled-back writes, a write that commits
+ *   after another transaction cached, and a reader older than the cache;
  * - preview and build keep producing identical font output.
  */
 
@@ -37,7 +38,7 @@ import {
   clearSiteFontUsageCache,
   loadSiteFontUsage,
   resolveThemeFonts,
-  siteFontUsageScanCount,
+  siteFontUsageReads,
 } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { registerAdminOps } from "../register.js";
@@ -90,15 +91,25 @@ async function uncached(tx: TransactionRunner): Promise<SiteFontUsage> {
   return loadSiteFontUsage(tx, tokens);
 }
 
+/** Whole reads of the site's texts this process ran so far. */
+function wholeReads(): number {
+  return siteFontUsageReads().whole;
+}
+
+/** Rows re-read by deltas so far. */
+function deltaRows(): number {
+  return siteFontUsageReads().deltaRows;
+}
+
 /**
  * Load through the cache and assert it equals the uncached scan. Returns
- * the number of full scans the cached load ran; the comparison itself
+ * the number of whole reads the cached load ran; the comparison itself
  * leaves a fresh entry from `tx` in the cache.
  */
 async function loadAndCompare(tx: TransactionRunner): Promise<number> {
-  const before = siteFontUsageScanCount();
+  const before = wholeReads();
   const usage = await loadSiteFontUsage(tx, tokens);
-  const misses = siteFontUsageScanCount() - before;
+  const misses = wholeReads() - before;
   const truth = await uncached(tx);
   expect(usage).toEqual(truth);
   return misses;
@@ -184,16 +195,18 @@ afterAll(async () => {
   await rm(join(process.cwd(), PREVIEW_CACHE), { recursive: true, force: true });
 });
 
-test("a preview reads each distinct face once and skips the usage scan while nothing changed", async () => {
+test("a preview reads each distinct face once and reads the site's texts whole only once", async () => {
   const preview = async () => {
     const reads = fontByteReadCount();
-    const scans = siteFontUsageScanCount();
+    const scans = wholeReads();
+    const rows = deltaRows();
     const { html } = (await run("pages.render_preview", { pageId })) as { html: string };
     expect(html).toContain("@font-face");
     return {
       html,
       reads: fontByteReadCount() - reads,
-      scans: siteFontUsageScanCount() - scans,
+      scans: wholeReads() - scans,
+      rows: deltaRows() - rows,
     };
   };
 
@@ -215,13 +228,17 @@ test("a preview reads each distinct face once and skips the usage scan while not
   expect(reread.reads).toBe(1);
   expect(reread.scans).toBe(0);
 
-  // A content change the scan covers invalidates it exactly once.
+  // A content change the scan covers is carried forward: the one changed
+  // row is re-read, the site is not (#1270).
   await adapter.withAdminTransaction(ctx, (tx) => setCaptionCss(tx, ".cap{font-weight:250}"));
   const changed = await preview();
-  expect(changed.scans).toBe(1);
+  expect(changed.scans).toBe(0);
+  expect(changed.rows).toBe(1);
   expect(changed.reads).toBe(0);
+  expect(changed.html).not.toBe(cold.html);
   const again = await preview();
   expect(again.scans).toBe(0);
+  expect(again.rows).toBe(0);
   expect(again.html).toBe(changed.html);
   await adapter.withAdminTransaction(ctx, (tx) => setCaptionCss(tx, ".cap{font-weight:400}"));
 });
@@ -239,10 +256,10 @@ test("preview and build produce identical font output from the shared cache", as
         throw new Error("Unexpected font network fetch");
       }) as typeof fetch,
     });
-  const scans = siteFontUsageScanCount();
+  const scans = wholeReads();
   const preview = await adapter.withAdminTransaction(ctx, (tx) => resolveIn(tx, "/_caelo/fonts"));
   const build = await adapter.withAdminTransaction(ctx, (tx) => resolveIn(tx, "/_assets/fonts"));
-  expect(siteFontUsageScanCount() - scans).toBe(1); // the build reused the preview's scan
+  expect(wholeReads() - scans).toBe(1); // the build reused the preview's read
   expect(preview.unresolved).toEqual([]);
   expect(build.files).toEqual(preview.files);
   expect(build.preloads).toEqual(
@@ -313,9 +330,12 @@ test("usage cache: a write that commits after another transaction cached is seen
   release();
   await writer;
   await adapter.withAdminTransaction(ctx, async (tx) => {
-    const scans = siteFontUsageScanCount();
+    const scans = wholeReads();
+    const rows = deltaRows();
     const usage = await loadSiteFontUsage(tx, tokens);
-    expect(siteFontUsageScanCount() - scans).toBe(1);
+    // The write was in flight when B read: the delta from B's mark has it.
+    expect(wholeReads() - scans).toBe(0);
+    expect(deltaRows() - rows).toBe(1);
     expect(usage.weights).toContain(270);
     expect(await loadAndCompare(tx)).toBe(0);
   });
@@ -336,19 +356,82 @@ test("usage cache: journal garbage collection past the cached mark forces a resc
     ).toBeGreaterThan(0);
   });
   await adapter.withAdminTransaction(ctx, async (tx) => {
-    const scans = siteFontUsageScanCount();
+    const scans = wholeReads();
     const usage = await loadSiteFontUsage(tx, tokens);
-    // The rows the freshness check would need are gone: it cannot prove the
-    // cache current, so it rescans instead of trusting it.
-    expect(siteFontUsageScanCount() - scans).toBe(1);
+    // The rows the freshness check and a delta would need are gone: it
+    // cannot carry the cache forward, so it reads whole instead of trusting it.
+    expect(wholeReads() - scans).toBe(1);
     expect(usage).toEqual(await uncached(tx));
   });
   await adapter.withAdminTransaction(ctx, async (tx) => {
-    const scans = siteFontUsageScanCount();
+    const scans = wholeReads();
     await loadSiteFontUsage(tx, tokens);
-    expect(siteFontUsageScanCount() - scans).toBe(0);
+    expect(wholeReads() - scans).toBe(0);
   });
   await adapter.withAdminTransaction(ctx, (tx) => setCaptionCss(tx, ".cap{font-weight:400}"));
+});
+
+test("usage cache: a write without font usage re-reads its row and keeps the scan (#1270)", async () => {
+  const setBody = (tx: TransactionRunner, text: string) =>
+    tx.execute(sql`
+      UPDATE content_instances SET "values" = jsonb_build_object('body_text', ${text}::text)
+       WHERE module_id = (SELECT id FROM modules WHERE display_name = ${`${TAG} body`})`);
+  const first = await adapter.withAdminTransaction(ctx, (tx) => loadSiteFontUsage(tx, tokens));
+  const scans = wholeReads();
+  const rows = deltaRows();
+  await adapter.withAdminTransaction(ctx, (tx) => setBody(tx, "Plain words"));
+  await adapter.withAdminTransaction(ctx, async (tx) => {
+    const plain = await loadSiteFontUsage(tx, tokens);
+    // The changed instance was read by id; its text has no font usage, so
+    // the held texts are unchanged and the scan is not run again.
+    expect({ whole: wholeReads() - scans, rows: deltaRows() - rows }).toEqual({
+      whole: 0,
+      rows: 1,
+    });
+    expect(plain).toBe(first);
+    expect(plain).toEqual(await uncached(tx));
+  });
+
+  // The same row starting to carry a weight joins the held texts, and
+  // leaving it again drops it; both by a delta of that one row.
+  for (const [text, has] of [
+    ['<b style="font-weight:850">x</b>', true],
+    ["Plain again", false],
+  ] as const) {
+    await adapter.withAdminTransaction(ctx, (tx) => setBody(tx, text));
+    await adapter.withAdminTransaction(ctx, async (tx) => {
+      const before = { whole: wholeReads(), rows: deltaRows() };
+      const usage = await loadSiteFontUsage(tx, tokens);
+      expect({ whole: wholeReads() - before.whole, rows: deltaRows() - before.rows }).toEqual({
+        whole: 0,
+        rows: 1,
+      });
+      expect(usage.weights?.includes(850) ?? false).toBe(has);
+      expect(usage).toEqual(await uncached(tx));
+    });
+  }
+  await adapter.withAdminTransaction(ctx, (tx) => setBody(tx, "Hello"));
+});
+
+test("usage cache: a reader that already wrote scanned rows reads whole and caches nothing", async () => {
+  await adapter.withAdminTransaction(ctx, (tx) => loadSiteFontUsage(tx, tokens));
+  await adapter.withAdminTransaction(ctx, async (tx) => {
+    await setCaptionCss(tx, ".cap{font-weight:280}");
+    const scans = wholeReads();
+    const usage = await loadSiteFontUsage(tx, tokens);
+    expect(wholeReads() - scans).toBe(1);
+    expect(usage.weights).toContain(280);
+    await setCaptionCss(tx, ".cap{font-weight:400}");
+  });
+  // Nothing of that transaction's view was kept: the next reader carries
+  // the clean cache forward by the journal rows the commit left.
+  await adapter.withAdminTransaction(ctx, async (tx) => {
+    const scans = wholeReads();
+    const usage = await loadSiteFontUsage(tx, tokens);
+    expect(wholeReads() - scans).toBe(0);
+    expect(usage.weights).not.toContain(280);
+    expect(usage).toEqual(await uncached(tx));
+  });
 });
 
 // Codex review on #1219: concurrent first reads of one face each stored it,

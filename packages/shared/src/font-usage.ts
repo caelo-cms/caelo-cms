@@ -55,6 +55,21 @@ export interface FontUsageSource {
   readonly text: string;
 }
 
+/**
+ * Whether `text` can change what {@link scanSiteFontUsage} derives. Every
+ * match the scanner makes contains `font` in some letter case
+ * (`font-weight`, `font:`, `fontWeight`, `.font =`,
+ * `font-variation-settings`, `fontVariationSettings`) or `--` (a custom
+ * property a weight's `var()` may name, or one touched another way). A
+ * text with neither adds nothing, so a caller that keeps only the relevant
+ * texts of a site gets the scan of all of them. This is exact, not a
+ * heuristic: a new match in the scanner must contain one of the two, and
+ * `font-usage.test.ts` holds the scanner to it.
+ */
+export function fontUsageRelevant(text: string): boolean {
+  return /font|--/i.test(text);
+}
+
 /** Result of {@link scanSiteFontUsage}. */
 export interface SiteFontUsage extends WeightUsage {
   /** Why `weights` is null (first few causes, `label: excerpt`); empty when certain. */

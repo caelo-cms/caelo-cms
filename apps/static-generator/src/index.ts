@@ -26,7 +26,7 @@ export { resolveBuildContentVariants } from "./content-variants-pass.js";
 export {
   clearSiteFontUsageCache,
   loadSiteFontUsage,
-  siteFontUsageScanCount,
+  siteFontUsageReads,
 } from "./font-usage-sources.js";
 export {
   clearFontResolverMemo,
