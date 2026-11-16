@@ -350,6 +350,7 @@ describe("the crawl's batch report and the scoped second pass (#423, #1360)", ()
       // `about` rendered but gave no samples: the scoped second pass skips
       // keyed pages and would never note it.
       tokenlessCapturedUrls: [about],
+      pagesSeen: 2,
     });
 
     const pages = await pagesOf(runId);
@@ -377,6 +378,7 @@ describe("the crawl's batch report and the scoped second pass (#423, #1360)", ()
       pages: [row(home, "home")],
       captures: [{ sourceUrl: ghost, screenshotObjectKey: screenshotKey(runId, ghost) }],
       tokenlessCapturedUrls: [],
+      pagesSeen: 1,
     });
     await expect(unmatched).rejects.toBeInstanceOf(ReportError);
     await expect(unmatched).rejects.toThrow("matched no import_pages row");
@@ -386,6 +388,7 @@ describe("the crawl's batch report and the scoped second pass (#423, #1360)", ()
       pages: [row(home, "home")],
       captures: [{ sourceUrl: home, screenshotObjectKey: screenshotKey(otherRun, home) }],
       tokenlessCapturedUrls: [],
+      pagesSeen: 1,
     });
     await expect(foreign).rejects.toThrow("is not one of this run's");
   });
@@ -407,6 +410,7 @@ describe("the crawl's batch report and the scoped second pass (#423, #1360)", ()
         },
       ],
       tokenlessCapturedUrls: [],
+      pagesSeen: 1,
     });
     const rendered: string[] = [];
     renderer(async (url, opts) => {
@@ -438,6 +442,7 @@ describe("the crawl's batch report and the scoped second pass (#423, #1360)", ()
       pages: [row(home, "home")],
       captures: [{ sourceUrl: home, screenshotObjectKey: screenshotKey(runId, home) }],
       tokenlessCapturedUrls: [home],
+      pagesSeen: 1,
     });
     let calls = 0;
     renderer(async () => {

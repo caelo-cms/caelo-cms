@@ -292,8 +292,8 @@ export const finishCrawlOp = defineOperation({
   input: z
     .object({
       runId,
-      pagesSeen: z.number().int().min(0),
-      pagesExtracted: z.number().int().min(0),
+      /** The URLs the crawl took; it only ever raises the run's count (#1590). */
+      pagesSeen: z.number().int().min(0).max(1_000_000),
       /**
        * What the run report keeps of the crawl (#197, #425): the error list,
        * the skip ledger and the out-of-scope count. The frontier itself is
@@ -310,16 +310,26 @@ export const finishCrawlOp = defineOperation({
     .strict(),
   output: z.object({ finished: z.boolean() }),
   handler: async (ctx, input, tx) => {
+    // #1590 — the batches kept the counts current; the end counts the run's
+    // rows once more, so a run whose earlier batches a release before #1590
+    // wrote ends with the right number too. Pages seen only ever goes up: a
+    // resumed attempt may have taken fewer URLs than an earlier one reported.
     const rows = (await tx.execute(sql`
-      UPDATE import_runs
-         SET status = 'ready_for_review', pages_seen = ${input.pagesSeen},
-             pages_extracted = ${input.pagesExtracted}, error_message = NULL,
-             started_at = COALESCE(started_at, now()), finished_at = now(),
+      WITH written AS (
+        SELECT count(*)::int AS n FROM import_pages WHERE run_id = ${input.runId}::uuid
+      )
+      UPDATE import_runs r
+         SET status = 'ready_for_review', pages_extracted = written.n,
+             pages_seen = GREATEST(r.pages_seen, ${input.pagesSeen}, written.n),
+             error_message = NULL,
+             started_at = COALESCE(r.started_at, now()), finished_at = now(),
              crawl_state = ${jsonbParam(input.report)}, heartbeat_at = NULL
-       WHERE id = ${input.runId}::uuid AND status = 'crawling'
-      RETURNING id
-    `)) as unknown as { id: string }[];
-    if (rows.length > 0) {
+        FROM written
+       WHERE r.id = ${input.runId}::uuid AND r.status = 'crawling'
+      RETURNING r.pages_seen, r.pages_extracted
+    `)) as unknown as { pages_seen: number; pages_extracted: number }[];
+    const run = rows[0];
+    if (run) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -327,10 +337,10 @@ export const finishCrawlOp = defineOperation({
         input: { runId: input.runId, pagesSeen: input.pagesSeen },
         succeeded: true,
         entityId: input.runId,
-        resultSummary: `crawled ${input.pagesExtracted} of ${input.pagesSeen} page(s), ${input.report.errors.length} error(s)`,
+        resultSummary: `crawled ${run.pages_extracted} of ${run.pages_seen} page(s), ${input.report.errors.length} error(s)`,
       });
     }
-    return ok({ finished: rows.length > 0 });
+    return ok({ finished: run !== undefined });
   },
 });
 
