@@ -59,6 +59,7 @@ import {
   guardsByModule,
   rejudgeAll,
   rejudgeChanged,
+  rejudgeUnfilledOnBranch,
   scanEmbeds,
   verdictFor,
 } from "./guards.js";
@@ -506,7 +507,7 @@ export default definePlugin<PluginContextTier1>({
     // hooks (which read verdicts only) see them from the first preview.
     // Not on every boot — that would rescan the whole site on each cold
     // start; the change consumer keeps them current after this.
-    if (firstActivation) await rejudgeAll(ctx, true);
+    if (firstActivation) await rejudgeAll(ctx);
   },
 
   buildAssets: async (ctx) => {
@@ -785,7 +786,7 @@ export default definePlugin<PluginContextTier1>({
      * The change consumer's rebuild (#1267): every instance's value
      * hosts and every module's verdict, from source.
      */
-    scan_modules: async (ctx) => rejudgeAll(ctx, true),
+    scan_modules: async (ctx) => rejudgeAll(ctx),
 
     /**
      * The change consumer (#1267): committed module and content-instance
@@ -796,10 +797,12 @@ export default definePlugin<PluginContextTier1>({
     module_changes: async (ctx, args) => {
       const { chatBranchId, changes } = moduleChangesArgs.parse(args);
       const settings = await settingsOf(adminQueryOf(ctx));
-      // Until the stored value hosts are filled (the first batch after
-      // the upgrade) or after a truncate, everything is rejudged.
+      // Until the stored value hosts are filled (main's first batch after
+      // the upgrade) or after a truncate, everything is rejudged on main.
+      // A branch never fills (#1625): it judges its batch from the
+      // instances and stores no hosts, so it holds no copy of main's rows.
       if (!settings.value_hosts_filled_at || changes.some((c) => c.op === "truncate")) {
-        return rejudgeAll(ctx, chatBranchId === null);
+        return chatBranchId === null ? rejudgeAll(ctx) : rejudgeUnfilledOnBranch(ctx, changes);
       }
       return rejudgeChanged(ctx, changes);
     },

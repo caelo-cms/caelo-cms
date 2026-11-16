@@ -196,6 +196,15 @@ export async function emitPluginRowSnapshots(
  *
  * @param rowIds restrict to these rows; omit for every row the branch touched
  */
+/**
+ * Above this many pending rows a branch overlay of one table is reported
+ * (#1625): every read of the table on that branch pays for all of them.
+ */
+export const LARGE_BRANCH_OVERLAY_ROWS = 500;
+
+/** (branch, plugin, table) overlays already reported by this process. */
+const reportedOverlays = new Set<string>();
+
 export async function loadBranchRowStates(
   tx: TransactionRunner,
   input: {
@@ -215,6 +224,7 @@ export async function loadBranchRowStates(
   // draft head (admin-core draft.ts, migration 0477): one head row per
   // pending row and owner, the newest across owners wins. Only pending
   // snapshots (not staged, not undone) are in the head (issue #620).
+  const started = performance.now();
   const rows = (await tx.execute(sql`
     SELECT DISTINCT ON (d.entity_id) d.entity_id::text AS row_id, prs.state
     FROM draft_pending_entities d
@@ -226,9 +236,36 @@ export async function loadBranchRowStates(
       ${onlyRows}
     ORDER BY d.entity_id, d.header_created_at DESC, d.row_created_at DESC, d.snapshot_row_id DESC
   `)) as unknown as { row_id: string; state: unknown }[];
+  reportLargeOverlay(input, rows.length, performance.now() - started);
   const out = new Map<string, PluginRowState>();
   for (const r of rows) out.set(r.row_id, r.state as PluginRowState);
   return out;
+}
+
+/**
+ * #1625 — a branch that holds many pending rows of one table makes every
+ * read of that table on the branch overlay them all. Reported once per
+ * branch and table per process, with the branch, so the log names the
+ * branch to look at (on searchVIU an experiment chat kept a pending copy
+ * of a whole table; which read paid for it was not visible).
+ */
+export function reportLargeOverlay(
+  input: {
+    readonly pluginId: string;
+    readonly table: string;
+    readonly chatBranchId: string;
+    readonly rowIds?: readonly string[];
+  },
+  rows: number,
+  ms: number,
+): void {
+  if (input.rowIds !== undefined || rows <= LARGE_BRANCH_OVERLAY_ROWS) return;
+  const key = `${input.chatBranchId}|${input.pluginId}|${input.table}`;
+  if (reportedOverlays.has(key)) return;
+  reportedOverlays.add(key);
+  console.warn(
+    `[plugin-storage] branch ${input.chatBranchId} holds ${rows} pending rows of plugin ${input.pluginId} table ${input.table} (read in ${Math.round(ms)} ms); every read of that table on the branch overlays all of them. Stage or discard the branch's chat if they are not wanted.`,
+  );
 }
 
 /**

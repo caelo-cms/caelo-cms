@@ -132,7 +132,11 @@ function makeCtx(): PluginContextTier1 {
         }
         if (op === "content_instances.list") {
           return {
-            instances: input.ids ? instances.filter((i) => input.ids?.includes(i.id)) : instances,
+            instances: input.ids
+              ? instances.filter((i) => input.ids?.includes(i.id))
+              : input.moduleIds
+                ? instances.filter((i) => input.moduleIds?.includes(i.moduleId))
+                : instances,
           };
         }
         if (op === "pages.list") return { pages: [] };
@@ -407,6 +411,56 @@ describe("module_changes keeps verdicts current on writes (#1214, change journal
       }),
     ).toEqual({ flagged: 0, cleared: 1, valueRows: 1 });
     expect(store.rows("value_hosts")).toEqual([]);
+  });
+
+  it("#1625 — a branch batch before main's fill judges from the instances and stores no hosts", async () => {
+    const settings = store.rows("settings")[0] as Record<string, unknown>;
+    settings.value_hosts_filled_at = null;
+    const video = moduleId(7);
+    const other = moduleId(8);
+    const ci = "20000000-0000-4000-8000-000000000007";
+    modules = [
+      {
+        id: video,
+        slug: "video",
+        kind: "content",
+        html: '<iframe src="{{url}}"></iframe>',
+        css: "",
+        js: "",
+        fields: [{ name: "url" }],
+      },
+      {
+        id: other,
+        slug: "other",
+        kind: "content",
+        html: "<p>{{t}}</p>",
+        css: "",
+        js: "",
+        fields: [],
+      },
+    ];
+    instances = [
+      { id: ci, moduleId: video, values: { url: "https://www.youtube.com/embed/x" } },
+      {
+        id: "20000000-0000-4000-8000-000000000008",
+        moduleId: other,
+        values: { t: "https://a.example/x" },
+      },
+    ];
+    cmsCalls = [];
+    const out = await ops.module_changes?.(makeCtx(), {
+      chatBranchId: "30000000-0000-4000-8000-000000000001",
+      changes: [{ kind: "content_instance", op: "update", rowId: ci, parentId: video }],
+    });
+    // Judged from the batch's module's instances: the verdict is there,
+    // no host row is stored on the branch, and the fill stays main's.
+    expect(out).toEqual({ flagged: 1, cleared: 0, valueRows: 0 });
+    expect(store.rows("value_hosts")).toEqual([]);
+    const guards = await guardsByModule(store.query as never, [video, other]);
+    expect(guards.get(video)?.detected_hosts).toEqual(["www.youtube.com"]);
+    expect(guards.has(other)).toBe(false);
+    expect(store.rows("settings")[0]?.value_hosts_filled_at).toBeNull();
+    expect(cmsCalls).toEqual(["modules.list", "content_instances.list"]);
   });
 
   it("#1269 — the first batch after the upgrade rejudges every instance and records the fill", async () => {

@@ -27,6 +27,12 @@
  * arrives, so neither a module change nor an instance change reads the
  * module's other instances.
  *
+ * #1625 — the stored hosts are filled on main only. Until main's first
+ * fill ran, a branch's batch judges its modules from their instances in
+ * memory and stores no hosts: filling on a branch wrote a pending copy of
+ * every row there (2,359 on searchVIU's experiment branch after 0.12.6),
+ * which every read of that branch then overlays.
+ *
  * Render hooks then read verdicts only (`gatedCategoryKeys`,
  * `guardsByModule`): no module or content-instance list on the render
  * path. The deferral gate still judges the content it is handed, so an
@@ -36,7 +42,12 @@
 import type { PluginAdminQuery, PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import { moduleSourceHosts } from "./scan.js";
 import { adminQueryOf, cmsOf, type GuardRow, settingsOf } from "./storage.js";
-import { refreshValueHosts, valueHostsOfModules } from "./value-hosts.js";
+import {
+  refreshValueHosts,
+  type ValueHostsOf,
+  valueHostsFromInstances,
+  valueHostsOfModules,
+} from "./value-hosts.js";
 
 /**
  * Which consent category a set of third-party hosts falls under, or
@@ -219,6 +230,7 @@ interface ModuleRow {
 export async function scanEmbeds(
   ctx: PluginContextTier1,
   moduleIds?: ReadonlyArray<string>,
+  hostsOf: ValueHostsOf = (keysOf) => valueHostsOfModules(adminQueryOf(ctx), keysOf),
 ): Promise<EmbedScan[]> {
   const q = adminQueryOf(ctx);
   const cms = cmsOf(ctx);
@@ -232,10 +244,7 @@ export async function scanEmbeds(
   // matter most. Those values' hosts are stored per instance
   // (value-hosts.ts, #1269): judging a module reads no instance.
   const sources = new Map(modules.map((m) => [m.id, moduleSourceHosts(m)]));
-  const valueHosts = await valueHostsOfModules(
-    q,
-    new Map([...sources].map(([id, src]) => [id, src.keys])),
-  );
+  const valueHosts = await hostsOf(new Map([...sources].map(([id, src]) => [id, src.keys])));
   const guards = await guardsByModule(
     q,
     modules.map((m) => m.id),
@@ -262,12 +271,13 @@ export async function scanEmbeds(
 export async function syncGuards(
   ctx: PluginContextTier1,
   moduleIds?: ReadonlyArray<string>,
+  hostsOf?: ValueHostsOf,
 ): Promise<{ flagged: number; cleared: number }> {
   const q = adminQueryOf(ctx);
   let flagged = 0;
   let cleared = 0;
   if (moduleIds && moduleIds.length === 0) return { flagged, cleared };
-  const scans = await scanEmbeds(ctx, moduleIds);
+  const scans = await scanEmbeds(ctx, moduleIds, hostsOf);
   const present = new Set(scans.map((s) => s.moduleId));
   const stored = moduleIds
     ? [...(await guardsByModule(q, moduleIds)).values()]
@@ -298,29 +308,49 @@ export async function syncGuards(
 }
 
 /**
- * #1269 — rejudge the whole site: every instance's value hosts from its
- * values, then every module's verdict. The consumer's rebuild, the first
- * activation, and the first batch after the upgrade that introduced the
- * stored value hosts (until it ran, a module's value hosts are unknown,
- * so no batch may judge from them). Records that the rows are filled
- * once it ran on main.
+ * #1269 — rejudge the whole site on main: every instance's value hosts
+ * from its values, then every module's verdict. The consumer's rebuild,
+ * the first activation, and main's first batch after the upgrade that
+ * introduced the stored value hosts (until it ran, a module's value hosts
+ * are unknown, so no batch may judge from them). Records that the rows
+ * are filled. Main only (#1625): a branch never fills.
  */
 export async function rejudgeAll(
   ctx: PluginContextTier1,
-  onMain: boolean,
 ): Promise<{ flagged: number; cleared: number; valueRows: number }> {
   const { changed } = await refreshValueHosts(ctx, "all");
   const judged = await syncGuards(ctx);
-  if (onMain) {
-    const q = adminQueryOf(ctx);
-    const settings = await settingsOf(q);
-    if (!settings.value_hosts_filled_at) {
-      await q.update("settings", settings.id, {
-        value_hosts_filled_at: new Date().toISOString(),
-      });
-    }
+  const q = adminQueryOf(ctx);
+  const settings = await settingsOf(q);
+  if (!settings.value_hosts_filled_at) {
+    await q.update("settings", settings.id, {
+      value_hosts_filled_at: new Date().toISOString(),
+    });
   }
   return { ...judged, valueRows: changed };
+}
+
+/**
+ * #1625 — a branch's batch while main has not filled the stored value
+ * hosts (or after a truncate): judge the batch's modules, every module
+ * for a truncate, from their instances as the branch shows them, in
+ * memory, and store no hosts. Costs the modules' instances, but only
+ * until main's first batch ran.
+ */
+export async function rejudgeUnfilledOnBranch(
+  ctx: PluginContextTier1,
+  changes: ReadonlyArray<{ kind: string; op: string; rowId: string; parentId: string | null }>,
+): Promise<{ flagged: number; cleared: number; valueRows: number }> {
+  const hostsOf: ValueHostsOf = (keysOf) => valueHostsFromInstances(ctx, keysOf);
+  if (changes.some((c) => c.op === "truncate")) {
+    return { ...(await syncGuards(ctx, undefined, hostsOf)), valueRows: 0 };
+  }
+  const moduleIds = new Set<string>();
+  for (const c of changes) {
+    if (c.kind === "module") moduleIds.add(c.rowId);
+    else if (c.kind === "content_instance" && c.parentId) moduleIds.add(c.parentId);
+  }
+  return { ...(await syncGuards(ctx, [...moduleIds], hostsOf)), valueRows: 0 };
 }
 
 /**
