@@ -165,6 +165,17 @@ one `propose_<action>` tool per action that wraps the op.
 - **Chat origin** — `chat_session_id` on each row lets the unified
   inbox render "from chat: <title>" so the operator can trace which
   AI session generated a proposal.
+- **Hand-off to an external agent** (`ops/mcp_approval_handoffs.ts`,
+  #658) — a proposal queued over the Power-MCP hands its decision back
+  to the agent that asked (`mcp.get_approval_outcome`). The outcome
+  text names no place on its own: approvals act in very different places
+  (the live site, an account, the authoring state the next Stage builds).
+  An executor whose approval acts on the live site — a Publish live or
+  rollback (`deploy`), publish anyway (`quality`), Go live now and an
+  external redirect approved "now" (`redirects`) — records what it put
+  live as `preview.appliedEffect` in the transaction that marks the row
+  applied, and the hand-off passes it on as the outcome's detail (#1591:
+  an approved promote used to read "in effect on the draft").
 
 ## Adding a new gated domain
 
@@ -212,9 +223,13 @@ one `propose_<action>` tool per action that wraps the op.
 
 5. **Cross-domain plumbing**: add a stanza to
    `pending_proposals.list`'s UNION ALL query + the GC worker's
-   `PENDING_TABLES` array. If the new domain uses non-standard
-   column names (like `decision_note` instead of `decision_reason`),
-   add the dispatch case to the worker.
+   `PENDING_TABLES` array, and to `readProposalDecisions` in
+   `ops/mcp_approval_handoffs.ts` (the external agent's hand-off). If
+   the new domain uses non-standard column names (like `decision_note`
+   instead of `decision_reason`), add the dispatch case to the worker.
+   If its approval acts on the live site, record what it put live as
+   `preview.appliedEffect` when it marks the row applied, and select it
+   there as the decision's detail (see "Hand-off to an external agent").
 
 6. **AI tool**: add a `propose_<action>` entry to
    `ai/tools/propose-tools-batch.ts` via the `makeProposeTool`

@@ -59,6 +59,7 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "../_propose-helpers.js";
+import { describeReleasedRun } from "../deploy-common.js";
 import { actorHasPermission } from "./_permissions.js";
 import { categorySchema, iso } from "./_shared.js";
 import {
@@ -679,16 +680,29 @@ const executeOutput = z.object({
 });
 type ExecuteOutput = z.infer<typeof executeOutput>;
 
-/** Mark the proposal applied and record the decision (one transaction). */
+/**
+ * Mark the proposal applied and record the decision (one transaction).
+ * #1591 — a publish-anyway decision put a build live: what it published is
+ * recorded on the proposal (`preview.appliedEffect`), so its result never
+ * reads as a change waiting on the draft for the agent that asked for it.
+ */
 async function markQualityApplied(
   tx: Tx,
   ctx: { actorId: string; requestId: string },
   proposalId: string,
   result: ExecuteOutput,
 ): Promise<void> {
+  const effect =
+    result.kind === "publish_anyway"
+      ? await describeReleasedRun(tx, result.toRunId ?? null, {
+          kind: "published",
+          over: "over the failed quality check",
+        })
+      : null;
   await tx.execute(sql`
     UPDATE quality_pending_actions
        SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
+           ${effect === null ? sql`` : sql`, preview = preview || jsonb_build_object('appliedEffect', ${effect}::text)`}
      WHERE id = ${proposalId}::uuid AND status = 'pending'
   `);
   await recordAudit(tx, {

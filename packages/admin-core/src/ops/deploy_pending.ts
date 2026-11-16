@@ -55,6 +55,7 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
+import { describeReleasedRun } from "./deploy-common.js";
 
 const proposalRowSchema = z.object({
   id: z.string(),
@@ -310,7 +311,7 @@ const beginExecuteOutput = z.discriminatedUnion("kind", [
     restoreRunId: z.string().nullable(),
   }),
   /** An earlier click's Publish live or rollback succeeded but was never marked applied; now it is. */
-  z.object({ kind: z.literal("applied"), runId: z.string() }),
+  z.object({ kind: z.literal("applied"), runId: z.string(), effect: z.string() }),
 ]);
 
 /**
@@ -362,8 +363,8 @@ export const beginExecuteDeployProposalOp = requiresApproverPermission(
       // record it now instead of releasing a second time. A rollback's run
       // carries the claimed id, like Publish live's (#1250).
       if (row.claimed_by_run_id !== null && row.run_status === "succeeded") {
-        await markApplied(tx, ctx, input.proposalId, row.claimed_by_run_id);
-        return ok({ kind: "applied" as const, runId: row.claimed_by_run_id });
+        const effect = await markApplied(tx, ctx, input.proposalId, row.claimed_by_run_id);
+        return ok({ kind: "applied" as const, runId: row.claimed_by_run_id, effect });
       }
       // A second click (another tab, a retried request) while the first one
       // still applies: the Publish live or rollback it started is running,
@@ -401,19 +402,34 @@ export const beginExecuteDeployProposalOp = requiresApproverPermission(
   }),
 );
 
-/** Mark the proposal applied by `runId` and record the approval (one transaction). */
+/**
+ * Mark the proposal applied by `runId` and record the approval (one
+ * transaction). #1591 — returns what it did (the build the run put on its
+ * target, {@link describeReleasedRun}) and records it on the proposal as
+ * `preview.appliedEffect`, so the result of an approved promote or rollback
+ * says it is live, wherever it is read.
+ */
 async function markApplied(
   tx: Parameters<typeof recordAuditFromCtx>[0],
   ctx: Parameters<typeof recordAuditFromCtx>[1],
   proposalId: string,
   runId: string | null,
-): Promise<void> {
+): Promise<string> {
+  const kinds = (await tx.execute(sql`
+    SELECT kind FROM deploy_pending_actions WHERE id = ${proposalId}::uuid
+  `)) as unknown as { kind: "promote" | "rollback" }[];
+  const effect = await describeReleasedRun(
+    tx,
+    runId,
+    kinds[0]?.kind === "rollback" ? { kind: "rolled back" } : { kind: "published" },
+  );
   await tx.execute(sql`
     UPDATE deploy_pending_actions
     SET status = 'applied',
         decided_at = now(),
         decided_by = ${ctx.actorId}::uuid,
-        applied_run_id = ${runId === null ? null : sql`${runId}::uuid`}
+        applied_run_id = ${runId === null ? null : sql`${runId}::uuid`},
+        preview = preview || jsonb_build_object('appliedEffect', ${effect}::text)
     WHERE id = ${proposalId}::uuid AND status = 'pending'
   `);
   await recordAuditFromCtx(tx, ctx, {
@@ -423,6 +439,7 @@ async function markApplied(
     entityId: proposalId,
     resultSummary: `applied (runId=${runId ?? "(none)"})`,
   });
+  return effect;
 }
 
 export const endExecuteDeployProposalOp = requiresApproverPermission(
@@ -445,11 +462,13 @@ export const endExecuteDeployProposalOp = requiresApproverPermission(
         ]),
       })
       .strict(),
-    output: z.object({}),
+    output: z.object({
+      /** #1591 — what the applied proposal did; null when it failed. */
+      effect: z.string().nullable(),
+    }),
     handler: async (ctx, input, tx) => {
       if (input.outcome.ok) {
-        await markApplied(tx, ctx, input.proposalId, input.outcome.runId);
-        return ok({});
+        return ok({ effect: await markApplied(tx, ctx, input.proposalId, input.outcome.runId) });
       }
       // Nothing went live: release the claim so the card can be approved
       // again once the cause is fixed.
@@ -467,7 +486,7 @@ export const endExecuteDeployProposalOp = requiresApproverPermission(
         entityId: input.proposalId,
         resultSummary: input.outcome.message,
       });
-      return ok({});
+      return ok({ effect: null });
     },
   }),
 );
@@ -484,7 +503,7 @@ async function runExecuteDeployProposal(
   ctx: ExecutionContext,
   input: { proposalId: string; runId?: string | undefined },
   steps: OperationSteps,
-): Promise<Result<{ runId: string | null; warning?: string }, QueryError>> {
+): Promise<Result<{ runId: string | null; effect: string; warning?: string }, QueryError>> {
   const { registry, adapter } = steps;
   // The run's id (Publish live or rollback), minted now so the claim names it.
   const claimedRunId = input.runId ?? randomUUID();
@@ -494,7 +513,7 @@ async function runExecuteDeployProposal(
   });
   if (!begun.ok) return err(begun.error);
   const plan = begun.value as z.infer<typeof beginExecuteOutput>;
-  if (plan.kind === "applied") return ok({ runId: plan.runId });
+  if (plan.kind === "applied") return ok({ runId: plan.runId, effect: plan.effect });
 
   // The underlying ops expect a human or system context (their actorScope
   // is human + system); ctx is the human who clicked Approve.
@@ -558,7 +577,17 @@ async function runExecuteDeployProposal(
   const note = applied.ok
     ? (applied.value as { securityHeadersNote?: string }).securityHeadersNote
     : undefined;
-  return ok({ runId, ...(note ? { warning: `${note} Tell the operator this.` } : {}) });
+  const { effect } = ended.value as { effect: string | null };
+  if (effect === null) {
+    // The step records an effect for every applied outcome; null here is a defect.
+    return err(
+      opError(
+        "deploy.execute_proposal",
+        `the ${plan.proposalKind} was applied (run ${runId}), but its result was not recorded. Settings → Deployments shows the run.`,
+      ),
+    );
+  }
+  return ok({ runId, effect, ...(note ? { warning: `${note} Tell the operator this.` } : {}) });
 }
 
 const executeDeployProposalOpDefinition = defineStepwiseOperation({
@@ -580,6 +609,11 @@ const executeDeployProposalOpDefinition = defineStepwiseOperation({
     .strict(),
   output: z.object({
     runId: z.string().nullable(),
+    /**
+     * #1591 — what the approval did ("Published build … to production …: it
+     * is live on the site now."): what the AI relays and the queue page shows.
+     */
+    effect: z.string(),
     /** #1454 — what the AI relays and the queue page shows. */
     warning: z.string().optional(),
   }),

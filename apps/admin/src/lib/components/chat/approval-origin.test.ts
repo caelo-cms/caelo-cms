@@ -54,7 +54,7 @@ describe("ownDecisionMessage", () => {
 
   it("tells the AI to continue after Approve, and to react after Reject", () => {
     expect(ownDecisionMessage({ kind: "layouts", proposalId, action: "approve" })).toBe(
-      "Approved: layouts proposal 1234abcd applied to the chat branch. Please continue with what you were doing.",
+      "Approved: layouts proposal 1234abcd is applied. Please continue with what you were doing.",
     );
     expect(ownDecisionMessage({ kind: "layouts", proposalId, action: "reject" })).toBe(
       "Rejected: layouts proposal 1234abcd was not applied. Adjust your plan, or ask me how to proceed.",
@@ -69,6 +69,16 @@ describe("ownDecisionMessage", () => {
       );
     }
     expect(isImportKind("layouts")).toBe(false);
+  });
+
+  // #1591 — a Go live now card this chat's AI queued was answered with
+  // "applied to the chat branch" although it put the redirects live.
+  it("never tells the AI a live-acting approval landed on a branch or the draft", () => {
+    for (const kind of ["go_live_now", "promote", "rollback", "publish_anyway", "set_external"]) {
+      expect(ownDecisionMessage({ kind, proposalId, action: "approve" })).not.toMatch(
+        /branch|draft/i,
+      );
+    }
   });
 });
 

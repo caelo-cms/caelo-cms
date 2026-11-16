@@ -357,6 +357,21 @@ async function reserveToolCall(
 const QUEUED_PROPOSAL_RE =
   /^Queued proposal ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):\s*([^\n]*)/;
 
+/**
+ * #1591 — the summary a hand-off records for a queued proposal's result:
+ * the first sentence after "Queued proposal <id>:" (the canonical
+ * "<summary>. <how it is approved>" shape the chat's card reads too), or of
+ * a bespoke flow's own wording. The rest asks for the approval ("Not applied
+ * yet — the Owner approves it at …"), and the hand-off shows the summary
+ * next to the DECIDED outcome, where those words are no longer true. A
+ * period inside an address (`example.com`) does not end the sentence.
+ */
+export function queuedProposalSummary(content: string): string {
+  const line = QUEUED_PROPOSAL_RE.exec(content)?.[2] ?? content.split("\n")[0] ?? "";
+  const end = line.search(/\.(\s|$)/);
+  return (end === -1 ? line : line.slice(0, end)).trim();
+}
+
 export const mcpFinishToolCallOp = defineOperation({
   name: "mcp.finish_tool_call",
   // Why human-only: the after-half of mcp.begin_tool_call (same reason).
@@ -448,7 +463,7 @@ async function handOffQueuedProposal(
     requestedBy,
     toolName: input.toolName,
     toolCallId: input.toolCallId,
-    summary: m?.[2] ?? input.result.content.split("\n")[0] ?? "",
+    summary: queuedProposalSummary(input.result.content),
   });
   if (!recorded) {
     // Every gated tool queues into a source pending_proposals.list knows;

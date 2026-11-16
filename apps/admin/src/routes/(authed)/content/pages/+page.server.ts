@@ -11,6 +11,7 @@ import {
   publishLinkNotice,
   setPagesToDraft,
 } from "#lib/server/link-notice.js";
+import { publishLiveFailure } from "#lib/server/publish-live-failure.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { openStagingHref, stagingOriginForAdmin } from "#lib/server/staging-link.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -259,7 +260,8 @@ export const actions: Actions = {
     if (!promote.ok) {
       // #1240 — the refusal names what to fix; a generic line hid it.
       console.error("[confirmPublish] deploy.promote failed", { error: promote.error });
-      return fail(500, { error: `Publish live failed: ${describeError(promote.error)}` });
+      // #1591 — a refusal is a 409 with its reason; a server fault a 500.
+      return publishLiveFailure("Publish live", promote.error);
     }
     return {
       published: {
