@@ -14,8 +14,10 @@ import {
   declarationGaps,
   fieldsOfRow,
   jsonForInlineScript,
+  legacySnippetNextStep,
   resolveTagColumns,
   type TagRow,
+  tagCode,
 } from "./tags.js";
 import { VENDOR_TEMPLATES } from "./vendors.js";
 
@@ -180,5 +182,122 @@ describe("vendor templates (#1135)", () => {
     );
     expect(next.script_src).toContain("G-NEW222");
     expect(next.inline_snippet).not.toContain("G-OLD111");
+  });
+});
+
+/**
+ * #1588 — a tag registered with hand-written code before its vendor had a
+ * template (`config` null) read exactly like one built from `config` in
+ * list_tracking_tags, so an approved update that replaced the code looked
+ * as if the old snippet stayed in effect, and every change that did not
+ * pass the ids failed with an error about fields the AI never sent.
+ */
+describe("what a stored tag loads (#1588)", () => {
+  const LEGACY_SNIPPET =
+    "if (location.pathname.indexOf('/de/produkte') === 0) { /* LI-OLD111 */ window.leadinfo = 1; }";
+  const legacyRow: TagRow = {
+    id: "t-legacy",
+    name: "Leadinfo (DE products)",
+    vendor: "leadinfo",
+    category_key: "marketing",
+    script_src: "",
+    inline_snippet: LEGACY_SNIPPET,
+    position: "body_end",
+    justification: "",
+    enabled: true,
+    config: null,
+    cookies: null,
+    vendor_info: null,
+    scope: null,
+  };
+
+  it("names a known vendor's tag without ids as running its stored hand-written code", () => {
+    expect(tagCode(legacyRow)).toEqual({
+      source: "legacy_snippet",
+      src: "",
+      inline: LEGACY_SNIPPET,
+    });
+    // A hand-written tag whose vendor became known later stores `{}`.
+    expect(tagCode({ ...legacyRow, config: {} }).source).toBe("legacy_snippet");
+    expect(tagCode({ ...legacyRow, vendor: "acme" }).source).toBe("hand_written");
+    // The update starts from the code that runs, never from ids it lacks.
+    expect(fieldsOfRow(legacyRow)).toMatchObject({ inlineSnippet: LEGACY_SNIPPET });
+    expect(fieldsOfRow(legacyRow).config).toBeUndefined();
+  });
+
+  it("builds a templated tag's code from its ids, never from a stored copy", () => {
+    const built = resolveTagColumns(
+      "add_tag",
+      { vendor: "leadinfo", config: { accountId: "LI-6953F4EAC04B9" } },
+      CATEGORIES,
+    );
+    // Whatever the code columns hold, the ids decide what loads.
+    const code = tagCode({ ...built, inline_snippet: LEGACY_SNIPPET });
+    expect(code.source).toBe("vendor_template");
+    expect(code.inline).toBe(built.inline_snippet);
+    expect(code.inline).toContain('"LI-6953F4EAC04B9"');
+    expect(code.inline).not.toContain("/de/produkte");
+  });
+
+  it("replaces the legacy code when the ids arrive, and drops the stored snippet", () => {
+    const base = fieldsOfRow(legacyRow);
+    delete base.inlineSnippet;
+    delete base.scriptSrc;
+    const next = resolveTagColumns(
+      "update_tags_many",
+      { ...base, config: { accountId: "LI-6953F4EAC04B9" }, scope: { paths: ["/de/*"] } },
+      CATEGORIES,
+    );
+    expect(next.config).toEqual({ accountId: "LI-6953F4EAC04B9" });
+    expect(next.inline_snippet).not.toContain("/de/produkte");
+    expect(tagCode({ ...legacyRow, ...next }).source).toBe("vendor_template");
+  });
+
+  it("accepts an explicitly empty snippet next to a known vendor's ids", () => {
+    const t = resolveTagColumns(
+      "update_tags_many",
+      {
+        vendor: "leadinfo",
+        config: { accountId: "LI-6953F4EAC04B9" },
+        inlineSnippet: "",
+        scriptSrc: "",
+      },
+      CATEGORIES,
+    );
+    expect(t.inline_snippet).toContain("cdn.leadinfo.net/ping.js");
+  });
+
+  it("keeps a legacy tag's code through a change that leaves the code alone", () => {
+    const base = fieldsOfRow(legacyRow);
+    delete base.inlineSnippet;
+    delete base.scriptSrc;
+    const next = resolveTagColumns(
+      "update_tags_many",
+      { ...base, scope: { paths: ["/de/*"] } },
+      CATEGORIES,
+      tagCode(legacyRow),
+    );
+    expect(next.inline_snippet).toBe(LEGACY_SNIPPET);
+    expect(next.scope).toEqual({ paths: ["/de/*"] });
+    expect(tagCode({ ...legacyRow, ...next }).source).toBe("legacy_snippet");
+    // Leadinfo's documented cookies describe Leadinfo's own code, not this
+    // one: the declaration keeps what the tag declared.
+    expect(next.cookies).toEqual([]);
+    expect(next.vendor_info.name).toBeUndefined();
+  });
+
+  it("tells the AI the next step instead of asking it to drop fields it never sent", () => {
+    const next = legacySnippetNextStep(legacyRow);
+    expect(next).toContain("config");
+    expect(next).toContain("accountId (LI- followed by");
+    expect(next).toContain("scope");
+    expect(next).toContain("needs no ids and keeps that code");
+    expect(() =>
+      resolveTagColumns(
+        "update_tags_many",
+        { vendor: "leadinfo", config: { accountId: "LI-1" }, inlineSnippet: "x()" },
+        CATEGORIES,
+      ),
+    ).toThrow(/pass only the ids in `config` \(on update_tags_many that replaces whatever code/);
   });
 });

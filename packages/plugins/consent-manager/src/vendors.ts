@@ -331,6 +331,44 @@ export const VENDOR_TEMPLATES: Readonly<Record<string, VendorTemplate>> = {
   },
 };
 
+/** The config a template takes, each key with its format: `accountId (LI- followed by …)`. */
+export function expectedVendorConfig(template: VendorTemplate): string {
+  return Object.entries(template.config)
+    .map(([k, f]) => `${k} (${f.format})`)
+    .join(", ");
+}
+
+type VendorConfigCheck =
+  | { readonly ok: true; readonly config: Record<string, string> }
+  | { readonly ok: false; readonly problem: string };
+
+function checkVendorConfig(
+  vendor: string,
+  template: VendorTemplate,
+  config: Readonly<Record<string, string>> | null | undefined,
+): VendorConfigCheck {
+  const given = config ?? {};
+  const unknown = Object.keys(given).filter((k) => !(k in template.config));
+  if (unknown.length > 0) {
+    return {
+      ok: false,
+      problem: `${vendor} takes config ${expectedVendorConfig(template)}; unknown key(s): ${unknown.join(", ")}`,
+    };
+  }
+  const out: Record<string, string> = {};
+  for (const [key, field] of Object.entries(template.config)) {
+    const value = (given[key] ?? "").trim();
+    if (!field.test(value)) {
+      return {
+        ok: false,
+        problem: `${vendor} needs config.${key} as ${field.format}${value ? ` — got "${value}"` : ""}. Ask the operator for it if you do not have it; do not hand-write the vendor's snippet instead.`,
+      };
+    }
+    out[key] = value;
+  }
+  return { ok: true, config: out };
+}
+
 /**
  * Validate a known vendor's config. The error names every field with its
  * expected format, so the AI can ask the operator for exactly that.
@@ -341,25 +379,22 @@ export function parseVendorConfig(
   template: VendorTemplate,
   config: Readonly<Record<string, string>> | undefined,
 ): Record<string, string> {
-  const expected = Object.entries(template.config)
-    .map(([k, f]) => `${k} (${f.format})`)
-    .join(", ");
-  const given = config ?? {};
-  const unknown = Object.keys(given).filter((k) => !(k in template.config));
-  if (unknown.length > 0) {
-    throw new Error(
-      `${tool}: ${vendor} takes config ${expected}; unknown key(s): ${unknown.join(", ")}`,
-    );
-  }
-  const out: Record<string, string> = {};
-  for (const [key, field] of Object.entries(template.config)) {
-    const value = (given[key] ?? "").trim();
-    if (!field.test(value)) {
-      throw new Error(
-        `${tool}: ${vendor} needs config.${key} as ${field.format}${value ? ` — got "${value}"` : ""}. Ask the operator for it if you do not have it; do not hand-write the vendor's snippet instead.`,
-      );
-    }
-    out[key] = value;
-  }
-  return out;
+  const checked = checkVendorConfig(vendor, template, config);
+  if (!checked.ok) throw new Error(`${tool}: ${checked.problem}`);
+  return checked.config;
+}
+
+/**
+ * A stored config the template builds code from, or null when it holds no
+ * usable ids — a tag registered before its vendor had a template stores
+ * none (tags.ts, `TagCodeSource`).
+ */
+export function storedVendorConfig(
+  vendor: string,
+  template: VendorTemplate,
+  config: Readonly<Record<string, string>> | null,
+): Record<string, string> | null {
+  if (config === null) return null;
+  const checked = checkVendorConfig(vendor, template, config);
+  return checked.ok ? checked.config : null;
 }
