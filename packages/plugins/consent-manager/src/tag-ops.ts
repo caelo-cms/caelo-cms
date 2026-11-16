@@ -32,10 +32,13 @@ import {
   declarationGaps,
   describeIssues,
   fieldsOfRow,
+  legacySnippetNextStep,
   resolveTagColumns,
+  type TagCode,
   type TagColumns,
   type TagRow,
   type TagScope,
+  tagCode,
   tagFieldsSchema,
 } from "./tags.js";
 import { VENDOR_TEMPLATES } from "./vendors.js";
@@ -194,14 +197,26 @@ export async function updateTagsMany(ctx: unknown, args: unknown) {
         `update_tags_many: no tag named "${name}". Registered: ${[...byName.keys()].join(", ") || "(none)"} — add new ones with add_tracking_tag.`,
       );
     }
-    // Switching to a known vendor replaces hand-written code with the
-    // template's, so the stored code must not ride into the merge.
+    // A tag that still runs code written before its vendor had a template
+    // changes only together with the ids that replace that code (#1588).
+    const nextVendor = (patch.vendor ?? row.vendor).trim();
+    if (
+      tagCode(row).source === "legacy_snippet" &&
+      patch.config === undefined &&
+      VENDOR_TEMPLATES[nextVendor]
+    ) {
+      throw new Error(`update_tags_many: ${legacySnippetNextStep(row)}`);
+    }
+    // Ids for a known vendor replace the code: whatever the tag stored,
+    // hand-written or built, must not ride into the merge.
     const base = fieldsOfRow(row);
     if (patch.config !== undefined) {
       delete base.scriptSrc;
       delete base.inlineSnippet;
     }
-    if (patch.scriptSrc !== undefined || patch.inlineSnippet !== undefined) delete base.config;
+    // New hand-written code replaces the ids. An empty `scriptSrc` /
+    // `inlineSnippet` writes none, so it leaves a templated tag's ids be.
+    if ((patch.scriptSrc ?? "") !== "" || (patch.inlineSnippet ?? "") !== "") delete base.config;
     // Vendor metadata is updated field by field: a patch naming only a new
     // privacy URL keeps the stored seat, purpose and transfer details. A
     // switch to another vendor starts from that vendor's own data.
@@ -259,6 +274,39 @@ export async function removeTag(ctx: unknown, args: unknown) {
   return { removed: name };
 }
 
+/** Enough of a hand-written snippet to read its ids and conditions, without flooding the result. */
+const SHOWN_SNIPPET_CHARS = 4000;
+
+/**
+ * What a tag loads, as `list_tags` reports it (#1588): a vendor's own code
+ * is named, hand-written code is shown, so a tag still running code from
+ * before its vendor's template cannot pass for one built from `config`.
+ */
+function loadsOf(row: TagRow, code: TagCode) {
+  if (code.source === "vendor_template") {
+    return {
+      code: code.source,
+      loads: `${row.vendor}'s own code, built from \`config\`${code.src ? ` (script ${code.src})` : ""}`,
+    };
+  }
+  const inline =
+    code.inline.length > SHOWN_SNIPPET_CHARS
+      ? `${code.inline.slice(0, SHOWN_SNIPPET_CHARS)} … (${code.inline.length - SHOWN_SNIPPET_CHARS} more characters)`
+      : code.inline;
+  const shown = {
+    ...(code.src ? { scriptSrc: code.src } : {}),
+    ...(code.inline ? { inlineSnippet: inline } : {}),
+  };
+  const what = [code.src, code.inline ? "the inline snippet" : ""].filter(Boolean).join(" and ");
+  if (code.source === "hand_written") return { code: code.source, loads: what, ...shown };
+  return {
+    code: code.source,
+    loads: `hand-written code (${what}), not ${row.vendor}'s own`,
+    ...shown,
+    nextStep: legacySnippetNextStep(row),
+  };
+}
+
 /** The tags with everything the AI needs to explain or change them, plus the vendor templates. */
 export async function listTags(ctx: unknown) {
   const tags = await allTags(ctx);
@@ -279,7 +327,7 @@ export async function listTags(ctx: unknown) {
         vendor: t.vendor,
         category: t.category_key,
         config: t.config ?? {},
-        loads: t.script_src || "(inline snippet)",
+        ...loadsOf(t, tagCode(t)),
         position: t.position,
         enabled: t.enabled,
         justification: t.justification,
@@ -332,12 +380,14 @@ export async function bakeTags(ctx: unknown): Promise<BakedTag[]> {
   return tags.map((t) => {
     const s = t.scope ?? {};
     const scoped = (s.paths?.length ?? 0) + (s.pageIds?.length ?? 0) + (s.templateIds?.length ?? 0);
+    // The same answer list_tags gives: a known vendor's code from its ids.
+    const code = tagCode(t);
     return {
       name: t.name,
       vendor: t.vendor,
       category: t.category_key,
-      src: t.script_src,
-      inline: t.inline_snippet,
+      src: code.src,
+      inline: code.inline,
       position: t.position === "head" ? "head" : "body_end",
       cookies: (t.cookies ?? []).map((c) => ({ name: c.name, prefix: c.pattern === true })),
       scope: {
