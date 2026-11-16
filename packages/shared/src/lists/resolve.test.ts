@@ -181,6 +181,46 @@ describe("system sources", () => {
   it("outside any page, page-shaped system sources are empty", () => {
     expect(entries(page(null), sys("breadcrumbs"))).toEqual([]);
   });
+
+  // #1598 — the links these sources generate are stored nowhere, so the
+  // stored-reference check (`check_links`) cannot see them: the resolver
+  // itself must never generate a link to a page the build does not ship.
+  it("no generated page entry names a page outside the build", () => {
+    // About and News are drafts; Team, Launch day and Meetup are published below them.
+    const pages = PAGES.map((p) =>
+      p.id === PAGE.about || p.id === PAGE.news ? { ...p, inBuild: false } : p,
+    );
+    const data = fixtureData({ pages });
+    const inBuild = new Set(pages.filter((p) => p.inBuild).map((p) => p.id));
+    const sources: [ListFieldSpec, unknown][] = [
+      [sys("breadcrumbs"), undefined],
+      [sys("children"), undefined],
+      [sys("siblings"), undefined],
+      [
+        {
+          name: "tagged",
+          listType: "links",
+          bind: "source",
+          source: { kind: "system", name: "term_pages" },
+        },
+        { terms: [TERM.release, TERM.event] },
+      ],
+      [query({ exclude_current: false, order: "title_asc", limit: 50 }), undefined],
+    ];
+    let generated = 0;
+    // A build renders exactly the pages in it.
+    for (const rendering of inBuild) {
+      for (const [field, value] of sources) {
+        for (const e of entries(page(rendering, data), field, value)) {
+          generated += 1;
+          expect({ rendering, field: field.name, entry: e.id, inBuild: inBuild.has(e.id) }).toEqual(
+            { rendering, field: field.name, entry: e.id, inBuild: true },
+          );
+        }
+      }
+    }
+    expect(generated).toBeGreaterThan(0);
+  });
 });
 
 describe("overlays (list-resolve)", () => {
@@ -389,6 +429,56 @@ describe("breadcrumbs (#1142)", () => {
     const moved = PAGES.map((p) => (p.id === PAGE.team ? { ...p, parentId: PAGE.news } : p));
     const ctx = page(PAGE.team, fixtureData({ pages: moved }));
     expect(entries(ctx, CRUMBS).map((e) => textOf(e, "title"))).toEqual(["Home", "News", "Team"]);
+  });
+
+  // #1598 — a crumb links its page, and a page the build does not ship is a
+  // 404 there. The trail leaves it out, as children and siblings do and as
+  // the BreadcrumbList JSON-LD does, and keeps the ancestors above it.
+  it("leaves out an ancestor that is not in the build and keeps the ones above it", () => {
+    // Home → News → About (draft) → Team.
+    const pages = PAGES.map((p) =>
+      p.id === PAGE.about ? { ...p, parentId: PAGE.news, inBuild: false } : p,
+    );
+    const ctx = page(PAGE.team, fixtureData({ pages }));
+    const got = entries(ctx, CRUMBS);
+    expect(got.map((e) => textOf(e, "title"))).toEqual(["Home", "News", "Team"]);
+    expect(got.map((e) => textOf(e, "link"))).not.toContain(`caelo:page/${PAGE.about}`);
+    expect(got.map((e) => e.get("is_ancestor"))).toEqual([
+      { kind: "bool", value: true },
+      { kind: "bool", value: true },
+      { kind: "bool", value: false },
+    ]);
+    expect(got.map((e) => [e.get("first"), e.get("last")])).toEqual([
+      [
+        { kind: "bool", value: true },
+        { kind: "bool", value: false },
+      ],
+      [
+        { kind: "bool", value: false },
+        { kind: "bool", value: false },
+      ],
+      [
+        { kind: "bool", value: false },
+        { kind: "bool", value: true },
+      ],
+    ]);
+    // The JSON-LD is built from the recorded trail: the same crumbs.
+    expect(ctx.breadcrumbTrail()).toEqual([PAGE.home, PAGE.news, PAGE.team]);
+    // Publishing the ancestor changes the tree, which rebuilds every trail.
+    expect(ctx.deps().pageTree).toBe(true);
+  });
+
+  it("shows no home crumb while the home page is not in the build", () => {
+    const pages = PAGES.map((p) => (p.id === PAGE.home ? { ...p, inBuild: false } : p));
+    const ctx = page(PAGE.team, fixtureData({ pages }));
+    expect(entries(ctx, CRUMBS).map((e) => textOf(e, "title"))).toEqual(["About", "Team"]);
+    expect(ctx.breadcrumbTrail()).toEqual([PAGE.about, PAGE.team]);
+  });
+
+  it("always shows the rendering page itself, also a draft in the editor preview", () => {
+    const pages = PAGES.map((p) => (p.id === PAGE.team ? { ...p, inBuild: false } : p));
+    const ctx = page(PAGE.team, fixtureData({ pages }));
+    expect(entries(ctx, CRUMBS).map((e) => textOf(e, "title"))).toEqual(["Home", "About", "Team"]);
   });
 
   describe("variants", () => {

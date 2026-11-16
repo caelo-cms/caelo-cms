@@ -7,16 +7,20 @@
  * from the site texts, and the page carries a `BreadcrumbList` JSON-LD
  * that is byte-identical in the editor preview and the generator's SEO
  * pass. A move and a short-title edit reach the trail without touching
- * the module.
+ * the module. A draft ancestor is left out of the trail in the preview
+ * and in the staged build, so no crumb links a page the build does not
+ * ship (#1598).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { localBuildPluginServices, resetPluginHost } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { runSeoPass } from "./fixtures/seo-pass.js";
@@ -41,6 +45,7 @@ let restoreBaseUrl: (() => Promise<void>) | null = null;
 let restoreLanguage: (() => Promise<void>) | null = null;
 let previousHome: string | null = null;
 let buildDir = "";
+let templateId = "";
 const ids = { home: "", about: "", team: "" };
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
@@ -77,6 +82,18 @@ const crumbsLd = (html: string): string | null =>
   [...html.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)]
     .map((m) => m[1] as string)
     .find((s) => s.includes('"BreadcrumbList"')) ?? null;
+const CRUMBS_HTML =
+  '<nav aria-label="{{site_text.breadcrumb_label}}"><ol>{{#crumbs}}<li>{{#is_current}}<span aria-current="page">{{short_title}}</span>{{/is_current}}{{^is_current}}<a href="{{link}}">{{short_title}}</a>{{/is_current}}</li>{{/crumbs}}</ol></nav>';
+const CRUMBS_FIELD = {
+  name: "crumbs",
+  kind: "list",
+  label: "Breadcrumbs",
+  listType: "links",
+  bind: "source",
+  source: { kind: "system", name: "breadcrumbs" },
+};
+const crumbHrefs = (html: string): string[] =>
+  [...nav(html).matchAll(/<a href="([^"]*)"/g)].map((m) => m[1] as string);
 const crumbLabels = (html: string): string[] =>
   [...nav(html).matchAll(/<li[^>]*>(?:<a [^>]*>|<span [^>]*>)([^<]*)</g)].map(
     (m) => m[1] as string,
@@ -102,6 +119,7 @@ beforeAll(async () => {
     displayName: "T1142",
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
   });
+  templateId = tpl.templateId;
   await run("template_blocks.set", {
     templateId: tpl.templateId,
     blocks: [{ name: "content", displayName: "Content", position: 0 }],
@@ -147,17 +165,8 @@ beforeAll(async () => {
         displayName: "T1142 breadcrumbs",
         description: "The breadcrumb trail of the page.",
         kind: "utility",
-        html: '<nav aria-label="{{site_text.breadcrumb_label}}"><ol>{{#crumbs}}<li>{{#is_current}}<span aria-current="page">{{short_title}}</span>{{/is_current}}{{^is_current}}<a href="{{link}}">{{short_title}}</a>{{/is_current}}</li>{{/crumbs}}</ol></nav>',
-        fields: [
-          {
-            name: "crumbs",
-            kind: "list",
-            label: "Breadcrumbs",
-            listType: "links",
-            bind: "source",
-            source: { kind: "system", name: "breadcrumbs" },
-          },
-        ],
+        html: CRUMBS_HTML,
+        fields: [CRUMBS_FIELD],
         content: { source: "inline", values: {} },
       },
     ],
@@ -242,6 +251,85 @@ describe("#1142 breadcrumbs", () => {
 
   it("a page without a breadcrumb module carries no BreadcrumbList", async () => {
     expect(crumbsLd(await preview(ids.about))).toBeNull();
+  });
+
+  // #1598 — a published page under a draft parent: the crumb of the parent
+  // would link a page the build does not ship (a 404 after Publish live).
+  // The trail leaves it out, keeps the published ancestor above it, and the
+  // JSON-LD names the same crumbs.
+  it("leaves a draft ancestor out of the trail, in the preview and in the staged build", async () => {
+    const create = async (
+      slug: string,
+      title: string,
+      status: "draft" | "published",
+      parentPageId?: string,
+    ) =>
+      (
+        await run<{ pageId: string }>("pages.create", {
+          slug,
+          title,
+          templateId,
+          status,
+          ...(parentPageId ? { parentPageId } : {}),
+        })
+      ).pageId;
+    const docs = await create("t1142-docs", "Documentation", "published");
+    const api = await create("t1142-api", "API reference", "draft", docs);
+    const auth = await create("t1142-auth", "Authentication", "published", api);
+    await run("pages.build_page", {
+      page: { pageId: auth },
+      modules: [
+        {
+          blockName: "content",
+          displayName: "T1598 breadcrumbs",
+          description: "The breadcrumb trail of a documentation page.",
+          kind: "utility",
+          html: CRUMBS_HTML,
+          fields: [CRUMBS_FIELD],
+          content: { source: "inline", values: {} },
+        },
+      ],
+    });
+    const labels = ["Start", "Documentation", "Authentication"];
+
+    const html = await preview(auth);
+    expect(crumbLabels(html)).toEqual(labels);
+    expect(crumbHrefs(html).some((href) => href.includes("t1142-api"))).toBe(false);
+    const previewLd = crumbsLd(html);
+    const ldNames = (ld: string | null): string[] =>
+      (JSON.parse(ld as string) as { itemListElement: { name: string }[] }).itemListElement.map(
+        (i) => i.name,
+      );
+    expect(ldNames(previewLd)).toEqual(labels);
+
+    const runId = "t1598-staging";
+    const result = await adapter.withAdminTransaction(SYS, (tx) =>
+      generateSite({
+        publishAt: new Date().toISOString(),
+        tx,
+        plugins: localBuildPluginServices,
+        target: {
+          id: "00000000-0000-0000-0000-000000001598",
+          name: "staging",
+          env: "staging",
+          outDir: "out",
+          baseUrl: BASE,
+          robotsDefault: "noindex",
+          pageUrlStyle: "directory",
+        },
+        runId,
+        repoRoot: buildDir,
+        changedPageIds: [auth],
+      }),
+    );
+    const built = await readFile(
+      join(buildDir, "out", "builds", runId, pageOutputPath("/t1142-docs/t1142-api/t1142-auth")),
+      "utf8",
+    );
+    expect(crumbLabels(built)).toEqual(labels);
+    expect(crumbHrefs(built)).toEqual(["/", "/t1142-docs/"]);
+    expect(result.unpublishedLinkTargets).toEqual([]);
+    expect(crumbsLd(built)).toBe(previewLd);
   });
 
   it("a short-title edit and a move reach the trail without touching the module", async () => {
