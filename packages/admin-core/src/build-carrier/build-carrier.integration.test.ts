@@ -748,7 +748,9 @@ describe("a build inside the request its carrier holds open (#1574)", () => {
     const order = await orderRow(id);
     expect(order?.outcome.givenUp).toBe(true);
     expect(order?.outcome.error?.message).toContain("Cloud Run answered 503");
-    expect((await jobRow(id))?.state).toBe("done");
+    // giveUpReportingJob records the order first and finishes the job row in
+    // a second step (launcher.ts), so the row may still read running here.
+    await until(async () => (await jobRow(id))?.state === "done", "the given-up job row");
   });
 
   it("orders a run's start and its order's give-up: the give-up waits for the run, then asks it to stop", async () => {
