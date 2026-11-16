@@ -263,7 +263,8 @@ breadcrumbs and navigation), `link` (`caelo:page/<id>`), `published_at`, `update
 (`name`, `slug`, …) plus `link` = its `landing_page` when set.
 
 `system` sources: `breadcrumbs` (home → root → current via
-`parent_page_id`, current page included — see "Breadcrumbs" below),
+`parent_page_id`, current page included, pages not in the build left
+out — see "Breadcrumbs" below),
 `children` / `siblings` of the current page
 (published, title order; `siblings` includes the current page, marked
 `is_current`, so a sub-navigation needs no special case), `page_terms`
@@ -387,14 +388,30 @@ are `is_ancestor`, the last `is_current`. Label crumbs with
 `{{short_title}}` — the home page's short title is the "Start" crumb, so
 it is translated with the home page.
 
+Like every generated page entry (queries, `children`, `siblings`,
+`term_pages`), a crumb names only a page that is in the build being
+rendered (preview: published in the draft view), because every crumb but
+the last links its page (#1598). A draft ancestor, or a draft home page,
+is left out, and the walk climbs on through it: Home → Docs → API (draft)
+→ Auth shows as Home → Docs → Auth, still the page's path. The crumb is
+dropped, not shown as text: the JSON-LD below can name a crumb without a
+URL only in the last position, so a text crumb would split the visible
+trail from the structured data, and every template that writes
+`<a href="{{link}}">` would ship an empty link. The rendering page itself
+always shows (a draft in the editor preview too). Publishing the ancestor
+changes the page tree, so the next build re-renders every trail. These
+links are stored nowhere, so the stored-reference check (`check_links`,
+the reference gates of Stage and Publish live) cannot see them: the
+resolver is what keeps them off pages the build does not ship.
+
 The render records the trail (`ListPageContext.breadcrumbTrail()`), and
 the SEO pass emits a `BreadcrumbList` JSON-LD from it with each crumb's
 short title and public URL (`breadcrumbJsonLdItems` + `renderSeoHead` in
 `shared/src/seo.ts`; the generator's `seo-pass.ts` and the preview's
-`preview-breadcrumbs.ts` build the items alike). A page that shows no
-trail gets none; a trail page without a public URL (not published) is
-left out of the JSON-LD — its visible link is already flagged by the
-unpublished-link gate. The 404 page never carries one.
+`preview-breadcrumbs.ts` build the items alike), so it names the same
+crumbs as the visible trail. A page that shows no trail gets none; a
+trail page without a public URL (in the editor preview of a draft: the
+page itself) is left out of the JSON-LD. The 404 page never carries one.
 
 A breadcrumb module:
 

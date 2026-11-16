@@ -24,7 +24,9 @@ import type { SiteView } from "../../site-view.js";
 /**
  * Items for `renderSeoHead`'s `breadcrumbs`; empty when the page rendered
  * no trail. A trail page that is not published in the draft view has no
- * public URL and is left out, as in the build.
+ * public URL and is left out, as in the build. The trail holds no such
+ * page but the previewed page itself (#1598: the source leaves the others
+ * out).
  */
 export async function previewBreadcrumbs(
   view: SiteView,

@@ -569,8 +569,9 @@ type CrumbPage = Pick<
 /**
  * The trail pages (#1142) this pass has no bundle for — an incremental
  * build re-renders a page without its unchanged ancestors. Only pages
- * published on the main line count: a draft ancestor has no public URL,
- * and its crumb is left out of the JSON-LD (see `breadcrumbJsonLdItems`).
+ * published on the main line count: a draft has no public URL. The
+ * `breadcrumbs` source already leaves pages outside the build out of the
+ * trail (#1598), so this filter only keeps the JSON-LD honest.
  */
 async function loadCrumbPages(tx: TransactionRunner, ids: readonly string[]): Promise<CrumbPage[]> {
   if (ids.length === 0) return [];

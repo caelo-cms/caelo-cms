@@ -308,10 +308,11 @@ export interface BreadcrumbJsonLdItem {
 /**
  * The `BreadcrumbList` items of a rendered trail (#1142). `lookup` answers
  * a trail page's short title and public URL, or null when the page has no
- * public URL in this render (not published). Such a crumb is left out:
- * its visible link is already flagged by the unpublished-link gate, and a
- * `ListItem` without a URL is only valid in the last position. The
- * generator and the editor preview both build their items through here.
+ * public URL in this render. The `breadcrumbs` source leaves every page
+ * outside the build out of the trail (#1598), so that is normally just the
+ * rendering page itself in the editor preview of a draft. Such a crumb is
+ * left out: a `ListItem` without a URL is only valid in the last position.
+ * The generator and the editor preview both build their items through here.
  */
 export function breadcrumbJsonLdItems(
   trail: readonly string[] | null,

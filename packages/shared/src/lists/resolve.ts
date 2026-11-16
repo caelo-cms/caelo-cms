@@ -1021,18 +1021,28 @@ function createPageContext(
       case "breadcrumbs": {
         depTree = true;
         if (!current) return EMPTY_LIST;
+        // #1598 — every crumb but the rendering page's own links its page,
+        // so a page this build does not ship (a draft ancestor) is left
+        // out, the rule of children and siblings. The walk still climbs
+        // through it: the crumbs above it are still the page's ancestors,
+        // in order. The BreadcrumbList JSON-LD names only pages with a
+        // public URL, so it lists exactly these crumbs. A text-only crumb
+        // instead would need a ListItem without a URL, which is valid only
+        // in the last position, and would render `href=""` in every
+        // template that links `{{link}}`. The rendering page is always in
+        // the build that renders it (the editor preview also renders drafts).
         const chain: ListPageRecord[] = [];
         const seen = new Set<string>();
         let p: ListPageRecord | undefined = current;
         while (p && !seen.has(p.id)) {
-          chain.unshift(p);
+          if (p === current || p.inBuild) chain.unshift(p);
           seen.add(p.id);
           p = p.parentId === null ? undefined : data.pages.get(p.parentId);
         }
         // The home page is no parent in the tree, yet every trail starts
         // there; its short name is the "Start" crumb, translated with it.
         const home = homeOfVariant();
-        if (home && !seen.has(home.id)) chain.unshift(home);
+        if (home?.inBuild && !seen.has(home.id)) chain.unshift(home);
         trail = chain.map((pg) => pg.id);
         const last = chain.length - 1;
         return listValue(pageEntries(readPages(chain), (_pg, index) => index < last));
