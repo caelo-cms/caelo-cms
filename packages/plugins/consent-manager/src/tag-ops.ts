@@ -199,12 +199,9 @@ export async function updateTagsMany(ctx: unknown, args: unknown) {
     }
     // A tag that still runs code written before its vendor had a template
     // changes only together with the ids that replace that code (#1588).
-    const nextVendor = (patch.vendor ?? row.vendor).trim();
-    if (
-      tagCode(row).source === "legacy_snippet" &&
-      patch.config === undefined &&
-      VENDOR_TEMPLATES[nextVendor]
-    ) {
+    // A switch to another vendor is judged by resolveTagColumns below.
+    const sameVendorKey = (patch.vendor ?? row.vendor).trim() === row.vendor;
+    if (tagCode(row).source === "legacy_snippet" && patch.config === undefined && sameVendorKey) {
       throw new Error(`update_tags_many: ${legacySnippetNextStep(row)}`);
     }
     // Ids for a known vendor replace the code: whatever the tag stored,
