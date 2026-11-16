@@ -32,6 +32,11 @@ import { err, ok, type Result } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import {
+  type RenderFailure,
+  renderFailureSchema,
+  renderReportSchema,
+} from "../../deploy/render-failures.js";
 import { stagedBySchema } from "../../quality/chat-feedback.js";
 import { withInstallRules } from "../../quality/classify.js";
 import { decideGate } from "../../quality/gate.js";
@@ -465,6 +470,10 @@ const claimedRunSchema = z.object({
   /** #727 — every published page of the staged build, homepage first:
    *  what the findings checks read. */
   checkPages: z.array(claimedAuditPage),
+  /** #1604 — the content the run's build could not render (the first of them). */
+  renderFailures: z.array(renderFailureSchema),
+  /** How many render failures the run recorded in all. */
+  renderFailureCount: z.number().int().nonnegative(),
 });
 
 /**
@@ -492,6 +501,16 @@ async function supersedeOutdated(tx: Tx, only: string | null): Promise<string[]>
   return rows.map((r) => r.id);
 }
 
+/** #1604 — what a run recorded of the content its build could not render. */
+function renderOfRun(stored: unknown): {
+  renderFailures: RenderFailure[];
+  renderFailureCount: number;
+} {
+  if (stored === null || stored === undefined) return { renderFailures: [], renderFailureCount: 0 };
+  const report = renderReportSchema.parse(stored);
+  return { renderFailures: report.failures, renderFailureCount: report.total };
+}
+
 /** What one claimed audit reads: its pages and where its build lies. */
 async function loadClaimedRun(
   tx: Tx,
@@ -501,7 +520,7 @@ async function loadClaimedRun(
     SELECT t.page_url_style, r.publish_summary->>'stagingLocation' AS staging_location,
            (SELECT 'https://' || s.staging_host FROM staging_access s
              WHERE s.id = 1 AND s.staging_host IS NOT NULL) AS staging_origin,
-           t.env, t.out_dir
+           t.env, t.out_dir, r.render_report
     FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
     WHERE r.id = ${row.deploy_run_id}::uuid
   `)) as unknown as {
@@ -510,6 +529,7 @@ async function loadClaimedRun(
     staging_origin: string | null;
     env: string;
     out_dir: string;
+    render_report: unknown;
   }[];
   const info = runInfo[0];
   if (!info) {
@@ -553,6 +573,7 @@ async function loadClaimedRun(
     outDir: info.out_dir,
     pages: pages.map(toClaimedAuditPage),
     checkPages: checkPages.map(toClaimedAuditPage),
+    ...renderOfRun(info.render_report),
   });
 }
 

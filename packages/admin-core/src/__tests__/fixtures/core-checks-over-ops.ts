@@ -4,7 +4,9 @@
  * Core's quality checks over the op-backed sources the admin answers the
  * audit's job with, without the job's transport. Made per audit: the
  * stored-link issues are the ones the audited build recorded where it
- * started (#1594), and the job's reporter names the audit.
+ * started (#1594), and the job's reporter names the audit. The render
+ * check sees no failures: these tests stage content that renders (the
+ * render report has its own test, stage-render-report.integration.test.ts).
  */
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
@@ -36,6 +38,7 @@ export function coreChecksOverOps(
       structure: structureSourcesFromOps(registry, adapter, ctx),
       links: linkSourcesFromOps(registry, adapter, ctx, recorded),
       references: referenceSourcesOf(recorded),
+      render: { failures: async () => ({ failures: [], total: 0 }) },
     });
   };
 }

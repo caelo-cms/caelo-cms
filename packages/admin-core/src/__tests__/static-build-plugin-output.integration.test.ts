@@ -478,18 +478,22 @@ describe("#605 — the published site carries every plugin's output", () => {
     // The real UI path (/settings/plugins → plugins.disable): the plugin
     // stays loaded until a restart, but nothing may call it any more —
     // the build must not die on "PluginDisabled", it must say which
-    // pages still iterate the switched-off plugin's list.
+    // pages still iterate the switched-off plugin's list. #1604 — a Stage
+    // goes through and reports them; Publish live refuses that build.
     await op(OWNER, "plugins.disable", { slug: "consent-manager" });
     const r = await execute(registry, adapter, OWNER, "deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
     });
-    expect(r.ok).toBe(false);
-    const message = JSON.stringify(r);
-    // The module iterates the plugin's list source: the render gate names
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const report = (r.value as { renderReport: { aiText: string } | null }).renderReport;
+    // The module iterates the plugin's list source: the report names
     // page, module and the switched-off plugin (epic #1107).
-    expect(message).toContain("list-source-unavailable:consent_categories plugin=consent-manager");
-    expect(message).not.toContain("PluginDisabled");
+    expect(report?.aiText).toContain(
+      "list-source-unavailable:consent_categories plugin=consent-manager",
+    );
+    expect(report?.aiText).toContain("list_plugins");
+    expect(JSON.stringify(r)).not.toContain("PluginDisabled");
   });
 
   it("after a restart without the plugin: the declared list is dormant too", async () => {
@@ -498,7 +502,8 @@ describe("#605 — the published site carries every plugin's output", () => {
       targetName: "staging",
       repoRoot: testRoot,
     });
-    expect(r.ok).toBe(false);
-    expect(JSON.stringify(r)).toContain("consent_categories");
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const report = (r.value as { renderReport: { aiText: string } | null }).renderReport;
+    expect(report?.aiText).toContain("consent_categories");
   });
 });

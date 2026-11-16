@@ -19,6 +19,7 @@ import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import {
   type ComposeModuleFailure,
   collectNestedRefs,
+  isCaeloFaultMarker,
   isLinkFailureMarker,
   type NestedContentInstanceResource,
   type NestedModuleResource,
@@ -323,10 +324,41 @@ export function renderFailuresOf(
 }
 
 /**
+ * How many content failures a staging build reports with its result
+ * (#1604). The run records them, the audit names them per page; the count
+ * says how many more there are. Bounded so a header broken on every page of
+ * a large site stays one small report.
+ */
+export const REPORTED_RENDER_FAILURES = 200;
+
+/** What a staging build reports of the content it could not render (#1604). */
+export interface StagedRenderFailures {
+  /** The first {@link REPORTED_RENDER_FAILURES} failures, in build order. */
+  readonly failures: readonly RenderFailure[];
+  /** How many there were in all. */
+  readonly total: number;
+}
+
+/**
+ * #1604 — a staging build does not stop on the site's content: its pages
+ * ship with the broken spot as the editor preview shows it, and the build
+ * reports the failures, which Publish live refuses. A failure no content
+ * edit can repair (a render without its context, a Caelo bug) still stops
+ * the build, with every failure named.
+ *
+ * Exported for tests.
+ */
+export function stagedRenderFailures(lines: readonly RenderFailure[]): StagedRenderFailures {
+  if (lines.some((l) => isCaeloFaultMarker(l.reason))) assertNoRenderFailures(lines);
+  return { failures: lines.slice(0, REPORTED_RENDER_FAILURES), total: lines.length };
+}
+
+/**
  * Throw when any page would ship a render failure ({@link renderFailuresOf}
  * of every page). Before this gate those pages deployed with the section
  * silently empty — the HTML comment is invisible to visitors and to the
- * operator (CLAUDE.md §2).
+ * operator (CLAUDE.md §2). A full staging build reports them instead
+ * ({@link stagedRenderFailures}, #1604); every other build stops here.
  *
  * Exported for tests.
  */
@@ -342,7 +374,7 @@ export function assertNoRenderFailures(lines: readonly RenderFailure[]): void {
       "Each names the page, the module and the field whose content could not be rendered. " +
       "Next step: open the page in the editor (the preview flags the same spots), then repair the field — " +
       "AI: get_content_instance on the module's content, then set_content_instance_values_many with a valid " +
-      "{ moduleId, contentInstanceId } reference or without the broken item — and Stage again. " +
+      "{ moduleId, contentInstanceId } reference or without the broken item — and build again (a Stage reports these instead of stopping, and Publish live refuses it until they are repaired). " +
       "A `field-path-unknown:<path>` is a placeholder its field cannot answer: a `link` field has {{f}}, {{f.href}}, {{f.target}} and {{f.title}}, " +
       "so fix the module HTML with update_modules_many (a link's label is a text field of its own). " +
       "A `field-value-empty:<path>` is a link field with no value: set it, or wrap the markup in {{#f}}…{{/f}}. " +

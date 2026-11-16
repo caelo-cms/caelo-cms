@@ -131,6 +131,13 @@ const subprocessDoneSchema = z.object({
   crossVariantLinks: z.array(crossVariantLinkSchema),
   /** #1257 — page lists cut at the query cap (a Stage warning). */
   truncatedLists: z.array(truncatedListSchema),
+  /**
+   * #1604 — the content a full staging build could not render (the first
+   * of them); the run records it and Publish live refuses the build.
+   */
+  renderFailures: z.array(renderFailureSchema),
+  /** How many render failures there were in all. */
+  renderFailureCount: z.number().int().nonnegative(),
   /** #1454 — the headers of the build's pages. */
   securityHeaders: siteHeaderSetSchema,
 });

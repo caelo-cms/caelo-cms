@@ -52,6 +52,7 @@ interface TriggerResult {
   readonly durationMs: number;
   readonly previewUrl?: string;
   linkNotice: { aiText: string } | null;
+  renderReport: { aiText: string } | null;
 }
 
 export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = {
@@ -59,7 +60,7 @@ export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = 
   description:
     "Rebuild the STAGING site (noindex, never visitor-facing) from PUBLISHED content; returns run id, page/file counts, preview URL.\n" +
     "USE FOR: before `propose_deploy_promote` when staging has no (or an outdated) successful build | after fixing a failed build (e.g. `regenerate_media_variants`) | operator asks to refresh staging.\n" +
-    "CORE RULES: this chat's unpublished changes are NOT in the build until published; never tell the operator pending edits are on staging. Production isn't reachable here: go live via `propose_deploy_promote`. Failed build -> fix the generator's named cause, then call again; never retry unchanged.",
+    "CORE RULES: this chat's unpublished changes are NOT in the build until published; never tell the operator pending edits are on staging. Production isn't reachable here: go live via `propose_deploy_promote`. Content it could not render is built and reported, not a failure: repair what it names, then rebuild. Failed build -> fix the generator's named cause, then call again; never retry unchanged.",
   schema: deployStagingInput,
   handler: async (ctx, input, toolCtx) => {
     const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "deploy.list_targets", {});
@@ -140,10 +141,12 @@ export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = 
     const preview = v.previewUrl ? ` Preview: ${v.previewUrl}.` : "";
     // #1240 — this build is reviewable, and Publish live refuses it.
     const links = v.linkNotice ? ` ${v.linkNotice.aiText}` : "";
+    // #1604 — so is a build with content it could not render.
+    const render = v.renderReport ? ` ${v.renderReport.aiText}` : "";
     return {
       ok: true,
       content:
-        `Staging "${v.targetName}" rebuilt (run ${v.runId}): ${v.pageCount} page(s), ${v.fileCount} file(s) in ${Math.round(v.durationMs / 1000)}s.${preview}${links} ` +
+        `Staging "${v.targetName}" rebuilt (run ${v.runId}): ${v.pageCount} page(s), ${v.fileCount} file(s) in ${Math.round(v.durationMs / 1000)}s.${preview}${render}${links} ` +
         "Only published content is included. To go live, call propose_deploy_promote.",
       value: v,
     };

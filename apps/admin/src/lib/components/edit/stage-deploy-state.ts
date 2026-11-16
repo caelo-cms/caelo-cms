@@ -128,6 +128,8 @@ export function qualityBlockReason(gate: QualityGateView): string {
       return `Blocked by ${gate.openProblemCount} quality problem(s) — fix them and Stage again, or accept them in the chat.`;
     case "errored":
       return "Quality check failed — retry it, or publish anyway with a reason.";
+    case "render":
+      return "Blocked: the staged build has spots it could not render — ask the AI to repair them, then Stage again.";
     case "missing":
       return "The staged build has not been quality-checked yet — run the check.";
     default:

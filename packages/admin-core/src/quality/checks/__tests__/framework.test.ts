@@ -83,6 +83,7 @@ describe("CheckRegistry", () => {
         neverLivePageIds: async () => new Set<string>(),
       },
       references: { issues: async () => ({ issues: [], truncated: false }) },
+      render: { failures: async () => ({ failures: [], total: 0 }) },
     });
     expect(r.list().map((e) => [e.id, e.kind])).toEqual([
       [LIGHTHOUSE_CHECK_ID, "lighthouse"],
@@ -90,12 +91,14 @@ describe("CheckRegistry", () => {
       ["links", "findings"],
       ["references", "findings"],
       ["security-headers", "findings"],
+      ["render", "findings"],
     ]);
     expect(r.findingChecks().map((e) => [e.id, e.scope, e.source])).toEqual([
       ["structure", "site", { kind: "core" }],
       ["links", "site", { kind: "core" }],
       ["references", "site", { kind: "core" }],
       ["security-headers", "site", { kind: "core" }],
+      ["render", "site", { kind: "core" }],
     ]);
     expect(r.lighthouse()?.id).toBe("lighthouse");
   });

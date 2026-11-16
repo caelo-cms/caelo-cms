@@ -78,6 +78,7 @@ export * from "./redirect-plan.js";
 export * from "./redirect-release.js";
 export * from "./redirect-target.js";
 export * from "./release-manifest.js";
+export * from "./render-failure-markers.js";
 export * from "./responsive-images.js";
 export * from "./result.js";
 export * from "./run-batched.js";

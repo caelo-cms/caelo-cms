@@ -11,6 +11,7 @@
 
 import { type defineOperation, uuidArray } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
+import { type RenderReport, renderReportSchema } from "../../deploy/render-failures.js";
 import { type LinkNotice, linkNoticeSchema } from "../../links/link-notice.js";
 import type { CheckRuleProblem } from "../../quality/checks/evaluate.js";
 import {
@@ -145,16 +146,27 @@ export async function loadAcceptances(
 export async function publishGateForRun(tx: Tx, deployRunId: string): Promise<GateDecision> {
   const audit = await loadGateAudit(tx, deployRunId);
   const acceptances = await loadAcceptances(tx, audit?.pages.map((p) => p.pageId) ?? []);
-  return decideGate(audit, acceptances, await loadRunLinkNotice(tx, deployRunId));
+  const recorded = await loadRunBuildNotices(tx, deployRunId);
+  return decideGate(audit, acceptances, recorded.linkNotice, recorded.renderReport);
 }
 
-/** #1240 — the language links a run's build rendered, as the run recorded them. */
-async function loadRunLinkNotice(tx: Tx, deployRunId: string): Promise<LinkNotice | null> {
+/**
+ * What a run's build recorded about itself: the language links it rendered
+ * (#1240) and the content it could not render (#1604).
+ */
+async function loadRunBuildNotices(
+  tx: Tx,
+  deployRunId: string,
+): Promise<{ linkNotice: LinkNotice | null; renderReport: RenderReport | null }> {
   const rows = (await tx.execute(sql`
-    SELECT link_notice FROM deploy_runs WHERE id = ${deployRunId}::uuid
-  `)) as unknown as { link_notice: unknown }[];
-  const stored = rows[0]?.link_notice ?? null;
-  return stored === null ? null : linkNoticeSchema.parse(stored);
+    SELECT link_notice, render_report FROM deploy_runs WHERE id = ${deployRunId}::uuid
+  `)) as unknown as { link_notice: unknown; render_report: unknown }[];
+  const link = rows[0]?.link_notice ?? null;
+  const render = rows[0]?.render_report ?? null;
+  return {
+    linkNotice: link === null ? null : linkNoticeSchema.parse(link),
+    renderReport: render === null ? null : renderReportSchema.parse(render),
+  };
 }
 
 /** The newest succeeded deploy run of a target (what Publish would ship). */

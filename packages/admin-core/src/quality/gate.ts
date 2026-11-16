@@ -43,6 +43,13 @@
  * into another language, and Publish live copies it as it is. So no audit
  * result, acceptance or override opens it; only a new Stage does.
  *
+ * #1604 — so does a build with content it could not render: a Stage no
+ * longer stops on such a spot, it ships it as the editor preview shows it
+ * and records it (`deploy_runs.render_report`). The audit reports each one
+ * (the `render` check), but the gate reads the run's record, so accepting a
+ * finding or publishing over a failed audit cannot ship it; only a new Stage
+ * that renders everything does.
+ *
  * #1446 — the same decision holds across pages when it is about a file
  * Caelo or a plugin ships (platform-audits.ts). The audit samples different
  * pages on each Stage, so an acceptance per page came back on every Stage
@@ -54,6 +61,7 @@
  * Page scores are not part of this: a category below 100 stays per page.
  */
 
+import { publishBlockedByRender, type RenderReport } from "../deploy/render-failures.js";
 import type { LinkNotice } from "../links/link-notice.js";
 import type { CheckRuleProblem } from "./checks/evaluate.js";
 import { shippedResourcesOf } from "./platform-audits.js";
@@ -124,7 +132,8 @@ export type GateState =
   | "running"
   | "problems"
   | "errored"
-  | "links";
+  | "links"
+  | "render";
 
 export interface OpenProblem {
   /** Null for a site-wide problem. */
@@ -147,6 +156,8 @@ export interface GateDecision {
   readonly canPublishAnyway: boolean;
   /** #1240 — state `links`: what the staged build links, with its actions. */
   readonly linkNotice?: LinkNotice;
+  /** #1604 — state `render`: the content the staged build could not render. */
+  readonly renderReport?: RenderReport;
 }
 
 /** Key helpers shared with the loaders. */
@@ -246,12 +257,25 @@ function describeProblem(p: OpenProblem): string {
  * @param audit - the newest audit of the staging deploy run Publish would
  *   ship, or null when that run was never audited.
  * @param linkNotice - the language links that run's build rendered (#1240).
+ * @param renderReport - the content that run's build could not render (#1604).
  */
 export function decideGate(
   audit: GateAudit | null,
   acceptances: GateAcceptances,
   linkNotice: LinkNotice | null = null,
+  renderReport: RenderReport | null = null,
 ): GateDecision {
+  if (renderReport !== null) {
+    return {
+      open: false,
+      state: "render",
+      auditRunId: audit?.id ?? null,
+      openProblems: [],
+      canPublishAnyway: false,
+      message: publishBlockedByRender(renderReport),
+      renderReport,
+    };
+  }
   if (linkNotice !== null) {
     return {
       open: false,

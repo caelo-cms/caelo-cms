@@ -14,7 +14,7 @@
  * tab's own quality actions. Nothing is read while the tab is hidden.
  */
 
-import type { LinkNotice } from "@caelo-cms/admin-core";
+import type { LinkNotice, RenderReport } from "@caelo-cms/admin-core";
 import { type LiveConsumer, liveFetch, liveHub } from "#lib/live/live-refresh.js";
 import { coalescedRefresh } from "./coalesced-refresh.js";
 
@@ -28,11 +28,14 @@ export interface QualityGate {
     | "running"
     | "problems"
     | "errored"
-    | "links";
+    | "links"
+    | "render";
   readonly auditRunId: string | null;
   readonly message: string;
   /** #1240 — state `links`: the links that keep this build from going live. */
   readonly linkNotice: LinkNotice | null;
+  /** #1604 — state `render`: the content the staged build could not render. */
+  readonly renderReport: RenderReport | null;
   readonly canPublishAnyway: boolean;
   readonly openProblemCount: number;
   /** #1207 — the largest problem groups (at most 5), for the Staging menu. */

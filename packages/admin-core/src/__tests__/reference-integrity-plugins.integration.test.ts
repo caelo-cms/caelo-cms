@@ -265,9 +265,9 @@ describe("#724 F — reference integrity through plugin composition points", () 
       chatSessionId: s.chatSessionId,
       headerIds: selected,
     });
-    expect(merged.ok).toBe(false);
-    if (merged.ok) return;
-    expect(merged.error.message).toContain("Stage refused");
-    expect(merged.error.message).toContain(`plugin "${SLUG}": Footer links (sel)`);
+    // #1604 — the merge goes through and names the link main keeps.
+    if (!merged.ok) throw new Error(`the Stage merge refused: ${JSON.stringify(merged.error)}`);
+    const warnings = (merged.value as { linkWarnings: string[] }).linkWarnings;
+    expect(warnings.some((w) => w.includes(`plugin "${SLUG}": Footer links (sel)`))).toBe(true);
   });
 });

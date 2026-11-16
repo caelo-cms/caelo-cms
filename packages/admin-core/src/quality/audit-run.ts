@@ -23,6 +23,7 @@
 
 import { existsSync } from "node:fs";
 import { NOT_FOUND_PAGE_FILE } from "@caelo-cms/static-generator";
+import type { RenderFailure } from "../deploy/render-failures.js";
 import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { localBuildArchiveDir } from "../ops/deploy-common.js";
 import type { CheckRegistry, LighthouseRunner } from "./checks/registry.js";
@@ -56,6 +57,14 @@ export interface ClaimedAuditRun {
   readonly pages: readonly ClaimedAuditPage[];
   /** #727 — every published page, for the findings checks. */
   readonly checkPages: readonly ClaimedAuditPage[];
+  /**
+   * #1604 — the content the run's build could not render (the first of
+   * them), for the `render` check. Absent in a claim from a release before
+   * #1604, whose builds stopped on such a spot instead.
+   */
+  readonly renderFailures?: readonly RenderFailure[];
+  /** How many render failures the run recorded in all. */
+  readonly renderFailureCount?: number;
 }
 
 /** A page of a claimed audit run. */

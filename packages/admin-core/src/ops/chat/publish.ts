@@ -124,10 +124,10 @@ interface MergeResult {
   readonly includeAll: boolean;
   /**
    * Epic #724 (rollout F) — reference-integrity warnings of the merged
-   * state (links to draft pages, legacy literal paths); each message names
-   * the page, the place and the fixing tool. Blocking problems refuse the
-   * merge instead (`stageReferenceGate`). Empty when clean or when the
-   * branch had nothing to merge.
+   * state (links to deleted or draft pages, legacy literal paths); each
+   * message names the page, the place and the fixing tool, the ones Publish
+   * live refuses first (#1604, `stageReferenceGate`). Empty when clean or
+   * when the branch had nothing to merge.
    */
   readonly linkWarnings: string[];
 }
@@ -1072,13 +1072,13 @@ export async function mergeWindowToMain(
   }
 
   // Epic #724 (rollout F) — reference integrity of the merged state: runs
-  // AFTER the replay wrote it to the live tables. A link to a deleted page
-  // refuses the merge — thrown so the whole replay rolls back and nothing
-  // reaches main; the static build would refuse it anyway, and this names
-  // every place and its fixing tool. Draft targets, targets without a
-  // same-language version and legacy literal paths are Stage warnings. A
-  // merge with nothing to replay returns earlier: `deploy.start_trigger`
-  // runs the same check on every build (#1240).
+  // AFTER the replay wrote it to the live tables. A Stage never fails on the
+  // site's content (#1604): a link to a deleted page is a Stage warning like
+  // a draft target, a target without a same-language version or a legacy
+  // literal path; the staging build shows it and Publish live refuses it.
+  // Only a check that cannot run refuses — thrown so the whole replay rolls
+  // back and nothing reaches main. A merge with nothing to replay returns
+  // earlier: `deploy.start_trigger` runs the same check on every build (#1240).
   const gate = await stageReferenceGate(tx, window.branchId, {
     pluginRowsMerged: pluginRowRows.length > 0,
   });
@@ -1307,9 +1307,10 @@ export const mergeChatToMainOp = defineOperation({
     mergedAt: z.string(),
     /**
      * Epic #724 (rollout F) — reference-integrity warnings of the staged
-     * state: links to draft pages (they block Publish live) and legacy
-     * literal paths, one AI-actionable message each. A link to a deleted
-     * page refuses the merge instead.
+     * state: links to deleted and draft pages (they block Publish live) and
+     * legacy literal paths, one AI-actionable message each, the blocking
+     * ones first. #1604 — a link to a deleted page no longer refuses the
+     * merge: the Stage reports it.
      */
     linkWarnings: z.array(z.string()),
     /** The headers replayed — pass them to chat.finalize_stage. */

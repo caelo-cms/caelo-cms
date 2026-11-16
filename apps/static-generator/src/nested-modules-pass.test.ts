@@ -4,9 +4,11 @@ import { describe, expect, it } from "bun:test";
 import type { ComposeModuleFailure } from "@caelo-cms/shared";
 import {
   assertNoRenderFailures,
+  REPORTED_RENDER_FAILURES,
   type RenderedPageForGate,
   RenderFailureError,
   renderFailuresOf,
+  stagedRenderFailures,
 } from "./nested-modules-pass.js";
 
 /** The gate as the build runs it: failures taken per page, refused together (#1271). */
@@ -152,5 +154,45 @@ describe("assertNoRenderFailures / renderFailuresOf", () => {
       moduleFailures: [failure("module-missing:cards[0]")],
     });
     expect(failures[0]?.target).toBeNull();
+  });
+});
+
+describe("stagedRenderFailures (#1604)", () => {
+  const page = (reasons: string[]): RenderedPageForGate => ({
+    pageId: "p",
+    pageSlug: "home",
+    pageTitle: "Home",
+    pagePath: "/",
+    html: "<p>{{signin_link.label}}</p>",
+    moduleFailures: reasons.map((r) => failure(r)),
+  });
+
+  it("reports the site's content instead of stopping the Stage", () => {
+    const failures = renderFailuresOf(
+      page(["field-path-unknown:signin_link.label", "module-missing:cards[0]"]),
+    );
+    const reported = stagedRenderFailures(failures);
+    expect(reported.total).toBe(2);
+    expect(reported.failures.map((f) => f.reason)).toEqual([
+      "field-path-unknown:signin_link.label",
+      "module-missing:cards[0]",
+    ]);
+  });
+
+  it("still stops on a render without its context, naming every failure", () => {
+    const failures = renderFailuresOf(
+      page(["field-path-unknown:signin_link.label", "nested-renderer-unavailable:cards[0]"]),
+    );
+    expect(() => stagedRenderFailures(failures)).toThrow(RenderFailureError);
+    expect(() => stagedRenderFailures(failures)).toThrow("field-path-unknown:signin_link.label");
+  });
+
+  it("bounds the report and keeps the count", () => {
+    const failures = renderFailuresOf(
+      page(Array.from({ length: REPORTED_RENDER_FAILURES + 7 }, (_, i) => `module-missing:m${i}`)),
+    );
+    const reported = stagedRenderFailures(failures);
+    expect(reported.failures).toHaveLength(REPORTED_RENDER_FAILURES);
+    expect(reported.total).toBe(REPORTED_RENDER_FAILURES + 7);
   });
 });

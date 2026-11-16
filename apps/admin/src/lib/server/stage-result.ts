@@ -13,6 +13,7 @@ import {
   describeTruncatedLists,
   describeUnpublishedLinks,
   type LinkNotice,
+  type RenderReport,
   type TruncatedListReport,
   type UnpublishedLinkTarget,
 } from "@caelo-cms/admin-core";
@@ -45,6 +46,8 @@ export async function describeStagedBuild(
     readonly pluginProblems: readonly DeployPluginProblem[];
     /** #1240 — links to pages without a version in the linking page's language. */
     readonly linkNotice: LinkNotice | null;
+    /** #1604 — content the build could not render (Publish live refuses it). */
+    readonly renderReport: RenderReport | null;
   },
   pageId: string | null,
 ): Promise<{
@@ -56,6 +59,7 @@ export async function describeStagedBuild(
   truncatedListWarning: string | null;
   pluginProblemWarning: string | null;
   linkNoticeWarning: string | null;
+  renderWarning: string | null;
 }> {
   const { adapter, registry } = getQueryContext();
   let previewUrl: string;
@@ -91,5 +95,6 @@ export async function describeStagedBuild(
     truncatedListWarning: describeTruncatedLists(build.truncatedLists),
     pluginProblemWarning: describeStagedPluginProblems(build.pluginProblems),
     linkNoticeWarning: build.linkNotice?.operatorText ?? null,
+    renderWarning: build.renderReport?.operatorText ?? null,
   };
 }

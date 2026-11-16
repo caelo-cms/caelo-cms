@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0692 — a staging build records its link check for its quality audit
+-- 0693 — a staging build records its link check for its quality audit
 -- (issue #1594).
 --
 -- deploy.start_trigger runs the reference check where every build starts.

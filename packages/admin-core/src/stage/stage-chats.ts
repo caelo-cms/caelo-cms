@@ -36,6 +36,7 @@ import { type ExecutionContext, PhaseTimer, type PhaseTiming } from "@caelo-cms/
 import { describeError } from "../ai/tools/_describe-error.js";
 import type { DraftPagesSummary } from "../deploy/draft-pages.js";
 import type { DeployPluginProblem } from "../deploy/plugin-problems.js";
+import type { RenderReport } from "../deploy/render-failures.js";
 import type { TruncatedListReport } from "../deploy/truncated-lists.js";
 import type { UnpublishedLinkTarget } from "../deploy/unpublished-links.js";
 import type { AffectedChat } from "../draft.js";
@@ -79,6 +80,12 @@ export interface StagedChats {
    * language: staging renders them, Publish live refuses this Stage.
    */
   readonly linkNotice: LinkNotice | null;
+  /**
+   * #1604 — the content the build could not render: staging shows those
+   * spots as the editor preview does, and Publish live refuses this Stage
+   * until they are repaired. Null when it rendered everything.
+   */
+  readonly renderReport: RenderReport | null;
   /**
    * One entry per merge: the shared draft's selected chats together, each
    * isolated chat on its own.
@@ -451,6 +458,7 @@ export async function stageChatSessions(
     linkWarnings: string[];
     linkNotice: LinkNotice | null;
     truncatedLists: TruncatedListReport[];
+    renderReport: RenderReport | null;
     pluginProblems: DeployPluginProblem[];
   };
   // The whole wait behind the Stage button, step by step; the deploy.*
@@ -479,6 +487,7 @@ export async function stageChatSessions(
       mergedEntityCount: merged.reduce((n, m) => n + m.entityCount, 0),
       linkWarnings: summary.linkWarnings,
       linkNotice: summary.linkNotice,
+      renderReport: summary.renderReport,
       chats: merged.map((m) => ({
         chatSessionIds: m.unit.chatSessionIds,
         entityCount: m.entityCount,

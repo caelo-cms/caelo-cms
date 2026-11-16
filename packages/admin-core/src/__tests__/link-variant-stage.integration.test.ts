@@ -14,8 +14,9 @@
  *
  * End to end (real generator, real Postgres, international-site active),
  * with the maintainer's decision of 2026-10-29: the Stage succeeds and
- * reports each target by title, Publish live refuses the same list, and a
- * deleted target is still refused before the generator runs.
+ * reports each target by title, Publish live refuses the same list. Since
+ * #1604 a deleted target no longer fails the Stage either: the build shows
+ * it and records it, and Publish live and a production build refuse it.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -437,32 +438,67 @@ describe("#1240 — a language version linking pages without a version in that l
     expect((gate.value as { gate: { state: string } }).gate.state).not.toBe("links");
   }, 120_000);
 
-  it("a deleted target is refused before the generator runs, also with nothing to merge", async () => {
+  it("#1604 — a deleted target is staged and reported, also with nothing to merge; Publish live and a production build refuse it", async () => {
     await sqlSystem(async (tx) => {
       await tx`UPDATE pages SET deleted_at = now() WHERE id = ${ids.dePricing}::uuid`;
     });
     try {
       const chatId = await openChat("t1240 deleted");
       const staged = await stageChatSessions({ registry, adapter }, OWNER, [chatId]);
-      expect(staged.ok).toBe(false);
-      if (staged.ok) return;
-      expect(staged.error.step).toBe("deploy");
-      expect(staged.error.message).toContain("Stage refused");
-      expect(staged.error.message).not.toContain("generator failed");
+      if (!staged.ok) throw new Error(staged.error.message);
+      // The build ran: the link shows on staging as the preview shows it,
+      // and the run records it.
+      const report = staged.value.renderReport;
+      expect(report).not.toBeNull();
+      expect(report?.failures.some((f) => f.reason.startsWith("link-target-missing:"))).toBe(true);
+      expect(report?.operatorText).toContain("A link points at something deleted");
+      expect(report?.operatorText).not.toContain("Caelo bug");
+      expectOperatorWords(report?.operatorText ?? "");
+      expect(report?.aiText).toContain("check_links");
+      const stored = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT status, render_report FROM deploy_runs WHERE id = ${staged.value.runId}::uuid`) as {
+            status: string;
+            render_report: { total: number } | null;
+          }[],
+      );
+      expect(stored[0]?.status).toBe("succeeded");
+      expect(stored[0]?.render_report?.total).toBe(report?.total as number);
+      // A passed audit does not open the gate: the run's record closes it.
+      await markAudited(staged.value.runId);
+      const gate = await execute(registry, adapter, OWNER, "quality_audits.gate_status", {});
+      if (!gate.ok) throw new Error(JSON.stringify(gate.error));
+      const view = (
+        gate.value as { gate: { open: boolean; state: string; canPublishAnyway: boolean } }
+      ).gate;
+      expect(view).toMatchObject({ open: false, state: "render", canPublishAnyway: false });
+      const refused = await publishLive();
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) {
+        const message = (refused.error as { message: string }).message;
+        expect(message).toContain("could not render");
+        expectOperatorWords(message);
+      }
+      // A production build still refuses it before the generator runs.
+      const production = await execute(registry, adapter, OWNER, "deploy.trigger", {
+        targetName: "production",
+        repoRoot: testRoot,
+      });
+      expect(production.ok).toBe(false);
       const failed = await sqlSystem(
         async (tx) =>
           (await tx`
             SELECT r.error_message FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
-            WHERE t.env = 'staging' AND r.status = 'failed' ORDER BY r.started_at DESC LIMIT 1
+            WHERE t.env = 'production' AND r.status = 'failed' ORDER BY r.started_at DESC LIMIT 1
           `) as { error_message: string }[],
       );
-      expect(failed[0]?.error_message).toStartWith("Blocked, links:");
+      expect(failed[0]?.error_message).toMatch(/^Blocked, (links|by the quality gate):/);
     } finally {
       await sqlSystem(async (tx) => {
         await tx`UPDATE pages SET deleted_at = NULL WHERE id = ${ids.dePricing}::uuid`;
       });
     }
-  }, 120_000);
+  }, 180_000);
 
   it("a Stage's report covers what the build rendered, not only what the check read", async () => {
     await execute(registry, adapter, OWNER, "pages.set_status", {

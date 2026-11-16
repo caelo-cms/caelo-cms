@@ -16,8 +16,9 @@
  * its own findings checks, `structure` (#820: repeated free markup that
  * should be a module), `links` (#849: broken internal links, missing
  * assets, redirect chains and loops, orphan pages) and `references` (#724:
- * stored links to deleted, language-less or unpublished pages) and
- * `security-headers` (#1454: what the build's CSP cannot allow) — maintainer decision:
+ * stored links to deleted, language-less or unpublished pages),
+ * `security-headers` (#1454: what the build's CSP cannot allow) and
+ * `render` (#1604: content the staged build could not render) — maintainer decision:
  * core topics like Lighthouse, not plugin add-ons. The rule about pages without a meta description
  * is enforced before the build by `deploy.trigger` (#730,
  * deploy/missing-seo.ts), so a staged build can never contain such a page.
@@ -31,6 +32,7 @@ import type { QualityCheck } from "./check.js";
 import { checkIdSchema } from "./findings.js";
 import { createLinksCheck, type LinkSources } from "./links.js";
 import { createReferencesCheck, type ReferenceSources } from "./references.js";
+import { createRenderCheck, type RenderSources } from "./render.js";
 import { createSecurityHeadersCheck } from "./security-headers.js";
 import { createStructureCheck, type StructureSources } from "./structure.js";
 
@@ -126,8 +128,8 @@ export class CheckRegistry {
 }
 
 /**
- * The checks core ships: Lighthouse and the `structure`, `links` and
- * `references` findings checks.
+ * The checks core ships: Lighthouse and the `structure`, `links`,
+ * `references`, `security-headers` and `render` findings checks.
  *
  * @param options.structure - where the structure check reads module
  *   templates and layouts (required: a core check that silently did not
@@ -136,12 +138,15 @@ export class CheckRegistry {
  *   redirects and the site's own URLs (required, same reason).
  * @param options.references - where the reference-integrity check (#724
  *   rollout F) reads the stored-link issues (required, same reason).
+ * @param options.render - what the audited run recorded of the content its
+ *   build could not render (#1604; required, same reason).
  */
 export function createCoreCheckRegistry(options: {
   readonly lighthouse?: LighthouseRunner;
   readonly structure: StructureSources;
   readonly links: LinkSources;
   readonly references: ReferenceSources;
+  readonly render: RenderSources;
 }): CheckRegistry {
   const registry = new CheckRegistry();
   registry.registerLighthouse(options.lighthouse ?? runAuditJob);
@@ -149,5 +154,6 @@ export function createCoreCheckRegistry(options: {
   registry.register(createLinksCheck(options.links), CORE);
   registry.register(createReferencesCheck(options.references), CORE);
   registry.register(createSecurityHeadersCheck(), CORE);
+  registry.register(createRenderCheck(options.render), CORE);
   return registry;
 }
