@@ -6,7 +6,7 @@
 # block merges". Three ecosystem entries:
 #   - bun            workspace JS (one root entry covers every workspace)
 #   - github-actions .github/workflows/* + .github/actions/*/action.yml
-#   - docker         apps/{admin,api-gateway}/Dockerfile + root docker-compose.yml
+#   - docker         apps/{admin,api-gateway,mcp-auth-proxy}/Dockerfile + root docker-compose.yml
 #
 # Notes for future contributors:
 #
@@ -122,14 +122,21 @@ updates:
   # ────────────────────────────────────────────────────────────────────
   # 3. Docker base images
   #
-  # The two Dockerfiles pin `oven/bun:1.3`. The root docker-compose.yml
+  # Every Dockerfile pins its bases by digest. The root docker-compose.yml
   # pins `postgres:17-alpine` and Caddy images on the dev path; covering
   # `/` here makes sure security advisories on those images surface too.
+  #
+  # The gateway and the MCP-Auth-Proxy run on the same distroless base
+  # (scripts/service-image.test.ts pins that), so the `distroless` group
+  # bumps both Dockerfiles in one PR: a digest bump of one alone always
+  # fails that test. It comes before `minor-and-patch`, because an update
+  # joins the first group it matches.
   # ────────────────────────────────────────────────────────────────────
   - package-ecosystem: "docker"
     directories:
       - "/apps/admin"
       - "/apps/api-gateway"
+      - "/apps/mcp-auth-proxy"
       - "/"
     schedule:
       interval: "weekly"
@@ -145,6 +152,9 @@ updates:
     cooldown:
       default-days: 3
     groups:
+      distroless:
+        patterns:
+          - "gcr.io/distroless/*"
       minor-and-patch:
         update-types:
           - "minor"

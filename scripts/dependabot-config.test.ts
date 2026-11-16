@@ -55,7 +55,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as yaml from "js-yaml";
 
@@ -77,6 +77,7 @@ type ScheduleBlock = {
 
 type GroupBlock = {
   "update-types"?: ReadonlyArray<string>;
+  patterns?: ReadonlyArray<string>;
 };
 
 type CooldownBlock = {
@@ -254,10 +255,32 @@ describe("S13: deferred-scope keys stay absent", () => {
   });
 });
 
+/**
+ * Dockerfiles Dependabot is not pointed at, with the reason. bug-intake
+ * names its bases through `ARG BUN_VERSION`, which Dependabot cannot read.
+ */
+const DOCKERFILES_WITHOUT_DEPENDABOT: Readonly<Record<string, string>> = {
+  "/apps/bug-intake": "bases come from ARG BUN_VERSION",
+};
+
 describe("docker block covers the right paths", () => {
-  it("includes both Dockerfile dirs plus the root compose file", () => {
+  it("covers every app's Dockerfile plus the root compose file", () => {
+    // Derived from the tree, so a new service image cannot be missed (the
+    // MCP-Auth-Proxy was, and its base fell behind the gateway's).
+    const appDirs = readdirSync(join(REPO_ROOT, "apps"))
+      .filter((app) => existsSync(join(REPO_ROOT, "apps", app, "Dockerfile")))
+      .map((app) => `/apps/${app}`)
+      .filter((dir) => !(dir in DOCKERFILES_WITHOUT_DEPENDABOT));
     const dirs = new Set(dockerEntry?.directories ?? []);
-    expect(dirs).toEqual(new Set(["/apps/admin", "/apps/api-gateway", "/"]));
+    expect(dirs).toEqual(new Set([...appDirs, "/"]));
+  });
+
+  it("bumps the distroless base of every service image in one PR, before minor-and-patch", () => {
+    // The gateway and the MCP-Auth-Proxy must share one distroless digest
+    // (scripts/service-image.test.ts); a bump of one alone always fails.
+    const names = Object.keys(dockerEntry?.groups ?? {});
+    expect(dockerEntry?.groups?.distroless?.patterns).toEqual(["gcr.io/distroless/*"]);
+    expect(names.indexOf("distroless")).toBeLessThan(names.indexOf("minor-and-patch"));
   });
 });
 
