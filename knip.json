@@ -9,6 +9,7 @@
   "ignoreDependencies": ["@playwright/mcp", "@caelo-cms/shared", "playwright", "lighthouse"],
   "ignoreExportsUsedInFile": true,
   "ignoreIssues": {
+    "apps/admin/tsconfig.json": ["unlisted"],
     "apps/admin/e2e-livedit/helpers.ts": ["exports"],
     "apps/admin/src/lib/components/ui/alert/index.ts": ["exports", "types"],
     "apps/admin/src/lib/components/ui/badge/index.ts": ["exports", "types"],
