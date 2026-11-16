@@ -585,9 +585,32 @@ async function run(cmd: string[]): Promise<string> {
   return out;
 }
 
+/**
+ * The tar option that reads a layer blob, from its first bytes. `docker save`
+ * on the containerd image store (the default since Docker 29, the
+ * ubuntu-26.04 runners) keeps each layer as its registry blob, gzip- or
+ * zstd-compressed; the classic store wrote plain tars. tar cannot detect the
+ * compression of a stream on its own, so the caller names it.
+ */
+export function layerDecompression(head: Uint8Array): readonly string[] {
+  if (head[0] === 0x1f && head[1] === 0x8b) return ["-z"];
+  if (head[0] === 0x28 && head[1] === 0xb5 && head[2] === 0x2f && head[3] === 0xfd) {
+    return ["--zstd"];
+  }
+  return [];
+}
+
 /** Non-directory entries of a tar stream (no leading `./` or `/`). */
-async function tarEntries(stream: ReadableStream<Uint8Array>, what: string): Promise<string[]> {
-  const tar = Bun.spawn(["tar", "-t"], { stdin: stream, stdout: "pipe", stderr: "pipe" });
+async function tarEntries(
+  stream: ReadableStream<Uint8Array>,
+  what: string,
+  decompression: readonly string[] = [],
+): Promise<string[]> {
+  const tar = Bun.spawn(["tar", "-t", ...decompression], {
+    stdin: stream,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [listing, err, code] = await Promise.all([
     new Response(tar.stdout).text(),
     new Response(tar.stderr).text(),
@@ -616,6 +639,13 @@ async function imageFiles(image: string): Promise<string[]> {
   } finally {
     await run(["docker", "rm", id]);
   }
+}
+
+/** Non-directory entries of one layer blob, plain or compressed (whiteouts included). */
+export async function layerEntries(path: string, what: string): Promise<string[]> {
+  const file = Bun.file(path);
+  const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  return tarEntries(file.stream(), what, layerDecompression(head));
 }
 
 async function rootfsLayers(image: string): Promise<string[]> {
@@ -649,7 +679,7 @@ async function addedLayerEntries(image: string, base: string): Promise<string[]>
     }
     const entries: string[] = [];
     for (const layer of paths.slice(baseLayers.length)) {
-      entries.push(...(await tarEntries(Bun.file(join(dir, layer)).stream(), `layer ${layer}`)));
+      entries.push(...(await layerEntries(join(dir, layer), `layer ${layer}`)));
     }
     return entries;
   } finally {
