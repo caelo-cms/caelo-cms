@@ -426,3 +426,168 @@ describe("decisionFromRow (lifecycle mapping)", () => {
     expect(decisionFromRow({ ...base, domain: "layouts", status: "bogus" }).outcome).toBe("failed");
   });
 });
+
+/**
+ * #1591 — an approved propose_deploy_promote over MCP read "Not applied yet
+ * — the Owner approves it at /settings/deployments/pending." and then "it is
+ * now in effect on the draft". Every approval that acts on the live site
+ * hands back what it put live, and the summary keeps none of the request's
+ * "Not applied yet" wording.
+ */
+describe("approvals that act on the live site hand back what they put live (#1591)", () => {
+  type Outcome = { outcome: string; summary: string; detail: string | null };
+
+  /** A finished run of `target`, as Stage / Publish live / a rollback records it. */
+  async function seedRun(
+    target: "staging" | "production",
+    buildId: string,
+    opts: { id?: string; minutesAgo?: number } = {},
+  ): Promise<string> {
+    const id = opts.id ?? crypto.randomUUID();
+    const ago = opts.minutesAgo ?? 0;
+    await withSystemTx(async (tx) => {
+      await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, finished_at, build_id)
+               SELECT ${id}::uuid, t.id, ${approverCtx.actorId}::uuid, 'succeeded',
+                      now() - make_interval(mins => ${ago}), now() - make_interval(mins => ${ago}),
+                      ${buildId}
+               FROM deploy_targets t WHERE t.name = ${target}`;
+    });
+    return id;
+  }
+
+  async function queueOverMcp(toolName: string, args: Record<string, unknown>) {
+    const r = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
+      plaintextToken: adminToken,
+      chatSessionId,
+      toolName,
+      args,
+    });
+    if (!r.ok) throw new Error(`execute_tool failed: ${JSON.stringify(r.error)}`);
+    const v = r.value as { content: string; approval?: { proposalId: string; domain: string } };
+    if (!v.approval) throw new Error(`no approval handle: ${v.content}`);
+    // The request itself still says it waits for the click.
+    expect(v.content).toContain("Not applied yet");
+    return v.approval;
+  }
+
+  /** The approval as deploy.execute_proposal runs it, with the run it starts in between. */
+  async function approveDeploy(proposalId: string, liveBuildId: string): Promise<string> {
+    const runId = crypto.randomUUID();
+    const begun = await execute(registry, adapter, approverCtx, "deploy.begin_execute_proposal", {
+      proposalId,
+      runId,
+    });
+    expect(begun.ok).toBe(true);
+    await seedRun("production", liveBuildId, { id: runId });
+    const ended = await execute(registry, adapter, approverCtx, "deploy.end_execute_proposal", {
+      proposalId,
+      claimedRunId: runId,
+      outcome: { ok: true, runId },
+    });
+    expect(ended.ok).toBe(true);
+    return runId;
+  }
+
+  async function outcomeOf(proposalId: string): Promise<Outcome> {
+    const out = await outcomeFor(adminToken, proposalId);
+    if (!out.ok) throw new Error(`get_approval_outcome failed: ${JSON.stringify(out.error)}`);
+    const v = out.value as Outcome;
+    // Nothing of the request's "waiting for the click" wording, no draft.
+    expect(`${v.summary} ${v.detail ?? ""}`).not.toMatch(/Not applied yet|draft/i);
+    return v;
+  }
+
+  it("an approved propose_deploy_promote: it published build <id> to production", async () => {
+    const staged = `b1591-staged-${crypto.randomUUID().slice(0, 8)}`;
+    await seedRun("staging", staged);
+    const approval = await queueOverMcp("propose_deploy_promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+    });
+    expect(approval.domain).toBe("deploy");
+    const live = `b1591-live-${crypto.randomUUID().slice(0, 8)}`;
+    const runId = await approveDeploy(approval.proposalId, live);
+
+    const v = await outcomeOf(approval.proposalId);
+    expect(v.outcome).toBe("applied");
+    expect(v.summary).toBe(`promote staging → production (build=${staged}, pages=0, files=0)`);
+    expect(v.detail).toBe(
+      `Published build ${live} to production (run ${runId}): it is live on the site now.`,
+    );
+  });
+
+  it("an approved propose_deploy_rollback: production serves the restored build", async () => {
+    await seedRun("production", `b1591-older-${crypto.randomUUID().slice(0, 8)}`, {
+      minutesAgo: 120,
+    });
+    await seedRun("production", `b1591-newer-${crypto.randomUUID().slice(0, 8)}`, {
+      minutesAgo: 60,
+    });
+    const approval = await queueOverMcp("propose_deploy_rollback", { target: "production" });
+    const preview = await withSystemTx(
+      async (tx) =>
+        (await tx`SELECT preview->>'restoreBuildId' AS restore
+                  FROM deploy_pending_actions WHERE id = ${approval.proposalId}::uuid`) as unknown as {
+          restore: string;
+        }[],
+    );
+    const restored = preview[0]?.restore ?? "";
+    const runId = await approveDeploy(approval.proposalId, restored);
+
+    const v = await outcomeOf(approval.proposalId);
+    expect(v.outcome).toBe("applied");
+    expect(v.detail).toBe(
+      `Rolled production back to build ${restored} (run ${runId}): the live site serves that build now.`,
+    );
+  });
+
+  it("an approved publish anyway: it published the build over the failed check", async () => {
+    const live = `b1591-anyway-${crypto.randomUUID().slice(0, 8)}`;
+    const runId = await seedRun("production", live);
+    const proposalId = crypto.randomUUID();
+    await withSystemTx(async (tx) => {
+      await tx`INSERT INTO quality_pending_actions
+                 (id, kind, proposed_by, payload, preview, chat_session_id)
+               VALUES (${proposalId}::uuid, 'publish_anyway', ${ownerCtx.actorId}::uuid,
+                       '{}'::jsonb, '{}'::jsonb, ${chatSessionId}::uuid)`;
+      await tx`INSERT INTO mcp_approval_handoffs
+                 (proposal_id, domain, chat_session_id, requested_by, tool_name, tool_call_id, summary)
+               VALUES (${proposalId}::uuid, 'quality', ${chatSessionId}::uuid,
+                       ${ownerCtx.actorId}::uuid, 'publish_despite_failed_audit', 'call-1591',
+                       'publish despite the failed audit')`;
+    });
+    const ended = await execute(
+      registry,
+      adapter,
+      approverCtx,
+      "quality_audits.end_execute_proposal",
+      { proposalId, claimedRunId: runId, toRunId: runId, message: null },
+    );
+    expect(ended.ok).toBe(true);
+
+    const v = await outcomeOf(proposalId);
+    expect(v.outcome).toBe("applied");
+    expect(v.detail).toBe(
+      `Published build ${live} to production over the failed quality check (run ${runId}): it is live on the site now.`,
+    );
+  });
+
+  it("a redirect approval hands back what it recorded at the approval (Go live now)", async () => {
+    const proposalId = crypto.randomUUID();
+    const effect = "Live now without a Publish live (Go live now): /t1591-a → /t1591-b (301).";
+    await withSystemTx(async (tx) => {
+      await tx`INSERT INTO redirect_pending_actions
+                 (id, kind, proposed_by, payload, preview, status, decided_at, decided_by, chat_session_id)
+               VALUES (${proposalId}::uuid, 'go_live_now', ${ownerCtx.actorId}::uuid, '{}'::jsonb,
+                       ${JSON.stringify({ appliedEffect: effect })}::text::jsonb, 'applied', now(),
+                       ${approverCtx.actorId}::uuid, ${chatSessionId}::uuid)`;
+      await tx`INSERT INTO mcp_approval_handoffs
+                 (proposal_id, domain, chat_session_id, requested_by, tool_name, tool_call_id, summary)
+               VALUES (${proposalId}::uuid, 'redirects', ${chatSessionId}::uuid,
+                       ${ownerCtx.actorId}::uuid, 'update_redirect_changes', 'call-1591-r',
+                       'go live now without Publish live: /t1591-a → /t1591-b (301)')`;
+    });
+    const v = await outcomeOf(proposalId);
+    expect(v).toMatchObject({ outcome: "applied", detail: effect });
+  });
+});

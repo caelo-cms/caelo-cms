@@ -25,8 +25,13 @@ interface Target {
   readonly env: string;
 }
 
+/**
+ * The op's own refusal, ahead of it. #1591 — marked a refusal (#1091) as the
+ * op marks it, so a caller tells it from a fault the same way whichever of
+ * the two said no first.
+ */
 function refused(operation: string, message: string): BuildOutcome {
-  return { ok: false, error: { kind: "HandlerError", operation, message } };
+  return { ok: false, error: { kind: "HandlerError", operation, message, refusal: true } };
 }
 
 /** Run a read op as the caller; a failure is the outcome. */

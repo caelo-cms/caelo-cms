@@ -541,9 +541,20 @@ async function goLiveUnderLease(
     );
     if (!released.released) return { ...released, decided: false };
     if (input.proposalId !== undefined) {
+      // #1591 — what the approval put live, for the agent that asked
+      // (handed back through mcp_approval_handoffs): live, not Staged.
+      const rules = released.applied
+        .map((r) =>
+          r.toPath === null
+            ? `${r.fromPath} removed`
+            : `${r.fromPath} → ${r.toPath} (${r.statusCode})`,
+        )
+        .join(", ");
+      const appliedEffect = `Live now without a Publish live (Go live now): ${rules}. The hosting is updated right after this approval; a failed push is retried automatically.`;
       await t.execute(sql`
         UPDATE redirect_pending_actions
-        SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
+        SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
+            preview = preview || jsonb_build_object('appliedEffect', ${appliedEffect}::text)
         WHERE id = ${input.proposalId}::uuid
       `);
     }

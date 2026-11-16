@@ -210,7 +210,18 @@ const promotePlan = z.object({
 });
 type PromotePlan = z.infer<typeof promotePlan>;
 
+/**
+ * A Publish live that said no on purpose: nothing staged, a closed quality
+ * gate, a plugin that does not run, a busy live release. #1591 — marked a
+ * refusal (#1091), so every surface shows the reason as the caller's next
+ * step (Settings → Deployments answers 409) instead of a server fault.
+ */
 function refused(message: string): Result<never, QueryError> {
+  return err({ kind: "HandlerError", operation: "deploy.promote", message, refusal: true });
+}
+
+/** A Publish live that broke: the hosting, the publisher or the recording failed. */
+function failed(message: string): Result<never, QueryError> {
   return err({ kind: "HandlerError", operation: "deploy.promote", message });
 }
 
@@ -562,7 +573,8 @@ async function runPromote(
   // #1008 — the plugin gate decides on what runs here; reconciled first,
   // outside any transaction (plugin-problems.ts).
   const unreconciled = await reconcilePluginsForBuild();
-  if (unreconciled !== null) return refused(unreconciled);
+  // The plugin check itself broke: a fault of this server, not a refusal.
+  if (unreconciled !== null) return failed(unreconciled);
   const started = await execute(registry, adapter, ctx, "deploy.start_promote", {
     fromTarget: input.fromTarget,
     toTarget: input.toTarget,
@@ -607,7 +619,7 @@ async function runPromote(
     // Unrecorded, the run's lease lapses and the next run marks it failed.
     if (!r.ok) console.error("[deploy] could not record the failed run", { runId, error: r.error });
     logRunTimings("publish-live", runId, timer, { status: "failed" }, { message: stored, refusal });
-    return refused(reply);
+    return refusal ? refused(reply) : failed(reply);
   };
   /** Proof, right before an irreversible provider step, that every lease is still this run's. */
   const fence = () =>

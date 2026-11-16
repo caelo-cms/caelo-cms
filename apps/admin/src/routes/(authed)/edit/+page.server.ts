@@ -32,6 +32,7 @@ import { opErrorMessage } from "#lib/server/op-error.js";
 import { loadEditorToolbar } from "#lib/server/plugin-toolbar.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
 import { publishChangedPages } from "#lib/server/publish-changed-pages.js";
+import { publishLiveFailure } from "#lib/server/publish-live-failure.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { ServerTiming } from "#lib/server/server-timing.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
@@ -1055,7 +1056,8 @@ export const actions: Actions = {
       // forensically visible even when the UI feedback is missed (the
       // layout toast dedups identical consecutive results).
       console.error("[promoteToProduction] deploy.promote failed", { error: promote.error });
-      return fail(500, { error: `Publish live failed: ${describeError(promote.error)}` });
+      // #1591 — a refusal is a 409 with its reason; a server fault a 500.
+      return publishLiveFailure("Publish live", promote.error);
     }
     const v = promote.value as {
       fromRunId: string;

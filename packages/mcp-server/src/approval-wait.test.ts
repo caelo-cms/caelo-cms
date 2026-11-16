@@ -80,6 +80,26 @@ describe("describeApprovalOutcome", () => {
     expect(rejected).toContain("REJECTED");
     expect(rejected).toContain("not now");
   });
+
+  // #1591 — an approved Publish live read "it is now in effect on the draft".
+  it("an applied outcome claims no draft; the admin's detail says where it took effect", () => {
+    const published = describeApprovalOutcome({
+      ...outcome(
+        "applied",
+        "Published build b-1591 to production (run r-1591): it is live on the site now.",
+      ),
+      domain: "deploy",
+      toolName: "propose_deploy_promote",
+      summary: "promote staging → production (build=b-1591, pages=3, files=12)",
+    });
+    expect(published).toContain("APPROVED and applied");
+    expect(published).toContain(
+      "Published build b-1591 to production (run r-1591): it is live on the site now.",
+    );
+    expect(published).not.toMatch(/draft|Not applied yet/i);
+    // Whatever the domain, the approval itself names no place.
+    expect(describeApprovalOutcome(outcome("applied"))).not.toMatch(/draft/i);
+  });
 });
 
 describe("resolveApprovalWaitMs", () => {

@@ -5,6 +5,7 @@ import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { publishLiveFailure } from "#lib/server/publish-live-failure.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { stageStatusOf } from "#lib/server/stage-status.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -109,7 +110,9 @@ export const actions: Actions = {
       fromTarget,
       toTarget,
     });
-    if (!result.ok) return fail(500, { error: `Promote ${fromTarget} → ${toTarget} failed.` });
+    // #1591 — a refusal is a 409 with its reason ("run Stage first", the
+    // quality gate); a server fault stays a 500, with its reason too.
+    if (!result.ok) return publishLiveFailure(`Promote ${fromTarget} → ${toTarget}`, result.error);
     // #1454 — a redirect would drop what the operator must read.
     const notice = (result.value as { securityHeadersNote?: string }).securityHeadersNote;
     const carrier = result.warning ? { carrierWarning: result.warning } : {};

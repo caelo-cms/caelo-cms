@@ -80,9 +80,14 @@ interface ProposalDecisionRow {
  */
 async function readProposalDecisions(tx: Tx, proposalId: string): Promise<ProposalDecisionRow[]> {
   const id = sql`${proposalId}::uuid`;
+  // #1591 — the kinds that act on the live site (a Publish live, a rollback,
+  // publish anyway, Go live now, an external redirect approved "now") record
+  // what they put live as `preview.appliedEffect` when they are applied; it
+  // rides back with 'applied', so the agent never reads a live change as one
+  // waiting on the draft.
   return (await tx.execute(sql`
     SELECT 'deploy'::text AS domain, status::text AS status, decided_at, decision_reason AS reason,
-           NULL::boolean AS result_ok, NULL::text AS result_summary
+           NULL::boolean AS result_ok, preview->>'appliedEffect' AS result_summary
       FROM deploy_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'layouts', status, decided_at, decision_reason, NULL, NULL
       FROM layout_pending_actions WHERE id = ${id}
@@ -108,7 +113,8 @@ async function readProposalDecisions(tx: Tx, proposalId: string): Promise<Propos
       FROM domain_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'static_files', status, decided_at, decision_reason, NULL, NULL
       FROM static_file_pending_actions WHERE id = ${id}
-    UNION ALL SELECT 'redirects', status, decided_at, decision_reason, NULL, NULL
+    UNION ALL SELECT 'redirects', status, decided_at, decision_reason, NULL,
+                     preview->>'appliedEffect'
       FROM redirect_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'themes', status, decided_at, decision_reason, NULL, NULL
       FROM theme_pending_actions WHERE id = ${id}
@@ -120,7 +126,8 @@ async function readProposalDecisions(tx: Tx, proposalId: string): Promise<Propos
     UNION ALL SELECT 'owner_settings', status, decided_at, decision_reason, NULL,
                      COALESCE(preview->>'appliedNextStep', preview->>'effect')
       FROM owner_settings_pending_actions WHERE id = ${id}
-    UNION ALL SELECT 'quality', status, decided_at, decision_reason, NULL, NULL
+    UNION ALL SELECT 'quality', status, decided_at, decision_reason, NULL,
+                     preview->>'appliedEffect'
       FROM quality_pending_actions WHERE id = ${id}
     UNION ALL SELECT 'tool_approvals', status, decided_at, decision_reason, result_ok, result_summary
       FROM tool_approval_actions WHERE id = ${id}
@@ -176,7 +183,8 @@ export function decisionFromRow(row: ProposalDecisionRow): {
         };
       }
       // A domain that reports what the change means (owner_settings: the
-      // proposal's effect) passes it on; the others select NULL.
+      // proposal's effect; deploy, quality, redirects: what a live-acting
+      // approval put live, #1591) passes it on; the others select NULL.
       return { outcome: "applied", detail: row.result_summary };
     case "rejected":
       return { outcome: "rejected", detail: row.reason };

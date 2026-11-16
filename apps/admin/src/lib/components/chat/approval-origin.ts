@@ -99,9 +99,13 @@ export function ownDecisionMessage(args: {
   // Imports are the one gated domain whose approval starts a BACKGROUND job
   // instead of applying a change — the message must say so or the AI
   // announces results that do not exist yet.
+  // #1591 — no place is named: an approval applies where its kind acts (Go
+  // live now and Publish live on the live site, most others in the
+  // authoring state the next Stage builds), never on "the chat branch" for
+  // every kind; the AI reads the result of what it proposed.
   return isImportKind(args.kind)
     ? `Approved: crawl proposal ${id} — the crawler starts within ~10s and runs in the background. Check the run status and tell me how you'll proceed.`
-    : `Approved: ${label} ${id} applied to the chat branch. Please continue with what you were doing.`;
+    : `Approved: ${label} ${id} is applied. Please continue with what you were doing.`;
 }
 
 /**
