@@ -90,12 +90,17 @@ export function linkTargetPagesOf(
  * Two small queries plus, only when the branch has pending renames,
  * moves or rows of a URL plugin, one path composition for those pages —
  * the same shape `pages.list` uses for its branch view.
+ *
+ * @param opts.pageRows the scope's page rows when the caller read them
+ *   already (`loadPageRows` of the same branch): the reference check reads
+ *   the pages once for its targets and its sources (#1594).
  */
 export async function loadLinkTargets(
   tx: TransactionRunner,
   chatBranchId: string | null,
+  opts: { readonly pageRows?: PageRows } = {},
 ): Promise<LinkTargets> {
-  const pages = await loadLinkTargetPages(tx, chatBranchId);
+  const pages = await loadLinkTargetPages(tx, chatBranchId, opts.pageRows);
   const media = (await tx.execute(sql`
     SELECT id::text AS id, slug FROM media_assets WHERE deleted_at IS NULL
   `)) as unknown as LinkIndexMedia[];
@@ -106,8 +111,9 @@ export async function loadLinkTargets(
 async function loadLinkTargetPages(
   tx: TransactionRunner,
   chatBranchId: string | null,
+  loaded?: PageRows,
 ): Promise<LinkTargetPage[]> {
-  const pageRows = await loadPageRows(tx, chatBranchId);
+  const pageRows = loaded ?? (await loadPageRows(tx, chatBranchId));
   const annotated = await pendingUrlAnnotationPageIds(tx, chatBranchId);
   let driftPaths: ReadonlyMap<string, string> = new Map();
   if (chatBranchId && (pageRows.pending.size > 0 || annotated.length > 0)) {

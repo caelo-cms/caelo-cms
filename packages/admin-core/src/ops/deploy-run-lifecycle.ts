@@ -112,8 +112,9 @@ export async function failRunIfOrphanedInTx(
   const marked = (await tx.execute(sql`
     UPDATE deploy_runs
     SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
-        -- #1319 — a run that never succeeded never writes its planned audit.
-        lease_expires_at = NULL, planned_audit = NULL
+        -- #1319 — a run that never succeeded never writes its planned audit
+        -- (#1594: nor needs the link check recorded for it).
+        lease_expires_at = NULL, planned_audit = NULL, reference_check = NULL
     WHERE id = ${runId}::uuid AND status = 'running'
       -- A heartbeat that renewed the lease after the check above wins: the
       -- run is alive. A lease-less (legacy) run is held by the advisory
@@ -351,8 +352,9 @@ export const failDeployRunOp = defineOperation({
       UPDATE deploy_runs
       SET status = 'failed', finished_at = clock_timestamp(), error_message = ${input.message},
           phase_timings = ${jsonbParam(input.phaseTimings)}, lease_expires_at = NULL,
-          -- #1319 — a failed build never writes its planned audit.
-          planned_audit = NULL
+          -- #1319 — a failed build never writes its planned audit (#1594:
+          -- nor needs the link check recorded for it).
+          planned_audit = NULL, reference_check = NULL
       WHERE id = ${input.runId}::uuid AND status = 'running'
     `);
     await releaseStagingPublication(tx, input.runId);

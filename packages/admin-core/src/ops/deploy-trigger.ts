@@ -146,7 +146,7 @@ import {
 import { jsonbParam } from "../sql-helpers.js";
 import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
-import { buildReferenceGate } from "./content/link-integrity.js";
+import { buildReferenceGate, type RecordedReferenceCheck } from "./content/link-integrity.js";
 
 import {
   effectiveOutDir,
@@ -417,6 +417,7 @@ export const startTriggerOp = defineOperation({
     // a Stage reports it (its build records it, Publish live refuses it).
     let linkWarnings: string[] = [];
     let linkNotice: LinkNotice | null = null;
+    let referenceCheck: RecordedReferenceCheck | null = null;
     if (target.env === "staging" || target.env === "production") {
       const links = await buildReferenceGate(tx, target.env);
       if (!links.ok) {
@@ -434,6 +435,7 @@ export const startTriggerOp = defineOperation({
       }
       linkWarnings = links.warnings;
       linkNotice = links.notice;
+      referenceCheck = links.audit;
     }
     // #1008 — a site built without an active plugin lacks what it adds. A
     // Stage records and reports it; production refuses (no override: the
@@ -521,8 +523,14 @@ export const startTriggerOp = defineOperation({
     });
     if (auditRequest !== null) {
       const planned = await planStagingAudit(tx, { deployRunId: input.runId, ...auditRequest });
+      // #1594 — the audit reports the links of what this build renders: the
+      // check above, under the Publish policy.
+      if (referenceCheck === null) {
+        throw new Error(`staging build ${input.runId} has no link check to record for its audit`);
+      }
       await tx.execute(sql`
-        UPDATE deploy_runs SET planned_audit = ${jsonbParam(planned)}
+        UPDATE deploy_runs
+        SET planned_audit = ${jsonbParam(planned)}, reference_check = ${jsonbParam(referenceCheck)}
         WHERE id = ${input.runId}::uuid
       `);
     }

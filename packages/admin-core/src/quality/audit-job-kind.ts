@@ -32,7 +32,11 @@ import {
   pageIndexToWire,
 } from "./audit-job-wire.js";
 import type { ClaimedAuditRun } from "./audit-run.js";
-import { linkSourcesFromOps, referenceSourcesFromOps } from "./checks/links-sources.js";
+import {
+  linkSourcesFromOps,
+  recordedLinkCheckFromOps,
+  referenceSourcesOf,
+} from "./checks/links-sources.js";
 import { structureSourcesFromOps } from "./checks/structure-sources.js";
 
 /** The admin env var naming the audit's Cloud Run job (Google Cloud). */
@@ -55,11 +59,20 @@ const STOP_REASONS: Readonly<Record<Exclude<ClaimState, "claimed" | "resumed">, 
   missing: "the audit was deleted (its Stage's build run was)",
 };
 
-/** Answer one `source` read with the same op reads the in-admin audit made. */
-async function readSource(deps: AdminJobDeps, request: AuditSourceRequest): Promise<unknown> {
+/**
+ * Answer one `source` read of the audit `auditRunId` with the same op
+ * reads the in-admin audit made; the stored-link issues come from the
+ * check its build recorded (#1594).
+ */
+async function readSource(
+  deps: AdminJobDeps,
+  auditRunId: string,
+  request: AuditSourceRequest,
+): Promise<unknown> {
   const { registry, adapter } = deps;
   const structure = structureSourcesFromOps(registry, adapter, REPORTING_JOB_CTX);
-  const links = linkSourcesFromOps(registry, adapter, REPORTING_JOB_CTX);
+  const recorded = recordedLinkCheckFromOps(registry, adapter, REPORTING_JOB_CTX, auditRunId);
+  const links = linkSourcesFromOps(registry, adapter, REPORTING_JOB_CTX, recorded);
   switch (request.name) {
     case "modules":
       return structure.modules();
@@ -76,7 +89,7 @@ async function readSource(deps: AdminJobDeps, request: AuditSourceRequest): Prom
     case "neverLivePageIds":
       return [...(await links.neverLivePageIds(request.pageIds))];
     case "referenceIssues":
-      return referenceSourcesFromOps(registry, adapter, REPORTING_JOB_CTX).issues(request.limit);
+      return referenceSourcesOf(recorded).issues(request.limit);
   }
 }
 
@@ -122,8 +135,8 @@ export const qualityAuditJobKind: ReportingJobKindDef = {
     },
     source: {
       input: auditSourceRequestSchema,
-      async handle(deps, _subjectId, input: AuditSourceRequest) {
-        return { value: await readSource(deps, input) };
+      async handle(deps, subjectId, input: AuditSourceRequest) {
+        return { value: await readSource(deps, subjectId, input) };
       },
     },
     "plugin-findings": {

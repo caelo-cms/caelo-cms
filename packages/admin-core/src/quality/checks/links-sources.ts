@@ -6,6 +6,10 @@
  * staged build was rendered from — the same reasoning as
  * structure-sources.ts, whose module and layout reads it shares).
  *
+ * The stored-link issues come from the link check the audited build
+ * recorded where it started (#1594, `quality_audits.reference_check`), not
+ * from a second read of the whole site.
+ *
  * A failed read throws: the runner reports the check as failed and the
  * audit fails loudly instead of reading as "no findings".
  */
@@ -21,13 +25,53 @@ import { readSiteUrls, structureSourcesFromOps } from "./structure-sources.js";
 
 /** `pages.list`'s maximum `pageIds`. */
 const PAGES_PER_LIST = 1000;
-/** `links.check_references`' maximum `limit`. */
-const REPORTED_DRAFT_LINKS = 500;
 
-interface ReportedIssue {
+/** The recorded check, as far as these sources read it. */
+export interface RecordedLinkIssues {
+  readonly issues: readonly ReportedIssue[];
+  readonly truncated: boolean;
+  readonly draftLinks: readonly ReportedIssue[];
+}
+
+/** One recorded issue (`links.check_references`' issue shape). */
+type ReportedIssue = ReferenceCheckIssue & {
   readonly place: { readonly kind: string } & Record<string, unknown>;
-  readonly pageIds: string[];
   readonly targetPath: string | null;
+};
+
+/** Reads the recorded link check of the build an audit audits. */
+export type RecordedLinkCheck = () => Promise<RecordedLinkIssues>;
+
+/**
+ * The link check the build of `auditRunId` recorded where it started
+ * (#1594), read through `quality_audits.reference_check` once and shared by
+ * the `links` and `references` checks.
+ */
+export function recordedLinkCheckFromOps(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+  auditRunId: string,
+): RecordedLinkCheck {
+  let read: Promise<RecordedLinkIssues> | null = null;
+  return () => {
+    if (read === null) {
+      const reading = execute(registry, adapter, ctx, "quality_audits.reference_check", {
+        auditRunId,
+      }).then((r) => {
+        if (!r.ok) {
+          throw new Error(`quality_audits.reference_check failed: ${describeError(r.error)}`);
+        }
+        return r.value as RecordedLinkIssues;
+      });
+      read = reading;
+      // A failed read is read again by the next check that needs it.
+      reading.catch(() => {
+        if (read === reading) read = null;
+      });
+    }
+    return read;
+  };
 }
 
 /**
@@ -60,6 +104,7 @@ export function linkSourcesFromOps(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   ctx: ExecutionContext,
+  recorded: RecordedLinkCheck,
 ): LinkSources {
   const run = async (op: string, input: unknown): Promise<unknown> => {
     const r = await execute(registry, adapter, ctx, op, input);
@@ -92,15 +137,10 @@ export function linkSourcesFromOps(
       // Every unpublished-target issue (warnings included: a draft page's
       // own link is skipped too, it is not in the build), and every link
       // with no same-language target: staging renders it to the target in
-      // its own language, which may be a draft (#1240). Past the op's limit
-      // the rest is simply not skipped — reported twice, never lost.
-      const r = (await run("links.check_references", {
-        for: "publish",
-        includeWarnings: true,
-        problems: ["unpublished-target", "variant-missing"],
-        limit: REPORTED_DRAFT_LINKS,
-      })) as { issues: ReportedIssue[] };
-      return r.issues.flatMap((i): ReportedDraftLink[] => {
+      // its own language, which may be a draft (#1240). Past the record's
+      // limit the rest is simply not skipped — reported twice, never lost.
+      const r = await recorded();
+      return r.draftLinks.flatMap((i): ReportedDraftLink[] => {
         const origin = originOf(i.place);
         return i.targetPath !== null
           ? [{ targetPath: i.targetPath, pageIds: i.pageIds, origin }]
@@ -122,24 +162,17 @@ export function linkSourcesFromOps(
 }
 
 /**
- * #724 (rollout F) — the `references` check's source: `links.check_references`
- * as the worker's system actor (no chat branch, so main — what the staged
- * build was rendered from), with the Publish-live policy.
+ * #724 (rollout F) — the `references` check's source: the build's recorded
+ * link check (#1594), main line under the Publish-live policy.
  */
-export function referenceSourcesFromOps(
-  registry: OperationRegistry,
-  adapter: DatabaseAdapter,
-  ctx: ExecutionContext,
-): ReferenceSources {
+export function referenceSourcesOf(recorded: RecordedLinkCheck): ReferenceSources {
   return {
     async issues(limit) {
-      const r = await execute(registry, adapter, ctx, "links.check_references", {
-        for: "publish",
-        includeWarnings: true,
-        limit,
-      });
-      if (!r.ok) throw new Error(`links.check_references failed: ${describeError(r.error)}`);
-      return r.value as { issues: ReferenceCheckIssue[]; truncated: boolean };
+      const r = await recorded();
+      return {
+        issues: r.issues.slice(0, limit),
+        truncated: r.truncated || r.issues.length > limit,
+      };
     },
   };
 }

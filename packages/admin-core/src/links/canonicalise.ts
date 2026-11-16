@@ -49,6 +49,7 @@ import {
   normaliseLinkPath,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import type { PageRows } from "../lists/pages-view.js";
 import { SHARED_DRAFT_PENDING } from "../redirects/model.js";
 import {
   type ActiveImportTargets,
@@ -101,14 +102,17 @@ export function probeLinkLookup<T>(apply: (run: LinkCanonicaliseRun) => T): {
  * @param imports the active import runs of the writing chat (see
  *   `import-targets.ts`): a planned page already rebuilt resolves to its
  *   page, one not built yet is pending.
+ * @param opts.pageRows the scope's page rows, when the caller read them
+ *   already (see {@link loadLinkTargets}).
  */
 export async function loadLinkTargetLookup(
   tx: TransactionRunner,
   chatBranchId: string | null,
   extraOwnHosts: readonly string[] = [],
   imports: ActiveImportTargets | null = null,
+  opts: { readonly pageRows?: PageRows } = {},
 ): Promise<LinkTargetLookup & { readonly targets: LinkTargets }> {
-  const targets = await loadLinkTargets(tx, chatBranchId);
+  const targets = await loadLinkTargets(tx, chatBranchId, opts);
   const byPath = new Map<string, string>();
   for (const p of targets.pages) byPath.set(normaliseLinkPath(p.path), p.id);
   const pageIds = new Set(targets.pages.map((p) => p.id));
