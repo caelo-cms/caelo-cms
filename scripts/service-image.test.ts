@@ -32,6 +32,8 @@ import {
   configProblems,
   contentProblems,
   cycloneDx,
+  layerDecompression,
+  layerEntries,
   licenseNotice,
   packageFiles,
   runtimeBase,
@@ -219,6 +221,43 @@ describe("runtimeBase", () => {
     expect(() => runtimeBase(`FROM oven/bun:1.4.4 AS builder\nFROM c@${DIGEST}\n`)).toThrow(
       "not pinned by digest: oven/bun:1.4.4",
     );
+  });
+});
+
+describe("layerEntries", () => {
+  // `docker save` on the containerd image store (Docker 29, ubuntu-26.04
+  // runners) writes layers as compressed registry blobs; the classic store
+  // wrote plain tars. Both must list the same entries, whiteouts included.
+  function tarOf(name: string, gzip: boolean): string {
+    const src = join(fixture, "layer-src");
+    mkdirSync(join(src, "app"), { recursive: true });
+    writeFileSync(join(src, "app/server.js"), "export {};");
+    writeFileSync(join(src, ".wh.gone"), "");
+    const out = join(fixture, name);
+    const made = Bun.spawnSync(
+      ["tar", gzip ? "-czf" : "-cf", out, "-C", src, "app/server.js", ".wh.gone"],
+      { stderr: "pipe" },
+    );
+    if (made.exitCode !== 0) throw new Error(made.stderr.toString());
+    return out;
+  }
+
+  it("lists a plain layer", async () => {
+    expect((await layerEntries(tarOf("plain.tar", false), "plain")).sort()).toEqual([
+      ".wh.gone",
+      "app/server.js",
+    ]);
+  });
+  it("lists a gzip-compressed layer blob the same way", async () => {
+    expect((await layerEntries(tarOf("blob.tar.gz", true), "gzip")).sort()).toEqual([
+      ".wh.gone",
+      "app/server.js",
+    ]);
+  });
+  it("names the decompression from the blob's first bytes", () => {
+    expect(layerDecompression(new Uint8Array([0x1f, 0x8b, 0x08, 0x00]))).toEqual(["-z"]);
+    expect(layerDecompression(new Uint8Array([0x28, 0xb5, 0x2f, 0xfd]))).toEqual(["--zstd"]);
+    expect(layerDecompression(new TextEncoder().encode("app/"))).toEqual([]);
   });
 });
 
