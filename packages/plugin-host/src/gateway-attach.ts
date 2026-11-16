@@ -90,7 +90,9 @@ function verifiedRelease(v: { definition: Definition; manifest: unknown }): Veri
 /**
  * Why the Owner's approval does not cover the release this gateway would
  * run, or null when it does: a capability it asks for beyond the approved
- * set (#1267), or a manifest other than the approved one (#1332).
+ * set (#1267), or a manifest other than the approved one (#1332). The
+ * registry carries the Owner's current approval, not the one frozen with
+ * the last Stage (#1587): that one names the release this image replaced.
  */
 function releaseApprovalProblem(
   row: Pick<RegistryRow, "approved_capabilities" | "approved_manifest_digest">,

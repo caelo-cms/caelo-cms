@@ -29,7 +29,11 @@
  *     staged plugin change cannot reach live visitors before Publish live
  *     (#763 N6). What does reach both databases at once is narrowing
  *     ({@link narrowRelease}): a plugin deactivated or a grant revoked since
- *     the freeze leaves the published state on the next publish.
+ *     the freeze leaves the published state on the next publish. So does a
+ *     release-signed plugin's approval, which is always the Owner's current
+ *     one (#1587): a gateway runs the release-signed code of its own image,
+ *     which a Caelo update replaced already, so the approval frozen with the
+ *     last Stage names a release that no longer runs anywhere.
  *
  * The frozen state lives in cms_admin and is never read back from a public
  * database: the staging database is no more trusted than the live one.
@@ -589,7 +593,9 @@ async function readCurrentRelease(
     tx,
     // #1267 — a release-signed plugin's approved capability set goes with
     // it: the gateway refuses to attach one that asks for more
-    // (gateway-attach.ts), as the admin host does (loader.ts).
+    // (gateway-attach.ts), as the admin host does (loader.ts). Recorded for
+    // the frozen state's completeness; every publish replaces it with the
+    // current approval (#1587, narrowRelease).
     sql`SELECT p.id::text AS id, p.slug, p.tier, p.version, a.id::text AS actor_id,
                CASE WHEN p.tier = 2 THEN p.manifest_json END AS manifest_json,
                CASE WHEN p.tier = 2 THEN p.source_code END AS source_code,
@@ -723,21 +729,37 @@ async function readPointedReleases(
   return out;
 }
 
+/**
+ * What the Owner approved of a release-signed plugin (cms_admin `plugins`):
+ * its capability set and the digest of its manifest, each null when nothing
+ * is approved.
+ */
+export interface ReleaseSignedApproval {
+  readonly capabilities: readonly string[] | null;
+  readonly manifestDigest: string | null;
+}
+
 /** What the main line says now, for narrowing a frozen state. */
-interface CurrentNarrowing {
+export interface CurrentNarrowing {
   readonly activePluginIds: ReadonlySet<string>;
   readonly liveGrantIds: ReadonlySet<string>;
-  /** A release-signed plugin's approved capability set now (null: not tier 1). */
-  readonly approvedCapabilities: ReadonlyMap<string, readonly string[] | null>;
+  /** Each active release-signed plugin's approval now, by plugin id. */
+  readonly releaseSignedApprovals: ReadonlyMap<string, ReleaseSignedApproval>;
 }
 
 async function readNarrowing(tx: ProjectionTx): Promise<CurrentNarrowing> {
   const active = (await rows(
     tx,
-    sql`SELECT id::text AS id,
-               CASE WHEN tier = 1 THEN to_jsonb(approved_capabilities) END AS approved_capabilities
+    sql`SELECT id::text AS id, tier,
+               to_jsonb(approved_capabilities) AS approved_capabilities,
+               approved_manifest_digest
         FROM plugins WHERE status = 'active'`,
-  )) as unknown as { id: string; approved_capabilities: string[] | null }[];
+  )) as unknown as {
+    id: string;
+    tier: number;
+    approved_capabilities: string[] | null;
+    approved_manifest_digest: string | null;
+  }[];
   const grants = (await rows(
     tx,
     sql`SELECT id::text AS id FROM plugin_capability_grants WHERE revoked_at IS NULL`,
@@ -745,30 +767,54 @@ async function readNarrowing(tx: ProjectionTx): Promise<CurrentNarrowing> {
   return {
     activePluginIds: new Set(active.map((p) => p.id)),
     liveGrantIds: new Set(grants.map((g) => g.id)),
-    approvedCapabilities: new Map(active.map((p) => [p.id, p.approved_capabilities])),
+    releaseSignedApprovals: new Map(
+      active
+        .filter((p) => Number(p.tier) === 1)
+        .map((p) => [
+          p.id,
+          { capabilities: p.approved_capabilities, manifestDigest: p.approved_manifest_digest },
+        ]),
+    ),
   };
 }
 
-/** A frozen plugin row with its approved capabilities cut down to what is approved now. */
-function narrowApproval(row: Row, now: CurrentNarrowing): Row {
-  const frozen = row.approved_capabilities;
-  if (!Array.isArray(frozen)) return row;
-  const current = now.approvedCapabilities.get(String(row.id));
-  const allowed = new Set(Array.isArray(current) ? current : []);
-  return { ...row, approved_capabilities: frozen.filter((c) => allowed.has(String(c))) };
+/**
+ * A frozen plugin row with a release-signed plugin's approval as the Owner
+ * holds it now (#1587); any other row as it was frozen. An active plugin
+ * without a recorded approval publishes none, so a gateway refuses it.
+ */
+function withCurrentApproval(row: Row, now: CurrentNarrowing): Row {
+  if (Number(row.tier) !== 1) return row;
+  const approval = now.releaseSignedApprovals.get(String(row.id));
+  return {
+    ...row,
+    approved_capabilities: approval?.capabilities ?? null,
+    approved_manifest_digest: approval?.manifestDigest ?? null,
+  };
 }
 
 /**
  * A frozen release state as it may be published now: only what the main
  * line still allows. A plugin deactivated (or uninstalled) since the
- * freeze, with its grants and rows, every grant revoked since, and every
- * capability a release-signed plugin's approval no longer holds are left
- * out. Nothing is added: an activation, an upgrade, a widened approval or
- * new plugin content follows the next release.
+ * freeze, with its grants and rows, and every grant revoked since are left
+ * out. Nothing is added: an activation, a runtime-authored plugin's new
+ * version with its grants, and new plugin content follow the next release.
+ *
+ * A release-signed plugin's approval is published as the Owner holds it
+ * now, narrower or wider than at the freeze (#1587). Its code is not in the
+ * frozen state: each gateway runs the release in its own image, which a
+ * Caelo update has replaced already, so the approval frozen with the last
+ * Stage names a manifest that no longer runs anywhere. Publishing that one
+ * kept a plugin the Owner had approved again after an update detached on
+ * the live gateway — every visitor operation of it a 404 — until the next
+ * Publish live, and nothing said so. The approval is the Owner's own grant
+ * (Settings → Plugins, "Approve this release"): it decides whether the code
+ * already in a gateway's image may run, never which plugins, data or
+ * settings live visitors get.
  *
  * @example
  *   narrowRelease(frozen, {
- *     activePluginIds: new Set(), liveGrantIds: new Set(), approvedCapabilities: new Map(),
+ *     activePluginIds: new Set(), liveGrantIds: new Set(), releaseSignedApprovals: new Map(),
  *   })
  *   // → no plugin, grant or row published
  */
@@ -776,7 +822,7 @@ export function narrowRelease(state: ReleaseState, now: CurrentNarrowing): Relea
   const active = (pluginId: unknown) => now.activePluginIds.has(String(pluginId));
   return {
     version: 1,
-    plugins: state.plugins.filter((p) => active(p.id)).map((p) => narrowApproval(p, now)),
+    plugins: state.plugins.filter((p) => active(p.id)).map((p) => withCurrentApproval(p, now)),
     grants: state.grants.filter((g) => active(g.plugin_id) && now.liveGrantIds.has(String(g.id))),
     pluginRows: state.pluginRows.filter((r) => active(r.plugin_id)),
     projected: state.projected.filter((id) => active(id)),

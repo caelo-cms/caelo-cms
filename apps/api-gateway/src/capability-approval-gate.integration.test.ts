@@ -11,10 +11,19 @@
  * Adversarial: the plugin is `active` and published; only its approval is
  * missing. Its visitor-facing operation must not run. Once the Owner
  * approves (and the admin republishes), it does.
+ *
+ * Issue #1587 — the approval reaches the gateway with the admin's next
+ * publish, not with the next Publish live. The registry follows the release
+ * (#1329), but a release-signed plugin's code does not: the gateway runs the
+ * one in its image, which a Caelo update replaced. Frozen, the approval named
+ * the release before the update, so the live gateway refused the release
+ * the Owner had approved and every visitor call of it (consent-manager's
+ * `record_consent`) was a 404 until somebody published the site again.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
+  drainProjectionOnce,
   publishProjectionOnce,
   registerAdminOps,
   releaseProjectionForTests,
@@ -115,6 +124,17 @@ async function cleanup(): Promise<void> {
   } finally {
     await pub.end();
   }
+}
+
+/** The release state the live database is pointed at (only Publish live moves it). */
+async function livePointer(): Promise<string | null> {
+  return asAdmin(async (tx) => {
+    const [row] = (await tx`
+      SELECT run_id::text AS id FROM projection_release_pointers WHERE environment = 'live'`) as {
+      id: string;
+    }[];
+    return row?.id ?? null;
+  });
 }
 
 function ping(): Promise<Response> {
@@ -221,13 +241,16 @@ describe("#1267 — the gateway honours the capability approval gate", () => {
     expect(pinged).toBe(0);
   });
 
-  it("runs it once the Owner approved and the admin republished", async () => {
+  it("runs it once the Owner approved and the admin republished, without a Publish live", async () => {
+    const pointer = await livePointer();
     await asAdmin(
       (tx) =>
         tx`UPDATE plugins SET approved_capabilities = ARRAY['snapshots'] WHERE slug = ${SLUG}`,
     );
-    // #1329 — a widened approval follows the release (Publish live).
-    await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, new Map([[SLUG, null]]));
+    // #1587 — the admin's post-write drain, not a release: the approval of a
+    // release-signed plugin is published as the Owner holds it now.
+    await drainProjectionOnce(adminAdapter, STAGING_ADAPTER);
+    expect(await livePointer()).toBe(pointer);
     await syncDispatchPlugins({ force: true });
     const r = await ping();
     if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${await r.text()}`);
@@ -244,5 +267,45 @@ describe("#1267 — the gateway honours the capability approval gate", () => {
     const r = await ping();
     expect(r.status).not.toBe(200);
     expect(pinged).toBe(1);
+  });
+});
+
+describe("#1587 — a release approved after a Caelo update runs on the live gateway", () => {
+  it("serves its visitor operation from the approval, not from the last Publish live", async () => {
+    // What the Owner approves for the release this gateway runs.
+    const approvedNow = await asAdmin(async (tx) => {
+      const [row] = (await tx`
+        SELECT approved_manifest_digest AS digest FROM plugins WHERE slug = ${SLUG}`) as {
+        digest: string | null;
+      }[];
+      return row?.digest ?? null;
+    });
+    expect(approvedNow).toMatch(/^[0-9a-f]{64}$/);
+
+    // The site went live before the update: the last Publish live froze the
+    // approval of the release before it, whose manifest differs.
+    await asAdmin(
+      (tx) =>
+        tx`UPDATE plugins SET approved_capabilities = ARRAY['snapshots'],
+                              approved_manifest_digest = ${"0".repeat(64)}
+           WHERE slug = ${SLUG}`,
+    );
+    await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, new Map([[SLUG, null]]));
+    await syncDispatchPlugins({ force: true });
+    // The update rolled the gateway: the release in its image is not approved yet.
+    expect((await ping()).status).toBe(404);
+    const before = pinged;
+    const pointer = await livePointer();
+
+    // The Owner approves the updated release. Nothing is staged or published.
+    await asAdmin(
+      (tx) => tx`UPDATE plugins SET approved_manifest_digest = ${approvedNow} WHERE slug = ${SLUG}`,
+    );
+    await drainProjectionOnce(adminAdapter, STAGING_ADAPTER);
+    expect(await livePointer()).toBe(pointer);
+    await syncDispatchPlugins({ force: true });
+    const r = await ping();
+    if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${await r.text()}`);
+    expect(pinged).toBe(before + 1);
   });
 });

@@ -62,7 +62,7 @@ Mail a plugin sends itself with `ctx.email.send` (an approved campaign) declares
 
 ## Approval is bound to the manifest
 
-The Owner's approval of a shipped plugin records the digest of its whole manifest (`plugins.approved_manifest_digest`). A release that changes the manifest, including any of the above, stops the plugin in the admin and the gateway until the Owner clicks "Approve this release" at Settings → Plugins. Publish live refuses while it waits, and Settings → Plugins and Settings → Updates say so. A changed public surface is pinned by `packages/plugin-host/src/public-surface.test.ts`, whose snapshot shows every change in review.
+The Owner's approval of a shipped plugin records the digest of its whole manifest (`plugins.approved_manifest_digest`). A release that changes the manifest, including any of the above, stops the plugin in the admin and the gateway until the Owner clicks "Approve this release" at Settings → Plugins. Publish live refuses while it waits, and Settings → Plugins and Settings → Updates say so. The approval reaches the live and staging gateways with the admin's next publish, without a Publish live (#1587): they already run the new release from their images. A changed public surface is pinned by `packages/plugin-host/src/public-surface.test.ts`, whose snapshot shows every change in review.
 
 ## Example
 
