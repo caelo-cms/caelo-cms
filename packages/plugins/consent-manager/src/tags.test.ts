@@ -267,12 +267,31 @@ describe("what a stored tag loads (#1588)", () => {
     expect(t.inline_snippet).toContain("cdn.leadinfo.net/ping.js");
   });
 
+  it("keeps a legacy tag's code through a change that leaves the code alone", () => {
+    const base = fieldsOfRow(legacyRow);
+    delete base.inlineSnippet;
+    delete base.scriptSrc;
+    const next = resolveTagColumns(
+      "update_tags_many",
+      { ...base, scope: { paths: ["/de/*"] } },
+      CATEGORIES,
+      tagCode(legacyRow),
+    );
+    expect(next.inline_snippet).toBe(LEGACY_SNIPPET);
+    expect(next.scope).toEqual({ paths: ["/de/*"] });
+    expect(tagCode({ ...legacyRow, ...next }).source).toBe("legacy_snippet");
+    // Leadinfo's documented cookies describe Leadinfo's own code, not this
+    // one: the declaration keeps what the tag declared.
+    expect(next.cookies).toEqual([]);
+    expect(next.vendor_info.name).toBeUndefined();
+  });
+
   it("tells the AI the next step instead of asking it to drop fields it never sent", () => {
     const next = legacySnippetNextStep(legacyRow);
     expect(next).toContain("config");
     expect(next).toContain("accountId (LI- followed by");
     expect(next).toContain("scope");
-    expect(next).toContain("remove_tracking_tag");
+    expect(next).toContain("needs no ids and keeps that code");
     expect(() =>
       resolveTagColumns(
         "update_tags_many",

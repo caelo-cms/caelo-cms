@@ -611,15 +611,38 @@ describe("#451 — consent-manager", () => {
     expect(before.nextStep).toContain("accountId (LI- followed by");
     expect(await runtimeJs()).toContain("t1588Legacy");
 
-    // A change without the ids would keep the old code: refused with the
-    // step that fixes it, not with "drop" fields the AI never sent.
-    const scopeOnly = await call("update_tags_many", {
+    // A change that leaves the code alone keeps it: the scope narrows where
+    // the old code runs, and the listing still flags it.
+    const scoped = await call("update_tags_many", {
       tags: [{ name: NAME, scope: { paths: ["/de/produkte/*"] } }],
     });
-    expect(scopeOnly.ok).toBe(false);
-    if (!scopeOnly.ok) {
-      expect(scopeOnly.error.message).toContain("Pass `config` with accountId");
-      expect(scopeOnly.error.message).not.toContain("Drop");
+    if (!scoped.ok) throw new Error(JSON.stringify(scoped.error));
+    const scopedJs = await runtimeJs();
+    expect(scopedJs).toContain("t1588Legacy");
+    expect(scopedJs).toContain('"include":["/de/produkte/*"]');
+    expect((await listed()).code).toBe("legacy_snippet");
+    expect((await listed()).nextStep).toContain("accountId (LI- followed by");
+
+    // Switching it off is never blocked, and only narrows what runs, so
+    // nobody is asked again.
+    const v0 = await policyVersion();
+    const off = await call("update_tags_many", { tags: [{ name: NAME, enabled: false }] });
+    if (!off.ok) throw new Error(JSON.stringify(off.error));
+    expect(await policyVersion()).toBe(v0);
+    expect(await runtimeJs()).not.toContain("t1588Legacy");
+    const on = await call("update_tags_many", { tags: [{ name: NAME, enabled: true }] });
+    if (!on.ok) throw new Error(JSON.stringify(on.error));
+    expect((await listed()).inlineSnippet).toBe(LEGACY);
+
+    // Touching the code without the ids is refused with the step that
+    // fixes it, not with "drop" fields the AI never sent.
+    const recoded = await call("update_tags_many", {
+      tags: [{ name: NAME, inlineSnippet: "" }],
+    });
+    expect(recoded.ok).toBe(false);
+    if (!recoded.ok) {
+      expect(recoded.error.message).toContain("Pass `config` with accountId");
+      expect(recoded.error.message).not.toContain("Drop");
     }
 
     // The ids replace the code, and the path filter becomes the scope.

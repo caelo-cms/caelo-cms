@@ -195,14 +195,20 @@ export function describeIssues(tool: string, error: z.ZodError): string {
  * @param tool the calling tool's name, for the error prefix
  * @param fields the merged fields (for an update: the stored row with the patch applied)
  * @param categories the category keys that exist
+ * @param keptLegacyCode for a change to a `legacy_snippet` tag that leaves its
+ *   code alone: the hand-written code it keeps (#1588). The vendor's
+ *   cookie and vendor defaults describe the vendor's own code, not that
+ *   one, so they are not filled in either.
  */
 export function resolveTagColumns(
   tool: string,
   fields: TagFields,
   categories: ReadonlySet<string>,
+  keptLegacyCode?: Pick<TagCode, "src" | "inline">,
 ): TagColumns {
   const vendorKey = (fields.vendor ?? "").trim();
   const template = VENDOR_TEMPLATES[vendorKey];
+  const defaults = keptLegacyCode ? undefined : template;
   const categoryKey = fields.category ?? template?.category;
   if (!categoryKey || !categories.has(categoryKey)) {
     throw new Error(
@@ -221,8 +227,12 @@ export function resolveTagColumns(
         `${tool}: ${vendorKey} is a known vendor — its code is built from \`config\` (${Object.keys(template.config).join(", ")}), never from a hand-written \`scriptSrc\`/\`inlineSnippet\`. Leave both out and pass only the ids in \`config\` (on update_tags_many that replaces whatever code the tag stored); a condition the snippet checked itself, such as a path or a language, goes into \`scope\`.`,
       );
     }
-    config = parseVendorConfig(tool, vendorKey, template, fields.config);
-    ({ src, inline } = template.build(config));
+    if (keptLegacyCode) {
+      ({ src, inline } = keptLegacyCode);
+    } else {
+      config = parseVendorConfig(tool, vendorKey, template, fields.config);
+      ({ src, inline } = template.build(config));
+    }
   } else {
     if (fields.config && Object.keys(fields.config).length > 0) {
       throw new Error(
@@ -252,7 +262,7 @@ export function resolveTagColumns(
     );
   }
 
-  const vendorInfo: VendorInfo = { ...(template?.vendorInfo ?? {}), ...(fields.vendorInfo ?? {}) };
+  const vendorInfo: VendorInfo = { ...(defaults?.vendorInfo ?? {}), ...(fields.vendorInfo ?? {}) };
   if (!vendorInfo.legalBasis) vendorInfo.legalBasis = defaultLegalBasis(categoryKey);
   return {
     vendor: vendorKey,
@@ -262,7 +272,7 @@ export function resolveTagColumns(
     inline_snippet: inline,
     position: fields.position ?? "body_end",
     justification: reason,
-    cookies: [...(fields.cookies ?? template?.cookies ?? [])],
+    cookies: [...(fields.cookies ?? defaults?.cookies ?? [])],
     vendor_info: vendorInfo,
     scope: fields.scope ?? {},
   };
@@ -282,11 +292,13 @@ export function resolveTagColumns(
  *   registered with hand-written code before its vendor had a template
  *   looks like this (`config` is null on rows older than the templates,
  *   and `{}` on a hand-written tag whose vendor became known later). It
- *   still runs the code it was approved with. Nothing rewrites it on its
- *   own: the snippet may check conditions of its own (a path filter, say)
- *   and its ids are not data, so turning it into the template changes
- *   what visitors' browsers run, which is the Owner's approval to give.
- *   An approved `update_tags_many` with `config` does exactly that.
+ *   still runs the code it was approved with, through every change that
+ *   leaves the code alone (switching it off must never wait for ids).
+ *   Nothing rewrites it on its own: the snippet may check conditions of
+ *   its own (a path filter, say) and its ids are not data, so turning it
+ *   into the template changes what visitors' browsers run, which is the
+ *   Owner's approval to give. An approved `update_tags_many` with
+ *   `config` does exactly that.
  */
 export type TagCodeSource = "vendor_template" | "hand_written" | "legacy_snippet";
 
@@ -318,14 +330,15 @@ export function tagCode(
 }
 
 /**
- * The refusal for a change to a `legacy_snippet` tag that does not pass
- * the vendor's ids: carrying its hand-written code on would keep the very
- * state the template exists to end, and the next step is one field away.
+ * The next step for a `legacy_snippet` tag: what `list_tags` shows with it,
+ * and the refusal for a change that touches its code without the vendor's
+ * ids (new hand-written code for a known vendor is refused, and dropping
+ * the old code would leave nothing to load).
  */
 export function legacySnippetNextStep(row: Pick<TagRow, "name" | "vendor">): string {
   const template = VENDOR_TEMPLATES[row.vendor];
   const expected = template ? expectedVendorConfig(template) : "the vendor's ids";
-  return `"${row.name}" has no ${row.vendor} ids in \`config\`, so it runs the code stored with it (hand-written before ${row.vendor} became a known vendor), not ${row.vendor}'s own. Pass \`config\` with ${expected} in update_tags_many — the id is usually in that code, which list_tracking_tags shows — and the tag loads ${row.vendor}'s own code instead; a condition the old code checked itself, such as a path or a language, goes into \`scope\`. To stop the tag instead: remove_tracking_tag.`;
+  return `"${row.name}" has no ${row.vendor} ids in \`config\`, so it runs the code stored with it (hand-written before ${row.vendor} became a known vendor), not ${row.vendor}'s own. Pass \`config\` with ${expected} in update_tags_many — the id is usually in that code, which list_tracking_tags shows — and the tag loads ${row.vendor}'s own code instead; a condition the old code checked itself, such as a path or a language, goes into \`scope\`. A change that leaves the code alone (\`enabled\`, \`scope\`, \`category\`, …) needs no ids and keeps that code.`;
 }
 
 /** The writable fields a stored row stands for — the base an update patches. */

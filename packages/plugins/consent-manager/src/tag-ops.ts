@@ -198,16 +198,24 @@ export async function updateTagsMany(ctx: unknown, args: unknown) {
       );
     }
     // A tag that still runs code written before its vendor had a template
-    // changes only together with the ids that replace that code (#1588).
-    // A switch to another vendor is judged by resolveTagColumns below.
+    // (#1588) keeps that code through every change that leaves the code
+    // alone: switching it off or narrowing it must never wait for ids. A
+    // change to the code needs the ids that replace it. A switch to
+    // another vendor is judged by resolveTagColumns below.
+    const code = tagCode(row);
     const sameVendorKey = (patch.vendor ?? row.vendor).trim() === row.vendor;
-    if (tagCode(row).source === "legacy_snippet" && patch.config === undefined && sameVendorKey) {
+    const keptLegacyCode =
+      code.source === "legacy_snippet" && sameVendorKey && patch.config === undefined
+        ? code
+        : undefined;
+    if (keptLegacyCode && (patch.scriptSrc !== undefined || patch.inlineSnippet !== undefined)) {
       throw new Error(`update_tags_many: ${legacySnippetNextStep(row)}`);
     }
     // Ids for a known vendor replace the code: whatever the tag stored,
-    // hand-written or built, must not ride into the merge.
+    // hand-written or built, must not ride into the merge. Kept legacy
+    // code is passed on its own, not as hand-written fields.
     const base = fieldsOfRow(row);
-    if (patch.config !== undefined) {
+    if (patch.config !== undefined || keptLegacyCode) {
       delete base.scriptSrc;
       delete base.inlineSnippet;
     }
@@ -217,16 +225,16 @@ export async function updateTagsMany(ctx: unknown, args: unknown) {
     // Vendor metadata is updated field by field: a patch naming only a new
     // privacy URL keeps the stored seat, purpose and transfer details. A
     // switch to another vendor starts from that vendor's own data.
-    const sameVendor = patch.vendor === undefined || patch.vendor === row.vendor;
     const vendorInfo =
-      patch.vendorInfo !== undefined && sameVendor && base.vendorInfo
+      patch.vendorInfo !== undefined && sameVendorKey && base.vendorInfo
         ? { vendorInfo: { ...base.vendorInfo, ...patch.vendorInfo } }
         : {};
-    if (!sameVendor) delete base.vendorInfo;
+    if (!sameVendorKey) delete base.vendorInfo;
     const columns = resolveTagColumns(
       "update_tags_many",
       { ...base, ...patch, ...vendorInfo },
       known,
+      keptLegacyCode,
     );
     if (patch.scope !== undefined) await assertScopeIds(cms, "update_tags_many", columns.scope);
     const nextEnabled = enabled ?? row.enabled;
