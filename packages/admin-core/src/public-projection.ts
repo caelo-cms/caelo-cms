@@ -242,11 +242,17 @@ export function createPublicProjectionPublisher(opts: {
           fullPublishDue = true;
           throw e;
         }
-        fullPublishDue = false;
-        // #1633 — the next instance to boot with the same inputs skips the
-        // full publish. Not after a publish that could not freeze a release
-        // state (an active plugin not loaded here): that one stays due.
-        if (report.unreleased.length === 0) {
+        // #1633 — a unit another publisher had already written from a later
+        // read was left alone here, and that publisher may lack what only
+        // an admin carries (the migration job has no staging gate key). The
+        // tick's backstop publishes everything again, and nothing is
+        // recorded until a full publish wrote every unit itself.
+        const superseded = report.superseded.live.length + report.superseded.staging.length > 0;
+        fullPublishDue = superseded;
+        // The next instance to boot with the same inputs skips the full
+        // publish. Not after a publish that could not freeze a release state
+        // (an active plugin not loaded here): that one stays due.
+        if (!superseded && report.unreleased.length === 0) {
           await recordBootPublish(
             dbs,
             bootPublishInputsDigest(loaded, dbs.stagingGateSecret ?? null),

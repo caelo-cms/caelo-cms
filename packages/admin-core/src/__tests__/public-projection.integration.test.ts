@@ -563,6 +563,50 @@ describe("the boot publish (#1633)", () => {
     expect((await bootPublish("t1633-key-b")).sections).toEqual(EMPTY);
   });
 
+  it("records nothing while another publisher's later read left a unit alone, and stays due", async () => {
+    // The migration job publishes without the staging gate key: a boot's
+    // full publish that it superseded on `staging_site` has not published
+    // this admin's key (Codex review of #1634).
+    await admin(async (tx) => tx`DELETE FROM projection_boot_publish`);
+    await drainProjectionOnce(adapter, staging);
+    const stagingDb = <T>(fn: (tx: SQL) => Promise<T>) => onDb(STAGING_URL as string, fn);
+    const saved = (await stagingDb(
+      async (tx) =>
+        await tx`SELECT generation::text AS generation, read_at FROM published_projection_generations WHERE unit = 'staging_site'`,
+    )) as { generation: string; read_at: Date }[];
+    await stagingDb(
+      async (tx) => tx`
+        INSERT INTO published_projection_generations (unit, generation, read_at)
+        VALUES ('staging_site', 9000000000000000, now())
+        ON CONFLICT (unit) DO UPDATE SET generation = EXCLUDED.generation`,
+    );
+    const publisher = bootingPublisher("t1633-key-c");
+    try {
+      const report = await publisher.publishAtBoot();
+      expect(report.superseded.staging).toContain("staging_site");
+      expect(
+        await admin(async (tx) => await tx`SELECT 1 FROM projection_boot_publish`),
+      ).toHaveLength(0);
+    } finally {
+      await stagingDb(async (tx) =>
+        saved[0]
+          ? tx`UPDATE published_projection_generations SET generation = ${saved[0].generation}::bigint,
+                 read_at = ${saved[0].read_at} WHERE unit = 'staging_site'`
+          : tx`DELETE FROM published_projection_generations WHERE unit = 'staging_site'`,
+      );
+    }
+    try {
+      // The tick's backstop publishes everything again, and that one counts.
+      const retried = await publisher.backstop();
+      expect(retried.sections.staging).toContain("staging_site");
+      expect(
+        await admin(async (tx) => await tx`SELECT 1 FROM projection_boot_publish`),
+      ).toHaveLength(1);
+    } finally {
+      publisher.stop();
+    }
+  });
+
   it("publishes everything while an environment has no frozen release state", async () => {
     await bootPublish("t1633-key-a");
     const pointer = (await admin(

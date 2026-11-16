@@ -372,12 +372,12 @@ describe("#1633 — a boot of an unchanged release writes nothing", () => {
     );
   }
 
-  /** Write the plugin's dist with `body` as its skill's text and sign it. */
-  async function writePlugin(root: string, body: string): Promise<string> {
+  /** Write the plugin's dist with "Version <release>." as its skill's text and sign it. */
+  async function writePlugin(root: string, release: "one" | "two"): Promise<string> {
     mkdirSync(join(root, QUIET, "dist"), { recursive: true });
     writeFileSync(
       join(root, QUIET, "dist", "index.js"),
-      `export default { slug: "${QUIET}", version: "0.1.0", tier: 1, schema: {}, operations: { noop: async () => ({}) }, skills: [{ slug: "${SKILL}", displayName: "Quiet", description: "How to use it.", body: ${JSON.stringify(body)} }] };\n`,
+      `export default { slug: "${QUIET}", version: "0.1.0", tier: 1, schema: {}, operations: { noop: async () => ({}) }, skills: [{ slug: "${SKILL}", displayName: "Quiet", description: "How to use it.", body: "Version ${release}." }] };\n`,
     );
     const signed = await ensureDevSignedManifests({
       pluginsRoot: root,
@@ -393,7 +393,7 @@ describe("#1633 — a boot of an unchanged release writes nothing", () => {
     const root = mkdtempSync(join(tmpdir(), "t1633-"));
     const roots = [root];
     try {
-      const publicKeyHex = await writePlugin(root, "Version one.");
+      const publicKeyHex = await writePlugin(root, "one");
       const opts = { infra, pluginsRoot: root, systemActorId: SYSTEM_ACTOR_ID, publicKeyHex };
       await bootstrap(opts);
       await sqlSystem(async (tx) => tx`UPDATE plugins SET status = 'active' WHERE slug = ${QUIET}`);
@@ -425,7 +425,7 @@ describe("#1633 — a boot of an unchanged release writes nothing", () => {
       const next = {
         ...opts,
         pluginsRoot: nextRoot,
-        publicKeyHex: await writePlugin(nextRoot, "Version two."),
+        publicKeyHex: await writePlugin(nextRoot, "two"),
       };
       resetPluginHost();
       await bootstrap(next);
