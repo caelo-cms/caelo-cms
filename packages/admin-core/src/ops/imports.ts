@@ -1472,6 +1472,11 @@ export const writeExtractedPagesOp = defineOperation({
           }),
         )
         .max(500),
+      /**
+       * #1590 — the URLs the crawl has taken so far (its batch report). It
+       * only ever raises the run's `pages_seen`; absent leaves it as it is.
+       */
+      pagesSeen: z.number().int().min(0).max(1_000_000).optional(),
     })
     .strict(),
   output: z.object({ inserted: z.number() }),
@@ -1510,6 +1515,20 @@ export const writeExtractedPagesOp = defineOperation({
       `)) as unknown as Array<{ id: string }>;
       if (r.length > 0) inserted += 1;
     }
+    // #1590 — the run's counts move with every batch, in the same write as
+    // its pages, so `list_import_runs` shows the crawl's progress instead of
+    // 0/0 until it ends. Pages extracted grows by the rows this write added:
+    // the admin's own count, so a report cannot inflate it, and a batch sent
+    // again (a resumed crawl) adds nothing. Pages seen comes from the crawl
+    // (untrusted, bounded above): it only ever goes up, and never below the
+    // pages written. In SET, `pages_extracted` reads the row before this
+    // update.
+    await tx.execute(sql`
+      UPDATE import_runs
+         SET pages_extracted = pages_extracted + ${inserted},
+             pages_seen = GREATEST(pages_seen, ${input.pagesSeen ?? 0}, pages_extracted + ${inserted})
+       WHERE id = ${input.runId}::uuid
+    `);
     return ok({ inserted });
   },
 });
