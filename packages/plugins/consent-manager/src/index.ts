@@ -799,8 +799,8 @@ export default definePlugin<PluginContextTier1>({
       const settings = await settingsOf(adminQueryOf(ctx));
       // Until the stored value hosts are filled (main's first batch after
       // the upgrade) or after a truncate, everything is rejudged on main.
-      // A branch never fills (#1625): it judges its batch from the
-      // instances and stores no hosts, so it holds no copy of main's rows.
+      // A branch never fills (#1625): it stores its own changed instances'
+      // hosts and judges from the instances, so it holds no copy of main's.
       if (!settings.value_hosts_filled_at || changes.some((c) => c.op === "truncate")) {
         return chatBranchId === null ? rejudgeAll(ctx) : rejudgeUnfilledOnBranch(ctx, changes);
       }

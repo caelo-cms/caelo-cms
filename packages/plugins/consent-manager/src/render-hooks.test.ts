@@ -413,12 +413,13 @@ describe("module_changes keeps verdicts current on writes (#1214, change journal
     expect(store.rows("value_hosts")).toEqual([]);
   });
 
-  it("#1625 — a branch batch before main's fill judges from the instances and stores no hosts", async () => {
+  it("#1625 — a branch batch before main's fill stores only its own instances' hosts", async () => {
     const settings = store.rows("settings")[0] as Record<string, unknown>;
     settings.value_hosts_filled_at = null;
     const video = moduleId(7);
     const other = moduleId(8);
     const ci = "20000000-0000-4000-8000-000000000007";
+    const branch = "30000000-0000-4000-8000-000000000001";
     modules = [
       {
         id: video,
@@ -433,10 +434,10 @@ describe("module_changes keeps verdicts current on writes (#1214, change journal
         id: other,
         slug: "other",
         kind: "content",
-        html: "<p>{{t}}</p>",
+        html: '<iframe src="{{url}}"></iframe>',
         css: "",
         js: "",
-        fields: [],
+        fields: [{ name: "url" }],
       },
     ];
     instances = [
@@ -444,23 +445,40 @@ describe("module_changes keeps verdicts current on writes (#1214, change journal
       {
         id: "20000000-0000-4000-8000-000000000008",
         moduleId: other,
-        values: { t: "https://a.example/x" },
+        values: { url: "https://player.vimeo.com/video/1" },
       },
     ];
     cmsCalls = [];
+    // A snapshot-only write: the journal names no parent module.
     const out = await ops.module_changes?.(makeCtx(), {
-      chatBranchId: "30000000-0000-4000-8000-000000000001",
-      changes: [{ kind: "content_instance", op: "update", rowId: ci, parentId: video }],
+      chatBranchId: branch,
+      changes: [{ kind: "content_instance", op: "update", rowId: ci, parentId: null }],
     });
-    // Judged from the batch's module's instances: the verdict is there,
-    // no host row is stored on the branch, and the fill stays main's.
-    expect(out).toEqual({ flagged: 1, cleared: 0, valueRows: 0 });
-    expect(store.rows("value_hosts")).toEqual([]);
+    // The changed instance's hosts are stored (the branch's own state), the
+    // other module's instance is neither stored nor judged, the module is
+    // found from the instance, and the fill stays main's.
+    expect(out).toEqual({ flagged: 1, cleared: 0, valueRows: 1 });
+    expect(store.rows("value_hosts").map((r) => [r.instance_id, r.key, r.host])).toEqual([
+      [ci, "url", "www.youtube.com"],
+    ]);
     const guards = await guardsByModule(store.query as never, [video, other]);
     expect(guards.get(video)?.detected_hosts).toEqual(["www.youtube.com"]);
     expect(guards.has(other)).toBe(false);
     expect(store.rows("settings")[0]?.value_hosts_filled_at).toBeNull();
-    expect(cmsCalls).toEqual(["modules.list", "content_instances.list"]);
+    expect(cmsCalls).toEqual(["content_instances.list", "modules.list", "content_instances.list"]);
+
+    // Once main has filled, a module-only edit on the branch judges from the
+    // stored rows, which hold the branch's instance: the guard stays.
+    settings.value_hosts_filled_at = "2026-11-16T00:00:00.000Z";
+    expect(
+      await ops.module_changes?.(makeCtx(), {
+        chatBranchId: branch,
+        changes: [{ kind: "module", op: "update", rowId: video, parentId: null }],
+      }),
+    ).toEqual({ flagged: 0, cleared: 0, valueRows: 0 });
+    expect(
+      (await guardsByModule(store.query as never, [video])).get(video)?.detected_hosts,
+    ).toEqual(["www.youtube.com"]);
   });
 
   it("#1269 — the first batch after the upgrade rejudges every instance and records the fill", async () => {

@@ -28,10 +28,11 @@
  * module's other instances.
  *
  * #1625 — the stored hosts are filled on main only. Until main's first
- * fill ran, a branch's batch judges its modules from their instances in
- * memory and stores no hosts: filling on a branch wrote a pending copy of
- * every row there (2,359 on searchVIU's experiment branch after 0.12.6),
- * which every read of that branch then overlays.
+ * fill ran, a branch's batch stores the hosts of its own changed instances
+ * and judges its modules from their instances in memory: filling on a
+ * branch wrote a pending copy of every row there (2,359 on searchVIU's
+ * experiment branch after 0.12.6), which every read of that branch then
+ * overlays.
  *
  * Render hooks then read verdicts only (`gatedCategoryKeys`,
  * `guardsByModule`): no module or content-instance list on the render
@@ -332,25 +333,22 @@ export async function rejudgeAll(
 
 /**
  * #1625 — a branch's batch while main has not filled the stored value
- * hosts (or after a truncate): judge the batch's modules, every module
- * for a truncate, from their instances as the branch shows them, in
- * memory, and store no hosts. Costs the modules' instances, but only
- * until main's first batch ran.
+ * hosts. The batch's own instances get their hosts stored on the branch,
+ * as after the fill: that is the branch's own state, never a copy of
+ * main's, and it is what later batches judge from once main has filled.
+ * The batch's modules are judged from their instances as the branch shows
+ * them, because main's rows for the other instances do not exist yet.
+ * After a truncate every module is judged that way and nothing is stored.
  */
 export async function rejudgeUnfilledOnBranch(
   ctx: PluginContextTier1,
   changes: ReadonlyArray<{ kind: string; op: string; rowId: string; parentId: string | null }>,
 ): Promise<{ flagged: number; cleared: number; valueRows: number }> {
-  const hostsOf: ValueHostsOf = (keysOf) => valueHostsFromInstances(ctx, keysOf);
+  const fromInstances: ValueHostsOf = (keysOf) => valueHostsFromInstances(ctx, keysOf);
   if (changes.some((c) => c.op === "truncate")) {
-    return { ...(await syncGuards(ctx, undefined, hostsOf)), valueRows: 0 };
+    return { ...(await syncGuards(ctx, undefined, fromInstances)), valueRows: 0 };
   }
-  const moduleIds = new Set<string>();
-  for (const c of changes) {
-    if (c.kind === "module") moduleIds.add(c.rowId);
-    else if (c.kind === "content_instance" && c.parentId) moduleIds.add(c.parentId);
-  }
-  return { ...(await syncGuards(ctx, [...moduleIds], hostsOf)), valueRows: 0 };
+  return rejudgeChanged(ctx, changes, fromInstances);
 }
 
 /**
@@ -361,14 +359,17 @@ export async function rejudgeUnfilledOnBranch(
 export async function rejudgeChanged(
   ctx: PluginContextTier1,
   changes: ReadonlyArray<{ kind: string; rowId: string; parentId: string | null }>,
+  hostsOf?: ValueHostsOf,
 ): Promise<{ flagged: number; cleared: number; valueRows: number }> {
   const instanceIds = changes.filter((c) => c.kind === "content_instance").map((c) => c.rowId);
+  // The refresh reads the instances, so it also names the modules of
+  // changes the journal delivers without a parent (a snapshot-only write).
   const refreshed = await refreshValueHosts(ctx, instanceIds);
   const moduleIds = new Set(refreshed.moduleIds);
   for (const c of changes) {
     if (c.kind === "module") moduleIds.add(c.rowId);
     else if (c.kind === "content_instance" && c.parentId) moduleIds.add(c.parentId);
   }
-  const judged = await syncGuards(ctx, [...moduleIds]);
+  const judged = await syncGuards(ctx, [...moduleIds], hostsOf);
   return { ...judged, valueRows: refreshed.changed };
 }
