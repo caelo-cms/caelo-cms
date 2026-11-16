@@ -264,7 +264,7 @@ describe("media-pass", () => {
     );
     expect(html).not.toContain("/_caelo/media");
     expect(html).toContain(
-      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w`,
+      `<link rel="preload" as="image" fetchpriority="high" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w`,
     );
     const copied = await readFile(join(buildDir, "_assets", `${assetSlug}.${H}.png`));
     expect(copied.byteLength).toBe(4);
@@ -292,7 +292,7 @@ describe("media-pass", () => {
     const html = pages[0]?.html ?? "";
     expect(html).toContain(`url(/_assets/${heroSlug}/webp-800.${H}.webp)`);
     expect(html).toContain(
-      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w`,
+      `<link rel="preload" as="image" fetchpriority="high" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w`,
     );
   });
 
@@ -344,7 +344,7 @@ describe("media-pass", () => {
     expect(html).toContain('sizes="320px"');
     // The preload fetches what the image will select, not a fixed ladder.
     expect(html).toContain(
-      `<link rel="preload" as="image" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w, /_assets/${heroSlug}/webp-800.${H}.webp 800w, /_assets/${heroSlug}.${H}.jpg 1600w" imagesizes="320px" />`,
+      `<link rel="preload" as="image" fetchpriority="high" imagesrcset="/_assets/${heroSlug}/webp-400.${H}.webp 400w, /_assets/${heroSlug}/webp-800.${H}.webp 800w, /_assets/${heroSlug}.${H}.jpg 1600w" imagesizes="320px" />`,
     );
   });
 

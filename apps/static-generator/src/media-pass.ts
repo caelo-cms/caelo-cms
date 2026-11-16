@@ -592,10 +592,12 @@ function rewriteCatchAllMediaUrls(
 }
 
 /**
- * Inject `<link rel="preload" as="image">` for the LCP candidate —
- * the first image in the page. Browser hint: fetches the image with
- * the same priority as critical CSS. Drops a measurable LCP score
- * improvement on heroes-with-images pages.
+ * Inject `<link rel="preload" as="image" fetchpriority="high">` for the
+ * LCP candidate — the first image in the page. The preload starts the
+ * image's request, so it carries the priority: without
+ * `fetchpriority="high"` the request starts at the preload's default
+ * priority and Lighthouse's lcp-discovery-insight fails even when the
+ * `<img>` itself says `fetchpriority="high"` (#1606).
  *
  * The ref is the first `_assets` path segment; the preload srcset takes
  * every ladder entry's published (content-hashed) path from the copy step.
@@ -666,7 +668,7 @@ function ownResponsivePair(html: string, at: number): { srcset: string; sizes: s
 
 /** Insert an image preload just before `</head>` (or prepend it without a head). */
 function insertPreload(html: string, imagesrcset: string, imagesizes: string): string {
-  const tag = `<link rel="preload" as="image" imagesrcset="${imagesrcset}" imagesizes="${imagesizes}" />`;
+  const tag = `<link rel="preload" as="image" fetchpriority="high" imagesrcset="${imagesrcset}" imagesizes="${imagesizes}" />`;
   if (html.includes("</head>")) {
     return html.replace("</head>", () => `  ${tag}\n  </head>`);
   }
