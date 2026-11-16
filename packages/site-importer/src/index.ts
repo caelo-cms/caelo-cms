@@ -61,6 +61,7 @@ export {
   type CrawledPage,
   type CrawlFetchResult,
   type CrawlOptions,
+  type CrawlProgress,
   type CrawlResult,
   crawlSite,
   isCrawlSkipError,

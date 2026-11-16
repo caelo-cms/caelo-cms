@@ -152,8 +152,8 @@ export interface CrawlOptions {
   readonly resumeFrom?: CrawlCheckpoint;
   /** issue #192 — incremental flush. When set, `CrawlResult.pages`
    *  stays EMPTY (memory stays bounded); every extracted batch goes
-   *  here instead. */
-  readonly onBatch?: (pages: CrawledPage[]) => Promise<void>;
+   *  here instead, with where the crawl stands (#1590). */
+  readonly onBatch?: (pages: CrawledPage[], progress: CrawlProgress) => Promise<void>;
   /** issue #192 — frontier persistence, called after every batch. */
   readonly onCheckpoint?: (cp: CrawlCheckpoint) => Promise<void>;
   /** Pages per onBatch/onCheckpoint flush. Default 25. */
@@ -219,6 +219,15 @@ export interface CrawledPage {
    *  Absent on fetch-only crawls and when the capture attempt failed —
    *  the post-crawl ground-truth pass then retries + notes loudly. */
   readonly styleSamples?: readonly ElementStyleSample[];
+}
+
+/**
+ * #1590 — where a streaming crawl stands when it hands a batch to
+ * `onBatch`, so the caller can show the run's progress while it crawls.
+ */
+export interface CrawlProgress {
+  /** URLs the crawl has taken so far: `CrawlResult.seenCount` at this point. */
+  readonly seenCount: number;
 }
 
 export interface CrawlResult {
@@ -381,6 +390,13 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
     ...(!opts.resumeFrom && listResolved ? listResolved.skipped : []),
   ];
   let pagesCrawled = opts.resumeFrom?.pagesCrawled ?? 0;
+  // #1590 — the page cap counts a URL from the moment a worker takes it,
+  // not when its page is done: checked against finished pages only, every
+  // worker could take a URL while the count was still below the cap, and a
+  // crawl rendered up to `concurrency - 1` pages past it. A slot is held by
+  // a kept page or a URL in flight; a URL whose page is dropped (an error,
+  // a skip, a redirect duplicate) gives its slot back.
+  let slotsTaken = pagesCrawled;
 
   // ── issue #425 — scope + skipped accounting ──────────────────────────
   const scope = opts.scope ?? null;
@@ -457,7 +473,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       const keys = batchKeys;
       batch = [];
       batchKeys = [];
-      await opts.onBatch(toSend);
+      await opts.onBatch(toSend, { seenCount: seen.size });
       for (const k of keys) unwritten.delete(k);
     }
     if (opts.onCheckpoint) {
@@ -492,34 +508,39 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   // narrow without relying on flow analysis across the worker closures.
   const pageFetcher = fetcher;
 
+  /** Takes `next` and one slot of the page cap; gives the slot back when no page is kept. */
   const processOne = async (next: { url: string; depth: number }): Promise<void> => {
     inFlight.set(next.url, next);
+    slotsTaken += 1;
+    let kept = false;
     try {
-      await processPage(next);
+      kept = await processPage(next);
     } finally {
       inFlight.delete(next.url);
+      if (!kept) slotsTaken -= 1;
     }
   };
 
-  const processPage = async (next: { url: string; depth: number }): Promise<void> => {
+  /** Crawls one URL; true when its page entered the result. */
+  const processPage = async (next: { url: string; depth: number }): Promise<boolean> => {
     // issue #425 — the scope's path-prefix rule decides PRE-fetch, at the
     // single point every URL passes through (crawl root, frontier links,
     // sitemap seeds, LIST entries alike): out-of-scope URLs are recorded
     // as skipped and never fetched.
     if (scopePrefix !== null && !isPathInScope(new URL(next.url).pathname, scopePrefix)) {
       recordSkip(next.url, `out-of-scope: outside path prefix ${scopePrefix}`, true);
-      return;
+      return false;
     }
     if (robots) {
       const path = new URL(next.url).pathname;
       if (!isPathAllowed(robots, path)) {
         errors.push({ url: next.url, reason: "robots-disallowed" });
-        return;
+        return false;
       }
     }
     await politeWait();
     // An abandoned crawl fetches nothing more, also after waiting its turn.
-    if (opts.signal?.aborted) return;
+    if (opts.signal?.aborted) return false;
     let res: PageFetchResult;
     try {
       res = await pageFetcher(next.url);
@@ -529,19 +550,19 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
       // "ready for review" result. Blocked in-site links merely record.
       if (isCrawlSkipError(e)) {
         recordSkip(next.url, (e as Error).message, false);
-        return;
+        return false;
       }
       if (next.depth === 0 && isExternalUrlBlockedError(e)) throw e;
       errors.push({ url: next.url, reason: (e as Error).message });
-      return;
+      return false;
     }
     if (!res.ok) {
       errors.push({ url: next.url, reason: "non-OK status" });
-      return;
+      return false;
     }
     if (!res.contentType.includes("text/html")) {
       errors.push({ url: next.url, reason: `skipped non-html (${res.contentType})` });
-      return;
+      return false;
     }
 
     // issue #425 — the fetchers follow same-host redirects; the page is
@@ -558,11 +579,11 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
           `out-of-scope: redirected to ${finalUrl}, outside path prefix ${scopePrefix}`,
           true,
         );
-        return;
+        return false;
       }
       if (seen.has(finalUrl)) {
         recordSkip(next.url, `redirect-duplicate: final URL ${finalUrl} already crawled`, false);
-        return;
+        return false;
       }
       // The final URL is the page's identity from here on — mark it seen
       // so a later direct link to it isn't fetched twice.
@@ -598,7 +619,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
             // of the wrong-language page it replaces.
             queue.push({ url: altNorm, depth: next.depth });
           }
-          return;
+          return false;
         }
       }
     }
@@ -669,12 +690,16 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
         }
       }
     }
+    return true;
   };
 
   // Worker pool over the shared queue. Workers claim (and mark seen)
-  // synchronously before awaiting, so no URL is fetched twice.
+  // synchronously before awaiting, so no URL is fetched twice, and take
+  // their slot of the page cap in the same step (#1590), so no worker
+  // claims past it. A worker that finds every slot taken stops; a slot
+  // given back is used by the worker that gave it back, which loops on.
   const worker = async (): Promise<void> => {
-    while (pagesCrawled < maxPages) {
+    while (slotsTaken < maxPages) {
       if (opts.signal?.aborted) return;
       const stop = opts.stopWhen?.() ?? null;
       if (stop !== null) {
@@ -696,7 +721,7 @@ export async function crawlSite(opts: CrawlOptions): Promise<CrawlResult> {
   try {
     // The ROOT must be processed alone first: it decides loud-abort on a
     // blocked source and feeds the first links before workers fan out.
-    if (!opts.resumeFrom && queue.length > 0 && pagesCrawled === 0) {
+    if (!opts.resumeFrom && queue.length > 0 && pagesCrawled === 0 && slotsTaken < maxPages) {
       const root = queue.shift();
       if (root && !seen.has(root.url)) {
         seen.add(root.url);
