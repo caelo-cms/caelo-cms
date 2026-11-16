@@ -36,6 +36,7 @@ import {
   type PluginHostInfra,
   pluginsNotRunningHere,
   pluginWorkerScheduler,
+  releaseManifestDigest,
   resetPluginHost,
   resetPluginHostSync,
   syncPluginHost,
@@ -329,6 +330,124 @@ describe("#1008 — syncPluginHost follows the plugin rows", () => {
       expect(await rowVersion(DISK)).toBe(before);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#1633 — a boot of an unchanged release writes nothing", () => {
+  const QUIET = `${PREFIX}quiet`;
+  const SKILL = `${PREFIX}quiet-howto`;
+
+  /** The xmin of each row a load could write, and the gateway outbox's size. */
+  async function footprint(): Promise<Record<string, string | number | undefined>> {
+    return sqlSystem(async (tx) => {
+      const plugin =
+        (await tx`SELECT id::text AS id, xmin::text AS v FROM plugins WHERE slug = ${QUIET}`) as {
+          id: string;
+          v: string;
+        }[];
+      const actor =
+        (await tx`SELECT xmin::text AS v FROM actors WHERE plugin_id = ${plugin[0]?.id ?? null}::uuid`) as {
+          v: string;
+        }[];
+      const skill = (await tx`SELECT xmin::text AS v FROM skills WHERE slug = ${SKILL}`) as {
+        v: string;
+      }[];
+      const outbox = (await tx`SELECT count(*)::int AS n FROM public_projection_outbox`) as {
+        n: number;
+      }[];
+      return { plugin: plugin[0]?.v, actor: actor[0]?.v, skill: skill[0]?.v, outbox: outbox[0]?.n };
+    });
+  }
+
+  async function skillRow(): Promise<{ body: string; status: string } | undefined> {
+    return sqlSystem(
+      async (tx) =>
+        (
+          (await tx`SELECT body, status FROM skills WHERE slug = ${SKILL}`) as {
+            body: string;
+            status: string;
+          }[]
+        )[0],
+    );
+  }
+
+  /** Write the plugin's dist with `body` as its skill's text and sign it. */
+  async function writePlugin(root: string, body: string): Promise<string> {
+    mkdirSync(join(root, QUIET, "dist"), { recursive: true });
+    writeFileSync(
+      join(root, QUIET, "dist", "index.js"),
+      `export default { slug: "${QUIET}", version: "0.1.0", tier: 1, schema: {}, operations: { noop: async () => ({}) }, skills: [{ slug: "${SKILL}", displayName: "Quiet", description: "How to use it.", body: ${JSON.stringify(body)} }] };\n`,
+    );
+    const signed = await ensureDevSignedManifests({
+      pluginsRoot: root,
+      keyPath: join(root, ".key"),
+    });
+    return signed.publicKeyHex;
+  }
+
+  it("leaves the plugin row, its actor, its skills and the gateway outbox alone; a changed skill is written", async () => {
+    // A disk plugin signed with a test key: what production boots. Every
+    // instance runs this boot, and on a CPU-bound database each write and
+    // each queued republish cost seconds (2026-11-16, searchVIU).
+    const root = mkdtempSync(join(tmpdir(), "t1633-"));
+    const roots = [root];
+    try {
+      const publicKeyHex = await writePlugin(root, "Version one.");
+      const opts = { infra, pluginsRoot: root, systemActorId: SYSTEM_ACTOR_ID, publicKeyHex };
+      await bootstrap(opts);
+      await sqlSystem(async (tx) => tx`UPDATE plugins SET status = 'active' WHERE slug = ${QUIET}`);
+      resetPluginHost();
+      expect((await bootstrap(opts)).loaded.map((l) => l.slug)).toContain(QUIET);
+      expect((await skillRow())?.body).toBe("Version one.");
+
+      const before = await footprint();
+      resetPluginHost();
+      expect((await bootstrap(opts)).loaded.map((l) => l.slug)).toContain(QUIET);
+      expect(await footprint()).toEqual(before);
+
+      // An Owner's archive of the skill is a decision a boot keeps, without a write.
+      await sqlSystem(
+        async (tx) =>
+          tx`UPDATE skills SET status = 'archived', activated_at = NULL WHERE slug = ${SKILL}`,
+      );
+      const archived = await footprint();
+      resetPluginHost();
+      await bootstrap(opts);
+      expect(await footprint()).toEqual(archived);
+      expect((await skillRow())?.status).toBe("archived");
+
+      // A release that changes the skill's text writes it once the Owner
+      // approved its manifest (#1332), and keeps the archive. Its own
+      // directory: this process already imported the first dist.
+      const nextRoot = mkdtempSync(join(tmpdir(), "t1633-"));
+      roots.push(nextRoot);
+      const next = {
+        ...opts,
+        pluginsRoot: nextRoot,
+        publicKeyHex: await writePlugin(nextRoot, "Version two."),
+      };
+      resetPluginHost();
+      await bootstrap(next);
+      const manifest = await sqlSystem(
+        async (tx) =>
+          (
+            (await tx`SELECT manifest_json FROM plugins WHERE slug = ${QUIET}`) as {
+              manifest_json: unknown;
+            }[]
+          )[0]?.manifest_json,
+      );
+      await sqlSystem(
+        async (tx) => tx`
+          UPDATE plugins SET approved_manifest_digest = ${releaseManifestDigest(manifest)},
+                             approved_manifest_json = manifest_json
+           WHERE slug = ${QUIET}`,
+      );
+      resetPluginHost();
+      expect((await bootstrap(next)).loaded.map((l) => l.slug)).toContain(QUIET);
+      expect(await skillRow()).toEqual({ body: "Version two.", status: "archived" });
+    } finally {
+      for (const dir of roots) rmSync(dir, { recursive: true, force: true });
     }
   });
 });

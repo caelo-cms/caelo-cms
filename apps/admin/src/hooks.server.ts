@@ -148,6 +148,9 @@ function bootstrapPlugins(): Promise<void> {
 }
 
 async function bootPluginHost(): Promise<void> {
+  // #1633 — every request on this instance waits for this boot, so it
+  // logs where the time went.
+  const bootStarted = performance.now();
   const { adapter, stagingAdapter, registry } = getQueryContext();
   // #1595 — from the first request on, an admin stall files one bug
   // report with the database's session list (before the plugin host, whose
@@ -208,6 +211,7 @@ async function bootPluginHost(): Promise<void> {
       dropPluginPublicSchemas({ adapter, stagingAdapter }, schemaName),
     dropAdminSchema: (schemaName) => adapter.dropPluginAdminSchema({ schemaName }),
   });
+  const pluginsStarted = performance.now();
   const report = await bootstrapPluginHost({
     infra: {
       adapter,
@@ -238,6 +242,7 @@ async function bootPluginHost(): Promise<void> {
     pluginsRoot,
     systemActorId: SYSTEM_CTX.actorId,
   });
+  const pluginsMs = performance.now() - pluginsStarted;
   // #387 — a discarded LoadReport made plugin failures invisible; every
   // failed plugin is an operator-relevant event, so log loudly.
   console.log(
@@ -269,11 +274,15 @@ async function bootPluginHost(): Promise<void> {
   });
   // #1140 — the scheduler tick's projection backstop drains through it.
   setSchedulerProjectionPublisher(publisher);
+  // #1633 — everything only when this admin adds something the migration
+  // job's publish could not (a runtime-installed plugin, the staging gate
+  // key), else a drain: every instance boots through here, often in a
+  // scale-out while the database is busiest.
   // A failed boot publish (another publisher held the lock throughout, the
   // database was overloaded) must not fail the plugin-host boot, which is
-  // memoised for the process: the scheduler tick's backstop retries the
-  // full publish until it succeeds.
-  await publisher.publishAll().catch((e: unknown) => {
+  // memoised for the process: the scheduler tick's backstop retries it.
+  const publishStarted = performance.now();
+  await publisher.publishAtBoot().catch((e: unknown) => {
     console.error(
       `[public-projection] boot publish failed; retried on the next scheduler tick: ${e instanceof Error ? e.message : String(e)}`,
     );
@@ -284,10 +293,17 @@ async function bootPluginHost(): Promise<void> {
   ensureChangeConsumers({ adapter, registry }).catch((e) =>
     console.error("[hooks] plugin change consumers did not start (the next tick retries)", e),
   );
+  const publishMs = performance.now() - publishStarted;
   // #724 rollout E — after the plugin host, so plugins' link hooks take
   // part, and after the gateway projection, which must not wait on a
   // site-wide content conversion (nor on the editor rows it locks).
+  const linksStarted = performance.now();
   await migrateLinksOnce();
+  const linksMs = performance.now() - linksStarted;
+  const s = (ms: number): string => `${(ms / 1000).toFixed(1)} s`;
+  console.log(
+    `[hooks] plugin host ready in ${s(performance.now() - bootStarted)} (plugins ${s(pluginsMs)}, gateway publish ${s(publishMs)}, internal links ${s(linksMs)})`,
+  );
 }
 
 // Epic #724 rollout E — the one-time data migration that turns existing
