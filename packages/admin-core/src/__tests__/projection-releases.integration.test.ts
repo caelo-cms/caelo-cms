@@ -46,6 +46,7 @@ const DECLARATIONS = new Map([[SLUG, { cfg: ["label"] }]]);
 let adapter: DatabaseAdapter;
 let staging: DatabaseAdapter;
 let pluginId = "";
+let pluginActorId = "";
 let pageId = "";
 
 async function onDb<T>(url: string, fn: (tx: SQL) => Promise<T>): Promise<T> {
@@ -120,6 +121,12 @@ beforeAll(async () => {
     await tx`
       INSERT INTO plugin_capability_grants (plugin_id, artifact_digest, capability, approved_by)
       VALUES (${id}::uuid, ${DIGEST}, 'chat_runner_tools', ${SYSTEM_ID}::uuid)`;
+    // The plugin's own actor, as the loader writes it with the plugin row.
+    const [actor] = (await tx`
+      INSERT INTO actors (kind, display_name, plugin_id)
+      VALUES ('plugin', ${`Plugin: ${SLUG}`}, ${id}::uuid)
+      RETURNING id::text AS id`) as { id: string }[];
+    pluginActorId = actor?.id ?? "";
     await tx.unsafe(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
     await tx.unsafe(`CREATE SCHEMA "${SCHEMA}"`);
     await tx.unsafe(`CREATE TABLE "${SCHEMA}".cfg (
@@ -149,6 +156,7 @@ afterAll(async () => {
     await tx`DELETE FROM comment_archive WHERE page_id = ${pageId}::uuid`;
     await tx`DELETE FROM pages WHERE id = ${pageId}::uuid`;
     await tx`DELETE FROM redirects WHERE from_path = '/t1329-old'`;
+    await tx`DELETE FROM actors WHERE id = ${pluginActorId}::uuid`;
     await tx`DELETE FROM plugins WHERE id = ${pluginId}::uuid`;
     await tx.unsafe(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
   });
@@ -250,6 +258,68 @@ describe("the release sections follow the release (#1329, N6)", () => {
                  WHERE run_id = ${runId}::uuid`,
     )) as { rows: number }[];
     expect(frozen?.rows).toBe(0);
+  });
+});
+
+describe("a plugin's actor in a release a person or the AI starts (#1587)", () => {
+  /** The actor each public database publishes for the plugin. */
+  async function publishedActor(db: typeof live): Promise<string | null | undefined> {
+    const rows = (await db(
+      async (tx) =>
+        await tx`SELECT actor_id::text AS actor FROM published_plugins WHERE id = ${pluginId}::uuid`,
+    )) as { actor: string | null }[];
+    return rows[0]?.actor;
+  }
+
+  // A Stage freezes in the transaction of the person (or AI) who asked for
+  // it, and `actors` shows a session only its own row. The freeze used to
+  // join the plugin's actor there and froze none, so after the first Stage
+  // and Publish live no gateway attached a single plugin.
+  for (const kind of ["human", "ai"] as const) {
+    it(`publishes the plugin with its actor after a Stage and Publish live by the ${kind}`, async () => {
+      const caller = await admin(async (tx) => {
+        const [a] = (await tx`
+          INSERT INTO actors (kind, display_name) VALUES (${kind}, 'Stage caller')
+          RETURNING id::text AS id`) as { id: string }[];
+        return a?.id ?? "";
+      });
+      try {
+        const runId = crypto.randomUUID();
+        await adapter.withAdminTransaction(
+          { actorId: caller, actorKind: kind, requestId: `t1587-stage-${kind}` },
+          (tx) =>
+            freezeRelease(tx, {
+              runId,
+              reason: "stage",
+              declarations: DECLARATIONS,
+              completeness: "as-loaded",
+            }),
+        );
+        await point("staging", runId);
+        await point("live", runId);
+        expect(await publishedActor(stagingDb)).toBe(pluginActorId);
+        expect(await publishedActor(live)).toBe(pluginActorId);
+      } finally {
+        await admin(async (tx) => {
+          await tx`DELETE FROM actors WHERE id = ${caller}::uuid`;
+        });
+      }
+    });
+  }
+
+  it("heals a release frozen without it with the next publish (the admin's boot)", async () => {
+    // What every Stage froze before this fix: each plugin without its actor.
+    await admin(async (tx) => {
+      await tx`
+        UPDATE projection_releases r
+        SET state = jsonb_set(r.state, '{plugins}', coalesce(
+          (SELECT jsonb_agg(p || '{"actor_id": null}'::jsonb)
+             FROM jsonb_array_elements(r.state->'plugins') p), '[]'::jsonb))
+        WHERE r.run_id IN (SELECT run_id FROM projection_release_pointers)`;
+    });
+    await publishProjectionOnce(adapter, staging, { declarations: DECLARATIONS });
+    expect(await publishedActor(stagingDb)).toBe(pluginActorId);
+    expect(await publishedActor(live)).toBe(pluginActorId);
   });
 });
 

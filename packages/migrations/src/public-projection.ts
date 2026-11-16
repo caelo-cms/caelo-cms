@@ -472,9 +472,12 @@ async function claimUnit(
 // ---------------------------------------------------------------------------
 
 /**
- * The release sections as {@link freezeRelease} stores them: exactly the
- * rows the public tables get, so a publish is a copy, never a re-read of
- * the main line.
+ * The release sections as {@link freezeRelease} stores them: the rows the
+ * public tables get, so a publish is a copy, never a re-read of the main
+ * line. The one exception is a plugin's actor, which is no release content
+ * (one per plugin, never changed) and which the publisher adds from the
+ * main line ({@link narrowRelease}, #1587); states frozen before that may
+ * still carry a (possibly null) `actor_id`, which a publish replaces.
  */
 export interface ReleaseState {
   readonly version: 1;
@@ -590,14 +593,19 @@ async function readCurrentRelease(
     // #1267 — a release-signed plugin's approved capability set goes with
     // it: the gateway refuses to attach one that asks for more
     // (gateway-attach.ts), as the admin host does (loader.ts).
-    sql`SELECT p.id::text AS id, p.slug, p.tier, p.version, a.id::text AS actor_id,
+    //
+    // #1587 — no actor here: a Stage freezes in the transaction of the
+    // person or AI who asked for it, and `actors` shows a session only its
+    // own row, so a join froze every plugin without one. The publisher adds
+    // it ({@link narrowRelease}).
+    sql`SELECT p.id::text AS id, p.slug, p.tier, p.version,
                CASE WHEN p.tier = 2 THEN p.manifest_json END AS manifest_json,
                CASE WHEN p.tier = 2 THEN p.source_code END AS source_code,
                CASE WHEN p.tier = 1 THEN to_jsonb(p.approved_capabilities) END
                  AS approved_capabilities,
                CASE WHEN p.tier = 1 THEN p.approved_manifest_digest END
                  AS approved_manifest_digest
-        FROM plugins p LEFT JOIN actors a ON a.plugin_id = p.id
+        FROM plugins p
         WHERE p.status = 'active'
         ORDER BY p.slug`,
   );
@@ -724,11 +732,13 @@ async function readPointedReleases(
 }
 
 /** What the main line says now, for narrowing a frozen state. */
-interface CurrentNarrowing {
+export interface CurrentNarrowing {
   readonly activePluginIds: ReadonlySet<string>;
   readonly liveGrantIds: ReadonlySet<string>;
   /** A release-signed plugin's approved capability set now (null: not tier 1). */
   readonly approvedCapabilities: ReadonlyMap<string, readonly string[] | null>;
+  /** Each active plugin's own actor (`actors.plugin_id`), by plugin id (#1587). */
+  readonly pluginActorIds: ReadonlyMap<string, string>;
 }
 
 async function readNarrowing(tx: ProjectionTx): Promise<CurrentNarrowing> {
@@ -742,11 +752,35 @@ async function readNarrowing(tx: ProjectionTx): Promise<CurrentNarrowing> {
     tx,
     sql`SELECT id::text AS id FROM plugin_capability_grants WHERE revoked_at IS NULL`,
   )) as unknown as { id: string }[];
+  // #1587 — read here, by the publisher (a `system` session, which sees
+  // every actor), never in a freeze: a freeze runs as whoever asked for
+  // the Stage, and `actors` shows them only their own row.
+  const actors = (await rows(
+    tx,
+    sql`SELECT a.plugin_id::text AS plugin_id, a.id::text AS actor_id
+        FROM actors a JOIN plugins p ON p.id = a.plugin_id
+        WHERE p.status = 'active'`,
+  )) as unknown as { plugin_id: string; actor_id: string }[];
   return {
     activePluginIds: new Set(active.map((p) => p.id)),
     liveGrantIds: new Set(grants.map((g) => g.id)),
     approvedCapabilities: new Map(active.map((p) => [p.id, p.approved_capabilities])),
+    pluginActorIds: new Map(actors.map((a) => [a.plugin_id, a.actor_id])),
   };
+}
+
+/**
+ * A frozen plugin row with the plugin's actor as the main line has it
+ * (#1587). The actor is the plugin's identity, one per plugin and never
+ * replaced, so this is no release content leaking ahead of Publish live.
+ * An active plugin with no actor row at all gets none: no admin host of
+ * this release has loaded it (the loader writes the actor with the plugin
+ * row), so Settings → Plugins already shows it as not running and Publish
+ * live refuses, and a gateway refuses it too ("active but has no actor
+ * row").
+ */
+function withPluginActor(row: Row, now: CurrentNarrowing): Row {
+  return { ...row, actor_id: now.pluginActorIds.get(String(row.id)) ?? null };
 }
 
 /** A frozen plugin row with its approved capabilities cut down to what is approved now. */
@@ -766,9 +800,14 @@ function narrowApproval(row: Row, now: CurrentNarrowing): Row {
  * out. Nothing is added: an activation, an upgrade, a widened approval or
  * new plugin content follows the next release.
  *
+ * Each published plugin carries its actor as the main line has it, so a
+ * state frozen without one (every Stage before #1587) heals with the next
+ * publish, the admin's boot included.
+ *
  * @example
  *   narrowRelease(frozen, {
  *     activePluginIds: new Set(), liveGrantIds: new Set(), approvedCapabilities: new Map(),
+ *     pluginActorIds: new Map(),
  *   })
  *   // → no plugin, grant or row published
  */
@@ -776,7 +815,9 @@ export function narrowRelease(state: ReleaseState, now: CurrentNarrowing): Relea
   const active = (pluginId: unknown) => now.activePluginIds.has(String(pluginId));
   return {
     version: 1,
-    plugins: state.plugins.filter((p) => active(p.id)).map((p) => narrowApproval(p, now)),
+    plugins: state.plugins
+      .filter((p) => active(p.id))
+      .map((p) => withPluginActor(narrowApproval(p, now), now)),
     grants: state.grants.filter((g) => active(g.plugin_id) && now.liveGrantIds.has(String(g.id))),
     pluginRows: state.pluginRows.filter((r) => active(r.plugin_id)),
     projected: state.projected.filter((id) => active(id)),
@@ -1494,6 +1535,11 @@ async function consumeOutbox(tx: ProjectionTx, ids: readonly string[]): Promise<
  * `completeness` defaults to `required`; a fixture that shares its
  * database with suites activating other plugins passes `as-loaded`, which
  * is what a Stage freezes ({@link FreezeCompleteness}).
+ *
+ * The freeze runs as a person, like a Stage's (`deploy.start_trigger` runs
+ * in the transaction of whoever asked for it), so it sees only what row
+ * security shows them. Frozen as `system`, every suite missed that a Stage
+ * froze each plugin without its actor (#1587).
  */
 export async function releaseMainLineForTests(
   dbs: ProjectionDatabases,
@@ -1503,7 +1549,18 @@ export async function releaseMainLineForTests(
   const read = await withProjectionLock(dbs, {}, async (tx) => {
     const gen = await readGeneration(tx);
     const runId = crypto.randomUUID();
-    await freezeRelease(tx, { runId, reason: "bootstrap", declarations, completeness });
+    const [session] = await rows(
+      tx,
+      sql`SELECT current_setting('caelo.actor_kind', true) AS kind,
+                 current_setting('caelo.actor_id', true) AS id`,
+    );
+    await tx.execute(sql`
+      SELECT set_config('caelo.actor_kind', 'human', true),
+             set_config('caelo.actor_id', ${crypto.randomUUID()}, true)`);
+    await freezeRelease(tx, { runId, reason: "stage", declarations, completeness });
+    await tx.execute(sql`
+      SELECT set_config('caelo.actor_kind', ${String(session?.kind ?? "")}, true),
+             set_config('caelo.actor_id', ${String(session?.id ?? "")}, true)`);
     for (const env of PUBLIC_TARGETS) await pointRelease(tx, env, runId);
     const outbox = await readOutbox(tx);
     const snap = await readSnapshot(tx, new Set(ALL_SECTIONS), true, new Set());
