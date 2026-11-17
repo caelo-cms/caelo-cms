@@ -191,6 +191,7 @@
       "version": "0.0.0",
       "bin": {
         "caelo-mcp-server": "./dist/index.js",
+        "caelo-power-mcp": "./dist/power.js",
         "caelo-admin-mcp": "./dist/admin.js",
       },
       "dependencies": {
