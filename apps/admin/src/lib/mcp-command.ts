@@ -153,6 +153,33 @@ export function remoteMcpAddCommand(cli: "claude" | "codex", server: RemoteMcpSe
 }
 
 /**
+ * The Claude Code plugin that connects by URL (integrations/claude-code,
+ * #1637): the marketplace it installs from, its install id, and the option
+ * that takes the site's Power-MCP URL. `scripts/claude-plugin.test.ts`
+ * holds these against the plugin's manifest and the marketplace file.
+ */
+export const CLAUDE_PLUGIN = {
+  marketplace: "caelo-cms/caelo-cms",
+  id: "caelo@caelo-cms",
+  /** The plugin's MCP server, as `/mcp` lists it. */
+  server: "caelo",
+  urlOption: "mcp_url",
+} as const;
+
+/**
+ * Terminal install of the Caelo plugin for Claude Code with the site's
+ * Power-MCP URL already set; `/mcp` → Authenticate signs in afterwards.
+ * The plugin brings skills on top of the connection, so this comes before
+ * the bare `claude mcp add` for the Power surface.
+ */
+export function claudePluginInstallCommands(powerUrl: string): string {
+  return [
+    `claude plugin marketplace add ${CLAUDE_PLUGIN.marketplace}`,
+    `claude plugin install ${CLAUDE_PLUGIN.id} --config ${shellWord(`${CLAUDE_PLUGIN.urlOption}=${powerUrl}`)}`,
+  ].join("\n");
+}
+
+/**
  * JSON config for file-configured clients. Cursor reads `url` in
  * `mcpServers`; VS Code `"type": "http"` + `url` in `servers`; Gemini CLI
  * `httpUrl` (its `url` key means SSE). Each discovers the sign-in from the

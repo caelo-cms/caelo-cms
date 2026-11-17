@@ -2,7 +2,9 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  CLAUDE_PLUGIN,
   claudeMcpAddCommand,
+  claudePluginInstallCommands,
   mcpAddCommand,
   mcpConfigJson,
   mcpServerSpec,
@@ -182,5 +184,29 @@ describe("remote MCP snippets (#806)", () => {
     for (const f of ["cursor", "vscode", "gemini"] as const) {
       expect(remoteMcpConfigJson(f, power)).not.toMatch(/TOKEN|env|command/);
     }
+  });
+});
+
+describe("Claude Code plugin install (#1637)", () => {
+  it("adds the marketplace and installs the plugin with the site's Power-MCP URL set", () => {
+    const url = "https://caelo-production-mcp-auth-proxy-xyz.a.run.app/api/mcp/power";
+    expect(claudePluginInstallCommands(url)).toBe(
+      [
+        "claude plugin marketplace add caelo-cms/caelo-cms",
+        `claude plugin install caelo@caelo-cms --config mcp_url=${url}`,
+      ].join("\n"),
+    );
+    // No token and no local server: the plugin connects by URL.
+    expect(claudePluginInstallCommands(url)).not.toMatch(/TOKEN|bunx|--env/);
+  });
+
+  it("quotes a URL the shell would read as more than one word", () => {
+    expect(claudePluginInstallCommands("https://a;b.example/api/mcp/power")).toContain(
+      "--config 'mcp_url=https://a;b.example/api/mcp/power'",
+    );
+  });
+
+  it("names the plugin by its install id", () => {
+    expect(CLAUDE_PLUGIN.id).toBe(`${CLAUDE_PLUGIN.server}@caelo-cms`);
   });
 });

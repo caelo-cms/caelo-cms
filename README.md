@@ -119,7 +119,7 @@ claude mcp add caelo-admin \
 
 Then ask it for an outcome, for example *"Add a pricing page in our design system and stage it for review."* Details: [MCP and Power-MCP docs](https://caelo-cms.com/docs/mcp/).
 
-Or install the Claude Code plugin, which adds the same server plus skills for connecting, safe editing and handing a site over to Caelo, and asks for the admin URL and token itself ([details](integrations/claude-code/README.md)):
+Or install the Claude Code plugin, which sets up the connection and adds skills for connecting, safe editing and handing a site over to Caelo ([details](integrations/claude-code/README.md)):
 
 ```bash
 claude plugin marketplace add caelo-cms/caelo-cms
