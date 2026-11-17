@@ -67,8 +67,8 @@ describe("one permission for working through an AI (#1636)", () => {
       tokens.indexOf("export async function resolveMcpToken("),
       tokens.indexOf("export interface SendChatBridgeOpts"),
     );
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: source text under test
-    expect(resolveToken).toContain("p.name = ${AI_WORK_PERMISSION}");
+    // The source text of the SQL template: the permission is interpolated, not spelled out.
+    expect(resolveToken).toMatch(/p\.name = \$\{AI_WORK_PERMISSION\}/);
     expect(resolveToken).toContain("AS user_can_write");
     expect(resolveToken).not.toMatch(/p\.name = '[a-z.]+'/);
   });
