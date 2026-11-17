@@ -31,7 +31,6 @@ import {
   loadChatBinding,
   pendingChangeKindSql,
   pendingCountsByKind,
-  sessionHasPendingSql,
   totalPending,
 } from "../../draft.js";
 import { releaseChatLocks } from "../../locks.js";
@@ -1039,93 +1038,6 @@ export const listActivePagesOp = defineOperation({
         chatTitle: r.chat_title,
         createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
       })),
-    });
-  },
-});
-
-/** Other open chats the banner lists at most (`hasMore` says when there are more). */
-const OPEN_WITH_PENDING_LIMIT = 20;
-
-/**
- * v0.8.0 — Cross-chat awareness data for the /edit toolbar banner: the
- * other open chats with pending changes, most recently active first, so
- * unstaged work on other pages is not forgotten when navigating.
- *
- * Issue #1268 — read from the draft head: the chats come from the open-chat
- * index in activity order and each one's count from its own head rows, so
- * the cost is the page of chats shown, not open chats x pending history.
- * The count is chat.branch_change_count's (pendingCountsByKind), so the
- * pill and the banner agree.
- */
-export const listOpenChatsWithPendingOp = defineOperation({
-  name: "chat.list_open_with_pending",
-  readScope: "request",
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      excludeChatSessionId: z.string().uuid().optional(),
-      /** At most this many chats (default 20). */
-      limit: z.number().int().min(1).max(100).default(OPEN_WITH_PENDING_LIMIT),
-    })
-    .strict(),
-  output: z.object({
-    chats: z.array(
-      z
-        .object({
-          chatSessionId: z.string(),
-          title: z.string(),
-          anchorPageId: z.string().nullable(),
-          anchorPagePath: z.string().nullable(),
-          pendingCount: z.number().int().nonnegative(),
-        })
-        .strict(),
-    ),
-    /** More open chats with pending changes exist than `chats` lists. */
-    hasMore: z.boolean(),
-  }),
-  handler: async (_ctx, input, tx) => {
-    const exclude = input.excludeChatSessionId ?? null;
-    const rows = (await tx.execute(sql`
-      SELECT cs.id::text AS chat_session_id, cs.title, cs.chat_branch_id::text AS branch_id,
-             cs.branch_kind, cs.page_id::text AS page_id,
-             -- By primary key per listed chat: a join lets the planner hash
-             -- every page (Postgres 17 did), which costs the size of the site.
-             (SELECT p.current_path FROM pages p
-               WHERE p.id = cs.page_id AND p.deleted_at IS NULL) AS page_path
-      FROM chat_sessions cs
-      WHERE cs.published_at IS NULL AND cs.archived_at IS NULL AND cs.discarded_at IS NULL
-        AND cs.subagent_role IS NULL
-        AND (${exclude}::uuid IS NULL OR cs.id <> ${exclude}::uuid)
-        AND ${sessionHasPendingSql("cs")}
-      ORDER BY cs.last_active_at DESC, cs.id DESC
-      LIMIT ${input.limit + 1}
-    `)) as unknown as {
-      chat_session_id: string;
-      title: string;
-      branch_id: string;
-      branch_kind: BranchKind;
-      page_id: string | null;
-      page_path: string | null;
-    }[];
-    const shown = rows.slice(0, input.limit);
-    const counts = await pendingCountsByKind(
-      tx,
-      shown.map((r) => ({
-        chatSessionId: r.chat_session_id,
-        branchId: r.branch_id,
-        kind: r.branch_kind,
-      })),
-    );
-    return ok({
-      chats: shown.map((r) => ({
-        chatSessionId: r.chat_session_id,
-        title: r.title,
-        anchorPageId: r.page_id,
-        anchorPagePath: r.page_path,
-        pendingCount: totalPending(counts.get(r.chat_session_id) ?? {}),
-      })),
-      hasMore: rows.length > input.limit,
     });
   },
 });

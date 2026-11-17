@@ -27,7 +27,6 @@
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
   import { onMount, untrack } from "svelte";
   import { editorRefreshUrl, unpinChatParam } from "#lib/components/edit/chat-pin.js";
-  import CrossChatBanner from "#lib/components/edit/CrossChatBanner.svelte";
   import PluginApprovalStrip from "#lib/components/PluginApprovalStrip.svelte";
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
   import PageSearch from "#lib/components/edit/PageSearch.svelte";
@@ -95,8 +94,7 @@
   const modules = new StreamedValue<Settled<"modules">>();
   const branchEditedModuleIds = new StreamedValue<Settled<"branchEditedModuleIds">>();
   const branchChangeCount = new StreamedValue<Settled<"branchChangeCount">>();
-  const pendingChangesView = new StreamedValue<Settled<"pendingChanges">>();
-  const otherOpenChats = new StreamedValue<Settled<"otherOpenChats">>();
+  const draftChats = new StreamedValue<Settled<"draftChats">>();
   const deployState = new StreamedValue<Settled<"deployState">>();
   const live = new StreamedValue<Settled<"live">>();
   const pageSeo = new StreamedValue<Settled<"pageSeo">>();
@@ -111,8 +109,7 @@
     modules.follow(data.modules, chat);
     branchEditedModuleIds.follow(data.branchEditedModuleIds, chat);
     branchChangeCount.follow(data.branchChangeCount, chat);
-    pendingChangesView.follow(data.pendingChanges, chat);
-    otherOpenChats.follow(data.otherOpenChats, chat);
+    draftChats.follow(data.draftChats, chat);
     deployState.follow(data.deployState);
     live.follow(data.live, data.activePageId);
     pageSeo.follow(data.pageSeo, data.activePageId);
@@ -134,7 +131,6 @@
   const publishErrors = $derived(
     [
       branchChangeCount.errorFor(chatKey),
-      pendingChangesView.errorFor(chatKey),
       deployState.error,
       live.error,
     ].filter((e): e is string => e !== null),
@@ -144,11 +140,20 @@
    * for this chat and page; null until then (they show placeholders).
    */
   const publishState = $derived.by(() => {
-    const changes = pendingChangesView.currentFor(chatKey);
     const deploy = deployState.current;
     const liveLinks = live.currentFor(data.activePageId);
-    if (branchChangeCount.pendingFor(chatKey) || !changes || !deploy || !liveLinks) return null;
-    return { changes, deploy, liveLinks };
+    if (branchChangeCount.pendingFor(chatKey) || !deploy || !liveLinks) return null;
+    return { deploy, liveLinks };
+  });
+  /**
+   * The operator's conversations with draft changes, for the Staging menu.
+   * Not part of `publishState`: Publish live does not need them, so a failed
+   * read says so in the menu and leaves Publish live working.
+   */
+  const drafts = $derived({
+    chats: draftChats.currentFor(chatKey),
+    loading: draftChats.pendingFor(chatKey),
+    error: draftChats.errorFor(chatKey),
   });
   /** #1269 — why the preview's link editor got no suggestions, or null. */
   let linkSuggestionsError = $state<string | null>(null);
@@ -283,8 +288,8 @@
   const pendingChanges = $derived(branchChangeCount.currentFor(chatKey) ?? 0);
   let pendingSwitchTo = $state<string | null>(null);
   let dialogOpen = $state(false);
-  // Height of the page chrome above the preview (cross-chat banner +
-  // toolbar); the pinned-right overlay is placed below it.
+  // Height of the page chrome above the preview (the strips above the
+  // toolbar + the toolbar); the pinned-right overlay is placed below it.
   let bannerHeight = $state(0);
   let toolbarHeight = $state(44);
   // P6.6b — side-by-side diff overlay toggle. The panel reads
@@ -615,16 +620,12 @@
 </script>
 
 <div class="relative flex h-screen w-full flex-col">
-  <!-- v0.8.0 — cross-chat awareness strip. Renders nothing when there
-       are no other open chats with pending changes. -->
-  <!-- Measured with the toolbar below: the pinned-right chat column starts
-       under both, so the banner never pushes toolbar controls beneath it. -->
+  <!-- The strips above the toolbar (plugin approvals, stream errors, chat
+       notices), measured with the toolbar below: the pinned-right chat column
+       starts under both, so a strip never pushes toolbar controls beneath it.
+       Draft changes of the operator's other chats are in the Staging menu. -->
   <div class="shrink-0" bind:clientHeight={bannerHeight}>
     <PluginApprovalStrip variant="bar" />
-    <CrossChatBanner
-      chats={otherOpenChats.currentFor(chatKey) ?? []}
-      error={otherOpenChats.errorFor(chatKey)}
-    />
     {#if streamErrors.length > 0}
       <!-- #1268 — streamed parts without a spot of their own; never a silent gap. -->
       <div
@@ -835,10 +836,10 @@
             {publishErrors[0]}
           </span>
         {:else if publishState}
-          <!-- Only with this chat's Stage list: the form submits this chat's id. -->
+          <!-- The Staging menu lists the operator's conversations with draft
+               changes, this chat first and ticked. -->
           <StageDeployButton
-            pendingChanges={publishState.changes}
-            branchChangeCount={pendingChanges}
+            {drafts}
             csrfToken={data.csrfToken}
             chatSessionId={data.activeChat.id}
             chatBranchId={data.activeChat.chatBranchId}

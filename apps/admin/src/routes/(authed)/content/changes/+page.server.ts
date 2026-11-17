@@ -1,82 +1,54 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #620 Part C — the Open changes overview: which chat changed what,
- * what each chat holds, and the lock takeovers between them. The operator
- * stages all of their chats or a selection in ONE Stage (one staging build,
- * one quality audit), or discards a chat's unstaged work.
+ * Issue #620 Part C — Draft changes: the operator's own conversations with
+ * changes that are not on staging yet, each with what it changed (pages
+ * new / changed / removed, site-wide changes). The operator stages one
+ * ("Stage now"), the ticked ones or all of them in ONE Stage (one staging
+ * build, one quality audit), or discards a conversation's draft changes.
  *
- * Only the operator's own chats can be staged or discarded here — the
- * merge and discard ops refuse another user's chat. Other editors' chats
- * are listed read-only so nobody is surprised by a takeover.
+ * Only the operator's own conversations are listed (decision 2026-11-17):
+ * those are the ones they can stage or discard; another editor's work is
+ * theirs. Live Edit's Staging menu shows the same list (DraftChatList).
  */
 
 import { carryStage, describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
+import type { DraftChat } from "#lib/components/edit/draft-chats.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { readOwnDraftChats } from "#lib/server/own-drafts.js";
 import { getQueryContext } from "#lib/server/query.js";
+import { stagedActionResult } from "#lib/server/stage-action-result.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
+import { readStageSelection } from "#lib/server/stage-selection.js";
 import type { Actions, PageServerLoad } from "./$types";
-
-interface ChangeRef {
-  kind: string;
-  entityId: string;
-  label: string;
-  detail?: string;
-}
-
-/** One chat row as `chat.list_open_changes` returns it. */
-interface OpenChat {
-  chatSessionId: string;
-  title: string;
-  isMine: boolean;
-  branchKind: "draft" | "experiment" | "migration" | "legacy";
-  anchorPagePath: string | null;
-  lastActiveAt: string;
-  lastStagedAt: string | null;
-  pendingCount: number;
-  changes: {
-    pending: { pages: ChangeRef[]; globals: ChangeRef[]; lists: ChangeRef[] };
-    staged: { pages: ChangeRef[]; globals: ChangeRef[]; lists: ChangeRef[] };
-  };
-  locks: { entityKind: string; entityId: string; label: string; lockedAt: string }[];
-  takeovers: {
-    direction: "adopted" | "lost";
-    entityKind: string;
-    label: string;
-    otherChatTitle: string;
-    adoptedSnapshotCount: number;
-    at: string;
-  }[];
-}
 
 export const load: PageServerLoad = async ({ locals }) => {
   const user = requirePermission(locals, "content.write");
-  const { adapter, registry } = getQueryContext();
-  const r = await execute(registry, adapter, locals.ctx, "chat.list_open_changes", {});
-  if (!r.ok) {
-    // Loud: an empty list here would read as "nothing open" (CLAUDE.md §2).
-    console.error("[changes] chat.list_open_changes failed", { error: r.error });
+  const canStage = user.permissions.has("deploy.trigger");
+  try {
     return {
-      chats: [] as OpenChat[],
-      loadError: `Could not load the open changes: ${describeError(r.error)}`,
-      canStage: user.permissions.has("deploy.trigger"),
+      chats: await readOwnDraftChats(locals.ctx),
+      loadError: null as string | null,
+      canStage,
+    };
+  } catch (e) {
+    // Loud: an empty list here would read as "nothing in draft" (CLAUDE.md §2).
+    return {
+      chats: [] as DraftChat[],
+      loadError: e instanceof Error ? e.message : String(e),
+      canStage,
     };
   }
-  return {
-    chats: (r.value as { chats: OpenChat[] }).chats,
-    loadError: null as string | null,
-    canStage: user.permissions.has("deploy.trigger"),
-  };
 };
 
 export const actions: Actions = {
   /**
-   * Stage the selected chats (or, with `all`, every chat of the operator
-   * that has unstaged changes) in one Stage: merge each, build staging
-   * once, audit once. Publish live stays a separate step.
+   * Stage one conversation ("Stage now"), the ticked ones, or all of them
+   * (stage-selection.ts) in one Stage: merge each, build staging once,
+   * audit once. Publish live stays a separate step.
    */
   stage: async ({ request, locals }) => {
     requirePermission(locals, "deploy.trigger");
@@ -84,78 +56,28 @@ export const actions: Actions = {
     const form = await request.formData();
     await assertCsrfToken(form, locals);
 
-    const listed = await execute(registry, adapter, locals.ctx, "chat.list_open_changes", {
-      mineOnly: true,
-    });
-    if (!listed.ok) {
-      return fail(500, { error: `Could not load your open chats: ${describeError(listed.error)}` });
-    }
-    const stageable = (listed.value as { chats: OpenChat[] }).chats.filter(
-      (c) => c.pendingCount > 0,
-    );
-    const stageableIds = new Set(stageable.map((c) => c.chatSessionId));
-    const requested =
-      form.get("all") === "1"
-        ? [...stageableIds]
-        : form.getAll("chatSessionId").map((v) => String(v));
-    if (requested.length === 0) {
-      return fail(400, { error: "Select at least one chat to stage." });
-    }
-    const foreign = requested.filter((id) => !stageableIds.has(id));
-    if (foreign.length > 0) {
-      return fail(400, {
-        error:
-          "Only your own chats with unstaged changes can be staged here — reload the page; one of the selected chats changed or belongs to another editor.",
-      });
-    }
+    const selection = await readStageSelection(locals.ctx, form);
+    if (!selection.ok) return fail(selection.status, { error: selection.error });
 
     // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
-    const staged = await carryStage({ adapter, registry }, locals.ctx, requested);
-    if (!staged.ok) {
-      const chat = stageable.find((c) => c.chatSessionId === staged.error.chatSessionId);
-      return fail(500, {
-        error: chat ? `${staged.error.message} (chat '${chat.title}')` : staged.error.message,
-      });
-    }
-    const {
-      previewUrl,
-      previewLabel,
-      draftPageCount,
-      draftPageTitles,
-      unpublishedLinkWarning,
-      truncatedListWarning,
-      pluginProblemWarning,
-      linkNoticeWarning,
-      renderWarning,
-    } = await describeStagedBuild(locals.ctx, staged.value, null);
+    const staged = await carryStage({ adapter, registry }, locals.ctx, selection.chatSessionIds);
+    if (!staged.ok) return fail(500, { error: staged.error.message });
+    const described = await describeStagedBuild(locals.ctx, staged.value, null);
     return {
-      staged: {
-        chatCount: requested.length,
-        pageCount: staged.value.pageCount,
-        fileCount: staged.value.fileCount,
-        buildId: staged.value.buildId,
-        mergedEntityCount: staged.value.mergedEntityCount,
-        linkWarnings: [...staged.value.linkWarnings],
-        alsoIncludes: staged.value.alsoIncludes.map((a) => a.title),
-        previewUrl,
-        previewLabel,
-        draftPageCount,
-        draftPageTitles,
-        unpublishedLinkWarning,
-        truncatedListWarning,
-        pluginProblemWarning,
-        linkNoticeWarning,
-        renderWarning,
-      },
+      staged: stagedActionResult(staged.value, described, {
+        chatCount: selection.chatSessionIds.length,
+        pageId: "",
+      }),
       // #1574 — built without the build carrier (the layout's toast says so).
       ...(staged.warning ? { carrierWarning: staged.warning } : {}),
     };
   },
 
   /**
-   * Throw away one chat's unstaged work and close it (chat.discard_branch).
-   * A shared-draft chat whose changes other chats built on is NOT discarded
-   * until the operator confirms that those later changes go too.
+   * Throw away one conversation's draft changes and close it
+   * (chat.discard_branch). A shared-draft chat whose changes other chats
+   * built on is NOT discarded until the operator confirms that those later
+   * changes go too.
    */
   discard: async ({ request, locals }) => {
     requirePermission(locals, "content.write");
@@ -170,7 +92,7 @@ export const actions: Actions = {
     });
     if (!r.ok) {
       console.error("[changes] chat.discard_branch failed", { chatSessionId, error: r.error });
-      return fail(400, { error: `Could not discard the chat: ${describeError(r.error)}` });
+      return fail(400, { error: `Could not discard the conversation: ${describeError(r.error)}` });
     }
     const v = r.value as {
       discarded: boolean;
@@ -179,12 +101,12 @@ export const actions: Actions = {
     if (!v.discarded) {
       return fail(409, {
         error:
-          "Discarding this chat would also undo later changes other chats made on top of it: " +
+          "Discarding this conversation would also undo later changes other conversations made on top of it: " +
           v.overlap.map((o) => `'${o.title}' (${o.labels.join(", ")})`).join("; ") +
           ". Use “Discard anyway” to undo them too.",
         confirmDiscard: chatSessionId,
       });
     }
-    return { ok: "Chat discarded — its unstaged changes are gone." };
+    return { ok: "Conversation discarded — its draft changes are gone." };
   },
 };

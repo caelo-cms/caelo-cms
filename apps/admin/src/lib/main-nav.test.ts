@@ -73,7 +73,7 @@ describe("main nav model", () => {
     expect(nav.settings?.href).toBe("/settings");
   });
 
-  it("hides Live edit, Open changes and design pages from a read-only reviewer", () => {
+  it("hides Live edit, Draft changes and design pages from a read-only reviewer", () => {
     const nav = visibleMainNav(new Set(["content.read"]), false, []);
     expect(nav.liveEdit).toBeNull();
     expect(nav.settings).toBeNull();

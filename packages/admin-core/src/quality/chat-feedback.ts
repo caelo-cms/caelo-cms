@@ -173,7 +173,7 @@ function stagedByCard(stagedBy: StagedBy | null): string {
 function stagedByOrigin(stagedBy: StagedBy | null): string {
   switch (stagedBy) {
     case "operator":
-      return "I staged this build myself (Stage button or Open changes), not you during a turn.";
+      return "I staged this build myself (Stage button or Draft changes), not you during a turn.";
     case "live_edit_ai":
       return "You staged this build with stage_changes in an earlier turn of this chat.";
     case "other_agent":

@@ -68,7 +68,7 @@ export function stageNeededFor(hasStagedBuild: boolean): StageNeeded {
 export function describeStageNeeded(needed: StageNeeded, host: string | null): string | null {
   const where = host ? `https://${host}/` : "the staging host";
   if (needed === "nothing-staged") {
-    return `Nothing is served at ${where} until the next Stage — Stage once (AI: stage_changes; admin: Stage in the editor or Open changes) to put the current published pages there.`;
+    return `Nothing is served at ${where} until the next Stage — Stage once (AI: stage_changes; admin: Stage in the editor or Draft changes) to put the current published pages there.`;
   }
   return null;
 }

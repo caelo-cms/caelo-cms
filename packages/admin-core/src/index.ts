@@ -154,6 +154,8 @@ export * from "./media/storage.js";
 // #589 — approver permissions declared on the §11.A executor ops.
 export { approverPermissionsOf } from "./ops/_approver-permission.js";
 export * from "./ops/auth.js";
+// The Draft changes panel: one conversation's changes in the operator's words.
+export type { DraftSummary, DraftSummaryRow } from "./ops/chat/draft-summary.js";
 // #971 — credentials an approval produced, collected by the approver in the admin.
 export {
   type CredentialHandoffRef,
@@ -161,6 +163,8 @@ export {
   HANDOFF_LOCATIONS,
 } from "./ops/credential_handoffs.js";
 export * from "./ops/deploy.js";
+// The Publish live review: what the next Publish live changes for visitors.
+export type { PublishPreview } from "./ops/deploy-publish-preview.js";
 // issue #297 — pure cost-gate math for the approve UI (shows the ceiling a
 // click will arm; requires a budget input when the estimate failed).
 export {

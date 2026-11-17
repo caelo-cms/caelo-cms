@@ -123,11 +123,11 @@
             <CardHeader>
               <CardTitle class="flex items-center gap-2 text-base">
                 <GitPullRequestArrow class="size-4" />
-                Open changes
+                Draft changes
               </CardTitle>
               <CardDescription>
                 {plural(data.openChanges.changeCount, "change", "changes")} in
-                {plural(data.openChanges.chatCount, "chat", "chats")} not staged yet.
+                {plural(data.openChanges.chatCount, "conversation", "conversations")} of yours, not on staging yet.
               </CardDescription>
             </CardHeader>
           </Card>

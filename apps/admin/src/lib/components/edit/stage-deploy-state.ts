@@ -164,34 +164,26 @@ export function formResultError(result: {
 
 /**
  * Which shape the Live edit toolbar takes:
- *  - `published`: the chat was published; nothing to do here.
- *  - `fresh`: no pending edits and nothing was ever staged.
- *  - `promote-only`: no pending edits, but a staged build exists (or this
+ *  - `pending`: the operator's conversations have draft changes; the
+ *    Staging menu lists them with Stage now / Stage selected / Stage all.
+ *  - `published`: this chat was published and nothing else is in draft.
+ *  - `fresh`: no draft changes and nothing was ever staged.
+ *  - `promote-only`: no draft changes, but a staged build exists (or this
  *    chat staged before): Publish live, plus Stage again.
- *  - `pending`: the chat has edits; Stage… opens the Stage dialog.
  */
 export type StageToolbarMode = "published" | "fresh" | "promote-only" | "pending";
 
-/** Pick the toolbar shape from the chat's and the site's deploy state. */
+/** Pick the toolbar shape from the operator's drafts and the site's deploy state. */
 export function stageToolbarMode(args: {
   sessionPublished: boolean;
-  branchChangeCount: number;
+  /** Changes in the operator's own conversations that are not on staging yet. */
+  draftChangeCount: number;
   hasStagedBuild: boolean;
   sessionLastStagedAt: string | null;
 }): StageToolbarMode {
+  if (args.draftChangeCount > 0) return "pending";
   if (args.sessionPublished) return "published";
-  if (args.branchChangeCount > 0) return "pending";
   return args.hasStagedBuild || args.sessionLastStagedAt !== null ? "promote-only" : "fresh";
-}
-
-/**
- * The list key of one not-yet-staged entry. The same id appears under
- * several kinds in one group: a new page has a `page` entry and a
- * `pageLayout` entry (its placements), both keyed by the page id, so a key
- * of the id alone repeats and Svelte refuses to render the Staging menu.
- */
-export function pendingEntryKey(entry: { kind: string; entityId: string }): string {
-  return `${entry.kind}:${entry.entityId}`;
 }
 
 /**
@@ -200,7 +192,7 @@ export function pendingEntryKey(entry: { kind: string; entityId: string }): stri
  * the quality gate says: a Publish live refused by the parity guard, a
  * Caelo upgrade or fixes written live all need a fresh Stage,
  * and without pending edits this button is the operator's only way to
- * get one. With pending edits, Stage… covers it.
+ * get one. With draft changes, the Draft changes list's Stage covers it.
  */
 export function offersStageAgain(mode: StageToolbarMode): boolean {
   return mode === "promote-only";
@@ -239,10 +231,13 @@ export function stagingMenuState(args: {
    *  it shows on the Publish button, and staging keeps its own state. */
   staging: boolean;
   hasStagedBuild: boolean;
-  branchChangeCount: number;
+  /** Changes in the operator's own conversations that are not on staging yet. */
+  draftChangeCount: number;
   qualityGate: QualityGateView | null;
   /** Why the newest Stage failed, or null (see {@link publishButtonState}). */
   stageFailure?: string | null;
+  /** Why the operator's draft changes could not be read, or null. */
+  draftError?: string | null;
 }): StagingMenuState {
   if (args.staging) {
     return { label: "Staging…", tone: "busy", tooltip: "Building staging and checking it" };
@@ -253,12 +248,17 @@ export function stagingMenuState(args: {
   if (args.stageFailure) {
     return { label: "Stage failed", tone: "problem", tooltip: args.stageFailure };
   }
+  if (args.draftError) {
+    // Loud, never "nothing to stage": the list is unknown, not empty.
+    return { label: "Staging", tone: "problem", tooltip: args.draftError };
+  }
   if (args.mode === "pending") {
-    const n = args.branchChangeCount;
+    const n = args.draftChangeCount;
+    const changes = `${n} draft ${n === 1 ? "change" : "changes"}`;
     return {
-      label: "Staging",
+      label: changes,
       tone: "pending",
-      tooltip: `${n} ${n === 1 ? "change" : "changes"} in this chat not staged yet`,
+      tooltip: `${changes} in your conversations, not on staging yet`,
     };
   }
   if (!args.hasStagedBuild) {

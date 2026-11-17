@@ -21,6 +21,7 @@ import type { listSnapshotsOp } from "../../ops/snapshots/list.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { makeListReadTool } from "./_list-read-tool.js";
 import { makeReadTool } from "./_make-read-tool.js";
+import { publishPreviewNote } from "./_publish-preview-note.js";
 import { redirectReleaseNote } from "./_redirect-sync-note.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
@@ -209,7 +210,7 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
 > = {
   name: "list_unpublished_changes",
   description:
-    "List what THIS chat changed that is not published yet (pages — SEO included, marked `· SEO` — modules, templates, layouts, theme, lists), split unstaged | staged; plus the site's pending redirect changes (going live, waiting for their target, Draft). " +
+    "List what THIS chat changed that is not published yet (pages — SEO included, marked `· SEO` — modules, templates, layouts, theme, lists), split unstaged | staged; plus the site's pending redirect changes (going live, waiting for their target, Draft) and what the next Publish live ships (pages new/changed/removed, site-wide parts, settings). " +
     "Use before saying work is ready to publish, to summarise what publishing ships, or to check an edit landed.",
   schema: unpublishedInput,
   inputSchema: z.toJSONSchema(unpublishedInput) as Record<string, unknown>,
@@ -240,11 +241,13 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
     // #1550 — the site's pending redirect changes (a Draft, a Staged change
     // and what waits for its target), whichever chat saved them.
     const redirects = await redirectReleaseNote(ctx, toolCtx);
+    // What the operator's Publish live review shows: the staged build vs live.
+    const release = await publishPreviewNote(ctx, toolCtx);
     return {
       ok: true,
       content:
-        lines.length > 0 || redirects !== ""
-          ? `${lines.join("\n")}${redirects}`.trimStart()
+        lines.length > 0 || redirects !== "" || release !== ""
+          ? `${lines.join("\n")}${redirects}${release}`.trimStart()
           : "Nothing unpublished — this chat has no changes waiting to publish.",
       value: v,
     };

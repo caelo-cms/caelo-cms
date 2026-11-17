@@ -64,6 +64,15 @@ function isRenderedSiteSetting(id: string): id is RenderedSiteSetting {
   return Object.hasOwn(RENDERED_SITE_SETTINGS, id);
 }
 
+/**
+ * The label of a rendered site setting (`setting:<column>` in a
+ * fingerprint), e.g. "site base URL"; null for a column that renders
+ * nothing (an older fingerprint can name one).
+ */
+export function renderedSettingLabel(column: string): string | null {
+  return isRenderedSiteSetting(column) ? RENDERED_SITE_SETTINGS[column].label : null;
+}
+
 /** One `setting:<column>` row per rendered setting. */
 function renderedSettingRows() {
   return sql.join(
