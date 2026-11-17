@@ -82,17 +82,28 @@ export async function provisionPluginSchemaInTx(
 ): Promise<ProvisionOutcome> {
   const schemaName = provisionedSchemaName(caller, opts.sql);
   const digest = createHash("sha256").update(opts.sql).digest("hex");
-  await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
-  await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${opts.pluginId}, true)`);
+  await tx.execute(sql`
+    SELECT set_config('caelo.actor_kind', 'system', true),
+           set_config('caelo.plugin_id', ${opts.pluginId}, true)
+  `);
+  const provisioned = async (): Promise<boolean> =>
+    (
+      (await tx.execute(sql`
+        SELECT 1 FROM plugin_schema_provisions
+        WHERE schema_name = ${schemaName} AND sql_digest = ${digest}
+          AND to_regnamespace(${schemaName}) IS NOT NULL
+      `)) as unknown[]
+    ).length > 0;
+  // #1633 — every admin instance provisions every active plugin at boot,
+  // and nearly always finds this digest recorded. Recorded means a
+  // provisioning with this exact DDL committed, so the common case needs
+  // no lock; only a schema to (re)provision takes it, and checks again
+  // under it.
+  if (await provisioned()) return { schemaName, droppedColumns: [] };
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`caelo:plugin-schema:${schemaName}`}, 0))`,
   );
-  const recorded = (await tx.execute(sql`
-    SELECT 1 FROM plugin_schema_provisions
-    WHERE schema_name = ${schemaName} AND sql_digest = ${digest}
-      AND to_regnamespace(${schemaName}) IS NOT NULL
-  `)) as unknown[];
-  if (recorded.length > 0) return { schemaName, droppedColumns: [] };
+  if (await provisioned()) return { schemaName, droppedColumns: [] };
   await tx.execute(sql.raw(opts.sql));
   // #1146 — the emitted DDL drops columns the spec no longer declares and
   // lists them in this transaction-local setting (plugin-sandbox schema.ts).

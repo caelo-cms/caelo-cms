@@ -10,9 +10,11 @@
  * environment's frozen state). This module runs that publisher inside the
  * admin process:
  *
- *   - {@link PublicProjectionPublisher.publishAll} after the plugin host
- *     booted — every section, so a release that adds a projected column or
- *     plugin converges as soon as the admin runs;
+ *   - {@link PublicProjectionPublisher.publishAtBoot} after the plugin host
+ *     booted — every section when this admin adds something the migration
+ *     job's publish could not (a runtime-installed plugin's projection, the
+ *     first frozen state it makes possible, the staging gate key; #1633),
+ *     else a drain;
  *   - a drain right after every write of this process that changed
  *     published state, before that write's op returns (registered with
  *     `DatabaseAdapter.setProjectionPublisher`): a security-relevant change
@@ -35,11 +37,14 @@
  */
 
 import {
+  bootPublishDue,
+  bootPublishInputsDigest,
   drainPublicProjection,
   type FreezeCompleteness,
   type ProjectionDatabases,
   type PublishReport,
   publishPublicProjection,
+  recordBootPublish,
   releaseMainLineForTests,
   type VisitorProjectionDeclarations,
 } from "@caelo-cms/migrations/public-projection";
@@ -158,6 +163,13 @@ export interface PublicProjectionPublisher {
    * of a plain drain, so a failed boot publish converges without a restart.
    */
   publishAll(): Promise<PublishReport>;
+  /**
+   * The boot's publish (#1633): {@link publishAll} when this admin adds
+   * something the migration job's publish could not (`bootPublishDue`),
+   * else a drain. Every instance boots through it, often while the
+   * database is busiest (a scale-out), so it repeats no full publish.
+   */
+  publishAtBoot(): Promise<PublishReport>;
   /** Republish whatever the outbox marks stale. */
   drain(): Promise<PublishReport>;
   /** The scheduler tick's backstop: the full publish while one is due, else a drain. */
@@ -168,8 +180,8 @@ export interface PublicProjectionPublisher {
 
 /**
  * Create the process's publisher and register its post-write drain. The
- * caller runs {@link PublicProjectionPublisher.publishAll} once its plugin
- * host booted; the scheduler tick runs its backstop.
+ * caller runs {@link PublicProjectionPublisher.publishAtBoot} once its
+ * plugin host booted; the scheduler tick runs its backstop.
  *
  * Per process, publishes run one at a time, and drains coalesce: a drain
  * asked for while another drain is still WAITING to start joins that one —
@@ -223,13 +235,33 @@ export function createPublicProjectionPublisher(opts: {
       const full = enqueue(async () => {
         waitingFull = null;
         let report: PublishReport;
+        const loaded = declarations();
         try {
-          report = await publishPublicProjection(dbs, declarations(), { comments: false });
+          report = await publishPublicProjection(dbs, loaded, { comments: false });
         } catch (e) {
           fullPublishDue = true;
           throw e;
         }
-        fullPublishDue = false;
+        // #1633 — a unit another publisher had already written from a later
+        // read was left alone here, and that publisher may lack what only
+        // an admin carries (the migration job has no staging gate key). The
+        // tick's backstop publishes everything again, and nothing is
+        // recorded until a full publish wrote every unit itself.
+        const superseded = report.superseded.live.length + report.superseded.staging.length > 0;
+        fullPublishDue = superseded;
+        // The next instance to boot with the same inputs skips the full
+        // publish. Not after a publish that could not freeze a release state
+        // (an active plugin not loaded here): that one stays due.
+        if (!superseded && report.unreleased.length === 0) {
+          await recordBootPublish(
+            dbs,
+            bootPublishInputsDigest(loaded, dbs.stagingGateSecret ?? null),
+          ).catch((e: unknown) => {
+            console.error(
+              `[public-projection] could not record the full publish; the next boot publishes everything again: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          });
+        }
         for (const target of report.unreleased) {
           console.error(
             `[public-projection] ${target}: no frozen release state yet — an active plugin is not loaded here, so the plugin registry stays as published until an instance that runs every active plugin boots, or the next Stage`,
@@ -248,6 +280,20 @@ export function createPublicProjectionPublisher(opts: {
       });
       waitingDrain = drain;
       return drain;
+    },
+    publishAtBoot: async () => {
+      let due: boolean;
+      try {
+        due = await bootPublishDue(
+          dbs,
+          bootPublishInputsDigest(declarations(), dbs.stagingGateSecret ?? null),
+        );
+      } catch (e) {
+        // Unknown whether it is due: the tick's backstop publishes everything.
+        fullPublishDue = true;
+        throw e;
+      }
+      return due ? publisher.publishAll() : publisher.drain();
     },
     backstop: () => (fullPublishDue ? publisher.publishAll() : publisher.drain()),
     stop: () => {

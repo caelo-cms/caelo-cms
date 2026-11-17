@@ -54,9 +54,13 @@
  * sections named there and deletes the rows; the admin runs it right after
  * each of its own writes and as a backstop on every scheduler tick
  * (admin-core `createPublicProjectionPublisher`, #1140). A pointer move marks
- * `plugins` (0531). The migration job and the admin's boot publish
- * everything ({@link publishPublicProjection}), so an install converges even
- * when the outbox was written before the triggers that a newer release adds.
+ * `plugins` (0531). The migration job publishes everything
+ * ({@link publishPublicProjection}) after every migration, so an install
+ * converges even when the outbox was written before the triggers that a
+ * newer release adds. An admin publishes everything at boot only when it
+ * adds something the migration job could not (#1633,
+ * {@link bootPublishDue}): the projections of a runtime-installed plugin,
+ * the first frozen state they make possible, or the staging gate key.
  * A `plugin:<id>` outbox row (the plugin's admin-side rows changed) is
  * consumed without a publish: its content reaches a public database with
  * the next frozen release.
@@ -100,6 +104,7 @@
  * inside the deploy ops' own transactions, which are audited.
  */
 
+import { createHash } from "node:crypto";
 import { type SQL, sql } from "drizzle-orm";
 
 /** The query surface a publisher needs on each side (a drizzle transaction fits). */
@@ -1333,6 +1338,77 @@ async function bootstrapPointers(
 }
 
 /**
+ * #1633 — what an admin's full publish adds over the migration job's, as
+ * one sha256: the visitor projections of the plugins it loaded (a
+ * runtime-installed plugin's included; the migration job knows only the
+ * shipped ones) and the staging gate key, which only an admin holds. The
+ * key enters as its own sha256, so the stored digest reveals nothing of it.
+ */
+export function bootPublishInputsDigest(
+  declarations: VisitorProjectionDeclarations,
+  stagingGateSecret: string | null,
+): string {
+  const plugins = [...declarations]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([slug, projection]) => [
+      slug,
+      projection === null
+        ? null
+        : Object.entries(projection)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([table, columns]) => [table, [...columns].sort()]),
+    ]);
+  const gateKey =
+    stagingGateSecret === null
+      ? null
+      : createHash("sha256").update(stagingGateSecret).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ plugins, gateKey })).digest("hex");
+}
+
+/**
+ * #1633 — whether an admin's boot must publish everything: when an
+ * environment has no frozen release state yet (the first one needs every
+ * active plugin loaded) or when the last full publish of an admin covered
+ * other inputs ({@link bootPublishInputsDigest}). Otherwise the migration
+ * job's publish after the last migration, the post-write drains and the
+ * tick's backstop already published what a full publish would.
+ *
+ * Read without the projection lock: a publisher that published meanwhile
+ * makes the full publish a repeat, never a mistake.
+ */
+export async function bootPublishDue(
+  dbs: ProjectionDatabases,
+  inputsDigest: string,
+): Promise<boolean> {
+  return dbs.readAdmin(async (tx) => {
+    const pointed = (await rows(
+      tx,
+      sql`SELECT environment FROM projection_release_pointers`,
+    )) as unknown as { environment: PublicTarget }[];
+    if (PUBLIC_TARGETS.some((t) => !pointed.some((p) => p.environment === t))) return true;
+    const last = (await rows(
+      tx,
+      sql`SELECT inputs_digest FROM projection_boot_publish WHERE id = 1`,
+    )) as unknown as { inputs_digest: string }[];
+    return last[0]?.inputs_digest !== inputsDigest;
+  });
+}
+
+/** #1633 — record the inputs a full publish of an admin covered ({@link bootPublishDue}). */
+export async function recordBootPublish(
+  dbs: ProjectionDatabases,
+  inputsDigest: string,
+): Promise<void> {
+  await dbs.readAdmin(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO projection_boot_publish (id, inputs_digest) VALUES (1, ${inputsDigest})
+      ON CONFLICT (id) DO UPDATE
+        SET inputs_digest = EXCLUDED.inputs_digest, published_at = now()
+    `);
+  });
+}
+
+/**
  * Publish everything to both public databases: the immediate sections, the
  * release sections each environment's pointer names, and — with
  * `comments: true` — a full resync of the approved comments (the migration
@@ -1468,7 +1544,14 @@ export async function withProjectionLock<T>(
     const attempt = await dbs.readAdmin(async (tx) => {
       const [row] = await rows(tx, PROJECTION_TRY_LOCK);
       if (row?.locked !== true) return { locked: false as const };
-      return { locked: true as const, value: await fn(tx) };
+      const value = await fn(tx);
+      // #1633 — what this read marked stale itself (the first frozen
+      // release's pointers mark `plugins`) is in the outbox it read, or
+      // stays there for the next drain. Asking the admin for a drain after
+      // this commit would queue that drain behind this very publish, which
+      // waits for this transaction: the boot hung for good.
+      await tx.execute(sql`SELECT set_config('caelo.projection_dirty', 'off', true)`);
+      return { locked: true as const, value };
     });
     if (attempt.locked) return attempt.value;
     const waited = now() - started;
