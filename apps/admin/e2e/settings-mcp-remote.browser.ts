@@ -60,10 +60,10 @@ test("gives every client the MCP URL in its own form", async ({ page }) => {
   await expect(page.getByTestId("remote-mcp-connector-name")).toContainText("(Chat)");
   await setup.getByLabel("What should the AI tool get?").selectOption("power");
   await expect(page.getByTestId("remote-mcp-url")).toHaveText(`${GATEWAY}/api/mcp/power`);
-  // #968 — a name that keeps the admin connector apart from the chat one.
+  // #968 — a name that keeps the Power connector apart from the chat one.
   await expect(page.getByTestId("remote-mcp-connector-name")).toContainText("(Power)");
   await expect(page.getByTestId("remote-mcp-setup-claude-code")).toHaveText(
-    / caelo-[a-z0-9-]+-admin /,
+    / caelo-[a-z0-9-]+-power /,
   );
 
   const tabs: Array<[string, string, string]> = [
