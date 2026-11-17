@@ -29,7 +29,7 @@ import {
   clearTestProvider,
   ensureIsolatedOwner,
   ISOLATED_OWNER_PASSWORD,
-  mintAdminMcpToken,
+  mintPowerMcpToken,
   registerTestProvider,
   runBunInline,
 } from "./helpers.js";
@@ -433,7 +433,7 @@ test("'Fix with AI' is refused while an external agent works in the chat", async
   request,
 }) => {
   const ownerId = ensureIsolatedOwner(OWNER_EMAIL);
-  const token = mintAdminMcpToken(ownerId, "quality-offer agent");
+  const token = mintPowerMcpToken(ownerId, "quality-offer agent");
   const sessionRes = await request.post("/api/mcp/session", {
     headers: { "x-caelo-mcp-token": token },
     data: { title: `quality-offer-${Date.now()}` },

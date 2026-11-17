@@ -149,9 +149,12 @@ async function send(
 
 const CHALLENGE_CHAT = `Bearer resource_metadata="${PUBLIC}/api/mcp/oauth/protected-resource/chat"`;
 
+/** Every address under /api/mcp/: the two surfaces, and `admin`, Power's address before #1636. */
+const ADDRESSES = ["chat", "power", "admin"] as const;
+
 describe("MCP proxy", () => {
   it("answers 401 with the resource_metadata challenge when there is no bearer token", async () => {
-    for (const surface of ["chat", "admin"]) {
+    for (const surface of ADDRESSES) {
       const idle = idleRecorder();
       const res = await send(`/api/mcp/${surface}`, { method: "POST", body: "{}" }, idle);
       expect(res.status).toBe(401);
@@ -174,15 +177,17 @@ describe("MCP proxy", () => {
 
   it("enforces the surface a token was granted for, before anything goes upstream", async () => {
     const chatOnly = accessToken("ok", `${PUBLIC}/api/mcp/chat`);
-    const toAdmin = await send("/api/mcp/admin", {
-      method: "POST",
-      body: "{}",
-      headers: { authorization: `Bearer ${chatOnly}` },
-    });
-    expect(toAdmin.status).toBe(401);
-    expect(toAdmin.headers.get("www-authenticate")).toBe(
-      `Bearer resource_metadata="${PUBLIC}/api/mcp/oauth/protected-resource/admin", error="invalid_token"`,
-    );
+    for (const address of ["power", "admin"] as const) {
+      const toPower = await send(`/api/mcp/${address}`, {
+        method: "POST",
+        body: "{}",
+        headers: { authorization: `Bearer ${chatOnly}` },
+      });
+      expect(toPower.status).toBe(401);
+      expect(toPower.headers.get("www-authenticate")).toBe(
+        `Bearer resource_metadata="${PUBLIC}/api/mcp/oauth/protected-resource/${address}", error="invalid_token"`,
+      );
+    }
     expect(seen).toHaveLength(0);
     const toChat = await send("/api/mcp/chat", {
       method: "POST",
@@ -190,8 +195,8 @@ describe("MCP proxy", () => {
       headers: { authorization: `Bearer ${chatOnly}` },
     });
     expect(toChat.status).toBe(200);
-    // A grant consented to for both surfaces opens both.
-    for (const surface of ["chat", "admin"]) {
+    // A grant consented to for both surfaces opens every address.
+    for (const surface of ADDRESSES) {
       const res = await send(`/api/mcp/${surface}`, {
         method: "POST",
         body: "{}",
@@ -260,6 +265,38 @@ describe("MCP proxy", () => {
     );
     expect(res.status).toBe(200);
     expect(seen[0]?.body.length).toBe(256);
+  });
+
+  it("serves a connector on the old address with the token it holds, at the admin's route of that name (#1636)", async () => {
+    // A connector added before the rename has the URL /api/mcp/admin and a
+    // token sealed for it. Nothing changes for it: its own resource, its own
+    // upstream route (which the admin keeps as an entry to the Power surface).
+    const sealedForOld = accessToken("old", `${PUBLIC}/api/mcp/admin`);
+    const viaOld = await send("/api/mcp/admin", {
+      method: "POST",
+      body: "{}",
+      headers: { authorization: `Bearer ${sealedForOld}` },
+    });
+    expect(viaOld.status).toBe(200);
+    expect(seen.map((s) => s.path)).toEqual(["/api/mcp/remote/admin"]);
+
+    const sealedForNew = accessToken("new", `${PUBLIC}/api/mcp/power`);
+    const viaNew = await send("/api/mcp/power", {
+      method: "POST",
+      body: "{}",
+      headers: { authorization: `Bearer ${sealedForNew}` },
+    });
+    expect(viaNew.status).toBe(200);
+    expect(seen.map((s) => s.path)).toEqual(["/api/mcp/remote/power"]);
+
+    // RFC 8707: a token names one resource. The two addresses are two.
+    const crossed = await send("/api/mcp/power", {
+      method: "POST",
+      body: "{}",
+      headers: { authorization: `Bearer ${sealedForOld}` },
+    });
+    expect(crossed.status).toBe(401);
+    expect(seen).toHaveLength(0);
   });
 
   it("forwards only allowlisted headers and sets fresh forwarding facts", async () => {

@@ -27,19 +27,19 @@ export const CHAT_MCP_INSTRUCTIONS = [
 ].join("\n");
 
 /**
- * MCP `instructions` for the admin server (#552). Clients such as Claude
+ * MCP `instructions` for the Power-MCP server (#552). Clients such as Claude
  * Code put this into the agent's context on connect, so a freshly
  * connected agent knows the session protocol without the operator
  * pasting anything: without a session every write fails, without the
  * context it works without the site's rules and brand voice.
  */
-export const ADMIN_MCP_INSTRUCTIONS = [
+export const POWER_MCP_INSTRUCTIONS = [
   "This server edits a Caelo CMS site. Before any other caelo tool:",
   "1. Call caelo_open_session once. It opens your own work session — a chat of yours in the Caelo admin, where the operator can follow, undo and stop your work (pass chatSessionId only to continue a session you opened earlier). Every write lands in the site's shared draft (or the session's own experiment branch); stage with stage_changes when the operator asks for it (otherwise offer it when a change is done), but nothing reaches the live site until the operator clicks Publish live in the Caelo admin.",
   "When several agents work in parallel over this connection (sub-agents), each one calls caelo_open_session itself and passes the workSessionId it got on every caelo call, so each works in its own session. Parallel agents never block each other; two calls that edit the same page or entity at once get a conflict that says to re-read and redo the edit. When the admin is at capacity a call is not run and says it is at capacity (HTTP 429): wait the seconds it names, then send the same call again unchanged.",
   "2. Call caelo_get_context once and follow it: it carries the site model, tool playbook, staging rules, site memory (brand voice, glossary) and the skills index.",
   "3. Load every skill the context marks ALWAYS APPLIES with load_skill before the work it covers (e.g. before writing any visitor-facing copy).",
-  "Every tool in this list works over MCP, including approval-gated ones (marked APPROVAL-GATED — deploys, users/roles, languages/locales, plugin settings, bulk deletes …). Call them yourself: Caelo shows the operator an approval card in the Caelo admin (their Live Edit chat and the pending-approvals page), the call waits for Approve/Reject and returns the decision; if the wait times out, call caelo_await_approval with the proposalId. Tell the operator what you requested and that they approve the card in Caelo. Never ask the operator to paste a prompt into the Caelo admin chat or to do a step there that a tool here can do, and never re-propose a pending proposal.",
+  "Every tool in this list works over MCP, including approval-gated ones (marked APPROVAL-GATED — deploys, users/roles, languages/locales, plugin settings, bulk deletes …). Call them yourself: Caelo shows the operator an approval card in the Caelo admin (their Live Edit chat and the pending-approvals page), the call waits for Approve/Reject and returns the decision; if the wait times out, call caelo_await_approval with the proposalId. Tell the operator what you requested and that they approve the card in Caelo (when their role does not allow that change, an Owner approves it). Never ask the operator to paste a prompt into the Caelo admin chat or to do a step there that a tool here can do, and never re-propose a pending proposal.",
   "After every stage_changes, call get_quality_audit (it waits for the result) and fix every open problem it names, then Stage and re-read until it passes: the target is 100 in every category and zero findings, and a score that dropped since the page's previous audit points at a recent change — check those changes first. Do not report open scores or findings to the operator as a result — only what you proved cannot be fixed in the site.",
   "Tool errors name the next step to take; follow them instead of retrying unchanged.",
 ].join("\n");
@@ -259,10 +259,10 @@ export const WORK_SESSION_PROPERTY = {
     "Your work session (the chatSessionId from caelo_open_session). Required when several agents share this connection; otherwise the session you opened last.",
 } as const;
 
-export const adminAwaitApprovalInput = z.object({ proposalId: z.string().uuid() }).strict();
+export const powerAwaitApprovalInput = z.object({ proposalId: z.string().uuid() }).strict();
 
 /** Issue #658 — keep waiting for a decision after a gated call's wait timed out. */
-export const ADMIN_AWAIT_APPROVAL_TOOL = {
+export const POWER_AWAIT_APPROVAL_TOOL = {
   name: "caelo_await_approval",
   description:
     "Wait for the operator's Approve/Reject on a proposal you queued with an approval-gated tool, and return " +
@@ -300,9 +300,9 @@ export const CHAT_TOOLS = [UPLOAD_IMAGES_TOOL, CHAT_AWAIT_APPROVAL_TOOL, CAELO_C
  * The tools Power-MCP adds in front of the admin's catalogue (stdio
  * flavour) — also the head of the credential-less listing (#841).
  */
-export const ADMIN_LOCAL_TOOLS = [
+export const POWER_LOCAL_TOOLS = [
   UPLOAD_IMAGES_TOOL,
   OPEN_SESSION_TOOL,
   GET_CONTEXT_TOOL,
-  ADMIN_AWAIT_APPROVAL_TOOL,
+  POWER_AWAIT_APPROVAL_TOOL,
 ] as const;

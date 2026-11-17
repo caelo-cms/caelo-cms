@@ -178,7 +178,7 @@ beforeAll(async () => {
   configureMcpBridge({ adapter, registry, resolveProvider: async () => null });
   const minted = await execute(registry, adapter, ownerCtx, "mcp_tokens.create", {
     displayName: `gated-test-${crypto.randomUUID().slice(0, 8)}`,
-    scope: "admin",
+    scope: "power",
   });
   if (!minted.ok) throw new Error(`token mint failed: ${JSON.stringify(minted.error)}`);
   adminToken = (minted.value as { plaintextToken: string }).plaintextToken;

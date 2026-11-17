@@ -250,7 +250,7 @@ describe("#1204 a Stage whose caller goes away leaves nothing held", () => {
     try {
       const minted = await execute(registry, adapter, HUMAN, "mcp_tokens.create", {
         displayName: "deploy-run-lease admin",
-        scope: "admin",
+        scope: "power",
       });
       if (!minted.ok) throw new Error(`mint: ${JSON.stringify(minted.error)}`);
       const token = (minted.value as { plaintextToken: string }).plaintextToken;

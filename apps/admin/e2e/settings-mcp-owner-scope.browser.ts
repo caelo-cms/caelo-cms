@@ -11,7 +11,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { acceptConfirm, clearLoginRateBucket, mintAdminMcpToken, runBunInline } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket, mintPowerMcpToken, runBunInline } from "./helpers.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -69,7 +69,7 @@ test.beforeAll(() => {
     E2E_EMAIL: REVIEWER_EMAIL,
     E2E_PASSWORD: REVIEWER_PASSWORD,
   }).trim();
-  mintAdminMcpToken(reviewerId, REVIEWER_TOKEN);
+  mintPowerMcpToken(reviewerId, REVIEWER_TOKEN);
 });
 
 test.afterAll(() => {

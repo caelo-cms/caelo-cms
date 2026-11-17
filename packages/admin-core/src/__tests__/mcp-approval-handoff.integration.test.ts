@@ -76,7 +76,7 @@ async function ensureActor(actorId: string, displayName: string): Promise<void> 
 async function mintAdminToken(ctx: ExecutionContext): Promise<string> {
   const r = await execute(registry, adapter, ctx, "mcp_tokens.create", {
     displayName: `handoff-test-${crypto.randomUUID().slice(0, 8)}`,
-    scope: "admin",
+    scope: "power",
   });
   if (!r.ok) throw new Error(`token mint failed: ${JSON.stringify(r.error)}`);
   return (r.value as { plaintextToken: string }).plaintextToken;

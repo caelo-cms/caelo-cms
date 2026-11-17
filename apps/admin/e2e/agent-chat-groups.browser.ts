@@ -14,7 +14,7 @@ import {
   clearLoginRateBucket,
   ensureIsolatedOwner,
   ISOLATED_OWNER_PASSWORD,
-  mintAdminMcpToken,
+  mintPowerMcpToken,
 } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
@@ -36,7 +36,7 @@ test("agent chats are listed per client, apart from the operator's own chats", a
   page,
   request,
 }) => {
-  const token = mintAdminMcpToken(ensureIsolatedOwner(OWNER_EMAIL), CLIENT);
+  const token = mintPowerMcpToken(ensureIsolatedOwner(OWNER_EMAIL), CLIENT);
   const titles = [1, 2, 3].map((i) => `agent-groups-e2e agent ${i} ${Date.now().toString(36)}`);
   const ids: string[] = [];
   for (const title of titles) {

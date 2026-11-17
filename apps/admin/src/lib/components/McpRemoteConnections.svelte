@@ -5,7 +5,7 @@
   // surface, app) that reached the site by URL (claude.ai, ChatGPT, Claude
   // Code, …), grouped by person. Rows appear on an app's first request. The
   // Owner revokes one app (sticky; the person's other apps keep working),
-  // restores it, sets its AI cost cap (+ "may use Caelo's AI" on the admin
+  // restores it, sets its AI cost cap (+ "may use Caelo's AI" on the Power
   // surface), and can block every app of a person, new ones included.
   // Everyone else sees only their own apps, read-only.
   import { confirmSubmit } from "#lib/confirm.svelte.js";
@@ -76,6 +76,12 @@
     return `$${(mc / 1e8).toFixed(2)}`;
   }
   const day = (iso: string) => iso.slice(0, 10);
+
+  // #1636 — the Power surface's address was /api/mcp/admin; connectors added
+  // back then keep working through it until 1.0 (#1638).
+  const LEGACY_ADDRESS_HINT =
+    "Connected through /api/mcp/admin, the Power-MCP address before it was renamed. It keeps working until Caelo 1.0. To move the app, remove the connector in the AI tool and add it again with the Power-MCP URL above.";
+  const anyLegacyAddress = $derived(connections.some((c) => c.viaLegacyAddress));
 </script>
 
 <Card data-testid="mcp-remote-connections">
@@ -95,6 +101,11 @@
     {#if people.length === 0}
       <p class="text-sm text-muted-foreground">
         No apps connected yet. One appears here the first time someone connects an AI tool by URL.
+      </p>
+    {/if}
+    {#if anyLegacyAddress}
+      <p class="text-sm text-muted-foreground" data-testid="mcp-remote-legacy-address-note">
+        Apps marked "old address": {LEGACY_ADDRESS_HINT}
       </p>
     {/if}
     {#each people as p (p.actorId)}
@@ -156,11 +167,20 @@
                   </TableCell>
                   <TableCell>
                     <Badge
-                      variant={c.surface === "admin" ? "default" : "secondary"}
+                      variant={c.surface === "power" ? "default" : "secondary"}
                       title={MCP_SURFACE_COPY[c.surface].title}
                     >
                       {c.surface}
                     </Badge>
+                    {#if c.viaLegacyAddress}
+                      <div
+                        class="text-xs text-muted-foreground"
+                        data-testid="mcp-remote-legacy-address"
+                        title={LEGACY_ADDRESS_HINT}
+                      >
+                        old address
+                      </div>
+                    {/if}
                   </TableCell>
                   <TableCell>
                     {#if c.revokedAt}
@@ -194,7 +214,7 @@
                           placeholder="uncapped"
                           value={c.aiCostCapMicrocents ?? ""}
                         />
-                        {#if c.surface === "admin"}
+                        {#if c.surface === "power"}
                           <label class="flex items-center gap-1">
                             <input
                               type="checkbox"
@@ -210,7 +230,7 @@
                       </form>
                     {:else}
                       {fmtUsdMc(c.aiCostCapMicrocents)}
-                      {#if c.surface === "admin"}
+                      {#if c.surface === "power"}
                         · {c.allowCaeloAi ? "agent + Caelo's AI" : "agent only"}
                       {/if}
                     {/if}

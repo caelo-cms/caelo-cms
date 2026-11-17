@@ -39,8 +39,16 @@
 
 /**
  * The paths the MCP rule covers, as an anchored RE2 pattern (Cloud Armor's
- * `matches`): the two MCP endpoints and the broker's `oauth/<name>` and
- * `oauth/<name>/<surface>` routes — lowercase letters and hyphens only.
+ * `matches`): the MCP endpoints (`chat`, `power`, and `admin`, the Power
+ * surface's address before #1636) and the broker's `oauth/<name>` and
+ * `oauth/<name>/<address>` routes — lowercase letters and hyphens only.
+ *
+ * A path the pattern does not name is still served: the proxy's policy has
+ * no other rule, so it falls to the default (allow) and meets the proxy's
+ * own rate limit (apps/mcp-auth-proxy rate-limit.ts), which is the same
+ * 600 a minute. That is why #1636 could add `power` without a contract
+ * bump: an install gets the edge throttle for it with its next converge,
+ * and nothing depends on it until then (epic #763, decision E3).
  *
  * Deliberately not a prefix match. A `startsWith('/api/mcp/')` rule also
  * matches `/api/mcp/../forms/submit` or `/api/mcp/%2e%2e/comments`, which
@@ -51,7 +59,7 @@
  * The dotted metadata aliases (`/.well-known/…`, `oauth/.well-known/…`) are
  * one-off GETs per connection and stay under the general rules.
  */
-export const MCP_ARMOR_PATH_PATTERN = "^/api/mcp/(?:chat|admin|oauth/[a-z-]+(?:/[a-z-]+)?)$";
+export const MCP_ARMOR_PATH_PATTERN = "^/api/mcp/(?:chat|power|admin|oauth/[a-z-]+(?:/[a-z-]+)?)$";
 
 /** The general per-IP ban rule and the OWASP rule packs the MCP rule must precede. */
 export const GENERAL_RATE_LIMIT_PRIORITY = 1000;

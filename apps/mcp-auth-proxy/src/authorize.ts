@@ -32,7 +32,7 @@ import {
   requestHoldsBinding,
 } from "./consent.js";
 import type { McpContext } from "./context.js";
-import { issuer, resourceUrls } from "./context.js";
+import { INVALID_RESOURCE_MESSAGE, issuer, resourceUrls } from "./context.js";
 import { googleAuthorizeUrl } from "./google.js";
 import { authorizePageError, type OAuthErrorCode } from "./http.js";
 import { redirectUriMatches } from "./redirect-allowlist.js";
@@ -186,10 +186,7 @@ export async function handleAuthorize(req: Request, ctx: McpContext): Promise<Re
     );
   }
   if (q.resource !== undefined && !resourceUrls(ctx.config).includes(q.resource)) {
-    return fail(
-      "invalid_target",
-      "resource must be this site's /api/mcp/chat or /api/mcp/admin URL",
-    );
+    return fail("invalid_target", INVALID_RESOURCE_MESSAGE);
   }
 
   const binding = newBinding();

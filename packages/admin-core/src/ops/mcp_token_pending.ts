@@ -14,6 +14,7 @@
 
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  AI_WORK_PERMISSION,
   CHAT_SURFACE_NEEDS_INSTALL_AI,
   err,
   ok,
@@ -24,7 +25,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { requiresApproverPermission } from "./_approver-permission.js";
+import { approverRefusal, requiresApproverPermission } from "./_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
   hashProposalPayload,
@@ -38,8 +39,10 @@ import {
 } from "./credential_handoffs.js";
 import { isMcpOnly } from "./security/ai_providers.js";
 import {
+  ALLOW_CAELO_AI_PERMISSION,
   createMcpTokenOp,
   mcpTokenNotVisibleMessage,
+  mcpTokenScope,
   revokeMcpTokenOp,
 } from "./security/mcp_tokens.js";
 
@@ -48,10 +51,10 @@ import {
 const proposeCreateInput = z
   .object({
     displayName: z.string().min(1).max(100),
-    /** Issue #376 — 'admin' unlocks the Power-MCP surface. Default 'chat'. */
-    scope: z.enum(["chat", "admin"]).optional(),
+    /** Issue #376 — 'power' unlocks the Power-MCP surface. Default 'chat'. */
+    scope: mcpTokenScope.optional(),
     aiCostCapMicrocents: z.number().int().nonnegative().nullable().optional(),
-    /** #741 — admin tokens only: the agent may spend the install's own AI. Default off. */
+    /** #741 — Power tokens only: the agent may spend the install's own AI. Default off. */
     allowCaeloAi: z.boolean().optional(),
   })
   .strict();
@@ -73,7 +76,7 @@ export const proposeMcpTokenCreateOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "mcp_tokens.propose_create",
-        message: `${CHAT_SURFACE_NEEDS_INSTALL_AI} Propose this token with scope 'admin'.`,
+        message: `${CHAT_SURFACE_NEEDS_INSTALL_AI} Propose this token with scope 'power'.`,
       });
     }
     const preview = {
@@ -204,6 +207,22 @@ const executeMcpTokenProposalOpDefinition = defineOperation({
     let credentialHandoff: CredentialHandoffRef | null = null;
     if (row.kind === "create") {
       const payload = row.payload as Parameters<typeof createMcpTokenOp.handler>[1];
+      // #741/#1636 — "may use Caelo's AI" spends the install's account, so
+      // this one proposal needs an Owner on top of the op's own approver
+      // permission. Refused like any missing approver permission, before
+      // anything is applied: the card stays pending for an Owner.
+      if (payload.allowCaeloAi === true) {
+        const refusal = await approverRefusal(tx, ctx, "mcp_tokens.execute_proposal", [
+          ALLOW_CAELO_AI_PERMISSION,
+        ]);
+        if (refusal !== null) {
+          return err({
+            kind: "HandlerError",
+            operation: "mcp_tokens.execute_proposal",
+            message: refusal,
+          });
+        }
+      }
       const r = await createMcpTokenOp.handler(ctx, payload, tx);
       if (!r.ok) return passthroughError(r.error, "create");
       // #971 — the minted plaintext is dropped here, unseen; the approver
@@ -244,9 +263,16 @@ const executeMcpTokenProposalOpDefinition = defineOperation({
   },
 });
 
-/** #589 — the approver must hold settings.write (see _approver-permission.ts). */
+/**
+ * #589 — the approver must hold what the panel action needs
+ * (_approver-permission.ts). Since #1636 that is the permission to work
+ * through an AI: the approver mints the token for themselves (it acts as
+ * them), or revokes one they can see (RLS 0315: their own, an Owner any).
+ * A proposal with "may use Caelo's AI" is refused by `mcp_tokens.create`
+ * unless the approver is an Owner.
+ */
 export const executeMcpTokenProposalOp = requiresApproverPermission(
-  ["settings.write"],
+  [AI_WORK_PERMISSION],
   executeMcpTokenProposalOpDefinition,
 );
 

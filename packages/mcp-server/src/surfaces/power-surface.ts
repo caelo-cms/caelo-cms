@@ -6,7 +6,7 @@
  * itself, plus the companion tools `caelo_open_session`,
  * `caelo_get_context`, `caelo_await_approval` and `caelo_upload_images`.
  *
- * The stdio shim (../admin-server.ts) backs it with HTTP calls to
+ * The stdio shim (../power-server.ts) backs it with HTTP calls to
  * `/api/mcp/*`, caching the catalogue and holding the work session in
  * process memory. The admin's remote endpoint `/api/mcp/remote/admin`
  * (issue #806) backs it with the Power-MCP steps in-process; its transport
@@ -32,15 +32,16 @@ import {
   describeApprovalOutcome,
   waitForApproval,
 } from "../approval-wait.js";
+import { POWER_BIN } from "../names.js";
 import {
-  ADMIN_AWAIT_APPROVAL_TOOL,
-  ADMIN_LOCAL_TOOLS,
-  ADMIN_MCP_INSTRUCTIONS,
-  adminAwaitApprovalInput,
   GET_CONTEXT_TOOL,
   OPEN_SESSION_TOOL,
   type OpenSessionInput,
   openSessionInput,
+  POWER_AWAIT_APPROVAL_TOOL,
+  POWER_LOCAL_TOOLS,
+  POWER_MCP_INSTRUCTIONS,
+  powerAwaitApprovalInput,
   UPLOAD_IMAGES_TOOL,
   WORK_SESSION_ARG,
   WORK_SESSION_PROPERTY,
@@ -92,8 +93,8 @@ export interface GetContextResponse {
   }>;
 }
 
-/** What the admin surface needs from Caelo — HTTP for the shim, ops in the admin. */
-export interface AdminSurfaceBackend {
+/** What the Power surface needs from Caelo — HTTP for the shim, ops in the admin. */
+export interface PowerSurfaceBackend {
   /** The catalogue to list (the shim's cached copy, or the live one). */
   listCatalogue(): Promise<readonly RemoteTool[]>;
   /** One catalogue tool by name; the shim refreshes its cache on a miss (#678). */
@@ -258,22 +259,22 @@ function takeWorkSession(
 }
 
 /** Build the Power-MCP server over `backend`. The caller connects a transport. */
-export function createAdminMcpServer(
-  backend: AdminSurfaceBackend,
+export function createPowerMcpServer(
+  backend: PowerSurfaceBackend,
   opts: AdminSurfaceOptions,
 ): Server {
   const uploadTool = opts.uploadImagesTool ?? UPLOAD_IMAGES_TOOL;
   const server = new Server(
-    { name: "caelo-admin-mcp", version: opts.serverVersion },
+    { name: POWER_BIN, version: opts.serverVersion },
     {
       capabilities: { tools: opts.listChanged ? { listChanged: true } : {} },
-      instructions: ADMIN_MCP_INSTRUCTIONS,
+      instructions: POWER_MCP_INSTRUCTIONS,
     },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      ...ADMIN_LOCAL_TOOLS.map((t) => (t === UPLOAD_IMAGES_TOOL ? uploadTool : t)),
+      ...POWER_LOCAL_TOOLS.map((t) => (t === UPLOAD_IMAGES_TOOL ? uploadTool : t)),
       ...(await backend.listCatalogue()).map((t) => ({
         name: t.name,
         description: t.description,
@@ -313,8 +314,8 @@ export function createAdminMcpServer(
         ...(onPending ? { onPending } : {}),
       });
     try {
-      if (name === ADMIN_AWAIT_APPROVAL_TOOL.name) {
-        const parsed = adminAwaitApprovalInput.safeParse(req.params.arguments ?? {});
+      if (name === POWER_AWAIT_APPROVAL_TOOL.name) {
+        const parsed = powerAwaitApprovalInput.safeParse(req.params.arguments ?? {});
         if (!parsed.success) {
           return errorResult(`invalid arguments: ${parsed.error.message}`);
         }

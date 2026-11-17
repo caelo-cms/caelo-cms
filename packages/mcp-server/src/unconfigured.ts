@@ -27,11 +27,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { CHAT_BIN, POWER_BIN } from "./names.js";
 import {
-  ADMIN_LOCAL_TOOLS,
-  ADMIN_MCP_INSTRUCTIONS,
   CHAT_MCP_INSTRUCTIONS,
   CHAT_TOOLS,
+  POWER_LOCAL_TOOLS,
+  POWER_MCP_INSTRUCTIONS,
 } from "./tool-definitions.js";
 import { ownVersion } from "./version-handshake.js";
 
@@ -74,20 +75,20 @@ export function missingCredentials(env: NodeJS.ProcessEnv): CredentialVar[] {
 
 /** The error every tool call returns while credentials are missing. */
 export function describeMissingCredentials(
-  mode: "chat" | "admin",
+  mode: "chat" | "power",
   missing: readonly CredentialVar[],
 ): string {
-  const scope = mode === "admin" ? "an ADMIN-scoped" : "a";
+  const token = mode === "power" ? "a token of scope 'power'" : "a token";
   return (
     `This Caelo MCP server is not connected to a Caelo install: ${missing.join(" and ")} ` +
     `${missing.length === 1 ? "is" : "are"} not set. Set CAELO_ADMIN_URL to your admin's https:// address ` +
-    `and CAELO_MCP_TOKEN to ${scope} token minted at /settings/mcp on that install, then restart the ` +
+    `and CAELO_MCP_TOKEN to ${token} minted at /settings/mcp on that install, then restart the ` +
     "MCP server. The operator has to do this in the MCP client's config; retrying the call will not help."
   );
 }
 
 export interface StartUnconfiguredOpts {
-  readonly mode: "chat" | "admin";
+  readonly mode: "chat" | "power";
   readonly missing: readonly CredentialVar[];
   /** Defaults to stdio; tests pass an in-memory transport. */
   readonly transport?: Transport;
@@ -97,17 +98,17 @@ export interface StartUnconfiguredOpts {
 export async function startUnconfiguredServer(opts: StartUnconfiguredOpts): Promise<void> {
   const server = new Server(
     {
-      name: opts.mode === "admin" ? "caelo-admin-mcp" : "caelo-mcp-server",
+      name: opts.mode === "power" ? POWER_BIN : CHAT_BIN,
       version: ownVersion(),
     },
     {
       capabilities: { tools: {} },
-      instructions: opts.mode === "admin" ? ADMIN_MCP_INSTRUCTIONS : CHAT_MCP_INSTRUCTIONS,
+      instructions: opts.mode === "power" ? POWER_MCP_INSTRUCTIONS : CHAT_MCP_INSTRUCTIONS,
     },
   );
   const error = describeMissingCredentials(opts.mode, opts.missing);
   const tools =
-    opts.mode === "admin" ? [...ADMIN_LOCAL_TOOLS, ...loadPowerCatalogue()] : [...CHAT_TOOLS];
+    opts.mode === "power" ? [...POWER_LOCAL_TOOLS, ...loadPowerCatalogue()] : [...CHAT_TOOLS];
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, async () => ({

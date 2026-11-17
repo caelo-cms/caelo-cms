@@ -15,27 +15,27 @@ export {
 } from "../approval-wait.js";
 export type { ChatApprovalState, SendChatResult } from "../chat-approval.js";
 export {
-  ADMIN_MCP_INSTRUCTIONS,
   type CaeloChatInput,
   CHAT_MCP_INSTRUCTIONS,
   type OpenSessionInput,
+  POWER_MCP_INSTRUCTIONS,
   REMOTE_UPLOAD_IMAGES_TOOL,
   UPLOAD_IMAGES_TOOL,
 } from "../tool-definitions.js";
-export {
-  type AdminSurfaceBackend,
-  type AdminSurfaceOptions,
-  createAdminMcpServer,
-  type ExecuteToolResponse,
-  type GetContextResponse,
-  NoWorkSessionError,
-  type OpenSessionResponse,
-  type RemoteTool,
-} from "./admin-surface.js";
 export {
   type ChatSurfaceBackend,
   type ChatSurfaceOptions,
   createChatMcpServer,
 } from "./chat-surface.js";
+export {
+  type AdminSurfaceOptions,
+  createPowerMcpServer,
+  type ExecuteToolResponse,
+  type GetContextResponse,
+  NoWorkSessionError,
+  type OpenSessionResponse,
+  type PowerSurfaceBackend,
+  type RemoteTool,
+} from "./power-surface.js";
 export { rpcToolCallId } from "./rpc-tool-call-id.js";
 export { type StoreImageMeta, type UploadImagesResult, uploadImagesWith } from "./upload.js";

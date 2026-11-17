@@ -6,7 +6,7 @@
  * drive Google and the admin with local fakes.
  */
 
-import type { McpConfig, McpSurface } from "./config.js";
+import { MCP_ADDRESSES, type McpAddress, type McpConfig } from "./config.js";
 import type { CimdCache } from "./registration.js";
 
 /** Proxy limits (constants in production, shrunk by tests). */
@@ -33,17 +33,26 @@ export function issuer(config: McpConfig): string {
   return `${config.publicUrl}/api/mcp/oauth`;
 }
 
-/** The protected-resource URL of one surface (what the user pastes into the MCP client). */
-export function resourceUrl(config: McpConfig, surface: McpSurface): string {
-  return `${config.publicUrl}/api/mcp/${surface}`;
+/** The protected-resource URL of one address (what the user pastes into the MCP client). */
+export function resourceUrl(config: McpConfig, address: McpAddress): string {
+  return `${config.publicUrl}/api/mcp/${address}`;
 }
 
 /** Where `WWW-Authenticate: Bearer resource_metadata=…` points (reachable via /api/* on every stack). */
-export function resourceMetadataUrl(config: McpConfig, surface: McpSurface): string {
-  return `${config.publicUrl}/api/mcp/oauth/protected-resource/${surface}`;
+export function resourceMetadataUrl(config: McpConfig, address: McpAddress): string {
+  return `${config.publicUrl}/api/mcp/oauth/protected-resource/${address}`;
 }
 
-/** The two resource URLs; a `resource` parameter must equal one of them. */
+/** Every resource URL; a `resource` parameter must equal one of them. */
 export function resourceUrls(config: McpConfig): readonly string[] {
-  return [resourceUrl(config, "chat"), resourceUrl(config, "admin")];
+  return MCP_ADDRESSES.map((address) => resourceUrl(config, address));
 }
+
+/** The address a resource URL names, or null when it is none of this site's. */
+export function addressOfResource(config: McpConfig, resource: string): McpAddress | null {
+  return MCP_ADDRESSES.find((address) => resourceUrl(config, address) === resource) ?? null;
+}
+
+/** What `invalid_target` tells a client that named another resource. */
+export const INVALID_RESOURCE_MESSAGE =
+  "resource must be this site's /api/mcp/chat or /api/mcp/power URL";

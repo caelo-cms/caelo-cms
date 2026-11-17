@@ -703,7 +703,7 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
   configureMcpBridge({ adapter, registry, resolveProvider: async () => null });
   const token = (await call(
     "mcp_tokens.create",
-    { displayName: "external-notes-test", scope: "admin" },
+    { displayName: "external-notes-test", scope: "power" },
     owner,
   )) as { plaintextToken: string };
   const session = (await call("mcp.open_session", {

@@ -43,6 +43,13 @@ async function ensureOwnerActor(): Promise<void> {
       await tx`INSERT INTO actors (id, kind, display_name)
                VALUES (${ownerCtx.actorId}::uuid, 'human', 'mcp-test owner')
                ON CONFLICT (id) DO NOTHING`;
+      // Minting needs a live user who may work through an AI (#1636).
+      await tx`INSERT INTO users (id, email, password_hash)
+               VALUES (${ownerCtx.actorId}::uuid, 'owner@mcp-lifecycle.test', 'test-only')
+               ON CONFLICT DO NOTHING`;
+      await tx`INSERT INTO user_roles (user_id, role_id)
+               SELECT ${ownerCtx.actorId}::uuid, id FROM roles WHERE name = 'owner'
+               ON CONFLICT DO NOTHING`;
     });
   } finally {
     await sql.end();

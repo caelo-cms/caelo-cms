@@ -13,7 +13,7 @@ import {
   clearLoginRateBucket,
   ensureIsolatedOwner,
   ISOLATED_OWNER_PASSWORD,
-  mintAdminMcpToken,
+  mintPowerMcpToken,
   runBunInline,
 } from "./helpers.js";
 
@@ -46,7 +46,7 @@ test("an external agent's proposal is decided in the chat and handed back to the
   page,
   request,
 }) => {
-  const token = mintAdminMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "mcp-handoff-e2e");
+  const token = mintPowerMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "mcp-handoff-e2e");
   const session = await mcpPost<{ chatSessionId: string }>(request, token, "/api/mcp/session", {
     title: `mcp-handoff-e2e-${Date.now()}`,
   });
@@ -158,7 +158,7 @@ test("an external agent's needs-approval tool call is approved in the chat and h
   page,
   request,
 }) => {
-  const token = mintAdminMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "mcp-gated-e2e");
+  const token = mintPowerMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "mcp-gated-e2e");
   const session = await mcpPost<{ chatSessionId: string }>(request, token, "/api/mcp/session", {
     title: `mcp-gated-e2e-${Date.now()}`,
   });

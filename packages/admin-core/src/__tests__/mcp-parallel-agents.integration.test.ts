@@ -62,7 +62,7 @@ let recording = false;
 function cred(): McpRemoteCredential {
   return {
     iapCredential: signIapTestAssertion(KEY, { aud: AUDIENCE, email: OWNER.email }),
-    surface: "admin",
+    surface: "power",
     client: CLIENT,
   };
 }
@@ -411,7 +411,7 @@ describe("#1253 — the cost of one write call", () => {
   it("a token's last_used_at is written at most once a minute", async () => {
     const minted = await execute(registry, adapter, ownerCtx, "mcp_tokens.create", {
       displayName: "t1253-token",
-      scope: "admin",
+      scope: "power",
     });
     if (!minted.ok) throw new Error(JSON.stringify(minted.error));
     const token = (minted.value as { plaintextToken: string }).plaintextToken;

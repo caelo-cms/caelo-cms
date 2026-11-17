@@ -63,7 +63,7 @@ const CHATGPT = "https://chatgpt.com/oauth/client.json";
 
 function cred(
   email: string,
-  surface: "chat" | "admin",
+  surface: "chat" | "power",
   client: string = CLAUDE_CODE,
 ): McpRemoteCredential {
   return { iapCredential: signIapTestAssertion(KEY, { aud: AUDIENCE, email }), surface, client };
@@ -146,45 +146,51 @@ afterAll(async () => {
 });
 
 describe("remote principal resolution", () => {
-  it("auto-creates the Owner's admin connection once and maps the email case-insensitively", async () => {
-    const first = await resolveRemoteMcpPrincipal(adapter, cred("owner@t806.TEST", "admin"), {
+  it("auto-creates the Owner's Power connection once and maps the email case-insensitively", async () => {
+    const first = await resolveRemoteMcpPrincipal(adapter, cred("owner@t806.TEST", "power"), {
       clientLabel: "claude-ai",
     });
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value.actorId).toBe(USERS.owner.id);
-    expect(first.value.scope).toBe("admin");
+    expect(first.value.scope).toBe("power");
     expect(first.value.allowCaeloAi).toBe(false);
     expect(first.value.via.kind).toBe("remote");
     expect(first.value.displayName).toBe(`Claude Code · ${USERS.owner.email}`);
-    const again = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "admin"));
+    const again = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "power"));
     expect(again.ok && again.value.via.kind === "remote" && again.value.via.connectionId).toBe(
       first.value.via.kind === "remote" ? first.value.via.connectionId : "",
     );
   });
 
-  it("gates each surface by permission: admin needs settings.write, chat needs content.write", async () => {
-    const editorAdmin = await resolveRemoteMcpPrincipal(adapter, cred(USERS.editor.email, "admin"));
-    expect(editorAdmin.ok).toBe(false);
-    if (!editorAdmin.ok) {
-      expect(editorAdmin.error.status).toBe(403);
-      expect(editorAdmin.error.code).toBe("permission_denied");
-      expect(editorAdmin.error.message).toContain("/api/mcp/chat");
-      // #968 — names what is missing, the user's role and the roles that allow it.
-      expect(editorAdmin.error.message).toContain("needs the settings.write permission");
-      expect(editorAdmin.error.message).toContain("Your role (editor)");
-      expect(editorAdmin.error.message).toContain("roles that do: owner");
+  it("gates both surfaces by the one permission for working through an AI (#1636)", async () => {
+    // An editor's own AI tool gets the Power surface: it runs the chat's tools.
+    const editorPower = await resolveRemoteMcpPrincipal(adapter, cred(USERS.editor.email, "power"));
+    expect(editorPower.ok).toBe(true);
+    if (editorPower.ok) {
+      expect(editorPower.value.actorId).toBe(USERS.editor.id);
+      expect(editorPower.value.scope).toBe("power");
+      // Spending the install's AI stays the Owner's decision.
+      expect(editorPower.value.allowCaeloAi).toBe(false);
     }
-    // Refused requests create no row.
-    expect(await connectionRow(USERS.editor.id, "admin")).toBeUndefined();
+    expect(await connectionRow(USERS.editor.id, "power")).toBeDefined();
     expect((await resolveRemoteMcpPrincipal(adapter, cred(USERS.editor.email, "chat"))).ok).toBe(
       true,
     );
-    const reviewerChat = await resolveRemoteMcpPrincipal(
-      adapter,
-      cred(USERS.reviewer.email, "chat"),
-    );
-    expect(!reviewerChat.ok && reviewerChat.error.code).toBe("permission_denied");
+    for (const surface of ["chat", "power"] as const) {
+      const refused = await resolveRemoteMcpPrincipal(adapter, cred(USERS.reviewer.email, surface));
+      expect(refused.ok).toBe(false);
+      if (refused.ok) continue;
+      expect(refused.error.status).toBe(403);
+      expect(refused.error.code).toBe("permission_denied");
+      // #968 — names the address, what is missing, the user's role and the roles that allow it.
+      expect(refused.error.message).toContain(`/api/mcp/${surface}`);
+      expect(refused.error.message).toContain("needs the content.write permission");
+      expect(refused.error.message).toContain("Your role (reviewer)");
+      expect(refused.error.message).toContain("roles that do: editor, owner");
+      // Refused requests create no row.
+      expect(await connectionRow(USERS.reviewer.id, surface)).toBeUndefined();
+    }
   });
 
   it("refuses unknown, role-less and deleted users as not_a_caelo_user", async () => {
@@ -213,7 +219,7 @@ describe("remote principal resolution", () => {
         aud: AUDIENCE,
         email: USERS.owner.email,
       }),
-      surface: "admin",
+      surface: "power",
       client: CLAUDE_CODE,
     });
     expect(!forged.ok && [forged.error.status, forged.error.code]).toEqual([
@@ -222,7 +228,7 @@ describe("remote principal resolution", () => {
     ]);
     audience = undefined;
     try {
-      const off = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "admin"));
+      const off = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "power"));
       expect(!off.ok && [off.error.status, off.error.code]).toEqual([
         503,
         "remote_mcp_not_configured",
@@ -365,6 +371,8 @@ describe("one connection per client app (#968)", () => {
   });
 
   it("keeps an unclaimed revoked pre-#968 row in force for an app that has not identified itself", async () => {
+    // Stored as 'admin', the Power surface's spelling before #1636: such rows
+    // stay in force for the Power surface.
     await withSql(
       (tx) => tx`
         INSERT INTO mcp_remote_connections
@@ -373,12 +381,12 @@ describe("one connection per client app (#968)", () => {
     );
     const app = "dcr:Resuming App";
     // A request without MCP initialize (no client name) might be the revoked app itself.
-    const unnamed = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "admin", app));
+    const unnamed = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "power", app));
     expect(!unnamed.ok && unnamed.error.code).toBe("remote_access_revoked");
     if (!unnamed.ok) expect(unnamed.error.message).toContain("Reconnect this app");
-    expect(await connectionRow(USERS.owner.id, "admin", app)).toBeUndefined();
+    expect(await connectionRow(USERS.owner.id, "power", app)).toBeUndefined();
     // Once it initializes as a different app, it gets its own row, with the old cap.
-    const named = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "admin", app), {
+    const named = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "power", app), {
       clientLabel: "resuming-app",
     });
     expect(named.ok && named.value.aiCostCapMicrocents).toBe(77);
@@ -436,7 +444,7 @@ describe("mcp_remote_connections ops", () => {
       }
     ).connections;
     const owner = rows.find(
-      (c) => c.email === USERS.owner.email && c.surface === "admin" && c.clientKey === CLAUDE_CODE,
+      (c) => c.email === USERS.owner.email && c.surface === "power" && c.clientKey === CLAUDE_CODE,
     );
     expect(owner?.clientLabel).toBe("claude-ai");
     expect(rows.some((c) => c.email === USERS.editor.email && c.surface === "chat")).toBe(true);
@@ -465,7 +473,7 @@ describe("mcp_remote_connections ops", () => {
     expect(rows.every((c) => c.actorId === USERS.editor.id)).toBe(true);
     expect(rows.some((c) => c.email === USERS.owner.email)).toBe(false);
 
-    const ownersRow = await connectionRow(USERS.owner.id, "admin");
+    const ownersRow = await connectionRow(USERS.owner.id, "power");
     const ownRow = await connectionRow(USERS.editor.id, "chat");
     for (const id of [ownersRow!.id, ownRow!.id]) {
       const revoke = await execute(registry, adapter, editorCtx, "mcp_remote_connections.revoke", {
@@ -478,19 +486,19 @@ describe("mcp_remote_connections ops", () => {
       });
       expect(message(cap)).toContain("not yours to change");
     }
-    expect((await connectionRow(USERS.owner.id, "admin"))?.revoked_at).toBeNull();
+    expect((await connectionRow(USERS.owner.id, "power"))?.revoked_at).toBeNull();
     expect((await connectionRow(USERS.editor.id, "chat"))?.revoked_at).toBeNull();
   });
 
-  it("sets the cap and allowCaeloAi on admin connections; refuses allowCaeloAi on chat", async () => {
-    const admin = await connectionRow(USERS.owner.id, "admin");
+  it("sets the cap and allowCaeloAi on Power connections; refuses allowCaeloAi on chat", async () => {
+    const admin = await connectionRow(USERS.owner.id, "power");
     const set = await execute(registry, adapter, ownerCtx, "mcp_remote_connections.set_cap", {
       id: admin!.id,
       aiCostCapMicrocents: 5_000_000,
       allowCaeloAi: true,
     });
     expect(set.ok).toBe(true);
-    const p = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "admin"));
+    const p = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "power"));
     expect(p.ok && [p.value.aiCostCapMicrocents, p.value.allowCaeloAi]).toEqual([5_000_000, true]);
 
     const chat = await connectionRow(USERS.editor.id, "chat");
@@ -499,7 +507,7 @@ describe("mcp_remote_connections ops", () => {
       aiCostCapMicrocents: null,
       allowCaeloAi: true,
     });
-    expect(message(refused)).toContain("admin-surface connections only");
+    expect(message(refused)).toContain("Power connections only");
 
     // Back to the default for the op tests below.
     await execute(registry, adapter, ownerCtx, "mcp_remote_connections.set_cap", {
@@ -511,9 +519,9 @@ describe("mcp_remote_connections ops", () => {
 });
 
 describe("mcp.* ops on a remote credential", () => {
-  it("serves the Power-MCP catalogue to the admin connection and refuses a chat credential", async () => {
+  it("serves the Power-MCP catalogue to the Power connection and refuses a chat credential", async () => {
     const r = await execute(registry, adapter, systemCtx, "mcp.list_tools", {
-      remote: cred(USERS.owner.email, "admin"),
+      remote: cred(USERS.owner.email, "power"),
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -524,12 +532,12 @@ describe("mcp.* ops on a remote credential", () => {
     const chat = await execute(registry, adapter, systemCtx, "mcp.list_tools", {
       remote: cred(USERS.editor.email, "chat"),
     });
-    expect(message(chat)).toMatch(/^auth_error: mcp\.list_tools belongs to the admin surface/);
+    expect(message(chat)).toMatch(/^auth_error: mcp\.list_tools belongs to the power surface/);
   });
 
   it("refuses a request carrying both credentials, or neither", async () => {
     const both = await execute(registry, adapter, systemCtx, "mcp.list_tools", {
-      remote: cred(USERS.owner.email, "admin"),
+      remote: cred(USERS.owner.email, "power"),
       plaintextToken: "mcp_000000000000",
     });
     expect(both.ok).toBe(false);
@@ -538,7 +546,7 @@ describe("mcp.* ops on a remote credential", () => {
   });
 
   it("opens an agent session of the connection's client and attributes tool calls to the connection", async () => {
-    const remote = cred(USERS.owner.email, "admin");
+    const remote = cred(USERS.owner.email, "power");
     const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       remote,
       title: "t806 remote session",
@@ -576,7 +584,7 @@ describe("mcp.* ops on a remote credential", () => {
     );
     expect(runs).toHaveLength(1);
     expect(runs[0]?.mcp_token_id).toBeNull();
-    expect(runs[0]?.conn).toBe((await connectionRow(USERS.owner.id, "admin"))?.id);
+    expect(runs[0]?.conn).toBe((await connectionRow(USERS.owner.id, "power"))?.id);
     expect(runs[0]?.label).toContain("(remote MCP)");
   });
 

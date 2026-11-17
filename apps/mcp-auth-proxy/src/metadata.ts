@@ -7,7 +7,8 @@
  * served under each OAuth variant they use.
  */
 
-import type { McpConfig, McpSurface } from "./config.js";
+import { mcpSurfaceOf } from "@caelo-cms/shared";
+import { MCP_ADDRESS_ALTERNATION, type McpAddress, type McpConfig } from "./config.js";
 import { issuer, resourceUrl } from "./context.js";
 import { GOOGLE_SCOPES } from "./google.js";
 import { json } from "./http.js";
@@ -15,14 +16,14 @@ import { json } from "./http.js";
 /** Scopes this broker advertises (the Google scopes it asks for). */
 const SCOPES = GOOGLE_SCOPES.split(" ");
 
-/** RFC 9728 document for one surface. */
-export function protectedResourceMetadata(config: McpConfig, surface: McpSurface): Response {
+/** RFC 9728 document for one address. */
+export function protectedResourceMetadata(config: McpConfig, address: McpAddress): Response {
   return json({
-    resource: resourceUrl(config, surface),
+    resource: resourceUrl(config, address),
     authorization_servers: [issuer(config)],
     bearer_methods_supported: ["header"],
     scopes_supported: SCOPES,
-    resource_name: surface === "chat" ? "Caelo (chat)" : "Caelo (admin tools)",
+    resource_name: mcpSurfaceOf(address) === "chat" ? "Caelo (chat)" : "Caelo (Power-MCP)",
   });
 }
 
@@ -62,10 +63,15 @@ export const AS_METADATA_PATHS: readonly string[] = [
   "/api/mcp/oauth/.well-known/oauth-authorization-server",
 ];
 
-/** The surface whose protected-resource metadata `pathname` asks for, or null. */
-export function protectedResourceSurface(pathname: string): McpSurface | null {
-  const m =
-    /^\/\.well-known\/oauth-protected-resource\/api\/mcp\/(chat|admin)$/.exec(pathname) ??
-    /^\/api\/mcp\/oauth\/protected-resource\/(chat|admin)$/.exec(pathname);
-  return m ? (m[1] as McpSurface) : null;
+const WELL_KNOWN_PROTECTED_RESOURCE = new RegExp(
+  `^/\\.well-known/oauth-protected-resource/api/mcp/(${MCP_ADDRESS_ALTERNATION})$`,
+);
+const OAUTH_PROTECTED_RESOURCE = new RegExp(
+  `^/api/mcp/oauth/protected-resource/(${MCP_ADDRESS_ALTERNATION})$`,
+);
+
+/** The address whose protected-resource metadata `pathname` asks for, or null. */
+export function protectedResourceAddress(pathname: string): McpAddress | null {
+  const m = WELL_KNOWN_PROTECTED_RESOURCE.exec(pathname) ?? OAUTH_PROTECTED_RESOURCE.exec(pathname);
+  return m ? (m[1] as McpAddress) : null;
 }

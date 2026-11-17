@@ -15,8 +15,8 @@ import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/typ
 import {
   catalogueSignature,
   resolveCatalogueMaxAgeMs,
-  startAdminMcpServer,
-} from "./admin-server.js";
+  startPowerMcpServer,
+} from "./power-server.js";
 
 const OLD_TOOL = { name: "get_staging_access", description: "d", inputSchema: { type: "object" } };
 const NEW_TOOL = {
@@ -115,7 +115,7 @@ describe("tool list changes reach the client", () => {
 
   async function connect(maxAgeMs: number): Promise<{ client: Client; changed: () => number }> {
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-    await startAdminMcpServer({
+    await startPowerMcpServer({
       adminUrl: `http://127.0.0.1:${stub.port}`,
       token: "mcp_test",
       transport: serverSide,

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 // SPDX-License-Identifier: MPL-2.0
 
 /**
@@ -8,13 +9,15 @@
  *
  * - (none)   — the chat MCP server: exactly one tool (`caelo_chat`) that
  *              talks to Caelo's own AI agent. Works with any token scope.
- * - `admin`  — the Power-MCP server (issue #376): the full chat-runner
+ * - `power`  — the Power-MCP server (issue #376): the full chat-runner
  *              tool catalogue for an external agent that drives the tool
- *              loop itself. Requires an admin-scoped token. Also
- *              available as the `caelo-admin-mcp` binary.
+ *              loop itself. Requires a token of scope `power`. Also
+ *              available as the `caelo-power-mcp` binary. `admin` is the
+ *              command's name from before #1636 and still accepted
+ *              (until 1.0, #1638).
  * - `export` — writes CLAUDE.md + .claude/skills/ files generated from
  *              the install's live context into `--out <dir>` (default:
- *              the current directory). Requires an admin-scoped token.
+ *              the current directory). Requires a token of scope `power`.
  *
  * Bridge model: every mode is a thin shim. Calls become HTTP POSTs
  * against the admin install's `/api/mcp/*` endpoints, which dispatch
@@ -27,15 +30,19 @@
  * start unconfigured instead (#841, see ./unconfigured.ts).
  */
 
-import { startAdminMcpServer } from "./admin-server.js";
 import { runExport } from "./export.js";
+import { CHAT_BIN, LEGACY_POWER_COMMAND, POWER_COMMAND } from "./names.js";
+import { startPowerMcpServer } from "./power-server.js";
 import { startMcpServer } from "./server.js";
 import { missingCredentials, startUnconfiguredServer } from "./unconfigured.js";
 import { ensureAdminRelease } from "./version-handshake.js";
 
 const command = process.argv[2];
-if (command !== undefined && command !== "admin" && command !== "export") {
-  console.error(`unknown command: ${command} (expected no command, "admin", or "export")`);
+const power = command === POWER_COMMAND || command === LEGACY_POWER_COMMAND;
+if (command !== undefined && !power && command !== "export") {
+  console.error(
+    `unknown command: ${command} (expected no command, "${POWER_COMMAND}", or "export")`,
+  );
   process.exit(2);
 }
 
@@ -44,20 +51,20 @@ if (command !== undefined && command !== "admin" && command !== "export") {
 // still exits.
 const missing = missingCredentials(process.env);
 if (missing.length > 0 && command !== "export") {
-  await startUnconfiguredServer({ mode: command === "admin" ? "admin" : "chat", missing });
+  await startUnconfiguredServer({ mode: power ? "power" : "chat", missing });
 } else {
   const adminUrl = process.env.CAELO_ADMIN_URL;
   const token = process.env.CAELO_MCP_TOKEN;
   if (!adminUrl || !token) {
     console.error(
-      `${missing.join(" and ")} not set — export needs CAELO_ADMIN_URL and an ADMIN-scoped ` +
-        "CAELO_MCP_TOKEN minted at /settings/mcp on your admin install",
+      `${missing.join(" and ")} not set — export needs CAELO_ADMIN_URL and a CAELO_MCP_TOKEN ` +
+        "of scope 'power', minted at /settings/mcp on your admin install",
     );
     process.exit(2);
   }
 
   // #764 — run as the admin's own release (re-execs on a mismatch).
-  await ensureAdminRelease({ adminUrl, token, bin: "caelo-mcp-server" });
+  await ensureAdminRelease({ adminUrl, token, bin: CHAT_BIN });
 
   if (command === "export") {
     const outFlag = process.argv.indexOf("--out");
@@ -69,8 +76,8 @@ if (missing.length > 0 && command !== "export") {
     const written = await runExport({ adminUrl, token, outDir: outDir ?? process.cwd() });
     for (const path of written) console.log(path);
     console.log(`exported ${written.length} file(s) — re-run after skills or site memory change`);
-  } else if (command === "admin") {
-    await startAdminMcpServer({ adminUrl, token });
+  } else if (power) {
+    await startPowerMcpServer({ adminUrl, token });
   } else {
     await startMcpServer({ adminUrl, token });
   }

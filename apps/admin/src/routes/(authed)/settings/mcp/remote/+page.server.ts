@@ -51,7 +51,7 @@ export const load: PageServerLoad = async ({ locals, parent }) => {
   const mayUse = {
     chat:
       aiMode !== "mcp_only" && locals.user?.permissions.has(MCP_SURFACE_PERMISSION.chat) === true,
-    admin: locals.user?.permissions.has(MCP_SURFACE_PERMISSION.admin) === true,
+    power: locals.user?.permissions.has(MCP_SURFACE_PERMISSION.power) === true,
   };
   return { availability, client, siteHost, mayUse };
 };

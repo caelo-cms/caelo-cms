@@ -20,7 +20,7 @@ import {
   clearTestProvider,
   ensureIsolatedOwner,
   ISOLATED_OWNER_PASSWORD,
-  mintAdminMcpToken,
+  mintPowerMcpToken,
   registerTestProvider,
   runBunInline,
 } from "./helpers.js";
@@ -144,7 +144,7 @@ test("an external agent's caelo_chat card records the decision for the agent and
 }) => {
   const actorId = await login(page);
   const agentName = `approval-resume-agent-${Date.now()}`;
-  const token = mintAdminMcpToken(actorId, agentName);
+  const token = mintPowerMcpToken(actorId, agentName);
   const sessionRes = await request.post("/api/mcp/session", {
     headers: { "x-caelo-mcp-token": token },
     data: { title: `approval-resume-e2e-${Date.now()}` },

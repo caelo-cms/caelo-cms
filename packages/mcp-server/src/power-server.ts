@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #376 — the Power-MCP stdio server (`caelo-admin-mcp` /
- * `caelo-mcp-server admin`). Where the chat server routes editing through a
+ * Issue #376 — the Power-MCP stdio server (`caelo-power-mcp` /
+ * `caelo-mcp-server power`). Where the chat server routes editing through a
  * tool that talks to Caelo's own AI, this server exposes the whole
  * chat-runner tool catalogue so the CALLING agent (Claude Code et al.)
  * drives the tool loop itself — no Caelo-side reasoning cost. Issue #741:
@@ -12,11 +12,11 @@
  * `caelo_get_context` explains the contract.
  *
  * The server itself (tools, companion tools, approval waits) is
- * ./surfaces/admin-surface.ts, shared with the admin's remote endpoint
+ * ./surfaces/power-surface.ts, shared with the admin's remote endpoint
  * (issue #806). This module is the stdio backend:
  *
- * - the catalogue is fetched live from `/api/mcp/tools` at startup (an
- *   admin-scoped token is required; 'chat' tokens get a 401 with the fix)
+ * - the catalogue is fetched live from `/api/mcp/tools` at startup (a
+ *   token of scope `power` is required; 'chat' tokens get a 401 with the fix)
  *   and re-read on use once it is older than its max age (#678) — a change
  *   reaches the client through `notifications/tools/list_changed`, an
  *   unknown tool name refreshes too. Never on a timer: every request wakes
@@ -37,17 +37,17 @@ import { type ApprovalOutcome, resolveApprovalWaitMs } from "./approval-wait.js"
 import { postAdmin, resolveTimeoutMs } from "./http.js";
 import { uploadImages } from "./image-upload.js";
 import {
-  createAdminMcpServer,
+  createPowerMcpServer,
   type ExecuteToolResponse,
   type GetContextResponse,
   NoWorkSessionError,
   type OpenSessionResponse,
   type RemoteTool,
-} from "./surfaces/admin-surface.js";
+} from "./surfaces/power-surface.js";
 import { rpcToolCallId } from "./surfaces/rpc-tool-call-id.js";
 import { ownVersion } from "./version-handshake.js";
 
-export interface StartAdminOpts {
+export interface StartPowerOpts {
   readonly adminUrl: string;
   readonly token: string;
   /** Defaults to stdio; tests pass an in-memory transport. */
@@ -88,7 +88,7 @@ export function catalogueSignature(tools: readonly RemoteTool[]): string {
   );
 }
 
-export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
+export async function startPowerMcpServer(opts: StartPowerOpts): Promise<void> {
   const target = { adminUrl: opts.adminUrl, token: opts.token };
   const fetchCatalogue = () =>
     postAdmin<{ tools: RemoteTool[] }>({
@@ -114,7 +114,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   // #678 — the catalogue is the ADMIN's: an upgrade or an activated plugin
   // changes it while this process runs. `listChanged` tells the client to
   // re-list when we say so, instead of the operator reconnecting (/mcp).
-  const server = createAdminMcpServer(
+  const server = createPowerMcpServer(
     {
       listCatalogue: async () => {
         // The client is listing right now: answer with the current list.
@@ -209,7 +209,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
       // stderr: stdout is the stdio transport. A failed refresh keeps the
       // last catalogue; the next use (or an unknown tool) retries.
       console.error(
-        `[caelo-admin-mcp] tool catalogue refresh failed: ${e instanceof Error ? e.message : String(e)}`,
+        `[caelo-power-mcp] tool catalogue refresh failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     });
   };

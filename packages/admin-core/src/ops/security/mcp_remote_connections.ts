@@ -18,7 +18,7 @@
  *   mcp_remote_connections.block_user / unblock_user
  *                                  — every app of one user, including apps
  *                                    that never connected before.
- *   mcp_remote_connections.set_cap — the AI cost cap and, on the admin
+ *   mcp_remote_connections.set_cap — the AI cost cap and, on the Power
  *                                    surface, whether the agent may spend
  *                                    the install's own AI (#741).
  *
@@ -32,7 +32,7 @@ import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 import { withSystemRls } from "../_helpers.js";
-import { mcpRemoteSurface } from "./mcp_credential.js";
+import { mcpRemoteSurface, mcpSurfaceFromStored } from "./mcp_credential.js";
 
 const connectionRow = z.object({
   id: z.string(),
@@ -51,6 +51,12 @@ const connectionRow = z.object({
   allowCaeloAi: z.boolean(),
   /** The MCP client's self-reported name (initialize `clientInfo`), e.g. "claude-ai". */
   clientLabel: z.string().nullable(),
+  /**
+   * #1636 — the app last connected through the Power surface's old address
+   * (`/api/mcp/admin`), which stops working with 1.0 (#1638). The Owner
+   * sees who still has to re-add a connector.
+   */
+  viaLegacyAddress: z.boolean(),
   createdAt: z.string(),
   lastUsedAt: z.string().nullable(),
   revokedAt: z.string().nullable(),
@@ -72,11 +78,13 @@ type RawRow = {
   id: string;
   actor_id: string;
   email: string | null;
-  surface: "chat" | "admin";
+  /** As stored: `admin` on rows from before #1636 (mcp_credential.ts). */
+  surface: string;
   client_key: string | null;
   ai_cost_cap_microcents: bigint | string | number | null;
   allow_caelo_ai: boolean;
   client_label: string | null;
+  via_legacy_address: boolean;
   created_at: string | Date;
   last_used_at: string | Date | null;
   revoked_at: string | Date | null;
@@ -93,13 +101,14 @@ function toRow(r: RawRow): McpRemoteConnectionRow {
     id: r.id,
     actorId: r.actor_id,
     email: r.email,
-    surface: r.surface,
+    surface: mcpSurfaceFromStored(r.surface),
     clientKey: r.client_key,
     clientName: describeMcpClient(r.client_key),
     aiCostCapMicrocents:
       cap === null ? null : typeof cap === "string" ? Number.parseInt(cap, 10) : Number(cap),
     allowCaeloAi: r.allow_caelo_ai,
     clientLabel: r.client_label,
+    viaLegacyAddress: r.via_legacy_address,
     createdAt: toIso(r.created_at) ?? "",
     lastUsedAt: toIso(r.last_used_at),
     revokedAt: toIso(r.revoked_at),
@@ -141,7 +150,7 @@ async function selectRows(
   // connection scope too.
   const rows = (await tx.execute(sql`
     SELECT c.id::text AS id, c.actor_id::text AS actor_id, c.surface, c.client_key,
-           c.ai_cost_cap_microcents, c.allow_caelo_ai, c.client_label,
+           c.ai_cost_cap_microcents, c.allow_caelo_ai, c.client_label, c.via_legacy_address,
            c.created_at, c.last_used_at, c.revoked_at, c.revoked_by::text AS revoked_by
     FROM mcp_remote_connections c
     ${id === undefined ? sql`` : sql`WHERE c.id = ${id}::uuid`}
@@ -310,7 +319,7 @@ export const setMcpRemoteConnectionCapOp = defineOperation({
       /** Microcents (USD × 1e8); null = uncapped. */
       aiCostCapMicrocents: z.number().int().nonnegative().nullable(),
       /**
-       * #741 — admin surface only: the agent may use the install's own AI
+       * #741 — Power surface only: the agent may use the install's own AI
        * (image generation, Caelo-side translation runs). Omit to keep it.
        */
       allowCaeloAi: z.boolean().optional(),
@@ -320,12 +329,12 @@ export const setMcpRemoteConnectionCapOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const [current] = await selectRows(tx, ctx, input.id);
     if (!current) return notFound("mcp_remote_connections.set_cap", input.id);
-    if (input.allowCaeloAi === true && current.surface !== "admin") {
+    if (input.allowCaeloAi === true && current.surface !== "power") {
       return err({
         kind: "HandlerError",
         operation: "mcp_remote_connections.set_cap",
         message:
-          "allowCaeloAi applies to admin-surface connections only — a chat connection always runs Caelo's own agent. Drop the flag.",
+          "allowCaeloAi applies to Power connections only — a chat connection always runs Caelo's own agent. Drop the flag.",
       });
     }
     const updated = await updateOne(

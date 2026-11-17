@@ -42,7 +42,7 @@ afterAll(async () => {
   await db.end();
 });
 
-async function mint(scope: "chat" | "admin") {
+async function mint(scope: "chat" | "power") {
   const r = await execute(registry, adapter, human, "mcp_tokens.create", {
     displayName: "version-test",
     scope,
@@ -53,11 +53,16 @@ async function mint(scope: "chat" | "admin") {
 const getVersion = (plaintextToken: string) =>
   execute(registry, adapter, system, "mcp.get_version", { plaintextToken });
 
-test("chat and admin tokens get the admin's release; unknown, revoked and expired tokens do not", async () => {
-  for (const scope of ["chat", "admin"] as const) {
+test("chat and Power tokens get the admin's release; unknown, revoked and expired tokens do not", async () => {
+  for (const scope of ["chat", "power"] as const) {
     const token = await mint(scope);
     const r = await getVersion(token.plaintextToken);
-    expect(r.ok && r.value).toEqual({ version: CAELO_VERSION });
+    // `bins` (#1636): the programs this release's shim package ships, so a
+    // shim started as `caelo-power-mcp` knows this release has it.
+    expect(r.ok && r.value).toEqual({
+      version: CAELO_VERSION,
+      bins: ["caelo-mcp-server", "caelo-power-mcp", "caelo-admin-mcp"],
+    });
     await execute(registry, adapter, human, "mcp_tokens.revoke", { id: token.id });
     const revoked = await getVersion(token.plaintextToken);
     expect(!revoked.ok && "message" in revoked.error && revoked.error.message).toBe(
@@ -74,7 +79,7 @@ test("chat and admin tokens get the admin's release; unknown, revoked and expire
 });
 
 test("the op is system-only — an AI actor cannot call it", async () => {
-  const token = await mint("admin");
+  const token = await mint("power");
   const r = await execute(registry, adapter, { ...system, actorKind: "ai" }, "mcp.get_version", {
     plaintextToken: token.plaintextToken,
   });

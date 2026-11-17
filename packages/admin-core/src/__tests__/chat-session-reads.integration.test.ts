@@ -264,7 +264,7 @@ describe("Power-MCP session lookups (#1216)", () => {
   beforeAll(async () => {
     const r = await execute(registry, adapter, owner, "mcp_tokens.create", {
       displayName: "issue1216-admin",
-      scope: "admin",
+      scope: "power",
     });
     if (!r.ok) throw new Error(`token: ${JSON.stringify(r.error)}`);
     token = (r.value as { plaintextToken: string }).plaintextToken;

@@ -5,7 +5,7 @@ description: Connect Claude Code to a Caelo CMS install and check the connection
 
 # Connect to Caelo
 
-The plugin starts Caelo's MCP server (`@caelo-cms/mcp-server`, Power-MCP mode) as the MCP server `caelo`. It needs three things: Bun on this machine, the admin URL of a Caelo install, and an admin-scoped MCP token from that install. Without URL and token the server still starts and lists its tools, but every call fails and names the missing value.
+The plugin starts Caelo's MCP server (`@caelo-cms/mcp-server`, Power-MCP mode) as the MCP server `caelo`. It needs three things: Bun on this machine, the admin URL of a Caelo install, and an MCP token of scope `power` from that install. Without URL and token the server still starts and lists its tools, but every call fails and names the missing value.
 
 ## 1. Check what is missing
 
@@ -15,7 +15,7 @@ Call `caelo_open_session`. If it works, the connection is fine: continue with th
 |---|---|---|
 | `CAELO_ADMIN_URL` / `CAELO_MCP_TOKEN` not set | Plugin options empty | Step 2 |
 | `must use https://` | URL starts with `http://` | Use the `https://` address (plain http only for localhost) |
-| HTTP 401 / token rejected | Token revoked, expired (tokens last 90 days) or chat-scoped | Mint a new token with scope `admin` (step 3) |
+| HTTP 401 / token rejected | Token revoked, expired (tokens last 90 days) or chat-scoped | Mint a new token with scope `power` (step 3) |
 | Google IAP | Install on Google Cloud behind IAP | Set the IAP service account option and run `gcloud auth application-default login` once |
 | Version handshake, `bunx` not found | Bun missing or the admin unreachable | Install Bun (https://bun.sh), check the URL opens in a browser |
 
@@ -32,7 +32,7 @@ Options: `admin_url` (e.g. `https://admin.example.com`), `mcp_token` (stored in 
 
 ## 3. Get a token
 
-As Owner, open `/settings/mcp` on the install, click **New token**, choose scope **admin**, optionally set an AI cost cap, and copy the token (it is shown once). Leave **Agent may use Caelo's AI** off unless the user wants Caelo's own AI calls on the install's key. The page also shows ready-made setups for other clients.
+Open `/settings/mcp` on the install with a role that may edit content, click **New token**, choose scope **power**, optionally set an AI cost cap, and copy the token (it is shown once). The token acts as the person who mints it, so everyone mints their own. An Owner also sees **Agent may use Caelo's AI**: leave it off unless the user wants Caelo's own AI calls on the install's key. The page also shows ready-made setups for other clients.
 
 ## 4. No Caelo install yet
 

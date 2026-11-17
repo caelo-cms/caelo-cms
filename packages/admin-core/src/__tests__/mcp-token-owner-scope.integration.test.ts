@@ -99,7 +99,9 @@ async function chatOf(ctx: ExecutionContext): Promise<ExecutionContext> {
 beforeAll(async () => {
   await seedUser(OWNER, "owner");
   await seedUser(EDITOR, "editor");
-  await seedUser(REVIEWER, "reviewer");
+  // Minting needs content.write (#1636). The reviewer holds a token from
+  // when they were an editor: it stays theirs to see and revoke.
+  await seedUser(REVIEWER, "editor");
   const db = new SQL(ADMIN_URL!);
   try {
     await db.begin(async (tx) => {
@@ -113,6 +115,16 @@ beforeAll(async () => {
   tokenOf.owner = await mint(OWNER, "owner-laptop");
   tokenOf.editor = await mint(EDITOR, "editor-laptop");
   tokenOf.reviewer = await mint(REVIEWER, "reviewer-laptop");
+  const demote = new SQL(ADMIN_URL!);
+  try {
+    await demote.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE user_roles SET role_id = (SELECT id FROM roles WHERE name = 'reviewer')
+               WHERE user_id = ${REVIEWER.actorId}::uuid`;
+    });
+  } finally {
+    await demote.end();
+  }
 });
 
 afterAll(async () => {
@@ -154,10 +166,23 @@ describe("mcp_tokens.revoke", () => {
   });
 
   it("lets a non-Owner revoke their own token", async () => {
-    const own = await mint(REVIEWER, "reviewer-ci");
-    const r = await execute(registry, adapter, REVIEWER, "mcp_tokens.revoke", { id: own });
+    const own = await mint(EDITOR, "editor-ci");
+    const r = await execute(registry, adapter, EDITOR, "mcp_tokens.revoke", { id: own });
     expect(r.ok).toBe(true);
     expect(await revokedAt(own)).not.toBeNull();
+  });
+
+  it("a person who may no longer mint (#1636) still revokes the token they hold", async () => {
+    const refused = await execute(registry, adapter, REVIEWER, "mcp_tokens.create", {
+      displayName: "reviewer-ci",
+    });
+    expect(errorMessage(refused)).toContain("permission_denied");
+    expect(errorMessage(refused)).toContain("content.write");
+    const r = await execute(registry, adapter, REVIEWER, "mcp_tokens.revoke", {
+      id: tokenOf.reviewer as string,
+    });
+    expect(r.ok).toBe(true);
+    expect(await revokedAt(tokenOf.reviewer as string)).not.toBeNull();
   });
 
   it("lets an Owner revoke another user's token", async () => {

@@ -23,7 +23,7 @@ import {
   clearTestProvider,
   ensureIsolatedOwner,
   ISOLATED_OWNER_PASSWORD,
-  mintAdminMcpToken,
+  mintPowerMcpToken,
   registerTestProvider,
   runBunInline,
 } from "./helpers.js";
@@ -190,7 +190,7 @@ test("an external agent working in the chat is listed, keeps the Live Edit AI ou
     ],
   ]);
   await attachTestProviderHeader(context, PROVIDER_ANSWER);
-  const token = mintAdminMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "stop-e2e agent");
+  const token = mintPowerMcpToken(ensureIsolatedOwner(OWNER_EMAIL), "stop-e2e agent");
   const sessionRes = await request.post("/api/mcp/session", {
     headers: { "x-caelo-mcp-token": token },
     data: { title: `stop-e2e-${Date.now()}` },

@@ -16,6 +16,7 @@ import {
   REEXEC_GUARD_ENV,
   type ReexecChild,
   reexecArgv,
+  reexecTarget,
 } from "./version-handshake.js";
 
 describe("decideHandshake", () => {
@@ -85,9 +86,65 @@ describe("reexecArgv", () => {
   });
 });
 
+describe("reexecTarget (#1636: caelo-power-mcp was caelo-admin-mcp)", () => {
+  const NEW_ADMIN = ["caelo-mcp-server", "caelo-power-mcp", "caelo-admin-mcp"];
+
+  it("keeps the new names for an admin whose release ships them", () => {
+    expect(
+      reexecTarget({ bin: "caelo-power-mcp", forwardedArgs: [], adminBins: NEW_ADMIN }),
+    ).toEqual({ bin: "caelo-power-mcp", forwardedArgs: [], adminBins: NEW_ADMIN });
+    expect(
+      reexecTarget({ bin: "caelo-mcp-server", forwardedArgs: ["power"], adminBins: NEW_ADMIN })
+        .forwardedArgs,
+    ).toEqual(["power"]);
+  });
+
+  it("re-runs the old names in a release from before the rename, which has no others", () => {
+    // An admin from before #1636 sends no `bins`.
+    expect(
+      reexecTarget({ bin: "caelo-power-mcp", forwardedArgs: [], adminBins: undefined }).bin,
+    ).toBe("caelo-admin-mcp");
+    expect(
+      reexecTarget({ bin: "caelo-mcp-server", forwardedArgs: ["power"], adminBins: undefined })
+        .forwardedArgs,
+    ).toEqual(["admin"]);
+  });
+
+  it("leaves the names every release has alone", () => {
+    for (const adminBins of [undefined, NEW_ADMIN]) {
+      expect(reexecTarget({ bin: "caelo-admin-mcp", forwardedArgs: [], adminBins }).bin).toBe(
+        "caelo-admin-mcp",
+      );
+      expect(
+        reexecTarget({
+          bin: "caelo-mcp-server",
+          forwardedArgs: ["export", "--out", "x"],
+          adminBins,
+        }),
+      ).toMatchObject({ bin: "caelo-mcp-server", forwardedArgs: ["export", "--out", "x"] });
+      // `power` only as the command, never as a later argument's value.
+      expect(
+        reexecTarget({ bin: "caelo-mcp-server", forwardedArgs: ["export", "power"], adminBins })
+          .forwardedArgs,
+      ).toEqual(["export", "power"]);
+    }
+  });
+
+  it("never puts a name the admin sent on the command line", () => {
+    const adminBins = ["caelo-power-mcp", "rm", "--package", "evil"];
+    expect(reexecTarget({ bin: "caelo-power-mcp", forwardedArgs: [], adminBins }).bin).toBe(
+      "caelo-power-mcp",
+    );
+  });
+});
+
 describe("describeVersionFetchFailure", () => {
   it("tells the operator how to pin when the admin predates the handshake", () => {
     expect(describeVersionFetchFailure("HTTP 404: Not Found", "caelo-admin-mcp")).toContain(
+      "bunx --package @caelo-cms/mcp-server@<admin release> caelo-admin-mcp",
+    );
+    // That admin's release has the Power-MCP server under its old name only.
+    expect(describeVersionFetchFailure("HTTP 404: Not Found", "caelo-power-mcp")).toContain(
       "bunx --package @caelo-cms/mcp-server@<admin release> caelo-admin-mcp",
     );
   });
@@ -108,6 +165,15 @@ describe("adminVersionResponse", () => {
       expect(adminVersionResponse.safeParse({ version }).success).toBe(false);
     }
     expect(adminVersionResponse.safeParse({}).success).toBe(false);
+  });
+
+  it("takes the release's programs when the admin announces them (#1636)", () => {
+    const parsed = adminVersionResponse.safeParse({
+      version: "0.13.0",
+      bins: ["caelo-mcp-server", "caelo-power-mcp", "caelo-admin-mcp"],
+    });
+    expect(parsed.success && parsed.data.bins).toContain("caelo-power-mcp");
+    expect(adminVersionResponse.safeParse({ version: "0.13.0", bins: "all" }).success).toBe(false);
   });
 });
 
@@ -186,12 +252,12 @@ function harness(over: Partial<HandshakeIo> = {}) {
     },
     ...over,
   };
-  const run = (adminUrl = "https://admin.example.com") =>
-    ensureAdminRelease({ adminUrl, token: "tok", bin: "caelo-mcp-server" }, io);
+  const run = (adminUrl = "https://admin.example.com", bin = "caelo-mcp-server") =>
+    ensureAdminRelease({ adminUrl, token: "tok", bin }, io);
   /** Runs the handshake and resolves with the code it exited with. */
-  const exitCode = async (adminUrl?: string): Promise<number> => {
+  const exitCode = async (adminUrl?: string, bin?: string): Promise<number> => {
     try {
-      await run(adminUrl);
+      await run(adminUrl, bin);
     } catch (e) {
       if (e instanceof Exited) return e.code;
       throw e;
@@ -263,6 +329,24 @@ describe("ensureAdminRelease", () => {
     expect(env[REEXEC_GUARD_ENV]).toBe("0.10.50");
     expect(env.HOME).toBe("/home/op");
     expect(h.logs.join("\n")).not.toContain("could not run");
+  });
+
+  it("re-execs caelo-power-mcp under the name the admin's release has (#1636)", async () => {
+    for (const [answer, expected] of [
+      [{ version: "0.10.52" }, "caelo-admin-mcp"],
+      [{ version: "0.10.52", bins: ["caelo-mcp-server", "caelo-power-mcp"] }, "caelo-power-mcp"],
+    ] as const) {
+      const h = harness({ fetchAdminVersion: async () => answer, forwardedArgs: [] });
+      const done = h.exitCode(undefined, "caelo-power-mcp");
+      (await h.spawnedChild()).emit("exit", 0, null);
+      expect(await done).toBe(0);
+      expect((h.spawned[0] as Spawned).args).toEqual([
+        "x",
+        "--package",
+        "@caelo-cms/mcp-server@0.10.52",
+        expected,
+      ]);
+    }
   });
 
   it("propagates a non-zero child exit with an actionable message", async () => {

@@ -9,12 +9,14 @@
  *     (the viu.one case: revoking Claude Code locked out ChatGPT), with who
  *     revoked it; Restore; the cap round-trip;
  *   - "Block all apps" and Unblock for the person;
- *   - the editor sees only their own apps, read-only, and no token section.
+ *   - the editor sees only their own apps, read-only, and mints a token of
+ *     their own (#1636): no Owner hands over theirs, and "may use Caelo's
+ *     AI" is not on offer to them.
  *
  * The remote endpoints themselves are covered by
  * apps/admin/src/lib/server/mcp-remote.integration.test.ts (IAP cannot be
- * reproduced in the compose stack), including the editor's permission error
- * on the admin address.
+ * reproduced in the compose stack), including an editor's own AI tool on
+ * the Power address and the refusal of a read-only role.
  */
 
 import { expect, type Page, test } from "@playwright/test";
@@ -103,7 +105,9 @@ test("the Owner blocks every app of a person and lifts the block", async ({ page
   await expect(rows.filter({ hasText: "active" })).toHaveCount(2);
 });
 
-test("an editor sees only their own apps, read-only, and no token section", async ({ page }) => {
+test("an editor sees only their own apps, read-only, and mints their own token", async ({
+  page,
+}) => {
   await signIn(page, EMAIL, PASSWORD);
   await page.goto("/settings/mcp");
   const card = page.getByTestId("mcp-remote-connections");
@@ -113,9 +117,23 @@ test("an editor sees only their own apps, read-only, and no token section", asyn
   for (const name of ["Revoke", "Restore", "Save", "Block all apps"]) {
     await expect(card.getByRole("button", { name })).toHaveCount(0);
   }
-  await expect(page.getByTestId("mcp-token-access")).toHaveCount(0);
   // Remote MCP is off in the suite: an editor is told to ask an Owner, not offered setup.
   const remote = page.getByTestId("mcp-remote-access");
   await expect(remote).toContainText("Ask an Owner to set it up.");
   await expect(remote.getByRole("link", { name: "Set up remote MCP" })).toHaveCount(0);
+
+  // #1636 — a token acts as its minter, so the editor mints their own.
+  const tokens = page.getByTestId("mcp-token-access");
+  await expect(tokens.getByText("Your tokens")).toBeVisible();
+  const name = `e2e-editor-own-${Date.now()}`;
+  await tokens.getByLabel("Name").fill(name);
+  await tokens.getByLabel("Scope").selectOption("power");
+  // Spending the install's AI is the Owner's decision: not offered here.
+  await expect(tokens.getByLabel("Agent may use Caelo's AI")).toHaveCount(0);
+  await tokens.getByRole("button", { name: "Create token" }).click();
+  await expect(page.getByText("Token created — copy it now.")).toBeVisible();
+  await expect(page.getByTestId("mcp-setup-claude-code")).toContainText(
+    "@caelo-cms/mcp-server@latest caelo-power-mcp",
+  );
+  await expect(tokens.getByRole("row").filter({ hasText: name })).toContainText("agent only");
 });
