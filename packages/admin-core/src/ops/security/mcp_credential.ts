@@ -8,6 +8,7 @@
  * cycle. See mcp_principal.ts for how a credential resolves.
  */
 
+import { textArray } from "@caelo-cms/query-api";
 import {
   MCP_ADDRESS_NAMES,
   MCP_SURFACE_NAMES,
@@ -46,16 +47,15 @@ export function mcpSurfaceFromPayload(value: string | undefined): McpSurfaceName
 }
 
 /**
- * SQL: `column` holds `surface`, in either spelling. One value for `chat`,
- * so the unique index on (actor_id, surface, client_key) still serves it.
+ * SQL: `column` holds `surface`, in either spelling. A plain equality for
+ * `chat`; for the Power surface one array parameter with its two spellings.
+ * Both are served by the unique index on (actor_id, surface, client_key).
  */
 export function storedSurfaceIs(column: SQL, surface: McpSurfaceName): SQL {
-  return surface === "power"
-    ? sql`${column} IN (${sql.join(
-        storedMcpSurfaceValues(surface).map((v) => sql`${v}`),
-        sql`, `,
-      )})`
-    : sql`${column} = ${surface}`;
+  const values = storedMcpSurfaceValues(surface);
+  return values.length === 1
+    ? sql`${column} = ${surface}`
+    : sql`${column} = ANY(${textArray(values)})`;
 }
 
 /**
