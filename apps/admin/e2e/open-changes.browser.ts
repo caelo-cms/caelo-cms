@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #620 Part C — the Open changes overview (/content/changes).
+ * Issue #620 Part C — Draft changes (/content/changes): the operator's own
+ * conversations with changes that are not on staging yet.
  *
  * Seeded through the real ops: experiment chat A edits a module, draft
  * chat B edits the same module (B takes it over — A's unstaged change moves
- * into the shared draft), and draft chat C edits another module. The overview must show B with the module
- * and the visible takeover note, hide A (nothing unstaged, nothing held
- * any more), and Discard C through the real form action (routing + CSRF +
- * chat.discard_branch). The multi-chat Stage itself (merge, one staging
- * build, one audit) is covered by the admin-core integration suite
- * (stage-chats-open-changes.integration.test.ts) — the mock E2E stack has
- * no staging build target to exercise.
+ * into the shared draft), and draft chat C edits another module. The page
+ * must show B with its count and, behind Show details, the module; hide A
+ * (nothing unstaged any more) and another editor's chat (only the
+ * operator's own are listed, decision 2026-11-17); and Discard C through
+ * the real form action (routing + CSRF + chat.discard_branch). The
+ * multi-chat Stage itself (merge, one staging build, one audit) is covered
+ * by the admin-core integration suite (stage-chats-open-changes.integration.test.ts)
+ * — the mock E2E stack has no staging build target to exercise.
  */
 
 import { expect, test } from "@playwright/test";
@@ -104,8 +106,8 @@ test.beforeAll(() => {
     await run(a.ctx, "modules.update", { moduleId: shared, html: "<p>from A</p>" });
     await run(b.ctx, "modules.update", { moduleId: shared, css: ".b{}" });
     await run(c.ctx, "modules.update", { moduleId: own, html: "<p>from C</p>" });
-    // Another editor's chat with open work: listed read-only, not a link
-    // (/edit only resumes the operator's own chats).
+    // Another editor's chat with draft changes: not the operator's to
+    // stage, so it is not listed at all.
     const colleagueId = crypto.randomUUID();
     const db2 = new SQL(process.env.ADMIN_DATABASE_URL);
     await db2.begin(async (tx) => {
@@ -141,7 +143,7 @@ test.beforeAll(() => {
   chats = JSON.parse(out) as typeof chats;
 });
 
-test("lists open chats with the takeover note and discards a chat", async ({ page }) => {
+test("lists the operator's own conversations with their changes and discards one", async ({ page }) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");
@@ -149,34 +151,37 @@ test("lists open chats with the takeover note and discards a chat", async ({ pag
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
   await page.goto("/content/changes");
-  await expect(page.getByRole("heading", { name: "Open changes" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Draft changes" })).toBeVisible();
 
-  const cardB = page.locator(`[data-chat-id="${chats.b}"]`);
+  const cardB = page.locator(`[data-testid="draft-chat"][data-chat-id="${chats.b}"]`);
   await expect(cardB).toBeVisible();
-  await expect(cardB).toContainText(`${TAG} Shared hero`);
-  await expect(cardB.getByTestId("takeovers")).toContainText(
-    `Adopted module '${TAG} Shared hero' from chat '${TAG} Website'`,
+  // Counted as the operator sees it: one module is one site-wide change.
+  await expect(cardB.getByTestId("draft-chat-stats")).toContainText("1 site-wide change");
+  await expect(cardB.getByTestId("draft-chat-details")).toHaveCount(0);
+  await cardB.getByTestId("draft-chat-details-toggle").click();
+  await expect(cardB.getByTestId("draft-chat-details")).toContainText(`${TAG} Shared hero`);
+  await expect(cardB.getByTestId("draft-chat-details")).toContainText("Section design");
+  // Open chat goes to the conversation itself (it has no page of its own).
+  await expect(cardB.getByTestId("open-chat-link")).toHaveAttribute(
+    "href",
+    `/edit?chat=${chats.b}`,
   );
   // A's change moved into B: A has nothing unstaged and holds nothing.
   await expect(page.locator(`[data-chat-id="${chats.a}"]`)).toHaveCount(0);
+  // Another editor's conversation is theirs to stage: not listed.
+  await expect(page.locator(`[data-chat-id="${chats.other}"]`)).toHaveCount(0);
 
-  // Another editor's chat: read-only, its title is not a link.
-  const cardOther = page.locator(`[data-chat-id="${chats.other}"]`);
-  await expect(cardOther).toContainText("another editor");
-  await expect(cardOther.getByTestId("foreign-chat-title")).toBeVisible();
-  await expect(cardOther.locator("a")).toHaveCount(0);
-  await expect(cardOther.getByTestId("discard-chat")).toHaveCount(0);
+  const cardC = page.locator(`[data-testid="draft-chat"][data-chat-id="${chats.c}"]`);
+  await cardC.getByTestId("draft-chat-details-toggle").click();
+  await expect(cardC.getByTestId("draft-chat-details")).toContainText(`${TAG} Own card`);
 
-  const cardC = page.locator(`[data-chat-id="${chats.c}"]`);
-  await expect(cardC).toContainText(`${TAG} Own card`);
+  // Nothing is ticked on this page, so "Stage selected" waits for a tick.
+  await expect(page.getByTestId("stage-selected")).toBeDisabled();
+  await cardC.getByTestId("draft-chat-select").check();
+  await expect(page.getByTestId("stage-selected")).toBeEnabled();
+  await cardC.getByTestId("draft-chat-select").uncheck();
 
-  // "Stage selected" with nothing ticked is refused, not silently ignored.
-  await page.getByTestId("stage-selected").click();
-  await expect(page.getByText("Select at least one chat to stage.").first()).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await page.locator(`[data-chat-id="${chats.c}"]`).getByTestId("discard-chat").click();
+  await cardC.getByTestId("discard-chat").click();
   await acceptConfirm(page);
   await expect(page.locator(`[data-chat-id="${chats.c}"]`)).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator(`[data-chat-id="${chats.b}"]`)).toBeVisible();
@@ -190,8 +195,8 @@ test("asks before a discard also undoes another draft chat's later change", asyn
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
   await page.goto("/content/changes");
-  const cardD = page.locator(`[data-chat-id="${chats.d}"]`);
-  await expect(cardD).toContainText(`${TAG} Layered`);
+  const cardD = page.locator(`[data-testid="draft-chat"][data-chat-id="${chats.d}"]`);
+  await expect(cardD).toContainText(`${TAG} Base work`);
   await cardD.getByTestId("discard-chat").click();
   await acceptConfirm(page);
   // Refused with the overlap named — nothing discarded yet.

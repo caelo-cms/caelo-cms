@@ -83,6 +83,10 @@ export {
   describeStagedPluginProblems,
 } from "./deploy/plugin-problems.js";
 export type { RenderReport } from "./deploy/render-failures.js";
+// The Draft changes panel: one conversation's changes in the operator's words.
+export type { DraftSummary, DraftSummaryRow } from "./ops/chat/draft-summary.js";
+// The Publish live review: what the next Publish live changes for visitors.
+export type { PublishPreview } from "./ops/deploy-publish-preview.js";
 // #842 — reading a staged GCS run (admin staging preview).
 export {
   readStagedBuildFiles,

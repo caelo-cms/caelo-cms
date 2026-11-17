@@ -36,6 +36,7 @@ import { publishLiveFailure } from "#lib/server/publish-live-failure.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { ServerTiming } from "#lib/server/server-timing.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
+import { readStageSelection } from "#lib/server/stage-selection.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 /**
@@ -540,8 +541,7 @@ export const load: PageServerLoad = async ({ locals, url, setHeaders }) => {
     modules: stream.modules,
     branchEditedModuleIds: stream.branchEditedModuleIds,
     branchChangeCount: stream.branchChangeCount,
-    pendingChanges: stream.pendingChanges,
-    otherOpenChats: stream.otherOpenChats,
+    draftChats: stream.draftChats,
     deployState: stream.deployState,
     live: stream.live,
     pageSeo: stream.pageSeo,
@@ -823,17 +823,23 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
-    const chatSessionId = String(form.get("chatSessionId") ?? "");
-    if (!chatSessionId) return fail(400, { error: "missing chatSessionId" });
     const pageId = String(form.get("pageId") ?? "");
+    // The Staging menu's Draft changes list: "Stage now" on one
+    // conversation, the ticked ones, or "Stage all" (stage-selection.ts).
+    const selection = await readStageSelection(locals.ctx, form);
+    if (!selection.ok) return fail(selection.status, { error: selection.error });
 
     // The whole flow — #553 classification before the merge, merge
     // (deferConsume), staging build, finalize only on build success, audit
-    // enqueue — lives in admin-core's stageChatSessions, shared with the
-    // Open changes overview's multi-chat Stage (issue #620). #1574 — it runs
-    // inside the request a carrier job holds open: a closed tab does not
-    // stop it, and this request waits for it as before.
-    const staged = await carryStage({ adapter, registry }, locals.ctx, [chatSessionId]);
+    // enqueue — lives in admin-core's stageChatSessions, shared with
+    // Content → Changes (issue #620). #1574 — it runs inside the request a
+    // carrier job holds open: a closed tab does not stop it, and this
+    // request waits for it as before.
+    const staged = await carryStage(
+      { adapter, registry },
+      locals.ctx,
+      selection.chatSessionIds,
+    );
     if (!staged.ok) return fail(500, { error: staged.error.message });
     const summary = staged.value;
     const {
@@ -851,6 +857,7 @@ export const actions: Actions = {
     return {
       staged: {
         pageId,
+        chatCount: selection.chatSessionIds.length,
         pageCount: summary.pageCount,
         fileCount: summary.fileCount,
         buildId: summary.buildId,
@@ -1045,11 +1052,16 @@ export const actions: Actions = {
         });
       }
     }
+    // The staged build the Publish live review showed: deploy.promote refuses
+    // a newer one (staging rebuilt meanwhile) instead of shipping it unseen.
+    const reviewed = form.get("stagedRunId");
+    const stagedRunId = typeof reviewed === "string" && reviewed !== "" ? reviewed : undefined;
     // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
     const promote = await executeBuild({ adapter, registry }, locals.ctx, "deploy.promote", {
       fromTarget: "staging",
       toTarget: "production",
       ...(redirectChanges ? { redirectChanges } : {}),
+      ...(stagedRunId ? { stagedRunId } : {}),
     });
     if (!promote.ok) {
       // run #10 D6 — stderr breadcrumb: "Publish live" failures must be

@@ -103,7 +103,6 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     ctx: "system",
     input: (r) => ({ chatSessionId: r.chatSessionId }),
   },
-  { op: "chat.list_open_with_pending", ctx: "system", input: () => ({}) },
   // One page of the overview (the Changes page asks for its pages the same way).
   { op: "chat.list_open_changes", ctx: "system", input: () => ({ limit: 20 }) },
   // Unbounded list ops (#1269 makes them keyset-paginated).

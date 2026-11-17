@@ -281,7 +281,7 @@ records it (`ListPageContext.truncatedLists()`), `preview_list_source`
 answers `total` next to `count` ("shows 50 of 63"), and a build reports
 every list cut at the query cap of 50 (`GenerateResult.truncatedLists`,
 `deploy/truncated-lists.ts`) as a Stage warning in the stage tool, the
-Stage toast and Open changes. A smaller `limit` someone chose ("latest
+Stage toast and Draft changes. A smaller `limit` someone chose ("latest
 3 news") is a teaser, not a defect, so a Stage does not report it; the
 tool still shows its total.
 

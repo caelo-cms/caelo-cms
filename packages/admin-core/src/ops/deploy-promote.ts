@@ -152,6 +152,13 @@ const promoteInput = z.object({
    */
   publishAnyway: publishAnywaySchema.optional(),
   /**
+   * The staged run the Publish live review showed (`deploy.publish_preview`).
+   * When staging was rebuilt since, the newest staged run is another build
+   * the operator did not see, and the Publish live is refused instead of
+   * shipping it. Omitted: the newest staged run, whatever it is.
+   */
+  stagedRunId: z.string().uuid().optional(),
+  /**
    * #1550 — the Staged redirect changes the Publish live confirmation
    * listed as going live (`redirects.release_plan`), by id and revision:
    * exactly these go live, minus any whose target the build does not
@@ -274,6 +281,11 @@ export const startPromoteOp = defineOperation({
       // §11): name the next step instead of just the diagnosis.
       return refused(
         `no succeeded build to promote from '${from.name}' — run Stage first (deploy.trigger targetName=${from.name}); Publish live only copies an already-staged build`,
+      );
+    }
+    if (input.stagedRunId !== undefined && input.stagedRunId !== fromRow.id) {
+      return refused(
+        "Nothing was published: staging was rebuilt after the Publish live review was opened, so the build going live is not the one it showed. Open Publish live again to review the new build.",
       );
     }
     // #1330 — a copy goes live as it is: a build an older release staged for
@@ -579,6 +591,7 @@ async function runPromote(
     fromTarget: input.fromTarget,
     toTarget: input.toTarget,
     ...(input.publishAnyway ? { publishAnyway: input.publishAnyway } : {}),
+    ...(input.stagedRunId ? { stagedRunId: input.stagedRunId } : {}),
     runId,
     leaseTtlMs: ttlMs,
   });

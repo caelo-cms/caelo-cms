@@ -64,7 +64,7 @@
           <!-- #678 — staging serves nothing until the first Stage. -->
           <div class="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200" data-testid="staging-stage-needed">
             Nothing is served at {access.stagingUrl}/ until the next Stage.
-            Stage from the editor or <a class="underline" href="/content/changes">Open changes</a>.
+            Stage from the editor or <a class="underline" href="/content/changes">Draft changes</a>.
           </div>
         {/if}
         {#if access.draftPages.count > 0}

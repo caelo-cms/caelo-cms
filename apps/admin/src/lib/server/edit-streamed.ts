@@ -4,7 +4,7 @@
  * #1268 — what Live Edit loads after first paint.
  *
  * Opening the editor once awaited about twenty reads in a row. One of them,
- * `chat.list_open_with_pending`, ran into the 60 s statement timeout on a
+ * the other-chats banner's read, ran into the 60 s statement timeout on a
  * large shared draft (searchVIU, 2026-10-30/31), so the operator saw
  * nothing for a minute. First paint now waits only for the page, the
  * chat and its transcript (`edit/+page.server.ts`); everything here
@@ -12,13 +12,14 @@
  * (`Streamed`, CLAUDE.md §2).
  *
  * The reads run in three lanes, each step after the previous one:
- *   - toolbar: the change count, deploy state, "View live", the Stage
- *     list and the page's SEO;
+ *   - toolbar: the change count, deploy state, "View live" and the page's
+ *     SEO;
  *   - picker: recently edited pages, the site's first pages, the root
  *     page, the modules (the search box searches the rest on the server,
  *     #1269 — the editor never reads every page);
- *   - banner: the other open chats, which grow with the draft and must not
- *     hold up the toolbar.
+ *   - drafts: the operator's own conversations with draft changes, for the
+ *     Draft changes panel. They grow with the draft and must not hold up
+ *     the toolbar.
  * A load then holds at most three pooled connections, not ten.
  */
 
@@ -26,6 +27,7 @@ import { stagingServedByGateway } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import type { ChatModule } from "#lib/components/chat/types.js";
+import type { DraftChat } from "#lib/components/edit/draft-chats.js";
 import { createLane, type Streamed, settle } from "#lib/streamed.js";
 import { type EditPage, toEditPage } from "./edit-active-page.js";
 import { type LiveLinks, loadLiveLinks } from "./live-links.js";
@@ -34,37 +36,6 @@ import { loadPageSeoInfo, type PageSeoInfo } from "./page-seo-info.js";
 import { getQueryContext } from "./query.js";
 import { SLOW_STEP_MS } from "./server-timing.js";
 import { openStagingHref } from "./staging-link.js";
-
-/** One entry of the Stage list. */
-export interface PendingEntity {
-  readonly kind: string;
-  readonly entityId: string;
-  readonly label: string;
-  readonly detail?: string;
-}
-
-/** What the chat changed, pending vs staged, per Stage list group. */
-export interface PendingChangesView {
-  readonly pending: {
-    pages: PendingEntity[];
-    globals: PendingEntity[];
-    lists: PendingEntity[];
-  };
-  readonly staged: {
-    pages: PendingEntity[];
-    globals: PendingEntity[];
-    lists: PendingEntity[];
-  };
-}
-
-/** Another open chat with unstaged changes, for the cross-chat banner. */
-export interface OtherOpenChat {
-  readonly chatSessionId: string;
-  readonly title: string;
-  readonly anchorPageId: string | null;
-  readonly anchorPagePath: string | null;
-  readonly pendingCount: number;
-}
 
 /** Where staging and live stand, for the Staging and Publish live controls. */
 export interface DeployState {
@@ -98,8 +69,8 @@ export interface EditorStream {
   readonly branchEditedModuleIds: Promise<Streamed<string[]>>;
   /** v0.2.76 — distinct entities this chat changed: the Diff count and Stage. */
   readonly branchChangeCount: Promise<Streamed<number>>;
-  readonly pendingChanges: Promise<Streamed<PendingChangesView>>;
-  readonly otherOpenChats: Promise<Streamed<OtherOpenChat[]>>;
+  /** The operator's own conversations with draft changes, most recently active first. */
+  readonly draftChats: Promise<Streamed<DraftChat[]>>;
   readonly deployState: Promise<Streamed<DeployState>>;
   /** "View live" in the Publish live menu. */
   readonly live: Promise<Streamed<LiveLinks>>;
@@ -124,7 +95,7 @@ export function streamEditorParts(input: EditorStreamInput): EditorStream {
   const { ctx, branchCtx, chatSessionId, activePage } = input;
   const toolbar = createLane();
   const picker = createLane();
-  const banner = createLane();
+  const drafts = createLane();
   const run = <T>(lane: ReturnType<typeof createLane>, what: string, step: () => Promise<T>) =>
     settle(what, () => lane(step), logSlowStep);
 
@@ -152,9 +123,6 @@ export function streamEditorParts(input: EditorStreamInput): EditorStream {
     if (!deploy.ok) throw new Error("the deploy state is missing");
     return loadLiveLinks(ctx, await loadMainPage(), deploy.value.productionMatchesStaging);
   });
-  const pendingChanges = run(toolbar, "The Stage list", () =>
-    read<PendingChangesView>(ctx, "chat.list_pending_changes", { chatSessionId }),
-  );
   const pageSeo = run(toolbar, "The page's SEO", async () =>
     activePage
       ? loadPageSeoInfo(branchCtx, activePage, (await loadMainPage())?.title ?? null)
@@ -202,11 +170,26 @@ export function streamEditorParts(input: EditorStreamInput): EditorStream {
     return v.moduleIds;
   });
 
-  const otherOpenChats = run(banner, "Other open chats", async () => {
-    const v = await read<{ chats: OtherOpenChat[] }>(ctx, "chat.list_open_with_pending", {
-      excludeChatSessionId: chatSessionId,
-    });
-    return v.chats;
+  // The operator's own chats only: the panel stages them, and another
+  // editor's work is theirs to stage (decision 2026-11-17). A chat that only
+  // holds locks has nothing to stage.
+  const draftChats = run(drafts, "Your draft changes", async () => {
+    const v = await read<{ chats: (DraftChat & { isMine: boolean })[] }>(
+      ctx,
+      "chat.list_open_changes",
+      { mineOnly: true },
+    );
+    return v.chats
+      .filter((c) => c.pendingCount > 0)
+      .map((c) => ({
+        chatSessionId: c.chatSessionId,
+        title: c.title,
+        branchKind: c.branchKind,
+        anchorPageId: c.anchorPageId,
+        anchorPagePath: c.anchorPagePath,
+        pendingCount: c.pendingCount,
+        summary: c.summary,
+      }));
   });
 
   return {
@@ -216,8 +199,7 @@ export function streamEditorParts(input: EditorStreamInput): EditorStream {
     modules,
     branchEditedModuleIds,
     branchChangeCount,
-    pendingChanges,
-    otherOpenChats,
+    draftChats,
     deployState,
     live,
     pageSeo,

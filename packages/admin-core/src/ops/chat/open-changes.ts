@@ -26,6 +26,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { type BranchKind, sessionHasPendingSql } from "../../draft.js";
 import { drainTakeoverNotices } from "../../lock-takeover.js";
+import { draftSummarySchema, summarizeDraftChanges } from "./draft-summary.js";
 import { loadPendingChangesFor, pendingChangesSchema } from "./stage.js";
 
 /** Open chats per page at most (most recently active first). */
@@ -41,6 +42,8 @@ const openChatSchema = z
     isMine: z.boolean(),
     /** Issue #620 — 'draft' (shared draft), 'experiment' / 'migration' (isolated) or 'legacy'. */
     branchKind: z.enum(["draft", "experiment", "migration", "legacy"]),
+    /** The anchor page (null: a chat without one, or its page was deleted). */
+    anchorPageId: z.string().nullable(),
     /** The anchor page's URL path (unique, unlike its slug). */
     anchorPagePath: z.string().nullable(),
     lastActiveAt: z.string(),
@@ -48,6 +51,8 @@ const openChatSchema = z
     /** Distinct entities changed since the last Stage (the pending refs). */
     pendingCount: z.number().int().nonnegative(),
     changes: pendingChangesSchema,
+    /** The changes in the operator's words: pages new / changed / removed, site-wide parts. */
+    summary: draftSummarySchema,
     locks: z.array(
       z
         .object({
@@ -122,6 +127,8 @@ export const listOpenChangesOp = defineOperation({
              cs.chat_branch_id::text AS chat_branch_id, cs.branch_kind,
              to_char(cs.last_active_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS last_active_at,
              cs.last_staged_at,
+             (SELECT p.id::text FROM pages p
+               WHERE p.id = cs.page_id AND p.deleted_at IS NULL) AS page_id,
              (SELECT p.current_path FROM pages p
                WHERE p.id = cs.page_id AND p.deleted_at IS NULL) AS page_path
       FROM chat_sessions cs
@@ -145,6 +152,7 @@ export const listOpenChangesOp = defineOperation({
       branch_kind: BranchKind;
       last_active_at: string;
       last_staged_at: string | Date | null;
+      page_id: string | null;
       page_path: string | null;
     }[];
     const page = sessions.slice(0, input.limit);
@@ -230,11 +238,13 @@ export const listOpenChangesOp = defineOperation({
         title: s.title,
         isMine: s.created_by === ctx.actorId,
         branchKind: s.branch_kind,
+        anchorPageId: s.page_id,
         anchorPagePath: s.page_path,
         lastActiveAt: s.last_active_at,
         lastStagedAt: iso(s.last_staged_at),
         pendingCount,
         changes,
+        summary: summarizeDraftChanges(changes),
         locks: own.map((l) => ({
           entityKind: l.entity_kind,
           entityId: l.entity_id,

@@ -125,15 +125,19 @@ async function failStreamedPart(route: Route, key: string, error: string): Promi
 test("a streamed part that fails shows its error where it would render", async ({ page }) => {
   await signInToDashboard(page);
   const message =
-    "Other open chats could not be loaded: canceling statement due to statement timeout";
-  await page.route(EDIT_DATA, (route) => failStreamedPart(route, "otherOpenChats", message));
+    "Your draft changes could not be loaded: canceling statement due to statement timeout";
+  await page.route(EDIT_DATA, (route) => failStreamedPart(route, "draftChats", message));
 
   await page.getByTestId("nav-live-edit").first().click();
   await expect(page.getByTestId("edit-toolbar")).toBeVisible();
-  const banner = page.getByTestId("cross-chat-error");
-  await expect(banner).toBeVisible();
-  await expect(banner).toContainText(message);
-  // The rest of the editor still works: the Staging controls arrive.
+  // The rest of the editor still works: the Staging and Publish live controls arrive.
   await expect(page.getByTestId("toolbar-publish-loading")).toHaveCount(0);
   await expect(page.getByTestId("toolbar-publish-error")).toHaveCount(0);
+  // The Staging button says something is wrong; its menu says what.
+  const staging = page.getByTestId("staging-menu");
+  await expect(staging).toHaveAttribute("data-tone", "problem");
+  await staging.click();
+  const error = page.getByTestId("draft-chats-error");
+  await expect(error).toBeVisible();
+  await expect(error).toContainText(message);
 });

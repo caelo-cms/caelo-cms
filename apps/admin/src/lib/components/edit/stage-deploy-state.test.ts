@@ -14,7 +14,6 @@ import { PARITY_REFUSAL_PREFIX } from "@caelo-cms/shared";
 import {
   formResultError,
   offersStageAgain,
-  pendingEntryKey,
   publishButtonState,
   publishErrorNextStep,
   qualityBlockReason,
@@ -136,7 +135,7 @@ describe("publishButtonState — #553 quality gate", () => {
 describe("Stage again in the toolbar (#835)", () => {
   const promoteOnly = {
     sessionPublished: false,
-    branchChangeCount: 0,
+    draftChangeCount: 0,
     hasStagedBuild: true,
     sessionLastStagedAt: null,
   };
@@ -156,12 +155,18 @@ describe("Stage again in the toolbar (#835)", () => {
   });
 
   it("no Stage again where Stage… covers it, nothing was staged, or the chat is published", () => {
-    expect(stageToolbarMode({ ...promoteOnly, branchChangeCount: 3 })).toBe("pending");
+    expect(stageToolbarMode({ ...promoteOnly, draftChangeCount: 3 })).toBe("pending");
     expect(offersStageAgain("pending")).toBe(false);
     expect(stageToolbarMode({ ...promoteOnly, hasStagedBuild: false })).toBe("fresh");
     expect(offersStageAgain("fresh")).toBe(false);
     expect(stageToolbarMode({ ...promoteOnly, sessionPublished: true })).toBe("published");
     expect(offersStageAgain("published")).toBe(false);
+  });
+
+  it("lists the operator's other draft conversations even when this chat was published", () => {
+    expect(
+      stageToolbarMode({ ...promoteOnly, sessionPublished: true, draftChangeCount: 2 }),
+    ).toBe("pending");
   });
 
   it("a parity refusal gets an untruncated pointer at Stage again; other failures do not", () => {
@@ -177,7 +182,7 @@ describe("stagingMenuState — the Staging button's label", () => {
     mode: "promote-only" as const,
     staging: false,
     hasStagedBuild: true,
-    branchChangeCount: 0,
+    draftChangeCount: 0,
     qualityGate: null,
   };
   const gate = (state: string, openProblemCount = 0) => ({
@@ -191,13 +196,21 @@ describe("stagingMenuState — the Staging button's label", () => {
     expect(stagingMenuState({ ...base, staging: true }).label).toBe("Staging…");
   });
 
-  it("marks unstaged edits as pending with their count in the tooltip", () => {
-    const s = stagingMenuState({ ...base, mode: "pending", branchChangeCount: 5 });
+  it("counts the draft changes of all the operator's conversations on the button", () => {
+    const s = stagingMenuState({ ...base, mode: "pending", draftChangeCount: 14 });
     expect(s).toEqual({
-      label: "Staging",
+      label: "14 draft changes",
       tone: "pending",
-      tooltip: "5 changes in this chat not staged yet",
+      tooltip: "14 draft changes in your conversations, not on staging yet",
     });
+    expect(stagingMenuState({ ...base, mode: "pending", draftChangeCount: 1 }).label).toBe(
+      "1 draft change",
+    );
+  });
+
+  it("turns red when the draft changes could not be read", () => {
+    const s = stagingMenuState({ ...base, draftError: "statement timeout" });
+    expect(s).toEqual({ label: "Staging", tone: "problem", tooltip: "statement timeout" });
   });
 
   it("says why Publish live is closed when nothing is staged", () => {
@@ -221,21 +234,6 @@ describe("stagingMenuState — the Staging button's label", () => {
   it("reads Staged when staging is built and its gate is open", () => {
     const s = stagingMenuState({ ...base, qualityGate: { ...gate("passed"), open: true } });
     expect(s).toEqual({ label: "Staged", tone: "ok", tooltip: "Staging is built and checked" });
-  });
-});
-
-describe("pendingEntryKey", () => {
-  it("a new page's page and placement entries get distinct keys (Staging menu each-key crash)", () => {
-    // chat.list_pending_changes puts content, page and pageLayout entries
-    // in one `pages` group; a page minted in the chat has the last two
-    // under the same page id.
-    const pageId = "8bddc261-fa49-470c-93ea-0f29b62d49b7";
-    const pages = [
-      { kind: "page", entityId: pageId, label: "Startseite" },
-      { kind: "pageLayout", entityId: pageId, label: "Startseite" },
-    ];
-    const keys = pages.map(pendingEntryKey);
-    expect(new Set(keys).size).toBe(pages.length);
   });
 });
 
@@ -280,7 +278,7 @@ describe("#1207 — a failed Stage closes Publish live", () => {
         mode: "pending",
         staging: false,
         hasStagedBuild: true,
-        branchChangeCount: 3,
+        draftChangeCount: 3,
         qualityGate: null,
         stageFailure: "Build failed",
       }),

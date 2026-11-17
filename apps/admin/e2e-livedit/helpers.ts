@@ -634,13 +634,15 @@ export function assertNoBrowserConsoleErrors(tracker: BrowserConsoleErrorTracker
 async function stagePending(page: Page): Promise<boolean> {
   const control = page.getByTestId("stage-deploy");
   await control.waitFor({ state: "visible", timeout: 10_000 }).catch(() => undefined);
-  return (await control.getAttribute("data-mode").catch(() => null)) === "pending";
+  // This chat's own draft changes: the Staging menu lists the operator's
+  // other conversations too, and only this one is the scenario's.
+  return (await control.getAttribute("data-this-chat-pending").catch(() => null)) === "true";
 }
 
 /**
  * What the Staging control shows when a Stage was expected but is not
- * offered: its mode and the menu's own text ("No changes in this chat …"
- * means the turn changed nothing on the site), so the failure names the
+ * offered: its mode and the menu's own text (no card for this chat means
+ * the turn changed nothing on the site), so the failure names the
  * state instead of a bare locator timeout. The turn itself is in the
  * pre-reset transcripts dump.
  */
@@ -655,7 +657,7 @@ async function stagingMenuDiagnosis(page: Page): Promise<string> {
     .catch(() => null);
   return (
     `Toolbar mode: ${mode ?? "(unreadable)"}; menu: "${(menu ?? "(menu not open)").replace(/\s+/g, " ").trim()}". ` +
-    "When the menu says the chat has no changes, the AI turn changed nothing on the site: read its reply in test-results/livedit/transcripts/."
+    "When the menu lists no card for this chat, the AI turn changed nothing on the site: read its reply in test-results/livedit/transcripts/."
   );
 }
 
@@ -666,7 +668,8 @@ async function openStagingMenu(page: Page): Promise<void> {
 }
 
 /**
- * Click the Stage modal trigger + confirm; resolves when the
+ * Stage this chat from the Staging menu's Draft changes list ("Stage now"
+ * on its card, the highlighted one); resolves when the
  * `?/stageAndDeployStaging` action returns. The action awaits
  * `chat.merge_to_main` + `deploy.trigger` synchronously, so the HTTP
  * response landing is the "staging build is on disk" signal —
@@ -691,15 +694,15 @@ export async function awaitStageComplete(page: Page): Promise<void> {
   // leaves the Staging menu) — fail in 30s, not at test timeout.
   await openStagingMenu(page);
   await page
-    .getByTestId("stage-btn")
+    .locator('[data-testid="draft-chat"][data-active="true"]')
+    .getByTestId("stage-chat-now")
     .click({ timeout: 30_000 })
     .catch(async (cause: unknown) => {
       throw new Error(
-        `awaitStageComplete: the Staging menu offers no Stage. ${await stagingMenuDiagnosis(page)}`,
+        `awaitStageComplete: the Staging menu offers no Stage for this chat. ${await stagingMenuDiagnosis(page)}`,
         { cause },
       );
     });
-  await page.getByTestId("stage-submit-btn").click({ timeout: 30_000 });
   const res = await responsePromise;
   const body = await res.text();
   if (res.status() < 200 || res.status() >= 300) {
@@ -759,11 +762,14 @@ export async function awaitPublishComplete(page: Page): Promise<void> {
     // not a race against legitimately longer turns/builds on a busy runner).
     { timeout: 360_000 },
   );
-  // Both `promote-btn` (chat-not-published case) and `promote-only-btn`
-  // (chat-already-published case) map to the same form action. Click
-  // whichever is in the DOM.
+  // Both `promote-btn` (draft changes pending) and `promote-only-btn` open
+  // the Publish live review; its Publish live submits the action once it
+  // has read what goes live.
   const promote = page.getByTestId("promote-btn").or(page.getByTestId("promote-only-btn")).first();
   await promote.click({ timeout: 30_000 });
+  const confirm = page.getByTestId("publish-review-confirm");
+  await expect(confirm).toBeEnabled({ timeout: 60_000 });
+  await confirm.click();
   const res = await responsePromise;
   const body = await res.text();
   if (res.status() < 200 || res.status() >= 300) {

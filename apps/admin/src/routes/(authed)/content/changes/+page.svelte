@@ -1,38 +1,35 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { GitPullRequestArrow } from "lucide-svelte";
+  import type { SubmitFunction } from "$app/forms";
   import { confirmSubmit } from "#lib/confirm.svelte.js";
+  import DraftChatList from "#lib/components/edit/DraftChatList.svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
-  import StateDot from "#lib/components/StateDot.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
-  import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
-  import { Card, CardContent, CardHeader, CardTitle } from "#lib/components/ui/card/index.js";
 
   let { data, form } = $props();
 
-  type Chat = (typeof data.chats)[number];
-  type Ref = Chat["changes"]["pending"]["pages"][number];
-
-  const ownStageable = $derived(data.chats.filter((c) => c.isMine && c.pendingCount > 0));
-
-  const groups = (c: Chat): { label: string; refs: Ref[] }[] =>
-    [
-      { label: "Pages", refs: c.changes.pending.pages },
-      { label: "Site-wide", refs: c.changes.pending.globals },
-      { label: "Lists", refs: c.changes.pending.lists },
-    ].filter((g) => g.refs.length > 0);
-
-  const when = (iso: string): string => iso.slice(0, 16).replace("T", " ");
+  let staging = $state(false);
+  const stage: SubmitFunction = () => {
+    staging = true;
+    return async ({ update }) => {
+      try {
+        await update({ reset: false });
+      } finally {
+        staging = false;
+      }
+    };
+  };
+  const discardFormId = (chatSessionId: string) => `discard-${chatSessionId}`;
 </script>
 
 <div class="space-y-6">
   <div>
-    <h1 class="text-2xl font-semibold tracking-tight">Open changes</h1>
-    <p class="text-sm text-muted-foreground">
-      Unstaged work across your chats. Chats share the site's draft, so they see each other's
-      changes; experiments and older chats keep their own branch. Stage sends the selected chats to
-      the staging site in one build; Publish live happens after you review staging.
+    <h1 class="text-2xl font-semibold tracking-tight">Draft changes</h1>
+    <p class="max-w-prose text-sm text-muted-foreground">
+      Your conversations with changes that are not on staging yet. Stage sends them to the staging
+      site in one build and runs the quality check; Publish live happens after you review staging.
     </p>
   </div>
 
@@ -59,8 +56,8 @@
   {#if form?.staged}
     <Alert>
       <AlertDescription>
-        Staged {form.staged.chatCount} chat(s): {form.staged.mergedEntityCount} change(s) are on the
-        staging site — <a class="underline" href={form.staged.previewUrl}>open the preview</a>.
+        Staged {form.staged.chatCount === 1 ? "1 conversation" : `${form.staged.chatCount} conversations`}:
+        the changes are on the staging site — <a class="underline" href={form.staged.previewUrl}>open the preview</a>.
         {#if form.staged.draftPageCount > 0}
           {form.staged.draftPageCount} draft page(s) are not in this build{form.staged.draftPageTitles.length > 0 ? ` (${form.staged.draftPageTitles.join(", ")}${form.staged.draftPageCount > form.staged.draftPageTitles.length ? ", …" : ""})` : ""} —
           only published pages are staged; set them to published and Stage again to include them.
@@ -78,9 +75,6 @@
         {#if form.staged.truncatedListWarning}
           {form.staged.truncatedListWarning}
         {/if}
-        {#if form.staged.renderWarning}
-          <strong data-testid="stage-render-warning">{form.staged.renderWarning}</strong>
-        {/if}
         {#if form.staged.linkNoticeWarning}
           <strong data-testid="stage-link-notice">{form.staged.linkNoticeWarning}</strong>
         {/if}
@@ -94,132 +88,32 @@
   {#if data.chats.length === 0 && !data.loadError}
     <EmptyStatePlaceholder
       icon={GitPullRequestArrow}
-      title="Nothing open"
-      description="No chat has unstaged changes. Ask the AI for a change in Live edit — it shows up here until it is staged."
+      title="Nothing in draft"
+      description="None of your conversations has changes that are not on staging. Ask the AI for a change in Live edit — it shows up here until it is staged."
     />
-  {:else}
-    <form id="stage-form" method="post" action="?/stage" class="space-y-4">
-      <input type="hidden" name="_csrf" value={data.csrfToken} />
-      {#if data.canStage && ownStageable.length > 0}
-        <div class="flex flex-wrap items-center gap-2">
-          <Button type="submit" name="all" value="1" data-testid="stage-all">
-            Stage all ({ownStageable.length})
-          </Button>
-          <Button type="submit" variant="secondary" data-testid="stage-selected">
-            Stage selected
-          </Button>
-        </div>
-      {/if}
+  {:else if data.chats.length > 0}
+    <div class="max-w-3xl rounded-lg border p-3">
+      <DraftChatList
+        chats={data.chats}
+        action="?/stage"
+        csrfToken={data.csrfToken}
+        canStage={data.canStage}
+        busy={staging}
+        submit={stage}
+        {discardFormId}
+      />
+    </div>
 
-      {#each data.chats as c (c.chatSessionId)}
-        <Card data-testid="open-chat" data-chat-id={c.chatSessionId}>
-          <CardHeader class="pb-2">
-            <div class="flex flex-wrap items-center gap-3">
-              {#if c.isMine && c.pendingCount > 0 && data.canStage}
-                <input
-                  type="checkbox"
-                  name="chatSessionId"
-                  value={c.chatSessionId}
-                  aria-label={`Select chat ${c.title}`}
-                  class="size-4"
-                />
-              {/if}
-              <CardTitle class="text-base">
-                {#if c.isMine}
-                  <a
-                    class="underline-offset-4 hover:underline"
-                    href={`/edit?chat=${c.chatSessionId}`}>{c.title}</a
-                  >
-                {:else}
-                  <!-- Another editor's chat cannot be opened here: /edit
-                       only resumes the operator's own chats. -->
-                  <span data-testid="foreign-chat-title">{c.title}</span>
-                {/if}
-              </CardTitle>
-              {#if c.isMine}
-                <Badge variant="secondary">your chat</Badge>
-              {:else}
-                <Badge variant="outline">another editor</Badge>
-              {/if}
-              {#if c.branchKind === "experiment" || c.branchKind === "migration"}
-                <Badge variant="outline">{c.branchKind} · own branch</Badge>
-              {:else if c.branchKind === "legacy"}
-                <Badge variant="outline">older chat · own branch</Badge>
-              {/if}
-              {#if c.anchorPagePath}
-                <Badge variant="outline">{c.anchorPagePath}</Badge>
-              {/if}
-              <!-- #779 — unstaged changes are the Draft state. -->
-              {#if c.pendingCount > 0}
-                <StateDot state="draft" class="text-muted-foreground">
-                  Draft · {c.pendingCount} unstaged
-                </StateDot>
-              {:else}
-                <Badge variant="secondary">0 unstaged</Badge>
-              {/if}
-              <span class="text-xs text-muted-foreground">active {when(c.lastActiveAt)}</span>
-              {#if c.isMine}
-                <Button
-                  type="submit"
-                  form={`discard-${c.chatSessionId}`}
-                  variant="destructive"
-                  size="sm"
-                  class="ml-auto"
-                  data-testid="discard-chat">Discard</Button
-                >
-              {/if}
-            </div>
-          </CardHeader>
-          <CardContent class="space-y-3 text-sm">
-            {#each groups(c) as g (g.label)}
-              <div>
-                <div class="font-medium">{g.label}</div>
-                <ul class="ml-4 list-disc text-muted-foreground">
-                  {#each g.refs as r (`${r.kind}:${r.entityId}`)}
-                    <li>{r.label}{r.detail ? ` — ${r.detail}` : ""}</li>
-                  {/each}
-                </ul>
-              </div>
-            {/each}
-            {#if c.locks.length > 0}
-              <div>
-                <div class="font-medium">Holds</div>
-                <p class="text-muted-foreground">
-                  {c.locks.map((l) => `${l.label} (${l.entityKind})`).join(", ")}
-                </p>
-              </div>
-            {/if}
-            {#if c.takeovers.length > 0}
-              <div>
-                <div class="font-medium">Taken over</div>
-                <ul class="ml-4 list-disc text-muted-foreground" data-testid="takeovers">
-                  {#each c.takeovers as t, i (`${t.at}:${i}`)}
-                    <li>
-                      {#if t.direction === "adopted"}
-                        Adopted {t.entityKind} '{t.label}' from chat '{t.otherChatTitle}' ({when(t.at)})
-                      {:else}
-                        Chat '{t.otherChatTitle}' took over {t.entityKind} '{t.label}' ({when(t.at)})
-                      {/if}
-                    </li>
-                  {/each}
-                </ul>
-              </div>
-            {/if}
-          </CardContent>
-        </Card>
-      {/each}
-    </form>
-
-    {#each data.chats.filter((c) => c.isMine) as c (c.chatSessionId)}
+    {#each data.chats as c (c.chatSessionId)}
       <form
-        id={`discard-${c.chatSessionId}`}
+        id={discardFormId(c.chatSessionId)}
         method="post"
         action="?/discard"
         class="hidden"
         use:confirmSubmit={{
-          title: `Discard chat '${c.title}'?`,
-          description: `Its ${c.pendingCount} unstaged change(s) are thrown away and the chat is closed. This cannot be undone.`,
-          confirmLabel: "Discard chat",
+          title: `Discard “${c.title}”?`,
+          description: `Its draft changes are thrown away and the conversation is closed. This cannot be undone.`,
+          confirmLabel: "Discard conversation",
         }}
       >
         <input type="hidden" name="_csrf" value={data.csrfToken} />

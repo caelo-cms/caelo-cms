@@ -58,7 +58,7 @@ export const load: PageServerLoad = async ({ locals }) => {
       ? execute(registry, adapter, locals.ctx, "chat.list_sessions", { includeArchived: false })
       : null,
     perms.has("content.write")
-      ? execute(registry, adapter, locals.ctx, "chat.list_open_changes", {})
+      ? execute(registry, adapter, locals.ctx, "chat.list_open_changes", { mineOnly: true })
       : null,
     perms.has("settings.read")
       ? execute(registry, adapter, locals.ctx, "pending_proposals.list", { limit: 1 })
@@ -83,11 +83,13 @@ export const load: PageServerLoad = async ({ locals }) => {
     : null;
   const openChanges: { changeCount: number; chatCount: number } | null = changesR?.ok
     ? (() => {
-        const chats = (changesR.value as { chats: { pendingCount: number }[] }).chats.filter(
-          (c) => c.pendingCount > 0,
-        );
+        // The operator's own conversations, counted as the Staging menu
+        // counts them: a page or a site-wide part is one change.
+        const chats = (
+          changesR.value as { chats: { pendingCount: number; summary: { rows: unknown[] } }[] }
+        ).chats.filter((c) => c.pendingCount > 0);
         return {
-          changeCount: chats.reduce((sum, c) => sum + c.pendingCount, 0),
+          changeCount: chats.reduce((sum, c) => sum + c.summary.rows.length, 0),
           chatCount: chats.length,
         };
       })()
