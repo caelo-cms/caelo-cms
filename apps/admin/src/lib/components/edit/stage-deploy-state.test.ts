@@ -164,9 +164,9 @@ describe("Stage again in the toolbar (#835)", () => {
   });
 
   it("lists the operator's other draft conversations even when this chat was published", () => {
-    expect(
-      stageToolbarMode({ ...promoteOnly, sessionPublished: true, draftChangeCount: 2 }),
-    ).toBe("pending");
+    expect(stageToolbarMode({ ...promoteOnly, sessionPublished: true, draftChangeCount: 2 })).toBe(
+      "pending",
+    );
   });
 
   it("a parity refusal gets an untruncated pointer at Stage again; other failures do not", () => {

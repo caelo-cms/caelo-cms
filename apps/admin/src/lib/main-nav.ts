@@ -78,7 +78,12 @@ export const PLUGINS_GROUP_LABEL = "Plugins";
 export const CONTENT_LINKS: readonly MainNavLink[] = [
   // issue #620 — the operator's own draft changes per conversation: Stage
   // now / selected / all, Discard.
-  { href: "/content/changes", label: "Draft changes", icon: "changes", permission: "content.write" },
+  {
+    href: "/content/changes",
+    label: "Draft changes",
+    icon: "changes",
+    permission: "content.write",
+  },
   { href: "/content/pages", label: "Pages", icon: "file", permission: "content.read" },
   { href: "/content/modules", label: "Modules", icon: "layers", permission: "content.read" },
   // Epic #1107 — menus, footer links, categories, tags: every shared list.

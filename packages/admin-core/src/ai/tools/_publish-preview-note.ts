@@ -35,7 +35,8 @@ const named = (items: readonly { path: string | null; title: string }[], total: 
 
 /** The lines of {@link publishPreviewNote}. Exported for the unit tests. */
 export function describePublishPreview(p: PublishPreview): string {
-  if (p.liveMatchesStaging) return "\nThe next Publish live ships nothing: live already serves the staged build.";
+  if (p.liveMatchesStaging)
+    return "\nThe next Publish live ships nothing: live already serves the staged build.";
   const lines = ["The next Publish live (the staged build, an operator's click) ships:"];
   if (p.notice !== null) lines.push(`- note: ${p.notice}`);
   const groups = [
@@ -44,7 +45,8 @@ export function describePublishPreview(p: PublishPreview): string {
     ["removed pages", p.pages.removed],
   ] as const;
   for (const [label, group] of groups) {
-    if (group.total > 0) lines.push(`- ${label} (${group.total}): ${named(group.items, group.total)}`);
+    if (group.total > 0)
+      lines.push(`- ${label} (${group.total}): ${named(group.items, group.total)}`);
   }
   if (p.siteWide.length > 0) {
     lines.push(

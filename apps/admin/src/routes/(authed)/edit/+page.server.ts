@@ -835,11 +835,7 @@ export const actions: Actions = {
     // Content → Changes (issue #620). #1574 — it runs inside the request a
     // carrier job holds open: a closed tab does not stop it, and this
     // request waits for it as before.
-    const staged = await carryStage(
-      { adapter, registry },
-      locals.ctx,
-      selection.chatSessionIds,
-    );
+    const staged = await carryStage({ adapter, registry }, locals.ctx, selection.chatSessionIds);
     if (!staged.ok) return fail(500, { error: staged.error.message });
     const summary = staged.value;
     const {

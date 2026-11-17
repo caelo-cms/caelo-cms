@@ -69,7 +69,7 @@ export function groupRedirects(
     let key = `rule:${redirectRule(c)}`;
     let from = "";
     let to = "";
-    if (c.toPath !== null && c.toPath.startsWith("/")) {
+    if (c.toPath?.startsWith("/")) {
       const [fromDir, fromLeaf] = splitPath(c.fromPath);
       const [toDir, toLeaf] = splitPath(c.toPath);
       if (fromLeaf !== "" && fromLeaf === toLeaf && fromDir !== toDir) {

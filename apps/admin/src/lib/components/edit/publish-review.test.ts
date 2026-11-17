@@ -16,7 +16,11 @@ const group = (paths: string[]) => ({
   items: paths.map((path, i) => ({ pageId: `${path}-${i}`, title: path, path })),
 });
 
-function preview(pages: { new?: string[]; changed?: string[]; removed?: string[] }): PublishPreview {
+function preview(pages: {
+  new?: string[];
+  changed?: string[];
+  removed?: string[];
+}): PublishPreview {
   return {
     staged: { runId: "s", startedAt: "2026-11-17T10:00:00Z", finishedAt: null },
     live: { runId: "l", finishedAt: null, stagedRunId: "x" },
@@ -34,7 +38,10 @@ function preview(pages: { new?: string[]; changed?: string[]; removed?: string[]
 
 describe("groupRedirects", () => {
   it("makes one row of pages that moved from one folder to another", () => {
-    const moved = ["a", "b", "c"].map((n) => ({ fromPath: `/blog/2024/${n}`, toPath: `/news/${n}` }));
+    const moved = ["a", "b", "c"].map((n) => ({
+      fromPath: `/blog/2024/${n}`,
+      toPath: `/news/${n}`,
+    }));
     const groups = groupRedirects([
       ...moved,
       { fromPath: "/plans", toPath: "/pricing" },
@@ -53,7 +60,10 @@ describe("groupRedirects", () => {
         { fromPath: "/docs/v1/install", toPath: "/docs/install" },
         { fromPath: "/partners", toPath: "https://partners.example.com/partners" },
       ]).map((g) => g.label),
-    ).toEqual(["/docs/v1/install → /docs/install", "/partners → https://partners.example.com/partners"]);
+    ).toEqual([
+      "/docs/v1/install → /docs/install",
+      "/partners → https://partners.example.com/partners",
+    ]);
   });
 });
 
@@ -69,7 +79,9 @@ describe("the review's pages", () => {
   });
 
   it("writes the breakdown without the kinds that have no page", () => {
-    expect(pageBreakdown(preview({ new: ["/a"], removed: ["/b", "/c"] }))).toBe("1 new · 2 removed");
+    expect(pageBreakdown(preview({ new: ["/a"], removed: ["/b", "/c"] }))).toBe(
+      "1 new · 2 removed",
+    );
     expect(pageBreakdown(preview({}))).toBe("none");
   });
 });
@@ -87,9 +99,9 @@ describe("the review's form", () => {
   });
 
   it("tells a release with nothing visible apart", () => {
-    expect(shipsNothingVisible({ preview: preview({}), redirects: { ...plan, goingLive: [] } })).toBe(
-      true,
-    );
+    expect(
+      shipsNothingVisible({ preview: preview({}), redirects: { ...plan, goingLive: [] } }),
+    ).toBe(true);
     expect(shipsNothingVisible({ preview: preview({}), redirects: plan })).toBe(false);
   });
 });

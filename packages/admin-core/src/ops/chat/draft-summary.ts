@@ -177,7 +177,8 @@ export function summarizeDraftChanges(changes: PendingChanges): DraftSummary {
       change,
       title: p.title,
       path: p.path,
-      what: change === "new" ? "New page" : change === "removed" ? "Removed" : pageWhat(p.kinds, p.seo),
+      what:
+        change === "new" ? "New page" : change === "removed" ? "Removed" : pageWhat(p.kinds, p.seo),
       pageId,
     });
   }

@@ -32,7 +32,13 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let templateId = "";
 /** P1 unchanged, P2 new, P3 removed, P4 edited in a staged chat, P5 a draft page edited. */
-const page: Record<"p1" | "p2" | "p3" | "p4" | "p5", string> = { p1: "", p2: "", p3: "", p4: "", p5: "" };
+const page: Record<"p1" | "p2" | "p3" | "p4" | "p5", string> = {
+  p1: "",
+  p2: "",
+  p3: "",
+  p4: "",
+  p5: "",
+};
 let moduleCode = "";
 let moduleEdited = "";
 
@@ -60,9 +66,13 @@ async function op<T>(ctx: ExecutionContext, name: string, input: unknown): Promi
 async function targets(name: string): Promise<{ staging: string; production: string }> {
   return withSql(async (tx) => {
     const s = (await tx`INSERT INTO deploy_targets (name, env, out_dir)
-      VALUES (${`${PFX}${name}-staging`}, 'staging', '/tmp/pp') RETURNING id::text AS id`) as { id: string }[];
+      VALUES (${`${PFX}${name}-staging`}, 'staging', '/tmp/pp') RETURNING id::text AS id`) as {
+      id: string;
+    }[];
     const p = (await tx`INSERT INTO deploy_targets (name, env, out_dir)
-      VALUES (${`${PFX}${name}-prod`}, 'production', '/tmp/pp') RETURNING id::text AS id`) as { id: string }[];
+      VALUES (${`${PFX}${name}-prod`}, 'production', '/tmp/pp') RETURNING id::text AS id`) as {
+      id: string;
+    }[];
     return { staging: s[0]?.id ?? "", production: p[0]?.id ?? "" };
   });
 }
@@ -75,7 +85,8 @@ async function build(
   fingerprint: Record<string, string> | null,
 ): Promise<string> {
   return withSql(async (tx) => {
-    const r = (await tx`INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id, render_fingerprint)
+    const r =
+      (await tx`INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id, render_fingerprint)
       VALUES (${targetId}::uuid, ${OWNER_ID}::uuid, 'succeeded',
               now() + ${Math.round(days * 24)}::int * interval '1 hour',
               now() + ${Math.round(days * 24)}::int * interval '1 hour', ${buildId},
@@ -93,11 +104,23 @@ async function preview(name: string): Promise<PublishPreview> {
 }
 
 /** A chat write, stamped as merged by a Stage `days` from now. */
-async function stagedChatWrite(days: number, write: (ctx: ExecutionContext) => Promise<void>): Promise<void> {
-  const s = await op<{ chatSessionId: string; chatBranchId: string }>(OWNER, "chat.create_session", {
-    title: `${PFX}chat`,
-  });
-  const ctx = { ...OWNER, actorKind: "ai" as const, chatBranchId: s.chatBranchId, chatTaskId: s.chatSessionId };
+async function stagedChatWrite(
+  days: number,
+  write: (ctx: ExecutionContext) => Promise<void>,
+): Promise<void> {
+  const s = await op<{ chatSessionId: string; chatBranchId: string }>(
+    OWNER,
+    "chat.create_session",
+    {
+      title: `${PFX}chat`,
+    },
+  );
+  const ctx = {
+    ...OWNER,
+    actorKind: "ai" as const,
+    chatBranchId: s.chatBranchId,
+    chatTaskId: s.chatSessionId,
+  };
   await write(ctx);
   await withSql(async (tx) => {
     await tx`UPDATE site_snapshots SET staged_at = now() + ${Math.round(days * 24)}::int * interval '1 hour'
@@ -178,7 +201,12 @@ describe("deploy.publish_preview", () => {
       "setting:site_base_url": base,
     });
     // Live: P1, P3, P4. Staged: P1, P2, P4 — with the hero's code and the base URL changed.
-    const liveSource = await build(t.staging, 10, "live-src", fp([page.p1, page.p3, page.p4], "a", "x"));
+    const liveSource = await build(
+      t.staging,
+      10,
+      "live-src",
+      fp([page.p1, page.p3, page.p4], "a", "x"),
+    );
     await build(t.production, 10.5, liveSource, null);
     // Between the builds a Stage merged an edit of P4, of the draft page P5
     // and of a module the fingerprint does not see (its fields, not its code).
@@ -194,8 +222,14 @@ describe("deploy.publish_preview", () => {
     expect(p.liveMatchesStaging).toBe(false);
     expect(p.staged?.runId).toBe(staged);
     expect(p.live?.stagedRunId).toBe(liveSource);
-    expect(p.pages.new).toEqual({ total: 1, items: [expect.objectContaining({ pageId: page.p2 })] });
-    expect(p.pages.removed).toEqual({ total: 1, items: [expect.objectContaining({ pageId: page.p3 })] });
+    expect(p.pages.new).toEqual({
+      total: 1,
+      items: [expect.objectContaining({ pageId: page.p2 })],
+    });
+    expect(p.pages.removed).toEqual({
+      total: 1,
+      items: [expect.objectContaining({ pageId: page.p3 })],
+    });
     // P4 changed; P5 is a draft page, not in the staged build: not listed. P1 is unchanged.
     expect(p.pages.changed.items.map((i) => i.pageId)).toEqual([page.p4]);
     expect(p.siteWide.map((s) => [s.title, s.what, s.change]).sort()).toEqual([
@@ -254,10 +288,15 @@ describe("deploy.promote with the review's staged run", () => {
     });
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(JSON.stringify(r.error)).toContain("staging was rebuilt after the Publish live review was opened");
+    expect(JSON.stringify(r.error)).toContain(
+      "staging was rebuilt after the Publish live review was opened",
+    );
     // Nothing was started on the production target.
     const runs = await withSql(
-      (tx) => tx`SELECT count(*)::int AS n FROM deploy_runs WHERE target_id = ${t.production}::uuid` as unknown as Promise<{ n: number }[]>,
+      (tx) =>
+        tx`SELECT count(*)::int AS n FROM deploy_runs WHERE target_id = ${t.production}::uuid` as unknown as Promise<
+          { n: number }[]
+        >,
     );
     expect(runs[0]?.n).toBe(0);
   });

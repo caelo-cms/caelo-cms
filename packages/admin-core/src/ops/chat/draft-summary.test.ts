@@ -9,7 +9,9 @@ type Ref = PendingChanges["pending"]["pages"][number];
 function changes(pending: Ref[], staged: Ref[] = []): PendingChanges {
   const split = (refs: Ref[]) => ({
     pages: refs.filter((r) => ["page", "pageLayout", "pageModuleContent"].includes(r.kind)),
-    globals: refs.filter((r) => !["page", "pageLayout", "pageModuleContent", "list"].includes(r.kind)),
+    globals: refs.filter(
+      (r) => !["page", "pageLayout", "pageModuleContent", "list"].includes(r.kind),
+    ),
     lists: refs.filter((r) => r.kind === "list"),
   });
   return { pending: split(pending), staged: split(staged) };
@@ -23,9 +25,27 @@ describe("summarizeDraftChanges", () => {
   it("counts a page once however many of its parts changed", () => {
     const s = summarizeDraftChanges(
       changes([
-        { kind: "pageModuleContent", entityId: "c1", label: "Pricing", pageId: PRICING, pagePath: "/pricing" },
-        { kind: "pageModuleContent", entityId: "c2", label: "Pricing", pageId: PRICING, pagePath: "/pricing" },
-        { kind: "pageLayout", entityId: PRICING, label: "Pricing", pageId: PRICING, pagePath: "/pricing" },
+        {
+          kind: "pageModuleContent",
+          entityId: "c1",
+          label: "Pricing",
+          pageId: PRICING,
+          pagePath: "/pricing",
+        },
+        {
+          kind: "pageModuleContent",
+          entityId: "c2",
+          label: "Pricing",
+          pageId: PRICING,
+          pagePath: "/pricing",
+        },
+        {
+          kind: "pageLayout",
+          entityId: PRICING,
+          label: "Pricing",
+          pageId: PRICING,
+          pagePath: "/pricing",
+        },
       ]),
     );
     expect(s.changedPages).toBe(1);
@@ -45,10 +65,37 @@ describe("summarizeDraftChanges", () => {
   it("tells new, removed and SEO-only pages apart", () => {
     const s = summarizeDraftChanges(
       changes([
-        { kind: "page", entityId: NEWPAGE, label: "Enterprise", pageId: NEWPAGE, pagePath: "/enterprise", change: "created" },
-        { kind: "pageLayout", entityId: NEWPAGE, label: "Enterprise", pageId: NEWPAGE, pagePath: "/enterprise" },
-        { kind: "page", entityId: GONE, label: "Old partners", pageId: GONE, pagePath: "/old-partners", change: "deleted" },
-        { kind: "page", entityId: PRICING, label: "Pricing", pageId: PRICING, pagePath: "/pricing", seo: true },
+        {
+          kind: "page",
+          entityId: NEWPAGE,
+          label: "Enterprise",
+          pageId: NEWPAGE,
+          pagePath: "/enterprise",
+          change: "created",
+        },
+        {
+          kind: "pageLayout",
+          entityId: NEWPAGE,
+          label: "Enterprise",
+          pageId: NEWPAGE,
+          pagePath: "/enterprise",
+        },
+        {
+          kind: "page",
+          entityId: GONE,
+          label: "Old partners",
+          pageId: GONE,
+          pagePath: "/old-partners",
+          change: "deleted",
+        },
+        {
+          kind: "page",
+          entityId: PRICING,
+          label: "Pricing",
+          pageId: PRICING,
+          pagePath: "/pricing",
+          seo: true,
+        },
       ]),
     );
     expect([s.newPages, s.changedPages, s.removedPages]).toEqual([1, 1, 1]);
@@ -63,7 +110,13 @@ describe("summarizeDraftChanges", () => {
   it("leaves out a page made and deleted again in the draft", () => {
     const s = summarizeDraftChanges(
       changes([
-        { kind: "page", entityId: NEWPAGE, label: "Scratch", pageId: NEWPAGE, change: "createdAndDeleted" },
+        {
+          kind: "page",
+          entityId: NEWPAGE,
+          label: "Scratch",
+          pageId: NEWPAGE,
+          change: "createdAndDeleted",
+        },
         { kind: "pageLayout", entityId: NEWPAGE, label: "Scratch", pageId: NEWPAGE },
       ]),
     );
@@ -77,8 +130,19 @@ describe("summarizeDraftChanges", () => {
           { kind: "list", entityId: "l1", label: "Main navigation", detail: "main-nav" },
           { kind: "layout", entityId: "s1", label: "Layout chrome", detail: "block=header" },
           { kind: "module", entityId: "m1", label: "Pricing table", detail: "pricing-table" },
-          { kind: "pluginRow", entityId: "r1", label: "international-site · translations", detail: "3f2a9c1e" },
-          { kind: "page", entityId: PRICING, label: "Pricing", pageId: PRICING, pagePath: "/pricing" },
+          {
+            kind: "pluginRow",
+            entityId: "r1",
+            label: "international-site · translations",
+            detail: "3f2a9c1e",
+          },
+          {
+            kind: "page",
+            entityId: PRICING,
+            label: "Pricing",
+            pageId: PRICING,
+            pagePath: "/pricing",
+          },
         ],
         // An isolated chat's marked-staged ref is still not on staging.
         [{ kind: "module", entityId: "m1", label: "Pricing table" }],

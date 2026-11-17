@@ -117,7 +117,9 @@ async function login(page: Page): Promise<void> {
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 }
 
-test("the Staging menu lists the operator's conversations, this one first and ticked", async ({ page }) => {
+test("the Staging menu lists the operator's conversations, this one first and ticked", async ({
+  page,
+}) => {
   await login(page);
   await page.goto(`/edit?chat=${chats.b}`);
   const staging = page.getByTestId("staging-menu");
@@ -135,7 +137,10 @@ test("the Staging menu lists the operator's conversations, this one first and ti
   await expect(first.getByTestId("draft-chat-select")).toBeChecked();
   const other = page.locator(`[data-testid="draft-chat"][data-chat-id="${chats.c}"]`);
   await expect(other.getByTestId("draft-chat-select")).not.toBeChecked();
-  await expect(other.getByTestId("open-chat-link")).toHaveAttribute("href", `/edit?chat=${chats.c}`);
+  await expect(other.getByTestId("open-chat-link")).toHaveAttribute(
+    "href",
+    `/edit?chat=${chats.c}`,
+  );
   await expect(page.getByTestId("stage-selected")).toHaveText("Stage selected (1)");
   await expect(page.getByTestId("stage-all")).toHaveText("Stage all (2)");
 
@@ -150,7 +155,11 @@ const STAGED_AT = "2026-11-17T14:32:00.000Z";
 
 /** A release of 6 pages, one site-wide part, one setting and 50 redirects. */
 function release(stagedRunId: string) {
-  const page = (n: string) => ({ pageId: `00000000-0000-4000-8000-0000000000${n}`, title: `Page ${n}`, path: `/p-${n}` });
+  const page = (n: string) => ({
+    pageId: `00000000-0000-4000-8000-0000000000${n}`,
+    title: `Page ${n}`,
+    path: `/p-${n}`,
+  });
   const moved = Array.from({ length: 48 }, (_, i) => ({
     id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
     revision: 1,
@@ -169,23 +178,48 @@ function release(stagedRunId: string) {
         changed: { total: 4, items: [page("02"), page("03"), page("04"), page("05")] },
         removed: { total: 1, items: [page("06")] },
       },
-      siteWide: [{ key: "list:l1", kind: "list", change: "changed", title: "Main navigation", what: "List" }],
+      siteWide: [
+        { key: "list:l1", kind: "list", change: "changed", title: "Main navigation", what: "List" },
+      ],
       settings: [{ key: "setting:organization_json", title: "Organization JSON-LD" }],
     },
     redirects: {
       goingLive: [
         ...moved,
-        { id: "10000000-0000-4000-8000-000000000001", revision: 2, fromPath: "/plans", toPath: "/pricing", origin: "manual" },
-        { id: "10000000-0000-4000-8000-000000000002", revision: 1, fromPath: "/faq-old", toPath: "/faq", origin: "manual" },
+        {
+          id: "10000000-0000-4000-8000-000000000001",
+          revision: 2,
+          fromPath: "/plans",
+          toPath: "/pricing",
+          origin: "manual",
+        },
+        {
+          id: "10000000-0000-4000-8000-000000000002",
+          revision: 1,
+          fromPath: "/faq-old",
+          toPath: "/faq",
+          origin: "manual",
+        },
       ],
-      waiting: [{ id: "10000000-0000-4000-8000-000000000003", revision: 1, fromPath: "/webinar", toPath: "/events/webinar", origin: "manual", reason: "target" }],
+      waiting: [
+        {
+          id: "10000000-0000-4000-8000-000000000003",
+          revision: 1,
+          fromPath: "/webinar",
+          toPath: "/events/webinar",
+          origin: "manual",
+          reason: "target",
+        },
+      ],
       draft: [],
       problem: null,
     },
   };
 }
 
-test("Publish live opens the review first: numbers, examples, Publish live at the top", async ({ page }) => {
+test("Publish live opens the review first: numbers, examples, Publish live at the top", async ({
+  page,
+}) => {
   await page.route("**/api/deploy/publish-preview", (route) =>
     route.fulfill({ json: release(chats.run) }),
   );

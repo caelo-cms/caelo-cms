@@ -21,7 +21,12 @@
  * but is not (CLAUDE.md §2).
  */
 
-import { defineOperation, textArray, type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
+import {
+  defineOperation,
+  type TransactionRunner,
+  textArray,
+  uuidArray,
+} from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -134,7 +139,11 @@ export const publishPreviewOp = defineOperation({
     const live = await newestSucceeded(tx, to.id);
     const base = {
       staged: staged
-        ? { runId: staged.id, startedAt: iso(staged.started_at), finishedAt: isoOrNull(staged.finished_at) }
+        ? {
+            runId: staged.id,
+            startedAt: iso(staged.started_at),
+            finishedAt: isoOrNull(staged.finished_at),
+          }
         : null,
       live: live
         ? {
@@ -150,7 +159,8 @@ export const publishPreviewOp = defineOperation({
     };
     const only = (notice: string) => ok({ ...base, notice });
 
-    if (!staged) return only("Nothing is staged yet. Stage first: Publish live copies the staged build.");
+    if (!staged)
+      return only("Nothing is staged yet. Stage first: Publish live copies the staged build.");
     if (!staged.has_fingerprint) {
       return only(
         "This staged build was made by an older Caelo version, so what it changes cannot be listed. Stage again to see the list.",
@@ -233,7 +243,10 @@ function capitalize(s: string): string {
 }
 
 /** The newest succeeded build of a target. */
-async function newestSucceeded(tx: TransactionRunner, targetId: string): Promise<RunRow | undefined> {
+async function newestSucceeded(
+  tx: TransactionRunner,
+  targetId: string,
+): Promise<RunRow | undefined> {
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, build_id, started_at, finished_at,
            render_fingerprint IS NOT NULL AS has_fingerprint

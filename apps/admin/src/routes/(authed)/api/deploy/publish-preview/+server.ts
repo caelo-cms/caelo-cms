@@ -28,11 +28,17 @@ export const GET: RequestHandler = async ({ locals }) => {
   ]);
   if (!preview.ok) {
     console.error("[publish-preview] deploy.publish_preview failed", { error: preview.error });
-    throw error(500, `What Publish live changes could not be read: ${describeError(preview.error)}`);
+    throw error(
+      500,
+      `What Publish live changes could not be read: ${describeError(preview.error)}`,
+    );
   }
   if (!redirects.ok) {
     console.error("[publish-preview] redirects.release_plan failed", { error: redirects.error });
-    throw error(500, `The redirects of this Publish live could not be read: ${describeError(redirects.error)}`);
+    throw error(
+      500,
+      `The redirects of this Publish live could not be read: ${describeError(redirects.error)}`,
+    );
   }
   return json({ preview: preview.value, redirects: redirects.value });
 };

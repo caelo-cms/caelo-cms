@@ -143,7 +143,9 @@ test.beforeAll(() => {
   chats = JSON.parse(out) as typeof chats;
 });
 
-test("lists the operator's own conversations with their changes and discards one", async ({ page }) => {
+test("lists the operator's own conversations with their changes and discards one", async ({
+  page,
+}) => {
   await page.goto("/login");
   await page.getByLabel("Email").fill("dev-owner@example.com");
   await page.getByLabel("Password").fill("dev owner password");

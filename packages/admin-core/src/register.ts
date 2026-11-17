@@ -254,6 +254,7 @@ import {
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
 import { finishPromoteOp, recheckPublishAnywayOp, startPromoteOp } from "./ops/deploy-promote.js";
+import { publishPreviewOp } from "./ops/deploy-publish-preview.js";
 import { finishRollbackOp, rollbackDeployOp, startRollbackOp } from "./ops/deploy-rollback.js";
 import {
   acquireLiveReleaseOp,
@@ -262,7 +263,6 @@ import {
   renewDeployRunLeaseOp,
 } from "./ops/deploy-run-lifecycle.js";
 import { getDeployRunOriginOp } from "./ops/deploy-run-origin.js";
-import { publishPreviewOp } from "./ops/deploy-publish-preview.js";
 import { stageStatusOp } from "./ops/deploy-stage-status.js";
 import { finishTriggerOp, startTriggerOp, triggerDeployOp } from "./ops/deploy-trigger.js";
 import { databaseActivityOp } from "./ops/diagnostics.js";
