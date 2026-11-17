@@ -39,12 +39,13 @@ const REGENERATED = new Set([
 const VERSIONED_JSON = new Set([
   "packages/mcp-server/server.json",
   "integrations/claude-code/.claude-plugin/plugin.json",
+  "integrations/claude-code-token/.claude-plugin/plugin.json",
 ]);
 
 /** Text files with a version-stamp pattern; everything outside it must match. */
 const STAMPED_TEXT: Record<string, RegExp> = {
   "packages/shared/src/version.ts": /CAELO_VERSION = "[^"]+"/g,
-  "integrations/claude-code/.mcp.json": /@caelo-cms\/mcp-server@[^"]+"/g,
+  "integrations/claude-code-token/.mcp.json": /@caelo-cms\/mcp-server@[^"]+"/g,
   // Workspace entries in the lockfile record each package's version.
   "bun.lock": /^(\s*)"version": "[^"]+",?$/gm,
 };

@@ -14,7 +14,13 @@
   import { Select } from "#lib/components/ui/select/index.js";
   import { Tabs, TabsContent, TabsList, TabsTrigger } from "#lib/components/ui/tabs/index.js";
   import { MCP_SURFACE_COPY, type McpSurfaceName, mcpConnectorName } from "@caelo-cms/shared";
-  import { remoteMcpAddCommand, remoteMcpConfigJson, remoteMcpServer } from "#lib/mcp-command.js";
+  import {
+    CLAUDE_PLUGIN,
+    claudePluginInstallCommands,
+    remoteMcpAddCommand,
+    remoteMcpConfigJson,
+    remoteMcpServer,
+  } from "#lib/mcp-command.js";
 
   let {
     urls,
@@ -93,6 +99,28 @@
     </TabsContent>
 
     <TabsContent value="claude-code" class="space-y-2">
+      {#if surface === "power"}
+        <!-- #1637 — the plugin connects by this URL and adds the skills. -->
+        <p class="text-sm">
+          With the Caelo plugin, which also brings skills for connecting, safe editing and handing
+          a site over:
+        </p>
+        <ol class="ml-5 list-decimal space-y-1 text-sm">
+          <li>Run these in a terminal.</li>
+        </ol>
+        <CopyLine
+          value={claudePluginInstallCommands(server.url)}
+          label="Commands"
+          testid="remote-mcp-setup-claude-plugin"
+        />
+        <ol start="2" class="ml-5 list-decimal space-y-1 text-sm">
+          <li>
+            Start Claude Code, run <code>/mcp</code>, pick <code>{CLAUDE_PLUGIN.server}</code> and
+            choose Authenticate.
+          </li>
+        </ol>
+        <p class="pt-2 text-sm text-muted-foreground">Or without the plugin, the connection alone:</p>
+      {/if}
       <ol class="ml-5 list-decimal space-y-1 text-sm">
         <li>Run this in a terminal, in the folder you work in.</li>
       </ol>

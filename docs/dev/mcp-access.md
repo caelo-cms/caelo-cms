@@ -101,6 +101,29 @@ An install works fully without an AI key of its own: an external agent on the Po
 - **Live Edit.** The composer gives way to a notice with links to Settings → AI and Settings → MCP, and `ChatPanel` starts no turn (no first-run welcome, no quality fix offer). The stream endpoint refuses with `code: "no_install_ai"`. Preview, Stage, Publish live and approval cards are untouched: the cards are how an agent's gated tools get their human click.
 - **Every caller has a defined result.** `scripts/install-ai-callers.test.ts` pins the inventory of the resolver's callers with what each does here, and no background worker is among them, so nothing logs on a timer for a state the Owner chose. Plugin AI on a human path (a panel's "let the AI decide") refuses with `NoInstallAi:`, which names both ways forward.
 
+## The Claude Code plugins (#975, #1637)
+
+The marketplace at the repo root (`.claude-plugin/marketplace.json`) lists two plugins. Both bring the same skills (`connect`, `edit-site`, `handover`) and differ in how they connect:
+
+| Plugin | Directory | Connects | For |
+|---|---|---|---|
+| `caelo` | `integrations/claude-code` | by URL: one remote server at the address the person enters (`mcp_url`), signed in with Google through `/mcp` | Google Cloud installs with remote MCP |
+| `caelo-token` | `integrations/claude-code-token` | Caelo's local MCP server (`caelo-power-mcp`) with a token | self-hosted, AWS, Azure, CI |
+
+The URL plugin is the default, because a tool that can connect by URL should (see the #968 decisions): no secret on anyone's machine, each person is themselves, no Bun, no gcloud, and no package to pin, since the install serves its own release. It holds no code and no address; `scripts/claude-plugin.test.ts` pins that its one server entry is `{ "type": "http", "url": "${user_config.mcp_url}" }` and nothing else.
+
+**Why two plugins and not one with two servers.** Measured with Claude Code 2.1.326 and a throwaway plugin (2026-11-17), because the docs do not say what happens to a plugin server whose option is empty:
+
+- A remote server whose URL option is empty is listed as failed: "URL is unset or invalid — open /plugin manage and configure …". It is not skipped.
+- The local server without credentials starts and is listed as connected (#841, so directories can list its tools), with every call failing.
+- With the URL set, Claude Code starts OAuth discovery for the plugin's server like for any remote server (protected-resource metadata, then registration).
+
+So one plugin with both servers would show every person a second Caelo server that does not work: a failed one in token mode, and a connected one that doubles the tool list with tools that all fail in URL mode. Each plugin asks only for what its path needs instead.
+
+The shared skills are two files kept identical in both directories (a `git-subdir` source fetches only its own directory, so they cannot be shared by path); the same test fails when they differ, and when one of them names a plugin option, because the skills also load in claude.ai and Cowork, where the connection is a custom connector.
+
+Settings → MCP → Remote shows the install commands for `caelo` on its Claude Code tab for the Power address (`claudePluginInstallCommands`), before the bare `claude mcp add`.
+
 ## Settings → MCP
 
 On an install without an AI key the page leads with creating a token and the `claude mcp add` command (see above). Otherwise it is state-aware:
