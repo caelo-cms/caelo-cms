@@ -128,6 +128,9 @@ test("the Staging menu lists the operator's conversations, this one first and ti
   await expect(page.getByTestId("cross-chat-banner")).toHaveCount(0);
 
   await staging.click();
+  // Bounded to the window and scrollable: a long list never pushes Stage all
+  // or the quality controls off screen.
+  await expect(page.getByTestId("staging-menu-content")).toHaveCSS("overflow-y", "auto");
   const cards = page.getByTestId("draft-chat");
   await expect(cards).toHaveCount(2);
   const first = cards.first();

@@ -35,6 +35,7 @@ import { publishChangedPages } from "#lib/server/publish-changed-pages.js";
 import { publishLiveFailure } from "#lib/server/publish-live-failure.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { ServerTiming } from "#lib/server/server-timing.js";
+import { stagedActionResult } from "#lib/server/stage-action-result.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
 import { readStageSelection } from "#lib/server/stage-selection.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -837,39 +838,12 @@ export const actions: Actions = {
     // request waits for it as before.
     const staged = await carryStage({ adapter, registry }, locals.ctx, selection.chatSessionIds);
     if (!staged.ok) return fail(500, { error: staged.error.message });
-    const summary = staged.value;
-    const {
-      previewUrl,
-      previewLabel,
-      draftPageCount,
-      draftPageTitles,
-      unpublishedLinkWarning,
-      truncatedListWarning,
-      pluginProblemWarning,
-      linkNoticeWarning,
-      renderWarning,
-    } = await describeStagedBuild(locals.ctx, summary, pageId || null);
-
+    const described = await describeStagedBuild(locals.ctx, staged.value, pageId || null);
     return {
-      staged: {
-        pageId,
+      staged: stagedActionResult(staged.value, described, {
         chatCount: selection.chatSessionIds.length,
-        pageCount: summary.pageCount,
-        fileCount: summary.fileCount,
-        buildId: summary.buildId,
-        previewUrl,
-        previewLabel,
-        mergedEntityCount: summary.mergedEntityCount,
-        draftPageCount,
-        draftPageTitles,
-        unpublishedLinkWarning,
-        truncatedListWarning,
-        pluginProblemWarning,
-        linkNoticeWarning,
-        renderWarning,
-        // Issue #620 — other chats' changes to the same things rode along.
-        alsoIncludes: summary.alsoIncludes.map((a) => a.title),
-      },
+        pageId,
+      }),
       // #1574 — built without the build carrier (the layout's toast says so).
       ...(staged.warning ? { carrierWarning: staged.warning } : {}),
     };

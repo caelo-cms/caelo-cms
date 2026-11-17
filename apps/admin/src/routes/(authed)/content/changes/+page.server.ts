@@ -18,40 +18,30 @@ import { fail } from "@sveltejs/kit";
 import type { DraftChat } from "#lib/components/edit/draft-chats.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { readOwnDraftChats } from "#lib/server/own-drafts.js";
 import { getQueryContext } from "#lib/server/query.js";
+import { stagedActionResult } from "#lib/server/stage-action-result.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
 import { readStageSelection } from "#lib/server/stage-selection.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ locals }) => {
   const user = requirePermission(locals, "content.write");
-  const { adapter, registry } = getQueryContext();
   const canStage = user.permissions.has("deploy.trigger");
-  const r = await execute(registry, adapter, locals.ctx, "chat.list_open_changes", {
-    mineOnly: true,
-  });
-  if (!r.ok) {
+  try {
+    return {
+      chats: await readOwnDraftChats(locals.ctx),
+      loadError: null as string | null,
+      canStage,
+    };
+  } catch (e) {
     // Loud: an empty list here would read as "nothing in draft" (CLAUDE.md §2).
-    console.error("[changes] chat.list_open_changes failed", { error: r.error });
     return {
       chats: [] as DraftChat[],
-      loadError: `Could not load your draft changes: ${describeError(r.error)}`,
+      loadError: e instanceof Error ? e.message : String(e),
       canStage,
     };
   }
-  // A conversation that only holds locks has nothing to stage.
-  const chats: DraftChat[] = (r.value as { chats: DraftChat[] }).chats
-    .filter((c) => c.pendingCount > 0)
-    .map((c) => ({
-      chatSessionId: c.chatSessionId,
-      title: c.title,
-      branchKind: c.branchKind,
-      anchorPageId: c.anchorPageId,
-      anchorPagePath: c.anchorPagePath,
-      pendingCount: c.pendingCount,
-      summary: c.summary,
-    }));
-  return { chats, loadError: null as string | null, canStage };
 };
 
 export const actions: Actions = {
@@ -72,34 +62,12 @@ export const actions: Actions = {
     // #1574 — inside the request a carrier job holds open (a closed tab does not stop it).
     const staged = await carryStage({ adapter, registry }, locals.ctx, selection.chatSessionIds);
     if (!staged.ok) return fail(500, { error: staged.error.message });
-    const {
-      previewUrl,
-      previewLabel,
-      draftPageCount,
-      draftPageTitles,
-      unpublishedLinkWarning,
-      truncatedListWarning,
-      pluginProblemWarning,
-      linkNoticeWarning,
-    } = await describeStagedBuild(locals.ctx, staged.value, null);
+    const described = await describeStagedBuild(locals.ctx, staged.value, null);
     return {
-      staged: {
+      staged: stagedActionResult(staged.value, described, {
         chatCount: selection.chatSessionIds.length,
-        pageCount: staged.value.pageCount,
-        fileCount: staged.value.fileCount,
-        buildId: staged.value.buildId,
-        mergedEntityCount: staged.value.mergedEntityCount,
-        linkWarnings: [...staged.value.linkWarnings],
-        alsoIncludes: staged.value.alsoIncludes.map((a) => a.title),
-        previewUrl,
-        previewLabel,
-        draftPageCount,
-        draftPageTitles,
-        unpublishedLinkWarning,
-        truncatedListWarning,
-        pluginProblemWarning,
-        linkNoticeWarning,
-      },
+        pageId: "",
+      }),
       // #1574 — built without the build carrier (the layout's toast says so).
       ...(staged.warning ? { carrierWarning: staged.warning } : {}),
     };

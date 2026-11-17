@@ -492,6 +492,9 @@
     }}
     class="contents"
   >
+    <!-- A rebuild for the chat on screen, which may have nothing in draft
+         (stage-selection.ts reads `restage`, not the Draft changes list). -->
+    <input type="hidden" name="restage" value="1" />
     <input type="hidden" name="chatSessionId" value={chatSessionId} />
     {#if activePageId}<input type="hidden" name="pageId" value={activePageId} />{/if}
     <input type="hidden" name="_csrf" value={csrfToken} />
@@ -658,7 +661,13 @@
       {stagingView.label}
       <ChevronDown class="size-3.5 opacity-60" />
     </PopoverTrigger>
-    <PopoverContent align="end" class="w-[26rem] max-w-[calc(100vw-2rem)] p-0" data-testid="staging-menu-content">
+    <!-- Bounded to the window: several conversations or open details would
+         otherwise push Stage all and the quality controls off screen. -->
+    <PopoverContent
+      align="end"
+      class="max-h-[calc(100dvh-5rem)] w-[26rem] max-w-[calc(100vw-2rem)] overflow-y-auto p-0"
+      data-testid="staging-menu-content"
+    >
       <div class="space-y-3 p-3">
         <div class="flex items-baseline justify-between gap-3">
           <h2 class="text-sm font-semibold">Staging</h2>

@@ -32,6 +32,7 @@ import { createLane, type Streamed, settle } from "#lib/streamed.js";
 import { type EditPage, toEditPage } from "./edit-active-page.js";
 import { type LiveLinks, loadLiveLinks } from "./live-links.js";
 import { opErrorMessage } from "./op-error.js";
+import { readOwnDraftChats } from "./own-drafts.js";
 import { loadPageSeoInfo, type PageSeoInfo } from "./page-seo-info.js";
 import { getQueryContext } from "./query.js";
 import { SLOW_STEP_MS } from "./server-timing.js";
@@ -173,24 +174,7 @@ export function streamEditorParts(input: EditorStreamInput): EditorStream {
   // The operator's own chats only: the panel stages them, and another
   // editor's work is theirs to stage (decision 2026-11-17). A chat that only
   // holds locks has nothing to stage.
-  const draftChats = run(drafts, "Your draft changes", async () => {
-    const v = await read<{ chats: (DraftChat & { isMine: boolean })[] }>(
-      ctx,
-      "chat.list_open_changes",
-      { mineOnly: true },
-    );
-    return v.chats
-      .filter((c) => c.pendingCount > 0)
-      .map((c) => ({
-        chatSessionId: c.chatSessionId,
-        title: c.title,
-        branchKind: c.branchKind,
-        anchorPageId: c.anchorPageId,
-        anchorPagePath: c.anchorPagePath,
-        pendingCount: c.pendingCount,
-        summary: c.summary,
-      }));
-  });
+  const draftChats = run(drafts, "Your draft changes", () => readOwnDraftChats(ctx));
 
   return {
     firstPages,

@@ -2,6 +2,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { error, redirect } from "@sveltejs/kit";
+import { totalChanges } from "#lib/components/edit/draft-chats.js";
+import { readOwnDraftChats } from "#lib/server/own-drafts.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { type DeployRunSummary, type SiteState, siteStateFrom } from "#lib/site-state.js";
 import type { PageServerLoad } from "./$types";
@@ -57,9 +59,9 @@ export const load: PageServerLoad = async ({ locals }) => {
     perms.has("content.write")
       ? execute(registry, adapter, locals.ctx, "chat.list_sessions", { includeArchived: false })
       : null,
-    perms.has("content.write")
-      ? execute(registry, adapter, locals.ctx, "chat.list_open_changes", { mineOnly: true })
-      : null,
+    // Every page of the operator's own drafts (own-drafts.ts); a failed
+    // read leaves the card out, logged there.
+    perms.has("content.write") ? readOwnDraftChats(locals.ctx).catch(() => null) : null,
     perms.has("settings.read")
       ? execute(registry, adapter, locals.ctx, "pending_proposals.list", { limit: 1 })
       : null,
@@ -69,7 +71,6 @@ export const load: PageServerLoad = async ({ locals }) => {
   ]);
   for (const [op, r] of [
     ["chat.list_sessions", chatsR],
-    ["chat.list_open_changes", changesR],
     ["pending_proposals.list", pendingR],
     ["ai_bug_reports.list", bugsR],
   ] as const) {
@@ -81,18 +82,9 @@ export const load: PageServerLoad = async ({ locals }) => {
         .slice(0, RECENT_CHAT_COUNT)
         .map(({ id, title, lastActiveAt }) => ({ id, title, lastActiveAt }))
     : null;
-  const openChanges: { changeCount: number; chatCount: number } | null = changesR?.ok
-    ? (() => {
-        // The operator's own conversations, counted as the Staging menu
-        // counts them: a page or a site-wide part is one change.
-        const chats = (
-          changesR.value as { chats: { pendingCount: number; summary: { rows: unknown[] } }[] }
-        ).chats.filter((c) => c.pendingCount > 0);
-        return {
-          changeCount: chats.reduce((sum, c) => sum + c.summary.rows.length, 0),
-          chatCount: chats.length,
-        };
-      })()
+  // Counted as the Staging menu counts them: a page or a site-wide part is one change.
+  const openChanges: { changeCount: number; chatCount: number } | null = changesR
+    ? { changeCount: totalChanges(changesR), chatCount: changesR.length }
     : null;
   const pendingApprovals: number | null = pendingR?.ok
     ? (pendingR.value as { total: number }).total
