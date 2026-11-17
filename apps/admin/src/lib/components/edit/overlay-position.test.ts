@@ -23,8 +23,8 @@ describe("overlayPositionStyle", () => {
     );
   });
 
-  it("moves the column down when the cross-chat banner pushes the toolbar down", () => {
-    // Regression: with the banner (36 px) the column stayed at top 56 px and
+  it("moves the column down when a strip above pushes the toolbar down", () => {
+    // Regression: with a strip (36 px) the column stayed at top 56 px and
     // covered the toolbar's "Edit elements" toggle (toolbar bottom at 80 px).
     const style = overlayPositionStyle(LAYOUT, { docked: false, chromeBottom: 80 });
     expect(style).toBe("right: 0; top: 92px; bottom: 0; width: 420px;");

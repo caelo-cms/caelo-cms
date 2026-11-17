@@ -4,13 +4,13 @@
  * Where the live-edit chat overlay sits for each pin mode.
  *
  * The pinned-right column starts below the /edit page chrome. That chrome is
- * not a fixed height: the cross-chat banner ("Also pending: …") appears above
- * the toolbar whenever other chats hold pending changes. A hard-coded top
- * (the old `top: 56px`) let the column, which stacks above the toolbar,
- * cover the toolbar's right-hand controls — "Edit elements", Diff, the page
- * picker — so they could not be clicked while the banner showed (the
- * live-edit-modifier-click E2E flake: parallel specs leave pending chats, the
- * banner appears, the toggle click never lands).
+ * not a fixed height: strips appear above the toolbar (plugin approvals,
+ * streamed-part errors, the chat notice; until #1643 the cross-chat banner
+ * "Also pending: …"). A hard-coded top (the old `top: 56px`) let the column,
+ * which stacks above the toolbar, cover the toolbar's right-hand controls —
+ * "Edit elements", Diff, the page picker — so they could not be clicked
+ * while a strip showed (the live-edit-modifier-click E2E flake: the banner
+ * appeared at random, the toggle click never landed).
  */
 
 import type { OverlayLayout } from "./use-overlay-layout.svelte.js";

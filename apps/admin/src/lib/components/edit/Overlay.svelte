@@ -61,9 +61,10 @@
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
   interface Props {
     docked?: boolean;
-    /** px from the viewport top to the bottom of the /edit chrome (banner +
-     *  toolbar). The pinned-right column starts below it, so it never covers
-     *  the toolbar's controls when the cross-chat banner pushes them down. */
+    /** px from the viewport top to the bottom of the /edit chrome (the strips
+     *  above the toolbar + the toolbar). The pinned-right column starts below
+     *  it, so it never covers the toolbar's controls when a strip pushes them
+     *  down. */
     chromeBottom?: number;
     previewSelection?: PluginPreviewSelection | null;
     onClearPreviewSelection?: () => void;

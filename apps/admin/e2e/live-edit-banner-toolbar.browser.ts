@@ -1,28 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Regression for the live-edit-modifier-click CI flake (PR #717): with the
- * cross-chat banner ("Also pending: …") shown above the /edit toolbar, the
- * default pinned-right chat column — placed at a hard-coded `top: 56px` —
- * covered the toolbar's right-hand controls (then the "Edit elements"
- * toggle, removed in #916) so they could not be clicked. Parallel specs leave pending chats behind, so the
- * banner appeared at random and the click timed out.
+ * Regression for the live-edit-modifier-click CI flake (PR #717): with a
+ * strip shown above the /edit toolbar (then the cross-chat banner "Also
+ * pending: …", removed in #1643), the default pinned-right chat column —
+ * placed at a hard-coded `top: 56px` — covered the toolbar's right-hand
+ * controls (then the "Edit elements" toggle, removed in #916) so they could
+ * not be clicked. The strip appeared at random and the click timed out.
  *
- * Here the banner is made deterministic: a chat of this spec's own Owner
- * gets a pending AI edit, then /edit opens a SECOND chat on the page. The
- * toolbar must stay clear of the column and its controls must take clicks.
+ * The strips above the toolbar remain (plugin approvals, streamed-part
+ * errors, the chat notice), so here one is made deterministic: a `?chat=`
+ * that names no open chat shows the chat notice (#1102). The toolbar must
+ * stay clear of the column and its controls must take clicks.
  */
 
 import { spawnSync } from "node:child_process";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
-  attachTestProviderHeader,
   clearLoginRateBucket,
-  clearTestProvider,
   ensureIsolatedOwner,
   ISOLATED_OWNER_PASSWORD,
   referenceViaContextMenu,
-  registerTestProvider,
   resetOverlayLayoutFor,
   runBunInline,
 } from "./helpers.js";
@@ -30,12 +28,10 @@ import {
 // Its own Owner: the chats and the overlay layout (default pinned-right)
 // are this spec's alone.
 const OWNER_EMAIL = "banner-toolbar-e2e-owner@example.com";
-const BASE = `http://localhost:${process.env.CAELO_E2E_PORT ?? "4173"}`;
 const ts = Date.now();
 const TPL_SLUG = `e2e-bt-tpl-${ts}`;
 const MOD_SLUG = `e2e-bt-mod-${ts}`;
 const PAGE_SLUG = `e2e-bt-page-${ts}`;
-const PROVIDER = `banner-toolbar-${ts}`;
 
 test.beforeAll(() => {
   clearLoginRateBucket();
@@ -43,8 +39,7 @@ test.beforeAll(() => {
   resetOverlayLayoutFor(OWNER_EMAIL);
 });
 
-test.afterAll(async () => {
-  await clearTestProvider(BASE, PROVIDER);
+test.afterAll(() => {
   runBunInline(
     `
     import { SQL } from "bun";
@@ -63,15 +58,7 @@ test.afterAll(async () => {
   );
 });
 
-async function newChat(page: Page): Promise<string> {
-  await page.goto("/content/chat");
-  await page.getByRole("button", { name: /\+ new chat/i }).click();
-  await expect(page).toHaveURL(/\/content\/chat\/[0-9a-f-]+$/, { timeout: 15_000 });
-  return page.url().split("/").pop() ?? "";
-}
-
-test("the pinned chat column never covers the toolbar while the cross-chat banner shows", async ({
-  context,
+test("the pinned chat column never covers the toolbar while a strip shows above it", async ({
   page,
 }) => {
   const r = spawnSync(
@@ -112,48 +99,22 @@ test("the pinned chat column never covers the toolbar while the cross-chat banne
   if (r.status !== 0) throw new Error(r.stderr);
   const ids = JSON.parse(r.stdout) as { mod: string; pg: string };
 
-  // One AI edit in the first chat leaves it with a pending change.
-  await registerTestProvider(BASE, PROVIDER, [
-    [
-      {
-        kind: "tool-call",
-        id: `tu_bt_${ts}`,
-        name: "update_modules_many",
-        arguments: { items: [{ moduleId: ids.mod, html: "<h1>BANNER_TOOLBAR_EDITED</h1>" }] },
-      },
-      { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
-      { kind: "done", stopReason: "tool_use" },
-    ],
-    [
-      { kind: "text-delta", text: "Edited the hero." },
-      { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
-      { kind: "done", stopReason: "end_turn" },
-    ],
-  ]);
-  await attachTestProviderHeader(context, PROVIDER);
-
   await page.goto("/login");
   await page.getByLabel("Email").fill(OWNER_EMAIL);
   await page.getByLabel("Password").fill(ISOLATED_OWNER_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  await newChat(page);
-  await page.getByTestId("chat-composer").fill("Change the hero");
-  await page.getByTestId("chat-send").click();
-  await expect(page.getByText("Edited the hero.")).toBeVisible({ timeout: 20_000 });
-
-  // A second chat on the page: the first one is now "another open chat
-  // with pending changes", so the banner shows above the toolbar.
-  const second = await newChat(page);
-  await page.goto(`/edit?page=${ids.pg}&chat=${second}`);
-  await expect(page.getByText("Also pending:")).toBeVisible({ timeout: 15_000 });
+  // A chat id that names no open chat: the editor opens another one and
+  // says so in a strip above the toolbar.
+  await page.goto(`/edit?page=${ids.pg}&chat=${crypto.randomUUID()}`);
+  await expect(page.getByTestId("chat-notice")).toBeVisible({ timeout: 15_000 });
 
   const toolbar = page.getByTestId("edit-toolbar");
   const column = page.getByRole("toolbar", { name: "Live-edit overlay controls" });
   await expect(column).toBeVisible();
   // The column starts below the toolbar, not on top of it. Polled: the
-  // banner pushes the toolbar down first and the column follows on the
+  // strip pushes the toolbar down first and the column follows on the
   // next layout pass (its top is derived from the measured chrome height),
   // so a single measurement can land between the two under load.
   await expect
