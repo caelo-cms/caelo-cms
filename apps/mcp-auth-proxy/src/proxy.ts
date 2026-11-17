@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The MCP endpoints (issue #806): `/api/mcp/<surface>` → the IAP-protected
- * admin's `/api/mcp/remote/<surface>`, streamed both ways (MCP Streamable
- * HTTP answers with SSE that can stay open for minutes).
+ * The MCP endpoints (issue #806): `/api/mcp/<address>` → the IAP-protected
+ * admin's `/api/mcp/remote/<address>`, streamed both ways (MCP Streamable
+ * HTTP answers with SSE that can stay open for minutes). The addresses are
+ * the two surfaces and the Power surface's old one (`MCP_ADDRESSES`,
+ * config.ts); the admin serves a route for each, so the proxy maps nothing.
  *
  * The broker holds no admin credential. The client's bearer is a sealed
- * access token (access-token.ts); the proxy refuses one minted for the
- * other surface and forwards only the user's own Google ID token inside
+ * access token (access-token.ts); the proxy refuses one minted for
+ * another address and forwards only the user's own Google ID token inside
  * it — plus the client app the token was issued to
  * ({@link MCP_CLIENT_HEADER}, issue #968) — and IAP decides: a token not issued to the
  * allowlisted client → IAP 401 (the client signs in again); a user
@@ -34,7 +36,7 @@
  */
 
 import { openAccessToken } from "./access-token.js";
-import type { McpSurface } from "./config.js";
+import type { McpAddress } from "./config.js";
 import type { McpContext, ProxyLimits } from "./context.js";
 import { resourceMetadataUrl } from "./context.js";
 import { json, withCors } from "./http.js";
@@ -91,21 +93,21 @@ export const PROXY_LIMITS: ProxyLimits = {
 /** The `WWW-Authenticate` challenge that starts (or restarts) the OAuth flow. */
 export function bearerChallenge(
   ctx: McpContext,
-  surface: McpSurface,
+  address: McpAddress,
   invalidToken: boolean,
 ): string {
-  const base = `Bearer resource_metadata="${resourceMetadataUrl(ctx.config, surface)}"`;
+  const base = `Bearer resource_metadata="${resourceMetadataUrl(ctx.config, address)}"`;
   return invalidToken ? `${base}, error="invalid_token"` : base;
 }
 
-function unauthorized(ctx: McpContext, surface: McpSurface, invalidToken: boolean): Response {
+function unauthorized(ctx: McpContext, address: McpAddress, invalidToken: boolean): Response {
   return json(
     {
       error: invalidToken ? "invalid_token" : "unauthorized",
       message: "Sign in with your Google account to use this Caelo site from your AI app.",
     },
     401,
-    { "www-authenticate": bearerChallenge(ctx, surface, invalidToken) },
+    { "www-authenticate": bearerChallenge(ctx, address, invalidToken) },
   );
 }
 
@@ -170,11 +172,11 @@ export interface ProxyHooks {
   readonly setIdleTimeout: (seconds: number) => void;
 }
 
-/** Serve one MCP request for `surface`. */
+/** Serve one MCP request for `address`. */
 export async function handleMcpProxy(
   req: Request,
   ctx: McpContext,
-  surface: McpSurface,
+  address: McpAddress,
   hooks: ProxyHooks,
 ): Promise<Response> {
   if (req.method !== "GET" && req.method !== "POST" && req.method !== "DELETE") {
@@ -184,11 +186,11 @@ export async function handleMcpProxy(
   }
   const auth = req.headers.get("authorization");
   const bearer = auth ? /^Bearer ([A-Za-z0-9._~+/-]+=*)$/i.exec(auth)?.[1] : undefined;
-  if (bearer === undefined) return unauthorized(ctx, surface, auth !== null);
-  // The surface binding is checked here, before anything goes upstream:
-  // a token approved for chat never reaches the admin surface.
-  const grant = openAccessToken(ctx, bearer, surface);
-  if (grant === null) return unauthorized(ctx, surface, true);
+  if (bearer === undefined) return unauthorized(ctx, address, auth !== null);
+  // The address binding is checked here, before anything goes upstream:
+  // a token approved for chat never reaches the Power surface.
+  const grant = openAccessToken(ctx, bearer, address);
+  if (grant === null) return unauthorized(ctx, address, true);
   const limits = ctx.proxyLimits;
   const declared = Number(req.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > limits.maxBodyBytes) {
@@ -228,7 +230,7 @@ export async function handleMcpProxy(
   const upHeaders = upstreamRequestHeaders(req, ctx);
   upHeaders.set("authorization", `Bearer ${grant.idToken}`);
   upHeaders.set(MCP_CLIENT_HEADER, encodeURIComponent(grant.client));
-  const target = `${ctx.config.adminUrl}/api/mcp/remote/${surface}`;
+  const target = `${ctx.config.adminUrl}/api/mcp/remote/${address}`;
   let upstream: Response;
   try {
     upstream = await ctx.fetchImpl(target, {
@@ -279,7 +281,7 @@ export async function handleMcpProxy(
   // against the broker, never with a challenge naming the admin origin.
   if (upstream.status === 401) {
     await upstream.body?.cancel();
-    return unauthorized(ctx, surface, true);
+    return unauthorized(ctx, address, true);
   }
   if (upstream.status === 403 && upstream.headers.has("x-goog-iap-generated-response")) {
     await upstream.body?.cancel();

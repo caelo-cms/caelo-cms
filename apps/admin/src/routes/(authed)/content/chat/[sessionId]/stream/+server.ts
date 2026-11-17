@@ -30,6 +30,7 @@ import {
   subscribeLiveTopics,
 } from "@caelo-cms/admin-core";
 import {
+  AI_WORK_PERMISSION,
   type LiveTopic,
   noInstallAiRefusal,
   pluginPreviewSelectionSchema,
@@ -45,7 +46,9 @@ const TEST_PROVIDER_HEADER = "x-caelo-test-provider";
 const LIVE_SETTLE_MS = 100;
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-  requirePermission(locals, "content.write");
+  // #1636 — one permission for working through an AI, here and on both MCP
+  // surfaces (scripts/ai-work-permission.test.ts).
+  requirePermission(locals, AI_WORK_PERMISSION);
 
   // Lightweight CSRF check via a dedicated header (the body is JSON, not
   // form-encoded, so the existing assertCsrfToken helper doesn't apply).

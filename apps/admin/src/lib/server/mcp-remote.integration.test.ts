@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #806 — `/api/mcp/remote/{chat,admin}` against a real Postgres,
+ * Issue #806 — `/api/mcp/remote/{chat,power}` against a real Postgres,
  * driven by the MCP SDK's own Streamable HTTP client (its fetch routed into
  * the route handlers): initialize + tools/list per surface, every auth
- * refusal (HTTP status + structured body), sticky revocation, the admin
- * surface's permission gate, and the work session per agent bound to the
+ * refusal (HTTP status + structured body), sticky revocation, the one
+ * permission both surfaces need (#1636), the Power surface's old address
+ * `/api/mcp/remote/admin`, and the work session per agent bound to the
  * client's MCP session id (#1253). IAP assertions are signed with
  * generated ES256 keys through the verifier's test seam.
  */
@@ -23,8 +24,9 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SQL } from "bun";
-import * as adminRoute from "../../routes/api/mcp/remote/admin/+server.js";
+import * as legacyPowerRoute from "../../routes/api/mcp/remote/admin/+server.js";
 import * as chatRoute from "../../routes/api/mcp/remote/chat/+server.js";
+import * as powerRoute from "../../routes/api/mcp/remote/power/+server.js";
 import { getQueryContext } from "./query.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -36,6 +38,7 @@ let audience: string | undefined = AUDIENCE;
 
 const OWNER = { id: "00000000-0000-4000-8806-0000000000a1", email: "owner@t806-route.test" };
 const EDITOR = { id: "00000000-0000-4000-8806-0000000000a2", email: "editor@t806-route.test" };
+const REVIEWER = { id: "00000000-0000-4000-8806-0000000000a3", email: "reviewer@t806-route.test" };
 
 const ownerCtx: ExecutionContext = {
   actorId: OWNER.id,
@@ -43,8 +46,9 @@ const ownerCtx: ExecutionContext = {
   requestId: "t806-route-owner",
 };
 
-type Surface = "chat" | "admin";
-const routes = { chat: chatRoute, admin: adminRoute } as const;
+/** A route under `/api/mcp/remote/`: the two surfaces, and the Power surface's old address. */
+type Surface = "chat" | "power" | "admin";
+const routes = { chat: chatRoute, power: powerRoute, admin: legacyPowerRoute } as const;
 
 async function withSql<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL!);
@@ -132,6 +136,7 @@ beforeAll(async () => {
     for (const [u, role] of [
       [OWNER, "owner"],
       [EDITOR, "editor"],
+      [REVIEWER, "reviewer"],
     ] as const) {
       await tx`INSERT INTO actors (id, kind, display_name)
                VALUES (${u.id}::uuid, 'human', ${u.email}) ON CONFLICT (id) DO NOTHING`;
@@ -156,7 +161,7 @@ beforeAll(async () => {
 afterAll(async () => {
   setIapVerifierForTests(null);
   await withSql(async (tx) => {
-    for (const u of [OWNER, EDITOR]) {
+    for (const u of [OWNER, EDITOR, REVIEWER]) {
       await tx`DELETE FROM mcp_remote_connections WHERE actor_id = ${u.id}::uuid`;
     }
   });
@@ -177,8 +182,8 @@ describe("remote MCP: initialize + tools/list", () => {
     await client.close();
   });
 
-  it("admin surface serves the companion tools plus the live Power-MCP catalogue", async () => {
-    const client = await connect("admin", OWNER.email);
+  it("Power surface serves the companion tools plus the live Power-MCP catalogue", async () => {
+    const client = await connect("power", OWNER.email);
     expect(client.getInstructions()).toContain("caelo_open_session");
     const names = new Set((await client.listTools()).tools.map((t) => t.name));
     for (const name of [
@@ -207,9 +212,71 @@ describe("remote MCP: initialize + tools/list", () => {
     const rows = (
       r.value as { connections: { email: string; surface: string; clientLabel: string }[] }
     ).connections;
-    expect(rows.find((c) => c.email === OWNER.email && c.surface === "admin")?.clientLabel).toBe(
+    expect(rows.find((c) => c.email === OWNER.email && c.surface === "power")?.clientLabel).toBe(
       "t806-client",
     );
+  });
+});
+
+describe("remote MCP: the Power surface follows the chat's permission (#1636)", () => {
+  const connections = async () => {
+    const r = await execute(
+      getQueryContext().registry,
+      getQueryContext().adapter,
+      ownerCtx,
+      "mcp_remote_connections.list",
+      {},
+    );
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    return (
+      r.value as {
+        connections: {
+          id: string;
+          email: string;
+          surface: string;
+          clientKey: string;
+          allowCaeloAi: boolean;
+          viaLegacyAddress: boolean;
+        }[];
+      }
+    ).connections;
+  };
+
+  it("an editor's own AI tool gets the tool catalogue, without the install's AI", async () => {
+    const client = await connect("power", EDITOR.email);
+    const names = new Set((await client.listTools()).tools.map((t) => t.name));
+    expect(names.has("caelo_open_session")).toBe(true);
+    expect(names.has("list_pages")).toBe(true);
+    await client.close();
+    const row = (await connections()).find(
+      (c) => c.email === EDITOR.email && c.surface === "power",
+    );
+    // "May use Caelo's AI" stays the Owner's decision: off on a new connection.
+    expect(row?.allowCaeloAi).toBe(false);
+    expect(row?.viaLegacyAddress).toBe(false);
+  });
+
+  it("a connector on the old address keeps working, and the Owner sees it until it is re-added", async () => {
+    const app = "dcr:t1636 old connector";
+    const legacy = await connect("admin", OWNER.email, app);
+    const names = new Set((await legacy.listTools()).tools.map((t) => t.name));
+    expect(names.has("caelo_open_session")).toBe(true);
+    await legacy.close();
+    const before = (await connections()).filter((c) => c.clientKey === app);
+    expect(before.map((c) => [c.surface, c.viaLegacyAddress])).toEqual([["power", true]]);
+    const rowId = before[0]?.id ?? "";
+
+    // The mark rides on the once-a-minute `last_used_at` write.
+    await withSql(
+      (tx) =>
+        tx`UPDATE mcp_remote_connections SET last_used_at = now() - interval '5 minutes'
+           WHERE id = ${rowId}::uuid`,
+    );
+    const readded = await connect("power", OWNER.email, app);
+    await readded.close();
+    const after = (await connections()).filter((c) => c.clientKey === app);
+    // Same app, same row: the address is not part of who the app is.
+    expect(after.map((c) => [c.id, c.viaLegacyAddress])).toEqual([[rowId, false]]);
   });
 });
 
@@ -223,7 +290,7 @@ describe("remote MCP: refusals", () => {
       aud: AUDIENCE,
       email: OWNER.email,
     });
-    expect(await refusal("admin", { "x-goog-iap-jwt-assertion": forged })).toMatchObject({
+    expect(await refusal("power", { "x-goog-iap-jwt-assertion": forged })).toMatchObject({
       status: 401,
       body: { error: "invalid_iap_assertion" },
     });
@@ -249,13 +316,16 @@ describe("remote MCP: refusals", () => {
     }
   });
 
-  it("refuses the admin surface to a user without settings.write", async () => {
-    const r = await refusal("admin", { "x-goog-iap-jwt-assertion": assertion(EDITOR.email) });
-    expect(r.status).toBe(403);
-    expect(r.body.error).toBe("permission_denied");
-    // #968 — names the missing permission and the role that would allow it.
-    expect(r.body.message).toContain("needs the settings.write permission");
-    expect(r.body.message).toContain("roles that do: owner");
+  it("refuses both surfaces to a role that may not edit content (#1636)", async () => {
+    for (const surface of ["chat", "power"] as const) {
+      const r = await refusal(surface, { "x-goog-iap-jwt-assertion": assertion(REVIEWER.email) });
+      expect(r.status).toBe(403);
+      expect(r.body.error).toBe("permission_denied");
+      // #968 — names the address, the missing permission and the roles that allow it.
+      expect(r.body.message).toContain(`/api/mcp/${surface}`);
+      expect(r.body.message).toContain("needs the content.write permission");
+      expect(r.body.message).toContain("roles that do: editor, owner");
+    }
   });
 
   it("400 missing_client_identity after authentication when the gateway named no app", async () => {
@@ -383,7 +453,7 @@ describe("remote MCP: one work session per agent (#1253)", () => {
   }
 
   it("binds the session to the client's MCP session id; later requests of that client write to it", async () => {
-    const client = await connect("admin", OWNER.email);
+    const client = await connect("power", OWNER.email);
     const chatSessionId = await openSession(client, "t1253 route session");
     const listed = await client.callTool({ name: "list_pages", arguments: {} });
     expect(listed.isError).toBeFalsy();
@@ -399,13 +469,13 @@ describe("remote MCP: one work session per agent (#1253)", () => {
   });
 
   it("two agents on two connections of one client open two sessions; workSessionId names one explicitly", async () => {
-    const a = await connect("admin", OWNER.email);
-    const b = await connect("admin", OWNER.email);
+    const a = await connect("power", OWNER.email);
+    const b = await connect("power", OWNER.email);
     const sessionA = await openSession(a, "t1253 agent A");
     const sessionB = await openSession(b, "t1253 agent B");
     expect(sessionA).not.toBe(sessionB);
     // A third agent that shares A's connection names its own session per call.
-    const c = await connect("admin", OWNER.email);
+    const c = await connect("power", OWNER.email);
     const r = await c.callTool({ name: "list_pages", arguments: { workSessionId: sessionB } });
     expect(r.isError).toBeFalsy();
     expect(await agentRuns(sessionB)).toBe(1);
@@ -417,7 +487,7 @@ describe("remote MCP: one work session per agent (#1253)", () => {
   });
 
   it("every catalogue tool advertises the optional workSessionId", async () => {
-    const client = await connect("admin", OWNER.email);
+    const client = await connect("power", OWNER.email);
     const { tools } = await client.listTools();
     const listPages = tools.find((t) => t.name === "list_pages");
     expect(

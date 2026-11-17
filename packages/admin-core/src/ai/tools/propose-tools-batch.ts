@@ -477,13 +477,13 @@ export const proposeMcpTokenCreateTool = makeProposeTool({
   opName: "mcp_tokens.propose_create",
   pendingQueuePath: "/settings/mcp/pending",
   when:
-    "Propose minting an MCP bearer token. `scope`: `chat` (default) = `caelo_chat` surface; `admin` also unlocks the Power-MCP tools for external agents. " +
-    "`allowCaeloAi` (admin only, default false) lets that agent spend the install's own AI (image generation, Caelo-side translation); leave off unless the operator asks (the agent then uses its own subscription).",
+    "Propose minting an MCP bearer token; it acts as the person who approves it. `scope`: `chat` (default) = `caelo_chat` surface; `power` also unlocks the Power-MCP tools for external agents. " +
+    "`allowCaeloAi` (`power` only, default false, Owner approval) lets that agent spend the install's own AI (image generation, Caelo-side translation); leave off unless the operator asks (the agent then uses its own subscription).",
   producesCredential: "mcp_token",
   schema: z
     .object({
       displayName: z.string().min(1).max(100),
-      scope: z.enum(["chat", "admin"]).optional(),
+      scope: z.enum(["chat", "power"]).optional(),
       aiCostCapMicrocents: z.number().int().nonnegative().nullable().optional(),
       allowCaeloAi: z.boolean().optional(),
     })
@@ -494,13 +494,13 @@ export const proposeMcpTokenCreateTool = makeProposeTool({
     required: ["displayName"],
     properties: {
       displayName: { type: "string", minLength: 1, maxLength: 100 },
-      scope: { type: "string", enum: ["chat", "admin"] },
+      scope: { type: "string", enum: ["chat", "power"] },
       aiCostCapMicrocents: { type: "integer", minimum: 0, nullable: true },
       allowCaeloAi: { type: "boolean" },
     },
   },
   summarize: (input) =>
-    `mint MCP token "${input.displayName}" (scope: ${input.scope ?? "chat"}${input.allowCaeloAi ? ", may use Caelo's AI" : ""})`,
+    `mint MCP token "${input.displayName}" (scope: ${input.scope ?? "chat"}${input.allowCaeloAi ? ", may use Caelo's AI" : ""}); it will act as whoever approves this`,
 });
 
 export const proposeMcpTokenRevokeTool = makeProposeTool({

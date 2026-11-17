@@ -113,14 +113,13 @@ class ScriptedProvider extends FixtureProvider {
   }
   /** Next step: call the gated token-mint tool (pauses on approval). */
   askToMint(displayName: string, callId: string): void {
+    this.askToCall("propose_create_mcp_token", { displayName }, callId);
+  }
+  /** Next step: call one gated tool (pauses on approval). */
+  askToCall(name: string, args: Record<string, unknown>, callId: string): void {
     this.steps.push([
-      { kind: "text-delta", text: "I'll mint that token." },
-      {
-        kind: "tool-call",
-        id: callId,
-        name: "propose_create_mcp_token",
-        arguments: { displayName },
-      },
+      { kind: "text-delta", text: "I'll request that." },
+      { kind: "tool-call", id: callId, name, arguments: args },
       { kind: "usage", inputTokens: 5, outputTokens: 4, cachedTokens: 0 },
       { kind: "done", stopReason: "tool_use" },
     ]);
@@ -326,7 +325,7 @@ describe("case 2 — a Power-MCP proposal is handed back, never starting a chat 
   it("approving after Stop applies, reaches the agent, adds no message and keeps the latch", async () => {
     const minted = await execute(registry, adapter, OWNER, "mcp_tokens.create", {
       displayName: "t658-power",
-      scope: "admin",
+      scope: "power",
     });
     if (!minted.ok) throw new Error(JSON.stringify(minted.error));
     const adminToken = (minted.value as { plaintextToken: string }).plaintextToken;
@@ -396,9 +395,12 @@ describe("case 3 — a caelo_chat turn's approval goes back to the external agen
     displayName: string,
     callId: string,
     as: ExecutionContext = OWNER,
+    /** The gated call the turn pauses on; default: mint a token named `displayName`. */
+    call?: { readonly name: string; readonly args: Record<string, unknown> },
   ) {
     const chatSessionId = await createChat(`t658 ${displayName}`, as);
-    provider.askToMint(displayName, callId);
+    if (call) provider.askToCall(call.name, call.args, callId);
+    else provider.askToMint(displayName, callId);
     const r = await sendChat(token, { message: "Mint a token for me.", chatSessionId });
     if (!r.ok) throw new Error(JSON.stringify(r.error));
     const v = r.value as { pendingApprovals: { approvalId: string; toolName: string }[] };
@@ -486,13 +488,44 @@ describe("case 3 — a caelo_chat turn's approval goes back to the external agen
     expect(await state(token, chatSessionId)).toBe("pending");
   });
 
+  it("an editor approves a token proposal in their own chat, and the token acts as them (#1636)", async () => {
+    const token = await chatToken("t1636-chat-editor", VIEWER);
+    const { chatSessionId, pendingApprovals } = await pausedChat(
+      token,
+      "t1636-editor-minted",
+      "call-mcp-1636",
+      VIEWER,
+    );
+    const approvalId = (pendingApprovals[0] as { approvalId: string }).approvalId;
+    const decided = await execute(registry, adapter, VIEWER, "chat.decide_turn_approval", {
+      chatSessionId,
+      approvalId,
+      approved: true,
+    });
+    expect(decided.ok).toBe(true);
+    const resumed = await sendChat(token, { chatSessionId, resume: true });
+    if (!resumed.ok) throw new Error(JSON.stringify(resumed.error));
+    const minted = await withSql(
+      async (tx) =>
+        (await tx`SELECT actor_id::text AS actor_id FROM mcp_tokens
+                  WHERE display_name = 't1636-editor-minted'`) as { actor_id: string }[],
+    );
+    // Minted by the approval, so it is the approver's: nobody's identity is handed over.
+    expect(minted.map((t) => t.actor_id)).toEqual([VIEWER.actorId]);
+  });
+
   it("approving needs the approver permission (#589), even in your own chat", async () => {
     const token = await chatToken("t658-chat-editor", VIEWER);
+    // A change an editor may ask for but not decide (settings.write).
     const { chatSessionId, pendingApprovals } = await pausedChat(
       token,
       "t658-chat-perm",
       "call-mcp-7",
       VIEWER,
+      {
+        name: "propose_rotate_gateway_cookie_secret",
+        args: { reason: "The secret showed up in a support log." },
+      },
     );
     const approvalId = (pendingApprovals[0] as { approvalId: string }).approvalId;
     const byEditor = await execute(registry, adapter, VIEWER, "chat.decide_turn_approval", {

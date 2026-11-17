@@ -22,9 +22,9 @@
       "packageArguments": [
         {
           "type": "positional",
-          "valueHint": "admin",
+          "valueHint": "power",
           "isRequired": false,
-          "description": "Pass 'admin' for Power-MCP (the full tool catalogue, needs an admin-scoped token). Omit for caelo_chat."
+          "description": "Pass 'power' for Power-MCP (the full tool catalogue, needs a token of scope 'power'). Omit for caelo_chat."
         }
       ],
       "environmentVariables": [

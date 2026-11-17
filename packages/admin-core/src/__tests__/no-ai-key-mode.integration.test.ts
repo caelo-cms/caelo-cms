@@ -102,7 +102,7 @@ async function storeKey(apiKey?: string): Promise<void> {
 async function mintAdminToken(allowCaeloAi: boolean): Promise<string> {
   const r = await execute(registry, adapter, ownerCtx, "mcp_tokens.create", {
     displayName: `no-ai-key-${allowCaeloAi}-${crypto.randomUUID()}`,
-    scope: "admin",
+    scope: "power",
     allowCaeloAi,
   });
   if (!r.ok) throw new Error(`mint: ${JSON.stringify(r.error)}`);
@@ -356,7 +356,7 @@ describe("the provider callers in this mode", () => {
 });
 
 describe("MCP in this mode", () => {
-  it("an admin token works; its stored 'may use Caelo's AI' cannot reach an AI that is not there", async () => {
+  it("a Power token works; its stored 'may use Caelo's AI' cannot reach an AI that is not there", async () => {
     const token = await mintAdminToken(true);
     await chooseMcpOnly();
     const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
@@ -430,22 +430,22 @@ describe("MCP in this mode", () => {
     expect(message(r)).not.toContain("AI provider not configured");
   });
 
-  it("a chat token cannot be minted or proposed; an admin token can", async () => {
+  it("a chat token cannot be minted or proposed; a Power token can", async () => {
     await chooseMcpOnly();
     const direct = await execute(registry, adapter, ownerCtx, "mcp_tokens.create", {
       displayName: "no-ai-key-refused",
     });
     expect(direct.ok).toBe(false);
-    if (!direct.ok) expect(message(direct)).toContain("scope 'admin'");
+    if (!direct.ok) expect(message(direct)).toContain("scope 'power'");
     const proposed = await execute(registry, adapter, ownerCtx, "mcp_tokens.propose_create", {
       displayName: "no-ai-key-refused",
       scope: "chat",
     });
     expect(proposed.ok).toBe(false);
-    if (!proposed.ok) expect(message(proposed)).toContain("scope 'admin'");
+    if (!proposed.ok) expect(message(proposed)).toContain("scope 'power'");
     const admin = await execute(registry, adapter, ownerCtx, "mcp_tokens.propose_create", {
       displayName: "no-ai-key-admin",
-      scope: "admin",
+      scope: "power",
     });
     expect(admin.ok).toBe(true);
     await mintAdminToken(false);

@@ -21,7 +21,7 @@
  * instance, every 50th page an overview with a page-query list, one
  * category term per page, an SEO row per page; ≈4·N staged snapshots of
  * history and ≈0.4·N pending ones spread over 20 open chats on the shared
- * draft; an owner and five editors with sessions; twenty admin MCP tokens.
+ * draft; an owner and five editors with sessions; twenty Power-MCP tokens.
  *
  * #1390 — every shipped plugin is active, with the site data its
  * background work and render hooks need: a video module embedding a
@@ -51,7 +51,7 @@ export interface ScaleGateFixture {
     readonly sessionToken: string;
     readonly chatSessionId: string;
   }>;
-  /** Admin-scoped MCP bearer tokens, one per agent. */
+  /** Power-MCP bearer tokens (scope `power`), one per agent. */
   readonly mcpTokens: readonly string[];
   /** English pages without a German variant yet: the agents' work queue. */
   readonly untranslated: ReadonlyArray<{ readonly id: string; readonly path: string }>;
@@ -567,12 +567,12 @@ async function main(): Promise<void> {
     });
     step(`history: ${staged} staged + ${pending} pending snapshots`);
 
-    // --- MCP tokens for the agents (admin scope: Power-MCP tool calls).
+    // --- MCP tokens for the agents (scope `power`: Power-MCP tool calls).
     const mcpTokens: string[] = [];
     for (let i = 0; i < AGENTS; i += 1) {
       const t = await op<{ plaintextToken: string }>(ownerCtx, "mcp_tokens.create", {
         displayName: `scale-gate agent ${i + 1}`,
-        scope: "admin",
+        scope: "power",
       });
       mcpTokens.push(t.plaintextToken);
     }

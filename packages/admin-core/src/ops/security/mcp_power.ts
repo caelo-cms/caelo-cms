@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #376 — Power-MCP ops: the admin-scoped MCP surface that exposes
+ * Issue #376 — Power-MCP ops: the MCP surface (scope `power`) that exposes
  * the chat-runner tool catalogue to an EXTERNAL agent (Claude Code or any
  * MCP client). The external agent drives the tool loop itself; Caelo
  * executes one tool per `mcp.execute_tool` call with the same
@@ -232,16 +232,16 @@ const MCP_CONDITIONAL_APPROVAL_NOTE =
   "the card; never ask them to paste a prompt into the Caelo chat.";
 
 /**
- * Credential → principal for the Power-MCP surface: an admin-scoped token
- * or the remote admin connection (#806). Failures keep the `auth_error:` /
+ * Credential → principal for the Power-MCP surface: a Power token or the
+ * remote Power connection (#806). Failures keep the `auth_error:` /
  * `permission_denied:` prefixes the HTTP shells map to 401 / 403.
  */
-async function resolveAdminPrincipal(
+async function resolvePowerPrincipal(
   adapter: DatabaseAdapter,
   credential: Parameters<typeof resolveMcpPrincipal>[1],
   operation: string,
 ): Promise<({ ok: true } & McpPrincipal) | { ok: false; message: string }> {
-  const r = await resolveMcpPrincipal(adapter, credential, { surface: "admin", operation });
+  const r = await resolveMcpPrincipal(adapter, credential, { surface: "power", operation });
   return r.ok ? { ok: true, ...r.principal } : r;
 }
 
@@ -291,7 +291,7 @@ async function asOp<T>(
 ): Promise<Result<T, QueryError>> {
   const bridged = bridgeOrError();
   if (!bridged.ok) return err({ kind: "HandlerError", operation, message: bridged.message });
-  const auth = await resolveAdminPrincipal(bridged.bridge.adapter, credential, operation);
+  const auth = await resolvePowerPrincipal(bridged.bridge.adapter, credential, operation);
   if (!auth.ok) return err({ kind: "HandlerError", operation, message: auth.message });
   const r = await step(bridged.bridge, auth);
   return r.ok ? ok(r.value) : err({ kind: "HandlerError", operation, message: r.message });

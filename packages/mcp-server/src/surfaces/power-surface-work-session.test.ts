@@ -12,18 +12,18 @@ import { describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
-  type AdminSurfaceBackend,
-  createAdminMcpServer,
+  createPowerMcpServer,
   NoWorkSessionError,
   type OpenSessionResponse,
-} from "./admin-surface.js";
+  type PowerSurfaceBackend,
+} from "./power-surface.js";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 const TOOLS = [{ name: "list_pages", description: "d", inputSchema: { type: "object" } }];
 const REFUSAL = `no_work_session: you already opened work session ${SESSION}, pass workSessionId`;
 
 async function connect(open: OpenSessionResponse): Promise<Client> {
-  const backend: AdminSurfaceBackend = {
+  const backend: PowerSurfaceBackend = {
     listCatalogue: async () => TOOLS,
     findTool: async (name) => TOOLS.find((t) => t.name === name),
     openSession: async () => open,
@@ -38,7 +38,7 @@ async function connect(open: OpenSessionResponse): Promise<Client> {
     uploadImages: async () => ({ content: [] }),
     catalogueMayHaveChanged: async () => false,
   };
-  const server = createAdminMcpServer(backend, {
+  const server = createPowerMcpServer(backend, {
     serverVersion: "0.0.0",
     approvalWaitMs: () => 1000,
     listChanged: true,

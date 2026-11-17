@@ -68,7 +68,7 @@ let bridge: SendChatBridgeOpts;
 function cred(): McpRemoteCredential {
   return {
     iapCredential: signIapTestAssertion(KEY, { aud: AUDIENCE, email: OWNER.email }),
-    surface: "admin",
+    surface: "power",
     client: CLIENT,
   };
 }

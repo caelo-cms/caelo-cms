@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { ADMIN_LOCAL_TOOLS, CHAT_TOOLS } from "./tool-definitions.js";
+import { CHAT_TOOLS, POWER_LOCAL_TOOLS } from "./tool-definitions.js";
 import {
   describeMissingCredentials,
   loadPowerCatalogue,
@@ -20,7 +20,7 @@ import {
 } from "./unconfigured.js";
 import { ownVersion } from "./version-handshake.js";
 
-async function connect(mode: "chat" | "admin"): Promise<Client> {
+async function connect(mode: "chat" | "power"): Promise<Client> {
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await startUnconfiguredServer({
     mode,
@@ -55,17 +55,17 @@ describe("#841 unconfigured server", () => {
     await client.close();
   });
 
-  it("admin mode lists its local tools plus the shipped Power-MCP catalogue", async () => {
-    const client = await connect("admin");
+  it("power mode lists its local tools plus the shipped Power-MCP catalogue", async () => {
+    const client = await connect("power");
     const { tools } = await client.listTools();
     const catalogue = loadPowerCatalogue();
     expect(catalogue.length).toBeGreaterThan(100);
     expect(tools.map((t) => t.name)).toEqual([
-      ...ADMIN_LOCAL_TOOLS.map((t) => t.name),
+      ...POWER_LOCAL_TOOLS.map((t) => t.name),
       ...catalogue.map((t) => t.name),
     ]);
     expect(tools.map((t) => t.name)).toContain("build_page");
-    expect(client.getServerVersion()?.name).toBe("caelo-admin-mcp");
+    expect(client.getServerVersion()?.name).toBe("caelo-power-mcp");
     expect(client.getServerVersion()?.version).toBe(ownVersion());
     await client.close();
   });
@@ -81,15 +81,18 @@ describe("#841 unconfigured server", () => {
     await client.close();
   });
 
-  it("admin mode asks for an admin-scoped token", () => {
-    expect(describeMissingCredentials("admin", ["CAELO_MCP_TOKEN"])).toContain(
+  it("power mode asks for a token of scope 'power'", () => {
+    expect(describeMissingCredentials("power", ["CAELO_MCP_TOKEN"])).toContain(
       "CAELO_MCP_TOKEN is not set",
     );
-    expect(describeMissingCredentials("admin", ["CAELO_MCP_TOKEN"])).toContain("ADMIN-scoped");
+    expect(describeMissingCredentials("power", ["CAELO_MCP_TOKEN"])).toContain("scope 'power'");
   });
 
   for (const [label, bin, args] of [
     ["caelo-mcp-server", "index.ts", []],
+    ["caelo-mcp-server power", "index.ts", ["power"]],
+    ["caelo-power-mcp", "power.ts", []],
+    // The names from before #1636, still entries to the same server.
     ["caelo-mcp-server admin", "index.ts", ["admin"]],
     ["caelo-admin-mcp", "admin.ts", []],
   ] as const) {

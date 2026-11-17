@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import CredentialHandoffs from "#lib/components/CredentialHandoffs.svelte";
-  import { CHAT_SURFACE_NEEDS_INSTALL_AI } from "@caelo-cms/shared";
+  import { CHAT_SURFACE_NEEDS_INSTALL_AI, type McpSurfaceName } from "@caelo-cms/shared";
   import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import McpClientSetup from "#lib/components/McpClientSetup.svelte";
@@ -31,18 +31,19 @@
   } from "#lib/components/ui/table/index.js";
 
   let { data, form } = $props();
-  // #968 — token access is for those who may mint tokens; anyone else sees
-  // the section only while they still hold a token of their own (to revoke it).
-  const showTokens = $derived(data.canWrite || data.tokens.length > 0);
+  // #968/#1636 — token access is for those who may mint tokens (everyone who
+  // may work through an AI); anyone else sees the section only while they
+  // still hold a token of their own (to revoke it).
+  const showTokens = $derived(data.canMint || data.tokens.length > 0);
   // #1460 — this install runs without an AI key: the page leads with the
   // token, and a chat token, which would run the install's own AI, is not on
   // offer.
   const mcpOnly = $derived(data.aiMode === "mcp_only");
-  // #741 — "may use Caelo's AI" only exists for admin (Power-MCP) tokens.
-  let newScope = $state<"chat" | "admin">(data.aiMode === "mcp_only" ? "admin" : "chat");
+  // #741 — "may use Caelo's AI" only exists for Power-MCP tokens.
+  let newScope = $state<McpSurfaceName>(data.aiMode === "mcp_only" ? "power" : "chat");
   const leadCommand = $derived(
     mcpAddCommand("claude", {
-      scope: "admin",
+      scope: "power",
       adminUrl: data.adminUrl,
       token: "<your token>",
       iapServiceAccount: data.iapServiceAccount,
@@ -67,7 +68,7 @@
   const setupArgs = $derived(
     form?.ok && form?.plaintextToken
       ? {
-          scope: String(form?.scope ?? ""),
+          scope: (form?.scope === "power" ? "power" : "chat") as McpSurfaceName,
           adminUrl: data.adminUrl,
           token: form.plaintextToken,
           iapServiceAccount: data.iapServiceAccount,
@@ -104,8 +105,9 @@
       <CardHeader>
         <CardTitle class="text-base">New token</CardTitle>
         <CardDescription>
-          90-day expiry. Set a cap to bound the wallet impact of a leaked token; leave blank for the
-          site-wide budget surface to gate spend.
+          90-day expiry. The token acts as you: what an agent does with it is recorded under your
+          name and follows your role. Set a cap to bound the wallet impact of a leaked token; leave
+          blank for the site-wide budget surface to gate spend.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -119,7 +121,7 @@
             <Label for="scope">Scope</Label>
             <Select id="scope" name="scope" bind:value={newScope}>
               <option value="chat" disabled={mcpOnly}>chat — talk to Caelo's AI (caelo_chat)</option>
-              <option value="admin">admin — full tool catalogue (Power-MCP)</option>
+              <option value="power">power — your AI tool does the work (Power-MCP)</option>
             </Select>
           </div>
           <div class="space-y-2">
@@ -139,7 +141,7 @@
             <p class="text-xs text-muted-foreground md:col-span-4" data-testid="mcp-chat-scope-unavailable">
               {CHAT_SURFACE_NEEDS_INSTALL_AI}
             </p>
-          {:else if newScope === "admin"}
+          {:else if newScope === "power" && data.canWrite}
             <div class="flex items-start gap-2 md:col-span-4">
               <input
                 id="allowCaeloAi"
@@ -170,15 +172,15 @@
     <h1 class="text-2xl font-semibold tracking-tight">MCP</h1>
     <p class="text-sm text-muted-foreground">
       Connect AI tools to this site over MCP. An AI tool either chats with this site's AI, or gets
-      full admin access and does the work itself: its changes land on a preview branch as an AI
-      actor, and approval-gated actions still wait for an Owner's click. Everything it does is
-      recorded under the person who connected it.
+      that AI's tools and does the work itself (Power-MCP): its changes land in the site's draft as
+      an AI actor, and approval-gated actions still wait for a click in Caelo from someone whose
+      role allows the change. Everything it does is recorded under the person who connected it.
     </p>
   </div>
 
   {#if mcpOnly}
     {@render notices()}
-    {#if data.visibility === "all"}
+    {#if data.canMint}
       <section class="space-y-4" data-testid="mcp-only-lead">
         <div>
           <h2 class="text-lg font-semibold tracking-tight">Connect your agent</h2>
@@ -234,17 +236,17 @@
               Every user's tokens. Revoke takes effect immediately. Expired tokens stop authenticating;
               mint a fresh one when a token is about to expire.
             {:else}
-              Only your own tokens are shown. Revoke takes effect immediately. An Owner mints new tokens
-              and manages other users' tokens.
+              Only your own tokens are shown. Revoke takes effect immediately. An Owner sees and
+              revokes every user's tokens.
             {/if}
           </CardDescription>
         </CardHeader>
         <CardContent>
           {#if data.tokens.length === 0}
             <p class="text-sm text-muted-foreground">
-              {data.visibility === "all"
+              {data.canMint
                 ? "No tokens yet. Mint one below."
-                : "You have no MCP tokens. Ask an Owner to mint one for you."}
+                : "You have no MCP tokens. Minting one needs a role that may edit content."}
             </p>
           {:else}
             <Table>
@@ -266,7 +268,7 @@
                   <TableRow>
                     <TableCell>{t.displayName}</TableCell>
                     <TableCell>
-                      <Badge variant={t.scope === "admin" ? "default" : "secondary"}>{t.scope}</Badge>
+                      <Badge variant={t.scope === "power" ? "default" : "secondary"}>{t.scope}</Badge>
                     </TableCell>
                     <TableCell><Badge variant={rowVariant(status)}>{status}</Badge></TableCell>
                     <TableCell>{fmtUsdMc(t.aiCostCapMicrocents)}</TableCell>
@@ -298,7 +300,7 @@
         </CardContent>
       </Card>
 
-      {#if data.visibility === "all" && !mcpOnly}
+      {#if data.canMint && !mcpOnly}
         {@render newTokenCard()}
       {/if}
     </section>

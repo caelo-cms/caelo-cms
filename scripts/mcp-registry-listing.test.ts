@@ -175,14 +175,15 @@ describe("#841 MCP Registry listing", () => {
 
     const src = (file: string) => readFileSync(resolve(PKG_DIR, "src", file), "utf8");
     for (const name of vars.keys()) {
-      const readSomewhere = ["index.ts", "admin.ts", "unconfigured.ts", "ingress-auth.ts"].some(
+      const readSomewhere = ["index.ts", "power-bin.ts", "unconfigured.ts", "ingress-auth.ts"].some(
         (f) => src(f).includes(name),
       );
       expect(readSomewhere).toBe(true);
     }
     // The optional positional is the Power-MCP switch index.ts accepts.
-    expect(serverJson.packages[0]?.packageArguments?.[0]?.valueHint).toBe("admin");
-    expect(src("index.ts")).toContain('command === "admin"');
+    expect(serverJson.packages[0]?.packageArguments?.[0]?.valueHint).toBe("power");
+    expect(src("index.ts")).toContain("command === POWER_COMMAND");
+    expect(src("names.ts")).toContain('export const POWER_COMMAND = "power";');
   });
 
   it("L5: the tarball ships the runtime files and the MPL-2.0 licence text", () => {

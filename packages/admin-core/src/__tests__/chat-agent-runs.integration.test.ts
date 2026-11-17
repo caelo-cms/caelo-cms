@@ -721,7 +721,7 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
   async function mintAdminToken(): Promise<string> {
     const r = await execute(registry, adapter, OWNER, "mcp_tokens.create", {
       displayName: "t664 claude code",
-      scope: "admin",
+      scope: "power",
     });
     if (!r.ok) throw new Error(JSON.stringify(r.error));
     return (r.value as { plaintextToken: string }).plaintextToken;

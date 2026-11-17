@@ -108,7 +108,7 @@ const MODULE_MODEL_BLOCK = [
 
 /**
  * Which surface a composed prompt is served on. "chat" is Caelo's own
- * chat-runner loop; "power-mcp" is the admin-scoped MCP surface (issue
+ * chat-runner loop; "power-mcp" is the Power-MCP surface (issue
  * #376) where an EXTERNAL agent drives the loop and the tools in
  * POWER_MCP_EXCLUDED_TOOLS (ops/security/mcp_power.ts) are not served.
  */

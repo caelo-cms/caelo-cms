@@ -21,9 +21,9 @@
  *
  * Remote rows are one per (user, surface, client app) since #968, keyed by
  * the app the gateway names (mcp_credential.ts `client`). A row is
- * auto-created on the app's first request when the user may use the
- * surface (chat: `content.write`; admin: `settings.write`, what minting an
- * admin-scope token takes). A revoked row is sticky: a later request never
+ * auto-created on the app's first request when the user may work through an
+ * AI (`AI_WORK_PERMISSION`, the same for both surfaces and the Live Edit
+ * chat since #1636). A revoked row is sticky: a later request never
  * resurrects it — only the Owner's Restore does. An Owner's block
  * (`mcp_remote_access_blocks`) refuses every app of the user, new ones
  * included. docs/dev/mcp-access.md is the concept.
@@ -44,7 +44,11 @@ import type { Permission } from "../../permissions.js";
 import { iapVerifier } from "../../security/iap-assertion.js";
 import type { McpAgentRef } from "../chat/mcp-agent.js";
 import { isMcpOnly } from "./ai_providers.js";
-import type { McpRemoteCredential, McpRemoteSurface } from "./mcp_credential.js";
+import {
+  type McpRemoteCredential,
+  type McpRemoteSurface,
+  storedSurfaceIs,
+} from "./mcp_credential.js";
 import type { McpTokenScope } from "./mcp_tokens.js";
 
 /** Who an MCP request acts as, whichever way it authenticated. */
@@ -117,7 +121,7 @@ const MISSING_CLIENT_IDENTITY: RemoteMcpRefusal = {
   status: 400,
   code: "missing_client_identity",
   message:
-    "This request did not come through the site's MCP address, so Caelo cannot tell which app sent it. Connect your AI tool to the /api/mcp/chat or /api/mcp/admin URL shown under Settings → MCP.",
+    "This request did not come through the site's MCP address, so Caelo cannot tell which app sent it. Connect your AI tool to the /api/mcp/chat or /api/mcp/power URL shown under Settings → MCP.",
 };
 
 /**
@@ -138,11 +142,7 @@ function permissionMessage(
     allowingRoles.length > 0
       ? `; roles that do: ${allowingRoles.join(", ")}`
       : "; no role on this site grants it yet";
-  const alternative =
-    surface === "admin"
-      ? " Connect the chat address (/api/mcp/chat) instead, or ask the site Owner to change your role under Settings → Users."
-      : " Ask the site Owner to change your role under Settings → Users.";
-  return `"${MCP_SURFACE_COPY[surface].title}" (/api/mcp/${surface}) needs the ${permission} permission. ${yours}${allowing}.${alternative}`;
+  return `"${MCP_SURFACE_COPY[surface].title}" (/api/mcp/${surface}) needs the ${permission} permission. ${yours}${allowing}. Ask the site Owner to change your role under Settings → Users.`;
 }
 
 const fmtDate = (v: string | Date): string =>
@@ -196,6 +196,11 @@ export const LAST_USED_STALE_SECONDS = 60;
  * (running agents, approval cards) — production saw 15 s lock timeouts on
  * exactly this query. Only the create path below writes, and it settles
  * races with `ON CONFLICT`.
+ *
+ * The Power surface matches both stored spellings (mcp_credential.ts). A
+ * person and app have one such row; should a release from before #1636
+ * have added a second one while both served, the revoked one wins, then
+ * the older, so a revocation never gets lost behind its twin.
  */
 async function selectConnection(
   tx: TransactionRunner,
@@ -211,7 +216,10 @@ async function selectConnection(
              AS last_used_stale
     FROM mcp_remote_connections c
     LEFT JOIN users u ON u.id = c.revoked_by
-    WHERE c.actor_id = ${actorId}::uuid AND c.surface = ${surface} AND c.client_key = ${clientKey}
+    WHERE c.actor_id = ${actorId}::uuid AND ${storedSurfaceIs(sql`c.surface`, surface)}
+      AND c.client_key = ${clientKey}
+    ORDER BY (c.revoked_at IS NOT NULL) DESC, c.created_at
+    LIMIT 1
   `)) as unknown as ConnectionRow[];
   return rows[0];
 }
@@ -232,7 +240,7 @@ async function adoptLegacyRow(
   if (clientLabel === undefined) return false;
   const adopted = (await tx.execute(sql`
     UPDATE mcp_remote_connections SET client_key = ${clientKey}
-    WHERE actor_id = ${actorId}::uuid AND surface = ${surface}
+    WHERE actor_id = ${actorId}::uuid AND ${storedSurfaceIs(sql`surface`, surface)}
       AND client_key IS NULL AND client_label = ${clientLabel}
     RETURNING id::text AS id
   `)) as unknown as { id: string }[];
@@ -256,7 +264,8 @@ async function selectLegacyRow(
     SELECT c.ai_cost_cap_microcents, c.allow_caelo_ai, c.revoked_at, u.email AS revoked_by_email
     FROM mcp_remote_connections c
     LEFT JOIN users u ON u.id = c.revoked_by
-    WHERE c.actor_id = ${actorId}::uuid AND c.surface = ${surface} AND c.client_key IS NULL
+    WHERE c.actor_id = ${actorId}::uuid AND ${storedSurfaceIs(sql`c.surface`, surface)}
+      AND c.client_key IS NULL
   `)) as unknown as LegacyRow[];
   return rows[0];
 }
@@ -267,14 +276,18 @@ async function selectLegacyRow(
  * Not an op, like {@link resolveMcpToken}: the credential would otherwise
  * reach audit input.
  *
- * @param clientLabel - the MCP client's self-reported name (initialize
+ * @param opts.clientLabel - the MCP client's self-reported name (initialize
  *   `clientInfo`), stored for the Settings list when given, and the key
  *   that hands a pre-#968 row to its app.
+ * @param opts.legacyAddress - whether the request came through the Power
+ *   surface's old address (`/api/mcp/remote/admin`, #1636), recorded with
+ *   `last_used_at` for the Owner's list. Only the route knows; an op that
+ *   resolves again leaves it out and the row keeps what it says.
  */
 export async function resolveRemoteMcpPrincipal(
   adapter: DatabaseAdapter,
   credential: McpRemoteCredential,
-  opts: { readonly clientLabel?: string } = {},
+  opts: { readonly clientLabel?: string; readonly legacyAddress?: boolean } = {},
 ): Promise<Result<McpPrincipal, RemoteMcpRefusal>> {
   const verified = await iapVerifier()(credential.iapCredential);
   if (!verified.ok) {
@@ -408,11 +421,16 @@ export async function resolveRemoteMcpPrincipal(
       // Only when there is something to record: a stale `last_used_at`, or a
       // client name the row does not have yet. The condition is in the
       // statement, so a concurrent request that already wrote it makes
-      // this one a no-op instead of a second write (#1253).
+      // this one a no-op instead of a second write (#1253). The address the
+      // request came through (#1636) rides on that write and never causes
+      // one: an app connected through both addresses at once would
+      // otherwise write this row on every request.
       if (row.last_used_stale || (label !== undefined && label !== row.client_label)) {
         await tx.execute(sql`
           UPDATE mcp_remote_connections
-          SET last_used_at = now(), client_label = COALESCE(${label ?? null}, client_label)
+          SET last_used_at = now(), client_label = COALESCE(${label ?? null}, client_label),
+              via_legacy_address =
+                COALESCE(${opts.legacyAddress ?? null}::boolean, via_legacy_address)
           WHERE id = ${row.id}::uuid
             AND (last_used_at IS NULL
                  OR last_used_at < now() - ${LAST_USED_STALE_SECONDS}::int * interval '1 second'

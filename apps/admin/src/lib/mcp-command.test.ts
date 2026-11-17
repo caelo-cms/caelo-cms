@@ -15,13 +15,13 @@ import {
 const base = { adminUrl: "https://admin.example.com", token: "tok_123" };
 
 describe("claudeMcpAddCommand", () => {
-  it("wires the Power-MCP binary for admin tokens (unchanged without IAP)", () => {
-    expect(claudeMcpAddCommand({ ...base, scope: "admin", iapServiceAccount: null })).toBe(
+  it("wires the Power-MCP binary for Power tokens (unchanged without IAP)", () => {
+    expect(claudeMcpAddCommand({ ...base, scope: "power", iapServiceAccount: null })).toBe(
       [
-        "claude mcp add caelo-admin \\",
+        "claude mcp add caelo-power \\",
         "  --env CAELO_ADMIN_URL=https://admin.example.com \\",
         "  --env CAELO_MCP_TOKEN=tok_123 \\",
-        "  -- bunx --package @caelo-cms/mcp-server@latest caelo-admin-mcp",
+        "  -- bunx --package @caelo-cms/mcp-server@latest caelo-power-mcp",
       ].join("\n"),
     );
   });
@@ -33,7 +33,7 @@ describe("claudeMcpAddCommand", () => {
   });
 
   it("#764: carries no release number for either scope — the shim pins itself to the admin's release", () => {
-    for (const scope of ["admin", "chat"]) {
+    for (const scope of ["power", "chat"] as const) {
       const cmd = claudeMcpAddCommand({ ...base, scope, iapServiceAccount: null });
       expect(cmd).not.toMatch(/@caelo-cms\/mcp-server@\d/);
     }
@@ -42,7 +42,7 @@ describe("claudeMcpAddCommand", () => {
   it("#764: resolves @latest, so bunx never reuses a cached pre-handshake shim", () => {
     // A bare name lets bunx run its cached unversioned install (up to a day old)
     // or a same-named binary on PATH; a dist-tag asks the registry every start.
-    for (const scope of ["admin", "chat"]) {
+    for (const scope of ["power", "chat"] as const) {
       const cmd = claudeMcpAddCommand({ ...base, scope, iapServiceAccount: null });
       expect(cmd).toContain("@caelo-cms/mcp-server@latest");
     }
@@ -51,7 +51,7 @@ describe("claudeMcpAddCommand", () => {
   it("adds the IAP service account on IAP installs (issue #37), before the `--`", () => {
     const cmd = claudeMcpAddCommand({
       ...base,
-      scope: "admin",
+      scope: "power",
       iapServiceAccount: "caelo-mcp@p.iam.gserviceaccount.com",
     });
     const iap = cmd.indexOf("--env CAELO_IAP_SERVICE_ACCOUNT=caelo-mcp@p.iam.gserviceaccount.com");
@@ -62,7 +62,11 @@ describe("claudeMcpAddCommand", () => {
 
 describe("mcpAddCommand", () => {
   it("renders Codex CLI with the same options-then-`--` shape as Claude Code", () => {
-    const args = { ...base, scope: "admin", iapServiceAccount: "sa@p.iam.gserviceaccount.com" };
+    const args = {
+      ...base,
+      scope: "power" as const,
+      iapServiceAccount: "sa@p.iam.gserviceaccount.com",
+    };
     expect(mcpAddCommand("codex", args)).toBe(
       claudeMcpAddCommand(args).replace(/^claude /, "codex "),
     );
@@ -90,7 +94,7 @@ describe("shellWord", () => {
     const cmd = mcpAddCommand("claude", {
       ...base,
       adminUrl: "https://a;b.example.com",
-      scope: "admin",
+      scope: "power",
       iapServiceAccount: null,
     });
     expect(cmd).toContain("--env 'CAELO_ADMIN_URL=https://a;b.example.com'");
@@ -98,14 +102,18 @@ describe("shellWord", () => {
 });
 
 describe("mcpConfigJson", () => {
-  const iapArgs = { ...base, scope: "admin", iapServiceAccount: "sa@p.iam.gserviceaccount.com" };
+  const iapArgs = {
+    ...base,
+    scope: "power" as const,
+    iapServiceAccount: "sa@p.iam.gserviceaccount.com",
+  };
 
   it("renders the mcpServers shape (Claude Desktop, Cursor, Gemini CLI) from the same spec", () => {
     expect(JSON.parse(mcpConfigJson("mcpServers", iapArgs))).toEqual({
       mcpServers: {
-        "caelo-admin": {
+        "caelo-power": {
           command: "bunx",
-          args: ["--package", "@caelo-cms/mcp-server@latest", "caelo-admin-mcp"],
+          args: ["--package", "@caelo-cms/mcp-server@latest", "caelo-power-mcp"],
           env: {
             CAELO_ADMIN_URL: "https://admin.example.com",
             CAELO_MCP_TOKEN: "tok_123",
@@ -130,18 +138,18 @@ describe("mcpConfigJson", () => {
   });
 
   it("keeps server names free of underscores (Gemini CLI rejects them)", () => {
-    for (const scope of ["admin", "chat"]) {
+    for (const scope of ["power", "chat"] as const) {
       expect(mcpServerSpec({ ...base, scope, iapServiceAccount: null }).name).not.toContain("_");
     }
   });
 });
 
 describe("remote MCP snippets (#806)", () => {
-  const url = "https://caelo-production-gateway-bbb-xyz.a.run.app/api/mcp/admin";
-  const admin = remoteMcpServer("admin", url, "viu.one");
+  const url = "https://caelo-production-gateway-bbb-xyz.a.run.app/api/mcp/power";
+  const power = remoteMcpServer("power", url, "viu.one");
 
   it("names each surface after the site, so two sites stay apart in one client (#968)", () => {
-    expect(admin).toEqual({ name: "caelo-viu-one-admin", url });
+    expect(power).toEqual({ name: "caelo-viu-one-power", url });
     expect(remoteMcpServer("chat", "u", "viu.one").name).toBe("caelo-viu-one");
     expect(remoteMcpServer("chat", "u", "Shop.Example.COM:8443").name).toBe(
       "caelo-shop-example-com-8443",
@@ -149,30 +157,30 @@ describe("remote MCP snippets (#806)", () => {
   });
 
   it("registers by URL in Claude Code (--transport http) and Codex (--url, then login)", () => {
-    expect(remoteMcpAddCommand("claude", admin)).toBe(
-      `claude mcp add --transport http caelo-viu-one-admin ${url}`,
+    expect(remoteMcpAddCommand("claude", power)).toBe(
+      `claude mcp add --transport http caelo-viu-one-power ${url}`,
     );
-    expect(remoteMcpAddCommand("codex", admin)).toBe(
-      `codex mcp add caelo-viu-one-admin --url ${url}\ncodex mcp login caelo-viu-one-admin`,
+    expect(remoteMcpAddCommand("codex", power)).toBe(
+      `codex mcp add caelo-viu-one-power --url ${url}\ncodex mcp login caelo-viu-one-power`,
     );
   });
 
   it("renders each file-configured client's remote key: url, type http + url, httpUrl", () => {
-    expect(JSON.parse(remoteMcpConfigJson("cursor", admin))).toEqual({
-      mcpServers: { "caelo-viu-one-admin": { url } },
+    expect(JSON.parse(remoteMcpConfigJson("cursor", power))).toEqual({
+      mcpServers: { "caelo-viu-one-power": { url } },
     });
-    expect(JSON.parse(remoteMcpConfigJson("vscode", admin))).toEqual({
-      servers: { "caelo-viu-one-admin": { type: "http", url } },
+    expect(JSON.parse(remoteMcpConfigJson("vscode", power))).toEqual({
+      servers: { "caelo-viu-one-power": { type: "http", url } },
     });
     // Gemini CLI's `url` means SSE; Streamable HTTP is `httpUrl`.
-    expect(JSON.parse(remoteMcpConfigJson("gemini", admin))).toEqual({
-      mcpServers: { "caelo-viu-one-admin": { httpUrl: url } },
+    expect(JSON.parse(remoteMcpConfigJson("gemini", power))).toEqual({
+      mcpServers: { "caelo-viu-one-power": { httpUrl: url } },
     });
   });
 
   it("carries no token or env: the client signs in through the browser", () => {
     for (const f of ["cursor", "vscode", "gemini"] as const) {
-      expect(remoteMcpConfigJson(f, admin)).not.toMatch(/TOKEN|env|command/);
+      expect(remoteMcpConfigJson(f, power)).not.toMatch(/TOKEN|env|command/);
     }
   });
 });

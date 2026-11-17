@@ -12,7 +12,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ApprovalOutcome } from "../approval-wait.js";
-import { type AdminSurfaceBackend, createAdminMcpServer } from "./admin-surface.js";
+import { createPowerMcpServer, type PowerSurfaceBackend } from "./power-surface.js";
 
 const TOOLS = ["activate_plugin", "reload_plugin", "propose_set_ai_budget"].map((name) => ({
   name,
@@ -33,7 +33,7 @@ function outcome(domain: string): ApprovalOutcome {
 }
 
 async function connect(domain: string): Promise<{ client: Client; changed: () => number }> {
-  const backend: AdminSurfaceBackend = {
+  const backend: PowerSurfaceBackend = {
     listCatalogue: async () => TOOLS,
     findTool: async (name) => TOOLS.find((t) => t.name === name),
     openSession: async () => ({ chatSessionId: "s", chatBranchId: "b", title: "t", resumed: true }),
@@ -51,7 +51,7 @@ async function connect(domain: string): Promise<{ client: Client; changed: () =>
     uploadImages: async () => ({ content: [] }),
     catalogueMayHaveChanged: async () => true,
   };
-  const server = createAdminMcpServer(backend, {
+  const server = createPowerMcpServer(backend, {
     serverVersion: "0.0.0",
     approvalWaitMs: () => 1000,
     approvalPollMs: 10,

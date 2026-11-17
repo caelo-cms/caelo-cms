@@ -1131,7 +1131,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mcpSendChatOp);
   registry.register(mcpAuthorizeUploadOp);
   registry.register(mcpGetVersionOp);
-  // Issue #376 — Power-MCP: admin-scoped tokens drive the chat-runner
+  // Issue #376 — Power-MCP: tokens of scope `power` drive the chat-runner
   // tool catalogue directly (external agent owns the loop). See
   // ops/security/mcp_power.ts for the invariants.
   registry.register(mcpListToolsOp);

@@ -649,6 +649,8 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     const re = new RegExp(MCP_ARMOR_PATH_PATTERN);
     for (const p of [
       "/api/mcp/chat",
+      "/api/mcp/power",
+      // The Power surface's address before #1636; connectors still use it.
       "/api/mcp/admin",
       "/api/mcp/oauth/authorize",
       "/api/mcp/oauth/google-callback",
@@ -678,7 +680,9 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     const documented = [...routes.matchAll(/^ \* {3}[A-Z|]+ +(\/api\/mcp\/[^\s]+)/gm)]
       .map((m) => m[1] as string)
       .flatMap((p) =>
-        p.includes("{") ? ["chat", "admin"].map((s) => p.replace(/\{(chat,admin|s)\}/, s)) : [p],
+        p.includes("{")
+          ? ["chat", "power", "admin"].map((s) => p.replace(/\{(chat,power,admin|s)\}/, s))
+          : [p],
       );
     expect(documented).toContain("/api/mcp/oauth/authorize");
     expect(documented.length).toBeGreaterThanOrEqual(8);

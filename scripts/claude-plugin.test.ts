@@ -57,7 +57,7 @@ describe("Claude Code plugin", () => {
     expect(server?.args).toEqual([
       "--package",
       `@caelo-cms/mcp-server@${pkg.version}`,
-      "caelo-admin-mcp",
+      "caelo-power-mcp",
     ]);
 
     const releaseSrc = readFileSync(resolve(REPO_ROOT, "scripts/release.ts"), "utf8");

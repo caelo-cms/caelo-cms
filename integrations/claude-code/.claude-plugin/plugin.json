@@ -24,8 +24,8 @@
     },
     "mcp_token": {
       "type": "string",
-      "title": "Caelo MCP token (admin scope)",
-      "description": "Mint it as Owner at /settings/mcp on your install: New token, scope admin. Shown once; stored in your system keychain.",
+      "title": "Caelo MCP token (scope power)",
+      "description": "Mint your own at /settings/mcp on your install: New token, scope power. It acts as you. Shown once; stored in your system keychain.",
       "sensitive": true,
       "default": ""
     },

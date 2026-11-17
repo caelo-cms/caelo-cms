@@ -35,7 +35,7 @@ let bridge: SendChatBridgeOpts;
 async function principal(client: string): Promise<McpPrincipal> {
   const cred: McpRemoteCredential = {
     iapCredential: signIapTestAssertion(KEY, { aud: AUDIENCE, email: OWNER.email }),
-    surface: "admin",
+    surface: "power",
     client,
   };
   const r = await resolveRemoteMcpPrincipal(adapter, cred);

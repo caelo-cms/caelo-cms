@@ -16,7 +16,7 @@ Claude Code then asks for three options:
 | Option | What to enter |
 |---|---|
 | `admin_url` | Your admin's address, e.g. `https://admin.example.com` |
-| `mcp_token` | A token with scope **admin**, minted as Owner at `/settings/mcp` (shown once, stored in your system keychain) |
+| `mcp_token` | A token with scope **power**, minted by you at `/settings/mcp` (it acts as you; shown once, stored in your system keychain) |
 | `iap_service_account` | Only on Google Cloud installs behind IAP: the value `/settings/mcp` shows. Leave empty otherwise |
 
 Change them later with `/plugin` or `claude plugin configure caelo@caelo-cms`. Without a URL and token the server still starts and lists its tools; each call then names the missing value.
@@ -35,7 +35,7 @@ Claude also picks them up on its own when a request matches. The server itself t
 
 ## What it runs and where data goes
 
-- The MCP server is the npm package [`@caelo-cms/mcp-server`](https://www.npmjs.com/package/@caelo-cms/mcp-server) (MPL-2.0, source in [`packages/mcp-server`](https://github.com/caelo-cms/caelo-cms/tree/main/packages/mcp-server)), started as `bunx --package @caelo-cms/mcp-server@<version> caelo-admin-mcp`. At startup it asks your admin which release it runs and, if that differs, restarts itself as exactly that release (downloaded from npm by `bunx`).
+- The MCP server is the npm package [`@caelo-cms/mcp-server`](https://www.npmjs.com/package/@caelo-cms/mcp-server) (MPL-2.0, source in [`packages/mcp-server`](https://github.com/caelo-cms/caelo-cms/tree/main/packages/mcp-server)), started as `bunx --package @caelo-cms/mcp-server@<version> caelo-power-mcp`. At startup it asks your admin which release it runs and, if that differs, restarts itself as exactly that release (downloaded from npm by `bunx`).
 - It sends requests only to the admin URL you configure, with your token. On Google Cloud installs with `iap_service_account` set, it also asks Google's IAM Credentials API to sign a short-lived token with your Application Default Credentials.
 - Some tools make your Caelo install fetch other websites (for example `inspect_external_page`, `screenshot_external_page`, `import_media_from_urls`, `propose_site_import`); those requests come from your install, not from this machine.
 - Every call is recorded in your install's audit trail. The plugin contains no telemetry.

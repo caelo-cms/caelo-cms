@@ -16,11 +16,13 @@
 import type { DatabaseAdapter, TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import {
+  AI_WORK_PERMISSION,
   CAELO_VERSION,
   CHAT_MAX_ATTACHMENTS,
   CHAT_SURFACE_NEEDS_INSTALL_AI,
   chatAttachmentSchema,
   err,
+  MCP_SERVER_BINS,
   noInstallAiRefusal,
   ok,
   type Result,
@@ -32,12 +34,16 @@ import { readAgentStopEpoch, runChatTurn } from "../../ai/chat-runner.js";
 import type { AIProvider } from "../../ai/provider.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
+import { missingPermissions } from "../_approver-permission.js";
 import { isOpenCard, type TurnApprovalStatus } from "../chat/turn-approval-state.js";
 import { isMcpOnly } from "./ai_providers.js";
 import {
   exactlyOneMcpCredential,
   type McpCredentialInput,
   mcpCredentialShape,
+  mcpRemoteSurface,
+  mcpSurfaceFromPayload,
+  mcpSurfaceFromStored,
 } from "./mcp_credential.js";
 import {
   LAST_USED_STALE_SECONDS,
@@ -48,13 +54,21 @@ import {
 import { hashMcpTokenSecret, mintMcpTokenSecret } from "./mcp_token_secret.js";
 
 /**
- * Issue #376 — token scope. `chat` drives the caelo_chat surface only;
- * `admin` additionally unlocks the Power-MCP surface (mcp.list_tools /
- * mcp.execute_tool / mcp.open_session / mcp.get_context — see
- * ./mcp_power.ts).
+ * Issue #376 — token scope: the surface a token opens. `chat` drives the
+ * caelo_chat surface only; `power` additionally unlocks the Power-MCP
+ * surface (mcp.list_tools / mcp.execute_tool / mcp.open_session /
+ * mcp.get_context — see ./mcp_power.ts). Rows from before #1636 store the
+ * Power scope as `admin`; every read goes through `mcpSurfaceFromStored`.
  */
-export const mcpTokenScope = z.enum(["chat", "admin"]);
+export const mcpTokenScope = mcpRemoteSurface;
 export type McpTokenScope = z.infer<typeof mcpTokenScope>;
+
+/**
+ * Who may let an agent spend the install's own AI (#741): the Owner. It is a
+ * spending decision on the install's account, so it does not follow the
+ * permission to mint a token.
+ */
+export const ALLOW_CAELO_AI_PERMISSION = "settings.write";
 
 const tokenRow = z.object({
   id: z.string(),
@@ -62,7 +76,7 @@ const tokenRow = z.object({
   displayName: z.string(),
   scope: mcpTokenScope,
   aiCostCapMicrocents: z.number().int().nonnegative().nullable(),
-  /** #741 — an admin token may spend the install's own AI (off: the agent does the AI work). */
+  /** #741 — a Power token may spend the install's own AI (off: the agent does the AI work). */
   allowCaeloAi: z.boolean(),
   lastUsedAt: z.string().nullable(),
   revokedAt: z.string().nullable(),
@@ -121,7 +135,7 @@ export const listMcpTokensOp = defineOperation({
       id: string;
       actor_id: string;
       display_name: string;
-      scope: McpTokenScope;
+      scope: string;
       ai_cost_cap_microcents: bigint | string | number | null;
       allow_caelo_ai: boolean;
       last_used_at: string | Date | null;
@@ -145,7 +159,7 @@ export const listMcpTokensOp = defineOperation({
         id: r.id,
         actorId: r.actor_id,
         displayName: r.display_name,
-        scope: r.scope,
+        scope: mcpSurfaceFromStored(r.scope),
         aiCostCapMicrocents: toN(r.ai_cost_cap_microcents),
         allowCaeloAi: r.allow_caelo_ai,
         lastUsedAt: toS(r.last_used_at),
@@ -161,7 +175,12 @@ export const createMcpTokenOp = defineOperation({
   name: "mcp_tokens.create",
   readScope: "request",
   // Why human-only: mints a bearer credential; the AI reaches it only through
-  // propose_create_mcp_token (Owner-approved) and never sees a plaintext token.
+  // propose_create_mcp_token (approved by a human) and never sees a plaintext token.
+  //
+  // #1636 — a token acts as the person who mints it (`actor_id` is the
+  // caller), so whoever may work through an AI mints their own: handing a
+  // teammate an Owner's token hands over the Owner's identity. RLS (0315)
+  // already lets a non-Owner insert and see only their own rows.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z
@@ -173,9 +192,10 @@ export const createMcpTokenOp = defineOperation({
       scope: mcpTokenScope.optional(),
       aiCostCapMicrocents: z.number().int().nonnegative().nullable().optional(),
       /**
-       * #741 — admin tokens only: the agent may use the install's own AI
-       * (image generation, Caelo-side translation runs). Off by default.
-       * Optional for the same execute_proposal reason as `scope`.
+       * #741 — Power tokens only, and only an Owner may set it: the agent
+       * may use the install's own AI (image generation, Caelo-side
+       * translation runs). Off by default. Optional for the same
+       * execute_proposal reason as `scope`.
        */
       allowCaeloAi: z.boolean().optional(),
     })
@@ -186,27 +206,48 @@ export const createMcpTokenOp = defineOperation({
     plaintextToken: z.string(),
   }),
   handler: async (ctx, input, tx) => {
-    const { plaintext: plaintextToken, hash: tokenHash } = await mintMcpTokenSecret();
-
-    const scope = input.scope ?? "chat";
+    // The approval path hands over the stored payload without a Zod parse;
+    // a card queued before #1636 says `admin`.
+    const scope = mcpSurfaceFromPayload(input.scope);
+    if (ctx.actorKind === "human") {
+      const missing = await missingPermissions(tx, ctx.actorId, [
+        AI_WORK_PERMISSION,
+        ...(input.allowCaeloAi === true ? ([ALLOW_CAELO_AI_PERMISSION] as const) : []),
+      ]);
+      if (missing.includes(AI_WORK_PERMISSION)) {
+        return err({
+          kind: "HandlerError",
+          operation: "mcp_tokens.create",
+          message: `permission_denied: minting an MCP token needs the ${AI_WORK_PERMISSION} permission, which your role does not have. A token acts as the person who mints it, so nobody can mint one for you; ask an Owner to change your role under Settings → Users.`,
+        });
+      }
+      if (missing.length > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "mcp_tokens.create",
+          message: `permission_denied: "may use Caelo's AI" spends this install's AI and needs the ${ALLOW_CAELO_AI_PERMISSION} permission (an Owner). Mint the token without it: the agent then does the AI work on its own subscription.`,
+        });
+      }
+    }
     // #1460 — a chat token runs the install's own AI, which this mode has not.
     if (scope === "chat" && (await isMcpOnly(tx))) {
       return err({
         kind: "HandlerError",
         operation: "mcp_tokens.create",
-        message: `${CHAT_SURFACE_NEEDS_INSTALL_AI} Mint this token with scope 'admin'.`,
+        message: `${CHAT_SURFACE_NEEDS_INSTALL_AI} Mint this token with scope 'power'.`,
       });
     }
     // The setting only exists on the Power-MCP surface; a chat token always
     // runs Caelo's own agent, so storing true there would mean nothing.
-    if (input.allowCaeloAi === true && scope !== "admin") {
+    if (input.allowCaeloAi === true && scope !== "power") {
       return err({
         kind: "HandlerError",
         operation: "mcp_tokens.create",
         message:
-          "allowCaeloAi applies to admin-scoped tokens only — a chat token always runs Caelo's own agent. Drop the flag or mint scope 'admin'.",
+          "allowCaeloAi applies to Power tokens only — a chat token always runs Caelo's own agent. Drop the flag or mint scope 'power'.",
       });
     }
+    const { plaintext: plaintextToken, hash: tokenHash } = await mintMcpTokenSecret();
     const rows = (await tx.execute(sql`
       INSERT INTO mcp_tokens (actor_id, token_hash, display_name, scope, ai_cost_cap_microcents, allow_caelo_ai)
       VALUES (${ctx.actorId}::uuid, ${tokenHash}, ${input.displayName}, ${scope}, ${input.aiCostCapMicrocents ?? null}, ${input.allowCaeloAi === true})
@@ -289,11 +330,11 @@ export type McpTokenFailure =
 export function mcpTokenAuthErrorMessage(failure: McpTokenFailure): string {
   switch (failure) {
     case "user_deleted":
-      return "auth_error: token user_deleted — the Caelo user this token belongs to was deleted or no longer exists. An Owner must mint a new token for an active user at /settings/mcp.";
+      return "auth_error: token user_deleted — the Caelo user this token belongs to was deleted or no longer exists. A token acts as the person who minted it: an active user mints their own at /settings/mcp.";
     case "user_has_no_role":
-      return "auth_error: token user_has_no_role — the Caelo user this token belongs to holds no role. An Owner must assign a role at /settings/users, or mint a token for another user at /settings/mcp.";
+      return "auth_error: token user_has_no_role — the Caelo user this token belongs to holds no role. An Owner must assign a role at /settings/users.";
     case "user_lacks_write_permission":
-      return "auth_error: token user_lacks_write_permission — the Caelo user this token belongs to lacks content.write permission (read-only role). An Owner must assign an Editor or Owner role at /settings/users, or mint a token for another user at /settings/mcp.";
+      return `auth_error: token user_lacks_write_permission — the Caelo user this token belongs to lacks the ${AI_WORK_PERMISSION} permission (read-only role). An Owner must assign an Editor or Owner role at /settings/users.`;
     default:
       return `auth_error: token ${failure}`;
   }
@@ -312,7 +353,7 @@ export function mcpTokenAuthErrorMessage(failure: McpTokenFailure): string {
  * this lookup.
  *
  * Exported for the Power-MCP ops (./mcp_power.ts) which share the same
- * bearer model but additionally require `scope === "admin"`.
+ * bearer model but additionally require `scope === "power"`.
  */
 export async function resolveMcpToken(
   adapter: DatabaseAdapter,
@@ -351,7 +392,7 @@ export async function resolveMcpToken(
                  SELECT 1 FROM user_roles ur
                  JOIN role_permissions rp ON rp.role_id = ur.role_id
                  JOIN permissions p ON p.id = rp.permission_id
-                 WHERE ur.user_id = t.actor_id AND p.name = 'content.write'
+                 WHERE ur.user_id = t.actor_id AND p.name = ${AI_WORK_PERMISSION}
                ) AS user_can_write,
                (t.last_used_at IS NULL
                  OR t.last_used_at < now() - ${LAST_USED_STALE_SECONDS}::int * interval '1 second')
@@ -364,7 +405,7 @@ export async function resolveMcpToken(
         id: string;
         actor_id: string;
         display_name: string;
-        scope: McpTokenScope;
+        scope: string;
         ai_cost_cap_microcents: bigint | string | number | null;
         allow_caelo_ai: boolean;
         expires_at: string | Date;
@@ -406,7 +447,7 @@ export async function resolveMcpToken(
         actorId: r.actor_id,
         tokenId: r.id,
         displayName: r.display_name,
-        scope: r.scope,
+        scope: mcpSurfaceFromStored(r.scope),
         aiCostCapMicrocents: cap,
         // #1460 — without an AI key nothing can run on the install's AI.
         allowCaeloAi: r.allow_caelo_ai === true && !r.no_install_ai,
@@ -797,7 +838,7 @@ export const mcpAuthorizeUploadOp = defineOperation({
  * lockstep with the admin, so the shim asks at startup and re-execs as
  * this exact version when it differs; the `claude mcp add` command then
  * never needs regenerating after an upgrade. Any token scope may ask
- * (chat and admin shims both handshake); the version is only disclosed
+ * (the chat and the Power shim both handshake); the version is only disclosed
  * to a live token.
  */
 export const mcpGetVersionOp = defineOperation({
@@ -810,7 +851,9 @@ export const mcpGetVersionOp = defineOperation({
   // Issue #1210 — resolving the token runs its own transaction.
   transaction: "none",
   input: z.object({ plaintextToken: z.string().min(8).max(200) }).strict(),
-  output: z.object({ version: z.string() }),
+  // FROZEN for released shims: `version` stays; fields are only ever added
+  // (`bins`, #1636: the programs this release's shim package ships).
+  output: z.object({ version: z.string(), bins: z.array(z.string()) }),
   handler: async (_ctx, input, _tx) => {
     const bridge = getMcpBridge();
     if (!bridge)
@@ -826,14 +869,14 @@ export const mcpGetVersionOp = defineOperation({
         operation: "mcp.get_version",
         message: mcpTokenAuthErrorMessage(resolved.error),
       });
-    return ok({ version: CAELO_VERSION });
+    return ok({ version: CAELO_VERSION, bins: [...MCP_SERVER_BINS] });
   },
 });
 
 /**
  * Issue #806 — resolve an op's credential to its principal (mcp_principal.ts),
  * enforcing what the op needs:
- * `admin` — the Power-MCP surface (an admin-scoped token or the remote admin
+ * `power` — the Power-MCP surface (a Power token or the remote Power
  * connection); `chat` — caelo_chat (any token, or the remote chat
  * connection); `any` — either surface (image uploads).
  *
@@ -843,7 +886,7 @@ export const mcpGetVersionOp = defineOperation({
 export async function resolveMcpPrincipal(
   adapter: DatabaseAdapter,
   credential: McpCredentialInput,
-  need: { readonly surface: "chat" | "admin" | "any"; readonly operation: string },
+  need: { readonly surface: McpTokenScope | "any"; readonly operation: string },
 ): Promise<{ ok: true; principal: McpPrincipal } | { ok: false; message: string }> {
   if (credential.remote !== undefined && credential.plaintextToken === undefined) {
     if (need.surface !== "any" && credential.remote.surface !== need.surface) {
@@ -865,12 +908,12 @@ export async function resolveMcpPrincipal(
   const resolved = await resolveMcpToken(adapter, credential.plaintextToken);
   if (!resolved.ok) return { ok: false, message: mcpTokenAuthErrorMessage(resolved.error) };
   const t = resolved.value;
-  if (need.surface === "admin" && t.scope !== "admin") {
+  if (need.surface === "power" && t.scope !== "power") {
     return {
       ok: false,
       message:
-        `auth_error: token scope '${t.scope}' — ${need.operation} needs an admin-scoped token. ` +
-        `Mint one at /settings/mcp (scope: admin); 'chat' tokens only drive caelo_chat.`,
+        `auth_error: token scope '${t.scope}' — ${need.operation} needs a Power token. ` +
+        `Mint one at /settings/mcp (scope: power); 'chat' tokens only drive caelo_chat.`,
     };
   }
   return {

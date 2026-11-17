@@ -2,7 +2,8 @@
 
 /**
  * Issue #806 — the admin side of remote MCP: `/api/mcp/remote/chat` and
- * `/api/mcp/remote/admin`, MCP Streamable HTTP endpoints for clients that
+ * `/api/mcp/remote/power` (plus `/api/mcp/remote/admin`, the Power
+ * surface's address before #1636), MCP Streamable HTTP endpoints for clients that
  * reach the admin through Google IAP with the user's own Google identity
  * (via the MCP-Auth-Proxy's OAuth broker; no bearer token, no local shim).
  *
@@ -31,7 +32,7 @@
  * their own sessions. The id also makes the `tools/call` JSON-RPC id an
  * idempotency key: a repeated request returns the first result.
  *
- * Power-MCP (the admin surface) resolves the principal ONCE per request,
+ * Power-MCP (the Power surface) resolves the principal ONCE per request,
  * here, and hands it to the in-process Power-MCP steps — no op re-resolves
  * it, and an approval wait polls with it instead of re-verifying every 3 s
  * (#1253: three resolutions per request, each locking the connection row,
@@ -62,17 +63,17 @@ import {
   resolveRemoteMcpPrincipal,
 } from "@caelo-cms/admin-core";
 import {
-  type AdminSurfaceBackend,
   type ApprovalOutcome,
   type ChatApprovalState,
   type ChatSurfaceBackend,
-  createAdminMcpServer,
   createChatMcpServer,
+  createPowerMcpServer,
   DEFAULT_APPROVAL_WAIT_MS,
   type ExecuteToolResponse,
   type GetContextResponse,
   NoWorkSessionError,
   type OpenSessionResponse,
+  type PowerSurfaceBackend,
   REMOTE_UPLOAD_IMAGES_TOOL,
   type RemoteTool,
   rpcToolCallId,
@@ -216,15 +217,15 @@ function stepValue<T>(r: PowerResult<T>): T {
 }
 
 /**
- * The admin surface for one request, on the principal the route resolved
+ * The Power surface for one request, on the principal the route resolved
  * (#1253). `transportSessionId` is the request's `Mcp-Session-Id` (null for
  * a client that keeps none).
  */
-function adminBackend(
+function powerBackend(
   credential: McpRemoteCredential,
   principal: McpPrincipal,
   transportSessionId: string | null,
-): AdminSurfaceBackend {
+): PowerSurfaceBackend {
   const bridge = powerBridge();
   const catalogue = async (): Promise<readonly RemoteTool[]> => powerListTools(principal);
   return {
@@ -269,10 +270,14 @@ function adminBackend(
  * Serve one MCP Streamable HTTP request on `surface`. Authenticates first
  * (HTTP 401/403/503 with `{error, message}` on refusal), then hands the
  * request to a fresh, stateless MCP server.
+ *
+ * @param opts.legacyAddress - the request came through the Power surface's
+ *   address from before #1636; recorded on the connection for the Owner.
  */
 export async function handleRemoteMcpRequest(
   request: Request,
   surface: McpRemoteSurface,
+  opts: { readonly legacyAddress?: boolean } = {},
 ): Promise<Response> {
   // Parsed up front for the initialize request's client name; a malformed
   // body is answered only AFTER authentication, so an unauthenticated
@@ -300,11 +305,12 @@ export async function handleRemoteMcpRequest(
   const clientLabel = clientLabelOf(parsedBody);
   let resolved: Awaited<ReturnType<typeof resolveRemoteMcpPrincipal>>;
   try {
-    resolved = await resolveRemoteMcpPrincipal(
-      adapter,
-      credential,
-      clientLabel ? { clientLabel } : {},
-    );
+    resolved = await resolveRemoteMcpPrincipal(adapter, credential, {
+      ...(clientLabel ? { clientLabel } : {}),
+      // Only the Power surface has a second address; a chat request says
+      // nothing about it.
+      ...(surface === "power" ? { legacyAddress: opts.legacyAddress === true } : {}),
+    });
   } catch (thrown) {
     // #1375 — the pool filled up between the gate in hooks.server.ts and
     // this checkout: the same 429 the gate answers, not a 500.
@@ -351,7 +357,7 @@ export async function handleRemoteMcpRequest(
           approvalWaitMs: () => DEFAULT_APPROVAL_WAIT_MS,
           resumeTimeoutMs: () => RESUME_RESERVE_MS,
         })
-      : createAdminMcpServer(adminBackend(credential, resolved.value, session.id), {
+      : createPowerMcpServer(powerBackend(credential, resolved.value, session.id), {
           serverVersion: CAELO_VERSION,
           uploadImagesTool: REMOTE_UPLOAD_IMAGES_TOOL,
           approvalWaitMs: () => DEFAULT_APPROVAL_WAIT_MS,
