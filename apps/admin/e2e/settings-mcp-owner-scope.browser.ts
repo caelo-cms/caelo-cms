@@ -6,6 +6,10 @@
  * Reviewer's token next to their own; the Reviewer sees only theirs, gets
  * no mint form, and can still revoke their own token.
  *
+ * Minting needs the permission to work through an AI (content.write,
+ * #1636), which a Reviewer has not. The fixture is the case that leaves a
+ * Reviewer holding a token: minted as an Editor, role changed afterwards.
+ *
  * The Reviewer fixture is provisioned by a Bun subprocess (Playwright runs
  * under Node), the same pattern as content-reviewer-readonly.browser.ts.
  */
@@ -43,11 +47,19 @@ const FIXTURE_SCRIPT = `
       \`;
       await tx\`
         INSERT INTO user_roles (user_id, role_id)
-        SELECT \${actorId}::uuid, r.id FROM roles r WHERE r.name = 'reviewer'
+        SELECT \${actorId}::uuid, r.id FROM roles r WHERE r.name = 'editor'
       \`;
       return actorId;
     });
     process.stdout.write(id);
+  } else if (op === "demote") {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx\`
+        UPDATE user_roles SET role_id = (SELECT id FROM roles WHERE name = 'reviewer')
+        WHERE user_id IN (SELECT id FROM users WHERE email = \${email})
+      \`;
+    });
   } else if (op === "wipe") {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
@@ -70,6 +82,7 @@ test.beforeAll(() => {
     E2E_PASSWORD: REVIEWER_PASSWORD,
   }).trim();
   mintPowerMcpToken(reviewerId, REVIEWER_TOKEN);
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "demote", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
 test.afterAll(() => {
