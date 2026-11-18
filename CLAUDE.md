@@ -357,7 +357,7 @@ Postgres MUST live on a private network IP that the public internet cannot reach
 | **Logs to a single sink** | All tiers | Cloud Logging / CloudWatch / Log Analytics. The analytics plugin queries the sink for edge-event analytics; one sink keeps that query simple. |
 | **DNS records output, not provisioned by default** | Tier 1 | Stack outputs the records to create at the operator's registrar. Cloud-DNS-managed mode is opt-in (`useCloudDns: true`) for operators who want the registrar to delegate the zone. |
 
-### The 8 config knobs every adapter exposes
+### The 7 config knobs every adapter exposes
 
 | Key | Default | Operator-tunable to | Cost delta |
 |---|---|---|---|
@@ -367,8 +367,9 @@ Postgres MUST live on a private network IP that the public internet cannot reach
 | `gatewayMinInstances` | `0` | `1` (or higher) | +$15/mo per instance |
 | `iapAllowlist` | `[<owner-email>]` | comma-list of emails / IDP groups | $0 |
 | `wafAdaptiveProtection` | `false` | `true` | +$5/mo (ML-based bot mitigation) |
-| `staticCdnRegion` | `global` | `eu-only` / `us-only` / etc. | $0 (routing scope) |
 | `backupRetentionDays` | `7` | up to `90` | +$5-15/mo |
+
+No knob limits the CDN to a region. Cloud CDN and Firebase Hosting (served by Fastly) cache at a global edge that cannot be confined to one region. The install region places the services, the database and the buckets: on gcp the static site's origin bucket too, while on gcp-firebase the static site is a Firebase Hosting site, which has no region. No stack sets a location for the project's `_Default` log bucket.
 
 Adapters MUST surface every knob via `pulumi config set caelo-<provider>:<key> <value>`. The names are identical across providers so operators can switch providers without re-learning config; the defaults match the "minimal-viable, scale-up later" goal.
 
