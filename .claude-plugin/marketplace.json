@@ -14,7 +14,18 @@
         "path": "integrations/claude-code",
         "ref": "release-latest"
       },
-      "description": "Edit a self-hosted Caelo CMS site from Claude Code: MCP server plus skills for connecting, safe editing and handover.",
+      "description": "Edit a Caelo CMS site from Claude Code: connect by URL with Google sign-in, plus skills for connecting, safe editing and handover. For Caelo installs on Google Cloud.",
+      "category": "development"
+    },
+    {
+      "name": "caelo-token",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/caelo-cms/caelo-cms.git",
+        "path": "integrations/claude-code-token",
+        "ref": "release-latest"
+      },
+      "description": "The same with Caelo's local MCP server and a token: for self-hosted, AWS and Azure installs and for CI.",
       "category": "development"
     }
   ]

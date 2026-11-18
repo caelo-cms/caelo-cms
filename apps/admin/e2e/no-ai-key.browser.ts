@@ -102,9 +102,9 @@ test("Settings → MCP leads with the token; a chat token is not on offer", asyn
 
   const lead = page.getByTestId("mcp-only-lead");
   await expect(lead).toBeVisible();
-  await expect(page.getByTestId("mcp-only-command")).toContainText("claude mcp add caelo-admin");
+  await expect(page.getByTestId("mcp-only-command")).toContainText("claude mcp add caelo-power");
 
-  await expect(page.getByLabel("Scope")).toHaveValue("admin");
+  await expect(page.getByLabel("Scope")).toHaveValue("power");
   await expect(page.locator('#scope option[value="chat"]')).toBeDisabled();
   await expect(page.getByTestId("mcp-chat-scope-unavailable")).toContainText("no AI key");
 
@@ -192,7 +192,7 @@ test("an agent builds and stages with no key; its approval card works in the cha
 
   const card = await tool("propose_create_mcp_token", {
     displayName: `no-key-approved-${Date.now()}`,
-    scope: "admin",
+    scope: "power",
   });
   const proposalId = card.approval?.proposalId;
   expect(proposalId).toBeTruthy();

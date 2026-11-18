@@ -12,7 +12,7 @@
 # CAELO_ADMIN_URL / CAELO_MCP_TOKEN the server still answers initialize
 # and tools/list; every tool call then names the variables to set.
 #
-# Starts Power-MCP (`admin`), so an inspection shows the full tool
+# Starts Power-MCP (`power`), so an inspection shows the full tool
 # catalogue (power-catalogue.json, this release's snapshot) rather than
 # the three caelo_chat tools. Override the command with no argument for
 # the caelo_chat server.

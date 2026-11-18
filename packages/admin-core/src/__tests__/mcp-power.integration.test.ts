@@ -53,7 +53,11 @@ const otherCtx: ExecutionContext = {
   requestId: "mcp-power-test-other",
 };
 
-async function ensureActor(actorId: string, displayName: string): Promise<void> {
+async function ensureActor(
+  actorId: string,
+  displayName: string,
+  role: "owner" | "editor" = "editor",
+): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
   try {
     await sql.begin(async (tx) => {
@@ -66,7 +70,7 @@ async function ensureActor(actorId: string, displayName: string): Promise<void> 
                VALUES (${actorId}::uuid, ${`${actorId}@mcp-power.test`}, 'test-only')
                ON CONFLICT DO NOTHING`;
       await tx`INSERT INTO user_roles (user_id, role_id)
-               SELECT ${actorId}::uuid, id FROM roles WHERE name = 'editor'
+               SELECT ${actorId}::uuid, id FROM roles WHERE name = ${role}
                ON CONFLICT DO NOTHING`;
     });
   } finally {
@@ -75,7 +79,8 @@ async function ensureActor(actorId: string, displayName: string): Promise<void> 
 }
 
 async function ensureOwnerActor(): Promise<void> {
-  await ensureActor(ownerCtx.actorId, "mcp-power-test owner");
+  // An Owner: some tests mint tokens that may use the install's AI (#741).
+  await ensureActor(ownerCtx.actorId, "mcp-power-test owner", "owner");
 }
 
 async function wipeOurRows(): Promise<void> {
@@ -91,7 +96,7 @@ async function wipeOurRows(): Promise<void> {
 }
 
 async function mintToken(
-  scope: "chat" | "admin",
+  scope: "chat" | "power",
   cap?: number,
   allowCaeloAi?: boolean,
 ): Promise<string> {
@@ -185,13 +190,13 @@ describe("Power-MCP token scope", () => {
   });
 });
 
-describe("Power-MCP surface (admin token)", () => {
+describe("Power-MCP surface (Power token)", () => {
   let adminToken: string;
   let chatSessionId: string;
   let chatBranchId: string;
 
   beforeAll(async () => {
-    adminToken = await mintToken("admin");
+    adminToken = await mintToken("power");
   });
 
   it("lists the filtered catalogue", async () => {
@@ -283,7 +288,7 @@ describe("Power-MCP surface (admin token)", () => {
     await ensureActor(otherCtx.actorId, "mcp-power-test other editor");
     const r = await execute(registry, adapter, otherCtx, "mcp_tokens.create", {
       displayName: "power-test-other-admin",
-      scope: "admin",
+      scope: "power",
     });
     if (!r.ok) throw new Error("other token mint failed");
     const otherToken = (r.value as { plaintextToken: string }).plaintextToken;
@@ -576,7 +581,7 @@ describe("Power-MCP surface (admin token)", () => {
 
   it("enforces the per-token cost cap for AI-spending tools at the boundary", async () => {
     // #741 — only a token allowed to use Caelo's AI can spend at all.
-    const cappedToken = await mintToken("admin", 1_000, true);
+    const cappedToken = await mintToken("power", 1_000, true);
     const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       plaintextToken: cappedToken,
       title: "mcp-power-test capped session",
@@ -616,7 +621,7 @@ describe("Power-MCP surface (admin token)", () => {
   });
 
   it("hands AI work back on a token without Caelo's AI (#741): no spend, actionable answers", async () => {
-    const token = await mintToken("admin");
+    const token = await mintToken("power");
     const opened = await execute(registry, adapter, systemCtx, "mcp.open_session", {
       plaintextToken: token,
       title: "mcp-power-test delegated session",
@@ -649,7 +654,7 @@ describe("Power-MCP surface (admin token)", () => {
   });
 
   it("tells a delegated token's agent about work items in its context and catalogue (#741)", async () => {
-    const token = await mintToken("admin");
+    const token = await mintToken("power");
     const ctxR = await execute(registry, adapter, systemCtx, "mcp.get_context", {
       plaintextToken: token,
     });
@@ -678,18 +683,18 @@ describe("Power-MCP surface (admin token)", () => {
     });
     expect(refused.ok).toBe(false);
     if (refused.ok) return;
-    expect("message" in refused.error ? refused.error.message : "").toContain("admin-scoped");
+    expect("message" in refused.error ? refused.error.message : "").toContain("Power tokens only");
 
-    await mintToken("admin", undefined, true);
+    await mintToken("power", undefined, true);
     const list = await execute(registry, adapter, ownerCtx, "mcp_tokens.list", {});
     expect(list.ok).toBe(true);
     if (!list.ok) return;
     const rows = (list.value as { tokens: Array<{ displayName: string; allowCaeloAi: boolean }> })
       .tokens;
-    expect(rows.find((t) => t.displayName === "power-test-admin-caelo-ai")?.allowCaeloAi).toBe(
+    expect(rows.find((t) => t.displayName === "power-test-power-caelo-ai")?.allowCaeloAi).toBe(
       true,
     );
-    expect(rows.find((t) => t.displayName === "power-test-admin")?.allowCaeloAi).toBe(false);
+    expect(rows.find((t) => t.displayName === "power-test-power")?.allowCaeloAi).toBe(false);
   });
 
   it("serves the composed context without the loop-specific blocks", async () => {

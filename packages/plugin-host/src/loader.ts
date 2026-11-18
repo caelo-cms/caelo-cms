@@ -74,6 +74,7 @@ import { compileListExt } from "./list-ext.js";
 import { pluginListSourcesRegistry } from "./list-sources.js";
 import { describeLoadError } from "./load-error.js";
 import { loadReported, reportLoadFailure } from "./load-outcome.js";
+import { timedStep } from "./load-timing.js";
 import { resetLocalLoadOutcomes } from "./local-availability.js";
 import { inactiveRequiredPlugins, requirementsMessage } from "./plugin-dependencies.js";
 import { resetPluginRuntimeStats } from "./plugin-runtime-stats.js";
@@ -144,7 +145,9 @@ async function verifyAndRegisterInMemory(
   tp: InMemoryPlugin,
   opts: BootstrapOpts,
 ): Promise<RegisterOutcome> {
-  const verified = await inPhase("verify", () => verifyInMemoryPlugin(tp));
+  const verified = await timedStep("verify", () =>
+    inPhase("verify", () => verifyInMemoryPlugin(tp)),
+  );
   return registerLoadedPlugin({
     definition: tp.definition,
     manifest: verified.manifest,
@@ -235,6 +238,38 @@ async function recordPriorManifestApproval(tx: TransactionRunner, slug: string):
   `);
 }
 
+/**
+ * The plugin's actor id, creating the actor on the plugin's first load.
+ * #1633 — every boot of every instance runs this, so an existing actor is
+ * only read: an INSERT … ON CONFLICT runs the statement triggers on
+ * `actors` even when it changes nothing, and one of them queues a
+ * republish of the gateway's plugin registry (cms_admin 0281).
+ */
+async function ensurePluginActor(
+  tx: TransactionRunner,
+  pluginId: string,
+  slug: string,
+): Promise<string> {
+  const displayName = `Plugin: ${slug}`;
+  const existing = (
+    (await tx.execute(sql`
+      SELECT id::text AS id, display_name = ${displayName} AS current
+        FROM actors WHERE plugin_id = ${pluginId}::uuid
+    `)) as unknown as { id: string; current: boolean }[]
+  )[0];
+  if (existing?.current === true) return existing.id;
+  const written = (await tx.execute(sql`
+    INSERT INTO actors (kind, display_name, plugin_id)
+    VALUES ('plugin', ${displayName}, ${pluginId}::uuid)
+    ON CONFLICT (plugin_id) WHERE plugin_id IS NOT NULL DO UPDATE
+      SET display_name = EXCLUDED.display_name
+    RETURNING id::text AS id
+  `)) as unknown as { id: string }[];
+  const id = written[0]?.id;
+  if (!id) throw new Error(`plugin "${slug}": its actor could not be created`);
+  return id;
+}
+
 /** A plugin whose manifest, signature and source passed verification. */
 export interface VerifiedPlugin {
   readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
@@ -298,6 +333,97 @@ export function pluginHostBootstrapped(): { infra: PluginHostInfra; systemActorI
   return bootOpts ? { infra: bootOpts.infra, systemActorId: bootOpts.systemActorId } : null;
 }
 
+/** What one directory of the plugins root came to at boot; null when it is no plugin. */
+type DiskEntryOutcome =
+  | {
+      readonly kind: "loaded";
+      readonly plugin: { slug: string; version: string; tier: 1 | 2 };
+    }
+  | {
+      readonly kind: "inactive";
+      readonly slug: string;
+      readonly version: string;
+      readonly status: string;
+    }
+  | { readonly kind: "failed"; readonly slug: string; readonly reason: string }
+  | null;
+
+/** Verify, register and load the plugin in `entry` of the plugins root (boot). */
+async function loadDiskEntry(
+  opts: BootstrapOpts,
+  publicKeyHex: string | undefined,
+  entry: string,
+): Promise<DiskEntryOutcome> {
+  const pluginDir = resolvePath(opts.pluginsRoot, entry);
+  let dirStat: ReturnType<typeof statSync>;
+  try {
+    dirStat = statSync(pluginDir);
+  } catch {
+    return null;
+  }
+  if (!dirStat.isDirectory()) return null;
+  const manifestPath = resolvePath(pluginDir, "manifest.json");
+  let manifestText: string;
+  try {
+    manifestText = readFileSync(manifestPath, "utf8");
+  } catch {
+    return null; // not a plugin dir
+  }
+  let rawManifest: unknown;
+  try {
+    rawManifest = JSON.parse(manifestText);
+  } catch (e) {
+    await reportLoadFailure(
+      { infra: opts.infra, systemActorId: opts.systemActorId, slug: entry },
+      new PluginLoadError("verify", new Error(`manifest JSON parse: ${(e as Error).message}`)),
+    );
+    return {
+      kind: "failed",
+      slug: entry,
+      reason: `manifest JSON parse: ${(e as Error).message}`,
+    };
+  }
+  const slug = (rawManifest as { slug?: unknown }).slug;
+  const slugStr = typeof slug === "string" ? slug : entry;
+  try {
+    const outcome = await loadReported(
+      { infra: opts.infra, systemActorId: opts.systemActorId, slug: slugStr },
+      () =>
+        loadOnePlugin({
+          slug: slugStr,
+          pluginDir,
+          rawManifest,
+          infra: opts.infra,
+          systemActorId: opts.systemActorId,
+          publicKeyHex,
+        }),
+      (o) => o.plugin !== null,
+    );
+    if (outcome.plugin) {
+      return {
+        kind: "loaded",
+        plugin: {
+          slug: outcome.plugin.slug,
+          version: outcome.plugin.version,
+          tier: outcome.plugin.tier,
+        },
+      };
+    }
+    // Verified and recorded, deliberately not running. This is the
+    // normal state of a freshly installed plugin.
+    return {
+      kind: "inactive",
+      slug: slugStr,
+      version: String((rawManifest as { version?: unknown }).version ?? "0.0.0"),
+      status: outcome.status,
+    };
+  } catch (e) {
+    // Recorded in plugin_errors / plugin_runtime by loadReported; the
+    // plugin's status stays the Owner's decision (#1008).
+    return { kind: "failed", slug: slugStr, reason: describeLoadError(e) };
+  }
+}
+
 export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   setHostInfra(opts.infra);
   setHostSystemActorId(opts.systemActorId);
@@ -354,69 +480,20 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
 
   const publicKeyHex = resolveTrustRoot(opts);
 
-  for (const entry of entries) {
-    const pluginDir = resolvePath(opts.pluginsRoot, entry);
-    let dirStat: ReturnType<typeof statSync>;
-    try {
-      dirStat = statSync(pluginDir);
-    } catch {
-      continue;
-    }
-    if (!dirStat.isDirectory()) continue;
-    const manifestPath = resolvePath(pluginDir, "manifest.json");
-    let manifestText: string;
-    try {
-      manifestText = readFileSync(manifestPath, "utf8");
-    } catch {
-      continue; // not a plugin dir
-    }
-    let rawManifest: unknown;
-    try {
-      rawManifest = JSON.parse(manifestText);
-    } catch (e) {
-      failed.push({ slug: entry, reason: `manifest JSON parse: ${(e as Error).message}` });
-      await reportLoadFailure(
-        { infra: opts.infra, systemActorId: opts.systemActorId, slug: entry },
-        new PluginLoadError("verify", new Error(`manifest JSON parse: ${(e as Error).message}`)),
-      );
-      continue;
-    }
-    const slug = (rawManifest as { slug?: unknown }).slug;
-    const slugStr = typeof slug === "string" ? slug : entry;
-    try {
-      const outcome = await loadReported(
-        { infra: opts.infra, systemActorId: opts.systemActorId, slug: slugStr },
-        () =>
-          loadOnePlugin({
-            slug: slugStr,
-            pluginDir,
-            rawManifest,
-            infra: opts.infra,
-            systemActorId: opts.systemActorId,
-            publicKeyHex,
-          }),
-        (o) => o.plugin !== null,
-      );
-      if (outcome.plugin) {
-        loaded.push({
-          slug: outcome.plugin.slug,
-          version: outcome.plugin.version,
-          tier: outcome.plugin.tier,
-        });
-      } else {
-        // Verified and recorded, deliberately not running. This is the
-        // normal state of a freshly installed plugin.
-        inactive.push({
-          slug: slugStr,
-          version: String((rawManifest as { version?: unknown }).version ?? "0.0.0"),
-          status: outcome.status,
-        });
-      }
-    } catch (e) {
-      // Recorded in plugin_errors / plugin_runtime by loadReported; the
-      // plugin's status stays the Owner's decision (#1008).
-      failed.push({ slug: slugStr, reason: describeLoadError(e) });
-    }
+  // #1633 — the release-signed plugins load side by side. Every request on
+  // a new instance waits for the boot, and each load is a chain of short
+  // database round trips: one after another their latencies added up to
+  // minutes while the database was CPU-bound. Nothing in a load depends on
+  // another plugin being loaded in this process (a requirement is checked
+  // against the plugin rows). The report keeps the directory order.
+  for (const outcome of await Promise.all(
+    entries.map((entry) => loadDiskEntry(opts, publicKeyHex, entry)),
+  )) {
+    if (outcome === null) continue;
+    if (outcome.kind === "loaded") loaded.push(outcome.plugin);
+    else if (outcome.kind === "inactive") {
+      inactive.push({ slug: outcome.slug, version: outcome.version, status: outcome.status });
+    } else failed.push({ slug: outcome.slug, reason: outcome.reason });
   }
 
   // Restore active external plugins from their reviewed database source.
@@ -545,22 +622,16 @@ async function loadTier2Row(
       requestId: `external-load-${row.slug}`,
     },
     async (tx) => {
-      const actors = (await tx.execute(sql`
-        INSERT INTO actors (kind, display_name, plugin_id)
-        VALUES ('plugin', ${`Plugin: ${row.slug}`}, ${row.id}::uuid)
-        ON CONFLICT (plugin_id) WHERE plugin_id IS NOT NULL DO UPDATE
-          SET display_name = EXCLUDED.display_name RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
+      const actorId = await ensurePluginActor(tx, row.id, row.slug);
       await tx.execute(sql`
         INSERT INTO plugin_schema_migrations (plugin_id, applied_for_version, applied_sql)
         SELECT ${row.id}::uuid, ${row.version}, ${emitted.sql}
         WHERE NOT EXISTS (SELECT 1 FROM plugin_schema_migrations
           WHERE plugin_id = ${row.id}::uuid AND applied_for_version = ${row.version})
       `);
-      return actors[0]?.id;
+      return actorId;
     },
   );
-  if (!actorId) throw new Error("ExternalPluginActorMissing");
   // Same check as activation: a tool name must not shadow another
   // plugin's — the chat would dispatch the wrong plugin's operation.
   for (const tool of definition.tools ?? []) {
@@ -614,7 +685,7 @@ interface LoadOpts {
 }
 
 async function loadOnePlugin(opts: LoadOpts): Promise<RegisterOutcome> {
-  const verified = await inPhase("verify", () => verifyDiskPlugin(opts));
+  const verified = await timedStep("verify", () => inPhase("verify", () => verifyDiskPlugin(opts)));
   return registerLoadedPlugin({
     definition: verified.definition,
     manifest: verified.manifest,
@@ -1159,22 +1230,26 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   const manifestDigest = releaseManifestDigest(opts.manifest);
   const initialDigest = opts.activation === "explicit" ? manifestDigest : null;
   const { pluginId, pluginActorId, persistedStatus, approvedCapabilities, approvedDigest } =
-    await opts.infra.adapter.withAdminTransaction(
-      {
-        actorId: opts.systemActorId,
-        actorKind: "system",
-        requestId: `plugin-load-${def.slug}`,
-      },
-      async (tx) => {
-        await recordPriorManifestApproval(tx, def.slug);
-        const rows = (await tx.execute(sql`
+    await timedStep("register", () =>
+      opts.infra.adapter.withAdminTransaction(
+        {
+          actorId: opts.systemActorId,
+          actorKind: "system",
+          requestId: `plugin-load-${def.slug}`,
+        },
+        async (tx) => {
+          const manifestJson = JSON.stringify(opts.manifest);
+          // A missing row, a changed release or a pending approval backfill.
+          const upsertPluginRow = async (): Promise<LoadRow | undefined> => {
+            await recordPriorManifestApproval(tx, def.slug);
+            const rows = (await tx.execute(sql`
         INSERT INTO plugins (
           slug, version, tier, status,
           manifest_json, source_path, manifest_signature, submitted_by, approved_capabilities,
           approved_manifest_digest, approved_manifest_json
         ) VALUES (
           ${def.slug}, ${def.version}, ${def.tier}, ${initialStatus},
-          (${JSON.stringify(opts.manifest)}::text)::jsonb,
+          (${manifestJson}::text)::jsonb,
           ${opts.sourcePath},
           ${opts.manifestSignatureHex},
           ${opts.systemActorId}::uuid,
@@ -1183,7 +1258,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
           END,
           ${initialDigest},
           CASE WHEN ${initialDigest === null} THEN NULL
-               ELSE (${JSON.stringify(opts.manifest)}::text)::jsonb
+               ELSE (${manifestJson}::text)::jsonb
           END
         )
         ON CONFLICT (slug) DO UPDATE SET
@@ -1210,40 +1285,57 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
           OR (plugins.tier = 1 AND plugins.validation_errors <> '[]'::jsonb)
         RETURNING id::text AS id, status, approved_capabilities, approved_manifest_digest
       `)) as unknown as LoadRow[];
-        // An unchanged row is not returned by the upsert; read it instead.
-        const row =
-          rows[0] ??
-          (
-            (await tx.execute(sql`
+            // An unchanged row is not returned by the upsert; read it instead.
+            return (
+              rows[0] ??
+              (
+                (await tx.execute(sql`
               SELECT id::text AS id, status, approved_capabilities, approved_manifest_digest
                 FROM plugins WHERE slug = ${def.slug}
             `)) as unknown as LoadRow[]
+              )[0]
+            );
+          };
+          // #1633 — read first. Every boot of every instance registers every
+          // plugin, and an INSERT … ON CONFLICT that changes nothing still
+          // fires the statement triggers on `plugins` (the gateway
+          // projection's outbox, cms_admin 0281): each boot queued a
+          // republish of the plugin registry. Only a missing row, a changed
+          // release or a pending approval backfill runs the upsert.
+          const current = (
+            (await tx.execute(sql`
+              SELECT id::text AS id, status, approved_capabilities, approved_manifest_digest,
+                     (version, manifest_json, source_path, manifest_signature)
+                       IS NOT DISTINCT FROM
+                       (${def.version}::text, (${manifestJson}::text)::jsonb,
+                        ${opts.sourcePath}::text, ${opts.manifestSignatureHex}::text)
+                     AND NOT (tier = 1 AND validation_errors <> '[]'::jsonb)
+                     -- recordPriorManifestApproval's backfill is still due.
+                     AND NOT (tier = 1 AND status IN ('active', 'disabled')
+                              AND (approved_manifest_digest IS NULL
+                                   OR approved_manifest_json IS NULL)) AS unchanged
+                FROM plugins WHERE slug = ${def.slug}
+            `)) as unknown as (LoadRow & { unchanged: boolean })[]
           )[0];
-        if (!row) throw new Error("plugins upsert returned no id");
-        const {
-          id,
-          status: persistedStatus,
-          approved_capabilities: approvedCapabilities,
-          approved_manifest_digest: approvedDigest,
-        } = row;
+          const row = current?.unchanged === true ? current : await upsertPluginRow();
+          if (!row) throw new Error("plugins upsert returned no id");
+          const {
+            id,
+            status: persistedStatus,
+            approved_capabilities: approvedCapabilities,
+            approved_manifest_digest: approvedDigest,
+          } = row;
 
-        const actorRows = (await tx.execute(sql`
-        INSERT INTO actors (kind, display_name, plugin_id)
-        VALUES ('plugin', ${`Plugin: ${def.slug}`}, ${id}::uuid)
-        ON CONFLICT (plugin_id) WHERE plugin_id IS NOT NULL DO UPDATE
-          SET display_name = EXCLUDED.display_name
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-        const actorId = actorRows[0]?.id;
-        if (!actorId) throw new Error("actor upsert returned no id");
-        return {
-          pluginId: id,
-          pluginActorId: actorId,
-          persistedStatus,
-          approvedCapabilities,
-          approvedDigest,
-        };
-      },
+          const actorId = await ensurePluginActor(tx, id, def.slug);
+          return {
+            pluginId: id,
+            pluginActorId: actorId,
+            persistedStatus,
+            approvedCapabilities,
+            approvedDigest,
+          };
+        },
+      ),
     );
 
   // THE ACTIVATION GATE. Everything below this line makes the plugin
@@ -1283,7 +1375,9 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       return { plugin: null, status: AWAITING_CAPABILITY_APPROVAL };
     }
   }
-  await assertRequiredPluginsActive(opts.infra, opts.systemActorId, def);
+  await timedStep("register", () =>
+    assertRequiredPluginsActive(opts.infra, opts.systemActorId, def),
+  );
 
   // #390 — claim URL slots. Exclusive: a conflict throws here and
   // surfaces to the Owner as "conflicts with <holder>". Claimed only
@@ -1313,14 +1407,16 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // public databases — the first boot after the upgrade that brings the
   // staging database backfills every active plugin's tables there.
   if (Object.keys(def.schema).length > 0) {
-    await inPhase("provision", () =>
-      provisionPluginPublicSchemas(opts.infra, {
-        pluginId,
-        slug: def.slug,
-        schema: def.schema,
-        indexes: def.indexes?.schema,
-        tableKinds: def.tableKinds,
-      }),
+    await timedStep("provision", () =>
+      inPhase("provision", () =>
+        provisionPluginPublicSchemas(opts.infra, {
+          pluginId,
+          slug: def.slug,
+          schema: def.schema,
+          indexes: def.indexes?.schema,
+          tableKinds: def.tableKinds,
+        }),
+      ),
     );
   }
 
@@ -1338,8 +1434,10 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       // #635 — the declared projection's tables republish on every write.
       projectedTables: Object.keys(def.visitorProjection ?? {}),
     });
-    await inPhase("provision", () =>
-      opts.infra.adapter.provisionPluginAdminSchema({ pluginId, sql: emitted.sql }),
+    await timedStep("provision", () =>
+      inPhase("provision", () =>
+        opts.infra.adapter.provisionPluginAdminSchema({ pluginId, sql: emitted.sql }),
+      ),
     );
   }
 
@@ -1386,9 +1484,9 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     });
     try {
       // #1144 — one activation of this plugin at a time across processes.
-      await runActivationSerialized(opts.infra, opts.systemActorId, def.slug, async () => {
-        await onActivate(ctx);
-      });
+      await runActivationSerialized(opts.infra, opts.systemActorId, def.slug, () =>
+        timedStep("activate", () => onActivate(ctx)),
+      );
     } catch (e) {
       loadedPlugins.unload(def.slug);
       throw new PluginLoadError(
@@ -1405,52 +1503,28 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // plugin's status (`plugin_list_type_available`), so a disable
   // archives them without touching a row.
   if (def.listTypes && def.listTypes.length > 0) {
-    await inPhase("activate", async () => {
-      const r = await execute(
-        opts.infra.registry,
-        opts.infra.adapter,
-        {
-          actorId: opts.systemActorId,
-          actorKind: "system",
-          requestId: `plugin-list-types-${def.slug}`,
-        },
-        "list_types.sync_plugin_types",
-        { pluginId, listTypes: def.listTypes },
-      );
-      if (!r.ok) {
-        loadedPlugins.unload(def.slug);
-        urlContributionsRegistry.unregisterPlugin(def.slug);
-        throw new Error(
-          `plugin "${def.slug}" list types could not be stored: ${"message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
+    await timedStep("list types", () =>
+      inPhase("activate", async () => {
+        const r = await execute(
+          opts.infra.registry,
+          opts.infra.adapter,
+          {
+            actorId: opts.systemActorId,
+            actorKind: "system",
+            requestId: `plugin-list-types-${def.slug}`,
+          },
+          "list_types.sync_plugin_types",
+          { pluginId, listTypes: def.listTypes },
         );
-      }
-    });
-  }
-
-  // #1077 — this instance now holds the plugin's verified definition, so
-  // its publisher can (re)publish the plugin's visitor projection. A
-  // publisher that does not have a plugin leaves its section alone, so
-  // without this mark a reload or a new version would keep serving what
-  // the previous definition published until the plugin's next write. The
-  // flag makes the adapter publish right after this commit, as the outbox
-  // triggers do (cms_admin migration 0281).
-  try {
-    await opts.infra.adapter.withAdminTransaction(
-      {
-        actorId: opts.systemActorId,
-        actorKind: "system",
-        requestId: `plugin-projection-${def.slug}`,
-      },
-      async (tx) => {
-        await tx.execute(
-          sql`INSERT INTO public_projection_outbox (section) VALUES (${`plugin:${pluginId}`})`,
-        );
-        await tx.execute(sql`SELECT set_config('caelo.projection_dirty', 'on', true)`);
-      },
+        if (!r.ok) {
+          loadedPlugins.unload(def.slug);
+          urlContributionsRegistry.unregisterPlugin(def.slug);
+          throw new Error(
+            `plugin "${def.slug}" list types could not be stored: ${"message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
+          );
+        }
+      }),
     );
-  } catch (e) {
-    loadedPlugins.unload(def.slug);
-    throw e;
   }
 
   // Register tools + workers + prompt-context renderers.
@@ -1496,26 +1570,39 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // On re-boot the upsert refreshes body/description but NEVER touches
   // status — an Owner's later archive of an individual skill sticks.
   if (def.skills && def.skills.length > 0) {
-    await opts.infra.adapter.withAdminTransaction(
-      {
-        actorId: opts.systemActorId,
-        actorKind: "system",
-        requestId: `plugin-skills-${def.slug}`,
-      },
-      async (tx) => {
-        for (const skill of def.skills ?? []) {
+    await timedStep("skills", () =>
+      opts.infra.adapter.withAdminTransaction(
+        {
+          actorId: opts.systemActorId,
+          actorKind: "system",
+          requestId: `plugin-skills-${def.slug}`,
+        },
+        async (tx) => {
+          const skills = (def.skills ?? []).map((skill) => ({
+            slug: skill.slug,
+            display_name: skill.displayName,
+            description: skill.description,
+            body: skill.body,
+            allowlisted_tools: skill.allowlistedTools ?? [],
+            auto_engagement_hints: skill.autoEngagementHints ?? {},
+          }));
+          // One statement for all of the plugin's skills, and a row is
+          // written only when this release changes it (#1633: every boot of
+          // every instance runs this; an unconditional rewrite fired the
+          // journal triggers for each skill each time).
           await tx.execute(sql`
             INSERT INTO skills (
               slug, display_name, description, body,
               allowlisted_tools, auto_engagement_hints,
               status, activated_at, plugin_id, plugin_owner_slug
-            ) VALUES (
-              ${skill.slug}, ${skill.displayName}, ${skill.description}, ${skill.body},
-              (${JSON.stringify(skill.allowlistedTools ?? [])}::text)::jsonb,
-              (${JSON.stringify(skill.autoEngagementHints ?? {})}::text)::jsonb,
-              'active', now(),
-              ${pluginId}::uuid, ${def.slug}
             )
+            SELECT s.slug, s.display_name, s.description, s.body,
+                   s.allowlisted_tools, s.auto_engagement_hints,
+                   'active', now(), ${pluginId}::uuid, ${def.slug}
+              FROM jsonb_to_recordset((${JSON.stringify(skills)}::text)::jsonb) AS s(
+                slug text, display_name text, description text, body text,
+                allowlisted_tools jsonb, auto_engagement_hints jsonb
+              )
             ON CONFLICT (slug) DO UPDATE SET
               display_name = EXCLUDED.display_name,
               description = EXCLUDED.description,
@@ -1536,9 +1623,20 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
               -- a per-skill decision; boot refreshes its text but does
               -- not overrule them.
               status = CASE WHEN skills.status = 'archived' THEN 'archived' ELSE 'active' END
+            -- Exactly the rows the SET above would change: different
+            -- text, or a status/stamp the CASEs move.
+            WHERE (skills.display_name, skills.description, skills.body,
+                   skills.allowlisted_tools, skills.auto_engagement_hints,
+                   skills.plugin_id, skills.plugin_owner_slug)
+                  IS DISTINCT FROM
+                  (EXCLUDED.display_name, EXCLUDED.description, EXCLUDED.body,
+                   EXCLUDED.allowlisted_tools, EXCLUDED.auto_engagement_hints,
+                   EXCLUDED.plugin_id, EXCLUDED.plugin_owner_slug)
+               OR NOT (skills.status = 'active'
+                       OR (skills.status = 'archived' AND skills.activated_at IS NULL))
           `);
-        }
-      },
+        },
+      ),
     );
   }
 

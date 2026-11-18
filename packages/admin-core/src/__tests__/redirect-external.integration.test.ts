@@ -154,6 +154,18 @@ describe("the gate", () => {
     expect(await rowsAt(`${PFX}-termin`)).toEqual([
       { from_path: `${PFX}-termin`, to_path: BOOKING, status_code: 302 },
     ]);
+    // #1591 — what an agent that asked is told: Staged, live with the next
+    // Publish live (only the "now" mode reads as live).
+    const effect = await asSystem(
+      async (tx) =>
+        (await tx`SELECT preview->>'appliedEffect' AS effect
+                  FROM redirect_pending_actions WHERE id = ${proposalId}::uuid`) as {
+          effect: string | null;
+        }[],
+    );
+    expect(effect[0]?.effect).toBe(
+      "Saved Staged: staging serves it at once, the live site with the next Publish live.",
+    );
     expect((await run(SYSTEM, "redirects.execute_proposal", { proposalId })).ok).toBe(false);
   });
 

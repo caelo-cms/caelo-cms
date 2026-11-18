@@ -22,7 +22,7 @@ export const MCP_ONLY_LEAVES_OFF =
 
 /** Why a chat token or the chat address is unavailable, and what works instead. */
 export const CHAT_SURFACE_NEEDS_INSTALL_AI =
-  "Chat access runs this site's own AI, and this install has no AI key. Use admin access (Power-MCP) instead: your agent does the AI work. Storing a key under Settings → AI makes chat access available.";
+  "Chat access runs this site's own AI, and this install has no AI key. Use Power-MCP instead: your agent does the AI work. Storing a key under Settings → AI makes chat access available.";
 
 /**
  * The refusal for work that needs the install's own AI in this mode. Starts
@@ -31,5 +31,5 @@ export const CHAT_SURFACE_NEEDS_INSTALL_AI =
  * @param what what would have run, as a noun phrase ("The chat")
  */
 export function noInstallAiRefusal(what: string): string {
-  return `${NO_INSTALL_AI_PREFIX} ${what} needs this install's own AI, and the Owner runs this install without an AI key (Power-MCP only). Do the work through an agent connected with an admin-scope MCP token (/settings/mcp), or store a key under Settings → AI (/settings/ai), which ends this mode at once.`;
+  return `${NO_INSTALL_AI_PREFIX} ${what} needs this install's own AI, and the Owner runs this install without an AI key (Power-MCP only). Do the work through an agent connected through Power-MCP (/settings/mcp), or store a key under Settings → AI (/settings/ai), which ends this mode at once.`;
 }

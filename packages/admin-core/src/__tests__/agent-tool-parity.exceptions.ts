@@ -322,7 +322,6 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "/edit New chat action (resume the caller's open page chat)",
   },
-  "chat.list_open_with_pending": { kind: "internal", reason: "unstaged-work banner in the editor" },
   "imports.get_session_budget_state": {
     kind: "internal",
     reason: "chat-runner migration budget gate; the AI reads spend via check_run_budget",

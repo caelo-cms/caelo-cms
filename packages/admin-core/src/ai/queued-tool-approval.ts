@@ -140,8 +140,9 @@ export async function queuePluginToolApproval(input: {
   return {
     ok: true,
     content:
-      `Queued proposal ${proposalId}: ${spec.name} (plugin ${pluginSlug}) — waiting for the operator's Approve in the Caelo admin. ` +
-      "Not applied yet; do not claim it is.",
+      // The summary ends the first sentence; the hand-off keeps only it (#1591).
+      `Queued proposal ${proposalId}: ${spec.name} (plugin ${pluginSlug}). ` +
+      "Waiting for the operator's Approve in the Caelo admin; not applied yet, do not claim it is.",
     queuedProposalId: proposalId,
   };
 }

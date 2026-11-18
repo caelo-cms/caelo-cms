@@ -6,10 +6,13 @@ token's scope:
 - **`caelo_chat`** (default mode, scope `chat`) — talks
   to Caelo's own AI agent. You describe an outcome; Caelo's chat-runner
   does the work.
-- **Power-MCP** (`caelo-admin-mcp` binary / `caelo-mcp-server admin`,
-  scope `admin`) — the full chat-runner tool catalogue exposed
+- **Power-MCP** (`caelo-power-mcp` binary / `caelo-mcp-server power`,
+  scope `power`) — the full chat-runner tool catalogue exposed
   directly, so YOUR agent (Claude Code et al.) drives the tool loop and
-  Caelo makes no provider calls of its own. `caelo-mcp-server export`
+  Caelo makes no provider calls of its own. Until Caelo 1.0 the binary
+  also answers to its earlier name `caelo-admin-mcp` (and
+  `caelo-mcp-server admin`), so setups from before the rename keep
+  working. `caelo-mcp-server export`
   additionally writes a CLAUDE.md + `.claude/skills/` tree generated
   from the install's live context.
 
@@ -23,7 +26,8 @@ model (work sessions, the shared draft, approval gates).
 
 In your Caelo install:
 
-1. Visit `/settings/mcp` as an Owner.
+1. Visit `/settings/mcp` with a role that may edit content. The token
+   acts as you: mint your own instead of sharing someone else's.
 2. Click **New token**, give it a name (`claude-code`, `laptop`, `ci`,
    etc.), optionally set an AI-spend cap (microcents), and copy the
    bearer that's shown ONCE.

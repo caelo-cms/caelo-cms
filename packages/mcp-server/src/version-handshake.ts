@@ -27,6 +27,12 @@
  * `caelo-mcp-server` / `caelo-admin-mcp`, and the `CAELO_MCP_REEXEC_FROM`
  * guard variable. Extend additively only.
  *
+ * #1636 added `caelo-power-mcp` (and the `power` command) that way: an
+ * admin from before it has neither, so the response's optional `bins`
+ * says which programs the admin's release ships, and a shim started under
+ * a new name re-runs the old one when the admin does not list it
+ * ({@link reexecTarget}).
+ *
  * No fallbacks (CLAUDE.md §2): when the versions cannot be matched the
  * shim exits with an actionable message instead of running a release
  * that does not belong to the admin.
@@ -36,6 +42,13 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
+import {
+  CHAT_BIN,
+  LEGACY_POWER_BIN,
+  LEGACY_POWER_COMMAND,
+  POWER_BIN,
+  POWER_COMMAND,
+} from "./names.js";
 
 const PACKAGE_NAME = "@caelo-cms/mcp-server";
 
@@ -56,7 +69,37 @@ export const HANDSHAKE_TIMEOUT_MS = 20_000;
  */
 export const adminVersionResponse = z.object({
   version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
+  /**
+   * The programs of the admin's release (#1636). Absent on an admin from
+   * before `caelo-power-mcp`. Only ever compared against the names this
+   * shim knows: nothing the admin sends becomes part of a command line.
+   */
+  bins: z.array(z.string().max(100)).max(20).optional(),
 });
+
+/**
+ * What to re-run in the admin's release: the program and arguments this
+ * process was started with, or their names from before #1636 when that
+ * release does not ship `caelo-power-mcp` (it then has `caelo-admin-mcp`
+ * and the `admin` command, which every release since #376 has).
+ *
+ * @example
+ *   reexecTarget({ bin: "caelo-power-mcp", forwardedArgs: [], adminBins: undefined })
+ *   // → { bin: "caelo-admin-mcp", forwardedArgs: [] }
+ */
+export function reexecTarget(args: {
+  readonly bin: string;
+  readonly forwardedArgs: readonly string[];
+  /** `bins` of the admin's version response. */
+  readonly adminBins: readonly string[] | undefined;
+}): { readonly bin: string; readonly forwardedArgs: readonly string[] } {
+  if (args.adminBins?.includes(POWER_BIN)) return args;
+  if (args.bin === POWER_BIN) return { ...args, bin: LEGACY_POWER_BIN };
+  if (args.bin === CHAT_BIN && args.forwardedArgs[0] === POWER_COMMAND) {
+    return { ...args, forwardedArgs: [LEGACY_POWER_COMMAND, ...args.forwardedArgs.slice(1)] };
+  }
+  return args;
+}
 
 /**
  * Set on the re-exec'd child to the parent's version, so a child that
@@ -140,9 +183,11 @@ export function handshakeUrlProblem(adminUrl: string): string | null {
  */
 export function describeVersionFetchFailure(message: string, bin: string): string {
   if (message.startsWith("HTTP 404")) {
+    // Such an admin's release has the Power-MCP server under its old name only.
+    const pinned = reexecTarget({ bin, forwardedArgs: [], adminBins: undefined }).bin;
     return (
       "this admin predates the MCP version handshake (#764). Upgrade the admin, or pin the " +
-      `shim to the admin's release in your MCP config: bunx --package ${PACKAGE_NAME}@<admin release> ${bin}`
+      `shim to the admin's release in your MCP config: bunx --package ${PACKAGE_NAME}@<admin release> ${pinned}`
     );
   }
   return `could not read the admin's release from /api/mcp/version: ${message}`;
@@ -220,7 +265,7 @@ export async function ensureAdminRelease(
   opts: {
     readonly adminUrl: string;
     readonly token: string;
-    /** The bin to re-run: `caelo-mcp-server` or `caelo-admin-mcp`. */
+    /** The bin this process runs as (names.ts); {@link reexecTarget} picks the one to re-run. */
     readonly bin: string;
   },
   io: HandshakeIo = processIo,
@@ -260,10 +305,15 @@ export async function ensureAdminRelease(
   }
 
   io.log(`caelo mcp: admin runs ${decision.version}, this shim is ${own} — switching`);
-  const [command, ...args] = reexecArgv({
-    version: decision.version,
+  const target = reexecTarget({
     bin: opts.bin,
     forwardedArgs: io.forwardedArgs,
+    adminBins: parsed.data.bins,
+  });
+  const [command, ...args] = reexecArgv({
+    version: decision.version,
+    bin: target.bin,
+    forwardedArgs: target.forwardedArgs,
     bunPath: io.bunPath,
   });
   const child = io.spawn(command as string, args, { ...io.env, [REEXEC_GUARD_ENV]: own });

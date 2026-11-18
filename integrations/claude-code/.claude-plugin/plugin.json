@@ -2,7 +2,7 @@
   "name": "caelo",
   "displayName": "Caelo CMS",
   "version": "0.0.0",
-  "description": "Edit a self-hosted Caelo CMS site from Claude Code: the Caelo MCP server (Power-MCP) plus skills to connect, edit safely (draft, stage, a person publishes) and hand a prototype over to Caelo.",
+  "description": "Edit a Caelo CMS site from Claude Code: connect by URL and sign in with Google, plus skills to edit safely (draft, stage, a person publishes) and hand a prototype over to Caelo. For installs without remote MCP use caelo-token.",
   "author": {
     "name": "searchVIU GmbH",
     "url": "https://caelo-cms.com"
@@ -16,23 +16,10 @@
   "supportUrl": "https://github.com/caelo-cms/caelo-cms/issues",
   "privacyPolicyUrl": "https://caelo-cms.com/privacy/",
   "userConfig": {
-    "admin_url": {
+    "mcp_url": {
       "type": "string",
-      "title": "Caelo admin URL",
-      "description": "Your Caelo admin's address, e.g. https://admin.example.com (https:// required; http:// only for localhost). Leave empty if you have no Caelo install yet.",
-      "default": ""
-    },
-    "mcp_token": {
-      "type": "string",
-      "title": "Caelo MCP token (admin scope)",
-      "description": "Mint it as Owner at /settings/mcp on your install: New token, scope admin. Shown once; stored in your system keychain.",
-      "sensitive": true,
-      "default": ""
-    },
-    "iap_service_account": {
-      "type": "string",
-      "title": "IAP service account (Google Cloud installs only)",
-      "description": "Only for installs on Google Cloud behind IAP: the value /settings/mcp shows for CAELO_IAP_SERVICE_ACCOUNT. Leave empty otherwise.",
+      "title": "Caelo MCP URL (Power-MCP)",
+      "description": "The Power-MCP URL your Caelo site shows under Settings → MCP, ending in /api/mcp/power. After saving, run /mcp, pick caelo and sign in with your Google account. Your site shows no such URL? Install caelo-token instead.",
       "default": ""
     }
   }

@@ -55,9 +55,10 @@ const claudeCodeDoc = {
 };
 
 describe("discovery metadata", () => {
-  it("serves RFC 9728 metadata for both surfaces on both paths", async () => {
+  it("serves RFC 9728 metadata for every address on both paths", async () => {
     const h = harness();
-    for (const surface of ["chat", "admin"]) {
+    // `admin`: the Power surface's address before #1636, a resource of its own.
+    for (const surface of ["chat", "power", "admin"]) {
       for (const path of [
         `/.well-known/oauth-protected-resource/api/mcp/${surface}`,
         `/api/mcp/oauth/protected-resource/${surface}`,
@@ -126,6 +127,7 @@ describe("CORS", () => {
     const h = harness();
     for (const path of [
       "/api/mcp/chat",
+      "/api/mcp/power",
       "/api/mcp/admin",
       "/api/mcp/oauth/token",
       "/api/mcp/oauth/register",
@@ -759,7 +761,7 @@ describe("token: authorization_code", () => {
       redirect_uri: CLAUDE_REDIRECT,
       client_id: clientId,
       code_verifier: verifier,
-      resource: `${PUBLIC}/api/mcp/admin`,
+      resource: `${PUBLIC}/api/mcp/power`,
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
@@ -772,7 +774,7 @@ describe("token: authorization_code", () => {
     // The bearer is the ID token sealed with the surface it was granted for.
     expect(openAccess(String(body.access_token), h.nowSeconds())).toEqual({
       id_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: h.nowSeconds() + 3600 }),
-      resource: `${PUBLIC}/api/mcp/admin`,
+      resource: `${PUBLIC}/api/mcp/power`,
       // The DCR client's name, so a re-registration stays the same app (#968).
       client: "dcr:Test",
       exp: h.nowSeconds() + 3600,
@@ -950,7 +952,7 @@ describe("token: authorization_code", () => {
       client_id: clientId,
       code_verifier: verifier,
     };
-    for (const resource of [`${PUBLIC}/api/mcp/admin`, "https://evil.example/api/mcp/chat"]) {
+    for (const resource of [`${PUBLIC}/api/mcp/power`, "https://evil.example/api/mcp/chat"]) {
       const res = await postToken(h, { ...fields, resource });
       expect(res.status).toBe(400);
       expect(((await res.json()) as { error: string }).error).toBe("invalid_target");
@@ -1102,7 +1104,7 @@ describe("token: refresh_token", () => {
       grant_type: "refresh_token",
       refresh_token: refresh,
       client_id: clientId,
-      resource: `${PUBLIC}/api/mcp/admin`,
+      resource: `${PUBLIC}/api/mcp/power`,
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("invalid_target");
@@ -1123,6 +1125,30 @@ describe("token: refresh_token", () => {
     expect(same.status).toBe(200);
   });
 
+  it("signs in and refreshes a connector on the Power surface's old address (#1636)", async () => {
+    // Connectors added before the rename have /api/mcp/admin as their URL
+    // and name it as the resource; their sign-ins and refreshes go on.
+    const OLD = `${PUBLIC}/api/mcp/admin`;
+    const { h, clientId, refresh } = await tokens({ resource: OLD });
+    const res = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      client_id: clientId,
+      resource: OLD,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { access_token: string };
+    expect(openAccess(body.access_token, h.nowSeconds()).resource).toBe(OLD);
+    // The two addresses are two resources: a sign-in for one is not one for the other.
+    const other = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      client_id: clientId,
+      resource: `${PUBLIC}/api/mcp/power`,
+    });
+    expect(((await other.json()) as { error: string }).error).toBe("invalid_target");
+  });
+
   it("binds a resource first named at refresh from then on", async () => {
     const { h, clientId, refresh } = await tokens();
     const first = (await (
@@ -1130,7 +1156,7 @@ describe("token: refresh_token", () => {
         grant_type: "refresh_token",
         refresh_token: refresh,
         client_id: clientId,
-        resource: `${PUBLIC}/api/mcp/admin`,
+        resource: `${PUBLIC}/api/mcp/power`,
       })
     ).json()) as { refresh_token: string };
     const res = await postToken(h, {

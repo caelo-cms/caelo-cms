@@ -73,6 +73,23 @@ const entityRefSchema = z
     label: z.string(),
     /** Optional details (e.g. block_name#position for content rows). */
     detail: z.string().optional(),
+    /**
+     * The page a change of the `pages` group belongs to (a content row's
+     * page, or the page itself), so a summary counts a page once however
+     * many of its parts changed.
+     */
+    pageId: z.string().optional(),
+    /** The page path at read time (`pages` group); absent when the page has none. */
+    pagePath: z.string().optional(),
+    /**
+     * `page` kind only: `created` = the page exists only in the draft (made
+     * in a chat, not on the site yet); `deleted` = the draft deletes a page
+     * of the site; `createdAndDeleted` = made and deleted again in the
+     * draft, so it never reaches the site.
+     */
+    change: z.enum(["created", "deleted", "createdAndDeleted"]).optional(),
+    /** `page` kind only: the change touches the page's SEO fields (#1156). */
+    seo: z.boolean().optional(),
   })
   .strict();
 type EntityRef = z.infer<typeof entityRefSchema>;
@@ -141,6 +158,11 @@ interface LabelledRow {
   entity_id: string;
   label: string | null;
   detail: string | null;
+  page_id: string | null;
+  page_path: string | null;
+  /** `page` kind: see `entityRefSchema.change`; null for any other change. */
+  page_change: "created" | "deleted" | "createdAndDeleted" | null;
+  seo_changed: boolean | null;
   stage_state: string;
   description: string | null;
   op_kind: string | null;
@@ -268,7 +290,34 @@ export async function loadPendingChangesFor(
            CASE WHEN h.kind = 'layoutChrome'
              THEN (SELECT x.description FROM site_snapshots x WHERE x.id = h.entity_id) END AS description,
            CASE WHEN h.kind = 'layoutChrome'
-             THEN (SELECT x.op_kind FROM site_snapshots x WHERE x.id = h.entity_id) END AS op_kind
+             THEN (SELECT x.op_kind FROM site_snapshots x WHERE x.id = h.entity_id) END AS op_kind,
+           -- The page a pages-group change belongs to, so a summary counts it once.
+           CASE h.kind
+             WHEN 'pageModuleContent' THEN h.page_id::text
+             WHEN 'page' THEN h.entity_id::text
+             WHEN 'pageLayout' THEN h.entity_id::text
+           END AS page_id,
+           CASE h.kind
+             WHEN 'pageModuleContent'
+               THEN (SELECT x.current_path FROM pages x WHERE x.id = h.page_id)
+             WHEN 'page' THEN (SELECT x.current_path FROM pages x WHERE x.id = h.entity_id)
+             WHEN 'pageLayout' THEN (SELECT x.current_path FROM pages x WHERE x.id = h.entity_id)
+           END AS page_path,
+           -- A page row with a branch id exists only in the draft (a branched
+           -- create, merged by its Stage); a newest state with deletedAt is
+           -- the draft deleting it. Both: a page that never reaches the site.
+           CASE WHEN h.kind = 'page' THEN (
+             SELECT CASE
+                      WHEN d.deleted AND p.draft_only THEN 'createdAndDeleted'
+                      WHEN d.deleted THEN 'deleted'
+                      WHEN p.draft_only THEN 'created'
+                    END
+               FROM (SELECT (x.state->>'deletedAt') IS NOT NULL AS deleted
+                       FROM page_snapshots x WHERE x.id = h.snapshot_row_id) d,
+                    (SELECT x.chat_branch_id IS NOT NULL AS draft_only
+                       FROM pages x WHERE x.id = h.entity_id) p
+           ) END AS page_change,
+           CASE WHEN h.kind = 'page' THEN h.seo_changed END AS seo_changed
       FROM h
      ORDER BY 1, 4, 3
   `)) as unknown as LabelledRow[];
@@ -307,6 +356,10 @@ function toRef(r: LabelledRow): EntityRef {
     entityId: r.entity_id,
     label: r.label ?? r.entity_id,
     ...(r.detail ? { detail: r.detail } : {}),
+    ...(r.page_id ? { pageId: r.page_id } : {}),
+    ...(r.page_path ? { pagePath: r.page_path } : {}),
+    ...(r.page_change ? { change: r.page_change } : {}),
+    ...(r.seo_changed ? { seo: true } : {}),
   };
 }
 

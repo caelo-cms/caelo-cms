@@ -505,7 +505,7 @@ describe("retry_tool_call — Power-MCP", () => {
   it("keeps a schema-rejected delete_pages_many; the fixed retry queues the approval it now needs", async () => {
     const minted = await execute(registry, adapter, OWNER, "mcp_tokens.create", {
       displayName: `t1275-${TS}`,
-      scope: "admin",
+      scope: "power",
     });
     if (!minted.ok) throw new Error(`token: ${JSON.stringify(minted.error)}`);
     const plaintextToken = (minted.value as { plaintextToken: string }).plaintextToken;

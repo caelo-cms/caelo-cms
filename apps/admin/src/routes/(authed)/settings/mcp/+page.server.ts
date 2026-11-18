@@ -2,7 +2,7 @@
 
 import type { McpRemoteAccessBlockRow, McpRemoteConnectionRow } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
-import { MCP_SURFACE_PERMISSION } from "@caelo-cms/shared";
+import { AI_WORK_PERMISSION, MCP_SURFACE_PERMISSION, type McpSurfaceName } from "@caelo-cms/shared";
 import { error, fail } from "@sveltejs/kit";
 import type { RemoteMcpState } from "#lib/mcp-remote-access.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -15,7 +15,7 @@ type TokenRow = {
   id: string;
   actorId: string;
   displayName: string;
-  scope: "chat" | "admin";
+  scope: McpSurfaceName;
   aiCostCapMicrocents: number | null;
   allowCaeloAi: boolean;
   lastUsedAt: string | null;
@@ -54,13 +54,17 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
   const { adapter, registry } = getQueryContext();
   const { aiMode } = await parent();
   const permissions = locals.user?.permissions;
+  // The Owner's controls: remote MCP setup, caps, "may use Caelo's AI",
+  // revoke / restore / block, other people's tokens.
   const canWrite = permissions?.has("settings.write") === true;
+  // #1636 — whoever may work through an AI mints tokens for themselves.
+  const canMint = permissions?.has(AI_WORK_PERMISSION) === true;
   // Which remote surfaces this user may connect — the URLs shown follow it.
   // #1460 — the chat surface runs the install's own AI, so it is not on
   // offer on an install without a key, whatever the role.
   const mayUse = {
     chat: aiMode !== "mcp_only" && permissions?.has(MCP_SURFACE_PERMISSION.chat) === true,
-    admin: permissions?.has(MCP_SURFACE_PERMISSION.admin) === true,
+    power: permissions?.has(MCP_SURFACE_PERMISSION.power) === true,
   };
   const r = await execute(registry, adapter, locals.ctx, "mcp_tokens.list", {});
   if (!r.ok) throw error(500, `Could not list MCP tokens: ${JSON.stringify(r.error)}`);
@@ -93,24 +97,29 @@ export const load: PageServerLoad = async ({ locals, url, parent }) => {
     remoteConnections,
     remoteBlocks,
     canWrite,
+    canMint,
     selfId: locals.user?.id ?? null,
   };
 };
 
 export const actions: Actions = {
   create: async ({ request, locals }) => {
-    requirePermission(locals, "settings.write");
+    // #1636 — a token acts as its minter, so everyone who may work through
+    // an AI mints their own; the op checks it again and keeps "may use
+    // Caelo's AI" with the Owner.
+    requirePermission(locals, AI_WORK_PERMISSION);
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const displayName = String(form.get("displayName") ?? "").trim();
     const capRaw = String(form.get("aiCostCapMicrocents") ?? "");
     const scopeRaw = String(form.get("scope") ?? "chat");
-    // #741 — the checkbox only renders for admin tokens; the op refuses it on chat.
-    const allowCaeloAi = scopeRaw === "admin" && form.get("allowCaeloAi") === "on";
+    // #741 — the checkbox only renders for Power tokens (and for an Owner);
+    // the op refuses it on chat and from anyone else.
+    const allowCaeloAi = scopeRaw === "power" && form.get("allowCaeloAi") === "on";
     if (!displayName) return fail(400, { error: "displayName required" });
-    if (scopeRaw !== "chat" && scopeRaw !== "admin") {
-      return fail(400, { error: "scope must be 'chat' or 'admin'" });
+    if (scopeRaw !== "chat" && scopeRaw !== "power") {
+      return fail(400, { error: "scope must be 'chat' or 'power'" });
     }
     const cap = capRaw === "" ? null : Number.parseInt(capRaw, 10);
     if (cap !== null && (!Number.isFinite(cap) || cap < 0)) {
@@ -208,14 +217,14 @@ export const actions: Actions = {
       });
     }
     const { adapter, registry } = getQueryContext();
-    // The checkbox only renders for admin-surface rows (an unchecked box
-    // sends nothing, so the row's surface says whether to apply it); the op
+    // The checkbox only renders for Power rows (an unchecked box sends
+    // nothing, so the row's surface says whether to apply it); the op
     // refuses the flag on chat rows.
-    const isAdminRow = form.get("surface") === "admin";
+    const isPowerRow = form.get("surface") === "power";
     const r = await execute(registry, adapter, locals.ctx, "mcp_remote_connections.set_cap", {
       id,
       aiCostCapMicrocents: cap,
-      ...(isAdminRow ? { allowCaeloAi: form.get("allowCaeloAi") === "on" } : {}),
+      ...(isPowerRow ? { allowCaeloAi: form.get("allowCaeloAi") === "on" } : {}),
     });
     if (!r.ok) return fail(400, { error: opMessage(r.error) });
     return { ok: true, remoteUpdated: id };

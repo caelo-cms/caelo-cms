@@ -32,7 +32,7 @@
  * hold, so a sign-in cannot be finished in a browser that did not approve
  * it. The cookie is `SameSite=Lax`: sent on Google's top-level redirect
  * back, not on a cross-site POST. Each sign-in gets its own cookie name, so
- * two parallel sign-ins (chat and admin connectors) do not clobber each
+ * two parallel sign-ins (chat and Power connectors) do not clobber each
  * other; each expires within {@link CONSENT_COOKIE_MAX_AGE_SECONDS} and the
  * callback deletes it.
  *
@@ -42,9 +42,14 @@
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { MCP_SURFACE_COPY, MCP_SURFACE_PERMISSION } from "@caelo-cms/shared";
-import type { McpConfig, McpSurface } from "./config.js";
-import { resourceUrl } from "./context.js";
+import {
+  AI_WORK_PERMISSION,
+  MCP_SURFACE_COPY,
+  type McpSurfaceName,
+  mcpSurfaceOf,
+} from "@caelo-cms/shared";
+import type { McpConfig } from "./config.js";
+import { addressOfResource } from "./context.js";
 import { GOOGLE_AUTHORIZE_URL } from "./google.js";
 
 /** Lifetime of the consent token on the page (the user reads, then clicks). */
@@ -131,30 +136,34 @@ function formActionSource(redirectUri: string): string {
   return u.protocol === "http:" || u.protocol === "https:" ? u.origin : u.protocol;
 }
 
-function surfaceOf(config: McpConfig, resource: string | null): McpSurface | null {
-  if (resource === resourceUrl(config, "chat")) return "chat";
-  if (resource === resourceUrl(config, "admin")) return "admin";
-  return null;
+/** The surface a grant for `resource` opens; null when the client named none (both). */
+function surfaceOf(config: McpConfig, resource: string | null): McpSurfaceName | null {
+  if (resource === null) return null;
+  const address = addressOfResource(config, resource);
+  return address === null ? null : mcpSurfaceOf(address);
 }
+
+/** Who may use either surface (#1636: one permission for working through an AI). */
+const NEEDS = `Needs a role on this site that may edit content (${AI_WORK_PERMISSION}).`;
 
 /**
  * What the grant opens, in the words Settings → MCP uses for the two
- * addresses (`MCP_SURFACE_COPY`, #968), plus who may use it: the broker
+ * surfaces (`MCP_SURFACE_COPY`, #968), plus who may use it: the broker
  * cannot know the user's role before Google sign-in, so the page says up
- * front which role the address needs instead of failing silently after.
+ * front which role it needs instead of failing silently after.
  */
-const ACCESS: Record<McpSurface | "both", { label: string; detail: string }> = {
+const ACCESS: Record<McpSurfaceName | "both", { label: string; detail: string }> = {
   chat: {
     label: MCP_SURFACE_COPY.chat.title,
-    detail: `${MCP_SURFACE_COPY.chat.does} Needs a role on this site that may edit content (${MCP_SURFACE_PERMISSION.chat}).`,
+    detail: `${MCP_SURFACE_COPY.chat.does} ${NEEDS}`,
   },
-  admin: {
-    label: MCP_SURFACE_COPY.admin.title,
-    detail: `${MCP_SURFACE_COPY.admin.does} Needs a role on this site that may change settings (${MCP_SURFACE_PERMISSION.admin}); with any other role, use the chat address instead.`,
+  power: {
+    label: MCP_SURFACE_COPY.power.title,
+    detail: `${MCP_SURFACE_COPY.power.does} ${NEEDS}`,
   },
   both: {
-    label: `${MCP_SURFACE_COPY.chat.title} and ${MCP_SURFACE_COPY.admin.title.toLowerCase()}`,
-    detail: `Each works only if your role on this site allows it: chat needs ${MCP_SURFACE_PERMISSION.chat}, full admin access needs ${MCP_SURFACE_PERMISSION.admin}.`,
+    label: `${MCP_SURFACE_COPY.chat.title}, and ${MCP_SURFACE_COPY.power.title}`,
+    detail: `The app may ask this site's AI to do the work, or do it itself with the AI's tools. ${NEEDS}`,
   },
 };
 

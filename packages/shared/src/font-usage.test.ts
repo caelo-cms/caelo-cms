@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import { describe, expect, it } from "bun:test";
-import { scanSiteFontUsage } from "./font-usage.js";
+import { fontUsageRelevant, scanSiteFontUsage } from "./font-usage.js";
 import type { ThemeDocument } from "./themes.js";
 
 const THEME = {
@@ -96,5 +96,55 @@ describe("scanSiteFontUsage", () => {
 
   it("does not mistake custom property names for font-weight declarations", () => {
     expect(scan(".a{--font-weight-x:500}").weights).toEqual([400, 600, 700, 900]);
+  });
+});
+
+describe("fontUsageRelevant", () => {
+  /** One text per kind of match the scanner makes. */
+  const TRIGGERS = [
+    ".a{font-weight:300}",
+    '<p style="FONT-WEIGHT:500">x</p>',
+    ".c{font:italic 200 1rem/1.4 serif}",
+    ".x{--w:350}",
+    ".y{font-weight:var(--w)}",
+    "el.style.setProperty('--w', 800)",
+    "el.style.fontWeight = w;",
+    "ctx.font = size + 'px Inter';",
+    `.a{font-variation-settings:"opsz" 32}`,
+    "el.style.fontVariationSettings = v",
+    ".a{transition:font-weight .2s}",
+  ];
+  /** Texts without `font` or `--`, close to the triggers. */
+  const NOISE = [
+    "",
+    "<p>Bold claims, weight: 900, lighter and bolder</p>",
+    ".a{weight:800}.b{font_weight:200}".replace("font_", "fo_"),
+    ".a{-webkit-text-stroke:1px} .b{margin:-1px}",
+    "{{weight}} calc(400 + 100) var(x) setProperty('w', 1)",
+    '{"title":"F O N T","w":700}',
+  ];
+
+  it("keeps every text the scanner can match", () => {
+    for (const text of TRIGGERS)
+      expect({ text, relevant: fontUsageRelevant(text) }).toEqual({ text, relevant: true });
+  });
+
+  it("drops texts that change no scan, so a scan over the relevant texts is the scan of all", () => {
+    const labelled = (texts: string[]) =>
+      scanSiteFontUsage({
+        tokens: THEME,
+        sources: texts.map((text) => ({
+          label: TRIGGERS.includes(text) ? "module:trigger" : "module:noise",
+          text,
+        })),
+      });
+    for (const text of NOISE) {
+      expect({ text, relevant: fontUsageRelevant(text) }).toEqual({ text, relevant: false });
+    }
+    for (const trigger of TRIGGERS) {
+      expect(labelled([trigger, ...NOISE])).toEqual(labelled([trigger]));
+      expect(labelled([...NOISE, trigger])).toEqual(labelled([trigger]));
+    }
+    expect(labelled(NOISE)).toEqual(labelled([]));
   });
 });

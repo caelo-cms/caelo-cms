@@ -42,23 +42,30 @@ export interface PluginPublicSchemaSpec {
  * cms_public_staging ({@link PluginHostInfra.stagingAdapter}).
  *
  * @returns the live database's emitted DDL (the activation records it).
- * @throws whatever either provisioning throws; the live one runs first.
+ * @throws whatever either provisioning throws (both run at once).
  */
 export async function provisionPluginPublicSchemas(
   infra: Pick<PluginHostInfra, "adapter" | "stagingAdapter">,
   spec: PluginPublicSchemaSpec,
 ): Promise<EmittedSchema> {
   const live = schemaFromSpec({ ...spec, target: LIVE_PUBLIC_GRANT_TARGET });
-  await infra.adapter.provisionPluginPublicSchema({ pluginId: spec.pluginId, sql: live.sql });
-  if (infra.stagingAdapter) {
-    const staged = schemaFromSpec({ ...spec, target: STAGING_PUBLIC_GRANT_TARGET });
-    const outcome = await infra.stagingAdapter.provisionPluginPublicSchema({
-      pluginId: spec.pluginId,
-      sql: staged.sql,
-    });
-    // The staging adapter has no cms_admin side; the drop is recorded here.
-    await infra.adapter.auditPluginSchemaDrop(spec.pluginId, outcome);
-  }
+  const stagingAdapter = infra.stagingAdapter;
+  // #1633 — two databases with pools of their own: provisioned side by
+  // side, so a boot waits for one round of checks, not two.
+  await Promise.all([
+    infra.adapter.provisionPluginPublicSchema({ pluginId: spec.pluginId, sql: live.sql }),
+    stagingAdapter
+      ? (async () => {
+          const staged = schemaFromSpec({ ...spec, target: STAGING_PUBLIC_GRANT_TARGET });
+          const outcome = await stagingAdapter.provisionPluginPublicSchema({
+            pluginId: spec.pluginId,
+            sql: staged.sql,
+          });
+          // The staging adapter has no cms_admin side; the drop is recorded here.
+          await infra.adapter.auditPluginSchemaDrop(spec.pluginId, outcome);
+        })()
+      : undefined,
+  ]);
   return live;
 }
 

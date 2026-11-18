@@ -212,10 +212,9 @@ describe("#1268 draft head", () => {
     expect(await drift()).toEqual([]);
   });
 
-  it("counts the same pending changes in the pill, the banner, the changes page and the Stage list", async () => {
+  it("counts the same pending changes in the pill, the changes page, its summary and the Stage list", async () => {
     const m = await seedModule("count");
     const a = await chat("count A");
-    const other = await chat("count observer");
     await writeModule(a, m, "<p>count 1</p>");
     await writeModule(a, m, "<p>count 2</p>");
     await op(a.ctx, "themes.update_meta", { displayName: `${PFX}theme from A` });
@@ -228,16 +227,13 @@ describe("#1268 draft head", () => {
     expect(pill.byKind.modules).toBe(1);
     expect(pill.byKind.themes).toBe(1);
 
-    const banner = await op<{ chats: { chatSessionId: string; pendingCount: number }[] }>(
-      SYS,
-      "chat.list_open_with_pending",
-      { excludeChatSessionId: other.id },
-    );
-    const changes = await op<{ chats: { chatSessionId: string; pendingCount: number }[] }>(
-      SYS,
-      "chat.list_open_changes",
-      {},
-    );
+    const changes = await op<{
+      chats: {
+        chatSessionId: string;
+        pendingCount: number;
+        summary: { siteWide: number; rows: { what: string }[] };
+      }[];
+    }>(SYS, "chat.list_open_changes", {});
     const list = await op<{
       pending: { pages: unknown[]; globals: { kind: string }[]; lists: unknown[] };
       staged: { pages: unknown[]; globals: unknown[]; lists: unknown[] };
@@ -251,8 +247,14 @@ describe("#1268 draft head", () => {
       list.staged.lists.length;
 
     expect(pill.count).toBe(2);
-    expect(banner.chats.find((c) => c.chatSessionId === a.id)?.pendingCount).toBe(pill.count);
-    expect(changes.chats.find((c) => c.chatSessionId === a.id)?.pendingCount).toBe(pill.count);
+    const fromA = changes.chats.find((c) => c.chatSessionId === a.id);
+    expect(fromA?.pendingCount).toBe(pill.count);
+    // The Draft changes panel shows the same two changes as site-wide parts.
+    expect(fromA?.summary.siteWide).toBe(pill.count);
+    expect(fromA?.summary.rows.map((r) => r.what).sort()).toEqual([
+      "Colours and fonts",
+      "Section design",
+    ]);
     expect(listed).toBe(pill.count);
     expect(list.pending.globals.map((g) => g.kind).sort()).toEqual(["module", "theme"]);
   });

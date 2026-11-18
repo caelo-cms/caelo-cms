@@ -37,6 +37,7 @@
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { PluginHostInfra } from "./dispatch.js";
+import { timedStep } from "./load-timing.js";
 
 /** How long a lease lives without a heartbeat. */
 const LEASE_TTL_MS = 60_000;
@@ -118,6 +119,26 @@ async function renew(lease: Lease): Promise<boolean> {
   );
 }
 
+/**
+ * Delete this activation's lease after `fn` succeeded, in one statement:
+ * true when it was still unexpired, i.e. no other activation could have
+ * taken it over while `fn` ran.
+ */
+async function releaseHeld(lease: Lease): Promise<boolean> {
+  const { infra, ctx, slug, holder } = lease;
+  return infra.adapter.withAdminTransaction(
+    ctx,
+    async (tx) => {
+      const rows = (await tx.execute(sql`
+        DELETE FROM plugin_activation_leases WHERE slug = ${slug} AND holder = ${holder}
+        RETURNING expires_at > clock_timestamp() AS held
+      `)) as unknown as { held: boolean }[];
+      return rows[0]?.held === true;
+    },
+    { holder: HOLDER },
+  );
+}
+
 /** Delete the lease if it is still this activation's. */
 async function release(lease: Lease): Promise<void> {
   const { infra, ctx, slug, holder } = lease;
@@ -161,16 +182,18 @@ export async function runActivationSerialized<T>(
   };
 
   const deadline = Date.now() + waitMs;
-  let pause = 50;
-  while (!(await tryAcquire(lease))) {
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `plugin "${slug}": another activation of this plugin ran for over ${Math.round(waitMs / 1000)} s, so its onActivate did not run here. Reload the plugin once the other activation finished (Settings → Plugins).`,
-      );
+  await timedStep("activation lease", async () => {
+    let pause = 50;
+    while (!(await tryAcquire(lease))) {
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `plugin "${slug}": another activation of this plugin ran for over ${Math.round(waitMs / 1000)} s, so its onActivate did not run here. Reload the plugin once the other activation finished (Settings → Plugins).`,
+        );
+      }
+      await Bun.sleep(pause);
+      pause = Math.min(pause * 2, 1_000);
     }
-    await Bun.sleep(pause);
-    pause = Math.min(pause * 2, 1_000);
-  }
+  });
 
   let lost = false;
   // Beats run one after another, never two at once.
@@ -191,14 +214,18 @@ export async function runActivationSerialized<T>(
     clearInterval(timer);
     await beat;
   };
+  let released = false;
   try {
     const out = await fn();
     await stopBeating();
     // The beats prove nothing when they kept failing (no pooled
     // connection, say): only a lease that is still this activation's and
     // unexpired right now shows that no other activation took it over.
-    if (!lost && !(await renew(lease))) lost = true;
-    if (lost) {
+    // Checked and released in one statement (#1633: each round trip of a
+    // boot costs a second on a CPU-bound database).
+    const held = await timedStep("activation lease", () => releaseHeld(lease));
+    released = true;
+    if (lost || !held) {
       throw new Error(
         `plugin "${slug}": the activation lease lapsed while onActivate ran (not renewed within ${Math.round(ttlMs / 1000)} s), so another activation may have run its seed at the same time. Reload the plugin (Settings → Plugins) and check the data it seeds.`,
       );
@@ -206,12 +233,14 @@ export async function runActivationSerialized<T>(
     return out;
   } finally {
     await stopBeating();
-    try {
-      await release(lease);
-    } catch (e) {
-      // Not fatal: the lease lapses on its own after `ttlMs`, and the next
-      // activation takes it over then.
-      console.error(`[plugin-host] releasing the activation lease of "${slug}" failed:`, e);
+    if (!released) {
+      try {
+        await timedStep("activation lease", () => release(lease));
+      } catch (e) {
+        // Not fatal: the lease lapses on its own after `ttlMs`, and the next
+        // activation takes it over then.
+        console.error(`[plugin-host] releasing the activation lease of "${slug}" failed:`, e);
+      }
     }
   }
 }

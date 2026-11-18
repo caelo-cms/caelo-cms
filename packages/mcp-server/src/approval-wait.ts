@@ -95,7 +95,17 @@ export async function waitForApproval(deps: WaitDeps): Promise<ApprovalOutcome> 
   });
 }
 
-/** The text the agent reads for an outcome — always names its next step. */
+/**
+ * The text the agent reads for an outcome — always names its next step.
+ *
+ * #1591 — an applied outcome says WHERE it took effect only through
+ * `detail`, which the admin writes per kind: an approved Publish live says
+ * which build it put live, Go live now which rules. The approval itself
+ * claims no place: approved proposals act in very different places (the
+ * live site, an account, the authoring state the next Stage builds), and a
+ * fixed "in effect on the draft" told an agent that a Publish live it just
+ * got approved was still unpublished.
+ */
 export function describeApprovalOutcome(o: ApprovalOutcome): string {
   const what = `proposal ${o.proposalId} (${o.toolName}${o.summary ? `: ${o.summary}` : ""})`;
   const detail = o.detail ? ` Detail: ${o.detail}` : "";
@@ -107,7 +117,7 @@ export function describeApprovalOutcome(o: ApprovalOutcome): string {
         `work that does not depend on it. Do not re-propose it.`
       );
     case "applied":
-      return `APPROVED and applied: the operator approved ${what}; it is now in effect on the draft. Continue your work with it.${detail}`;
+      return `APPROVED and applied: the operator approved ${what}. Continue your work with it.${detail}`;
     case "failed":
       return `APPROVED but applying it failed: ${what}.${detail} Tell the operator; fix the cause before proposing again.`;
     case "rejected":

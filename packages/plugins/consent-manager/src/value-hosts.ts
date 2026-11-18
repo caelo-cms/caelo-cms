@@ -135,6 +135,42 @@ export async function refreshValueHosts(
   return { moduleIds, changed };
 }
 
+/** Per module, the hosts of its instances' values under the keys its markup loads. */
+export type ValueHostsOf = (
+  keysOf: ReadonlyMap<string, readonly string[]>,
+) => Promise<Map<string, Set<string>>>;
+
+/**
+ * #1625 — {@link valueHostsOfModules} computed from the instances
+ * themselves, as the caller's scope shows them, storing nothing. For a
+ * branch before main filled the stored rows (guards.ts
+ * `rejudgeUnfilledOnBranch`); it reads every instance of the modules.
+ */
+export async function valueHostsFromInstances(
+  ctx: PluginContextTier1,
+  keysOf: ReadonlyMap<string, readonly string[]>,
+): Promise<Map<string, Set<string>>> {
+  const cms = cmsOf(ctx);
+  const out = new Map<string, Set<string>>();
+  const loading = [...keysOf].filter(([, keys]) => keys.length > 0).map(([id]) => id);
+  for (let i = 0; i < loading.length; i += PAGE) {
+    const r = await cms.call<{ instances: { moduleId: string; values: unknown }[] }>(
+      "content_instances.list",
+      { moduleIds: loading.slice(i, i + PAGE) },
+    );
+    for (const inst of r.instances) {
+      const keys = keysOf.get(inst.moduleId) ?? [];
+      for (const [key, hosts] of valueHostsByKey(inst.values ?? {})) {
+        if (!keys.includes(key)) continue;
+        const set = out.get(inst.moduleId) ?? new Set<string>();
+        for (const host of hosts) set.add(host);
+        out.set(inst.moduleId, set);
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Per module, the stored hosts of its instances' values under `keysOf`
  * (the keys the module's markup loads).

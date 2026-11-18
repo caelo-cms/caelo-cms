@@ -152,6 +152,13 @@ const promoteInput = z.object({
    */
   publishAnyway: publishAnywaySchema.optional(),
   /**
+   * The staged run the Publish live review showed (`deploy.publish_preview`).
+   * When staging was rebuilt since, the newest staged run is another build
+   * the operator did not see, and the Publish live is refused instead of
+   * shipping it. Omitted: the newest staged run, whatever it is.
+   */
+  stagedRunId: z.string().uuid().optional(),
+  /**
    * #1550 — the Staged redirect changes the Publish live confirmation
    * listed as going live (`redirects.release_plan`), by id and revision:
    * exactly these go live, minus any whose target the build does not
@@ -210,7 +217,18 @@ const promotePlan = z.object({
 });
 type PromotePlan = z.infer<typeof promotePlan>;
 
+/**
+ * A Publish live that said no on purpose: nothing staged, a closed quality
+ * gate, a plugin that does not run, a busy live release. #1591 — marked a
+ * refusal (#1091), so every surface shows the reason as the caller's next
+ * step (Settings → Deployments answers 409) instead of a server fault.
+ */
 function refused(message: string): Result<never, QueryError> {
+  return err({ kind: "HandlerError", operation: "deploy.promote", message, refusal: true });
+}
+
+/** A Publish live that broke: the hosting, the publisher or the recording failed. */
+function failed(message: string): Result<never, QueryError> {
   return err({ kind: "HandlerError", operation: "deploy.promote", message });
 }
 
@@ -263,6 +281,11 @@ export const startPromoteOp = defineOperation({
       // §11): name the next step instead of just the diagnosis.
       return refused(
         `no succeeded build to promote from '${from.name}' — run Stage first (deploy.trigger targetName=${from.name}); Publish live only copies an already-staged build`,
+      );
+    }
+    if (input.stagedRunId !== undefined && input.stagedRunId !== fromRow.id) {
+      return refused(
+        "Nothing was published: staging was rebuilt after the Publish live review was opened, so the build going live is not the one it showed. Open Publish live again to review the new build.",
       );
     }
     // #1330 — a copy goes live as it is: a build an older release staged for
@@ -562,11 +585,13 @@ async function runPromote(
   // #1008 — the plugin gate decides on what runs here; reconciled first,
   // outside any transaction (plugin-problems.ts).
   const unreconciled = await reconcilePluginsForBuild();
-  if (unreconciled !== null) return refused(unreconciled);
+  // The plugin check itself broke: a fault of this server, not a refusal.
+  if (unreconciled !== null) return failed(unreconciled);
   const started = await execute(registry, adapter, ctx, "deploy.start_promote", {
     fromTarget: input.fromTarget,
     toTarget: input.toTarget,
     ...(input.publishAnyway ? { publishAnyway: input.publishAnyway } : {}),
+    ...(input.stagedRunId ? { stagedRunId: input.stagedRunId } : {}),
     runId,
     leaseTtlMs: ttlMs,
   });
@@ -607,7 +632,7 @@ async function runPromote(
     // Unrecorded, the run's lease lapses and the next run marks it failed.
     if (!r.ok) console.error("[deploy] could not record the failed run", { runId, error: r.error });
     logRunTimings("publish-live", runId, timer, { status: "failed" }, { message: stored, refusal });
-    return refused(reply);
+    return refusal ? refused(reply) : failed(reply);
   };
   /** Proof, right before an irreversible provider step, that every lease is still this run's. */
   const fence = () =>

@@ -100,7 +100,6 @@ import {
   listBranchEditedEntitiesOp,
   listBranchEditedModulesOp,
   listChatSessionsOp,
-  listOpenChatsWithPendingOp,
   renameChatSessionOp,
   resolveChatSessionOp,
   setChatExtendedThinkingOp,
@@ -255,6 +254,7 @@ import {
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
 import { finishPromoteOp, recheckPublishAnywayOp, startPromoteOp } from "./ops/deploy-promote.js";
+import { publishPreviewOp } from "./ops/deploy-publish-preview.js";
 import { finishRollbackOp, rollbackDeployOp, startRollbackOp } from "./ops/deploy-rollback.js";
 import {
   acquireLiveReleaseOp,
@@ -1131,7 +1131,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mcpSendChatOp);
   registry.register(mcpAuthorizeUploadOp);
   registry.register(mcpGetVersionOp);
-  // Issue #376 — Power-MCP: admin-scoped tokens drive the chat-runner
+  // Issue #376 — Power-MCP: tokens of scope `power` drive the chat-runner
   // tool catalogue directly (external agent owns the loop). See
   // ops/security/mcp_power.ts for the invariants.
   registry.register(mcpListToolsOp);
@@ -1177,6 +1177,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getDeployRunOp);
   // #1288 — where the Stage runs stand, with an estimate of the time left.
   registry.register(stageStatusOp);
+  // What the next Publish live changes for visitors (its review in Live Edit).
+  registry.register(publishPreviewOp);
   registry.register(promoteDeployOp);
   // #1225 — deploy.promote's steps: it holds no transaction while it
   // rebuilds and uploads; the live-release lease orders it with rollback,
@@ -1542,8 +1544,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(countBranchChangesOp);
   // v0.5.8 — per-page chat gate companion: list pages with an open chat.
   registry.register(listActivePagesOp);
-  // v0.8.0 — cross-chat awareness banner data for the /edit toolbar.
-  registry.register(listOpenChatsWithPendingOp);
   // #1268 — rebuild the draft head from the snapshot history (repair).
   registry.register(rebuildDraftHeadOp);
   // v0.5.20 — per-chat completion view (powers /content/chat/[id]/summary).

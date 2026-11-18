@@ -11,7 +11,8 @@
  *                    capture job on Google Cloud, the one shared browser on
  *                    a self-hosted admin); its screenshot stays in the
  *                    admin, the job gets the HTML and the style samples
- *   batch            extracted pages and their captures
+ *   batch            extracted pages and their captures; the run's counts
+ *                    move with it (#1590)
  *   checkpoint       the frontier, so a killed job resumes
  *   capture-targets  the pages still without a screenshot (the second pass)
  *   page-capture     one such page's screenshot key and design tokens
@@ -138,6 +139,13 @@ export const batchReportSchema = z
       .max(500),
     /** Pages with a stored screenshot but no style samples: each gets a loud note. */
     tokenlessCapturedUrls: z.array(url).max(500),
+    /**
+     * #1590 — the URLs the crawl has taken so far, so the run shows its
+     * progress while it crawls. The admin keeps the highest count it was
+     * told, never below the pages it wrote; the pages extracted it counts
+     * itself from the rows each batch adds.
+     */
+    pagesSeen: z.number().int().min(0).max(1_000_000),
   })
   .strict();
 
@@ -163,10 +171,13 @@ const urlWithReason = z
   .object({ url: z.string().max(4000), reason: z.string().max(2000) })
   .strict();
 
+/**
+ * The crawl's end. No page count: the admin counts the pages it wrote
+ * (#1590), so a report can neither inflate nor rewind it.
+ */
 export const finishReportSchema = z
   .object({
     pagesSeen: z.number().int().min(0).max(1_000_000),
-    pagesExtracted: z.number().int().min(0).max(100_000),
     errors: z.array(urlWithReason).max(50_000),
     skipped: z.array(urlWithReason).max(1000),
     skippedOutOfScope: z.number().int().min(0).max(10_000_000),

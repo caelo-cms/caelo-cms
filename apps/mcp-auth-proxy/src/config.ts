@@ -25,6 +25,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { MCP_ADDRESS_NAMES, type McpAddressName } from "@caelo-cms/shared";
 import { z } from "zod";
 import { json } from "./http.js";
 
@@ -40,9 +41,19 @@ export const MCP_ENV = {
   clientFile: "CAELO_OPERATOR_OAUTH_CLIENT_FILE",
 } as const;
 
-/** The two MCP surfaces the proxy exposes. */
-export const MCP_SURFACES = ["chat", "admin"] as const;
-export type McpSurface = (typeof MCP_SURFACES)[number];
+/**
+ * The addresses the proxy answers under `/api/mcp/`: the two MCP surfaces
+ * (`chat`, `power`) and `admin`, the Power surface's address before #1636.
+ * A connector added back then still has that URL and holds tokens sealed
+ * for it (RFC 8707), so it stays a resource of its own: same checks, its own
+ * metadata, forwarded to the admin's route of the same name. Removed with
+ * 1.0 (#1638).
+ */
+export const MCP_ADDRESSES = MCP_ADDRESS_NAMES;
+export type McpAddress = McpAddressName;
+
+/** `chat|power|admin`, for the path patterns of routes.ts and metadata.ts. */
+export const MCP_ADDRESS_ALTERNATION = MCP_ADDRESSES.join("|");
 
 /** The Google OAuth client the Owner configured. */
 export interface GoogleClient {

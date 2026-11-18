@@ -244,7 +244,14 @@ export const siteImportJobKind: ReportingJobKindDef = {
         for (const c of input.captures) assertRunKey(runId, c.screenshotObjectKey);
         const now = await op<{ crawling: boolean }>(deps, "imports.is_crawling", { runId });
         if (!now.crawling) throw new ActionRefusal("the run is not crawling any more");
-        await op(deps, "imports.write_extracted_pages", { runId, pages: input.pages });
+        // #1590 — the run's counts move in the same write as its pages: the
+        // pages it added (the admin's own count) and the job's seen count,
+        // which only ever raises the run's.
+        await op(deps, "imports.write_extracted_pages", {
+          runId,
+          pages: input.pages,
+          pagesSeen: input.pagesSeen,
+        });
         try {
           await recordBatchCaptures({
             runId,
@@ -322,7 +329,6 @@ export const siteImportJobKind: ReportingJobKindDef = {
         const r = await op<{ finished: boolean }>(deps, "imports.finish_crawl", {
           runId,
           pagesSeen: input.pagesSeen,
-          pagesExtracted: input.pagesExtracted,
           report: {
             errors: input.errors,
             skipped: input.skipped,

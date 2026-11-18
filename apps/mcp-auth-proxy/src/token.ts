@@ -26,7 +26,7 @@ import { readBodyWithCap } from "@caelo-cms/shared";
 import { z } from "zod";
 import { MAX_CLIENT_KEY_LENGTH, sealAccessToken } from "./access-token.js";
 import { CodeSealSchema } from "./authorize.js";
-import { type McpContext, resourceUrls } from "./context.js";
+import { INVALID_RESOURCE_MESSAGE, type McpContext, resourceUrls } from "./context.js";
 import { exchangeGoogleCode, type GoogleTokenResult, refreshGoogleToken } from "./google.js";
 import { json, oauthError } from "./http.js";
 import { clientKeyOf } from "./registration.js";
@@ -198,10 +198,7 @@ export async function handleToken(req: Request, ctx: McpContext): Promise<Respon
   }
   const r = parsed.data;
   if (r.resource !== undefined && !resourceUrls(ctx.config).includes(r.resource)) {
-    return oauthError(
-      "invalid_target",
-      "resource must be this site's /api/mcp/chat or /api/mcp/admin URL",
-    );
+    return oauthError("invalid_target", INVALID_RESOURCE_MESSAGE);
   }
   const now = ctx.nowSeconds();
 

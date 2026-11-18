@@ -64,7 +64,7 @@ describe("remoteMcpAvailability", () => {
       status: "available",
       mcpPublicUrl: PUBLIC,
       signInSettingsPath: "/settings/google-sign-in",
-      urls: { chat: `${PUBLIC}/api/mcp/chat`, admin: `${PUBLIC}/api/mcp/admin` },
+      urls: { chat: `${PUBLIC}/api/mcp/chat`, power: `${PUBLIC}/api/mcp/power` },
     });
   });
 });

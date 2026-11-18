@@ -12,7 +12,7 @@ import { attachTestProviderHeader, clearTestProvider, registerTestProvider } fro
 const base = `http://localhost:${process.env.CAELO_E2E_PORT ?? "4173"}`;
 const fixture = `chat-image-upload-${Date.now()}`;
 
-function mintToken(scope: "chat" | "admin"): { id: string; plaintextToken: string } {
+function mintToken(scope: "chat" | "power"): { id: string; plaintextToken: string } {
   const result = spawnSync(
     "bun",
     [
@@ -191,14 +191,14 @@ test("real MCP stdio clients upload images with both token scopes and return usa
   })
     .png()
     .toBuffer();
-  for (const mode of ["chat", "admin"] as const) {
+  for (const mode of ["chat", "power"] as const) {
     const token = mintToken(mode);
     const client = new Client({ name: "upload-e2e", version: "1" });
     const transport = new StdioClientTransport({
       command: "bun",
       args: [
         resolve("../../packages/mcp-server/src/index.ts"),
-        ...(mode === "admin" ? ["admin"] : []),
+        ...(mode === "power" ? ["power"] : []),
       ],
       env: {
         ...Object.fromEntries(

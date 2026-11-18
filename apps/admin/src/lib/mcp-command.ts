@@ -9,7 +9,7 @@
  * renders that spec — so a change to the launch line (a new env var, a
  * different binary) reaches every client at once.
  *
- * Admin-scoped tokens wire the Power-MCP binary (full tool catalogue,
+ * Tokens of scope `power` wire the Power-MCP binary (full tool catalogue,
  * external agent drives the loop); chat tokens wire the caelo_chat shim.
  *
  * On IAP-protected installs (gcp / gcp-firebase) the admin knows its MCP
@@ -26,8 +26,10 @@
  * a dist-tag makes bunx resolve against the registry on every start.
  */
 
+import { MCP_POWER_BIN, type McpSurfaceName } from "@caelo-cms/shared";
+
 export interface McpCommandArgs {
-  scope: string;
+  scope: McpSurfaceName;
   adminUrl: string;
   token: string;
   iapServiceAccount: string | null;
@@ -46,11 +48,11 @@ const PKG = "@caelo-cms/mcp-server@latest";
 
 /** Name, launch line and env of the MCP server for one minted token. */
 export function mcpServerSpec(args: McpCommandArgs): McpServerSpec {
-  const admin = args.scope === "admin";
+  const power = args.scope === "power";
   return {
-    name: admin ? "caelo-admin" : "caelo",
+    name: power ? "caelo-power" : "caelo",
     command: "bunx",
-    args: admin ? ["--package", PKG, "caelo-admin-mcp"] : [PKG],
+    args: power ? ["--package", PKG, MCP_POWER_BIN] : [PKG],
     env: {
       CAELO_ADMIN_URL: args.adminUrl,
       CAELO_MCP_TOKEN: args.token,
@@ -112,21 +114,21 @@ export function mcpConfigJson(format: "mcpServers" | "vscode", args: McpCommandA
 /** One remote MCP surface: the URL a client connects to and the name it is listed under. */
 export interface RemoteMcpServer {
   /**
-   * `caelo-<site>` (caelo_chat) or `caelo-<site>-admin` (Power-MCP): the
+   * `caelo-<site>` (caelo_chat) or `caelo-<site>-power` (Power-MCP): the
    * site in the name keeps two Caelo sites apart in one client's config
    * (#968), where a fixed `caelo` would make the second overwrite the first.
    */
   name: string;
-  /** `<public origin>/api/mcp/chat` or `/api/mcp/admin`. */
+  /** `<public origin>/api/mcp/chat` or `/api/mcp/power`. */
   url: string;
 }
 
 /**
  * The remote server for `surface` on the site at `siteHost`
- * (`viu.one` → `caelo-viu-one`, `caelo-viu-one-admin`).
+ * (`viu.one` → `caelo-viu-one`, `caelo-viu-one-power`).
  */
 export function remoteMcpServer(
-  surface: "chat" | "admin",
+  surface: McpSurfaceName,
   url: string,
   siteHost: string,
 ): RemoteMcpServer {
@@ -135,7 +137,7 @@ export function remoteMcpServer(
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   const base = `caelo-${site}`;
-  return { name: surface === "admin" ? `${base}-admin` : base, url };
+  return { name: surface === "power" ? `${base}-power` : base, url };
 }
 
 /**
@@ -148,6 +150,33 @@ export function remoteMcpAddCommand(cli: "claude" | "codex", server: RemoteMcpSe
   return cli === "claude"
     ? `claude mcp add --transport http ${server.name} ${shellWord(server.url)}`
     : `codex mcp add ${server.name} --url ${shellWord(server.url)}\ncodex mcp login ${server.name}`;
+}
+
+/**
+ * The Claude Code plugin that connects by URL (integrations/claude-code,
+ * #1637): the marketplace it installs from, its install id, and the option
+ * that takes the site's Power-MCP URL. `scripts/claude-plugin.test.ts`
+ * holds these against the plugin's manifest and the marketplace file.
+ */
+export const CLAUDE_PLUGIN = {
+  marketplace: "caelo-cms/caelo-cms",
+  id: "caelo@caelo-cms",
+  /** The plugin's MCP server, as `/mcp` lists it. */
+  server: "caelo",
+  urlOption: "mcp_url",
+} as const;
+
+/**
+ * Terminal install of the Caelo plugin for Claude Code with the site's
+ * Power-MCP URL already set; `/mcp` → Authenticate signs in afterwards.
+ * The plugin brings skills on top of the connection, so this comes before
+ * the bare `claude mcp add` for the Power surface.
+ */
+export function claudePluginInstallCommands(powerUrl: string): string {
+  return [
+    `claude plugin marketplace add ${CLAUDE_PLUGIN.marketplace}`,
+    `claude plugin install ${CLAUDE_PLUGIN.id} --config ${shellWord(`${CLAUDE_PLUGIN.urlOption}=${powerUrl}`)}`,
+  ].join("\n");
 }
 
 /**

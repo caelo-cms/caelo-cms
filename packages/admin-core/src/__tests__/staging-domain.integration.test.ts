@@ -1489,7 +1489,7 @@ describe("cms-provision staging-domain enable → staging_access.provision (#678
       const human: ExecutionContext = { actorId, actorKind: "human", requestId: "mcp-reveal" };
       const minted = await execute(registry, adapter, human, "mcp_tokens.create", {
         displayName: `staging-reveal-${actorId.slice(-2)}`,
-        scope: "admin",
+        scope: "power",
       });
       if (!minted.ok) throw new Error(JSON.stringify(minted.error));
       const token = (minted.value as { plaintextToken: string }).plaintextToken;

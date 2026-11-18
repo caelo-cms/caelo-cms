@@ -15,7 +15,7 @@
  *
  * Routes (all under the public origin `CAELO_MCP_PUBLIC_URL`):
  *
- *   GET|POST|DELETE /api/mcp/{chat,admin}                     proxy.ts
+ *   GET|POST|DELETE /api/mcp/{chat,power,admin}               proxy.ts
  *   GET  /.well-known/oauth-protected-resource/api/mcp/{s}     metadata.ts
  *   GET  /api/mcp/oauth/protected-resource/{s}                 metadata.ts
  *   GET  (two AS-metadata variants)                            metadata.ts
@@ -29,8 +29,9 @@
 
 import { handleAuthorize, handleAuthorizeDecision, handleGoogleCallback } from "./authorize.js";
 import {
+  MCP_ADDRESS_ALTERNATION,
+  type McpAddress,
   McpConfigLoader,
-  type McpSurface,
   notConfiguredResponse,
   type ReadTextFile,
 } from "./config.js";
@@ -39,8 +40,8 @@ import { corsPreflight, fixedNotFound, json } from "./http.js";
 import {
   AS_METADATA_PATHS,
   authorizationServerMetadata,
+  protectedResourceAddress,
   protectedResourceMetadata,
-  protectedResourceSurface,
 } from "./metadata.js";
 import { handleMcpProxy, PROXY_LIMITS } from "./proxy.js";
 import {
@@ -80,7 +81,7 @@ export interface McpRequestHooks {
 export type McpRouter = (req: Request, hooks: McpRequestHooks) => Promise<Response | null>;
 
 const OAUTH_PREFIX = "/api/mcp/oauth/";
-const MCP_ENDPOINT = /^\/api\/mcp\/(chat|admin)$/;
+const MCP_ENDPOINT = new RegExp(`^/api/mcp/(${MCP_ADDRESS_ALTERNATION})$`);
 
 /** True when `pathname` belongs to remote MCP. */
 export function isMcpPath(pathname: string): boolean {
@@ -165,15 +166,15 @@ export function createMcpRouter(deps: McpRouterDeps = {}): McpRouter {
 
     const endpoint = MCP_ENDPOINT.exec(pathname);
     if (endpoint) {
-      return handleMcpProxy(req, ctx, endpoint[1] as McpSurface, {
+      return handleMcpProxy(req, ctx, endpoint[1] as McpAddress, {
         setIdleTimeout: hooks.setIdleTimeout,
       });
     }
 
-    const prSurface = protectedResourceSurface(pathname);
-    if (prSurface) {
+    const prAddress = protectedResourceAddress(pathname);
+    if (prAddress) {
       return req.method === "GET"
-        ? protectedResourceMetadata(ctx.config, prSurface)
+        ? protectedResourceMetadata(ctx.config, prAddress)
         : methodNotAllowed("GET");
     }
     if (AS_METADATA_PATHS.includes(pathname)) {

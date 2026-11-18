@@ -8,11 +8,55 @@
  * cycle. See mcp_principal.ts for how a credential resolves.
  */
 
+import { textArray } from "@caelo-cms/query-api";
+import {
+  MCP_ADDRESS_NAMES,
+  MCP_SURFACE_NAMES,
+  type McpSurfaceName,
+  mcpSurfaceOf,
+  storedMcpSurfaceValues,
+} from "@caelo-cms/shared";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 
-/** A remote MCP surface: `chat` (caelo_chat) or `admin` (Power-MCP). */
-export const mcpRemoteSurface = z.enum(["chat", "admin"]);
+/** An MCP surface: `chat` (caelo_chat) or `power` (Power-MCP). */
+export const mcpRemoteSurface = z.enum(MCP_SURFACE_NAMES);
 export type McpRemoteSurface = z.infer<typeof mcpRemoteSurface>;
+
+/**
+ * A surface as a row stores it (`mcp_tokens.scope`,
+ * `mcp_remote_connections.surface`): rows from before #1636 say `admin` for
+ * the Power surface. Everything written since says `power`; reads take both
+ * through {@link mcpSurfaceFromStored} and {@link storedSurfaceIs}, so no
+ * row had to be rewritten under a running release. The old spelling goes
+ * with 1.0 (#1638).
+ */
+const storedMcpSurface = z.enum(MCP_ADDRESS_NAMES).transform(mcpSurfaceOf);
+
+/** The surface a stored value names; throws on a value no release ever wrote. */
+export function mcpSurfaceFromStored(stored: string): McpSurfaceName {
+  return storedMcpSurface.parse(stored);
+}
+
+/**
+ * The surface of a payload that never passed the op's Zod schema again (an
+ * approval card queued before #1636 holds `scope: "admin"`).
+ */
+export function mcpSurfaceFromPayload(value: string | undefined): McpSurfaceName {
+  return value === undefined ? "chat" : mcpSurfaceFromStored(value);
+}
+
+/**
+ * SQL: `column` holds `surface`, in either spelling. A plain equality for
+ * `chat`; for the Power surface one array parameter with its two spellings.
+ * Both are served by the unique index on (actor_id, surface, client_key).
+ */
+export function storedSurfaceIs(column: SQL, surface: McpSurfaceName): SQL {
+  const values = storedMcpSurfaceValues(surface);
+  return values.length === 1
+    ? sql`${column} = ${surface}`
+    : sql`${column} = ANY(${textArray(values)})`;
+}
 
 /**
  * The header the MCP-Auth-Proxy names the client app in (URI-encoded;

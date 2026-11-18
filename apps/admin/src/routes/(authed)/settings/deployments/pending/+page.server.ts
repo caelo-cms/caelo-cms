@@ -61,10 +61,9 @@ export const actions: Actions = {
           : "approve failed";
       return fail(400, { error: message });
     }
-    const v = r.value as { runId: string | null; warning?: string };
-    const applied = v.runId
-      ? `Proposal applied. Deploy run ${v.runId.slice(0, 8)}… in flight.`
-      : "Proposal applied.";
+    // #1591 — the build finished before this answer: say which build went where.
+    const v = r.value as { effect: string; warning?: string };
+    const applied = `Approved. ${v.effect}`;
     return {
       ok: true,
       message: v.warning ? `${applied} ${v.warning}` : applied,

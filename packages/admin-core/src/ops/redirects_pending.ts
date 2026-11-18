@@ -451,9 +451,33 @@ const executeDefinition = defineOperation({
         owner: await ownerOfContext(tx, ctx, "redirects.execute_proposal"),
       },
     );
+    const changes = written.flatMap((o) =>
+      o.outcome === "pending" && o.changeId !== null && o.revision !== null
+        ? [{ fromPath: o.fromPath, id: o.changeId, revision: o.revision }]
+        : [],
+    );
+    const alreadyLive = written.filter((o) => o.outcome === "unchanged").map((o) => o.fromPath);
+    const alreadyLiveNote =
+      alreadyLive.length > 0 ? ` Already live as it is: ${alreadyLive.join(", ")}.` : "";
+    const saved =
+      changes.length === 0
+        ? "Already live as it is: nothing changed."
+        : `${
+            payload.goLive === "now"
+              ? "Saved; it goes live on the hosting now (Go live now)."
+              : "Saved Staged: staging serves it at once, the live site with the next Publish live."
+          }${alreadyLiveNote}`;
+    // #1591 — what the approval did, for the agent that asked (handed back
+    // through mcp_approval_handoffs). "Now" acts on the live site: the caller
+    // runs Go live now right after this commit, so it never reads as Staged.
+    const appliedEffect =
+      changes.length === 0 || payload.goLive !== "now"
+        ? saved
+        : `Saved and approved to go live now, without a Publish live: Go live now puts ${changes.map((c) => c.fromPath).join(", ")} live on the hosting right after the approval (find_redirects shows each rule's state).${alreadyLiveNote}`;
     await tx.execute(sql`
       UPDATE redirect_pending_actions
-      SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
+      SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid,
+          preview = preview || jsonb_build_object('appliedEffect', ${appliedEffect}::text)
       WHERE id = ${input.proposalId}::uuid
     `);
     const fromPaths = payload.redirects.map((r) => r.fromPath);
@@ -471,20 +495,6 @@ const executeDefinition = defineOperation({
         ),
     });
     const conflicts = await pageConflicts(ctx, tx, payload);
-    const changes = written.flatMap((o) =>
-      o.outcome === "pending" && o.changeId !== null && o.revision !== null
-        ? [{ fromPath: o.fromPath, id: o.changeId, revision: o.revision }]
-        : [],
-    );
-    const alreadyLive = written.filter((o) => o.outcome === "unchanged").map((o) => o.fromPath);
-    const saved =
-      changes.length === 0
-        ? "Already live as it is: nothing changed."
-        : `${
-            payload.goLive === "now"
-              ? "Saved; it goes live on the hosting now (Go live now)."
-              : "Saved Staged: staging serves it at once, the live site with the next Publish live."
-          }${alreadyLive.length > 0 ? ` Already live as it is: ${alreadyLive.join(", ")}.` : ""}`;
     return ok({
       fromPaths,
       goLive: payload.goLive,

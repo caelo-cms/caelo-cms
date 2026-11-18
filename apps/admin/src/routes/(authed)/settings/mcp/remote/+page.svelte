@@ -154,15 +154,15 @@
             {CHAT_SURFACE_NEEDS_INSTALL_AI}
           </p>
         {/if}
-        {#if data.siteHost && (data.mayUse.chat || data.mayUse.admin)}
+        {#if data.siteHost && (data.mayUse.chat || data.mayUse.power)}
           <RemoteMcpClientSetup urls={a.urls} siteHost={data.siteHost} mayUse={data.mayUse} />
         {:else if data.aiMode === "mcp_only"}
           <p class="text-sm" data-testid="remote-mcp-no-surface">
-            Your role may not use full admin access; ask an Owner under Settings → Users.
+            Your role may not connect AI tools; ask an Owner under Settings → Users.
           </p>
         {:else}
           <p class="text-sm" data-testid="remote-mcp-no-surface">
-            Your role may not use remote MCP. Chatting with the site's AI needs content.write; ask an
+            Your role may not use remote MCP. Connecting an AI tool needs content.write; ask an
             Owner under Settings → Users.
           </p>
         {/if}

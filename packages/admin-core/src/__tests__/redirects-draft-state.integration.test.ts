@@ -623,11 +623,17 @@ describe("Go live now (#1550)", () => {
     const status = await asSystem(
       ADMIN_URL as string,
       async (tx) =>
-        (await tx`SELECT status FROM redirect_pending_actions WHERE id = ${proposalId}::uuid`) as {
+        (await tx`SELECT status, preview->>'appliedEffect' AS effect
+                  FROM redirect_pending_actions WHERE id = ${proposalId}::uuid`) as {
           status: string;
+          effect: string | null;
         }[],
     );
     expect(status[0]?.status).toBe("applied");
+    // #1591 — what an external agent that asked is told: live, never Staged or draft.
+    expect(status[0]?.effect).toBe(
+      `Live now without a Publish live (Go live now): ${P}-ai → /t1550-live (301). The hosting is updated right after this approval; a failed push is retried automatically.`,
+    );
   });
 
   it("an approval puts live the change its card showed: a change saved since refuses it", async () => {
@@ -742,6 +748,19 @@ describe("Go live now (#1550)", () => {
     expect(saved.fromPaths).toEqual([`${P}-ext-same`, `${P}-ext-new`]);
     expect(saved.changes.map((c) => c.fromPath)).toEqual([`${P}-ext-new`]);
     expect(saved.nextStep).toContain(`Already live as it is: ${P}-ext-same`);
+    // #1591 — what an external agent that asked is told: going live now, not Staged.
+    const effect = await asSystem(
+      ADMIN_URL as string,
+      async (tx) =>
+        (await tx`SELECT preview->>'appliedEffect' AS effect
+                  FROM redirect_pending_actions WHERE id = ${proposalId}::uuid`) as {
+          effect: string | null;
+        }[],
+    );
+    expect(effect[0]?.effect).toBe(
+      `Saved and approved to go live now, without a Publish live: Go live now puts ${P}-ext-new live on the hosting right after the approval (find_redirects shows each rule's state). Already live as it is: ${P}-ext-same.`,
+    );
+    expect(effect[0]?.effect).not.toMatch(/Staged|draft/i);
     // Every proposed path would refuse the whole batch: one has nothing pending.
     const refs = saved.changes.map(({ id, revision }) => ({ id, revision }));
     expect(

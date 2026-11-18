@@ -51,7 +51,7 @@ export type RemoteMcpAvailability =
       /** Where the sign-in client is set up (Settings → Google sign-in). */
       readonly signInSettingsPath: string;
       /** The two MCP endpoints the Owner hands to clients. */
-      readonly urls: { readonly chat: string; readonly admin: string };
+      readonly urls: { readonly chat: string; readonly power: string };
     };
 
 /** Whether this install can offer remote MCP, from the admin's env. */
@@ -80,7 +80,7 @@ export function remoteMcpAvailability(env: RemoteMcpEnv): RemoteMcpAvailability 
     status: "available",
     mcpPublicUrl: publicUrl,
     signInSettingsPath: GOOGLE_SIGN_IN_SETTINGS_PATH,
-    urls: { chat: `${publicUrl}/api/mcp/chat`, admin: `${publicUrl}/api/mcp/admin` },
+    urls: { chat: `${publicUrl}/api/mcp/chat`, power: `${publicUrl}/api/mcp/power` },
   };
 }
 

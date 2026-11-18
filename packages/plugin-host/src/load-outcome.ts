@@ -25,6 +25,7 @@ import { sql } from "drizzle-orm";
 import type { PluginHostInfra } from "./dispatch.js";
 import { deregisterPlugin } from "./lifecycle.js";
 import { describeLoadError } from "./load-error.js";
+import { describeLoadTiming, timedStep, withLoadTiming } from "./load-timing.js";
 import { noteLocalLoadOutcome } from "./local-availability.js";
 import {
   classifyPluginError,
@@ -56,11 +57,23 @@ export async function loadReported<T>(
   isLoaded: (outcome: T) => boolean,
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
+    const started = performance.now();
     try {
-      const outcome = await load();
+      const { value: outcome, steps } = await withLoadTiming(async () => {
+        const outcome = await load();
+        if (isLoaded(outcome)) {
+          noteLocalLoadOutcome(subject.slug, true, null);
+          await timedStep("runtime record", () =>
+            recordPluginRuntime({ ...subject, state: "loaded", errorId: null }),
+          );
+        }
+        return outcome;
+      });
+      // #1633 — one line per load, so a slow start names its step.
       if (isLoaded(outcome)) {
-        noteLocalLoadOutcome(subject.slug, true, null);
-        await recordPluginRuntime({ ...subject, state: "loaded", errorId: null });
+        console.log(
+          `[plugin-host] ${describeLoadTiming(subject.slug, performance.now() - started, steps)}`,
+        );
       }
       return outcome;
     } catch (error) {

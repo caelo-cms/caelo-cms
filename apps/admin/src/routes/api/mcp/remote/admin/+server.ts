@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #806 — remote MCP Streamable HTTP endpoint, admin surface (Power-MCP).
- * Reached through Google IAP with the user's own Google identity (the
- * MCP-Auth-Proxy's OAuth broker forwards the client's bearer); authentication,
- * the MCP server and the transport live in #lib/server/mcp-remote.ts.
- * No cookie session and no CSRF check: the IAP assertion IS the auth.
+ * The Power surface under its address from before #1636. The MCP-Auth-Proxy
+ * forwards `/api/mcp/admin`, the URL of every connector added until then,
+ * to this route, so those connectors keep working without being re-added.
+ * It is the same endpoint as `../power`; the request is only marked, so
+ * Settings → MCP can show the Owner which apps still come this way before
+ * the address goes with 1.0 (#1638).
  */
 
 import { handleRemoteMcpRequest } from "#lib/server/mcp-remote.js";
 import type { RequestHandler } from "./$types";
 
-export const POST: RequestHandler = ({ request }) => handleRemoteMcpRequest(request, "admin");
-export const GET: RequestHandler = ({ request }) => handleRemoteMcpRequest(request, "admin");
-export const DELETE: RequestHandler = ({ request }) => handleRemoteMcpRequest(request, "admin");
+const LEGACY = { legacyAddress: true } as const;
+
+export const POST: RequestHandler = ({ request }) =>
+  handleRemoteMcpRequest(request, "power", LEGACY);
+export const GET: RequestHandler = ({ request }) =>
+  handleRemoteMcpRequest(request, "power", LEGACY);
+export const DELETE: RequestHandler = ({ request }) =>
+  handleRemoteMcpRequest(request, "power", LEGACY);

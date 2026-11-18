@@ -5,44 +5,52 @@ import { type RemoteMcpState, remoteAccessView } from "./mcp-remote-access.js";
 
 const ON: RemoteMcpState = {
   status: "on",
-  urls: { chat: "https://viu.one/api/mcp/chat", admin: "https://viu.one/api/mcp/admin" },
+  urls: { chat: "https://viu.one/api/mcp/chat", power: "https://viu.one/api/mcp/power" },
   siteHost: "viu.one",
 };
-const OWNER = { chat: true, admin: true };
-const EDITOR = { chat: true, admin: false };
+const MAY_WORK_THROUGH_AI = { chat: true, power: true };
+const NO_AI_KEY = { chat: false, power: true };
+const READ_ONLY = { chat: false, power: false };
 
 describe("remoteAccessView (#968)", () => {
-  it("never offers setup once remote MCP is on, and shows an Owner both addresses with their purpose", () => {
-    const v = remoteAccessView(ON, OWNER, true);
+  it("never offers setup once remote MCP is on, and shows both addresses with their purpose", () => {
+    const v = remoteAccessView(ON, MAY_WORK_THROUGH_AI, true);
     expect(v.setupHref).toBeNull();
     expect(v.surfaces.map((s) => [s.surface, s.url, s.connectorName])).toEqual([
       ["chat", "https://viu.one/api/mcp/chat", "Caelo viu.one (Chat)"],
-      ["admin", "https://viu.one/api/mcp/admin", "Caelo viu.one (Admin)"],
+      ["power", "https://viu.one/api/mcp/power", "Caelo viu.one (Power)"],
     ]);
     for (const s of v.surfaces) {
       expect(s.title.length).toBeGreaterThan(0);
       expect(s.does.length).toBeGreaterThan(0);
-      expect(s.who).toContain(s.surface === "admin" ? "settings.write" : "content.write");
+      // #1636 — one permission for working through an AI, on both addresses.
+      expect(s.who).toContain("content.write");
     }
-    expect(v.adminHint).toBeNull();
   });
 
-  it("shows an editor only the chat address, and says what admin access needs", () => {
-    const v = remoteAccessView(ON, EDITOR, false);
-    expect(v.surfaces.map((s) => s.surface)).toEqual(["chat"]);
-    expect(JSON.stringify(v)).not.toContain("/api/mcp/admin");
-    expect(v.adminHint).toContain("settings.write");
+  it("shows an editor the same two addresses as an Owner (#1636)", () => {
+    const owner = remoteAccessView(ON, MAY_WORK_THROUGH_AI, true);
+    const editor = remoteAccessView(ON, MAY_WORK_THROUGH_AI, false);
+    expect(editor.surfaces).toEqual(owner.surfaces);
+    // The old name is neither an address on offer nor in any text.
+    expect(JSON.stringify(editor)).not.toContain("admin");
+  });
+
+  it("shows only what the viewer may use: no chat address without an AI key, none for a read-only role", () => {
+    expect(remoteAccessView(ON, NO_AI_KEY, true).surfaces.map((s) => s.surface)).toEqual(["power"]);
+    expect(remoteAccessView(ON, READ_ONLY, false).surfaces).toEqual([]);
   });
 
   it("offers setup to an Owner only while remote MCP is off", () => {
     const off: RemoteMcpState = { status: "off", signInSettingsPath: "/settings/google-sign-in" };
-    expect(remoteAccessView(off, OWNER, true).setupHref).toBe("/settings/google-sign-in");
-    expect(remoteAccessView(off, EDITOR, false).setupHref).toBeNull();
+    expect(remoteAccessView(off, MAY_WORK_THROUGH_AI, true).setupHref).toBe(
+      "/settings/google-sign-in",
+    );
+    expect(remoteAccessView(off, MAY_WORK_THROUGH_AI, false).setupHref).toBeNull();
     const unavailable: RemoteMcpState = { status: "not-available", reason: "self-hosted" };
-    expect(remoteAccessView(unavailable, OWNER, true)).toEqual({
+    expect(remoteAccessView(unavailable, MAY_WORK_THROUGH_AI, true)).toEqual({
       setupHref: null,
       surfaces: [],
-      adminHint: null,
     });
   });
 });

@@ -43,7 +43,7 @@ describe("consent page", () => {
     const h = harness();
     const clientId = await registerClient(h, [CHATGPT_CALLBACK], "Totally Claude");
     const res = await h.send(
-      query(clientId, { redirect_uri: CHATGPT_CALLBACK, resource: `${PUBLIC}/api/mcp/admin` }),
+      query(clientId, { redirect_uri: CHATGPT_CALLBACK, resource: `${PUBLIC}/api/mcp/power` }),
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("location")).toBeNull();
@@ -56,8 +56,11 @@ describe("consent page", () => {
     expect(html).toContain("Totally Claude");
     expect(html).toContain("name not verified");
     // The surface in plain words, and which role it needs (#968).
-    expect(html).toContain("Full admin access");
-    expect(html).toContain("settings.write");
+    expect(html).toContain("Power-MCP: your AI tool does the work");
+    // #1636 — both surfaces need the one permission for working through an AI.
+    expect(html).toContain("content.write");
+    expect(html).not.toContain("settings.write");
+    expect(html).not.toContain("admin access");
     expect(html).not.toContain("accounts.google.com/o/oauth2");
     // Nothing left the proxy: no Google, no CIMD for a DCR client.
     expect(h.calls).toHaveLength(0);

@@ -300,7 +300,7 @@ function gatedTool(name: string): FilteredTool {
   return t as FilteredTool;
 }
 
-async function mintToken(scope: "chat" | "admin"): Promise<string> {
+async function mintToken(scope: "chat" | "power"): Promise<string> {
   const r = await execute(registry, adapter, OWNER, "mcp_tokens.create", {
     displayName: `t971-${scope}-${crypto.randomUUID().slice(0, 6)}`,
     scope,
@@ -327,7 +327,7 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
     await expectNoPasswordIn(resultParts, await passwordHashOf(address));
 
     // Power-MCP: queued over MCP, approved in the admin, outcome read back.
-    const adminToken = await mintToken("admin");
+    const adminToken = await mintToken("power");
     const session = await execute(registry, adapter, SYSTEM, "mcp.open_session", {
       plaintextToken: adminToken,
       title: "t971 power",

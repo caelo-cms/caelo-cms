@@ -11,20 +11,23 @@
    * Two controls (the toolbar redesign of 2026-10):
    *
    *   [Staging ▾]            → its label says where staging stands
-   *                            (pending edits, staged, N problems, check
-   *                            failed …), so a closed Publish live always
-   *                            has its reason on screen. The menu lists
-   *                            what Stage would ship, opens the Stage
-   *                            dialog, holds the quality-gate actions and
-   *                            Stage again, and links to staging.
-   *   [Publish live | ▾]     → the human-only decision (coral). The caret
-   *                            opens the live-site menu: this page live,
-   *                            the live site, and whether live matches
-   *                            staging.
+   *                            ("14 draft changes", staged, N problems,
+   *                            check failed …), so a closed Publish live
+   *                            always has its reason on screen. The menu
+   *                            lists the operator's own conversations with
+   *                            draft changes (DraftChatList: this chat
+   *                            first, highlighted and ticked; Stage now,
+   *                            Stage selected, Stage all), holds the
+   *                            quality-gate actions and Stage again, and
+   *                            links to staging.
+   *   [Publish live | ▾]     → the human-only decision (coral). The click
+   *                            opens the Publish live review (what goes
+   *                            live, PublishLiveReview); the caret opens the
+   *                            live-site menu: this page live, the live
+   *                            site, and whether live matches staging.
    */
   import { pluginApprovals } from "#lib/plugin-approvals.svelte.js";
   import { Check, ChevronDown, ExternalLink, LoaderCircle } from "lucide-svelte";
-  import { tick } from "svelte";
   import { enhance, type SubmitFunction } from "$app/forms";
   import StateDot from "#lib/components/StateDot.svelte";
   import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
@@ -32,6 +35,9 @@
   import { cn } from "#lib/utils.js";
   import LinkNoticeBanner from "#lib/components/LinkNoticeBanner.svelte";
   import { askInChat } from "./ask-in-chat.js";
+  import DraftChatList from "./DraftChatList.svelte";
+  import { type DraftChat, totalChanges } from "./draft-chats.js";
+  import PublishLiveReview from "./PublishLiveReview.svelte";
   import StageRunProgress from "./StageRunProgress.svelte";
   import {
     Dialog,
@@ -49,7 +55,6 @@
   import {
     formResultError,
     offersStageAgain,
-    pendingEntryKey,
     publishButtonState,
     publishErrorNextStep,
     qualityBlockReason,
@@ -58,16 +63,6 @@
     stagingMenuState,
   } from "./stage-deploy-state.js";
 
-  interface PendingEntity {
-    kind: string;
-    entityId: string;
-    label: string;
-    detail?: string;
-  }
-  interface PendingChangesView {
-    pending: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
-    staged: { pages: PendingEntity[]; globals: PendingEntity[]; lists: PendingEntity[] };
-  }
   interface LastStaged {
     runId: string;
     finishedAt: string;
@@ -75,8 +70,7 @@
   }
 
   let {
-    pendingChanges,
-    branchChangeCount = 0,
+    drafts,
     csrfToken,
     chatSessionId,
     chatBranchId,
@@ -89,14 +83,11 @@
     lastStageFailure = null,
     live,
   }: {
-    pendingChanges: PendingChangesView;
     /**
-     * v0.7.3 — authoritative branch-snapshot count (chat.branch_change_count).
-     * Drives the split-button visibility + badge. Independent from
-     * pendingChanges (which drops entities with 'published' marks from
-     * prior chat.publish runs).
+     * The operator's own conversations with draft changes (streamed in;
+     * `chats` is null until they arrive, `error` says why they did not).
      */
-    branchChangeCount?: number;
+    drafts: { chats: readonly DraftChat[] | null; loading: boolean; error: string | null };
     csrfToken: string;
     chatSessionId: string;
     /** The chat's branch: a status change on a link notice belongs to it. */
@@ -137,40 +128,8 @@
     };
   } = $props();
 
-  /**
-   * Per-kind change counts for the dropdown checkboxes. "Pages" lumps
-   * direct page edits + per-page layout + per-placement content into
-   * one bucket because the operator's mental model is "the page"; the
-   * server-side impact resolver categorizes finer. "Modules" /
-   * "Templates" / "Lists" / "Layout chrome" map 1:1 to entity kinds in
-   * the snapshot tables (layout chrome is the v0.8.0 addition for
-   * `layout_modules.set` snapshots that used to be invisible).
-   */
-  function countByKind(group: "pages" | "globals" | "lists", kinds: ReadonlyArray<string>): number {
-    const buckets: PendingEntity[][] = [
-      pendingChanges.pending[group],
-      pendingChanges.staged[group],
-    ];
-    let n = 0;
-    for (const arr of buckets) {
-      for (const e of arr) if (kinds.includes(e.kind)) n += 1;
-    }
-    return n;
-  }
-  const pagesCount = $derived(countByKind("pages", ["page", "pageLayout", "pageModuleContent"]));
-  const modulesCount = $derived(countByKind("globals", ["module"]));
-  const templatesCount = $derived(countByKind("globals", ["template"]));
-  // v0.9.0 — merged "Layout chrome" into "Layouts": one bucket counts both
-  // layout-the-entity edits + module placements on layout blocks. Operator
-  // doesn't have to disambiguate two flavors of "layout-y" change.
-  const layoutsCount = $derived(countByKind("globals", ["layout"]));
-  // Epic #1107 — shared lists sit in the `lists` group; changes to their
-  // types and to page types restructure them, so they count here too.
-  const listsCount = $derived(
-    countByKind("lists", ["list"]) + countByKind("globals", ["listType", "pageType"]),
-  );
-
-  let dialogOpen = $state(false);
+  /** The operator's draft changes across their conversations ("14 draft changes"). */
+  const draftChangeCount = $derived(totalChanges(drafts.chats ?? []));
   /**
    * issue #262 — inline Stage failure text, rendered inside the dialog.
    * The layout-level toast dedups identical consecutive form results, so
@@ -195,7 +154,7 @@
   const toolbarMode = $derived(
     stageToolbarMode({
       sessionPublished,
-      branchChangeCount,
+      draftChangeCount,
       hasStagedBuild: lastStaged !== null,
       sessionLastStagedAt,
     }),
@@ -261,9 +220,10 @@
       mode: toolbarMode,
       staging,
       hasStagedBuild: lastStaged !== null,
-      branchChangeCount,
+      draftChangeCount,
       qualityGate: gate,
       stageFailure,
+      draftError: drafts.error,
     }),
   );
   const STAGING_TONE: Record<StagingTone, string> = {
@@ -296,64 +256,19 @@
     pluginApprovals.dialogOpen = true;
   }
 
-  /** #1550 — a pending redirect change, as the release plan lists it. */
-  interface PlannedRedirect {
-    id: string;
-    revision: number;
-    fromPath: string;
-    toPath: string | null;
-    origin: string;
-    reason?: "target" | "page";
-  }
-  interface RedirectPlan {
-    goingLive: PlannedRedirect[];
-    waiting: PlannedRedirect[];
-    draft: PlannedRedirect[];
-    problem: string | null;
-  }
   /**
-   * #1550 — the Publish live confirmation: the redirect changes going live
-   * with it, waiting for their target and staying in draft. Only shown when
-   * there are any; the confirmed `goingLive` list rides the form, so a
-   * change saved after the confirmation waits for the next Publish live.
+   * The Publish live review: every Publish live click opens it first
+   * (decision 2026-11-17); its form posts the staged run and the redirect
+   * changes it showed, so exactly that goes live.
    */
-  let redirectPlan = $state<RedirectPlan | null>(null);
-  let redirectConfirmOpen = $state(false);
-  let publishForm = $state<HTMLFormElement | null>(null);
-  let confirmedRedirects = $state("");
-  const redirectLine = (r: PlannedRedirect) =>
-    r.toPath === null ? `${r.fromPath} (removed)` : `${r.fromPath} → ${r.toPath}`;
+  let reviewOpen = $state(false);
 
-  /** Publish live's click: confirm the redirect changes first when there are any. */
-  async function confirmRedirectsFirst(event: MouseEvent): Promise<void> {
+  function openReview(event: MouseEvent): void {
     openApprovalInstead(event);
     if (event.defaultPrevented) return;
-    event.preventDefault();
-    confirmedRedirects = "";
     publishError = null;
-    let plan: RedirectPlan;
-    try {
-      const res = await fetch("/api/redirects/release-plan", { headers: { accept: "application/json" } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      plan = (await res.json()) as RedirectPlan;
-    } catch (e) {
-      // Loud, never a Publish live without its confirmation.
-      publishError = `Nothing was published: the redirect changes of this Publish live could not be read (${e instanceof Error ? e.message : String(e)}). Try again.`;
-      return;
-    }
-    const any =
-      plan.goingLive.length + plan.waiting.length + plan.draft.length > 0 || plan.problem !== null;
-    if (!any) {
-      // Bound to "none": a redirect saved after this check waits for the
-      // next Publish live, as it would after a confirmation.
-      confirmedRedirects = "[]";
-      await tick();
-      publishForm?.requestSubmit();
-      return;
-    }
-    redirectPlan = plan;
-    confirmedRedirects = JSON.stringify(plan.goingLive.map((c) => ({ id: c.id, revision: c.revision })));
-    redirectConfirmOpen = true;
+    liveMenuOpen = false;
+    reviewOpen = true;
   }
 
   /** Publish live's form submit, shared by the button and the Live menu's override. */
@@ -361,6 +276,7 @@
     publishing = true;
     publishError = null;
     liveMenuOpen = false;
+    reviewOpen = false;
     return async ({ result, update }) => {
       try {
         await update({ reset: false });
@@ -372,20 +288,29 @@
     };
   };
 
-  let userPagesChoice = $state(true);
-  let userModulesChoice = $state(true);
-  let userTemplatesChoice = $state(true);
-  let userListsChoice = $state(true);
-  let userLayoutsChoice = $state(true);
   /**
-   * Effective checkbox state. When a kind has zero changes, force it
-   * off + non-submittable regardless of the user's last toggle.
+   * The Draft changes list's Stage (Stage now / selected / all): the menu
+   * closes, the toolbar shows the running Stage, a refusal stays on screen
+   * until the next attempt (#262: the layout toast dedups repeats).
    */
-  const effectivePages = $derived(pagesCount > 0 && userPagesChoice);
-  const effectiveModules = $derived(modulesCount > 0 && userModulesChoice);
-  const effectiveTemplates = $derived(templatesCount > 0 && userTemplatesChoice);
-  const effectiveLists = $derived(listsCount > 0 && userListsChoice);
-  const effectiveLayouts = $derived(layoutsCount > 0 && userLayoutsChoice);
+  const stageEnhance: SubmitFunction = () => {
+    staging = true;
+    stageError = null;
+    restageError = null;
+    stagingMenuOpen = false;
+    return async ({ result, update }) => {
+      try {
+        await update({ reset: false });
+      } finally {
+        staging = false;
+      }
+      stageError = formResultError(result);
+      // A fresh Stage replaces what a refused Publish live compared against.
+      if (stageError === null) publishError = null;
+      // #553 — the Stage just queued (or skipped) a quality check.
+      void quality.refresh();
+    };
+  };
 
   function formatRelativeTime(iso: string): string {
     const t = new Date(iso).getTime();
@@ -397,42 +322,32 @@
   }
 </script>
 
-<!-- run #10 D6 — ONE Publish-live form for every toolbar shape. A failed
-     Publish renders a persistent inline alert, immune to toast dedup (#267).
-     #779 — Publish live is a human-only decision, so it is coral (`decide`).
-     Its caret opens the live-site menu: where the page is live, and whether
-     live matches staging. -->
+<!-- run #10 D6 — ONE Publish live control for every toolbar shape. Its
+     click opens the review (PublishLiveReview), whose form publishes. A
+     failed Publish renders a persistent inline alert, immune to toast dedup
+     (#267). #779 — Publish live is a human-only decision, so it is coral
+     (`decide`). Its caret opens the live-site menu: where the page is live,
+     and whether live matches staging. -->
 {#snippet liveControls(testid: string)}
   <div class="inline-flex" data-testid="live-controls">
-    <form
-      method="post"
-      action="?/promoteToProduction"
-      use:enhance={publishEnhance}
-      class="contents"
-      bind:this={publishForm}
+    <Button
+      type="button"
+      size="sm"
+      variant="decide"
+      class="rounded-r-none"
+      disabled={publishState.disabled}
+      title={publishState.tooltip}
+      data-testid={testid}
+      onclick={openReview}
     >
-      <input type="hidden" name="_csrf" value={csrfToken} />
-      <!-- #1550 — the redirect changes this Publish live was planned with (none: "[]"). -->
-      <input type="hidden" name="redirectChanges" value={confirmedRedirects} />
-      <Button
-        type="submit"
-        size="sm"
-        variant="decide"
-        class="rounded-r-none"
-        disabled={publishState.disabled}
-        title={publishState.tooltip}
-        data-testid={testid}
-        onclick={confirmRedirectsFirst}
-      >
-        {#if publishing}
-          <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" />Publishing…
-        {:else if productionMatchesStaging === true}
-          <Check class="size-3.5" />Live
-        {:else}
-          Publish live
-        {/if}
-      </Button>
-    </form>
+      {#if publishing}
+        <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" />Publishing…
+      {:else if productionMatchesStaging === true}
+        <Check class="size-3.5" />Live
+      {:else}
+        Publish live
+      {/if}
+    </Button>
     <Popover bind:open={liveMenuOpen}>
       <PopoverTrigger
         class={cn(
@@ -473,22 +388,23 @@
         {#if publishState.overridable && lastStaged}
           <!-- #1207 — the staged build passed its own checks; publishing it
                over a failed Stage is allowed, as a choice that says what goes live. -->
-          <form
-            method="post"
-            action="?/promoteToProduction"
-            use:enhance={publishEnhance}
-            class="space-y-2 border-t p-3"
-            data-testid="publish-older-build"
-          >
-            <input type="hidden" name="_csrf" value={csrfToken} />
+          <div class="space-y-2 border-t p-3" data-testid="publish-older-build">
             <p class="text-xs text-muted-foreground">
               Staging still holds the build from {formatRelativeTime(lastStaged.finishedAt)}, without
               the changes of the failed Stage.
             </p>
-            <Button type="submit" size="sm" variant="outline" class="w-full" disabled={staging || publishing}>
-              Publish that build live anyway
+            <!-- The review shows that build: what it puts live, before the click. -->
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              class="w-full"
+              disabled={staging || publishing}
+              onclick={openReview}
+            >
+              Publish that build live anyway…
             </Button>
-          </form>
+          </div>
         {/if}
         <div class="border-t p-1">
           {#if live.error}
@@ -576,6 +492,9 @@
     }}
     class="contents"
   >
+    <!-- A rebuild for the chat on screen, which may have nothing in draft
+         (stage-selection.ts reads `restage`, not the Draft changes list). -->
+    <input type="hidden" name="restage" value="1" />
     <input type="hidden" name="chatSessionId" value={chatSessionId} />
     {#if activePageId}<input type="hidden" name="pageId" value={activePageId} />{/if}
     <input type="hidden" name="_csrf" value={csrfToken} />
@@ -718,7 +637,12 @@
   {/if}
 {/snippet}
 
-<div class="inline-flex items-center gap-1.5" data-testid="stage-deploy" data-mode={toolbarMode}>
+<div
+  class="inline-flex items-center gap-1.5"
+  data-testid="stage-deploy"
+  data-mode={toolbarMode}
+  data-this-chat-pending={drafts.chats?.some((c) => c.chatSessionId === chatSessionId) ? "true" : "false"}
+>
   <Popover bind:open={stagingMenuOpen}>
     <PopoverTrigger
       class={cn(buttonVariants({ variant: "outline", size: "sm" }), STAGING_TONE[stagingView.tone])}
@@ -737,7 +661,13 @@
       {stagingView.label}
       <ChevronDown class="size-3.5 opacity-60" />
     </PopoverTrigger>
-    <PopoverContent align="end" class="w-80 p-0" data-testid="staging-menu-content">
+    <!-- Bounded to the window: several conversations or open details would
+         otherwise push Stage all and the quality controls off screen. -->
+    <PopoverContent
+      align="end"
+      class="max-h-[calc(100dvh-5rem)] w-[26rem] max-w-[calc(100vw-2rem)] overflow-y-auto p-0"
+      data-testid="staging-menu-content"
+    >
       <div class="space-y-3 p-3">
         <div class="flex items-baseline justify-between gap-3">
           <h2 class="text-sm font-semibold">Staging</h2>
@@ -748,56 +678,40 @@
         <!-- #1288 — a running Stage's step, progress and time left. -->
         <StageRunProgress />
 
-        {#if toolbarMode === "published"}
-          <p class="text-xs text-muted-foreground">This chat's work was published live.</p>
-        {:else if toolbarMode === "pending"}
-          <div class="space-y-2">
+        {#if drafts.error}
+          <!-- Loud: the list is unknown, never shown as "nothing to stage". -->
+          <p role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="draft-chats-error">
+            {drafts.error}
+          </p>
+        {:else if drafts.chats === null}
+          <p class="text-xs text-muted-foreground" role="status" data-testid="draft-chats-loading">
+            Reading your draft changes…
+          </p>
+        {:else if drafts.chats.length > 0}
+          <div class="space-y-1.5" data-testid="draft-changes">
             <h3 class="text-xs font-medium text-muted-foreground">
-              Not staged yet ({branchChangeCount})
+              Draft changes · not on staging yet
             </h3>
-            <ul class="max-h-48 space-y-1 overflow-y-auto text-xs" data-testid="pending-list">
-              {#each pendingChanges.pending.pages as e (pendingEntryKey(e))}
-                <li class="flex items-center gap-2">
-                  <span class="rounded bg-link/10 px-1 py-0.5 font-mono text-[10px] text-link">page</span>
-                  <span class="truncate">{e.label}</span>
-                </li>
-              {/each}
-              {#each pendingChanges.pending.globals as e (pendingEntryKey(e))}
-                <li class="flex items-center gap-2">
-                  <span
-                    class="rounded bg-purple-500/10 px-1 py-0.5 font-mono text-[10px] text-purple-700 dark:text-purple-300"
-                    >{e.kind}</span
-                  >
-                  <span class="truncate">{e.label}</span>
-                  {#if e.detail}<span class="truncate text-muted-foreground">— {e.detail}</span>{/if}
-                </li>
-              {/each}
-              {#each pendingChanges.pending.lists as e (pendingEntryKey(e))}
-                <li class="flex items-center gap-2">
-                  <span
-                    class="rounded bg-emerald-500/10 px-1 py-0.5 font-mono text-[10px] text-emerald-700 dark:text-emerald-300"
-                    >list</span
-                  >
-                  <span class="truncate">{e.label}</span>
-                </li>
-              {/each}
-            </ul>
-            <Button
-              type="button"
-              size="sm"
-              disabled={staging || publishing}
-              data-testid="stage-btn"
-              onclick={() => {
-                stagingMenuOpen = false;
-                dialogOpen = true;
-              }}
-            >
-              {staging ? "Staging…" : `Stage ${branchChangeCount} ${branchChangeCount === 1 ? "change" : "changes"}…`}
-            </Button>
+            <DraftChatList
+              chats={drafts.chats}
+              activeChatId={chatSessionId}
+              action="?/stageAndDeployStaging"
+              {csrfToken}
+              busy={staging || publishing}
+              submit={stageEnhance}
+              hidden={activePageId ? { pageId: activePageId } : {}}
+            />
           </div>
+        {:else if toolbarMode === "published"}
+          <p class="text-xs text-muted-foreground">This chat's work was published live.</p>
         {:else if toolbarMode === "fresh"}
           <p class="text-xs text-muted-foreground">
-            No changes in this chat. Ask the AI for one, then stage it here.
+            No draft changes yet. Ask the AI for a change, then stage it here.
+          </p>
+        {/if}
+        {#if stageError}
+          <p role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="stage-error">
+            Stage failed: {stageError}
           </p>
         {/if}
 
@@ -830,201 +744,21 @@
   {#if toolbarMode !== "published"}
     {@render liveControls(toolbarMode === "pending" ? "promote-btn" : "promote-only-btn")}
   {/if}
-  {#if restageError && !stagingMenuOpen}
-    <span role="alert" class="max-w-60 truncate text-xs font-medium text-red-700 dark:text-red-300" title={restageError}>
-      Stage failed: {restageError}
+  {#if (stageError ?? restageError) && !stagingMenuOpen}
+    <span role="alert" class="max-w-60 truncate text-xs font-medium text-red-700 dark:text-red-300" title={stageError ?? restageError}>
+      Stage failed: {stageError ?? restageError}
     </span>
   {/if}
 </div>
 
-<Dialog bind:open={dialogOpen}>
-  <DialogContent class="sm:max-w-md">
-    <DialogHeader>
-      <DialogTitle>Stage these changes</DialogTitle>
-      <DialogDescription>
-        Stage merges this chat's changes into main and rebuilds staging. v0.9.0: the kind
-        checkboxes are an informational preview of what will ship; selective filtering arrives in
-        v0.9.1. To promote staging to production, use the Promote button (atomic, no rebuild).
-      </DialogDescription>
-    </DialogHeader>
-
-    {#if lastStaged}
-      <div
-        class="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
-        data-testid="last-staged-banner"
-      >
-        Last staged {formatRelativeTime(lastStaged.finishedAt)}
-        {#if lastStaged.previewUrl}
-          — <a
-            href={lastStaged.previewUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            class="underline">preview</a
-          >
-        {/if}
-      </div>
-    {:else}
-      <div class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-        No successful staging build yet. Click "Stage to staging" first so this Promote ships
-        something other than the previous production build.
-      </div>
-    {/if}
-
-    <form
-      method="post"
-      action="?/stageAndDeployStaging"
-      use:enhance={() => {
-        staging = true;
-        stageError = null;
-        restageError = null;
-        return async ({ result, update }) => {
-          try {
-            await update({ reset: false });
-          } finally {
-            staging = false;
-          }
-          // run #10 D6 — shared result→message mapping with the
-          // Publish-live inline alert (stage-deploy-state.ts).
-          stageError = formResultError(result);
-          if (stageError === null) dialogOpen = false;
-          // #553 — the Stage just queued (or skipped) a quality check.
-          void quality.refresh();
-        };
-      }}
-      data-testid="stage-form"
-    >
-      <input type="hidden" name="chatSessionId" value={chatSessionId} />
-      {#if activePageId}
-        <input type="hidden" name="pageId" value={activePageId} />
-      {/if}
-      <input type="hidden" name="_csrf" value={csrfToken} />
-
-      <ul class="space-y-2 py-2">
-        <li>
-          <label class="flex items-center gap-2 text-sm" class:opacity-50={pagesCount === 0}>
-            <input
-              type="checkbox"
-              name="kind"
-              value="pages"
-              class="h-4 w-4 rounded border-input"
-              checked={effectivePages}
-              disabled={pagesCount === 0}
-              onchange={(e) => {
-                userPagesChoice = (e.currentTarget as HTMLInputElement).checked;
-              }}
-            />
-            <span class="font-medium">Pages</span>
-            <span class="text-xs text-muted-foreground">({pagesCount} changes)</span>
-          </label>
-        </li>
-        <li>
-          <label class="flex items-center gap-2 text-sm" class:opacity-50={modulesCount === 0}>
-            <input
-              type="checkbox"
-              name="kind"
-              value="modules"
-              class="h-4 w-4 rounded border-input"
-              checked={effectiveModules}
-              disabled={modulesCount === 0}
-              onchange={(e) => {
-                userModulesChoice = (e.currentTarget as HTMLInputElement).checked;
-              }}
-            />
-            <span class="font-medium">Modules</span>
-            <span class="text-xs text-muted-foreground">({modulesCount} changes)</span>
-          </label>
-        </li>
-        <li>
-          <label class="flex items-center gap-2 text-sm" class:opacity-50={templatesCount === 0}>
-            <input
-              type="checkbox"
-              name="kind"
-              value="templates"
-              class="h-4 w-4 rounded border-input"
-              checked={effectiveTemplates}
-              disabled={templatesCount === 0}
-              onchange={(e) => {
-                userTemplatesChoice = (e.currentTarget as HTMLInputElement).checked;
-              }}
-            />
-            <span class="font-medium">Templates</span>
-            <span class="text-xs text-muted-foreground">({templatesCount} changes)</span>
-          </label>
-        </li>
-        <li>
-          <label class="flex items-center gap-2 text-sm" class:opacity-50={layoutsCount === 0}>
-            <input
-              type="checkbox"
-              name="kind"
-              value="layouts"
-              class="h-4 w-4 rounded border-input"
-              checked={effectiveLayouts}
-              disabled={layoutsCount === 0}
-              onchange={(e) => {
-                userLayoutsChoice = (e.currentTarget as HTMLInputElement).checked;
-              }}
-            />
-            <span class="font-medium">Layouts</span>
-            <span class="text-xs text-muted-foreground">
-              ({layoutsCount} changes — header/footer/nav + layout HTML)
-            </span>
-          </label>
-        </li>
-        <li>
-          <label class="flex items-center gap-2 text-sm" class:opacity-50={listsCount === 0}>
-            <input
-              type="checkbox"
-              name="kind"
-              value="lists"
-              class="h-4 w-4 rounded border-input"
-              checked={effectiveLists}
-              disabled={listsCount === 0}
-              onchange={(e) => {
-                userListsChoice = (e.currentTarget as HTMLInputElement).checked;
-              }}
-            />
-            <span class="font-medium">Lists</span>
-            <span class="text-xs text-muted-foreground">
-              ({listsCount} changes — triggers full rebuild)
-            </span>
-          </label>
-        </li>
-      </ul>
-
-      {#if stageError}
-        <div
-          class="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-800 dark:text-red-200"
-          role="alert"
-          data-testid="stage-error"
-        >
-          <span class="font-semibold">Stage failed:</span>
-          {stageError}
-        </div>
-      {/if}
-
-      <DialogFooter>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onclick={() => {
-            dialogOpen = false;
-          }}
-        >
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          size="sm"
-          disabled={staging || publishing}
-          data-testid="stage-submit-btn"
-        >
-          {staging ? "Staging…" : "Stage to staging"}
-        </Button>
-      </DialogFooter>
-    </form>
-  </DialogContent>
-</Dialog>
+<PublishLiveReview
+  bind:open={reviewOpen}
+  {csrfToken}
+  submit={publishEnhance}
+  busy={staging || publishing}
+  {gate}
+  {draftChangeCount}
+/>
 
 <Dialog bind:open={publishAnywayOpen}>
   <DialogContent class="sm:max-w-md">
@@ -1083,73 +817,6 @@
         </Button>
         <Button type="submit" size="sm" variant="destructive" disabled={staging || publishing} data-testid="publish-anyway-submit">
           {publishing ? "Publishing…" : "Publish anyway"}
-        </Button>
-      </DialogFooter>
-    </form>
-  </DialogContent>
-</Dialog>
-
-<!-- #1550 — the Publish live confirmation's redirect list: what goes live
-     with this Publish live, what waits for its target and what stays in
-     draft. The confirmed list rides the form, so exactly it goes live. -->
-<Dialog bind:open={redirectConfirmOpen}>
-  <DialogContent class="sm:max-w-lg">
-    <DialogHeader>
-      <DialogTitle>Publish live with these redirects?</DialogTitle>
-      <DialogDescription>
-        Redirects go live with Publish live. A change saved after you confirm waits for the next one.
-      </DialogDescription>
-    </DialogHeader>
-    {#if redirectPlan}
-      <div class="max-h-80 space-y-3 overflow-y-auto text-sm" data-testid="publish-redirects">
-        {#if redirectPlan.problem}
-          <p class="text-red-700 dark:text-red-300" role="alert">{redirectPlan.problem}</p>
-        {/if}
-        {#if redirectPlan.goingLive.length > 0}
-          <div data-testid="publish-redirects-going">
-            <p class="font-medium">Going live ({redirectPlan.goingLive.length})</p>
-            <ul class="font-mono text-xs">
-              {#each redirectPlan.goingLive as r (r.id)}<li>{redirectLine(r)}</li>{/each}
-            </ul>
-          </div>
-        {/if}
-        {#if redirectPlan.waiting.length > 0}
-          <div data-testid="publish-redirects-waiting">
-            <p class="font-medium">Waiting for their target ({redirectPlan.waiting.length})</p>
-            <p class="text-xs text-muted-foreground">
-              Their target is not in the staged build yet; they go live with the Publish live that ships it.
-            </p>
-            <ul class="font-mono text-xs">
-              {#each redirectPlan.waiting as r (r.id)}<li>{redirectLine(r)}</li>{/each}
-            </ul>
-          </div>
-        {/if}
-        {#if redirectPlan.draft.length > 0}
-          <div data-testid="publish-redirects-draft">
-            <p class="font-medium">Staying in draft ({redirectPlan.draft.length})</p>
-            <ul class="font-mono text-xs">
-              {#each redirectPlan.draft as r (r.id)}<li>{redirectLine(r)}</li>{/each}
-            </ul>
-          </div>
-        {/if}
-      </div>
-    {/if}
-    <form
-      method="post"
-      action="?/promoteToProduction"
-      use:enhance={(input) => {
-        redirectConfirmOpen = false;
-        return publishEnhance(input);
-      }}
-    >
-      <input type="hidden" name="_csrf" value={csrfToken} />
-      <input type="hidden" name="redirectChanges" value={confirmedRedirects} />
-      <DialogFooter>
-        <Button type="button" variant="outline" size="sm" onclick={() => (redirectConfirmOpen = false)}>
-          Cancel
-        </Button>
-        <Button type="submit" size="sm" variant="decide" disabled={staging || publishing} data-testid="publish-redirects-confirm">
-          Publish live
         </Button>
       </DialogFooter>
     </form>

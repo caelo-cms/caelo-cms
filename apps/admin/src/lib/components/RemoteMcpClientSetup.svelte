@@ -13,22 +13,28 @@
   import { Label } from "#lib/components/ui/label/index.js";
   import { Select } from "#lib/components/ui/select/index.js";
   import { Tabs, TabsContent, TabsList, TabsTrigger } from "#lib/components/ui/tabs/index.js";
-  import { MCP_SURFACE_COPY, mcpConnectorName } from "@caelo-cms/shared";
-  import { remoteMcpAddCommand, remoteMcpConfigJson, remoteMcpServer } from "#lib/mcp-command.js";
+  import { MCP_SURFACE_COPY, type McpSurfaceName, mcpConnectorName } from "@caelo-cms/shared";
+  import {
+    CLAUDE_PLUGIN,
+    claudePluginInstallCommands,
+    remoteMcpAddCommand,
+    remoteMcpConfigJson,
+    remoteMcpServer,
+  } from "#lib/mcp-command.js";
 
   let {
     urls,
     siteHost,
     mayUse,
   }: {
-    urls: { chat: string; admin: string };
+    urls: Record<McpSurfaceName, string>;
     /** For the suggested connector name ("Caelo viu.one (Chat)", #968). */
     siteHost: string;
     /** The surfaces this user's role allows; only those are offered. */
-    mayUse: { chat: boolean; admin: boolean };
+    mayUse: Record<McpSurfaceName, boolean>;
   } = $props();
 
-  let surface = $state<"chat" | "admin">(mayUse.chat ? "chat" : "admin");
+  let surface = $state<McpSurfaceName>(mayUse.chat ? "chat" : "power");
   let client = $state("claude-ai");
   const server = $derived(remoteMcpServer(surface, urls[surface], siteHost));
   const connectorName = $derived(mcpConnectorName(siteHost, surface));
@@ -39,14 +45,14 @@
     <Label for="remote-surface">What should the AI tool get?</Label>
     <Select id="remote-surface" bind:value={surface}>
       {#if mayUse.chat}<option value="chat">{MCP_SURFACE_COPY.chat.title}</option>{/if}
-      {#if mayUse.admin}<option value="admin">{MCP_SURFACE_COPY.admin.title}</option>{/if}
+      {#if mayUse.power}<option value="power">{MCP_SURFACE_COPY.power.title}</option>{/if}
     </Select>
     <p class="text-xs text-muted-foreground">{MCP_SURFACE_COPY[surface].does}</p>
   </div>
   <CopyLine value={server.url} label="MCP URL" testid="remote-mcp-url" />
   <CopyLine value={connectorName} label="Connector name" testid="remote-mcp-connector-name" />
   <p class="text-xs text-muted-foreground">
-    Use this name for the connector, so a chat and an admin connector to this site stay apart in
+    Use this name for the connector, so a chat and a Power connector to this site stay apart in
     the same AI tool.
   </p>
   <p class="text-sm text-muted-foreground">
@@ -93,6 +99,28 @@
     </TabsContent>
 
     <TabsContent value="claude-code" class="space-y-2">
+      {#if surface === "power"}
+        <!-- #1637 — the plugin connects by this URL and adds the skills. -->
+        <p class="text-sm">
+          With the Caelo plugin, which also brings skills for connecting, safe editing and handing
+          a site over:
+        </p>
+        <ol class="ml-5 list-decimal space-y-1 text-sm">
+          <li>Run these in a terminal.</li>
+        </ol>
+        <CopyLine
+          value={claudePluginInstallCommands(server.url)}
+          label="Commands"
+          testid="remote-mcp-setup-claude-plugin"
+        />
+        <ol start="2" class="ml-5 list-decimal space-y-1 text-sm">
+          <li>
+            Start Claude Code, run <code>/mcp</code>, pick <code>{CLAUDE_PLUGIN.server}</code> and
+            choose Authenticate.
+          </li>
+        </ol>
+        <p class="pt-2 text-sm text-muted-foreground">Or without the plugin, the connection alone:</p>
+      {/if}
       <ol class="ml-5 list-decimal space-y-1 text-sm">
         <li>Run this in a terminal, in the folder you work in.</li>
       </ol>

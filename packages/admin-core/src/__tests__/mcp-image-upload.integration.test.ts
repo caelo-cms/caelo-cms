@@ -49,7 +49,7 @@ afterAll(async () => {
   await db.end();
   await rm(root, { recursive: true });
 });
-async function mint(scope: "chat" | "admin") {
+async function mint(scope: "chat" | "power") {
   const result = await execute(registry, adapter, human, "mcp_tokens.create", {
     displayName: "image-test",
     scope,
@@ -62,7 +62,7 @@ async function authorize(plaintextToken: string) {
 }
 
 test("chat and admin tokens authorize uploads; revoked, expired, removed-role and deleted users do not", async () => {
-  for (const scope of ["chat", "admin"] as const) {
+  for (const scope of ["chat", "power"] as const) {
     const token = await mint(scope);
     expect((await authorize(token.plaintextToken)).ok).toBe(true);
     await execute(registry, adapter, human, "mcp_tokens.revoke", { id: token.id });

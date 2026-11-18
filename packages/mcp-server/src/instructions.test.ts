@@ -8,7 +8,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { startAdminMcpServer } from "./admin-server.js";
+import { startPowerMcpServer } from "./power-server.js";
 import { startMcpServer } from "./server.js";
 
 let catalogueStub: ReturnType<typeof Bun.serve>;
@@ -38,7 +38,7 @@ async function connect(
 describe("#552 MCP instructions", () => {
   it("admin server tells the agent to open a session, load context and always-applies skills", async () => {
     const { client, instructions } = await connect((transport) =>
-      startAdminMcpServer({
+      startPowerMcpServer({
         adminUrl: `http://127.0.0.1:${catalogueStub.port}`,
         token: "mcp_test",
         transport,

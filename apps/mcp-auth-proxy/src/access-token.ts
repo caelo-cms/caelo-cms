@@ -2,16 +2,16 @@
 
 /**
  * The access token the broker hands an MCP client (issue #806 follow-up):
- * the user's Google ID token sealed together with the MCP surface the
+ * the user's Google ID token sealed together with the MCP address the
  * grant was authorized for (RFC 8707 resource).
  *
  * Why not the raw ID token: a Google ID token carries no resource, so a
  * client the user approved for the chat surface could send it to the
- * admin surface and IAP would let it through — the consent page's "gets
+ * Power surface and IAP would let it through — the consent page's "gets
  * access to: chat" would be a promise nothing enforces. Sealed, the proxy
- * can check the surface on every request and forward only the inner ID
+ * can check the address on every request and forward only the inner ID
  * token, which IAP then checks as before. A grant whose client never named
- * a resource was consented to as "chat and admin tools" and opens both.
+ * a resource was consented to as both surfaces and opens every address.
  *
  * Side effect, intended: the bearer in the client's hands is useless
  * against IAP directly or against any other Google API; it only works
@@ -27,7 +27,7 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { McpSurface } from "./config.js";
+import type { McpAddress } from "./config.js";
 import { type McpContext, resourceUrl } from "./context.js";
 import { open, seal } from "./seal.js";
 
@@ -45,7 +45,7 @@ export function isWellFormedText(s: string): boolean {
 /** Payload of a sealed access token. */
 export const AccessSealSchema = z.strictObject({
   id_token: z.string(),
-  /** The surface's resource URL, or null for a grant consented to for both surfaces. */
+  /** The address's resource URL, or null for a grant consented to for both surfaces. */
   resource: z.string().nullable(),
   /** The MCP client the grant was issued to ({@link mcpClientKey}). */
   client: z.string().min(1).max(MAX_CLIENT_KEY_LENGTH),
@@ -101,18 +101,18 @@ export function sealAccessToken(
 
 /**
  * The Google ID token and client key inside `bearer`, when it is a
- * genuine, unexpired access token valid for `surface`; null otherwise (the
+ * genuine, unexpired access token valid for `address`; null otherwise (the
  * caller answers 401 `invalid_token`, which makes the client sign in again
  * for this resource, or refresh).
  */
 export function openAccessToken(
   ctx: McpContext,
   bearer: string,
-  surface: McpSurface,
+  address: McpAddress,
 ): { readonly idToken: string; readonly client: string } | null {
   const opened = open(ctx.config.openKeys, "access", bearer, AccessSealSchema, ctx.nowSeconds());
   if (!opened.ok) return null;
   const { resource, id_token, client } = opened.value;
-  if (resource !== null && resource !== resourceUrl(ctx.config, surface)) return null;
+  if (resource !== null && resource !== resourceUrl(ctx.config, address)) return null;
   return { idToken: id_token, client };
 }

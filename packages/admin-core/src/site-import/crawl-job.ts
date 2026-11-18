@@ -275,7 +275,7 @@ async function crawl(
     // it has, and every URL left in the skip ledger with the reason.
     stopWhen: () => attempt.budgetSpent,
     signal: attempt.abort.signal,
-    onBatch: async (pages) => {
+    onBatch: async (pages, progress) => {
       if (halted()) throw new CrawlHaltedError();
       const { captures, tokenlessCapturedUrls } = batchCaptures(pages, keyByUrl);
       for (const p of pages) keyByUrl.delete(p.url);
@@ -284,6 +284,8 @@ async function crawl(
           pages: pages.map(pageRow),
           captures,
           tokenlessCapturedUrls,
+          // #1590 — the run shows its progress while it crawls.
+          pagesSeen: progress.seenCount,
         } satisfies BatchReport),
       );
     },
@@ -297,7 +299,6 @@ async function crawl(
   await captureMissingGroundTruth(reportedGroundTruthSink(reporter), screenshotter);
   await reporter.call("finish", {
     pagesSeen: result.seenCount,
-    pagesExtracted: result.pagesCrawled,
     errors: [...result.errors],
     skipped: [...result.skipped],
     skippedOutOfScope: result.skippedOutOfScope,

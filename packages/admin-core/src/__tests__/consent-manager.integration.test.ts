@@ -563,6 +563,130 @@ describe("#451 — consent-manager", () => {
     if (!removed.ok) throw new Error(JSON.stringify(removed.error));
   });
 
+  it("replaces a tag's hand-written code from before its vendor's template once the ids arrive (#1588)", async () => {
+    // A Leadinfo tag registered before Leadinfo had a template: its own
+    // code with its own path filter, and no `config` (the column did not
+    // exist yet). add_tag no longer accepts that, so the row is set up the
+    // way an older release left it.
+    const NAME = "Leadinfo DE";
+    const LEGACY =
+      "if (location.pathname.indexOf('/de/produkte') === 0) { window.t1588Legacy = 'LI-OLD111'; }";
+    const added = await call("add_tag", {
+      name: NAME,
+      vendor: "t1588-before-template",
+      category: "marketing",
+      inlineSnippet: LEGACY,
+    });
+    if (!added.ok) throw new Error(JSON.stringify(added.error));
+    await sqlSystem(async (tx) => {
+      await tx`SELECT set_config('caelo.plugin_id', ${pluginId}, true)`;
+      await tx`UPDATE plugin_consent_manager.tags SET vendor = 'leadinfo', config = NULL
+        WHERE name = ${NAME}`;
+    });
+
+    type Listed = {
+      name: string;
+      code: string;
+      loads: string;
+      config: Record<string, string>;
+      inlineSnippet?: string;
+      nextStep?: string;
+    };
+    const listed = async (): Promise<Listed> => {
+      const r = await call("list_tags");
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      const tag = (r.value as { tags: Listed[] }).tags.find((t) => t.name === NAME);
+      if (!tag) throw new Error(`${NAME} is not listed`);
+      return tag;
+    };
+    const runtimeJs = async () =>
+      (await collectBuildAssets([pageId], MAIN_RENDER)).find((a) => a.fileName === "runtime.js")
+        ?.content ?? "";
+
+    // The listing says what runs: the old code, shown, with the next step.
+    const before = await listed();
+    expect(before.code).toBe("legacy_snippet");
+    expect(before.loads).toContain("not leadinfo's own");
+    expect(before.inlineSnippet).toBe(LEGACY);
+    expect(before.nextStep).toContain("accountId (LI- followed by");
+    expect(await runtimeJs()).toContain("t1588Legacy");
+
+    // A change that leaves the code alone keeps it: the scope narrows where
+    // the old code runs, and the listing still flags it.
+    const scoped = await call("update_tags_many", {
+      tags: [{ name: NAME, scope: { paths: ["/de/produkte/*"] } }],
+    });
+    if (!scoped.ok) throw new Error(JSON.stringify(scoped.error));
+    const scopedJs = await runtimeJs();
+    expect(scopedJs).toContain("t1588Legacy");
+    expect(scopedJs).toContain('"include":["/de/produkte/*"]');
+    expect((await listed()).code).toBe("legacy_snippet");
+    expect((await listed()).nextStep).toContain("accountId (LI- followed by");
+
+    // Switching it off is never blocked, and only narrows what runs, so
+    // nobody is asked again.
+    const v0 = await policyVersion();
+    const off = await call("update_tags_many", { tags: [{ name: NAME, enabled: false }] });
+    if (!off.ok) throw new Error(JSON.stringify(off.error));
+    expect(await policyVersion()).toBe(v0);
+    expect(await runtimeJs()).not.toContain("t1588Legacy");
+    const on = await call("update_tags_many", { tags: [{ name: NAME, enabled: true }] });
+    if (!on.ok) throw new Error(JSON.stringify(on.error));
+    expect((await listed()).inlineSnippet).toBe(LEGACY);
+
+    // Touching the code without the ids is refused with the step that
+    // fixes it, not with "drop" fields the AI never sent.
+    const recoded = await call("update_tags_many", {
+      tags: [{ name: NAME, inlineSnippet: "" }],
+    });
+    expect(recoded.ok).toBe(false);
+    if (!recoded.ok) {
+      expect(recoded.error.message).toContain("Pass `config` with accountId");
+      expect(recoded.error.message).not.toContain("Drop");
+    }
+
+    // The ids replace the code, and the path filter becomes the scope.
+    const converted = await call("update_tags_many", {
+      tags: [
+        {
+          name: NAME,
+          config: { accountId: "LI-6953F4EAC04B9" },
+          scope: { paths: ["/de/produkte/*"] },
+        },
+      ],
+    });
+    if (!converted.ok) throw new Error(JSON.stringify(converted.error));
+    const after = await listed();
+    expect(after.code).toBe("vendor_template");
+    expect(after.loads).toContain("leadinfo's own code");
+    expect(after.config).toEqual({ accountId: "LI-6953F4EAC04B9" });
+    expect(after.inlineSnippet).toBeUndefined();
+    expect(after.nextStep).toBeUndefined();
+    const js = await runtimeJs();
+    expect(js).not.toContain("t1588Legacy");
+    expect(js).toContain("LI-6953F4EAC04B9");
+    expect(js).toContain("cdn.leadinfo.net/ping.js");
+    expect(js).toContain('"include":["/de/produkte/*"]');
+
+    // From here it changes field by field. An empty snippet writes no code
+    // and keeps the ids; pasting a snippet stays refused, with the step.
+    const disabled = await call("update_tags_many", {
+      tags: [{ name: NAME, enabled: false, inlineSnippet: "" }],
+    });
+    if (!disabled.ok) throw new Error(JSON.stringify(disabled.error));
+    expect((await listed()).config).toEqual({ accountId: "LI-6953F4EAC04B9" });
+    const pasted = await call("update_tags_many", {
+      tags: [{ name: NAME, inlineSnippet: "window.leadinfo = 1;" }],
+    });
+    expect(pasted.ok).toBe(false);
+    if (!pasted.ok) {
+      expect(pasted.error.message).toContain("replaces whatever code the tag stored");
+    }
+
+    const removed = await call("remove_tag", { name: NAME });
+    if (!removed.ok) throw new Error(JSON.stringify(removed.error));
+  });
+
   it("stops injecting a removed tag", async () => {
     const listed = await call("list_tags");
     if (!listed.ok) throw new Error(JSON.stringify(listed.error));

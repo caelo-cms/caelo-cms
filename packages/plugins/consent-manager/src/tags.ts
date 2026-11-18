@@ -31,7 +31,12 @@
  */
 
 import { z } from "@caelo-cms/plugin-sdk";
-import { parseVendorConfig, VENDOR_TEMPLATES } from "./vendors.js";
+import {
+  expectedVendorConfig,
+  parseVendorConfig,
+  storedVendorConfig,
+  VENDOR_TEMPLATES,
+} from "./vendors.js";
 
 /** One cookie a tag sets. `pattern` makes `name` a prefix (`_ga_` covers `_ga_ABC123`). */
 export const cookieDeclSchema = z
@@ -190,14 +195,20 @@ export function describeIssues(tool: string, error: z.ZodError): string {
  * @param tool the calling tool's name, for the error prefix
  * @param fields the merged fields (for an update: the stored row with the patch applied)
  * @param categories the category keys that exist
+ * @param keptLegacyCode for a change to a `legacy_snippet` tag that leaves its
+ *   code alone: the hand-written code it keeps (#1588). The vendor's
+ *   cookie and vendor defaults describe the vendor's own code, not that
+ *   one, so they are not filled in either.
  */
 export function resolveTagColumns(
   tool: string,
   fields: TagFields,
   categories: ReadonlySet<string>,
+  keptLegacyCode?: Pick<TagCode, "src" | "inline">,
 ): TagColumns {
   const vendorKey = (fields.vendor ?? "").trim();
   const template = VENDOR_TEMPLATES[vendorKey];
+  const defaults = keptLegacyCode ? undefined : template;
   const categoryKey = fields.category ?? template?.category;
   if (!categoryKey || !categories.has(categoryKey)) {
     throw new Error(
@@ -213,11 +224,15 @@ export function resolveTagColumns(
   if (template) {
     if ((fields.scriptSrc ?? "") !== "" || (fields.inlineSnippet ?? "") !== "") {
       throw new Error(
-        `${tool}: ${vendorKey} is a known vendor — its code is built from \`config\` (${Object.keys(template.config).join(", ")}). Drop \`scriptSrc\`/\`inlineSnippet\` and pass the ids in \`config\`.`,
+        `${tool}: ${vendorKey} is a known vendor — its code is built from \`config\` (${Object.keys(template.config).join(", ")}), never from a hand-written \`scriptSrc\`/\`inlineSnippet\`. Leave both out and pass only the ids in \`config\` (on update_tags_many that replaces whatever code the tag stored); a condition the snippet checked itself, such as a path or a language, goes into \`scope\`.`,
       );
     }
-    config = parseVendorConfig(tool, vendorKey, template, fields.config);
-    ({ src, inline } = template.build(config));
+    if (keptLegacyCode) {
+      ({ src, inline } = keptLegacyCode);
+    } else {
+      config = parseVendorConfig(tool, vendorKey, template, fields.config);
+      ({ src, inline } = template.build(config));
+    }
   } else {
     if (fields.config && Object.keys(fields.config).length > 0) {
       throw new Error(
@@ -247,7 +262,7 @@ export function resolveTagColumns(
     );
   }
 
-  const vendorInfo: VendorInfo = { ...(template?.vendorInfo ?? {}), ...(fields.vendorInfo ?? {}) };
+  const vendorInfo: VendorInfo = { ...(defaults?.vendorInfo ?? {}), ...(fields.vendorInfo ?? {}) };
   if (!vendorInfo.legalBasis) vendorInfo.legalBasis = defaultLegalBasis(categoryKey);
   return {
     vendor: vendorKey,
@@ -257,21 +272,83 @@ export function resolveTagColumns(
     inline_snippet: inline,
     position: fields.position ?? "body_end",
     justification: reason,
-    cookies: [...(fields.cookies ?? template?.cookies ?? [])],
+    cookies: [...(fields.cookies ?? defaults?.cookies ?? [])],
     vendor_info: vendorInfo,
     scope: fields.scope ?? {},
   };
 }
 
+/**
+ * Where the code a stored tag loads comes from (#1588) — the one answer
+ * the runtime, `list_tags` and `update_tags_many` share, so what the AI
+ * is told loads is what does.
+ *
+ * - `vendor_template`: a known vendor with its ids in `config`. The code is
+ *   the vendor's snippet built from those ids, so nothing else stored with
+ *   the tag can be in effect.
+ * - `hand_written`: any other vendor; the stored `scriptSrc` /
+ *   `inlineSnippet` is the code.
+ * - `legacy_snippet`: a known vendor WITHOUT usable ids. Only a tag
+ *   registered with hand-written code before its vendor had a template
+ *   looks like this (`config` is null on rows older than the templates,
+ *   and `{}` on a hand-written tag whose vendor became known later). It
+ *   still runs the code it was approved with, through every change that
+ *   leaves the code alone (switching it off must never wait for ids).
+ *   Nothing rewrites it on its own: the snippet may check conditions of
+ *   its own (a path filter, say) and its ids are not data, so turning it
+ *   into the template changes what visitors' browsers run, which is the
+ *   Owner's approval to give. An approved `update_tags_many` with
+ *   `config` does exactly that.
+ */
+export type TagCodeSource = "vendor_template" | "hand_written" | "legacy_snippet";
+
+/** The code a stored tag loads and where it comes from. */
+export interface TagCode {
+  readonly source: TagCodeSource;
+  readonly src: string;
+  readonly inline: string;
+}
+
+/**
+ * What a stored tag loads. A templated tag's code is built from its config
+ * here, not read from the stored columns: the columns still get the built
+ * code on every write (an older release, after a rollback, injects from
+ * them), but no stored copy can stand in for the ids.
+ */
+export function tagCode(
+  row: Pick<TagRow, "vendor" | "config" | "script_src" | "inline_snippet">,
+): TagCode {
+  const template = VENDOR_TEMPLATES[row.vendor];
+  if (!template) {
+    return { source: "hand_written", src: row.script_src, inline: row.inline_snippet };
+  }
+  const config = storedVendorConfig(row.vendor, template, row.config);
+  if (config === null) {
+    return { source: "legacy_snippet", src: row.script_src, inline: row.inline_snippet };
+  }
+  return { source: "vendor_template", ...template.build(config) };
+}
+
+/**
+ * The next step for a `legacy_snippet` tag: what `list_tags` shows with it,
+ * and the refusal for a change that touches its code without the vendor's
+ * ids (new hand-written code for a known vendor is refused, and dropping
+ * the old code would leave nothing to load).
+ */
+export function legacySnippetNextStep(row: Pick<TagRow, "name" | "vendor">): string {
+  const template = VENDOR_TEMPLATES[row.vendor];
+  const expected = template ? expectedVendorConfig(template) : "the vendor's ids";
+  return `"${row.name}" has no ${row.vendor} ids in \`config\`, so it runs the code stored with it (hand-written before ${row.vendor} became a known vendor), not ${row.vendor}'s own. Pass \`config\` with ${expected} in update_tags_many — the id is usually in that code, which list_tracking_tags shows — and the tag loads ${row.vendor}'s own code instead; a condition the old code checked itself, such as a path or a language, goes into \`scope\`. A change that leaves the code alone (\`enabled\`, \`scope\`, \`category\`, …) needs no ids and keeps that code.`;
+}
+
 /** The writable fields a stored row stands for — the base an update patches. */
 export function fieldsOfRow(row: TagRow): TagFields {
-  const templated = Boolean(VENDOR_TEMPLATES[row.vendor]) && row.config !== null;
   return {
     vendor: row.vendor,
     category: row.category_key,
     // A templated tag's code is derived from its config; carrying the
     // generated code into the merge would read as hand-written.
-    ...(templated
+    ...(tagCode(row).source === "vendor_template"
       ? { config: row.config ?? {} }
       : { scriptSrc: row.script_src, inlineSnippet: row.inline_snippet }),
     position: row.position === "head" ? "head" : "body_end",

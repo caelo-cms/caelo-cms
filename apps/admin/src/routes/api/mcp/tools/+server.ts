@@ -3,7 +3,7 @@
 /**
  * Issue #376 — Power-MCP: tool-catalogue endpoint. The admin-mode MCP
  * server fetches this once at startup and registers the entries as MCP
- * tools. Auth (admin-scoped bearer) lives inside the op; this is just
+ * tools. Auth (a bearer of scope `power`) lives inside the op; this is just
  * the HTTP shell — same shape as ../chat/+server.ts.
  */
 

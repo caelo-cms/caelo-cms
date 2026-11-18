@@ -24,7 +24,7 @@ test.beforeEach(async ({ page }) => {
 test("a minted token comes with setup for every client", async ({ page }) => {
   await page.goto("/settings/mcp");
   await page.getByLabel("Name").fill(`e2e-clients-${Date.now()}`);
-  await page.getByLabel("Scope").selectOption("admin");
+  await page.getByLabel("Scope").selectOption("power");
   await page.getByRole("button", { name: "Create token" }).click();
 
   const setup = page.getByTestId("mcp-client-setup");
@@ -34,12 +34,12 @@ test("a minted token comes with setup for every client", async ({ page }) => {
 
   await expect(setup).toContainText("in the terminal, not inside Claude Code");
   const claude = page.getByTestId("mcp-setup-claude-code");
-  await expect(claude).toContainText("claude mcp add caelo-admin");
+  await expect(claude).toContainText("claude mcp add caelo-power");
   await expect(claude).toContainText(token);
 
   const tabs: Array<[string, string, string]> = [
     ["Claude Desktop", "mcp-setup-claude-desktop", '"mcpServers"'],
-    ["Codex CLI", "mcp-setup-codex", "codex mcp add caelo-admin"],
+    ["Codex CLI", "mcp-setup-codex", "codex mcp add caelo-power"],
     ["Cursor", "mcp-setup-cursor", '"mcpServers"'],
     ["VS Code", "mcp-setup-vscode", '"servers"'],
     ["Gemini CLI", "mcp-setup-gemini", '"mcpServers"'],

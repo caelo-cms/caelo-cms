@@ -58,9 +58,13 @@
  * sections named there and deletes the rows; the admin runs it right after
  * each of its own writes and as a backstop on every scheduler tick
  * (admin-core `createPublicProjectionPublisher`, #1140). A pointer move marks
- * `plugins` (0531). The migration job and the admin's boot publish
- * everything ({@link publishPublicProjection}), so an install converges even
- * when the outbox was written before the triggers that a newer release adds.
+ * `plugins` (0531). The migration job publishes everything
+ * ({@link publishPublicProjection}) after every migration, so an install
+ * converges even when the outbox was written before the triggers that a
+ * newer release adds. An admin publishes everything at boot only when it
+ * adds something the migration job could not (#1633,
+ * {@link bootPublishDue}): the projections of a runtime-installed plugin,
+ * the first frozen state they make possible, or the staging gate key.
  * A `plugin:<id>` outbox row (the plugin's admin-side rows changed) is
  * consumed without a publish: its content reaches a public database with
  * the next frozen release.
@@ -104,6 +108,7 @@
  * inside the deploy ops' own transactions, which are audited.
  */
 
+import { createHash } from "node:crypto";
 import { type SQL, sql } from "drizzle-orm";
 
 /** The query surface a publisher needs on each side (a drizzle transaction fits). */
@@ -476,9 +481,12 @@ async function claimUnit(
 // ---------------------------------------------------------------------------
 
 /**
- * The release sections as {@link freezeRelease} stores them: exactly the
- * rows the public tables get, so a publish is a copy, never a re-read of
- * the main line.
+ * The release sections as {@link freezeRelease} stores them: the rows the
+ * public tables get, so a publish is a copy, never a re-read of the main
+ * line. The one exception is a plugin's actor, which is no release content
+ * (one per plugin, never changed) and which the publisher adds from the
+ * main line ({@link narrowRelease}, #1587); states frozen before that may
+ * still carry a (possibly null) `actor_id`, which a publish replaces.
  */
 export interface ReleaseState {
   readonly version: 1;
@@ -596,14 +604,19 @@ async function readCurrentRelease(
     // (gateway-attach.ts), as the admin host does (loader.ts). Recorded for
     // the frozen state's completeness; every publish replaces it with the
     // current approval (#1587, narrowRelease).
-    sql`SELECT p.id::text AS id, p.slug, p.tier, p.version, a.id::text AS actor_id,
+    //
+    // #1587 — no actor here: a Stage freezes in the transaction of the
+    // person or AI who asked for it, and `actors` shows a session only its
+    // own row, so a join froze every plugin without one. The publisher adds
+    // it ({@link narrowRelease}).
+    sql`SELECT p.id::text AS id, p.slug, p.tier, p.version,
                CASE WHEN p.tier = 2 THEN p.manifest_json END AS manifest_json,
                CASE WHEN p.tier = 2 THEN p.source_code END AS source_code,
                CASE WHEN p.tier = 1 THEN to_jsonb(p.approved_capabilities) END
                  AS approved_capabilities,
                CASE WHEN p.tier = 1 THEN p.approved_manifest_digest END
                  AS approved_manifest_digest
-        FROM plugins p LEFT JOIN actors a ON a.plugin_id = p.id
+        FROM plugins p
         WHERE p.status = 'active'
         ORDER BY p.slug`,
   );
@@ -745,6 +758,8 @@ export interface CurrentNarrowing {
   readonly liveGrantIds: ReadonlySet<string>;
   /** Each active release-signed plugin's approval now, by plugin id. */
   readonly releaseSignedApprovals: ReadonlyMap<string, ReleaseSignedApproval>;
+  /** Each active plugin's own actor (`actors.plugin_id`), by plugin id (#1587). */
+  readonly pluginActorIds: ReadonlyMap<string, string>;
 }
 
 async function readNarrowing(tx: ProjectionTx): Promise<CurrentNarrowing> {
@@ -764,6 +779,15 @@ async function readNarrowing(tx: ProjectionTx): Promise<CurrentNarrowing> {
     tx,
     sql`SELECT id::text AS id FROM plugin_capability_grants WHERE revoked_at IS NULL`,
   )) as unknown as { id: string }[];
+  // #1587 — read here, by the publisher (a `system` session, which sees
+  // every actor), never in a freeze: a freeze runs as whoever asked for
+  // the Stage, and `actors` shows them only their own row.
+  const actors = (await rows(
+    tx,
+    sql`SELECT a.plugin_id::text AS plugin_id, a.id::text AS actor_id
+        FROM actors a JOIN plugins p ON p.id = a.plugin_id
+        WHERE p.status = 'active'`,
+  )) as unknown as { plugin_id: string; actor_id: string }[];
   return {
     activePluginIds: new Set(active.map((p) => p.id)),
     liveGrantIds: new Set(grants.map((g) => g.id)),
@@ -775,6 +799,7 @@ async function readNarrowing(tx: ProjectionTx): Promise<CurrentNarrowing> {
           { capabilities: p.approved_capabilities, manifestDigest: p.approved_manifest_digest },
         ]),
     ),
+    pluginActorIds: new Map(actors.map((a) => [a.plugin_id, a.actor_id])),
   };
 }
 
@@ -791,6 +816,20 @@ function withCurrentApproval(row: Row, now: CurrentNarrowing): Row {
     approved_capabilities: approval?.capabilities ?? null,
     approved_manifest_digest: approval?.manifestDigest ?? null,
   };
+}
+
+/**
+ * A frozen plugin row with the plugin's actor as the main line has it
+ * (#1587). The actor is the plugin's identity, one per plugin and never
+ * replaced, so this is no release content leaking ahead of Publish live.
+ * An active plugin with no actor row at all gets none: no admin host of
+ * this release has loaded it (the loader writes the actor with the plugin
+ * row), so Settings → Plugins already shows it as not running and Publish
+ * live refuses, and a gateway refuses it too ("active but has no actor
+ * row").
+ */
+function withPluginActor(row: Row, now: CurrentNarrowing): Row {
+  return { ...row, actor_id: now.pluginActorIds.get(String(row.id)) ?? null };
 }
 
 /**
@@ -812,9 +851,14 @@ function withCurrentApproval(row: Row, now: CurrentNarrowing): Row {
  * already in a gateway's image may run, never which plugins, data or
  * settings live visitors get.
  *
+ * Each published plugin carries its actor as the main line has it, so a
+ * state frozen without one (every Stage before #1587) heals with the next
+ * publish, the admin's boot included.
+ *
  * @example
  *   narrowRelease(frozen, {
  *     activePluginIds: new Set(), liveGrantIds: new Set(), releaseSignedApprovals: new Map(),
+ *     pluginActorIds: new Map(),
  *   })
  *   // → no plugin, grant or row published
  */
@@ -822,7 +866,9 @@ export function narrowRelease(state: ReleaseState, now: CurrentNarrowing): Relea
   const active = (pluginId: unknown) => now.activePluginIds.has(String(pluginId));
   return {
     version: 1,
-    plugins: state.plugins.filter((p) => active(p.id)).map((p) => withCurrentApproval(p, now)),
+    plugins: state.plugins
+      .filter((p) => active(p.id))
+      .map((p) => withPluginActor(withCurrentApproval(p, now), now)),
     grants: state.grants.filter((g) => active(g.plugin_id) && now.liveGrantIds.has(String(g.id))),
     pluginRows: state.pluginRows.filter((r) => active(r.plugin_id)),
     projected: state.projected.filter((id) => active(id)),
@@ -1338,6 +1384,77 @@ async function bootstrapPointers(
 }
 
 /**
+ * #1633 — what an admin's full publish adds over the migration job's, as
+ * one sha256: the visitor projections of the plugins it loaded (a
+ * runtime-installed plugin's included; the migration job knows only the
+ * shipped ones) and the staging gate key, which only an admin holds. The
+ * key enters as its own sha256, so the stored digest reveals nothing of it.
+ */
+export function bootPublishInputsDigest(
+  declarations: VisitorProjectionDeclarations,
+  stagingGateSecret: string | null,
+): string {
+  const plugins = [...declarations]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([slug, projection]) => [
+      slug,
+      projection === null
+        ? null
+        : Object.entries(projection)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([table, columns]) => [table, [...columns].sort()]),
+    ]);
+  const gateKey =
+    stagingGateSecret === null
+      ? null
+      : createHash("sha256").update(stagingGateSecret).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ plugins, gateKey })).digest("hex");
+}
+
+/**
+ * #1633 — whether an admin's boot must publish everything: when an
+ * environment has no frozen release state yet (the first one needs every
+ * active plugin loaded) or when the last full publish of an admin covered
+ * other inputs ({@link bootPublishInputsDigest}). Otherwise the migration
+ * job's publish after the last migration, the post-write drains and the
+ * tick's backstop already published what a full publish would.
+ *
+ * Read without the projection lock: a publisher that published meanwhile
+ * makes the full publish a repeat, never a mistake.
+ */
+export async function bootPublishDue(
+  dbs: ProjectionDatabases,
+  inputsDigest: string,
+): Promise<boolean> {
+  return dbs.readAdmin(async (tx) => {
+    const pointed = (await rows(
+      tx,
+      sql`SELECT environment FROM projection_release_pointers`,
+    )) as unknown as { environment: PublicTarget }[];
+    if (PUBLIC_TARGETS.some((t) => !pointed.some((p) => p.environment === t))) return true;
+    const last = (await rows(
+      tx,
+      sql`SELECT inputs_digest FROM projection_boot_publish WHERE id = 1`,
+    )) as unknown as { inputs_digest: string }[];
+    return last[0]?.inputs_digest !== inputsDigest;
+  });
+}
+
+/** #1633 — record the inputs a full publish of an admin covered ({@link bootPublishDue}). */
+export async function recordBootPublish(
+  dbs: ProjectionDatabases,
+  inputsDigest: string,
+): Promise<void> {
+  await dbs.readAdmin(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO projection_boot_publish (id, inputs_digest) VALUES (1, ${inputsDigest})
+      ON CONFLICT (id) DO UPDATE
+        SET inputs_digest = EXCLUDED.inputs_digest, published_at = now()
+    `);
+  });
+}
+
+/**
  * Publish everything to both public databases: the immediate sections, the
  * release sections each environment's pointer names, and — with
  * `comments: true` — a full resync of the approved comments (the migration
@@ -1473,7 +1590,14 @@ export async function withProjectionLock<T>(
     const attempt = await dbs.readAdmin(async (tx) => {
       const [row] = await rows(tx, PROJECTION_TRY_LOCK);
       if (row?.locked !== true) return { locked: false as const };
-      return { locked: true as const, value: await fn(tx) };
+      const value = await fn(tx);
+      // #1633 — what this read marked stale itself (the first frozen
+      // release's pointers mark `plugins`) is in the outbox it read, or
+      // stays there for the next drain. Asking the admin for a drain after
+      // this commit would queue that drain behind this very publish, which
+      // waits for this transaction: the boot hung for good.
+      await tx.execute(sql`SELECT set_config('caelo.projection_dirty', 'off', true)`);
+      return { locked: true as const, value };
     });
     if (attempt.locked) return attempt.value;
     const waited = now() - started;
@@ -1540,6 +1664,11 @@ async function consumeOutbox(tx: ProjectionTx, ids: readonly string[]): Promise<
  * `completeness` defaults to `required`; a fixture that shares its
  * database with suites activating other plugins passes `as-loaded`, which
  * is what a Stage freezes ({@link FreezeCompleteness}).
+ *
+ * The freeze runs as a person, like a Stage's (`deploy.start_trigger` runs
+ * in the transaction of whoever asked for it), so it sees only what row
+ * security shows them. Frozen as `system`, every suite missed that a Stage
+ * froze each plugin without its actor (#1587).
  */
 export async function releaseMainLineForTests(
   dbs: ProjectionDatabases,
@@ -1549,7 +1678,18 @@ export async function releaseMainLineForTests(
   const read = await withProjectionLock(dbs, {}, async (tx) => {
     const gen = await readGeneration(tx);
     const runId = crypto.randomUUID();
-    await freezeRelease(tx, { runId, reason: "bootstrap", declarations, completeness });
+    const [session] = await rows(
+      tx,
+      sql`SELECT current_setting('caelo.actor_kind', true) AS kind,
+                 current_setting('caelo.actor_id', true) AS id`,
+    );
+    await tx.execute(sql`
+      SELECT set_config('caelo.actor_kind', 'human', true),
+             set_config('caelo.actor_id', ${crypto.randomUUID()}, true)`);
+    await freezeRelease(tx, { runId, reason: "stage", declarations, completeness });
+    await tx.execute(sql`
+      SELECT set_config('caelo.actor_kind', ${String(session?.kind ?? "")}, true),
+             set_config('caelo.actor_id', ${String(session?.id ?? "")}, true)`);
     for (const env of PUBLIC_TARGETS) await pointRelease(tx, env, runId);
     const outbox = await readOutbox(tx);
     const snap = await readSnapshot(tx, new Set(ALL_SECTIONS), true, new Set());

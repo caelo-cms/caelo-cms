@@ -29,6 +29,4 @@ export const EXACT_COUNTS: Readonly<Record<string, string>> = {
     "pages per type; asked by the page-type admin pages and list_page_types",
   "list_types.list {counts}":
     "shared lists per type; asked by the list-type admin page and list_list_types",
-  "chat.list_open_with_pending":
-    "pending changes of each listed chat; the editor's other-chats banner shows them",
 };

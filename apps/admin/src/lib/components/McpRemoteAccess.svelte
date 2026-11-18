@@ -8,8 +8,8 @@
   // remoteAccessView (lib/mcp-remote-access.ts, unit-tested); this renders
   // it. The concept is docs/dev/mcp-access.md.
   import {
+    AI_WORK_PERMISSION,
     CHAT_SURFACE_NEEDS_INSTALL_AI,
-    MCP_SURFACE_PERMISSION,
     type McpSurfaceName,
   } from "@caelo-cms/shared";
   import CopyLine from "#lib/components/updates/CopyLine.svelte";
@@ -92,8 +92,8 @@
         </p>
       {:else if view.surfaces.length === 0}
         <p class="text-sm" data-testid="mcp-remote-access-none">
-          Your role may not use either address. Chatting with the site's AI needs
-          {MCP_SURFACE_PERMISSION.chat}; ask an Owner under Settings → Users.
+          Your role may not connect AI tools. Both addresses need {AI_WORK_PERMISSION}; ask an
+          Owner under Settings → Users.
         </p>
       {/if}
       {#each view.surfaces as s (s.surface)}
@@ -112,11 +112,6 @@
           />
         </section>
       {/each}
-      {#if view.adminHint}
-        <p class="text-xs text-muted-foreground" data-testid="mcp-remote-admin-hint">
-          {view.adminHint}
-        </p>
-      {/if}
       {#if view.surfaces.length > 0}
         <a href="/settings/mcp/remote" class="text-sm underline">
           Step-by-step setup for ChatGPT, Claude, Cursor and others

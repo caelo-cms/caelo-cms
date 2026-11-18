@@ -121,6 +121,43 @@ export function logRunTimings(
 }
 
 /**
+ * #1591 — what a release run put live, in the words an approval's result
+ * uses: the build, the target, the run, and for production that visitors get
+ * it now. An approved Publish live, publish anyway or rollback acts on the
+ * live site, so its result must never read as a change waiting on the draft
+ * (the proposal records it as `preview.appliedEffect`, which reaches the
+ * external agent that asked for it through mcp_approval_handoffs).
+ *
+ * @param how - "published" for a Publish live (with what it was published
+ *   over, e.g. "over the failed quality check"), "rolled back" for a rollback.
+ */
+export async function describeReleasedRun(
+  tx: TransactionRunner,
+  runId: string | null,
+  how: { readonly kind: "published"; readonly over?: string } | { readonly kind: "rolled back" },
+): Promise<string> {
+  const rows =
+    runId === null
+      ? []
+      : ((await tx.execute(sql`
+          SELECT r.build_id, t.name AS target_name, t.env
+          FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+          WHERE r.id = ${runId}::uuid
+        `)) as unknown as { build_id: string | null; target_name: string; env: string }[]);
+  const row = rows[0];
+  if (!row?.build_id) {
+    // CLAUDE.md §2 — say what is missing instead of guessing a build.
+    return `It was applied, but its run ${runId ?? "(none)"} records no build: Settings → Deployments shows what each target serves.`;
+  }
+  const live = row.env === "production";
+  if (how.kind === "rolled back") {
+    return `Rolled ${row.target_name} back to build ${row.build_id} (run ${runId})${live ? ": the live site serves that build now." : "."}`;
+  }
+  const over = how.over ? ` ${how.over}` : "";
+  return `Published build ${row.build_id} to ${row.target_name}${over} (run ${runId})${live ? ": it is live on the site now." : "."}`;
+}
+
+/**
  * #1154 — the one path to live: a production build or publish runs only for
  * a human (an Owner-initiated production build, a Publish live, or an
  * approved proposal applied as its approver). There is no automatic
@@ -133,13 +170,15 @@ export function productionNeedsHuman(
   ctx: ExecutionContext,
   targetEnv: string,
   operation: "deploy.trigger" | "deploy.promote",
-): { kind: "HandlerError"; operation: string; message: string } | null {
+): { kind: "HandlerError"; operation: string; message: string; refusal: true } | null {
   if (targetEnv !== "production" || ctx.actorKind === "human") return null;
   return {
     kind: "HandlerError",
     operation,
     message:
       "production is built only by a human Publish live (or an Owner-initiated production build) — nothing publishes automatically. Stage the change and let the Owner click Publish live.",
+    // #1591 — a deliberate guard with its next step, not a defect (#1091).
+    refusal: true,
   };
 }
 

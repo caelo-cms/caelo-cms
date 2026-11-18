@@ -225,15 +225,15 @@ export function ensureIsolatedOwner(email: string): string {
   ).trim();
 }
 
-/** Mint an admin-scoped Power-MCP token for `actorId`; returns the plaintext. */
-export function mintAdminMcpToken(actorId: string, displayName: string): string {
+/** Mint a Power-MCP token (scope `power`) for `actorId`; returns the plaintext. */
+export function mintPowerMcpToken(actorId: string, displayName: string): string {
   return runBunInline(
     `
     import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
     import { registerAdminOps } from "@caelo-cms/admin-core";
     const adapter = new DatabaseAdapter({ adminDatabaseUrl: process.env.ADMIN_DATABASE_URL, publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL });
     const registry = new OperationRegistry(); registerAdminOps(registry);
-    const r = await execute(registry, adapter, { actorId: process.env.ACTOR_ID, actorKind: "human", requestId: "e2e-mint-mcp" }, "mcp_tokens.create", { displayName: process.env.DISPLAY_NAME, scope: "admin" });
+    const r = await execute(registry, adapter, { actorId: process.env.ACTOR_ID, actorKind: "human", requestId: "e2e-mint-mcp" }, "mcp_tokens.create", { displayName: process.env.DISPLAY_NAME, scope: "power" });
     if (!r.ok) throw new Error(JSON.stringify(r.error));
     process.stdout.write(r.value.plaintextToken);
     await adapter.close();

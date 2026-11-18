@@ -8,13 +8,13 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { startAdminMcpServer } from "./admin-server.js";
 import {
   type ApprovalOutcome,
   describeApprovalOutcome,
   resolveApprovalWaitMs,
   waitForApproval,
 } from "./approval-wait.js";
+import { startPowerMcpServer } from "./power-server.js";
 
 const PROPOSAL_ID = "11111111-2222-4333-8444-555555555555";
 
@@ -79,6 +79,26 @@ describe("describeApprovalOutcome", () => {
     const rejected = describeApprovalOutcome(outcome("rejected", "not now"));
     expect(rejected).toContain("REJECTED");
     expect(rejected).toContain("not now");
+  });
+
+  // #1591 — an approved Publish live read "it is now in effect on the draft".
+  it("an applied outcome claims no draft; the admin's detail says where it took effect", () => {
+    const published = describeApprovalOutcome({
+      ...outcome(
+        "applied",
+        "Published build b-1591 to production (run r-1591): it is live on the site now.",
+      ),
+      domain: "deploy",
+      toolName: "propose_deploy_promote",
+      summary: "promote staging → production (build=b-1591, pages=3, files=12)",
+    });
+    expect(published).toContain("APPROVED and applied");
+    expect(published).toContain(
+      "Published build b-1591 to production (run r-1591): it is live on the site now.",
+    );
+    expect(published).not.toMatch(/draft|Not applied yet/i);
+    // Whatever the domain, the approval itself names no place.
+    expect(describeApprovalOutcome(outcome("applied"))).not.toMatch(/draft/i);
   });
 });
 
@@ -157,7 +177,7 @@ describe("gated tool call over the admin MCP server", () => {
 
   async function connect(): Promise<Client> {
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-    await startAdminMcpServer({
+    await startPowerMcpServer({
       adminUrl: `http://127.0.0.1:${stub.port}`,
       token: "mcp_test",
       transport: serverSide,

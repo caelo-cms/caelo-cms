@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "private": false,
   "license": "MPL-2.0",
-  "description": "MCP servers for Caelo CMS: `caelo_chat` (talk to Caelo's own AI) and the admin-scoped Power-MCP (the full chat-runner tool catalogue, driven by your own agent). Lets Claude Code (or any MCP-aware client) drive a Caelo install from outside the browser.",
+  "description": "MCP servers for Caelo CMS: `caelo_chat` (talk to Caelo's own AI) and Power-MCP (the full chat-runner tool catalogue, driven by your own agent). Lets Claude Code (or any MCP-aware client) drive a Caelo install from outside the browser.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/caelo-cms/caelo-cms.git",
@@ -17,6 +17,7 @@
   "types": "./dist/index.d.ts",
   "bin": {
     "caelo-mcp-server": "./dist/index.js",
+    "caelo-power-mcp": "./dist/power.js",
     "caelo-admin-mcp": "./dist/admin.js"
   },
   "exports": {
