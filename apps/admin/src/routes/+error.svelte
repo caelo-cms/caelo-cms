@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { onMount } from "svelte";
   import { page, updated } from "$app/state";
   import { type ReloadMemory, reloadIfNewerRelease } from "#lib/version-skew.js";
 
@@ -27,7 +28,10 @@
 
   // #1656 — an error in a tab older than the deployed release is most
   // likely its old components reading the new release's data: reload once.
-  $effect(() => {
+  // onMount, not $effect: `updated.check()` reads SvelteKit's `updated`
+  // state, so an effect would run again when the check sets it and call
+  // the reload twice.
+  onMount(() => {
     void reloadIfNewerRelease(
       () => updated.check(),
       () => location.reload(),
