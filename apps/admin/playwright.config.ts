@@ -58,7 +58,12 @@ export default defineConfig({
     // at boot; CI checkouts have none (locally they exist as tsc side
     // effects, which is how this went unnoticed until the first plugin
     // E2E). Build them before the admin build.
-    command: `bun run plugins:build && bun run build && PORT=${port} ORIGIN=${origin} bun run build/index.js`,
+    // #1656 — the admin itself builds in production mode, as the release
+    // image does: with NODE_ENV=development Vite compiles the browser code
+    // under the `development` condition, where SvelteKit's version checks
+    // (`updated`) are off, so the suite ran a client no install runs. The
+    // server keeps reading NODE_ENV at run time (`env` below).
+    command: `bun run plugins:build && NODE_ENV=production bun run build && PORT=${port} ORIGIN=${origin} bun run build/index.js`,
     url: origin,
     reuseExistingServer: !process.env.CI,
     // Cold builds on first run can take longer than 120s when node_modules has
