@@ -44,7 +44,11 @@ export function fullLoadTarget(
 /** How long one address is not reloaded again after {@link reloadIfNewerRelease} reloaded it. */
 export const RELOAD_GUARD_MS = 60_000;
 
-/** Where {@link reloadIfNewerRelease} remembers its last reload (the tab's `sessionStorage`). */
+/**
+ * Where {@link reloadIfNewerRelease} remembers its last reload across the
+ * reload (the tab's `sessionStorage`). `get` answers `null` and `set` does
+ * nothing when the storage is unavailable.
+ */
 export interface ReloadMemory {
   get(): string | null;
   set(value: string): void;
@@ -56,7 +60,9 @@ export interface ReloadMemory {
  * so the check answers `false` and a real error stays on screen. The same
  * address is not reloaded twice within {@link RELOAD_GUARD_MS}, so a check
  * that keeps answering `true` (two revisions answering side by side during
- * a rollout) cannot loop.
+ * a rollout) cannot loop. Without a memory that keeps the guard across the
+ * reload (storage blocked or full) it never reloads: the operator reloads
+ * by hand, as before.
  *
  * @param newerReleaseDeployed SvelteKit's `updated.check()`.
  * @param href The address the error page shows.
@@ -70,7 +76,9 @@ export async function reloadIfNewerRelease(
 ): Promise<boolean> {
   if (reloadedRecently(memory.get(), href, now)) return false;
   if (!(await newerReleaseDeployed())) return false;
-  memory.set(JSON.stringify({ href, at: now }));
+  const guard = JSON.stringify({ href, at: now });
+  memory.set(guard);
+  if (memory.get() !== guard) return false;
   reload();
   return true;
 }

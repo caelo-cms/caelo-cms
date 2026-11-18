@@ -5,8 +5,9 @@
 
   const MEMORY_KEY = "caelo:version-skew-reload";
 
-  // sessionStorage can be missing or throw (private mode, blocked storage);
-  // without it the guard sees no earlier reload, as on a fresh tab.
+  // sessionStorage can be missing or throw (private mode, blocked storage,
+  // quota); then nothing is remembered and the page does not reload by
+  // itself, since only a remembered guard stops a reload loop.
   const memory: ReloadMemory = {
     get() {
       try {
@@ -19,7 +20,7 @@
       try {
         sessionStorage.setItem(MEMORY_KEY, value);
       } catch {
-        // Nothing to remember in: the guard then only holds for this check.
+        // Not remembered: reloadIfNewerRelease reads it back and skips the reload.
       }
     },
   };

@@ -97,6 +97,23 @@ describe("reloadIfNewerRelease (#1656)", () => {
     expect(t.reloads).toBe(3);
   });
 
+  it("never reloads when the guard cannot be kept across the reload", async () => {
+    let reloads = 0;
+    const blocked: ReloadMemory = { get: () => null, set: () => undefined };
+    for (const at of [1_000, 2_000, 3_000]) {
+      expect(
+        await reloadIfNewerRelease(
+          async () => true,
+          () => reloads++,
+          blocked,
+          HREF,
+          at,
+        ),
+      ).toBe(false);
+    }
+    expect(reloads).toBe(0);
+  });
+
   it("treats an unreadable memory as no earlier reload", async () => {
     const t = tab();
     t.set("not json");
