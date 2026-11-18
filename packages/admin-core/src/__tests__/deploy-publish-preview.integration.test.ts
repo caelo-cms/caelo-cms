@@ -310,6 +310,27 @@ describe("deploy.publish_preview", () => {
     ]);
   });
 
+  it("says so when a later Stage merged on top of the staged build without finishing its build", async () => {
+    const t = await targets("advanced");
+    const fp = { [`page:${page.p1}`]: "h" };
+    const [own] = await place(tileModule, [page.p1]);
+    const liveSource = await build(t.staging, 80, "live-src", fp);
+    await build(t.production, 80.5, liveSource, null);
+    await stagedChatWrite(81, async (ctx) => {
+      await op(ctx, "content_instances.set_values", { id: own, values: { headline: "v2" } });
+    });
+    await build(t.staging, 82, "staged", fp);
+    // A later Stage merged (its build failed, so the staged build is still day 82's).
+    await stagedChatWrite(83, async (ctx) => {
+      await op(ctx, "content_instances.set_values", { id: own, values: { headline: "v3" } });
+    });
+
+    const p = await preview("advanced");
+    expect(p.notice).toContain("A later Stage changed the site after this build");
+    // The lists are still shown, read from the newer state.
+    expect(p.pages.changed.items.map((i) => i.pageId)).toEqual([page.p1]);
+  });
+
   it("says live already serves the staged build", async () => {
     const t = await targets("same");
     const staged = await build(t.staging, 20, "staged", { [`page:${page.p1}`]: "h" });

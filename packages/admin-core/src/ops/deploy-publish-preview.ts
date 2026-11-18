@@ -244,12 +244,18 @@ export const publishPreviewOp = defineOperation({
       publishedInStaged,
       where,
     });
+    // Main is what the last Stage merged. A later Stage whose build did not
+    // finish (it failed, or still runs) merged on top of this build, so
+    // where a section shows was read from that newer state: say so.
+    const mainAdvanced = parts.length > 0 && (await stagedSince(tx, iso(staged.started_at)));
 
     return ok({
       ...base,
-      notice: ordered
-        ? null
-        : "The live build is newer than this staged build, so Publish live would put older content live. Stage again first.",
+      notice: !ordered
+        ? "The live build is newer than this staged build, so Publish live would put older content live. Stage again first."
+        : mainAdvanced
+          ? "A later Stage changed the site after this build and has not finished building, so where some sections show is read from that newer state. Stage again for an exact list."
+          : null,
       pages: {
         new: await labelPages(tx, release.newPageIds, input.limit),
         changed: await labelPages(tx, release.changedPageIds, input.limit),
@@ -340,7 +346,20 @@ async function stagedBetween(
   `)) as unknown as StagedEntity[];
 }
 
-/** Of `pageIds`, the pages the staged build publishes (its fingerprint has them). */
+/** Whether a Stage merged anything at or after `from` (the staged build's start). */
+async function stagedSince(tx: TransactionRunner, from: string): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT EXISTS (SELECT 1 FROM site_snapshots WHERE staged_at >= ${from}::timestamptz) AS advanced
+  `)) as unknown as { advanced: boolean }[];
+  return rows[0]?.advanced === true;
+}
+
+/**
+ * Of `pageIds`, the pages the staged build publishes (its fingerprint has
+ * them). The fingerprint's keys are expanded once and matched against the
+ * ids: testing `?` once per id detoasts the whole fingerprint per id, which
+ * took a second for 5,000 ids on a 5,000-page build.
+ */
 async function pagesInBuild(
   tx: TransactionRunner,
   runId: string,
@@ -348,8 +367,9 @@ async function pagesInBuild(
 ): Promise<Set<string>> {
   if (pageIds.length === 0) return new Set();
   const rows = (await tx.execute(sql`
-    SELECT x.id FROM unnest(${textArray(pageIds)}) AS x(id)
-     WHERE (SELECT r.render_fingerprint FROM deploy_runs r WHERE r.id = ${runId}::uuid) ? ('page:' || x.id)
+    SELECT substring(k.key from 6) AS id
+      FROM deploy_runs r CROSS JOIN LATERAL jsonb_object_keys(r.render_fingerprint) AS k(key)
+     WHERE r.id = ${runId}::uuid AND k.key = ANY(${textArray(pageIds.map((id) => `page:${id}`))})
   `)) as unknown as { id: string }[];
   return new Set(rows.map((r) => r.id));
 }

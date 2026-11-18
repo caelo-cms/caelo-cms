@@ -27,11 +27,21 @@ counted where it shows, by the same rule in both lists
 `loadPartPlacements` (`ops/content/part-placement.ts`) reads where each
 part renders: a content instance through `loadContentInstanceReach`
 (placements, parents, module defaults, shared lists), a module through its
-instances plus the layouts whose chrome places it. A module's instances
-are read up to `PART_INSTANCE_CAP` (100); one with more counts as shown on
-many pages, so the cost follows the changed parts, never how widely a
-section design is used. Templates, the layout, the theme, lists, list and
-page types and plugin data stay site-wide by nature.
+instances plus the layouts whose chrome places it. Every read is bounded
+per part: a module's instances up to `PART_INSTANCE_CAP` (100), an
+instance's placements up to `PART_PAGE_CAP` (100, the reach's
+`placementsPerSource`); past either it shows "on many pages". All parts
+are read in one batch (about twenty statements however many changed), so
+the cost follows the changed parts, never how widely a section design or a
+synced content is used: on a 5,000-page bench with 208 changed parts and a
+CTA synced on every page, `chat.list_open_changes` spent 13.8 ms in
+Postgres (11.9 ms before) and `deploy.publish_preview` 19.2 ms (3.8 ms).
+Templates, the layout, the theme, lists, list and page types and plugin
+data stay site-wide by nature.
+
+Orphaned content (no page shows it) is not a finding of the review or the
+quality check, which audit what visitors get. Where it comes from and how
+it is cleaned up is #1626.
 
 ## Draft changes (before Stage)
 
@@ -86,7 +96,10 @@ the build that is live again. Two sources, both recorded by every Stage:
 tested). A staged change to a page the staged build does not publish (a
 draft page) is not listed. Section designs and content count where they
 show on main, which is what the last Stage merged, counting only the
-pages the staged build publishes (above). The security headers count as
+pages the staged build publishes (above). When a later Stage merged on top
+of the staged build and its build did not finish (it failed, or still
+runs), main is newer than the build: the lists are still shown and the
+notice says so ("Stage again for an exact list"). The security headers count as
 a setting when both builds recorded them and they differ.
 
 **Look before the click.** Every new or changed page links to it on

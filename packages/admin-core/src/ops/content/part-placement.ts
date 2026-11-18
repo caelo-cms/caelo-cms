@@ -14,8 +14,12 @@
  *     and every nested use holds one), and on every page of a layout whose
  *     chrome places it. Its instances are read up to
  *     {@link PART_INSTANCE_CAP}; a module with more counts as shown on many
- *     pages without reading them all, so the cost is bounded by the
- *     changed parts, never by how widely a section design is used.
+ *     pages without reading them all.
+ *
+ * Every read is bounded per part (instances per module, placements per
+ * instance: {@link PART_PAGE_CAP}), so the cost follows the changed parts,
+ * never how widely a section design or a synced content is used. All parts
+ * are read in one batch, about twenty statements whatever their number.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
@@ -25,6 +29,13 @@ import type { PartPage, PartPlacement } from "./part-where.js";
 
 /** Instances of one module read at most; a module with more shows on many pages. */
 export const PART_INSTANCE_CAP = 100;
+
+/**
+ * Placements read at most per content instance (and per module whose
+ * default shows it); one with more shows on many pages. A CTA synced on
+ * every page of a 50,000-page site costs this many rows, not 50,000.
+ */
+export const PART_PAGE_CAP = 100;
 
 /** A changed part whose placement decides how it is listed. */
 export interface PartRef {
@@ -73,35 +84,37 @@ export async function loadPartPlacements(
   )) {
     instancesOf.get(ci.moduleId)?.push(ci.contentInstanceId);
   }
-  const reach = await loadContentInstanceReach(tx, branchId, [
-    ...instanceIds,
-    ...[...instancesOf.values()].flat(),
-  ]);
+  const reach = await loadContentInstanceReach(
+    tx,
+    branchId,
+    [...instanceIds, ...[...instancesOf.values()].flat()],
+    { placementsPerSource: PART_PAGE_CAP },
+  );
   const chrome = moduleIds.length > 0 ? await layoutsPlacingModules(tx, branchId, moduleIds) : null;
 
   const placementOfInstances = (ids: readonly string[]) => {
     const pages = new Map<string, PartPage>();
     const lists = new Set<string>();
     let inLayout = false;
+    let morePages = false;
     for (const id of ids) {
       const r = reach.get(id);
       if (!r) throw new Error(`loadPartPlacements: no reach for content instance ${id}`);
       for (const p of r.pages) pages.set(p.pageId, p);
       for (const l of r.viaLists) lists.add(l.name);
       if (r.chromeLayouts.length > 0) inLayout = true;
+      if (r.morePages) morePages = true;
     }
     return {
       pages: [...pages.values()].sort((a, b) => a.path.localeCompare(b.path)),
       lists: [...lists].sort(),
       inLayout,
+      morePages,
     };
   };
 
   for (const id of instanceIds) {
-    out.set(partKey({ kind: "contentInstance", id }), {
-      ...placementOfInstances([id]),
-      morePages: false,
-    });
+    out.set(partKey({ kind: "contentInstance", id }), placementOfInstances([id]));
   }
   for (const id of moduleIds) {
     const instances = instancesOf.get(id) ?? [];
@@ -109,7 +122,7 @@ export async function loadPartPlacements(
     out.set(partKey({ kind: "module", id }), {
       ...placed,
       inLayout: placed.inLayout || (chrome?.get(id)?.length ?? 0) > 0,
-      morePages: instances.length > PART_INSTANCE_CAP,
+      morePages: placed.morePages || instances.length > PART_INSTANCE_CAP,
     });
   }
   return out;

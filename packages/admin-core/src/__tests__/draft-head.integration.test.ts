@@ -352,6 +352,54 @@ describe("#1268 draft head", () => {
     ]);
   });
 
+  it("reads a bounded sample of a widely used section and still counts it as site-wide", async () => {
+    const tile = await seedModule("bounded");
+    const [first] = await seedPages("bounded", 1);
+    if (!first) throw new Error("no page");
+    // 101 placements of one synced content (one more than PART_PAGE_CAP),
+    // on pages of their own, and 102 unused instances of another section
+    // (one more than PART_INSTANCE_CAP, plus the one the chat deletes).
+    const synced = await asSystem(async (tx) => {
+      const tpl = (await tx`SELECT template_id::text AS id FROM pages WHERE id = ${first}::uuid`) as {
+        id: string;
+      }[];
+      const ci = (await tx`
+        INSERT INTO content_instances (module_id, "values") VALUES (${tile}::uuid, '{}'::jsonb)
+        RETURNING id::text AS id`) as { id: string }[];
+      await tx.unsafe(`
+        WITH p AS (
+          INSERT INTO pages (slug, title, short_title, template_id, page_type_confirmed, current_path, status)
+          SELECT '${PFX}bounded-x-' || i, 'x ' || i, 'x ' || i, '${tpl[0]?.id}', true, '/${PFX}bounded-x-' || i, 'draft'
+            FROM generate_series(1, 101) i RETURNING id)
+        INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        SELECT p.id, 'content', 0, '${tile}', '${ci[0]?.id}', 'synced' FROM p`);
+      return ci[0]?.id ?? "";
+    });
+    const unused = await seedModule("bounded-unused");
+    const sampled = await asSystem(async (tx) => {
+      const rows = (await tx.unsafe(`
+        INSERT INTO content_instances (module_id, "values")
+        SELECT '${unused}', '{}'::jsonb FROM generate_series(1, 102)
+        RETURNING id::text AS id`)) as { id: string }[];
+      return rows[0]?.id ?? "";
+    });
+    const a = await chat("bounded A");
+    await op(a.ctx, "content_instances.set_values", { id: synced, values: {} });
+    await writeModule(a, unused, "<p>bounded v1</p>");
+    // A pending deletion of a sampled instance must not shrink the sample
+    // below the cap (Codex review of #1658).
+    await op(a.ctx, "content_instances.delete", { id: sampled });
+
+    const changes = await op<{
+      chats: { chatSessionId: string; summary: { rows: { title: string; what: string }[] } }[];
+    }>(SYS, "chat.list_open_changes", {});
+    const rows = changes.chats.find((c) => c.chatSessionId === a.id)?.summary.rows ?? [];
+    expect(rows.map((r) => `${r.title}:${r.what}`).sort()).toEqual([
+      "bounded-unused:Section design · on many pages",
+      "bounded:Shared content · on many pages",
+    ]);
+  });
+
   it("pages the changes overview with a keyset cursor", async () => {
     const chats: Chat[] = [];
     for (const i of [1, 2, 3]) {

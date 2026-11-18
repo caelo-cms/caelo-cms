@@ -199,7 +199,10 @@ export function liveInstancesSql(branchId: string | null, liveFilter: SQL): SQL 
  *
  * @param liveLimitPerModule read at most this many live instances per
  *   module (the branch's pending ones come on top), for a caller that only
- *   needs to know whether a module is used more than that.
+ *   needs to know whether a module is used more than that. An instance
+ *   with a pending state on the branch never counts towards the limit: the
+ *   head overlay reads it (and drops it when the branch deleted it), so a
+ *   sampled row the overlay removes could otherwise hide that more exist.
  */
 export async function findContentInstancesOfModules(
   tx: TransactionRunner,
@@ -210,6 +213,12 @@ export async function findContentInstancesOfModules(
   if (moduleIds.length === 0) return [];
   const wanted = new Set(moduleIds);
   const branchId = chatBranchId ?? null;
+  const notPending = branchId
+    ? sql`AND (SELECT true FROM draft_pending_entities h
+                WHERE h.chat_branch_id = ${branchId}::uuid
+                  AND h.entity_kind = 'contentInstance' AND h.entity_id = ci.id
+                LIMIT 1) IS NULL`
+    : sql``;
   return loadInstancesInView(
     tx,
     branchId,
@@ -221,6 +230,7 @@ export async function findContentInstancesOfModules(
            CROSS JOIN LATERAL (
              SELECT ci.id FROM content_instances ci
               WHERE ci.module_id = m.id AND ci.deleted_at IS NULL AND ${visibleInstanceSql(branchId)}
+                ${notPending}
               LIMIT ${liveLimitPerModule}
            ) hit)`,
     // An instance never changes its module, so filtering the head rows by
