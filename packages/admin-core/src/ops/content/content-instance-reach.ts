@@ -580,7 +580,7 @@ async function moduleDefaultParents(
  * the branch sees the chrome (its pending `layout_modules.set` snapshots),
  * the same view the preview renders.
  */
-async function layoutsPlacingModules(
+export async function layoutsPlacingModules(
   tx: Tx,
   branchId: string | null,
   moduleIds: readonly string[],

@@ -6,6 +6,33 @@ words (Draft, Staged, Live) and count what an operator recognises: one
 page, however many of its parts changed, or one part that shows on many
 pages.
 
+## Where a part counts
+
+A section design (module) or a section's content (content instance) is
+counted where it shows, by the same rule in both lists
+(`ops/content/part-where.ts`):
+
+- **On one page:** a change of that page. Every placement holds its own
+  content instance since v0.12, so editing one section's text is, by
+  entity, a content-instance change; the operator sees a changed page. A
+  new section design made for a new page belongs to that page.
+- **On no page:** not listed. An unused section design or content nothing
+  shows changes nothing for a visitor. A conversation with only such
+  changes reads "Nothing visitors see".
+- **On two or more pages, in a layout's chrome or in a shared list:**
+  site-wide, saying where: "Section design · on 4 pages", "Shared content
+  · in the site layout". Unnamed content is named by its section design,
+  never by its id.
+
+`loadPartPlacements` (`ops/content/part-placement.ts`) reads where each
+part renders: a content instance through `loadContentInstanceReach`
+(placements, parents, module defaults, shared lists), a module through its
+instances plus the layouts whose chrome places it. A module's instances
+are read up to `PART_INSTANCE_CAP` (100); one with more counts as shown on
+many pages, so the cost follows the changed parts, never how widely a
+section design is used. Templates, the layout, the theme, lists, list and
+page types and plugin data stay site-wide by nature.
+
 ## Draft changes (before Stage)
 
 The Staging button reads "N draft changes": the changes in the
@@ -28,7 +55,8 @@ Content → Changes, which adds Discard.
   part, worded by rules (no AI call). A page is new when its row exists
   only in the draft (`pages.chat_branch_id`), removed when its newest
   draft state is deleted; one made and deleted again in the draft is left
-  out.
+  out. Section designs and content count where they show as the chat's
+  branch sees the site (above), draft pages included.
 - **Open chat** links `/edit?chat=<id>&page=<anchor page>`: without the
   page, a page-bound chat is not found among the shown page's chats.
 
@@ -56,8 +84,21 @@ the build that is live again. Two sources, both recorded by every Stage:
 
 `deploy/publish-preview.ts` sorts both into the groups (pure, unit
 tested). A staged change to a page the staged build does not publish (a
-draft page) is not listed. The security headers count as a setting when
-both builds recorded them and they differ.
+draft page) is not listed. Section designs and content count where they
+show on main, which is what the last Stage merged, counting only the
+pages the staged build publishes (above). The security headers count as
+a setting when both builds recorded them and they differ.
+
+**Look before the click.** Every new or changed page links to it on
+staging, and every site-wide part to a page that shows it (its first page,
+or the home page for layout chrome and lists). On an install with a
+protected staging host the link goes through "Open staging"
+(`/staging/open?path=`, which signs the operator in there); a development
+checkout links to its local staging port; aws / azure, which have no
+staging site yet, show no links. `GET /api/deploy/publish-preview` says
+which (`staging`, `#lib/server/staging-link.ts`); `#lib/staging-href.ts`
+builds the links in the browser. A removed page has no link: staging no
+longer has it.
 
 When the builds cannot be compared, the lists stay empty and `notice`
 says why, never a list that reads complete but is not: nothing staged

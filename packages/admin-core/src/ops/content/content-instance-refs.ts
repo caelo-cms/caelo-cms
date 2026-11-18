@@ -196,18 +196,33 @@ export function liveInstancesSql(branchId: string | null, liveFilter: SQL): SQL 
  * Content instances (the caller's view) that fill any of `moduleIds` —
  * the instances a module's field default renders through when they leave
  * that field unset (#627).
+ *
+ * @param liveLimitPerModule read at most this many live instances per
+ *   module (the branch's pending ones come on top), for a caller that only
+ *   needs to know whether a module is used more than that.
  */
 export async function findContentInstancesOfModules(
   tx: TransactionRunner,
   chatBranchId: string | null | undefined,
   moduleIds: readonly string[],
+  liveLimitPerModule?: number,
 ): Promise<ContentInstanceRef[]> {
   if (moduleIds.length === 0) return [];
   const wanted = new Set(moduleIds);
+  const branchId = chatBranchId ?? null;
   return loadInstancesInView(
     tx,
-    chatBranchId ?? null,
-    sql`ci.module_id = ANY(${uuidArray(moduleIds)})`,
+    branchId,
+    liveLimitPerModule === undefined
+      ? sql`ci.module_id = ANY(${uuidArray(moduleIds)})`
+      : // The inner alias is `ci` too: visibleInstanceSql names it.
+        sql`ci.id IN (
+          SELECT hit.id FROM unnest(${uuidArray(moduleIds)}) AS m(id)
+           CROSS JOIN LATERAL (
+             SELECT ci.id FROM content_instances ci
+              WHERE ci.module_id = m.id AND ci.deleted_at IS NULL AND ${visibleInstanceSql(branchId)}
+              LIMIT ${liveLimitPerModule}
+           ) hit)`,
     // An instance never changes its module, so filtering the head rows by
     // module drops whole instances, never an owner's newer state: one head
     // read, one snapshot row per pending instance of these modules.

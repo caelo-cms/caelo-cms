@@ -15,6 +15,11 @@
  * `build_id`), so after a rollback the review compares with the build
  * that is live again.
  *
+ * A section design or a section's content counts where it shows on main
+ * (what the last Stage merged): on one published page as a change of that
+ * page, on none not at all, on more as a site-wide part that says where
+ * (ops/content/part-placement.ts, the rule the Draft changes summary uses).
+ *
  * When the builds cannot be compared (nothing staged, a build from an
  * older release, live built directly by an Owner's production build), the
  * lists stay empty and `notice` says why: never a list that reads complete
@@ -33,11 +38,14 @@ import { z } from "zod";
 import {
   classifyRelease,
   type FingerprintChange,
+  placedPartsOfRelease,
   type SiteWideChange,
   type StagedEntity,
   splitFingerprintKey,
 } from "../deploy/publish-preview.js";
 import { SITE_WIDE_WHAT } from "./chat/draft-summary.js";
+import { loadPartPlacements, partKey, placementOf } from "./content/part-placement.js";
+import { wherePartShows } from "./content/part-where.js";
 import { renderedSettingLabel } from "./quality/render-fingerprint.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -73,7 +81,11 @@ const outputSchema = z.object({
   /** Why the lists are empty or incomplete; null when they are exact. */
   notice: z.string().nullable(),
   pages: z.object({ new: pageGroupSchema, changed: pageGroupSchema, removed: pageGroupSchema }),
-  /** Parts that show on many pages: section designs, templates, layout, lists, theme, plugins. */
+  /**
+   * Parts that show on many pages: section designs and content shown on
+   * more than one page (one shown on one page is a change of that page),
+   * templates, layout, lists, theme, plugins.
+   */
   siteWide: z.array(
     z
       .object({
@@ -81,7 +93,10 @@ const outputSchema = z.object({
         kind: z.string(),
         change: z.enum(["new", "changed", "removed"]),
         title: z.string(),
+        /** What it is, and where it shows: "Section design · on 4 pages". */
         what: z.string(),
+        /** A published page that shows it, to look at on staging; null when none is named. */
+        samplePath: z.string().nullable(),
       })
       .strict(),
   ),
@@ -207,12 +222,28 @@ export const publishPreviewOp = defineOperation({
     const stagedEntities = ordered
       ? await stagedBetween(tx, iso(source.started_at), iso(staged.started_at))
       : [];
-    const publishedInStaged = await pagesInBuild(
-      tx,
-      staged.id,
-      stagedEntities.filter((e) => e.kind === "page").map((e) => e.id),
+    // Where each changed section design and content shows on main, which
+    // is what the last Stage merged.
+    const parts = placedPartsOfRelease({ fingerprint, staged: stagedEntities });
+    const placements = await loadPartPlacements(tx, null, parts);
+    const publishedInStaged = await pagesInBuild(tx, staged.id, [
+      ...new Set([
+        ...stagedEntities.filter((e) => e.kind === "page").map((e) => e.id),
+        ...[...placements.values()].flatMap((p) => p.pages.map((page) => page.pageId)),
+      ]),
+    ]);
+    const where = new Map(
+      parts.map((p) => [
+        partKey(p),
+        wherePartShows(placementOf(placements, p), (pageId) => publishedInStaged.has(pageId)),
+      ]),
     );
-    const release = classifyRelease({ fingerprint, staged: stagedEntities, publishedInStaged });
+    const release = classifyRelease({
+      fingerprint,
+      staged: stagedEntities,
+      publishedInStaged,
+      where,
+    });
 
     return ok({
       ...base,
@@ -381,8 +412,10 @@ async function labelSiteWide(
     UNION ALL SELECT 'list', id::text, COALESCE(name, slug) FROM lists WHERE id = ANY(${ids})
     UNION ALL SELECT 'listType', id::text, COALESCE(definition->>'name', slug) FROM list_types WHERE id = ANY(${ids})
     UNION ALL SELECT 'pageType', id::text, COALESCE(definition->>'name', slug) FROM page_types WHERE id = ANY(${ids})
-    UNION ALL SELECT 'contentInstance', id::text, COALESCE(display_name, slug)
-                FROM content_instances WHERE id = ANY(${ids})
+    -- Every placement's own content is unnamed: its section design names it.
+    UNION ALL SELECT 'contentInstance', ci.id::text, COALESCE(ci.display_name, ci.slug, m.display_name)
+                FROM content_instances ci JOIN modules m ON m.id = ci.module_id
+               WHERE ci.id = ANY(${ids})
   `)) as unknown as { kind: string; id: string; label: string | null }[];
   const label = new Map(rows.map((r) => [`${r.kind}:${r.id}`, r.label]));
   const order = Object.keys(SITE_WIDE_WHAT);
@@ -403,8 +436,9 @@ async function labelSiteWide(
         kind: p.kind,
         change: p.change,
         // A part deleted since has no row left to name it.
-        title: named ?? (p.change === "removed" ? "A deleted part" : p.id),
-        what,
+        title: named ?? "A deleted part",
+        what: p.shows === null ? what : `${what} · ${p.shows}`,
+        samplePath: p.samplePath,
       };
     })
     .sort((a, b) => rank(a.kind) - rank(b.kind) || a.title.localeCompare(b.title));

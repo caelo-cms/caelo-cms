@@ -66,8 +66,32 @@ test.beforeAll(() => {
       const s = await run(human, "chat.create_session", { title: tag + " " + title });
       return { id: s.chatSessionId, ctx: { ...human, actorKind: "ai", chatBranchId: s.chatBranchId, chatTaskId: s.chatSessionId } };
     };
-    const moduleOf = async (slug) =>
-      (await run(human, "modules.create", { slug: tag + "-" + slug, displayName: tag + " " + slug, html: "<p>v0</p>" })).moduleId;
+    // Two draft pages of their own: a section design counts where it shows
+    // (on one page it is a change of that page, on none it is not listed).
+    const { templateId } = await run(human, "templates.create", {
+      pageType: "home", slug: tag + "-tpl", displayName: tag + " template",
+      html: '<body><caelo-slot name="content">_</caelo-slot></body>',
+    });
+    const pageIds = [];
+    for (const n of [1, 2]) {
+      pageIds.push((await run(human, "pages.create", {
+        slug: tag + "-page-" + n, title: tag + " page " + n, templateId, status: "draft",
+      })).pageId);
+    }
+    const moduleOf = async (slug) => {
+      const moduleId = (await run(human, "modules.create", { slug: tag + "-" + slug, displayName: tag + " " + slug, html: "<p>v0</p>" })).moduleId;
+      const db = new SQL(process.env.ADMIN_DATABASE_URL);
+      await db.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        for (const pageId of pageIds) {
+          const ci = (await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${moduleId}::uuid, '{}'::jsonb) RETURNING id\`)[0].id;
+          await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+            VALUES (\${pageId}::uuid, 'content', (SELECT count(*)::int FROM page_modules WHERE page_id = \${pageId}::uuid), \${moduleId}::uuid, \${ci}::uuid, 'unsynced')\`;
+        }
+      });
+      await db.end();
+      return moduleId;
+    };
     // C is older; B is the conversation the operator has on screen.
     const c = await open("Footer work");
     await run(c.ctx, "modules.update", { moduleId: await moduleOf("footer"), html: "<p>from C</p>" });
@@ -102,6 +126,10 @@ test.afterAll(() => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx\`DELETE FROM deploy_runs WHERE id = \${process.env.RUN_ID}::uuid\`;
       await tx\`UPDATE chat_sessions SET archived_at = now() WHERE title LIKE \${process.env.DR_TAG + "%"}\`;
+      await tx\`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE \${process.env.DR_TAG + "%"})\`;
+      await tx\`DELETE FROM pages WHERE slug LIKE \${process.env.DR_TAG + "%"}\`;
+      await tx\`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE \${process.env.DR_TAG + "%"})\`;
+      await tx\`DELETE FROM templates WHERE slug LIKE \${process.env.DR_TAG + "%"}\`;
     });
     await sql.end();
     `,
@@ -149,7 +177,9 @@ test("the Staging menu lists the operator's conversations, this one first and ti
 
   await other.getByTestId("draft-chat-details-toggle").click();
   await expect(other.getByTestId("draft-chat-details")).toContainText(`${TAG} footer`);
-  await expect(other.getByTestId("draft-chat-details")).toContainText("Section design");
+  await expect(other.getByTestId("draft-chat-details")).toContainText(
+    "Section design · on 2 pages",
+  );
   await other.getByTestId("draft-chat-select").check();
   await expect(page.getByTestId("stage-selected")).toHaveText("Stage selected (2)");
 });
@@ -182,7 +212,22 @@ function release(stagedRunId: string) {
         removed: { total: 1, items: [page("06")] },
       },
       siteWide: [
-        { key: "list:l1", kind: "list", change: "changed", title: "Main navigation", what: "List" },
+        {
+          key: "list:l1",
+          kind: "list",
+          change: "changed",
+          title: "Main navigation",
+          what: "List",
+          samplePath: null,
+        },
+        {
+          key: "module:m1",
+          kind: "module",
+          change: "changed",
+          title: "Pricing table",
+          what: "Section design · on 4 pages",
+          samplePath: "/p-02",
+        },
       ],
       settings: [{ key: "setting:organization_json", title: "Organization JSON-LD" }],
     },
@@ -217,6 +262,7 @@ function release(stagedRunId: string) {
       draft: [],
       problem: null,
     },
+    staging: { kind: "gate" },
   };
 }
 
@@ -254,6 +300,13 @@ test("Publish live opens the review first: numbers, examples, Publish live at th
   await expect(pages.locator("li")).toHaveCount(3);
   await pages.getByRole("button", { name: "Show all 6" }).click();
   await expect(pages.locator("li")).toHaveCount(6);
+  // A new or changed page opens on staging, to look at it again; a removed one is not there.
+  await expect(pages.getByRole("link", { name: "Page 01" })).toHaveAttribute(
+    "href",
+    "/staging/open?path=%2Fp-01",
+  );
+  await expect(pages.getByRole("link", { name: "Page 06" })).toHaveCount(0);
+  await expect(pages.getByText("Page 06")).toBeVisible();
 
   // 48 moved posts are one row with their count.
   const redirects = review.getByTestId("publish-redirects-going");
@@ -263,7 +316,14 @@ test("Publish live opens the review first: numbers, examples, Publish live at th
   await review.getByLabel("Search redirects").fill("faq");
   await expect(review.getByText("1 of 50")).toBeVisible();
 
-  await expect(review.getByTestId("publish-review-site-wide")).toContainText("Main navigation");
+  const siteWide = review.getByTestId("publish-review-site-wide");
+  await expect(siteWide).toContainText("Main navigation");
+  // A section design on several pages says where, and opens one of them.
+  await expect(siteWide).toContainText("Section design · on 4 pages");
+  await expect(siteWide.getByRole("link", { name: "Pricing table" })).toHaveAttribute(
+    "href",
+    "/staging/open?path=%2Fp-02",
+  );
   await expect(review.getByTestId("publish-review-settings")).toContainText("Organization JSON-LD");
   await expect(review.getByTestId("publish-review-drafts")).toContainText(
     "Your 2 draft changes are not in this build",

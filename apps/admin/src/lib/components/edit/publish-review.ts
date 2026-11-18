@@ -12,6 +12,7 @@
  */
 
 import type { PublishPreview } from "@caelo-cms/admin-core";
+import { type StagingLinks, stagingPageHref } from "#lib/staging-href.js";
 
 /** A redirect change, as `redirects.release_plan` lists it. */
 export interface PlannedRedirect {
@@ -35,6 +36,21 @@ export interface RedirectPlan {
 export interface PublishReviewData {
   readonly preview: PublishPreview;
   readonly redirects: RedirectPlan;
+  /** How its pages link to staging, to look at them before the click. */
+  readonly staging: StagingLinks;
+}
+
+/**
+ * The staging link of a listed page, to look at it before publishing; null
+ * for a removed page (staging no longer has it), a page without a path,
+ * or an install without a staging site.
+ */
+export function reviewPageHref(
+  staging: StagingLinks,
+  page: Pick<ReviewPage, "path" | "change">,
+): string | null {
+  if (page.change === "removed" || page.path === null) return null;
+  return stagingPageHref(staging, page.path);
 }
 
 /** One redirect rule as text: `from → to`, or `from (removed)`. */
@@ -142,7 +158,9 @@ export function pageTotal(preview: PublishPreview): number {
 }
 
 /** Whether the release changes nothing a visitor sees: no page, part, setting or redirect. */
-export function shipsNothingVisible(data: PublishReviewData): boolean {
+export function shipsNothingVisible(
+  data: Pick<PublishReviewData, "preview" | "redirects">,
+): boolean {
   return (
     pageTotal(data.preview) === 0 &&
     data.preview.siteWide.length === 0 &&

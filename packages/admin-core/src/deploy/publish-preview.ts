@@ -16,9 +16,17 @@
  *     are the content changes the fingerprint (code and structure only)
  *     does not see.
  *
+ * A section design (module) or a section's content (content instance) is
+ * counted where it shows (ops/content/part-where.ts): on one published
+ * page it is a change of that page, on none it is not listed, on more it
+ * is a site-wide change that says where it shows. Every placement holds
+ * its own content instance, so most content changes are page changes.
+ *
  * This file is the pure part: it sorts both into the groups the review
  * shows. Reading and labelling are the op's (ops/deploy-publish-preview.ts).
  */
+
+import { describeWhere, type PartWhere, samplePathOf } from "../ops/content/part-where.js";
 
 /** One entity whose fingerprint differs between the live and the staged build. */
 export interface FingerprintChange {
@@ -42,6 +50,10 @@ export interface SiteWideChange {
   readonly kind: string;
   readonly id: string;
   readonly change: "new" | "changed" | "removed";
+  /** Where it shows ("on 4 pages", "in the site layout"); null for a kind that is site-wide by nature. */
+  readonly shows: string | null;
+  /** A page that shows it, to look at; null when it has none to name. */
+  readonly samplePath: string | null;
 }
 
 /** The release, sorted into the review's groups (ids only; the op labels them). */
@@ -72,17 +84,49 @@ const STAGED_SITE_WIDE = new Set([
 
 const CHANGE_OF = { added: "new", changed: "changed", removed: "removed" } as const;
 
+/** Kinds counted where they show ({@link PartWhere}) instead of as site-wide by nature. */
+const PLACED_KINDS: ReadonlySet<string> = new Set(["module", "contentInstance"]);
+
+/** A part whose placement decides its group. */
+export interface PlacedPart {
+  readonly kind: "module" | "contentInstance";
+  readonly id: string;
+}
+
+/**
+ * The parts of a release whose placement {@link classifyRelease} needs:
+ * every new or changed module and every staged content instance. A module
+ * only the live build has (removed) shows nowhere any more and stays a
+ * removed site-wide part.
+ */
+export function placedPartsOfRelease(args: {
+  readonly fingerprint: readonly FingerprintChange[];
+  readonly staged: readonly StagedEntity[];
+}): PlacedPart[] {
+  const parts = new Map<string, PlacedPart>();
+  const add = (kind: string, id: string) => {
+    if (kind === "module" || kind === "contentInstance") parts.set(`${kind}:${id}`, { kind, id });
+  };
+  for (const f of args.fingerprint) if (f.change !== "removed") add(f.kind, f.id);
+  for (const s of args.staged) add(s.kind, s.id);
+  return [...parts.values()];
+}
+
 /**
  * Sort a release's differences into the review's groups.
  *
  * @param args.publishedInStaged - the pages the staged build publishes: a
  *   staged content change to a draft page does not go live, so it is not
  *   listed.
+ * @param args.where - where each of {@link placedPartsOfRelease} shows,
+ *   counting only published pages, keyed `<kind>:<id>`; a part missing
+ *   from it is a caller bug and throws.
  */
 export function classifyRelease(args: {
   readonly fingerprint: readonly FingerprintChange[];
   readonly staged: readonly StagedEntity[];
   readonly publishedInStaged: ReadonlySet<string>;
+  readonly where: ReadonlyMap<string, PartWhere>;
 }): ReleaseClassification {
   const newPages = new Set<string>();
   const changedPages = new Set<string>();
@@ -90,6 +134,27 @@ export function classifyRelease(args: {
   const siteWide = new Map<string, SiteWideChange>();
   const settings = new Set<string>();
   let theme: SiteWideChange | null = null;
+  /** Parts shown on one page, attributed once the new and removed pages are known. */
+  const onOnePage = new Set<string>();
+
+  const addPart = (kind: string, id: string, change: SiteWideChange["change"]) => {
+    const key = `${kind}:${id}`;
+    if (siteWide.has(key)) return;
+    if (!PLACED_KINDS.has(kind) || change === "removed") {
+      siteWide.set(key, { kind, id, change, shows: null, samplePath: null });
+      return;
+    }
+    const w = args.where.get(key);
+    if (w === undefined) {
+      throw new Error(`classifyRelease: no placement for ${key} (read placedPartsOfRelease first)`);
+    }
+    if (w.kind === "nowhere") return;
+    if (w.kind === "page") {
+      onOnePage.add(w.page.pageId);
+      return;
+    }
+    siteWide.set(key, { kind, id, change, shows: describeWhere(w), samplePath: samplePathOf(w) });
+  };
 
   for (const f of args.fingerprint) {
     if (f.kind === "page") {
@@ -103,10 +168,10 @@ export function classifyRelease(args: {
       // theme key removed and one added — one change for the operator,
       // named after the theme that goes live.
       if (theme === null || f.change === "added") {
-        theme = { kind: "theme", id: f.id, change: "changed" };
+        theme = { kind: "theme", id: f.id, change: "changed", shows: null, samplePath: null };
       }
     } else if (FINGERPRINT_SITE_WIDE.has(f.kind)) {
-      siteWide.set(`${f.kind}:${f.id}`, { kind: f.kind, id: f.id, change: CHANGE_OF[f.change] });
+      addPart(f.kind, f.id, CHANGE_OF[f.change]);
     }
   }
 
@@ -117,11 +182,13 @@ export function classifyRelease(args: {
       }
       changedPages.add(s.id);
     } else if (s.kind === "theme") {
-      theme ??= { kind: "theme", id: s.id, change: "changed" };
+      theme ??= { kind: "theme", id: s.id, change: "changed", shows: null, samplePath: null };
     } else if (STAGED_SITE_WIDE.has(s.kind)) {
-      const key = `${s.kind}:${s.id}`;
-      if (!siteWide.has(key)) siteWide.set(key, { kind: s.kind, id: s.id, change: "changed" });
+      addPart(s.kind, s.id, "changed");
     }
+  }
+  for (const pageId of onOnePage) {
+    if (!newPages.has(pageId) && !removedPages.has(pageId)) changedPages.add(pageId);
   }
 
   return {

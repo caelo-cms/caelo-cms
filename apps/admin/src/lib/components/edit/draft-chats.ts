@@ -54,7 +54,9 @@ export function statChips(summary: DraftSummary): string[] {
   if (summary.siteWide > 0) {
     chips.push(countOf(summary.siteWide, "site-wide change", "site-wide changes"));
   }
-  return chips;
+  // Only changes no page shows (an unused section design): Stage merges
+  // them, but nothing changes for a visitor.
+  return chips.length > 0 ? chips : ["Nothing visitors see"];
 }
 
 /** Where the conversation works, under its title. */
