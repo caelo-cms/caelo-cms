@@ -4,16 +4,25 @@ import { stagingServedByGateway } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
+import type { StagingLinks } from "../staging-href.js";
 import { getQueryContext } from "./query.js";
 
+export { openStagingHref } from "../staging-href.js";
+
+/** Where a development checkout serves staging when CAELO_STAGING_BASE_URL is unset (deploy.trigger's own default). */
+const DEV_STAGING_BASE_URL = "http://localhost:8081";
+
 /**
- * #650 — the admin's link to a page on the protected staging site: the
- * "Open staging" route, which signs the operator in on staging.<domain>
- * and lands on the page. Never the provider's preview origin.
+ * How this install links to its staging pages: through "Open staging" where
+ * staging has its own protected host, on the local staging port in a
+ * development checkout (no CAELO_PROVIDER), and not at all on a provider
+ * without a staging publisher yet (aws / azure, #749 / #750).
  */
-export function openStagingHref(path: string): string {
-  const p = path.startsWith("/") ? path : `/${path}`;
-  return p === "/" ? "/staging/open" : `/staging/open?path=${encodeURIComponent(p)}`;
+export function stagingLinksForAdmin(): StagingLinks {
+  const provider = process.env.CAELO_PROVIDER;
+  if (stagingServedByGateway(provider)) return { kind: "gate" };
+  if (provider) return null;
+  return { kind: "origin", origin: process.env.CAELO_STAGING_BASE_URL ?? DEV_STAGING_BASE_URL };
 }
 
 /**

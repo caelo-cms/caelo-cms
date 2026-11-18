@@ -26,7 +26,9 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { type BranchKind, sessionHasPendingSql } from "../../draft.js";
 import { drainTakeoverNotices } from "../../lock-takeover.js";
-import { draftSummarySchema, summarizeDraftChanges } from "./draft-summary.js";
+import { loadPartPlacements, partKey, placementOf } from "../content/part-placement.js";
+import { type PartWhere, wherePartShows } from "../content/part-where.js";
+import { draftSummarySchema, placedPartsOf, summarizeDraftChanges } from "./draft-summary.js";
 import { loadPendingChangesFor, pendingChangesSchema } from "./stage.js";
 
 /** Open chats per page at most (most recently active first). */
@@ -81,6 +83,16 @@ const openChatSchema = z
 
 /** One open chat as the overview renders it. */
 export type OpenChatChanges = z.infer<typeof openChatSchema>;
+
+/** The placements read for a branch of the listed chats (every one is read). */
+function whereOf(
+  byBranch: ReadonlyMap<string, Map<string, PartWhere>>,
+  branchId: string,
+): Map<string, PartWhere> {
+  const where = byBranch.get(branchId);
+  if (!where) throw new Error(`chat.list_open_changes: no placements read for branch ${branchId}`);
+  return where;
+}
 
 function iso(v: string | Date | null): string | null {
   if (v === null) return null;
@@ -166,6 +178,23 @@ export const listOpenChangesOp = defineOperation({
       tx,
       page.map((s) => ({ chatSessionId: s.id, branchId: s.chat_branch_id, kind: s.branch_kind })),
     );
+    // Where each changed section design and content shows, as its chat's
+    // branch sees the site: one read per branch (the draft chats share one).
+    const partsByBranch = new Map<string, ReturnType<typeof placedPartsOf>>();
+    for (const s of page) {
+      const changes = changesByChat.get(s.id);
+      const parts = partsByBranch.get(s.chat_branch_id) ?? [];
+      if (changes) parts.push(...placedPartsOf(changes));
+      partsByBranch.set(s.chat_branch_id, parts);
+    }
+    const whereByBranch = new Map<string, Map<string, PartWhere>>();
+    for (const [branchId, parts] of partsByBranch) {
+      const placements = await loadPartPlacements(tx, branchId, parts);
+      whereByBranch.set(
+        branchId,
+        new Map(parts.map((p) => [partKey(p), wherePartShows(placementOf(placements, p))])),
+      );
+    }
 
     const locks = (await tx.execute(sql`
       SELECT l.chat_session_id::text AS chat, l.entity_kind, l.entity_id::text AS entity_id, l.locked_at,
@@ -244,7 +273,7 @@ export const listOpenChangesOp = defineOperation({
         lastStagedAt: iso(s.last_staged_at),
         pendingCount,
         changes,
-        summary: summarizeDraftChanges(changes),
+        summary: summarizeDraftChanges(changes, whereOf(whereByBranch, s.chat_branch_id)),
         locks: own.map((l) => ({
           entityKind: l.entity_kind,
           entityId: l.entity_id,

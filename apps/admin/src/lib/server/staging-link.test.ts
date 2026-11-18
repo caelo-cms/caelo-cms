@@ -3,7 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { stagingOpenRedirect } from "./staging-link.js";
+import { stagingLinksForAdmin, stagingOpenRedirect } from "./staging-link.js";
 
 describe("stagingOpenRedirect", () => {
   it("answers 303 to the staging host without caching the one-time link", () => {
@@ -29,5 +29,41 @@ describe("stagingOpenRedirect", () => {
     );
     expect(route).toContain("stagingOpenRedirect(");
     expect(route).not.toMatch(/\bredirect\(/);
+  });
+});
+
+describe("stagingLinksForAdmin", () => {
+  function withEnv(env: Record<string, string | undefined>, run: () => void): void {
+    const before = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try {
+      run();
+    } finally {
+      for (const [k, v] of Object.entries(before)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+
+  it("goes through Open staging where staging has its own protected host", () => {
+    withEnv({ CAELO_PROVIDER: "gcp-firebase" }, () => {
+      expect(stagingLinksForAdmin()).toEqual({ kind: "gate" });
+    });
+  });
+
+  it("uses the local staging port in a development checkout", () => {
+    withEnv({ CAELO_PROVIDER: undefined, CAELO_STAGING_BASE_URL: "http://localhost:9999" }, () => {
+      expect(stagingLinksForAdmin()).toEqual({ kind: "origin", origin: "http://localhost:9999" });
+    });
+  });
+
+  it("links nowhere on a provider without a staging site yet", () => {
+    withEnv({ CAELO_PROVIDER: "aws" }, () => {
+      expect(stagingLinksForAdmin()).toBeNull();
+    });
   });
 });

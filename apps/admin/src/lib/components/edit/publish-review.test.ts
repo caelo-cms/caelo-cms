@@ -7,6 +7,7 @@ import {
   examplePages,
   groupRedirects,
   pageBreakdown,
+  reviewPageHref,
   reviewPages,
   shipsNothingVisible,
 } from "./publish-review.js";
@@ -103,5 +104,29 @@ describe("the review's form", () => {
       shipsNothingVisible({ preview: preview({}), redirects: { ...plan, goingLive: [] } }),
     ).toBe(true);
     expect(shipsNothingVisible({ preview: preview({}), redirects: plan })).toBe(false);
+  });
+});
+
+describe("reviewPageHref", () => {
+  it("opens a new or changed page on the protected staging host through Open staging", () => {
+    expect(reviewPageHref({ kind: "gate" }, { path: "/de/preise", change: "changed" })).toBe(
+      "/staging/open?path=%2Fde%2Fpreise",
+    );
+    expect(reviewPageHref({ kind: "gate" }, { path: "/", change: "new" })).toBe("/staging/open");
+  });
+
+  it("opens the page on the local staging port in a development checkout", () => {
+    expect(
+      reviewPageHref(
+        { kind: "origin", origin: "http://localhost:8081" },
+        { path: "/de/preise", change: "new" },
+      ),
+    ).toBe("http://localhost:8081/de/preise");
+  });
+
+  it("has no link for a removed page, a page without a path or an install without staging", () => {
+    expect(reviewPageHref({ kind: "gate" }, { path: "/old", change: "removed" })).toBeNull();
+    expect(reviewPageHref({ kind: "gate" }, { path: null, change: "changed" })).toBeNull();
+    expect(reviewPageHref(null, { path: "/de/preise", change: "changed" })).toBeNull();
   });
 });

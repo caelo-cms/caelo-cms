@@ -37,7 +37,7 @@ import {
   idNeedles,
 } from "./content-instance-refs.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
-import { findModulePagePlacements } from "./module-placements.js";
+import { findModulePagePlacements, placementRowsOfModules } from "./module-placements.js";
 
 /** One placement bound to a content_instance, as the caller sees it. */
 export interface PlacementInView {
@@ -65,22 +65,38 @@ type Tx = TransactionRunner;
  * set_values' blast radius, delete's guard) goes through here so they
  * agree with each other and with the preview. Ordered by path so
  * messages name pages deterministically.
+ *
+ * @param bound read at most `perInstance` live placements per instance and
+ *   add every instance that has more to `capped`, for a caller that only
+ *   needs to know whether an instance shows on more pages than that.
  */
 export async function listPlacementsInView(
   tx: Tx,
   contentInstanceIds: readonly string[],
   branchId: string | null,
+  bound?: { readonly perInstance: number; readonly capped: Set<string> },
 ): Promise<PlacementInView[]> {
   if (contentInstanceIds.length === 0) return [];
   const idList = uuidArray(contentInstanceIds);
-  const live = (await tx.execute(sql`
-    SELECT pm.content_instance_id::text AS content_instance_id, pm.page_id::text AS page_id,
+  const columns = sql`pm.content_instance_id::text AS content_instance_id, pm.page_id::text AS page_id,
            p.current_path AS path, p.slug AS page_slug, p.title AS page_title,
-           (p.deleted_at IS NOT NULL) AS page_deleted, pm.block_name, pm.position, pm.sync_mode
+           (p.deleted_at IS NOT NULL) AS page_deleted, pm.block_name, pm.position, pm.sync_mode`;
+  const live = (await tx.execute(
+    bound === undefined
+      ? sql`
+    SELECT ${columns}
     FROM page_modules pm
     JOIN pages p ON p.id = pm.page_id
-    WHERE pm.content_instance_id = ANY(${idList})
-  `)) as unknown as {
+    WHERE pm.content_instance_id = ANY(${idList})`
+      : sql`
+    SELECT x.* FROM unnest(${idList}) AS c(id)
+    CROSS JOIN LATERAL (
+      SELECT ${columns}
+        FROM page_modules pm
+        JOIN pages p ON p.id = pm.page_id
+       WHERE pm.content_instance_id = c.id
+       LIMIT ${bound.perInstance + 1}) x`,
+  )) as unknown as {
     content_instance_id: string;
     page_id: string;
     path: string;
@@ -91,6 +107,13 @@ export async function listPlacementsInView(
     position: number;
     sync_mode: "synced" | "unsynced";
   }[];
+  if (bound !== undefined) {
+    const perInstance = new Map<string, number>();
+    for (const r of live) {
+      perInstance.set(r.content_instance_id, (perInstance.get(r.content_instance_id) ?? 0) + 1);
+    }
+    for (const [id, n] of perInstance) if (n > bound.perInstance) bound.capped.add(id);
+  }
   const placements: PlacementInView[] = live.map((r) => ({
     contentInstanceId: r.content_instance_id,
     pageId: r.page_id,
@@ -330,6 +353,13 @@ export interface ContentInstanceReach {
   readonly chromeLayouts: readonly { readonly layoutId: string; readonly slug: string }[];
   /** Shared lists that show it or an ancestor — it renders wherever they render. */
   readonly viaLists: readonly ListParent[];
+  /**
+   * A bounded read (`placementsPerSource`) stopped before the end for it,
+   * an ancestor or a module whose default shows it: it renders on more
+   * pages than `pages` lists, and `placements` is a sample. Always false
+   * for an unbounded read.
+   */
+  readonly morePages: boolean;
 }
 
 /** Direct parents of any kind. */
@@ -348,12 +378,21 @@ export function isOrphan(r: ContentInstanceReach): boolean {
  * Walks parent instances upward (bounded by the renderer's depth), then
  * reads module defaults and shared lists once for the whole closure, and
  * the placements of every instance in it in one call.
+ *
+ * @param options.placementsPerSource read at most this many placements per
+ *   instance and per module default parent, and say `morePages` past it:
+ *   for a caller that only needs to know whether an instance shows on one
+ *   page or many (the change lists, part-placement.ts), so an instance
+ *   synced on every page costs that many rows, not the site. The delete
+ *   guard, the blast radius and the incremental Stage read everything.
  */
 export async function loadContentInstanceReach(
   tx: Tx,
   branchId: string | null,
   contentInstanceIds: readonly string[],
+  options: { readonly placementsPerSource?: number } = {},
 ): Promise<Map<string, ContentInstanceReach>> {
+  const bound = options.placementsPerSource;
   const out = new Map<string, ContentInstanceReach>();
   const ids = [...new Set(contentInstanceIds)];
   if (ids.length === 0) return out;
@@ -426,14 +465,24 @@ export async function loadContentInstanceReach(
   }
 
   // 3. Where the closure renders: placements, and the pages / layouts of parent modules.
-  const placements = await listPlacementsInView(tx, closure, branchId);
+  const cappedInstances = new Set<string>();
+  const placements = await listPlacementsInView(
+    tx,
+    closure,
+    branchId,
+    bound === undefined ? undefined : { perInstance: bound, capped: cappedInstances },
+  );
   const parentModuleIds = [
     ...new Set(closure.flatMap((id) => moduleParents.get(id) ?? []).map((m) => m.moduleId)),
   ];
   // A module default renders on a placement whose own content leaves that
   // field empty, so these are the pages it MAY render on — the right side
   // to err on for a blast radius — as the branch's page layouts place it.
-  const modulePages = await findModulePagePlacements(tx, branchId, parentModuleIds);
+  const cappedModules = new Set<string>();
+  const modulePages =
+    bound === undefined
+      ? await findModulePagePlacements(tx, branchId, parentModuleIds)
+      : await boundedModulePages(tx, branchId, parentModuleIds, bound, cappedModules);
   const moduleLayouts = await layoutsPlacingModules(tx, branchId, parentModuleIds);
 
   for (const id of ids) {
@@ -454,8 +503,11 @@ export async function loadContentInstanceReach(
     }
     const layouts = new Map<string, { layoutId: string; slug: string }>();
     const viaLists = new Map<string, ListParent>();
+    let morePages = false;
     for (const a of ancestors) {
+      if (cappedInstances.has(a)) morePages = true;
       for (const m of moduleParents.get(a) ?? []) {
+        if (cappedModules.has(m.moduleId)) morePages = true;
         for (const page of modulePages.get(m.moduleId) ?? []) pages.set(page.pageId, page);
         for (const l of moduleLayouts.get(m.moduleId) ?? []) layouts.set(l.layoutId, l);
       }
@@ -469,9 +521,34 @@ export async function loadContentInstanceReach(
       pages: [...pages.values()].sort((a, b) => a.path.localeCompare(b.path)),
       chromeLayouts: [...layouts.values()].sort((a, b) => a.slug.localeCompare(b.slug)),
       viaLists: [...viaLists.values()].sort((a, b) => a.slug.localeCompare(b.slug)),
+      morePages,
     });
   }
   return out;
+}
+
+/**
+ * {@link findModulePagePlacements} reading at most `bound` placements per
+ * module; every module with more goes into `capped`.
+ */
+async function boundedModulePages(
+  tx: Tx,
+  branchId: string | null,
+  moduleIds: readonly string[],
+  bound: number,
+  capped: Set<string>,
+): Promise<Map<string, ReachPage[]>> {
+  const rows = await placementRowsOfModules(tx, branchId, moduleIds, bound + 1);
+  const rowsOf = new Map<string, number>();
+  const pagesOf = new Map<string, Map<string, ReachPage>>();
+  for (const r of rows) {
+    rowsOf.set(r.moduleId, (rowsOf.get(r.moduleId) ?? 0) + 1);
+    const pages = pagesOf.get(r.moduleId) ?? new Map<string, ReachPage>();
+    pages.set(r.pageId, { pageId: r.pageId, path: r.path, title: r.title });
+    pagesOf.set(r.moduleId, pages);
+  }
+  for (const [moduleId, n] of rowsOf) if (n > bound) capped.add(moduleId);
+  return new Map([...pagesOf].map(([moduleId, pages]) => [moduleId, [...pages.values()]]));
 }
 
 /**
@@ -580,7 +657,7 @@ async function moduleDefaultParents(
  * the branch sees the chrome (its pending `layout_modules.set` snapshots),
  * the same view the preview renders.
  */
-async function layoutsPlacingModules(
+export async function layoutsPlacingModules(
   tx: Tx,
   branchId: string | null,
   moduleIds: readonly string[],

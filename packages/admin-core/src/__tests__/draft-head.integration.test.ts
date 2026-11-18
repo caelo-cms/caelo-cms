@@ -41,6 +41,17 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
+  // Templates, pages and modules survive the per-file reset (seed-bearing
+  // tables): a published page left behind without a meta description would
+  // make the next file's Stage refuse its build.
+  await asSystem(async (tx) => {
+    const tpl = `${PFX}%`;
+    await tx`DELETE FROM page_modules WHERE page_id IN (SELECT p.id FROM pages p JOIN templates t ON t.id = p.template_id WHERE t.slug LIKE ${tpl})`;
+    await tx`DELETE FROM pages WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${tpl})`;
+    await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${tpl})`;
+    await tx`DELETE FROM templates WHERE slug LIKE ${tpl}`;
+    await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${tpl})`;
+  });
   await adapter.close();
 });
 
@@ -93,6 +104,45 @@ async function seedModule(slug: string): Promise<string> {
       html: `<p>${slug} v0</p>`,
     })
   ).moduleId;
+}
+
+/** Published pages of a template of their own: where seeded sections are placed. */
+async function seedPages(slug: string, n: number): Promise<string[]> {
+  const { templateId } = await op<{ templateId: string }>(SYS, "templates.create", {
+    pageType: "home",
+    slug: `${PFX}${slug}-tpl`,
+    displayName: `${slug} template`,
+    html: '<body><caelo-slot name="content">_</caelo-slot></body>',
+  });
+  const ids: string[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const { pageId } = await op<{ pageId: string }>(SYS, "pages.create", {
+      slug: `${PFX}${slug}-${i}`,
+      title: `${slug} page ${i}`,
+      templateId,
+      status: "published",
+    });
+    ids.push(pageId);
+  }
+  return ids;
+}
+
+/** One content instance of `moduleId` placed on every one of `pageIds`; returns its id. */
+async function placeContent(moduleId: string, pageIds: readonly string[]): Promise<string> {
+  return asSystem(async (tx) => {
+    const ci = (await tx`
+      INSERT INTO content_instances (module_id, "values") VALUES (${moduleId}::uuid, '{}'::jsonb)
+      RETURNING id::text AS id`) as { id: string }[];
+    const id = ci[0]?.id ?? "";
+    for (const pageId of pageIds) {
+      await tx`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+               VALUES (${pageId}::uuid, 'content',
+                       (SELECT count(*)::int FROM page_modules WHERE page_id = ${pageId}::uuid),
+                       ${moduleId}::uuid, ${id}::uuid,
+                       ${pageIds.length > 1 ? "synced" : "unsynced"})`;
+    }
+    return id;
+  });
 }
 
 /**
@@ -214,6 +264,9 @@ describe("#1268 draft head", () => {
 
   it("counts the same pending changes in the pill, the changes page, its summary and the Stage list", async () => {
     const m = await seedModule("count");
+    // On two pages, so its change is a site-wide one (a section design on
+    // one page is a change of that page, one on none is not listed).
+    for (const pageId of await seedPages("count", 2)) await placeContent(m, [pageId]);
     const a = await chat("count A");
     await writeModule(a, m, "<p>count 1</p>");
     await writeModule(a, m, "<p>count 2</p>");
@@ -253,10 +306,99 @@ describe("#1268 draft head", () => {
     expect(fromA?.summary.siteWide).toBe(pill.count);
     expect(fromA?.summary.rows.map((r) => r.what).sort()).toEqual([
       "Colours and fonts",
-      "Section design",
+      "Section design · on 2 pages",
     ]);
     expect(listed).toBe(pill.count);
     expect(list.pending.globals.map((g) => g.kind).sort()).toEqual(["module", "theme"]);
+  });
+
+  it("counts a section's own content as a change of its page, and shared content where it shows", async () => {
+    const m = await asSystem(async (tx) => {
+      const r = (await tx`
+        INSERT INTO modules (slug, display_name, type, html, fields)
+        VALUES (${`${PFX}tile`}, 'Tile', ${`${PFX}tile`}, '<h2>{{headline}}</h2>',
+                '[{"name":"headline","kind":"text"}]'::jsonb)
+        RETURNING id::text AS id`) as { id: string }[];
+      return r[0]?.id ?? "";
+    });
+    const [first, second] = await seedPages("content", 2);
+    if (!first || !second) throw new Error("no pages");
+    const own = await placeContent(m, [first]);
+    const shared = await placeContent(m, [first, second]);
+    const a = await chat("content A");
+    for (const id of [own, shared]) {
+      await op(a.ctx, "content_instances.set_values", { id, values: { headline: "v1" } });
+    }
+
+    const changes = await op<{
+      chats: {
+        chatSessionId: string;
+        changes: { pending: { globals: { kind: string; label: string }[] } };
+        summary: {
+          changedPages: number;
+          siteWide: number;
+          rows: { area: string; title: string; what: string; pageId: string | null }[];
+        };
+      }[];
+    }>(SYS, "chat.list_open_changes", {});
+    const fromA = changes.chats.find((c) => c.chatSessionId === a.id);
+    // Unnamed content is named by its section design, never by its id.
+    expect(fromA?.changes.pending.globals.map((g) => g.label)).toEqual(["Tile", "Tile"]);
+    expect(fromA?.summary.changedPages).toBe(1);
+    expect(fromA?.summary.siteWide).toBe(1);
+    expect(fromA?.summary.rows.map((r) => [r.area, r.title, r.what, r.pageId])).toEqual([
+      ["page", "content page 0", "Text and images", first],
+      ["siteWide", "Tile", "Shared content · on 2 pages", null],
+    ]);
+  });
+
+  it("reads a bounded sample of a widely used section and still counts it as site-wide", async () => {
+    const tile = await seedModule("bounded");
+    const [first] = await seedPages("bounded", 1);
+    if (!first) throw new Error("no page");
+    // 101 placements of one synced content (one more than PART_PAGE_CAP),
+    // on pages of their own, and 102 unused instances of another section
+    // (one more than PART_INSTANCE_CAP, plus the one the chat deletes).
+    const synced = await asSystem(async (tx) => {
+      const tpl =
+        (await tx`SELECT template_id::text AS id FROM pages WHERE id = ${first}::uuid`) as {
+          id: string;
+        }[];
+      const ci = (await tx`
+        INSERT INTO content_instances (module_id, "values") VALUES (${tile}::uuid, '{}'::jsonb)
+        RETURNING id::text AS id`) as { id: string }[];
+      await tx.unsafe(`
+        WITH p AS (
+          INSERT INTO pages (slug, title, short_title, template_id, page_type_confirmed, current_path, status)
+          SELECT '${PFX}bounded-x-' || i, 'x ' || i, 'x ' || i, '${tpl[0]?.id}', true, '/${PFX}bounded-x-' || i, 'draft'
+            FROM generate_series(1, 101) i RETURNING id)
+        INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+        SELECT p.id, 'content', 0, '${tile}', '${ci[0]?.id}', 'synced' FROM p`);
+      return ci[0]?.id ?? "";
+    });
+    const unused = await seedModule("bounded-unused");
+    const sampled = await asSystem(async (tx) => {
+      const rows = (await tx.unsafe(`
+        INSERT INTO content_instances (module_id, "values")
+        SELECT '${unused}', '{}'::jsonb FROM generate_series(1, 102)
+        RETURNING id::text AS id`)) as { id: string }[];
+      return rows[0]?.id ?? "";
+    });
+    const a = await chat("bounded A");
+    await op(a.ctx, "content_instances.set_values", { id: synced, values: {} });
+    await writeModule(a, unused, "<p>bounded v1</p>");
+    // A pending deletion of a sampled instance must not shrink the sample
+    // below the cap (Codex review of #1658).
+    await op(a.ctx, "content_instances.delete", { id: sampled });
+
+    const changes = await op<{
+      chats: { chatSessionId: string; summary: { rows: { title: string; what: string }[] } }[];
+    }>(SYS, "chat.list_open_changes", {});
+    const rows = changes.chats.find((c) => c.chatSessionId === a.id)?.summary.rows ?? [];
+    expect(rows.map((r) => `${r.title}:${r.what}`).sort()).toEqual([
+      "bounded-unused:Section design · on many pages",
+      "bounded:Shared content · on many pages",
+    ]);
   });
 
   it("pages the changes overview with a keyset cursor", async () => {

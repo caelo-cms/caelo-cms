@@ -7,6 +7,9 @@
  * migration 0705). And `deploy.promote` refusing a staged build other than
  * the one its review showed (`stagedRunId`).
  *
+ * A section design or a section's content counts where it shows: on one
+ * published page as a change of that page, on more as a site-wide part.
+ *
  * The suite runs on deploy targets of its own, so the newest staged and
  * live builds are the ones it seeds, whatever other files leave behind.
  * Its builds and headers are dated days ahead: no other Stage falls into
@@ -39,8 +42,12 @@ const page: Record<"p1" | "p2" | "p3" | "p4" | "p5", string> = {
   p4: "",
   p5: "",
 };
+/** On P1 and P4: a site-wide part. */
 let moduleCode = "";
+/** On P1 only: its change is a change of P1. */
 let moduleEdited = "";
+/** A section with a text field, for the content cases. */
+let tileModule = "";
 
 async function withSql<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -167,7 +174,45 @@ beforeAll(async () => {
       html: "<p>v0</p>",
     })
   ).moduleId;
+  tileModule = await withSql(async (tx) => {
+    const r = (await tx`
+      INSERT INTO modules (slug, display_name, type, html, fields)
+      VALUES (${`${PFX}tile`}, ${`${PFX}Tile`}, ${`${PFX}tile`}, '<h2>{{headline}}</h2>',
+              '[{"name":"headline","kind":"text"}]'::jsonb)
+      RETURNING id::text AS id`) as { id: string }[];
+    return r[0]?.id ?? "";
+  });
+  await place(moduleCode, [page.p1, page.p4]);
+  await place(moduleEdited, [page.p1]);
 });
+
+/** A placement of `moduleId` on each page, each with its own content (unsynced); returns the instance ids. */
+async function place(moduleId: string, pageIds: readonly string[]): Promise<string[]> {
+  const ids: string[] = [];
+  for (const pageId of pageIds) ids.push(await placeShared(moduleId, [pageId], "unsynced"));
+  return ids;
+}
+
+/** One content instance of `moduleId`, placed on every one of `pageIds`; returns its id. */
+async function placeShared(
+  moduleId: string,
+  pageIds: readonly string[],
+  syncMode: "synced" | "unsynced" = "synced",
+): Promise<string> {
+  return withSql(async (tx) => {
+    const ci = (await tx`
+      INSERT INTO content_instances (module_id, "values") VALUES (${moduleId}::uuid, '{"headline":"v0"}'::jsonb)
+      RETURNING id::text AS id`) as { id: string }[];
+    const id = ci[0]?.id ?? "";
+    for (const pageId of pageIds) {
+      await tx`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
+               VALUES (${pageId}::uuid, 'content',
+                       (SELECT count(*)::int FROM page_modules WHERE page_id = ${pageId}::uuid),
+                       ${moduleId}::uuid, ${id}::uuid, ${syncMode})`;
+    }
+    return id;
+  });
+}
 
 /**
  * Templates, their pages and modules survive the per-file reset
@@ -183,6 +228,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM pages WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM templates WHERE slug LIKE ${`${PFX}%`}`;
+    await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}%`}`;
   });
 }
@@ -230,13 +276,59 @@ describe("deploy.publish_preview", () => {
       total: 1,
       items: [expect.objectContaining({ pageId: page.p3 })],
     });
-    // P4 changed; P5 is a draft page, not in the staged build: not listed. P1 is unchanged.
-    expect(p.pages.changed.items.map((i) => i.pageId)).toEqual([page.p4]);
-    expect(p.siteWide.map((s) => [s.title, s.what, s.change]).sort()).toEqual([
-      [`${PFX}Card`, "Section design", "changed"],
-      [`${PFX}Hero`, "Section design", "changed"],
+    // P4 changed; P5 is a draft page, not in the staged build: not listed.
+    // P1 changed through the Card, which shows only there.
+    expect(p.pages.changed.items.map((i) => i.pageId)).toEqual([page.p1, page.p4]);
+    // The Hero shows on two pages: site-wide, with a page to look at.
+    expect(p.siteWide.map((s) => [s.title, s.what, s.change, s.samplePath])).toEqual([
+      [`${PFX}Hero`, "Section design · on 2 pages", "changed", `/${PFX}p1`],
     ]);
     expect(p.settings).toEqual([{ key: "setting:site_base_url", title: "Site base URL" }]);
+  });
+
+  it("counts a section's content where it shows, and names unnamed shared content by its section", async () => {
+    const t = await targets("content");
+    const fp = { [`page:${page.p1}`]: "h", [`page:${page.p2}`]: "h" };
+    const [own] = await place(tileModule, [page.p1]);
+    const shared = await placeShared(tileModule, [page.p1, page.p2]);
+    const [onDraft] = await place(tileModule, [page.p5]);
+    const liveSource = await build(t.staging, 70, "live-src", fp);
+    await build(t.production, 70.5, liveSource, null);
+    await stagedChatWrite(71, async (ctx) => {
+      for (const id of [own, shared, onDraft]) {
+        await op(ctx, "content_instances.set_values", { id, values: { headline: "v1" } });
+      }
+    });
+    await build(t.staging, 72, "staged", fp);
+
+    const p = await preview("content");
+    expect(p.notice).toBeNull();
+    // The section's own text on P1: a change of P1. The content on the draft page P5: no visitor sees it.
+    expect(p.pages.changed.items.map((i) => i.pageId)).toEqual([page.p1]);
+    expect(p.siteWide.map((s) => [s.kind, s.title, s.what, s.samplePath])).toEqual([
+      ["contentInstance", `${PFX}Tile`, "Shared content · on 2 pages", `/${PFX}p1`],
+    ]);
+  });
+
+  it("says so when a later Stage merged on top of the staged build without finishing its build", async () => {
+    const t = await targets("advanced");
+    const fp = { [`page:${page.p1}`]: "h" };
+    const [own] = await place(tileModule, [page.p1]);
+    const liveSource = await build(t.staging, 80, "live-src", fp);
+    await build(t.production, 80.5, liveSource, null);
+    await stagedChatWrite(81, async (ctx) => {
+      await op(ctx, "content_instances.set_values", { id: own, values: { headline: "v2" } });
+    });
+    await build(t.staging, 82, "staged", fp);
+    // A later Stage merged (its build failed, so the staged build is still day 82's).
+    await stagedChatWrite(83, async (ctx) => {
+      await op(ctx, "content_instances.set_values", { id: own, values: { headline: "v3" } });
+    });
+
+    const p = await preview("advanced");
+    expect(p.notice).toContain("A later Stage changed the site after this build");
+    // The lists are still shown, read from the newer state.
+    expect(p.pages.changed.items.map((i) => i.pageId)).toEqual([page.p1]);
   });
 
   it("says live already serves the staged build", async () => {
