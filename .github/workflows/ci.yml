@@ -599,16 +599,19 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: bun install --frozen-lockfile
 
-      # `@caelo-cms/shared` publishes a compiled `dist/` (its package.json
-      # `main` points there) and the admin app's Vite SSR build can't
-      # resolve it otherwise. Narrowly building only this package — other
-      # dist-shipping workspaces (`mcp-server`, `provisioning`) are not on
-      # any admin SSR import path, and broadening to `@caelo-cms/*` would
-      # also rebuild `@caelo-cms/admin`, duplicating the Vite build that
-      # Playwright's webServer runs immediately after.
-      # Mirrors the side-effect of `bun run typecheck` in the `check` job.
-      - name: Build @caelo-cms/shared (admin SSR dep)
-        run: bun run --filter '@caelo-cms/shared' build
+      # `@caelo-cms/shared` and `@caelo-cms/mcp-server` (the remote MCP
+      # surfaces, #806) ship a compiled `dist/`, and the admin's Vite build
+      # resolves them there: the suite builds the admin in production mode,
+      # as the release image does (#1656), so the `development` export
+      # condition that pointed `@caelo-cms/mcp-server/surfaces` at its
+      # sources no longer applies. Same step as the e2e-livedit job.
+      # Narrowly these two — broadening to `@caelo-cms/*` would also rebuild
+      # `@caelo-cms/admin`, duplicating the Vite build that Playwright's
+      # webServer runs immediately after.
+      - name: Build @caelo-cms/shared + mcp-server (admin SSR deps)
+        run: |
+          bun run --filter '@caelo-cms/shared' build
+          bun run --filter '@caelo-cms/mcp-server' build
 
       - name: Bootstrap databases
         env:
