@@ -360,9 +360,10 @@ describe("#1268 draft head", () => {
     // on pages of their own, and 102 unused instances of another section
     // (one more than PART_INSTANCE_CAP, plus the one the chat deletes).
     const synced = await asSystem(async (tx) => {
-      const tpl = (await tx`SELECT template_id::text AS id FROM pages WHERE id = ${first}::uuid`) as {
-        id: string;
-      }[];
+      const tpl =
+        (await tx`SELECT template_id::text AS id FROM pages WHERE id = ${first}::uuid`) as {
+          id: string;
+        }[];
       const ci = (await tx`
         INSERT INTO content_instances (module_id, "values") VALUES (${tile}::uuid, '{}'::jsonb)
         RETURNING id::text AS id`) as { id: string }[];
