@@ -6,8 +6,8 @@
  * checks are the test surface for issue #36's contract (and the #52 follow-up
  * that removed the mask).
  *
- * Failures here are regressions in: the `Build @caelo-cms/shared (admin SSR
- * dep)` step (presence, exact filter form, exact name, ordering relative to
+ * Failures here are regressions in: the `Build @caelo-cms/shared + mcp-server (admin SSR
+ * deps)` step (presence, exact filter form, exact name, ordering relative to
  * `Bootstrap databases`), the removed `continue-on-error: true` mask (issue
  * #52 — a failure must block merging), the dropped "best-effort" wording, or
  * the retained `needs: check`. U-numbers track plan §8.1.
@@ -52,8 +52,16 @@ describe("e2e job — issue #36 contract", () => {
     expect(e2e).toContain("bun run --filter '@caelo-cms/shared' build");
   });
 
-  it("U2: the build step's name is `Build @caelo-cms/shared (admin SSR dep)`", () => {
-    expect(e2e).toContain("- name: Build @caelo-cms/shared (admin SSR dep)");
+  it("U2: the build step's name is `Build @caelo-cms/shared + mcp-server (admin SSR deps)`", () => {
+    expect(e2e).toContain("- name: Build @caelo-cms/shared + mcp-server (admin SSR deps)");
+  });
+
+  it("U9: builds `@caelo-cms/mcp-server` before `Bootstrap databases` (#1656)", () => {
+    // The suite builds the admin in production mode (apps/admin/playwright.config.ts),
+    // so `@caelo-cms/mcp-server/surfaces` resolves to its dist/, not its sources.
+    const buildIdx = e2e.indexOf("bun run --filter '@caelo-cms/mcp-server' build");
+    expect(buildIdx).toBeGreaterThan(-1);
+    expect(buildIdx).toBeLessThan(e2e.indexOf("- name: Bootstrap databases"));
   });
 
   it("U3: no `continue-on-error: true` mask — #52 fixed the Rollup SIGILL at root, failures must block merging", () => {
