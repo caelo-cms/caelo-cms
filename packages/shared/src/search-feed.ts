@@ -22,6 +22,7 @@
  */
 
 import { z } from "zod";
+import { trimSlashes } from "./url.js";
 
 /** The feed's path at the site root. */
 export const FEED_FILE = "feed.xml";
@@ -48,7 +49,7 @@ export function indexNowKeyFile(key: string): string {
 
 /** The absolute URL of the site's feed. */
 export function siteFeedUrl(siteBaseUrl: string): string {
-  return `${siteBaseUrl.replace(/\/+$/, "")}/${FEED_FILE}`;
+  return `${trimSlashes(siteBaseUrl)}/${FEED_FILE}`;
 }
 
 /**

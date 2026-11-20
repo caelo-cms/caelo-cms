@@ -43,6 +43,8 @@ export type SearchNotifyFetch = (
 /** One request of a notification. */
 export interface SearchNotifyRequest {
   readonly url: string;
+  /** Names the request in what is recorded ("the WebSub hub", "IndexNow for example.com"). */
+  readonly label: string;
   readonly headers: Record<string, string>;
   readonly body: string;
 }
@@ -54,6 +56,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 export function websubRequest(feedUrl: string): SearchNotifyRequest {
   return {
     url: WEBSUB_HUB_URL,
+    label: "the WebSub hub",
     headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT },
     body: new URLSearchParams({ "hub.mode": "publish", "hub.url": feedUrl }).toString(),
   };
@@ -62,12 +65,21 @@ export function websubRequest(feedUrl: string): SearchNotifyRequest {
 /**
  * The IndexNow submissions for `urls`: one per host (a submission names
  * one host, whose root serves the key file), at most
- * {@link INDEXNOW_MAX_URLS} URLs each.
+ * {@link INDEXNOW_MAX_URLS} URLs each. A URL that is not an absolute
+ * http(s) address cannot be submitted and is returned as `invalid`.
  */
-export function indexNowRequests(key: string, urls: readonly string[]): SearchNotifyRequest[] {
+export function indexNowRequests(
+  key: string,
+  urls: readonly string[],
+): { readonly requests: SearchNotifyRequest[]; readonly invalid: string[] } {
   const byOrigin = new Map<string, { host: string; urls: string[] }>();
+  const invalid: string[] = [];
   for (const u of urls) {
-    const parsed = new URL(u);
+    const parsed = URL.parse(u);
+    if (parsed === null || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
+      invalid.push(u);
+      continue;
+    }
     const entry = byOrigin.get(parsed.origin) ?? { host: parsed.host, urls: [] };
     entry.urls.push(u);
     byOrigin.set(parsed.origin, entry);
@@ -79,6 +91,7 @@ export function indexNowRequests(key: string, urls: readonly string[]): SearchNo
     for (let at = 0; at < list.length; at += INDEXNOW_MAX_URLS) {
       requests.push({
         url: INDEXNOW_ENDPOINT,
+        label: `IndexNow for ${host}`,
         headers: { "Content-Type": "application/json; charset=utf-8", "User-Agent": USER_AGENT },
         body: JSON.stringify({
           host,
@@ -89,7 +102,7 @@ export function indexNowRequests(key: string, urls: readonly string[]): SearchNo
       });
     }
   }
-  return requests;
+  return { requests, invalid };
 }
 
 /** What an answer means: done, try again later, or give up. */
@@ -116,47 +129,55 @@ export function retryAfterSeconds(value: string | null, now = Date.now()): numbe
   return Number.isNaN(at) ? null : Math.min(Math.max(0, Math.ceil((at - now) / 1000)), 86_400);
 }
 
-/** The worst of several outcomes: one refusal fails all, one passing error retries all. */
-function worst(a: SearchNotifyOutcome, b: SearchNotifyOutcome): SearchNotifyOutcome {
-  const rank = { sent: 0, retry: 1, failed: 2 } as const;
-  return rank[a] >= rank[b] ? a : b;
+/**
+ * The outcome of a notification's requests together. A passing error on any
+ * request retries the notification (the engines tolerate a repeat); else one
+ * accepted request makes it sent, since what was refused — a host whose key
+ * file the engine cannot read, say — would be refused again; else it failed.
+ */
+export function combineOutcomes(outcomes: readonly SearchNotifyOutcome[]): SearchNotifyOutcome {
+  if (outcomes.includes("retry")) return "retry";
+  return outcomes.includes("sent") ? "sent" : "failed";
 }
+
+/** What to record for one notification. */
+interface SendResult {
+  readonly outcome: SearchNotifyOutcome;
+  readonly responseStatus: number | null;
+  readonly detail: string | null;
+  readonly retryAfterSeconds: number | null;
+}
+
+const failedWith = (detail: string): SendResult => ({
+  outcome: "failed",
+  responseStatus: null,
+  detail,
+  retryAfterSeconds: null,
+});
 
 /** Send one claimed notification; returns what to record. */
 async function sendOne(
   n: ClaimedSearchNotification,
   fetchImpl: SearchNotifyFetch,
-): Promise<{
-  outcome: SearchNotifyOutcome;
-  responseStatus: number | null;
-  detail: string | null;
-  retryAfterSeconds: number | null;
-}> {
+): Promise<SendResult> {
   let requests: SearchNotifyRequest[];
+  const notes: string[] = [];
   if (n.channel === "websub") {
-    if (n.feedUrl === null) {
-      return {
-        outcome: "failed",
-        responseStatus: null,
-        detail: "the run serves no feed",
-        retryAfterSeconds: null,
-      };
-    }
+    if (n.feedUrl === null) return failedWith("the run serves no feed");
     requests = [websubRequest(n.feedUrl)];
   } else {
-    if (n.indexNowKey === null) {
-      return {
-        outcome: "failed",
-        responseStatus: null,
-        detail: "the run serves no IndexNow key",
-        retryAfterSeconds: null,
-      };
+    if (n.indexNowKey === null) return failedWith("the run serves no IndexNow key");
+    const built = indexNowRequests(n.indexNowKey, n.urls);
+    requests = built.requests;
+    if (built.invalid.length > 0) {
+      notes.push(
+        `${built.invalid.length} address(es) are not absolute and were left out (${built.invalid.slice(0, 3).join(", ")})`,
+      );
     }
-    requests = indexNowRequests(n.indexNowKey, n.urls);
+    if (requests.length === 0) return failedWith(notes.join("; "));
   }
-  let outcome: SearchNotifyOutcome = "sent";
+  const outcomes: SearchNotifyOutcome[] = [];
   let responseStatus: number | null = null;
-  let detail: string | null = null;
   let retryAfter: number | null = null;
   for (const req of requests) {
     try {
@@ -167,23 +188,27 @@ async function sendOne(
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       const step = classifyStatus(res.status);
+      outcomes.push(step);
       responseStatus = res.status;
       if (step !== "sent") {
         const text = (await res.text().catch(() => "")).trim().slice(0, 300);
-        detail = `${new URL(req.url).host} answered ${res.status}${text ? `: ${text}` : ""}`;
+        notes.push(`${req.label} answered ${res.status}${text ? `: ${text}` : ""}`);
         retryAfter = Math.max(
           retryAfter ?? 0,
           retryAfterSeconds(res.headers.get("retry-after")) ?? 0,
         );
       }
-      outcome = worst(outcome, step);
     } catch (e) {
-      detail = `${new URL(req.url).host} did not answer: ${e instanceof Error ? e.message : String(e)}`;
-      outcome = worst(outcome, "retry");
+      outcomes.push("retry");
+      notes.push(`${req.label} did not answer: ${e instanceof Error ? e.message : String(e)}`);
     }
-    if (outcome === "failed") break;
   }
-  return { outcome, responseStatus, detail, retryAfterSeconds: retryAfter };
+  return {
+    outcome: combineOutcomes(outcomes),
+    responseStatus,
+    detail: notes.length > 0 ? notes.join("; ").slice(0, 2000) : null,
+    retryAfterSeconds: retryAfter,
+  };
 }
 
 let sends = 0;
@@ -213,7 +238,12 @@ export async function sendSearchNotifications(opts: {
   const fetchImpl = opts.fetch ?? (globalThis.fetch as unknown as SearchNotifyFetch);
   const tally = { sent: 0, retrying: 0, failed: 0 };
   for (const n of (claimedR.value as { claimed: ClaimedSearchNotification[] }).claimed) {
-    const result = await sendOne(n, fetchImpl);
+    // A notification the sender cannot even build is recorded as failed, so
+    // it never blocks the ones after it or comes back on every claim.
+    const result = await sendOne(n, fetchImpl).catch(
+      (e: unknown): SendResult =>
+        failedWith(`could not be sent: ${e instanceof Error ? e.message : String(e)}`),
+    );
     const recorded = await execute(opts.registry, opts.adapter, ctx, "search_notify.record", {
       id: n.id,
       ...result,

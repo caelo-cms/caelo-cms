@@ -70,7 +70,11 @@ ALTER TABLE deploy_runs
   -- for every run from before this migration: its Publish live has no
   -- changes to record, and must not read the missing rows as "every page
   -- removed".
-  ADD COLUMN IF NOT EXISTS page_changes_recorded boolean NOT NULL DEFAULT false;
+  ADD COLUMN IF NOT EXISTS page_changes_recorded boolean NOT NULL DEFAULT false,
+  -- A Publish live: the Stage it ships. While it runs, that Stage keeps its
+  -- staged_page_changes even when newer Stages finish.
+  ADD COLUMN IF NOT EXISTS promoted_from_run_id uuid NULL REFERENCES deploy_runs(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS deploy_runs_promoted_from_idx ON deploy_runs (promoted_from_run_id);
 
 CREATE TABLE IF NOT EXISTS live_page_versions (
   id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

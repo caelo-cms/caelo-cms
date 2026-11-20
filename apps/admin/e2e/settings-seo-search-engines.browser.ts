@@ -24,25 +24,23 @@ test("Owner switches the feed and IndexNow and sees the notifications card", asy
 
   const feed = page.getByLabel("Publish a feed of the latest changes (/feed.xml)");
   const indexNow = page.getByLabel("Tell IndexNow search engines what changed");
-  // Both are on for a new site.
-  await expect(feed).toBeChecked();
-  await expect(indexNow).toBeChecked();
-
   const save = page.getByRole("button", { name: "Save settings" });
-  await feed.uncheck();
-  await indexNow.uncheck();
-  await save.click();
-  await expect(page.getByText("Saved.")).toBeVisible();
-  await page.reload();
-  await expect(feed).not.toBeChecked();
-  await expect(indexNow).not.toBeChecked();
+  // The inline confirmation; the toast repeats the text.
+  const saved = page.getByRole("alert").getByText("Saved.");
 
-  // Back on, as the rest of the suite expects.
-  await feed.check();
-  await indexNow.check();
-  await save.click();
-  await expect(page.getByText("Saved.")).toBeVisible();
-  await page.reload();
-  await expect(feed).toBeChecked();
-  await expect(indexNow).toBeChecked();
+  /** Set both switches, save, and check they stick across a reload. */
+  const setBoth = async (on: boolean) => {
+    await feed.setChecked(on);
+    await indexNow.setChecked(on);
+    await save.click();
+    await expect(saved).toBeVisible();
+    await page.reload();
+    await expect(feed).toBeChecked({ checked: on });
+    await expect(indexNow).toBeChecked({ checked: on });
+  };
+
+  // Each way round, from whatever the suite's database holds, ending where
+  // a new site starts (both on), which the rest of the suite expects.
+  await setBoth(false);
+  await setBoth(true);
 });

@@ -3,7 +3,13 @@
 import { describe, expect, it } from "bun:test";
 import { INDEXNOW_ENDPOINT, INDEXNOW_MAX_URLS, WEBSUB_HUB_URL } from "@caelo-cms/shared";
 import { searchNotifyDisabledReason } from "./notifications.js";
-import { classifyStatus, indexNowRequests, retryAfterSeconds, websubRequest } from "./notify.js";
+import {
+  classifyStatus,
+  combineOutcomes,
+  indexNowRequests,
+  retryAfterSeconds,
+  websubRequest,
+} from "./notify.js";
 
 describe("websubRequest", () => {
   it("is the hub's publish ping for the feed, form-encoded", () => {
@@ -17,11 +23,12 @@ describe("websubRequest", () => {
 
 describe("indexNowRequests", () => {
   it("submits one request per host, naming that host's key file", () => {
-    const reqs = indexNowRequests("abcdef12", [
+    const { requests: reqs, invalid } = indexNowRequests("abcdef12", [
       "https://example.com/a/",
       "https://de.example.com/b/",
       "https://example.com/c/",
     ]);
+    expect(invalid).toEqual([]);
     expect(reqs.map((r) => r.url)).toEqual([INDEXNOW_ENDPOINT, INDEXNOW_ENDPOINT]);
     expect(reqs.map((r) => JSON.parse(r.body))).toEqual([
       {
@@ -44,8 +51,18 @@ describe("indexNowRequests", () => {
       { length: INDEXNOW_MAX_URLS + 1 },
       (_, i) => `https://example.com/p${i}/`,
     );
-    const reqs = indexNowRequests("abcdef12", urls);
+    const { requests: reqs } = indexNowRequests("abcdef12", urls);
     expect(reqs.map((r) => JSON.parse(r.body).urlList.length)).toEqual([INDEXNOW_MAX_URLS, 1]);
+  });
+
+  it("leaves out an address that is not absolute instead of failing on it", () => {
+    const { requests, invalid } = indexNowRequests("abcdef12", [
+      "/relative/",
+      "mailto:a@example.com",
+      "https://example.com/a/",
+    ]);
+    expect(invalid).toEqual(["/relative/", "mailto:a@example.com"]);
+    expect(requests.map((r) => JSON.parse(r.body).urlList)).toEqual([["https://example.com/a/"]]);
   });
 });
 
@@ -59,6 +76,15 @@ describe("classifyStatus", () => {
     expect(classifyStatus(400)).toBe("failed");
     expect(classifyStatus(403)).toBe("failed");
     expect(classifyStatus(422)).toBe("failed");
+  });
+});
+
+describe("combineOutcomes", () => {
+  it("retries on any passing error, else is sent when one request was accepted", () => {
+    expect(combineOutcomes(["sent", "retry", "failed"])).toBe("retry");
+    expect(combineOutcomes(["sent", "failed"])).toBe("sent");
+    expect(combineOutcomes(["failed", "failed"])).toBe("failed");
+    expect(combineOutcomes([])).toBe("failed");
   });
 });
 

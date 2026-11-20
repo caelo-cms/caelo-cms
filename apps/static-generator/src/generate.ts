@@ -1490,7 +1490,7 @@ async function buildSite(
       FEED_FILE,
       renderAtomFeed({
         feedUrl: feed.url,
-        siteUrl: `${seoSettings.siteBaseUrl.replace(/\/+$/, "")}/`,
+        siteUrl: `${trimSlashes(seoSettings.siteBaseUrl)}/`,
         title: feed.title,
         language: seoSettings.siteLanguage,
         hubUrl: WEBSUB_HUB_URL,

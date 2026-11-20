@@ -69,6 +69,12 @@ that was live already, dated as the sitemap dated it until then
 announced, because IndexNow asks not to submit changes from before it was set
 up.
 
+Content a plugin bakes into a page (approved comments, say) is not part of the
+fingerprint. It goes live through the plugin-data build between Publish lives
+(#1155), not through Publish live, so counting it at a Stage would date it at
+the wrong moment; announcing plugin-data changes belongs to the plugin-data
+build.
+
 An incremental build renders only the pages a change reached. It records
 their changes and takes the other pages' dates from the record. It cannot
 tell which pages were removed.
@@ -76,7 +82,8 @@ tell which pages were removed.
 ## The feed
 
 `/feed.xml` lists the 100 pages that changed last, newest first. Each entry
-carries `urn:uuid:<page id>` (permanent across URL changes), the canonical URL,
+carries `urn:uuid:<page id>` (permanent across URL changes), the canonical URL
+(made absolute against the site address when an override is relative),
 `published` (first publication) and `updated` (the change date), and the meta
 description as the summary. The feed is titled with the site's host. A build
 always knows the host, so the feed never waits for authoring data. It names
@@ -85,8 +92,9 @@ Google's hub (`https://pubsubhubbub.appspot.com/`) as `rel="hub"`.
 Every page links it (`<link rel="alternate" type="application/atom+xml">`,
 also in the editor preview), and robots.txt lists it as a second `Sitemap:`
 line, since search engines accept Atom as a sitemap of the latest URLs.
-Staging's robots.txt lists nothing. On GCS the feed is cached for 60 seconds
-only, so the hub's fetch right after the ping gets the new copy.
+Staging's robots.txt lists nothing. On GCS the feed is served `no-cache`, so the
+hub's fetch right after the ping never gets a copy a cache took before the
+publish.
 
 ## The pings
 
@@ -106,9 +114,14 @@ They are sent right after the commit, inside the request that published.
 Publish live, a production build and a rollback all wait for the send (at most
 10 seconds per request). An answer of 2xx is `sent`. 429, 5xx and no answer
 are retried by the tick with backoff (2, 4, 8 … minutes, at least the
-engine's `Retry-After`) up to 6 attempts. Any other 4xx is `failed`: the
-engine refuses the request as it is (for example a key file it could not
-read). A send never fails or delays the publish beyond the request.
+engine's `Retry-After`) up to 6 attempts. Any other 4xx is refused for good
+(for example a key file the engine could not read). With several
+submissions (one per host), a passing error retries the notification; else
+one accepted submission makes it `sent`, with the refused hosts named in its
+detail; else it is `failed`. An address that is not absolute is left out and
+named. A notification the sender cannot even build is recorded `failed`,
+so it never blocks the others. A send never fails or delays the publish
+beyond the request.
 
 The row is `skipped`, with the reason, when the site's address cannot be
 reached from the internet (localhost, `.local`, `.test`, an IP address and the

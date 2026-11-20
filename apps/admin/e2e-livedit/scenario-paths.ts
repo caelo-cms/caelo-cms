@@ -522,6 +522,12 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/gateway-refresh.ts`,
   `${A}/ops/gateway-refresh.ts`,
   `${SHARED}/gateway-refresh.ts`,
+  // The live record per page and the WebSub / IndexNow sends after Publish
+  // live (docs/dev/search-engine-feed.md): written by the human's publish,
+  // no AI turn reaches them. The AI only reads the outcome (get_site_seo).
+  `${A}/search-feed/**`,
+  `${A}/ops/search-notifications.ts`,
+  `${SHARED}/search-feed.ts`,
   `${A}/ops/staging_access.ts`,
   `${A}/ops/owner_settings_*.ts`,
   // #1337 — the Owner's mail caps, an owner-settings proposal like the above.

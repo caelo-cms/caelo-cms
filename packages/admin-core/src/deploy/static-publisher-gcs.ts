@@ -1004,10 +1004,12 @@ function cacheControlFor(key: string): string {
   if (key === "robots.txt" || key === "sitemap.xml") {
     return "public, max-age=300";
   }
-  // The WebSub hub fetches the feed right after the Publish live ping: no
-  // stale copy may answer it (docs/dev/search-engine-feed.md).
+  // The WebSub hub fetches the feed right after the Publish live ping: a
+  // cache must ask the bucket every time, or a copy it took just before the
+  // publish answers the hub, and the ping is spent on the old feed
+  // (docs/dev/search-engine-feed.md).
   if (key === FEED_FILE) {
-    return "public, max-age=60";
+    return "public, no-cache";
   }
   return "public, max-age=3600";
 }

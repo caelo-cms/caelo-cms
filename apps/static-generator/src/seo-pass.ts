@@ -357,7 +357,9 @@ export async function prepareSeoPass(args: {
           }
           contentStates.record({
             pageId: bundle.pageId,
-            url: publicUrlOf(bundle),
+            // The feed and IndexNow need an absolute address; a canonical
+            // override may be written relative to the site.
+            url: new URL(publicUrlOf(bundle), settings.siteBaseUrl).href,
             fingerprint: pageContentFingerprint({
               title: bundle.title,
               metaDescription: bundle.metaDescription,

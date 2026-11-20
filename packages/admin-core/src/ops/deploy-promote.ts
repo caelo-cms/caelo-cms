@@ -364,6 +364,11 @@ export const startPromoteOp = defineOperation({
       baseRunId: null,
       leaseTtlMs: input.leaseTtlMs,
     });
+    // docs/dev/search-engine-feed.md — the Stage this run ships keeps what
+    // its build changes until the run ends, however many Stages finish since.
+    await tx.execute(sql`
+      UPDATE deploy_runs SET promoted_from_run_id = ${fromRow.id}::uuid WHERE id = ${input.runId}::uuid
+    `);
     const num = (v: number | string | null): number | null =>
       v === null ? null : typeof v === "string" ? Number.parseInt(v, 10) : v;
     return ok({

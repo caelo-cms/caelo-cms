@@ -137,8 +137,10 @@ async function stampRun(
 
 /**
  * A Stage: keep what its build found changed until a Publish live ships it.
- * The two newest Stages of the target keep their rows — the one Publish
- * live may be shipping while this one finished, and this one.
+ * The two newest Stages of the target keep their rows (this one and the one
+ * before it), and so does every Stage a running Publish live ships
+ * (`deploy_runs.promoted_from_run_id`): newer Stages may finish while it
+ * uploads or waits for its turn.
  */
 export async function recordStagedChanges(
   tx: TransactionRunner,
@@ -154,6 +156,10 @@ export async function recordStagedChanges(
         WHERE target_id = ${targetId}::uuid AND status = 'succeeded' AND id <> ${runId}::uuid
         ORDER BY started_at DESC
         LIMIT 1
+      )
+      AND run_id NOT IN (
+        SELECT promoted_from_run_id FROM deploy_runs
+        WHERE status = 'running' AND promoted_from_run_id IS NOT NULL
       )
   `);
   for (let at = 0; at < feed.changes.length; at += INSERT_BATCH) {
