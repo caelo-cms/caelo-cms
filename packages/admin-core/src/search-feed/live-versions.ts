@@ -346,6 +346,25 @@ export async function applyStagedRun(
 }
 
 /**
+ * A plugin-data release (#1155) serves the files of its base release with
+ * fresher plugin regions: the same pages, feed and key file. It takes the
+ * base's record head, feed and key, so a rollback to it restores what it
+ * serves, and the next Publish live compares its feed with the right one.
+ */
+export async function inheritSearchFeedFromBase(
+  tx: TransactionRunner,
+  runId: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE deploy_runs r
+    SET live_versions_head = b.live_versions_head, feed_url = b.feed_url,
+        indexnow_key = b.indexnow_key
+    FROM deploy_runs b
+    WHERE r.id = ${runId}::uuid AND b.id = r.base_run_id
+  `);
+}
+
+/**
  * A rollback put `restoredRunId`'s build live again: the record gets that
  * build's state back, dated `at` (live content did change at that moment).
  * A build from before the record began has no state to restore; then

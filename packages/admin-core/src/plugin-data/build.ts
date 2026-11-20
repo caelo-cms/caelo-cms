@@ -133,6 +133,7 @@ import {
 } from "../deploy/static-publisher.js";
 import { fenceRunLeases } from "../ops/deploy-lease-steps.js";
 import { beginRunInTx } from "../ops/deploy-run-lifecycle.js";
+import { inheritSearchFeedFromBase } from "../search-feed/live-versions.js";
 import { jsonbParam } from "../sql-helpers.js";
 
 /** At most this many stale (plugin, page) marks are baked per build. */
@@ -781,6 +782,9 @@ export const finishPluginDataRunOp = defineOperation({
              lease_expires_at = NULL
        WHERE id = ${input.runId}::uuid
     `);
+    // docs/dev/search-engine-feed.md — the release serves its base release's
+    // pages, feed and key file, so a rollback to it restores that record.
+    await inheritSearchFeedFromBase(tx, input.runId);
     // #1157 — the release starts from the live build's files, which carry
     // the redirects of that build's time (self-hosted copies its archive
     // over `current/`); redirects saved since must stay live. Pushed after

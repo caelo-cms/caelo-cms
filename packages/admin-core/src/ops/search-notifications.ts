@@ -51,10 +51,26 @@ export const claimSearchNotificationsOp = defineOperation({
       /** Only this run's (right after its Publish live); omitted: every due one. */
       runId: z.string().uuid().optional(),
       limit: z.number().int().min(1).max(20),
+      /**
+       * Notifications are off on this install: the due ones are marked
+       * skipped with this reason and none is claimed, so switching them off
+       * also stops the retries already queued.
+       */
+      skipReason: z.string().min(1).max(2000).optional(),
     })
     .strict(),
   output: z.object({ claimed: z.array(claimedShape) }),
   handler: async (_ctx, input, tx) => {
+    if (input.skipReason !== undefined) {
+      await tx.execute(sql`
+        UPDATE search_engine_notifications
+        SET status = 'skipped', next_attempt_at = NULL, finished_at = clock_timestamp(),
+            detail = ${input.skipReason}
+        WHERE status = 'pending' AND next_attempt_at <= clock_timestamp()
+          ${input.runId ? sql`AND run_id = ${input.runId}::uuid` : sql``}
+      `);
+      return ok({ claimed: [] });
+    }
     const rows = (await tx.execute(sql`
       SELECT n.id::text AS id, n.run_id::text AS run_id, n.channel, n.attempts,
              r.feed_url, r.indexnow_key
@@ -112,13 +128,13 @@ export const recordSearchNotificationOp = defineOperation({
       retryAfterSeconds: z.number().int().min(0).max(86_400).nullable(),
     })
     .strict(),
-  output: z.object({ status: z.enum(["sent", "pending", "failed"]) }),
+  output: z.object({ status: z.enum(["sent", "pending", "failed", "skipped"]) }),
   handler: async (ctx, input, tx) => {
     const row = (
       (await tx.execute(sql`
-        SELECT attempts, channel, url_count FROM search_engine_notifications
+        SELECT attempts, channel, url_count, status FROM search_engine_notifications
         WHERE id = ${input.id}::uuid FOR UPDATE
-      `)) as unknown as { attempts: number; channel: string; url_count: number }[]
+      `)) as unknown as { attempts: number; channel: string; url_count: number; status: string }[]
     )[0];
     if (!row) {
       return err({
@@ -126,6 +142,11 @@ export const recordSearchNotificationOp = defineOperation({
         operation: "search_notify.record",
         message: `search notification ${input.id} not found`,
       });
+    }
+    // A newer Publish live superseded this ping while it was in flight
+    // (queueSearchNotifications): it stays skipped unless it did go out.
+    if (row.status !== "pending" && input.outcome !== "sent") {
+      return ok({ status: "skipped" as const });
     }
     const giveUp = input.outcome === "retry" && row.attempts >= SEARCH_NOTIFY_MAX_ATTEMPTS;
     // What the site told a third party, and how it answered.

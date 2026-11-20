@@ -21,6 +21,7 @@ import {
 import { describeError } from "../ai/tools/_describe-error.js";
 import { SYSTEM_ACTOR_ID } from "../audit.js";
 import type { ClaimedSearchNotification } from "../ops/search-notifications.js";
+import { searchNotifyDisabledReason } from "./notifications.js";
 
 /** A response, as far as the sender reads it. */
 export interface SearchNotifyResponse {
@@ -230,9 +231,12 @@ export async function sendSearchNotifications(opts: {
     actorKind: "system" as const,
     requestId: `search-notify-${sends++}`,
   };
+  // Off on this install: what is due is marked skipped, nothing is sent.
+  const off = searchNotifyDisabledReason(process.env);
   const claimedR = await execute(opts.registry, opts.adapter, ctx, "search_notify.claim", {
     ...(opts.runId ? { runId: opts.runId } : {}),
     limit: 20,
+    ...(off === null ? {} : { skipReason: off }),
   });
   if (!claimedR.ok) throw new Error(`search_notify.claim failed: ${describeError(claimedR.error)}`);
   const fetchImpl = opts.fetch ?? (globalThis.fetch as unknown as SearchNotifyFetch);
@@ -251,10 +255,10 @@ export async function sendSearchNotifications(opts: {
     if (!recorded.ok) {
       throw new Error(`search_notify.record failed: ${describeError(recorded.error)}`);
     }
-    const status = (recorded.value as { status: "sent" | "pending" | "failed" }).status;
+    const status = (recorded.value as { status: "sent" | "pending" | "failed" | "skipped" }).status;
     if (status === "sent") tally.sent += 1;
     else if (status === "pending") tally.retrying += 1;
-    else tally.failed += 1;
+    else if (status === "failed") tally.failed += 1;
   }
   return tally;
 }

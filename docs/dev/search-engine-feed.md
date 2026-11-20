@@ -61,7 +61,9 @@ append, in the transaction that records the run:
   at that run's head (`deploy_runs.live_versions_head`), dated with the
   rollback, because live content changed at that moment. A build from before
   the record began has no state to restore. Then nothing is appended until
-  the next Publish live.
+  the next Publish live. A plugin-data release (#1155) serves its base
+  release's pages, feed and key file and takes over that release's head,
+  feed and key, so a rollback to it restores the same record.
 
 The first Publish live after the update records the `baseline`: every page
 that was live already, dated as the sitemap dated it until then
@@ -104,7 +106,8 @@ The run's transaction queues one row per channel in
 - **WebSub** when the feed changed: an announced page, or a feed this
   production run serves for the first time. A newer ping makes the older ones
   still waiting `skipped`, because the hub fetches the feed as it is when the
-  ping arrives.
+  ping arrives. A late answer for such a ping leaves it `skipped`, unless the
+  ping did go out.
 - **IndexNow** when the run announces pages and serves a key: every URL that
   changed, plus the URL a moved or removed page was live at before. The URLs
   are grouped by host (a submission names one host whose root serves the key
@@ -125,8 +128,9 @@ beyond the request.
 
 The row is `skipped`, with the reason, when the site's address cannot be
 reached from the internet (localhost, `.local`, `.test`, an IP address and the
-like: `isPublicSiteHost`), and on installs with `CAELO_SEARCH_NOTIFY=off`. Test
-runs set that (`scripts/test-preload.ts`, the Playwright config, the scale
+like: `isPublicSiteHost`), and on installs with `CAELO_SEARCH_NOTIFY=off`. The
+switch is checked again when sending, so turning it off also marks the queued
+retries `skipped` instead of sending them. Test runs set it (`scripts/test-preload.ts`, the Playwright config, the scale
 gate). The sender's own tests pass a fake `fetch`.
 
 Nothing here builds or publishes: the tick's task only announces what a human

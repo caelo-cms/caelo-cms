@@ -18,6 +18,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import {
   DatabaseAdapter,
+  execute,
   OperationRegistry,
   SYSTEM_ACTOR_ID,
   type TransactionRunner,
@@ -32,6 +33,7 @@ import {
 import {
   applyLiveChanges,
   applyStagedRun,
+  inheritSearchFeedFromBase,
   liveVersionsHead,
   recordStagedChanges,
   restoreLiveVersions,
@@ -319,6 +321,35 @@ describe("the live record", () => {
     expect(await live()).toEqual({ [P1]: { url: url(P1), fp: FP("a") } });
   });
 
+  it("a plugin-data release serves its base's record, so a rollback to it restores that", async () => {
+    const first = await publish(
+      [change(P1, { kind: "added", prevUrl: null })],
+      "2026-11-20T08:00:00Z",
+    );
+    const refresh = crypto.randomUUID();
+    runs.push(refresh);
+    await admin(
+      (
+        tx,
+      ) => tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, build_kind, base_run_id)
+                 SELECT ${refresh}::uuid, id, ${SYSTEM_ACTOR_ID}::uuid, 'succeeded',
+                        '2026-11-20T08:30:00Z'::timestamptz, 'plugin_data', ${first}::uuid
+                 FROM deploy_targets WHERE name = 'production'`,
+    );
+    await inTx((tx) => inheritSearchFeedFromBase(tx, refresh));
+    await publish([change(P1, { fingerprint: FP("b") })], "2026-11-20T09:00:00Z");
+    const rollback = await run("production", "2026-11-20T10:00:00Z");
+    const r = await inTx((tx) =>
+      restoreLiveVersions(tx, {
+        runId: rollback,
+        restoredRunId: refresh,
+        at: "2026-11-20T10:00:00.000Z",
+      }),
+    );
+    expect(r).toEqual({ announced: 1, restorable: true });
+    expect(await live()).toEqual({ [P1]: { url: url(P1), fp: FP("a") } });
+  });
+
   it("a rollback to a build from before the record appends nothing", async () => {
     const old = await run("production", "2026-11-19T08:00:00Z");
     await publish([change(P1, { kind: "added", prevUrl: null })], "2026-11-20T08:00:00Z");
@@ -429,7 +460,9 @@ describe("the notifications", () => {
     );
     const engines = fakeEngines((host) => (host === "pubsubhubbub.appspot.com" ? 204 : 202));
     expect(
-      await sendSearchNotifications({ adapter, registry, runId: prod, fetch: engines.fetchImpl }),
+      await withNotificationsOn(() =>
+        sendSearchNotifications({ adapter, registry, runId: prod, fetch: engines.fetchImpl }),
+      ),
     ).toEqual({ sent: 2, retrying: 0, failed: 0 });
     const indexNow = engines.sent.find((s) => s.url.includes("indexnow"));
     expect(JSON.parse(indexNow?.body ?? "{}")).toEqual({
@@ -455,7 +488,9 @@ describe("the notifications", () => {
     );
     const engines = fakeEngines((host) => (host === "pubsubhubbub.appspot.com" ? 503 : 403));
     expect(
-      await sendSearchNotifications({ adapter, registry, runId: prod, fetch: engines.fetchImpl }),
+      await withNotificationsOn(() =>
+        sendSearchNotifications({ adapter, registry, runId: prod, fetch: engines.fetchImpl }),
+      ),
     ).toEqual({ sent: 0, retrying: 1, failed: 1 });
     const rows = await notifications(prod);
     expect(rows.map((r) => [r.channel, r.status, r.attempts, r.later])).toEqual([
@@ -465,7 +500,9 @@ describe("the notifications", () => {
     expect(rows[0]?.detail).toContain("answered 403: refused");
     // Not due yet: a second send right away claims nothing.
     expect(
-      await sendSearchNotifications({ adapter, registry, runId: prod, fetch: engines.fetchImpl }),
+      await withNotificationsOn(() =>
+        sendSearchNotifications({ adapter, registry, runId: prod, fetch: engines.fetchImpl }),
+      ),
     ).toEqual({ sent: 0, retrying: 0, failed: 0 });
   });
 
@@ -484,11 +521,59 @@ describe("the notifications", () => {
     );
     const engines = fakeEngines(() => new Error("connect ETIMEDOUT"));
     expect(
-      await sendSearchNotifications({ adapter, registry, runId: prod, fetch: engines.fetchImpl }),
+      await withNotificationsOn(() =>
+        sendSearchNotifications({ adapter, registry, runId: prod, fetch: engines.fetchImpl }),
+      ),
     ).toEqual({ sent: 0, retrying: 0, failed: 1 });
     const websub = (await notifications(prod)).find((r) => r.channel === "websub");
     expect(websub?.status).toBe("failed");
     expect(websub?.detail).toContain(`given up after ${SEARCH_NOTIFY_MAX_ATTEMPTS} attempts`);
     expect(websub?.detail).toContain("did not answer: connect ETIMEDOUT");
+  });
+
+  it("while they are off on the install, the sender sends nothing and marks what is due skipped", async () => {
+    const prod = await withNotificationsOn(() =>
+      publish([change(P1, { kind: "added", prevUrl: null })], "2026-11-20T08:00:00Z"),
+    );
+    process.env.CAELO_SEARCH_NOTIFY = "off";
+    const engines = fakeEngines(() => 202);
+    expect(
+      await sendSearchNotifications({ adapter, registry, runId: prod, fetch: engines.fetchImpl }),
+    ).toEqual({ sent: 0, retrying: 0, failed: 0 });
+    expect(engines.sent).toEqual([]);
+    const rows = await notifications(prod);
+    expect(rows.map((r) => r.status)).toEqual(["skipped", "skipped"]);
+    expect(rows[0]?.detail).toContain("CAELO_SEARCH_NOTIFY=off");
+  });
+
+  it("a late answer for a ping a newer Publish live replaced leaves it skipped", async () => {
+    const first = await withNotificationsOn(() =>
+      publish([change(P1, { kind: "added", prevUrl: null })], "2026-11-20T08:00:00Z"),
+    );
+    // The first ping is in flight...
+    const claimed = await execute(registry, adapter, SYSTEM, "search_notify.claim", {
+      runId: first,
+      limit: 20,
+    });
+    expect(claimed.ok).toBe(true);
+    const websub = (
+      claimed.ok ? (claimed.value as { claimed: { id: string; channel: string }[] }).claimed : []
+    ).find((n) => n.channel === "websub");
+    // ...when the next Publish live replaces it...
+    await withNotificationsOn(() =>
+      publish([change(P1, { fingerprint: FP("b") })], "2026-11-20T09:00:00Z"),
+    );
+    // ...and then the hub answers 503.
+    const late = await execute(registry, adapter, SYSTEM, "search_notify.record", {
+      id: websub?.id ?? "",
+      outcome: "retry",
+      responseStatus: 503,
+      detail: "the WebSub hub answered 503",
+      retryAfterSeconds: null,
+    });
+    expect(late.ok && (late.value as { status: string }).status).toBe("skipped");
+    const row = (await notifications(first)).find((r) => r.channel === "websub");
+    expect(row?.status).toBe("skipped");
+    expect(row?.detail).toContain("a later Publish live");
   });
 });
