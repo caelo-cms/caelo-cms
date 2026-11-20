@@ -67,19 +67,30 @@ describe("buildRobotsTxt", () => {
 });
 
 describe("buildRobotsTxtWithSitemap (promote rewrites robots.txt with it)", () => {
-  it("staging never references the sitemap, even when the build ships one", () => {
-    expect(buildRobotsTxtWithSitemap("noindex", "https://example.com", true)).toBe(
-      "User-agent: *\nDisallow: /\n",
-    );
+  it("staging never references the sitemap or the feed, even when the build ships them", () => {
+    expect(
+      buildRobotsTxtWithSitemap("noindex", "https://example.com", { sitemap: true, feed: true }),
+    ).toBe("User-agent: *\nDisallow: /\n");
   });
 
   it("production points crawlers at the sitemap", () => {
-    expect(buildRobotsTxtWithSitemap("index", "https://example.com/", true)).toBe(
-      "User-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\n",
+    expect(
+      buildRobotsTxtWithSitemap("index", "https://example.com/", { sitemap: true, feed: false }),
+    ).toBe("User-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\n");
+    expect(
+      buildRobotsTxtWithSitemap("index", "https://example.com", { sitemap: false, feed: false }),
+    ).toBe("User-agent: *\nAllow: /\n");
+  });
+
+  it("production lists the feed as a second sitemap (search engines take Atom as one)", () => {
+    expect(
+      buildRobotsTxtWithSitemap("index", "https://example.com/", { sitemap: true, feed: true }),
+    ).toBe(
+      "User-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\nSitemap: https://example.com/feed.xml\n",
     );
-    expect(buildRobotsTxtWithSitemap("index", "https://example.com", false)).toBe(
-      "User-agent: *\nAllow: /\n",
-    );
+    expect(
+      buildRobotsTxtWithSitemap("index", "https://example.com", { sitemap: false, feed: true }),
+    ).toBe("User-agent: *\nAllow: /\n\nSitemap: https://example.com/feed.xml\n");
   });
 });
 

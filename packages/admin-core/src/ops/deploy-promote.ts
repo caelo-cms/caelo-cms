@@ -105,8 +105,11 @@ import {
   releaseRedirectChanges,
   takeOverRedirectsOnFirstPublishedPages,
 } from "../redirects/release.js";
+import { applyStagedRun } from "../search-feed/live-versions.js";
+import { queueSearchNotifications } from "../search-feed/notifications.js";
+import { sendSearchNotificationsAfterPublish } from "../search-feed/notify.js";
 import { jsonbParam } from "../sql-helpers.js";
-import { stampFirstPublished } from "./content/first-published.js";
+import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import {
   logRunTimings,
   productionNeedsHuman,
@@ -519,6 +522,15 @@ export const finishPromoteOp = defineOperation({
         input.runId,
         await stampFirstPublished(tx, input.fromRunId),
       );
+      // docs/dev/search-engine-feed.md — what the staged build changes per
+      // page becomes the live record; its WebSub ping and IndexNow
+      // submission are queued (sent after this commit, deploy.promote).
+      const { announced } = await applyStagedRun(tx, {
+        runId: input.runId,
+        fromRunId: input.fromRunId,
+        shippedAt: await deployRunStartedAt(tx, input.fromRunId),
+      });
+      await queueSearchNotifications(tx, { runId: input.runId, announced });
       // #1155 — the promoted build baked its plugin data when it was
       // staged; bakes a plugin-data build made since are pending again.
       await rewindBakesToRun(tx, input.fromRunId);
@@ -807,6 +819,11 @@ async function runPromote(
         runId,
         error: describeError(synced.error),
       });
+    }
+    // The build is live: tell the WebSub hub and IndexNow, inside this
+    // request (docs/dev/search-engine-feed.md); the tick retries.
+    if (plan.to.env === "production") {
+      await sendSearchNotificationsAfterPublish({ adapter, registry, runId });
     }
     // Last fallible step done: one line per run, never succeeded + failed.
     logRunTimings("publish-live", runId, timer, { status: "succeeded" });

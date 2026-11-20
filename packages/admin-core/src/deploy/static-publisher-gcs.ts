@@ -43,6 +43,7 @@ import { join } from "node:path";
 import {
   assertGcpRedirectBudget,
   buildRedirectPlan,
+  FEED_FILE,
   GCP_PUBLIC_BASE_PATHS,
   HTML_CACHE_CONTROL,
   IMMUTABLE_CACHE_CONTROL,
@@ -225,18 +226,20 @@ export function createGcsStaticPublisher(
       // fails here with nothing changed.
       const redirectPlan = await readStagedRedirectPlan(h.stagingBucket, sourceRunId);
       const buildFiles = await readStagedBuildFiles(h.stagingBucket, sourceRunId);
-      // PR #947 review — robots.txt advertises the build's sitemap. One the
-      // hash-skip left out of the staging prefix is served from the live
-      // copy; if that copy vanished out of band, refuse before any file
+      // PR #947 review — robots.txt advertises the build's sitemap and feed.
+      // One the hash-skip left out of the staging prefix is served from the
+      // live copy; if that copy vanished out of band, refuse before any file
       // moves instead of shipping a `Sitemap:` line that 404s.
-      if (
-        buildFiles.has("sitemap.xml") &&
-        !stagedFiles.some((f) => f.name === `${prefix}sitemap.xml`) &&
-        !(await h.staticBucket.file("sitemap.xml").exists())[0]
-      ) {
-        throw new StagedRunError(
-          `static-publisher-gcs: run ${sourceRunId} contains sitemap.xml, but it is neither staged nor live in gs://${h.staticBucketName}/ (deleted outside Caelo?). Run Stage again.`,
-        );
+      for (const advertised of ["sitemap.xml", FEED_FILE]) {
+        if (
+          buildFiles.has(advertised) &&
+          !stagedFiles.some((f) => f.name === `${prefix}${advertised}`) &&
+          !(await h.staticBucket.file(advertised).exists())[0]
+        ) {
+          throw new StagedRunError(
+            `static-publisher-gcs: run ${sourceRunId} contains ${advertised}, but it is neither staged nor live in gs://${h.staticBucketName}/ (deleted outside Caelo?). Run Stage again.`,
+          );
+        }
       }
       let copied = 0;
       await runBatched(stagedFiles, PARALLEL_COPIES, async (stagedFile) => {
@@ -270,11 +273,10 @@ export function createGcsStaticPublisher(
       // Staging's X-Robots-Tag lives only on the staging-preview proxy
       // response, never in object metadata, so there is no header to
       // strip here.
-      const robotsBody = buildRobotsTxtWithSitemap(
-        toTarget.robotsDefault,
-        siteBaseUrl,
-        buildFiles.has("sitemap.xml"),
-      );
+      const robotsBody = buildRobotsTxtWithSitemap(toTarget.robotsDefault, siteBaseUrl, {
+        sitemap: buildFiles.has("sitemap.xml"),
+        feed: buildFiles.has(FEED_FILE),
+      });
       await uploadBytes(
         h.staticBucket,
         "robots.txt",
@@ -1001,6 +1003,11 @@ function cacheControlFor(key: string): string {
   }
   if (key === "robots.txt" || key === "sitemap.xml") {
     return "public, max-age=300";
+  }
+  // The WebSub hub fetches the feed right after the Publish live ping: no
+  // stale copy may answer it (docs/dev/search-engine-feed.md).
+  if (key === FEED_FILE) {
+    return "public, max-age=60";
   }
   return "public, max-age=3600";
 }

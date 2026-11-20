@@ -19,6 +19,9 @@ export {
   neutralizeBakeMarkers,
   replaceBakeRegions,
 } from "./bake-regions.js";
+// docs/dev/search-engine-feed.md — what a build changes live per page.
+export { bodyContentDigest, pageContentFingerprint } from "./content-fingerprint.js";
+export { ContentStates } from "./content-states.js";
 // issue #150 — theme web-font resolver (see fonts-resolver.ts header
 // for why it lives here). admin-core re-exports this surface.
 // #592 — the build's content-variants pass (resolution + loud refusal).

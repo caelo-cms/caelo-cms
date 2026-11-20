@@ -77,6 +77,9 @@ import { markRedirectsBehind } from "../deploy/redirect-sync.js";
 import { loadStaticPublisher, type PublishSummary } from "../deploy/static-publisher.js";
 import { forgetAllBakes } from "../plugin-data/stale-pages.js";
 import { rollBackRedirectReleases } from "../redirects/release.js";
+import { restoreLiveVersions } from "../search-feed/live-versions.js";
+import { queueSearchNotifications } from "../search-feed/notifications.js";
+import { sendSearchNotificationsAfterPublish } from "../search-feed/notify.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { rowToTarget, runStartedAt, TARGET_COLUMNS, type TargetDbRow } from "./deploy-common.js";
 import { acquireLeaseStep, fenceRunLeases } from "./deploy-lease-steps.js";
@@ -319,6 +322,17 @@ export const finishRollbackOp = defineOperation({
     await markRedirectsBehind(tx, [input.targetId]);
     // #1155 — the build put back may lack any bake made since it ran.
     if (run.env === "production") await forgetAllBakes(tx);
+    // docs/dev/search-engine-feed.md — the live record gets the restored
+    // build's pages back; the pages that changed are announced again
+    // (queued here, sent after this commit by deploy.rollback).
+    if (run.env === "production") {
+      const { announced } = await restoreLiveVersions(tx, {
+        runId: input.runId,
+        restoredRunId: input.restoreRunId,
+        at: new Date().toISOString(),
+      });
+      await queueSearchNotifications(tx, { runId: input.runId, announced });
+    }
     return ok({
       recorded: true as const,
       redirects: {
@@ -463,6 +477,9 @@ async function runRollback(
     });
   }
   if (lostMessage !== null) return refused(lostMessage);
+  // The restored pages are live: tell the WebSub hub and IndexNow, inside
+  // this request (docs/dev/search-engine-feed.md); the tick retries.
+  await sendSearchNotificationsAfterPublish({ adapter, registry, runId });
   return ok({
     buildId: plan.buildId,
     newRunId: runId,

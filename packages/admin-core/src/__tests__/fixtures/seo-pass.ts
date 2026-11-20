@@ -11,7 +11,12 @@ import { join } from "node:path";
 import type { BuildPluginServices } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { PageUrlStyle, SiteSeoSettings } from "@caelo-cms/shared";
-import { MediaPass, prepareSeoPass } from "@caelo-cms/static-generator";
+import {
+  bodyContentDigest,
+  ContentStates,
+  MediaPass,
+  prepareSeoPass,
+} from "@caelo-cms/static-generator";
 
 export async function runSeoPass(args: {
   tx: TransactionRunner;
@@ -31,6 +36,8 @@ export async function runSeoPass(args: {
   notFoundPageId: string | null;
   /** #1452 — the theme's bound default share image; none unless set. */
   siteShareImageAssetId?: string | null;
+  /** The feed every page links; none unless set. */
+  feed?: { readonly url: string; readonly title: string } | null;
 }): Promise<{ sitemapEmitted: boolean }> {
   const media = new MediaPass({
     tx: args.tx,
@@ -48,8 +55,18 @@ export async function runSeoPass(args: {
     pageUrlStyle: args.pageUrlStyle,
     notFoundPageId: args.notFoundPageId,
     siteShareImageAssetId: args.siteShareImageAssetId ?? null,
+    // Only these pages are built: none of the others counts as removed.
+    contentStates: await ContentStates.load(args.tx, {
+      publishAt: new Date().toISOString(),
+      full: false,
+    }),
+    feed: args.feed ?? null,
   });
-  const pages = args.pages.map((p) => ({ ...p, pageTitle: p.pageTitle ?? p.pageSlug }));
+  const pages = args.pages.map((p) => ({
+    ...p,
+    pageTitle: p.pageTitle ?? p.pageSlug,
+    bodyDigest: bodyContentDigest(p.html),
+  }));
   await seo.apply(pages);
   pages.forEach((p, i) => {
     const original = args.pages[i];

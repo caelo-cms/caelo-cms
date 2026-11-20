@@ -89,6 +89,7 @@ import {
   resolveDocumentLanguage,
   type SiteSeoSettings,
   scanCssVars,
+  siteFeedLink,
   type TemplateField,
   unknownCssVarMarker,
   wrapEditableValues,
@@ -718,6 +719,9 @@ async function renderPreview(
       (page.seo?.noindex ?? false) || (followUp !== null && pagination?.followUps === "noindex"),
     ogImageUrl: shareImages.get(pageId)?.url ?? null,
     organization,
+    // The feed link every built page carries (docs/dev/search-engine-feed.md).
+    // Without a base URL the build refuses, so there is nothing to show.
+    feed: siteBaseUrl ? siteFeedLink(settings.feedEnabled, siteBaseUrl) : null,
     breadcrumbs: siteBaseUrl
       ? await previewBreadcrumbs(view, lists.breadcrumbTrail(), {
           siteBaseUrl,

@@ -699,7 +699,18 @@ function extractBodyInner(composedHtml: string): string {
   return peeled ?? inner;
 }
 
-export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOutput {
+/** {@link composePageWithLayout}'s result. */
+export interface ComposeWithLayoutOutput extends ComposeOutput {
+  /**
+   * The page's own body: the template with the page's modules, as it fills
+   * the layout's `content` slot — without the layout's header, footer and
+   * other blocks. The static generator fingerprints it to tell whether what
+   * the page itself shows changed (docs/dev/search-engine-feed.md).
+   */
+  readonly contentHtml: string;
+}
+
+export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeWithLayoutOutput {
   // No-fallbacks (CLAUDE.md §2): validate the layout declares a
   // `content` slot up-front, before rendering. The htmlparser2-based
   // walk handles attribute quoting / ordering uniformly; a layout
@@ -907,5 +918,6 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     replacedSlots: [...replacedSet],
     missingSlots: [...missingSet],
     moduleFailures,
+    contentHtml: innerBody,
   };
 }

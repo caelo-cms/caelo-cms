@@ -43,6 +43,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import {
+  type BuildSearchFeed,
   buildMediaUrl,
   ComposeError,
   type ComposeFonts,
@@ -53,8 +54,11 @@ import {
   composeSiteHeaders,
   createListRenderContext,
   FAVICON_VARIANT,
+  FEED_CONTENT_TYPE,
+  FEED_FILE,
   fontUnresolvableMarker,
   formatStaticFilesManifest,
+  indexNowKeyFile,
   isRasterImageMime,
   LIST_QUERY_MAX_LIMIT,
   type ListRenderContext,
@@ -76,17 +80,22 @@ import {
   STATIC_FILES_MANIFEST_FILE,
   type StaticFileContentType,
   servableRedirectTargetIssue,
+  siteFeedLink,
   siteSecurityPolicySchema,
   staticFileCollisions,
   staticFileContentTypeHeader,
   type ThemeDocument,
   themeFaviconRendition,
   trimSlashes,
+  WEBSUB_HUB_URL,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { ASSET_REFERENCES_FILE, serializeAssetReferences } from "./asset-references.js";
+import { renderAtomFeed } from "./atom-feed.js";
 import { type BuildOutput, DiskOutput } from "./build-output.js";
 import { BuildRefusal } from "./build-refusal.js";
+import { bodyContentDigest } from "./content-fingerprint.js";
+import { ContentStates } from "./content-states.js";
 import type { VariantComposeModule } from "./content-variants-pass.js";
 import { publishFontFiles } from "./font-assets.js";
 import { loadSiteFontUsage } from "./font-usage-sources.js";
@@ -256,6 +265,12 @@ export interface GenerateResult {
   readonly renderFailures: readonly RenderFailure[];
   /** How many render failures the build had in all (`renderFailures` lists the first). */
   readonly renderFailureCount: number;
+  /**
+   * What the build changes live per page, its feed and its IndexNow key
+   * (docs/dev/search-engine-feed.md). A Stage records it with the run; the
+   * Publish live that ships the build makes it the live record.
+   */
+  readonly searchFeed: BuildSearchFeed;
 }
 
 /** One page linking to a page this build does not ship. */
@@ -633,6 +648,8 @@ async function buildSite(
   // #551 — read first: a missing site base URL or site language fails the
   // run before any file is written, not halfway through the page passes.
   const seoSettings = requireSiteLanguage(await readSeoSettings(tx));
+  // The feed every page links (docs/dev/search-engine-feed.md).
+  const feed = siteFeedLink(seoSettings.feedEnabled, seoSettings.siteBaseUrl);
 
   await mkdir(buildDir, { recursive: true });
 
@@ -1043,6 +1060,13 @@ async function buildSite(
   const renderFailures: RenderFailure[] = [];
   const contentTypeOverrides: Record<string, string> = {};
 
+  // What production serves per page, to tell what this build changes
+  // (docs/dev/search-engine-feed.md). Only a full build knows which pages
+  // it no longer ships.
+  const contentStates = await ContentStates.load(tx, {
+    publishAt: args.publishAt,
+    full: pagesToBuild === null,
+  });
   const seo = await prepareSeoPass({
     tx,
     plugins: args.plugins,
@@ -1052,6 +1076,8 @@ async function buildSite(
     pageUrlStyle,
     notFoundPageId,
     siteShareImageAssetId: tr?.social_share_media_id ?? null,
+    contentStates,
+    feed,
   });
   // #449 — plugin client assets: one call per contributing plugin for
   // the whole build, written under `_caelo/plugin/<slug>/` with the
@@ -1161,6 +1187,9 @@ async function buildSite(
         pageId: page.page_id,
         pageSlug: page.slug,
         pageTitle: page.title,
+        // What the page itself shows, without the layout's chrome: page 1
+        // stands for the page in the live record (docs/dev/search-engine-feed.md).
+        bodyDigest: n === 1 ? bodyContentDigest(composed.contentHtml) : null,
         relPath:
           n === 1
             ? outputPathOf(page)
@@ -1441,6 +1470,40 @@ async function buildSite(
 
   const sitemapEmitted = await seo.writeSitemap(writeBuildFile);
   if (sitemapEmitted) fileCount += 1;
+  // docs/dev/search-engine-feed.md — what this build changes live, the feed
+  // of the latest changes, and the IndexNow key file. The run that ships the
+  // build to production records the changes and announces them.
+  const states = await contentStates.finish(tx);
+  /** A search file the build writes at the root; refused when a page already ships there. */
+  const writeSearchFile = async (relPath: string, body: string, contentType: string) => {
+    if (servedPaths.has(relPath)) {
+      throw new BuildRefusal(
+        `static-generator: a page is published at /${relPath}, where the site's ${relPath === FEED_FILE ? "feed" : "IndexNow key file"} belongs. Give the page another URL, or turn the ${relPath === FEED_FILE ? "feed" : "IndexNow submissions"} off under Settings → SEO, then Stage again.`,
+      );
+    }
+    contentTypeOverrides[relPath] = contentType;
+    await writeBuildFile(relPath, body, contentType);
+    fileCount += 1;
+  };
+  if (feed !== null) {
+    await writeSearchFile(
+      FEED_FILE,
+      renderAtomFeed({
+        feedUrl: feed.url,
+        siteUrl: `${seoSettings.siteBaseUrl.replace(/\/+$/, "")}/`,
+        title: feed.title,
+        language: seoSettings.siteLanguage,
+        hubUrl: WEBSUB_HUB_URL,
+        entries: states.feed,
+        emptyUpdated: new Date(args.publishAt).toISOString(),
+      }),
+      FEED_CONTENT_TYPE,
+    );
+  }
+  const indexNowKey = seoSettings.indexNowEnabled ? seoSettings.indexNowKey : null;
+  if (indexNowKey !== null) {
+    await writeSearchFile(indexNowKeyFile(indexNowKey), indexNowKey, "text/plain; charset=utf-8");
+  }
   // cdn_manifest.json is always written.
   await media.finish(writeBuildFile);
   fileCount += 1;
@@ -1448,7 +1511,10 @@ async function buildSite(
 
   await writeBuildFile(
     "robots.txt",
-    buildRobotsTxtWithSitemap(target.robotsDefault, seoSettings.siteBaseUrl, sitemapEmitted),
+    buildRobotsTxtWithSitemap(target.robotsDefault, seoSettings.siteBaseUrl, {
+      sitemap: sitemapEmitted,
+      feed: feed !== null,
+    }),
   );
   fileCount += 1;
 
@@ -1628,6 +1694,12 @@ async function buildSite(
     renderFailures: reportedRenderFailures?.failures ?? [],
     renderFailureCount: reportedRenderFailures?.total ?? 0,
     securityHeaders,
+    searchFeed: {
+      base: states.base,
+      changes: states.changes,
+      feedUrl: feed?.url ?? null,
+      indexNowKey,
+    },
   };
 }
 
@@ -1738,6 +1810,8 @@ interface BuiltPage {
   pageSlug: string;
   pageTitle: string;
   relPath: string;
+  /** The digest of what the page's own body shows (page 1 only; see SeoPagesContext). */
+  bodyDigest: string | null;
   /** #1142 — the trail the page's breadcrumbs showed, for the BreadcrumbList JSON-LD. */
   breadcrumbTrail: readonly string[] | null;
   /** #1257 — page `n` ≥ 2 of a paginated overview, and whether it may be indexed. */

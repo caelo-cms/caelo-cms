@@ -579,6 +579,10 @@ import {
 } from "./ops/role_pending.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
 import { scheduledTasksClaimOp, scheduledTasksFinishOp } from "./ops/scheduled_tasks.js";
+import {
+  claimSearchNotificationsOp,
+  recordSearchNotificationOp,
+} from "./ops/search-notifications.js";
 import { aiBudgetsStatusOp, listAiBudgetsOp, setAiBudgetOp } from "./ops/security/ai_budgets.js";
 import {
   aggregateAiCallsOp,
@@ -1456,6 +1460,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // The admin's refresh pings to the gateways (gateway-refresh.ts).
   registry.register(gatewayRefreshTargetsOp);
   registry.register(recordGatewayRefreshOp);
+  // The WebSub pings and IndexNow submissions of production runs
+  // (docs/dev/search-engine-feed.md).
+  registry.register(claimSearchNotificationsOp);
+  registry.register(recordSearchNotificationOp);
   registry.register(setGatewaySettingsOp);
   registry.register(rotateCookieSecretOp);
   registry.register(listGatewayRequestsOp);

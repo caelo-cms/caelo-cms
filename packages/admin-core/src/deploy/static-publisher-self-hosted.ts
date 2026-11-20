@@ -47,6 +47,7 @@ import {
   emitCaddyRedirects,
   emitCaddySiteHeaders,
   emitCaddyStaticFileHeaders,
+  FEED_FILE,
   formatRedirectsFile,
   isSafeStagedPath,
   parseSiteHeaderSet,
@@ -156,11 +157,10 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     // destination is all promote has to do.
     await writeFile(
       join(overlayDir, "robots.txt"),
-      buildRobotsTxtWithSitemap(
-        toTarget.robotsDefault,
-        siteBaseUrl,
-        existsSync(join(sourceBuildDir, "sitemap.xml")),
-      ),
+      buildRobotsTxtWithSitemap(toTarget.robotsDefault, siteBaseUrl, {
+        sitemap: existsSync(join(sourceBuildDir, "sitemap.xml")),
+        feed: existsSync(join(sourceBuildDir, FEED_FILE)),
+      }),
       "utf8",
     );
     try {

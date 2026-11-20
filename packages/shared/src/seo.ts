@@ -83,6 +83,10 @@ export const siteDefaultsSetSeoInputSchema = z
       .max(2048)
       .url("siteBaseUrl must be an absolute URL (https://example.com)"),
     sitemapEnabled: z.boolean(),
+    /** Atom feed of the latest changes + the WebSub ping (docs/dev/search-engine-feed.md). */
+    feedEnabled: z.boolean(),
+    /** IndexNow submissions of the URLs a Publish live changed. */
+    indexNowEnabled: z.boolean(),
     organizationJson: organizationJsonSchema.default({}),
   })
   .strict();
@@ -98,6 +102,8 @@ export const siteSeoProposalInputSchema = z
   .object({
     siteBaseUrl: z.string().min(1).max(2048).optional(),
     sitemapEnabled: z.boolean().optional(),
+    feedEnabled: z.boolean().optional(),
+    indexNowEnabled: z.boolean().optional(),
     organizationJson: organizationJsonSchema.optional(),
   })
   .strict()
@@ -105,8 +111,10 @@ export const siteSeoProposalInputSchema = z
     (v) =>
       v.siteBaseUrl !== undefined ||
       v.sitemapEnabled !== undefined ||
+      v.feedEnabled !== undefined ||
+      v.indexNowEnabled !== undefined ||
       v.organizationJson !== undefined,
-    "pass at least one of `siteBaseUrl`, `sitemapEnabled`, `organizationJson`",
+    "pass at least one of `siteBaseUrl`, `sitemapEnabled`, `feedEnabled`, `indexNowEnabled`, `organizationJson`",
   );
 export type SiteSeoProposalInput = z.infer<typeof siteSeoProposalInputSchema>;
 
@@ -219,6 +227,12 @@ export interface PageSeoRow {
 export interface SiteSeoSettings {
   siteBaseUrl: string;
   sitemapEnabled: boolean;
+  /** `site_defaults.feed_enabled` — write `/feed.xml` and link it (docs/dev/search-engine-feed.md). */
+  feedEnabled: boolean;
+  /** `site_defaults.indexnow_enabled` — serve the IndexNow key file and submit changed URLs. */
+  indexNowEnabled: boolean;
+  /** `site_defaults.indexnow_key` — public by design, served at `/<key>.txt`. */
+  indexNowKey: string;
   /** `site_defaults.site_language` — the `<html lang>` of every page no
    *  plugin assigns its own locale to (see document-language.ts). Always
    *  set here: the static generator refuses to build while it is NULL. */
@@ -291,6 +305,12 @@ export interface SeoMetaInput {
   ogImageUrl: string | null;
   organization: SiteSeoSettings["organization"];
   /**
+   * The site's Atom feed (`<link rel="alternate" type="application/atom+xml">`),
+   * or null when the site has none ({@link siteFeedUrl}). Every page links it,
+   * so feed readers and crawlers find it from any page.
+   */
+  feed: { readonly url: string; readonly title: string } | null;
+  /**
    * #1142 — the breadcrumb trail the page SHOWS (home → current), as
    * built by {@link breadcrumbJsonLdItems}; null or empty = the page shows
    * none and gets no `BreadcrumbList`, so structured data never claims a
@@ -350,6 +370,11 @@ export function renderSeoHead(input: SeoMetaInput): string {
   }
   if (input.noindex) {
     lines.push(`<meta name="robots" content="noindex" />`);
+  }
+  if (input.feed) {
+    lines.push(
+      `<link rel="alternate" type="application/atom+xml" title="${enc(input.feed.title)}" href="${enc(input.feed.url)}" />`,
+    );
   }
   // Open Graph
   lines.push(`<meta property="og:title" content="${enc(input.title)}" />`);

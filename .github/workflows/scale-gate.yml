@@ -148,6 +148,7 @@ jobs:
             -e PUBLIC_STAGING_ADMIN_DATABASE_URL \
             -e CAELO_SECRET_KEK -e CAELO_INTERNAL_SECRET -e ORIGIN -e PORT=4391 -e NODE_ENV=development \
             -e CAELO_RELEASE_CHECK=off -e CAELO_UPDATE_SCHEDULER=off -e CAELO_SCHEDULER_CLOCK=off \
+            -e CAELO_SEARCH_NOTIFY=off \
             -e CAELO_SITE_URL=https://scale-gate.example \
             oven/bun:1.4.4 bun run build/index.js
           docker logs -f scale-gate-admin > admin.log 2>&1 &

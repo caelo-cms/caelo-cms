@@ -46,6 +46,8 @@ import { readSiteDelta, readSiteParts, type SiteViewParts, siteViewOf } from "./
 export interface SiteViewSettings {
   readonly siteBaseUrl: string | null;
   readonly sitemapEnabled: boolean;
+  /** The site's Atom feed is on: every page links it (docs/dev/search-engine-feed.md). */
+  readonly feedEnabled: boolean;
   readonly organizationJson: string | null;
   readonly siteLanguage: string | null;
   readonly homePageId: string | null;

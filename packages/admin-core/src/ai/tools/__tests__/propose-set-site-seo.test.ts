@@ -25,6 +25,8 @@ describe("propose_set_site_seo", () => {
     const s = proposeSetSiteSeoTool.schema;
     expect(s.safeParse({ siteBaseUrl: "https://www.example.com" }).success).toBe(true);
     expect(s.safeParse({ sitemapEnabled: false }).success).toBe(true);
+    expect(s.safeParse({ feedEnabled: false }).success).toBe(true);
+    expect(s.safeParse({ indexNowEnabled: true }).success).toBe(true);
     expect(s.safeParse({}).success).toBe(false);
     expect(s.safeParse({ siteBaseUrl: "https://x.example", siteLanguage: "de" }).success).toBe(
       false,
@@ -36,7 +38,13 @@ describe("propose_set_site_seo", () => {
     const props = Object.keys(
       (proposeSetSiteSeoTool.inputSchema as { properties: Record<string, unknown> }).properties,
     ).sort();
-    expect(props).toEqual(["organizationJson", "siteBaseUrl", "sitemapEnabled"]);
+    expect(props).toEqual([
+      "feedEnabled",
+      "indexNowEnabled",
+      "organizationJson",
+      "siteBaseUrl",
+      "sitemapEnabled",
+    ]);
   });
 
   it("routes the site language and per-page SEO to their own tools", () => {
