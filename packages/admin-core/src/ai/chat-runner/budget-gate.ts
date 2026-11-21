@@ -75,9 +75,12 @@ export async function fetchBudgetGate(
   adapter: DatabaseAdapter,
   ctx: ExecutionContext,
   chatSessionId: string,
+  /** #1653 — the running turn's ledger row; the gate adds its real usage instead. */
+  excludeCallId: string | null = null,
 ): Promise<BudgetGateState | null> {
   const r = await execute(registry, adapter, ctx, "imports.get_session_budget_state", {
     chatSessionId,
+    excludeCallId,
   });
   if (!r.ok) {
     // Minimal embeddings (fixture registries in loop unit tests) don't

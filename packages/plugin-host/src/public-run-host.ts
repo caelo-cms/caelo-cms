@@ -217,9 +217,11 @@ async function runInsert(
       return answerOf(run.onlyIf.answer, null);
   }
   if (run.drop) {
-    const v = inputAt(args, run.drop.field);
-    if (typeof v === "string" && matchesDropPattern(v, run.drop.patterns))
-      return answerOf(run.drop.answer, null);
+    for (const field of run.drop.fields) {
+      const v = inputAt(args, field);
+      if (typeof v === "string" && matchesDropPattern(v, run.drop.patterns))
+        return answerOf(run.drop.answer, null);
+    }
   }
   for (const check of run.checks ?? []) await runCheck(check, args, ctx);
   const r = await ctx.query.insert(run.table, resolveAll(run.values, args, ctx));

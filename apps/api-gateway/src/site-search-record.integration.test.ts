@@ -292,6 +292,20 @@ describe("site search `record`, declared and run by the gateway (#1340)", () => 
     expect(await stored()).toEqual([]);
   });
 
+  it("drops a search whose query before looks like personal data", async () => {
+    await clearEvents();
+    const r = await record({
+      kind: "search",
+      text: "preise",
+      lang: "de",
+      results: 1,
+      previous: "max@example.com",
+    });
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as { data: unknown }).data).toEqual({ recorded: true });
+    expect(await stored()).toEqual([]);
+  });
+
   it("a filled honeypot stores nothing and answers the same", async () => {
     await clearEvents();
     const r = await record({

@@ -24,7 +24,9 @@ import {
   idTerm,
   type KeyedDoc,
   keywordTerm,
+  keywordValues,
   lookupDocs,
+  numberValue,
   type OpenRelease,
   type Passage,
   primaryLanguage,
@@ -66,6 +68,35 @@ const QUERY_VECTORS = 2000;
 
 /** Candidates the vector side ranks before the fusion. */
 const VECTOR_CANDIDATES = 50;
+
+/**
+ * When results are merged (the meaning side, link texts, boosts), every page
+ * slices one fused order of this many candidates: a window that grew with
+ * the page would change the fusion's inputs and reorder hits a visitor has
+ * already seen. A pure word search stays exact on every page (its top-k is
+ * prefix-stable).
+ */
+const MERGED_CANDIDATES = 50;
+
+/** The query's filter, applied to a document whatever source found it. */
+interface DocFilter {
+  readonly langs: readonly string[] | null;
+  readonly keywords: Readonly<Record<string, readonly string[]>>;
+  readonly ranges: Readonly<Record<string, { readonly gte?: number; readonly lte?: number }>>;
+}
+
+function passesFilter(doc: KeyedDoc, f: DocFilter): boolean {
+  if (f.langs && !f.langs.includes(doc.lang)) return false;
+  for (const [field, allowed] of Object.entries(f.keywords))
+    if (!keywordValues(doc, field).some((v) => allowed.includes(v))) return false;
+  for (const [field, r] of Object.entries(f.ranges)) {
+    const v = numberValue(doc, field);
+    if (Number.isNaN(v)) return false;
+    if (r.gte !== undefined && v < r.gte) return false;
+    if (r.lte !== undefined && v > r.lte) return false;
+  }
+  return true;
+}
 
 /** The model a release's fingerprint names is not in this gateway's catalog. */
 export class ModelUnavailableError extends Error {
@@ -279,11 +310,16 @@ export async function runCollectionOperation(
         ...(Number.isFinite(lte) ? { lte } : {}),
       };
   }
+  const docFilter: DocFilter = { langs: langFilter ?? null, keywords, ranges };
+  const merging =
+    Boolean(profile.semantic && release.manifest.vectorModel) ||
+    profile.boosts.length > 0 ||
+    Boolean(op.anchors && opts.anchors?.release);
   const query: TextQuery = {
     text: q,
     lang,
     weights: profile.weights,
-    limit: limit * page * (profile.boosts.length > 0 ? 3 : 1),
+    limit: merging ? MERGED_CANDIDATES : limit * page,
     facets: op.facets,
     typos: profile.typos,
     compounds: profile.compounds,
@@ -328,13 +364,16 @@ export async function runCollectionOperation(
     if (anchorHits.size > 0) {
       const docs = await lookupDocs(release, [...anchorHits.keys()].map(idTerm));
       const wordScore = new Map(r.hits.map((h) => [h.key, h.score] as const));
-      const allowed = (d: KeyedDoc) => !langFilter || langFilter.includes(d.lang);
       const scored = new Map<number, number>(wordScore);
       for (const d of docs) {
-        if (!allowed(d)) continue;
+        // A link text names its target whatever the visitor filtered for.
+        if (!passesFilter(d, docFilter)) continue;
         scored.set(d.key, (scored.get(d.key) ?? 0) + (anchorHits.get(d.id)?.score ?? 0));
       }
-      keys = [...scored.entries()].sort((x, y) => y[1] - x[1] || x[0] - y[0]).map(([k]) => k);
+      keys = [...scored.entries()]
+        .sort((x, y) => y[1] - x[1] || x[0] - y[0])
+        .map(([k]) => k)
+        .slice(0, MERGED_CANDIDATES);
     }
   }
   // #1650 — the meaning side: the query's vector against the passages'.
@@ -350,7 +389,7 @@ export async function runCollectionOperation(
     }
     const near = await searchVectors(release, {
       vector,
-      limit: Math.max(VECTOR_CANDIDATES, limit * page),
+      limit: VECTOR_CANDIDATES,
       minSimilarity: profile.semantic.minSimilarity,
       filter: query.filter ?? {},
     });
@@ -360,7 +399,7 @@ export async function runCollectionOperation(
         { keys, weight: 1 },
         { keys: near.map((h) => h.key), weight: profile.semantic.weight },
       ],
-      query.limit + near.length,
+      MERGED_CANDIDATES,
     ).map((h) => h.key);
   }
   // Boosts reorder by stored keyword values, so the candidates load first.
@@ -392,9 +431,10 @@ export async function runCollectionOperation(
       (b) => normalizeQuery(b.query, lang) === normalizeQuery(q, lang),
     )?.ids ?? [];
   const pinnedDocs = pinnedIds.length > 0 ? await lookupDocs(release, pinnedIds.map(idTerm)) : [];
+  // A pinned page is still one of the visitor's filters and language.
   const pinnedOrder = pinnedIds
     .map((id) => pinnedDocs.find((d) => d.id === id))
-    .filter((d): d is KeyedDoc => d !== undefined);
+    .filter((d): d is KeyedDoc => d !== undefined && passesFilter(d, docFilter));
   for (const d of pinnedOrder) stored.set(d.key, d);
   const ordered = [
     ...pinnedOrder.map((d) => d.key),
@@ -445,6 +485,8 @@ export async function runCollectionOperation(
       total:
         Math.max(r.total, keys.length) + pinnedOrder.filter((d) => !keys.includes(d.key)).length,
       page,
+      // Whether a next page has hits: a merged order ends with its window.
+      more: page * limit < (merging ? ordered.length : r.total + pinnedOrder.length),
       hits,
       facets: r.facets,
       corrections: r.corrections,

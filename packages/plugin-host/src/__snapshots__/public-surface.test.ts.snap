@@ -1172,7 +1172,10 @@ exports[`shipped plugins' public surface (#1332) site-search: matches the review
           "answer": {
             "recorded": true,
           },
-          "field": "text",
+          "fields": [
+            "text",
+            "previous",
+          ],
           "patterns": [
             "email",
             "phone",

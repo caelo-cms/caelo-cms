@@ -348,8 +348,10 @@ export default definePlugin({
           equals: true,
           answer: { recorded: true },
         },
+        // The query before is a visitor's text too: either one looking like
+        // personal data keeps the whole event out.
         drop: {
-          field: "text",
+          fields: ["text", "previous"],
           patterns: ["email", "phone", "long-number"],
           answer: { recorded: true },
         },

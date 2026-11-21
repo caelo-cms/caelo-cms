@@ -183,10 +183,10 @@ export const publicRun = z.discriminatedUnion("action", [
         })
         .strict()
         .optional(),
-      /** A field that looks like personal data answers `answer` and stores nothing. */
+      /** Any of these fields looking like personal data answers `answer` and stores nothing. */
       drop: z
         .object({
-          field: inputField,
+          fields: z.array(inputField).min(1).max(8),
           patterns: z.array(z.enum(PUBLIC_DROP_PATTERNS)).min(1).max(PUBLIC_DROP_PATTERNS.length),
           answer: publicAnswer,
         })

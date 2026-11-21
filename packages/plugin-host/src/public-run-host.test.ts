@@ -98,7 +98,7 @@ const inboxOp: PublicOperationDef = {
       },
     ],
     honeypot: { field: "hp", store: "nothing", answer: { ok: true } },
-    drop: { field: "text", patterns: ["email", "phone", "long-number"], answer: { ok: true } },
+    drop: { fields: ["text"], patterns: ["email", "phone", "long-number"], answer: { ok: true } },
     answer: { ok: true, id: { from: "inserted-id" } },
   },
 };
@@ -455,7 +455,7 @@ describe("a privacy-preserving inbox (site-search record)", () => {
         answer: { recorded: true },
       },
       drop: {
-        field: "text",
+        fields: ["text"],
         patterns: ["email", "phone", "long-number"],
         answer: { recorded: true },
       },

@@ -48,7 +48,7 @@ An insert's extras, in the order the host applies them:
 
 1. `honeypot` — a field bots fill; when it holds anything the visitor gets its `answer` and `store: "nothing"` stores nothing, `"marked"` stores the row with its `values` overriding (a form's `status: "spam"`).
 2. `onlyIf` — a `column` of a published (or published-admin) row must equal `equals`; otherwise the visitor gets its `answer` and nothing is stored (a switch the Owner sets, such as counting searches).
-3. `drop` — a field that looks like personal data (`email`, `phone`, `long-number`: six digits in a row or card/IBAN groups) answers its `answer` and stores nothing (`matchesDropPattern` in the SDK).
+3. `drop` — any of its `fields` that looks like personal data (`email`, `phone`, `long-number`: six digits in a row or card/IBAN groups) answers its `answer` and stores nothing (`matchesDropPattern` in the SDK).
 4. `checks` — `not-blank`, `equals-row` (the field equals a column of a published row: the current policy version), `all-in` (every element is a value of a published column: known consent categories), `form-fields` (the field fits a field definition stored in a published row). A failed check refuses with its `refusal` words.
 5. the insert; `answer` may name `{ from: "inserted-id" }`.
 
