@@ -454,6 +454,13 @@ function fakeCtx() {
   return { ctx, collections, calls, coll };
 }
 
+/** The link texts of an anchors collection, without the blocks' state documents. */
+const linkTexts = (docs: ReadonlyMap<string, CollectionDocInput>): string[] =>
+  [...docs.values()]
+    .filter((d) => !d.id.startsWith("b:"))
+    .map((d) => String(d.values.text))
+    .sort();
+
 const args = (pages: PageOutputFacts[], final = false): PageOutputObserverArgs => ({
   runId: "r",
   pages,
@@ -468,7 +475,7 @@ describe("the observer", () => {
     const { ctx, calls, coll } = fakeCtx();
     await observeOp(ctx, args([facts()]));
     expect(coll("pages").size).toBe(1);
-    expect(coll("anchors").size).toBe(2);
+    expect(linkTexts(coll("anchors"))).toHaveLength(2);
     calls.length = 0;
     // The footer's text changed (it does not count), its links did not.
     const footerEdited = facts({
@@ -492,10 +499,30 @@ describe("the observer", () => {
     });
     await observeOp(ctx, args([renamed]));
     expect(calls.some((c) => c.collection === "anchors" && c.op === "replace")).toBe(true);
-    expect([...coll("anchors").values()].map((d) => d.values.text).sort()).toEqual([
-      "Kontakt & Anfahrt",
-      "Unser Blog",
-    ]);
+    expect(linkTexts(coll("anchors"))).toEqual(["Kontakt & Anfahrt", "Unser Blog"]);
+  });
+
+  it("writes a navigation block again when the index lost its last write with a failed Stage", async () => {
+    const { ctx, calls, coll } = fakeCtx();
+    await observeOp(ctx, args([facts()]));
+    const indexed = new Map(coll("anchors"));
+    const renamed = facts({
+      links: facts().links.map((l) =>
+        l.moduleId === "m-footer" ? { ...l, text: "Kontakt & Anfahrt" } : l,
+      ),
+    });
+    await observeOp(ctx, args([renamed]));
+    // That Stage failed: its writes were discarded, the index holds the old links.
+    coll("anchors").clear();
+    for (const [id, d] of indexed) coll("anchors").set(id, d);
+    calls.length = 0;
+    await observeOp(ctx, args([renamed]));
+    expect(calls.some((c) => c.collection === "anchors" && c.op === "replace")).toBe(true);
+    expect(linkTexts(coll("anchors"))).toEqual(["Kontakt & Anfahrt", "Unser Blog"]);
+    // And once the index holds it, the same links write nothing.
+    calls.length = 0;
+    await observeOp(ctx, args([renamed]));
+    expect(calls.filter((c) => c.collection === "anchors")).toEqual([]);
   });
 
   it("removes an excluded page's document but keeps its links as anchor texts", async () => {
@@ -503,6 +530,6 @@ describe("the observer", () => {
     await observeOp(ctx, args([facts()]));
     await observeOp(ctx, args([facts({ noindex: true })]));
     expect(coll("pages").size).toBe(0);
-    expect(coll("anchors").size).toBe(2);
+    expect(linkTexts(coll("anchors"))).toHaveLength(2);
   });
 });

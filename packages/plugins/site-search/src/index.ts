@@ -120,7 +120,6 @@ async function writeReport(
         placement: m.placement,
         weighting: m.weighting,
         reason: m.reason,
-        ...(m.anchorsDigest !== undefined ? { anchors_digest: m.anchorsDigest } : {}),
         run_id: runId,
       };
       const id = existing.get(m.moduleId);
@@ -283,7 +282,6 @@ export default definePlugin({
       placement: "int",
       weighting: "string",
       reason: "string",
-      anchors_digest: "string",
       run_id: "string",
     },
     index_report: { notes: "text", run_id: "string" },
@@ -392,6 +390,8 @@ export default definePlugin({
         target: { kind: "keyword" },
         source: { kind: "keyword" },
         sources: { kind: "number" },
+        // A navigation block's state document: its link set's digest.
+        block_digest: { kind: "keyword" },
       },
       // Navigation links count once per block, so a 50,000-page site has
       // roughly ten texts per page here.

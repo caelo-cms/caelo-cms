@@ -454,11 +454,12 @@ export function makeCollectionOps(
     handler: async (ctx, input, tx) => {
       const { plugin } = declaredCollection(COLLECTION_OPS.getMany, ctx.pluginId, input.collection);
       // Changes no index holds yet, other than this Stage's own: the newest
-      // index is then not what the plugin last wrote.
+      // index is then not what the plugin last wrote. A discarded change (a
+      // failed Stage's) will never be held, so it does not count.
       const pendingRows = (await tx.execute(sql`
         SELECT 1 FROM collection_changes
         WHERE plugin_id = ${plugin.pluginId}::uuid AND collection = ${input.collection}
-          AND applied_run_id IS NULL
+          AND applied_run_id IS NULL AND discarded_at IS NULL
           AND (${input.stageRunId ?? null}::uuid IS NULL OR run_id IS DISTINCT FROM ${input.stageRunId ?? null}::uuid)
         LIMIT 1
       `)) as unknown as unknown[];
@@ -737,12 +738,15 @@ export function makePluginCollections(
         docs: readonly CollectionDocInput[],
       ) => {
         assertWriting("replace");
-        // The removals first, then the documents: change files apply in order.
+        // Every removal first, then the documents: change files apply in
+        // order, and a change removes before it adds. The documents ride on
+        // the LAST removal chunk, so no later removal can take one of them
+        // away (and up to 1000 values stay one change).
         for (let i = 0; i < values.length; i += MAX_DELETES) {
-          const first = i === 0;
+          const last = i + MAX_DELETES >= values.length;
           await run(COLLECTION_OPS.write, {
             collection: name,
-            upserts: first ? docs.slice(0, MAX_UPSERTS) : [],
+            upserts: last ? docs.slice(0, MAX_UPSERTS) : [],
             deletes: [],
             deleteWhere: [{ field, values: values.slice(i, i + MAX_DELETES) }],
             ...(invocation.stageRunId ? { stageRunId: invocation.stageRunId } : {}),

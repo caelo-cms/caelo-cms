@@ -705,6 +705,62 @@ describe("page output and collections through Stage and Publish live", () => {
     ).toEqual([`/${PAGES[0]}`]);
   });
 
+  it("a Stage's plan and an index completion of one collection never interleave", async () => {
+    // A plan reads the newest ready release and claims the unapplied
+    // changes; an index completing between the two would mark its changes
+    // applied after the plan chose the release before it. A transaction
+    // holding the collection's lock stands for a plan (or a completion) in
+    // flight: neither the other completion nor a Stage's plan gets through.
+    const [{ id: pluginId }] = (await sqlSystem(
+      async (tx) => tx`SELECT id::text AS id FROM plugins WHERE slug = ${PLUGIN}`,
+    )) as [{ id: string }];
+    const conn = new SQL(ADMIN_URL as string);
+    let release = (): void => {};
+    let locked = (): void => {};
+    const isLocked = new Promise<void>((r) => {
+      locked = r;
+    });
+    const holder = conn.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(1644, hashtext(${`${pluginId}:pages`}))`;
+      locked();
+      await new Promise<void>((r) => {
+        release = r;
+      });
+    });
+    await isLocked;
+    let completed = false;
+    const completion = execute(
+      registry,
+      adapter,
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t1644-lock" },
+      "collections.index_done",
+      {
+        runId: crypto.randomUUID(),
+        pluginId,
+        collection: "pages",
+        releaseKey: "t1644-lock.json",
+        stats: {},
+      },
+    ).then((r) => {
+      completed = true;
+      return r;
+    });
+    let staged = false;
+    const staging = stage().then((run) => {
+      staged = true;
+      return run;
+    });
+    await Bun.sleep(1500);
+    expect(completed).toBe(false);
+    expect(staged).toBe(false);
+    release();
+    await holder;
+    await conn.end();
+    // It ran after the lock: no pending release of that run exists.
+    expect((await completion).ok).toBe(false);
+    expect((await indexState(await staging)).state).toBe("ready");
+  });
+
   it("a page taken offline while the observer's last call fails is removed by the next Stage", async () => {
     const page = pageIds.get(PAGES[1] as string) as string;
     const before = await indexState(await stage());

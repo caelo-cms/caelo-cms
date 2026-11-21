@@ -118,6 +118,38 @@ export interface AnchorDoc extends CollectionDocInput {
   };
 }
 
+/**
+ * A navigation block's state in the anchors collection: one document per
+ * block, without text (it never matches a search), that carries the digest
+ * of the block's link set. It shares the block's source, so every
+ * replacement of the block's links rewrites it in the same change, and a
+ * change discarded with a failed Stage takes it along: what the index holds
+ * is always what the next Stage compares against (#1666).
+ */
+export interface BlockDoc extends CollectionDocInput {
+  readonly values: {
+    readonly text: "";
+    readonly target: "";
+    readonly source: string;
+    readonly sources: 0;
+    readonly block_digest: string;
+  };
+}
+
+/** The id of a navigation block's state document (anchor ids are `a` + hex). */
+export function blockDocId(moduleId: string): string {
+  return `b:${moduleId}`;
+}
+
+/** A navigation block's state document for its link set's digest. */
+export function blockDocument(moduleId: string, digest: string): BlockDoc {
+  return {
+    id: blockDocId(moduleId),
+    lang: "und",
+    values: { text: "", target: "", source: `m:${moduleId}`, sources: 0, block_digest: digest },
+  };
+}
+
 /** Folds a link text for identity: case, spacing and punctuation at the ends. */
 export function normalizeAnchorText(text: string): string {
   return text

@@ -66,6 +66,26 @@ interface ReleaseRow {
   vector_model: string | null;
 }
 
+/** The advisory-lock class of one collection's release protocol (epic #1644). */
+const COLLECTION_LOCK_CLASS = 1644;
+
+/**
+ * Serialises a collection's release selection with its index completion.
+ * A plan reads the newest ready release and claims every change no index
+ * applied: both reads must see one state. Without the lock an index that
+ * completes between them marks its changes applied after the plan chose the
+ * release before it, and the new index misses them for good.
+ */
+async function lockCollection(
+  tx: TransactionRunner,
+  pluginId: string,
+  collection: string,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(${COLLECTION_LOCK_CLASS}::int, hashtext(${`${pluginId}:${collection}`}))`,
+  );
+}
+
 async function previousReady(
   tx: TransactionRunner,
   pluginId: string,
@@ -128,7 +148,12 @@ export const planCollectionRunOp = defineOperation({
     let pending = 0;
     let carried = 0;
     let failed = 0;
-    for (const c of activeCollections()) {
+    // One lock order for every plan: no two plans wait on each other.
+    const collections = [...activeCollections()].sort((a, b) =>
+      `${a.pluginId}:${a.collection}`.localeCompare(`${b.pluginId}:${b.collection}`),
+    );
+    for (const c of collections) {
+      await lockCollection(tx, c.pluginId, c.collection);
       const previous = await previousReady(tx, c.pluginId, c.collection);
       const failure = failedBy.get(c.pluginId);
       if (failure !== undefined) {
@@ -271,6 +296,7 @@ export const collectionIndexDoneOp = defineOperation({
     .strict(),
   output: z.object({}),
   handler: async (_ctx, input, tx) => {
+    await lockCollection(tx, input.pluginId, input.collection);
     const updated = (await tx.execute(sql`
       UPDATE collection_releases SET state = 'ready', release_key = ${input.releaseKey}, stats = ${jsonbParam(input.stats)},
              error = NULL, finished_at = now()

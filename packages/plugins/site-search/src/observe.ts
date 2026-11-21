@@ -16,7 +16,14 @@ import type {
   PluginContextTier1,
 } from "@caelo-cms/plugin-sdk";
 import { placementKey } from "@caelo-cms/plugin-sdk";
-import { type AnchorDoc, anchorDocuments, pageDocument } from "./documents.js";
+import {
+  type AnchorDoc,
+  anchorDocuments,
+  type BlockDoc,
+  blockDocId,
+  blockDocument,
+  pageDocument,
+} from "./documents.js";
 import { buildProfile, type ListEntry, profileConfigOf } from "./profile.js";
 import {
   type CountingSettings,
@@ -83,6 +90,29 @@ async function entities(
   return out;
 }
 
+/**
+ * The digests of navigation blocks as the newest index holds them (their
+ * state documents), read in getMany's chunks. `pending`: changes no index
+ * holds yet exist, so nothing may be skipped.
+ */
+async function heldBlocks(
+  anchors: NonNullable<PluginCollections["anchors"]>,
+  moduleIds: readonly string[],
+): Promise<{ digests: Map<string, string>; pending: boolean }> {
+  const digests = new Map<string, string>();
+  let pending = false;
+  for (let i = 0; i < moduleIds.length; i += 1000) {
+    const ids = moduleIds.slice(i, i + 1000);
+    const r = await anchors.getMany(ids.map(blockDocId));
+    pending ||= r.pending;
+    for (const id of ids) {
+      const digest = r.docs.get(blockDocId(id))?.values.block_digest;
+      if (typeof digest === "string") digests.set(id, digest);
+    }
+  }
+  return { digests, pending };
+}
+
 /** One module's counting as the index report shows it. */
 export interface ModuleReportRow {
   readonly moduleId: string;
@@ -91,8 +121,6 @@ export interface ModuleReportRow {
   readonly placement: number;
   readonly weighting: string;
   readonly reason: string;
-  /** A navigation block's anchor texts, digested: unchanged links are not rewritten. */
-  readonly anchorsDigest?: string;
 }
 
 /** A 64-bit FNV-1a digest of a JSON value (change detection, not security). */
@@ -103,20 +131,6 @@ export function digestOf(value: unknown): string {
     h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
   }
   return h.toString(16).padStart(16, "0");
-}
-
-/** The stored anchor digests of navigation blocks (module_counting.anchors_digest). */
-async function chromeDigests(ctx: Ctx, moduleIds: readonly string[]): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  if (!ctx.adminQuery || moduleIds.length === 0) return out;
-  for (let i = 0; i < moduleIds.length; i += 1000) {
-    for (const r of await ctx.adminQuery.list<
-      "module_counting",
-      { module_id: string; anchors_digest: string }
-    >("module_counting", { anyOf: { module_id: moduleIds.slice(i, i + 1000) }, limit: 1000 }))
-      if (r.anchors_digest) out.set(r.module_id, r.anchors_digest);
-  }
-  return out;
 }
 
 /** What one observer call did, for the tests and the report. */
@@ -208,11 +222,10 @@ export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<O
   // index holds yet make the comparison unsafe: then everything is written.
   const before = await pages.getMany(args.pages.map((p) => p.pageId));
   const trust = !before.pending;
-  const storedChrome = trust ? await chromeDigests(ctx, moduleIds) : new Map<string, string>();
 
   const upserts = [];
   const excluded: string[] = [];
-  const anchorDocs = new Map<string, ReturnType<typeof anchorDocuments>[number]>();
+  const anchorDocs = new Map<string, AnchorDoc | BlockDoc>();
   const anchorSources = new Set<string>();
   const chrome = new Map<string, AnchorDoc[]>();
   const report = new Map<string, ModuleReportRow>();
@@ -274,19 +287,16 @@ export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<O
     if (!trust || old?.values.digest !== digest || ownChanged)
       upserts.push({ ...doc, values: { ...doc.values, digest, anchors_digest: anchorsDigest } });
   }
-  // A navigation block's links: replaced only when they changed.
-  const chromeDigest = new Map<string, string>();
+  // A navigation block's links: replaced only when they differ from what
+  // the index holds (its state document's digest, #1666).
+  const held = await heldBlocks(anchors, [...chrome.keys()]);
   for (const [moduleId, docs] of chrome) {
     const d = digestOf(docs.map((x) => [x.id, x.values.text, x.values.sources]).sort());
-    chromeDigest.set(moduleId, d);
-    if (!trust || storedChrome.get(moduleId) !== d) {
+    if (held.pending || held.digests.get(moduleId) !== d) {
       anchorSources.add(`m:${moduleId}`);
       for (const x of docs) anchorDocs.set(x.id, x);
+      anchorDocs.set(blockDocId(moduleId), blockDocument(moduleId, d));
     }
-  }
-  for (const [moduleId, d] of chromeDigest) {
-    const row = report.get(moduleId);
-    if (row) report.set(moduleId, { ...row, anchorsDigest: d });
   }
   // The links of these pages and blocks replace what they said before, as
   // one change (the index removes, then adds).
