@@ -6,6 +6,7 @@
    * rendered from its declaration. A map is a small table of key and value.
    */
 
+  import { EMBEDDING_MODELS } from "@caelo-cms/shared";
   import { Plus, Trash2 } from "lucide-svelte";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -50,6 +51,9 @@
   }
 
   const mapValue = $derived((value ?? {}) as Record<string, unknown>);
+  const selectedModel = $derived(
+    spec.type === "catalogModel" ? EMBEDDING_MODELS.find((m) => m.id === value) : undefined,
+  );
 
   function setMapKey(key: string, v: unknown): void {
     onchange({ ...mapValue, [key]: v });
@@ -121,8 +125,15 @@
       <option value="">No list</option>
       {#each lists.filter((l) => l.type === spec.listType) as l (l.id)}<option value={l.id}>{l.name}</option>{/each}
     </Select>
-  {:else if spec.type === "pageRef" || spec.type === "catalogModel"}
-    <Input id={id} class="max-w-80 font-mono" placeholder={spec.type === "pageRef" ? "Page id" : "Model id"} value={String(value ?? "")} oninput={(e) => onchange((e.currentTarget as HTMLInputElement).value || null)} />
+  {:else if spec.type === "catalogModel"}
+    <!-- #1650: the core catalog's embedding models; none turns semantic search off. -->
+    <Select id={id} class="max-w-80" value={String(value ?? "")} onchange={(e) => onchange((e.currentTarget as HTMLSelectElement).value || null)}>
+      <option value="">Off: search by words only</option>
+      {#each EMBEDDING_MODELS as m (m.id)}<option value={m.id}>{m.label}</option>{/each}
+    </Select>
+    {#if selectedModel}<p class="text-muted-foreground text-xs">{selectedModel.description} {selectedModel.licence}.</p>{/if}
+  {:else if spec.type === "pageRef"}
+    <Input id={id} class="max-w-80 font-mono" placeholder="Page id" value={String(value ?? "")} oninput={(e) => onchange((e.currentTarget as HTMLInputElement).value || null)} />
   {:else}
     {@render scalar(spec, value, id, onchange)}
   {/if}

@@ -7,6 +7,7 @@
   "references": [
     { "path": "./packages/font-service" },
     { "path": "./packages/shared" },
+    { "path": "./packages/models" },
     { "path": "./packages/query-api" },
     { "path": "./packages/admin-core" },
     { "path": "./packages/plugin-sdk" },
@@ -19,6 +20,7 @@
     { "path": "./packages/plugins/ratings" },
     { "path": "./packages/plugins/newsletter" },
     { "path": "./packages/plugins/comments" },
+    { "path": "./packages/plugins/site-search" },
     { "path": "./packages/plugins/auth" },
     { "path": "./packages/plugins/international-site" },
     { "path": "./packages/plugins/consent-manager" },

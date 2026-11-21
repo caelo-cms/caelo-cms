@@ -19,6 +19,16 @@
  * Each gateway reads only its own environment's store: the live gateway
  * the live store, the staging gateway the staging one (the env var it is
  * given and its identity's bucket rights both say so).
+ *
+ * Semantic search (#1650): when the release was built with a catalog model
+ * and the profile turns `semantic` on, `search` embeds the query with the
+ * same model on ONNX Runtime's WebAssembly build (no native code touches a
+ * visitor's text), ranks passages by cosine similarity (at least the
+ * profile's `minSimilarity`), and fuses that ranking with the word ranking
+ * by Reciprocal Rank Fusion (k = 60, the vector side weighted by the
+ * profile's `weight`). Boosts and best bets apply to the fused order;
+ * facets count the word matches. A release whose model this gateway's
+ * catalog lacks answers 503 instead of a search without its meaning half.
  */
 
 import {
@@ -26,6 +36,7 @@ import {
   type CollectionStore,
   FileCache,
   foldDiacritics,
+  fuse,
   highlight,
   idTerm,
   type KeyedDoc,
@@ -40,10 +51,12 @@ import {
   readProfile,
   scopedStore,
   searchText,
+  searchVectors,
   snippet,
   storeFromUrl,
   type TextQuery,
 } from "@caelo-cms/collection-index";
+import type { Embedder } from "@caelo-cms/models";
 import { isPluginDisabled, loadedPlugins } from "@caelo-cms/plugin-host";
 import {
   type CollectionOperationManifest,
@@ -52,6 +65,11 @@ import {
   searchProfile,
 } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import {
+  EMBEDDING_MODELS,
+  type EmbeddingModel,
+  embeddingModelFingerprint,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 /** The env var of each environment's collection store. */
@@ -91,6 +109,73 @@ export interface CollectionAnswer {
 interface OpenEntry {
   readonly release: OpenRelease;
   readonly profile: SearchProfile | null;
+}
+
+/** Embeds a visitor's query; the gateway's is WebAssembly (see {@link wasmQueryEmbedder}). */
+export type QueryEmbedder = (fingerprint: string, query: string) => Promise<Float32Array>;
+
+/** Query vectors kept per gateway: a query is embedded once, whatever page or filter follows. */
+const QUERY_VECTORS = 2000;
+
+/** Candidates the vector side ranks before the fusion. */
+const VECTOR_CANDIDATES = 50;
+
+/** The model a release's fingerprint names is not in this gateway's catalog. */
+export class ModelUnavailableError extends Error {
+  override readonly name = "ModelUnavailableError";
+}
+
+/** The catalog model behind a release's vector fingerprint, or undefined. */
+export function modelOfFingerprint(fingerprint: string): EmbeddingModel | undefined {
+  return EMBEDDING_MODELS.find((m) => embeddingModelFingerprint(m) === fingerprint);
+}
+
+/**
+ * The gateway's query embedder: one WebAssembly embedder per model, loaded
+ * on first use (about half a second and 570 MB, bench/semantic-results.md)
+ * and kept; query vectors in a small LRU. The runtime is imported lazily,
+ * so a gateway without semantic search never loads it.
+ */
+export function wasmQueryEmbedder(): QueryEmbedder & { warm(fingerprint: string): void } {
+  const embedders = new Map<string, Promise<Embedder>>();
+  const vectors = new Map<string, Float32Array>();
+  const embedderOf = (fingerprint: string): Promise<Embedder> => {
+    let e = embedders.get(fingerprint);
+    if (!e) {
+      const model = modelOfFingerprint(fingerprint);
+      if (!model) {
+        return Promise.reject(
+          new ModelUnavailableError(
+            `the release was embedded with ${fingerprint}, which this gateway's model catalog does not have (an admin and gateway of different releases?)`,
+          ),
+        );
+      }
+      e = import("@caelo-cms/models/wasm").then((m) => m.createWasmEmbedder(model));
+      e.catch(() => embedders.delete(fingerprint));
+      embedders.set(fingerprint, e);
+    }
+    return e;
+  };
+  const embed = async (fingerprint: string, query: string): Promise<Float32Array> => {
+    const key = `${fingerprint}\n${query}`;
+    const hit = vectors.get(key);
+    if (hit) {
+      vectors.delete(key);
+      vectors.set(key, hit);
+      return hit;
+    }
+    const [vector] = await (await embedderOf(fingerprint)).embed([query], "query");
+    vectors.set(key, vector as Float32Array);
+    while (vectors.size > QUERY_VECTORS) vectors.delete(vectors.keys().next().value as string);
+    return vector as Float32Array;
+  };
+  return Object.assign(embed, {
+    warm: (fingerprint: string) => {
+      embedderOf(fingerprint).catch((e: unknown) =>
+        console.error(`[collections] ${e instanceof Error ? e.message : String(e)}`),
+      );
+    },
+  });
 }
 
 /** The gateway's collection state: the store, the published release keys and the open releases. */
@@ -166,7 +251,12 @@ export class GatewayCollections {
         const release = await openRelease(manifest, cache);
         const raw = await readProfile(manifest, cache);
         const parsed = raw === null ? null : searchProfile.safeParse(raw);
-        return { release, profile: parsed?.success ? parsed.data : null };
+        const profile = parsed?.success ? parsed.data : null;
+        // The first semantic query should not also pay the model's load.
+        if (profile?.semantic && manifest.vectorModel) {
+          defaultQueryEmbedder().warm(manifest.vectorModel.id);
+        }
+        return { release, profile };
       })();
       entry.catch(() => this.open.delete(id));
       this.open.set(id, entry);
@@ -213,6 +303,7 @@ export async function runCollectionOperation(
   entry: OpenEntry,
   releaseKey: string,
   params: URLSearchParams,
+  embedQuery: QueryEmbedder = defaultQueryEmbedder(),
 ): Promise<CollectionAnswer> {
   const { release, profile } = entry;
   if (op.kind === "read") {
@@ -334,10 +425,42 @@ export async function runCollectionOperation(
   };
   const r = await searchText(release, query);
   let keys = r.hits.map((h) => h.key);
+  // #1650 — the meaning side: the query's vector against the passages'.
+  const fingerprint = release.manifest.vectorModel?.id;
+  const bestPassage = new Map<number, number>();
+  if (profile.semantic && fingerprint) {
+    let vector: Float32Array;
+    try {
+      vector = await embedQuery(fingerprint, q);
+    } catch (e) {
+      if (e instanceof ModelUnavailableError) return fail(503, "ModelUnavailable", e.message);
+      throw e;
+    }
+    const near = await searchVectors(release, {
+      vector,
+      limit: Math.max(VECTOR_CANDIDATES, limit * page),
+      minSimilarity: profile.semantic.minSimilarity,
+      filter: query.filter ?? {},
+    });
+    for (const h of near) bestPassage.set(h.key, h.passage);
+    keys = fuse(
+      [
+        { keys, weight: 1 },
+        { keys: near.map((h) => h.key), weight: profile.semantic.weight },
+      ],
+      query.limit + near.length,
+    ).map((h) => h.key);
+  }
   // Boosts reorder by stored keyword values, so the candidates load first.
   let stored = await storedMap(release, keys);
   if (profile.boosts.length > 0) {
-    const score = new Map(r.hits.map((h) => [h.key, h.score] as const));
+    // Boosts multiply a document's place score: its word score, or, after
+    // the fusion, its fused rank turned into a descending score.
+    const score = new Map(
+      bestPassage.size > 0
+        ? keys.map((k, i) => [k, keys.length - i] as const)
+        : r.hits.map((h) => [h.key, h.score] as const),
+    );
     const boosted = (k: number): number => {
       const doc = stored.get(k);
       let s = score.get(k) ?? 0;
@@ -374,8 +497,17 @@ export async function runCollectionOperation(
       const out = returned(d, op.returns);
       if (typeof d.values.title === "string" && op.returns.includes("title"))
         out.titleHighlights = highlight(d.values.title, r.terms, d.lang).highlights;
-      if (op.snippet)
-        out.snippet = snippet((d.values[op.snippet] ?? []) as Passage[], r.terms, d.lang);
+      if (op.snippet) {
+        // A document only the meaning side found shows its closest passage.
+        const lexical = r.hits.some((h) => h.key === d.key);
+        out.snippet = snippet(
+          (d.values[op.snippet] ?? []) as Passage[],
+          r.terms,
+          d.lang,
+          220,
+          lexical ? undefined : bestPassage.get(d.key),
+        );
+      }
       if (pinnedOrder.some((p) => p.key === d.key)) out.pinned = true;
       return out;
     });
@@ -385,7 +517,8 @@ export async function runCollectionOperation(
     body: {
       release: releaseKey,
       query: q,
-      total: r.total + pinnedOrder.filter((d) => !keys.includes(d.key)).length,
+      total:
+        Math.max(r.total, keys.length) + pinnedOrder.filter((d) => !keys.includes(d.key)).length,
       page,
       hits,
       facets: r.facets,
@@ -393,6 +526,14 @@ export async function runCollectionOperation(
       splits: r.splits,
     },
   };
+}
+
+let gatewayEmbedder: ReturnType<typeof wasmQueryEmbedder> | null = null;
+
+/** The process's query embedder (one per gateway process). */
+export function defaultQueryEmbedder(): ReturnType<typeof wasmQueryEmbedder> {
+  gatewayEmbedder ??= wasmQueryEmbedder();
+  return gatewayEmbedder;
 }
 
 async function storedMap(

@@ -19,10 +19,31 @@
  *     must exist as files, not only inside the bundle;
  *   - oxc-parser with its native binding, which the plugin validator loads
  *     (it cannot be bundled);
- *   - the Deno binary (`/usr/local/bin/deno`), the sandbox runtime.
+ *   - the Deno binary (`/usr/local/bin/deno`), the sandbox runtime;
+ *   - #1650: the embedding models of the core catalog and ONNX Runtime's
+ *     WebAssembly build (`ort-wasm-simd-threaded.{wasm,mjs}`, loaded from
+ *     CAELO_ORT_WASM_DIR; its JavaScript is in the bundle). No native
+ *     inference code: a visitor's query runs inside WebAssembly.
  */
 
+import { EMBEDDING_MODELS } from "../../packages/shared/src/embedding-models.ts";
 import type { ServiceImageSpec } from "../../scripts/service-image.ts";
+
+/**
+ * #1650 — the catalog's embedding models, under /opt/caelo/models (the
+ * Dockerfile's `models` stage fetched and verified them): each graph with a
+ * package URL, so the image's SBOM names the model at its revision, and its
+ * tokenizer and licence notice beside it.
+ */
+const modelGraphs = EMBEDDING_MODELS.map((m) => ({
+  path: `opt/caelo/models/${m.id}/${m.source.revision}/${m.files.model.name}`,
+  purl: `pkg:huggingface/${m.source.repo}@${m.source.revision}`,
+}));
+const modelData = EMBEDDING_MODELS.flatMap((m) =>
+  [m.files.tokenizer.name, "NOTICE.txt"].map(
+    (f) => `opt/caelo/models/${m.id}/${m.source.revision}/${f}`,
+  ),
+);
 
 const spec: ServiceImageSpec = {
   dockerfile: "apps/api-gateway/Dockerfile",
@@ -61,6 +82,8 @@ const spec: ServiceImageSpec = {
     "packages/plugins/*/manifest.json",
     "packages/plugins/*/manifest.sig",
     "packages/plugins/*/dist/**/*.js",
+    "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm",
+    "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs",
   ],
   binaries: [
     // No advisory database tracks Bun releases; the builder's digest-pinned
@@ -69,12 +92,13 @@ const spec: ServiceImageSpec = {
     // GitHub advisories file Deno under its crate; the version must equal the
     // Dockerfile's denoland/deno:bin-<version> (scripts/service-image.test.ts).
     { path: "usr/local/bin/deno", purl: "pkg:cargo/deno@2.9.8" },
+    ...modelGraphs,
   ],
   // #1338 — the database CA bundles every verify-full URL names as
   // `sslrootcert` (packages/shared database-tls.ts DATABASE_CA_DIR), copied by
   // the Dockerfile from packages/shared/certs/. Required: without them the
   // gateway cannot open a single database connection.
-  extraFiles: ["etc/caelo/db-ca/*"],
+  extraFiles: ["etc/caelo/db-ca/*", ...modelData],
   require: [
     "etc/caelo/db-ca/*.pem",
     "usr/local/bin/bun",
@@ -84,6 +108,10 @@ const spec: ServiceImageSpec = {
     "app/packages/plugins/.tier1-trust-root",
     "app/packages/plugins/*/manifest.sig",
     "app/node_modules/@oxc-parser/binding-*/*.node",
+    "app/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm",
+    "app/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs",
+    ...modelGraphs.map((f) => f.path),
+    ...modelData,
   ],
 };
 

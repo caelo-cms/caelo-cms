@@ -14,7 +14,13 @@
  *   with the current key; `/release` names the key uncached;
  * - limits: too many words is a 400; an unknown operation a 404; no
  *   published release a 503;
- * - the staging gateway reads only the staging store.
+ * - the staging gateway reads only the staging store;
+ * - #1650 semantic search: a release embedded natively (as the index job
+ *   does) answers a query with no word in common through the query's
+ *   WebAssembly vector, fused with the word ranking; a release embedded
+ *   with a model this gateway's catalog lacks answers 503, never a search
+ *   without its meaning half. The real-model part runs when the model is
+ *   fetched (packages/models testing.ts; CI requires it).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -23,6 +29,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { releaseProjectionForTests, stagingPublicAdapter } from "@caelo-cms/admin-core";
 import { buildRelease, directoryStore, scopedStore } from "@caelo-cms/collection-index";
+import { modelsForTests } from "@caelo-cms/models";
+import { createNativeEmbedder } from "@caelo-cms/models/native";
 import {
   bootstrap,
   bootstrapDispatchOnly,
@@ -31,6 +39,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { DEFAULT_EMBEDDING_MODEL_ID, type EmbeddingModel, embeddingModel } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { GatewayCollections } from "./collections.js";
 import {
@@ -50,6 +59,29 @@ if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs req
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SLUG = "t1649-search";
+const MODEL = embeddingModel(DEFAULT_EMBEDDING_MODEL_ID) as EmbeddingModel;
+const MODELS = modelsForTests(MODEL);
+
+const SEMANTIC_FIELDS = {
+  title: { kind: "text", prefix: true },
+  sections: { kind: "passages", vector: true },
+  url: { kind: "keyword" },
+} as const;
+const semanticCollection = {
+  description: "Pages with vectors.",
+  fields: SEMANTIC_FIELDS,
+  vectorModelConfig: "semantic_model",
+  maxDocuments: 1000,
+  maxDocumentBytes: 100_000,
+};
+const semanticSearch = (name: string, collection: string) => ({
+  name,
+  kind: "search" as const,
+  collection,
+  description: "Search by meaning.",
+  returns: ["url", "title"],
+  snippet: "sections",
+});
 
 const fixture = definePlugin({
   slug: SLUG,
@@ -69,8 +101,22 @@ const fixture = definePlugin({
       maxDocuments: 1000,
       maxDocumentBytes: 100_000,
     },
+    semantic: semanticCollection,
+    unknown_model: semanticCollection,
+  },
+  config: {
+    semantic_model: {
+      type: "catalogModel",
+      purpose: "embedding",
+      label: "Model",
+      description: "The model semantic search embeds with.",
+      effect: "rebuild",
+      default: DEFAULT_EMBEDDING_MODEL_ID,
+    },
   },
   collectionOperations: [
+    semanticSearch("semantic_search", "semantic"),
+    semanticSearch("unknown_search", "unknown_model"),
     {
       name: "search",
       kind: "search",
@@ -106,6 +152,8 @@ let gatewayAdapter: DatabaseAdapter;
 let pluginId = "";
 let root = "";
 let releaseKey = "";
+let semanticKey = "";
+let unknownKey = "";
 const envBefore: Record<string, string | undefined> = {};
 
 async function onDb<T>(url: string, fn: (tx: SQL) => Promise<T>): Promise<T> {
@@ -142,6 +190,12 @@ const page = (id: string, title: string, url: string, text: string, pageType = "
     url,
     page_type: pageType,
   },
+});
+
+const semanticPage = (id: string, title: string, url: string, text: string) => ({
+  id,
+  lang: "de",
+  values: { title, sections: [{ anchor: "inhalt", heading: title, text }], url },
 });
 
 let ip = 0;
@@ -246,6 +300,84 @@ beforeAll(async () => {
     await tx`INSERT INTO published_collections (plugin_id, collection, release_key) VALUES (${pluginId}::uuid, 'pages', ${releaseKey})`;
   });
 
+  // #1650 — releases with vectors: one embedded as the index job does, one
+  // stamped with a model no catalog has.
+  const semanticProfile = {
+    weights: { title: 3, "sections.heading": 2, "sections.text": 1 },
+    boosts: [],
+    synonyms: {},
+    bestBets: {},
+    protectedTerms: [],
+    typos: true,
+    compounds: true,
+    prefix: true,
+    crossLanguage: false,
+    semantic: { weight: 1, minSimilarity: 0.2 },
+    suggestions: {},
+  };
+  const semanticPages = [
+    semanticPage(
+      "de-preise",
+      "Preise",
+      "/preise/",
+      "Starter für 49 € im Monat, Agentur für 499 €. Monatlich kündbar.",
+    ),
+    semanticPage(
+      "de-versand",
+      "Versand",
+      "/versand/",
+      "Innerhalb Deutschlands liefern wir in zwei bis vier Werktagen.",
+    ),
+    semanticPage(
+      "de-ausweis",
+      "Personalausweis",
+      "/ausweis/",
+      "Ist Ihr Ausweis gestohlen worden, melden Sie das sofort im Bürgerbüro.",
+    ),
+    semanticPage(
+      "de-rueckgabe",
+      "Rückgabe",
+      "/rueckgabe/",
+      "Den Retourenschein drucken Sie im Kundenkonto aus.",
+    ),
+  ];
+  const publish = async (collection: string, built: { file: string }) => {
+    await onDb(PUBLIC_ADMIN_URL as string, async (tx) => {
+      await tx`INSERT INTO published_collections (plugin_id, collection, release_key) VALUES (${pluginId}::uuid, ${collection}, ${built.file})`;
+    });
+  };
+  const sinkFor = (collection: string, w: Promise<void>[]) => {
+    const target = scopedStore(directoryStore(join(root, "live")), `${SLUG}/${collection}`);
+    return (name: string, data: Uint8Array) =>
+      void w.push(target.write(name, data, { immutable: true }));
+  };
+  if (MODELS.dir) {
+    const embedder = await createNativeEmbedder(MODEL, { dir: MODELS.dir, threads: 2 });
+    const w: Promise<void>[] = [];
+    const semantic = await buildRelease(semanticPages, {
+      schema: { fields: SEMANTIC_FIELDS as never },
+      sink: sinkFor("semantic", w),
+      profile: semanticProfile,
+      vectorModel: { id: embedder.fingerprint, dims: MODEL.dims },
+      embed: (texts) => embedder.embed(texts, "passage"),
+    });
+    await Promise.all(w);
+    await embedder.release();
+    semanticKey = semantic.file;
+    await publish("semantic", semantic);
+  }
+  const w2: Promise<void>[] = [];
+  const unknown = await buildRelease(semanticPages, {
+    schema: { fields: SEMANTIC_FIELDS as never },
+    sink: sinkFor("unknown_model", w2),
+    profile: semanticProfile,
+    vectorModel: { id: "retired-model@000000000000", dims: MODEL.dims },
+    embed: async (texts) => texts.map(() => new Float32Array(MODEL.dims).fill(1)),
+  });
+  await Promise.all(w2);
+  unknownKey = unknown.file;
+  await publish("unknown_model", unknown);
+
   const urls = gatewayDatabaseUrls({
     PUBLIC_DATABASE_URL: PUBLIC_URL,
     CAELO_GATEWAY_ENVIRONMENT: "live",
@@ -276,6 +408,47 @@ afterAll(async () => {
   await gatewayAdapter.close();
   await adminAdapter.close();
   await rm(root, { recursive: true, force: true });
+});
+
+describe("semantic search in the gateway (#1650)", () => {
+  if (MODELS.required) {
+    it("the model is fetched (CAELO_MODELS=required)", () => {
+      expect(MODELS.dir).not.toBeNull();
+    });
+  }
+  const live = (name: string, fn: () => Promise<void>) =>
+    it.skipIf(MODELS.dir === null)(name, fn, 60_000);
+
+  live("finds a page by meaning when no word matches, showing its closest passage", async () => {
+    const r = await json(
+      `/api/plugin/${SLUG}/semantic_search?q=${encodeURIComponent("Was kostet das?")}&lang=de&release=${semanticKey}`,
+    );
+    expect(r.status).toBe(200);
+    const hits = r.body.hits as { url: string; snippet: { anchor: string } | null }[];
+    expect(hits[0]?.url).toBe("/preise/");
+    expect(hits[0]?.snippet?.anchor).toBe("inhalt");
+    expect(r.response.headers.get("cache-control")).toBe("public, max-age=60, s-maxage=3600");
+  });
+
+  live("keeps the page its words name first", async () => {
+    const r = await json(
+      `/api/plugin/${SLUG}/semantic_search?q=Versand&lang=de&release=${semanticKey}`,
+    );
+    expect((r.body.hits as { url: string }[])[0]?.url).toBe("/versand/");
+    const stolen = await json(
+      `/api/plugin/${SLUG}/semantic_search?q=${encodeURIComponent("Ausweis geklaut")}&lang=de&release=${semanticKey}`,
+    );
+    expect((stolen.body.hits as { url: string }[])[0]?.url).toBe("/ausweis/");
+  });
+
+  it("refuses a release embedded with a model this gateway's catalog lacks", async () => {
+    const r = await json(
+      `/api/plugin/${SLUG}/unknown_search?q=Preise&lang=de&release=${unknownKey}`,
+    );
+    expect(r.status).toBe(503);
+    expect((r.body.error as { kind: string; message: string }).kind).toBe("ModelUnavailable");
+    expect((r.body.error as { message: string }).message).toMatch(/retired-model@000000000000/);
+  });
 });
 
 describe("declarative collection operations in the gateway", () => {

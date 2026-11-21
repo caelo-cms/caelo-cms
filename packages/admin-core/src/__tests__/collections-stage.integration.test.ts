@@ -15,7 +15,12 @@
  *   drops it;
  * - an observer that fails marks the Stage's index failed, and Publish live
  *   refuses it with the reason;
- * - an observer cannot write a public table (visitors would see staged work).
+ * - an observer cannot write a public table (visitors would see staged work);
+ * - #1650: a collection whose configuration names a catalog model is
+ *   embedded by the index job (only changed passages in a delta), finds a
+ *   page by meaning, and a model change rebuilds it (here: semantic search
+ *   turned off). Runs with the real model when it is fetched
+ *   (packages/models testing.ts; CI requires it).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -29,7 +34,10 @@ import {
   parseRelease,
   scopedStore,
   searchText,
+  searchVectors,
 } from "@caelo-cms/collection-index";
+import { modelsForTests } from "@caelo-cms/models";
+import { createNativeEmbedder } from "@caelo-cms/models/native";
 import {
   bootstrap,
   resetCollectionStores,
@@ -43,7 +51,13 @@ import {
   type PluginCollections,
 } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import {
+  DEFAULT_EMBEDDING_MODEL_ID,
+  type EmbeddingModel,
+  type ExecutionContext,
+  embeddingModel,
+  embeddingModelFingerprint,
+} from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { runCollectionsGc } from "../collections/gc.js";
 import { setDeployBridge } from "../ops/deploy.js";
@@ -71,6 +85,9 @@ const MOD = "t1644-mod";
 const PAGES = ["t1644-preise", "t1644-blog"];
 /** The site root: a build refuses a site without one. */
 const HOME = "home";
+const MODEL = embeddingModel(DEFAULT_EMBEDDING_MODEL_ID) as EmbeddingModel;
+/** Without the fetched model the `semantic` collection has no model, and the rest still runs. */
+const MODELS = modelsForTests(MODEL);
 
 let adapter: DatabaseAdapter;
 let stagingAdapter: DatabaseAdapter;
@@ -129,6 +146,9 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM audit_events WHERE actor_id IN (SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${PLUGIN}))`;
     await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${PLUGIN})`;
     await tx`DELETE FROM plugins WHERE slug = ${PLUGIN}`;
+    // The plugin's private tables hold its configuration: a run that changed
+    // the model must not leave it for the next run's activation to keep.
+    await tx.unsafe(`DROP SCHEMA IF EXISTS plugin_${PLUGIN.replace(/-/g, "_")} CASCADE`);
   });
 }
 
@@ -194,24 +214,21 @@ async function stage(): Promise<string> {
   return staged.runId;
 }
 
-async function indexState(runId: string): Promise<{
+interface IndexState {
+  collection: string;
   state: string;
   releaseKey: string | null;
   error: string | null;
   stats: Record<string, unknown>;
-}> {
-  // The index job runs in-process, started by the Stage; wait for it.
-  for (let i = 0; i < 200; i++) {
-    const s = await ok<{
-      collections: {
-        state: string;
-        releaseKey: string | null;
-        error: string | null;
-        stats: Record<string, unknown>;
-      }[];
-    }>("collections.run_state", { runId });
-    const c = s.collections[0];
-    if (c && c.state !== "pending") return c;
+  vectorModel: string | null;
+}
+
+async function indexState(runId: string, collection = "pages"): Promise<IndexState> {
+  // The index job runs in-process, started by the Stage; wait until it built every collection.
+  for (let i = 0; i < 1200; i++) {
+    const s = await ok<{ collections: IndexState[] }>("collections.run_state", { runId });
+    const c = s.collections.find((x) => x.collection === collection);
+    if (c && s.collections.every((x) => x.state !== "pending")) return c;
     await Bun.sleep(50);
   }
   throw new Error("the index job did not finish");
@@ -279,6 +296,16 @@ beforeAll(async () => {
           schema: { hits: { query: "text" } },
           tableKinds: { hits: "published" },
           requestedCapabilities: ["collections", "page_output"],
+          config: {
+            semantic_model: {
+              type: "catalogModel",
+              purpose: "embedding",
+              label: "Model",
+              description: "The model the semantic collection embeds with.",
+              effect: "rebuild",
+              default: MODELS.dir ? DEFAULT_EMBEDDING_MODEL_ID : null,
+            },
+          },
           collections: {
             pages: {
               description: "Every published page, for the site search.",
@@ -287,6 +314,17 @@ beforeAll(async () => {
                 sections: { kind: "passages" },
                 url: { kind: "keyword" },
               },
+              maxDocuments: 1000,
+              maxDocumentBytes: 100_000,
+            },
+            semantic: {
+              description: "The same pages with vectors.",
+              fields: {
+                title: { kind: "text", prefix: true },
+                sections: { kind: "passages", vector: true },
+                url: { kind: "keyword" },
+              },
+              vectorModelConfig: "semantic_model",
               maxDocuments: 1000,
               maxDocumentBytes: 100_000,
             },
@@ -341,8 +379,10 @@ beforeAll(async () => {
                 .map((p) => p.pageId);
 
               if (writePublic) await ctx.query.insert("hits", { query: "staged" });
-              const pages = (ctx as { collections?: PluginCollections }).collections?.pages;
-              if (!pages) throw new Error("ctx.collections.pages missing");
+              const collections = (ctx as { collections?: PluginCollections }).collections;
+              const pages = collections?.pages;
+              const semantic = collections?.semantic;
+              if (!pages || !semantic) throw new Error("ctx.collections.pages/semantic missing");
               const docs = a.pages
                 .filter((p) => !excluded.includes(p.pageId))
                 .map((p) => ({
@@ -360,18 +400,24 @@ beforeAll(async () => {
                     url: p.path,
                   },
                 }));
-              if (docs.length > 0) await pages.upsert(docs);
-              if (a.removed.length > 0 || excluded.length > 0)
-                await pages.delete([...a.removed, ...excluded]);
+              for (const c of [pages, semantic]) {
+                if (docs.length > 0) await c.upsert(docs);
+                if (a.removed.length > 0 || excluded.length > 0)
+                  await c.delete([...a.removed, ...excluded]);
+              }
               if (a.final && !profileSet) {
                 profileSet = true;
-                await pages.setProfile({
+                const profile = {
                   weights: { title: 3, "sections.heading": 2, "sections.text": 1 },
                   typos: true,
                   compounds: true,
                   prefix: true,
                   crossLanguage: false,
-                  semantic: null,
+                };
+                await pages.setProfile({ ...profile, semantic: null });
+                await semantic.setProfile({
+                  ...profile,
+                  semantic: { weight: 1, minSimilarity: 0.2 },
                 });
               }
               return {};
@@ -582,5 +628,65 @@ describe("page output and collections through Stage and Publish live", () => {
       { keepStages: 2, keepPublishes: 1 },
     );
     expect(again.deletedFiles + again.deletedChanges).toBe(0);
+  });
+});
+
+describe("semantic search through the Stage (#1650)", () => {
+  if (MODELS.required) {
+    it("the model is fetched (CAELO_MODELS=required)", () => {
+      expect(MODELS.dir).not.toBeNull();
+    });
+  }
+  const live = (name: string, fn: () => Promise<void>) =>
+    it.skipIf(MODELS.dir === null)(name, fn, 120_000);
+
+  live("embeds only the changed page's passages and finds it by meaning", async () => {
+    await setText(PAGES[0] as string, "Starter für 49 € im Monat, Agentur für 499 €.");
+    const run = await stage();
+    const index = await indexState(run, "semantic");
+    expect(index.state).toBe("ready");
+    expect(index.vectorModel).toBe(MODEL.id);
+    expect(index.stats).toMatchObject({
+      vectorModel: embeddingModelFingerprint(MODEL),
+      passagesEmbedded: 1,
+      rebuilt: false,
+    });
+    const store = scopedStore(
+      directoryStore(join(root, "collections-staging")),
+      `${PLUGIN}/semantic`,
+    );
+    const release = await openRelease(
+      parseRelease(await store.read(index.releaseKey as string)),
+      new FileCache({ read: (f) => store.read(f) }, 1 << 26),
+    );
+    expect(release.manifest.vectorModel?.id).toBe(embeddingModelFingerprint(MODEL));
+    const embedder = await createNativeEmbedder(MODEL, { dir: MODELS.dir as string, threads: 2 });
+    const [vector] = await embedder.embed(["Was kostet das?"], "query");
+    await embedder.release();
+    const near = await searchVectors(release, {
+      vector: vector as Float32Array,
+      limit: 1,
+      minSimilarity: 0.2,
+    });
+    const top = (await release.segments.at(-1)?.reader.stored([near[0]?.key as number]))?.get(
+      near[0]?.key as number,
+    );
+    const found =
+      top ??
+      (await release.segments[0]?.reader.stored([near[0]?.key as number]))?.get(
+        near[0]?.key as number,
+      );
+    expect(found?.values.url).toBe(`/${PAGES[0]}`);
+  });
+
+  live("a model change rebuilds the collection, here without vectors", async () => {
+    await ok("plugin_config.update", { pluginSlug: PLUGIN, patch: { semantic_model: null } });
+    const run = await stage();
+    const semantic = await indexState(run, "semantic");
+    expect(semantic.state).toBe("ready");
+    expect(semantic.vectorModel).toBeNull();
+    expect(semantic.stats).toMatchObject({ rebuilt: true, vectorModel: null, passagesEmbedded: 0 });
+    // The word collection did not change and is carried over.
+    expect((await indexState(run, "pages")).stats.carried).toBe(true);
   });
 });

@@ -26,9 +26,11 @@
     "@ai-sdk/anthropic": "^4.0.104",
     "@ai-sdk/google": "^4.0.120",
     "@ai-sdk/openai": "^4.0.117",
-    "@caelo-cms/migrations": "workspace:*",
-    "@caelo-cms/plugin-consent-manager": "workspace:*",
     "@caelo-cms/collection-index": "workspace:*",
+    "@caelo-cms/font-service": "workspace:*",
+    "@caelo-cms/migrations": "workspace:*",
+    "@caelo-cms/models": "workspace:*",
+    "@caelo-cms/plugin-consent-manager": "workspace:*",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
@@ -43,8 +45,7 @@
     "lighthouse": "13.5.0",
     "oxc-parser": "0.158.0",
     "sharp": "^0.35",
-    "zod": "4.6.7",
-    "@caelo-cms/font-service": "workspace:*"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@caelo-cms/api-gateway": "workspace:*",
