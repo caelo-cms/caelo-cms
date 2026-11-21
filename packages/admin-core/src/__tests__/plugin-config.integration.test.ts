@@ -18,6 +18,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
+  onPluginRegistered,
   type PluginHostInfra,
   resetPluginHost,
   runPluginOperation,
@@ -487,5 +488,48 @@ describe("plugin configuration (#1645)", () => {
     // The stored 700 no longer fits max 50: reset to the new default.
     expect(value.cap).toBe(25);
     expect(value.results).toBe(20);
+  });
+
+  it("announces a plugin to its listeners only once the registration is complete (#1646)", async () => {
+    // The activation batch listens here: it must find the configuration
+    // stored and whatever onActivate prepared, never a plugin halfway in.
+    let activated = false;
+    const seen: { activated: boolean; results: unknown }[] = [];
+    const off = onPluginRegistered(async (p) => {
+      if (p.slug !== SLUG) return;
+      const r = await runPluginOperation({
+        invocation: MAIN,
+        pluginSlug: SLUG,
+        operationName: "read",
+        args: {},
+      });
+      seen.push({ activated, results: r.ok ? (r.value as { results: unknown }).results : r.error });
+    });
+    try {
+      const slow = definePlugin({
+        ...plugin("0.3.0"),
+        onActivate: async () => {
+          await Bun.sleep(200);
+          activated = true;
+        },
+      });
+      resetPluginHost();
+      const digest = releaseManifestDigest(manifestFromDefinition(slow));
+      await withSystemSql(
+        async (tx) =>
+          tx`UPDATE plugins SET approved_manifest_digest = ${digest} WHERE slug = ${SLUG}`,
+      );
+      const report = await bootstrap({
+        infra,
+        pluginsRoot: "/dev/null/unused",
+        systemActorId: HUMAN,
+        testPlugins: [{ definition: slow }],
+      });
+      expect(report.failed).toEqual([]);
+      for (let i = 0; i < 100 && seen.length === 0; i++) await Bun.sleep(20);
+      expect(seen).toEqual([{ activated: true, results: 20 }]);
+    } finally {
+      off();
+    }
   });
 });

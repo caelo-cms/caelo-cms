@@ -448,8 +448,8 @@ describe("plugin batches (#1646)", () => {
     const done = await settled(run.id, 60_000);
     expect(done.error).toBeNull();
     expect(done.result).toEqual({
-      // Deno has a node-style `process`; reading its environment is denied.
-      env: "denied",
+      // No `process` at all in the sandbox (sandbox-entry.ts), so no environment.
+      env: "none",
       other: "refused",
       adminQuery: "undefined",
       files: "undefined",

@@ -5,8 +5,9 @@
  * registered in this process: loaded at boot, activated, reloaded or
  * updated. admin-core queues a plugin's `activation` batches from here
  * (once per version, so boot loads on every instance add nothing). A
- * listener runs after the plugin can answer and never blocks its load: a
- * failure is logged, the load stands.
+ * listener runs once the registration is complete — configuration seeded,
+ * onActivate done, list types, tools and skills in place — and never
+ * blocks the load: a failure is logged, the load stands.
  */
 
 import type { LoadedPlugin } from "./dispatch.js";
@@ -21,7 +22,7 @@ export function onPluginRegistered(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
-/** Tells every listener; called by the loader right after a registration. */
+/** Tells every listener; called by the loader once a registration is complete. */
 export function notifyPluginRegistered(plugin: LoadedPlugin): void {
   for (const listener of listeners) {
     void Promise.resolve()

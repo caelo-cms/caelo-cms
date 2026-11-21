@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, PluginManifest } from "@caelo-cms/plugin-sdk";
 import { previewContext } from "./preview-context.js";
-import { buildIsolatedBundle, runSandbox, runSandboxWithBundler } from "./sandbox-runtime.js";
+import {
+  buildIsolatedBundle,
+  exitReason,
+  runSandbox,
+  runSandboxWithBundler,
+  streamHead,
+} from "./sandbox-runtime.js";
 
 const manifest: PluginManifest = {
   slug: "sandbox-probe",
@@ -133,11 +139,9 @@ describe("actual Deno plugin execution", () => {
     ).toEqual({ rows: [{ body: "host result" }], color: "blue", visitor: "visitor" });
   });
   it("does not expose host globals, credentials or elevated handles", async () => {
-    expect(await invoke("return [typeof Bun, typeof ctx.cms, typeof ctx.ai];")).toEqual([
-      "undefined",
-      "undefined",
-      "undefined",
-    ]);
+    expect(
+      await invoke("return [typeof Bun, typeof ctx.cms, typeof ctx.ai, typeof process];"),
+    ).toEqual(["undefined", "undefined", "undefined", "undefined"]);
     expect(await invoke('try { return process.env.HOME; } catch { return "denied"; }')).toBe(
       "denied",
     );
@@ -295,17 +299,6 @@ describe("runtime layer without the validator in front", () => {
         "await new Promise(() => {});",
       ),
     ).rejects.toThrow(/SandboxExited: code 1 \(.*boom-before-the-call.*\)/);
-  });
-
-  it("a plugin that floods stderr neither blocks nor fills the host", async () => {
-    const started = performance.now();
-    expect(
-      await invokeUnvalidated(
-        "",
-        'for (let i = 0; i < 10000; i++) console.error("x".repeat(1000)); return "done";',
-      ),
-    ).toBe("done");
-    expect(performance.now() - started).toBeLessThan(20_000);
   });
 
   it("the validator does refuse these sources on the production path", async () => {
@@ -532,5 +525,30 @@ describe("ctx.consentPurposes through the broker (consent_provider)", () => {
       refused: ["SandboxArgumentsInvalid", "SandboxArgumentsInvalid"],
       after: HOST_LIST,
     });
+  });
+});
+
+describe("why a child exited", () => {
+  it("keeps the first 2 KB of stderr and reads the rest to the end", async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(1024).fill(120);
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled++ >= 10_000) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+    const head = await streamHead(stream, 2048);
+    expect(head.byteLength).toBe(2048);
+    expect(pulled).toBe(10_001);
+  });
+
+  it("names the first line, without control characters, at most 300 characters", () => {
+    const enc = new TextEncoder();
+    expect(exitReason(enc.encode("\n\nerror: Uncaught Error: boom\u0007\n    at x\n"))).toBe(
+      "error: Uncaught Error: boom",
+    );
+    expect(exitReason(enc.encode(`error: ${"y".repeat(1000)}`))).toHaveLength(300);
+    expect(exitReason(new Uint8Array())).toBe("");
   });
 });

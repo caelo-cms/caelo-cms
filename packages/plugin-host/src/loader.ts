@@ -1469,7 +1469,6 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     pluginActorId,
   };
   loadedPlugins.set(lp);
-  notifyPluginRegistered(lp);
   // URL slots + the annotation op go live only now that the plugin can
   // answer: claimed earlier, a render running concurrently with this
   // activation called the annotation op of a plugin not yet loaded
@@ -1686,6 +1685,10 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // there is nothing left to mark inert at boot. `applyPluginLifecycle`
   // (lifecycle.ts) stays the live path for a disable that happens WHILE
   // the host is running.
+  // Announced only now: a listener (the activation batch, #1646) may read
+  // the configuration seeded above and run what onActivate prepared, so it
+  // must never see a plugin halfway through its registration.
+  notifyPluginRegistered(lp);
   return { plugin: lp, status: persistedStatus };
 }
 

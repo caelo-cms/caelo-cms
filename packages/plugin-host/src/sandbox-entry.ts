@@ -60,8 +60,14 @@ export const readStdin = () => readerRead(stdinReader);
 // included) would corrupt the protocol or fill a host-side buffer.
 console.log = console.info = console.debug = console.warn = console.error = () => {};
 delete globalThis.Deno;
-// Fail closed: a runtime that refuses the delete must not run plugin code.
+// Node's \`process\` is Deno's compatibility layer over the namespace just
+// removed: touching it would reach back for \`Deno\` (newer Deno throws
+// there asynchronously and takes the child down). A plugin reads no
+// environment, argv or exit code anyway, so it goes too.
+delete globalThis.process;
+// Fail closed: a runtime that refuses a delete must not run plugin code.
 if (typeof globalThis.Deno !== "undefined") throw new Error("SandboxPreludeFailed: Deno namespace still reachable");
+if (typeof globalThis.process !== "undefined") throw new Error("SandboxPreludeFailed: process still reachable");
 `;
 
 /** Entry module: prelude first, then the plugin, then the protocol loop. */

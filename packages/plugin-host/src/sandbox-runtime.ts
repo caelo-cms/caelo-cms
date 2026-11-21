@@ -371,8 +371,15 @@ export function runSandbox(invocation: SandboxInvocation): Promise<unknown> {
 /** Bytes of a crashed child's stderr kept to say why it exited. */
 const STDERR_HEAD_BYTES = 2048;
 
-/** The first `limit` bytes of a stream, reading it to its end (the rest is dropped). */
-async function streamHead(stream: ReadableStream<Uint8Array>, limit: number): Promise<Uint8Array> {
+/**
+ * The first `limit` bytes of a stream, reading it to its end (the rest is
+ * dropped), so a child writing more can never block on a full pipe.
+ * Exported for its unit test.
+ */
+export async function streamHead(
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+): Promise<Uint8Array> {
   const head = new Uint8Array(limit);
   let kept = 0;
   try {
@@ -393,7 +400,7 @@ async function streamHead(stream: ReadableStream<Uint8Array>, limit: number): Pr
  * uncaught exception): one line, control characters dropped, at most 300
  * characters. It is the plugin's own text, as a thrown error's message is.
  */
-function exitReason(stderr: Uint8Array): string {
+export function exitReason(stderr: Uint8Array): string {
   const text = new TextDecoder().decode(stderr);
   let line = "";
   for (const raw of text.split("\n")) {
@@ -409,7 +416,7 @@ function exitReason(stderr: Uint8Array): string {
     out += c < 32 || c === 127 ? " " : ch;
     if (out.length >= 300) break;
   }
-  return out;
+  return out.trim();
 }
 
 export async function runSandboxWithBundler(
