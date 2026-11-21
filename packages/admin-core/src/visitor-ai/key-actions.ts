@@ -41,7 +41,6 @@ export const storeVisitorAiKeyInput = z
     staging: z.enum(["same", "none"]),
   })
   .strict();
-export type StoreVisitorAiKeyInput = z.infer<typeof storeVisitorAiKeyInput>;
 
 /** The outcome as the page or the card shows it. */
 export type VisitorAiKeyResult =

@@ -529,7 +529,7 @@ describe("a visitor conversation (#1654)", () => {
     useModel();
     const next = await ask({ question: "Und gibt es Rabatte?", lang: "de", history: [firstTurn] });
     expect(next.status).toBe(200);
-    expect((of(next, "done")[0]?.data.conversation as { turn: number }).turn).toBe(2);
+    expect(of(next, "done")[0]?.data.conversation).toMatchObject({ turn: 2 });
 
     const [payload, mac] = firstTurn.split(".") as [string, string];
     const turn = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { a: string };

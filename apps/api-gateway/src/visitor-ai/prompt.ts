@@ -41,7 +41,7 @@ export function systemPrompt(
   const parts: string[] = [];
   for (const path of fields) {
     const leaf = leaves.get(path);
-    if (!leaf || leaf.visitorVisible !== true)
+    if (leaf?.visitorVisible !== true)
       return {
         ok: false,
         problem: `prompt field "${path}" is not a visitor-visible leaf of the plugin's config`,
