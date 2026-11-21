@@ -84,6 +84,16 @@ A plugin's declared collection operation answers a GET with no plugin code: the 
 - **No query in the logs.** Google Cloud writes a request log entry with the full URL for every request Cloud Run, the load balancer or Firebase Hosting serves. The CLI puts the exclusion `caelo-<env>-visitor-queries` (`GET` with a URL `/api/plugin/<slug>/<op>?…`, `packages/provisioning/src/visitor-query-logs.ts`) on `_Default` and on gcp's edge log sink to BigQuery (the stack declares it there too), so a visitor's query is never stored. The gateway's own request log row has the operation and the status, never the query.
 - **Memory.** Both gateways run with 1 GiB (`GATEWAY_MEMORY_DEFAULT`): parsed index files stay cached in memory (`CAELO_COLLECTIONS_CACHE_MB`, 256 MiB by default).
 
+## Visitor conversations (epic #1644, #1654)
+
+A declared `ai-chat` operation answers a POST as Server-Sent Events, core code only ([visitor-ai.md](./visitor-ai.md)). On top of the steps above:
+
+- **Paid, so gated first.** Origin (the published site origins only, also for a cross-site call from the gateway's run.app origin on gcp-firebase), JSON, at most 256 KiB, the per-operation memory budget, two open streams per client per instance; then the published settings and the key; then the signed history; a proof of work for every new conversation, whatever the site's captcha setting; the ledger's reservation last. The provider sees nothing before the worst case is reserved.
+- **Budgets that hold under concurrency.** One advisory lock over the ledger: the rolling 24 hours and 30 days, the conversation's total and turns, one running turn per conversation, the turns running site-wide.
+- **No write to reach.** The model's only tools are the declared search and read operations of active plugins, run on this environment's release; sources are built from their results only.
+- **No row per request** beyond the ledger's, no query and no answer in a log.
+- **Stream through the edge.** gcp's load balancer and Caddy stream `/api/*`; Firebase Hosting buffers its rewrite, so there the widget streams from the gateway's own run.app origin with CORS for the site's origins, and the CSP's `connect-src` names it while a conversation is active. A turn ends within 55 s, inside the staging gateway's 60 s request timeout.
+
 ## The edge per provider (E3, #1339)
 
 No protection on this page depends on a WAF. Where a provider has one it is an extra layer; `packages/provisioning/src/public-service-shape.ts` is the per-provider table (E11), and `public-service-shape.test.ts` pins every stack, the CLI setup modules, the Compose file and the GCP cost table to it.
