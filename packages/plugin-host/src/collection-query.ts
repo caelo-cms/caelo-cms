@@ -356,6 +356,10 @@ export async function runCollectionOperation(
   };
   const r = await searchText(release, query);
   let keys = r.hits.map((h) => h.key);
+  // A candidate's place score before boosts: its word score, plus what other
+  // pages' link texts add (below). Boosts multiply this, never the bare word
+  // score, so a boost leaves the link texts' contribution in place.
+  let placeScore = new Map(r.hits.map((h) => [h.key, h.score] as const));
   // #1651 — anchor texts: the words other pages link a document with.
   const anchorHits = new Map<string, { score: number; texts: string[]; sources: number }>();
   if (op.anchors && opts.anchors?.release) {
@@ -397,6 +401,7 @@ export async function runCollectionOperation(
         if (!passesFilter(d, docFilter)) continue;
         scored.set(d.key, (scored.get(d.key) ?? 0) + (anchorHits.get(d.id)?.score ?? 0));
       }
+      placeScore = scored;
       keys = [...scored.entries()]
         .sort((x, y) => y[1] - x[1] || x[0] - y[0])
         .map(([k]) => k)
@@ -432,13 +437,13 @@ export async function runCollectionOperation(
   // Boosts reorder by stored keyword values, so the candidates load first.
   let stored = await storedMap(release, keys);
   if (profile.boosts.length > 0) {
-    // Boosts multiply a document's place score: its word score, or, after
-    // the fusion, its fused rank turned into a descending score.
-    const score = new Map(
+    // Boosts multiply a document's place score: its word score with what
+    // link texts add, or, after the fusion, its fused rank turned into a
+    // descending score.
+    const score =
       bestPassage.size > 0
-        ? keys.map((k, i) => [k, keys.length - i] as const)
-        : r.hits.map((h) => [h.key, h.score] as const),
-    );
+        ? new Map(keys.map((k, i) => [k, keys.length - i] as const))
+        : placeScore;
     const boosted = (k: number): number => {
       const doc = stored.get(k);
       let s = score.get(k) ?? 0;

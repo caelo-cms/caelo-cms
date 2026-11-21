@@ -264,6 +264,45 @@ describe("the conversation's tools", () => {
     expect(r.results[0]).toMatchObject({ source: 1, title: "Preise", url: "/preise/" });
   });
 
+  it("reading long pages leaves source numbers for the turn's later reads", async () => {
+    // Thirty sections each: the budget keeps a few, and only those (and at
+    // most a handful per page) take numbers from the turn's twenty.
+    const pageOf = (path: string) => ({
+      url: path,
+      title: path,
+      description: "",
+      sections: Array.from({ length: 30 }, (_, i) => ({
+        anchor: `s${i}`,
+        heading: `Abschnitt ${i}`,
+        text: "y".repeat(1500),
+      })),
+    });
+    const sources = new TurnSources();
+    const tools = buildTools(
+      [search, read],
+      {
+        release: async () => ({ entry: {} as OpenEntry, key: "k", anchors: null }),
+        run: async (_t, _r, params) => ({
+          status: 200,
+          cacheSeconds: null,
+          body: { documents: [pageOf(params.get("value") ?? "/")] },
+        }),
+      },
+      sources,
+      { lang: "de", siteOrigins: SITE, mayCall: () => true },
+    );
+    const execute = (
+      tools.site_search__read as {
+        execute: (i: unknown, o: unknown) => Promise<string>;
+      }
+    ).execute;
+    for (const path of ["/a/", "/b/", "/c/"]) {
+      const r = JSON.parse(await execute({ url: path }, { toolCallId: path, messages: [] }));
+      expect(r.results).toHaveLength(1);
+      expect(r.results[0].title).toBe(path);
+    }
+  });
+
   it("a long page is read from its beginning, marked truncated, never dropped", async () => {
     const r = await run("site_search__read", { url: "/preise/" });
     expect(r.results).toHaveLength(1);

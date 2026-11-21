@@ -123,6 +123,9 @@ function bounded(
   }
 }
 
+/** Sources one read may register for its sections; later reads of the turn keep the rest. */
+const SECTION_SOURCES_PER_READ = 8;
+
 /**
  * One document within `budget` bytes of JSON: trailing sections go first,
  * then the last section's text is shortened. A long page stays readable
@@ -253,25 +256,29 @@ export function buildTools(
                   anchor?: unknown;
                 }[])
               : [];
-            items.push(
-              boundedDocument(
-                {
-                  source: n,
-                  title: plain(d.title).slice(0, 200),
-                  description: plain(d.description).slice(0, 600),
-                  sections: passages.slice(0, 40).map((p) => {
-                    // A section is a source of its own: the link opens it.
-                    const sn = sources.add(d.url, d.title, p.anchor, ctx.siteOrigins);
-                    return {
-                      source: sn ?? n,
-                      heading: plain(p.heading).slice(0, 200),
-                      text: plain(p.text).slice(0, 1500),
-                    };
-                  }),
-                },
-                share,
-              ),
-            );
+            // Bounded first, then numbered: a section the budget drops never
+            // takes a source number from the turn's twenty.
+            const sections = passages.slice(0, 40).map((p) => ({
+              source: n,
+              heading: plain(p.heading).slice(0, 200),
+              text: plain(p.text).slice(0, 1500),
+            }));
+            const doc = boundedDocument(
+              {
+                source: n,
+                title: plain(d.title).slice(0, 200),
+                description: plain(d.description).slice(0, 600),
+                sections,
+              },
+              share,
+            ) as { sections: { source: number }[] };
+            // A section is a source of its own (the link opens it), for the
+            // first few: the rest cite the page.
+            doc.sections.forEach((sec, i) => {
+              if (i >= SECTION_SOURCES_PER_READ) return;
+              sec.source = sources.add(d.url, d.title, passages[i]?.anchor, ctx.siteOrigins) ?? n;
+            });
+            items.push(doc);
           }
           return bounded(items);
         },

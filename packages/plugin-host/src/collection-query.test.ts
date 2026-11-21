@@ -151,6 +151,31 @@ describe("collection operations: every source honours the filter", () => {
   });
 });
 
+describe("collection operations: boosts keep what link texts add", () => {
+  it("a boost for a type none of the hits has leaves their order alone", async () => {
+    // B matches the words better; many pages link A with the query, which
+    // puts A first. A boost for another page type must not undo that.
+    const docs = [
+      page("a-tarif", "Tarif", "article"),
+      page("b-tarif", "Tarif Tarif Tarif Übersicht", "article"),
+    ];
+    const anchors = await entry(
+      [{ id: "l1", lang: "de", values: { text: "Tarif", target: "a-tarif", sources: 50 } }],
+      ANCHORS,
+      { ...BASE_PROFILE, weights: { text: 1 } },
+    );
+    const plain = await entry(docs, PAGES, BASE_PROFILE);
+    const boosted = await entry(docs, PAGES, {
+      ...BASE_PROFILE,
+      boosts: [{ field: "page_type", values: { product: 2 } }],
+    });
+    const order = async (pages: OpenEntry) =>
+      (await search(pages, anchors, { q: "Tarif", lang: "de" })).hits.map((h) => h.url);
+    expect(await order(plain)).toEqual(["/a-tarif/", "/b-tarif/"]);
+    expect(await order(boosted)).toEqual(["/a-tarif/", "/b-tarif/"]);
+  });
+});
+
 describe("collection operations: pages of a merged order", () => {
   it("page 2 continues page 1 without a repeat, and says when the order ends", async () => {
     // 45 pages that all match, more than a window that grew with the page
