@@ -7,7 +7,8 @@
  * the real store is exercised by the integration suites.
  */
 
-import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { runDeclaredPublicOperation } from "@caelo-cms/plugin-host";
+import { type PluginContextTier1, publicOperationOf } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 export type Row = Record<string, unknown> & { id: string };
@@ -132,7 +133,14 @@ export function world(seed: Partial<Record<string, Row[]>> = {}) {
   return { ctx, tables, state };
 }
 
+/**
+ * Run an operation as the host would: a public one through its
+ * declaration (core's visitor-auth block, #1340), an admin one through
+ * the plugin's code.
+ */
 export async function run(ctx: PluginContextTier1, op: string, args: unknown): Promise<unknown> {
+  const declared = publicOperationOf(plugin.publicOperations, op);
+  if (declared) return runDeclaredPublicOperation(declared, ctx, args);
   const fn = plugin.operations[op];
   if (!fn) throw new Error(`operation ${op} missing`);
   return fn(ctx, args);

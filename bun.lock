@@ -306,6 +306,9 @@
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
+      },
     },
     "packages/plugins/comments": {
       "name": "@caelo-cms/plugin-comments",
@@ -313,6 +316,9 @@
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
       },
     },
     "packages/plugins/consent-manager": {
@@ -328,6 +334,9 @@
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
       },
     },
     "packages/plugins/international-site": {
@@ -345,6 +354,9 @@
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
+      },
     },
     "packages/plugins/ratings": {
       "name": "@caelo-cms/plugin-ratings",
@@ -352,6 +364,9 @@
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
       },
     },
     "packages/plugins/site-search": {

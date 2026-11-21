@@ -11,7 +11,8 @@
 
 import { describe, expect, it } from "bun:test";
 import { HONEYPOT_FIELD_NAME } from "@caelo-cms/plugin-component-kit";
-import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { runDeclaredPublicOperation } from "@caelo-cms/plugin-host";
+import { type PluginContextTier1, publicOperationOf } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 import { COMMENT_DATE_OPTIONS } from "./render.js";
 import { THREAD_RUNTIME_JS } from "./runtime.js";
@@ -148,8 +149,11 @@ async function visit(
   const submits: Record<string, unknown>[] = [];
   const headers: Record<string, string>[] = [];
   const warnings: unknown[][] = [];
-  const list = plugin.operations.list_approved;
-  if (!list) throw new Error("list_approved missing");
+  // #1340 — the thread read is core's block, run from the declaration.
+  const declared = publicOperationOf(plugin.publicOperations, "list_approved");
+  if (!declared) throw new Error("list_approved missing");
+  const list = (ctx: PluginContextTier1, args: unknown) =>
+    runDeclaredPublicOperation(declared, ctx, args);
   const captcha = opts.captcha ?? { target: "0" };
   const fetchStub = async (
     url: string,

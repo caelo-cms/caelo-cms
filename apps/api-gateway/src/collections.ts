@@ -46,7 +46,7 @@ import {
   loadedPlugins,
   type OpenEntry,
   wasmQueryEmbedder,
-} from "@caelo-cms/plugin-host";
+} from "@caelo-cms/plugin-host/gateway";
 import {
   type CollectionOperationManifest,
   collectionOperationManifest,
@@ -55,7 +55,7 @@ import {
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
-export { runCollectionOperation } from "@caelo-cms/plugin-host";
+export { runCollectionOperation } from "@caelo-cms/plugin-host/gateway";
 
 /** The env var of each environment's collection store. */
 const STORE_ENV = {

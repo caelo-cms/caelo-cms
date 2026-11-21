@@ -328,10 +328,14 @@ describe("the gateway image", () => {
     expect(runtime).not.toMatch(/^RUN /m);
   });
 
-  it("lists the Deno version the Dockerfile copies", () => {
-    const tag = /^FROM denoland\/deno:bin-(\S+)@/m.exec(dockerfile)?.[1];
-    const deno = gatewaySpec.binaries.find((b) => b.path === "usr/local/bin/deno");
-    expect(deno?.purl).toBe(`pkg:cargo/deno@${tag}`);
+  it("carries no plugin code: no Deno, no dist, no validator (#1340)", () => {
+    // No Deno stage, binary or env (the header comment names what it lacks).
+    expect(dockerfile).not.toMatch(/^FROM denoland|--from=deno|CAELO_DENO_BINARY/m);
+    expect(gatewaySpec.binaries.map((b) => b.path)).toEqual(["usr/local/bin/bun"]);
+    expect(gatewaySpec.copy.some((c) => c.includes("dist"))).toBe(false);
+    expect(gatewaySpec.bundle.external).toEqual([]);
+    expect(gatewaySpec.runtimePackages).toEqual([]);
+    expect(gatewaySpec.nodeModules).toEqual([]);
   });
 
   it("ships the run-time closure its spec lists", () => {
@@ -393,7 +397,10 @@ describe("the gateway image", () => {
         components: Array<{ name: string }>;
       };
       expect(sbom.components.map((c) => c.name)).toContain("drizzle-orm");
-      expect(sbom.components.map((c) => c.name)).toContain("deno");
+      // #1340 — no plugin runtime in the bundle either.
+      expect(sbom.components.map((c) => c.name)).not.toContain("deno");
+      expect(sbom.components.map((c) => c.name)).not.toContain("oxc-parser");
+      expect(code).not.toContain("CAELO_DENO_BINARY");
       expect(readFileSync(join(out, BUNDLE_LICENSES), "utf8")).toContain("drizzle-orm@");
     } finally {
       rmSync(out, { recursive: true, force: true });

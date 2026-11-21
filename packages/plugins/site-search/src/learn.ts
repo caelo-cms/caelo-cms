@@ -6,7 +6,7 @@
  * another in the same tab), each with its text, language, day and result
  * count — no address, no visitor id, no cookie. Text that looks like an
  * e-mail address, a phone number or a long number is dropped before it is
- * stored.
+ * stored (the host's declared `drop` patterns, `record` in index.ts).
  *
  * From 30 days of counts come:
  *   - popular-query candidates: asked at least 5 times on at least 3 days,
@@ -16,20 +16,6 @@
  *     synonym or a pinned result may be missing) and reformulations (what
  *     visitors searched instead). They are visitors' words: untrusted data.
  */
-
-/** Stored search text: trimmed, single-spaced, at most 120 characters. */
-export function cleanQuery(text: string): string {
-  return text.normalize("NFKC").replace(/\s+/g, " ").trim().slice(0, 120);
-}
-
-const EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/;
-const PHONE = /(?:\+|00)?\d[\d\s()./-]{6,}\d/;
-const LONG_NUMBER = /\d{6,}/;
-
-/** True when a query looks like personal data and must not be stored. */
-export function looksPersonal(text: string): boolean {
-  return EMAIL.test(text) || PHONE.test(text) || LONG_NUMBER.test(text.replace(/\s/g, ""));
-}
 
 /** One counted event, as the inbox stores it. */
 export interface SearchEvent {
@@ -93,7 +79,12 @@ export function aggregate(events: readonly SearchEvent[]): {
       q.days.add(e.day);
       if (e.results > 0) q.withResults++;
     } else if (e.kind === "click") q.clicks++;
-    else if (e.kind === "reformulation" && e.previous) {
+    // A search that names the query before it is also a reformulation.
+    if (
+      (e.kind === "search" || e.kind === "reformulation") &&
+      e.previous &&
+      e.previous !== e.text
+    ) {
       const rk = `${queryKey(e.previous, lang)}>${key}`;
       const r = reforms.get(rk) ?? { from: e.previous, to: e.text, lang, count: 0 };
       r.count++;

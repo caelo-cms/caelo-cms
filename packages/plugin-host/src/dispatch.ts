@@ -42,6 +42,7 @@ import { refuseMailUnsubscribeCall } from "./mail-link-token.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
 import { refusePublicCall, VISITOR_MESSAGE_MAX, visitorSafeResult } from "./public-contract.js";
+import { runDeclaredPublicOperation } from "./public-run-host.js";
 import {
   emitPublicPluginOpEvent,
   isProjectionNotPublished,
@@ -630,8 +631,29 @@ async function runPluginOperationNow(
       },
     };
   }
-  const handler = plugin.definition.operations[opts.operationName];
-  if (!handler) {
+  // #1340 — a visitor call runs the operation's declaration (core code),
+  // never a plugin handler: `publicOperations` names no code operation.
+  // A system caller (a seed, a test, a migration) may run a declaration
+  // too: the same core code, on the system's context, its input checked
+  // against the declared schema. No other origin reaches a public
+  // operation except as a visitor.
+  const declared =
+    opts.visitorContext || opts.invocation.origin === "system"
+      ? publicOperationOf(plugin.definition.publicOperations, opts.operationName)
+      : undefined;
+  const handler: ((ctx: PluginContext, args: unknown) => unknown) | undefined = declared
+    ? (ctx, args) => {
+        if (opts.visitorContext)
+          return runDeclaredPublicOperation(declared, ctx as PluginContextTier1, args);
+        const parsed = declared.input.safeParse(args);
+        if (!parsed.success)
+          throw new Error(`${opts.operationName}: the input does not match its declared schema`);
+        return runDeclaredPublicOperation(declared, ctx as PluginContextTier1, parsed.data);
+      }
+    : opts.visitorContext
+      ? undefined
+      : plugin.definition.operations[opts.operationName];
+  if (!handler && !opts.visitorContext) {
     return {
       ok: false,
       error: {
@@ -808,6 +830,13 @@ async function runPluginOperationNow(
         kind: "OperationFailed",
         message: `failed to build plugin context: ${(e as Error).message}`,
       },
+    };
+  }
+  if (!handler) {
+    // Unreachable: a visitor call without a declaration was refused above.
+    return {
+      ok: false,
+      error: { kind: "OperationNotPublic", message: `"${opts.operationName}" has no declared run` },
     };
   }
   try {

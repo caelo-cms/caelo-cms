@@ -7,7 +7,11 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./artifact": "./src/artifact.ts",
+    "./installation-policy": "./src/installation-policy.ts",
+    "./manifest": "./src/manifest.ts",
+    "./schema": "./src/schema.ts"
   },
   "scripts": {
     "typecheck": "tsc -b"

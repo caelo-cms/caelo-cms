@@ -12,7 +12,7 @@
  * transaction (private-storage.ts), not here.
  */
 
-import { validateSelectedGrants } from "@caelo-cms/plugin-sandbox";
+import { validateSelectedGrants } from "@caelo-cms/plugin-sandbox/installation-policy";
 import {
   type PluginCapability,
   type PluginToolPermission,

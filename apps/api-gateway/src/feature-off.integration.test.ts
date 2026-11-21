@@ -68,9 +68,15 @@ const fixture = definePlugin({
       input: z.looseObject({}),
       reads: ["notes"],
       writes: ["notes"],
+      run: {
+        action: "insert" as const,
+        table: "notes",
+        values: { message: { from: "const" as const, value: "saved" } },
+        answer: { saved: true },
+      },
     },
   ],
-  operations: { save: async () => ({ saved: true }) },
+  operations: {},
 });
 
 let adminAdapter: DatabaseAdapter;

@@ -36,16 +36,8 @@ const manifest = {
   schema: { notes: { id: "uuid", body: "text" } },
   tableKinds: { notes: "visitor-state" },
   operations: ["save", "read", "compare"],
-  publicOperations: [
-    {
-      name: "read",
-      kind: "write" as const,
-      captcha: "none" as const,
-      inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
-      reads: ["notes"],
-      writes: ["notes"],
-    },
-  ],
+  // #1340 — no public operation: this probe's operations run admin-side,
+  // in the sandbox; a visitor reaches none of them (asserted below).
   hasStaticRender: false,
 };
 const source = `import { definePlugin } from "@caelo-cms/plugin-sdk";

@@ -30,7 +30,6 @@ import {
   HONEYPOT_FIELD_NAME,
   honeypotBodyField,
   honeypotFieldHtml,
-  isHoneypotArgTripped,
   KIT_CSS,
   postPluginJson,
   setStatus,
@@ -40,9 +39,7 @@ import {
   defineComponent,
   definePlugin,
   isAiDelegated,
-  mailUnsubscribeRecipient,
   type PluginContextTier1,
-  PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
 import {
@@ -118,12 +115,6 @@ const tokenInput = z
   })
   .strict();
 
-/** How long a double opt-in link stays valid (#1337: tokens expire). */
-const CONFIRM_TOKEN_TTL_MS = 1000 * 60 * 60 * 48;
-
-/** `subscribe`'s one answer for every address (P6, #1336). */
-const SUBSCRIBE_ANSWER = Object.freeze({ awaitingConfirm: true as const });
-
 /** Most rows one `ctx.query.list` returns (the SDK's cap). */
 const SUBSCRIBER_LIST_CAP = 1000;
 
@@ -148,21 +139,9 @@ async function allSubscribers(ctx: PluginContextTier1, op: string): Promise<Subs
   return subs;
 }
 
-function hashEmail(email: string): string {
-  // Deterministic non-cryptographic hash for de-dupe + analytics. Email lookups
-  // use this; the raw email is stored alongside for sending. P13 may swap
-  // for argon2 or a keyed HMAC.
-  const normalised = email.trim().toLowerCase();
-  let h = 0n;
-  for (let i = 0; i < normalised.length; i++) {
-    h = (h * 31n + BigInt(normalised.charCodeAt(i))) & 0xffffffffffffffffn;
-  }
-  return h.toString(16).padStart(16, "0");
-}
-
 export default definePlugin<PluginContextTier1>({
   slug: "newsletter",
-  version: "1.0.0",
+  version: "1.1.0",
   tier: 1,
   schema: {
     subscribers: {
@@ -275,6 +254,14 @@ export default definePlugin<PluginContextTier1>({
       rateLimit: { max: 5, windowSeconds: 60 },
       reads: ["subscribers"],
       writes: ["subscribers"],
+      // #1340 — core's double opt-in: one answer for every address, a
+      // confirmation link valid for 48 hours (#1337), a repeated sign-up
+      // mails the link still valid; a filled honeypot stores nothing.
+      run: {
+        action: "block",
+        block: "double-opt-in.subscribe",
+        options: { table: "subscribers", template: "confirm_subscription", hours: 48 },
+      },
     },
     {
       name: "confirm",
@@ -283,6 +270,7 @@ export default definePlugin<PluginContextTier1>({
       rateLimit: { max: 10, windowSeconds: 60 },
       reads: ["subscribers"],
       writes: ["subscribers"],
+      run: { action: "block", block: "double-opt-in.confirm", options: { table: "subscribers" } },
     },
     {
       name: "unsubscribe",
@@ -291,6 +279,12 @@ export default definePlugin<PluginContextTier1>({
       rateLimit: { max: 10, windowSeconds: 60 },
       reads: ["subscribers"],
       writes: ["subscribers"],
+      // #1432 — the host signed the token per recipient and checks it first.
+      run: {
+        action: "block",
+        block: "mail.unsubscribe",
+        options: { table: "subscribers", column: "unsubscribed_at" },
+      },
     },
   ],
   operations: {
@@ -300,110 +294,6 @@ export default definePlugin<PluginContextTier1>({
      * status crosses back, so nobody can learn whether an address is on
      * the list by subscribing it.
      */
-    subscribe: async (ctx, args) => {
-      const parsed = subscribeInput.safeParse(args);
-      if (!parsed.success) throw new PublicOperationError("subscribe: invalid email");
-      const input = parsed.data;
-      // A filled honeypot gets the same answer as a real signup, so the
-      // bot learns nothing — and nothing is stored or mailed.
-      if (isHoneypotArgTripped(args)) return SUBSCRIBE_ANSWER;
-      const ok = await ctx.captcha.requireProof(null);
-      if (!ok) throw new PublicOperationError("subscribe: captcha verification failed");
-      const hash = hashEmail(input.email);
-      const existing = await ctx.query.list<
-        "subscribers",
-        {
-          id: string;
-          confirmed_at: string | null;
-          confirm_token: string;
-          confirm_expires_at: string | null;
-        }
-      >("subscribers", { email_hash: hash, limit: 1 });
-      if (existing[0]?.confirmed_at) return SUBSCRIBE_ANSWER;
-      if (!ctx.email) throw new Error("subscribe: the email capability is not attached");
-      // #1337 — a repeated sign-up mails the link that is still valid: a
-      // fresh one would void the link already in the inbox, and if the
-      // per-recipient cap refuses the new mail, nobody could confirm until
-      // the cap window passes (anyone who knows the address could cause
-      // that). Only an expired (or pre-#1337) link is replaced, for 48 hours.
-      const pending = existing[0];
-      if (
-        pending?.confirm_expires_at &&
-        new Date(pending.confirm_expires_at) > new Date() &&
-        typeof pending.confirm_token === "string"
-      ) {
-        await ctx.email.queue({
-          template: "confirm_subscription",
-          to: input.email,
-          token: pending.confirm_token,
-        });
-        return SUBSCRIBE_ANSWER;
-      }
-      const confirmToken = crypto.randomUUID();
-      const confirmExpiresAt = new Date(Date.now() + CONFIRM_TOKEN_TTL_MS).toISOString();
-      if (existing[0]) {
-        await ctx.query.update("subscribers", existing[0].id, {
-          confirm_token: confirmToken,
-          confirm_expires_at: confirmExpiresAt,
-        });
-      } else {
-        await ctx.query.insert("subscribers", {
-          email: input.email,
-          email_hash: hash,
-          confirm_token: confirmToken,
-          confirm_expires_at: confirmExpiresAt,
-          unsub_token: crypto.randomUUID(),
-        });
-      }
-      await ctx.email.queue({
-        template: "confirm_subscription",
-        to: input.email,
-        token: confirmToken,
-      });
-      return SUBSCRIBE_ANSWER;
-    },
-
-    confirm: async (ctx, args) => {
-      const parsed = tokenInput.safeParse(args);
-      if (!parsed.success) throw new PublicOperationError("confirm: invalid token");
-      const input = parsed.data;
-      const matches = await ctx.query.list<
-        "subscribers",
-        { id: string; confirm_expires_at: string | null }
-      >("subscribers", {
-        confirm_token: input.token,
-        limit: 1,
-      });
-      if (!matches[0]) throw new PublicOperationError("confirm: invalid token");
-      // A row from before #1337 has no expiry: it signs up again for a new link.
-      const expires = matches[0].confirm_expires_at;
-      if (!expires || new Date(expires) < new Date()) {
-        throw new PublicOperationError("confirm: the link has expired");
-      }
-      await ctx.query.update("subscribers", matches[0].id, {
-        confirmed_at: new Date().toISOString(),
-      });
-      return { confirmed: true };
-    },
-
-    unsubscribe: async (ctx, args) => {
-      const parsed = tokenInput.safeParse(args);
-      if (!parsed.success) throw new PublicOperationError("unsubscribe: invalid token");
-      const input = parsed.data;
-      // The host already checked the signature, so a link stays good to
-      // press again and for a subscriber who is gone: both are unsubscribed.
-      const subscriberId = mailUnsubscribeRecipient(input.token);
-      if (!subscriberId) throw new PublicOperationError("unsubscribe: invalid token");
-      // Compare-and-swap, so that of two concurrent POSTs only the first
-      // sets the date; a gone subscriber swaps nothing and is still a success.
-      await ctx.query.compareAndSwap(
-        "subscribers",
-        subscriberId,
-        { unsubscribed_at: null },
-        { unsubscribed_at: new Date().toISOString() },
-      );
-      return { unsubscribed: true };
-    },
     /**
      * Campaigns (newest first) + how many subscribers a send reaches. A
      * campaign's send state comes from the approved runs in private

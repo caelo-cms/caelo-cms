@@ -14,7 +14,7 @@ import {
 import { SITE_SEARCH_CONFIG } from "./config.js";
 import { anchorDocuments, normalizeAnchorText, pageDocument, sectionsOf } from "./documents.js";
 import plugin from "./index.js";
-import { aggregate, cleanQuery, isPopularCandidate, looksPersonal } from "./learn.js";
+import { aggregate, isPopularCandidate } from "./learn.js";
 
 const observeOp = (ctx: unknown, a: PageOutputObserverArgs) =>
   (plugin.operations.observe as (c: unknown, x: unknown) => Promise<{ indexed: number }>)(ctx, a);
@@ -258,13 +258,6 @@ describe("the profile", () => {
 });
 
 describe("counting visitors' searches", () => {
-  it("drops what looks like personal data", () => {
-    for (const t of ["max@example.com", "+49 30 1234567", "0049301234567", "Kundennummer 12345678"])
-      expect(looksPersonal(t)).toBe(true);
-    for (const t of ["Preise", "SEO Tool 2026", "Logfile Analyse"])
-      expect(looksPersonal(t)).toBe(false);
-    expect(cleanQuery("  a   b ")).toBe("a b");
-  });
   it("calls a query popular after 5 searches on 3 days that found something", () => {
     const ev = (day: string, results = 3) =>
       ({

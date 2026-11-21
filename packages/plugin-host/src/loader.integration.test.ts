@@ -296,16 +296,17 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
 
   it("failure isolation: one bad plugin doesn't block the rest", async () => {
     const goodDef = definePlugin({ ...helloPluginDef, slug: "test-p115-good" });
-    // Bad: zero operations violates the manifest schema (`operations`
-    // min(1)). Since #387 the testPlugins path runs the REAL manifest
-    // validator, so this must land in `failed` — not silently load like
-    // the pre-#387 fast path allowed.
+    // Bad: a table without a kind violates the manifest lint (#1332).
+    // Since #387 the testPlugins path runs the REAL manifest validator, so
+    // this must land in `failed` — not silently load like the pre-#387
+    // fast path allowed. (A plugin with no code operation is valid since
+    // #1340: its visitor surface may be all declarations.)
     const badDef = definePlugin({
       slug: "test-p115-bad",
       version: "0.1.0",
       tier: 1,
-      schema: {},
-      operations: {} as never,
+      schema: { notes: { body: "text" } },
+      operations: { noop: async () => ({}) },
       requestedCapabilities: [],
     });
     const report = await bootstrap({

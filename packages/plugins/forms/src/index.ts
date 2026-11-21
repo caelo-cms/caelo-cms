@@ -50,7 +50,6 @@ import {
   definePlugin,
   isAiDelegated,
   type PluginContextTier1,
-  PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
 
@@ -83,8 +82,6 @@ const submitInput = z
   })
   .strict();
 
-type SubmitInput = z.infer<typeof submitInput>;
-
 /** One field of a form definition, as `schema_json.fields` holds it. */
 const formField = z
   .object({
@@ -101,35 +98,6 @@ const formField = z
 
 /** A form definition's `schema_json`: the fields a submission may carry. */
 const formSchemaJson = z.object({ fields: z.array(formField).min(1).max(MAX_FIELDS) }).strict();
-
-type FormSchemaJson = z.infer<typeof formSchemaJson>;
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/**
- * #1332 (M3) — a submission against the form's declared fields: no field
- * the form does not have, every required one filled, an email field
- * holding an address. Each refusal is worded for the visitor and names
- * the field label, never the form's slug (P6).
- */
-function checkSubmission(form: FormSchemaJson, data: SubmitInput["data"]): void {
-  const fields = new Map(form.fields.map((f) => [f.name, f]));
-  for (const name of Object.keys(data)) {
-    if (!fields.has(name)) {
-      throw new PublicOperationError(`submit: this form has no field "${name}"`);
-    }
-  }
-  for (const f of form.fields) {
-    const value = data[f.name];
-    const empty = value === undefined || value === null || String(value).trim() === "";
-    if (f.required && (empty || value === false)) {
-      throw new PublicOperationError(`submit: "${f.label}" is required`);
-    }
-    if (!empty && f.type === "email" && !EMAIL_RE.test(String(value))) {
-      throw new PublicOperationError(`submit: "${f.label}" must be an email address`);
-    }
-  }
-}
 
 interface ListSubmissionsInput {
   formSlug?: string;
@@ -166,7 +134,7 @@ interface SubmissionRow {
 
 export default definePlugin<PluginContextTier1>({
   slug: SLUG,
-  version: "1.0.0",
+  version: "1.1.0",
   tier: 1,
   schema: {
     forms: {
@@ -212,53 +180,42 @@ export default definePlugin<PluginContextTier1>({
       rateLimit: { max: 10, windowSeconds: 60 },
       reads: ["forms"],
       writes: ["form_submissions"],
+      // #1340 — declared, run by the host: the data must fit the form's
+      // fields (no field the form lacks, every required one filled, an
+      // email field holding an address); a filled honeypot is stored as
+      // spam and answered like success, so the bot does not retry. No
+      // refusal names the form's slug (P6).
+      run: {
+        action: "insert",
+        table: "form_submissions",
+        values: {
+          form_slug: { from: "input", field: "formSlug" },
+          page_id: { from: "input", field: "pageId", orElse: "" },
+          data: { from: "input", field: "data" },
+          status: { from: "const", value: "new" },
+        },
+        checks: [
+          {
+            check: "form-fields",
+            field: "data",
+            source: { table: "forms", of: "schema" },
+            keyColumn: "slug",
+            keyField: "formSlug",
+            definitionColumn: "schema_json",
+            missing: "submit: this form does not exist",
+          },
+        ],
+        honeypot: {
+          field: "honeypot",
+          store: "marked",
+          values: { status: { from: "const", value: "spam" } },
+          answer: { submissionId: { from: "inserted-id" }, honeypot: true },
+        },
+        answer: { submissionId: { from: "inserted-id" } },
+      },
     },
   ],
   operations: {
-    /**
-     * `submit` — PUBLIC visitor write. Routes through the gateway:
-     *   POST /api/plugin/forms/submit
-     *   { formSlug, pageId?, data: {...} }
-     *
-     * The host has already checked the captcha bound to this operation and
-     * the body's shape (#1332). Here:
-     * 1. Look the form up and check the data against its fields.
-     * 2. Insert into form_submissions.
-     *
-     * No refusal names the form's slug (P6): a visitor learns nothing
-     * about which forms exist beyond the one on the page.
-     */
-    submit: async (ctx, args) => {
-      const input = submitInput.parse(args);
-      // Honeypot — bots fill the hidden field; mark spam silently and
-      // return success so the bot doesn't retry. Real users never trip this.
-      const honeypotTripped = (input.honeypot ?? "").trim() !== "";
-
-      const forms = await ctx.query.list<"forms", { slug: string; schema_json: unknown }>("forms", {
-        slug: input.formSlug,
-        limit: 1,
-      });
-      const form = forms[0];
-      if (!form) throw new PublicOperationError("submit: this form does not exist");
-      const schema = formSchemaJson.safeParse(form.schema_json);
-      if (!schema.success) {
-        // The Owner's definition is broken, not the visitor's input: a
-        // loud plugin error (the visitor gets the generic refusal).
-        throw new Error(
-          `submit: a stored form definition has no valid fields (${schema.error.issues[0]?.message ?? "invalid"}) — re-create it with create_form`,
-        );
-      }
-      if (!honeypotTripped) checkSubmission(schema.data, input.data);
-
-      const r = await ctx.query.insert("form_submissions", {
-        form_slug: input.formSlug,
-        page_id: input.pageId ?? "",
-        data: input.data,
-        status: honeypotTripped ? "spam" : "new",
-      });
-      return { submissionId: r.id, ...(honeypotTripped ? { honeypot: true } : {}) };
-    },
-
     /**
      * `list_submissions` — admin read. Optional filter by formSlug + status.
      */

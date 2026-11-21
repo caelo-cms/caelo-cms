@@ -64,11 +64,17 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   const operations = new Set(manifest.operations);
   if (operations.size !== manifest.operations.length) throw new Error("Duplicate operation name");
   for (const name of [
-    ...(manifest.publicOperations ?? []).map((op) => op.name),
     ...(manifest.tools ?? []).map((t) => t.operationName),
     ...(manifest.workers ?? []).map((w) => w.operationName),
   ]) {
     if (!operations.has(name)) throw new Error(`Undeclared operation: ${name}`);
+  }
+  // #1340 — a public operation is its declared run, never source code.
+  for (const op of manifest.publicOperations ?? []) {
+    if (operations.has(op.name))
+      throw new Error(
+        `Public operation ${op.name} is also a source operation; a public operation is only its declared run`,
+      );
   }
   const publicOperations = new Set((manifest.publicOperations ?? []).map((op) => op.name));
   // #1332 — the host validates every visitor body against this schema

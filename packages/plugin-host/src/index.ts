@@ -242,7 +242,6 @@ export {
   loadActivatedPlugin,
   pluginHostBootstrapped,
   resetPluginHost,
-  unapprovedCapabilities,
   verifyDiskPlugin,
 } from "./loader.js";
 // #1008 — whether a plugin runs in this process: where its skills are
@@ -252,6 +251,13 @@ export {
   pluginRunsHere,
 } from "./local-availability.js";
 export { verifyMailUnsubscribeToken } from "./mail-link-token.js";
+// #1340 — a plugin as its manifest alone (the gateway's view).
+export {
+  declarativeDefinition,
+  resolveTrustRoot,
+  unapprovedCapabilities,
+  verifyDiskManifest,
+} from "./manifest-definition.js";
 export {
   type ComposedModuleRef,
   canonicalSitePath,
@@ -305,12 +311,17 @@ export {
   type PromptContextRenderer,
   pluginPromptContextRegistry,
 } from "./prompt-context-registry.js";
+export { COMMENT_THREAD_PAGE_SIZE } from "./public-blocks/comment-thread.js";
+export { optInEmailHash } from "./public-blocks/mail-blocks.js";
+export { argon2InFlight } from "./public-blocks/visitor-auth.js";
 export {
   GENERIC_VISITOR_FAILURE,
   refusePublicCall,
   VISITOR_TRANSPORT_FIELDS,
   visitorSafeResult,
 } from "./public-contract.js";
+// #1340 — public operations run as declarations (core code), never plugin code.
+export { runDeclaredPublicOperation } from "./public-run-host.js";
 export {
   dropPluginPublicSchemas,
   type PluginPublicSchemaSpec,

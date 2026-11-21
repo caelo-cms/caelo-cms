@@ -24,7 +24,6 @@ import {
   type PluginAuditFindingsArgs,
   type PluginBatchArgs,
   type PluginContextTier1,
-  PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
 import {
@@ -35,10 +34,8 @@ import {
 } from "./config.js";
 import {
   aggregate,
-  cleanQuery,
   isPopularCandidate,
   isZeroResultInsight,
-  looksPersonal,
   MODERATION_SCHEMA,
   MODERATION_SYSTEM,
   queryKey,
@@ -53,19 +50,21 @@ type Ctx = PluginContextTier1;
 
 const recordInput = z
   .object({
-    kind: z.enum(["search", "click", "reformulation"]),
+    kind: z.enum(["search", "click"]),
     text: z.string().min(1).max(200),
     lang: z.string().regex(/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$/),
     results: z.number().int().min(0).max(1_000_000),
     target: z.string().max(500).optional(),
-    previous: z.string().max(200).nullable().optional(),
+    /** The query this tab searched just before (a reformulation), if any. */
+    previous: z.string().max(200).optional(),
+    /** The honeypot: a person never fills it. */
+    website: z.string().max(200).optional(),
   })
-  .passthrough();
+  .strict();
 
 /** Days of counted searches kept. */
 const WINDOW_DAYS = 30;
 
-const today = () => new Date().toISOString().slice(0, 10);
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
 
 function adminQueryOf(ctx: Ctx) {
@@ -326,6 +325,36 @@ export default definePlugin({
       input: recordInput,
       rateLimit: { max: 30, windowSeconds: 60 },
       writes: ["search_events"],
+      // #1340 — declared, run by the host. Stored only while the Owner turned
+      // counting on (the projected switch); text that looks like personal
+      // data is dropped before storage; a filled honeypot stores nothing.
+      // Every outcome answers the same, so a client learns nothing from it.
+      run: {
+        action: "insert",
+        table: "search_events",
+        values: {
+          kind: { from: "input", field: "kind" },
+          text: { from: "input", field: "text", trim: true },
+          lang: { from: "input", field: "lang" },
+          day: { from: "today" },
+          results: { from: "input", field: "results" },
+          target: { from: "input", field: "target", optional: true },
+          previous: { from: "input", field: "previous", optional: true, trim: true },
+        },
+        honeypot: { field: "website", store: "nothing", answer: { recorded: true } },
+        onlyIf: {
+          source: { table: "public_settings", of: "adminSchema" },
+          column: "counting",
+          equals: true,
+          answer: { recorded: true },
+        },
+        drop: {
+          field: "text",
+          patterns: ["email", "phone", "long-number"],
+          answer: { recorded: true },
+        },
+        answer: { recorded: true },
+      },
     },
   ],
   config: SITE_SEARCH_CONFIG,
@@ -441,52 +470,6 @@ export default definePlugin({
         a.final ? values?.popular_suggestions === true : null,
       );
       return { indexed: r.indexed, excluded: r.excluded, anchors: r.anchors };
-    },
-
-    record: async (ctx, args) => {
-      const input = recordInput.parse(args);
-      // A filled honeypot gets the same answer, and nothing is stored.
-      if ((args as Record<string, unknown>).website) return { recorded: false };
-      const [settings] =
-        (await (ctx as Ctx).adminQuery?.list<"public_settings", { counting: boolean }>(
-          "public_settings",
-          { limit: 1 },
-        )) ?? [];
-      if (settings?.counting !== true) return { recorded: false };
-      const text = cleanQuery(input.text);
-      const previous = input.previous ? cleanQuery(input.previous) : "";
-      // Text that may be personal data never reaches storage.
-      if (!text || looksPersonal(text) || (previous && looksPersonal(previous)))
-        return { recorded: false };
-      if (input.kind === "reformulation" && !previous)
-        throw new PublicOperationError("record: a reformulation names the previous query");
-      await ctx.query.insert("search_events", {
-        kind: input.kind,
-        text,
-        lang: input.lang.toLowerCase(),
-        day: today(),
-        results: input.results,
-        target: input.kind === "click" ? (input.target ?? "").slice(0, 500) : "",
-        previous:
-          input.kind === "search" && previous
-            ? previous
-            : input.kind === "reformulation"
-              ? previous
-              : "",
-      });
-      // A search after another in the same tab is also a reformulation.
-      if (input.kind === "search" && previous && previous !== text) {
-        await ctx.query.insert("search_events", {
-          kind: "reformulation",
-          text,
-          lang: input.lang.toLowerCase(),
-          day: today(),
-          results: input.results,
-          target: "",
-          previous,
-        });
-      }
-      return { recorded: true };
     },
 
     learn: async (ctx, args) => {

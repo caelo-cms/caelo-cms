@@ -82,10 +82,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
 import {
   bootstrapDispatchOnly,
-  ensureDevSignedManifests,
   hostInfra,
   loadedPlugins,
   markDispatchRegistryStale,
@@ -97,7 +95,7 @@ import {
   unpublishedRegistryError,
   VISITOR_ID_PURPOSE,
   verifyMailUnsubscribeToken,
-} from "@caelo-cms/plugin-host";
+} from "@caelo-cms/plugin-host/gateway";
 import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
 import {
@@ -1167,7 +1165,9 @@ async function collectionOperation(
       const entry = await collections.release(route.slug, declared.op.collection, key);
       // #1651 — the anchor collection of the same Stage, when the op declares one.
       const anchorsOf = declared.op.kind === "search" ? declared.op.anchors : undefined;
-      const anchorKey = anchorsOf ? keys.get(`${declared.pluginId}:${anchorsOf.collection}`) : undefined;
+      const anchorKey = anchorsOf
+        ? keys.get(`${declared.pluginId}:${anchorsOf.collection}`)
+        : undefined;
       const anchors =
         anchorsOf && anchorKey
           ? await collections.release(route.slug, anchorsOf.collection, anchorKey)
@@ -1263,9 +1263,8 @@ async function servedToVisitors(
   await syncDispatchPlugins();
   const plugin = loadedPlugins.bySlug(slug);
   if (!plugin) return unpublishedRegistryError() ? "unpublished" : "unknown";
-  const served =
-    Object.hasOwn(plugin.definition.operations, operation) &&
-    publicOperationOf(plugin.definition.publicOperations, operation) !== undefined;
+  // #1340 — a public operation is its declaration; there is no code to find.
+  const served = publicOperationOf(plugin.definition.publicOperations, operation) !== undefined;
   return served ? "served" : "unknown";
 }
 
@@ -1723,21 +1722,9 @@ if (import.meta.main) {
       "[api-gateway] refresh pings: none (this gateway has CPU between requests and hears every publish notification as it arrives)",
     );
   }
-  // #387 one-trust-path: same dev auto-signing + verified disk load as
-  // the admin host. Non-production boots regenerate stale manifests
-  // with the repo dev key; the loader verifies via the trust-root drop
-  // file (or the embedded release key in production).
-  if (process.env.NODE_ENV !== "production") {
-    const signed = await ensureDevSignedManifests({
-      pluginsRoot: PLUGINS_ROOT,
-      keyPath: resolve(PLUGINS_ROOT, "../../.caelo-dev-key"),
-    });
-    for (const r of signed.reports) {
-      if (r.status === "failed" || r.status === "skipped") {
-        console.warn(`[api-gateway] plugin dev-sign ${r.status}: ${r.slug} — ${r.reason}`);
-      }
-    }
-  }
+  // #1340 — the gateway verifies the shipped manifests and runs none of
+  // the plugins' code; in a dev checkout the admin signs the manifests it
+  // generates (the gateway never imports a dist, so it signs nothing).
   // Dispatch-only: verify what this image ships, attach what the admin's
   // registry marks active, write nothing (#613).
   const report = await bootstrapDispatchOnly({

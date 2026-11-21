@@ -9,13 +9,14 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { argon2InFlight } from "@caelo-cms/plugin-host";
 import {
   checkMailTemplates,
   isPublicOperationBusyError,
   manifestFromDefinition,
   publicOperationOf,
 } from "@caelo-cms/plugin-sdk";
-import plugin, { argon2InFlight } from "./index.js";
+import plugin from "./index.js";
 import { OPEN_CONFIG, type Row, run, sha256Hex, world } from "./test-world.js";
 
 const PASSWORD = "correct horse battery";

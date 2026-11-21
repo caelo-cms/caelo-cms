@@ -7,23 +7,20 @@
  * CI (every file the image adds to its distroless base must be listed here).
  *
  * The gateway is the one service that takes untrusted traffic (CLAUDE.md
- * §11.B Tier 3), so it carries its bundled server and, until plugins leave
- * the gateway (E2-B, v0.13), what plugins need at run time:
+ * §11.B Tier 3). #1340 (epic #763 E2-B): it runs no plugin code, so it
+ * carries its bundled server and, of the plugins, only data:
  *
- *   - the release-signed plugin dists, their manifests and the trust root
- *     the image build signed them with (#387);
- *   - the packages those dists import (`@caelo-cms/plugin-sdk`,
- *     `@caelo-cms/plugin-component-kit`) and their closure. The sandbox
- *     bundler inlines the same two SDK packages into every runtime-authored
- *     plugin it hands to Deno (plugin-host sandbox-runtime.ts), so they
- *     must exist as files, not only inside the bundle;
- *   - oxc-parser with its native binding, which the plugin validator loads
- *     (it cannot be bundled);
- *   - the Deno binary (`/usr/local/bin/deno`), the sandbox runtime;
+ *   - each release-signed plugin's manifest and signature, and the trust
+ *     root the image build signed them with (#387) — the gateway attaches a
+ *     plugin as its verified manifest and runs its declarations with core
+ *     code (plugin-host manifest-definition.ts, public-run-host.ts).
  *   - #1650: the embedding models of the core catalog and ONNX Runtime's
  *     WebAssembly build (`ort-wasm-simd-threaded.{wasm,mjs}`, loaded from
  *     CAELO_ORT_WASM_DIR; its JavaScript is in the bundle). No native
  *     inference code: a visitor's query runs inside WebAssembly.
+ *
+ * No plugin dist, no Deno, no plugin validator (oxc-parser) and no package
+ * a plugin would import at run time: the bundle is the whole program.
  */
 
 import { EMBEDDING_MODELS } from "../../packages/shared/src/embedding-models.ts";
@@ -53,35 +50,17 @@ const spec: ServiceImageSpec = {
     // Same depth as src/: the bundle resolves packages/plugins relative to
     // its own directory (src/plugins-root.ts).
     outdir: "apps/api-gateway/dist",
-    external: ["oxc-parser"],
+    external: [],
   },
-  runtimePackages: ["@caelo-cms/plugin-sdk", "@caelo-cms/plugin-component-kit", "oxc-parser"],
+  // #1340 — nothing is resolved from disk at run time.
+  runtimePackages: [],
   // gcr.io/distroless/cc-debian13 (the Dockerfile's runtime base).
   libc: "glibc",
-  nodeModules: [
-    "node_modules/@caelo-cms/plugin-component-kit",
-    "node_modules/@caelo-cms/plugin-sdk",
-    "node_modules/@caelo-cms/shared",
-    // The binding for the image's platform (linux, glibc); the runtime base is Debian.
-    "node_modules/@oxc-parser/binding-linux-*-gnu",
-    "node_modules/@oxc-project/types",
-    "node_modules/colorjs.io",
-    "node_modules/dom-serializer",
-    "node_modules/domelementtype",
-    "node_modules/domhandler",
-    "node_modules/domutils",
-    "node_modules/entities",
-    "node_modules/htmlparser2",
-    "node_modules/mustache",
-    "node_modules/oxc-parser",
-    "node_modules/zod",
-  ],
+  nodeModules: [],
   copy: [
     "packages/plugins/.tier1-trust-root",
-    "packages/plugins/*/package.json",
     "packages/plugins/*/manifest.json",
     "packages/plugins/*/manifest.sig",
-    "packages/plugins/*/dist/**/*.js",
     "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm",
     "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs",
   ],
@@ -89,9 +68,6 @@ const spec: ServiceImageSpec = {
     // No advisory database tracks Bun releases; the builder's digest-pinned
     // oven/bun tag is its version, bumped by Dependabot.
     { path: "usr/local/bin/bun", purl: null },
-    // GitHub advisories file Deno under its crate; the version must equal the
-    // Dockerfile's denoland/deno:bin-<version> (scripts/service-image.test.ts).
-    { path: "usr/local/bin/deno", purl: "pkg:cargo/deno@2.9.8" },
     ...modelGraphs,
   ],
   // #1338 — the database CA bundles every verify-full URL names as
@@ -102,12 +78,11 @@ const spec: ServiceImageSpec = {
   require: [
     "etc/caelo/db-ca/*.pem",
     "usr/local/bin/bun",
-    "usr/local/bin/deno",
     "app/apps/api-gateway/dist/server.js",
     "app/apps/api-gateway/dist/image-self-check.js",
     "app/packages/plugins/.tier1-trust-root",
+    "app/packages/plugins/*/manifest.json",
     "app/packages/plugins/*/manifest.sig",
-    "app/node_modules/@oxc-parser/binding-*/*.node",
     "app/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm",
     "app/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs",
     ...modelGraphs.map((f) => f.path),
