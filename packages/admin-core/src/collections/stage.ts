@@ -14,15 +14,77 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { EMBEDDING_MODEL_IDS, type ExecutionContext, embeddingModel } from "@caelo-cms/shared";
 import { describeError } from "../ai/tools/_describe-error.js";
 import type { AdminJobDeps } from "../reporting-jobs/kind.js";
 import { startReportingJob } from "../reporting-jobs/launcher.js";
+import { activeCollections } from "./ops.js";
 
 /** Observers whose page output failed in this Stage, as the build reported them. */
 export interface FailedObserver {
   readonly pluginId: string;
   readonly error: string;
+}
+
+/** The value at a dotted config path (`semantic.model`), or undefined. */
+function valueAt(values: Record<string, unknown>, path: string): unknown {
+  let at: unknown = values;
+  for (const part of path.split(".")) {
+    if (typeof at !== "object" || at === null) return undefined;
+    at = (at as Record<string, unknown>)[part];
+  }
+  return at;
+}
+
+/**
+ * #1650 — the embedding model each collection's configuration names for
+ * this Stage (its `vectorModelConfig` leaf), read once per plugin on main,
+ * which the Stage just built. A model the catalog no longer has fails that
+ * plugin's index loudly instead of indexing without vectors.
+ */
+async function configuredVectorModels(
+  deps: AdminJobDeps,
+  sys: ExecutionContext,
+): Promise<{
+  models: { pluginId: string; collection: string; model: string | null }[];
+  failed: FailedObserver[];
+}> {
+  const models: { pluginId: string; collection: string; model: string | null }[] = [];
+  const failed: FailedObserver[] = [];
+  const bySlug = new Map<string, Record<string, unknown> | Error>();
+  for (const c of activeCollections()) {
+    const path = c.decl.vectorModelConfig;
+    if (path === undefined) continue;
+    let values = bySlug.get(c.slug);
+    if (values === undefined) {
+      const r = await execute(deps.registry, deps.adapter, sys, "plugin_config.get", {
+        pluginSlug: c.slug,
+      });
+      values = r.ok
+        ? (r.value as { values: Record<string, unknown> }).values
+        : new Error(describeError(r.error));
+      bySlug.set(c.slug, values);
+    }
+    if (values instanceof Error) {
+      failed.push({
+        pluginId: c.pluginId,
+        error: `its configuration could not be read for the embedding model (${values.message})`,
+      });
+      continue;
+    }
+    const model = valueAt(values, path);
+    if (model === null || model === undefined) {
+      models.push({ pluginId: c.pluginId, collection: c.collection, model: null });
+    } else if (typeof model === "string" && embeddingModel(model)) {
+      models.push({ pluginId: c.pluginId, collection: c.collection, model });
+    } else {
+      failed.push({
+        pluginId: c.pluginId,
+        error: `its configuration (${path}) names the embedding model ${JSON.stringify(model)}, which this release's catalog does not have (${EMBEDDING_MODEL_IDS.join(", ")}): pick one in Settings → Plugin settings, or turn semantic search off, and Stage again`,
+      });
+    }
+  }
+  return { models, failed };
 }
 
 /** After a successful Stage: commit page output, plan and start the index. Returns a note for the run, or null. */
@@ -37,9 +99,15 @@ export async function afterStageBuild(
   });
   if (!committed.ok)
     return `the page output of this Stage could not be recorded (${describeError(committed.error)}); the next Stage sends those pages again`;
+  const vectors = await configuredVectorModels(deps, sys);
+  const failures = [
+    ...failed,
+    ...vectors.failed.filter((v) => !failed.some((f) => f.pluginId === v.pluginId)),
+  ];
   const planned = await execute(deps.registry, deps.adapter, sys, "collections.plan_run", {
     runId,
-    failed: failed.map((f) => ({ pluginId: f.pluginId, error: f.error.slice(0, 2000) })),
+    failed: failures.map((f) => ({ pluginId: f.pluginId, error: f.error.slice(0, 2000) })),
+    vectorModels: vectors.models,
   });
   if (!planned.ok)
     return `the search index of this Stage could not be planned (${describeError(planned.error)}); Stage again`;

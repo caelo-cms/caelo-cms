@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { DEFAULT_EMBEDDING_MODEL_ID } from "@caelo-cms/shared/embedding-models";
 import {
   applyConfigPatch,
   checkConfig,
@@ -196,6 +197,43 @@ describe("config schema", () => {
     expect(issues.some((i) => i.startsWith("config.b") && i.includes("above max"))).toBe(true);
     expect(issues.some((i) => i.startsWith("config.c.default"))).toBe(true);
     expect(issues.some((i) => i.startsWith("entityConfig.module.mode.default"))).toBe(true);
+  });
+
+  it("takes only a model of the core catalog, or null, for a catalogModel leaf (#1650)", () => {
+    const model = parseConfigSchema({
+      model: {
+        type: "catalogModel",
+        purpose: "embedding",
+        label: "Model",
+        description: "The embedding model.",
+        effect: "rebuild",
+        default: DEFAULT_EMBEDDING_MODEL_ID,
+      },
+    });
+    const values = configValueSchema(model);
+    expect(values.safeParse({ model: DEFAULT_EMBEDDING_MODEL_ID }).success).toBe(true);
+    expect(values.safeParse({ model: null }).success).toBe(true);
+    expect(values.safeParse({ model: "jina-embeddings-v3" }).success).toBe(false);
+    const issues: string[] = [];
+    checkConfig(
+      parseConfigSchema({
+        model: {
+          type: "catalogModel",
+          purpose: "embedding",
+          label: "Model",
+          description: "The embedding model.",
+          effect: "rebuild",
+          default: "a-plugin-shipped-model",
+        },
+      }),
+      undefined,
+      (path, message) => issues.push(`${path.join(".")}: ${message}`),
+    );
+    expect(issues).toEqual([
+      expect.stringMatching(
+        /^config\.model\.default: default "a-plugin-shipped-model" is not a model of the core catalog/,
+      ),
+    ]);
   });
 
   it("validates entity config and reads unset fields as their defaults", () => {

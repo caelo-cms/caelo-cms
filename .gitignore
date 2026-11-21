@@ -1,5 +1,10 @@
 node_modules/
 dist/
+# Embedding models fetched by `bun run models:fetch` (#1650); verified by digest, never committed.
+.caelo-models/
+# The semantic bench's raw results (packages/collection-index/bench/semantic.ts).
+packages/collection-index/bench/out/
+.bench-models/
 build/
 .svelte-kit/
 .astro/

@@ -63,6 +63,7 @@ interface ReleaseRow {
   run_id: string;
   release_key: string;
   stats: Record<string, unknown>;
+  vector_model: string | null;
 }
 
 async function previousReady(
@@ -71,7 +72,7 @@ async function previousReady(
   collection: string,
 ): Promise<ReleaseRow | null> {
   const rows = (await tx.execute(sql`
-    SELECT run_id::text AS run_id, release_key, stats FROM collection_releases
+    SELECT run_id::text AS run_id, release_key, stats, vector_model FROM collection_releases
     WHERE plugin_id = ${pluginId}::uuid AND collection = ${collection} AND state = 'ready'
     ORDER BY created_at DESC LIMIT 1
   `)) as unknown as ReleaseRow[];
@@ -92,6 +93,26 @@ export const planCollectionRunOp = defineOperation({
         .array(z.object({ pluginId: uuid, error: z.string().max(2000) }).strict())
         .max(64)
         .default([]),
+      /**
+       * #1650 — per collection with a `vectorModelConfig`, the catalog model
+       * its configuration names for this Stage (null: semantic search off).
+       * A collection missing here has no vector model.
+       */
+      vectorModels: z
+        .array(
+          z
+            .object({
+              pluginId: uuid,
+              collection: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/),
+              model: z
+                .string()
+                .regex(/^[a-z0-9][a-z0-9.-]{0,79}$/)
+                .nullable(),
+            })
+            .strict(),
+        )
+        .max(256)
+        .default([]),
     })
     .strict(),
   output: z.object({
@@ -101,6 +122,9 @@ export const planCollectionRunOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     const failedBy = new Map(input.failed.map((f) => [f.pluginId, f.error] as const));
+    const modelOf = new Map(
+      input.vectorModels.map((v) => [`${v.pluginId}:${v.collection}`, v.model] as const),
+    );
     let pending = 0;
     let carried = 0;
     let failed = 0;
@@ -123,20 +147,25 @@ export const planCollectionRunOp = defineOperation({
         RETURNING id
       `)) as unknown as { id: string }[];
       const digest = declarationDigest(c.decl);
+      const model = modelOf.get(`${c.pluginId}:${c.collection}`) ?? null;
+      // A model change is a rebuild: the job re-embeds every passage.
       const unchanged =
-        previous !== null && claimed.length === 0 && previous.stats.schemaDigest === digest;
+        previous !== null &&
+        claimed.length === 0 &&
+        previous.stats.schemaDigest === digest &&
+        previous.vector_model === model;
       if (unchanged) {
         await tx.execute(sql`
-          INSERT INTO collection_releases (run_id, plugin_id, collection, state, release_key, previous_run_id, stats, finished_at)
+          INSERT INTO collection_releases (run_id, plugin_id, collection, state, release_key, previous_run_id, stats, vector_model, finished_at)
           VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'ready', ${previous.release_key},
-                  ${previous.run_id}::uuid, ${jsonbParam({ ...previous.stats, carried: true })}, now())
+                  ${previous.run_id}::uuid, ${jsonbParam({ ...previous.stats, carried: true })}, ${model}, now())
           ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
         `);
         carried++;
       } else {
         await tx.execute(sql`
-          INSERT INTO collection_releases (run_id, plugin_id, collection, state, previous_run_id)
-          VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'pending', ${previous?.run_id ?? null})
+          INSERT INTO collection_releases (run_id, plugin_id, collection, state, previous_run_id, vector_model)
+          VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'pending', ${previous?.run_id ?? null}, ${model})
           ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
         `);
         pending++;
@@ -157,6 +186,8 @@ export const indexTaskSchema = z.object({
   maxDocuments: z.number().int(),
   previousReleaseKey: z.string().nullable(),
   previousSchemaDigest: z.string().nullable(),
+  /** #1650 — the catalog model to embed passages with; null: no vectors. */
+  vectorModel: z.string().nullable(),
   /** Change files of the run, oldest first. */
   changeKeys: z.array(z.string()),
 });
@@ -172,13 +203,15 @@ export const collectionIndexTasksOp = defineOperation({
   output: z.object({ tasks: z.array(indexTaskSchema) }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT r.plugin_id::text AS plugin_id, r.collection, p.release_key AS previous_key, p.stats AS previous_stats
+      SELECT r.plugin_id::text AS plugin_id, r.collection, r.vector_model,
+             p.release_key AS previous_key, p.stats AS previous_stats
       FROM collection_releases r
       LEFT JOIN collection_releases p ON p.run_id = r.previous_run_id AND p.plugin_id = r.plugin_id AND p.collection = r.collection
       WHERE r.run_id = ${input.runId}::uuid AND r.state = 'pending'
     `)) as unknown as {
       plugin_id: string;
       collection: string;
+      vector_model: string | null;
       previous_key: string | null;
       previous_stats: Record<string, unknown> | null;
     }[];
@@ -204,6 +237,7 @@ export const collectionIndexTasksOp = defineOperation({
         previousReleaseKey: r.previous_key,
         previousSchemaDigest:
           typeof r.previous_stats?.schemaDigest === "string" ? r.previous_stats.schemaDigest : null,
+        vectorModel: r.vector_model,
         changeKeys: changes.map((x) => x.store_key),
       });
     }
@@ -286,6 +320,8 @@ export const runCollectionSchema = z.object({
   releaseKey: z.string().nullable(),
   error: z.string().nullable(),
   stats: z.record(z.string(), z.unknown()),
+  /** #1650 — the catalog model the Stage embedded with, or null. */
+  vectorModel: z.string().nullable(),
 });
 
 export const collectionRunStateOp = defineOperation({
@@ -297,7 +333,7 @@ export const collectionRunStateOp = defineOperation({
   output: z.object({ collections: z.array(runCollectionSchema) }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(
-      sql`SELECT plugin_id::text AS plugin_id, collection, state, release_key, error, stats
+      sql`SELECT plugin_id::text AS plugin_id, collection, state, release_key, error, stats, vector_model
           FROM collection_releases WHERE run_id = ${input.runId}::uuid ORDER BY plugin_id, collection`,
     )) as unknown as {
       plugin_id: string;
@@ -306,6 +342,7 @@ export const collectionRunStateOp = defineOperation({
       release_key: string | null;
       error: string | null;
       stats: Record<string, unknown>;
+      vector_model: string | null;
     }[];
     return ok({
       collections: rows.map((r) => ({
@@ -315,6 +352,7 @@ export const collectionRunStateOp = defineOperation({
         releaseKey: r.release_key,
         error: r.error,
         stats: r.stats ?? {},
+        vectorModel: r.vector_model,
       })),
     });
   },

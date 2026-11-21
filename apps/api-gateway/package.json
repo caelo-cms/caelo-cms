@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@caelo-cms/collection-index": "workspace:*",
+    "@caelo-cms/models": "workspace:*",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",

@@ -15,6 +15,26 @@ FROM denoland/deno:bin-2.9.8 AS deno
 
 FROM node:26.13.1-bookworm-slim AS node
 
+# #1650 — the core catalog's embedding models (packages/shared/src/
+# embedding-models.ts), fetched from their pinned revisions and verified by
+# SHA-256 (packages/models/scripts/fetch-models.ts): a file that is not the
+# reviewed one never lands. A stage of its own over the catalog and the fetch
+# code only, so it re-runs when the catalog changes; `--epoch` stamps one
+# fixed time, so the same models are the same layer digest in every build
+# (#1559). The script needs nothing installed but the catalog file, which
+# the symlink resolves as `@caelo-cms/shared/embedding-models`. Each model
+# gets its NOTICE.txt (source, revision, licence text from licenses/).
+FROM oven/bun:1.4.4 AS models
+WORKDIR /repo
+COPY packages/shared/package.json packages/shared/
+COPY packages/shared/src/embedding-models.ts packages/shared/src/
+COPY packages/models/src/fetch.ts packages/models/src/files.ts packages/models/src/
+COPY packages/models/scripts/fetch-models.ts packages/models/scripts/
+COPY licenses/Apache-2.0.txt licenses/MIT.txt licenses/
+RUN mkdir -p node_modules/@caelo-cms && \
+    ln -s ../../packages/shared node_modules/@caelo-cms/shared && \
+    bun packages/models/scripts/fetch-models.ts --dir /models --licenses licenses --epoch
+
 FROM oven/bun:1.4.4 AS builder
 
 # Node + npm come from the official image, not Debian's apt package
@@ -61,6 +81,8 @@ COPY packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY packages/plugin-component-kit/package.json packages/plugin-component-kit/
 COPY packages/plugin-sandbox/package.json packages/plugin-sandbox/
 COPY packages/plugin-host/package.json packages/plugin-host/
+COPY packages/collection-index/package.json packages/collection-index/
+COPY packages/models/package.json packages/models/
 COPY packages/site-importer/package.json packages/site-importer/
 COPY packages/migrations/package.json packages/migrations/
 COPY packages/mcp-server/package.json packages/mcp-server/
@@ -152,6 +174,22 @@ RUN mkdir -p /repo/node_modules/bun && \
 # floor of ZIP-style timestamps. Nothing later in the build writes into
 # these trees except SvelteKit's generated `$app` types (copied on their
 # own in the runtime stage) and Vite's empty `.vite-temp` directory.
+# #1650 — ONNX Runtime ships every platform's native library in one npm
+# package (about 290 MB) and every WebAssembly build in another (about
+# 145 MB). The admin runs the linux x64 library (the index job's
+# embeddings) and, for a query it embeds like the gateway, the SIMD build;
+# the rest is dropped before the tree is staged. `test` fails the build if
+# a release moves the files this keeps.
+RUN set -e && \
+    ort=/repo/node_modules/onnxruntime-node/bin/napi-v6 && \
+    test -f "$ort/linux/x64/onnxruntime_binding.node" && \
+    find "$ort" -mindepth 1 -maxdepth 1 ! -name linux -exec rm -rf {} + && \
+    find "$ort/linux" -mindepth 1 -maxdepth 1 ! -name x64 -exec rm -rf {} + && \
+    web=/repo/node_modules/onnxruntime-web/dist && \
+    test -f "$web/ort-wasm-simd-threaded.wasm" && test -f "$web/ort.node.min.mjs" && \
+    find "$web" -type f ! -name ort-wasm-simd-threaded.wasm ! -name ort-wasm-simd-threaded.mjs \
+      ! -name ort.node.min.mjs ! -name ort.node.min.js -delete
+
 RUN mkdir -p /deps/root/app /deps/admin/app/apps/admin && \
     cp -a /repo/node_modules /deps/root/app/node_modules && \
     cp -a /repo/apps/admin/node_modules /deps/admin/app/apps/admin/node_modules && \
@@ -227,6 +265,11 @@ RUN bun /tmp/pw/node_modules/playwright/cli.js install --with-deps --no-shell ch
 # (verify-full; packages/shared database-tls.ts DATABASE_CA_DIR). A fixed
 # path outside /app, so a URL built anywhere names a file in every image.
 COPY packages/shared/certs/ /etc/caelo/db-ca/
+
+# #1650 — the embedding models the index job (and the in-process job of a
+# self-hosted admin) embeds with: the `models` stage, verified at build.
+COPY --link --from=models /models /opt/caelo/models
+ENV CAELO_MODELS_DIR=/opt/caelo/models
 
 # Reproduce the workspace layout under /app so node_modules resolution
 # works the same way it did at build time (Bun nests admin-specific

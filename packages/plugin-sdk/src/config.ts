@@ -25,6 +25,7 @@
  *   at once, allowed only for a field without a visitor-visible effect.
  */
 
+import { EMBEDDING_MODEL_IDS } from "@caelo-cms/shared/embedding-models";
 import { z } from "zod";
 
 /** What a change of a field touches. */
@@ -242,7 +243,8 @@ function leafValueSchema(field: ConfigLeaf["field"]): z.ZodType {
     case "listRef":
       return uuid.nullable();
     case "catalogModel":
-      return z.string().min(1).max(80).nullable();
+      // #1650 — only a model of the core catalog; null turns semantic search off.
+      return z.enum(EMBEDDING_MODEL_IDS as [string, ...string[]]).nullable();
     case "map":
       return z.record(mapKey, scalarValueSchema(field.value));
     default:
@@ -387,7 +389,15 @@ function checkLeaf(path: string[], field: ConfigLeaf["field"], issue: Issue): vo
       issue([...path, "value", "default"], "the value's default is not valid");
     return;
   }
-  if (field.type === "pageRef" || field.type === "listRef" || field.type === "catalogModel") return;
+  if (field.type === "catalogModel") {
+    if (field.default !== null && !EMBEDDING_MODEL_IDS.includes(field.default))
+      issue(
+        [...path, "default"],
+        `default "${field.default}" is not a model of the core catalog (${EMBEDDING_MODEL_IDS.join(", ")}), or null`,
+      );
+    return;
+  }
+  if (field.type === "pageRef" || field.type === "listRef") return;
   if (!scalarValueSchema(field).safeParse(field.default).success)
     issue(
       [...path, "default"],

@@ -12,9 +12,16 @@
   },
   "scripts": {
     "typecheck": "tsc -b",
-    "bench": "bun run bench/run.ts"
+    "bench": "bun run bench/run.ts",
+    "bench:semantic": "bun run bench/semantic.ts"
   },
   "dependencies": {
     "@orama/stemmers": "3.1.18"
+  },
+  "devDependencies": {
+    "@caelo-cms/models": "workspace:*",
+    "@caelo-cms/shared": "workspace:*",
+    "onnxruntime-node": "1.31.1",
+    "onnxruntime-web": "1.31.1"
   }
 }

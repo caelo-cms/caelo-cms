@@ -12,9 +12,18 @@
  * Changes fold in order: the last version of a document wins, a delete
  * removes it, a full replacement (`replaceAll`) drops everything before it.
  * The release is a delta on the previous one, unless there is none, the
- * schema or the protected terms changed, or a full replacement came; then
- * it is rebuilt from the documents (the previous release's stored documents,
- * which are the rebuild source, and the changes).
+ * schema, the protected terms or the vector model changed, or a full
+ * replacement came; then it is rebuilt from the documents (the previous
+ * release's stored documents, which are the rebuild source, and the
+ * changes).
+ *
+ * #1650 — semantic search: when the Stage's configuration names a catalog
+ * model (`task.vectorModel`) and the search profile turns semantic search
+ * on, every new or changed passage is embedded with that model on native
+ * ONNX Runtime, and the release records the model's fingerprint (catalog
+ * id + graph digest). A release built with another model, or none, is
+ * rebuilt rather than extended, because query vectors of one model must
+ * never be compared with passage vectors of another.
  */
 
 import {
@@ -30,12 +39,14 @@ import {
   readProfile,
   scopedStore,
 } from "@caelo-cms/collection-index";
+import type { Embedder } from "@caelo-cms/models";
 import {
   collectionStoreFromEnv,
   decodeChangeFile,
   STAGING_COLLECTION_STORE_ENV,
 } from "@caelo-cms/plugin-host";
 import type { SearchProfile } from "@caelo-cms/plugin-sdk";
+import { type EmbeddingModel, embeddingModel } from "@caelo-cms/shared";
 import type { JobReporter } from "../reporting-jobs/job-reporter.js";
 import type { IndexTask } from "./ops.js";
 
@@ -137,10 +148,59 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return a.size === b.size && [...a].every((x) => b.has(x));
 }
 
+/** Gives the job an embedder per catalog model (native ONNX Runtime; tests pass their own). */
+export type EmbedderSource = (model: EmbeddingModel) => Promise<Embedder>;
+
+/**
+ * Native embedders, one per model, created on first use and released by
+ * {@link releaseEmbedders}. The import is lazy: an admin that never indexes
+ * with a model never loads ONNX Runtime.
+ */
+export function nativeEmbedders(): {
+  source: EmbedderSource;
+  releaseEmbedders: () => Promise<void>;
+} {
+  const made = new Map<string, Promise<Embedder>>();
+  return {
+    source: (model) => {
+      let e = made.get(model.id);
+      if (!e) {
+        e = import("@caelo-cms/models/native").then((m) => m.createNativeEmbedder(model));
+        made.set(model.id, e);
+      }
+      return e;
+    },
+    releaseEmbedders: async () => {
+      for (const e of made.values()) await (await e.catch(() => null))?.release();
+      made.clear();
+    },
+  };
+}
+
+/** The vector model of a task, or null when it builds no vectors. */
+function vectorModelOf(
+  task: IndexTask,
+  schema: CollectionSchema,
+  profile: SearchProfile | undefined,
+): EmbeddingModel | null {
+  const hasVectorField = Object.values(schema.fields).some(
+    (f) => f.kind === "passages" && f.vector === true,
+  );
+  if (!hasVectorField || task.vectorModel === null || !profile?.semantic) return null;
+  const model = embeddingModel(task.vectorModel);
+  if (!model) {
+    throw new Error(
+      `the Stage named the embedding model ${task.vectorModel}, which this release's catalog does not have: pick a model in Settings → Plugin settings and Stage again`,
+    );
+  }
+  return model;
+}
+
 /** Builds one collection's next release in `store`; returns it with its statistics. */
 export async function indexCollection(
   store: CollectionStore,
   task: IndexTask,
+  embedders: EmbedderSource = nativeEmbedders().source,
 ): Promise<{ applied: AppliedRelease; stats: Record<string, unknown> }> {
   const scoped = scopedStore(store, `${task.slug}/${task.collection}`);
   const cache = new FileCache({ read: (f) => scoped.read(f) }, 512 * 1024 * 1024);
@@ -156,11 +216,28 @@ export async function indexCollection(
   const schema: CollectionSchema = { fields: task.fields as CollectionSchema["fields"] };
   const uploader = new Uploader(scoped);
   const sink = (name: string, data: Uint8Array): void => uploader.put(name, data);
+  const model = vectorModelOf(task, schema, profile);
+  const embedder = model ? await embedders(model) : null;
+  let embedded = 0;
+  let embedMs = 0;
+  const vectors = embedder
+    ? {
+        vectorModel: { id: embedder.fingerprint, dims: embedder.model.dims },
+        embed: async (texts: readonly string[]) => {
+          const t = performance.now();
+          const out = await embedder.embed(texts, "passage");
+          embedMs += performance.now() - t;
+          embedded += texts.length;
+          return out;
+        },
+      }
+    : {};
   const rebuild =
     previous === null ||
     folded.reset ||
     task.previousSchemaDigest !== task.schemaDigest ||
-    !sameSet(protectedTermsOf(previousProfile), protectedTerms);
+    !sameSet(protectedTermsOf(previousProfile), protectedTerms) ||
+    (previous.vectorModel?.id ?? null) !== (embedder?.fingerprint ?? null);
   let applied: AppliedRelease;
   if (rebuild) {
     const opened = previous && !folded.reset ? await openRelease(previous, cache) : null;
@@ -180,7 +257,7 @@ export async function indexCollection(
       }
       yield* folded.upserts.values();
     };
-    applied = await buildRelease(docs(), { schema, sink, protectedTerms, profile });
+    applied = await buildRelease(docs(), { schema, sink, protectedTerms, profile, ...vectors });
   } else {
     applied = await applyChanges(
       previous,
@@ -190,6 +267,7 @@ export async function indexCollection(
         sink,
         cache,
         protectedTerms,
+        ...vectors,
         ...(folded.profile ? { profile: folded.profile } : {}),
       },
     );
@@ -208,6 +286,9 @@ export async function indexCollection(
     rebuilt: rebuild,
     merged: applied.merged,
     changes: task.changeKeys.length,
+    vectorModel: embedder?.fingerprint ?? null,
+    passagesEmbedded: embedded,
+    embedSeconds: Math.round(embedMs / 100) / 10,
   };
   return { applied, stats };
 }
@@ -217,9 +298,24 @@ export async function runCollectionIndexJob(reporter: JobReporter): Promise<void
   const { tasks } = (await reporter.call("tasks", {})) as { tasks: IndexTask[] };
   if (tasks.length === 0) return;
   const store = collectionStoreFromEnv(STAGING_COLLECTION_STORE_ENV);
+  const embedders = nativeEmbedders();
+  try {
+    await indexTasks(reporter, store, tasks, embedders.source);
+  } finally {
+    // In-process (self-hosted) the admin keeps running: give the model's memory back.
+    await embedders.releaseEmbedders();
+  }
+}
+
+async function indexTasks(
+  reporter: JobReporter,
+  store: CollectionStore,
+  tasks: readonly IndexTask[],
+  embedders: EmbedderSource,
+): Promise<void> {
   for (const task of tasks) {
     try {
-      const { applied, stats } = await indexCollection(store, task);
+      const { applied, stats } = await indexCollection(store, task, embedders);
       await reporter.call("done", {
         pluginId: task.pluginId,
         collection: task.collection,

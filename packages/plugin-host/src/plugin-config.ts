@@ -60,7 +60,7 @@ import {
   type OperationRegistry,
   type TransactionRunner,
 } from "@caelo-cms/query-api";
-import { type ExecutionContext, ok } from "@caelo-cms/shared";
+import { EMBEDDING_MODELS, type ExecutionContext, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -862,7 +862,8 @@ function allowedOf(field: ConfigLeaf["field"]): string {
     case "listRef":
       return `a list id of list type "${field.listType}", or null`;
     case "catalogModel":
-      return "a model id from the model catalog, or null";
+      // #1650 — the ids, so the AI picks without a round-trip.
+      return `an embedding model of the core catalog (${EMBEDDING_MODELS.map((m) => `${m.id}: ${m.label}`).join("; ")}), or null to search by words only`;
     case "map":
       return `per ${field.keys === "pageType" ? "page type slug" : field.keys === "language" ? "language tag" : "module id"}: ${allowedOf(field.value as ConfigLeaf["field"])}`;
   }

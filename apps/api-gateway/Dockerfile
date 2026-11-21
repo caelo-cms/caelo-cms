@@ -27,6 +27,26 @@
 
 FROM denoland/deno:bin-2.9.8@sha256:b507583d3c68ba69f3ed2ce5969ae5b8b70f43421c781279c7aea06435263543 AS deno
 
+# #1650 — the core catalog's embedding models (packages/shared/src/
+# embedding-models.ts), fetched from their pinned revisions and verified by
+# SHA-256 (packages/models/scripts/fetch-models.ts): a file that is not the
+# reviewed one never lands. A stage of its own over the catalog and the fetch
+# code only, so it re-runs when the catalog changes; `--epoch` stamps one
+# fixed time, so the same models are the same layer digest in every build
+# (#1559). The script needs nothing installed but the catalog file, which
+# the symlink resolves as `@caelo-cms/shared/embedding-models`. Each model
+# gets its NOTICE.txt (source, revision, licence text from licenses/).
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS models
+WORKDIR /repo
+COPY packages/shared/package.json packages/shared/
+COPY packages/shared/src/embedding-models.ts packages/shared/src/
+COPY packages/models/src/fetch.ts packages/models/src/files.ts packages/models/src/
+COPY packages/models/scripts/fetch-models.ts packages/models/scripts/
+COPY licenses/Apache-2.0.txt licenses/MIT.txt licenses/
+RUN mkdir -p node_modules/@caelo-cms && \
+    ln -s ../../packages/shared node_modules/@caelo-cms/shared && \
+    bun packages/models/scripts/fetch-models.ts --dir /models --licenses licenses --epoch
+
 FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS builder
 
 WORKDIR /repo
@@ -46,6 +66,8 @@ COPY packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY packages/plugin-component-kit/package.json packages/plugin-component-kit/
 COPY packages/plugin-sandbox/package.json packages/plugin-sandbox/
 COPY packages/plugin-host/package.json packages/plugin-host/
+COPY packages/collection-index/package.json packages/collection-index/
+COPY packages/models/package.json packages/models/
 COPY packages/site-importer/package.json packages/site-importer/
 COPY packages/migrations/package.json packages/migrations/
 COPY packages/mcp-server/package.json packages/mcp-server/
@@ -92,12 +114,17 @@ COPY --from=builder /stage/app /app
 # #1338 — the CA bundles every database URL names as sslrootcert
 # (verify-full; packages/shared database-tls.ts DATABASE_CA_DIR).
 COPY packages/shared/certs/ /etc/caelo/db-ca/
+# #1650 — the embedding models (the `models` stage). The WebAssembly runtime
+# that runs them is staged by image.ts (`copy`); its JavaScript is bundled.
+COPY --link --from=models /models /opt/caelo/models
 
 WORKDIR /app
 
 ENV NODE_ENV=production
 # The sandbox spawns this binary directly (plugin-host sandbox-runtime.ts).
 ENV CAELO_DENO_BINARY=/usr/local/bin/deno
+ENV CAELO_MODELS_DIR=/opt/caelo/models
+ENV CAELO_ORT_WASM_DIR=/app/node_modules/onnxruntime-web/dist
 # The image is read-only for the service; Bun must not try to cache
 # transpiled sources (the plugin SDK is TypeScript) under $HOME.
 ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
