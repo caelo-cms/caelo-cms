@@ -63,6 +63,7 @@ import { redactCredentials } from "./checkpoint-secrets.js";
 import { cliUsage, initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
 import {
   BOOTSTRAP_DIR,
+  COLLECTIONS_DIR,
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
   COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
@@ -361,7 +362,15 @@ function emitComposeFiles(cfg: CaeloConfig): void {
   );
   // The bind-mounted content dirs, created by the CLI so Docker does not
   // create them root-owned on a Linux host.
-  for (const dir of ["output", MEDIA_DIR]) mkdirSync(resolve(CAELO_DIR, dir), { recursive: true });
+  // Epic #1644 — and the two collection stores the gateways mount one each.
+  for (const dir of [
+    "output",
+    MEDIA_DIR,
+    `${COLLECTIONS_DIR}/staging`,
+    `${COLLECTIONS_DIR}/live`,
+  ]) {
+    mkdirSync(resolve(CAELO_DIR, dir), { recursive: true });
+  }
 }
 
 /** The Compose file for `cfg` running `images` (secrets come from config.json). */

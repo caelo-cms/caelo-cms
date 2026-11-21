@@ -35,6 +35,7 @@ import {
   runServiceAccountId,
   stagingGatewayServiceAccountId,
   staticPublisherServiceAccountId,
+  visitorQueryLogExclusionName,
 } from "../../dist/gcp-names.js";
 import { createSiteUrlMap } from "../../dist/gcp-url-map.js";
 import {
@@ -59,6 +60,8 @@ import {
   cloudSqlPrivateDnsName,
   databaseUrls,
   defaultStagingHost,
+  GATEWAY_CDN_POLICY,
+  GATEWAY_MEMORY_DEFAULT,
   gatewayEnvContract,
   REMOTE_MCP_IDENTITY_CONFIG,
   type RuntimeSecret,
@@ -70,6 +73,10 @@ import {
 } from "../../dist/stack-contract.js";
 import { DEPLOY_GATEWAYS_CONFIG, parseDeployGateways } from "../../dist/stack-gateways.js";
 import { GCP_STATIC_RESPONSE_HEADERS } from "../../dist/static-security-headers.js";
+import {
+  VISITOR_QUERY_LOG_DESCRIPTION,
+  VISITOR_QUERY_LOG_FILTER,
+} from "../../dist/visitor-query-logs.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -976,7 +983,8 @@ const gatewaySvc = deployGateways
       serviceName: "gateway",
       minInstances: gatewayMinInstances,
       maxInstances: gatewayMaxInstances,
-      memory: "512Mi",
+      // Epic #1644 — collection index files are cached in memory.
+      memory: GATEWAY_MEMORY_DEFAULT,
       // Visitor requests only (#1328 moved remote MCP's long streams to the
       // MCP-Auth-Proxy): Cloud Run's default.
       timeout: "300s",
@@ -1086,6 +1094,16 @@ function gatewayBackend(service: gcp.cloudrunv2.Service): gcp.compute.BackendSer
       backends: [{ group: gatewayNeg.id }],
       loadBalancingScheme: "EXTERNAL_MANAGED",
       securityPolicy: wafPolicy.id,
+      // Epic #1644 — a collection operation's answer for the release it
+      // names is cacheable; everything else the gateway says is no-store
+      // (stack-contract.ts GATEWAY_CDN_POLICY, converged by upgrade).
+      enableCdn: true,
+      cdnPolicy: {
+        cacheMode: GATEWAY_CDN_POLICY.cacheMode,
+        negativeCaching: GATEWAY_CDN_POLICY.negativeCaching,
+        serveWhileStale: GATEWAY_CDN_POLICY.serveWhileStale,
+        cacheKeyPolicy: { ...GATEWAY_CDN_POLICY.cacheKeyPolicy },
+      },
     },
     opts,
   );
@@ -1396,6 +1414,16 @@ const loggingSink = new gcp.logging.ProjectSink(
       ? pulumi.interpolate`(resource.type="cloud_run_revision" AND resource.labels.service_name="${gatewaySvc.name}") OR (resource.type="cloud_run_revision" AND resource.labels.service_name="${adminSvc.name}" AND severity>=WARNING)`
       : pulumi.interpolate`resource.type="cloud_run_revision" AND resource.labels.service_name="${adminSvc.name}" AND severity>=WARNING`,
     uniqueWriterIdentity: true,
+    // Epic #1644 — visitors' search queries ride in the URL of a gateway
+    // request log; they are never exported (visitor-query-logs.ts; the CLI
+    // puts the same exclusion on _Default).
+    exclusions: [
+      {
+        name: visitorQueryLogExclusionName(env),
+        description: VISITOR_QUERY_LOG_DESCRIPTION,
+        filter: VISITOR_QUERY_LOG_FILTER,
+      },
+    ],
   },
   opts,
 );

@@ -61,6 +61,7 @@ import {
   cloudRunServicePrefix,
   databaseUrls,
   fixedCloudRunServiceName,
+  GATEWAY_MEMORY_DEFAULT,
   type GcpProvider,
   STAGING_GATEWAY_TIMEOUT_SECONDS,
   serviceSecrets,
@@ -162,7 +163,8 @@ export function stagingGatewayDeployArgs(inputs: StagingGatewayServiceInputs): s
     "--min-instances=0",
     `--max-instances=${DEFAULT_STAGING_GATEWAY_MAX_INSTANCES}`,
     "--cpu=1",
-    "--memory=512Mi",
+    // Epic #1644 — the staging collection index files are cached in memory.
+    `--memory=${GATEWAY_MEMORY_DEFAULT}`,
     "--cpu-throttling",
     `--timeout=${STAGING_GATEWAY_TIMEOUT_SECONDS}`,
     `--network=${inputs.vpc.network}`,

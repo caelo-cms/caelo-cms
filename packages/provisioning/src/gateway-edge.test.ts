@@ -11,6 +11,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ensureGatewayArmorRules } from "./gateway-armor.js";
 import {
+  API_BAN_PRIORITY,
+  COLLECTION_OPERATION_PATH_PATTERN,
   CREDENTIAL_PATH_PATTERN,
   DEFAULT_RULE_PRIORITY,
   GATEWAY_ARMOR_BILLED_RULES,
@@ -73,6 +75,31 @@ describe("the gateway's Cloud Armor rules (#1339)", () => {
     }
     const credential = GATEWAY_ARMOR_RULES[0];
     expect(credential?.kind === "rate" && credential.count).toBe(30);
+  });
+
+  it("throttles collection reads instead of banning, and only GETs of that shape (#1644)", () => {
+    expect(COLLECTION_OPERATION_PATH_PATTERN).not.toMatch(/\((?!\?:)/);
+    const re = new RegExp(COLLECTION_OPERATION_PATH_PATTERN);
+    for (const p of [
+      "/api/plugin/site-search/search",
+      "/api/plugin/site-search/suggest",
+      "/api/plugin/site-search/search/release",
+    ]) {
+      expect(re.test(p)).toBe(true);
+    }
+    for (const p of [
+      "/api/plugin/site-search/search/x",
+      "/api/plugin/Site/search",
+      "/api/plugin/site-search/../auth/login",
+      "/api/captcha/challenge",
+    ]) {
+      expect(re.test(p)).toBe(false);
+    }
+    const rule = GATEWAY_ARMOR_RULES.find((r) => r.priority === 820);
+    expect(rule?.kind === "rate" && rule.action).toBe("throttle");
+    expect(rule?.expression.startsWith("request.method == 'GET' && ")).toBe(true);
+    // Before the /api/ ban: a conforming read is allowed there and never counts toward it.
+    expect(820).toBeLessThan(API_BAN_PRIORITY);
   });
 
   it("keeps staged pages out of the general ban: it matches /api/ paths only", () => {
@@ -167,6 +194,7 @@ describe("ensureGatewayArmorRules (the converge, contract 22)", () => {
     expect(writes).toEqual([
       "create 800",
       "create 810",
+      "create 820",
       "create 1001",
       "update 2000",
       "update 2001",

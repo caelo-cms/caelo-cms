@@ -118,6 +118,17 @@ describe("adminEnvContract", () => {
       // #1574 — and for the build carrier.
       CAELO_BUILD_CARRIER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-build",
       CAELO_BUILD_CARRIER_SERVICE_ACCOUNT: "caelo-production-build@acme.iam.gserviceaccount.com",
+      // Epic #1644 — the collection index job and the plugin batch job
+      // (reporting-job-catalog.ts), and both collection stores.
+      CAELO_COLLECTION_INDEX_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-index",
+      CAELO_COLLECTION_INDEX_SERVICE_ACCOUNT: "caelo-production-index@acme.iam.gserviceaccount.com",
+      CAELO_PLUGIN_BATCH_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch",
+      CAELO_PLUGIN_BATCH_SERVICE_ACCOUNT:
+        "caelo-production-plugin-batch@acme.iam.gserviceaccount.com",
+      CAELO_COLLECTIONS_STAGING_STORE: "gs://acme-caelo-production-coll-staging",
+      CAELO_COLLECTIONS_LIVE_STORE: "gs://acme-caelo-production-coll-live",
       CAELO_STATIC_BUCKET: "acme-caelo-production-static",
       CAELO_STAGING_BUCKET: "acme-caelo-production-staging",
       // #1330 — every provider serves staging at its own host now.
@@ -176,6 +187,17 @@ describe("adminEnvContract", () => {
       // #1574 — and for the build carrier.
       CAELO_BUILD_CARRIER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-build",
       CAELO_BUILD_CARRIER_SERVICE_ACCOUNT: "caelo-production-build@acme.iam.gserviceaccount.com",
+      // Epic #1644 — the collection index job and the plugin batch job
+      // (reporting-job-catalog.ts), and both collection stores.
+      CAELO_COLLECTION_INDEX_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-index",
+      CAELO_COLLECTION_INDEX_SERVICE_ACCOUNT: "caelo-production-index@acme.iam.gserviceaccount.com",
+      CAELO_PLUGIN_BATCH_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch",
+      CAELO_PLUGIN_BATCH_SERVICE_ACCOUNT:
+        "caelo-production-plugin-batch@acme.iam.gserviceaccount.com",
+      CAELO_COLLECTIONS_STAGING_STORE: "gs://acme-caelo-production-coll-staging",
+      CAELO_COLLECTIONS_LIVE_STORE: "gs://acme-caelo-production-coll-live",
       CAELO_FIREBASE_SITE: "caelo-production-site-abc123",
       CAELO_GATEWAY_SERVICE: "caelo-production-gateway-1a2b3c4",
       CAELO_GATEWAY_REGION: "europe-west1",
@@ -236,6 +258,8 @@ describe("gatewayEnvContract", () => {
       CAELO_TRUSTED_PROXY_HOPS: "2",
       PUBLIC_DATABASE_URL:
         "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      // Epic #1644 — the live collection store, never the staging one.
+      CAELO_COLLECTIONS_LIVE_STORE: "gs://acme-caelo-production-coll-live",
       // The only account whose refresh pings it takes: the admin's runtime
       // account. An identity, nothing secret.
       CAELO_GATEWAY_REFRESH_ACCOUNT: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
@@ -269,6 +293,8 @@ describe("gatewayEnvContract", () => {
         PUBLIC_DATABASE_URL:
           "postgresql://public_staging_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
         CAELO_STAGING_STORAGE: "gs://acme-caelo-production-staging",
+        // Epic #1644 — the staging collection store, never the live one.
+        CAELO_COLLECTIONS_STAGING_STORE: "gs://acme-caelo-production-coll-staging",
         CAELO_GATEWAY_REFRESH_ACCOUNT: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
         PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-staging-role-password:latest",
       });

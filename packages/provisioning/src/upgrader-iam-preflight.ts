@@ -51,12 +51,9 @@
 
 import { z } from "zod";
 import {
-  auditRunnerServiceAccountEmail,
   auditServiceAccountEmail,
-  buildCarrierServiceAccountEmail,
   captureServiceAccountEmail,
   gatewayServiceAccountEmail,
-  importCrawlServiceAccountEmail,
   mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
@@ -64,6 +61,7 @@ import {
   upgraderJobName,
   upgraderServiceAccountEmail,
 } from "./gcp-names.js";
+import { REPORTING_JOB_CATALOG, reportingJobServiceAccountEmail } from "./reporting-job-catalog.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import { OPS_INSTALL_PREFIX, opsBucketName } from "./state-backend.js";
 import { RELEASE_REGISTRY } from "./upgrade/release-images.js";
@@ -262,24 +260,13 @@ export function upgraderAccessChecks(target: {
       resource: sa(captureServiceAccountEmail(projectId, env)),
       permissions: ["iam.serviceAccounts.actAs"],
     },
-    {
-      // #1359 — so does the quality-audit runner.
-      need: "run the quality-audit runner as its service account after moving it",
-      resource: sa(auditRunnerServiceAccountEmail(projectId, env)),
+    // #1359, #1360, #1574, epic #1644 — and every reporting job
+    // (reporting-job-catalog.ts).
+    ...REPORTING_JOB_CATALOG.map((e) => ({
+      need: `run the ${e.label} as its service account after moving it`,
+      resource: sa(reportingJobServiceAccountEmail(e, projectId, env)),
       permissions: ["iam.serviceAccounts.actAs"],
-    },
-    {
-      // #1360 — and the site-import crawler.
-      need: "run the site-import crawler as its service account after moving it",
-      resource: sa(importCrawlServiceAccountEmail(projectId, env)),
-      permissions: ["iam.serviceAccounts.actAs"],
-    },
-    {
-      // #1574 — and the build carrier.
-      need: "run the build carrier as its service account after moving it",
-      resource: sa(buildCarrierServiceAccountEmail(projectId, env)),
-      permissions: ["iam.serviceAccounts.actAs"],
-    },
+    })),
     {
       need: "keep the upgrader job running as its own service account after it moves onto a release",
       resource: sa(upgraderServiceAccountEmail(projectId, env)),

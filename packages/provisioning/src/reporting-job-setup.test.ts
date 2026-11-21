@@ -14,17 +14,35 @@ import { describe, expect, it } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { GcloudResult } from "./gcloud.js";
+import type { GcloudRunner, Sleep } from "./gcloud-retry.js";
 import {
-  auditRunnerJobSpec,
-  buildCarrierJobSpec,
-  ensureAuditRunnerJob,
-  ensureBuildCarrierJob,
-  ensureImportCrawlJob,
-  importCrawlJobSpec,
+  type ReportingJobPlace,
+  reportingJobEntry,
+  reportingJobSpec,
+} from "./reporting-job-catalog.js";
+import {
+  ensureReportingJobKind,
   REPORTING_JOB_FORBIDDEN_ROLES,
   REPORTING_JOB_SCRIPT,
   type ReportingJobTarget,
 } from "./reporting-job-setup.js";
+
+// #1646 — every kind is one catalog entry; these tests drive each through
+// it, so the kinds from before the catalog must behave exactly as they did.
+type Deps = { run?: GcloudRunner; sleep?: Sleep };
+const ensureOf = (kind: string) => (t: ReportingJobTarget, d: Deps) =>
+  ensureReportingJobKind(reportingJobEntry(kind), t, d);
+const specOf = (kind: string) => (p: Pick<ReportingJobPlace, "provider" | "env">) =>
+  reportingJobSpec(reportingJobEntry(kind), { projectId: "acme", region: "europe-west1", ...p });
+const ensureAuditRunnerJob = ensureOf("quality_audit");
+const ensureImportCrawlJob = ensureOf("site_import");
+const ensureBuildCarrierJob = ensureOf("build");
+const ensureCollectionIndexJob = ensureOf("collection_index");
+const ensurePluginBatchJob = ensureOf("plugin_batch");
+const auditRunnerJobSpec = (p: ReportingJobPlace) =>
+  reportingJobSpec(reportingJobEntry("quality_audit"), p);
+const importCrawlJobSpec = specOf("site_import");
+const buildCarrierJobSpec = specOf("build");
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
@@ -388,5 +406,100 @@ describe("ensureBuildCarrierJob (#1574)", () => {
     expect(spec.env).toEqual(["CAELO_PROVIDER=gcp-firebase"]);
     expect(spec.readBuckets).toEqual([]);
     expect(spec.runJobs).toEqual([]);
+  });
+});
+
+describe("the collection index job (epic #1644)", () => {
+  const INDEX_SA = "caelo-production-index@acme.iam.gserviceaccount.com";
+  const INDEX = `serviceAccount:${INDEX_SA}`;
+
+  it("grants the shared line plus read and create on the staging collection store, nothing of live", async () => {
+    const { run, calls } = fakeGcloud();
+    const r = await ensureCollectionIndexJob(TARGET, { run, sleep: async () => {} });
+    expect(r.ok).toBe(true);
+    const mine = grants(calls).filter((g) => g.member === INDEX);
+    expect(mine.map((g) => [g.where, g.role])).toEqual([
+      [
+        `iam service-accounts add-iam-policy-binding ${INDEX_SA}`,
+        "roles/iam.serviceAccountTokenCreator",
+      ],
+      ["projects add-iam-policy-binding acme", "roles/logging.logWriter"],
+      [
+        "iap web add-iam-policy-binding --resource-type=backend-services",
+        "roles/iap.httpsResourceAccessor",
+      ],
+      [
+        "storage buckets add-iam-policy-binding gs://acme-caelo-production-coll-staging",
+        "roles/storage.objectViewer",
+      ],
+      [
+        "storage buckets add-iam-policy-binding gs://acme-caelo-production-coll-staging",
+        "roles/storage.objectCreator",
+      ],
+    ]);
+    // objectCreator is forbidden but where a kind declares the bucket.
+    for (const g of mine.filter((g) => !g.where.endsWith("coll-staging"))) {
+      for (const forbidden of REPORTING_JOB_FORBIDDEN_ROLES) {
+        expect(g.role.startsWith(forbidden)).toBe(false);
+      }
+    }
+    expect(mine.some((g) => g.where.includes("coll-live"))).toBe(false);
+    expect(mine.some((g) => g.role === "roles/storage.objectAdmin")).toBe(false);
+  });
+
+  it("deploys on 2 vCPU / 4 GiB with the staging store and nothing else in its env", async () => {
+    const { run, calls } = fakeGcloud();
+    await ensureCollectionIndexJob(TARGET, { run, sleep: async () => {} });
+    const deploy = deployOf(calls);
+    expect(deploy.slice(0, 4)).toEqual(["run", "jobs", "deploy", "caelo-production-index"]);
+    expect(flag(deploy, "service-account")).toBe(INDEX_SA);
+    expect(flag(deploy, "cpu")).toBe("2");
+    expect(flag(deploy, "memory")).toBe("4Gi");
+    // admin-core JOB_TIMING.collection_index.maxRunSeconds.
+    expect(flag(deploy, "task-timeout")).toBe("3600s");
+    expect(flag(deploy, "set-env-vars")?.split(",").sort()).toEqual([
+      "CAELO_COLLECTIONS_STAGING_STORE=gs://acme-caelo-production-coll-staging",
+      "CAELO_PROVIDER=gcp",
+    ]);
+    for (const a of deploy) {
+      expect(a).not.toMatch(/^--(set|update)-secrets|^--(vpc-connector|network|subnet|vpc-egress)/);
+    }
+  });
+});
+
+describe("the plugin batch job (#1646)", () => {
+  const BATCH_SA = "caelo-production-plugin-batch@acme.iam.gserviceaccount.com";
+  const BATCH = `serviceAccount:${BATCH_SA}`;
+
+  it("holds exactly the shared line: no bucket, no other job, no secret", async () => {
+    const { run, calls } = fakeGcloud();
+    const r = await ensurePluginBatchJob(TARGET, { run, sleep: async () => {} });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.serviceAccount).toBe(BATCH_SA);
+    const mine = grants(calls).filter((g) => g.member === BATCH);
+    expect(mine.map((g) => g.role)).toEqual([
+      "roles/iam.serviceAccountTokenCreator",
+      "roles/logging.logWriter",
+      "roles/iap.httpsResourceAccessor",
+    ]);
+    for (const g of mine) {
+      for (const forbidden of REPORTING_JOB_FORBIDDEN_ROLES) {
+        expect(g.role.startsWith(forbidden)).toBe(false);
+      }
+    }
+  });
+
+  it("deploys the admin image (the sandbox runs inside it) on 1 vCPU / 2 GiB", async () => {
+    const { run, calls } = fakeGcloud();
+    await ensurePluginBatchJob(TARGET, { run, sleep: async () => {} });
+    const deploy = deployOf(calls);
+    expect(deploy.slice(0, 4)).toEqual(["run", "jobs", "deploy", "caelo-production-plugin-batch"]);
+    expect(flag(deploy, "image")).toBe(ADMIN_IMAGE);
+    expect(flag(deploy, "args")).toBe(`--bun,${REPORTING_JOB_SCRIPT}`);
+    expect(flag(deploy, "cpu")).toBe("1");
+    expect(flag(deploy, "memory")).toBe("2Gi");
+    expect(flag(deploy, "task-timeout")).toBe("3900s");
+    expect(flag(deploy, "set-env-vars")).toBe("CAELO_PROVIDER=gcp");
+    expect(flag(deploy, "max-retries")).toBe("0");
   });
 });

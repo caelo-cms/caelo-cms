@@ -595,6 +595,100 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     ).toBe(false);
   });
 
+  it("epic #1644 — creates the collection stores, then the index job that writes the staging one, keeps it on IAP, tells the admin and both gateways", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events, {
+      overrides: [
+        [/^storage buckets describe gs:\/\/acme-caelo-production-coll-/, fail("NOT_FOUND: 404")],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const index = "caelo-production-index@acme.iam.gserviceaccount.com";
+    const created = indexOf(
+      events,
+      /^gcloud storage buckets create gs:\/\/acme-caelo-production-coll-staging /,
+    );
+    const exclusion = indexOf(
+      events,
+      /^gcloud logging sinks update _Default .*--add-exclusion=\^;\^name=caelo-production-visitor-queries;/,
+    );
+    const write = indexOf(
+      events,
+      new RegExp(
+        `^gcloud storage buckets add-iam-policy-binding gs://acme-caelo-production-coll-staging --member=serviceAccount:${index} --role=roles/storage\\.objectCreator`,
+      ),
+    );
+    const deploy = indexOf(events, /^gcloud run jobs deploy caelo-production-index /);
+    const opAccess = indexOf(
+      events,
+      /^gcloud run jobs deploy caelo-production-operator-access-sync /,
+    );
+    const adminRoll = indexOf(events, new RegExp(`^gcloud run services update ${ADMIN} `));
+    const gatewayRoll = indexOf(events, new RegExp(`^gcloud run services update ${GATEWAY} `));
+    const move = indexOf(events, /^gcloud run jobs update caelo-production-index /);
+    expect(created < exclusion && exclusion < write && write < deploy).toBe(true);
+    expect(deploy < opAccess && opAccess < adminRoll && adminRoll < move).toBe(true);
+    expect(events[opAccess]).toContain(index);
+    expect(events[adminRoll]).toContain(
+      "CAELO_COLLECTION_INDEX_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-index",
+    );
+    expect(events[adminRoll]).toContain(
+      "CAELO_COLLECTIONS_STAGING_STORE=gs://acme-caelo-production-coll-staging",
+    );
+    expect(events[adminRoll]).toContain(
+      "CAELO_COLLECTIONS_LIVE_STORE=gs://acme-caelo-production-coll-live",
+    );
+    // The live gateway learns the live store and nothing of staging.
+    expect(events[gatewayRoll]).toContain(
+      "CAELO_COLLECTIONS_LIVE_STORE=gs://acme-caelo-production-coll-live",
+    );
+    expect(events[gatewayRoll]).not.toContain("coll-staging");
+    // #1646 — and the plugin batch job, which holds the shared line only.
+    const batch = "caelo-production-plugin-batch@acme.iam.gserviceaccount.com";
+    expect(
+      indexOf(events, /^gcloud run jobs deploy caelo-production-plugin-batch /),
+    ).toBeGreaterThan(-1);
+    expect(
+      events.some(
+        (e) =>
+          e.includes(`--member=serviceAccount:${batch}`) &&
+          /(run jobs|storage buckets) add-iam-policy-binding/.test(e),
+      ),
+    ).toBe(false);
+    expect(events[opAccess]).toContain(batch);
+    expect(events[adminRoll]).toContain(`CAELO_PLUGIN_BATCH_SERVICE_ACCOUNT=${batch}`);
+    expect(lines).toContain(
+      "done: Collection stores ready (each gateway reads only its own index)",
+    );
+    expect(lines).toContain(
+      "done: Collection index job ready (a Stage's plugin indexes build in their own job)",
+    );
+  });
+
+  it("epic #1644 — failed collection stores skip the index job and leave every collection env untouched", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events, {
+      overrides: [
+        [/^storage buckets describe gs:\/\/acme-caelo-production-coll-/, fail("NOT_FOUND: 404")],
+        [
+          /^storage buckets create gs:\/\/acme-caelo-production-coll-staging/,
+          fail("PERMISSION_DENIED"),
+        ],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("Collection stores not set up"))).toBe(true);
+    expect(events.some((e) => e.startsWith("gcloud run jobs deploy caelo-production-index "))).toBe(
+      false,
+    );
+    expect(events.some((e) => /services update .*CAELO_COLLECTION/.test(e))).toBe(false);
+    // The other reporting jobs are untouched by it.
+    expect(
+      events.some((e) => e.startsWith("gcloud run jobs deploy caelo-production-plugin-batch ")),
+    ).toBe(true);
+  });
+
   it("sets up the capture job on the CURRENT admin image before the roll, then moves it with the admin (#1217)", async () => {
     const events: string[] = [];
     const { deps, lines } = upgradeDeps(events);
