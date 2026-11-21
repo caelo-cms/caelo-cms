@@ -252,6 +252,44 @@ describe("#1292 — the list operation refuses reads no index covers", () => {
     await provision({ entries: [["status", "created_at"]] });
   });
 
+  it("reads the catalog once per table until a plugin schema changes (#1669)", async () => {
+    const statements: string[] = [];
+    const counting = new DatabaseAdapter({
+      adminDatabaseUrl: ADMIN_URL,
+      publicDatabaseUrl: PUBLIC_URL,
+      onStatement: (s) => statements.push(s),
+    });
+    const catalogReads = () =>
+      statements.filter((s) => s.includes("FROM pg_catalog.pg_index")).length;
+    const listCounted = (filter: Record<string, unknown>) =>
+      execute(registry, counting, ctx, STORAGE_OPS.public.list, {
+        schema: SCHEMA,
+        table: "entries",
+        columns: PUBLIC_TABLE.entries,
+        filter,
+      });
+    try {
+      // A provisioning starts afresh, wherever the leads were read before.
+      await provision({ entries: [["status", "created_at"]] });
+      for (const filter of [
+        { status: "new" },
+        { status: "old" },
+        { anyOf: { status: ["new", "old"] } },
+      ]) {
+        expect((await listCounted(filter)).ok).toBe(true);
+      }
+      expect(catalogReads()).toBe(1);
+      // The next provisioning (a load, an upgrade) is read again, once.
+      await provision({ entries: [["status", "created_at"], ["slug"]] });
+      expect((await listCounted({ slug: "a" })).ok).toBe(true);
+      expect((await listCounted({ slug: "b" })).ok).toBe(true);
+      expect(catalogReads()).toBe(2);
+    } finally {
+      await counting.close();
+      await provision({ entries: [["status", "created_at"]] });
+    }
+  });
+
   it("follows the indexes the table has, not what a caller claims", async () => {
     // The column map comes from the caller; an index cannot: a version
     // that stops declaring the index loses the read with it.

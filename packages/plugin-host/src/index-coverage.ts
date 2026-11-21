@@ -23,7 +23,7 @@ import {
   listIndexRefusal,
   readsByColumn,
 } from "@caelo-cms/plugin-sdk";
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { pluginSchemaGeneration, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import type { ListPlan } from "./private-storage.js";
 
@@ -66,4 +66,43 @@ export async function indexLeadColumns(
     any: new Set(rows.map((r) => r.col)),
     ordered: new Set(rows.filter((r) => r.ordered).map((r) => r.col)),
   };
+}
+
+/**
+ * #1669 — the leads per table, read from the catalog once per plugin
+ * schema change of this process (`pluginSchemaGeneration`, query-api):
+ * the catalog changes only when a plugin schema is provisioned or
+ * dropped, and every `plugin_storage.list` asked it again (83,708 catalog
+ * reads in a two-minute local gate run, one per list). Kept per zone,
+ * because a plugin's public and private schemas share their name in two
+ * databases. A read that a schema change overtook is not kept.
+ */
+const remembered = new Map<string, IndexLeads>();
+let rememberedAt = -1;
+
+/** {@link indexLeadColumns}, remembered until this process changes a plugin schema. */
+export async function rememberedIndexLeadColumns(
+  tx: TransactionRunner,
+  zone: "private" | "public",
+  schema: string,
+  table: string,
+): Promise<IndexLeads> {
+  const generation = pluginSchemaGeneration();
+  if (generation !== rememberedAt) {
+    remembered.clear();
+    rememberedAt = generation;
+  }
+  const key = `${zone}|${schema}.${table}`;
+  const hit = remembered.get(key);
+  if (hit) return hit;
+  const leads = await indexLeadColumns(tx, schema, table);
+  if (pluginSchemaGeneration() === generation && rememberedAt === generation) {
+    remembered.set(key, leads);
+  }
+  return leads;
+}
+
+/** Test seam: forget every remembered lead set (a cold measure reads the catalog again). */
+export function forgetIndexLeadColumns(): void {
+  remembered.clear();
 }

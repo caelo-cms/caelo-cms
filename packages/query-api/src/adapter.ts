@@ -286,6 +286,23 @@ export function resolvePoolMax(explicit?: number): number | undefined {
 }
 
 /**
+ * #1669 — how many plugin schema changes this process has committed: every
+ * provisioning (a load, an activation, an install, an upgrade) and every
+ * drop, in any database, by any adapter of the process. A reader that
+ * remembers what the catalog says about plugin tables (the index check of
+ * a plugin `list`) forgets it when this moves. Another instance's DDL
+ * reaches this process with the plugin reload that follows it: the plugin
+ * host reloads a plugin whose row changed before it serves a request, and
+ * every load provisions (idempotently), which moves this counter here too.
+ */
+let pluginSchemaChanges = 0;
+
+/** See {@link pluginSchemaChanges}. */
+export function pluginSchemaGeneration(): number {
+  return pluginSchemaChanges;
+}
+
+/**
  * #1254 — the cms_public pool's cap: `explicitPublic` > the
  * `CAELO_DB_PUBLIC_POOL_MAX` env > whatever {@link resolvePoolMax} gives
  * every pool (`explicitAll`, then `CAELO_DB_POOL_MAX`). A present but
@@ -1349,6 +1366,7 @@ export class DatabaseAdapter {
       // identifier that doesn't match the safe pattern.
       return provisionPluginSchemaInTx(tx, "provisionPluginPublicSchema", opts);
     });
+    pluginSchemaChanges += 1;
     const result = {
       database: this.#publicDatabase,
       schemaName: outcome.schemaName,
@@ -1415,6 +1433,7 @@ export class DatabaseAdapter {
         await auditDroppedColumns(tx, "cms_admin", opts.pluginId, outcome);
       }
     });
+    pluginSchemaChanges += 1;
   }
 
   /**
@@ -1436,6 +1455,7 @@ export class DatabaseAdapter {
         sql`DELETE FROM plugin_schema_provisions WHERE schema_name = ${opts.schemaName}`,
       );
     });
+    pluginSchemaChanges += 1;
   }
 
   async dropPluginPublicSchema(opts: { schemaName: string }): Promise<void> {
@@ -1452,6 +1472,7 @@ export class DatabaseAdapter {
         sql`DELETE FROM plugin_schema_provisions WHERE schema_name = ${opts.schemaName}`,
       );
     });
+    pluginSchemaChanges += 1;
   }
 
   /** The drizzle pool handles; refused inside a transaction of the same pool (see {@link rawAdmin}). */

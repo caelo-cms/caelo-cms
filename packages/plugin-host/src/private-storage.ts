@@ -23,6 +23,7 @@ import { privateReadColumns } from "@caelo-cms/plugin-sandbox";
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { loadBranchOverlay } from "./branch-overlay.js";
 import {
   emitPluginRowSnapshot,
   emitPluginRowSnapshots,
@@ -579,9 +580,11 @@ export async function privateList(
   t: Target & { readonly columns: Readonly<Record<string, string>> },
   plan: ListPlan,
 ): Promise<Record<string, unknown>[]> {
-  const overlay =
+  // #1669 — the branch's pending rows of the table, carried by the journal
+  // between reads instead of read in full on every list.
+  const overlay: ReadonlyMap<string, PluginRowState> =
     ctx.chatBranchId && ctx.pluginId
-      ? await loadBranchRowStates(tx, {
+      ? await loadBranchOverlay(tx, {
           pluginId: ctx.pluginId,
           table: t.table,
           chatBranchId: ctx.chatBranchId,

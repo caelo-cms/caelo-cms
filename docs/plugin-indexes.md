@@ -58,7 +58,7 @@ plugin_public_storage.list: no index covers this read of "reviews" (it filters b
 
 `id`-only reads and writes (`update`, `updateMany`, `delete`, `compareAndSwap`) go by the primary key and need nothing.
 
-The rule itself lives in the SDK (`packages/plugin-sdk/src/index-coverage.ts`), so the host and a plugin's tests apply the same code. The host check reads the table's indexes from the database catalog (`packages/plugin-host/src/index-coverage.ts`), not from the caller: the storage operations are reachable from plugin code (`ctx.cms.call`), so an index list passed in could claim indexes that do not exist. The catalog holds exactly what the emitters built from the manifest. A read with only a `limit` skips the catalog lookup.
+The rule itself lives in the SDK (`packages/plugin-sdk/src/index-coverage.ts`), so the host and a plugin's tests apply the same code. The host check reads the table's indexes from the database catalog (`packages/plugin-host/src/index-coverage.ts`), not from the caller: the storage operations are reachable from plugin code (`ctx.cms.call`), so an index list passed in could claim indexes that do not exist. The catalog holds exactly what the emitters built from the manifest. A read with only a `limit` skips the catalog lookup. The leads of a table are read once and kept until this process provisions or drops a plugin schema (`pluginSchemaGeneration`, query-api; #1669): the catalog changes only then, and another instance's DDL reaches this process with the plugin reload that follows it, since every load provisions. Before, every `list` read the catalog again.
 
 ## Testing a plugin's reads
 

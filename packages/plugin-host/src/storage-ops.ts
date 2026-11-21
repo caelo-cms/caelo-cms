@@ -38,10 +38,10 @@ import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  indexLeadColumns,
   listAccessOf,
   listIndexRefusal,
   readsByColumn,
+  rememberedIndexLeadColumns,
 } from "./index-coverage.js";
 import {
   type ListPlan,
@@ -435,7 +435,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
           label: op,
           zone: zone === "private" ? "adminSchema" : "schema",
           table: input.table,
-          leads: await indexLeadColumns(tx, input.schema, input.table),
+          leads: await rememberedIndexLeadColumns(tx, zone, input.schema, input.table),
           access,
         });
         if (unindexed) return fail(op, unindexed);

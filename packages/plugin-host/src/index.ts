@@ -21,6 +21,12 @@ export {
 export { type BakedDataPlugin, bakedDataPlugin, bakedDataVisitorTrigger } from "./baked-data.js";
 export { bakedDataPageIds, MAX_BAKED_PAGES_PER_CALL } from "./baked-data-pages.js";
 export {
+  branchOverlayJournalFilter,
+  branchOverlayReadCount,
+  clearBranchOverlayCache,
+  loadBranchOverlay,
+} from "./branch-overlay.js";
+export {
   BUILD_PLUGIN_METHODS,
   type BuildPluginMethod,
   type BuildPluginServices,
@@ -136,10 +142,12 @@ export {
 } from "./image-ledger.js";
 export { checkPluginRuntime, type PluginRuntimeReport } from "./image-self-check.js";
 export {
+  forgetIndexLeadColumns,
   indexLeadColumns,
   type ListIndexAccess,
   listAccessOf,
   listIndexRefusal,
+  rememberedIndexLeadColumns,
 } from "./index-coverage.js";
 export {
   applyPluginLifecycle,
