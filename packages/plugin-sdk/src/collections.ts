@@ -90,7 +90,11 @@ export interface PluginCollectionHandle {
    * adds `docs`, as one change: what one source said is replaced whole
    * (a page's anchor texts). `docs` may be empty (a removal by field).
    */
-  replace(field: string, values: readonly string[], docs: readonly CollectionDocInput[]): Promise<void>;
+  replace(
+    field: string,
+    values: readonly string[],
+    docs: readonly CollectionDocInput[],
+  ): Promise<void>;
   /** A document as the newest staged index holds it, or null. */
   get(id: string): Promise<CollectionDocInput | null>;
   /**

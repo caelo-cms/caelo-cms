@@ -76,6 +76,11 @@ export function declarativeDefinition(manifest: PluginManifest): PluginDefinitio
     ...(m.bakedData ? { bakedData: m.bakedData } : {}),
     ...(m.collections ? { collections: m.collections } : {}),
     ...(m.collectionOperations ? { collectionOperations: m.collectionOperations } : {}),
+    // #1654 — the gateway runs a declared conversation with core code; its
+    // prompt fields are config leaves, which it validates the released
+    // values against.
+    ...(m.aiChatOperations ? { aiChatOperations: m.aiChatOperations } : {}),
+    ...(m.config ? { config: m.config } : {}),
   } as unknown as PluginDefinition<PluginContext>);
 }
 

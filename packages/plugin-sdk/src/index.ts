@@ -37,6 +37,12 @@ import {
 } from "@caelo-cms/shared/lists-model";
 import { z } from "zod";
 import { checkAdminPanels, type PluginAdminPanel, pluginAdminPanel } from "./admin-panels.js";
+import {
+  type AiChatOperationInput,
+  aiChatOperationManifest,
+  checkAiChatOperations,
+  MAX_AI_CHAT_OPERATIONS,
+} from "./ai-chat-operations.js";
 import { MAX_BATCH_OPERATIONS, pluginBatchOperation } from "./batch.js";
 import {
   type CollectionOperationInput,
@@ -190,6 +196,7 @@ export const pluginCapability = z.enum([
   "page_output",
   "collections",
   "batch_jobs",
+  "visitor_ai",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -1405,6 +1412,8 @@ export const pluginManifest = z
       .array(collectionOperationManifest)
       .max(MAX_COLLECTION_OPERATIONS)
       .optional(),
+    /** See `PluginDefinition.aiChatOperations` (#1654). Needs the `visitor_ai` capability. */
+    aiChatOperations: z.array(aiChatOperationManifest).max(MAX_AI_CHAT_OPERATIONS).optional(),
     /** See `PluginDefinition.pageOutputObserver` (#1647). Needs the `page_output` capability. */
     pageOutputObserver: pageOutputObserverManifest.optional(),
     /** See `PluginDefinition.batchOperations` (#1646). Needs the `batch_jobs` capability. */
@@ -1432,6 +1441,15 @@ export const pluginManifest = z
       m.collectionOperations,
       m.collections,
       [...m.operations, ...(m.publicOperations ?? []).map((o) => o.name)],
+      issueAt,
+    );
+    checkAiChatOperations(
+      m,
+      [
+        ...m.operations,
+        ...(m.publicOperations ?? []).map((o) => o.name),
+        ...(m.collectionOperations ?? []).map((o) => o.name),
+      ],
       issueAt,
     );
     const named = (path: readonly (string | number)[], op: string | undefined, what: string) => {
@@ -3066,6 +3084,13 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   /** #1649 — declarative visitor operations over the collections (`search`, `suggest`, `read`); core runs them in the gateway. */
   readonly collectionOperations?: ReadonlyArray<CollectionOperationInput>;
   /**
+   * #1654 — declarative visitor conversations (`ai-chat`): core runs them in
+   * the gateway with the Owner's visitor-AI key and budgets, the prompt from
+   * visitor-visible config, and only the declared search and read operations
+   * as tools. Needs the `visitor_ai` grant and `requires: ["visitor-ai"]`.
+   */
+  readonly aiChatOperations?: ReadonlyArray<AiChatOperationInput>;
+  /**
    * #1647 — the operation core calls at every Stage with the facts of the
    * pages whose output changed (`PageOutputObserverArgs`). Needs the
    * `page_output` grant. In this call the plugin may write only its
@@ -3147,6 +3172,7 @@ export function manifestFromDefinition(def: {
   readonly configPreviewOperation?: string;
   readonly collections?: Readonly<Record<string, PluginCollectionManifest>>;
   readonly collectionOperations?: ReadonlyArray<CollectionOperationInput>;
+  readonly aiChatOperations?: ReadonlyArray<AiChatOperationInput>;
   readonly pageOutputObserver?: PageOutputObserverManifest;
   readonly batchOperations?: ReadonlyArray<z.input<typeof pluginBatchOperation>>;
 }): PluginManifest {
@@ -3248,6 +3274,9 @@ export function manifestFromDefinition(def: {
     ...(def.collectionOperations && def.collectionOperations.length > 0
       ? { collectionOperations: [...def.collectionOperations] }
       : {}),
+    ...(def.aiChatOperations && def.aiChatOperations.length > 0
+      ? { aiChatOperations: [...def.aiChatOperations] }
+      : {}),
     ...(def.pageOutputObserver ? { pageOutputObserver: { ...def.pageOutputObserver } } : {}),
     ...(def.batchOperations && def.batchOperations.length > 0
       ? { batchOperations: [...def.batchOperations] }
@@ -3276,7 +3305,7 @@ export type {
   PluginPreviewSelection,
   PluginPreviewTarget,
 } from "@caelo-cms/shared";
-
+export * from "./ai-chat-operations.js";
 export * from "./batch.js";
 export * from "./collection-operations.js";
 export * from "./collections.js";

@@ -244,7 +244,10 @@ export function checkCollectionOperations(
           if (a.fields[op.anchors.target]?.kind !== "keyword")
             issue([...path, "anchors", "target"], `"${op.anchors.target}" must be a keyword field`);
           if (op.anchors.sources && a.fields[op.anchors.sources]?.kind !== "number")
-            issue([...path, "anchors", "sources"], `"${op.anchors.sources}" must be a number field`);
+            issue(
+              [...path, "anchors", "sources"],
+              `"${op.anchors.sources}" must be a number field`,
+            );
         }
       }
       for (const f of op.filters)

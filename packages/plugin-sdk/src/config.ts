@@ -23,6 +23,13 @@
  *   operator's in-chat click (CLAUDE.md §11.A), e.g. a cost limit.
  * - `scope`: `release` waits for Stage and Publish live; `immediate` applies
  *   at once, allowed only for a field without a visitor-visible effect.
+ *
+ * `visitorVisible` (#1654) marks a leaf the public gateway may read: its
+ * value is published with the release into the public database, where an
+ * `ai-chat` operation's prompt takes it from (`prompt.fields`). Only scalar
+ * leaves with scope `release` qualify, so what the gateway reads is frozen
+ * with a Stage and live with Publish live like everything else visitors see.
+ * Everything not marked stays on the authoring side.
  */
 
 import { EMBEDDING_MODEL_IDS } from "@caelo-cms/shared/embedding-models";
@@ -49,6 +56,8 @@ const leafMeta = {
   effect: z.enum(CONFIG_EFFECTS),
   gate: z.enum(["routine", "approval"]).default("routine"),
   scope: z.enum(["release", "immediate"]).default("release"),
+  /** #1654 — published with the release for the gateway (see the file comment). */
+  visitorVisible: z.boolean().optional(),
 };
 
 const scalarLeaves = [
@@ -360,7 +369,9 @@ export function entityConfigSchema(
 ): z.ZodType<Record<string, unknown>> {
   const shape: Record<string, z.ZodType> = {};
   for (const [name, field] of Object.entries(fields))
-    shape[name] = (field.type === "pageRef" ? uuid : scalarValueSchema(field)).nullable().optional();
+    shape[name] = (field.type === "pageRef" ? uuid : scalarValueSchema(field))
+      .nullable()
+      .optional();
   return z.object(shape).strict() as unknown as z.ZodType<Record<string, unknown>>;
 }
 
@@ -379,7 +390,28 @@ export function entityConfigValue(
 
 type Issue = (path: readonly (string | number)[], message: string) => void;
 
+/** Leaf types whose value the gateway may read (#1654): text and plain values, never references. */
+const VISITOR_VISIBLE_TYPES: ReadonlySet<string> = new Set([
+  "string",
+  "enum",
+  "bool",
+  "int",
+  "number",
+]);
+
 function checkLeaf(path: string[], field: ConfigLeaf["field"], issue: Issue): void {
+  if (field.visitorVisible === true) {
+    if (!VISITOR_VISIBLE_TYPES.has(field.type))
+      issue(
+        [...path, "visitorVisible"],
+        `a ${field.type} field cannot be visitor-visible: only string, enum, bool, int and number values are published to the gateway`,
+      );
+    if (field.scope !== "release")
+      issue(
+        [...path, "visitorVisible"],
+        'a visitor-visible field needs scope "release": the gateway reads what the last Publish live released',
+      );
+  }
   if (field.scope === "immediate" && field.effect !== "none") {
     issue(
       path,
@@ -444,6 +476,11 @@ export function checkConfig(
   for (const kind of CONFIG_ENTITY_KINDS) {
     for (const [name, field] of Object.entries(entityConfig?.[kind] ?? {})) {
       checkLeaf(["entityConfig", kind, name], field, issue);
+      if (field.visitorVisible === true)
+        issue(
+          ["entityConfig", kind, name, "visitorVisible"],
+          "entity fields are never published to the gateway: only `config` leaves can be visitor-visible",
+        );
       if (field.scope === "immediate")
         issue(
           ["entityConfig", kind, name],
@@ -451,6 +488,11 @@ export function checkConfig(
         );
     }
   }
+}
+
+/** The paths of a schema's visitor-visible leaves (#1654), in declaration order. */
+export function visitorVisibleLeaves(schema: PluginConfigSchema): ConfigLeaf[] {
+  return configLeaves(schema).filter((l) => l.field.visitorVisible === true);
 }
 
 /** Parses a configuration schema declaration (the manifest form). */
