@@ -131,7 +131,8 @@ const MAIN = String.raw`
   }
 
   var CSS = [
-    ":host{position:fixed;inset:auto 1rem 1rem auto;z-index:2147483000;width:min(26rem,calc(100vw - 2rem));max-height:min(36rem,calc(100vh - 2rem));display:flex;flex-direction:column;font:inherit;color:var(--caelo-color-text,#111);background:var(--caelo-color-surface,#fff);border:1px solid var(--caelo-color-border,#d4d4d8);border-radius:.75rem;box-shadow:0 10px 30px rgba(0,0,0,.18)}",
+    ":host{position:fixed;inset:auto 1rem 1rem auto;z-index:2147483000;width:min(26rem,calc(100vw - 2rem));font:inherit}",
+    ".box{max-height:min(36rem,calc(100vh - 2rem));display:flex;flex-direction:column;color:var(--caelo-color-text,#111);background:var(--caelo-color-surface,#fff);border:1px solid var(--caelo-color-border,#d4d4d8);border-radius:.75rem;box-shadow:0 10px 30px rgba(0,0,0,.18)}",
     "@media (max-width:30rem){:host{inset:auto .5rem .5rem .5rem;width:auto}}",
     "header{display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.75rem 1rem;border-bottom:1px solid var(--caelo-color-border,#e4e4e7)}",
     "h2{font-size:1rem;margin:0}",
@@ -178,9 +179,11 @@ const MAIN = String.raw`
     var style = document.createElement("style");
     style.textContent = CSS;
     root.appendChild(style);
+    // The dialog and its label live in one root: a label reference does not
+    // cross the shadow boundary.
     var titleId = "caelo-assistant-title";
-    this.setAttribute("role", "dialog");
-    this.setAttribute("aria-labelledby", titleId);
+    var box = el("div", { class: "box", role: "dialog", "aria-modal": "false", "aria-labelledby": titleId });
+    root.appendChild(box);
     var header = el("header");
     var h = el("h2", { id: titleId }, textOf(t, "title"));
     var close = el("button", { type: "button", "aria-label": textOf(t, "close") || "×" }, "×");
@@ -199,12 +202,12 @@ const MAIN = String.raw`
     var restart = el("button", { type: "button", hidden: "" }, textOf(t, "new"));
     form.appendChild(input);
     form.appendChild(send);
-    root.appendChild(header);
-    root.appendChild(notice);
-    root.appendChild(log);
-    root.appendChild(status);
-    root.appendChild(form);
-    root.appendChild(restart);
+    box.appendChild(header);
+    box.appendChild(notice);
+    box.appendChild(log);
+    box.appendChild(status);
+    box.appendChild(form);
+    box.appendChild(restart);
 
     var state = load();
     var busy = false;
@@ -407,7 +410,9 @@ const MAIN = String.raw`
     }
     close.addEventListener("click", closeIt);
     root.addEventListener("keydown", function (ev) { if (ev.key === "Escape") closeIt(); });
-    setTimeout(function () { input.focus(); }, 0);
+    // The panel is in the document already: the focus moves at once, so a
+    // key pressed right after opening reaches it.
+    input.focus();
   };
 
   if (!customElements.get("caelo-assistant")) customElements.define("caelo-assistant", Assistant);

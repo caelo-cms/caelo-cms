@@ -36,6 +36,7 @@ import siteAssistant from "@caelo-cms/plugin-site-assistant";
 import siteSearch from "@caelo-cms/plugin-site-search";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
+import { dropPublishedState } from "./published-changes.js";
 import {
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
@@ -197,8 +198,21 @@ export async function prepareAssistantSite(urls: {
   await registerTestLiveOrigin(urls.admin);
   await drainProjectionOnce(adminAdapter, staging);
 
+  // A release republishes the plugins' section, the index pointer with it:
+  // this site's index has no Stage run, so it is published again after each.
+  let indexKey: string | null = null;
+  const publishIndex = async () => {
+    if (!indexKey) return;
+    await onDb(urls.publicAdmin, async (tx) => {
+      await tx`DELETE FROM published_collections`;
+      await tx`INSERT INTO published_collections (plugin_id, collection, release_key) VALUES (${idOf("site-search")}::uuid, 'pages', ${indexKey})`;
+    });
+  };
   const release = async () => {
     await releaseProjectionForTests(adminAdapter, staging, undefined, "as-loaded");
+    await publishIndex();
+    // What the admin's publish notification does to the gateway's caches.
+    dropPublishedState();
     resetVisitorAiCacheForTests();
     invalidateGatewaySettings();
   };
@@ -242,10 +256,8 @@ export async function prepareAssistantSite(urls: {
     },
   );
   await Promise.all(writes);
-  await onDb(urls.publicAdmin, async (tx) => {
-    await tx`DELETE FROM published_collections`;
-    await tx`INSERT INTO published_collections (plugin_id, collection, release_key) VALUES (${idOf("site-search")}::uuid, 'pages', ${built.file})`;
-  });
+  indexKey = built.file;
+  await publishIndex();
 
   const gw = gatewayDatabaseUrls({
     PUBLIC_DATABASE_URL: urls.publicGateway,
