@@ -222,6 +222,8 @@ export interface PublicBlockContract {
         readonly kind: "visitor-state" | "published" | "inbox";
         readonly columns: readonly Column[];
         readonly writes: boolean;
+        /** Columns the block filters by: the plugin's `indexes` must lead with each (#1292). */
+        readonly filters?: readonly Column[];
       }
     >
   >;
@@ -243,26 +245,31 @@ const AUTH_TABLES = {
     kind: "visitor-state",
     columns: ["email", "email_key", "password_hash", "email_verified_at", "last_login_at"],
     writes: true,
+    filters: ["email"],
   },
   visitor_sessions: {
     kind: "visitor-state",
     columns: ["public_user_id", "token_hash", "expires_at"],
     writes: true,
+    filters: ["token_hash", "public_user_id"],
   },
   password_reset_tokens: {
     kind: "visitor-state",
     columns: ["public_user_id", "token_hash", "expires_at", "used_at"],
     writes: true,
+    filters: ["token_hash"],
   },
   email_verification_tokens: {
     kind: "visitor-state",
     columns: ["public_user_id", "token_hash", "password_hash", "expires_at", "used_at"],
     writes: true,
+    filters: ["token_hash", "public_user_id"],
   },
   login_throttle: {
     kind: "visitor-state",
     columns: ["email_hash", "failures", "window_started_at"],
     writes: true,
+    filters: ["email_hash"],
   },
 } as const;
 
@@ -304,6 +311,7 @@ const OPT_IN_TABLE = {
       "unsub_token",
     ],
     writes: true,
+    filters: ["email_hash", "confirm_token"],
   },
 } as const;
 
@@ -362,7 +370,7 @@ export const PUBLIC_BLOCK_CONTRACTS: Readonly<Record<PublicBlock, PublicBlockCon
 export function blockTables(
   block: PublicBlock,
   options: Readonly<Record<string, unknown>> | undefined,
-): { table: string; kind: string; columns: string[]; writes: boolean }[] {
+): { table: string; kind: string; columns: string[]; writes: boolean; filters: string[] }[] {
   const c = PUBLIC_BLOCK_CONTRACTS[block];
   const name = (n: string) => (n.startsWith("<") ? String(options?.[n.slice(1, -1)] ?? "") : n);
   return Object.entries(c.tables).map(([t, spec]) => ({
@@ -370,6 +378,7 @@ export function blockTables(
     kind: spec.kind,
     columns: spec.columns.map(name),
     writes: spec.writes,
+    filters: (spec.filters ?? []).map(name),
   }));
 }
 
@@ -414,6 +423,7 @@ export function checkPublicRun(
     readonly visitorProjection?: Readonly<Record<string, readonly string[]>>;
     readonly requestedCapabilities?: readonly string[];
     readonly mailTemplates?: Readonly<Record<string, unknown>>;
+    readonly indexes?: { readonly schema?: Readonly<Record<string, readonly unknown[]>> };
   },
   issue: (path: (string | number)[], message: string) => void,
 ): void {
@@ -480,9 +490,23 @@ export function checkPublicRun(
   } else if (run.action === "list" && run.of === "adminSchema") {
     if (op.kind !== "read") issue(["kind"], `"${op.name}" only lists, so it is kind "read"`);
     const projected = m.visitorProjection?.[run.table];
-    const wanted = [...run.columns, ...Object.keys(run.where ?? {}), ...(run.orderBy ? [run.orderBy] : [])];
-    if (!projected) issue(["run", "table"], `"${op.name}" lists admin table "${run.table}", which visitorProjection does not publish`);
-    else for (const c of wanted) if (c !== "id" && !projected.includes(c)) issue(["run", "columns"], `"${op.name}" names "${run.table}.${c}", which visitorProjection does not publish`);
+    const wanted = [
+      ...run.columns,
+      ...Object.keys(run.where ?? {}),
+      ...(run.orderBy ? [run.orderBy] : []),
+    ];
+    if (!projected)
+      issue(
+        ["run", "table"],
+        `"${op.name}" lists admin table "${run.table}", which visitorProjection does not publish`,
+      );
+    else
+      for (const c of wanted)
+        if (c !== "id" && !projected.includes(c))
+          issue(
+            ["run", "columns"],
+            `"${op.name}" names "${run.table}.${c}", which visitorProjection does not publish`,
+          );
   } else if (run.action === "list") {
     if (op.kind !== "read") issue(["kind"], `"${op.name}" only lists, so it is kind "read"`);
     if (ownTable(["run", "table"], run.table, VISITOR_READABLE, "read")) {
@@ -513,8 +537,20 @@ export function checkPublicRun(
           t.kind === "published" ? new Set(["published"]) : new Set([t.kind]),
           t.writes ? "write" : "read",
         )
-      )
+      ) {
         columns(["run", "block"], t.table, t.columns);
+        const leading = new Set(
+          (m.indexes?.schema?.[t.table] ?? []).map((e) =>
+            Array.isArray(e) ? e[0] : (e as { columns?: string[] }).columns?.[0],
+          ),
+        );
+        for (const f of t.filters)
+          if (!leading.has(f))
+            issue(
+              ["run", "block"],
+              `block "${run.block}" reads "${t.table}" by "${f}": declare indexes: { schema: { ${t.table}: [["${f}"]] } }`,
+            );
+      }
     }
     for (const cap of contract.capabilities)
       if (!(m.requestedCapabilities ?? []).includes(cap))

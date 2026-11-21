@@ -443,21 +443,41 @@ describe("/api/* served from cms_public alone (#635)", () => {
       manifestFromDefinition({
         ...fixture,
         publicOperations: [
-          { name: "probe", kind: "read", captcha: "none", input: z.looseObject({}), run: run as never },
+          {
+            name: "probe",
+            kind: "read",
+            captcha: "none",
+            input: z.looseObject({}),
+            run: run as never,
+          },
         ],
       });
     // A draft table the plugin does not publish.
     expect(
-      declaring({ action: "list", table: "drafts", of: "adminSchema", limit: 1, columns: ["body"], as: "x" }),
+      declaring({
+        action: "list",
+        table: "drafts",
+        of: "adminSchema",
+        limit: 1,
+        columns: ["body"],
+        as: "x",
+      }),
     ).toThrow("visitorProjection does not publish");
     // A column of a published table that is not published itself.
     expect(
-      declaring({ action: "list", table: "settings", of: "adminSchema", limit: 1, columns: ["internal_note"], as: "x" }),
+      declaring({
+        action: "list",
+        table: "settings",
+        of: "adminSchema",
+        limit: 1,
+        columns: ["internal_note"],
+        as: "x",
+      }),
     ).toThrow("visitorProjection does not publish");
     // No action writes private storage: an insert names only a public table.
-    expect(
-      declaring({ action: "insert", table: "settings", values: {}, answer: {} }),
-    ).toThrow("not a table of this plugin's schema");
+    expect(declaring({ action: "insert", table: "settings", values: {}, answer: {} })).toThrow(
+      "not a table of this plugin's schema",
+    );
   });
 
   it("serves an admin write only once it is released, never from the outbox (#1329, N6)", async () => {
@@ -470,15 +490,16 @@ describe("/api/* served from cms_public alone (#635)", () => {
     await publish();
     const before = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
     await expectStatus(before, 200);
-    expect(((await before.json()) as { data: { settings: { label: string }[] } }).data.settings[0]?.label).toBe(
-      "from-the-admin",
-    );
+    expect(
+      ((await before.json()) as { data: { settings: { label: string }[] } }).data.settings[0]
+        ?.label,
+    ).toBe("from-the-admin");
     await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, DECLARATIONS);
     invalidateGatewaySettings();
     const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
-    expect(((await r.json()) as { data: { settings: { label: string }[] } }).data.settings[0]?.label).toBe(
-      "changed-by-the-owner",
-    );
+    expect(
+      ((await r.json()) as { data: { settings: { label: string }[] } }).data.settings[0]?.label,
+    ).toBe("changed-by-the-owner");
   });
 
   it("a registry change drained where the plugin is not loaded leaves its rows published (#1077)", async () => {
@@ -493,9 +514,9 @@ describe("/api/* served from cms_public alone (#635)", () => {
     expect(elsewhere.sections.live).toContain(`plugin:${pluginId}`);
     const kept = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
     await expectStatus(kept, 200);
-    expect(((await kept.json()) as { data: { settings: { label: string }[] } }).data.settings[0]?.label).toBe(
-      "changed-by-the-owner",
-    );
+    expect(
+      ((await kept.json()) as { data: { settings: { label: string }[] } }).data.settings[0]?.label,
+    ).toBe("changed-by-the-owner");
   });
 
   it("a released version that drops its declaration withdraws what was published", async () => {

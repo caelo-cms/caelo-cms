@@ -21,7 +21,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { publishProjectionOnce, stagingPublicAdapter } from "@caelo-cms/admin-core";
 import { applyPluginLifecycle, bootstrap, resetPluginHost } from "@caelo-cms/plugin-host";
 import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
-import { definePlugin, z } from "@caelo-cms/plugin-sdk";
+import { definePlugin, visitorAuthInputs, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { sessionCookieValue } from "@caelo-cms/shared";
 import { SQL } from "bun";
@@ -38,7 +38,8 @@ if (!ADMIN_URL || !PUBLIC_URL || !PUBLIC_ROLE_URL) throw new Error("DB URLs requ
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SLUG = "test-p12-gw";
-const SESSION_TOKEN = "d".repeat(64);
+const VISITOR_EMAIL = "v@example.com";
+const VISITOR_PASSWORD = "correct horse battery";
 
 let adapter: DatabaseAdapter;
 let gatewayAdapter: DatabaseAdapter;
@@ -55,10 +56,48 @@ const fixturePlugin = definePlugin({
       message: "string",
       created_at: "timestamp",
     },
+    // #1340 — the visitor login is core's block on the auth tables.
+    public_users: {
+      id: "uuid",
+      email: "string",
+      email_key: "string",
+      password_hash: "string",
+      email_verified_at: "timestamp_nullable",
+      created_at: "timestamp",
+      last_login_at: "timestamp_nullable",
+    },
+    visitor_sessions: {
+      id: "uuid",
+      public_user_id: "string",
+      token_hash: "string",
+      expires_at: "timestamp",
+      created_at: "timestamp",
+    },
+    login_throttle: {
+      id: "uuid",
+      email_hash: "string",
+      failures: "int",
+      window_started_at: "timestamp",
+      created_at: "timestamp",
+    },
   },
-  tableKinds: { notes: "visitor-state" },
-  // Default deny at the visitor boundary: the fixture has to say
-  // which of its operations the gateway may reach.
+  tableKinds: {
+    notes: "visitor-state",
+    public_users: "visitor-state",
+    visitor_sessions: "visitor-state",
+    login_throttle: "visitor-state",
+  },
+  // The reads the login block makes (its contract names them, #1292).
+  indexes: {
+    schema: {
+      public_users: [["email"]],
+      visitor_sessions: [["token_hash"], ["public_user_id"]],
+      login_throttle: [{ columns: ["email_hash"], unique: true }],
+    },
+  },
+  requestedCapabilities: ["email"],
+  // Default deny at the visitor boundary: the fixture has to say which
+  // operations the gateway may reach. #1340 — each is a declaration.
   publicOperations: [
     {
       name: "save",
@@ -67,56 +106,45 @@ const fixturePlugin = definePlugin({
       input: z.looseObject({}),
       reads: ["notes"],
       writes: ["notes"],
+      run: {
+        action: "insert" as const,
+        table: "notes",
+        values: {
+          visitor_id: { from: "visitor" as const, key: "id" as const },
+          message: { from: "input" as const, field: "message" },
+        },
+        answer: { id: { from: "inserted-id" as const } },
+      },
     },
     {
       name: "login",
       kind: "write" as const,
       captcha: "none" as const,
-      input: z.looseObject({}),
-      reads: ["notes"],
-      writes: ["notes"],
+      input: visitorAuthInputs.credentials,
+      reads: ["login_throttle", "public_users"],
+      writes: ["login_throttle", "public_users", "visitor_sessions"],
+      run: { action: "block" as const, block: "visitor-auth.login" as const },
     },
     {
-      name: "whoami",
-      kind: "write" as const,
+      name: "me",
+      kind: "read" as const,
       captcha: "none" as const,
-      input: z.looseObject({}),
-      reads: ["notes"],
-      writes: ["notes"],
+      input: visitorAuthInputs.session,
+      reads: ["visitor_sessions", "public_users"],
+      run: { action: "block" as const, block: "visitor-auth.me" as const },
     },
     {
       name: "logout",
       kind: "write" as const,
       captcha: "none" as const,
-      input: z.looseObject({}),
-      reads: ["notes"],
-      writes: ["notes"],
+      input: visitorAuthInputs.session,
+      reads: ["visitor_sessions"],
+      writes: ["visitor_sessions"],
+      run: { action: "block" as const, block: "visitor-auth.logout" as const },
     },
   ],
   operations: {
     admin_only: async () => ({ secret: "should never be reachable from the gateway" }),
-    // A visitor login as the auth plugin does it (#1343: it must survive
-    // a proxy that forwards no cookie but __session).
-    login: async (ctx) => {
-      ctx.visitor.setSession?.({
-        sessionToken: SESSION_TOKEN,
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-      });
-      return { ok: true };
-    },
-    whoami: async (ctx) => ({ sessionToken: ctx.visitor.sessionToken }),
-    logout: async (ctx) => {
-      ctx.visitor.setSession?.(null);
-      return { ok: true };
-    },
-    save: async (ctx, args) => {
-      const a = args as { message: string };
-      const r = await ctx.query.insert("notes", {
-        visitor_id: ctx.visitor.id,
-        message: a.message,
-      });
-      return { id: r.id, visitorSeen: ctx.visitor.id };
-    },
     bump: async (_ctx, _args) => ({ ok: true }),
   },
 });
@@ -159,15 +187,66 @@ async function provisionSchema(): Promise<void> {
   );
   if (!id) throw new Error("plugin row missing");
   const emitted = schemaFromSpec({
-    tableKinds: { notes: "visitor-state" },
+    tableKinds: fixturePlugin.tableKinds,
     pluginId: id,
     slug: SLUG,
-    schema: {
-      notes: { id: "uuid", visitor_id: "string", message: "string", created_at: "timestamp" },
-    },
-    indexes: undefined,
+    schema: fixturePlugin.schema,
+    indexes: fixturePlugin.indexes?.schema,
   });
   await adapter.provisionPluginPublicSchema({ pluginId: id, sql: emitted.sql });
+}
+
+/** The fixture plugin's id (its tables' RLS scope). */
+async function fixturePluginId(): Promise<string> {
+  const admin = new SQL(ADMIN_URL as string);
+  try {
+    const rows = (await admin.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`;
+    })) as unknown as { id: string }[];
+    if (!rows[0]) throw new Error("plugin row missing");
+    return rows[0].id;
+  } finally {
+    await admin.end();
+  }
+}
+
+/** The visitor id the gateway stored with a `save` (null without consent, #677). */
+async function storedVisitorId(id: string): Promise<string | null> {
+  const pub = new SQL(PUBLIC_URL as string);
+  try {
+    const rows = (await pub.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`SELECT set_config('caelo.plugin_id', ${await fixturePluginId()}, true)`;
+      return tx.unsafe(`SELECT visitor_id FROM plugin_test_p12_gw.notes WHERE id = $1`, [id]);
+    })) as unknown as { visitor_id: string | null }[];
+    if (!rows[0]) throw new Error(`no stored note ${id}`);
+    return (rows[0] as { visitor_id: string | null }).visitor_id;
+  } finally {
+    await pub.end();
+  }
+}
+
+/** A visitor account whose address was verified (the login block refuses others). */
+async function seedVerifiedVisitor(): Promise<void> {
+  const hash = await Bun.password.hash(VISITOR_PASSWORD, {
+    algorithm: "argon2id",
+    memoryCost: 19_456,
+    timeCost: 2,
+  });
+  const pub = new SQL(PUBLIC_URL as string);
+  try {
+    await pub.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`SELECT set_config('caelo.plugin_id', ${await fixturePluginId()}, true)`;
+      await tx.unsafe(
+        `INSERT INTO plugin_test_p12_gw.public_users (email, email_key, password_hash, email_verified_at) VALUES ($1, $2, $3, now())`,
+        [VISITOR_EMAIL, "k-v", hash],
+      );
+    });
+  } finally {
+    await pub.end();
+  }
 }
 
 async function bootstrapAndProvision(): Promise<void> {
@@ -237,9 +316,9 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     const r = await handleRequest(postReq(`/api/plugin/${SLUG}/save`, { message: "hi" }));
     expect(r.status).toBe(200);
     expect(r.headers.get("set-cookie")).toBeNull();
-    const body = (await r.json()) as { ok: boolean; data: { visitorSeen: string | null } };
+    const body = (await r.json()) as { ok: boolean; data: { id: string } };
     expect(body.ok).toBe(true);
-    expect(body.data.visitorSeen).toBeNull();
+    expect(await storedVisitorId(body.data.id)).toBeNull();
   });
 
   it("404s an operation the plugin did not expose to visitors", async () => {
@@ -272,8 +351,8 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
     const setCookie = r.headers.get("set-cookie") ?? "";
     expect(setCookie).toStartWith("__session=;");
     expect(setCookie).toContain("Max-Age=0");
-    const body = (await r.json()) as { data: { visitorSeen: string | null } };
-    expect(body.data.visitorSeen).toBeNull();
+    const body = (await r.json()) as { data: { id: string } };
+    expect(await storedVisitorId(body.data.id)).toBeNull();
   });
 
   it("keeps a visitor logged in behind a proxy that forwards only __session (#1343)", async () => {
@@ -284,25 +363,26 @@ describe("api-gateway handleRequest (P12 PR1.4)", () => {
       ["caelo_consent", "x"],
       ["other", "1"],
     ]);
-    const call = async (op: string) => {
+    const call = async (op: string, body: unknown = {}) => {
       const forwarded = jar.has("__session") ? `__session=${jar.get("__session")}` : undefined;
-      const r = await handleRequest(postReq(`/api/plugin/${SLUG}/${op}`, {}, forwarded));
+      const r = await handleRequest(postReq(`/api/plugin/${SLUG}/${op}`, body, forwarded));
       for (const c of r.headers.getSetCookie()) {
         const [pair = "", ...flags] = c.split("; ");
         const eq = pair.indexOf("=");
         if (flags.includes("Max-Age=0")) jar.delete(pair.slice(0, eq));
         else jar.set(pair.slice(0, eq), pair.slice(eq + 1));
       }
-      return (await r.json()) as { data: { sessionToken?: string | null } };
+      return (await r.json()) as { data: { authenticated?: boolean } };
     };
-    expect((await call("whoami")).data.sessionToken).toBeNull();
-    await call("login");
+    await seedVerifiedVisitor();
+    expect((await call("me")).data.authenticated).toBe(false);
+    await call("login", { email: VISITOR_EMAIL, password: VISITOR_PASSWORD });
     expect(jar.has("__session")).toBe(true);
-    expect((await call("whoami")).data.sessionToken).toBe(SESSION_TOKEN);
-    expect((await call("whoami")).data.sessionToken).toBe(SESSION_TOKEN);
+    expect((await call("me")).data.authenticated).toBe(true);
+    expect((await call("me")).data.authenticated).toBe(true);
     await call("logout");
     expect(jar.has("__session")).toBe(false);
-    expect((await call("whoami")).data.sessionToken).toBeNull();
+    expect((await call("me")).data.authenticated).toBe(false);
   });
 
   it("does not fail on a malformed cookie header", async () => {
