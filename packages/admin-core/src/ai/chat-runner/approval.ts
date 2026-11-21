@@ -32,6 +32,8 @@ const TOOL_LABELS: Record<string, string> = {
     "Move the protected staging site to another host — it needs a DNS record and domain mapping before it answers",
   propose_set_security_headers:
     "Change the site's security headers — a wrong policy can stop scripts or let other sites frame this one",
+  propose_set_visitor_ai:
+    "Change the AI that answers visitors (provider, model, budgets, limits) — it spends money on its own key; paste the key below when the card asks for one",
   propose_rotate_staging_credentials:
     "Replace the staging crawler credentials — every crawler using the old one is locked out; this cannot be undone",
 };

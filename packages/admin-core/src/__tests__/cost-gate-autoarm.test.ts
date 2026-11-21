@@ -11,14 +11,17 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { computeAiCallCostMicrocents } from "@caelo-cms/shared";
+import {
+  computeAiCallCostMicrocents,
+  type PricingCandidate,
+  pickPricingRow,
+} from "@caelo-cms/shared";
 import {
   type BudgetGateState,
   budgetTripText,
   budgetWarningText,
   evaluateGateLevel,
 } from "../ai/chat-runner/budget-gate.js";
-import { type PricingCandidate, pickPricingRow } from "../ai/pricing-cache.js";
 import {
   deriveCeilingFromEstimate,
   ESTIMATE_CEILING_SAFETY_FACTOR,

@@ -77,8 +77,8 @@ ALTER TABLE visitor_ai_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE visitor_ai_settings FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS visitor_ai_settings_authenticated ON visitor_ai_settings;
 CREATE POLICY visitor_ai_settings_authenticated ON visitor_ai_settings
-  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
-  WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
+  USING (caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai', 'system']))
+  WITH CHECK (caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai', 'system']));
 
 DROP TRIGGER IF EXISTS caelo_projection_settings_visitor_ai ON visitor_ai_settings;
 CREATE TRIGGER caelo_projection_settings_visitor_ai

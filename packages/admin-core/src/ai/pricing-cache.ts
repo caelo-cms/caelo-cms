@@ -11,66 +11,8 @@
  * stay deterministic by clearing on cold start.
  */
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import type { PricingRow } from "@caelo-cms/shared";
+import { type PricingCandidate, type PricingRow, pickPricingRow } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-
-/**
- * A candidate ai_pricing row for one (provider, operationType), carrying the
- * fields `pickPricingRow` needs to choose the row in force at a given time:
- * the rates plus the model (for exact-vs-wildcard specificity) and the
- * validity/effective timestamps as epoch ms (null bound = open-ended).
- */
-export interface PricingCandidate extends PricingRow {
-  model: string;
-  effectiveFromMs: number;
-  validFromMs: number | null;
-  validToMs: number | null;
-}
-
-/**
- * Pick the ai_pricing row in force at `nowMs` from candidates already scoped
- * to one (provider, operationType). Eligibility: `effective_from` has passed
- * AND the `[valid_from, valid_to]` window (either bound open) contains
- * `nowMs`. Precedence among the eligible: exact-model beats the wildcard `*`,
- * then a DATED window beats the undated back-compat row, then the
- * latest-starting window wins, then the latest `effective_from`. Returns the
- * `PricingRow` rate subset, or null when nothing is eligible.
- *
- * Pure + exported so validity-window selection is unit-testable without a DB.
- */
-export function pickPricingRow(
-  candidates: readonly PricingCandidate[],
-  requestedModel: string,
-  nowMs: number,
-): PricingRow | null {
-  const eligible = candidates.filter(
-    (c) =>
-      c.effectiveFromMs <= nowMs &&
-      (c.validFromMs === null || c.validFromMs <= nowMs) &&
-      (c.validToMs === null || c.validToMs >= nowMs),
-  );
-  if (eligible.length === 0) return null;
-  const exact = (c: PricingCandidate) => (c.model === requestedModel ? 1 : 0);
-  const dated = (c: PricingCandidate) => (c.validFromMs !== null || c.validToMs !== null ? 1 : 0);
-  // Later in each ranked dimension wins; `beats(b, a)` = "b outranks a".
-  const beats = (b: PricingCandidate, a: PricingCandidate): boolean => {
-    if (exact(b) !== exact(a)) return exact(b) > exact(a);
-    if (dated(b) !== dated(a)) return dated(b) > dated(a);
-    const bf = b.validFromMs ?? Number.NEGATIVE_INFINITY;
-    const af = a.validFromMs ?? Number.NEGATIVE_INFINITY;
-    if (bf !== af) return bf > af;
-    return b.effectiveFromMs > a.effectiveFromMs;
-  };
-  const best = eligible.reduce((a, b) => (beats(b, a) ? b : a));
-  return {
-    inputMicrocents: best.inputMicrocents,
-    outputMicrocents: best.outputMicrocents,
-    cachedMicrocents: best.cachedMicrocents,
-    cacheCreationMicrocents: best.cacheCreationMicrocents,
-    longPromptThresholdTokens: best.longPromptThresholdTokens ?? null,
-    longPromptMultiplier: best.longPromptMultiplier ?? null,
-  };
-}
 
 interface CacheEntry {
   value: PricingRow | null;

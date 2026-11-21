@@ -274,6 +274,7 @@ import { submitResultTool } from "./submit-result.js";
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateRedirectChangesTool } from "./update-redirect-changes.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
+import { getVisitorAiTool, proposeSetVisitorAiTool } from "./visitor-ai-tools.js";
 
 let processRegistry: ToolRegistry | null = null;
 
@@ -642,6 +643,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetPluginAiCostCapTool);
   registry.register(proposeSetMailCapsTool);
   registry.register(getMailCapsTool);
+  // #1654 — the visitor AI: settings through the owner-settings gate.
+  registry.register(proposeSetVisitorAiTool);
+  registry.register(getVisitorAiTool);
   registry.register(proposeRotateGatewayCookieSecretTool);
   // Issue #650 — the protected staging domain's access gate.
   registry.register(getStagingAccessTool);

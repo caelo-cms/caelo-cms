@@ -114,7 +114,7 @@ CREATE POLICY visitor_ai_calls_gc ON visitor_ai_calls
 DROP POLICY IF EXISTS visitor_ai_calls_admin ON visitor_ai_calls;
 CREATE POLICY visitor_ai_calls_admin ON visitor_ai_calls
   FOR SELECT TO admin_role
-  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
+  USING (caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai', 'system']));
 
 -- The writer chooses neither the id nor the time: both come from defaults.
 GRANT SELECT, DELETE ON visitor_ai_calls TO public_role;
