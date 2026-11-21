@@ -118,13 +118,25 @@ async function reserve(spender: Spender, request = UNIT, model = MODEL) {
   });
 }
 
-async function spent(where: ReturnType<typeof sql>): Promise<number> {
-  const rows = (await sys((tx) =>
-    tx.execute(
-      sql`SELECT coalesce(sum(cost_estimate_microcents), 0)::bigint AS n FROM ai_calls WHERE ${where}`,
-    ),
-  )) as unknown as { n: string }[];
-  return Number(rows[0]?.n ?? 0);
+/**
+ * What this file's calls cost so far, by its made-up provider or by the
+ * plugin: a test-only read on its own connection, like {@link wipeCalls}.
+ */
+async function spent(by: { provider: string } | { pluginId: string }): Promise<number> {
+  const conn = new SQL(process.env.ADMIN_DATABASE_URL as string);
+  try {
+    const rows = (await conn.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return "provider" in by
+        ? tx`SELECT coalesce(sum(cost_estimate_microcents), 0)::bigint AS n FROM ai_calls
+             WHERE provider = ${by.provider}`
+        : tx`SELECT coalesce(sum(cost_estimate_microcents), 0)::bigint AS n FROM ai_calls
+             WHERE plugin_id = ${by.pluginId}::uuid`;
+    })) as { n: string }[];
+    return Number(rows[0]?.n ?? 0);
+  } finally {
+    await conn.end();
+  }
 }
 
 beforeAll(async () => {
@@ -261,7 +273,7 @@ describe("the AI spend ledger (#1653)", () => {
     );
     expect(results.filter((r) => r.ok)).toHaveLength(5);
     expect(results.filter((r) => !r.ok)).toHaveLength(15);
-    expect(await spent(sql`provider = ${PROVIDER}`)).toBeLessThanOrEqual(55_000);
+    expect(await spent({ provider: PROVIDER })).toBeLessThanOrEqual(55_000);
   });
 
   it("settling moves a reservation to the real cost, releasing frees it, and an extension is checked", async () => {
@@ -307,7 +319,7 @@ describe("the AI spend ledger (#1653)", () => {
     ).toContain("this chat step could cost up to");
     const released = await execute(registry, adapter, SYSTEM, "ai_ledger.release", { callId: bId });
     expect((released.ok ? released.value : null) as unknown).toEqual({ released: true });
-    expect(await spent(sql`provider = ${PROVIDER}`)).toBe(2_000);
+    expect(await spent({ provider: PROVIDER })).toBe(2_000);
   });
 
   it("the plugin cap reserves before the call: parallel ctx.ai calls cannot overshoot it", async () => {
@@ -353,7 +365,7 @@ describe("the AI spend ledger (#1653)", () => {
       "AiBudgetReached (plugin)",
     );
     // Settled at the real cost: 100 × 2,000/1K + 100 × 5,000/1K = 700 each.
-    expect(await spent(sql`plugin_id = ${plugin.pluginId}::uuid`)).toBe(1_400);
+    expect(await spent({ pluginId: plugin.pluginId })).toBe(1_400);
   });
 
   it("a plugin call whose provider throws releases its reservation", async () => {

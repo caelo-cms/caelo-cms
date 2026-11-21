@@ -298,7 +298,7 @@ describe("the visitor AI's settings (#1654, §11.A)", () => {
 });
 
 describe("the key store (#1654)", () => {
-  it("replaces a key file atomically and never reads it", async () => {
+  it("writes a key file the gateway may read, and never reads it back", async () => {
     const file = join(dir, "visitor-ai-key.json");
     const store = visitorAiKeyStore("live", { CAELO_VISITOR_AI_KEY_FILE: file });
     await store.write({ provider: "openai", apiKey: KEY });
@@ -313,12 +313,18 @@ describe("the key store (#1654)", () => {
     } finally {
       await handle.close();
     }
+  });
+
+  it("removing the key replaces the file with an empty one", async () => {
+    const file = join(dir, "visitor-ai-key-removed.json");
+    const store = visitorAiKeyStore("live", { CAELO_VISITOR_AI_KEY_FILE: file });
+    await store.write({ provider: "openai", apiKey: KEY });
     await store.write(null);
-    const cleared = await open(file, "r");
+    const handle = await open(file, "r");
     try {
-      expect(await cleared.readFile("utf8")).toBe("{}");
+      expect(await handle.readFile("utf8")).toBe("{}");
     } finally {
-      await cleared.close();
+      await handle.close();
     }
   });
 
