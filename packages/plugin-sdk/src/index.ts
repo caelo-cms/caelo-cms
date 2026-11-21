@@ -1258,7 +1258,9 @@ export const pluginManifest = z
       .max(64)
       .optional(),
     /** Operation names. Bodies live in source — the manifest just lists names. */
-    operations: z.array(z.string().min(1).max(120)).min(1),
+    // #1340 — may be empty: a plugin whose visitor surface is all
+    // declarations (`publicOperations[].run`) needs no code operation.
+    operations: z.array(z.string().min(1).max(120)).max(200),
     component: pluginComponent.optional(),
     hasStaticRender: z.boolean().default(false),
     /** See `PluginDefinition.publicOperations` (#1332): each visitor

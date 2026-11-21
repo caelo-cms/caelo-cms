@@ -83,6 +83,10 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "auth_config",
         "public_users",
       ],
+      "run": {
+        "action": "block",
+        "block": "visitor-auth.signup",
+      },
       "writes": [
         "public_users",
         "email_verification_tokens",
@@ -119,6 +123,10 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
       "reads": [
         "email_verification_tokens",
       ],
+      "run": {
+        "action": "block",
+        "block": "visitor-auth.verify-email",
+      },
       "writes": [
         "email_verification_tokens",
         "public_users",
@@ -156,6 +164,10 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "login_throttle",
         "public_users",
       ],
+      "run": {
+        "action": "block",
+        "block": "visitor-auth.login",
+      },
       "writes": [
         "login_throttle",
         "public_users",
@@ -179,6 +191,10 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
       "reads": [
         "visitor_sessions",
       ],
+      "run": {
+        "action": "block",
+        "block": "visitor-auth.logout",
+      },
       "writes": [
         "visitor_sessions",
       ],
@@ -201,6 +217,10 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "visitor_sessions",
         "public_users",
       ],
+      "run": {
+        "action": "block",
+        "block": "visitor-auth.me",
+      },
       "writes": [],
     },
     {
@@ -229,6 +249,10 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
       "reads": [
         "public_users",
       ],
+      "run": {
+        "action": "block",
+        "block": "visitor-auth.request-password-reset",
+      },
       "writes": [
         "password_reset_tokens",
       ],
@@ -266,6 +290,10 @@ exports[`shipped plugins' public surface (#1332) auth: matches the reviewed surf
         "password_reset_tokens",
         "visitor_sessions",
       ],
+      "run": {
+        "action": "block",
+        "block": "visitor-auth.reset-password",
+      },
       "writes": [
         "public_users",
         "password_reset_tokens",
@@ -379,6 +407,56 @@ exports[`shipped plugins' public surface (#1332) comments: matches the reviewed 
         "windowSeconds": 60,
       },
       "reads": [],
+      "run": {
+        "action": "insert",
+        "answer": {
+          "commentId": {
+            "from": "inserted-id",
+          },
+          "status": "pending",
+        },
+        "checks": [
+          {
+            "check": "not-blank",
+            "field": "content",
+            "refusal": "submit: content empty",
+          },
+          {
+            "check": "not-blank",
+            "field": "authorName",
+            "refusal": "submit: authorName required",
+          },
+        ],
+        "honeypot": {
+          "answer": {
+            "commentId": "00000000-0000-0000-0000-000000000000",
+            "status": "pending",
+          },
+          "field": "hp_address",
+          "store": "nothing",
+        },
+        "table": "comments",
+        "values": {
+          "author_name": {
+            "field": "authorName",
+            "from": "input",
+            "trim": true,
+          },
+          "content": {
+            "field": "content",
+            "from": "input",
+            "trim": true,
+          },
+          "page_id": {
+            "field": "pageId",
+            "from": "input",
+          },
+          "status": {
+            "from": "const",
+            "value": "pending",
+          },
+        },
+      },
       "writes": [
         "comments",
       ],
@@ -432,6 +510,10 @@ exports[`shipped plugins' public surface (#1332) comments: matches the reviewed 
         "windowSeconds": 60,
       },
       "reads": [],
+      "run": {
+        "action": "block",
+        "block": "comment-thread.read",
+      },
       "writes": [],
     },
   ],
@@ -496,6 +578,50 @@ exports[`shipped plugins' public surface (#1332) consent-manager: matches the re
         "windowSeconds": 60,
       },
       "reads": [],
+      "run": {
+        "action": "insert",
+        "answer": {
+          "recorded": true,
+        },
+        "checks": [
+          {
+            "check": "equals-row",
+            "column": "policy_version",
+            "field": "policyVersion",
+            "refusal": "record_consent: the policy version is not the current one; the visitor must be asked again",
+            "source": {
+              "of": "adminSchema",
+              "table": "settings",
+            },
+          },
+          {
+            "check": "all-in",
+            "column": "key",
+            "field": "granted",
+            "refusal": "record_consent: unknown consent categories",
+            "source": {
+              "of": "adminSchema",
+              "table": "categories",
+            },
+          },
+        ],
+        "table": "consent_log",
+        "values": {
+          "consent_id": {
+            "field": "consentId",
+            "from": "input",
+          },
+          "granted": {
+            "distinct": true,
+            "field": "granted",
+            "from": "input",
+          },
+          "policy_version": {
+            "field": "policyVersion",
+            "from": "input",
+          },
+        },
+      },
       "writes": [
         "consent_log",
       ],
@@ -596,6 +722,64 @@ exports[`shipped plugins' public surface (#1332) forms: matches the reviewed sur
       "reads": [
         "forms",
       ],
+      "run": {
+        "action": "insert",
+        "answer": {
+          "submissionId": {
+            "from": "inserted-id",
+          },
+        },
+        "checks": [
+          {
+            "check": "form-fields",
+            "definitionColumn": "schema_json",
+            "field": "data",
+            "keyColumn": "slug",
+            "keyField": "formSlug",
+            "missing": "submit: this form does not exist",
+            "source": {
+              "of": "schema",
+              "table": "forms",
+            },
+          },
+        ],
+        "honeypot": {
+          "answer": {
+            "honeypot": true,
+            "submissionId": {
+              "from": "inserted-id",
+            },
+          },
+          "field": "honeypot",
+          "store": "marked",
+          "values": {
+            "status": {
+              "from": "const",
+              "value": "spam",
+            },
+          },
+        },
+        "table": "form_submissions",
+        "values": {
+          "data": {
+            "field": "data",
+            "from": "input",
+          },
+          "form_slug": {
+            "field": "formSlug",
+            "from": "input",
+          },
+          "page_id": {
+            "field": "pageId",
+            "from": "input",
+            "orElse": "",
+          },
+          "status": {
+            "from": "const",
+            "value": "new",
+          },
+        },
+      },
       "writes": [
         "form_submissions",
       ],
@@ -681,6 +865,15 @@ exports[`shipped plugins' public surface (#1332) newsletter: matches the reviewe
       "reads": [
         "subscribers",
       ],
+      "run": {
+        "action": "block",
+        "block": "double-opt-in.subscribe",
+        "options": {
+          "hours": 48,
+          "table": "subscribers",
+          "template": "confirm_subscription",
+        },
+      },
       "writes": [
         "subscribers",
       ],
@@ -710,6 +903,13 @@ exports[`shipped plugins' public surface (#1332) newsletter: matches the reviewe
       "reads": [
         "subscribers",
       ],
+      "run": {
+        "action": "block",
+        "block": "double-opt-in.confirm",
+        "options": {
+          "table": "subscribers",
+        },
+      },
       "writes": [
         "subscribers",
       ],
@@ -739,6 +939,14 @@ exports[`shipped plugins' public surface (#1332) newsletter: matches the reviewe
       "reads": [
         "subscribers",
       ],
+      "run": {
+        "action": "block",
+        "block": "mail.unsubscribe",
+        "options": {
+          "column": "unsubscribed_at",
+          "table": "subscribers",
+        },
+      },
       "writes": [
         "subscribers",
       ],
@@ -804,6 +1012,31 @@ exports[`shipped plugins' public surface (#1332) ratings: matches the reviewed s
         "windowSeconds": 60,
       },
       "reads": [],
+      "run": {
+        "action": "insert",
+        "answer": {
+          "id": {
+            "from": "inserted-id",
+          },
+          "recorded": true,
+        },
+        "table": "ratings",
+        "values": {
+          "page_id": {
+            "field": "pageId",
+            "from": "input",
+            "trim": true,
+          },
+          "score": {
+            "field": "score",
+            "from": "input",
+          },
+          "visitor_id": {
+            "from": "visitor",
+            "key": "id",
+          },
+        },
+      },
       "writes": [
         "ratings",
       ],
@@ -826,6 +1059,29 @@ exports[`shipped plugins' public surface (#1332) ratings: matches the reviewed s
       "reads": [
         "rating_aggregates",
       ],
+      "run": {
+        "action": "list",
+        "as": "aggregates",
+        "columns": [
+          "id",
+          "page_id",
+          "count",
+          "sum",
+          "average",
+          "updated_at",
+        ],
+        "limit": 200,
+        "orderBy": "count",
+        "orderDir": "desc",
+        "table": "rating_aggregates",
+        "where": {
+          "page_id": {
+            "field": "pageId",
+            "from": "input",
+            "optional": true,
+          },
+        },
+      },
       "writes": [],
     },
   ],
