@@ -435,56 +435,79 @@ const SCENARIOS: Record<string, () => Promise<void>> = {
   },
 
   async propose_rotate_staging_credentials() {
-    await withStagingEnv(async () => {
-      await withSql(async (tx) => {
-        await tx`UPDATE staging_access SET basic_auth_enabled = true, basic_auth_nonce = 't971-b0',
-                   header_enabled = true, header_nonce = 't971-h0' WHERE id = 1`;
-        await tx`DELETE FROM owner_settings_pending_actions WHERE status = 'pending'`;
+    // staging_access is a seed table the per-file reset keeps: put the gate
+    // back as it was, or every later file meets a staging site behind basic
+    // auth (staging-site-projection expects 403 and gets 401).
+    const [before] = (await withSql(
+      async (tx) =>
+        tx`SELECT basic_auth_enabled, basic_auth_nonce, header_enabled, header_nonce
+           FROM staging_access WHERE id = 1`,
+    )) as {
+      basic_auth_enabled: boolean;
+      basic_auth_nonce: string;
+      header_enabled: boolean;
+      header_nonce: string;
+    }[];
+    try {
+      await withStagingEnv(async () => {
+        await withSql(async (tx) => {
+          await tx`UPDATE staging_access SET basic_auth_enabled = true, basic_auth_nonce = 't971-b0',
+                     header_enabled = true, header_nonce = 't971-h0' WHERE id = 1`;
+          await tx`DELETE FROM owner_settings_pending_actions WHERE status = 'pending'`;
+        });
+        const rotated = (await attachGatedExecute(
+          gatedTool("propose_rotate_staging_credentials"),
+          registry,
+          adapter,
+          AI,
+          OWNER,
+        ).execute?.({ which: "both", reason: "t971: shared with a contractor who left" })) as {
+          ok: boolean;
+        };
+        expect(rotated.ok).toBe(true);
+        // The read tool, run the way the chat runs it (AI actor, Owner present).
+        const read = await tools.dispatch("get_staging_access", {}, AI, toolCtx);
+        const smuggled = await tools.dispatch(
+          "get_staging_access",
+          { includeCredentials: true },
+          AI,
+          toolCtx,
+        );
+        expect(smuggled.ok).toBe(false);
+        const nonces = await withSql(
+          async (tx) =>
+            (await tx`SELECT basic_auth_nonce AS b, header_nonce AS h FROM staging_access WHERE id = 1`) as {
+              b: string;
+              h: string;
+            }[],
+        );
+        const row = nonces[0];
+        if (!row || row.b === "t971-b0" || row.h === "t971-h0") throw new Error("nothing rotated");
+        const password = await deriveStagingCredential(GATE_SECRET, "basic-auth", row.b);
+        const header = await deriveStagingCredential(GATE_SECRET, "header", row.h);
+        // The Owner still reads them in the admin (Settings → Staging access).
+        const owner = await execute(registry, adapter, OWNER, "staging_access.get", {
+          includeCredentials: true,
+        });
+        expect(JSON.stringify(owner)).toContain(password);
+        const visible = {
+          "the gated tool result": JSON.stringify(rotated),
+          get_staging_access: JSON.stringify([read, smuggled]),
+          "audit / pending rows": await storedSideChannels(),
+        };
+        expectAbsent(password, visible);
+        expectAbsent(header, visible);
+        expect(read.content).toContain("/settings/staging");
       });
-      const rotated = (await attachGatedExecute(
-        gatedTool("propose_rotate_staging_credentials"),
-        registry,
-        adapter,
-        AI,
-        OWNER,
-      ).execute?.({ which: "both", reason: "t971: shared with a contractor who left" })) as {
-        ok: boolean;
-      };
-      expect(rotated.ok).toBe(true);
-      // The read tool, run the way the chat runs it (AI actor, Owner present).
-      const read = await tools.dispatch("get_staging_access", {}, AI, toolCtx);
-      const smuggled = await tools.dispatch(
-        "get_staging_access",
-        { includeCredentials: true },
-        AI,
-        toolCtx,
-      );
-      expect(smuggled.ok).toBe(false);
-      const nonces = await withSql(
-        async (tx) =>
-          (await tx`SELECT basic_auth_nonce AS b, header_nonce AS h FROM staging_access WHERE id = 1`) as {
-            b: string;
-            h: string;
-          }[],
-      );
-      const row = nonces[0];
-      if (!row || row.b === "t971-b0" || row.h === "t971-h0") throw new Error("nothing rotated");
-      const password = await deriveStagingCredential(GATE_SECRET, "basic-auth", row.b);
-      const header = await deriveStagingCredential(GATE_SECRET, "header", row.h);
-      // The Owner still reads them in the admin (Settings → Staging access).
-      const owner = await execute(registry, adapter, OWNER, "staging_access.get", {
-        includeCredentials: true,
-      });
-      expect(JSON.stringify(owner)).toContain(password);
-      const visible = {
-        "the gated tool result": JSON.stringify(rotated),
-        get_staging_access: JSON.stringify([read, smuggled]),
-        "audit / pending rows": await storedSideChannels(),
-      };
-      expectAbsent(password, visible);
-      expectAbsent(header, visible);
-      expect(read.content).toContain("/settings/staging");
-    });
+    } finally {
+      if (before)
+        await withSql(
+          async (tx) =>
+            tx`UPDATE staging_access SET basic_auth_enabled = ${before.basic_auth_enabled},
+                 basic_auth_nonce = ${before.basic_auth_nonce}, header_enabled = ${before.header_enabled},
+                 header_nonce = ${before.header_nonce} WHERE id = 1`,
+        );
+    }
   },
 
   async propose_rotate_gateway_cookie_secret() {
