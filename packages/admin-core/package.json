@@ -22,6 +22,7 @@
     "lint:spdx": "bun run scripts/check-spdx-headers.ts"
   },
   "dependencies": {
+    "croner": "11.0.0",
     "@ai-sdk/anthropic": "^4.0.104",
     "@ai-sdk/google": "^4.0.120",
     "@ai-sdk/openai": "^4.0.117",

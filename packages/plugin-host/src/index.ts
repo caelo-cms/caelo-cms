@@ -108,6 +108,7 @@ export {
   type LoadedPlugin,
   loadedPlugins,
   MAIN_RENDER,
+  makeInvocationContext,
   type PluginHostInfra,
   pluginToolSurfaceGeneration,
   type RenderScope,
@@ -210,6 +211,7 @@ export {
   pluginHostBootstrapped,
   resetPluginHost,
   unapprovedCapabilities,
+  verifyDiskPlugin,
 } from "./loader.js";
 // #1008 — whether a plugin runs in this process: where its skills are
 // available, and what the Publish-live gate checks every active plugin against.
@@ -264,6 +266,8 @@ export {
   requiredPluginsOf,
   requirementsMessage,
 } from "./plugin-dependencies.js";
+// Epic #1644 (R5, #1646) — plugin batches in a job container.
+export { notifyPluginRegistered, onPluginRegistered } from "./plugin-registered.js";
 export { type ListPlan, type PluginRowLocker, privateListSql } from "./private-storage.js";
 export {
   type PromptContextRenderer,
@@ -322,6 +326,8 @@ export {
   refreshRuntimeHeartbeat,
   stopRuntimeHeartbeat,
 } from "./runtime-health.js";
+export { SANDBOX_BATCH_CALL_LIMIT, sandboxMethod } from "./sandbox-protocol.js";
+export { brokerSandboxCall, runSandbox } from "./sandbox-runtime.js";
 export {
   pluginWorkerScheduler,
   type ScheduledWorker,

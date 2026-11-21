@@ -789,6 +789,7 @@ import {
   setUserEmailOp,
   setUserRolesOp,
 } from "./ops/users.js";
+import { PLUGIN_BATCH_OPS } from "./plugin-batches/ops.js";
 import {
   beginPluginDataRunOp,
   buildPluginDataOp,
@@ -1394,6 +1395,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPendingPluginConfigProposalsOp);
   // Epic #1644 (#1647) — page output delivered to plugin observers at a Stage.
   for (const op of PAGE_OUTPUT_OPS) registry.register(op as never);
+  for (const op of PLUGIN_BATCH_OPS) registry.register(op as never);
   // Epic #1644 (#1648) — a Stage's collection index.
   for (const op of COLLECTION_INDEX_OPS) registry.register(op as never);
   registry.register(rejectStaticFileProposalOp);

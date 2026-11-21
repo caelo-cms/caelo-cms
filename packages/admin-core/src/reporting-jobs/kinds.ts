@@ -8,6 +8,7 @@
 
 import { buildCarrierJobKind } from "../build-carrier/kind.js";
 import { collectionIndexJobKind } from "../collections/index-job-kind.js";
+import { pluginBatchJobKind } from "../plugin-batches/job-kind.js";
 import { qualityAuditJobKind } from "../quality/audit-job-kind.js";
 import { siteImportJobKind } from "../site-import/import-job-kind.js";
 import type { ReportingJobKindDef } from "./kind.js";
@@ -18,6 +19,7 @@ const KINDS: Readonly<Record<ReportingJobKind, ReportingJobKindDef>> = {
   site_import: siteImportJobKind,
   build: buildCarrierJobKind,
   collection_index: collectionIndexJobKind,
+  plugin_batch: pluginBatchJobKind,
 };
 
 // The shared actions are answered before a kind's own (dispatch.ts): a kind

@@ -9,6 +9,7 @@
  * protocol.ts (`JOB_TIMING`).
  */
 
+import type { PluginCapability } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import type { z } from "zod";
@@ -103,6 +104,13 @@ export interface ReportingJobKindDef {
    * build) is never started minutes after the request that asked for it.
    */
   readonly unstarted: "start" | "give-up";
+  /**
+   * #1646 — the plugin capability whose work this kind does: the launcher
+   * starts it only while an active plugin holds that grant (a kind no
+   * plugin uses is never started; its work is given up with the reason).
+   * Core kinds (audit, import, build) name none.
+   */
+  readonly capability?: PluginCapability;
   /** The kind's own actions (the shared ones: protocol.ts FOUNDATION_ACTIONS). */
   // biome-ignore lint/suspicious/noExplicitAny: each action narrows its own input with its schema.
   readonly actions: Readonly<Record<string, ReportingAction<any>>>;

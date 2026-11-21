@@ -207,6 +207,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   },
   "static_files.list_pending": PENDING_QUEUE,
   "plugin_config.list_pending": PENDING_QUEUE,
+  "collections.run_state": {
+    kind: "covered",
+    by: ["get_stage_status"],
+    note: "#1648 — deploy.stage_status reports every succeeded Stage's search indexes (ready, still building, failed with the reason); run_state is the Publish live gate's and the panels' per-run read",
+  },
   "users.list_pending": PENDING_QUEUE,
   // #970 — the sync job's per-run report. The AI sees it where it acts: every
   // approved user change folds the run's refused members into the tool

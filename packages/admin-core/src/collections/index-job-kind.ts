@@ -43,6 +43,7 @@ const reportTarget = {
 export const collectionIndexJobKind: ReportingJobKindDef = {
   kind: "collection_index",
   label: "search index",
+  capability: "collections",
   gcp: {
     jobEnvVar: COLLECTION_INDEX_JOB_ENV_VAR,
     serviceAccountEnvVar: COLLECTION_INDEX_SERVICE_ACCOUNT_ENV_VAR,

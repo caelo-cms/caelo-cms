@@ -1423,11 +1423,6 @@ export const pluginManifest = z
     );
     for (const [i, b] of (m.batchOperations ?? []).entries()) {
       named(["batchOperations", i, "operation"], b.operation, "the batch operation");
-      if (b.pageOutput && !m.pageOutputObserver)
-        issueAt(
-          ["batchOperations", i, "pageOutput"],
-          "a batch that reads page output belongs to a plugin with a `pageOutputObserver`",
-        );
     }
     const batchNames = (m.batchOperations ?? []).map((b) => b.operation);
     if (new Set(batchNames).size !== batchNames.length)
@@ -2116,11 +2111,14 @@ export interface PluginInvocation {
    */
   readonly siteBaseUrl?: string;
   /**
-   * #1647 / #1648 — set for origins `observer` and `batch`: the Stage's
-   * deploy run whose output the call reads. Collection writes of the call
-   * belong to that run's index.
+   * #1647 / #1648 — set for origin `observer`: the Stage's deploy run whose
+   * output the call reads. Collection writes of the call belong to that
+   * run's index. (A batch's writes go to the next Stage's index; a `stage`
+   * batch finds its Stage in `PluginBatchArgs.stageRunId`.)
    */
   readonly stageRunId?: string;
+  /** #1646 — set for origin `batch`: the run the call belongs to. */
+  readonly batchRunId?: string;
 }
 
 /** Prefix of the error the host throws when a plugin calls `ctx.ai` or

@@ -262,6 +262,18 @@ export {
   type UpdateRoute,
   type UpdateRouteInput,
 } from "./platform-updates/update-route.js";
+export {
+  PLUGIN_BATCH_JOB_ENV_VAR,
+  PLUGIN_BATCH_SERVICE_ACCOUNT_ENV_VAR,
+} from "./plugin-batches/job-kind.js";
+// Epic #1644 (R5, #1646) — plugin batches.
+export { PLUGIN_BATCH_OPS } from "./plugin-batches/ops.js";
+export {
+  bootstrapPluginBatchTriggers,
+  enqueueStageBatches,
+  pluginBatchTaskKey,
+  pluginBatchTasks,
+} from "./plugin-batches/triggers.js";
 // #1155 — the plugin-data build, a task on the #1140 scheduler tick.
 export { type PluginDataTickResult, runPluginDataBuildIfDue } from "./plugin-data/worker.js";
 // issue #946 / #1217 — the preview document's shape (CSP sandbox, inlined

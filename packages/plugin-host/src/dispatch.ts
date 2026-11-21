@@ -375,6 +375,11 @@ export function assertInvocationConsistent(
   if (invocation.origin === "observer" && !invocation.stageRunId) {
     throw new Error("PluginInvocationInvalid: an observer invocation needs its Stage's run id");
   }
+  if (invocation.origin === "batch" && (!invocation.batchRunId || invocation.stageRunId)) {
+    throw new Error(
+      "PluginInvocationInvalid: a batch invocation names its run (batchRunId) and no Stage run: its collection writes go to the next Stage",
+    );
+  }
   // A branch is allowed for a chat, a branch preview render, and an
   // approved action whose approver cannot publish (it stays in the chat).
   if (
@@ -540,6 +545,26 @@ export function renderInvocation(scope: RenderScope): PluginInvocation {
  * taking a second connection (#1254, query-api pool-guard.ts). They see the
  * holder's uncommitted writes, which is what a composition mid-write needs.
  */
+/**
+ * #1646 — the context a plugin's call gets on this host for `invocation`,
+ * outside an operation dispatch: the batch job's remote broker answers each
+ * SDK call the plugin made in the job on it (sandbox-runtime
+ * `brokerSandboxCall`). The same factory and checks as a dispatched call.
+ */
+export async function makeInvocationContext(
+  slug: string,
+  invocation: PluginInvocation,
+): Promise<PluginContext | PluginContextTier1> {
+  const plugin = loadedPlugins.bySlug(slug);
+  if (!plugin) throw new Error(`no loaded plugin with slug "${slug}"`);
+  if (isPluginDisabled(slug)) throw new Error(`plugin "${slug}" is disabled`);
+  if (!cachedInfra || !makeContext) {
+    throw new Error("plugin host not bootstrapped — call bootstrap() before dispatch");
+  }
+  assertInvocationConsistent(invocation, undefined);
+  return makeContext({ plugin, infra: cachedInfra, invocation });
+}
+
 export async function runPluginOperation(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {

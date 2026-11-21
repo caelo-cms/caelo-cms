@@ -38,6 +38,7 @@ export const REPORTING_JOB_KINDS = [
   "site_import",
   "build",
   "collection_index",
+  "plugin_batch",
 ] as const;
 
 export type ReportingJobKind = (typeof REPORTING_JOB_KINDS)[number];
@@ -111,6 +112,18 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
     renewEverySeconds: 60,
     maxAttempts: 3,
     maxRunSeconds: 60 * 60,
+    reportTimeoutSeconds: 10 * 60,
+  },
+  // A plugin's batch operation (#1646): up to its declared maxRunSeconds
+  // (at most an hour) plus start-up. Two attempts: a batch re-derives what
+  // it writes, so a second run after a dead one is safe; more would repeat
+  // a batch that dies for a reason of its own.
+  plugin_batch: {
+    firstLeaseSeconds: 15 * 60,
+    leaseSeconds: 10 * 60,
+    renewEverySeconds: 60,
+    maxAttempts: 2,
+    maxRunSeconds: 60 * 60 + 5 * 60,
     reportTimeoutSeconds: 10 * 60,
   },
 };

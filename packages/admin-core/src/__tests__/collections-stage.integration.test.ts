@@ -407,6 +407,13 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(
       await searchStore(join(root, "collections-staging"), index.releaseKey as string, "Preis"),
     ).toEqual([`/${PAGES[0]}`]);
+    // The Stage status says the index is ready (the AI reads it in get_stage_status).
+    const status = await ok<{
+      runs: { searchIndexes?: { collection: string; state: string }[] }[];
+    }>("deploy.stage_status", { deployRunId: first });
+    expect(status.runs[0]?.searchIndexes).toEqual([
+      { plugin: PLUGIN, collection: "pages", state: "ready", error: null },
+    ] as never);
     // The staging gateway learns the Stage's index; the live one still has none.
     expect(await published(STAGING_URL as string)).toEqual([index.releaseKey as string]);
     expect(await published(PUBLIC_URL as string)).toEqual([]);

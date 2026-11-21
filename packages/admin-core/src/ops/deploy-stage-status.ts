@@ -12,7 +12,7 @@
  * run's own timestamps.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, uuidArray } from "@caelo-cms/query-api";
 import {
   ok,
   type PhaseTiming,
@@ -108,7 +108,40 @@ export const stageStatusOp = defineOperation({
         ).map((h) => phaseTimingsSchema.parse(h.phase_timings) ?? [])
       : [];
 
-    return ok({ runs: rows.map((r) => toStageStatus(r, history)) });
+    // #1648 — the search indexes each succeeded run built.
+    const succeeded = rows.filter((r) => r.status === "succeeded").map((r) => r.id);
+    const indexes =
+      succeeded.length === 0
+        ? []
+        : ((await tx.execute(sql`
+            SELECT c.run_id::text AS run_id, p.slug AS plugin, c.collection, c.state, c.error
+              FROM collection_releases c JOIN plugins p ON p.id = c.plugin_id
+             WHERE c.run_id = ANY(${uuidArray(succeeded)})
+             ORDER BY p.slug, c.collection
+          `)) as unknown as {
+            run_id: string;
+            plugin: string;
+            collection: string;
+            state: "pending" | "ready" | "failed";
+            error: string | null;
+          }[]);
+    return ok({
+      runs: rows.map((r) => {
+        const own = indexes.filter((i) => i.run_id === r.id);
+        const run = toStageStatus(r, history);
+        return own.length === 0
+          ? run
+          : {
+              ...run,
+              searchIndexes: own.map((i) => ({
+                plugin: i.plugin,
+                collection: i.collection,
+                state: i.state,
+                error: i.error,
+              })),
+            };
+      }),
+    });
   },
 });
 

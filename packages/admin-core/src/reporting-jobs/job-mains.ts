@@ -10,6 +10,7 @@
 
 import { runBuildCarrierJob } from "../build-carrier/job.js";
 import { runCollectionIndexJob } from "../collections/index-job.js";
+import { runPluginBatchJob } from "../plugin-batches/job.js";
 import { runQualityAuditJob } from "../quality/audit-job.js";
 import { runSiteImportJob } from "../site-import/crawl-job.js";
 import type { ReportingJobKind } from "./protocol.js";
@@ -21,4 +22,5 @@ export const JOB_MAINS: Readonly<Record<ReportingJobKind, JobMain>> = {
   site_import: (reporter) => runSiteImportJob(reporter),
   build: (reporter) => runBuildCarrierJob(reporter),
   collection_index: (reporter) => runCollectionIndexJob(reporter),
+  plugin_batch: (reporter) => runPluginBatchJob(reporter),
 };

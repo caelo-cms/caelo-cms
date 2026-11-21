@@ -79,6 +79,7 @@ import { timedStep } from "./load-timing.js";
 import { resetLocalLoadOutcomes } from "./local-availability.js";
 import { CONFIG_OPS, withHostConfigTables } from "./plugin-config.js";
 import { inactiveRequiredPlugins, requirementsMessage } from "./plugin-dependencies.js";
+import { notifyPluginRegistered } from "./plugin-registered.js";
 import { resetPluginRuntimeStats } from "./plugin-runtime-stats.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { provisionPluginPublicSchemas } from "./public-schemas.js";
@@ -663,6 +664,8 @@ async function loadTier2Row(
   });
   pluginToolsRegistry.unregisterPlugin(row.slug);
   for (const tool of definition.tools ?? []) pluginToolsRegistry.register(row.slug, tool);
+  const registered = loadedPlugins.bySlug(row.slug);
+  if (registered) notifyPluginRegistered(registered);
 }
 
 /**
@@ -1491,6 +1494,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     pluginActorId,
   };
   loadedPlugins.set(lp);
+  notifyPluginRegistered(lp);
   // URL slots + the annotation op go live only now that the plugin can
   // answer: claimed earlier, a render running concurrently with this
   // activation called the annotation op of a plugin not yet loaded

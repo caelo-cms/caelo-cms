@@ -33,6 +33,7 @@ import {
   IAP_ASSERTION_HEADER,
   iapVerifier,
   type PublicProjectionPublisher,
+  pluginBatchTasks,
   pluginChangeConsumersTask,
   pluginWorkerTasks,
   runSchedulerTick,
@@ -144,7 +145,13 @@ export async function runAdminSchedulerTick(
     registry,
     // #1361 — the change consumers before the workers: on a quiet site
     // their drain has nothing to do and costs a few small transactions.
-    tasks: [...core, pluginChangeConsumersTask({ adapter, registry }), ...pluginWorkerTasks()],
+    tasks: [
+      ...core,
+      pluginChangeConsumersTask({ adapter, registry }),
+      ...pluginWorkerTasks(),
+      // #1646 — scheduled plugin batches queue a run when their cron is due.
+      ...pluginBatchTasks({ adapter, registry }),
+    ],
     holder: `${instance}/${ticks++}`.slice(0, 200),
   });
 }

@@ -137,6 +137,7 @@ import {
   linksTheCheckMissed,
   withBuiltLinks,
 } from "../links/link-notice.js";
+import { enqueueStageBatches } from "../plugin-batches/triggers.js";
 import { loadedVisitorProjections } from "../public-projection.js";
 import { startQualityAuditJob } from "../quality/start-audit-job.js";
 import { loadStagedChanges } from "../redirects/model.js";
@@ -1183,6 +1184,8 @@ async function runTrigger(
         built.pageOutput?.failed ?? [],
       );
       if (note !== null) console.error("[deploy] Stage collections", { runId, note });
+      // #1646 — plugins' `stage` batches run on what this Stage published.
+      await enqueueStageBatches({ adapter, registry }, runId);
     }
     // The run is recorded; now put the live redirects on the build
     // production serves, in a transaction of its own. A failure is recorded

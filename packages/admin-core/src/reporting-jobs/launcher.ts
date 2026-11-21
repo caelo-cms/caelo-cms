@@ -23,6 +23,8 @@
  * attempt (backstop.ts).
  */
 
+import { hasGrantedCapability, isPluginDisabled, loadedPlugins } from "@caelo-cms/plugin-host";
+import type { PluginCapability } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { CAELO_VERSION } from "@caelo-cms/shared";
 import { describeError } from "../ai/tools/_describe-error.js";
@@ -212,6 +214,13 @@ export async function giveUpReportingJob(
  *
  * @param opts.launcher - run it here instead (tests drive in-process runs).
  */
+/** Whether an active, loaded plugin holds `capability` (an Owner grant). */
+function activePluginHolds(capability: PluginCapability): boolean {
+  return loadedPlugins
+    .all()
+    .some((p) => !isPluginDisabled(p.slug) && hasGrantedCapability(p, capability));
+}
+
 export async function startReportingJob(
   deps: AdminJobDeps,
   kind: ReportingJobKind,
@@ -219,6 +228,13 @@ export async function startReportingJob(
   opts: { readonly launcher?: JobLauncher; readonly env?: Record<string, string | undefined> } = {},
 ): Promise<StartOutcome> {
   const def = reportingJobKind(kind);
+  // #1646 — a kind that does a plugin capability's work starts only while
+  // an active plugin holds the grant; anything else is never started.
+  if (def.capability && !activePluginHolds(def.capability)) {
+    const message = `no active plugin holds the "${def.capability}" capability, so no ${def.label} job starts`;
+    await giveUpReportingJob(deps, def, subjectId, message);
+    return { outcome: "given-up", message };
+  }
   const choice: LauncherChoice = opts.launcher
     ? { kind: "launcher", launcher: opts.launcher }
     : launcherFor(def, opts.env);
