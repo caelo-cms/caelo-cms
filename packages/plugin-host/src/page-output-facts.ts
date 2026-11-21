@@ -24,7 +24,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { placementKey } from "@caelo-cms/plugin-sdk";
+import { canonicalSitePath, placementKey } from "@caelo-cms/plugin-sdk";
 import { CONTENT_INSTANCE_ATTRIBUTE } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
 
@@ -123,25 +123,6 @@ const ROOT: Scope = {
 
 function collapse(s: string): string {
   return s.replace(/\s+/g, " ").trim();
-}
-
-/** A site path in one spelling: no query or hash, no `index.html`, no trailing slash except the root. */
-export function canonicalSitePath(pathname: string): string {
-  let p = pathname;
-  try {
-    p = decodeURI(p);
-  } catch {
-    // A malformed escape stays as written.
-  }
-  p = p.replace(/\/index\.html?$/i, "/");
-  // Trailing slashes off, in linear time (a `/\/+$/` scan is quadratic on
-  // a path of many slashes, and the path comes from the page's markup).
-  if (p.length > 1) {
-    let end = p.length;
-    while (end > 0 && p.charCodeAt(end - 1) === 47) end--;
-    p = p.slice(0, end);
-  }
-  return p === "" ? "/" : p;
 }
 
 /** The site path a link names, or null when it leaves the site or is no page link. */

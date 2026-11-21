@@ -13,7 +13,12 @@
  * module's placement count instead of once per page).
  */
 
-import { type CollectionDocInput, type PageOutputFacts, placementKey } from "@caelo-cms/plugin-sdk";
+import {
+  type CollectionDocInput,
+  canonicalSitePath,
+  type PageOutputFacts,
+  placementKey,
+} from "@caelo-cms/plugin-sdk";
 import { type ModuleVerdict, textMayCount } from "./rules.js";
 
 /** One section of a page: what a result links to. */
@@ -102,6 +107,8 @@ export function pageDocument(
       sections,
       reduced,
       url: facts.path,
+      // What the anchors' targets name: the page's path in links' spelling.
+      site_path: canonicalSitePath(facts.path),
       page_type: facts.pageType ?? "",
       terms,
     },
@@ -188,8 +195,14 @@ export function anchorDocuments(
   },
 ): AnchorDoc[] {
   const out = new Map<string, AnchorDoc>();
+  const own = canonicalSitePath(facts.path);
   for (const link of facts.links) {
-    if (!link.targetPageId || link.pluginSlug !== null) continue;
+    // A link names an address of the site, not the page this build found
+    // there: the search resolves it to whatever page is there when the
+    // visitor searches, so a page published or created at that address
+    // later is named without the linking page being delivered again.
+    if (link.path === null || link.pluginSlug !== null) continue;
+    const target = canonicalSitePath(link.path);
     const text = normalizeAnchorText(link.text);
     if (text.length < 2) continue;
     const chrome = link.zone === "layout" && link.moduleId !== null;
@@ -198,15 +211,15 @@ export function anchorDocuments(
     // block's is one of the block's links like the others: they are the
     // same on every page, so each page must yield the block's whole set,
     // or one page's delivery would drop the link to that page.
-    if (!chrome && link.targetPageId === facts.pageId) continue;
+    if (!chrome && target === own) continue;
     const source = anchorSource(link, facts.pageId);
-    const id = anchorId(source, link.targetPageId, text);
+    const id = anchorId(source, target, text);
     out.set(id, {
       id,
       lang: facts.lang || "und",
       values: {
         text: link.text.replace(/\s+/g, " ").trim().slice(0, 200),
-        target: link.targetPageId,
+        target,
         source,
         sources: chrome ? Math.max(1, opts.placementOf(link.moduleId as string)) : 1,
       },

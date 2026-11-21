@@ -57,14 +57,18 @@ export const searchOperationManifest = z
     rateLimit: rateLimit.optional(),
     /**
      * #1651 — anchor texts: documents of `collection` whose text matches the
-     * query describe the document their keyword `target` names (its id). A
-     * document found only through them is a hit too. `sources`, a number
-     * field, weighs a text by how many pages use it.
+     * query describe the document their keyword `target` names: its id, or
+     * with `targetField` the value of that keyword field of the searched
+     * collection (a page's path), resolved when the visitor searches, so a
+     * link counts for whatever page is at its address then. A document found
+     * only through them is a hit too. `sources`, a number field, weighs a
+     * text by how many pages use it.
      */
     anchors: z
       .object({
         collection: z.string().min(1).max(40),
         target: fieldName,
+        targetField: fieldName.optional(),
         sources: fieldName.optional(),
       })
       .strict()
@@ -243,6 +247,11 @@ export function checkCollectionOperations(
         else {
           if (a.fields[op.anchors.target]?.kind !== "keyword")
             issue([...path, "anchors", "target"], `"${op.anchors.target}" must be a keyword field`);
+          if (op.anchors.targetField && kindOf(op.anchors.targetField) !== "keyword")
+            issue(
+              [...path, "anchors", "targetField"],
+              `"${op.anchors.targetField}" must be a keyword field of collection "${op.collection}"`,
+            );
           if (op.anchors.sources && a.fields[op.anchors.sources]?.kind !== "number")
             issue(
               [...path, "anchors", "sources"],

@@ -372,6 +372,8 @@ export default definePlugin({
         sections: { kind: "passages", vector: true },
         reduced: { kind: "passages" },
         url: { kind: "keyword" },
+        // The page's path as links name it: the anchors' targets.
+        site_path: { kind: "keyword" },
         page_type: { kind: "keyword", facet: true },
         terms: { kind: "keyword", facet: true },
         // Change detection: an unchanged page is not written again.
@@ -410,7 +412,12 @@ export default definePlugin({
       filters: ["page_type", "terms"],
       facets: ["page_type"],
       maxResults: 50,
-      anchors: { collection: "anchors", target: "target", sources: "sources" },
+      anchors: {
+        collection: "anchors",
+        target: "target",
+        targetField: "site_path",
+        sources: "sources",
+      },
     },
     {
       name: "suggest",

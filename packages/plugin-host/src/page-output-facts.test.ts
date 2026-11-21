@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import {
-  canonicalSitePath,
-  extractPageHtmlFacts,
-  MAX_PAGE_TEXT_CHARS,
-  sitePathOf,
-} from "./page-output-facts.js";
+import { canonicalSitePath } from "@caelo-cms/plugin-sdk";
+import { extractPageHtmlFacts, MAX_PAGE_TEXT_CHARS, sitePathOf } from "./page-output-facts.js";
 import { factBatches, PAGE_OUTPUT_BATCH_BYTES } from "./page-output-host.js";
 
 const ORIGINS = new Set(["https://example.com", "https://www.example.com"]);

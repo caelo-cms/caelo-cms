@@ -30,6 +30,8 @@ collectionOperations: [
 
 Field kinds: `text` (optionally `prefix` for search as you type), `passages` (sections with anchor, heading and text; at most one with `vector`), `keyword` (filters, facets, exact lookup), `number`, `date`.
 
+`anchors` adds the documents other collections' texts describe: a document of `anchors.collection` whose text matches names its target in the keyword `target`. Without `targetField` the target is a document id. With `targetField` (a keyword field of the searched collection, such as a page's canonical path) the target is that value, resolved when the visitor searches: the text counts for whatever document holds the value then. Name addresses this way when the target can appear after the text was written (a link to a page published later), because a page's facts are delivered again only when its own output changes.
+
 ## Writing
 
 `ctx.collections.<name>`:

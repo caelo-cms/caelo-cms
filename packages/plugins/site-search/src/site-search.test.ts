@@ -186,6 +186,8 @@ describe("documents", () => {
       ["m-footer", { weighting: "none" as const, reason: "chrome" as const }],
     ]);
     const doc = pageDocument(f, verdicts);
+    // The address links name it by (anchors' targets), next to its own URL.
+    expect([doc.values.url, doc.values.site_path]).toEqual(["/preise/", "/preise"]);
     expect(doc.values.sections).toEqual([
       { anchor: "pakete", heading: "Pakete", text: "Für Agenturen, monatlich kündbar." },
     ]);
@@ -202,10 +204,11 @@ describe("documents", () => {
     expect(sectionsOf(f, () => true).map((s) => s.heading)).toEqual(["A", "B"]);
   });
   it("turns site links into anchor documents; navigation links once per block", () => {
+    // A link names an address: the search finds the page there when it runs.
     const docs = anchorDocuments(facts(), { chromeLinks: true, placementOf: () => 400 });
     expect(docs.map((d) => [d.values.source, d.values.target, d.values.sources]).sort()).toEqual([
-      ["m:m-footer", "p-kontakt", 400],
-      ["p:p-preise", "p-blog", 1],
+      ["m:m-footer", "/kontakt", 400],
+      ["p:p-preise", "/blog", 1],
     ]);
     expect(anchorDocuments(facts(), { chromeLinks: false, placementOf: () => 1 })).toHaveLength(1);
     expect(normalizeAnchorText("  Unser   Blog!  ")).toBe("unser blog");
@@ -265,7 +268,7 @@ describe("documents", () => {
     expect(on("a")).toEqual(on("b"));
     expect(on("a")).toHaveLength(2);
     // A page's own link to itself still says nothing about it.
-    const own = anchorDocuments(facts({ pageId: "a", links: [selfLink] }), {
+    const own = anchorDocuments(facts({ pageId: "a", path: "/a/", links: [selfLink] }), {
       chromeLinks: true,
       placementOf: () => 1,
     });

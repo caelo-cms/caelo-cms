@@ -16,7 +16,11 @@ import {
   FileCache,
   openRelease,
 } from "@caelo-cms/collection-index";
-import { searchOperationManifest, searchProfile } from "@caelo-cms/plugin-sdk";
+import {
+  checkCollectionOperations,
+  searchOperationManifest,
+  searchProfile,
+} from "@caelo-cms/plugin-sdk";
 import { type OpenEntry, runCollectionOperation } from "./collection-query.js";
 
 const PAGES: CollectionSchema = {
@@ -165,6 +169,66 @@ describe("collection operations: a link to a page the index does not hold", () =
     );
     const r = await search(pages, anchors, { q: "Tarife", lang: "de" });
     expect(r.hits).toEqual([]);
+  });
+});
+
+describe("collection operations: a link names an address, resolved when the visitor searches", () => {
+  const BY_PATH = searchOperationManifest.parse({
+    name: "search",
+    kind: "search",
+    collection: "pages",
+    description: "The site's pages.",
+    returns: ["url", "title", "page_type"],
+    maxResults: 10,
+    anchors: { collection: "anchors", target: "target", targetField: "url", sources: "sources" },
+  });
+  const byPath = async (pages: OpenEntry, anchors: OpenEntry) =>
+    (
+      (
+        await runCollectionOperation(
+          BY_PATH,
+          pages,
+          "k",
+          new URLSearchParams({ q: "Tarife", lang: "de" }),
+          {
+            embedQuery: noEmbed,
+            anchors,
+          },
+        )
+      ).body as { hits: { url: string }[] }
+    ).hits.map((h) => h.url);
+
+  it("is declared only on a keyword field of the searched collection", () => {
+    const issues: string[] = [];
+    const lint = (targetField: string) =>
+      checkCollectionOperations(
+        [{ ...BY_PATH, anchors: { ...BY_PATH.anchors, targetField } } as never],
+        { pages: PAGES, anchors: ANCHORS },
+        [],
+        (_p, m) => issues.push(m),
+      );
+    lint("url");
+    expect(issues).toEqual([]);
+    lint("title");
+    expect(issues).toEqual(['"title" must be a keyword field of collection "pages"']);
+  });
+
+  it("counts for whatever page is at the address now, also one published after the link", async () => {
+    const anchors = await entry(
+      [{ id: "a1", lang: "de", values: { text: "Tarife", target: "/neu/", sources: 9 } }],
+      ANCHORS,
+      { ...BASE_PROFILE, weights: { text: 1 } },
+    );
+    // No page at the address yet: the link text adds nothing.
+    const before = await entry([page("blog-preise", "Preise", "article")], PAGES, BASE_PROFILE);
+    expect(await byPath(before, anchors)).toEqual([]);
+    // The page is published (the linking page was not delivered again).
+    const after = await entry(
+      [page("blog-preise", "Preise", "article"), page("neu", "Unser Angebot", "product")],
+      PAGES,
+      BASE_PROFILE,
+    );
+    expect(await byPath(after, anchors)).toEqual(["/neu/"]);
   });
 });
 

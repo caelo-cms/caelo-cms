@@ -73,12 +73,41 @@ export interface PageOutputText {
   readonly inLink: boolean;
 }
 
+/**
+ * A site path in one spelling: no query or hash, no `index.html`, no
+ * trailing slash except the root. `PageOutputLink.path` is in this form; a
+ * plugin that matches links to pages puts the page's path through it too.
+ */
+export function canonicalSitePath(pathname: string): string {
+  let p = pathname;
+  try {
+    p = decodeURI(p);
+  } catch {
+    // A malformed escape stays as written.
+  }
+  p = p.replace(/\/index\.html?$/i, "/");
+  // Trailing slashes off, in linear time (a `/\/+$/` scan is quadratic on
+  // a path of many slashes, and the path comes from the page's markup).
+  if (p.length > 1) {
+    let end = p.length;
+    while (end > 0 && p.charCodeAt(end - 1) === 47) end--;
+    p = p.slice(0, end);
+  }
+  return p === "" ? "/" : p;
+}
+
 /** One link of the page body. */
 export interface PageOutputLink {
   readonly href: string;
-  /** The site path it names, null for external links. */
+  /** The site path it names ({@link canonicalSitePath}), null for external links. */
   readonly path: string | null;
-  /** The page it points at, when it names a page of this site. */
+  /**
+   * The page this build ships at that path, or null. A page's facts come
+   * again only when its own output changes, so this is what the link named
+   * when they were taken: a page published or created at the path later
+   * does not show here until the linking page changes. A plugin whose
+   * state must follow that keys links by `path` (site-search's anchors do).
+   */
   readonly targetPageId: string | null;
   readonly text: string;
   readonly moduleId: string | null;

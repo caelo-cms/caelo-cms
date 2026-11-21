@@ -362,6 +362,8 @@ export async function runCollectionOperation(
   let placeScore = new Map(r.hits.map((h) => [h.key, h.score] as const));
   // #1651 — anchor texts: the words other pages link a document with.
   const anchorHits = new Map<string, { score: number; texts: string[]; sources: number }>();
+  /** The anchor hits by the id of the document they name. */
+  const anchorByDoc = new Map<string, { score: number; texts: string[]; sources: number }>();
   if (op.anchors && opts.anchors?.release) {
     const a = opts.anchors;
     const ar = await searchText(a.release, {
@@ -393,13 +395,31 @@ export async function runCollectionOperation(
       anchorHits.set(target, at);
     }
     if (anchorHits.size > 0) {
-      const docs = await lookupDocs(release, [...anchorHits.keys()].map(idTerm));
+      // The target is a document id, or (targetField) a keyword value such as
+      // a page's path: whatever document holds it when the visitor searches
+      // is what the link names.
+      const field = op.anchors.targetField;
+      const docs = await lookupDocs(
+        release,
+        [...anchorHits.keys()].map((t) =>
+          field === undefined ? idTerm(t) : keywordTerm(field, t),
+        ),
+      );
+      for (const d of docs) {
+        const hit =
+          field === undefined
+            ? anchorHits.get(d.id)
+            : keywordValues(d, field)
+                .map((v) => anchorHits.get(v))
+                .find((h) => h !== undefined);
+        if (hit) anchorByDoc.set(d.id, hit);
+      }
       const wordScore = new Map(r.hits.map((h) => [h.key, h.score] as const));
       const scored = new Map<number, number>(wordScore);
       for (const d of docs) {
         // A link text names its target whatever the visitor filtered for.
         if (!passesFilter(d, docFilter)) continue;
-        scored.set(d.key, (scored.get(d.key) ?? 0) + (anchorHits.get(d.id)?.score ?? 0));
+        scored.set(d.key, (scored.get(d.key) ?? 0) + (anchorByDoc.get(d.id)?.score ?? 0));
       }
       placeScore = scored;
       keys = [...scored.entries()]
@@ -503,7 +523,7 @@ export async function runCollectionOperation(
           synonyms: synonymsOf(profile, lang),
           lexical: r.hits.some((h) => h.key === d.key),
           semantic: bestPassage.has(d.key),
-          anchors: anchorHits.get(d.id) ?? null,
+          anchors: anchorByDoc.get(d.id) ?? null,
           pinned: pinnedOrder.some((p) => p.key === d.key),
         });
       return out;

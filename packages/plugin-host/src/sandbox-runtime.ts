@@ -5,7 +5,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateSource } from "@caelo-cms/plugin-sandbox";
-import type { PluginContext, PluginContextTier1, PluginManifest } from "@caelo-cms/plugin-sdk";
+import {
+  CONFIG_ENTITY_KINDS,
+  type PluginContext,
+  type PluginContextTier1,
+  type PluginManifest,
+} from "@caelo-cms/plugin-sdk";
 import { z } from "zod";
 import { sandboxEntrySource, sandboxPreludeSource } from "./sandbox-entry.js";
 import {
@@ -34,7 +39,8 @@ const table = z
   .regex(/^[a-z_][a-z0-9_]*$/)
   .max(120);
 const collectionName = z.string().regex(/^[a-z][a-z0-9_]{0,39}$/);
-const entityKind = z.enum(["page", "module"]);
+/** Every entity kind the SDK's config reader takes (pages, modules, content blocks, page types). */
+const entityKind = z.enum(CONFIG_ENTITY_KINDS);
 const record = z.record(z.string(), z.unknown());
 const id = z.string().uuid();
 
