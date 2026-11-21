@@ -30,13 +30,29 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"]],
   projects: [
-    { name: "main", testIgnore: "**/no-ai-key.browser.ts" },
+    {
+      name: "main",
+      testIgnore: [
+        "**/no-ai-key.browser.ts",
+        "**/site-search-visitor.browser.ts",
+        "**/site-assistant-visitor.browser.ts",
+      ],
+    },
+    // Epic #1644 — both visitor sites activate the site search and publish
+    // its index (published_collections, the plugin's row): one after the
+    // other, never side by side. Nothing in `main` touches either.
+    { name: "site-search-visitor", testMatch: "**/site-search-visitor.browser.ts" },
+    {
+      name: "site-assistant-visitor",
+      testMatch: "**/site-assistant-visitor.browser.ts",
+      dependencies: ["site-search-visitor"],
+    },
     // #1460 — takes the AI providers away from the whole install, so it
     // runs alone, after everything else.
     {
       name: "no-ai-key",
       testMatch: "**/no-ai-key.browser.ts",
-      dependencies: ["main"],
+      dependencies: ["main", "site-assistant-visitor"],
       fullyParallel: false,
     },
   ],
