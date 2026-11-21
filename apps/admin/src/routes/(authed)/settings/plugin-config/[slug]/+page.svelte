@@ -8,8 +8,8 @@
    */
 
   import ConfigForm from "#lib/components/plugin-config/ConfigForm.svelte";
+  import EntityConfigCard from "#lib/components/plugin-config/EntityConfigCard.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
-  import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#lib/components/ui/card/index.js";
 
   let { data, form } = $props();
 
@@ -42,22 +42,15 @@
   {/if}
 
   {#each Object.entries(data.entityFields) as [kind, fields] (kind)}
-    <Card>
-      <CardHeader>
-        <CardTitle>{KIND_LABEL[kind] ?? kind}</CardTitle>
-        <CardDescription>
-          Set on the {kind === "page" ? "page's settings" : kind === "module" ? "module's page" : "entity's page"}, or ask the AI. Unset fields
-          use the default shown here.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ul class="space-y-2 text-sm">
-          {#each fields as f ((f as { path: string }).path)}
-            {@const field = f as { path: string; label: string; description: string; allowed: string }}
-            <li><span class="font-medium">{field.label}</span>: {field.description} <span class="text-muted-foreground">({field.allowed})</span></li>
-          {/each}
-        </ul>
-      </CardContent>
-    </Card>
+    <EntityConfigCard
+      {kind}
+      title={KIND_LABEL[kind] ?? kind}
+      fields={fields as never}
+      configured={data.configured[kind] ?? []}
+      modules={data.modules}
+      pageTypes={data.pageTypes}
+      lists={data.lists}
+      csrfToken={data.csrfToken}
+    />
   {/each}
 </div>

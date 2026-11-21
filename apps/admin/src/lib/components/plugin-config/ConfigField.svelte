@@ -14,6 +14,7 @@
   import { Label } from "#lib/components/ui/label/index.js";
   import { Select } from "#lib/components/ui/select/index.js";
   import { Textarea } from "#lib/components/ui/textarea/index.js";
+  import PageRefPicker from "./PageRefPicker.svelte";
 
   interface Spec {
     type: string;
@@ -133,7 +134,7 @@
     </Select>
     {#if selectedModel}<p class="text-muted-foreground text-xs">{selectedModel.description} {selectedModel.licence}.</p>{/if}
   {:else if spec.type === "pageRef"}
-    <Input id={id} class="max-w-80 font-mono" placeholder="Page id" value={String(value ?? "")} oninput={(e) => onchange((e.currentTarget as HTMLInputElement).value || null)} />
+    <PageRefPicker {id} {label} value={(value as string | null) ?? null} onchange={(v) => onchange(v)} />
   {:else}
     {@render scalar(spec, value, id, onchange)}
   {/if}

@@ -57,10 +57,68 @@ export const load: PageServerLoad = async ({ locals, params }) => {
         type: l.type,
       }))
     : [];
-  return { slug: params.slug, ...value, pageTypes, lists };
+  // The entities that have settings, per kind, and what to pick a new one from.
+  const configured: Record<
+    string,
+    { id: string; label: string; values: Record<string, unknown> }[]
+  > = {};
+  let modules: { id: string; name: string }[] = [];
+  for (const kind of Object.keys(value.entityFields)) {
+    const e = await execute(registry, adapter, locals.ctx, "plugin_config.get_entities", {
+      pluginSlug: params.slug,
+      kind,
+      configuredOnly: true,
+    });
+    const rows = e.ok
+      ? (e.value as { entities: { id: string; values: Record<string, unknown> }[] }).entities
+      : [];
+    if (kind === "module" && modules.length === 0) {
+      const m = await execute(registry, adapter, locals.ctx, "modules.list", {});
+      modules = m.ok
+        ? (m.value as { modules: { id: string; displayName: string }[] }).modules.map((x) => ({
+            id: x.id,
+            name: x.displayName,
+          }))
+        : [];
+    }
+    const label = (id: string) =>
+      kind === "module"
+        ? (modules.find((x) => x.id === id)?.name ?? id)
+        : kind === "pageType"
+          ? (pageTypes.find((t) => t.slug === id)?.name ?? id)
+          : id;
+    configured[kind] = rows.map((r) => ({ id: r.id, label: label(r.id), values: r.values }));
+  }
+  return { slug: params.slug, ...value, pageTypes, lists, configured, modules };
 };
 
 export const actions: Actions = {
+  saveEntity: async ({ request, locals, params }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const kind = String(form.get("kind") ?? "");
+    const id = String(form.get("id") ?? "").trim();
+    let values: unknown;
+    try {
+      values = JSON.parse(String(form.get("values") ?? "{}"));
+    } catch {
+      return fail(400, {
+        error: "The form sent no readable values. Reload the page and try again.",
+      });
+    }
+    if (!id) return fail(400, { error: "Pick what the settings are for first." });
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "plugin_config.set_entities", {
+      pluginSlug: params.slug,
+      items: [{ kind, id, values }],
+    });
+    if (!r.ok) return fail(400, { error: opErrorMessage(r.error, "save failed") });
+    return {
+      ok: true,
+      message: "Saved. The new values reach the site with the next Stage and Publish live.",
+    };
+  },
   save: async ({ request, locals, params }) => {
     requirePermission(locals, "settings.write");
     const form = await request.formData();
