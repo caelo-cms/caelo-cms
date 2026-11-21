@@ -152,13 +152,18 @@ export const collectionsGcPlanOp = defineOperation({
       else if (!r.kept && r.state === "ready" && !r.collected) c.collect.push(r.run_id);
     }
     // Changes in a ready release are never read again (a retry rebuilds
-    // from the release before it, which already holds them).
+    // from the release before it, which already holds them); a discarded
+    // one (a failed Stage's) is never read at all.
     const changes = (await tx.execute(sql`
-      SELECT c.id::text AS id, c.store_key AS key FROM collection_changes c
-        JOIN collection_releases r ON r.run_id = c.applied_run_id
-             AND r.plugin_id = c.plugin_id AND r.collection = c.collection AND r.state = 'ready'
-       WHERE c.applied_run_id IS NOT NULL
-       LIMIT ${input.changeLimit}
+      (SELECT c.id::text AS id, c.store_key AS key FROM collection_changes c
+         JOIN collection_releases r ON r.run_id = c.applied_run_id
+              AND r.plugin_id = c.plugin_id AND r.collection = c.collection AND r.state = 'ready'
+        WHERE c.applied_run_id IS NOT NULL
+        LIMIT ${input.changeLimit})
+      UNION ALL
+      (SELECT c.id::text AS id, c.store_key AS key FROM collection_changes c
+        WHERE c.discarded_at IS NOT NULL
+        LIMIT ${input.changeLimit})
     `)) as unknown as { id: string; key: string }[];
     return ok({ collections: [...byCollection.values()], changes });
   },

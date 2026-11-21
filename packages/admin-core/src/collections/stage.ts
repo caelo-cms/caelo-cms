@@ -128,16 +128,18 @@ export async function afterStageBuild(
   return null;
 }
 
-/** After a failed Stage: its page output never happened. */
+/** After a failed Stage: its page output never happened, nor what observers wrote from it. */
 export async function afterFailedStage(
   deps: AdminJobDeps,
   sys: ExecutionContext,
   runId: string,
 ): Promise<void> {
-  const r = await execute(deps.registry, deps.adapter, sys, "page_output.discard_run", { runId });
-  if (!r.ok)
-    console.error("[deploy] could not discard the failed Stage's page output", {
-      runId,
-      error: describeError(r.error),
-    });
+  for (const op of ["page_output.discard_run", "collections.discard_run_changes"] as const) {
+    const r = await execute(deps.registry, deps.adapter, sys, op, { runId });
+    if (!r.ok)
+      console.error(`[deploy] could not discard the failed Stage's page output (${op})`, {
+        runId,
+        error: describeError(r.error),
+      });
+  }
 }

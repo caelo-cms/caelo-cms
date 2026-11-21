@@ -13,7 +13,7 @@
  * module's placement count instead of once per page).
  */
 
-import type { CollectionDocInput, PageOutputFacts } from "@caelo-cms/plugin-sdk";
+import { type CollectionDocInput, type PageOutputFacts, placementKey } from "@caelo-cms/plugin-sdk";
 import { type ModuleVerdict, textMayCount } from "./rules.js";
 
 /** One section of a page: what a result links to. */
@@ -69,19 +69,24 @@ export function pageDocument(
   facts: PageOutputFacts,
   verdicts: ReadonlyMap<string, ModuleVerdict>,
 ): CollectionDocInput {
-  const weighting = (moduleId: string | null) =>
-    moduleId === null ? "none" : (verdicts.get(moduleId)?.weighting ?? "none");
+  // Each text counts by its own placement's verdict: one design placed with
+  // two content instances is two blocks with their own settings.
+  const weighting = (t: {
+    readonly moduleId: string | null;
+    readonly contentInstanceId: string | null;
+  }) =>
+    t.moduleId === null
+      ? "none"
+      : (verdicts.get(placementKey(t.moduleId, t.contentInstanceId))?.weighting ?? "none");
   // A link's words describe its target (they count there as anchor text):
   // on the page that carries the link they count reduced.
   const sections = sectionsOf(
     facts,
-    (t) => textMayCount(t) && !t.inLink && weighting(t.moduleId) === "full",
+    (t) => textMayCount(t) && !t.inLink && weighting(t) === "full",
   );
   const reduced = sectionsOf(
     facts,
-    (t) =>
-      textMayCount(t) &&
-      (weighting(t.moduleId) === "reduced" || (t.inLink && weighting(t.moduleId) === "full")),
+    (t) => textMayCount(t) && (weighting(t) === "reduced" || (t.inLink && weighting(t) === "full")),
   );
   const terms = Object.entries(facts.terms).flatMap(([list, ids]) =>
     ids.map((id) => `${list}:${id}`),
@@ -152,12 +157,16 @@ export function anchorDocuments(
 ): AnchorDoc[] {
   const out = new Map<string, AnchorDoc>();
   for (const link of facts.links) {
-    if (!link.targetPageId || link.targetPageId === facts.pageId || link.pluginSlug !== null)
-      continue;
+    if (!link.targetPageId || link.pluginSlug !== null) continue;
     const text = normalizeAnchorText(link.text);
     if (text.length < 2) continue;
     const chrome = link.zone === "layout" && link.moduleId !== null;
     if (chrome && !opts.chromeLinks) continue;
+    // A page's own link to itself says nothing about it. A navigation
+    // block's is one of the block's links like the others: they are the
+    // same on every page, so each page must yield the block's whole set,
+    // or one page's delivery would drop the link to that page.
+    if (!chrome && link.targetPageId === facts.pageId) continue;
     const source = anchorSource(link, facts.pageId);
     const id = anchorId(source, link.targetPageId, text);
     out.set(id, {

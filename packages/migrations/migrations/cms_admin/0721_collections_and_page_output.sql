@@ -51,13 +51,19 @@ CREATE TABLE collection_changes (
   -- A batch's full replacement: every document not in it is deleted.
   replace_all boolean NOT NULL DEFAULT false,
   bytes       int NOT NULL CHECK (bytes >= 0),
-  created_at  timestamptz NOT NULL DEFAULT now()
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  -- Written by an observer of a Stage that failed: its page output never
+  -- happened (the next Stage delivers those pages again), so no index may
+  -- claim it; the clean-up deletes it with its file.
+  discarded_at timestamptz
 );
 CREATE INDEX collection_changes_plugin_idx ON collection_changes (plugin_id, collection, created_at);
 CREATE INDEX collection_changes_run_idx ON collection_changes (run_id);
 CREATE INDEX collection_changes_applied_idx ON collection_changes (applied_run_id);
 CREATE INDEX collection_changes_unapplied_idx ON collection_changes (plugin_id, collection, created_at)
   WHERE applied_run_id IS NULL;
+CREATE INDEX collection_changes_discarded_idx ON collection_changes (discarded_at)
+  WHERE discarded_at IS NOT NULL;
 
 CREATE TABLE collection_releases (
   run_id          uuid NOT NULL REFERENCES deploy_runs(id) ON DELETE CASCADE,

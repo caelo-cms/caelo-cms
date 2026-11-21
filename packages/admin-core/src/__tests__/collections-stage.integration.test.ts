@@ -60,6 +60,7 @@ import {
 } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { runCollectionsGc } from "../collections/gc.js";
+import { afterFailedStage } from "../collections/stage.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { drainProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
 import { registerAdminOps } from "../register.js";
@@ -478,6 +479,19 @@ describe("page output and collections through Stage and Publish live", () => {
     const page = calls.flatMap((c) => c.pages).find((p) => p.title === "Preise");
     expect(page?.modules.find((m) => m.zone === "page")?.placementCount).toBe(3);
     expect(page?.texts.find((t) => t.text === "Abschnitt")?.heading).toBe(2);
+    // The observer tells placements apart by their content instance ...
+    expect(page?.texts.find((t) => t.text === "Abschnitt")?.contentInstanceId).toBe(
+      instances.get(PAGES[0] as string),
+    );
+    // ... from a stamp no published file carries.
+    const { readFile } = await import("node:fs/promises");
+    const built = (await listFiles(root)).filter((f) => f.endsWith(".html"));
+    expect(built.length).toBeGreaterThan(0);
+    for (const f of built)
+      expect([f, (await readFile(f, "utf8")).includes("data-caelo-content-instance")]).toEqual([
+        f,
+        false,
+      ]);
     expect(calls.at(-1)?.final).toBe(true);
     const index = await indexState(first);
     expect(index.state).toBe("ready");
@@ -655,6 +669,35 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(
       await searchStore(join(root, "collections-staging"), index.releaseKey as string, "Januar"),
     ).toEqual([`/${PAGES[0]}`]);
+  });
+
+  it("what an observer wrote in a failed Stage never reaches a later index", async () => {
+    const run = await stage();
+    const [plugin] = (await sqlSystem(
+      async (tx) => tx`SELECT id::text AS id FROM plugins WHERE slug = ${PLUGIN}`,
+    )) as { id: string }[];
+    // A write of that Stage's observer, as if the Stage then failed. Its
+    // file is not even in the store: a claim of it would fail the index job.
+    const [abandoned] = (await sqlSystem(
+      async (tx) =>
+        tx`INSERT INTO collection_changes (plugin_id, collection, run_id, store_key, upserts, deletes, bytes)
+           VALUES (${plugin?.id}::uuid, 'pages', ${run}::uuid, ${`${PLUGIN}/pages/changes/t-abandoned.json`}, 1, 0, 10)
+           RETURNING id::text AS id`,
+    )) as { id: string }[];
+    await afterFailedStage(
+      { adapter, registry },
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t1644-failed" },
+      run,
+    );
+    await setText(PAGES[1] as string, "Versand ab sofort auch nach Österreich.");
+    const next = await stage();
+    expect((await indexState(next)).state).toBe("ready");
+    const [row] = (await sqlSystem(
+      async (tx) =>
+        tx`SELECT applied_run_id::text AS applied, discarded_at IS NOT NULL AS discarded
+           FROM collection_changes WHERE id = ${abandoned?.id}::uuid`,
+    )) as { applied: string | null; discarded: boolean }[];
+    expect(row).toEqual({ applied: null, discarded: true });
   });
 
   it("the clean-up deletes what no kept release names, keeps the newest index searchable, and drops applied change files", async () => {

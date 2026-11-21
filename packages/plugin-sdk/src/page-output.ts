@@ -21,7 +21,17 @@ import { z } from "zod";
 export const PAGE_OUTPUT_ZONES = ["layout", "template", "page"] as const;
 export type PageOutputZone = (typeof PAGE_OUTPUT_ZONES)[number];
 
-/** One module placed on the page. */
+/**
+ * The key of one placement: a module design with the content instance it
+ * shows. One design placed twice with two content instances is two blocks
+ * (each with its own settings); a module without an instance is keyed by
+ * itself.
+ */
+export function placementKey(moduleId: string, contentInstanceId: string | null): string {
+  return contentInstanceId ? `${moduleId}/${contentInstanceId}` : moduleId;
+}
+
+/** One module placed on the page (one entry per placement, {@link placementKey}). */
 export interface PageOutputModule {
   /** The module design id (`data-caelo-module-id`). */
   readonly moduleId: string;
@@ -47,6 +57,8 @@ export interface PageOutputModule {
 export interface PageOutputText {
   readonly text: string;
   readonly moduleId: string | null;
+  /** The content instance of the placement the run sits in ({@link placementKey}). */
+  readonly contentInstanceId: string | null;
   readonly listItem: string | null;
   readonly pluginSlug: string | null;
   /** `text`, a visible attribute (`alt`, `placeholder`, …), or `literal` (code, `translate="no"`). */
@@ -70,6 +82,8 @@ export interface PageOutputLink {
   readonly targetPageId: string | null;
   readonly text: string;
   readonly moduleId: string | null;
+  /** The content instance of the placement it sits in ({@link placementKey}). */
+  readonly contentInstanceId: string | null;
   /** The zone of the module it sits in, null outside every module. */
   readonly zone: PageOutputZone | null;
   readonly pluginSlug: string | null;

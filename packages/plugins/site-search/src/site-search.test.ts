@@ -16,6 +16,7 @@ import { SITE_SEARCH_CONFIG } from "./config.js";
 import { anchorDocuments, normalizeAnchorText, pageDocument, sectionsOf } from "./documents.js";
 import plugin from "./index.js";
 import { aggregate, isPopularCandidate } from "./learn.js";
+import { verdictsOf } from "./observe.js";
 
 const observeOp = (ctx: unknown, a: PageOutputObserverArgs) =>
   (plugin.operations.observe as (c: unknown, x: unknown) => Promise<{ indexed: number }>)(ctx, a);
@@ -39,6 +40,7 @@ const mod = (over: Partial<PageOutputModule>): PageOutputModule => ({
 const text = (t: string, over: Partial<PageOutputFacts["texts"][number]> = {}) => ({
   text: t,
   moduleId: "m-body",
+  contentInstanceId: null,
   listItem: null,
   pluginSlug: null,
   source: "text",
@@ -207,6 +209,67 @@ describe("documents", () => {
     ]);
     expect(anchorDocuments(facts(), { chromeLinks: false, placementOf: () => 1 })).toHaveLength(1);
     expect(normalizeAnchorText("  Unser   Blog!  ")).toBe("unser blog");
+  });
+  it("each placement of one design counts by its own content's settings", () => {
+    const f = facts({
+      modules: [
+        mod({ moduleId: "m-text", contentInstanceId: "ci-a" }),
+        mod({ moduleId: "m-text", contentInstanceId: "ci-b" }),
+      ],
+      texts: [
+        text("Erster Block", { moduleId: "m-text", contentInstanceId: "ci-a" }),
+        text("Zweiter Block", { moduleId: "m-text", contentInstanceId: "ci-b" }),
+      ],
+    });
+    const verdicts = verdictsOf(
+      f,
+      100,
+      COUNTING,
+      new Map(),
+      new Map([["ci-b", { mode: "never" }]]),
+    );
+    const doc = pageDocument(f, verdicts);
+    const words = JSON.stringify(doc.values.sections);
+    expect(words).toContain("Erster Block");
+    expect(words).not.toContain("Zweiter Block");
+  });
+
+  it("a navigation block yields its whole link set on every page, its link to that page included", () => {
+    const nav = (target: string, label: string) => ({
+      href: `/${target}/`,
+      path: `/${target}/`,
+      targetPageId: target,
+      text: label,
+      moduleId: "m-nav",
+      zone: "layout" as const,
+      pluginSlug: null,
+    });
+    const selfLink = {
+      href: "/a/",
+      path: "/a/",
+      targetPageId: "a",
+      text: "Hier",
+      moduleId: "m-body",
+      zone: "page" as const,
+      pluginSlug: null,
+    };
+    const on = (pageId: string) =>
+      anchorDocuments(
+        facts({ pageId, links: [nav("a", "Preise"), nav("b", "Kontakt"), selfLink] }),
+        { chromeLinks: true, placementOf: () => 2 },
+      )
+        .filter((d) => d.values.source === "m:m-nav")
+        .map((d) => d.id)
+        .sort();
+    // Delivering only page A must not drop the block's link to A.
+    expect(on("a")).toEqual(on("b"));
+    expect(on("a")).toHaveLength(2);
+    // A page's own link to itself still says nothing about it.
+    const own = anchorDocuments(facts({ pageId: "a", links: [selfLink] }), {
+      chromeLinks: true,
+      placementOf: () => 1,
+    });
+    expect(own).toEqual([]);
   });
 });
 

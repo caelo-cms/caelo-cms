@@ -78,6 +78,7 @@ describe("extractPageHtmlFacts", () => {
         path: "/de/preise",
         text: "Preise",
         moduleId: "m-head",
+        contentInstanceId: null,
         zone: "layout",
         pluginSlug: null,
       },
@@ -86,9 +87,43 @@ describe("extractPageHtmlFacts", () => {
         path: null,
         text: "Partner",
         moduleId: "m-head",
+        contentInstanceId: null,
         zone: "layout",
         pluginSlug: null,
       },
+    ]);
+  });
+
+  it("tells two placements of one design apart by their content instance", () => {
+    const two = extractPageHtmlFacts({
+      pageId: "p2",
+      path: "/zwei/",
+      url: "https://example.com/zwei/",
+      html: `<html lang="de"><body>
+        <div data-caelo-module-id="m-text" data-caelo-content-instance="11111111-1111-4111-8111-111111111111"><p>Erster Block</p></div>
+        <div data-caelo-module-id="m-text" data-caelo-content-instance="22222222-2222-4222-8222-222222222222"><p>Zweiter Block</p></div>
+      </body></html>`,
+      composed: [
+        {
+          moduleId: "m-text",
+          zone: "page",
+          contentInstanceId: "11111111-1111-4111-8111-111111111111",
+        },
+        {
+          moduleId: "m-text",
+          zone: "page",
+          contentInstanceId: "22222222-2222-4222-8222-222222222222",
+        },
+      ],
+      siteOrigins: ORIGINS,
+    });
+    expect(two.modules.map((m) => m.contentInstanceId)).toEqual([
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]);
+    expect(two.texts.map((t) => [t.text, t.contentInstanceId?.slice(0, 1)])).toEqual([
+      ["Erster Block", "1"],
+      ["Zweiter Block", "2"],
     ]);
   });
 

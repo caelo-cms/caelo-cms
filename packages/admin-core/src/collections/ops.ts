@@ -144,6 +144,7 @@ export const planCollectionRunOp = defineOperation({
       const claimed = (await tx.execute(sql`
         UPDATE collection_changes SET run_id = ${input.runId}::uuid
         WHERE plugin_id = ${c.pluginId}::uuid AND collection = ${c.collection} AND applied_run_id IS NULL
+          AND discarded_at IS NULL
         RETURNING id
       `)) as unknown as { id: string }[];
       const digest = declarationDigest(c.decl);
@@ -378,8 +379,34 @@ export const collectionUnstartedRunsOp = defineOperation({
   },
 });
 
+/**
+ * A failed Stage: what its observers wrote is discarded, never claimed by a
+ * later index. Its page output never happened (page_output.discard_run), so
+ * the next Stage delivers those pages again and the observers write what
+ * still holds; a page unpublished in between must not live on in the index
+ * through an abandoned write.
+ */
+export const collectionDiscardRunChangesOp = defineOperation({
+  name: "collections.discard_run_changes",
+  readScope: "request",
+  // Why system-only: the Stage's failure path drops what its build delivered.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ runId: z.string().uuid() }).strict(),
+  output: z.object({ discarded: z.number().int() }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE collection_changes SET discarded_at = now()
+      WHERE run_id = ${input.runId}::uuid AND applied_run_id IS NULL AND discarded_at IS NULL
+      RETURNING id
+    `)) as unknown as { id: string }[];
+    return ok({ discarded: rows.length });
+  },
+});
+
 /** Every collection op, for register.ts. */
 export const COLLECTION_INDEX_OPS = [
+  collectionDiscardRunChangesOp,
   planCollectionRunOp,
   collectionIndexTasksOp,
   collectionIndexDoneOp,

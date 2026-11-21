@@ -12,7 +12,8 @@
 
 export { externalArtifactDigest, releaseManifestDigest } from "@caelo-cms/plugin-sandbox";
 export type { ContentVariantPage, ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
-export { pluginManifest } from "@caelo-cms/plugin-sdk";
+// Epic #1644 — the key of one placement (module and content instance), for the generator.
+export { placementKey, pluginManifest } from "@caelo-cms/plugin-sdk";
 // #1653 — the one AI spend ledger (text and images).
 export {
   AI_LEDGER_LOCK,

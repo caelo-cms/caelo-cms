@@ -15,6 +15,7 @@ import type {
   PluginContext,
   PluginContextTier1,
 } from "@caelo-cms/plugin-sdk";
+import { placementKey } from "@caelo-cms/plugin-sdk";
 import { type AnchorDoc, anchorDocuments, pageDocument } from "./documents.js";
 import { buildProfile, type ListEntry, profileConfigOf } from "./profile.js";
 import {
@@ -127,7 +128,7 @@ export interface ObserveResult {
   readonly notes: readonly string[];
 }
 
-/** Turns one page's facts into its verdicts per module. */
+/** Turns one page's facts into its verdicts per placement ({@link placementKey}). */
 export function verdictsOf(
   facts: PageOutputFacts,
   publishedPages: number,
@@ -148,7 +149,7 @@ export function verdictsOf(
       ? (instanceSettings.get(m.contentInstanceId)?.mode as SearchMode | undefined)
       : undefined;
     out.set(
-      m.moduleId,
+      placementKey(m.moduleId, m.contentInstanceId),
       moduleWeighting(m, facts.pageId, publishedPages, counting, settings, instanceMode),
     );
   }
@@ -255,7 +256,7 @@ export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<O
       instanceSettings,
     );
     for (const m of facts.modules) {
-      const v = verdicts.get(m.moduleId) as ModuleVerdict;
+      const v = verdicts.get(placementKey(m.moduleId, m.contentInstanceId)) as ModuleVerdict;
       // A module's verdict differs only between its home page and the
       // rest; the report shows how it counts on the other pages.
       if (v.reason === "home-page" && report.has(m.moduleId)) continue;

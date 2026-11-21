@@ -24,6 +24,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { placementKey } from "@caelo-cms/plugin-sdk";
+import { CONTENT_INSTANCE_ATTRIBUTE } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
 
 /** Where a module sits in a page's composition. */
@@ -40,6 +42,8 @@ export interface ComposedModuleRef {
 export interface PageHtmlText {
   readonly text: string;
   readonly moduleId: string | null;
+  /** The content instance of the placement it sits in (two placements of one design differ). */
+  readonly contentInstanceId: string | null;
   readonly listItem: string | null;
   readonly pluginSlug: string | null;
   readonly source: string;
@@ -57,6 +61,7 @@ export interface PageHtmlLink {
   readonly path: string | null;
   readonly text: string;
   readonly moduleId: string | null;
+  readonly contentInstanceId: string | null;
   readonly zone: PageOutputZone | null;
   readonly pluginSlug: string | null;
 }
@@ -70,7 +75,7 @@ export interface PageHtmlFacts {
   readonly title: string | null;
   readonly metaDescription: string | null;
   readonly robots: string | null;
-  /** Modules of the composition plus those found nested in the HTML, each once. */
+  /** Placements of the composition plus modules found nested in the HTML, each once (by module and content instance). */
   readonly modules: readonly ComposedModuleRef[];
   readonly texts: readonly PageHtmlText[];
   readonly links: readonly PageHtmlLink[];
@@ -91,6 +96,7 @@ const HEADING = /^h([1-6])$/;
 interface Scope {
   readonly tag: string;
   readonly moduleId: string | null;
+  readonly contentInstanceId: string | null;
   readonly zone: PageOutputZone | null;
   readonly listItem: string | null;
   readonly pluginSlug: string | null;
@@ -104,6 +110,7 @@ interface Scope {
 const ROOT: Scope = {
   tag: "",
   moduleId: null,
+  contentInstanceId: null,
   zone: null,
   listItem: null,
   pluginSlug: null,
@@ -178,8 +185,26 @@ export const MAX_PAGE_LINKS = 2_000;
 
 /** Reads the facts of one page's final HTML. */
 export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
-  const zoneOf = new Map(input.composed.map((m) => [m.moduleId, m.zone] as const));
-  const modules = new Map(input.composed.map((m) => [m.moduleId, m] as const));
+  // Keyed by placement: one design placed twice with two content instances
+  // is two blocks, each with its own settings.
+  const zoneOf = new Map<string, PageOutputZone>();
+  for (const m of input.composed) {
+    zoneOf.set(placementKey(m.moduleId, m.contentInstanceId), m.zone);
+    if (!zoneOf.has(m.moduleId)) zoneOf.set(m.moduleId, m.zone);
+  }
+  const modules = new Map(
+    input.composed.map((m) => [placementKey(m.moduleId, m.contentInstanceId), m] as const),
+  );
+  // A root without the stamp (none was asked for, or a withheld module)
+  // belongs to the design's only placement when it has one; with several,
+  // it cannot be told apart and stays a block of its own.
+  const placementsOf = new Map<string, (string | null)[]>();
+  for (const m of input.composed)
+    placementsOf.set(m.moduleId, [...(placementsOf.get(m.moduleId) ?? []), m.contentInstanceId]);
+  const onlyInstanceOf = (moduleId: string): string | null => {
+    const list = placementsOf.get(moduleId);
+    return list?.length === 1 ? (list[0] ?? null) : null;
+  };
   let lang: string | null = null;
   let title: string | null = null;
   let metaDescription: string | null = null;
@@ -209,6 +234,7 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
     texts.push({
       text,
       moduleId: scope.moduleId,
+      contentInstanceId: scope.contentInstanceId,
       listItem: scope.listItem,
       pluginSlug: scope.pluginSlug,
       source: scope.literal || scope.noTranslate ? "literal" : source,
@@ -223,15 +249,29 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
       onopentag(name, attrs) {
         const parent = top();
         const moduleId = attrs["data-caelo-module-id"];
+        // A module root names its placement's content instance when the
+        // generator stamped it; a nested module has none of its own.
+        const instance =
+          moduleId !== undefined
+            ? (attrs[CONTENT_INSTANCE_ATTRIBUTE] ?? onlyInstanceOf(moduleId))
+            : parent.contentInstanceId;
         const translate = attrs.translate?.toLowerCase();
         const headingMatch = HEADING.exec(name);
+        const key = moduleId !== undefined ? placementKey(moduleId, instance) : null;
         const zone =
-          moduleId !== undefined ? (zoneOf.get(moduleId) ?? parent.zone ?? "page") : parent.zone;
-        if (moduleId !== undefined && !modules.has(moduleId))
-          modules.set(moduleId, { moduleId, zone: zone ?? "page", contentInstanceId: null });
+          moduleId !== undefined
+            ? (zoneOf.get(key as string) ?? zoneOf.get(moduleId) ?? parent.zone ?? "page")
+            : parent.zone;
+        if (moduleId !== undefined && !modules.has(key as string))
+          modules.set(key as string, {
+            moduleId,
+            zone: zone ?? "page",
+            contentInstanceId: instance,
+          });
         const scope: Scope = {
           tag: name,
           moduleId: moduleId ?? parent.moduleId,
+          contentInstanceId: instance,
           zone,
           listItem:
             attrs["data-caelo-list-item"] ?? (moduleId === undefined ? parent.listItem : null),
@@ -304,6 +344,7 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
             path: sitePathOf(last.href, input.url, input.siteOrigins),
             text: collapse(last.text) || collapse(last.label ?? ""),
             moduleId: last.scope.moduleId,
+            contentInstanceId: last.scope.contentInstanceId,
             zone: last.scope.zone,
             pluginSlug: last.scope.pluginSlug,
           });

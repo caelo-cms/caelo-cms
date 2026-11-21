@@ -59,6 +59,11 @@ export {
 export * from "./markup-structure.js";
 export * from "./mcp-access.js";
 export * from "./media.js";
+export {
+  CONTENT_INSTANCE_ATTRIBUTE,
+  stripContentInstances,
+  tagContentInstance,
+} from "./module-id-tag.js";
 export * from "./nested-module-render.js";
 export * from "./owner-setup-token.js";
 export * from "./page-log.js";

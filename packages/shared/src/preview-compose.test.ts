@@ -60,6 +60,27 @@ describe("composePagePreview", () => {
     );
   });
 
+  it("stamps each placement's content instance only when an observer asked for it (#1644)", () => {
+    const input = (stampContentInstances: boolean) => ({
+      templateHtml: `<body><caelo-slot name="x">_</caelo-slot></body>`,
+      templateCss: "",
+      stampContentInstances,
+      blocks: [
+        {
+          blockName: "x",
+          modules: [
+            { ...blankModule, html: "<p>A</p>", contentInstanceId: uid(1) },
+            { ...blankModule, html: "<p>B</p>", contentInstanceId: uid(2) },
+          ],
+        },
+      ],
+    });
+    const stamped = composePagePreview(input(true)).html;
+    expect(stamped).toContain(`data-caelo-content-instance="${uid(1)}">A</p>`);
+    expect(stamped).toContain(`data-caelo-content-instance="${uid(2)}">B</p>`);
+    expect(composePagePreview(input(false)).html).not.toContain("data-caelo-content-instance");
+  });
+
   it("orders modules within a block by array order", () => {
     const out = composePagePreview({
       templateHtml: `<body><caelo-slot name="x">_</caelo-slot></body>`,

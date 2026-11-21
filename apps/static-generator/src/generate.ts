@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { fontReader } from "@caelo-cms/font-service";
-import type { ComposedModuleRef, PageOutputFinish } from "@caelo-cms/plugin-host";
+import {
+  type ComposedModuleRef,
+  type PageOutputFinish,
+  placementKey,
+} from "@caelo-cms/plugin-host";
 import { PageOutputCollector } from "./page-output.js";
 
 /**
@@ -87,6 +91,7 @@ import {
   siteSecurityPolicySchema,
   staticFileCollisions,
   staticFileContentTypeHeader,
+  stripContentInstances,
   type ThemeDocument,
   themeFaviconRendition,
   trimSlashes,
@@ -1184,6 +1189,9 @@ async function buildSite(
           deferredModules,
           nestedModules: loaded.nestedModules,
           linkResolver,
+          // Epic #1644 — observers tell two placements of one design apart by
+          // their content instance; the stamp is stripped before the write.
+          stampContentInstances: pageOutput !== null,
         });
         return { composed, lists, linkResolver };
       } catch (e) {
@@ -1214,7 +1222,7 @@ async function buildSite(
         ...(pageOutput && n === 1 ? { composed: composedRefs(blocks, layoutBlocks) } : {}),
         // What the page itself shows, without the layout's chrome: page 1
         // stands for the page in the live record (docs/dev/search-engine-feed.md).
-        bodyDigest: n === 1 ? bodyContentDigest(composed.contentHtml) : null,
+        bodyDigest: n === 1 ? bodyContentDigest(stripContentInstances(composed.contentHtml)) : null,
         relPath:
           n === 1
             ? outputPathOf(page)
@@ -1392,7 +1400,12 @@ async function buildSite(
       // #1271 — on an uploading publisher each file goes to the provider
       // as it is written (the stream output); WRITE_PARALLELISM files at once.
       await runBatched(pages, WRITE_PARALLELISM, (p) =>
-        writeBuildFile(p.relPath, p.html, contentTypeOverrides[p.relPath]),
+        // The observers' placement stamps never reach a published file.
+        writeBuildFile(
+          p.relPath,
+          pageOutput ? stripContentInstances(p.html) : p.html,
+          contentTypeOverrides[p.relPath],
+        ),
       );
     });
     fileCount += pages.length;
@@ -1929,22 +1942,18 @@ function composedRefs(
     readonly modules: readonly { readonly moduleId: string; readonly contentInstanceId?: string }[];
   }[],
 ): ComposedModuleRef[] {
+  // One entry per placement (module and content instance): one design
+  // placed with two instances is two blocks to an observer.
   const out = new Map<string, ComposedModuleRef>();
-  for (const b of layoutBlocks)
-    for (const m of b.modules)
-      if (!out.has(m.moduleId))
-        out.set(m.moduleId, {
-          moduleId: m.moduleId,
-          zone: "layout",
-          contentInstanceId: m.contentInstanceId ?? null,
-        });
-  for (const b of blocks)
-    for (const m of b.modules)
-      if (!out.has(m.moduleId))
-        out.set(m.moduleId, {
-          moduleId: m.moduleId,
-          zone: "page",
-          contentInstanceId: m.contentInstanceId ?? null,
-        });
+  const add = (
+    m: { readonly moduleId: string; readonly contentInstanceId?: string },
+    zone: "layout" | "page",
+  ) => {
+    const instance = m.contentInstanceId ?? null;
+    const key = placementKey(m.moduleId, instance);
+    if (!out.has(key)) out.set(key, { moduleId: m.moduleId, zone, contentInstanceId: instance });
+  };
+  for (const b of layoutBlocks) for (const m of b.modules) add(m, "layout");
+  for (const b of blocks) for (const m of b.modules) add(m, "page");
   return [...out.values()];
 }

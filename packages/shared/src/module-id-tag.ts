@@ -30,18 +30,45 @@ export const MODULE_ID_ATTRIBUTE = "data-caelo-module-id";
  * @example tagModuleId('<line x1="0"/>', "abc") // '<line x1="0" data-caelo-module-id="abc"/>'
  */
 export function tagModuleId(html: string, moduleId: string): string {
+  return tagRoot(html, MODULE_ID_ATTRIBUTE, moduleId);
+}
+
+/**
+ * Epic #1644 — the content instance a placement shows, on its root next to
+ * the module id, for page-output observers only: two placements of one
+ * design with different content are two blocks to an index. The generator
+ * stamps it when an observer reads the page and strips it
+ * ({@link stripContentInstances}) before the file is written, so the
+ * published HTML never carries it.
+ */
+export const CONTENT_INSTANCE_ATTRIBUTE = "data-caelo-content-instance";
+
+/** {@link CONTENT_INSTANCE_ATTRIBUTE} on the module's root (idempotent, like {@link tagModuleId}). */
+export function tagContentInstance(html: string, contentInstanceId: string): string {
+  return tagRoot(html, CONTENT_INSTANCE_ATTRIBUTE, contentInstanceId);
+}
+
+const STAMP = new RegExp(` ${CONTENT_INSTANCE_ATTRIBUTE}="[0-9a-f-]{36}"`, "g");
+
+/** The HTML without the observers' content-instance stamps (a fixed-width pattern: linear). */
+export function stripContentInstances(html: string): string {
+  return html.includes(CONTENT_INSTANCE_ATTRIBUTE) ? html.replace(STAMP, "") : html;
+}
+
+/** `name="value"` on the first opening tag of `html`, unless that tag has `name` already. */
+function tagRoot(html: string, name: string, value: string): string {
   if (!html) return html;
   const firstOpen = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/;
   const m = firstOpen.exec(html);
   if (!m) return html;
   const tagAttrs = m[2] ?? "";
-  if (/\sdata-caelo-module-id\s*=/.test(tagAttrs)) return html;
+  if (new RegExp(`\\s${name}\\s*=`).test(tagAttrs)) return html;
   // String ops, not a `\s*\/\s*$` regex: that backtracks polynomially on
   // long whitespace runs (CodeQL js/polynomial-redos).
   const trimmed = tagAttrs.trimEnd();
   const selfClosing = trimmed.endsWith("/");
   const attrs = selfClosing ? trimmed.slice(0, -1).trimEnd() : tagAttrs;
   const close = selfClosing ? "/>" : ">";
-  const replaced = `<${m[1]}${attrs} ${MODULE_ID_ATTRIBUTE}="${moduleId}"${close}`;
+  const replaced = `<${m[1]}${attrs} ${name}="${value}"${close}`;
   return html.slice(0, m.index) + replaced + html.slice(m.index + m[0].length);
 }
