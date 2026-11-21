@@ -39,7 +39,7 @@
  * rebuild-from-source op instead.
  */
 
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import type { TransactionRunner } from "./operation.js";
 
 /** One journal row as consumers see it. */
@@ -269,14 +269,15 @@ export function snapshotFollows(earlier: string, later: string): boolean {
  * through the primary key as at most three index ranges.
  *
  * The bounds are statement parameters, never values the statement derives
- * from the snapshot (a CTE column, a scalar subquery over it): Postgres
- * plans with a parameter's value, so it sees that hardly any row lies past
- * xmax and takes the index. Derived inside the statement, the bounds were
- * unknown to the planner; it assumed a third of the journal matched, and
- * under the EXISTS of a freshness check (planned for its first match) a
- * sequential scan looked cheapest. A fresh check has no match, so it read
- * the whole journal, three times: the scale gate's 8-second check, 17,600
- * buffers per call over 328,000 rows (#1269).
+ * from the snapshot (a CTE column, a scalar subquery over it): a custom
+ * plan uses a parameter's value, so it sees that hardly any row lies past
+ * xmax and takes the index. Unknown bounds (derived inside the statement,
+ * or a generic plan's `$n`) make the planner assume a third of the journal
+ * matches, and under the EXISTS of a freshness check (planned for its
+ * first match) a sequential scan looks cheapest. A fresh check has no
+ * match, so it read the whole journal, three times: 17,600 buffers per
+ * call over 328,000 rows (#1269). A statement that reads through here must
+ * therefore run with a custom plan ({@link executeWithCustomPlan}).
  *
  * The old `xid >= xmin` scan re-read every row between xmin and xmax on
  * every read, so a long transaction (a plugin's first rebuild, a build)
@@ -299,6 +300,34 @@ function unseenRows(bounds: SnapshotBounds, ownXid: string | null = null) {
     ranges.push(sql`SELECT * FROM entity_changes WHERE xid = ${ownXid}::xid8`);
   }
   return sql`(${sql.join(ranges, sql` UNION ALL `)})`;
+}
+
+/**
+ * Run `statement` with a plan made for its parameter values, never with a
+ * cached generic one (#1667).
+ *
+ * Bun prepares every statement on its connection, and after five runs
+ * Postgres (`plan_cache_mode = auto`) may switch it to a generic plan when
+ * that plan's estimate looks no worse. For a journal read that estimate
+ * is wrong: without the snapshot bounds it assumes a third of the journal
+ * matches (see {@link unseenRows}). The nightly scale gate showed the
+ * result on every freshness check: three sequential scans, 16,947 buffers
+ * per call over 315,000 rows, on a database already at its CPU share.
+ *
+ * `SET LOCAL` keeps the switch inside the caller's transaction. It goes
+ * back to the server's setting after the statement, so the caller's later
+ * statements keep their cached plans. If the statement fails, the
+ * transaction is aborted and the setting ends with it, so it is not
+ * restored then (a restore would fail too and hide the error).
+ */
+async function executeWithCustomPlan(
+  tx: TransactionRunner,
+  statement: SQL,
+): Promise<Awaited<ReturnType<TransactionRunner["execute"]>>> {
+  await tx.execute(sql`SET LOCAL plan_cache_mode = force_custom_plan`);
+  const rows = await tx.execute(statement);
+  await tx.execute(sql`SET LOCAL plan_cache_mode TO DEFAULT`);
+  return rows;
 }
 
 /**
@@ -355,7 +384,9 @@ export async function checkJournalMark(
   filter: JournalFilter,
 ): Promise<JournalCheck> {
   const ownXid = cached?.ownXid ?? null;
-  const rows = (await tx.execute(sql`
+  const rows = (await executeWithCustomPlan(
+    tx,
+    sql`
     WITH c AS (SELECT ${cached?.snapshot ?? null}::pg_snapshot AS s, ${cached?.ownXid ?? null}::xid8 AS own),
          r AS (SELECT pg_current_snapshot() AS s, pg_current_xact_id_if_assigned() AS own)
     SELECT r.s::text AS snapshot, r.own::text AS own_xid,
@@ -377,7 +408,8 @@ export async function checkJournalMark(
               SELECT 1 FROM entity_change_horizons h WHERE h.horizon >= pg_snapshot_xmin(c.s)
             )) AS fresh
       FROM c, r
-  `)) as unknown as {
+  `,
+  )) as unknown as {
     snapshot: string;
     own_xid: string | null;
     dirty: boolean;
@@ -668,7 +700,9 @@ export async function readChanges(
     throw new Error("readChanges: limit must be an integer 1..5000");
   }
   const after = input.after;
-  const rows = (await tx.execute(sql`
+  const rows = (await executeWithCustomPlan(
+    tx,
+    sql`
     WITH c AS (SELECT ${input.cursor}::pg_snapshot AS s,
                       COALESCE(${input.target}::pg_snapshot, pg_current_snapshot()) AS t),
     horizon AS (
@@ -698,7 +732,8 @@ export async function readChanges(
     SELECT (SELECT t::text FROM c) AS target, (SELECT lost FROM horizon) AS lost, page.*
       FROM (SELECT 1) one LEFT JOIN page ON true
      ORDER BY page.sort_xid, page.table_name, page.row_id
-  `)) as unknown as ({ target: string; lost: boolean } & (
+  `,
+  )) as unknown as ({ target: string; lost: boolean } & (
     | RawChange
     | Record<keyof RawChange, null>
   ))[];

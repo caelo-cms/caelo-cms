@@ -33,6 +33,7 @@ import {
 import type { ExecutionContext, LiveTopic } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { type LiveFanOut, startLiveFanOut, subscribeLiveTopics } from "../live-events.js";
 import { registerAdminOps } from "../register.js";
 
@@ -43,6 +44,8 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 const PFX = "t1267-";
 const ACTOR = "00000000-0000-0000-0000-00000000ffff";
 const SYS: ExecutionContext = { actorId: ACTOR, actorKind: "system", requestId: "t1267" };
+
+const dialect = new PgDialect();
 
 let adapter: DatabaseAdapter;
 let otherAdapter: DatabaseAdapter;
@@ -140,6 +143,30 @@ async function analyzeJournal(): Promise<void> {
   await asSystem((tx) => tx`ANALYZE entity_changes`);
 }
 
+/** Sequential scans of the journal so far in `tx`'s transaction. */
+async function journalSeqScans(tx: TransactionRunner): Promise<number> {
+  const [row] = (await tx.execute(sql`
+    SELECT seq_scan FROM pg_stat_xact_user_tables WHERE relid = 'entity_changes'::regclass
+  `)) as unknown as { seq_scan: number | string }[];
+  return Number(row?.seq_scan ?? 0);
+}
+
+/**
+ * Plans Postgres made so far on `tx`'s connection for the prepared
+ * statements that read the journal through its unseen-row ranges (the
+ * freshness check and the consumer read), generic and custom (#1667).
+ */
+async function journalReadPlans(
+  tx: TransactionRunner,
+): Promise<{ generic: number; custom: number }> {
+  const [row] = (await tx.execute(sql`
+    SELECT COALESCE(sum(generic_plans), 0)::int AS generic, COALESCE(sum(custom_plans), 0)::int AS custom
+      FROM pg_prepared_statements
+     WHERE statement LIKE '%FROM entity_changes WHERE xid >= %'
+  `)) as unknown as { generic: number; custom: number }[];
+  return { generic: Number(row?.generic ?? 0), custom: Number(row?.custom ?? 0) };
+}
+
 /** Removes the probe rows again (system may delete journal rows, as GC does). */
 async function dropProbeRows(): Promise<void> {
   await asSystem((tx) => tx`DELETE FROM entity_changes WHERE kind = ${PROBE_KIND}`);
@@ -190,6 +217,11 @@ function measuring(tx: TransactionRunner, buffers: number[]): TransactionRunner 
     get(target, prop, receiver) {
       if (prop !== "execute") return Reflect.get(target, prop, receiver);
       return async (q: Parameters<TransactionRunner["execute"]>[0]) => {
+        // A `SET LOCAL` around a read (the custom-plan switch, #1667) reads
+        // nothing and cannot be explained.
+        if (typeof q !== "string" && /^\s*SET\s/i.test(dialect.sqlToQuery(q).sql)) {
+          return target.execute(q);
+        }
         const plan = (await target.execute(
           sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${q}`,
         )) as unknown as {
@@ -795,6 +827,96 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
           pollChanges(tx, name, { filter, limit: 100 }),
         );
         expect(next.changes.map((c) => c.rowId)).toEqual([probeId]);
+      } finally {
+        await asSystem((tx) => tx`DELETE FROM change_consumers WHERE name = ${name}`);
+        await dropFlood();
+      }
+    });
+
+    // #1667 — Bun prepares every statement, and after five runs on one
+    // connection Postgres may plan it generically, without the snapshot
+    // bounds: the nightly gate's checks then read the whole journal three
+    // times each (16,947 buffers per call over 315,000 rows). There most of
+    // the journal is of the kinds the reader asks for, written by a few
+    // large transactions (the seeded site; an import), so a generic plan
+    // expects a third of it past the mark and many rows per xid. These
+    // tests build that journal, force the generic plan, as a connection
+    // that ran the read often has it, and count the journal's sequential
+    // scans in the transaction (`measuring` would EXPLAIN a fresh,
+    // custom-planned copy instead).
+    async function bulkOfAskedKind(): Promise<void> {
+      await adapter.withAdminTransaction(SYS, (tx) =>
+        tx.execute(sql`
+          INSERT INTO entity_changes (xid, table_name, row_id, kind, op)
+          SELECT pg_current_xact_id(), 't1269_probe', 'bulk-' || i, ${PROBE_KIND}, 'insert'
+            FROM generate_series(1, 20000) i`),
+      );
+      await analyzeJournal();
+    }
+
+    const askedFilter = { kinds: [PROBE_KIND] };
+
+    /**
+     * `fn` on a transaction that plans generically, with what its journal
+     * reads cost: sequential scans of the journal, and the plans Postgres
+     * made for the prepared statements that read through `unseenRows`.
+     */
+    const generically = <T>(fn: (tx: TransactionRunner) => Promise<T>) =>
+      adapter.withAdminTransaction(SYS, async (tx) => {
+        await tx.execute(sql`SET LOCAL plan_cache_mode = force_generic_plan`);
+        const scans = await journalSeqScans(tx);
+        const plans = await journalReadPlans(tx);
+        const result = await fn(tx);
+        const after = await journalReadPlans(tx);
+        return {
+          result,
+          seqScans: (await journalSeqScans(tx)) - scans,
+          genericPlans: after.generic - plans.generic,
+          customPlans: after.custom - plans.custom,
+        };
+      });
+
+    it("a check reads by index also on a connection whose statement went generic (#1667)", async () => {
+      try {
+        await bulkOfAskedKind();
+        const { mark } = await adapter.withAdminTransaction(SYS, (tx) =>
+          checkJournalMark(tx, null, askedFilter),
+        );
+        const fresh = await generically((tx) => checkJournalMark(tx, mark, askedFilter));
+        expect(fresh.result.fresh).toBe(true);
+        expect(fresh.seqScans).toBe(0);
+        expect(fresh.genericPlans).toBe(0);
+        expect(fresh.customPlans).toBeGreaterThan(0);
+        await writeProbeRow();
+        const stale = await generically((tx) => checkJournalMark(tx, mark, askedFilter));
+        expect(stale.result.fresh).toBe(false);
+        expect(stale.seqScans).toBe(0);
+        expect(stale.genericPlans).toBe(0);
+        expect(stale.customPlans).toBeGreaterThan(0);
+      } finally {
+        await dropFlood();
+      }
+    });
+
+    it("a consumer poll reads by index also on a connection whose statement went generic (#1667)", async () => {
+      const name = `test:${crypto.randomUUID()}`;
+      try {
+        await bulkOfAskedKind();
+        // Registered after the bulk rows: its cursor has seen them.
+        await adapter.withAdminTransaction(SYS, (tx) => registerConsumer(tx, name));
+        const poll = (tx: TransactionRunner) =>
+          pollChanges(tx, name, { filter: askedFilter, limit: 100 });
+        const empty = await generically(poll);
+        expect(empty.result.changes).toEqual([]);
+        expect(empty.seqScans).toBe(0);
+        expect(empty.genericPlans).toBe(0);
+        expect(empty.customPlans).toBeGreaterThan(0);
+        const probeId = await writeProbeRow();
+        const next = await generically(poll);
+        expect(next.result.changes.map((c) => c.rowId)).toEqual([probeId]);
+        expect(next.seqScans).toBe(0);
+        expect(next.genericPlans).toBe(0);
+        expect(next.customPlans).toBeGreaterThan(0);
       } finally {
         await asSystem((tx) => tx`DELETE FROM change_consumers WHERE name = ${name}`);
         await dropFlood();
