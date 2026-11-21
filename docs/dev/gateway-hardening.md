@@ -2,6 +2,10 @@
 
 The cheap setup (gcp-firebase) has no load balancer and no WAF in front of the API gateway, and the gateway stays reachable on `*.run.app` (epic #763, decision E3). So every protection lives in the gateway and in the database itself. Where a provider has a WAF (gcp: Cloud Armor), it is an extra layer, never the only one. This page describes the gateway's own layers from #1326 (P1) and #1338 (P8).
 
+## No plugin code (E2-B, #1340)
+
+The gateway runs no plugin code: no shipped plugin's dist, no installed plugin's sandbox. It attaches a plugin as its manifest (`plugin-host/manifest-definition.ts`): a release-signed plugin's signed `manifest.json` from the image, verified against the trust root, and an installed plugin's approved manifest from the published registry, whose source is only hashed against the approval's artifact digest. A visitor call runs the operation's declared `run` with core code (`public-run-host.ts`, the building blocks in `public-blocks/`, [../plugin-public-surface.md](../plugin-public-surface.md)), and the consent rule is computed by core from the provider's `consentProvider` declaration. The gateway imports only `@caelo-cms/plugin-host/gateway`, whose import graph reaches no loader, sandbox, validator or plugin package (`gateway-entry.test.ts` walks it), and its image carries no Deno, no dist and no oxc-parser (`apps/api-gateway/image.ts`). So a hole in a plugin cannot run in the process that holds the gateway's credentials: the visitor-AI key of #1654 can live there.
+
 ## A gateway whose feature is off (E14 a, #1339)
 
 Every public service is provisioned on every install at zero minimum instances, so one that nobody uses costs nothing. While its feature is off it answers the fixed 404 of a path that names no route (`{ ok: false, error: { kind: "NotFound", requestId } }`, no cookie), before it reads the request and before any database access. The one path a gateway reads anything of while off is the admin's refresh ping, `POST /api/_caelo/refresh`: it checks the ping's token header without the database, and anything but a valid ping gets the same fixed 404 (below).
