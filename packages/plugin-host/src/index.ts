@@ -75,6 +75,19 @@ export {
   withAssetContent,
 } from "./client-assets.js";
 export {
+  type CollectionAnswer,
+  type HitExplanation,
+  MAX_QUERY_WORDS,
+  ModelUnavailableError,
+  modelOfFingerprint,
+  normalizeQuery,
+  type OpenEntry,
+  type QueryEmbedder,
+  type RunCollectionOptions,
+  runCollectionOperation,
+  wasmQueryEmbedder,
+} from "./collection-query.js";
+export {
   COLLECTION_OPS,
   type CollectionChangeFile,
   collectionDocSchema,
@@ -389,16 +402,3 @@ export {
   type PluginWriteHintsResult,
   writeHintContributors,
 } from "./write-hints.js";
-export {
-  type CollectionAnswer,
-  type HitExplanation,
-  MAX_QUERY_WORDS,
-  ModelUnavailableError,
-  modelOfFingerprint,
-  normalizeQuery,
-  type OpenEntry,
-  type QueryEmbedder,
-  type RunCollectionOptions,
-  runCollectionOperation,
-  wasmQueryEmbedder,
-} from "./collection-query.js";

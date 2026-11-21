@@ -55,7 +55,7 @@ import {
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
-export { type CollectionAnswer, MAX_QUERY_WORDS, runCollectionOperation } from "@caelo-cms/plugin-host";
+export { runCollectionOperation } from "@caelo-cms/plugin-host";
 
 /** The env var of each environment's collection store. */
 const STORE_ENV = {
@@ -68,7 +68,6 @@ const CACHE_BYTES = Number(process.env.CAELO_COLLECTIONS_CACHE_MB ?? 256) * 1024
 
 /** Releases one gateway keeps open (the newest few; a Publish live replaces one). */
 const OPEN_RELEASES = 8;
-
 
 const PATH = /^\/api\/plugin\/([a-z][a-z0-9-]{0,54})\/([a-z_][a-z0-9_]{0,119})(\/release)?$/;
 
@@ -191,4 +190,3 @@ export function declaredCollectionOperation(
   if (!parsed.success || !plugin.definition.collections?.[parsed.data.collection]) return null;
   return { pluginId: plugin.pluginId, op: parsed.data };
 }
-

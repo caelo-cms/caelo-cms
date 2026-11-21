@@ -16,7 +16,6 @@
  * the pages or the plugin's settings, and the next Stage re-derives it.
  */
 
-import { type OpenEntry, runCollectionOperation, wasmQueryEmbedder } from "./collection-query.js";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import {
   type CollectionStore,
@@ -51,6 +50,7 @@ import {
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { type OpenEntry, runCollectionOperation, wasmQueryEmbedder } from "./collection-query.js";
 import {
   isPluginDisabled,
   type LoadedPlugin,
@@ -361,7 +361,10 @@ export function makeCollectionOps(
     database: "cms_admin",
     input: z
       .object({
-        collections: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,39}$/)).min(1).max(2),
+        collections: z
+          .array(z.string().regex(/^[a-z][a-z0-9_]{0,39}$/))
+          .min(1)
+          .max(2),
         /** A Stage's run; absent: `at`. */
         runId: z.string().uuid().optional(),
         /** `staged`: the newest Stage with a ready index; `live`: what visitors search. */
@@ -380,8 +383,13 @@ export function makeCollectionOps(
       ),
     }),
     handler: async (ctx, input, tx) => {
-      const plugin = declaredCollection(COLLECTION_OPS.releaseOf, ctx.pluginId, input.collections[0] as string).plugin;
-      for (const c of input.collections) declaredCollection(COLLECTION_OPS.releaseOf, ctx.pluginId, c);
+      const plugin = declaredCollection(
+        COLLECTION_OPS.releaseOf,
+        ctx.pluginId,
+        input.collections[0] as string,
+      ).plugin;
+      for (const c of input.collections)
+        declaredCollection(COLLECTION_OPS.releaseOf, ctx.pluginId, c);
       const out = [];
       for (const collection of input.collections) {
         const rows = (await tx.execute(
@@ -395,11 +403,22 @@ export function makeCollectionOps(
               : sql`SELECT run_id::text AS run_id, state, release_key, error FROM collection_releases
                     WHERE plugin_id = ${plugin.pluginId}::uuid AND collection = ${collection} AND state = 'ready'
                     ORDER BY created_at DESC LIMIT 1`,
-        )) as unknown as { run_id: string; state: "pending" | "ready" | "failed"; release_key: string | null; error: string | null }[];
+        )) as unknown as {
+          run_id: string;
+          state: "pending" | "ready" | "failed";
+          release_key: string | null;
+          error: string | null;
+        }[];
         const r = rows[0];
         out.push(
           r
-            ? { collection, state: r.state, releaseKey: r.release_key, error: r.error, runId: r.run_id }
+            ? {
+                collection,
+                state: r.state,
+                releaseKey: r.release_key,
+                error: r.error,
+                runId: r.run_id,
+              }
             : { collection, state: "none" as const, releaseKey: null, error: null, runId: null },
         );
       }
@@ -439,7 +458,11 @@ export function makeCollectionOps(
       `)) as unknown as { release_key: string }[];
       const releaseKey = rows[0]?.release_key;
       if (!releaseKey) return ok({ docs: [], pending: pendingRows.length > 0 });
-      const entry = await openAdminRelease(store(), collectionPrefix(plugin.slug, input.collection), releaseKey);
+      const entry = await openAdminRelease(
+        store(),
+        collectionPrefix(plugin.slug, input.collection),
+        releaseKey,
+      );
       const found = await lookupDocs(entry.release, input.ids.map(idTerm));
       return ok({
         docs: found.map((d) => ({ id: d.id, lang: d.lang, values: d.values })),
@@ -455,7 +478,11 @@ const adminReleases = new Map<string, Promise<OpenEntry>>();
 const ADMIN_OPEN_RELEASES = 6;
 let adminEmbedder: ReturnType<typeof wasmQueryEmbedder> | null = null;
 
-async function openAdminRelease(store: CollectionStore, prefix: string, releaseKey: string): Promise<OpenEntry> {
+async function openAdminRelease(
+  store: CollectionStore,
+  prefix: string,
+  releaseKey: string,
+): Promise<OpenEntry> {
   const id = `${store.describe}|${prefix}|${releaseKey}`;
   let entry = adminReleases.get(id);
   if (!entry) {
@@ -543,7 +570,11 @@ export function makePluginCollections(
           });
         }
       },
-      replace: async (field: string, values: readonly string[], docs: readonly CollectionDocInput[]) => {
+      replace: async (
+        field: string,
+        values: readonly string[],
+        docs: readonly CollectionDocInput[],
+      ) => {
         assertWriting("replace");
         // The removals first, then the documents: change files apply in order.
         for (let i = 0; i < values.length; i += MAX_DELETES) {
@@ -600,13 +631,23 @@ export function makePluginCollections(
           };
         // The live store when the live release is asked for; the staging one otherwise.
         const store = collectionStoreFromEnv(
-          opts.at === "live" && !opts.runId ? LIVE_COLLECTION_STORE_ENV : STAGING_COLLECTION_STORE_ENV,
+          opts.at === "live" && !opts.runId
+            ? LIVE_COLLECTION_STORE_ENV
+            : STAGING_COLLECTION_STORE_ENV,
         );
-        const entry = await openAdminRelease(store, collectionPrefix(plugin.slug, name), main.releaseKey);
+        const entry = await openAdminRelease(
+          store,
+          collectionPrefix(plugin.slug, name),
+          main.releaseKey,
+        );
         const a = resolved.releases[1];
         const anchors =
           anchorsName && a?.state === "ready" && a.releaseKey
-            ? await openAdminRelease(store, collectionPrefix(plugin.slug, anchorsName), a.releaseKey)
+            ? await openAdminRelease(
+                store,
+                collectionPrefix(plugin.slug, anchorsName),
+                a.releaseKey,
+              )
             : null;
         const search = new URLSearchParams();
         for (const [k, v] of Object.entries(params))
@@ -623,11 +664,14 @@ export function makePluginCollections(
         const docs = new Map<string, CollectionDocInput>();
         let pending = false;
         for (let i = 0; i < ids.length; i += 1000) {
-          const r = await run<{ docs: CollectionDocInput[]; pending: boolean }>(COLLECTION_OPS.getMany, {
-            collection: name,
-            ids: ids.slice(i, i + 1000),
-            ...(invocation.stageRunId ? { stageRunId: invocation.stageRunId } : {}),
-          });
+          const r = await run<{ docs: CollectionDocInput[]; pending: boolean }>(
+            COLLECTION_OPS.getMany,
+            {
+              collection: name,
+              ids: ids.slice(i, i + 1000),
+              ...(invocation.stageRunId ? { stageRunId: invocation.stageRunId } : {}),
+            },
+          );
           for (const d of r.docs) docs.set(d.id, d);
           pending ||= r.pending;
         }
