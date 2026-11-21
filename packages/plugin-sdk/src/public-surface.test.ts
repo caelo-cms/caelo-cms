@@ -64,7 +64,12 @@ const op = (o: Partial<PublicOperationDef> & { name: string }): PublicOperationD
   const run: PublicOperationDef["run"] =
     kind === "read"
       ? { action: "list", table: o.reads?.[0] ?? "settings", limit: 1, columns: ["id"], as: "rows" }
-      : { action: "insert", table: o.writes?.[0] ?? "entries", values: {}, answer: { ok: true } };
+      : {
+          action: "insert",
+          table: o.writes?.[0] ?? "entries",
+          values: { id: { from: "const", value: null } },
+          answer: { ok: true },
+        };
   return { kind: "write", input: z.object({}).strict(), run, ...o };
 };
 

@@ -96,20 +96,25 @@ const echoPlugin = definePlugin<PluginContextTier1>({
   slug: "visitor-echo",
   version: "0.0.1",
   tier: 1,
-  schema: {},
+  // #1340 — a declared insert of the visitor id it was handed, nothing else.
+  schema: { seen: { id: "uuid", visitor_id: "string", created_at: "timestamp" } },
+  tableKinds: { seen: "inbox" },
   publicOperations: [
     {
       name: "whoami",
       kind: "write" as const,
       captcha: "none" as const,
       input: z.looseObject({}),
-      reads: [],
-      writes: [],
+      writes: ["seen"],
+      run: {
+        action: "insert" as const,
+        table: "seen",
+        values: { visitor_id: { from: "visitor" as const, key: "id" as const } },
+        answer: { id: { from: "inserted-id" as const } },
+      },
     },
   ],
-  operations: {
-    whoami: async (ctx) => ({ visitorId: ctx.visitor.id }),
-  },
+  operations: {},
 });
 const RECORD = "/api/plugin/consent-manager/record_consent";
 /** The random id the banner keeps in caelo_consent and posts with every decision. */
@@ -371,7 +376,7 @@ beforeAll(async () => {
   resetPluginHost();
   pluginIds = await asAdmin(async (tx) => {
     const rows =
-      (await tx`SELECT slug, id::text AS id FROM plugins WHERE slug IN ('consent-manager', 'ratings')`) as {
+      (await tx`SELECT slug, id::text AS id FROM plugins WHERE slug IN ('consent-manager', 'ratings', 'visitor-echo')`) as {
         slug: string;
         id: string;
       }[];
@@ -532,7 +537,13 @@ describe("accepted, then withdrawn (#677)", () => {
       post("/api/plugin/visitor-echo/whoami", {}, [ACCEPTED, sessionCookie(visitorCookie)]),
     );
     await expectStatus(r, 200);
-    expect(((await r.json()) as { data: { visitorId: string | null } }).data.visitorId).toBeNull();
+    const { id } = ((await r.json()) as { data: { id: string } }).data;
+    const seen = await publicRows<{ id: string; visitor_id: string | null }>(
+      "visitor-echo",
+      "seen",
+    );
+    expect(seen.find((row) => row.id === id)?.visitor_id ?? null).toBeNull();
+    expect(seen.some((row) => row.id === id)).toBe(true);
   });
 
   it("expires the cookie when the visitor withdraws, and stops reading it", async () => {

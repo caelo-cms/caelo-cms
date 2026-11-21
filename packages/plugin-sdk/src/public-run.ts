@@ -458,6 +458,8 @@ export function checkPublicRun(
   const run = op.run;
   if (run.action === "insert") {
     if (op.kind !== "write") issue(["kind"], `"${op.name}" inserts, so it is kind "write"`);
+    if (Object.keys(run.values).length === 0)
+      issue(["run", "values"], `"${op.name}" inserts a row: give it at least one column value`);
     if (ownTable(["run", "table"], run.table, VISITOR_WRITABLE, "write")) {
       columns(["run", "values"], run.table, Object.keys(run.values));
       columns(["run", "honeypot", "values"], run.table, Object.keys(run.honeypot?.values ?? {}));
