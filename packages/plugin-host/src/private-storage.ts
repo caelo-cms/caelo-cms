@@ -597,9 +597,11 @@ export async function privateList(
   const main = rows.map((r) => rowToState(r.row).values);
   if (overlay.size === 0) return main;
 
+  // The overlay is remembered across reads (#1669): hand out copies, so a
+  // caller that changes a returned row cannot change what later reads see.
   const branchRows = [...overlay.values()]
     .filter((s) => s.deletedAt === null && matches(s.values, plan))
-    .map((s) => s.values);
+    .map((s) => structuredClone(s.values) as Record<string, unknown>);
   const merged = [...main, ...branchRows];
   if (plan.orderBy) {
     const key = plan.orderBy;

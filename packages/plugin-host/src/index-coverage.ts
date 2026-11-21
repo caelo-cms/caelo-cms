@@ -23,8 +23,9 @@ import {
   listIndexRefusal,
   readsByColumn,
 } from "@caelo-cms/plugin-sdk";
-import { pluginSchemaGeneration, type TransactionRunner } from "@caelo-cms/query-api";
+import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { type LoadedPlugin, loadedPlugins } from "./dispatch.js";
 import type { ListPlan } from "./private-storage.js";
 
 // The rule itself is the SDK's, so a plugin's unit tests apply exactly
@@ -69,40 +70,46 @@ export async function indexLeadColumns(
 }
 
 /**
- * #1669 — the leads per table, read from the catalog once per plugin
- * schema change of this process (`pluginSchemaGeneration`, query-api):
- * the catalog changes only when a plugin schema is provisioned or
- * dropped, and every `plugin_storage.list` asked it again (83,708 catalog
- * reads in a two-minute local gate run, one per list). Kept per zone,
- * because a plugin's public and private schemas share their name in two
- * databases. A read that a schema change overtook is not kept.
+ * #1669 — the leads per table, read from the catalog once per loaded
+ * plugin: every `plugin_storage.list` asked the catalog again (83,708
+ * catalog reads in a two-minute local gate run, one per list). The
+ * catalog changes only when a plugin schema is provisioned or dropped,
+ * and each of those reaches every process as a new load of the plugin: an
+ * admin provisions on every load (its own DDL, or the reload that follows
+ * another instance's), and the dispatch-only gateway attaches the new
+ * version. A load registers a new `LoadedPlugin`, so the leads are kept
+ * per loaded plugin object and a new load starts afresh; an unloaded
+ * plugin takes them with it. Per zone, because a plugin's public and
+ * private schemas share their name in two databases. A plugin that is
+ * not loaded in this process (its own load, before it registers) reads
+ * the catalog every time.
  */
-const remembered = new Map<string, IndexLeads>();
-let rememberedAt = -1;
+let remembered = new WeakMap<LoadedPlugin, Map<string, IndexLeads>>();
 
-/** {@link indexLeadColumns}, remembered until this process changes a plugin schema. */
+/** {@link indexLeadColumns}, remembered for the plugin as it is loaded now. */
 export async function rememberedIndexLeadColumns(
   tx: TransactionRunner,
+  pluginId: string | undefined,
   zone: "private" | "public",
   schema: string,
   table: string,
 ): Promise<IndexLeads> {
-  const generation = pluginSchemaGeneration();
-  if (generation !== rememberedAt) {
-    remembered.clear();
-    rememberedAt = generation;
+  const plugin = pluginId ? loadedPlugins.byId(pluginId) : undefined;
+  if (!plugin) return indexLeadColumns(tx, schema, table);
+  let tables = remembered.get(plugin);
+  if (!tables) {
+    tables = new Map();
+    remembered.set(plugin, tables);
   }
   const key = `${zone}|${schema}.${table}`;
-  const hit = remembered.get(key);
+  const hit = tables.get(key);
   if (hit) return hit;
   const leads = await indexLeadColumns(tx, schema, table);
-  if (pluginSchemaGeneration() === generation && rememberedAt === generation) {
-    remembered.set(key, leads);
-  }
+  tables.set(key, leads);
   return leads;
 }
 
 /** Test seam: forget every remembered lead set (a cold measure reads the catalog again). */
 export function forgetIndexLeadColumns(): void {
-  remembered.clear();
+  remembered = new WeakMap();
 }

@@ -118,6 +118,12 @@ const plugin = definePlugin({
       return {};
     },
     list: async (ctx) => q(ctx).list("notes", { orderBy: "label", orderDir: "asc" }),
+    // #1669 — changes the rows a list returned, then lists again.
+    list_after_changing: async (ctx) => {
+      const rows = await q(ctx).list("notes", { orderBy: "label", orderDir: "asc" });
+      for (const row of rows) row.label = "changed-in-memory";
+      return q(ctx).list("notes", { orderBy: "label", orderDir: "asc" });
+    },
     // #1213 — keyset paging by id (+ an optional anyOf), `pageSize` rows a read.
     page_by_id: async (ctx, args) => {
       const a = args as { pageSize: number; labels?: string[] };
@@ -749,6 +755,19 @@ describe("#1669 — a branch's pending rows, carried by the journal between read
     expect(await labels(MAIN)).toEqual(expect.arrayContaining(["x-one", "x-two-b"]));
     await expectOverlayExact(x.chatBranchId);
     await expectOverlayExact(y.chatBranchId);
+  });
+
+  it("hands out copies: a caller that changes a listed row changes no later read", async () => {
+    const w = await newChat("w1669");
+    const added = await call(w.invocation, "add", { label: "w-kept" });
+    if (!added.ok) throw new Error(added.error.message);
+    const expected = await labels(w.invocation);
+    expect(expected).toContain("w-kept");
+    const changed = await call(w.invocation, "list_after_changing");
+    if (!changed.ok) throw new Error(changed.error.message);
+    expect((changed.value as { label: string }[]).map((n) => n.label)).toEqual(expected);
+    expect(await labels(w.invocation)).toEqual(expected);
+    await expectOverlayExact(w.chatBranchId);
   });
 
   it("never keeps what a transaction saw of its own uncommitted writes", async () => {

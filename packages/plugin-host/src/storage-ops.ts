@@ -435,7 +435,13 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
           label: op,
           zone: zone === "private" ? "adminSchema" : "schema",
           table: input.table,
-          leads: await rememberedIndexLeadColumns(tx, zone, input.schema, input.table),
+          leads: await rememberedIndexLeadColumns(
+            tx,
+            ctx.pluginId,
+            zone,
+            input.schema,
+            input.table,
+          ),
           access,
         });
         if (unindexed) return fail(op, unindexed);

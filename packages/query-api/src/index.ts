@@ -32,7 +32,6 @@ export {
   type PluginSchemaProvisionOutcome,
   POOL_IDLE_TIMEOUT_SECONDS,
   type PublicDatabaseName,
-  pluginSchemaGeneration,
   type TransactionOptions,
   thrownToQueryError,
 } from "./adapter.js";
