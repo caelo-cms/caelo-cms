@@ -25,8 +25,7 @@
  * fetch on demand (spends the external-fetch budget) and cache it.
  */
 
-import { promptTokenBound } from "@caelo-cms/plugin-host";
-import { siteData } from "@caelo-cms/shared";
+import { promptTokenBound, siteData } from "@caelo-cms/shared";
 import { fetchRenderedHtml, htmlToMarkdown } from "@caelo-cms/site-importer";
 import { z } from "zod";
 import { AiSpendRefusedError, aiSpendRunner } from "../ai-spend.js";

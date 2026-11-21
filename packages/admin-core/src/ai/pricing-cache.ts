@@ -11,18 +11,8 @@
  * stay deterministic by clearing on cold start.
  */
 import type { TransactionRunner } from "@caelo-cms/query-api";
+import type { PricingRow } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import type { LongPromptPricing } from "./long-prompt-pricing.js";
-
-export interface PricingRow extends LongPromptPricing {
-  inputMicrocents: number;
-  outputMicrocents: number | null;
-  /** Cache-READ (`cache_read_input_tokens`) rate per 1K tokens. */
-  cachedMicrocents: number | null;
-  /** Cache-WRITE (`cache_creation_input_tokens`) rate per 1K tokens; NULL
-   *  lets the cost mapper default to 1.25x the input rate. */
-  cacheCreationMicrocents: number | null;
-}
 
 /**
  * A candidate ai_pricing row for one (provider, operationType), carrying the

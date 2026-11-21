@@ -1,26 +1,58 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * issue #297 — pure cost mapping for `chat.record_ai_call`.
- *
- * Extracted from the op handler so the arithmetic AND the unpriced-call
- * detection are unit-testable without a DB. Run #14's report showed $0.00
- * despite 15+ ai_calls rows: the ai_pricing seed only carried
- * `('anthropic','claude-opus-4-7')` while the default chat model is
- * `claude-sonnet-5`, so `lookupPricing` missed and every row silently
- * stored `cost_estimate_microcents = 0` — a hidden fallback (CLAUDE.md §2)
- * that made the whole cost gate blind. Migration 0155 seeds the current
- * model catalog; this module makes any FUTURE gap loud instead of $0-quiet
- * (`unpriced: true` → stderr breadcrumb at the write site + an
- * `unpricedCallCount` surface on `imports.get_run_cost`).
+ * What an AI call costs, and the most it can cost before it runs: the pure
+ * pricing every spend ledger shares (#297, #1477, #1653, #1654). The admin's
+ * `ai_calls` ledger and the gateway's visitor-AI ledger (cms_public) price
+ * the same way from the same code, so a cap means the same on both sides.
  *
  * Money unit: microcents (1e-8 USD); pricing rows are per 1K tokens for
  * text and per image for image ops (see migration 0048).
+ *
+ * Prices that depend on prompt length (#1477): Claude Haiku 5.5 bills a
+ * request whose prompt is over 100,000 tokens at five times its normal
+ * rates, on every lane. The prompt length counts cache reads and writes
+ * too, and each request is priced on its own.
  */
 
-import { longPromptRateMultiplier } from "./long-prompt-pricing.js";
-import type { PricingRow } from "./pricing-cache.js";
+/** The prompt-length fields of an `ai_pricing` row; absent or null = one flat card. */
+export interface LongPromptPricing {
+  readonly longPromptThresholdTokens?: number | null;
+  readonly longPromptMultiplier?: number | null;
+}
 
+/**
+ * The factor on every rate for a request with `promptTokens` of input.
+ *
+ * @param promptTokens all input tokens of the request (fresh + cache read +
+ *   cache write). At exactly the threshold the normal rates still apply.
+ * @returns 1 for a row without prompt-length pricing or a prompt at or under
+ *   the threshold, else the row's multiplier.
+ */
+export function longPromptRateMultiplier(
+  pricing: LongPromptPricing | null | undefined,
+  promptTokens: number,
+): number {
+  const threshold = pricing?.longPromptThresholdTokens;
+  const multiplier = pricing?.longPromptMultiplier;
+  if (threshold == null || multiplier == null) return 1;
+  return promptTokens > threshold ? multiplier : 1;
+}
+
+/** The rates of one `ai_pricing` row (per 1K tokens; per image for image rows). */
+export interface PricingRow extends LongPromptPricing {
+  inputMicrocents: number;
+  outputMicrocents: number | null;
+  /** Cache-READ (`cache_read_input_tokens`) rate per 1K tokens. */
+  cachedMicrocents: number | null;
+  /** Cache-WRITE (`cache_creation_input_tokens`) rate per 1K tokens; NULL
+   *  lets the cost mapper default to 1.25x the input rate. */
+  cacheCreationMicrocents: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// The cost of a finished call (issue #297).
+// ---------------------------------------------------------------------------
 export interface AiCallCostInput {
   operationType: "text" | "image";
   inputTokens: number;
@@ -129,4 +161,70 @@ export function worstCaseTextMicrocents(
   return Math.ceil(
     ((req.promptTokens * inRate) / 1000 + (req.maxOutputTokens * outRate) / 1000) * tier,
   );
+}
+
+// ---------------------------------------------------------------------------
+// The prompt bound of a request before it runs (#1653).
+// ---------------------------------------------------------------------------
+
+/** Tokens a provider adds to every request around the caller's content. */
+export const PROVIDER_REQUEST_OVERHEAD_TOKENS = 2_000;
+
+/**
+ * Tokens one image counts at most, whatever its size: providers scale an
+ * image down before they count it (about 1,600 tokens at most for Claude,
+ * fewer for the others), so its base64 bytes say nothing about its cost.
+ */
+export const IMAGE_TOKEN_BOUND = 5_000;
+
+/** Media parts in any of the message shapes the AI SDK and Caelo use. */
+function isMediaPart(o: Record<string, unknown>): boolean {
+  return (
+    o.type === "image" ||
+    o.type === "file" ||
+    o.type === "media" ||
+    o.type === "image-data" ||
+    typeof o.mediaType === "string" ||
+    typeof o.mimeType === "string"
+  );
+}
+
+/**
+ * An upper bound of the tokens a value sends: one token per UTF-8 byte of
+ * its text (a byte-level BPE token is at least one byte), {@link
+ * IMAGE_TOKEN_BOUND} per image or file part instead of its encoded bytes.
+ * Several times the real count for prose — the safe side for a
+ * reservation, which is settled to the real count after the call.
+ */
+export function tokenBoundOf(value: unknown): number {
+  // The UTF-8 length of the value's JSON text, with each media part
+  // counted at its token bound instead: what the provider receives is at
+  // most this many bytes of text plus the images.
+  if (typeof value === "function" || value === undefined) return 0;
+  if (typeof value === "string") return Buffer.byteLength(JSON.stringify(value), "utf8");
+  if (value === null || typeof value !== "object") return String(value).length;
+  if (Array.isArray(value)) {
+    let n = 2;
+    for (const v of value) n += tokenBoundOf(v) + 1;
+    return n;
+  }
+  const o = value as Record<string, unknown>;
+  if (isMediaPart(o)) {
+    // The part's own short fields (type, name) still travel; its data does not count as text.
+    let n = IMAGE_TOKEN_BOUND;
+    for (const [k, v] of Object.entries(o))
+      if (typeof v === "string" && v.length < 1_000) n += Buffer.byteLength(k + v, "utf8") + 6;
+    return n;
+  }
+  let n = 2;
+  for (const [k, v] of Object.entries(o))
+    n += Buffer.byteLength(JSON.stringify(k), "utf8") + tokenBoundOf(v) + 2;
+  return n;
+}
+
+/** An upper bound of a request's prompt tokens: its parts plus the provider's wrapping. */
+export function promptTokenBound(...parts: readonly unknown[]): number {
+  let n = PROVIDER_REQUEST_OVERHEAD_TOKENS;
+  for (const p of parts) n += tokenBoundOf(p);
+  return n;
 }

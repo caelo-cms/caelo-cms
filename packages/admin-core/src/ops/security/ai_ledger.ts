@@ -25,10 +25,9 @@ import {
   settleAiSpend,
 } from "@caelo-cms/plugin-host";
 import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { computeAiCallCostMicrocents, err, ok, worstCaseTextMicrocents } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { computeAiCallCostMicrocents, worstCaseTextMicrocents } from "../../ai/call-cost.js";
 import { lookupPricing } from "../../ai/pricing-cache.js";
 
 /** An id: any 8-4-4-4-12 hex form (the system actor's id is no RFC 4122 version). */

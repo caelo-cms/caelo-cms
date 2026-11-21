@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { computeAiCallCostMicrocents } from "../ai/call-cost.js";
+import { computeAiCallCostMicrocents } from "@caelo-cms/shared";
 import {
   type BudgetGateState,
   budgetTripText,

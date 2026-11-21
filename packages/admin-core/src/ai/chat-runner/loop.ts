@@ -30,9 +30,9 @@
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { type LongPromptPricing, longPromptRateMultiplier } from "@caelo-cms/shared";
 import { mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
 import { aiSpendRunner } from "../ai-spend.js";
-import { type LongPromptPricing, longPromptRateMultiplier } from "../long-prompt-pricing.js";
 import type {
   AIProvider,
   ChatMessageInput,

@@ -17,11 +17,9 @@
 import { describe, expect, it } from "bun:test";
 import type { DatabaseAdapter, TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import type { ExecutionContext, LongPromptPricing } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
-
-import type { LongPromptPricing } from "../long-prompt-pricing.js";
 import type { AIProvider, ProviderEvent } from "../provider.js";
 import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";

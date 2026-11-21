@@ -380,68 +380,6 @@ export async function releaseAiSpend(tx: TransactionRunner, callId: string): Pro
   return rows.length > 0;
 }
 
-/** Tokens a provider adds to every request around the caller's content. */
-export const PROVIDER_REQUEST_OVERHEAD_TOKENS = 2_000;
-
-/**
- * Tokens one image counts at most, whatever its size: providers scale an
- * image down before they count it (about 1,600 tokens at most for Claude,
- * fewer for the others), so its base64 bytes say nothing about its cost.
- */
-export const IMAGE_TOKEN_BOUND = 5_000;
-
-/** Media parts in any of the message shapes the AI SDK and Caelo use. */
-function isMediaPart(o: Record<string, unknown>): boolean {
-  return (
-    o.type === "image" ||
-    o.type === "file" ||
-    o.type === "media" ||
-    o.type === "image-data" ||
-    typeof o.mediaType === "string" ||
-    typeof o.mimeType === "string"
-  );
-}
-
-/**
- * An upper bound of the tokens a value sends: one token per UTF-8 byte of
- * its text (a byte-level BPE token is at least one byte), {@link
- * IMAGE_TOKEN_BOUND} per image or file part instead of its encoded bytes.
- * Several times the real count for prose — the safe side for a
- * reservation, which is settled to the real count after the call.
- */
-export function tokenBoundOf(value: unknown): number {
-  // The UTF-8 length of the value's JSON text, with each media part
-  // counted at its token bound instead: what the provider receives is at
-  // most this many bytes of text plus the images.
-  if (typeof value === "function" || value === undefined) return 0;
-  if (typeof value === "string") return Buffer.byteLength(JSON.stringify(value), "utf8");
-  if (value === null || typeof value !== "object") return String(value).length;
-  if (Array.isArray(value)) {
-    let n = 2;
-    for (const v of value) n += tokenBoundOf(v) + 1;
-    return n;
-  }
-  const o = value as Record<string, unknown>;
-  if (isMediaPart(o)) {
-    // The part's own short fields (type, name) still travel; its data does not count as text.
-    let n = IMAGE_TOKEN_BOUND;
-    for (const [k, v] of Object.entries(o))
-      if (typeof v === "string" && v.length < 1_000) n += Buffer.byteLength(k + v, "utf8") + 6;
-    return n;
-  }
-  let n = 2;
-  for (const [k, v] of Object.entries(o))
-    n += Buffer.byteLength(JSON.stringify(k), "utf8") + tokenBoundOf(v) + 2;
-  return n;
-}
-
-/** An upper bound of a request's prompt tokens: its parts plus the provider's wrapping. */
-export function promptTokenBound(...parts: readonly unknown[]): number {
-  let n = PROVIDER_REQUEST_OVERHEAD_TOKENS;
-  for (const p of parts) n += tokenBoundOf(p);
-  return n;
-}
-
 /** Dollars; amounts below a cent keep four decimals so a small cap does not read "$0.00". */
 const usd = (microcents: number): string =>
   `$${(microcents / 1e8).toFixed(microcents > 0 && microcents < 1_000_000 ? 4 : 2)}`;

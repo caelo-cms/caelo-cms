@@ -93,7 +93,9 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
       return handle.replace(field, values, docs as never);
     }
     if (method === "collections.getMany") {
-      const [, ids] = z.tuple([z.string(), z.array(z.string().min(1).max(500)).max(1000)]).parse(args);
+      const [, ids] = z
+        .tuple([z.string(), z.array(z.string().min(1).max(500)).max(1000)])
+        .parse(args);
       const r = await handle.getMany(ids);
       return { docs: [...r.docs.values()], pending: r.pending };
     }
@@ -102,7 +104,10 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
         .tuple([
           z.string(),
           z.string().max(120),
-          z.record(z.string().max(40), z.union([z.string().max(500), z.array(z.string().max(500)).max(20)])),
+          z.record(
+            z.string().max(40),
+            z.union([z.string().max(500), z.array(z.string().max(500)).max(20)]),
+          ),
           z
             .object({
               runId: z.string().uuid().optional(),

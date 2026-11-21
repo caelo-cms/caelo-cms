@@ -27,9 +27,12 @@ import {
   type PluginInvocation,
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
-import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
+import {
+  promptTokenBound,
+  recordCapLookupFailure,
+  recordCapLookupSuccess,
+} from "@caelo-cms/shared";
 import { z } from "zod";
-import { promptTokenBound } from "./ai-ledger.js";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 import type { AICompletion, AIObjectCompletion } from "./types.js";
 

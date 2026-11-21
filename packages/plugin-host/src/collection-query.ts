@@ -35,7 +35,11 @@ import {
 } from "@caelo-cms/collection-index";
 import type { Embedder } from "@caelo-cms/models";
 import type { CollectionOperationManifest, SearchProfile } from "@caelo-cms/plugin-sdk";
-import { EMBEDDING_MODELS, type EmbeddingModel, embeddingModelFingerprint } from "@caelo-cms/shared";
+import {
+  EMBEDDING_MODELS,
+  type EmbeddingModel,
+  embeddingModelFingerprint,
+} from "@caelo-cms/shared";
 
 /** Words a query may have; more is refused, not cut. */
 export const MAX_QUERY_WORDS = 10;
@@ -467,7 +471,10 @@ function explainHit(
     readonly query: string;
     readonly lang: string;
     readonly corrections: readonly { readonly from: string; readonly to: string }[];
-    readonly splits: readonly { readonly from: string; readonly parts: readonly [string, string] }[];
+    readonly splits: readonly {
+      readonly from: string;
+      readonly parts: readonly [string, string];
+    }[];
     readonly synonyms: ReadonlyMap<string, readonly string[]>;
     readonly lexical: boolean;
     readonly semantic: boolean;
@@ -504,9 +511,15 @@ function explainHit(
       if (typed.has(folded)) via.add(`"${w}" as typed`);
       else if (x.corrections.some((c) => c.to === folded))
         via.add(`"${w}" for the typo "${x.corrections.find((c) => c.to === folded)?.from}"`);
-      else if ([...x.synonyms.entries()].some(([k, alts]) => typed.has(k) && alts.some((a) => foldDiacritics(a.toLowerCase()) === folded)))
+      else if (
+        [...x.synonyms.entries()].some(
+          ([k, alts]) =>
+            typed.has(k) && alts.some((a) => foldDiacritics(a.toLowerCase()) === folded),
+        )
+      )
         via.add(`"${w}" as a synonym`);
-      else if (x.splits.some((s) => s.parts.includes(folded))) via.add(`"${w}" as part of a compound`);
+      else if (x.splits.some((s) => s.parts.includes(folded)))
+        via.add(`"${w}" as part of a compound`);
       else via.add(`"${w}" as a form of a query word`);
     }
   }
@@ -549,4 +562,3 @@ async function storedOf(
     .filter((d): d is KeyedDoc => d !== undefined)
     .map((d) => returned(d, fields));
 }
-
