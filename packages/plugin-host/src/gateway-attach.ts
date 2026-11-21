@@ -310,13 +310,15 @@ export function servesVisitorOperations(): boolean | null {
     return null;
   }
   // #1649 — a declared collection operation (search, suggest, read) is a
-  // visitor operation too, though no plugin code answers it.
+  // visitor operation too, though no plugin code answers it; so (#1654) is
+  // a declared conversation.
   return loadedPlugins
     .all()
     .some(
       (p) =>
         (p.definition.publicOperations ?? []).length > 0 ||
-        (p.definition.collectionOperations ?? []).length > 0,
+        (p.definition.collectionOperations ?? []).length > 0 ||
+        (p.definition.aiChatOperations ?? []).length > 0,
     );
 }
 

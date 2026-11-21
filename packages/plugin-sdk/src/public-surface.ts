@@ -100,8 +100,11 @@ export const publicOperationRateLimit = z
 /** The per-client-address budget of one operation. */
 export type PublicOperationRateLimit = z.infer<typeof publicOperationRateLimit>;
 
-/** Mail is the only host service a plugin can declare it needs (E12). */
-export const pluginRequirement = z.enum(["email"]);
+/**
+ * The host services a plugin can declare it needs (E12): mail, and (#1654)
+ * the visitor AI — its own key and budgets, set up by the Owner.
+ */
+export const pluginRequirement = z.enum(["email", "visitor-ai"]);
 
 /** A host service a plugin needs before it can be activated. */
 export type PluginRequirement = z.infer<typeof pluginRequirement>;

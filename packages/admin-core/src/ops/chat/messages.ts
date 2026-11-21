@@ -8,10 +8,15 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { CHAT_MAX_ATTACHMENTS, chatAttachmentSchema, err, ok } from "@caelo-cms/shared";
+import {
+  CHAT_MAX_ATTACHMENTS,
+  chatAttachmentSchema,
+  computeAiCallCostMicrocents,
+  err,
+  ok,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { computeAiCallCostMicrocents } from "../../ai/call-cost.js";
 import { lookupPricing } from "../../ai/pricing-cache.js";
 import { jsonbParam } from "../../sql-helpers.js";
 

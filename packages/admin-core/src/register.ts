@@ -796,6 +796,13 @@ import {
   setUserEmailOp,
   setUserRolesOp,
 } from "./ops/users.js";
+import {
+  getVisitorAiOp,
+  proposeSetVisitorAiOp,
+  recordVisitorAiKeyOp,
+  setVisitorAiOp,
+  visitorAiSpendOp,
+} from "./ops/visitor_ai.js";
 import { PLUGIN_BATCH_OPS } from "./plugin-batches/ops.js";
 import {
   beginPluginDataRunOp,
@@ -1560,6 +1567,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getMailCapsOp);
   registry.register(setMailCapsOp);
   registry.register(proposeSetMailCapsOp);
+  // #1654 — the visitor AI's settings, its key record and the gateway's ledger.
+  registry.register(getVisitorAiOp);
+  registry.register(setVisitorAiOp);
+  registry.register(proposeSetVisitorAiOp);
+  registry.register(recordVisitorAiKeyOp);
+  registry.register(visitorAiSpendOp);
   // #757 — the step-up for the actions above: the Owner's password, re-entered.
   registry.register(stepUpConfirmPasswordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the

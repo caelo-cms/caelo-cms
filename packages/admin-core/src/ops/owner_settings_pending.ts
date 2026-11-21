@@ -57,6 +57,7 @@ import {
   translationModelProblem,
 } from "./security/ai_providers.js";
 import { applySecurityHeadersProposal, SECURITY_HEADERS_NEXT_STEP } from "./security_headers.js";
+import { applyVisitorAiProposal } from "./visitor_ai.js";
 
 type Ctx = ExecutionContext;
 
@@ -443,6 +444,9 @@ const executeOwnerSettingsProposalOpDefinition = defineOperation({
       nextStep = SECURITY_HEADERS_NEXT_STEP;
     } else if (row.kind === "set_mail_caps") {
       const problem = await applyMailCapsProposal(ctx, tx, row.payload);
+      if (problem) return handlerError(op, problem);
+    } else if (row.kind === "set_visitor_ai") {
+      const problem = await applyVisitorAiProposal(ctx, tx, row.payload);
       if (problem) return handlerError(op, problem);
     } else if (row.kind === "set_ai_budget") {
       const payload = proposeAiBudgetInput.parse(row.payload);

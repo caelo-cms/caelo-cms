@@ -77,6 +77,7 @@ import {
   type RolePasswords,
   SITE_OUTPUT_ROOT,
   selfHostedSiteUrl,
+  VISITOR_AI_DIR,
 } from "./compose.js";
 import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
 import { ACCEPT_RELEASE_CANDIDATE_FLAG } from "./release-candidate.js";
@@ -368,8 +369,15 @@ function emitComposeFiles(cfg: CaeloConfig): void {
     MEDIA_DIR,
     `${COLLECTIONS_DIR}/staging`,
     `${COLLECTIONS_DIR}/live`,
+    // #1654 — the visitor AI's key per environment; no key until the Owner stores one.
+    `${VISITOR_AI_DIR}/live`,
+    `${VISITOR_AI_DIR}/staging`,
   ]) {
     mkdirSync(resolve(CAELO_DIR, dir), { recursive: true });
+  }
+  for (const environment of ["live", "staging"]) {
+    const key = resolve(CAELO_DIR, VISITOR_AI_DIR, environment, "key.json");
+    if (!existsSync(key)) writeFileSync(key, "{}", { mode: 0o640 });
   }
 }
 

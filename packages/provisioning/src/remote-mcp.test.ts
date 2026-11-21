@@ -195,6 +195,17 @@ describe("remote-MCP secrets + IAM (contract)", () => {
           target: { kind: "secret", name: "operator-oauth-client" },
           onFailure: "warn",
         }),
+        // #1654 — the visitor AI's keys, the same add-version-only grant.
+        expect.objectContaining({
+          stackResource: "admin-visitor-ai-key-version-adder",
+          member: "run-sa",
+          target: { kind: "secret", name: "visitor-ai-key" },
+        }),
+        expect.objectContaining({
+          stackResource: "admin-visitor-ai-staging-key-version-adder",
+          member: "run-sa",
+          target: { kind: "secret", name: "visitor-ai-staging-key" },
+        }),
       ]);
       const adminReads = stackIamInvariants(provider).filter(
         (i) =>
@@ -209,7 +220,8 @@ describe("remote-MCP secrets + IAM (contract)", () => {
 
   it("mounts the OAuth client on the MCP-Auth-Proxy only, at latest, as the file its env names", () => {
     expect(SERVICE_SECRET_FILES.admin).toEqual([]);
-    expect(SERVICE_SECRET_FILES.gateway).toEqual([]);
+    // #1654 — the gateway's one file is its visitor-AI key, never the sign-in client.
+    expect(SERVICE_SECRET_FILES.gateway.map((f) => f.secret)).toEqual(["visitor-ai-key"]);
     expect(SERVICE_SECRET_FILES["mcp-auth-proxy"]).toEqual([OPERATOR_OAUTH_CLIENT_FILE]);
     expect(secretFileVolumesTemplate("mcp-auth-proxy", "production")).toEqual({
       volumes: [

@@ -21,13 +21,13 @@
  * unit-testable against a FixtureProvider.
  */
 
-import { promptTokenBound } from "@caelo-cms/plugin-host";
 import {
   DEFAULT_LIST_TYPES,
   type ModuleField,
   type ModuleKind,
   moduleFieldSchema,
   moduleKindSchema,
+  promptTokenBound,
   validateListItems,
 } from "@caelo-cms/shared";
 import { z } from "zod";

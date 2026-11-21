@@ -28,7 +28,7 @@
  * the judgment delays only the turn's close, never the visible answer.
  */
 
-import { promptTokenBound } from "@caelo-cms/plugin-host";
+import { promptTokenBound } from "@caelo-cms/shared";
 import type { AiSpendRunner } from "../ai-spend.js";
 import { catalogModel } from "../model-catalog.js";
 import { getActiveProviderForModel } from "../provider-resolver.js";

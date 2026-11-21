@@ -20,7 +20,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
-import { longPromptRateMultiplier } from "../long-prompt-pricing.js";
+import { longPromptRateMultiplier } from "@caelo-cms/shared";
 import { chatPluginInvocation } from "../plugin-invocation.js";
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";

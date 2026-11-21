@@ -171,6 +171,8 @@ const PUBLIC_TABLES = [
   "form_submissions",
   "ratings",
   "visitor_sessions",
+  // #1654 — what visitors' AI conversations spent.
+  "visitor_ai_calls",
 ];
 
 const tables = target === "admin" ? ADMIN_TABLES : PUBLIC_TABLES;

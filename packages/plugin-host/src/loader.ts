@@ -891,6 +891,7 @@ export async function activateApprovedExternalPlugin(
       "collections",
       "page_output",
       "batch_jobs",
+      "visitor_ai",
     ]);
     for (const capability of manifest.requestedCapabilities ?? [])
       if (!supported.has(capability))
@@ -1158,6 +1159,12 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   if (def.pageOutputObserver !== undefined && !grantedCaps.has("page_output")) {
     throw new Error(
       `plugin "${def.slug}" declares a page-output observer without the page_output capability — registration refused`,
+    );
+  }
+  // #1654 — a visitor conversation spends the Owner's visitor-AI budget.
+  if ((def.aiChatOperations?.length ?? 0) > 0 && !grantedCaps.has("visitor_ai")) {
+    throw new Error(
+      `plugin "${def.slug}" declares ai-chat operations without the visitor_ai capability — registration refused`,
     );
   }
   if ((def.batchOperations?.length ?? 0) > 0 && !grantedCaps.has("batch_jobs")) {

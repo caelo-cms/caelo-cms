@@ -27,7 +27,7 @@
  * call index i, capped at the largest context the provider window admits.
  */
 
-import { type LongPromptPricing, longPromptRateMultiplier } from "./long-prompt-pricing.js";
+import { type LongPromptPricing, longPromptRateMultiplier } from "@caelo-cms/shared";
 
 /**
  * LEGACY (pre-#299) calls/page on the singular-op build path. Run #15 main

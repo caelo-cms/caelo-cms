@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 29;
+export const INFRA_CONTRACT_VERSION = 30;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -224,6 +224,20 @@ export const INFRA_CONTRACT_VERSION = 29;
 //       the admin. The new admin starts every crawl on that job and the
 //       app-roll moves its image, so an in-cloud upgrader must not roll an
 //       install onto it before it exists.
+//  30 — #1654: the visitor AI's keys. Two CLI-generated secrets,
+//       `visitor-ai-key` (live) and `visitor-ai-staging-key` (staging), each
+//       created as `{}` (no key); the admin's run SA holds
+//       secretVersionAdder on both (stack-contract.ts GCP_COMMON: it adds a
+//       key the Owner pasted or removes one, never reads one); the live
+//       gateway's SA holds secretAccessor on `visitor-ai-key` only and
+//       mounts it at /secrets/visitor-ai/key.json, the staging gateway's on
+//       `visitor-ai-staging-key` only, at the same path
+//       (SERVICE_SECRET_FILES); CAELO_VISITOR_AI_KEY_FILE on both gateways,
+//       CAELO_VISITOR_AI_KEY_STORE / CAELO_VISITOR_AI_STAGING_KEY_STORE on
+//       the admin. The new gateways mount the secret and the new admin
+//       writes to it, so an in-cloud upgrader must not roll an install onto
+//       them before the secrets exist (Cloud Run refuses a revision whose
+//       secret volume has no version).
 //  29 — epic #1644 (#1648, #1649): plugin collections (a site search's
 //       index). The two private collection stores (collections-setup.ts,
 //       `coll-staging` / `coll-live`) with the admin's objectAdmin on both,
@@ -306,6 +320,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   27: "the build carrier: a job of its own that holds the request a Stage, Publish live or production build runs in when nobody else waits for it, its service account and grants (#1574)",
   28: "the upgrader's right to run the staging gateway as its service account, so updates from Settings → Updates roll every service (#1596)",
   29: "plugin collections such as a site search: two private storage buckets for the staging and the live index, a job of its own that builds a Stage's index, each gateway's read access to its own index only and more memory for it, search answers cached at the edge, and visitors' search queries kept out of the logs (#1644)",
+  30: "the visitor AI's own keys: one secret for the live site and one for staging, which the admin can store a key in but never read, each mounted only in its own gateway (#1654)",
 };
 
 /**

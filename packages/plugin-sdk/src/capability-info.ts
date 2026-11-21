@@ -114,6 +114,11 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
     allows:
       "Keep an index of your content in private storage. It goes live with Publish live, and visitors can query it only through the search operations the plugin declares.",
   },
+  visitor_ai: {
+    label: "Visitor AI",
+    allows:
+      "Answer visitors' questions with AI on your site, from the pages its search finds. It runs on your visitor-AI key and within the budgets you set; it can only search and read, never change anything.",
+  },
   batch_jobs: {
     label: "Long-running tasks",
     allows:

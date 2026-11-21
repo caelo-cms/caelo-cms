@@ -340,10 +340,11 @@ const ANY_WRITE =
 /**
  * #1328 — the only writes allowed before the backup: the MCP-Auth-Proxy's
  * account, its secretAccessor on its two secrets, and the services an older
- * install lacks (mcp-auth-proxy-setup.ts). Additive; nothing serves on them.
+ * install lacks (mcp-auth-proxy-setup.ts), with (#1654) the staging
+ * gateway's read of its own visitor-AI key. Additive; nothing serves on them.
  */
 const PRE_PLAN_WRITE =
-  /^(iam service-accounts create caelo-production-(mcp-proxy-sa|stg-gw-sa) |secrets add-iam-policy-binding caelo-production-(mcp-oauth-seal-key|operator-oauth-client) .*--member=serviceAccount:caelo-production-mcp-proxy-sa@|secrets add-iam-policy-binding caelo-production-public-staging-role-password .*--member=serviceAccount:caelo-production-stg-gw-sa@|storage buckets (create|add-iam-policy-binding) gs:\/\/acme-caelo-production-staging |run services replace |run deploy caelo-production-(mcp-auth-proxy|staging-gateway) |run services add-iam-policy-binding caelo-production-staging-gateway .*--member=allUsers )/;
+  /^(iam service-accounts create caelo-production-(mcp-proxy-sa|stg-gw-sa) |secrets add-iam-policy-binding caelo-production-(mcp-oauth-seal-key|operator-oauth-client) .*--member=serviceAccount:caelo-production-mcp-proxy-sa@|secrets add-iam-policy-binding caelo-production-(public-staging-role-password|visitor-ai-staging-key) .*--member=serviceAccount:caelo-production-stg-gw-sa@|storage buckets (create|add-iam-policy-binding) gs:\/\/acme-caelo-production-staging |run services replace |run deploy caelo-production-(mcp-auth-proxy|staging-gateway) |run services add-iam-policy-binding caelo-production-staging-gateway .*--member=allUsers )/;
 
 const indexOf = (events: string[], pattern: RegExp): number => {
   const i = events.findIndex((e) => pattern.test(e));

@@ -44,6 +44,8 @@ export function externalPluginDefinition(opts: {
         "collections",
         "page_output",
         "batch_jobs",
+        // #1654 — no broker: the gateway runs the declared conversation itself.
+        "visitor_ai",
       ].includes(capability)
     )
       throw new Error(`External capability broker unavailable: ${capability}`);
@@ -120,6 +122,8 @@ export function externalPluginDefinition(opts: {
     ...(manifest.collectionOperations
       ? { collectionOperations: manifest.collectionOperations }
       : {}),
+    // #1654 — a declaration the gateway runs with core code, like collections.
+    ...(manifest.aiChatOperations ? { aiChatOperations: manifest.aiChatOperations } : {}),
     ...(manifest.pageOutputObserver ? { pageOutputObserver: manifest.pageOutputObserver } : {}),
     ...(manifest.batchOperations ? { batchOperations: manifest.batchOperations } : {}),
   });
