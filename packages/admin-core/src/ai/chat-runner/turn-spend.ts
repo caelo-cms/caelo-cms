@@ -65,6 +65,8 @@ export class TurnSpend {
   #pendingHistoryBound = 0;
   /** The ledger could not be reached at the start: record the turn at its end instead. */
   #unaccounted = false;
+  /** Requests this turn let go out; each one reports usage, or fails. */
+  #sent = 0;
 
   constructor(
     private readonly deps: { registry: OperationRegistry; adapter: DatabaseAdapter },
@@ -105,6 +107,16 @@ export class TurnSpend {
     history: readonly ChatMessageInput[],
     maxOutputTokens: number,
     steps: readonly ProviderStepSummary[] = [],
+  ): Promise<SpendRefusal | null> {
+    const refusal = await this.#check(history, maxOutputTokens, steps);
+    if (refusal === null) this.#sent += 1;
+    return refusal;
+  }
+
+  async #check(
+    history: readonly ChatMessageInput[],
+    maxOutputTokens: number,
+    steps: readonly ProviderStepSummary[],
   ): Promise<SpendRefusal | null> {
     const historyBound = tokenBoundOf(history);
     const lastStep = steps[steps.length - 1];
@@ -194,6 +206,11 @@ export class TurnSpend {
    * The turn ended: settle the row to the real totals. Returns what was
    * billed, or null when there is no row to settle (refused before its first
    * request, or unaccounted — the caller records the turn the old way).
+   *
+   * A request that went out without reporting usage, and whose failure does
+   * not prove the provider billed nothing (an abort or a lost connection
+   * while it ran), keeps its worst case: the row stays at least at its
+   * reservation, overstated, never under.
    */
   async settle(
     usage: UsageAccumulator,
@@ -202,12 +219,14 @@ export class TurnSpend {
   ): Promise<{ aiCallId: string; costMicrocents: number } | null> {
     if (this.#callId === null) return null;
     const u = fromAccumulator(usage);
+    const unreported = this.#sent - (usage.usageReports ?? 0) - (usage.unbilledFailures ?? 0);
     const r = await execute(this.deps.registry, this.deps.adapter, LEDGER_CTX, "ai_ledger.settle", {
       callId: this.#callId,
       ...this.target,
       usage: u,
       durationMs,
       succeeded,
+      usageMissing: unreported > 0,
     }).catch((e: unknown) => ({ ok: false as const, error: { kind: String(e) } }));
     if (!r.ok) {
       // The row keeps its last reservation: overstated, never under.

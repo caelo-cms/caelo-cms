@@ -27,6 +27,7 @@ import {
 import { definePlugin, type PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { type ExecutionContext, resetCapLookupCounters } from "@caelo-cms/shared";
+import { APICallError } from "ai";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { makePluginAi } from "../../../plugin-host/src/plugin-ai.js";
@@ -287,6 +288,7 @@ describe("the AI spend ledger (#1653)", () => {
       usage: { inputTokens: 500, outputTokens: 200 },
       durationMs: 10,
       succeeded: true,
+      usageMissing: false,
     });
     // 500 × 2,000/1K + 200 × 5,000/1K = 2,000.
     expect((settle.ok ? settle.value : null) as unknown).toMatchObject({ costMicrocents: 2_000 });
@@ -368,28 +370,93 @@ describe("the AI spend ledger (#1653)", () => {
     expect(await spent({ pluginId: plugin.pluginId })).toBe(1_400);
   });
 
-  it("a plugin call whose provider throws releases its reservation", async () => {
-    const infra = {
-      adapter,
-      registry,
-      aiProvider: {
-        resolve: async () => ({ provider: PROVIDER, model: MODEL }),
-        complete: async () => {
-          throw new Error("provider error: overloaded");
-        },
-        generateObject: async () => {
-          throw new Error("not used");
-        },
-      },
-    } as unknown as PluginHostInfra;
-    const ai = makePluginAi(plugin, infra, { origin: "worker", actorId: plugin.pluginActorId });
-    await expect(ai.complete({ system: "s", messages: [] })).rejects.toThrow("overloaded");
-    const rows = (await sys((tx) =>
+  it("a call whose usage is missing keeps its reservation; known usage never lowers it", async () => {
+    const a = await reserve({ kind: "actor", actorId: alice, chatSessionId: null });
+    const { callId } = (a.ok ? a.value : null) as { callId: string };
+    const reserved = (await sys((tx) =>
       tx.execute(
-        sql`SELECT reservation, cost_estimate_microcents::int AS cost FROM ai_calls WHERE plugin_id = ${plugin.pluginId}::uuid`,
+        sql`SELECT cost_estimate_microcents::int AS c FROM ai_calls WHERE id = ${callId}::uuid`,
       ),
-    )) as unknown as { reservation: string; cost: number }[];
-    expect(rows).toEqual([{ reservation: "released", cost: 0 }]);
+    )) as unknown as { c: number }[];
+    const settle = await execute(registry, adapter, SYSTEM, "ai_ledger.settle", {
+      callId,
+      provider: PROVIDER,
+      model: MODEL,
+      usage: { inputTokens: 500, outputTokens: 200 },
+      durationMs: 10,
+      succeeded: false,
+      usageMissing: true,
+    });
+    // 2,000 known, but the request that never reported keeps the worst case.
+    expect((settle.ok ? settle.value : null) as unknown).toEqual({
+      costMicrocents: reserved[0]?.c,
+      settled: true,
+    });
+    expect(reserved[0]?.c).toBeGreaterThan(2_000);
+    // Without tokens and with usage missing, it is not released either.
+    const b = await reserve({ kind: "actor", actorId: alice, chatSessionId: null });
+    const bId = ((b.ok ? b.value : null) as { callId: string }).callId;
+    const none = await execute(registry, adapter, SYSTEM, "ai_ledger.settle", {
+      callId: bId,
+      provider: PROVIDER,
+      model: MODEL,
+      usage: { inputTokens: 0, outputTokens: 0 },
+      durationMs: 10,
+      succeeded: false,
+      usageMissing: true,
+    });
+    expect((none.ok ? none.value : null) as { settled: boolean } | null).toMatchObject({
+      settled: true,
+    });
+    expect(((none.ok ? none.value : null) as { costMicrocents: number }).costMicrocents).toBe(
+      reserved[0]?.c,
+    );
+  });
+
+  it("a plugin call the provider refused gives its reservation back; any other failure keeps it", async () => {
+    const throwing = (error: unknown) =>
+      ({
+        adapter,
+        registry,
+        aiProvider: {
+          resolve: async () => ({ provider: PROVIDER, model: MODEL }),
+          complete: async () => {
+            throw error;
+          },
+          generateObject: async () => {
+            throw new Error("not used");
+          },
+        },
+      }) as unknown as PluginHostInfra;
+    const rows = async () =>
+      (await sys((tx) =>
+        tx.execute(
+          sql`SELECT reservation, cost_estimate_microcents::int AS cost FROM ai_calls
+              WHERE plugin_id = ${plugin.pluginId}::uuid ORDER BY created_at`,
+        ),
+      )) as unknown as { reservation: string; cost: number }[];
+    const refused = new APICallError({
+      message: "Overloaded",
+      url: "https://provider.test/v1/messages",
+      requestBodyValues: {},
+      statusCode: 529,
+    });
+    const worker = { origin: "worker" as const, actorId: plugin.pluginActorId };
+    await expect(
+      makePluginAi(plugin, throwing(refused), worker).complete({ system: "s", messages: [] }),
+    ).rejects.toThrow("Overloaded");
+    expect(await rows()).toEqual([{ reservation: "released", cost: 0 }]);
+    // A timeout after the request went out may have been billed.
+    await expect(
+      makePluginAi(plugin, throwing(new Error("The operation timed out.")), worker).complete({
+        system: "s",
+        messages: [],
+      }),
+    ).rejects.toThrow("timed out");
+    const after = await rows();
+    expect(after).toHaveLength(2);
+    expect(after[1]?.reservation).toBe("settled");
+    expect(after[1]?.cost).toBeGreaterThan(0);
   });
 
   it("an unpriced model runs uncounted only while no cap applies", async () => {

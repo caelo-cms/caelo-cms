@@ -12,6 +12,7 @@
  * module's imports and fails on any of them.
  */
 
+export { failureProvedUnbilled } from "./ai-unbilled.js";
 // #1649 / #1650 — declared collection operations, executed by core code.
 export {
   AI_CHAT_SEARCH_HITS,

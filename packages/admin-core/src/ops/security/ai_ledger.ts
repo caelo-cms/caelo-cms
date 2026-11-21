@@ -7,8 +7,10 @@
  *
  *   ai_ledger.reserve  worst case of the first request → a reserved ai_calls row
  *   ai_ledger.extend   a multi-step call: spent so far + the next request's worst case
- *   ai_ledger.settle   the real tokens and cost
- *   ai_ledger.release  the call failed before the provider billed anything
+ *   ai_ledger.settle   the real tokens and cost; at least the reservation while
+ *                      a request's usage is missing (overstated, never under)
+ *   ai_ledger.release  the call failed, and the failure proves the provider
+ *                      billed nothing (plugin-host `failureProvedUnbilled`)
  *
  * A refusal is an error with `refusal: true` and a message that names the
  * budget, the figures and the next step. An unpriced model may run only
@@ -207,13 +209,21 @@ export const aiLedgerSettleOp = defineOperation({
       usage: usageInput,
       durationMs: z.number().int().nonnegative(),
       succeeded: z.boolean(),
+      /**
+       * A request went out and its usage never came back, and its failure
+       * does not prove that nothing was billed (`failureProvedUnbilled`):
+       * the call keeps at least its reservation, which holds that request's
+       * worst case.
+       */
+      usageMissing: z.boolean(),
     })
     .strict(),
   output: z.object({ costMicrocents: z.number().int(), settled: z.boolean() }),
   handler: async (_ctx, input, tx) => {
     const u = input.usage;
-    // Nothing came back and nothing was billed: the reservation goes.
-    if (!input.succeeded && u.inputTokens + u.outputTokens === 0) {
+    // Every request reported, none used a token, and the call failed: the
+    // provider billed nothing and the reservation goes.
+    if (!input.usageMissing && !input.succeeded && u.inputTokens + u.outputTokens === 0) {
       const released = await releaseAiSpend(tx, input.callId);
       return ok({ costMicrocents: 0, settled: released });
     }
@@ -239,8 +249,9 @@ export const aiLedgerSettleOp = defineOperation({
       costMicrocents: mapped.costMicrocents,
       durationMs: input.durationMs,
       succeeded: input.succeeded,
+      usageMissing: input.usageMissing,
     });
-    return ok({ costMicrocents: mapped.costMicrocents, settled });
+    return ok({ costMicrocents: settled ?? mapped.costMicrocents, settled: settled !== null });
   },
 });
 

@@ -306,27 +306,39 @@ export interface AiSettlement {
   readonly costMicrocents: number;
   readonly durationMs: number;
   readonly succeeded: boolean;
+  /**
+   * A request of the call went out and its usage never came back, and
+   * nothing proves the provider billed nothing (`failureProvedUnbilled`):
+   * the call is booked at least at its reservation, which holds that
+   * request's worst case.
+   */
+  readonly usageMissing: boolean;
 }
 
-/** Settles a reservation at its real cost. Idempotent: a settled or released row stays. */
+/**
+ * Settles a reservation at its real cost, or at least at the reservation
+ * when usage is missing. Returns what was booked, null when the row was no
+ * longer reserved. Idempotent: a settled or released row stays.
+ */
 export async function settleAiSpend(
   tx: TransactionRunner,
   callId: string,
   s: AiSettlement,
-): Promise<boolean> {
-  const rows = (await tx.execute(sql`
+): Promise<number | null> {
+  const [row] = (await tx.execute(sql`
     UPDATE ai_calls SET provider = ${s.provider}, model = ${s.model},
       input_tokens = ${s.inputTokens}, output_tokens = ${s.outputTokens},
       cached_tokens = ${s.cachedTokens}, cache_creation_tokens = ${s.cacheCreationTokens},
-      cost_estimate_microcents = ${s.costMicrocents}, duration_ms = ${s.durationMs},
-      succeeded = ${s.succeeded}, reservation = 'settled'
+      cost_estimate_microcents = CASE WHEN ${s.usageMissing}
+        THEN GREATEST(cost_estimate_microcents, ${s.costMicrocents}) ELSE ${s.costMicrocents} END,
+      duration_ms = ${s.durationMs}, succeeded = ${s.succeeded}, reservation = 'settled'
     WHERE id = ${callId}::uuid AND reservation = 'reserved'
-    RETURNING id
-  `)) as unknown as unknown[];
-  return rows.length > 0;
+    RETURNING cost_estimate_microcents::bigint AS cost
+  `)) as unknown as { cost: string | number }[];
+  return row ? Number(row.cost) : null;
 }
 
-/** Releases a reservation whose call never billed (it failed before the provider answered). */
+/** Releases a reservation whose call provably billed nothing (`failureProvedUnbilled`). */
 export async function releaseAiSpend(tx: TransactionRunner, callId: string): Promise<boolean> {
   const rows = (await tx.execute(sql`
     UPDATE ai_calls SET cost_estimate_microcents = 0, succeeded = false, reservation = 'released'

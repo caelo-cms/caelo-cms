@@ -29,6 +29,7 @@ export {
   reserveAiSpend,
   settleAiSpend,
 } from "./ai-ledger.js";
+export { failureProvedUnbilled } from "./ai-unbilled.js";
 export {
   auditFindingContributors,
   type PluginAuditFindings,

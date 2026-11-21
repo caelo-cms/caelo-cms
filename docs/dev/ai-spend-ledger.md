@@ -12,7 +12,7 @@ A reservation is an `ai_calls` row with `reservation = 'reserved'` and the call'
 |---|---|
 | `reserved` | The call runs. The row holds its worst case. A reservation that is never settled (the process died) keeps that amount and ages out of the 24-hour budgets: overstated, never under. |
 | `settled` | The real tokens and cost are written. Rows from before the ledger are settled. |
-| `released` | The call failed before the provider billed anything. Cost 0. |
+| `released` | The call failed, and the failure proves the provider billed nothing. Cost 0. |
 
 Reservations and extensions take one advisory lock (`AI_LEDGER_LOCK`), shared with images. Two calls can never both pass a cap that only one fits under.
 
@@ -46,7 +46,18 @@ A turn keeps one row. The run prologue reserves before each run's first request;
 - before a request: ends the turn with a notice that names the budget and the next step (`stopReason: "cost_ceiling"`);
 - between steps: stops the run cleanly, and the steps that ran stay billed.
 
-The turn settles the row to its real totals at the end. Step usage comes from the SDK's own per-step `usage` (`ProviderStepSummary.usage`).
+The turn settles the row to its real totals at the end. Step usage comes from the SDK's own per-step `usage` (`ProviderStepSummary.usage`). The turn counts the requests it let go out against the usage reports: a request that reported none (cut off by Stop, a timeout, a connection lost while it ran) keeps its worst case, so the row settles at least at its reservation (`ai_ledger.settle` with `usageMissing`).
+
+## When a failed call gives its reservation back
+
+Missing usage is no evidence that nothing was billed: a request cut off after it went out may come after the provider read the prompt and generated. A reservation is released only when the failure proves the provider billed nothing (`plugin-host` `failureProvedUnbilled`, read from the AI SDK's error types):
+
+- the provider answered with an error status (`APICallError`, 4xx or 5xx): it refused instead of generating;
+- the SDK refused to send the request (an invalid prompt or argument, an unsupported feature);
+- no connection to the provider ever opened (refused, host not found);
+- a `RetryError` whose every attempt is one of these.
+
+Every other failure keeps the worst case: an abort, a timeout, a connection reset, an error this check does not know. The rule is the same for chat turns, core helpers (`aiSpendRunner`), plugin `ctx.ai` and visitors' AI in the gateway. Spend is overstated, never under, and an over-booked reservation ages out of the rolling budgets.
 
 ## Adding a paid AI call
 

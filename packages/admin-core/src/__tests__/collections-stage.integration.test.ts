@@ -96,6 +96,8 @@ let registry: OperationRegistry;
 let root = "";
 
 let writePublic = false;
+/** The observer fails after it wrote its documents (a partial delivery). */
+let failAfterWrite = false;
 /** The plugin sets its profile when it changes: here, once. */
 let profileSet = false;
 const calls: PageOutputObserverArgs[] = [];
@@ -417,6 +419,7 @@ beforeAll(async () => {
                 if (a.removed.length > 0 || excluded.length > 0)
                   await c.delete([...a.removed, ...excluded]);
               }
+              if (failAfterWrite) throw new Error("t1644: the observer fails after writing");
               if (a.final && !profileSet) {
                 profileSet = true;
                 const profile = {
@@ -668,6 +671,34 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(index.state).toBe("ready");
     expect(
       await searchStore(join(root, "collections-staging"), index.releaseKey as string, "Januar"),
+    ).toEqual([`/${PAGES[0]}`]);
+  });
+
+  it("what an observer wrote before it failed is discarded, its pages delivered again", async () => {
+    failAfterWrite = true;
+    await setText(PAGES[0] as string, "Neue Preise ab März.");
+    let run: string;
+    try {
+      run = await stage();
+    } finally {
+      failAfterWrite = false;
+    }
+    expect((await indexState(run)).state).toBe("failed");
+    const rows = (await sqlSystem(
+      async (tx) =>
+        tx`SELECT (discarded_at IS NOT NULL) AS discarded FROM collection_changes
+           WHERE run_id = ${run}::uuid AND applied_run_id IS NULL`,
+    )) as { discarded: boolean }[];
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.discarded)).toBe(true);
+    // Nothing of that delivery was recorded: the next Stage delivers the
+    // page again, and its index finds the new text.
+    const next = await stage();
+    expect(calls.flatMap((c) => c.pages.map((p) => p.path))).toContain(`/${PAGES[0]}`);
+    const index = await indexState(next);
+    expect(index.state).toBe("ready");
+    expect(
+      await searchStore(join(root, "collections-staging"), index.releaseKey as string, "März"),
     ).toEqual([`/${PAGES[0]}`]);
   });
 

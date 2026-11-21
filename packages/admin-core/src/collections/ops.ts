@@ -138,6 +138,14 @@ export const planCollectionRunOp = defineOperation({
                   ${`the plugin's page-output observer failed: ${failure}`}, now())
           ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
         `);
+        // What the observer wrote before it failed is not its delivery: its
+        // pages are delivered again by the next Stage, so these partial
+        // writes are discarded, never claimed by a later index.
+        await tx.execute(sql`
+          UPDATE collection_changes SET discarded_at = now()
+          WHERE plugin_id = ${c.pluginId}::uuid AND collection = ${c.collection}
+            AND run_id = ${input.runId}::uuid AND applied_run_id IS NULL AND discarded_at IS NULL
+        `);
         failed++;
         continue;
       }

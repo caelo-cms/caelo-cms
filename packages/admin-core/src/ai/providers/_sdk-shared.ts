@@ -19,6 +19,7 @@
  * provider-brand strings cross this boundary (CLAUDE.md §4).
  */
 
+import { failureProvedUnbilled } from "@caelo-cms/plugin-host";
 import {
   generateObject,
   jsonSchema,
@@ -396,9 +397,12 @@ export async function* translateSDKStream(
           // defects — classified here, from the SDK's APICallError, so the
           // chat-runner never has to scrape the message.
           const accountIssue = classifyProviderAccountError(errVal);
-          yield accountIssue
-            ? { kind: "error", message, accountIssue }
-            : { kind: "error", message };
+          yield {
+            kind: "error",
+            message,
+            ...(accountIssue ? { accountIssue } : {}),
+            ...(failureProvedUnbilled(errVal) ? { unbilled: true as const } : {}),
+          };
           yield { kind: "done", stopReason: "error" };
           yieldedDone = true;
           break;

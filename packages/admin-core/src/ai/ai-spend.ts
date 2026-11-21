@@ -14,7 +14,7 @@
  * (shared/cap-failures.ts).
  */
 
-import type { AiSpender } from "@caelo-cms/plugin-host";
+import { type AiSpender, failureProvedUnbilled } from "@caelo-cms/plugin-host";
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
@@ -126,10 +126,20 @@ export function aiSpendRunner(
       try {
         result = await call();
       } catch (e) {
+        // Only a failure that proves nothing was billed gives the
+        // reservation back; any other keeps its worst case (#1653).
         if (callId) {
-          await execute(deps.registry, deps.adapter, LEDGER_CTX, "ai_ledger.release", {
-            callId,
-          }).catch(() => undefined);
+          await (failureProvedUnbilled(e)
+            ? execute(deps.registry, deps.adapter, LEDGER_CTX, "ai_ledger.release", { callId })
+            : execute(deps.registry, deps.adapter, LEDGER_CTX, "ai_ledger.settle", {
+                callId,
+                ...target,
+                usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 },
+                durationMs: Date.now() - startedAt,
+                succeeded: false,
+                usageMissing: true,
+              })
+          ).catch(() => undefined);
         }
         throw e;
       }
@@ -149,6 +159,7 @@ export function aiSpendRunner(
           },
           durationMs,
           succeeded: true,
+          usageMissing: false,
         }).catch((e: unknown) => ({ ok: false as const, error: e }));
         // The row keeps its reservation when the settle failed: overstated, never under.
         if (!settled.ok) console.error("[ai-spend] reservation not settled", { what: opts.what });

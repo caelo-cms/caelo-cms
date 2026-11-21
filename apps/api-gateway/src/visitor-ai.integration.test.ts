@@ -38,6 +38,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { APICallError } from "ai";
 import { SQL } from "bun";
 import {
   GATEWAY_DATABASE_ROLES,
@@ -673,18 +674,34 @@ describe("a visitor conversation (#1654)", () => {
     expect((await ledger()).filter((r) => r.reservation === "reserved")).toEqual([]);
   });
 
-  it("releases a turn whose provider never answered", async () => {
+  it("releases a turn the provider refused, and keeps the worst case of one whose cost is unknown", async () => {
     await onDb(PUBLIC_ADMIN_URL, async (tx) => {
       await tx`TRUNCATE visitor_ai_calls`;
     });
     const failing = scriptedVisitorModel();
     failing.model.doStream = async () => {
-      throw new Error("401 invalid x-api-key");
+      throw new APICallError({
+        message: "invalid x-api-key",
+        url: "https://provider.test/v1/messages",
+        requestBodyValues: {},
+        statusCode: 401,
+        isRetryable: false,
+      });
     };
     setVisitorAiModelFactoryForTests(() => failing.model);
     const r = await ask({ question: "Hallo?", lang: "de", captcha: await proof() });
     expect(errorKind(r)).toBe("Unavailable");
+    expect((await ledger()).map((x) => x.reservation)).toEqual(["released"]);
+    // A connection lost after the request went out may have been billed:
+    // leaving early, or losing the line, never frees the budget (#1653).
+    failing.model.doStream = async () => {
+      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+    };
+    const lost = await ask({ question: "Hallo?", lang: "de", captcha: await proof() });
+    expect(errorKind(lost)).toBe("Unavailable");
     const rows = await ledger();
-    expect(rows.map((x) => x.reservation)).toEqual(["released"]);
+    expect(rows.map((x) => x.reservation)).toEqual(["released", "settled"]);
+    expect(rows[1]?.cost).toBe(rows[1]?.reserved as number);
+    expect(rows[1]?.cost).toBeGreaterThan(0);
   });
 });

@@ -33,6 +33,7 @@ import {
   recordCapLookupSuccess,
 } from "@caelo-cms/shared";
 import { z } from "zod";
+import { failureProvedUnbilled } from "./ai-unbilled.js";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 import type { AICompletion, AIObjectCompletion } from "./types.js";
 
@@ -152,7 +153,15 @@ export function makePluginAi(
     try {
       result = await call();
     } catch (e) {
-      if (callId) await settlePluginAiCall(plugin, infra, callId, null, Date.now() - startedAt);
+      if (callId) {
+        await settlePluginAiCall(
+          plugin,
+          infra,
+          callId,
+          { failed: e, target },
+          Date.now() - startedAt,
+        );
+      }
       throw e;
     }
     const durationMs = Date.now() - startedAt;
@@ -245,32 +254,53 @@ async function reservePluginAiCall(
   return null;
 }
 
-/** Settle a reservation at the call's real cost; `null` = it threw before billing. */
+/** How a reserved call ended: its result, or the error it threw on its target. */
+type PluginAiOutcome =
+  | AIObjectCompletion
+  | AICompletion
+  | { readonly failed: unknown; readonly target: { provider: string; model: string } };
+
+/**
+ * Settle a reservation at the call's real cost. A call that threw gives the
+ * reservation back only when its error proves nothing was billed; any other
+ * failure keeps its worst case (#1653).
+ */
 async function settlePluginAiCall(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
   callId: string,
-  result: AIObjectCompletion | AICompletion | null,
+  outcome: PluginAiOutcome,
   durationMs: number,
 ): Promise<void> {
+  const ledger = (op: string, input: Record<string, unknown>) =>
+    execute(infra.registry, infra.adapter, ledgerCtx(plugin), op, input);
   try {
-    const r = result
-      ? await execute(infra.registry, infra.adapter, ledgerCtx(plugin), "ai_ledger.settle", {
-          callId,
-          provider: result.provider,
-          model: result.model,
-          usage: {
-            inputTokens: result.inputTokens,
-            outputTokens: result.outputTokens,
-            cachedTokens: result.cachedTokens,
-            cacheCreationTokens: result.cacheCreationTokens,
-          },
-          durationMs,
-          succeeded: true,
-        })
-      : await execute(infra.registry, infra.adapter, ledgerCtx(plugin), "ai_ledger.release", {
-          callId,
-        });
+    const r =
+      "failed" in outcome
+        ? failureProvedUnbilled(outcome.failed)
+          ? await ledger("ai_ledger.release", { callId })
+          : await ledger("ai_ledger.settle", {
+              callId,
+              ...outcome.target,
+              usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 },
+              durationMs,
+              succeeded: false,
+              usageMissing: true,
+            })
+        : await ledger("ai_ledger.settle", {
+            callId,
+            provider: outcome.provider,
+            model: outcome.model,
+            usage: {
+              inputTokens: outcome.inputTokens,
+              outputTokens: outcome.outputTokens,
+              cachedTokens: outcome.cachedTokens,
+              cacheCreationTokens: outcome.cacheCreationTokens,
+            },
+            durationMs,
+            succeeded: true,
+            usageMissing: false,
+          });
     if (!r.ok) throw new Error(r.error.kind);
   } catch (e) {
     // The reservation stays at its worst case: spend is overstated, never

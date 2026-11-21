@@ -37,6 +37,7 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { failureProvedUnbilled } from "@caelo-cms/plugin-host/gateway";
 import type { AiChatOperationManifest, ConfigLeaf } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import {
@@ -551,12 +552,14 @@ export async function aiChatResponse(req: Request, c: AiChatContext): Promise<Re
         failure = e;
       }
       try {
-        if (failure !== null && !answered) {
-          // The provider never answered: it billed nothing.
+        if (failure !== null && !answered && failureProvedUnbilled(failure)) {
+          // The provider refused before generating (an error status, no
+          // connection): it billed nothing.
           await releaseTurn(c.adapter, ledgerId);
         } else if (failure !== null) {
-          // Part of a turn ran; what the unfinished step billed is unknown, so it
-          // keeps its worst case (the reservation), never less.
+          // What the unfinished request billed is unknown (a visitor who left,
+          // the deadline, a connection lost after sending), so it keeps its
+          // worst case (the reservation), never less (#1653).
           const known = cost(pricing, usage, largestPrompt);
           await settleTurn(c.adapter, ledgerId, {
             costMicrocents: Math.max(known, amount),
