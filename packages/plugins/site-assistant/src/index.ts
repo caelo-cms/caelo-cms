@@ -134,16 +134,20 @@ async function testQuestions(ctx: Ctx): Promise<TestQuestion[]> {
   return testQuestionsOf(r.list.items);
 }
 
-/** The site's language, the language a test question without one is asked in. */
+/** The site's language, the language a question without one is asked in. */
 async function siteLanguage(ctx: Ctx): Promise<string> {
-  const lang = document_language(await ctx.cms?.call<unknown, unknown>("site_defaults.get", {}));
-  return lang ?? "en";
-}
-
-function document_language(value: unknown): string | null {
-  const v = value as { siteLanguage?: unknown; site_language?: unknown } | null | undefined;
-  const lang = v?.siteLanguage ?? v?.site_language;
-  return typeof lang === "string" && lang.trim() ? lang.trim() : null;
+  if (!ctx.cms)
+    throw new Error("site-assistant: reading the site's language needs the cms_admin grant");
+  const r = await ctx.cms.call<
+    Record<string, never>,
+    { defaults: { siteLanguage: string | null } | null }
+  >("site_defaults.get", {});
+  const lang = r.defaults?.siteLanguage?.trim();
+  if (!lang)
+    throw new Error(
+      "site-assistant: the site has no language set (set_site_identity siteLanguage); a question is searched in the site's language",
+    );
+  return lang;
 }
 
 /** Runs one tool for the audit, waiting while the Stage's index is still being built. */

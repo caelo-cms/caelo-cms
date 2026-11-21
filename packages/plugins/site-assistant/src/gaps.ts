@@ -13,11 +13,15 @@
  * clustered by its words only (no model reads it here), and the report
  * that reaches the admin AI is marked untrusted.
  *
- * Clustering is linear in the questions: each question's content words
- * (lowercased, diacritics folded, stop words and short words out, a light
- * suffix trim) form a set; a question joins the first open cluster whose
- * words it shares at least half of (Jaccard), else starts one. Clusters
- * are bounded, so a flood of distinct questions stays bounded too.
+ * Clustering groups phrasings of one question, not meanings: each
+ * question's content words (lowercased, diacritics folded, stop words and
+ * short words out, a light suffix trim) are compared by their first five
+ * letters, so "Versandkosten" meets "Versand". A question joins the cluster
+ * it shares the most words with, when that is at least two of them (one for
+ * a one-word question) and at least half of its own; else it starts one.
+ * Synonyms ("liefert", "Versand") stay apart: the AI that reads the report
+ * groups meanings. A prefix index keeps it linear in the questions, and
+ * clusters are bounded, so a flood of distinct questions stays bounded too.
  */
 
 /** One stored rating, as the inbox keeps it. */
@@ -97,16 +101,11 @@ export function questionWords(question: string): string[] {
   return out;
 }
 
-function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
-  let shared = 0;
-  for (const w of a) if (b.has(w)) shared++;
-  const union = a.size + b.size - shared;
-  return union === 0 ? 0 : shared / union;
-}
+/** The part of a word two spellings of it share ("versandkost" and "versand": "versa"). */
+const stemKey = (word: string): string => word.slice(0, 5);
 
 interface Building {
   lang: string;
-  words: Set<string>;
   counts: Map<string, number>;
   samples: string[];
   notes: string[];
@@ -122,23 +121,31 @@ interface Building {
  */
 export function clusterGaps(events: readonly FeedbackEvent[]): Gap[] {
   const clusters: Building[] = [];
+  // Language and stem key → the clusters that have a word with that key.
+  const byKey = new Map<string, Set<number>>();
   for (const e of events) {
     if (e.kind === "helpful" || !e.question) continue;
     const words = questionWords(e.question);
     if (words.length === 0) continue;
     const lang = (e.lang.split("-")[0] ?? e.lang).toLowerCase();
-    const set = new Set(words);
-    let target: Building | undefined;
-    for (const c of clusters)
-      if (c.lang === lang && jaccard(set, c.words) >= 0.5) {
-        target = c;
-        break;
+    const keys = [...new Set(words.map((w) => `${lang}|${stemKey(w)}`))];
+    const shared = new Map<number, number>();
+    for (const k of keys)
+      for (const i of byKey.get(k) ?? []) shared.set(i, (shared.get(i) ?? 0) + 1);
+    const need = Math.max(Math.min(2, keys.length), Math.ceil(keys.length / 2));
+    let best = -1;
+    let bestShared = 0;
+    for (const [i, n] of shared)
+      if (n >= need && (n > bestShared || (n === bestShared && i < best))) {
+        best = i;
+        bestShared = n;
       }
-    if (!target) {
+    let target: Building;
+    if (best >= 0) target = clusters[best] as Building;
+    else {
       if (clusters.length >= MAX_CLUSTERS) continue;
       target = {
         lang,
-        words: set,
         counts: new Map(),
         samples: [],
         notes: [],
@@ -146,7 +153,13 @@ export function clusterGaps(events: readonly FeedbackEvent[]): Gap[] {
         notHelpful: 0,
         days: new Set(),
       };
+      best = clusters.length;
       clusters.push(target);
+    }
+    for (const k of keys) {
+      const set = byKey.get(k) ?? new Set<number>();
+      set.add(best);
+      byKey.set(k, set);
     }
     for (const w of words) target.counts.set(w, (target.counts.get(w) ?? 0) + 1);
     if (target.samples.length < 3 && !target.samples.includes(e.question.trim()))
