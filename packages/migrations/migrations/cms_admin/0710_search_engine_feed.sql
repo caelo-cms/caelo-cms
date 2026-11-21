@@ -85,7 +85,9 @@ CREATE TABLE IF NOT EXISTS live_page_versions (
   run_id       uuid NOT NULL REFERENCES deploy_runs(id) ON DELETE CASCADE,
   -- No foreign key: the history of a page outlives its row.
   page_id      uuid NOT NULL,
-  kind         text NOT NULL CHECK (kind IN ('baseline', 'added', 'changed', 'moved', 'removed', 'restored')),
+  -- `redated`: the same content, now served with another date (a rollback
+  -- or a Publish live put back files that show it); never announced.
+  kind         text NOT NULL CHECK (kind IN ('baseline', 'added', 'changed', 'moved', 'removed', 'restored', 'redated')),
   -- The public URL the page is live at; NULL once it is no longer live.
   url          text NULL CHECK (url IS NULL OR char_length(url) <= 2048),
   fingerprint  text NULL CHECK (fingerprint IS NULL OR fingerprint ~ '^[0-9a-f]{64}$'),

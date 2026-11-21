@@ -27,10 +27,10 @@ export async function announcedUrls(tx: TransactionRunner, runId: string): Promi
   const rows = (await tx.execute(sql`
     SELECT u FROM (
       SELECT url AS u FROM live_page_versions
-      WHERE run_id = ${runId}::uuid AND kind <> 'baseline' AND url IS NOT NULL
+      WHERE run_id = ${runId}::uuid AND kind NOT IN ('baseline', 'redated') AND url IS NOT NULL
       UNION
       SELECT prev_url AS u FROM live_page_versions
-      WHERE run_id = ${runId}::uuid AND kind <> 'baseline' AND prev_url IS NOT NULL
+      WHERE run_id = ${runId}::uuid AND kind NOT IN ('baseline', 'redated') AND prev_url IS NOT NULL
     ) x
     ORDER BY u
   `)) as unknown as { u: string }[];

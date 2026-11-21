@@ -400,6 +400,36 @@ describe("the live record", () => {
     expect(r).toEqual({ announced: 1, restorable: true });
   });
 
+  it("the same content served with another date gets that date, unannounced", async () => {
+    const t1 = "2026-11-20T08:00:00.000Z";
+    const t3 = "2026-11-20T10:00:00.000Z";
+    const first = await publish(
+      [change(P1, { kind: "added", prevUrl: null, changedAt: t1 })],
+      "2026-11-20T08:00:00Z",
+    );
+    await publish(
+      [change(P1, { fingerprint: FP("b"), changedAt: "2026-11-20T09:00:00.000Z" })],
+      "2026-11-20T09:00:00Z",
+    );
+    await publish([change(P1, { fingerprint: FP("a"), changedAt: t3 })], "2026-11-20T10:00:00Z");
+    // Rolled back to the first build: the same content as now, but its files say t1.
+    const rollback = await run("production", "2026-11-20T11:00:00Z");
+    const r = await inTx((tx) =>
+      restoreLiveVersions(tx, {
+        runId: rollback,
+        restoredRunId: first,
+        at: "2026-11-20T11:00:00.000Z",
+      }),
+    );
+    expect(r).toEqual({ announced: 0, restorable: true });
+    const [row] = (await admin(
+      (tx) => tx`SELECT kind, changed_at FROM live_page_versions WHERE run_id = ${rollback}::uuid`,
+    )) as { kind: string; changed_at: Date }[];
+    expect([row?.kind, row?.changed_at.toISOString()]).toEqual(["redated", t1]);
+    await inTx((tx) => queueSearchNotifications(tx, { runId: rollback, announced: r.announced }));
+    expect((await notifications(rollback)).map((n) => n.channel)).not.toContain("indexnow");
+  });
+
   it("a rollback to a build from before the record appends nothing", async () => {
     const old = await run("production", "2026-11-19T08:00:00Z");
     await publish([change(P1, { kind: "added", prevUrl: null })], "2026-11-20T08:00:00Z");

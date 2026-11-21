@@ -62,7 +62,11 @@ append, in the transaction that records the run:
   keeps the date it had in that build, the date its restored feed and
   sitemap show, so the record describes the files served; a page the build
   did not ship is removed as of the rollback. IndexNow still gets the URLs
-  that changed. A build from before
+  that changed. When the content is the same but the restored files date it
+  otherwise (it changed and changed back in between), a `redated` row gives
+  the record that date; it is never announced. A Publish live of a Stage
+  rebuilt against a moved record does the same for the pages it shows as
+  they are live. A build from before
   the record began has no state to restore. Then nothing is appended until
   the next Publish live. A plugin-data release (#1155) appends its own
   rows and serves its base release's feed and key file, so a rollback to it

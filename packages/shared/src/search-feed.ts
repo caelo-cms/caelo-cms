@@ -79,6 +79,9 @@ export function siteFeedLink(
  *  - `moved` — it is live at another URL (and maybe changed too).
  *  - `removed` — no longer live (unpublished, deleted, noindex).
  *  - `restored` — a rollback put an earlier state back (log only).
+ *  - `redated` — the same content is served with another date: a rollback
+ *    or a Publish live put back files that show it (log only, never
+ *    announced: nothing changed live).
  */
 export const PAGE_VERSION_KINDS = [
   "baseline",
@@ -87,6 +90,7 @@ export const PAGE_VERSION_KINDS = [
   "moved",
   "removed",
   "restored",
+  "redated",
 ] as const;
 export type PageVersionKind = (typeof PAGE_VERSION_KINDS)[number];
 
@@ -94,9 +98,9 @@ export type PageVersionKind = (typeof PAGE_VERSION_KINDS)[number];
 export const BUILD_CHANGE_KINDS = ["baseline", "added", "changed", "moved", "removed"] as const;
 export type BuildChangeKind = (typeof BUILD_CHANGE_KINDS)[number];
 
-/** Kinds announced to search engines: everything but the baseline. */
+/** Kinds announced to search engines: a change of what is live, not the baseline or a new date. */
 export function isAnnouncedKind(kind: PageVersionKind): boolean {
-  return kind !== "baseline";
+  return kind !== "baseline" && kind !== "redated";
 }
 
 /** One page whose live state a build changes (or records as the baseline). */

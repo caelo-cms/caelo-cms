@@ -295,6 +295,31 @@ function sameState(a: RecordState | undefined, b: RecordState | undefined): bool
   );
 }
 
+/**
+ * The row that makes the record match what is served when the content is
+ * the same but the served files show another date (`redated`, never
+ * announced); null when nothing differs.
+ */
+function redatedRow(
+  pageId: string,
+  from: RecordState | undefined,
+  to: RecordState,
+  servedAt: string,
+): VersionRow | null {
+  if (from === undefined || to.url === null || from.changedAt === servedAt) return null;
+  return {
+    pageId,
+    kind: "redated",
+    url: to.url,
+    fingerprint: to.fingerprint,
+    pluginFingerprint: to.pluginFingerprint,
+    title: to.title,
+    summary: to.summary,
+    prevUrl: from.url,
+    changedAt: servedAt,
+  };
+}
+
 /** Not live: no URL, no fingerprints. */
 const notLive = (changedAt: string): RecordState => ({
   url: null,
@@ -369,8 +394,14 @@ async function reconcile(
   for (const pageId of new Set([...shipped.keys(), ...now.keys()])) {
     const to = shipped.get(pageId) ?? notLive(args.shippedAt);
     const from = now.get(pageId);
-    if (sameState(from, to)) continue;
     const change = changeOf.get(pageId);
+    if (sameState(from, to)) {
+      // Live already, as shipped — but the shipped files may date it
+      // otherwise (an intervening build made the same change on its own date).
+      const redated = redatedRow(pageId, from, to, change?.changedAt ?? to.changedAt);
+      if (redated) rows.push(redated);
+      continue;
+    }
     // A page the record has never seen stays the baseline it was built as.
     const kind =
       change?.kind === "baseline" && from === undefined ? "baseline" : stepKind(from, to);
@@ -558,7 +589,13 @@ export async function restoreLiveVersions(
   for (const pageId of new Set([...target.keys(), ...now.keys()])) {
     const to = target.get(pageId) ?? notLive(args.at);
     const from = now.get(pageId);
-    if (sameState(from, to)) continue;
+    if (sameState(from, to)) {
+      // The same content, but the restored files may date it otherwise (it
+      // went live again later, after a change in between).
+      const redated = redatedRow(pageId, from, to, to.changedAt);
+      if (redated) rows.push(redated);
+      continue;
+    }
     if (to.url === null && (from === undefined || from.url === null)) continue;
     rows.push({
       pageId,
