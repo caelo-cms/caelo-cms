@@ -107,7 +107,9 @@ export * from "./editor-toolbar.js";
 export * from "./index-coverage.js";
 export * from "./indexes.js";
 export * from "./mail-templates.js";
+export * from "./public-run.js";
 export * from "./public-surface.js";
+export * from "./visitor-auth.js";
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
@@ -1110,6 +1112,23 @@ export const VISITOR_CONSENT_HEADER = "x-caelo-consent";
 /** The purpose key that makes the gateway set {@link VISITOR_ID_COOKIE}. */
 export const VISITOR_ID_PURPOSE_KEY = "visitor_id";
 
+/** #1340 — see `PluginDefinition.consentProvider`. */
+export const pluginConsentProvider = z
+  .object({
+    policyVersion: z
+      .object({
+        table: z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/),
+        column: z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/),
+      })
+      .strict(),
+    strictness: z
+      .array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/))
+      .min(1)
+      .max(16),
+  })
+  .strict();
+export type PluginConsentProvider = z.infer<typeof pluginConsentProvider>;
+
 /** One cookie a declared purpose sets, worded for the banner and the privacy policy. */
 export const pluginConsentCookie = z
   .object({
@@ -1365,6 +1384,8 @@ export const pluginManifest = z
     /** See `PluginDefinition.consentPurposes`. Data only — no capability:
      *  a declaration asks the visitor, it never grants anything. */
     consentPurposes: z.array(pluginConsentPurpose).max(20).optional(),
+    /** See `PluginDefinition.consentProvider` (#1340). */
+    consentProvider: pluginConsentProvider.optional(),
     /** See `PluginDefinition.bakedData` (#1155). */
     bakedData: pluginBakedData.optional(),
     /** See `PluginDefinition.config` (#1645). */
@@ -1466,6 +1487,15 @@ export const pluginManifest = z
       required.add(slug);
     }
     const purposeKeys = new Set<string>();
+    if (m.consentProvider) {
+      const { table, column } = m.consentProvider.policyVersion;
+      if (!(m.visitorProjection?.[table] ?? []).includes(column))
+        ctx.addIssue({
+          code: "custom",
+          path: ["consentProvider", "policyVersion"],
+          message: `the consent rule reads "${table}.${column}", which visitorProjection does not publish`,
+        });
+    }
     for (const [i, p] of (m.consentPurposes ?? []).entries()) {
       if (purposeKeys.has(p.key)) {
         ctx.addIssue({
@@ -2580,6 +2610,15 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
   /**
+   * #1340 — the consent provider's rule as data, so core computes it in
+   * the gateway without plugin code: where the current policy version is
+   * (a column of a published admin table, `visitorProjection`), and the
+   * order of its categories from loosest to strictest (a purpose several
+   * plugins declare under different categories takes the strictest). Only
+   * the consent provider (`consent-manager`) declares it.
+   */
+  readonly consentProvider?: PluginConsentProvider;
+  /**
    * Runs each time the host brings the plugin up — at boot and when an
    * Owner activates it — on main, with `invocation.origin` `"system"`.
    * The place for create-time defaults (a settings row, seed
@@ -3093,6 +3132,7 @@ export function manifestFromDefinition(def: {
   readonly editorToolbar?: ReadonlyArray<PluginEditorToolbarItem>;
   readonly requiresPlugins?: ReadonlyArray<string>;
   readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
+  readonly consentProvider?: PluginConsentProvider;
   readonly bakedData?: PluginBakedData;
   readonly config?: Readonly<Record<string, ConfigFieldInput>>;
   readonly entityConfig?: Partial<
@@ -3174,6 +3214,14 @@ export function manifestFromDefinition(def: {
             ...p,
             cookies: p.cookies.map((c) => ({ ...c })),
           })),
+        }
+      : {}),
+    ...(def.consentProvider
+      ? {
+          consentProvider: {
+            policyVersion: { ...def.consentProvider.policyVersion },
+            strictness: [...def.consentProvider.strictness],
+          },
         }
       : {}),
     ...(def.bakedData

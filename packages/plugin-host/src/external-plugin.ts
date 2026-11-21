@@ -11,7 +11,7 @@ import type {
 import { z } from "zod";
 
 /** A manifest's public operation as the definition dispatch enforces. */
-function publicOperationFromManifest(op: PublicOperationManifest): PublicOperationDef {
+export function publicOperationFromManifest(op: PublicOperationManifest): PublicOperationDef {
   return {
     name: op.name,
     kind: op.kind,
@@ -20,6 +20,8 @@ function publicOperationFromManifest(op: PublicOperationManifest): PublicOperati
     ...(op.rateLimit ? { rateLimit: op.rateLimit } : {}),
     reads: op.reads,
     writes: op.writes,
+    // #1340 — the declaration the host runs; the sandbox never answers a visitor.
+    run: op.run,
   };
 }
 

@@ -26,14 +26,13 @@
  *   comment_meta — page_id + last_approved_at + count (delta-fetch since)
  */
 
-import { HONEYPOT_FIELD_NAME, isHoneypotArgTripped } from "@caelo-cms/plugin-component-kit";
+import { HONEYPOT_FIELD_NAME } from "@caelo-cms/plugin-component-kit";
 import {
   type AiWorkItem,
   definePlugin,
   isAiDelegated,
   type PluginContextTier1,
   type PluginWriteHintsArgs,
-  PublicOperationError,
   z,
 } from "@caelo-cms/plugin-sdk";
 import { threadHtml } from "./render.js";
@@ -314,7 +313,7 @@ function bakedPage(decision: ModerationDecision, pageId: string | null): { pageI
 
 export default definePlugin<PluginContextTier1>({
   slug: "comments",
-  version: "1.3.0",
+  version: "1.4.0",
   tier: 1,
   schema: {
     comments: {
@@ -356,6 +355,30 @@ export default definePlugin<PluginContextTier1>({
       input: submitInput,
       rateLimit: { max: 10, windowSeconds: 60 },
       writes: ["comments"],
+      // #1340 — declared, run by the host: a pending comment for
+      // moderation. A filled honeypot gets the same answer as a real
+      // submission, so the bot learns nothing, and nothing reaches the
+      // moderation inbox.
+      run: {
+        action: "insert",
+        table: "comments",
+        values: {
+          page_id: { from: "input", field: "pageId" },
+          author_name: { from: "input", field: "authorName", trim: true },
+          content: { from: "input", field: "content", trim: true },
+          status: { from: "const", value: "pending" },
+        },
+        checks: [
+          { check: "not-blank", field: "content", refusal: "submit: content empty" },
+          { check: "not-blank", field: "authorName", refusal: "submit: authorName required" },
+        ],
+        honeypot: {
+          field: HONEYPOT_FIELD_NAME,
+          store: "nothing",
+          answer: { commentId: "00000000-0000-0000-0000-000000000000", status: "pending" },
+        },
+        answer: { commentId: { from: "inserted-id" }, status: "pending" },
+      },
     },
     // Reads the approved thread the admin publishes, no table of its own.
     // One call per page view plus one per "Show older comments" click.
@@ -365,6 +388,7 @@ export default definePlugin<PluginContextTier1>({
       captcha: "none",
       input: listApprovedInput,
       rateLimit: { max: 60, windowSeconds: 60 },
+      run: { action: "block", block: "comment-thread.read" },
     },
   ],
   /**
@@ -389,50 +413,6 @@ export default definePlugin<PluginContextTier1>({
     ],
   },
   operations: {
-    submit: async (ctx, args) => {
-      const input = submitInput.parse(args);
-      // A filled honeypot gets the same answer as a real submission, so
-      // the bot learns nothing — and nothing reaches the moderation inbox.
-      if (isHoneypotArgTripped(args)) {
-        return { commentId: "00000000-0000-0000-0000-000000000000", status: "pending" as const };
-      }
-      if (!input.content.trim()) throw new PublicOperationError("submit: content empty");
-      if (!input.authorName.trim()) throw new PublicOperationError("submit: authorName required");
-
-      const r = await ctx.query.insert("comments", {
-        page_id: input.pageId,
-        author_name: input.authorName.trim(),
-        content: input.content.trim(),
-        status: "pending",
-      });
-      return { commentId: r.id, status: "pending" as const };
-    },
-
-    list_approved: async (ctx, args) => {
-      // v0.2.18 / Fix D — approved comments live in cms_admin's
-      // comment_archive after moderation. cms_public.plugin_comments
-      // is now a write-only inbox; reads go through ctx.cms.call so a
-      // public-DB compromise leaks at most pending submissions.
-      const input = listApprovedInput.parse(args);
-      const page = await approvedComments(ctx, input.pageId, {
-        limit: THREAD_PAGE_SIZE,
-        since: input.since,
-        before: input.before,
-      });
-      // The visitor feed's row shape, which the browser runtime reads.
-      return {
-        nextCursor: page.nextCursor,
-        comments: page.comments.map((c) => ({
-          id: c.publicRowId,
-          page_id: input.pageId,
-          author_name: c.authorName,
-          content: c.content,
-          status: "approved" as const,
-          submitted_at: c.submittedAt,
-        })),
-      };
-    },
-
     list_pending: async (ctx, _args) => {
       const rows = await ctx.query.list<"comments", CommentRow>("comments", {
         status: "pending",

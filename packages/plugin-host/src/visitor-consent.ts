@@ -21,13 +21,13 @@
  * sends it to the gateway in the {@link VISITOR_CONSENT_HEADER} request
  * header, as do the component kit's gateway calls (#1343): the gateway
  * reads no consent cookie, because behind Firebase Hosting none reaches
- * it. Its `visitor_consent_rule` operation tells core which policy
- * version is current and which of its categories covers each purpose. It
- * builds that purpose map from the declarations of the active plugins,
- * which it reads through `ctx.consentPurposes` (capability
- * `consent_provider`). A decision counts only under the current policy
- * version — the same rule its runtime applies before it re-asks the
- * visitor.
+ * it. #1340 — the rule is core's, computed without plugin code from the
+ * provider's `consentProvider` declaration: the current policy version
+ * from the published admin column it names, and for each purpose the
+ * active plugins declare, its category (the strictest, by the provider's
+ * declared order, when several plugins declare one purpose differently).
+ * A decision counts only under the current policy version — the same rule
+ * its runtime applies before it re-asks the visitor.
  *
  * The header is no weaker than the cookie it replaces: both are written
  * by the page's own script, and neither is more than the visitor's say-so.
@@ -49,20 +49,18 @@
 
 import { VISITOR_CONSENT_HEADER, VISITOR_ID_PURPOSE_KEY } from "@caelo-cms/plugin-sdk";
 import { z } from "zod";
+import { declaredConsentPurposes } from "./consent-purposes.js";
 import {
   hostSystemActorId,
   isPluginDisabled,
   loadedPlugins,
-  runPluginOperation,
+  makeInvocationContext,
 } from "./dispatch.js";
 
 export { VISITOR_CONSENT_HEADER };
 
 /** The plugin that governs visitor consent until PR-D (#676) makes the provider declarable. */
 export const VISITOR_CONSENT_PROVIDER_SLUG = "consent-manager";
-
-/** The provider operation core reads the rule from. Not visitor-facing. */
-export const VISITOR_CONSENT_RULE_OPERATION = "visitor_consent_rule";
 
 /** The purpose key for the gateway's visitor id. */
 export const VISITOR_ID_PURPOSE = VISITOR_ID_PURPOSE_KEY;
@@ -113,47 +111,53 @@ export function parseVisitorConsentHeader(value: string | null): VisitorConsentD
 }
 
 /**
- * Ask the running consent provider for its rule.
- *
- * @returns the rule, or null when no consent provider is running — a site
- *   without one has no way to ask, so nobody has consented.
- * @throws when the provider is running but fails or answers ill-formed.
+ * The rule of the active consent provider, or null when none runs (nobody
+ * can have agreed, so no visitor id is stored). Throws when the provider
+ * runs but its rule cannot be read: no silent "no consent" that would hide
+ * a broken projection.
  */
 export async function resolveVisitorConsentRule(): Promise<VisitorConsentRule | null> {
   const slug = VISITOR_CONSENT_PROVIDER_SLUG;
-  if (!loadedPlugins.bySlug(slug) || isPluginDisabled(slug)) return null;
-  const r = await runPluginOperation({
-    invocation: { origin: "system", actorId: hostSystemActorId() },
-    pluginSlug: slug,
-    operationName: VISITOR_CONSENT_RULE_OPERATION,
-    args: {},
-  });
-  if (!r.ok) {
+  const provider = loadedPlugins.bySlug(slug);
+  if (!provider || isPluginDisabled(slug)) return null;
+  const declared = provider.definition.consentProvider;
+  if (!declared) {
+    throw new Error(`visitor consent: ${slug} declares no consentProvider (its rule source)`);
+  }
+  const ctx = await makeInvocationContext(slug, { origin: "system", actorId: hostSystemActorId() });
+  const admin = (
+    ctx as {
+      adminQuery?: {
+        list(t: string, f: Record<string, unknown>): Promise<Record<string, unknown>[]>;
+      };
+    }
+  ).adminQuery;
+  if (!admin) {
     throw new Error(
-      `visitor consent: ${slug}.${VISITOR_CONSENT_RULE_OPERATION} failed (${r.error.kind}): ${r.error.message}`,
+      `visitor consent: ${slug} has no published admin data (the cms_admin_schema grant)`,
     );
   }
-  const parsed = visitorConsentRule.safeParse(r.value);
+  const rows = await admin.list(declared.policyVersion.table, { limit: 1 });
+  const strictness = declared.strictness;
+  const purposes: Record<string, string> = {};
+  for (const p of declaredConsentPurposes()) {
+    const current = purposes[p.key];
+    if (current === undefined || strictness.indexOf(p.category) > strictness.indexOf(current)) {
+      purposes[p.key] = p.category;
+    }
+  }
+  const parsed = visitorConsentRule.safeParse({
+    policyVersion: rows[0]?.[declared.policyVersion.column],
+    purposes,
+  });
   if (!parsed.success) {
     throw new Error(
-      `visitor consent: ${slug}.${VISITOR_CONSENT_RULE_OPERATION} returned an invalid rule: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+      `visitor consent: ${slug}'s rule is invalid: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
     );
   }
   return parsed.data;
 }
 
-/**
- * Whether the visitor's decision grants `purpose` under `rule`.
- *
- * @param rule the provider's rule, or null when no provider runs.
- * @param purpose a purpose key, e.g. {@link VISITOR_ID_PURPOSE}.
- * @param decisionHeader the request's {@link VISITOR_CONSENT_HEADER}
- *   value, or null when the request carries none.
- * @throws when the provider's rule does not cover `purpose` — callers ask
- *   only about a purpose an active plugin declares, and the provider
- *   classifies every declaration, so a gap is a wiring error, not a
- *   silent no.
- */
 export function visitorConsentGranted(
   rule: VisitorConsentRule | null,
   purpose: string,

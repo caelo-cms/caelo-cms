@@ -273,12 +273,17 @@ export {
   type PromptContextRenderer,
   pluginPromptContextRegistry,
 } from "./prompt-context-registry.js";
+export { COMMENT_THREAD_PAGE_SIZE } from "./public-blocks/comment-thread.js";
+export { optInEmailHash } from "./public-blocks/mail-blocks.js";
+export { argon2InFlight } from "./public-blocks/visitor-auth.js";
 export {
   GENERIC_VISITOR_FAILURE,
   refusePublicCall,
   VISITOR_TRANSPORT_FIELDS,
   visitorSafeResult,
 } from "./public-contract.js";
+// #1340 — public operations run as declarations (core code), never plugin code.
+export { runDeclaredPublicOperation } from "./public-run-host.js";
 export {
   dropPluginPublicSchemas,
   type PluginPublicSchemaSpec,
