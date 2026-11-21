@@ -21,7 +21,7 @@
  */
 
 import { ByteReader, ByteWriter } from "./bytes.js";
-import { type FileCache, SegmentReader } from "./reader.js";
+import { type FileCacheLike, SegmentReader } from "./reader.js";
 import {
   type CollectionDoc,
   type CollectionSchema,
@@ -108,7 +108,7 @@ function parseJson<T>(data: Uint8Array): T {
 /** Opens a release: its segment manifests and removed sets load now, everything else on demand. */
 export async function openRelease(
   manifest: ReleaseManifest,
-  cache: FileCache,
+  cache: FileCacheLike,
 ): Promise<OpenRelease> {
   if (manifest.format !== 1)
     throw new RangeError(
@@ -170,7 +170,7 @@ export interface ApplyOptions {
   readonly schema: CollectionSchema;
   readonly sink: FileSink;
   /** Reads the previous release's files. */
-  readonly cache: FileCache;
+  readonly cache: FileCacheLike;
   /** Embeds passage texts; required when the schema has a vector field. */
   readonly embed?: (texts: readonly string[]) => Promise<readonly Float32Array[]>;
   readonly vectorModel?: { readonly id: string; readonly dims: number };
@@ -517,7 +517,7 @@ function writeProfile(profile: unknown, sink: FileSink): string {
 /** Reads a release's search profile, or null when it has none. */
 export async function readProfile(
   release: ReleaseManifest,
-  cache: FileCache,
+  cache: FileCacheLike,
 ): Promise<unknown | null> {
   if (!release.profile) return null;
   return cache.get(release.profile, (d) => parseJson<unknown>(d));
@@ -526,7 +526,7 @@ export async function readProfile(
 /** Every file a release references, for copies and garbage collection. */
 export async function releaseFiles(
   manifest: ReleaseManifest,
-  cache: FileCache,
+  cache: FileCacheLike,
 ): Promise<Set<string>> {
   const files = new Set<string>(manifest.profile ? [manifest.profile] : []);
   for (const s of manifest.segments) {

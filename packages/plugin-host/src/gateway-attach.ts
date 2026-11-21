@@ -286,7 +286,15 @@ export function servesVisitorOperations(): boolean | null {
   if (!s || s.syncedAt === 0 || s.lastError !== null || s.inFlight || s.unattached > 0) {
     return null;
   }
-  return loadedPlugins.all().some((p) => (p.definition.publicOperations ?? []).length > 0);
+  // #1649 — a declared collection operation (search, suggest, read) is a
+  // visitor operation too, though no plugin code answers it.
+  return loadedPlugins
+    .all()
+    .some(
+      (p) =>
+        (p.definition.publicOperations ?? []).length > 0 ||
+        (p.definition.collectionOperations ?? []).length > 0,
+    );
 }
 
 async function readRegistry(opts: DispatchOnlyBootstrapOpts): Promise<RegistryRow[]> {

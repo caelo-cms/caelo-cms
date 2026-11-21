@@ -21,7 +21,14 @@ export {
 } from "./analyze.js";
 export { ByteReader, ByteWriter } from "./bytes.js";
 export { compoundTailInitials, splitCompound } from "./compound.js";
-export { type CacheStats, FileCache, type FileSource, SegmentReader } from "./reader.js";
+export {
+  type CacheStats,
+  FileCache,
+  type FileCacheLike,
+  type FileSource,
+  prefixedCache,
+  SegmentReader,
+} from "./reader.js";
 export {
   type AppliedRelease,
   type ApplyOptions,

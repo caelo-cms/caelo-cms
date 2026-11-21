@@ -121,5 +121,19 @@ export function externalPluginDefinition(opts: {
     ...(manifest.hasStaticRender
       ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
       : {}),
+    // Epic #1644 — reviewed manifest data: an installed plugin keeps
+    // configuration, collections, page output and batch jobs like a shipped
+    // one (one plugin model); its observer and batch code run in the sandbox.
+    ...(manifest.config ? { config: manifest.config } : {}),
+    ...(manifest.entityConfig ? { entityConfig: manifest.entityConfig } : {}),
+    ...(manifest.configPreviewOperation
+      ? { configPreviewOperation: manifest.configPreviewOperation }
+      : {}),
+    ...(manifest.collections ? { collections: manifest.collections } : {}),
+    ...(manifest.collectionOperations
+      ? { collectionOperations: manifest.collectionOperations }
+      : {}),
+    ...(manifest.pageOutputObserver ? { pageOutputObserver: manifest.pageOutputObserver } : {}),
+    ...(manifest.batchOperations ? { batchOperations: manifest.batchOperations } : {}),
   });
 }

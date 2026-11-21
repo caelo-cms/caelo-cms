@@ -117,6 +117,12 @@ import {
   trustedProxyHopsFromEnv,
 } from "./client-ip.js";
 import {
+  declaredCollectionOperation,
+  GatewayCollections,
+  parseCollectionPath,
+  runCollectionOperation,
+} from "./collections.js";
+import {
   databaseIsolationProblems,
   GATEWAY_ENVIRONMENTS,
   gatewayDatabaseRoles,
@@ -1029,7 +1035,10 @@ async function visitorRequest(
   const isCaptchaChallenge = req.method === "GET" && url.pathname === "/api/captcha/challenge";
   const pluginRoute = req.method === "POST" ? parsePluginPath(url.pathname) : null;
   const oneClick = req.method === "POST" ? parseMailLinkPath(url.pathname) : null;
-  if (!isCaptchaChallenge && !pluginRoute && !oneClick) {
+  // #1649 — a declared collection operation answers a GET: cacheable, no cookie.
+  const collectionRoute =
+    req.method === "GET" && !isCaptchaChallenge ? parseCollectionPath(url.pathname) : null;
+  if (!isCaptchaChallenge && !pluginRoute && !oneClick && !collectionRoute) {
     return errorResponse("NotFound", 404, requestId);
   }
   const client = requestClientAddress(req, conn, requestId);
@@ -1044,6 +1053,7 @@ async function visitorRequest(
   // #1361 — the cheap gates above passed: confirm the published state the
   // rest answers from (settings, registry, rate-limit specs, consent rule).
   await confirmPublishedStateOn(adapter);
+  if (collectionRoute) return collectionOperation(url, collectionRoute, requestId);
   if (oneClick) return mailOneClick(req, url, oneClick, requestId);
   let settings: GatewaySettings;
   try {
@@ -1055,6 +1065,104 @@ async function visitorRequest(
   if (isCaptchaChallenge) return captchaChallenge(req, settings, client.value, requestId);
   if (!pluginRoute) return errorResponse("NotFound", 404, requestId);
   return pluginOperation(req, settings, client.value, pluginRoute, requestId);
+}
+
+// ---------------------------------------------------------------------------
+// #1649 — declared collection operations: search, suggest, read.
+// ---------------------------------------------------------------------------
+
+/** This gateway's collection state; its environment decides which store it reads. */
+let gatewayCollections: GatewayCollections | null = null;
+
+function collectionsOfGateway(): GatewayCollections {
+  if (!gatewayCollections) {
+    gatewayCollections = new GatewayCollections(
+      process.env.CAELO_GATEWAY_ENVIRONMENT === "staging" ? "staging" : "live",
+    );
+    onPublishedChange(() => gatewayCollections?.invalidate());
+  }
+  return gatewayCollections;
+}
+
+/** A JSON answer the CDN may keep for `sMaxAge` seconds (no cookie, ever). */
+function cacheableJsonResponse(
+  body: unknown,
+  status: number,
+  sMaxAge: number | null,
+  requestId: string,
+): Response {
+  const response = jsonResponse(body, { status, requestId });
+  if (sMaxAge !== null)
+    response.headers.set("Cache-Control", `public, max-age=60, s-maxage=${sMaxAge}`);
+  return response;
+}
+
+async function collectionOperation(
+  url: URL,
+  route: { readonly slug: string; readonly operation: string; readonly releaseOnly: boolean },
+  requestId: string,
+): Promise<Response> {
+  const adapter = cachedAdapter as DatabaseAdapter;
+  await syncDispatchPlugins();
+  const declared = declaredCollectionOperation(route.slug, route.operation);
+  if (!declared) {
+    if (unpublishedRegistryError()) return errorResponse("ProjectionNotPublished", 503, requestId);
+    return errorResponse("NotFound", 404, requestId);
+  }
+  const opLimited = operationRateLimited(`${route.slug}.${route.operation}`, requestId);
+  if (opLimited) return opLimited;
+  const start = performance.now();
+  const collections = collectionsOfGateway();
+  const startedAt = publishedCacheGeneration();
+  let answer: { status: number; body: unknown; cacheSeconds: number | null };
+  try {
+    const keys = await collections.releaseKeys(adapter, SYSTEM_CTX, () => mayCacheRead(startedAt));
+    const key = keys.get(`${declared.pluginId}:${declared.op.collection}`);
+    const asked = url.searchParams.get("release");
+    if (!key) {
+      answer = {
+        status: 503,
+        body: { ok: false, error: { kind: "IndexNotReady", requestId } },
+        cacheSeconds: null,
+      };
+    } else if (route.releaseOnly) {
+      answer = { status: 200, body: { release: key }, cacheSeconds: null };
+    } else if (asked !== null && asked !== key) {
+      // A newer Stage went live: the client asks again under the new key.
+      answer = {
+        status: 409,
+        body: { ok: false, error: { kind: "ReleaseMoved", requestId }, release: key },
+        cacheSeconds: null,
+      };
+    } else {
+      const entry = await collections.release(route.slug, declared.op.collection, key);
+      const ran = await runCollectionOperation(declared.op, entry, key, url.searchParams);
+      answer = {
+        ...ran,
+        cacheSeconds: asked === key && ran.status === 200 ? ran.cacheSeconds : null,
+      };
+    }
+  } catch (e) {
+    return errorResponse("ServiceUnavailable", 503, requestId, {
+      log: `collection ${route.slug}.${route.operation}: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+  // Logged like every visitor call, without the query (#1649).
+  await recordRequest({
+    pluginSlug: route.slug,
+    operation: route.operation,
+    statusCode: answer.status,
+    durationMs: Math.round(performance.now() - start),
+    bodyBytes: 0,
+    wasRateLimited: false,
+    wasHoneypotCaught: false,
+    captchaPassed: false,
+    errorKind:
+      answer.status >= 400
+        ? String((answer.body as { error?: { kind?: string } }).error?.kind ?? "Error")
+        : null,
+  });
+  return cacheableJsonResponse(answer.body, answer.status, answer.cacheSeconds, requestId);
 }
 
 /** How long a `Busy` (503) answer asks the client to wait (#1334). */

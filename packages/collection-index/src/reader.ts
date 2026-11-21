@@ -39,12 +39,22 @@ export interface CacheStats {
   bytesLoaded: number;
 }
 
+/** What readers need of a cache: a parsed file by name. */
+export interface FileCacheLike {
+  get<T>(file: string, parse: (data: Uint8Array) => T): Promise<T>;
+}
+
+/** A view of `cache` whose file names sit under `prefix/`: one bounded cache for many collections. */
+export function prefixedCache(cache: FileCacheLike, prefix: string): FileCacheLike {
+  return { get: (file, parse) => cache.get(`${prefix}/${file}`, parse) };
+}
+
 /**
  * Caches parsed files up to a byte budget, least recently used out first.
  * Values are parsed once; the budget counts the raw file size. Concurrent
  * requests for one file share one read.
  */
-export class FileCache {
+export class FileCache implements FileCacheLike {
   private readonly entries = new Map<string, { value: unknown; bytes: number }>();
   private readonly loading = new Map<string, Promise<unknown>>();
   private used = 0;
@@ -100,7 +110,7 @@ export class FileCache {
 export class SegmentReader {
   constructor(
     readonly manifest: SegmentManifest,
-    private readonly cache: FileCache,
+    private readonly cache: FileCacheLike,
   ) {}
 
   /** Keys, slot lengths, languages, numbers and facets of every document in the segment. */
