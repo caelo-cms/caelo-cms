@@ -210,6 +210,13 @@ async function runInsert(
     const r = await ctx.query.insert(run.table, row);
     return answerOf(run.honeypot.answer, r.id);
   }
+  if (run.onlyIf) {
+    const rows = await sourceQuery(ctx, run.onlyIf.source.of).list(run.onlyIf.source.table, {
+      limit: 1,
+    });
+    if ((rows[0]?.[run.onlyIf.column] ?? null) !== run.onlyIf.equals)
+      return answerOf(run.onlyIf.answer, null);
+  }
   if (run.drop) {
     const v = inputAt(args, run.drop.field);
     if (typeof v === "string" && matchesDropPattern(v, run.drop.patterns))

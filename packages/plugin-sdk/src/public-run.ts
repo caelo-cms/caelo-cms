@@ -168,6 +168,21 @@ export const publicRun = z.discriminatedUnion("action", [
         })
         .strict()
         .optional(),
+      /**
+       * Store only while `column` of the source's (first) row equals
+       * `equals` — a switch the Owner sets in published data (search
+       * counting on or off). Otherwise the visitor gets `answer` and
+       * nothing is stored; no refusal tells a visitor the switch is off.
+       */
+      onlyIf: z
+        .object({
+          source: tableSource,
+          column: identifier,
+          equals: jsonScalar,
+          answer: publicAnswer,
+        })
+        .strict()
+        .optional(),
       /** A field that looks like personal data answers `answer` and stores nothing. */
       drop: z
         .object({
@@ -390,6 +405,7 @@ export function runTables(run: PublicRun): { reads: Set<string>; writes: Set<str
     writes.add(run.table);
     for (const c of run.checks ?? [])
       if ("source" in c && c.source.of === "schema") reads.add(c.source.table);
+    if (run.onlyIf?.source.of === "schema") reads.add(run.onlyIf.source.table);
   } else if (run.action === "list") {
     if ((run.of ?? "schema") === "schema") reads.add(run.table);
   } else {
@@ -463,6 +479,33 @@ export function checkPublicRun(
     if (ownTable(["run", "table"], run.table, VISITOR_WRITABLE, "write")) {
       columns(["run", "values"], run.table, Object.keys(run.values));
       columns(["run", "honeypot", "values"], run.table, Object.keys(run.honeypot?.values ?? {}));
+    }
+    const sourced: { path: (string | number)[]; source: PublicTableSource; cols: string[] }[] = [];
+    if (run.onlyIf)
+      sourced.push({
+        path: ["run", "onlyIf", "source"],
+        source: run.onlyIf.source,
+        cols: [run.onlyIf.column],
+      });
+    for (const s of sourced) {
+      if (s.source.of === "schema") {
+        if (ownTable(s.path, s.source.table, VISITOR_READABLE, "read"))
+          columns(s.path, s.source.table, s.cols);
+      } else {
+        const projected = m.visitorProjection?.[s.source.table];
+        if (!projected)
+          issue(
+            s.path,
+            `"${op.name}" reads admin table "${s.source.table}", which visitorProjection does not publish`,
+          );
+        else
+          for (const col of s.cols)
+            if (!projected.includes(col))
+              issue(
+                s.path,
+                `"${op.name}" reads "${s.source.table}.${col}", which visitorProjection does not publish`,
+              );
+      }
     }
     for (const [i, c] of (run.checks ?? []).entries()) {
       if (!("source" in c)) continue;

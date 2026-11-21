@@ -366,3 +366,118 @@ describe("checkPublicSurface over a manifest without a run", () => {
     expect(typeof checkPublicSurface).toBe("function");
   });
 });
+
+/**
+ * The site-search plugin's `record` (epic #1644) as a declaration: an inbox
+ * write of a submitted search or click, no visitor id, a honeypot, the text
+ * dropped when it looks like personal data, and stored only while the
+ * Owner's projected `public_settings.counting` switch is on.
+ */
+describe("a privacy-preserving inbox (site-search record)", () => {
+  const record: PublicOperationDef = {
+    name: "record",
+    kind: "write",
+    captcha: "none",
+    input: z
+      .object({
+        kind: z.enum(["search", "click"]),
+        text: z.string().max(200),
+        lang: z.string().max(12),
+        results: z.number().int().min(0).max(100_000),
+        target: z.string().max(500).optional(),
+        previous: z.string().max(200).optional(),
+        website: z.string().max(200).optional(),
+      })
+      .strict(),
+    rateLimit: { max: 30, windowSeconds: 60 },
+    writes: ["search_events"],
+    run: {
+      action: "insert",
+      table: "search_events",
+      values: {
+        kind: { from: "input", field: "kind" },
+        text: { from: "input", field: "text", trim: true },
+        lang: { from: "input", field: "lang" },
+        day: { from: "today" },
+        results: { from: "input", field: "results" },
+        target: { from: "input", field: "target", optional: true },
+        previous: { from: "input", field: "previous", optional: true },
+      },
+      honeypot: { field: "website", store: "nothing", answer: { recorded: true } },
+      onlyIf: {
+        source: { table: "public_settings", of: "adminSchema" },
+        column: "counting",
+        equals: true,
+        answer: { recorded: true },
+      },
+      drop: {
+        field: "text",
+        patterns: ["email", "phone", "long-number"],
+        answer: { recorded: true },
+      },
+      answer: { recorded: true },
+    },
+  };
+
+  it("lints clean as a manifest", () => {
+    const def = definePlugin({
+      slug: "search-probe",
+      version: "1.0.0",
+      tier: 1,
+      schema: {
+        search_events: {
+          id: "uuid",
+          kind: "string",
+          text: "string",
+          lang: "string",
+          day: "string",
+          results: "int",
+          target: "string",
+          previous: "string",
+        },
+      },
+      tableKinds: { search_events: "inbox" },
+      adminSchema: { public_settings: { counting: "bool" } },
+      visitorProjection: { public_settings: ["counting"] },
+      requestedCapabilities: ["cms_admin_schema"],
+      operations: {},
+      publicOperations: [record],
+    } as never);
+    expect(() => manifestFromDefinition(def)).not.toThrow();
+  });
+
+  it("stores while counting is on; answers alike and stores nothing when off, for personal data and for bots", async () => {
+    const on = fakeCtx({}, { public_settings: [{ counting: true }] });
+    await runDeclaredPublicOperation(record, on.ctx, {
+      kind: "search",
+      text: " preise ",
+      lang: "de",
+      results: 3,
+    });
+    expect(on.inserted[0]?.row).toMatchObject({
+      kind: "search",
+      text: "preise",
+      lang: "de",
+      results: 3,
+    });
+    expect(Object.keys(on.inserted[0]?.row ?? {})).not.toContain("visitor_id");
+    for (const [admin, args] of [
+      [
+        { public_settings: [{ counting: false }] },
+        { kind: "search", text: "preise", lang: "de", results: 3 },
+      ],
+      [
+        { public_settings: [{ counting: true }] },
+        { kind: "search", text: "jane@example.com", lang: "de", results: 0 },
+      ],
+      [
+        { public_settings: [{ counting: true }] },
+        { kind: "search", text: "x", lang: "de", results: 0, website: "bot" },
+      ],
+    ] as const) {
+      const f = fakeCtx({}, admin as never);
+      expect(await runDeclaredPublicOperation(record, f.ctx, args)).toEqual({ recorded: true });
+      expect(f.inserted).toEqual([]);
+    }
+  });
+});
