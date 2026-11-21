@@ -33,6 +33,11 @@ async function resolveOrThrow(purpose: string | undefined) {
 /** Build the `aiProvider` the plugin host's `ctx.ai` calls. */
 export function makePluginTextProvider(): PluginHostAIProvider {
   return {
+    // #1653 — the host reserves the call's worst case on this model first.
+    resolve: async (purpose) => {
+      const resolved = await resolveOrThrow(purpose);
+      return { provider: resolved.providerName, model: resolved.model };
+    },
     complete: async (opts) => {
       const resolved = await resolveOrThrow(opts.purpose);
       let text = "";

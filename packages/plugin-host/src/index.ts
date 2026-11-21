@@ -13,6 +13,25 @@
 export { externalArtifactDigest, releaseManifestDigest } from "@caelo-cms/plugin-sandbox";
 export type { ContentVariantPage, ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
 export { pluginManifest } from "@caelo-cms/plugin-sdk";
+// #1653 — the one AI spend ledger (text and images).
+export {
+  AI_LEDGER_LOCK,
+  type AiCapRefusal,
+  type AiReservation,
+  type AiSessionKey,
+  type AiSettlement,
+  type AiSpender,
+  checkAiCaps,
+  describeAiCapRefusal,
+  extendAiSpend,
+  IMAGE_TOKEN_BOUND,
+  PROVIDER_REQUEST_OVERHEAD_TOKENS,
+  promptTokenBound,
+  releaseAiSpend,
+  reserveAiSpend,
+  settleAiSpend,
+  tokenBoundOf,
+} from "./ai-ledger.js";
 export {
   auditFindingContributors,
   type PluginAuditFindings,
