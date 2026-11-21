@@ -330,7 +330,9 @@ describe("the gateway image", () => {
 
   it("carries no plugin code: no Deno, no dist, no validator (#1340)", () => {
     // No Deno stage, binary or env (the header comment names what it lacks).
-    expect(dockerfile).not.toMatch(/^FROM denoland|--from=deno|CAELO_DENO_BINARY/m);
+    expect(dockerfile).not.toMatch(/^FROM denoland/m);
+    expect(dockerfile).not.toContain("--from=deno");
+    expect(dockerfile).not.toContain("CAELO_DENO_BINARY");
     // Bun, plus the embedding models' ONNX graphs (#1650): data a visitor's
     // query runs through inside WebAssembly, never plugin code.
     expect(

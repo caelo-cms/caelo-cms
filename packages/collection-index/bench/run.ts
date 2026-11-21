@@ -17,7 +17,15 @@
  * `BENCH_OUT` also writes the JSON.
  */
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -139,8 +147,8 @@ async function main(): Promise<void> {
     storeLatencyMs: STORE_LATENCY_MS,
   };
   const lines: string[] = [`# Collection index benchmark: ${PAGES.toLocaleString("en")} pages`, ""];
-  const root = join(tmpdir(), `caelo-collection-bench-${process.pid}`);
-  rmSync(root, { recursive: true, force: true });
+  // A fresh directory of its own (mkdtemp), never a predictable path.
+  const root = mkdtempSync(join(tmpdir(), "caelo-collection-bench-"));
   const store = join(root, "store");
   mkdirSync(store, { recursive: true });
   const write = (name: string, data: Uint8Array): void => writeFileSync(join(store, name), data);

@@ -17,6 +17,7 @@
  */
 
 import {
+  isEmailAddress,
   matchesDropPattern,
   type PluginContextTier1,
   type PublicAnswer,
@@ -113,8 +114,6 @@ function sourceQuery(ctx: PluginContextTier1, of: "schema" | "adminSchema") {
   return ctx.adminQuery;
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 interface FormField {
   readonly name: string;
   readonly label: string;
@@ -182,7 +181,7 @@ async function runCheck(check: PublicCheck, args: unknown, ctx: PluginContextTie
         const empty = v === undefined || v === null || String(v).trim() === "";
         if (f.required && (empty || v === false))
           throw new PublicOperationError(`"${f.label}" is required`);
-        if (!empty && f.type === "email" && !EMAIL_RE.test(String(v)))
+        if (!empty && f.type === "email" && !isEmailAddress(String(v)))
           throw new PublicOperationError(`"${f.label}" must be an email address`);
       }
       return;

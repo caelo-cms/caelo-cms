@@ -268,13 +268,20 @@ export function gcsStore(
   };
 }
 
+/** `s` without its trailing slashes, in linear time (a `/\/+$/` scan is quadratic on many slashes). */
+function withoutTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47) end--;
+  return s.slice(0, end);
+}
+
 /** Opens a store from its URL (`gs://bucket[/prefix]` or `file:///dir`). */
 export function storeFromUrl(url: string, fetchImpl: typeof fetch = fetch): CollectionStore {
   if (url.startsWith("gs://")) {
     const rest = url.slice("gs://".length);
     const slash = rest.indexOf("/");
     const bucket = slash < 0 ? rest : rest.slice(0, slash);
-    const prefix = slash < 0 ? "" : rest.slice(slash + 1).replace(/\/+$/, "");
+    const prefix = slash < 0 ? "" : withoutTrailingSlashes(rest.slice(slash + 1));
     return gcsStore(bucket, prefix, metadataTokenSource(fetchImpl), fetchImpl);
   }
   if (url.startsWith("file://")) {

@@ -251,6 +251,17 @@ async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promis
       // DELETE after the truncate: churn rows referencing these tables
       // are already gone, and the FKs' ON DELETE SET NULL keeps the
       // seeded rows in `actors` / `themes` alive.
+      // A plugin's list types (0357) are kept on purpose when its row goes
+      // (they become the operator's site types), so deleting `plugins`
+      // here would hand the next file a type its plugin's activation
+      // refuses as someone else's. They go with the plugin rows the reset
+      // removes; the shipped seed types (no plugin) stay.
+      if (
+        deleteTargets.includes("plugins") &&
+        allTables.some((t) => t.tablename === "list_types")
+      ) {
+        await tx.unsafe("DELETE FROM list_types WHERE plugin_id IS NOT NULL");
+      }
       for (const t of deleteTargets) {
         await tx.unsafe(`DELETE FROM "${t}"`);
       }

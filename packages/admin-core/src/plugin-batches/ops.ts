@@ -17,24 +17,15 @@
  * lost on the way is picked up by the scheduler tick's backstop.
  */
 
-import {
-  hasGrantedCapability,
-  hostInfra,
-  isPluginDisabled,
-  type LoadedPlugin,
-  loadedPlugins,
-} from "@caelo-cms/plugin-host";
-import {
-  BATCH_TRIGGERS,
-  MAX_BATCH_RESULT_BYTES,
-  type PluginBatchOperation,
-} from "@caelo-cms/plugin-sdk";
+import { hostInfra, type LoadedPlugin, loadedPlugins } from "@caelo-cms/plugin-host";
+import { BATCH_TRIGGERS, MAX_BATCH_RESULT_BYTES } from "@caelo-cms/plugin-sdk";
 import { afterCommit, defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { startReportingJob } from "../reporting-jobs/launcher.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { declaredBatch } from "./declared.js";
 
 const uuid = z.string().uuid();
 const slug = z.string().regex(/^[a-z][a-z0-9-]{0,54}$/);
@@ -102,31 +93,6 @@ function toRun(r: RunRow): BatchRun {
     startedAt: r.started_at,
     finishedAt: r.finished_at,
   };
-}
-
-/** The declared batch of a loaded, active plugin with the grant, or why not. */
-export function declaredBatch(
-  plugin: LoadedPlugin | undefined,
-  operation: string,
-): { ok: true; batch: PluginBatchOperation } | { ok: false; message: string } {
-  if (!plugin) return { ok: false, message: "the plugin is not active on this site" };
-  if (isPluginDisabled(plugin.slug))
-    return { ok: false, message: `plugin "${plugin.slug}" is disabled (Settings → Plugins)` };
-  if (!hasGrantedCapability(plugin, "batch_jobs"))
-    return {
-      ok: false,
-      message: `plugin "${plugin.slug}" was not granted batch jobs: an Owner approves the capability in Settings → Plugins`,
-    };
-  const batches = (plugin.definition.batchOperations ?? []) as PluginBatchOperation[];
-  const batch = batches.find((b) => b.operation === operation);
-  if (!batch) {
-    const names = batches.map((b) => b.operation);
-    return {
-      ok: false,
-      message: `plugin "${plugin.slug}" declares no batch "${operation}"${names.length > 0 ? `; it declares ${names.join(", ")}` : ""}`,
-    };
-  }
-  return { ok: true, batch };
 }
 
 function refuse(operation: string, message: string) {

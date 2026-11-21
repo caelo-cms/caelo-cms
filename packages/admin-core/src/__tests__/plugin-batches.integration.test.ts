@@ -298,7 +298,7 @@ describe("plugin batches (#1646)", () => {
     await until(async () => (await runs(SHIPPED)).some((r) => r.trigger === "activation"));
     const first = (await runs(SHIPPED)).find((r) => r.trigger === "activation") as BatchRun;
     const done = await settled(first.id);
-    expect(done.state).toBe("completed");
+    expect({ state: done.state, error: done.error }).toEqual({ state: "completed", error: null });
     expect(done.result).toEqual({ count: 3, trigger: "activation", invocation: "batch" });
     // The plugin loads again (another instance's boot, a reload): no second run.
     resetPluginHost();
@@ -329,7 +329,7 @@ describe("plugin batches (#1646)", () => {
     );
     expect(run.trigger).toBe("operator");
     const done = await settled(run.id);
-    expect(done.state).toBe("completed");
+    expect({ state: done.state, error: done.error }).toEqual({ state: "completed", error: null });
     expect(done.result).toMatchObject({ count: 5, trigger: "operator" });
     const changes = await adapter.withAdminTransaction(
       SYSTEM,
@@ -409,7 +409,7 @@ describe("plugin batches (#1646)", () => {
     });
     await runReportingJobBackstop({ adapter, registry });
     const done = await settled(runId);
-    expect(done.state).toBe("completed");
+    expect({ state: done.state, error: done.error }).toEqual({ state: "completed", error: null });
     expect(done.result).toMatchObject({ count: 1 });
   });
 

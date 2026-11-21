@@ -16,7 +16,7 @@
  * hand) is refused, not embedded with.
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
 import type { EmbeddingModel, EmbeddingModelFile } from "@caelo-cms/shared";
 
@@ -68,18 +68,26 @@ export async function readVerifiedModelFile(
 ): Promise<Uint8Array> {
   const path = modelFilePath(dir, model, file);
   const fix = `run \`bun run models:fetch\` (or rebuild the image) so ${model.id} is fetched again`;
-  let size: number;
+  // One open file for the size check and the read: what is checked is what
+  // is read (and the digest below is taken of exactly those bytes).
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    size = (await stat(path)).size;
+    handle = await open(path, "r");
   } catch {
     throw new ModelFileError(`embedding model ${model.id}: ${path} is missing; ${fix}`);
   }
-  if (size !== file.bytes) {
-    throw new ModelFileError(
-      `embedding model ${model.id}: ${path} has ${size} bytes, the catalog pins ${file.bytes}; ${fix}`,
-    );
+  let data: Uint8Array;
+  try {
+    const { size } = await handle.stat();
+    if (size !== file.bytes) {
+      throw new ModelFileError(
+        `embedding model ${model.id}: ${path} has ${size} bytes, the catalog pins ${file.bytes}; ${fix}`,
+      );
+    }
+    data = new Uint8Array(await handle.readFile());
+  } finally {
+    await handle.close();
   }
-  const data = new Uint8Array(await readFile(path));
   const digest = sha256Hex(data);
   if (digest !== file.sha256) {
     throw new ModelFileError(

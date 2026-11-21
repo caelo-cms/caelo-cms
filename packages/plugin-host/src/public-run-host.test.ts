@@ -18,6 +18,7 @@ import { describe, expect, it } from "bun:test";
 import {
   checkPublicSurface,
   definePlugin,
+  isEmailAddress,
   isPublicOperationError,
   manifestFromDefinition,
   matchesDropPattern,
@@ -186,6 +187,49 @@ describe("drop patterns", () => {
     expect(matchesDropPattern("(030) 123 45 67", ["phone"])).toBe(true);
     expect(matchesDropPattern("kd-nr 123456", ["long-number"])).toBe(true);
     expect(matchesDropPattern("DE89 3704 0044 0532 0130 00", ["long-number"])).toBe(true);
+  });
+
+  // The regexes the checks replace, as the truth table they keep (CodeQL
+  // flagged both as polynomial on visitor input).
+  const WHOLE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const ANYWHERE = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+  const CASES = [
+    "a@b.c",
+    "a.b@c.de",
+    "a@b",
+    "a@.b",
+    "a@b.",
+    "@b.c",
+    "a@@b.c",
+    "a@b@c.d",
+    "a b@c.d",
+    "x@y.z w",
+    "mail me: a@b.de",
+    ".@a.b",
+    "a@b..",
+    "a@.b.c",
+    "a@b.c.",
+    "",
+    "@",
+    ".",
+    "a@b.c@d",
+    "foo@bar",
+    "q@w.e r@t",
+    "!@!.!.!.",
+  ];
+  it("check e-mail addresses like the regexes they replace", () => {
+    for (const c of CASES) {
+      expect([c, isEmailAddress(c)]).toEqual([c, WHOLE.test(c)]);
+      expect([c, matchesDropPattern(c, ["email"])]).toEqual([c, ANYWHERE.test(c)]);
+    }
+  });
+  it("stay linear on input built to make a regex backtrack", () => {
+    const evil = `!@!.${"!.".repeat(50_000)}`;
+    const started = performance.now();
+    isEmailAddress(`${evil} `);
+    matchesDropPattern(`${"!@".repeat(20_000)}x`, ["email"]);
+    matchesDropPattern(evil, ["email"]);
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });
 

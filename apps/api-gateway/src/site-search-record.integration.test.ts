@@ -241,13 +241,19 @@ afterAll(async () => {
           ELSE ARRAY(SELECT jsonb_array_elements_text((${approved}::text)::jsonb)) END,
         approved_manifest_digest = ${before.approved_manifest_digest}
         WHERE slug = ${SLUG}`;
+    } else {
+      // This file created the row: take it out again, with what it brought.
+      await tx`DELETE FROM site_snapshots WHERE actor_id IN (SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${SLUG}))`;
+      await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${SLUG})`;
+      await tx`DELETE FROM list_types WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${SLUG})`;
+      await tx`DELETE FROM plugins WHERE slug = ${SLUG}`;
     }
   });
   await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, undefined, "as-loaded");
   resetDispatchOnlyHost();
   resetPluginHost();
-  await gatewayAdapter.close();
-  await adminAdapter.close();
+  await gatewayAdapter?.close();
+  await adminAdapter?.close();
 });
 
 describe("site search `record`, declared and run by the gateway (#1340)", () => {
