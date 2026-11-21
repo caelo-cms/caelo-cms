@@ -541,6 +541,31 @@ describe("declarative collection operations in the gateway", () => {
     expect([...statuses]).toEqual([200]);
   });
 
+  it("the search path writes nothing to the database, answered or failed", async () => {
+    const logged = () =>
+      onDb(
+        PUBLIC_ADMIN_URL as string,
+        async (tx) =>
+          (
+            (await tx`SELECT count(*)::int AS n FROM gateway_request_log WHERE plugin_slug = ${SLUG}`) as {
+              n: number;
+            }[]
+          )[0]?.n ?? 0,
+      );
+    const before = await logged();
+    for (const path of [
+      `/api/plugin/${SLUG}/search?q=Preise&lang=de&release=${releaseKey}`,
+      `/api/plugin/${SLUG}/suggest?q=Pr&lang=de`,
+      `/api/plugin/${SLUG}/search?q=Preise&lang=de&release=another`,
+      `/api/plugin/${SLUG}/search/release`,
+    ]) {
+      const r = await handleRequest(get(path));
+      expect(r.status).toBeLessThan(500);
+      await r.arrayBuffer();
+    }
+    expect(await logged()).toBe(before);
+  });
+
   it("refuses too many words, an unknown operation, and serves 503 without a release", async () => {
     const long = await json(
       `/api/plugin/${SLUG}/search?q=${encodeURIComponent("eins zwei drei vier fünf sechs sieben acht neun zehn elf")}&lang=de`,

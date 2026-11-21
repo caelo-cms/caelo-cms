@@ -314,6 +314,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
     "derived from Stage output (#1647): the digest an observer last saw every page under; losing it only re-sends every page at the next Stage",
   plugin_page_observer_pending:
     "a running Stage's observer digests (#1647), committed or dropped with the run",
+  plugin_batch_runs:
+    "the run log of plugin batch operations (#1646): queued, running and how each ended; read by its list op, nothing is derived from it",
   content_instance_refs:
     "derived (synchronous, #1287): the ids and media slugs each content instance's values reference, maintained by triggers on the journaled content_instances; rebuilt by content_instances.rebuild_refs",
   content_instance_snapshot_refs:

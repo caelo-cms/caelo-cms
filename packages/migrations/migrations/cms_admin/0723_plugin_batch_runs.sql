@@ -49,22 +49,26 @@ ALTER TABLE plugin_batch_runs FORCE ROW LEVEL SECURITY;
 CREATE POLICY plugin_batch_runs_system_scope ON plugin_batch_runs
   USING (caelo_setting_is('caelo.actor_kind', 'system'))
   WITH CHECK (caelo_setting_is('caelo.actor_kind', 'system'));
--- Which batches ran and how they ended is no secret: every authenticated
--- actor reads it (Settings, the plugin's panel, the AI's list tool).
-CREATE POLICY plugin_batch_runs_authenticated_read ON plugin_batch_runs FOR SELECT
-  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
+-- Which batches ran and how they ended is no secret to the people and the
+-- AI running the site (Settings, the plugin's page, the AI's list tool). A
+-- run's input and result are the plugin's data: a plugin reads its own runs
+-- only, never another plugin's.
+CREATE POLICY plugin_batch_runs_operator_read ON plugin_batch_runs FOR SELECT
+  USING (caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai', 'system']));
+CREATE POLICY plugin_batch_runs_own_plugin_read ON plugin_batch_runs FOR SELECT
+  USING (caelo_setting_is('caelo.actor_kind', 'plugin') AND (plugin_id)::text = current_setting('caelo.plugin_id', true));
 
 -- A person or the AI starts a batch that declares the operator trigger
 -- (plugin_batches.start checks the declaration and the grant) and stops one
 -- that has not ended; everything else about a run is the system's.
 CREATE POLICY plugin_batch_runs_operator_start ON plugin_batch_runs FOR INSERT
   WITH CHECK (
-    current_setting('caelo.actor_kind', true) IN ('human', 'ai')
+    caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai'])
     AND trigger = 'operator' AND state = 'queued'
     AND result IS NULL AND error IS NULL AND started_at IS NULL AND finished_at IS NULL
   );
 CREATE POLICY plugin_batch_runs_operator_stop ON plugin_batch_runs FOR UPDATE
-  USING (current_setting('caelo.actor_kind', true) IN ('human', 'ai') AND state IN ('queued', 'running'))
-  WITH CHECK (current_setting('caelo.actor_kind', true) IN ('human', 'ai') AND state = 'stopped');
+  USING (caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai']) AND state IN ('queued', 'running'))
+  WITH CHECK (caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai']) AND state = 'stopped');
 
 COMMIT;

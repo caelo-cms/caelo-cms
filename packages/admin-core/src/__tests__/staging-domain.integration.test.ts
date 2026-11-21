@@ -514,6 +514,8 @@ describe("Stage → Publish live behind the staging gateway (gcp-firebase, #1330
     expect(liveRun!.phase_timings.map((p) => p.phase).filter((p) => !p.includes("."))).toEqual([
       "prepare",
       "lock-wait",
+      // #1648 — the plugins' search indexes go live with the build.
+      "collections",
       "publish",
       "finish",
     ]);

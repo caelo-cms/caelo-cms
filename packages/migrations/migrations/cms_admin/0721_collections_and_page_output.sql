@@ -155,11 +155,13 @@ CREATE POLICY collection_changes_own_plugin ON collection_changes FOR INSERT
   WITH CHECK (caelo_setting_is('caelo.actor_kind', 'plugin') AND (plugin_id)::text = current_setting('caelo.plugin_id', true));
 CREATE POLICY collection_changes_own_plugin_read ON collection_changes FOR SELECT
   USING (caelo_setting_is('caelo.actor_kind', 'plugin') AND (plugin_id)::text = current_setting('caelo.plugin_id', true));
--- Which index a Stage built is no secret: every authenticated actor reads it
--- (the Stage status, Publish live's gate, the plugin itself); only the
--- system writes it.
-CREATE POLICY collection_releases_authenticated_read ON collection_releases FOR SELECT
-  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
+-- Which index a Stage built is no secret to the people and the AI running
+-- the site (the Stage status, Publish live's gate); a plugin reads its own
+-- releases only, never another plugin's. Only the system writes them.
+CREATE POLICY collection_releases_operator_read ON collection_releases FOR SELECT
+  USING (caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai', 'system']));
+CREATE POLICY collection_releases_own_plugin_read ON collection_releases FOR SELECT
+  USING (caelo_setting_is('caelo.actor_kind', 'plugin') AND (plugin_id)::text = current_setting('caelo.plugin_id', true));
 
 -- A collection release of a pointed run that becomes ready (or is replaced)
 -- republishes the release section, so the gateway learns the new index.

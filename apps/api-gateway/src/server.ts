@@ -1186,21 +1186,17 @@ async function collectionOperation(
       log: `collection ${route.slug}.${route.operation}: ${e instanceof Error ? e.message : String(e)}`,
     });
   }
-  // Logged like every visitor call, without the query (#1649).
-  await recordRequest({
-    pluginSlug: route.slug,
-    operation: route.operation,
-    statusCode: answer.status,
-    durationMs: Math.round(performance.now() - start),
-    bodyBytes: 0,
-    wasRateLimited: false,
-    wasHoneypotCaught: false,
-    captchaPassed: false,
-    errorKind:
-      answer.status >= 400
-        ? String((answer.body as { error?: { kind?: string } }).error?.kind ?? "Error")
-        : null,
-  });
+  // #1649 — the search path writes nothing to the database: no request-log
+  // row, so search-as-you-type, a flood or a store outage (every answer a
+  // 503) never becomes write load. The platform's request metrics count the
+  // answers and their latency; a server-side failure is one log line, which
+  // never carries the query.
+  if (answer.status >= 500) {
+    const kind = (answer.body as { error?: { kind?: string } }).error?.kind ?? "Error";
+    console.warn(
+      `[api-gateway] collection ${route.slug}.${route.operation}: ${answer.status} ${kind} after ${Math.round(performance.now() - start)} ms (request ${requestId})`,
+    );
+  }
   return cacheableJsonResponse(answer.body, answer.status, answer.cacheSeconds, requestId);
 }
 

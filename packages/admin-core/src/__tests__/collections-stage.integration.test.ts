@@ -494,6 +494,26 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(await published(PUBLIC_URL as string)).toEqual([index.releaseKey as string]);
   });
 
+  it("a plugin reads its own index releases, never another plugin's", async () => {
+    const releasesAs = async (kind: string, pluginId: string) => {
+      const conn = new SQL(ADMIN_URL as string);
+      try {
+        return (await conn.begin(async (tx) => {
+          await tx`SELECT set_config('caelo.actor_kind', ${kind}, true),
+                          set_config('caelo.plugin_id', ${pluginId}, true)`;
+          return tx`SELECT DISTINCT plugin_id::text AS id FROM collection_releases`;
+        })) as { id: string }[];
+      } finally {
+        await conn.end();
+      }
+    };
+    const [own] = (await releasesAs("system", "")).map((r) => r.id);
+    expect(own).toBeDefined();
+    expect((await releasesAs("human", "")).map((r) => r.id)).toContain(own as string);
+    expect((await releasesAs("plugin", own as string)).map((r) => r.id)).toEqual([own as string]);
+    expect(await releasesAs("plugin", crypto.randomUUID())).toEqual([]);
+  });
+
   it("a second Stage delivers only the changed page and writes a delta", async () => {
     await setText(PAGES[1] as string, "Neu: Versand in die Schweiz.");
     const run = await stage();

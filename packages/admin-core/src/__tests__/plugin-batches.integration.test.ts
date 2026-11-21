@@ -464,4 +464,26 @@ describe("plugin batches (#1646)", () => {
     );
     expect(changes[0]?.n).toBe(1);
   });
+
+  it("a plugin reads its own batch runs, never another plugin's input or result", async () => {
+    const own = installed[0]?.pluginId as string;
+    const ids = async (ctx: ExecutionContext) =>
+      adapter.withAdminTransaction(
+        ctx,
+        async (tx) =>
+          (await tx.execute(
+            sql`SELECT DISTINCT plugin_id::text AS id FROM plugin_batch_runs`,
+          )) as unknown as {
+            id: string;
+          }[],
+      );
+    // The people and the system see every plugin's runs ...
+    const all = (await ids(owner)).map((r) => r.id);
+    expect(all).toContain(own);
+    expect(all.length).toBeGreaterThan(1);
+    // ... a plugin only its own, whatever it asks for.
+    const asPlugin = { ...SYSTEM, actorKind: "plugin" as const, pluginId: own };
+    expect((await ids(asPlugin)).map((r) => r.id)).toEqual([own]);
+    expect(await ids({ ...asPlugin, pluginId: crypto.randomUUID() })).toEqual([]);
+  });
 });
