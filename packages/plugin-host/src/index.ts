@@ -94,6 +94,7 @@ export {
   decodeChangeFile,
   encodeChangeFile,
   LIVE_COLLECTION_STORE_ENV,
+  makePluginChatTools,
   makePluginCollections,
   registerCollectionOps,
   resetCollectionStores,
