@@ -122,3 +122,5 @@ Plain gcp has no staging host at all: `cms-provision staging-domain enable` refu
 ## What a later controlled test should repeat
 
 On a scratch install, not on live: the Apps Script / other-Google-egress forging question from section 2, and a streamed response that sends its first byte early and runs past 60 s (whether the 60 s limit is first-byte only for streams too).
+
+Epic #1644: whether Hosting's CDN keeps a rewrite answer marked `public, s-maxage` (a collection operation's search answer for the release it names, `apps/api-gateway/src/collections.ts`) with the query string in its key, and how the `Vary: cookie,need-authorization` it adds splits that cache: a request with a `__session` cookie versus one without (the site's search client fetches with `credentials: "omit"`). From the docs it should (<https://firebase.google.com/docs/hosting/manage-cache>), but nothing here measured it yet.
