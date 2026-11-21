@@ -361,7 +361,7 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     slug,
     schema: { signups: { email: "text" } },
     tableKinds: { signups: "visitor-state" },
-    operations: ["save", "read", "identity", "public_probe", "approved_save", "public_save"],
+    operations: ["save", "read", "identity", "approved_save", "public_save"],
     publicOperations: [
       {
         name: "public_probe",
@@ -370,6 +370,14 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
         inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },
         reads: ["signups"],
         writes: ["signups"],
+        // #1340 — a declaration: the installed plugin's code never answers a
+        // visitor, so it cannot reach its private storage from one either.
+        run: {
+          action: "insert",
+          table: "signups",
+          values: { email: { from: "const", value: "probe@example.test" } },
+          answer: { stored: true },
+        },
       },
     ],
     requestedCapabilities: ["cms_admin_schema", "chat_runner_tools"],
@@ -402,7 +410,6 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     approved_save:async(ctx,args)=>ctx.adminQuery.insert("notes",{body:args.body}),
     read:async(ctx)=>ctx.adminQuery.list("notes"),
     identity:async(ctx)=>ctx.invocation,
-    public_probe:async(ctx)=>({privateAccess:!!ctx.adminQuery,identity:ctx.invocation??null}),
     public_save:async(ctx,args)=>ctx.query.insert("signups",{email:args.email})
   }};`;
   const item = (await call("plugins.stage_installation", {
@@ -639,10 +646,7 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
       },
       invocation: { origin: "visitor", actorId: "test-visitor" },
     }),
-  ).toEqual({
-    ok: true,
-    value: { privateAccess: false, identity: { origin: "visitor", actorId: "test-visitor" } },
-  });
+  ).toEqual({ ok: true, value: { stored: true } });
   // System work (no author) gets no private storage.
   expect(
     (
