@@ -68,6 +68,7 @@ export async function runSeoPass(args: {
     bodyDigest: bodyContentDigest(p.html),
   }));
   await seo.apply(pages);
+  seo.recordStates(pages);
   pages.forEach((p, i) => {
     const original = args.pages[i];
     if (original) original.html = p.html;

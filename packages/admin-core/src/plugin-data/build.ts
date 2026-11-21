@@ -18,6 +18,10 @@
  * through the provider's publisher, and replaces only the marked bake
  * regions of plugins that declare baked data (static-generator
  * `bake-regions.ts`) with a fresh `staticRender` of current plugin data.
+ * docs/dev/search-engine-feed.md — the pages whose baked content changed
+ * also get their `<lastmod>` in the live sitemap and their entry in the live
+ * feed brought up to date (titles from the published page files), a row in
+ * the live page record, and their WebSub / IndexNow announcement.
  * Every other byte, file, header, redirect and setting is the published
  * build's; the publisher releases exactly that tree. So it can carry no
  * page, module, template, theme, SEO, redirect or settings change a human
@@ -95,6 +99,7 @@ import {
   CAELO_VERSION,
   type ExecutionContext,
   err,
+  FEED_FILE,
   type LiveBuildUrls,
   ok,
   PhaseTimer,
@@ -106,7 +111,11 @@ import {
   bakeRegion,
   type DeployTarget,
   findBakeRegions,
+  patchSitemapLastmod,
+  pluginRegionsDigest,
+  publishedTitleAndSummary,
   replaceBakeRegions,
+  updateAtomFeed,
 } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -133,7 +142,9 @@ import {
 } from "../deploy/static-publisher.js";
 import { fenceRunLeases } from "../ops/deploy-lease-steps.js";
 import { beginRunInTx } from "../ops/deploy-run-lifecycle.js";
-import { inheritSearchFeedFromBase } from "../search-feed/live-versions.js";
+import { applyPluginDataChanges, type PluginDigest } from "../search-feed/live-versions.js";
+import { queueSearchNotifications } from "../search-feed/notifications.js";
+import { sendSearchNotificationsAfterPublish } from "../search-feed/notify.js";
 import { jsonbParam } from "../sql-helpers.js";
 
 /** At most this many stale (plugin, page) marks are baked per build. */
@@ -199,6 +210,12 @@ interface TargetBake {
   readonly versionMismatch: string[];
   /** `slug:pageId` of regions left alone → the pages the live build lacks (#1495). */
   readonly unknownLinks: ReadonlyMap<string, readonly string[]>;
+  /**
+   * docs/dev/search-engine-feed.md — per re-baked page, what its plugins
+   * now show (`pluginRegionsDigest` of its own file), and that file.
+   */
+  readonly pluginDigests: readonly PluginDigest[];
+  readonly pageHtml: ReadonlyMap<string, string>;
 }
 
 const routingManifestSchema = z.object({
@@ -379,13 +396,77 @@ async function bakeTarget(args: {
     });
     if (next !== html) changed.set(path, Buffer.from(next, "utf8"));
   }
+  // What each re-baked page's plugins now show, from its own file (a
+  // paginated overview's follow-ups carry the same regions): compared with
+  // the live record when the run is recorded.
+  const pluginDigests: PluginDigest[] = [];
+  const pageHtml = new Map<string, string>();
+  for (const [pageId, paths] of pathOf) {
+    const own = paths[0];
+    const body = own === undefined ? undefined : changed.get(own);
+    if (body === undefined) continue;
+    const html = body.toString("utf8");
+    pageHtml.set(pageId, html);
+    pluginDigests.push({ pageId, pluginFingerprint: pluginRegionsDigest(html) });
+  }
   return {
     files: changed,
     bakedPages: baked.size,
     notLive,
     versionMismatch: [...versionMismatch].sort(),
     unknownLinks,
+    pluginDigests,
+    pageHtml,
   };
+}
+
+/**
+ * docs/dev/search-engine-feed.md — bring the live sitemap's `<lastmod>` and
+ * the live feed's entries of the pages whose baked content changed up to
+ * date, in the files this release ships. Only those entries move; the
+ * titles and summaries come from the published page files, never from page
+ * rows nobody published.
+ */
+async function patchSearchFiles(args: {
+  publisher: StaticPublisher;
+  target: DeployTarget;
+  live: LiveBuildRef;
+  bake: TargetBake;
+  changes: readonly { pageId: string; url: string; firstPublishedAt: string }[];
+  changedAt: string;
+}): Promise<void> {
+  const { publisher, target, live, bake, changes, changedAt } = args;
+  if (changes.length === 0) return;
+  const files = await publisher.readLiveFiles({ target, live, paths: ["sitemap.xml", FEED_FILE] });
+  const sitemap = files.get("sitemap.xml");
+  if (sitemap) {
+    const next = patchSitemapLastmod(
+      sitemap.toString("utf8"),
+      new Map(changes.map((c) => [c.url, changedAt])),
+    );
+    bake.files.set("sitemap.xml", Buffer.from(next, "utf8"));
+  }
+  const feed = files.get(FEED_FILE);
+  if (feed) {
+    const entries = changes.map((c) => {
+      const html = bake.pageHtml.get(c.pageId);
+      if (html === undefined) {
+        throw new Error(
+          `plugin-data build: page ${c.pageId} changed but its file was not re-baked`,
+        );
+      }
+      const { title, summary } = publishedTitleAndSummary(html);
+      return {
+        pageId: c.pageId,
+        url: c.url,
+        title,
+        summary,
+        changedAt,
+        publishedAt: c.firstPublishedAt,
+      };
+    });
+    bake.files.set(FEED_FILE, Buffer.from(updateAtomFeed(feed.toString("utf8"), entries), "utf8"));
+  }
 }
 
 async function recordState(
@@ -761,6 +842,28 @@ export const finishPluginDataRunOp = defineOperation({
       publishSummary: z.record(z.string(), z.unknown()),
       pluginData: z.record(z.string(), z.unknown()),
       phaseTimings: z.array(phaseTimingSchema),
+      /**
+       * docs/dev/search-engine-feed.md — what the re-baked pages' plugins now
+       * show, and when that went live: the pages that changed get their row.
+       */
+      searchFeed: z
+        .object({
+          changedAt: z.string().datetime({ offset: true }),
+          digests: z
+            .array(
+              z
+                .object({
+                  pageId: z.string().uuid(),
+                  pluginFingerprint: z
+                    .string()
+                    .regex(/^[0-9a-f]{64}$/)
+                    .nullable(),
+                })
+                .strict(),
+            )
+            .max(MAX_MARKS_PER_BUILD),
+        })
+        .strict(),
     })
     .strict(),
   output: z.object({}),
@@ -782,9 +885,15 @@ export const finishPluginDataRunOp = defineOperation({
              lease_expires_at = NULL
        WHERE id = ${input.runId}::uuid
     `);
-    // docs/dev/search-engine-feed.md — the release serves its base release's
-    // pages, feed and key file, so a rollback to it restores that record.
-    await inheritSearchFeedFromBase(tx, input.runId);
+    // docs/dev/search-engine-feed.md — the pages whose baked content changed
+    // get their row in the live record (dated when it went live), and their
+    // WebSub / IndexNow announcement is queued (sent after this commit).
+    const { announced } = await applyPluginDataChanges(tx, {
+      runId: input.runId,
+      digests: input.searchFeed.digests,
+      changedAt: input.searchFeed.changedAt,
+    });
+    await queueSearchNotifications(tx, { runId: input.runId, announced });
     // #1157 — the release starts from the live build's files, which carry
     // the redirects of that build's time (self-hosted copies its archive
     // over `current/`); redirects saved since must stay live. Pushed after
@@ -1051,6 +1160,36 @@ async function runPluginDataBuild(
           throw new Error(proof.message);
         }
       };
+      // docs/dev/search-engine-feed.md — the pages whose baked content
+      // changed, read now that the lease is held (the record cannot move
+      // until this run is recorded); their sitemap and feed entries ship
+      // with this release.
+      const planned = await execute(registry, adapter, sys, "search_feed.plan_plugin_data", {
+        digests: bake.pluginDigests,
+      });
+      if (!planned.ok) {
+        return await failRun(
+          `the plugin-data build could not read the live record: ${describeError(planned.error)}`,
+        );
+      }
+      try {
+        await patchSearchFiles({
+          publisher,
+          target,
+          live,
+          bake,
+          changes: (
+            planned.value as {
+              changes: { pageId: string; url: string; firstPublishedAt: string }[];
+            }
+          ).changes,
+          changedAt: plan.bakedAt,
+        });
+      } catch (e) {
+        return await failRun(
+          `the plugin-data build could not bring the live sitemap and feed up to date: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
       let summary: Awaited<ReturnType<StaticPublisher["publishPluginData"]>>;
       try {
         summary = await publisher.publishPluginData({
@@ -1076,6 +1215,7 @@ async function runPluginDataBuild(
         publishSummary: summary as unknown as Record<string, unknown>,
         pluginData: summaryOfBake,
         phaseTimings: timer.phases(),
+        searchFeed: { changedAt: plan.bakedAt, digests: [...bake.pluginDigests] },
       });
       if (!finished.ok) {
         return await failRun(
@@ -1098,6 +1238,9 @@ async function runPluginDataBuild(
         error: describeError(synced.error),
       });
     }
+    // The re-baked pages are live: tell the WebSub hub and IndexNow, inside
+    // the tick's request (docs/dev/search-engine-feed.md).
+    await sendSearchNotificationsAfterPublish({ adapter, registry, runId });
     runIds.push(runId);
     served.set(t.target.id, runId);
     bakedPages += bake.bakedPages;

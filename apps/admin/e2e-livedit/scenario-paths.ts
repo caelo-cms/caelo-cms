@@ -527,6 +527,7 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   // no AI turn reaches them. The AI only reads the outcome (get_site_seo).
   `${A}/search-feed/**`,
   `${A}/ops/search-notifications.ts`,
+  `${A}/ops/search-feed.ts`,
   `${SHARED}/search-feed.ts`,
   `${A}/ops/staging_access.ts`,
   `${A}/ops/owner_settings_*.ts`,

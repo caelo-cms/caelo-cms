@@ -1314,6 +1314,9 @@ async function buildSite(
         bakes,
       }),
     );
+    // docs/dev/search-engine-feed.md — the live comparison reads the final
+    // page, plugin regions included.
+    seo.recordStates(pages);
     await timer.measure(parts, "plugin-assets", () => {
       // Runs AFTER the plugin render pass so a runtime that hydrates baked
       // markup is guaranteed to find it already in the document.

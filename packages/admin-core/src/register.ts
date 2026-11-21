@@ -579,6 +579,7 @@ import {
 } from "./ops/role_pending.js";
 import { createRoleOp, deleteRoleOp, listRolesOp, updateRolePermissionsOp } from "./ops/roles.js";
 import { scheduledTasksClaimOp, scheduledTasksFinishOp } from "./ops/scheduled_tasks.js";
+import { planPluginDataSearchFeedOp } from "./ops/search-feed.js";
 import {
   claimSearchNotificationsOp,
   recordSearchNotificationOp,
@@ -1464,6 +1465,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // (docs/dev/search-engine-feed.md).
   registry.register(claimSearchNotificationsOp);
   registry.register(recordSearchNotificationOp);
+  registry.register(planPluginDataSearchFeedOp);
   registry.register(setGatewaySettingsOp);
   registry.register(rotateCookieSecretOp);
   registry.register(listGatewayRequestsOp);

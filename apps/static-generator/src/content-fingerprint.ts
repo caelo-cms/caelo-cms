@@ -11,10 +11,19 @@
  * every Publish live is soon ignored. So markup, styles, scripts and every
  * attribute but the ones that carry content are left out, and whitespace
  * runs count as one space.
+ *
+ * What plugins bake into a page (`staticRender`: approved comments, a
+ * language switcher) is a second fingerprint, {@link pluginRegionsDigest}.
+ * A plugin renders one region per page wherever its placeholder sits, so
+ * every region of the page counts. It is taken from the finished page —
+ * after the build's plugin pass, and by the plugin-data build from the live
+ * files it re-bakes (#1155) — so both reach the same value for the same
+ * output.
  */
 
 import { createHash } from "node:crypto";
 import { Parser } from "htmlparser2";
+import { findBakeRegions } from "./bake-regions.js";
 
 /** Elements whose content is never shown as text. */
 const SKIPPED = new Set(["script", "style"]);
@@ -79,4 +88,28 @@ export function pageContentFingerprint(page: {
     .update("\u0000")
     .update(page.bodyDigest)
     .digest("hex");
+}
+
+/**
+ * sha256 (hex) of what the plugins baked into a finished page show: the
+ * {@link visibleContent} of each plugin's region, in slug order. Null when
+ * no plugin bakes into the page. The bake markers and the wrapper's
+ * `data-baked-at` carry no content, so a fresh bake of the same data gives
+ * the same digest.
+ */
+export function pluginRegionsDigest(pageHtml: string): string | null {
+  const bySlug = new Map<string, string>();
+  for (const region of findBakeRegions(pageHtml)) {
+    if (!bySlug.has(region.slug)) bySlug.set(region.slug, visibleContent(region.text));
+  }
+  if (bySlug.size === 0) return null;
+  const hash = createHash("sha256");
+  for (const slug of [...bySlug.keys()].sort()) {
+    hash
+      .update(slug)
+      .update("\u0000")
+      .update(bySlug.get(slug) ?? "")
+      .update("\u0000");
+  }
+  return hash.digest("hex");
 }

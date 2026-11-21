@@ -32,8 +32,8 @@ import {
 } from "../ops/search-notifications.js";
 import {
   applyLiveChanges,
+  applyPluginDataChanges,
   applyStagedRun,
-  inheritSearchFeedFromBase,
   liveVersionsHead,
   recordStagedChanges,
   restoreLiveVersions,
@@ -100,6 +100,7 @@ function change(pageId: string, over: Partial<PageChange>): PageChange {
     kind: "changed",
     url: url(pageId),
     fingerprint: FP("a"),
+    pluginFingerprint: null,
     prevUrl: url(pageId),
     changedAt: "2026-11-20T10:00:00.000Z",
     ...over,
@@ -321,9 +322,12 @@ describe("the live record", () => {
     expect(await live()).toEqual({ [P1]: { url: url(P1), fp: FP("a") } });
   });
 
-  it("a plugin-data release serves its base's record, so a rollback to it restores that", async () => {
+  it("a plugin-data release records the pages whose baked content changed, and only those", async () => {
     const first = await publish(
-      [change(P1, { kind: "added", prevUrl: null })],
+      [
+        change(P1, { kind: "added", prevUrl: null, pluginFingerprint: FP("c") }),
+        change(P2, { kind: "added", prevUrl: null, pluginFingerprint: FP("c") }),
+      ],
       "2026-11-20T08:00:00Z",
     );
     const refresh = crypto.randomUUID();
@@ -336,18 +340,42 @@ describe("the live record", () => {
                         '2026-11-20T08:30:00Z'::timestamptz, 'plugin_data', ${first}::uuid
                  FROM deploy_targets WHERE name = 'production'`,
     );
-    await inTx((tx) => inheritSearchFeedFromBase(tx, refresh));
-    await publish([change(P1, { fingerprint: FP("b") })], "2026-11-20T09:00:00Z");
-    const rollback = await run("production", "2026-11-20T10:00:00Z");
+    // P1 got a new comment; P2 was re-baked with the same comments; P3 is
+    // not live in the record.
+    const { announced } = await inTx((tx) =>
+      applyPluginDataChanges(tx, {
+        runId: refresh,
+        digests: [
+          { pageId: P1, pluginFingerprint: FP("d") },
+          { pageId: P2, pluginFingerprint: FP("c") },
+          { pageId: P3, pluginFingerprint: FP("d") },
+        ],
+        changedAt: "2026-11-20T08:30:00.000Z",
+      }),
+    );
+    expect(announced).toBe(1);
+    expect(await rowsOf(refresh)).toEqual([
+      { page_id: P1, kind: "changed", url: url(P1), prev_url: url(P1) },
+    ]);
+    const [stamped] = (await admin(
+      (tx) => tx`SELECT live_versions_head::text AS h, feed_url, indexnow_key
+                 FROM deploy_runs WHERE id = ${refresh}::uuid`,
+    )) as { h: string; feed_url: string; indexnow_key: string }[];
+    expect({ ...stamped, h: Number(stamped?.h) }).toEqual({
+      h: (await head()) ?? -1,
+      feed_url: FEED,
+      indexnow_key: KEY,
+    });
+    // A rollback to the release before it restores the earlier comments.
+    const rollback = await run("production", "2026-11-20T09:00:00Z");
     const r = await inTx((tx) =>
       restoreLiveVersions(tx, {
         runId: rollback,
-        restoredRunId: refresh,
-        at: "2026-11-20T10:00:00.000Z",
+        restoredRunId: first,
+        at: "2026-11-20T09:00:00.000Z",
       }),
     );
     expect(r).toEqual({ announced: 1, restorable: true });
-    expect(await live()).toEqual({ [P1]: { url: url(P1), fp: FP("a") } });
   });
 
   it("a rollback to a build from before the record appends nothing", async () => {

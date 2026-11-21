@@ -57,6 +57,7 @@ describe("pageChangeSchema", () => {
     kind: "changed",
     url: "https://example.com/a/",
     fingerprint: "a".repeat(64),
+    pluginFingerprint: null,
     prevUrl: "https://example.com/a/",
     changedAt: "2026-11-20T12:00:00.000Z",
   };
@@ -67,6 +68,18 @@ describe("pageChangeSchema", () => {
       pageChangeSchema.safeParse({ ...change, kind: "removed", url: null, fingerprint: null })
         .success,
     ).toBe(true);
+  });
+
+  it("refuses a plugin fingerprint on a removed page", () => {
+    expect(
+      pageChangeSchema.safeParse({
+        ...change,
+        kind: "removed",
+        url: null,
+        fingerprint: null,
+        pluginFingerprint: "b".repeat(64),
+      }).success,
+    ).toBe(false);
   });
 
   it("refuses a removal with a URL and a live page without one", () => {

@@ -16,6 +16,7 @@ function page(id: string, over: Partial<RecordedPage> = {}): RecordedPage {
     pageId: id,
     url: `https://example.com/${id}/`,
     fingerprint: FP_A,
+    pluginFingerprint: null,
     title: `Page ${id}`,
     summary: "",
     firstPublishedAt: "2026-10-01T00:00:00.000Z",
@@ -25,7 +26,15 @@ function page(id: string, over: Partial<RecordedPage> = {}): RecordedPage {
 }
 
 function states(
-  live: Record<string, { url: string | null; fingerprint: string | null; changedAt: string }>,
+  live: Record<
+    string,
+    {
+      url: string | null;
+      fingerprint: string | null;
+      pluginFingerprint: string | null;
+      changedAt: string;
+    }
+  >,
   base: number | null = 7,
   full = true,
 ) {
@@ -43,6 +52,7 @@ describe("ContentStates", () => {
       p1: {
         url: "https://example.com/p1/",
         fingerprint: FP_A,
+        pluginFingerprint: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
     });
@@ -56,6 +66,7 @@ describe("ContentStates", () => {
       p1: {
         url: "https://example.com/p1/",
         fingerprint: FP_A,
+        pluginFingerprint: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
     });
@@ -67,10 +78,26 @@ describe("ContentStates", () => {
         kind: "changed",
         url: "https://example.com/p1/",
         fingerprint: FP_B,
+        pluginFingerprint: null,
         prevUrl: "https://example.com/p1/",
         changedAt: PUBLISH_AT,
       },
     ]);
+  });
+
+  it("dates a page whose baked plugin content changed, like any other change", async () => {
+    const s = states({
+      p1: {
+        url: "https://example.com/p1/",
+        fingerprint: FP_A,
+        pluginFingerprint: FP_A,
+        changedAt: "2026-11-01T00:00:00.000Z",
+      },
+    });
+    s.record(page("p1", { pluginFingerprint: FP_B }));
+    expect(s.changedAt("p1")).toBe(PUBLISH_AT);
+    const [c] = (await s.finish(NO_TX)).changes;
+    expect(c).toMatchObject({ kind: "changed", fingerprint: FP_A, pluginFingerprint: FP_B });
   });
 
   it("records a new URL as moved, with the URL it had", async () => {
@@ -78,6 +105,7 @@ describe("ContentStates", () => {
       p1: {
         url: "https://example.com/old/",
         fingerprint: FP_A,
+        pluginFingerprint: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
     });
@@ -96,7 +124,12 @@ describe("ContentStates", () => {
 
   it("records a page that was removed and is back as added", async () => {
     const s = states({
-      p1: { url: null, fingerprint: null, changedAt: "2026-11-01T00:00:00.000Z" },
+      p1: {
+        url: null,
+        fingerprint: null,
+        pluginFingerprint: null,
+        changedAt: "2026-11-01T00:00:00.000Z",
+      },
     });
     s.record(page("p1"));
     expect((await s.finish(NO_TX)).changes[0]?.kind).toBe("added");
@@ -126,14 +159,21 @@ describe("ContentStates", () => {
       p1: {
         url: "https://example.com/p1/",
         fingerprint: FP_A,
+        pluginFingerprint: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
       gone: {
         url: "https://example.com/gone/",
         fingerprint: FP_A,
+        pluginFingerprint: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
-      wasGone: { url: null, fingerprint: null, changedAt: "2026-11-01T00:00:00.000Z" },
+      wasGone: {
+        url: null,
+        fingerprint: null,
+        pluginFingerprint: null,
+        changedAt: "2026-11-01T00:00:00.000Z",
+      },
     });
     s.record(page("p1"));
     expect((await s.finish(NO_TX)).changes).toEqual([
@@ -142,6 +182,7 @@ describe("ContentStates", () => {
         kind: "removed",
         url: null,
         fingerprint: null,
+        pluginFingerprint: null,
         prevUrl: "https://example.com/gone/",
         changedAt: PUBLISH_AT,
       },
@@ -154,6 +195,7 @@ describe("ContentStates", () => {
         other: {
           url: "https://example.com/other/",
           fingerprint: FP_A,
+          pluginFingerprint: null,
           changedAt: "2026-11-01T00:00:00.000Z",
         },
       },

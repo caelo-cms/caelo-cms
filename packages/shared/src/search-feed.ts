@@ -111,6 +111,14 @@ export const pageChangeSchema = z
       .string()
       .regex(/^[0-9a-f]{64}$/)
       .nullable(),
+    /**
+     * sha256 hex of what the plugins baked into the page show (approved
+     * comments, say); null when none bakes into it, or the page is removed.
+     */
+    pluginFingerprint: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
     /** Where it was live before; null when it was not. */
     prevUrl: z.string().max(2048).nullable(),
     /** The date the feed and the sitemap show for it (ISO). */
@@ -118,7 +126,11 @@ export const pageChangeSchema = z
   })
   .strict()
   .refine((c) => (c.url === null) === (c.fingerprint === null), "url and fingerprint go together")
-  .refine((c) => (c.kind === "removed") === (c.url === null), "only a removed page has no url");
+  .refine((c) => (c.kind === "removed") === (c.url === null), "only a removed page has no url")
+  .refine(
+    (c) => c.url !== null || c.pluginFingerprint === null,
+    "a removed page has no plugin fingerprint",
+  );
 export type PageChange = z.infer<typeof pageChangeSchema>;
 
 /**

@@ -58,7 +58,7 @@ import {
   siteFeedUrl,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { pageContentFingerprint } from "./content-fingerprint.js";
+import { pageContentFingerprint, pluginRegionsDigest } from "./content-fingerprint.js";
 import type { ContentStates } from "./content-states.js";
 import type { MediaPass } from "./media-pass.js";
 
@@ -103,6 +103,12 @@ export interface SeoPagesContext {
 export interface SeoPass {
   /** Inject head meta + `<html lang>` into one batch of pages, in place. */
   apply(pages: SeoPagesContext[]): Promise<void>;
+  /**
+   * Record one batch's indexable pages in the live comparison, once their
+   * HTML is final (after the plugin pass): page 1 of every indexable page,
+   * which is what the feed, the sitemap date and IndexNow speak for.
+   */
+  recordStates(pages: readonly SeoPagesContext[]): void;
   /**
    * Write sitemap.xml (when enabled) from what every batch recorded; call
    * once after the last batch. Returns whether it was written. Each
@@ -293,6 +299,34 @@ export async function prepareSeoPass(args: {
   const followUpsOf = new Map<string, number[]>();
 
   return {
+    recordStates(pages) {
+      for (const p of pages) {
+        const bundle = bundleById.get(p.pageId);
+        if (!bundle || p.followUp || !isIndexable(bundle)) continue;
+        if (p.bodyDigest === null) {
+          throw new Error(`seo-pass: page ${bundle.pageId} was composed without a body digest`);
+        }
+        contentStates.record({
+          pageId: bundle.pageId,
+          // The feed and IndexNow need an absolute address; a canonical
+          // override may be written relative to the site.
+          url: new URL(publicUrlOf(bundle), settings.siteBaseUrl).href,
+          fingerprint: pageContentFingerprint({
+            title: bundle.title,
+            metaDescription: bundle.metaDescription,
+            bodyDigest: p.bodyDigest,
+          }),
+          // What the plugins baked into it (comments): the same digest the
+          // plugin-data build takes from the live file it re-bakes.
+          pluginFingerprint: pluginRegionsDigest(p.html),
+          title: bundle.title,
+          summary: bundle.metaDescription,
+          firstPublishedAt: bundle.firstPublishedAt,
+          updatedAt: bundle.updatedAt,
+        });
+      }
+    },
+
     publicUrl(pageId) {
       const url = publicUrls.get(pageId);
       if (url === undefined) throw new Error(`seo-pass: no public URL resolved for page ${pageId}`);
@@ -349,28 +383,6 @@ export async function prepareSeoPass(args: {
           followUpsOf.set(p.pageId, [...(followUpsOf.get(p.pageId) ?? []), p.followUp.page]);
         }
         const isNotFoundPage = bundle.pageId === notFoundPageId;
-        // The live record knows page 1 of every indexable page: what search
-        // engines may list, so what the feed and IndexNow announce.
-        if (!p.followUp && isIndexable(bundle)) {
-          if (p.bodyDigest === null) {
-            throw new Error(`seo-pass: page ${bundle.pageId} was composed without a body digest`);
-          }
-          contentStates.record({
-            pageId: bundle.pageId,
-            // The feed and IndexNow need an absolute address; a canonical
-            // override may be written relative to the site.
-            url: new URL(publicUrlOf(bundle), settings.siteBaseUrl).href,
-            fingerprint: pageContentFingerprint({
-              title: bundle.title,
-              metaDescription: bundle.metaDescription,
-              bodyDigest: p.bodyDigest,
-            }),
-            title: bundle.title,
-            summary: bundle.metaDescription,
-            firstPublishedAt: bundle.firstPublishedAt,
-            updatedAt: bundle.updatedAt,
-          });
-        }
         const shareImage = shareImageOf.get(bundle.pageId) ?? null;
         const ogImageUrl = shareImage === null ? null : (ogImageUrlByAsset.get(shareImage) ?? null);
         const headBlock = renderSeoHead({

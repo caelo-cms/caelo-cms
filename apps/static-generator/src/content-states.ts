@@ -31,6 +31,7 @@ import { sql } from "drizzle-orm";
 interface LiveState {
   readonly url: string | null;
   readonly fingerprint: string | null;
+  readonly pluginFingerprint: string | null;
   readonly changedAt: string;
 }
 
@@ -40,6 +41,8 @@ export interface RecordedPage {
   /** Its public URL (the canonical). */
   readonly url: string;
   readonly fingerprint: string;
+  /** What the plugins baked into the page show (`pluginRegionsDigest`); null: none. */
+  readonly pluginFingerprint: string | null;
   readonly title: string;
   /** The meta description ("" when none). */
   readonly summary: string;
@@ -103,7 +106,8 @@ export class ContentStates {
     const live = new Map<string, LiveState>();
     if (base !== null) {
       const rows = (await tx.execute(sql`
-        SELECT DISTINCT ON (page_id) page_id::text AS page_id, url, fingerprint, changed_at
+        SELECT DISTINCT ON (page_id) page_id::text AS page_id, url, fingerprint,
+               plugin_fingerprint, changed_at
         FROM live_page_versions
         WHERE id <= ${base}
         ORDER BY page_id, id DESC
@@ -111,12 +115,14 @@ export class ContentStates {
         page_id: string;
         url: string | null;
         fingerprint: string | null;
+        plugin_fingerprint: string | null;
         changed_at: string | Date;
       }[];
       for (const r of rows) {
         live.set(r.page_id, {
           url: r.url,
           fingerprint: r.fingerprint,
+          pluginFingerprint: r.plugin_fingerprint,
           changedAt: iso(r.changed_at),
         });
       }
@@ -135,6 +141,7 @@ export class ContentStates {
       {
         readonly url: string | null;
         readonly fingerprint: string | null;
+        readonly pluginFingerprint: string | null;
         readonly changedAt: string;
       }
     >;
@@ -151,7 +158,7 @@ export class ContentStates {
     }
     const live = this.live.get(page.pageId);
     let changedAt: string;
-    let change: Omit<PageChange, "pageId" | "url" | "fingerprint"> | null;
+    let change: Omit<PageChange, "pageId" | "url" | "fingerprint" | "pluginFingerprint"> | null;
     if (live === undefined) {
       // Never recorded. Before the first record (base null), a page that
       // was live already is the baseline: dated as the sitemap dated it
@@ -168,7 +175,11 @@ export class ContentStates {
     } else if (live.url === null) {
       changedAt = this.publishAt;
       change = { kind: "added", prevUrl: null, changedAt };
-    } else if (live.url === page.url && live.fingerprint === page.fingerprint) {
+    } else if (
+      live.url === page.url &&
+      live.fingerprint === page.fingerprint &&
+      live.pluginFingerprint === page.pluginFingerprint
+    ) {
       changedAt = live.changedAt;
       change = null;
     } else {
@@ -185,6 +196,7 @@ export class ContentStates {
         pageId: page.pageId,
         url: page.url,
         fingerprint: page.fingerprint,
+        pluginFingerprint: page.pluginFingerprint,
         ...change,
       });
     }
@@ -210,6 +222,7 @@ export class ContentStates {
           kind: "removed",
           url: null,
           fingerprint: null,
+          pluginFingerprint: null,
           prevUrl: live.url,
           changedAt: this.publishAt,
         });

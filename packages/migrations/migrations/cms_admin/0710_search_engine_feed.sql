@@ -16,6 +16,8 @@
 --     production (Publish live, an Owner's production build, a rollback) in
 --     the transaction that records the run. The newest row per page is what
 --     is live. `changed_at` is the date the feed and the sitemap show.
+--     The plugin-data build (#1155) appends a `changed` row too, when what
+--     a plugin bakes into a page (approved comments) changed live.
 --     `baseline` rows record what was already live when this shipped (the
 --     first Publish live after the update); they are not announced to
 --     search engines. A rollback appends `restored` rows: the restored
@@ -87,12 +89,16 @@ CREATE TABLE IF NOT EXISTS live_page_versions (
   -- The public URL the page is live at; NULL once it is no longer live.
   url          text NULL CHECK (url IS NULL OR char_length(url) <= 2048),
   fingerprint  text NULL CHECK (fingerprint IS NULL OR fingerprint ~ '^[0-9a-f]{64}$'),
+  -- What the plugins baked into the page shows (comments, say): NULL when
+  -- no plugin bakes into it. A change of either fingerprint is a change.
+  plugin_fingerprint text NULL CHECK (plugin_fingerprint IS NULL OR plugin_fingerprint ~ '^[0-9a-f]{64}$'),
   -- The URL it was live at before this row; NULL when it was not live.
   prev_url     text NULL CHECK (prev_url IS NULL OR char_length(prev_url) <= 2048),
   -- When its live content last changed: the date the feed and the sitemap show.
   changed_at   timestamptz NOT NULL,
   recorded_at  timestamptz NOT NULL DEFAULT clock_timestamp(),
   CHECK ((url IS NULL) = (fingerprint IS NULL)),
+  CHECK (url IS NOT NULL OR plugin_fingerprint IS NULL),
   CHECK ((kind = 'removed') = (url IS NULL))
 );
 -- The newest row per page (the live state), for a page and for every page.
@@ -107,10 +113,14 @@ CREATE TABLE IF NOT EXISTS staged_page_changes (
   kind         text NOT NULL CHECK (kind IN ('baseline', 'added', 'changed', 'moved', 'removed')),
   url          text NULL CHECK (url IS NULL OR char_length(url) <= 2048),
   fingerprint  text NULL CHECK (fingerprint IS NULL OR fingerprint ~ '^[0-9a-f]{64}$'),
+  -- What the plugins baked into the page shows (comments, say): NULL when
+  -- no plugin bakes into it. A change of either fingerprint is a change.
+  plugin_fingerprint text NULL CHECK (plugin_fingerprint IS NULL OR plugin_fingerprint ~ '^[0-9a-f]{64}$'),
   prev_url     text NULL CHECK (prev_url IS NULL OR char_length(prev_url) <= 2048),
   changed_at   timestamptz NOT NULL,
   PRIMARY KEY (run_id, page_id),
   CHECK ((url IS NULL) = (fingerprint IS NULL)),
+  CHECK (url IS NOT NULL OR plugin_fingerprint IS NULL),
   CHECK ((kind = 'removed') = (url IS NULL))
 );
 CREATE INDEX IF NOT EXISTS staged_page_changes_target_idx ON staged_page_changes (target_id, run_id);

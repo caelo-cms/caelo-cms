@@ -61,9 +61,9 @@ append, in the transaction that records the run:
   at that run's head (`deploy_runs.live_versions_head`), dated with the
   rollback, because live content changed at that moment. A build from before
   the record began has no state to restore. Then nothing is appended until
-  the next Publish live. A plugin-data release (#1155) serves its base
-  release's pages, feed and key file and takes over that release's head,
-  feed and key, so a rollback to it restores the same record.
+  the next Publish live. A plugin-data release (#1155) appends its own
+  rows and serves its base release's feed and key file, so a rollback to it
+  restores its record too.
 
 The first Publish live after the update records the `baseline`: every page
 that was live already, dated as the sitemap dated it until then
@@ -71,11 +71,23 @@ that was live already, dated as the sitemap dated it until then
 announced, because IndexNow asks not to submit changes from before it was set
 up.
 
-Content a plugin bakes into a page (approved comments, say) is not part of the
-fingerprint. It goes live through the plugin-data build between Publish lives
-(#1155), not through Publish live, so counting it at a Stage would date it at
-the wrong moment; announcing plugin-data changes belongs to the plugin-data
-build.
+What plugins bake into a page (`staticRender`: approved comments, the
+language switcher) is a second fingerprint next to it, `plugin_fingerprint`:
+the visible content of every plugin region of the finished page. A plugin
+renders one region per page wherever its placeholder sits, so all of them
+count, header and footer included. Either fingerprint moving is a change.
+
+Plugin content takes a second road live. A Stage bakes it like everything
+else. Between Publish lives the plugin-data build (#1155) re-bakes the
+regions of the pages a plugin names (a newly approved comment) into the live
+files on the scheduler tick. It follows the same rule: it takes the plugin
+fingerprint of each re-baked page from its live file, appends a `changed`
+row dated when the content went live for every page that moved, brings that
+page's `<lastmod>` and feed entry up to date in the live `sitemap.xml` and
+`feed.xml`, and announces it like a Publish live, inside the tick's request.
+The entry's title and summary come from the published page file, never from
+page rows nobody published. Those are the only bytes it writes besides the
+regions (`search_feed.plan_plugin_data`, `applyPluginDataChanges`).
 
 An incremental build renders only the pages a change reached. It records
 their changes and takes the other pages' dates from the record. It cannot
