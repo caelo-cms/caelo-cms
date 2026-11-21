@@ -278,6 +278,16 @@ describe("the live record", () => {
       [P1, "changed"],
       [P2, "changed"],
     ]);
+    // P1 carries the Stage's date for its change; P2, which the Stage left as
+    // it was, the date the shipped feed and sitemap show for it.
+    const dates = (await admin(
+      (tx) => tx`SELECT page_id::text AS page_id, changed_at FROM live_page_versions
+                 WHERE run_id = ${prod}::uuid ORDER BY page_id`,
+    )) as { page_id: string; changed_at: Date }[];
+    expect(dates.map((d) => [d.page_id, d.changed_at.toISOString()])).toEqual([
+      [P1, "2026-11-20T10:00:00.000Z"],
+      [P2, "2026-11-20T10:00:00.000Z"],
+    ]);
   });
 
   it("a rollback restores the state the restored run made live, and announces it", async () => {

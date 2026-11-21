@@ -309,9 +309,10 @@ const notLive = (changedAt: string): RecordState => ({
  * A build goes live (Publish live of a Stage, an Owner's production build):
  * append what it changes to the record.
  *
- * @param shippedAt - the date of a page whose change this build shows only
- *   because the record moved since it was built (the build's publish
- *   instant, as its other changes carry).
+ * @param shippedAt - the date of a removal this build shows only because the
+ *   record moved since it was built (the build's publish instant, as its
+ *   other changes carry). A page it shows unchanged keeps the date its files
+ *   carry for it.
  * @returns how many rows search engines hear of.
  */
 export async function applyLiveChanges(
@@ -384,7 +385,10 @@ async function reconcile(
       title: to.url === null ? null : to.title,
       summary: to.url === null ? null : to.summary,
       prevUrl: from?.url ?? null,
-      changedAt: change?.changedAt ?? args.shippedAt,
+      // A page the Stage left as it was keeps the date the shipped feed and
+      // sitemap show for it (the record at the Stage's base); only a page
+      // the build no longer ships is removed as of the shipping.
+      changedAt: change?.changedAt ?? (to.url === null ? args.shippedAt : to.changedAt),
     });
   }
   return rows;
