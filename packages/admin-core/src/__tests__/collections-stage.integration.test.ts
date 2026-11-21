@@ -786,6 +786,10 @@ describe("page output and collections through Stage and Publish live", () => {
 
   it("what an observer wrote in a failed Stage never reaches a later index", async () => {
     const run = await stage();
+    // That Stage's own index must be complete first: it marks every change
+    // of its run applied, and the row below stands for a failed Stage's
+    // write, which no index of its run would ever take.
+    expect((await indexState(run)).state).toBe("ready");
     const [plugin] = (await sqlSystem(
       async (tx) => tx`SELECT id::text AS id FROM plugins WHERE slug = ${PLUGIN}`,
     )) as { id: string }[];

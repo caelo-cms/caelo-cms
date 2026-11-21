@@ -106,6 +106,31 @@ describe("configuration and collections through the sandbox (#1645, #1648)", () 
     expect(deleted).toEqual([["a", "b"]]);
   });
 
+  it("reads any number of entity settings, as the SDK promises (the broker takes 1000 per call)", async () => {
+    const calls: number[] = [];
+    const ctx: PluginContext = {
+      ...context,
+      config: {
+        get: async () => ({}),
+        entity: async () => ({}),
+        entities: async (_k, ids) => {
+          calls.push(ids.length);
+          return new Map(ids.map((id) => [id, { n: id }] as const));
+        },
+        configured: async () => [],
+      },
+    };
+    const value = await invoke(
+      `const ids = [];
+       for (let i = 0; i < 2500; i++) ids.push("m" + i);
+       const m = await ctx.config.entities("module", ids);
+       return { size: m.size, last: m.get("m2499").n };`,
+      { context: ctx },
+    );
+    expect(value).toEqual({ size: 2500, last: "m2499" });
+    expect(calls).toEqual([1000, 1000, 500]);
+  });
+
   it("refuses a collection call naming a collection the host did not attach", async () => {
     const ctx: PluginContext = {
       ...context,

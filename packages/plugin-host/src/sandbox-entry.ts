@@ -120,11 +120,19 @@ const handles = (prefix, names) => {
   return ObjectFreeze(out);
 };
 const QUERY_METHODS = ["insert", "list", "update", "updateMany", "compareAndSwap", "delete"];
-// Epic #1644 — config.entities answers entry pairs (JSON has no Map).
+// Epic #1644 — config.entities answers entry pairs (JSON has no Map), and
+// takes any number of ids, as the SDK promises: the broker reads 1000 per call.
+const CONFIG_ENTITY_CHUNK = 1000;
 const configHandle = () => ObjectFreeze({
   get: () => rpc("config.get"),
   entity: (kind, id) => rpc("config.entity", kind, id),
-  entities: async (kind, ids) => new MapCtor(await rpc("config.entities", kind, ids)),
+  entities: async (kind, ids) => {
+    const out = new MapCtor();
+    for (let i = 0; i < ids.length; i += CONFIG_ENTITY_CHUNK) {
+      for (const [id, values] of await rpc("config.entities", kind, ids.slice(i, i + CONFIG_ENTITY_CHUNK))) out.set(id, values);
+    }
+    return out;
+  },
   configured: (kind) => rpc("config.configured", kind),
 });
 // A batch of documents travels in messages below the 1 MB line limit: the

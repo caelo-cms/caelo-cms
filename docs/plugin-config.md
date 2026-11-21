@@ -69,7 +69,7 @@ Row ids are deterministic (uuid v5 of slug and scope). Entity settings live in `
 
 ## Reading
 
-`ctx.config.get()` returns the merged value as the call's branch sees it (a chat sees its draft, an observer and a batch see main). `ctx.config.entity(kind, id)`, `entities(kind, ids)` (a Map) and `configured(kind)` read the per-entity settings; an unset field reads as its default. In the sandbox, `config.entities` travels as entry pairs and comes back as a Map.
+`ctx.config.get()` returns the merged value as the call's branch sees it (a chat sees its draft, an observer and a batch see main). `ctx.config.entity(kind, id)`, `entities(kind, ids)` (a Map) and `configured(kind)` read the per-entity settings; an unset field reads as its default. In the sandbox, `config.entities` travels as entry pairs and comes back as a Map. `entities` takes any number of ids: the host reads them in bounded chunks (1000 per sandbox call, 5000 per host operation).
 
 A page-output observer gets every page again after a change to the plugin's version, its `release` and `approved` settings or its module settings (the observer digest), and one page again after a change to that page's settings (`plugin-page-output.md`).
 
@@ -77,7 +77,7 @@ A page-output observer gets every page again after a change to the plugin's vers
 
 - `get_plugin_config`: every field with its value, allowed values, effect and gate, plus the entity fields.
 - `preview_plugin_config`: a dry run of a patch, plus the plugin's own report when it declares `configPreviewOperation`.
-- `update_plugin_config`: a merge patch. It lands on the chat's draft, and undo works.
+- `update_plugin_config`: a merge patch. It lands on the chat's draft, and undo works. A plugin's configuration writes run one at a time (a transaction lock per plugin): each reads the stored rows, merges and writes whole rows back, so two saves of different fields at once both stay.
 - `propose_plugin_config`: a patch containing an `approval` field, applied after the Owner's click.
 - `set_plugin_entity_config_many`: per-entity values. `null` returns a field to its default.
 

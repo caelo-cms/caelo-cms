@@ -27,6 +27,9 @@ export function ensureConfigOps(infra: PluginHostInfra): void {
   });
 }
 
+/** Ids per `plugin_config.get_entities` call (its input allows 5000). */
+const ENTITY_READ_CHUNK = 5000;
+
 /** True when the plugin declares anything `ctx.config` reads. */
 export function hasConfig(plugin: LoadedPlugin): boolean {
   return Boolean(plugin.definition.config || plugin.definition.entityConfig);
@@ -52,7 +55,7 @@ export function makePluginConfigReader(
     if (!r.ok) throw new Error("message" in r.error ? String(r.error.message) : r.error.kind);
     return r.value as T;
   }
-  const entities = async (
+  const read = async (
     kind: ConfigEntityKind,
     ids: readonly string[] | undefined,
     configuredOnly: boolean,
@@ -63,6 +66,19 @@ export function makePluginConfigReader(
         { pluginSlug: plugin.slug, kind, ids, configuredOnly },
       )
     ).entities;
+  // Any number of ids: read in the op's bounded chunks, so a caller never
+  // meets the op's input limit (a site with many configured modules).
+  const entities = async (
+    kind: ConfigEntityKind,
+    ids: readonly string[] | undefined,
+    configuredOnly: boolean,
+  ) => {
+    if (ids === undefined) return read(kind, undefined, configuredOnly);
+    const out: { id: string; values: Record<string, unknown> }[] = [];
+    for (let i = 0; i < ids.length; i += ENTITY_READ_CHUNK)
+      out.push(...(await read(kind, ids.slice(i, i + ENTITY_READ_CHUNK), configuredOnly)));
+    return out;
+  };
   return Object.freeze({
     get: async () =>
       (await run<{ values: Record<string, unknown> }>(CONFIG_OPS.get, { pluginSlug: plugin.slug }))

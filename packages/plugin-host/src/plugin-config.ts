@@ -215,6 +215,19 @@ interface Deps {
   readonly lookup: ConfigPluginLookup;
 }
 
+/** The advisory-lock class of a plugin's configuration writes (epic #1644). */
+const CONFIG_LOCK_CLASS = 1645;
+
+/**
+ * Serialises one plugin's configuration writes. Every write reads the
+ * stored rows, merges the patch and writes whole rows back; without the
+ * lock two saves of different fields read the same rows, and the second
+ * one's write restores the first one's field to its old value.
+ */
+async function lockPluginConfig(tx: TransactionRunner, slug: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(${CONFIG_LOCK_CLASS}::int, hashtext(${slug}))`);
+}
+
 async function scopeToPlugin(tx: TransactionRunner, pluginId: string): Promise<void> {
   // The tables' RLS policy admits only the plugin's own id. A human, the AI
   // or the system reaching them through these operations acts for the
@@ -295,6 +308,7 @@ export async function seedConfig(
   schema: PluginConfigSchema,
   locker: PluginRowLocker | undefined,
 ): Promise<{ reset: string[] }> {
+  await lockPluginConfig(tx, slug);
   const defaults = configDefaults(schema);
   const rows = await readRows(tx, ctx, slug, CONFIG_TABLE, CONFIG_COLUMNS, [...ROWS]);
   const stored = mergedRows(rows);
@@ -408,6 +422,7 @@ export async function updateConfig(
       `${gated.map((g) => g.path).join(", ")} need${gated.length === 1 ? "s" : ""} the operator's approval: send ${gated.length === 1 ? "it" : "them"} through propose_plugin_config, the rest with update_plugin_config`,
     );
   }
+  await lockPluginConfig(tx, slug);
   const before = await readConfigValue(tx, ctx, slug, schema);
   const after = applyConfigPatch(schema, before, parsed.data);
   const valid = configValueSchema(schema).safeParse(after);
@@ -542,6 +557,7 @@ export async function setEntityConfig(
         problems.push(`items.${i}.values.${issue.path.join(".")}: ${issue.message}`);
   });
   if (problems.length > 0) refuse(op, problems.join("; "));
+  await lockPluginConfig(tx, slug);
   const t = { schema: schemaName(slug), table: ENTITY_CONFIG_TABLE };
   const byKind = new Map<ConfigEntityKind, EntityConfigWrite[]>();
   for (const item of items)

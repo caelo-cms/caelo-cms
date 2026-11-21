@@ -18,6 +18,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
+  hostRowId,
   onPluginRegistered,
   type PluginHostInfra,
   resetPluginHost,
@@ -531,5 +532,58 @@ describe("plugin configuration (#1645)", () => {
     } finally {
       off();
     }
+  });
+  it("two saves of different fields of one row at the same time keep both (#1666)", async () => {
+    const owner = (n: string): ExecutionContext => ({
+      actorId: HUMAN,
+      actorKind: "human",
+      requestId: `pcfg-race-${n}`,
+    });
+    // Both saves change their field from what is stored, whatever earlier
+    // tests left there.
+    const stored = await read(MAIN);
+    const results = stored.results === 33 ? 34 : 33;
+    const mode = (stored.ranking as { mode: string }).mode === "hybrid" ? "words" : "hybrid";
+    // A transaction holding the release row stands for a slow writer: both
+    // saves start meanwhile, read the stored row and wait to write it.
+    const conn = new SQL(ADMIN_URL as string);
+    let release = (): void => {};
+    let locked = (): void => {};
+    const isLocked = new Promise<void>((r) => {
+      locked = r;
+    });
+    const [{ id: pluginId }] = (await withSystemSql(
+      async (tx) => tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`,
+    )) as [{ id: string }];
+    const holder = conn.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // The tables' RLS admits only the plugin's own id.
+      await tx`SELECT set_config('caelo.plugin_id', ${pluginId}, true)`;
+      const held = await tx.unsafe(
+        `SELECT 1 FROM "${SCHEMA}"."caelo_config" WHERE id = '${hostRowId("config:release")}' FOR UPDATE`,
+      );
+      if (held.length !== 1) throw new Error("the release row was not locked");
+      locked();
+      await new Promise<void>((r) => {
+        release = r;
+      });
+    });
+    await isLocked;
+    const a = execute(registry, adapter, owner("a"), "plugin_config.update", {
+      pluginSlug: SLUG,
+      patch: { results },
+    });
+    const b = execute(registry, adapter, owner("b"), "plugin_config.update", {
+      pluginSlug: SLUG,
+      patch: { ranking: { mode } },
+    });
+    await Bun.sleep(500);
+    release();
+    await holder;
+    await conn.end();
+    for (const r of await Promise.all([a, b])) if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const v = await read(MAIN);
+    expect(v.results).toBe(results);
+    expect((v.ranking as { mode: string }).mode).toBe(mode);
   });
 });
