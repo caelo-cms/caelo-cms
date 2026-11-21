@@ -365,6 +365,8 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
     expect(plan.ok && plan.services.gateway.changes.map((c) => c.name).sort()).toEqual([
       "ADMIN_DATABASE_PASSWORD",
       "ADMIN_DATABASE_URL",
+      // Epic #1644 — where it reads the live collection releases.
+      "CAELO_COLLECTIONS_LIVE_STORE",
       // #1329 — the gateway says it is the live site's.
       "CAELO_GATEWAY_ENVIRONMENT",
       // Whose refresh pings it takes: the admin's account.

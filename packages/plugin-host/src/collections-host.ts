@@ -60,6 +60,17 @@ export const LIVE_COLLECTION_STORE_ENV = "CAELO_COLLECTIONS_LIVE_STORE";
 
 const stores = new Map<string, CollectionStore>();
 
+/**
+ * The providers with no collection store yet, and the issue that adds one:
+ * a plugin's collection write fails there with this gap, so the Stage
+ * records the plugin's collections as failed instead of indexing anywhere
+ * else (CLAUDE.md §2: no fallbacks).
+ */
+const PROVIDERS_WITHOUT_COLLECTION_STORE: Readonly<Record<string, string>> = {
+  aws: "issue #749: an S3 store per environment",
+  azure: "issue #750: a Blob Storage store per environment",
+};
+
 /** The store an env var names; a loud error naming the variable when it is unset. */
 export function collectionStoreFromEnv(
   envVar: string,
@@ -67,8 +78,11 @@ export function collectionStoreFromEnv(
 ): CollectionStore {
   const url = env[envVar];
   if (!url) {
+    const gap = PROVIDERS_WITHOUT_COLLECTION_STORE[env.CAELO_PROVIDER ?? ""];
     throw new Error(
-      `${envVar} is not set: plugin collections need their store (the install sets it from the stack; self-hosted: a file:// directory)`,
+      gap
+        ? `plugin collections have no store on provider "${env.CAELO_PROVIDER}" yet (${gap}); this plugin's collections fail at every Stage until it exists — deactivate the plugin at /settings/plugins to Publish live without them`
+        : `${envVar} is not set: plugin collections need their store (Google Cloud: run \`cms-provision upgrade\`, which creates it; self-hosted: \`cms-provision up\` writes a file:// directory into the Compose file)`,
     );
   }
   let store = stores.get(url);

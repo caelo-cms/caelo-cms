@@ -76,6 +76,7 @@ import {
   databaseUrls,
   defaultStagingHost,
   fixedCloudRunServiceName,
+  GATEWAY_MEMORY_DEFAULT,
   gatewayEnvContract,
   MCP_AUTH_PROXY_TIMEOUT_SECONDS,
   mcpAuthProxyEnvContract,
@@ -861,7 +862,8 @@ const gatewaySvc = deployGateways
       resourceName: `${namePrefix}-data-gateway`,
       minInstances: gatewayMinInstances,
       maxInstances: gatewayMaxInstances,
-      memory: "512Mi",
+      // Epic #1644 — collection index files are cached in memory.
+      memory: GATEWAY_MEMORY_DEFAULT,
       // Firebase Hosting cuts a rewritten request at 60 s anyway.
       timeout: "300s",
       // All traffic: the Firebase rewrite arrives from Google's edge, and it is

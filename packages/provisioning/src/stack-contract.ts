@@ -43,19 +43,18 @@ import {
 import { z } from "zod";
 import type { SupportedProvider } from "./adapter.js";
 import {
+  COLLECTIONS_LIVE_STORE_ENV,
+  COLLECTIONS_STAGING_STORE_ENV,
+  gcpCollectionStore,
+} from "./collection-stores.js";
+import {
   auditJobResource,
-  auditRunnerJobResource,
-  auditRunnerServiceAccountEmail,
-  buildCarrierJobResource,
-  buildCarrierServiceAccountEmail,
   captureJobResource,
   convergeJobResource,
   gatewayServiceAccountEmail,
   gcpBucketName,
   gcpNamePrefix,
   gcpSecretId,
-  importCrawlJobResource,
-  importCrawlServiceAccountEmail,
   mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   operatorAccessJobResource,
@@ -66,6 +65,7 @@ import {
   staticPublisherServiceAccountId,
   upgraderJobResource,
 } from "./gcp-names.js";
+import { reportingJobAdminEnv } from "./reporting-job-catalog.js";
 
 export type GcpProvider = "gcp" | "gcp-firebase";
 /**
@@ -400,28 +400,11 @@ export const CAPTURE_BUCKET_ENV_VAR = "CAELO_CAPTURE_BUCKET";
 export const MEDIA_BUCKET_ENV_VAR = "CAELO_MEDIA_BUCKET";
 
 /**
- * #1359 — the admin env vars naming the quality-audit runner job (the
- * whole audit of a Stage, a reporting job: reporting-job-setup.ts) and the
- * one service account whose reports the admin takes for it (admin-core
- * quality/audit-job-kind.ts). `upgrade` leaves them untouched when it could
- * not set the job up.
+ * #1359, #1360, #1574, epic #1644 — each reporting job's pair of admin env
+ * vars (the job, and the one service account whose reports the admin takes
+ * for it) is its catalog entry's (reporting-job-catalog.ts
+ * `REPORTING_JOB_CATALOG`); {@link adminEnvContract} sets every entry's.
  */
-export const AUDIT_RUNNER_JOB_ENV_VAR = "CAELO_AUDIT_RUNNER_JOB";
-export const AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR = "CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT";
-
-/**
- * #1360 — the same pair for the site-import crawler (a site import's crawl,
- * a reporting job; admin-core site-import/import-job-kind.ts).
- */
-export const IMPORT_CRAWL_JOB_ENV_VAR = "CAELO_IMPORT_CRAWL_JOB";
-export const IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR = "CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT";
-
-/**
- * #1574 — the same pair for the build carrier (the job that holds the
- * request a build runs in; admin-core build-carrier/kind.ts).
- */
-export const BUILD_CARRIER_JOB_ENV_VAR = "CAELO_BUILD_CARRIER_JOB";
-export const BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR = "CAELO_BUILD_CARRIER_SERVICE_ACCOUNT";
 
 /**
  * #1140 — the admin env var naming the service account of the scheduler
@@ -1040,6 +1023,12 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
     { name: GATEWAY_ENVIRONMENT_ENV, value: "live" },
     { name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS[inputs.provider]) },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
+    // Epic #1644 — the live collection store, read-only for its account
+    // (collections-setup.ts): search, suggest and read answer from it.
+    {
+      name: COLLECTIONS_LIVE_STORE_ENV,
+      value: gcpCollectionStore(inputs.projectId, inputs.env, "live"),
+    },
     // The only account whose refresh pings the gateway takes: the admin's
     // (@caelo-cms/shared gateway-refresh.ts). An identity, not a secret.
     {
@@ -1070,6 +1059,12 @@ export function stagingGatewayEnvContract<V>(
     },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.publicStaging },
     { name: STAGING_STORAGE_ENV, value: gcpStagingStorage(inputs.projectId, inputs.env) },
+    // Epic #1644 — the staging collection store, read-only for its account:
+    // staging's search answers from the Stage's releases, never the live ones.
+    {
+      name: COLLECTIONS_STAGING_STORE_ENV,
+      value: gcpCollectionStore(inputs.projectId, inputs.env, "staging"),
+    },
     // As the live gateway's: whose refresh pings it takes.
     {
       name: GATEWAY_REFRESH_ACCOUNT_ENV,
@@ -1498,36 +1493,18 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     { name: CAPTURE_JOB_ENV_VAR, value: captureJobResource(projectId, inputs.region, env) },
     { name: CAPTURE_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "capture") },
     { name: MEDIA_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "media") },
-    // #1359 — the job a Stage's quality audit runs in, and the only IAP
-    // identity whose reports the admin takes for it (reporting-job-setup.ts).
+    // #1359, #1360, #1574, epic #1644 — each reporting job and the only IAP
+    // identity whose reports the admin takes for it, in catalog order
+    // (reporting-job-catalog.ts).
+    ...reportingJobAdminEnv(projectId, inputs.region, env),
+    // Epic #1644 — both collection stores: the admin writes change files to
+    // staging and copies a Stage's releases to live at Publish live
+    // (collections-setup.ts).
     {
-      name: AUDIT_RUNNER_JOB_ENV_VAR,
-      value: auditRunnerJobResource(projectId, inputs.region, env),
+      name: COLLECTIONS_STAGING_STORE_ENV,
+      value: gcpCollectionStore(projectId, env, "staging"),
     },
-    {
-      name: AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR,
-      value: auditRunnerServiceAccountEmail(projectId, env),
-    },
-    // #1360 — the job a site import's crawl runs in, and the only IAP
-    // identity whose reports the admin takes for it.
-    {
-      name: IMPORT_CRAWL_JOB_ENV_VAR,
-      value: importCrawlJobResource(projectId, inputs.region, env),
-    },
-    {
-      name: IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR,
-      value: importCrawlServiceAccountEmail(projectId, env),
-    },
-    // #1574 — the job that holds the request a build nobody else waits for
-    // runs in, and the only IAP identity whose reports the admin takes for it.
-    {
-      name: BUILD_CARRIER_JOB_ENV_VAR,
-      value: buildCarrierJobResource(projectId, inputs.region, env),
-    },
-    {
-      name: BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR,
-      value: buildCarrierServiceAccountEmail(projectId, env),
-    },
+    { name: COLLECTIONS_LIVE_STORE_ENV, value: gcpCollectionStore(projectId, env, "live") },
     // #1140 — the only IAP identity the admin's scheduler tick endpoint
     // accepts (scheduler-setup.ts).
     {
@@ -1590,6 +1567,31 @@ export const STATIC_CDN_POLICY = {
   maxTtl: 31536000,
   clientTtl: 31536000,
 } as const;
+
+/**
+ * Epic #1644 (#1649) — Cloud CDN on the `gcp` stack's live gateway backend.
+ * `USE_ORIGIN_HEADERS`: the CDN keeps only what the gateway marks
+ * `public` with an `s-maxage`, which is exactly a collection operation's
+ * answer for the release the request names (apps/api-gateway
+ * collections.ts); every other gateway answer is `no-store` and passes
+ * through. The query string is part of the cache key (the query, the
+ * language, the release), and a cached error is never served
+ * (`negativeCaching` off). Cache hits never reach the gateway, nor the
+ * backend's Cloud Armor policy, which judges only what goes to the origin.
+ * The staging gateway's backend gets no CDN: staged pages stay behind the
+ * staging gate.
+ */
+export const GATEWAY_CDN_POLICY = {
+  cacheMode: "USE_ORIGIN_HEADERS",
+  negativeCaching: false,
+  serveWhileStale: 0,
+  cacheKeyPolicy: { includeHost: true, includeProtocol: true, includeQueryString: true },
+} as const;
+
+/** The `gcp` stack's live gateway backend service (Pulumi adds a suffix). */
+export function gatewayBackendPrefix(env: string): string {
+  return `${gcpNamePrefix(env)}-gateway-backend`;
+}
 
 /** Who an IAM invariant grants a role to. */
 export type IamPrincipal =
@@ -2103,6 +2105,25 @@ export function staticBackendBucketPrefix(env: string): string {
  * raises an existing install's admin to it (never lowers a larger value).
  */
 export const ADMIN_MEMORY_DEFAULT = "2Gi";
+
+/**
+ * Epic #1644 (#1649) — the live and the staging gateway's memory. Search,
+ * suggest and read answer from collection index files the gateway keeps
+ * parsed in memory (`CAELO_COLLECTIONS_CACHE_MB`, 256 MiB by default, plus
+ * the release being opened), next to its visitor handlers: 512 MiB left no
+ * room for that. AWS (1024 MB Fargate tasks) and Azure (1.0Gi apps) already
+ * run every service at 1 GiB; `upgrade` raises a Google Cloud gateway below
+ * it (never lowers a larger value, stack-converge.ts planServiceMemory).
+ */
+export const GATEWAY_MEMORY_DEFAULT = "1Gi";
+
+/** The memory upgrade raises each Cloud Run service to (null: the stacks' alone). */
+export const SERVICE_MEMORY_FLOOR: Readonly<Record<CloudRunSlug, string | null>> = {
+  admin: ADMIN_MEMORY_DEFAULT,
+  gateway: GATEWAY_MEMORY_DEFAULT,
+  "staging-gateway": GATEWAY_MEMORY_DEFAULT,
+  "mcp-auth-proxy": null,
+};
 
 /**
  * Parse a memory quantity (`512Mi`, `2Gi`, `2G`, `1.5Gi`) to MiB; null when

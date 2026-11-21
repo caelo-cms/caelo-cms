@@ -4,6 +4,7 @@ import { describe, expect, it } from "bun:test";
 import type { GcloudResult } from "./gcloud.js";
 import {
   ABSENT_DEFAULT_FIREWALL_RULES,
+  GATEWAY_CDN_POLICY,
   STATIC_CDN_POLICY,
   stackIamInvariants,
 } from "./stack-contract.js";
@@ -54,6 +55,9 @@ const IN_SHAPE_BACKEND = {
   cdnPolicy: STATIC_CDN_POLICY,
   customResponseHeaders: GCP_STATIC_RESPONSE_HEADERS,
 };
+
+/** Epic #1644 — the gcp live gateway's backend already at {@link GATEWAY_CDN_POLICY}. */
+const IN_SHAPE_GATEWAY_BACKEND = { enableCDN: true, cdnPolicy: GATEWAY_CDN_POLICY };
 
 const policy = (bindings: { role: string; members: string[]; condition?: unknown }[]) =>
   ok(JSON.stringify({ bindings }));
@@ -342,7 +346,7 @@ describe("planContractEnv", () => {
     // and gate key onto an install that predates it.
     expect(plan.services.admin.flags).toEqual([
       // #1329 — and the staging database's pool onto one that predates it.
-      "--update-env-vars=PUBLIC_STAGING_ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem,CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_CAPTURE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-capture,CAELO_CAPTURE_BUCKET=acme-caelo-production-capture,CAELO_MEDIA_BUCKET=acme-caelo-production-media,CAELO_AUDIT_RUNNER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit-run,CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT=caelo-production-audit-run@acme.iam.gserviceaccount.com,CAELO_IMPORT_CRAWL_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-import,CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT=caelo-production-import@acme.iam.gserviceaccount.com,CAELO_BUILD_CARRIER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-build,CAELO_BUILD_CARRIER_SERVICE_ACCOUNT=caelo-production-build@acme.iam.gserviceaccount.com,CAELO_SCHEDULER_SERVICE_ACCOUNT=caelo-production-scheduler@acme.iam.gserviceaccount.com,CAELO_OPERATOR_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-operator-oauth-client,CAELO_STAGING_BUCKET=acme-caelo-production-staging,CAELO_FIREBASE_STAGING_SITE=caelo-production-stg-6eace1,CAELO_GATEWAY_SERVICE=caelo-production-data-gateway,CAELO_STAGING_HOST=staging.acme.com",
+      "--update-env-vars=PUBLIC_STAGING_ADMIN_DATABASE_URL=postgresql://admin_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem,CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_CAPTURE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-capture,CAELO_CAPTURE_BUCKET=acme-caelo-production-capture,CAELO_MEDIA_BUCKET=acme-caelo-production-media,CAELO_AUDIT_RUNNER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit-run,CAELO_AUDIT_RUNNER_SERVICE_ACCOUNT=caelo-production-audit-run@acme.iam.gserviceaccount.com,CAELO_IMPORT_CRAWL_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-import,CAELO_IMPORT_CRAWL_SERVICE_ACCOUNT=caelo-production-import@acme.iam.gserviceaccount.com,CAELO_BUILD_CARRIER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-build,CAELO_BUILD_CARRIER_SERVICE_ACCOUNT=caelo-production-build@acme.iam.gserviceaccount.com,CAELO_COLLECTION_INDEX_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-index,CAELO_COLLECTION_INDEX_SERVICE_ACCOUNT=caelo-production-index@acme.iam.gserviceaccount.com,CAELO_PLUGIN_BATCH_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch,CAELO_PLUGIN_BATCH_SERVICE_ACCOUNT=caelo-production-plugin-batch@acme.iam.gserviceaccount.com,CAELO_COLLECTIONS_STAGING_STORE=gs://acme-caelo-production-coll-staging,CAELO_COLLECTIONS_LIVE_STORE=gs://acme-caelo-production-coll-live,CAELO_SCHEDULER_SERVICE_ACCOUNT=caelo-production-scheduler@acme.iam.gserviceaccount.com,CAELO_OPERATOR_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-operator-oauth-client,CAELO_STAGING_BUCKET=acme-caelo-production-staging,CAELO_FIREBASE_STAGING_SITE=caelo-production-stg-6eace1,CAELO_GATEWAY_SERVICE=caelo-production-data-gateway,CAELO_STAGING_HOST=staging.acme.com",
       "--update-secrets=PUBLIC_STAGING_ADMIN_DATABASE_PASSWORD=caelo-production-postgres-password:latest,CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
     // #1328 — the Firebase rewrite follows the data gateway (above), which
@@ -350,7 +354,7 @@ describe("planContractEnv", () => {
     expect(plan.services.gateway.flags).toEqual([
       // The gateway learns which forwarded address is the visitor (#845),
       // (#1329) that it is the live site's, and whose refresh pings it takes.
-      "--update-env-vars=CAELO_GATEWAY_ENVIRONMENT=live,CAELO_TRUSTED_PROXY_HOPS=1,CAELO_GATEWAY_REFRESH_ACCOUNT=caelo-production-run-sa@acme.iam.gserviceaccount.com",
+      "--update-env-vars=CAELO_GATEWAY_ENVIRONMENT=live,CAELO_TRUSTED_PROXY_HOPS=1,CAELO_COLLECTIONS_LIVE_STORE=gs://acme-caelo-production-coll-live,CAELO_GATEWAY_REFRESH_ACCOUNT=caelo-production-run-sa@acme.iam.gserviceaccount.com",
     ]);
     // The old gateway service becomes the proxy in one revision: every
     // database and site var goes, its own contract arrives.
@@ -856,6 +860,9 @@ describe("ensureStackInvariants", () => {
         policy([{ role: "roles/run.invoker", members: [IAP_AGENT, "allUsers"] }]),
       ],
       "compute backend-buckets list": [ok("caelo-production-static-backend-9f8e7d6\n")],
+      // Epic #1644 — the live gateway's backend, already at its CDN policy.
+      "compute backend-services list": [ok("caelo-production-gateway-backend-1a2b3c4\n")],
+      "compute backend-services describe": [ok(JSON.stringify(IN_SHAPE_GATEWAY_BACKEND))],
       "compute firewall-rules list": [ok("[]")],
       // #891 — every live SVG already served as a download.
       "storage objects list": [
@@ -919,6 +926,72 @@ describe("ensureStackInvariants", () => {
       const update = calls.find((c) => c.startsWith("compute backend-buckets update"));
       expect(update).toContain("--custom-response-header=X-Content-Type-Options: nosniff");
       expect(report.outcomes.find((o) => o.id.startsWith("Cloud CDN"))?.status).toBe("applied");
+    });
+
+    // Epic #1644 — visitors' repeated searches answered at the edge.
+    it("turns Cloud CDN on for the live gateway's backend, caching only what the gateway marks cacheable", async () => {
+      const answers = {
+        ...fullGcp(),
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
+        "compute backend-services describe": [ok(JSON.stringify({ enableCDN: false }))],
+      };
+      const { run, calls } = fakeGcloud(answers);
+      const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
+      expect(report.mustAbort).toBe(false);
+      expect(calls).toContain(
+        "compute backend-services list --project=acme --global --filter=name~^caelo-production-gateway-backend --format=value(name)",
+      );
+      expect(calls).toContain(
+        "compute backend-services update caelo-production-gateway-backend-1a2b3c4 --project=acme --global --enable-cdn --cache-mode=USE_ORIGIN_HEADERS --no-negative-caching --serve-while-stale=0 --cache-key-include-host --cache-key-include-protocol --cache-key-include-query-string --quiet",
+      );
+      expect(
+        report.outcomes.find((o) =>
+          o.id.startsWith("Cloud CDN on caelo-production-gateway-backend"),
+        )?.status,
+      ).toBe("applied");
+    });
+
+    it("re-applies the gateway CDN policy when the cache key lost the query string", async () => {
+      const drifted = {
+        enableCDN: true,
+        cdnPolicy: {
+          ...GATEWAY_CDN_POLICY,
+          cacheKeyPolicy: { includeHost: true, includeProtocol: true },
+        },
+      };
+      const answers = {
+        ...fullGcp(),
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
+        "compute backend-services describe": [ok(JSON.stringify(drifted))],
+      };
+      const { run, calls } = fakeGcloud(answers);
+      await ensureStackInvariants(gcp, { run, sleep: async () => {} });
+      expect(calls.some((c) => c.startsWith("compute backend-services update"))).toBe(true);
+    });
+
+    it("leaves an install without a deployed gateway alone, and refuses to guess between two backends", async () => {
+      const none = fakeGcloud({
+        ...fullGcp(),
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
+        "compute backend-services list": [ok("")],
+      });
+      const r1 = await ensureStackInvariants(gcp, { run: none.run, sleep: async () => {} });
+      expect(none.calls.some((c) => c.startsWith("compute backend-services update"))).toBe(false);
+      expect(r1.outcomes.every((o) => o.status === "present")).toBe(true);
+      const two = fakeGcloud({
+        ...fullGcp(),
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
+        "compute backend-services list": [
+          ok("caelo-production-gateway-backend-a\ncaelo-production-gateway-backend-b\n"),
+        ],
+      });
+      const r2 = await ensureStackInvariants(gcp, { run: two.run, sleep: async () => {} });
+      expect(two.calls.some((c) => c.startsWith("compute backend-services update"))).toBe(false);
+      const outcome = r2.outcomes.find((o) =>
+        o.id.startsWith("Cloud CDN on caelo-production-gateway-backend"),
+      );
+      expect(outcome?.status).toBe("failed");
+      expect(r2.mustAbort).toBe(false);
     });
 
     it("warns (no abort) when the CDN update fails", async () => {

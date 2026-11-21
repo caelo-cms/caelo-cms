@@ -149,12 +149,24 @@ export function staticPublisherServiceAccountId(env: string): string {
   return `caelo-${short}-publisher`;
 }
 
+/**
+ * A bucket of the install: the stacks' (media, static, staging) and the
+ * CLI's (audit results, capture; epic #1644: the two collection stores,
+ * `coll-staging` and `coll-live`, collections-setup.ts). Kept short: a
+ * bucket name has at most 63 characters, and a project id can take 30 of
+ * them (`<project>-caelo-production-coll-staging` is 60 then).
+ */
+export type GcpBucketKind =
+  | "media"
+  | "static"
+  | "staging"
+  | "audit-results"
+  | "capture"
+  | "coll-staging"
+  | "coll-live";
+
 /** Globally unique GCS bucket name the stacks give each bucket. */
-export function gcpBucketName(
-  projectId: string,
-  env: string,
-  bucket: "media" | "static" | "staging" | "audit-results" | "capture",
-): string {
+export function gcpBucketName(projectId: string, env: string, bucket: GcpBucketKind): string {
   return `${projectId}-${gcpNamePrefix(env)}-${bucket}`;
 }
 
@@ -247,90 +259,22 @@ export function auditServiceAccountEmail(projectId: string, env: string): string
 }
 
 /**
- * #1359 — Cloud Run job that runs a Stage's whole quality audit (the
- * findings checks and the Lighthouse fan-out to {@link auditJobName}) and
- * reports back to the admin, one execution per audit (reporting-job-setup.ts).
+ * #1359, #1360, #1574, epic #1644 — the reporting jobs (a Stage's quality
+ * audit, a site import's crawl, a carried build, a Stage's collection
+ * index, a plugin's batch run) each run as a Cloud Run job of their own
+ * under an account of their own, both named `caelo-<env>-<kind name>`:
+ * reporting-job-catalog.ts derives them from its one entry per kind.
  */
-export function auditRunnerJobName(env: string): string {
-  return `${gcpNamePrefix(env)}-audit-run`;
-}
-
-/** Full resource name of the audit runner job, as the admin's env carries it. */
-export function auditRunnerJobResource(projectId: string, region: string, env: string): string {
-  return `projects/${projectId}/locations/${region}/jobs/${auditRunnerJobName(env)}`;
+export function reportingJobAccountId(env: string, name: string): string {
+  return `${gcpNamePrefix(env)}-${name}`;
 }
 
 /**
- * Account id of the audit runner's own service account: reads the staged
- * build and the Lighthouse results, runs the Lighthouse job, and reports to
- * the admin through IAP — no database, no secret (reporting-job-setup.ts).
- * `caelo-production-audit-run` is 26 of the 30 characters an id may have.
+ * Epic #1644 (#1649) — the Cloud Logging exclusion that keeps visitors'
+ * search queries out of the install's logs (visitor-query-logs.ts).
  */
-export function auditRunnerServiceAccountId(env: string): string {
-  return `${gcpNamePrefix(env)}-audit-run`;
-}
-
-/** Email of the audit runner's service account. */
-export function auditRunnerServiceAccountEmail(projectId: string, env: string): string {
-  return `${auditRunnerServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
-}
-
-/**
- * #1360 — Cloud Run job that crawls a site import and reports each page to
- * the admin, one execution per attempt (reporting-job-setup.ts). The admin
- * renders the pages it asks for through the capture job.
- */
-export function importCrawlJobName(env: string): string {
-  return `${gcpNamePrefix(env)}-import`;
-}
-
-/** Full resource name of the crawl job, as the admin's env carries it. */
-export function importCrawlJobResource(projectId: string, region: string, env: string): string {
-  return `projects/${projectId}/locations/${region}/jobs/${importCrawlJobName(env)}`;
-}
-
-/**
- * Account id of the crawl job's own service account: reports to the admin
- * through IAP and fetches robots.txt and sitemaps through the SSRF guard —
- * no database, no secret, no bucket, no other job (reporting-job-setup.ts).
- * `caelo-production-import` is 23 of the 30 characters an id may have.
- */
-export function importCrawlServiceAccountId(env: string): string {
-  return `${gcpNamePrefix(env)}-import`;
-}
-
-/** Email of the crawl job's service account. */
-export function importCrawlServiceAccountEmail(projectId: string, env: string): string {
-  return `${importCrawlServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
-}
-
-/**
- * #1574 — Cloud Run job that carries a build: one execution per Stage,
- * Publish live or production build nobody else waits for, holding the
- * admin request the build runs in (reporting-job-setup.ts).
- */
-export function buildCarrierJobName(env: string): string {
-  return `${gcpNamePrefix(env)}-build`;
-}
-
-/** Full resource name of the build carrier's job, as the admin's env carries it. */
-export function buildCarrierJobResource(projectId: string, region: string, env: string): string {
-  return `projects/${projectId}/locations/${region}/jobs/${buildCarrierJobName(env)}`;
-}
-
-/**
- * Account id of the build carrier's own service account: it reports to the
- * admin through IAP and holds nothing else — no database, no secret, no
- * bucket, no other job (reporting-job-setup.ts). `caelo-production-build`
- * is 22 of the 30 characters an id may have.
- */
-export function buildCarrierServiceAccountId(env: string): string {
-  return `${gcpNamePrefix(env)}-build`;
-}
-
-/** Email of the build carrier's service account. */
-export function buildCarrierServiceAccountEmail(projectId: string, env: string): string {
-  return `${buildCarrierServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
+export function visitorQueryLogExclusionName(env: string): string {
+  return `${gcpNamePrefix(env)}-visitor-queries`;
 }
 
 /**

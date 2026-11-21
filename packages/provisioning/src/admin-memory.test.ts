@@ -7,13 +7,22 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { generateDockerCompose } from "./compose.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   azureContainerAppResources,
+  GATEWAY_MEMORY_DEFAULT,
   memoryQuantityMiB,
 } from "./stack-contract.js";
-import { liveContainerMemory, planAdminMemory, serviceRollArgs } from "./stack-converge.js";
+import {
+  liveContainerMemory,
+  planAdminMemory,
+  planServiceMemory,
+  serviceRollArgs,
+} from "./stack-converge.js";
+import { stagingGatewayDeployArgs } from "./staging-gateway-setup.js";
 import { estimateGcpCost } from "./wizards/gcp-cost.js";
 
 describe("memoryQuantityMiB", () => {
@@ -67,6 +76,53 @@ describe("planAdminMemory (upgrade)", () => {
     });
     expect(args).toContain("--memory=2Gi");
     expect(args.indexOf("--memory=2Gi")).toBeLessThan(args.indexOf("--quiet"));
+  });
+});
+
+describe("the gateways' memory (epic #1644)", () => {
+  it("is 1Gi: collection index files are cached next to the visitor handlers", () => {
+    expect(GATEWAY_MEMORY_DEFAULT).toBe("1Gi");
+  });
+
+  it("upgrade raises both gateways from Cloud Run's 512Mi, never lowers, leaves the proxy alone", () => {
+    for (const slug of ["gateway", "staging-gateway"] as const) {
+      expect(planServiceMemory(slug, "512Mi")).toEqual({
+        ok: true,
+        flags: ["--memory=1Gi"],
+        from: "512Mi",
+      });
+      expect(planServiceMemory(slug, null)).toEqual({
+        ok: true,
+        flags: ["--memory=1Gi"],
+        from: null,
+      });
+      expect(planServiceMemory(slug, "2Gi")).toEqual({ ok: true, flags: [], from: "2Gi" });
+    }
+    expect(planServiceMemory("admin", "1Gi")).toEqual(planAdminMemory("1Gi"));
+    expect(planServiceMemory("mcp-auth-proxy", "512Mi")).toEqual({
+      ok: true,
+      flags: [],
+      from: "512Mi",
+    });
+  });
+
+  it("is what both Google Cloud stacks and the staging gateway's setup deploy", () => {
+    for (const stack of ["gcp", "gcp-firebase"]) {
+      const src = readFileSync(resolve(import.meta.dir, "..", "stacks", stack, "index.ts"), "utf8");
+      expect(src).toContain("memory: GATEWAY_MEMORY_DEFAULT,");
+    }
+    const args = stagingGatewayDeployArgs({
+      provider: "gcp-firebase",
+      projectId: "acme",
+      region: "europe-west1",
+      env: "production",
+      domain: "acme.com",
+      stagingHost: "staging.acme.com",
+      gatewayImageRef: `europe-west1-docker.pkg.dev/x/y/gateway@sha256:${"b".repeat(64)}`,
+      databaseHost: "db1.p-label.europe-west1.sql-psa.goog",
+      vpc: { network: "default", subnetwork: "default" },
+    });
+    expect(args).toContain("--memory=1Gi");
   });
 });
 
