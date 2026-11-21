@@ -644,11 +644,21 @@ async function runPluginOperationNow(
   const handler: ((ctx: PluginContext, args: unknown) => unknown) | undefined = declared
     ? (ctx, args) => {
         if (opts.visitorContext)
-          return runDeclaredPublicOperation(declared, ctx as PluginContextTier1, args);
+          return runDeclaredPublicOperation(
+            declared,
+            ctx as PluginContextTier1,
+            args,
+            plugin.pluginId,
+          );
         const parsed = declared.input.safeParse(args);
         if (!parsed.success)
           throw new Error(`${opts.operationName}: the input does not match its declared schema`);
-        return runDeclaredPublicOperation(declared, ctx as PluginContextTier1, parsed.data);
+        return runDeclaredPublicOperation(
+          declared,
+          ctx as PluginContextTier1,
+          parsed.data,
+          plugin.pluginId,
+        );
       }
     : opts.visitorContext
       ? undefined

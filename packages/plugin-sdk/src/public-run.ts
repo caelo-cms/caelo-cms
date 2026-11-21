@@ -28,6 +28,7 @@
  */
 
 import { z } from "zod";
+import { configLeaves, type PluginConfigSchema } from "./config.js";
 
 const identifier = z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/);
 /** A field of the validated input: a top-level key, or `a.b` one level down. */
@@ -171,22 +172,44 @@ export const publicRun = z.discriminatedUnion("action", [
       /**
        * Store only while `column` of the source's (first) row equals
        * `equals` — a switch the Owner sets in published data (search
-       * counting on or off). Otherwise the visitor gets `answer` and
-       * nothing is stored; no refusal tells a visitor the switch is off.
+       * counting on or off) — or, with `config` (#1655), while the
+       * plugin's released value of that config leaf equals it (a leaf
+       * marked `visitorVisible`, published with the release, so the switch
+       * goes live exactly with the Publish live that ships it). Otherwise
+       * the visitor gets `answer` and nothing is stored; no refusal tells a
+       * visitor the switch is off.
        */
       onlyIf: z
-        .object({
-          source: tableSource,
-          column: identifier,
-          equals: jsonScalar,
-          answer: publicAnswer,
-        })
-        .strict()
+        .union([
+          z
+            .object({
+              source: tableSource,
+              column: identifier,
+              equals: jsonScalar,
+              answer: publicAnswer,
+            })
+            .strict(),
+          z
+            .object({
+              config: z
+                .string()
+                .regex(/^[a-z][a-z0-9_]{0,47}(\.[a-z][a-z0-9_]{0,47}){0,2}$/, "a config leaf path"),
+              equals: jsonScalar,
+              answer: publicAnswer,
+            })
+            .strict(),
+        ])
         .optional(),
-      /** A field that looks like personal data answers `answer` and stores nothing. */
+      /**
+       * A field that looks like personal data answers `answer` and stores
+       * nothing. `alsoFields` (#1655) are checked with the same patterns:
+       * every free-text field a row stores belongs here, or one of them is a
+       * way around the drop.
+       */
       drop: z
         .object({
           field: inputField,
+          alsoFields: z.array(inputField).min(1).max(4).optional(),
           patterns: z.array(z.enum(PUBLIC_DROP_PATTERNS)).min(1).max(PUBLIC_DROP_PATTERNS.length),
           answer: publicAnswer,
         })
@@ -405,7 +428,8 @@ export function runTables(run: PublicRun): { reads: Set<string>; writes: Set<str
     writes.add(run.table);
     for (const c of run.checks ?? [])
       if ("source" in c && c.source.of === "schema") reads.add(c.source.table);
-    if (run.onlyIf?.source.of === "schema") reads.add(run.onlyIf.source.table);
+    if (run.onlyIf && "source" in run.onlyIf && run.onlyIf.source.of === "schema")
+      reads.add(run.onlyIf.source.table);
   } else if (run.action === "list") {
     if ((run.of ?? "schema") === "schema") reads.add(run.table);
   } else {
@@ -440,6 +464,7 @@ export function checkPublicRun(
     readonly requestedCapabilities?: readonly string[];
     readonly mailTemplates?: Readonly<Record<string, unknown>>;
     readonly indexes?: { readonly schema?: Readonly<Record<string, readonly unknown[]>> };
+    readonly config?: PluginConfigSchema;
   },
   issue: (path: (string | number)[], message: string) => void,
 ): void {
@@ -481,12 +506,22 @@ export function checkPublicRun(
       columns(["run", "honeypot", "values"], run.table, Object.keys(run.honeypot?.values ?? {}));
     }
     const sourced: { path: (string | number)[]; source: PublicTableSource; cols: string[] }[] = [];
-    if (run.onlyIf)
+    if (run.onlyIf && "source" in run.onlyIf)
       sourced.push({
         path: ["run", "onlyIf", "source"],
         source: run.onlyIf.source,
         cols: [run.onlyIf.column],
       });
+    if (run.onlyIf && "config" in run.onlyIf) {
+      const path = run.onlyIf.config;
+      const leaf = configLeaves(m.config ?? {}).find((l) => l.path === path);
+      if (!leaf) issue(["run", "onlyIf", "config"], `"${path}" is not a leaf of \`config\``);
+      else if (leaf.field.visitorVisible !== true)
+        issue(
+          ["run", "onlyIf", "config"],
+          `"${path}" is not visitor-visible: mark it \`visitorVisible: true\` so its released value reaches the public side`,
+        );
+    }
     for (const s of sourced) {
       if (s.source.of === "schema") {
         if (ownTable(s.path, s.source.table, VISITOR_READABLE, "read"))

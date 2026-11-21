@@ -91,6 +91,7 @@ import {
   registerGatewayOperations,
   runPluginOperation,
   servesVisitorOperations,
+  setPublishedVisitorConfigReader,
   syncDispatchPlugins,
   unpublishedRegistryError,
   VISITOR_ID_PURPOSE,
@@ -191,6 +192,7 @@ import {
   aiChatRefusal,
   aiChatResponse,
 } from "./visitor-ai/chat.js";
+import { loadVisitorConfig } from "./visitor-ai/published.js";
 import {
   collectionToolRuntime,
   declaredAiChatOperation,
@@ -702,6 +704,9 @@ export function setGatewayAdapter(adapter: DatabaseAdapter): void {
   cachedAdapter = adapter;
   sweepGatewayStateIfDue = gatewayStateGc(adapter);
   addressHashKeys = ipHashKeys(adapter);
+  // #1655 — a declaration's `onlyIf: { config }` reads the released
+  // visitor-visible configuration, cached like the conversations read it.
+  setPublishedVisitorConfigReader((pluginId) => loadVisitorConfig(adapter, pluginId));
 }
 
 /**

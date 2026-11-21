@@ -332,6 +332,11 @@ export {
 } from "./public-urls.js";
 export { unpublishedRegistryError } from "./published-state.js";
 export {
+  type PublishedVisitorConfigReader,
+  publishedVisitorConfig,
+  setPublishedVisitorConfigReader,
+} from "./published-visitor-config.js";
+export {
   type PluginNotRunning,
   pluginNotRunningMarker,
   pluginNotRunningReason,
