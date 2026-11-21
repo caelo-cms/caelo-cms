@@ -28,10 +28,16 @@ import {
   storeFromUrl,
 } from "@caelo-cms/collection-index";
 import {
+  type AiChatTool,
+  aiChatOperationManifest,
+  type ChatToolHit,
+  type ChatToolResult,
   type CollectionDocInput,
+  type CollectionOperationManifest,
   type CollectionQueryOptions,
   type CollectionQueryResult,
   collectionOperationManifest,
+  type PluginChatTools,
   type PluginCollectionHandle,
   type PluginCollectionManifest,
   type PluginCollections,
@@ -50,7 +56,12 @@ import {
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { type OpenEntry, runCollectionOperation, wasmQueryEmbedder } from "./collection-query.js";
+import {
+  aiChatToolParams,
+  type OpenEntry,
+  runCollectionOperation,
+  wasmQueryEmbedder,
+} from "./collection-query.js";
 import {
   isPluginDisabled,
   type LoadedPlugin,
@@ -519,6 +530,161 @@ const WRITING_ORIGINS: ReadonlySet<string> = new Set([
   "system",
 ]);
 
+/** The plugin's own actor, for the collection operations that run as it. */
+function collectionActor(plugin: LoadedPlugin) {
+  return {
+    actorId: plugin.pluginActorId,
+    actorKind: "plugin" as const,
+    pluginId: plugin.pluginId,
+    requestId: `plugin-${plugin.slug}-collections`,
+  };
+}
+
+/**
+ * Runs `op`, a declared operation of `owner`'s collections, on the release
+ * `opts` names: as `owner` (the release lookup sees only its own rows), on
+ * the staging store or, for `at: live`, the live one.
+ */
+async function queryCollectionOperation(
+  owner: LoadedPlugin,
+  infra: PluginHostInfra,
+  op: CollectionOperationManifest,
+  params: URLSearchParams,
+  opts: CollectionQueryOptions,
+): Promise<CollectionQueryResult> {
+  registerCollectionOps(infra.registry);
+  const anchorsName = op.kind === "search" ? op.anchors?.collection : undefined;
+  const r = await execute(
+    infra.registry,
+    infra.adapter,
+    collectionActor(owner),
+    COLLECTION_OPS.releaseOf,
+    {
+      collections: anchorsName ? [op.collection, anchorsName] : [op.collection],
+      ...(opts.runId ? { runId: opts.runId } : { at: opts.at ?? "staged" }),
+    },
+  );
+  if (!r.ok) throw new Error("message" in r.error ? String(r.error.message) : r.error.kind);
+  const resolved = r.value as {
+    releases: {
+      collection: string;
+      state: CollectionQueryResult["state"];
+      releaseKey: string | null;
+      error: string | null;
+      runId: string | null;
+    }[];
+  };
+  const main = resolved.releases[0];
+  if (!main || main.state !== "ready" || !main.releaseKey)
+    return { state: main?.state ?? "none", error: main?.error ?? null, status: 503, body: null };
+  // The live store when the live release is asked for; the staging one otherwise.
+  const store = collectionStoreFromEnv(
+    opts.at === "live" && !opts.runId ? LIVE_COLLECTION_STORE_ENV : STAGING_COLLECTION_STORE_ENV,
+  );
+  const entry = await openAdminRelease(
+    store,
+    collectionPrefix(owner.slug, op.collection),
+    main.releaseKey,
+  );
+  const a = resolved.releases[1];
+  const anchors =
+    anchorsName && a?.state === "ready" && a.releaseKey
+      ? await openAdminRelease(store, collectionPrefix(owner.slug, anchorsName), a.releaseKey)
+      : null;
+  adminEmbedder ??= wasmQueryEmbedder();
+  const answer = await runCollectionOperation(op, entry, main.releaseKey, params, {
+    embedQuery: adminEmbedder,
+    anchors,
+    explain: opts.explain === true,
+  });
+  return { state: "ready", error: null, status: answer.status, body: answer.body };
+}
+
+const plainText = (v: unknown): string =>
+  typeof v === "string"
+    ? v
+    : v && typeof v === "object" && typeof (v as { text?: unknown }).text === "string"
+      ? (v as { text: string }).text
+      : "";
+
+/** The pages one tool answer names, as the gateway numbers them for the visitor. */
+function chatToolHits(op: CollectionOperationManifest, body: unknown): ChatToolHit[] {
+  const b = (body ?? {}) as { hits?: unknown[]; documents?: unknown[] };
+  const rows = ((op.kind === "search" ? b.hits : b.documents) ?? []) as Record<string, unknown>[];
+  return rows.map((h) => {
+    const anchor = (h.snippet as { anchor?: unknown } | null | undefined)?.anchor;
+    return {
+      id: String(h.id ?? ""),
+      url: plainText(h.url),
+      title: plainText(h.title),
+      anchor: typeof anchor === "string" && anchor !== "" ? anchor : null,
+    };
+  });
+}
+
+/**
+ * `ctx.chatTools` (#1655): the tools a plugin's own `ai-chat` operations
+ * declare, run as the gateway runs them for a visitor (the same parameters,
+ * the same executor), here on a Stage's, the newest staged or the live
+ * release. Only a declared tool of the named conversation runs, as the
+ * plugin that owns the collection, and only while that plugin is active:
+ * the Owner approved exactly these tools with the conversation, so a
+ * site assistant's audit and previews reach nothing a visitor's turn could
+ * not.
+ */
+export function makePluginChatTools(plugin: LoadedPlugin, infra: PluginHostInfra): PluginChatTools {
+  const conversations = (plugin.definition.aiChatOperations ?? []).map((o) =>
+    aiChatOperationManifest.parse(o),
+  );
+  return Object.freeze({
+    run: async (
+      conversation: string,
+      tool: AiChatTool,
+      input: Readonly<Record<string, string>>,
+      opts: { readonly lang: string; readonly runId?: string; readonly at?: "staged" | "live" },
+    ): Promise<ChatToolResult> => {
+      const conv = conversations.find((c) => c.name === conversation);
+      if (!conv)
+        throw new Error(
+          `ctx.chatTools.run: plugin "${plugin.slug}" declares no conversation "${conversation}"`,
+        );
+      if (!conv.tools.some((t) => t.plugin === tool.plugin && t.operation === tool.operation))
+        throw new Error(
+          `ctx.chatTools.run: ${tool.plugin}/${tool.operation} is not a tool of "${conversation}": only the tools a conversation declares run`,
+        );
+      const owner = tool.plugin === plugin.slug ? plugin : loadedPlugins.bySlug(tool.plugin);
+      if (!owner || isPluginDisabled(owner.slug))
+        return { state: "none", error: `plugin "${tool.plugin}" is not active`, hits: [] };
+      const op = (owner.definition.collectionOperations ?? [])
+        .map((o) => collectionOperationManifest.parse(o))
+        .find((o) => o.name === tool.operation);
+      if (!op || (op.kind !== "search" && op.kind !== "read"))
+        return {
+          state: "none",
+          error: `${tool.plugin}/${tool.operation} is no search or read operation`,
+          hits: [],
+        };
+      const r = await queryCollectionOperation(
+        owner,
+        infra,
+        op,
+        aiChatToolParams(op, input, opts.lang),
+        opts.runId ? { runId: opts.runId } : { at: opts.at ?? "staged" },
+      );
+      if (r.state !== "ready") return { state: r.state, error: r.error, hits: [] };
+      if (r.status !== 200) {
+        const kind = (r.body as { error?: { kind?: unknown } } | null)?.error?.kind;
+        return {
+          state: "failed",
+          error: typeof kind === "string" ? kind : `HTTP ${r.status}`,
+          hits: [],
+        };
+      }
+      return { state: "ready", error: null, hits: chatToolHits(op, r.body) };
+    },
+  });
+}
+
 /** `ctx.collections` of one invocation. */
 export function makePluginCollections(
   plugin: LoadedPlugin,
@@ -526,12 +692,7 @@ export function makePluginCollections(
   invocation: PluginInvocation,
 ): PluginCollections {
   registerCollectionOps(infra.registry);
-  const ctx = {
-    actorId: plugin.pluginActorId,
-    actorKind: "plugin" as const,
-    pluginId: plugin.pluginId,
-    requestId: `plugin-${plugin.slug}-collections`,
-  };
+  const ctx = collectionActor(plugin);
   const run = async <T>(opName: string, input: unknown): Promise<T> => {
     const r = await execute(infra.registry, infra.adapter, ctx, opName, input);
     if (!r.ok) throw new Error("message" in r.error ? String(r.error.message) : r.error.kind);
@@ -608,57 +769,10 @@ export function makePluginCollections(
           throw new Error(
             `ctx.collections.${name}.query: plugin "${plugin.slug}" declares no collection operation "${operation}" on "${name}"`,
           );
-        const anchorsName = op.kind === "search" ? op.anchors?.collection : undefined;
-        const resolved = await run<{
-          releases: {
-            collection: string;
-            state: CollectionQueryResult["state"];
-            releaseKey: string | null;
-            error: string | null;
-            runId: string | null;
-          }[];
-        }>(COLLECTION_OPS.releaseOf, {
-          collections: anchorsName ? [name, anchorsName] : [name],
-          ...(opts.runId ? { runId: opts.runId } : { at: opts.at ?? "staged" }),
-        });
-        const main = resolved.releases[0];
-        if (!main || main.state !== "ready" || !main.releaseKey)
-          return {
-            state: main?.state ?? "none",
-            error: main?.error ?? null,
-            status: 503,
-            body: null,
-          };
-        // The live store when the live release is asked for; the staging one otherwise.
-        const store = collectionStoreFromEnv(
-          opts.at === "live" && !opts.runId
-            ? LIVE_COLLECTION_STORE_ENV
-            : STAGING_COLLECTION_STORE_ENV,
-        );
-        const entry = await openAdminRelease(
-          store,
-          collectionPrefix(plugin.slug, name),
-          main.releaseKey,
-        );
-        const a = resolved.releases[1];
-        const anchors =
-          anchorsName && a?.state === "ready" && a.releaseKey
-            ? await openAdminRelease(
-                store,
-                collectionPrefix(plugin.slug, anchorsName),
-                a.releaseKey,
-              )
-            : null;
         const search = new URLSearchParams();
         for (const [k, v] of Object.entries(params))
           for (const one of Array.isArray(v) ? v : [v as string]) search.append(k, one);
-        adminEmbedder ??= wasmQueryEmbedder();
-        const answer = await runCollectionOperation(op, entry, main.releaseKey, search, {
-          embedQuery: adminEmbedder,
-          anchors,
-          explain: opts.explain === true,
-        });
-        return { state: "ready", error: null, status: answer.status, body: answer.body };
+        return queryCollectionOperation(plugin, infra, op, search, opts);
       },
       getMany: async (ids: readonly string[]) => {
         const docs = new Map<string, CollectionDocInput>();

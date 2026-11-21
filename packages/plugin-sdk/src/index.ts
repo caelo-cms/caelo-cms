@@ -42,6 +42,7 @@ import {
   aiChatOperationManifest,
   checkAiChatOperations,
   MAX_AI_CHAT_OPERATIONS,
+  type PluginChatTools,
 } from "./ai-chat-operations.js";
 import { MAX_BATCH_OPERATIONS, pluginBatchOperation } from "./batch.js";
 import {
@@ -2235,6 +2236,12 @@ export interface PluginContext {
   readonly config?: PluginConfigReader;
   /** #1648 — write handles of the plugin's collections; present in admin and batch calls of a plugin with the grant. */
   readonly collections?: PluginCollections;
+  /**
+   * #1655 — the declared tools of the plugin's `ai-chat` operations, run as
+   * the gateway runs them (Stage audit, previews). Present on the admin side
+   * for a plugin with the `visitor_ai` grant that declares a conversation.
+   */
+  readonly chatTools?: PluginChatTools;
 }
 
 /** Reads a plugin's configuration (#1645). Missing stored configuration is an error, never a silent default. */

@@ -32,6 +32,7 @@
     "@caelo-cms/plugin-ratings": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*",
     "@caelo-cms/plugin-sdk": "workspace:*",
+    "@caelo-cms/plugin-site-assistant": "workspace:*",
     "@caelo-cms/plugin-site-search": "workspace:*",
     "@caelo-cms/static-generator": "workspace:*",
     "drizzle-orm": "0.45.4"

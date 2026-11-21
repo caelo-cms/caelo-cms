@@ -14,6 +14,8 @@
 
 // #1649 / #1650 — declared collection operations, executed by core code.
 export {
+  AI_CHAT_SEARCH_HITS,
+  aiChatToolParams,
   type CollectionAnswer,
   MAX_QUERY_WORDS,
   ModelUnavailableError,
@@ -44,6 +46,12 @@ export { registerGatewayOperations } from "./gateway-ops.js";
 export { verifyMailUnsubscribeToken } from "./mail-link-token.js";
 export { checkShippedManifests } from "./manifest-definition.js";
 export { unpublishedRegistryError } from "./published-state.js";
+// #1655 — released visitor-visible configuration for public declarations.
+export {
+  type PublishedVisitorConfigReader,
+  publishedVisitorConfig,
+  setPublishedVisitorConfigReader,
+} from "./published-visitor-config.js";
 export {
   resolveVisitorConsentRule,
   VISITOR_CONSENT_HEADER,

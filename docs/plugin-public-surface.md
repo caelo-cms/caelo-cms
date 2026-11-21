@@ -47,7 +47,7 @@ A value (`values`, `where`) comes `from` one of: `input` (a top-level field or `
 An insert's extras, in the order the host applies them:
 
 1. `honeypot` — a field bots fill; when it holds anything the visitor gets its `answer` and `store: "nothing"` stores nothing, `"marked"` stores the row with its `values` overriding (a form's `status: "spam"`).
-2. `onlyIf` — a `column` of a published (or published-admin) row must equal `equals`; otherwise the visitor gets its `answer` and nothing is stored (a switch the Owner sets, such as counting searches).
+2. `onlyIf` — a `column` of a published (or published-admin) row must equal `equals`, or with `config: "<leaf>"` (#1655) the plugin's released value of a `visitorVisible` config leaf must; otherwise the visitor gets its `answer` and nothing is stored (a switch the Owner sets, such as counting searches or keeping the site assistant's feedback). A config switch is published with the release (`published_plugin_visitor_config`), so it goes live with the Publish live that ships it; where no released value is readable (an admin process), nothing is stored.
 3. `drop` — any of its `fields` that looks like personal data (`email`, `phone`, `long-number`: six digits in a row or card/IBAN groups) answers its `answer` and stores nothing (`matchesDropPattern` in the SDK).
 4. `checks` — `not-blank`, `equals-row` (the field equals a column of a published row: the current policy version), `all-in` (every element is a value of a published column: known consent categories), `form-fields` (the field fits a field definition stored in a published row). A failed check refuses with its `refusal` words.
 5. the insert; `answer` may name `{ from: "inserted-id" }`.

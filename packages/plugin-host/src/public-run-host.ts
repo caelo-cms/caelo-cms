@@ -31,6 +31,7 @@ import {
 import { COMMENT_THREAD_BLOCKS } from "./public-blocks/comment-thread.js";
 import { MAIL_BLOCKS } from "./public-blocks/mail-blocks.js";
 import { VISITOR_AUTH_BLOCKS } from "./public-blocks/visitor-auth.js";
+import { publishedVisitorConfig } from "./published-visitor-config.js";
 
 type BlockFn = (
   ctx: PluginContextTier1,
@@ -198,6 +199,7 @@ async function runInsert(
   run: Extract<PublicRun, { action: "insert" }>,
   args: unknown,
   ctx: PluginContextTier1,
+  pluginId: string | undefined,
 ): Promise<unknown> {
   if (run.honeypot && honeypotTripped(args, run.honeypot.field)) {
     // Same answer as a real submission: the bot learns nothing.
@@ -209,7 +211,12 @@ async function runInsert(
     const r = await ctx.query.insert(run.table, row);
     return answerOf(run.honeypot.answer, r.id);
   }
-  if (run.onlyIf) {
+  if (run.onlyIf && "config" in run.onlyIf) {
+    // The released value; none readable here (or not released yet) stores nothing.
+    const values = pluginId ? await publishedVisitorConfig(pluginId) : null;
+    if ((values?.[run.onlyIf.config] ?? null) !== run.onlyIf.equals)
+      return answerOf(run.onlyIf.answer, null);
+  } else if (run.onlyIf) {
     const rows = await sourceQuery(ctx, run.onlyIf.source.of).list(run.onlyIf.source.table, {
       limit: 1,
     });
@@ -253,11 +260,13 @@ export async function runDeclaredPublicOperation(
   op: PublicOperationDef,
   ctx: PluginContextTier1,
   args: unknown,
+  /** The plugin's id: an `onlyIf: { config }` switch reads its released configuration. */
+  pluginId?: string,
 ): Promise<unknown> {
   const run = op.run;
   switch (run.action) {
     case "insert":
-      return runInsert(run, args, ctx);
+      return runInsert(run, args, ctx, pluginId);
     case "list":
       return runList(run, args, ctx);
     case "block": {

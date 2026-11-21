@@ -181,6 +181,7 @@ const execute = async (message) => {
     ...(message.hasPrivateFiles ? { privateFiles: handles("privateFiles", ["begin", "writeChunk", "commit", "stat", "readChunk", "remove"]) } : {}),
     ...(message.hasConfig ? { config: configHandle() } : {}),
     ...(message.collections && message.collections.length > 0 ? { collections: collectionsOf(message.collections) } : {}),
+    ...(message.hasChatTools ? { chatTools: ObjectFreeze({ run: (conversation, tool, input, opts) => rpc("chatTools.run", conversation, tool, input, opts || {}) }) } : {}),
     api: handles("api", ["list", "get"]),
     captcha: handles("captcha", ["requireProof"]),
     theme: ObjectFreeze(message.theme), visitor: ObjectFreeze(message.visitor),

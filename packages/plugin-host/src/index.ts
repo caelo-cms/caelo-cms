@@ -71,6 +71,8 @@ export {
   withAssetContent,
 } from "./client-assets.js";
 export {
+  AI_CHAT_SEARCH_HITS,
+  aiChatToolParams,
   type CollectionAnswer,
   type HitExplanation,
   MAX_QUERY_WORDS,
@@ -92,6 +94,7 @@ export {
   decodeChangeFile,
   encodeChangeFile,
   LIVE_COLLECTION_STORE_ENV,
+  makePluginChatTools,
   makePluginCollections,
   registerCollectionOps,
   resetCollectionStores,
@@ -329,6 +332,11 @@ export {
   resolvePublicPageUrls,
 } from "./public-urls.js";
 export { unpublishedRegistryError } from "./published-state.js";
+export {
+  type PublishedVisitorConfigReader,
+  publishedVisitorConfig,
+  setPublishedVisitorConfigReader,
+} from "./published-visitor-config.js";
 export {
   type PluginNotRunning,
   pluginNotRunningMarker,

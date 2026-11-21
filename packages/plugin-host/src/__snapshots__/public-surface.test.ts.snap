@@ -1251,3 +1251,133 @@ exports[`shipped plugins' public surface (#1332) site-search: matches the review
   },
 }
 `;
+
+exports[`shipped plugins' public surface (#1332) site-assistant: matches the reviewed surface 1`] = `
+{
+  "mailTemplates": {},
+  "mailUnsubscribe": null,
+  "publicOperations": [
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "helpful",
+              "not_helpful",
+              "unanswered",
+            ],
+            "type": "string",
+          },
+          "lang": {
+            "pattern": "^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$",
+            "type": "string",
+          },
+          "note": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string",
+          },
+          "question": {
+            "maxLength": 500,
+            "minLength": 1,
+            "type": "string",
+          },
+          "website": {
+            "maxLength": 200,
+            "type": "string",
+          },
+        },
+        "required": [
+          "kind",
+          "lang",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "feedback",
+      "rateLimit": {
+        "max": 20,
+        "windowSeconds": 60,
+      },
+      "reads": [],
+      "run": {
+        "action": "insert",
+        "answer": {
+          "recorded": true,
+        },
+        "drop": {
+          "answer": {
+            "recorded": true,
+          },
+          "fields": [
+            "question",
+            "note",
+          ],
+          "patterns": [
+            "email",
+            "phone",
+            "long-number",
+          ],
+        },
+        "honeypot": {
+          "answer": {
+            "recorded": true,
+          },
+          "field": "website",
+          "store": "nothing",
+        },
+        "onlyIf": {
+          "answer": {
+            "recorded": true,
+          },
+          "config": "feedback.enabled",
+          "equals": true,
+        },
+        "table": "feedback",
+        "values": {
+          "day": {
+            "from": "today",
+          },
+          "kind": {
+            "field": "kind",
+            "from": "input",
+          },
+          "lang": {
+            "field": "lang",
+            "from": "input",
+          },
+          "note": {
+            "field": "note",
+            "from": "input",
+            "optional": true,
+            "trim": true,
+          },
+          "question": {
+            "field": "question",
+            "from": "input",
+            "optional": true,
+            "trim": true,
+          },
+        },
+      },
+      "writes": [
+        "feedback",
+      ],
+    },
+  ],
+  "requires": [
+    "visitor-ai",
+  ],
+  "tables": {
+    "feedback": {
+      "kind": "inbox",
+      "visitorPrivileges": [
+        "INSERT",
+      ],
+    },
+  },
+}
+`;

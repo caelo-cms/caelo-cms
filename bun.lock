@@ -95,6 +95,7 @@
         "@caelo-cms/plugin-ratings": "workspace:*",
         "@caelo-cms/plugin-sandbox": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
+        "@caelo-cms/plugin-site-assistant": "workspace:*",
         "@caelo-cms/plugin-site-search": "workspace:*",
         "@caelo-cms/static-generator": "workspace:*",
         "drizzle-orm": "0.45.4",
@@ -157,6 +158,7 @@
         "@caelo-cms/plugin-consent-manager": "workspace:*",
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/plugin-sandbox": "workspace:*",
+        "@caelo-cms/plugin-site-assistant": "workspace:*",
         "@caelo-cms/plugin-site-search": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
@@ -373,6 +375,13 @@
       },
       "devDependencies": {
         "@caelo-cms/plugin-host": "workspace:*",
+      },
+    },
+    "packages/plugins/site-assistant": {
+      "name": "@caelo-cms/plugin-site-assistant",
+      "version": "0.0.0",
+      "dependencies": {
+        "@caelo-cms/plugin-sdk": "workspace:*",
       },
     },
     "packages/plugins/site-search": {
@@ -593,6 +602,8 @@
     "@caelo-cms/plugin-sandbox": ["@caelo-cms/plugin-sandbox@workspace:packages/plugin-sandbox"],
 
     "@caelo-cms/plugin-sdk": ["@caelo-cms/plugin-sdk@workspace:packages/plugin-sdk"],
+
+    "@caelo-cms/plugin-site-assistant": ["@caelo-cms/plugin-site-assistant@workspace:packages/plugins/site-assistant"],
 
     "@caelo-cms/plugin-site-search": ["@caelo-cms/plugin-site-search@workspace:packages/plugins/site-search"],
 

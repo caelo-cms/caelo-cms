@@ -16,7 +16,11 @@
  * stores count as untrusted too.
  */
 
-import type { CollectionAnswer, OpenEntry } from "@caelo-cms/plugin-host/gateway";
+import {
+  aiChatToolParams,
+  type CollectionAnswer,
+  type OpenEntry,
+} from "@caelo-cms/plugin-host/gateway";
 import type { AiChatTool, CollectionOperationManifest } from "@caelo-cms/plugin-sdk";
 import { type ToolSet, tool } from "ai";
 import { z } from "zod";
@@ -27,9 +31,6 @@ export const TOOL_RESULT_MAX_BYTES = 12_000;
 
 /** Bytes a tool call's own input takes at most (a query or a path). */
 export const TOOL_CALL_MAX_BYTES = 800;
-
-/** Hits a search tool returns to the model. */
-const SEARCH_HITS = 5;
 
 /** A resolved tool: the declared operation, where its release lives. */
 export interface ResolvedTool {
@@ -160,15 +161,9 @@ export function buildTools(
           if (!ctx.mayCall()) return unavailable("TooManyToolCalls");
           const release = await runtime.release(t);
           if (!release) return unavailable("IndexNotReady");
-          const answer = await runtime.run(
-            t,
-            release,
-            new URLSearchParams({
-              q: query,
-              lang: ctx.lang,
-              limit: String(Math.min(SEARCH_HITS, op.maxResults)),
-            }),
-          );
+          // The same parameters an admin-side run sends (the Stage audit of a
+          // site assistant, #1655): both see the same pages.
+          const answer = await runtime.run(t, release, aiChatToolParams(op, { query }, ctx.lang));
           if (answer.status !== 200) return unavailable(errorKind(answer));
           const hits = ((answer.body as { hits?: unknown[] }).hits ?? []) as Record<
             string,
@@ -204,12 +199,7 @@ export function buildTools(
           if (!ctx.mayCall()) return unavailable("TooManyToolCalls");
           const release = await runtime.release(t);
           if (!release) return unavailable("IndexNotReady");
-          const value = input[by] ?? "";
-          const answer = await runtime.run(
-            t,
-            release,
-            new URLSearchParams(op.by === "id" ? { id: value } : { value }),
-          );
+          const answer = await runtime.run(t, release, aiChatToolParams(op, input, ctx.lang));
           if (answer.status !== 200) return unavailable(errorKind(answer));
           const docs = ((answer.body as { documents?: unknown[] }).documents ?? []) as Record<
             string,

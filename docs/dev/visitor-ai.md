@@ -100,6 +100,10 @@ On `gcp` (load balancer) and self-hosted (Caddy) `/api/*` streams on the site's 
 
 The CSP's `connect-src` names it only while a plugin with a conversation is active: the build adds the live gateway's origin, attributed to that plugin (`collectBuildAssets`), and the staging gateway adds its own when it serves the staged pages (the build renders the live site).
 
+## Admin-side runs of the tools
+
+`ctx.chatTools` (#1655) lets a plugin with the `visitor_ai` grant run its own conversation's declared tools on the admin side, with the parameters the gateway sends (`aiChatToolParams`, shared): a Stage audit checks what visitors' questions would find on the Stage's index, a preview shows the sources of a question. Only declared tools of the named conversation run, as the plugin that owns the collection ([site-assistant.md](./site-assistant.md)).
+
 ## Testing
 
 `setVisitorAiModelFactoryForTests(f)` (`provider.ts`) replaces the provider with any `LanguageModel`; `scriptedVisitorModel(script)` (`scripted-model.ts`) is the AI SDK's `MockLanguageModelV4` behaving like a model with the conversation's tools: it searches the question's words, answers from the first source citing `[n]`, records the tool names it was offered, and takes overrides (an injected page asking for a write tool, an invented link, a delay). The key file is still read, so "no key → unavailable" is tested with the real path. `apps/api-gateway/e2e/visitor-ai-site.ts` is the browser fixture: the real gateway on its own database identity, a release, the settings published, the scripted model; it prints `READY <port>`.

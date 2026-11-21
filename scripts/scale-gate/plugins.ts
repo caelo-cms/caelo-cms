@@ -16,9 +16,10 @@ import formsPlugin from "@caelo-cms/plugin-forms";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import newsletterPlugin from "@caelo-cms/plugin-newsletter";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
+import siteAssistantPlugin from "@caelo-cms/plugin-site-assistant";
 import siteSearchPlugin from "@caelo-cms/plugin-site-search";
 
-/** The shipped plugins, dependencies first (ratings requires consent-manager). */
+/** The shipped plugins, dependencies first (ratings requires consent-manager, site-assistant site-search). */
 export const SHIPPED_PLUGINS = [
   intlPlugin,
   consentPlugin,
@@ -28,6 +29,8 @@ export const SHIPPED_PLUGINS = [
   newsletterPlugin,
   ratingsPlugin,
   siteSearchPlugin,
+  // Requires site-search: after it.
+  siteAssistantPlugin,
 ] as const;
 
 /** Their slugs. */

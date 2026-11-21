@@ -60,6 +60,7 @@
  */
 
 import { z } from "zod";
+import type { PluginConfigSchema } from "./config.js";
 import { checkPublicRun, type PublicRun, publicRun } from "./public-run.js";
 
 /** The four kinds a public (`schema`) table can have. */
@@ -211,6 +212,7 @@ export function checkPublicSurface(
     readonly mailTemplates?: Readonly<Record<string, unknown>>;
     readonly operations: ReadonlyArray<string>;
     readonly publicOperations?: ReadonlyArray<PublicOperationManifest>;
+    readonly config?: PluginConfigSchema;
   },
   addIssue: (path: (string | number)[], message: string) => void,
 ): void {
