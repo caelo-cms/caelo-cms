@@ -86,6 +86,12 @@ interface RunState {
   readonly offered: Map<string, Map<string, string>>;
   /** Per plugin with page settings, per offered page: the hash of those settings. */
   readonly settings: Map<string, Map<string, string>>;
+  /**
+   * Per plugin with placement steps, per offered page: the step of each of
+   * its modules. A step can move with the site's size alone (the half
+   * rule), so it is part of what the plugin received for the page.
+   */
+  readonly pageSteps: Map<string, Map<string, string>>;
   /** Per plugin with placement steps: its thresholds this Stage (from its configuration). */
   readonly steps: Map<string, { thresholds: number[]; halfFrom?: number }>;
   /** Plugins whose observer failed in this run, with the first error. */
@@ -103,6 +109,7 @@ function stateOf(runId: string): RunState {
       digests: new Map(),
       offered: new Map(),
       settings: new Map(),
+      pageSteps: new Map(),
       steps: new Map(),
       failed: new Map(),
       publishedPageCount: 0,
@@ -258,6 +265,7 @@ async function offeredHashes(
   pages: readonly OfferedPage[],
   state: RunState,
   settingsOut: Map<string, string>,
+  stepsOut: Map<string, string>,
 ): Promise<Map<string, string>> {
   const steps = await placementThresholds(plugin, runId, state);
   const stepsOf = (p: OfferedPage): string =>
@@ -270,8 +278,12 @@ async function offeredHashes(
           .sort()
           .join(",")
       : "";
-  const withSteps = (p: OfferedPage, base: string): string =>
-    steps ? sha256(`${base}\n${stepsOf(p)}`) : base;
+  const withSteps = (p: OfferedPage, base: string): string => {
+    if (!steps) return base;
+    const key = stepsOf(p);
+    stepsOut.set(p.pageId, key);
+    return sha256(`${base}\n${key}`);
+  };
   if (!plugin.definition.entityConfig?.page || !hasConfig(plugin)) {
     return new Map(pages.map((p) => [p.pageId, withSteps(p, p.htmlHash)] as const));
   }
@@ -296,7 +308,12 @@ async function offeredHashes(
  */
 function receivedHash(state: RunState, pluginId: string, facts: PageOutputFacts): string {
   const settings = state.settings.get(pluginId)?.get(facts.pageId);
-  return settings ? sha256(`${facts.outputHash}\n${settings}`) : facts.outputHash;
+  const steps = state.pageSteps.get(pluginId)?.get(facts.pageId);
+  let hash = settings ? sha256(`${facts.outputHash}\n${settings}`) : facts.outputHash;
+  // The modules' steps: a block whose step moved with the site's size comes
+  // again although the page's facts are the same.
+  if (steps !== undefined) hash = sha256(`${hash}\nsteps:${steps}`);
+  return hash;
 }
 
 /** The pages whose facts some observer needs. */
@@ -323,7 +340,12 @@ export async function pageOutputNeeds(
         settings = new Map();
         state.settings.set(plugin.pluginId, settings);
       }
-      const hashes = await offeredHashes(plugin, runId, chunk, state, settings);
+      let pageSteps = state.pageSteps.get(plugin.pluginId);
+      if (!pageSteps) {
+        pageSteps = new Map();
+        state.pageSteps.set(plugin.pluginId, pageSteps);
+      }
+      const hashes = await offeredHashes(plugin, runId, chunk, state, settings, pageSteps);
       let offered = state.offered.get(plugin.pluginId);
       if (!offered) {
         offered = new Map();

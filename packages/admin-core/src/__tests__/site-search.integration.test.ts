@@ -123,6 +123,11 @@ async function wipe(): Promise<void> {
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug = ${slug})`;
       await tx`DELETE FROM pages WHERE slug = ${slug}`;
     }
+    // The pages and the banner of the site-size test.
+    await tx`DELETE FROM pages_seo WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE 't1651-x%')`;
+    await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE 't1651-x%')`;
+    await tx`DELETE FROM pages WHERE slug LIKE 't1651-x%'`;
+    await tx`DELETE FROM modules WHERE slug = 't1651-banner'`;
     await tx`DELETE FROM modules WHERE slug IN (${MOD}, ${TEASER})`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL})`;
     await tx`DELETE FROM templates WHERE slug = ${TPL}`;
@@ -514,5 +519,70 @@ describe("the site search (#1651)", () => {
     // only in the last step.
     const hits = (await preview("gratis")).map((h) => h.url);
     expect(hits.sort()).toEqual(["/", `/${PAGES[0]}`, `/${PAGES[2]}`].sort());
+  });
+
+  it("a block whose step moves with the site's size is delivered again on every page it is on", async () => {
+    // The half-of-all-pages rule (halfFrom 11): one shared block on 11 of
+    // 21 pages counts only on its home page (it has none here: nowhere);
+    // once the site has 22 pages it counts reduced on all 11, although
+    // neither the block nor its pages changed.
+    await ok("plugin_config.update", {
+      pluginSlug: SLUG,
+      patch: { counting: { full_max: 2, reduced_max: 30 } },
+    });
+    const { templateId } = await sqlSystem(
+      async (tx) =>
+        (
+          (await tx`SELECT id::text AS "templateId" FROM templates WHERE slug = ${TPL}`) as {
+            templateId: string;
+          }[]
+        )[0] as { templateId: string },
+    );
+    const banner = await ok<{ moduleId: string }>("modules.create", {
+      slug: "t1651-banner",
+      displayName: "Banner",
+      html: "<aside><p>{{claim}}</p></aside>",
+      fields: [{ name: "claim", kind: "text", label: "Claim" }] as never,
+    });
+    const shared = await ok<{ contentInstanceId: string }>("content_instances.create", {
+      moduleId: banner.moduleId,
+      purpose: "The loyalty banner shown on many pages.",
+      values: { claim: "Sonderaktion für Stammkunden" },
+    });
+    let n = 0;
+    const addPage = async (withBanner: boolean) => {
+      const slug = `t1651-x${n++}`;
+      const { pageId } = await ok<{ pageId: string }>("pages.create", {
+        slug,
+        title: `Seite ${n}`,
+        templateId,
+      });
+      await ok("pages.set_modules", {
+        pageId,
+        blocks: [{ blockName: "content", moduleIds: withBanner ? [banner.moduleId] : [] }],
+      });
+      if (withBanner)
+        await ok("placement.set_content", {
+          pageId,
+          blockName: "content",
+          position: 0,
+          contentInstanceId: shared.contentInstanceId,
+          syncMode: "synced",
+        });
+      await ok("pages.update", { pageId, status: "published" });
+      await ok("pages_seo.autofill", { pageId, metaDescription: `About ${slug}.` });
+    };
+    const [{ published }] = (await sqlSystem(
+      async (tx) => tx`SELECT count(*)::int AS published FROM pages WHERE status = 'published'`,
+    )) as [{ published: number }];
+    for (let i = 0; i < 11; i++) await addPage(true);
+    while (published + n < 21) await addPage(false);
+    await stage();
+    expect(await preview("Sonderaktion")).toEqual([]);
+    // One more page without the banner: the site has 22.
+    await addPage(false);
+    await stage();
+    // Reduced on all 11 of its pages (the preview shows ten).
+    expect((await preview("Sonderaktion")).length).toBe(10);
   });
 });

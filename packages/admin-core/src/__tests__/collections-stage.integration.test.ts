@@ -817,6 +817,48 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(row).toEqual({ applied: null, discarded: true });
   });
 
+  it("a Stage does not take the writes of a Stage still running", async () => {
+    // Stage B started after A released its build lease and wrote before A's
+    // plan: B's outcome decides its writes (its own plan, or its discard).
+    const [plugin] = (await sqlSystem(
+      async (tx) => tx`SELECT id::text AS id FROM plugins WHERE slug = ${PLUGIN}`,
+    )) as { id: string }[];
+    const inFlight = crypto.randomUUID();
+    await sqlSystem(
+      async (tx) =>
+        tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, lease_expires_at)
+           SELECT ${inFlight}::uuid, id, ${SYSTEM_ACTOR_ID}::uuid, 'running',
+                  clock_timestamp() + interval '10 minutes'
+           FROM deploy_targets WHERE name = 'staging'`,
+    );
+    // Its file is not in the store: a claim of it would fail the index job.
+    const [write] = (await sqlSystem(
+      async (tx) =>
+        tx`INSERT INTO collection_changes (plugin_id, collection, run_id, store_key, upserts, deletes, bytes)
+           VALUES (${plugin?.id}::uuid, 'pages', ${inFlight}::uuid, ${`${PLUGIN}/pages/changes/t-in-flight.json`}, 1, 0, 10)
+           RETURNING id::text AS id`,
+    )) as { id: string }[];
+    try {
+      await setText(PAGES[1] as string, "Lieferung jetzt auch am Samstag.");
+      const run = await stage();
+      expect((await indexState(run)).state).toBe("ready");
+      const [row] = (await sqlSystem(
+        async (tx) =>
+          tx`SELECT run_id::text AS run, applied_run_id IS NULL AS unapplied
+             FROM collection_changes WHERE id = ${write?.id}::uuid`,
+      )) as { run: string; unapplied: boolean }[];
+      expect(row).toEqual({ run: inFlight, unapplied: true });
+    } finally {
+      await sqlSystem(
+        async (tx) => tx`DELETE FROM collection_changes WHERE id = ${write?.id}::uuid`,
+      );
+      await sqlSystem(
+        async (tx) =>
+          tx`UPDATE deploy_runs SET status = 'failed', finished_at = now() WHERE id = ${inFlight}::uuid`,
+      );
+    }
+  });
+
   it("the clean-up keeps the newest ready index however many failed Stages follow it", async () => {
     // The next plan builds on the newest ready release (previousReady): if
     // failed Stages pushed it out of the retention window and the clean-up

@@ -330,7 +330,19 @@ describe("the AI spend ledger (#1653)", () => {
     await sys((tx) =>
       tx.execute(sql`UPDATE plugins SET ai_cost_cap_microcents = 45000 WHERE slug = ${SLUG}`),
     );
+    // Every admitted call holds its reservation until all eight were
+    // decided: a call that settled first would free its worst case and let
+    // a later one in, which is right, but not what this test counts.
+    const CALLS = 8;
     let providerCalls = 0;
+    let refusedCalls = 0;
+    let open = (): void => {};
+    const decided = new Promise<void>((r) => {
+      open = r;
+    });
+    const check = () => {
+      if (providerCalls + refusedCalls === CALLS) open();
+    };
     const infra = {
       adapter,
       registry,
@@ -338,7 +350,8 @@ describe("the AI spend ledger (#1653)", () => {
         resolve: async () => ({ provider: PROVIDER, model: MODEL }),
         complete: async () => {
           providerCalls += 1;
-          await Bun.sleep(30);
+          check();
+          await decided;
           return {
             text: "ok",
             inputTokens: 100,
@@ -358,8 +371,14 @@ describe("the AI spend ledger (#1653)", () => {
     const ai = makePluginAi(plugin, infra, invocation);
     // Each call: prompt bound ≈ 2,000 + a few bytes, output 1,000 → ~15,0xx µ¢ reserved.
     const results = await Promise.allSettled(
-      Array.from({ length: 8 }, () =>
-        ai.complete({ system: "s", messages: [{ role: "user", content: "hi" }], maxTokens: 1_000 }),
+      Array.from({ length: CALLS }, () =>
+        ai
+          .complete({ system: "s", messages: [{ role: "user", content: "hi" }], maxTokens: 1_000 })
+          .catch((e: unknown) => {
+            refusedCalls += 1;
+            check();
+            throw e;
+          }),
       ),
     );
     const refused = results.filter((r) => r.status === "rejected");

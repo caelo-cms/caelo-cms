@@ -30,10 +30,10 @@ Core records per plugin and page what it delivered (`plugin_page_observations`).
 
 - its HTML;
 - the plugin's settings for that page (`entityConfig.page`);
-- the placement step of one of its modules, when the plugin declares `placementSteps`. The step is computed from `contentPlacementCount`, so a module reused with each page's own words never moves;
+- the placement step of one of its modules, when the plugin declares `placementSteps`. The step is computed from `contentPlacementCount`, so a module reused with each page's own words never moves. With `halfFrom` a step also moves with the site's size alone (a block on 11 of 21 pages is past half, on 11 of 22 it is not), and the steps are part of what the plugin received for the page, so those pages come again although their facts did not change;
 - the observer digest: the plugin's version and approved artifact, its configuration without `immediate` fields, and its module settings. A new digest sends every page again.
 
-A page whose HTML changed but whose facts and settings did not is recorded without a call. Deliveries are pending until the Stage succeeds; a failed build discards them, so the next Stage sends those pages again (`page_output.commit_run` / `discard_run`).
+A page whose HTML changed but whose facts, settings and module steps did not is recorded without a call. Deliveries are pending until the Stage succeeds; a failed build discards them, so the next Stage sends those pages again (`page_output.commit_run` / `discard_run`).
 
 ## What an observer may write
 
