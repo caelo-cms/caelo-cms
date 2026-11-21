@@ -61,6 +61,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   editorToolbar: "Editor toolbar",
   requiresPlugins: "Required plugins",
   consentPurposes: "Visitor consent purposes",
+  consentProvider: "How it decides which consent covers what",
   bakedData: "Data baked into pages",
   config: "Its settings",
   entityConfig: "Its settings per page, module or page type",
