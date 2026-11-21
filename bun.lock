@@ -75,6 +75,7 @@
       "name": "@caelo-cms/api-gateway",
       "version": "0.0.0",
       "dependencies": {
+        "@caelo-cms/collection-index": "workspace:*",
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
@@ -141,6 +142,7 @@
         "@ai-sdk/anthropic": "^4.0.104",
         "@ai-sdk/google": "^4.0.120",
         "@ai-sdk/openai": "^4.0.117",
+        "@caelo-cms/collection-index": "workspace:*",
         "@caelo-cms/font-service": "workspace:*",
         "@caelo-cms/migrations": "workspace:*",
         "@caelo-cms/plugin-consent-manager": "workspace:*",
@@ -152,6 +154,7 @@
         "@caelo-cms/static-generator": "workspace:*",
         "@google-cloud/storage": "^8.4.0",
         "ai": "^7.0.172",
+        "croner": "11.0.0",
         "drizzle-orm": "0.45.4",
         "google-auth-library": "^11.3.4",
         "htmlparser2": "^12.0.0",
@@ -171,6 +174,13 @@
         "@caelo-cms/plugin-sdk": "workspace:*",
         "ajv": "8.20.0",
         "ajv-formats": "3.0.1",
+      },
+    },
+    "packages/collection-index": {
+      "name": "@caelo-cms/collection-index",
+      "version": "0.0.0",
+      "dependencies": {
+        "@orama/stemmers": "3.1.18",
       },
     },
     "packages/font-service": {
@@ -234,6 +244,7 @@
       "name": "@caelo-cms/plugin-host",
       "version": "0.0.0",
       "dependencies": {
+        "@caelo-cms/collection-index": "workspace:*",
         "@caelo-cms/font-service": "workspace:*",
         "@caelo-cms/plugin-sandbox": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
@@ -241,6 +252,7 @@
         "@caelo-cms/shared": "workspace:*",
         "croner": "11.0.0",
         "drizzle-orm": "0.45.4",
+        "htmlparser2": "^12.0.0",
         "zod": "4.6.7",
       },
       "devDependencies": {
@@ -272,6 +284,9 @@
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
+      },
     },
     "packages/plugins/comments": {
       "name": "@caelo-cms/plugin-comments",
@@ -279,6 +294,9 @@
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
       },
     },
     "packages/plugins/consent-manager": {
@@ -294,6 +312,9 @@
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
       },
     },
     "packages/plugins/international-site": {
@@ -311,6 +332,9 @@
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
       },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
+      },
     },
     "packages/plugins/ratings": {
       "name": "@caelo-cms/plugin-ratings",
@@ -318,6 +342,9 @@
       "dependencies": {
         "@caelo-cms/plugin-component-kit": "workspace:*",
         "@caelo-cms/plugin-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@caelo-cms/plugin-host": "workspace:*",
       },
     },
     "packages/provisioning": {
@@ -351,13 +378,6 @@
         "@caelo-cms/shared": "workspace:*",
         "drizzle-orm": "0.45.4",
         "zod": "4.6.7",
-      },
-    },
-    "packages/search-index": {
-      "name": "@caelo-cms/search-index",
-      "version": "0.0.0",
-      "dependencies": {
-        "@orama/stemmers": "3.1.18",
       },
     },
     "packages/shared": {
@@ -503,6 +523,8 @@
 
     "@caelo-cms/bug-intake": ["@caelo-cms/bug-intake@workspace:apps/bug-intake"],
 
+    "@caelo-cms/collection-index": ["@caelo-cms/collection-index@workspace:packages/collection-index"],
+
     "@caelo-cms/font-service": ["@caelo-cms/font-service@workspace:packages/font-service"],
 
     "@caelo-cms/mcp-auth-proxy": ["@caelo-cms/mcp-auth-proxy@workspace:apps/mcp-auth-proxy"],
@@ -538,8 +560,6 @@
     "@caelo-cms/provisioning": ["@caelo-cms/provisioning@workspace:packages/provisioning"],
 
     "@caelo-cms/query-api": ["@caelo-cms/query-api@workspace:packages/query-api"],
-
-    "@caelo-cms/search-index": ["@caelo-cms/search-index@workspace:packages/search-index"],
 
     "@caelo-cms/shared": ["@caelo-cms/shared@workspace:packages/shared"],
 

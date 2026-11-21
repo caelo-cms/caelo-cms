@@ -15,5 +15,8 @@
   "dependencies": {
     "@caelo-cms/plugin-sdk": "workspace:*",
     "@caelo-cms/plugin-component-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "@caelo-cms/plugin-host": "workspace:*"
   }
 }
