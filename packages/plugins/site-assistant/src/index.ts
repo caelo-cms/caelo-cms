@@ -74,7 +74,7 @@ function adminQueryOf(ctx: Ctx) {
 function chatToolsOf(ctx: Ctx) {
   if (!ctx.chatTools)
     throw new Error(
-      "site-assistant: running its conversation's tools needs the visitor_ai grant on the admin side",
+      "site-assistant: its conversation's tools run only in the admin, with the visitor_ai capability",
     );
   return ctx.chatTools;
 }
