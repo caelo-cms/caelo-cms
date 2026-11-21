@@ -151,6 +151,23 @@ describe("collection operations: every source honours the filter", () => {
   });
 });
 
+describe("collection operations: a link to a page the index does not hold", () => {
+  it("adds nothing: the page is offline, its link texts wait for it", async () => {
+    const pages = await entry(
+      [page("blog-preise", "Preise im Vergleich", "article")],
+      PAGES,
+      BASE_PROFILE,
+    );
+    const anchors = await entry(
+      [{ id: "a1", lang: "de", values: { text: "Tarife", target: "offline", sources: 9 } }],
+      ANCHORS,
+      { ...BASE_PROFILE, weights: { text: 1 } },
+    );
+    const r = await search(pages, anchors, { q: "Tarife", lang: "de" });
+    expect(r.hits).toEqual([]);
+  });
+});
+
 describe("collection operations: boosts keep what link texts add", () => {
   it("a boost for a type none of the hits has leaves their order alone", async () => {
     // B matches the words better; many pages link A with the query, which

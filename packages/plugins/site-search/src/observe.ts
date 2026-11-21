@@ -309,12 +309,15 @@ export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<O
   if (args.final) {
     if (args.removed.length > 0) {
       await pages.delete(args.removed);
+      // What the page said goes. What other pages and blocks say about it
+      // stays with them (their digests describe it): the search ignores a
+      // link to a page the index does not hold, and when the page comes
+      // back, the links to it count again without anyone rewriting them.
       await anchors.replace(
         "source",
         args.removed.map((id) => `p:${id}`),
         [],
       );
-      await anchors.replace("target", args.removed, []);
     }
     const goneModules = args.placementChanges.filter((c) => c.after === 0);
     if (goneModules.length > 0)

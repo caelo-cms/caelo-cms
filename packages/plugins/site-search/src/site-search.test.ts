@@ -502,6 +502,17 @@ describe("the observer", () => {
     expect(linkTexts(coll("anchors"))).toEqual(["Kontakt & Anfahrt", "Unser Blog"]);
   });
 
+  it("keeps the links to a page taken offline, so they count again when it comes back", async () => {
+    const { ctx, coll } = fakeCtx();
+    await observeOp(ctx, args([facts()]));
+    // Both link targets go offline; the page linking them does not change.
+    await observeOp(ctx, { ...args([], true), removed: ["p-kontakt", "p-blog"] });
+    expect(linkTexts(coll("anchors"))).toEqual(["Kontakt", "Unser Blog"]);
+    // They come back, and the unchanged page is delivered again.
+    await observeOp(ctx, args([facts()]));
+    expect(linkTexts(coll("anchors"))).toEqual(["Kontakt", "Unser Blog"]);
+  });
+
   it("writes a navigation block again when the index lost its last write with a failed Stage", async () => {
     const { ctx, calls, coll } = fakeCtx();
     await observeOp(ctx, args([facts()]));
