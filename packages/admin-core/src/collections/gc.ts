@@ -52,6 +52,16 @@ export const KEEP_PUBLISHES = 20;
 /** Store files one clean-up run deletes at most; the next run goes on. */
 export const MAX_DELETES_PER_RUN = 20_000;
 
+/**
+ * Files younger than this are never deleted, whatever the plan says. The
+ * keep set is read before the deletes, and a writer still in flight is in
+ * none of it yet: a Stage's index job writing new segments, a Publish live
+ * copying a release whose manifest lands last. Names are content-addressed
+ * and never rewritten, so a file's age is when it was written; every such
+ * writer finishes well inside the window, and the next round decides.
+ */
+export const GC_GRACE_MS = 6 * 60 * 60 * 1000;
+
 const planSchema = z.object({
   collections: z.array(
     z.object({
@@ -227,7 +237,12 @@ export interface CollectionsGcReport {
 /** One clean-up run over both stores. */
 export async function runCollectionsGc(
   deps: AdminJobDeps,
-  opts: { readonly keepStages?: number; readonly keepPublishes?: number } = {},
+  opts: {
+    readonly keepStages?: number;
+    readonly keepPublishes?: number;
+    /** Tests only: how old a file must be to go ({@link GC_GRACE_MS}). */
+    readonly graceMs?: number;
+  } = {},
 ): Promise<CollectionsGcReport> {
   const planned = await execute(
     deps.registry,
@@ -263,9 +278,12 @@ export async function runCollectionsGc(
         continue;
       }
       const keep = await keptFiles(store, prefix, c.keep);
+      const youngerThan = Date.now() - (opts.graceMs ?? GC_GRACE_MS);
       // A directory-like listing: every key under `<slug>/<collection>/`.
-      for (const key of await store.list(prefix)) {
+      for (const { key, writtenAt } of await store.listEntries(prefix)) {
         if (key.startsWith(changes) || keep.has(key)) continue;
+        // A writer in flight (above): this round leaves it, the next decides.
+        if (writtenAt > youngerThan) continue;
         if (deleted >= MAX_DELETES_PER_RUN) {
           complete = false;
           break;

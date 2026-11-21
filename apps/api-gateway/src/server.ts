@@ -997,7 +997,6 @@ async function stagingRequest(
     failures: site.failures,
     api: (admitted) => visitorRequest(admitted, conn, requestId),
     secure: process.env.NODE_ENV === "production",
-    connectSources: await stagingConnectSources(),
   });
 }
 
@@ -1112,23 +1111,6 @@ async function visitorRequest(
 let streamOrigin: Promise<string | null> | null = null;
 
 /**
- * #1654 — what the staged pages may also connect to: this gateway's own
- * stream origin while a conversation is attached. The build renders the
- * live site's (static-generator CSP), never staging's.
- */
-async function stagingConnectSources(): Promise<string[]> {
-  const chats = loadedPlugins.all().some((p) => (p.definition.aiChatOperations ?? []).length > 0);
-  if (!chats) return [];
-  try {
-    const origin = await ownStreamOrigin();
-    return origin ? [origin] : [];
-  } catch (e) {
-    console.warn(`[api-gateway] staging: no stream origin for the CSP: ${describeFailure(e)}`);
-    return [];
-  }
-}
-
-/**
  * #1654 — where the widget streams this gateway's conversations from: its
  * run.app origin on gcp-firebase (the Firebase rewrite buffers), the
  * site's own elsewhere (shared visitor-ai-origin.ts). Learned once: a
@@ -1136,7 +1118,10 @@ async function stagingConnectSources(): Promise<string[]> {
  */
 function ownStreamOrigin(): Promise<string | null> {
   if (!streamOrigin) {
-    streamOrigin = visitorAiStreamOrigin(process.env, { service: process.env.K_SERVICE });
+    streamOrigin = visitorAiStreamOrigin(process.env, {
+      service: process.env.K_SERVICE,
+      environment: process.env.CAELO_GATEWAY_ENVIRONMENT === "staging" ? "staging" : "live",
+    });
     streamOrigin.catch(() => {
       streamOrigin = null;
     });
@@ -1169,7 +1154,7 @@ async function aiChatInfoResponse(
       log: `ai-chat stream origin: ${describeFailure(e)}`,
     });
   }
-  const available = await aiChatAvailable(adapter, chat);
+  const { problem: available, limits } = await aiChatAvailable(adapter, chat);
   const response = jsonResponse(
     {
       ok: true,
@@ -1177,10 +1162,8 @@ async function aiChatInfoResponse(
         available: available === null,
         streamOrigin: origin,
         captcha: chat.op.captcha,
-        limits: {
-          maxTurns: chat.op.limits.maxTurns,
-          maxQuestionChars: chat.op.limits.maxQuestionChars,
-        },
+        // The limits the turn enforces (the Owner may lower the plugin's).
+        limits: { maxTurns: limits.maxTurns, maxQuestionChars: limits.maxQuestionChars },
       },
     },
     { requestId },

@@ -98,7 +98,9 @@ Staging gets its own key, by the Owner's choice the same one or none: a compromi
 
 On `gcp` (load balancer) and self-hosted (Caddy) `/api/*` streams on the site's own origin. On `gcp-firebase` the Firebase Hosting rewrite buffers `/api/**` until a response ends, so the widget streams from the gateway's own run.app origin: `https://<service>-<project number>.<region>.run.app`, which the gateway (from `K_SERVICE` and the metadata server) and the admin (from `CAELO_GATEWAY_SERVICE`, `CAELO_GATEWAY_REGION` and the metadata server) both derive; `CAELO_VISITOR_AI_STREAM_ORIGIN` overrides it (empty: the site's own). The gateway answers the CORS preflight and the turn with `Access-Control-Allow-Origin` for the site's published origins only, and the info `GET` names the origin.
 
-The CSP's `connect-src` names it only while a plugin with a conversation is active: the build adds the live gateway's origin, attributed to that plugin (`collectBuildAssets`), and the staging gateway adds its own when it serves the staged pages (the build renders the live site).
+The CSP's `connect-src` names it only while a plugin with a conversation is active: the build adds the live gateway's origin, attributed to that plugin (`collectBuildAssets`).
+
+Staged pages always stream from their own origin: the staging gateway serves the staged site itself, with no Firebase rewrite in front to buffer, and its gate admits only requests that carry the operator's staging cookie, which a cross-origin run.app request would not. So the staging gateway's info `GET` names no stream origin, and the widget sends its requests with the page's credentials (`credentials: "same-origin"`), as the site search does once the gate refuses a cookie-less read.
 
 ## Admin-side runs of the tools
 

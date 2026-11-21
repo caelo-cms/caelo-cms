@@ -55,15 +55,23 @@ export async function cloudRunInstanceLocation(
 /**
  * The origin to stream from, or null for the site's own. `service` and
  * `region` name the gateway (the admin's env); without `region` the
- * instance's own (a gateway asking about itself).
+ * instance's own (a gateway asking about itself). The staging gateway
+ * always streams on its own origin: it serves the staged site itself, with
+ * no Firebase rewrite in front to buffer, and its gate admits only requests
+ * carrying the operator's staging cookie, which a run.app request would not.
  */
 export async function visitorAiStreamOrigin(
   env: Readonly<Record<string, string | undefined>>,
-  gateway: { readonly service: string | undefined; readonly region?: string | undefined },
+  gateway: {
+    readonly service: string | undefined;
+    readonly region?: string | undefined;
+    readonly environment?: "live" | "staging";
+  },
   fetchFn: typeof fetch = fetch,
 ): Promise<string | null> {
   const override = env[VISITOR_AI_STREAM_ORIGIN_ENV];
   if (override !== undefined) return override.trim() === "" ? null : new URL(override).origin;
+  if (gateway.environment === "staging") return null;
   if (env.CAELO_PROVIDER !== "gcp-firebase") return null;
   if (!gateway.service)
     throw new Error(

@@ -6,6 +6,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import type { CollectionAnswer, OpenEntry } from "@caelo-cms/plugin-host/gateway";
+import { readOperationManifest, searchOperationManifest } from "@caelo-cms/plugin-sdk";
 import {
   cloudRunServiceOrigin,
   visitorAiStreamOrigin,
@@ -13,7 +15,13 @@ import {
 } from "@caelo-cms/shared";
 import { turnWorstCase } from "./chat.js";
 import { CORE_RULES, systemPrompt } from "./prompt.js";
-import { sitePath, TurnSources } from "./tools.js";
+import {
+  buildTools,
+  type ResolvedTool,
+  sitePath,
+  TOOL_RESULT_MAX_BYTES,
+  TurnSources,
+} from "./tools.js";
 import {
   CONVERSATION_MAX_AGE_MS,
   type SignedTurn,
@@ -165,6 +173,14 @@ describe("the stream origin", () => {
         metadata,
       ),
     ).toBe("https://caelo-production-data-gateway-123456789.europe-west1.run.app");
+    // The staging gateway serves the staged site itself, behind its cookie gate.
+    expect(
+      await visitorAiStreamOrigin(
+        { CAELO_PROVIDER: "gcp-firebase" },
+        { service: "caelo-production-staging-gateway", environment: "staging" },
+        metadata,
+      ),
+    ).toBeNull();
     expect(
       await visitorAiStreamOrigin({ CAELO_VISITOR_AI_STREAM_ORIGIN: "" }, { service: undefined }),
     ).toBeNull();
@@ -172,5 +188,89 @@ describe("the stream origin", () => {
       visitorAiStreamOrigin({ CAELO_PROVIDER: "gcp-firebase" }, { service: undefined }, metadata),
     ).rejects.toThrow("cms-provision upgrade");
     expect(() => cloudRunServiceOrigin("Bad_Name", "1", "europe-west1")).toThrow();
+  });
+});
+
+describe("the conversation's tools", () => {
+  const SITE = ["https://example.com"];
+  const search: ResolvedTool = {
+    decl: { plugin: "site-search", operation: "search" },
+    pluginId: "p",
+    op: searchOperationManifest.parse({
+      name: "search",
+      kind: "search",
+      collection: "pages",
+      description: "The site's pages.",
+      returns: ["url", "title"],
+      snippet: "sections",
+    }),
+  };
+  const read: ResolvedTool = {
+    decl: { plugin: "site-search", operation: "read" },
+    pluginId: "p",
+    op: readOperationManifest.parse({
+      name: "read",
+      kind: "read",
+      collection: "pages",
+      description: "One page.",
+      by: "url",
+      returns: ["url", "title"],
+      passages: "sections",
+    }),
+  };
+  const longPage = {
+    url: "/preise/",
+    title: "Preise",
+    description: "Was es kostet.",
+    sections: Array.from({ length: 8 }, (_, i) => ({
+      anchor: `s${i}`,
+      heading: `Abschnitt ${i}`,
+      text: "x".repeat(1500),
+    })),
+  };
+  const answers: Record<string, CollectionAnswer> = {
+    search: {
+      status: 200,
+      cacheSeconds: null,
+      body: {
+        hits: [
+          {
+            url: "/preise/",
+            title: "Preise",
+            snippet: { anchor: "s0", heading: "Pakete", text: "Monatlich kündbar." },
+          },
+        ],
+      },
+    },
+    read: { status: 200, cacheSeconds: null, body: { documents: [longPage] } },
+  };
+  const run = (name: string, input: unknown) => {
+    const tools = buildTools(
+      [search, read],
+      {
+        release: async () => ({ entry: {} as OpenEntry, key: "k", anchors: null }),
+        run: async (t) => answers[t.op.kind] as CollectionAnswer,
+      },
+      new TurnSources(),
+      { lang: "de", siteOrigins: SITE, mayCall: () => true },
+    );
+    const execute = (tools[name] as { execute: (i: unknown, o: unknown) => Promise<string> })
+      .execute;
+    return execute(input, { toolCallId: "1", messages: [] }).then((r) => JSON.parse(r));
+  };
+
+  it("a search result names what the read tool looks a page up by", async () => {
+    const r = await run("site_search__search", { query: "Preise" });
+    expect(r.results[0]).toMatchObject({ source: 1, title: "Preise", url: "/preise/" });
+  });
+
+  it("a long page is read from its beginning, marked truncated, never dropped", async () => {
+    const r = await run("site_search__read", { url: "/preise/" });
+    expect(r.results).toHaveLength(1);
+    const doc = r.results[0];
+    expect(doc.truncated).toBe(true);
+    expect(doc.sections.length).toBeGreaterThan(0);
+    expect(doc.sections[0].heading).toBe("Abschnitt 0");
+    expect(Buffer.byteLength(JSON.stringify(r), "utf8")).toBeLessThanOrEqual(TOOL_RESULT_MAX_BYTES);
   });
 });

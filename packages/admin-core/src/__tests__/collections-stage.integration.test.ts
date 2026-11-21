@@ -663,12 +663,25 @@ describe("page output and collections through Stage and Publish live", () => {
     const latest = await stage();
     const index = await indexState(latest);
     const before = (await listFiles(join(root, "collections-staging"))).length;
-    const report = await runCollectionsGc(
+    const indexFiles = async () =>
+      (await listFiles(join(root, "collections-staging"))).filter((f) => !f.includes("/changes/"))
+        .length;
+    const indexBefore = await indexFiles();
+    // With the grace window every index file here is too young to go: a
+    // writer could still be in flight (gc.ts GC_GRACE_MS). Applied change
+    // files have their own rule and may go.
+    const spared = await runCollectionsGc(
       { adapter, registry },
       { keepStages: 2, keepPublishes: 1 },
     );
+    expect(spared.deletedFiles).toBe(0);
+    expect(spared.deletedChanges).toBeGreaterThan(0);
+    expect(await indexFiles()).toBe(indexBefore);
+    const report = await runCollectionsGc(
+      { adapter, registry },
+      { keepStages: 2, keepPublishes: 1, graceMs: 0 },
+    );
     expect(report.deletedFiles).toBeGreaterThan(0);
-    expect(report.deletedChanges).toBeGreaterThan(0);
     expect((await listFiles(join(root, "collections-staging"))).length).toBeLessThan(before);
     expect(
       await searchStore(join(root, "collections-staging"), index.releaseKey as string, "Februar"),
@@ -685,7 +698,7 @@ describe("page output and collections through Stage and Publish live", () => {
     // A second run finds nothing more to do.
     const again = await runCollectionsGc(
       { adapter, registry },
-      { keepStages: 2, keepPublishes: 1 },
+      { keepStages: 2, keepPublishes: 1, graceMs: 0 },
     );
     expect(again.deletedFiles + again.deletedChanges).toBe(0);
   });

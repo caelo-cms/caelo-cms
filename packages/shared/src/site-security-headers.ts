@@ -493,26 +493,6 @@ export function stagedHeaderFields(set: SiteHeaderSet): {
 }
 
 /** `headers` with more inline-script sources in whichever CSP has a `script-src`. */
-/**
- * `headers` with `origins` added to the CSP's `connect-src` (#1654: the
- * staging gateway's own stream origin for a visitor conversation, which no
- * build knows). A policy without `connect-src` is left alone: it does not
- * restrict connections, so nothing needs adding.
- */
-export function withConnectSources(
-  headers: Readonly<Record<string, string>>,
-  origins: readonly string[],
-): Record<string, string> {
-  const out = { ...headers };
-  if (origins.length === 0) return out;
-  for (const name of ["Content-Security-Policy", "Content-Security-Policy-Report-Only"]) {
-    const value = out[name];
-    if (value?.includes("connect-src 'self'"))
-      out[name] = value.replace("connect-src 'self'", `connect-src 'self' ${origins.join(" ")}`);
-  }
-  return out;
-}
-
 export function withScriptHashes(
   headers: Readonly<Record<string, string>>,
   hashes: readonly string[],

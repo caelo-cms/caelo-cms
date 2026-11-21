@@ -267,18 +267,51 @@ export function turnWorstCase(
 export async function aiChatAvailable(
   adapter: DatabaseAdapter,
   chat: { readonly pluginId: string; readonly op: AiChatOperationManifest },
-): Promise<string | null> {
-  if (!resolveAiChatTools(chat.op).ok) return "a tool's plugin is not active";
+): Promise<{ readonly problem: string | null; readonly limits: AiChatEffectiveLimits }> {
+  const declared = effectiveAiChatLimits(chat.op.limits, null);
+  if (!resolveAiChatTools(chat.op).ok)
+    return { problem: "a tool's plugin is not active", limits: declared };
   const loaded = await loadVisitorAi(adapter);
   const s = loaded.settings;
-  if (!s) return loaded.problem ?? "no settings";
-  if (!s.enabled) return "switched off";
-  if (s.keyProvider !== s.provider) return `no ${s.provider} key is stored`;
-  if (!pricingNow(s)) return `${s.provider}/${s.model} is unpriced`;
+  if (!s) return { problem: loaded.problem ?? "no settings", limits: declared };
+  // What the turn enforces, so a widget never offers what it then refuses.
+  const limits = effectiveAiChatLimits(chat.op.limits, s);
+  if (!s.enabled) return { problem: "switched off", limits };
+  if (s.keyProvider !== s.provider) return { problem: `no ${s.provider} key is stored`, limits };
+  if (!pricingNow(s)) return { problem: `${s.provider}/${s.model} is unpriced`, limits };
   const key = await readVisitorAiKey();
-  if (!key.ok) return key.problem;
-  if (key.provider !== s.provider) return `the key is for ${key.provider}`;
-  return null;
+  if (!key.ok) return { problem: key.problem, limits };
+  if (key.provider !== s.provider) return { problem: `the key is for ${key.provider}`, limits };
+  return { problem: null, limits };
+}
+
+/** A conversation's limits as a turn enforces them: the declaration's, lowered by the Owner's. */
+export interface AiChatEffectiveLimits {
+  readonly maxTurns: number;
+  readonly maxQuestionChars: number;
+  readonly maxAnswerTokens: number;
+}
+
+/** The lower of the declaration's and the Owner's published limits. */
+export function effectiveAiChatLimits(
+  declared: AiChatOperationManifest["limits"],
+  owner: {
+    readonly maxTurns?: number | null;
+    readonly maxQuestionChars?: number | null;
+    readonly maxAnswerTokens?: number | null;
+  } | null,
+): AiChatEffectiveLimits {
+  return {
+    maxTurns: Math.min(declared.maxTurns, owner?.maxTurns ?? Number.POSITIVE_INFINITY),
+    maxQuestionChars: Math.min(
+      declared.maxQuestionChars,
+      owner?.maxQuestionChars ?? Number.POSITIVE_INFINITY,
+    ),
+    maxAnswerTokens: Math.min(
+      declared.maxAnswerTokens,
+      owner?.maxAnswerTokens ?? Number.POSITIVE_INFINITY,
+    ),
+  };
 }
 
 /** Answer one ai-chat request. */
@@ -338,17 +371,7 @@ export async function aiChatResponse(req: Request, c: AiChatContext): Promise<Re
       c.requestId,
       `no ${s.provider} key is stored for ${c.environment}`,
     );
-  const limits = {
-    maxTurns: Math.min(c.op.limits.maxTurns, s.maxTurns ?? Number.POSITIVE_INFINITY),
-    maxQuestionChars: Math.min(
-      c.op.limits.maxQuestionChars,
-      s.maxQuestionChars ?? Number.POSITIVE_INFINITY,
-    ),
-    maxAnswerTokens: Math.min(
-      c.op.limits.maxAnswerTokens,
-      s.maxAnswerTokens ?? Number.POSITIVE_INFINITY,
-    ),
-  };
+  const limits = effectiveAiChatLimits(c.op.limits, s);
   if (question.length > limits.maxQuestionChars)
     return aiChatRefusal(
       "TooLong",

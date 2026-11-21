@@ -105,3 +105,27 @@ test("asks, sees the answer stream with its source, rates it, and keeps the conv
   await expect(again).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Fragen?" })).toBeFocused();
 });
+
+test("behind a gate that admits only the operator's cookie, the conversation still answers", async ({
+  page,
+  context,
+}) => {
+  // The staging gate: every request without the operator's cookie is refused.
+  await context.addCookies([{ name: "__session", value: "staging-operator", url: origin }]);
+  const refused: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    if (!(route.request().headers().cookie ?? "").includes("__session=")) {
+      refused.push(route.request().url());
+      return route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
+    }
+    return route.continue();
+  });
+  await page.goto(`${origin}/`);
+  await page.getByRole("button", { name: "Fragen?" }).click();
+  const dialog = page.getByRole("dialog", { name: "Fragen zur Website" });
+  const field = dialog.getByRole("textbox", { name: "Ihre Frage" });
+  await field.fill("Was kostet das Starter-Paket?");
+  await field.press("Enter");
+  await expect(dialog.getByRole("log")).toContainText("49 Euro");
+  expect(refused).toEqual([]);
+});

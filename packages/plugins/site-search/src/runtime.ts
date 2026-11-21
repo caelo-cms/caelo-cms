@@ -27,7 +27,10 @@
  * popular queries the results page carries. Focus warms the index up
  * (one uncached call naming the current release); every later call names
  * that release, so the CDN can answer it. Requests send no cookie
- * (`credentials: "omit"`). A submitted search and a click on a result are
+ * (`credentials: "omit"`), so visitors share one cache entry per query;
+ * behind the staging gate, which admits only the operator's cookie, the
+ * first refusal (401/403) switches the page to its own credentials
+ * (`same-origin`). A submitted search and a click on a result are
  * counted only when the operator turned popular suggestions on, after the
  * gateway's proof of work, in the background; nothing is sent while the
  * visitor types.
@@ -47,10 +50,25 @@ export const RUNTIME_JS = String.raw`(function () {
     return /^[a-z]{2,3}(-[a-z0-9]{1,8})*$/.test(l) ? l : "en";
   }
 
+  // No cookie by default (one CDN entry per query); the page's own once a
+  // gate refused a request without (staging).
+  var credentials = "omit";
+
+  function send(url, init) {
+    var opts = Object.assign({}, init || {}, { credentials: credentials });
+    return fetch(url, opts).then(function (res) {
+      if ((res.status === 401 || res.status === 403) && credentials === "omit") {
+        credentials = "same-origin";
+        return send(url, init);
+      }
+      return res;
+    });
+  }
+
   function get(op, params) {
     var qs = new URLSearchParams(params);
     if (releases[op]) qs.set("release", releases[op]);
-    return fetch(API + op + "?" + qs.toString(), { credentials: "omit" }).then(function (res) {
+    return send(API + op + "?" + qs.toString()).then(function (res) {
       if (res.status === 409) {
         return res.json().then(function (body) {
           if (!(body && body.release) || body.release === releases[op]) throw new Error(op + " 409");
@@ -68,7 +86,7 @@ export const RUNTIME_JS = String.raw`(function () {
 
   function warm() {
     if (releaseAsked) return releaseAsked;
-    releaseAsked = fetch(API + "search/release", { credentials: "omit" })
+    releaseAsked = send(API + "search/release")
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (body) { if (body && body.release) releases.search = body.release; })
       .catch(function () { releaseAsked = null; });
@@ -105,7 +123,7 @@ export const RUNTIME_JS = String.raw`(function () {
   }
 
   function proof() {
-    return fetch("/api/captcha/challenge", { credentials: "omit" }).then(function (res) {
+    return send("/api/captcha/challenge").then(function (res) {
       if (res.status === 204) return null;
       if (!res.ok) throw new Error("captcha challenge " + res.status);
       return res.json().then(function (env) {
@@ -134,9 +152,11 @@ export const RUNTIME_JS = String.raw`(function () {
       .then(function (p) {
         if (p) body._caelo_captcha = p;
         body.website = "";
+        // The credentials the search before it settled on; a refused proof
+        // is not retried (it is single-use).
         return fetch(API + "record", {
           method: "POST",
-          credentials: "omit",
+          credentials: credentials,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
@@ -248,7 +268,7 @@ export const RUNTIME_JS = String.raw`(function () {
     if (popularCache) return popularCache;
     var action = form.getAttribute("action");
     if (!action) return Promise.resolve([]);
-    popularCache = fetch(action, { credentials: "omit" })
+    popularCache = send(action)
       .then(function (res) { return res.ok ? res.text() : ""; })
       .then(function (html) {
         var doc = new DOMParser().parseFromString(html, "text/html");

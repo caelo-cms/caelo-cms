@@ -36,6 +36,17 @@ export interface CollectionStore extends FileSource {
   delete(key: string): Promise<void>;
   /** Keys under a prefix ("" for every key), in no particular order. */
   list(prefix: string): Promise<string[]>;
+  /**
+   * The keys under a prefix with when each was written (epoch ms), for a
+   * clean-up that must spare what a writer still in flight just put there.
+   */
+  listEntries(prefix: string): Promise<StoreEntry[]>;
+}
+
+/** One stored object: its key and when it was written (epoch milliseconds). */
+export interface StoreEntry {
+  readonly key: string;
+  readonly writtenAt: number;
 }
 
 /** A key the stores accept: a plain relative path without `..`, backslashes or control characters. */
@@ -67,6 +78,11 @@ export function scopedStore(store: CollectionStore, prefix: string): CollectionS
     delete: (key) => store.delete(k(key)),
     list: async (p) =>
       (await store.list(p === "" ? prefix : k(p))).map((full) => full.slice(prefix.length + 1)),
+    listEntries: async (p) =>
+      (await store.listEntries(p === "" ? prefix : k(p))).map((e) => ({
+        key: e.key.slice(prefix.length + 1),
+        writtenAt: e.writtenAt,
+      })),
   };
 }
 
@@ -115,22 +131,31 @@ export function directoryStore(root: string): CollectionStore {
       await rm(await inside(key), { force: true });
     },
     async list(prefix) {
-      const base = await realpath(root).catch(() => null);
-      if (base === null) return [];
-      const dir = prefix === "" ? base : await inside(prefix);
-      const out: string[] = [];
-      const walk = async (d: string): Promise<void> => {
-        for (const e of await readdir(d, { withFileTypes: true }).catch(() => [])) {
-          const full = join(d, e.name);
-          if (e.isDirectory()) await walk(full);
-          else if (e.isFile() && !e.name.endsWith(".tmp"))
-            out.push(relative(base, full).split(sep).join("/"));
-        }
-      };
-      await walk(dir);
-      return out;
+      return (await listDirectory(prefix)).map((e) => e.key);
     },
+    listEntries: (prefix) => listDirectory(prefix),
   };
+
+  async function listDirectory(prefix: string): Promise<StoreEntry[]> {
+    const base = await realpath(root).catch(() => null);
+    if (base === null) return [];
+    const dir = prefix === "" ? base : await inside(prefix);
+    const out: StoreEntry[] = [];
+    const walk = async (d: string): Promise<void> => {
+      for (const e of await readdir(d, { withFileTypes: true }).catch(() => [])) {
+        const full = join(d, e.name);
+        if (e.isDirectory()) await walk(full);
+        else if (e.isFile() && !e.name.endsWith(".tmp")) {
+          // A write lands by rename (writeFile then rename): the mtime is when it was written.
+          const st = await stat(full).catch(() => null);
+          if (st)
+            out.push({ key: relative(base, full).split(sep).join("/"), writtenAt: st.mtimeMs });
+        }
+      }
+    };
+    await walk(dir);
+    return out;
+  }
 }
 
 // ─── Cloud Storage ──────────────────────────────────────────────────────
@@ -249,23 +274,38 @@ export function gcsStore(
       return fail(res, `delete ${key}`);
     },
     async list(p) {
-      const out: string[] = [];
-      let pageToken: string | undefined;
-      const full = p === "" ? prefix : object(p);
-      do {
-        const res = await fetchImpl(
-          `${API}/storage/v1/b/${bucket}/o?prefix=${encodeURIComponent(full === "" ? "" : `${full}/`)}&fields=items(name),nextPageToken${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`,
-          await authed(),
-        );
-        if (!res.ok) return fail(res, `list ${p}`);
-        const body = (await res.json()) as { items?: { name: string }[]; nextPageToken?: string };
-        for (const item of body.items ?? [])
-          out.push(prefix === "" ? item.name : item.name.slice(prefix.length + 1));
-        pageToken = body.nextPageToken;
-      } while (pageToken);
-      return out;
+      return (await listObjects(p)).map((e) => e.key);
     },
+    listEntries: (p) => listObjects(p),
   };
+
+  async function listObjects(p: string): Promise<StoreEntry[]> {
+    const out: StoreEntry[] = [];
+    let pageToken: string | undefined;
+    const full = p === "" ? prefix : object(p);
+    do {
+      const res = await fetchImpl(
+        `${API}/storage/v1/b/${bucket}/o?prefix=${encodeURIComponent(full === "" ? "" : `${full}/`)}&fields=items(name,timeCreated),nextPageToken${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`,
+        await authed(),
+      );
+      if (!res.ok) return fail(res, `list ${p}`);
+      const body = (await res.json()) as {
+        items?: { name: string; timeCreated?: string }[];
+        nextPageToken?: string;
+      };
+      for (const item of body.items ?? []) {
+        // Asked for in `fields`: an object without it is a broken answer.
+        if (!item.timeCreated) throw new Error(`gs://${bucket}: ${item.name} has no timeCreated`);
+        out.push({
+          key: prefix === "" ? item.name : item.name.slice(prefix.length + 1),
+          // An object is never rewritten (immutable names): created = written.
+          writtenAt: Date.parse(item.timeCreated),
+        });
+      }
+      pageToken = body.nextPageToken;
+    } while (pageToken);
+    return out;
+  }
 }
 
 /** `s` without its trailing slashes, in linear time (a `/\/+$/` scan is quadratic on many slashes). */

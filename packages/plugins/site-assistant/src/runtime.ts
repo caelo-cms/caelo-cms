@@ -30,8 +30,10 @@
  * the site's own origin elsewhere) and is rendered as text; `[n]` becomes a
  * link only to a source the gateway sent (widget-logic.ts). The signed
  * history stays in this tab (sessionStorage), never on a server. A
- * conversation starts with the gateway's proof of work. Requests send no
- * cookie (`credentials: "omit"`). Nothing here builds site content: the
+ * conversation starts with the gateway's proof of work. Requests carry the
+ * page's own credentials only (`credentials: "same-origin"`): on staging the
+ * gate admits only the operator's staging cookie, and a cross-origin stream
+ * (run.app on gcp-firebase) carries none. Nothing here builds site content: the
  * texts are cloned from the markup, the rest is the conversation itself.
  */
 
@@ -71,7 +73,7 @@ const MAIN = String.raw`
   }
 
   function proof(scope) {
-    return fetch("/api/captcha/challenge?for=" + encodeURIComponent(scope), { credentials: "omit" })
+    return fetch("/api/captcha/challenge?for=" + encodeURIComponent(scope), { credentials: "same-origin" })
       .then(function (res) {
         if (res.status === 204) return null;
         if (!res.ok) throw new Error("challenge " + res.status);
@@ -98,7 +100,7 @@ const MAIN = String.raw`
   function getInfo() {
     if (info) return Promise.resolve(info);
     if (infoAsked) return infoAsked;
-    infoAsked = fetch(API + OP, { credentials: "omit" })
+    infoAsked = fetch(API + OP, { credentials: "same-origin" })
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (body) {
         info = body && body.data ? body.data : { available: false };
@@ -123,7 +125,7 @@ const MAIN = String.raw`
       if (p) body._caelo_captcha = p;
       return fetch(API + "feedback", {
         method: "POST",
-        credentials: "omit",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
@@ -334,7 +336,7 @@ const MAIN = String.raw`
           if (p) body.captcha = p;
           return fetch(origin + API + OP, {
             method: "POST",
-            credentials: "omit",
+            credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });

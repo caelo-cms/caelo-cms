@@ -473,6 +473,13 @@ describe("a visitor conversation (#1654)", () => {
     await writeFile(keyFile, "{}");
     expect((await info()).available).toBe(false);
     await writeFile(keyFile, JSON.stringify({ provider: "anthropic", apiKey: KEY }));
+    // The Owner lowers the plugin's limits: the widget learns what a turn enforces.
+    await setSettings({ ...ON, max_turns: 2, max_question_chars: 50 });
+    try {
+      expect((await info()).limits).toEqual({ maxTurns: 2, maxQuestionChars: 50 });
+    } finally {
+      await setSettings({ ...ON, max_turns: null, max_question_chars: null });
+    }
   });
 
   it("needs a proof of work to start", async () => {

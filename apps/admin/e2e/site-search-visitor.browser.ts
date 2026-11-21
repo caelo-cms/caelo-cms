@@ -80,3 +80,25 @@ test("a typo is corrected", async ({ page }) => {
     "kontakt",
   );
 });
+
+test("behind a gate that admits only the operator's cookie, the search sends the page's own", async ({
+  page,
+  context,
+}) => {
+  // The staging gate: a read without the operator's cookie is refused.
+  await context.addCookies([{ name: "__session", value: "staging-operator", url: origin }]);
+  const refused: string[] = [];
+  await page.route("**/api/plugin/site-search/**", async (route) => {
+    if (!(route.request().headers().cookie ?? "").includes("__session=")) {
+      refused.push(route.request().url());
+      return route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
+    }
+    return route.continue();
+  });
+  await page.goto(`${origin}/suche/?q=Rabatte`);
+  await expect(page.locator("[data-caelo-search-list] li").first()).toContainText("Preise");
+  // A cookie-less try (two when the warm-up ran beside it), then the page's
+  // credentials for the rest.
+  expect(refused.length).toBeGreaterThanOrEqual(1);
+  expect(refused.length).toBeLessThanOrEqual(2);
+});

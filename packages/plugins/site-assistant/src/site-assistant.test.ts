@@ -175,7 +175,9 @@ describe("the browser script", () => {
       expect(RUNTIME_JS).toContain(`function ${name}(`);
     expect(RUNTIME_JS).not.toContain("innerHTML");
     expect(RUNTIME_JS).not.toContain("eval(");
-    expect(RUNTIME_JS).toContain('credentials: "omit"');
+    // The page's own credentials (the staging gate's cookie), never another origin's.
+    expect(RUNTIME_JS).toContain('credentials: "same-origin"');
+    expect(RUNTIME_JS).not.toContain('credentials: "include"');
     expect(RUNTIME_JS).toContain('attachShadow({ mode: "open" })');
     expect(RUNTIME_JS).toContain('"aria-live": "polite"');
   });

@@ -123,6 +123,26 @@ function bounded(
   }
 }
 
+/**
+ * One document within `budget` bytes of JSON: trailing sections go first,
+ * then the last section's text is shortened. A long page stays readable
+ * (its beginning, marked `truncated`) instead of dropping out whole.
+ */
+function boundedDocument(
+  doc: Record<string, unknown> & { sections: { text: string }[] },
+  budget: number,
+): Record<string, unknown> {
+  const size = (d: unknown) => Buffer.byteLength(JSON.stringify(d), "utf8");
+  if (size(doc) <= budget) return doc;
+  const sections = doc.sections.map((s) => ({ ...s }));
+  const out = { ...doc, sections, truncated: true };
+  while (sections.length > 1 && size(out) > budget) sections.pop();
+  const last = sections[sections.length - 1];
+  while (last && last.text.length > 0 && size(out) > budget)
+    last.text = last.text.slice(0, Math.floor(last.text.length / 2));
+  return out;
+}
+
 /** The model-facing name of a declared tool. */
 export function toolName(t: AiChatTool): string {
   return `${t.plugin}__${t.operation}`.replace(/-/g, "_").slice(0, 64);
@@ -144,6 +164,19 @@ export function buildTools(
   },
 ): ToolSet {
   const out: ToolSet = {};
+  // What a read tool of this turn looks a page up by: every search result
+  // carries it, so the model can read a page it found instead of guessing.
+  const readBy = new Set(
+    tools.flatMap((t) => (t.op.kind === "read" ? [t.op.by === "id" ? "id" : t.op.by] : [])),
+  );
+  const lookupOf = (h: Record<string, unknown>): Record<string, string> => {
+    const keys: Record<string, string> = {};
+    for (const by of readBy) {
+      const v = by === "id" ? h.id : h[by];
+      if (typeof v === "string" && v.length > 0 && v.length <= 500) keys[by] = v;
+    }
+    return keys;
+  };
   for (const t of tools) {
     const { op } = t;
     const unavailable = (kind: string) => JSON.stringify({ error: kind });
@@ -183,6 +216,7 @@ export function buildTools(
               title: plain(h.title).slice(0, 200),
               heading: plain(snip?.heading).slice(0, 200),
               snippet: plain(snip?.text).slice(0, 600),
+              ...lookupOf(h),
             });
           }
           return bounded(items, { query });
@@ -206,6 +240,9 @@ export function buildTools(
             unknown
           >[];
           const items: Record<string, unknown>[] = [];
+          // Each document gets its share of the budget (a read returns one page,
+          // or a few by the same key), less the envelope.
+          const share = Math.floor((TOOL_RESULT_MAX_BYTES - 64) / Math.max(1, docs.length));
           for (const d of docs) {
             const n = sources.add(d.url, d.title, null, ctx.siteOrigins);
             if (n === null) continue;
@@ -216,20 +253,25 @@ export function buildTools(
                   anchor?: unknown;
                 }[])
               : [];
-            items.push({
-              source: n,
-              title: plain(d.title).slice(0, 200),
-              description: plain(d.description).slice(0, 600),
-              sections: passages.slice(0, 40).map((p) => {
-                // A section is a source of its own: the link opens it.
-                const sn = sources.add(d.url, d.title, p.anchor, ctx.siteOrigins);
-                return {
-                  source: sn ?? n,
-                  heading: plain(p.heading).slice(0, 200),
-                  text: plain(p.text).slice(0, 1500),
-                };
-              }),
-            });
+            items.push(
+              boundedDocument(
+                {
+                  source: n,
+                  title: plain(d.title).slice(0, 200),
+                  description: plain(d.description).slice(0, 600),
+                  sections: passages.slice(0, 40).map((p) => {
+                    // A section is a source of its own: the link opens it.
+                    const sn = sources.add(d.url, d.title, p.anchor, ctx.siteOrigins);
+                    return {
+                      source: sn ?? n,
+                      heading: plain(p.heading).slice(0, 200),
+                      text: plain(p.text).slice(0, 1500),
+                    };
+                  }),
+                },
+                share,
+              ),
+            );
           }
           return bounded(items);
         },
