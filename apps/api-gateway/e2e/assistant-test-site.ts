@@ -2,7 +2,7 @@
 
 /**
  * Epic #1644 (#1655) — a site with the site assistant, for the gateway's
- * integration test and the browser fixture (`e2e/assistant-site.ts`): the
+ * integration test and the browser fixture (`assistant-site.ts`): the
  * admin activates site-search and site-assistant (approving this build of
  * each, as the Owner does), publishes a release, the visitor AI is on with
  * a key file and budgets, site-search's index is a release in the live
@@ -36,16 +36,16 @@ import siteAssistant from "@caelo-cms/plugin-site-assistant";
 import siteSearch from "@caelo-cms/plugin-site-search";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
-import { dropPublishedState } from "./published-changes.js";
+import { dropPublishedState } from "../src/published-changes.js";
 import {
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
   invalidateGatewaySettings,
   setGatewayAdapter,
-} from "./server.js";
-import { registerTestLiveOrigin } from "./test-support.js";
-import { VISITOR_AI_KEY_FILE_ENV } from "./visitor-ai/provider.js";
-import { resetVisitorAiCacheForTests } from "./visitor-ai/published.js";
+} from "../src/server.js";
+import { registerTestLiveOrigin } from "../src/test-support.js";
+import { VISITOR_AI_KEY_FILE_ENV } from "../src/visitor-ai/provider.js";
+import { resetVisitorAiCacheForTests } from "../src/visitor-ai/published.js";
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SYSTEM = { actorId: SYSTEM_ACTOR_ID, actorKind: "system" as const, requestId: "t1655-site" };

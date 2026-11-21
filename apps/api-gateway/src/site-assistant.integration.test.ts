@@ -20,7 +20,7 @@ import {
   ASSISTANT_SITE_PAGES,
   type AssistantSite,
   prepareAssistantSite,
-} from "./assistant-test-site.js";
+} from "../e2e/assistant-test-site.js";
 import { handleRequest } from "./server.js";
 import { TEST_LIVE_ORIGIN } from "./test-support.js";
 import { setVisitorAiModelFactoryForTests } from "./visitor-ai/provider.js";

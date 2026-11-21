@@ -14,11 +14,11 @@
  */
 
 import { RUNTIME_JS } from "@caelo-cms/plugin-site-assistant/runtime";
-import { ASSISTANT_SITE_PAGES, prepareAssistantSite } from "../src/assistant-test-site.js";
 import { handleRequest } from "../src/server.js";
 import { TEST_LIVE_ORIGIN } from "../src/test-support.js";
 import { setVisitorAiModelFactoryForTests } from "../src/visitor-ai/provider.js";
 import { scriptedVisitorModel } from "../src/visitor-ai/scripted-model.js";
+import { ASSISTANT_SITE_PAGES, prepareAssistantSite } from "./assistant-test-site.js";
 
 function required(name: string): string {
   const v = process.env[name];
