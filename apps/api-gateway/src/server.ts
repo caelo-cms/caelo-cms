@@ -142,6 +142,8 @@ import { HARD_MAX_BODY_BYTES, readBodyWithCap } from "./middleware/body-cap.js";
 import { type CaptchaConfig, issuePowChallenge, verifyPowProof } from "./middleware/captcha.js";
 import { checkHoneypot } from "./middleware/honeypot.js";
 import {
+  COLLECTION_CLIENT_MEMORY_LIMIT,
+  COLLECTION_OPERATION_MEMORY_LIMIT,
   MemoryRateLimiter,
   OPERATION_MEMORY_LIMIT,
   VISITOR_MEMORY_LIMIT,
@@ -1043,7 +1045,10 @@ async function visitorRequest(
   }
   const client = requestClientAddress(req, conn, requestId);
   if (!client.ok) return client.response;
-  const memoryLimited = memoryRateLimited(client.value, requestId);
+  // #1649 — collection reads have their own budget (no database, cheap CPU).
+  const memoryLimited = collectionRoute
+    ? collectionClientRateLimited(client.value, requestId)
+    : memoryRateLimited(client.value, requestId);
   if (memoryLimited) return memoryLimited;
 
   if (!cachedAdapter) {
@@ -1070,6 +1075,15 @@ async function visitorRequest(
 // ---------------------------------------------------------------------------
 // #1649 — declared collection operations: search, suggest, read.
 // ---------------------------------------------------------------------------
+
+const collectionClientLimiter = new MemoryRateLimiter(COLLECTION_CLIENT_MEMORY_LIMIT);
+const collectionOperationLimiter = new MemoryRateLimiter(COLLECTION_OPERATION_MEMORY_LIMIT, 10_000);
+
+function collectionClientRateLimited(address: string, requestId: string): Response | null {
+  const take = collectionClientLimiter.take(rateLimitAddress(address));
+  if (take.allowed) return null;
+  return errorResponse("RateLimited", 429, requestId, { retryAfterSec: take.retryAfterSec });
+}
 
 /** This gateway's collection state; its environment decides which store it reads. */
 let gatewayCollections: GatewayCollections | null = null;
@@ -1109,8 +1123,13 @@ async function collectionOperation(
     if (unpublishedRegistryError()) return errorResponse("ProjectionNotPublished", 503, requestId);
     return errorResponse("NotFound", 404, requestId);
   }
-  const opLimited = operationRateLimited(`${route.slug}.${route.operation}`, requestId);
-  if (opLimited) return opLimited;
+  const take = collectionOperationLimiter.take(`${route.slug}.${route.operation}`);
+  if (!take.allowed) {
+    return errorResponse("RateLimited", 429, requestId, {
+      retryAfterSec: take.retryAfterSec,
+      log: `site-wide search budget of ${route.slug}.${route.operation} spent on this instance`,
+    });
+  }
   const start = performance.now();
   const collections = collectionsOfGateway();
   const startedAt = publishedCacheGeneration();

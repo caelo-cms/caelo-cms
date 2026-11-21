@@ -355,6 +355,17 @@ describe("declarative collection operations in the gateway", () => {
     expect(docs[0]?.sections.map((s) => s.anchor)).toEqual(["inhalt"]);
   });
 
+  it("search-as-you-type is not throttled by the write operations' budget", async () => {
+    // 400 searches in a burst: past the generic per-operation burst of 300.
+    const statuses = new Set<number>();
+    for (let i = 0; i < 400; i++) {
+      const r = await handleRequest(get(`/api/plugin/${SLUG}/suggest?q=Lo&lang=de&release=${releaseKey}`));
+      statuses.add(r.status);
+      await r.arrayBuffer();
+    }
+    expect([...statuses]).toEqual([200]);
+  });
+
   it("refuses too many words, an unknown operation, and serves 503 without a release", async () => {
     const long = await json(
       `/api/plugin/${SLUG}/search?q=${encodeURIComponent("eins zwei drei vier fünf sechs sieben acht neun zehn elf")}&lang=de`,
