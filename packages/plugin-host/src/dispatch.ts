@@ -633,11 +633,23 @@ async function runPluginOperationNow(
   }
   // #1340 — a visitor call runs the operation's declaration (core code),
   // never a plugin handler: `publicOperations` names no code operation.
-  const declared = opts.visitorContext
-    ? publicOperationOf(plugin.definition.publicOperations, opts.operationName)
-    : undefined;
+  // A system caller (a seed, a test, a migration) may run a declaration
+  // too: the same core code, on the system's context, its input checked
+  // against the declared schema. No other origin reaches a public
+  // operation except as a visitor.
+  const declared =
+    opts.visitorContext || opts.invocation.origin === "system"
+      ? publicOperationOf(plugin.definition.publicOperations, opts.operationName)
+      : undefined;
   const handler: ((ctx: PluginContext, args: unknown) => unknown) | undefined = declared
-    ? (ctx, args) => runDeclaredPublicOperation(declared, ctx as PluginContextTier1, args)
+    ? (ctx, args) => {
+        if (opts.visitorContext)
+          return runDeclaredPublicOperation(declared, ctx as PluginContextTier1, args);
+        const parsed = declared.input.safeParse(args);
+        if (!parsed.success)
+          throw new Error(`${opts.operationName}: the input does not match its declared schema`);
+        return runDeclaredPublicOperation(declared, ctx as PluginContextTier1, parsed.data);
+      }
     : opts.visitorContext
       ? undefined
       : plugin.definition.operations[opts.operationName];
