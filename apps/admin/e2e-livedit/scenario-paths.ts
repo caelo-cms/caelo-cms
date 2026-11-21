@@ -185,6 +185,8 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${A}/collections/promote.ts`,
       `${A}/ops/page_output.ts`,
       `${A}/plugin-batches/triggers.ts`,
+      // #1654 — the pricing every AI call is reserved and settled with.
+      `${SHARED}/ai-cost.ts`,
       `${A}/snapshots/**`,
       `${A}/deploy/**`,
       `${A}/draft.ts`,
@@ -576,9 +578,15 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   // CI scenario activates such a plugin; their integration tests and the
   // site-search browser test drive them.
   `${A}/collections/{gc,index-job,index-job-kind,ops}.ts`,
-  `${A}/plugin-batches/{job,job-kind,ops}.ts`,
+  `${A}/plugin-batches/{job,job-kind,ops,declared}.ts`,
   `${A}/ops/plugin_config_pending.ts`,
   `${SHARED}/embedding-models.ts`,
+  // #1654 — the visitor AI's Owner settings and its key, set through an
+  // approval card; no CI scenario turns the visitor AI on. Its gateway and
+  // admin integration tests drive them.
+  `${A}/ops/visitor_ai.ts`,
+  `${A}/visitor-ai/**`,
+  `${SHARED}/visitor-ai-origin.ts`,
 ];
 
 /**
