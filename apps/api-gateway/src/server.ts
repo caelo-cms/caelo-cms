@@ -184,6 +184,12 @@ import {
   resolveVisitor,
   visitorIdDeclared,
 } from "./visitor.js";
+import { aiChatPreflight, aiChatRefusal, aiChatResponse } from "./visitor-ai/chat.js";
+import {
+  collectionToolRuntime,
+  declaredAiChatOperation,
+  resolveAiChatTools,
+} from "./visitor-ai/route.js";
 
 export {
   GATEWAY_DATABASE_ENV,
@@ -1035,11 +1041,14 @@ async function visitorRequest(
   // ---- #1326: the input filter, before any database access ----
   const isCaptchaChallenge = req.method === "GET" && url.pathname === "/api/captcha/challenge";
   const pluginRoute = req.method === "POST" ? parsePluginPath(url.pathname) : null;
+  // #1654 — the CORS preflight of a conversation the widget runs from the
+  // site's own origin against this gateway's run.app origin (gcp-firebase).
+  const preflight = req.method === "OPTIONS" ? parsePluginPath(url.pathname) : null;
   const oneClick = req.method === "POST" ? parseMailLinkPath(url.pathname) : null;
   // #1649 — a declared collection operation answers a GET: cacheable, no cookie.
   const collectionRoute =
     req.method === "GET" && !isCaptchaChallenge ? parseCollectionPath(url.pathname) : null;
-  if (!isCaptchaChallenge && !pluginRoute && !oneClick && !collectionRoute) {
+  if (!isCaptchaChallenge && !pluginRoute && !oneClick && !collectionRoute && !preflight) {
     return errorResponse("NotFound", 404, requestId);
   }
   const client = requestClientAddress(req, conn, requestId);
@@ -1066,9 +1075,64 @@ async function visitorRequest(
     return settingsUnavailable(e, requestId);
   }
 
-  if (isCaptchaChallenge) return captchaChallenge(req, settings, client.value, requestId);
+  if (isCaptchaChallenge) return captchaChallenge(req, url, settings, client.value, requestId);
+  if (preflight) {
+    await syncDispatchPlugins();
+    if (!declaredAiChatOperation(preflight.slug, preflight.operation))
+      return errorResponse("NotFound", 404, requestId);
+    return aiChatPreflight(req, settings.liveOrigins ?? [], requestId);
+  }
   if (!pluginRoute) return errorResponse("NotFound", 404, requestId);
+  await syncDispatchPlugins();
+  const chat = declaredAiChatOperation(pluginRoute.slug, pluginRoute.operation);
+  if (chat) return aiChatOperation(req, settings, client.value, pluginRoute, chat, requestId);
   return pluginOperation(req, settings, client.value, pluginRoute, requestId);
+}
+
+/** This gateway's environment, which its visitor-AI key, turns and ledger belong to. */
+function gatewayEnvironment(): "live" | "staging" {
+  return process.env.CAELO_GATEWAY_ENVIRONMENT === "staging" ? "staging" : "live";
+}
+
+/**
+ * #1654 — one turn of a declared `ai-chat` conversation, streamed
+ * (visitor-ai/chat.ts). Core code only; the per-operation memory budget
+ * first, nothing written but the ledger's reservation.
+ */
+async function aiChatOperation(
+  req: Request,
+  settings: GatewaySettings,
+  clientIp: string,
+  route: { readonly slug: string; readonly operation: string },
+  chat: NonNullable<ReturnType<typeof declaredAiChatOperation>>,
+  requestId: string,
+): Promise<Response> {
+  const adapter = cachedAdapter as DatabaseAdapter;
+  const origins = settings.liveOrigins ?? [];
+  const origin = req.headers.get("origin");
+  const allowed = origin !== null && origins.includes(origin) ? origin : null;
+  const take = operationMemoryLimiter.take(`${route.slug}.${route.operation}`);
+  if (!take.allowed)
+    return aiChatRefusal(
+      "RateLimited",
+      allowed,
+      requestId,
+      "site-wide operation budget",
+      take.retryAfterSec,
+    );
+  const startedAt = publishedCacheGeneration();
+  return aiChatResponse(req, {
+    adapter,
+    environment: gatewayEnvironment(),
+    plugin: { pluginId: chat.pluginId, slug: route.slug, config: chat.config },
+    op: chat.op,
+    tools: resolveAiChatTools(chat.op),
+    runtime: collectionToolRuntime(adapter, collectionsOfGateway(), () => mayCacheRead(startedAt)),
+    siteOrigins: origins,
+    verifyCaptcha: (proof) => verifyPowProof(adapter, proof, `${route.slug}.${route.operation}`),
+    clientKey: rateLimitAddress(clientIp),
+    requestId,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,20 +1271,63 @@ async function collectionOperation(
 /** How long a `Busy` (503) answer asks the client to wait (#1334). */
 const BUSY_RETRY_AFTER_SEC = 2;
 
-/** `GET /api/captcha/challenge`: a PoW challenge, bounded per client address. */
+/**
+ * `GET /api/captcha/challenge`: a PoW challenge, bounded per client address.
+ *
+ * #1654 — `?for=<slug>.<op>` naming a declared ai-chat operation gets a
+ * proof of work whatever the site's captcha setting: a conversation spends
+ * money, so it always starts with one. The site's pages may fetch it from
+ * another origin (the gateway's run.app origin on gcp-firebase), so an
+ * allowed origin gets CORS.
+ */
 async function captchaChallenge(
   req: Request,
+  url: URL,
+  settings: GatewaySettings,
+  clientIp: string,
+  requestId: string,
+): Promise<Response> {
+  const purpose = /^([a-z][a-z0-9-]{0,54})\.([a-z_][a-z0-9_]{0,119})$/.exec(
+    url.searchParams.get("for") ?? "",
+  );
+  let forChat = false;
+  if (purpose) {
+    await syncDispatchPlugins();
+    forChat = declaredAiChatOperation(purpose[1] as string, purpose[2] as string) !== null;
+  }
+  if (forChat) {
+    const response = await captchaChallengeFor(
+      req,
+      { provider: "pow", powTargetPrefix: settings.captcha.powTargetPrefix },
+      settings,
+      clientIp,
+      requestId,
+    );
+    const origin = req.headers.get("origin");
+    if (origin !== null && (settings.liveOrigins ?? []).includes(origin)) {
+      response.headers.set("Access-Control-Allow-Origin", origin);
+      response.headers.set("Vary", "Origin");
+      response.headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+    }
+    return response;
+  }
+  return captchaChallengeFor(req, settings.captcha, settings, clientIp, requestId);
+}
+
+async function captchaChallengeFor(
+  req: Request,
+  captcha: CaptchaConfig,
   settings: GatewaySettings,
   clientIp: string,
   requestId: string,
 ): Promise<Response> {
   const adapter = cachedAdapter as DatabaseAdapter;
-  if (settings.captcha.provider === "off") {
+  if (captcha.provider === "off") {
     return new Response(null, { status: 204 });
   }
-  if (settings.captcha.provider !== "pow") {
+  if (captcha.provider !== "pow") {
     return errorResponse("NotImplemented", 501, requestId, {
-      log: `captcha provider ${settings.captcha.provider} is not wired yet`,
+      log: `captcha provider ${captcha.provider} is not wired yet`,
     });
   }
   const opLimited = operationRateLimited("_captcha.challenge", requestId);
@@ -1241,7 +1348,7 @@ async function captchaChallenge(
       retryAfterSec: challengeRl.retryAfterSec,
     });
   }
-  const challenge = await issuePowChallenge(adapter, { config: settings.captcha });
+  const challenge = await issuePowChallenge(adapter, { config: captcha });
   return jsonResponse(
     { ok: true, data: challenge },
     { setCookies: visitor.cookies.setCookieHeaders() },
