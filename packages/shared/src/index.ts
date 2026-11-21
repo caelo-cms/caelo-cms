@@ -124,3 +124,4 @@ export {
   isNewerVersion,
   parseVersion,
 } from "./version.js";
+export * from "./visitor-ai-origin.js";

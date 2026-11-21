@@ -77,6 +77,7 @@ import {
   stagingIpAllowlistSupported,
   verifyStagingRunToken,
   verifyStagingToken,
+  withConnectSources,
   withScriptHashes,
 } from "@caelo-cms/shared";
 import { type MemoryLimitSpec, MemoryRateLimiter } from "../middleware/memory-limiter.js";
@@ -142,6 +143,12 @@ export interface StagingSiteDeps {
   readonly nowSeconds?: () => number;
   /** Override {@link FIRST_BYTE_BUDGET_MS} (tests). */
   readonly firstByteBudgetMs?: number;
+  /**
+   * #1654 — origins this gateway's pages may also connect to: its own
+   * stream origin while a visitor conversation is attached (gcp-firebase),
+   * which the build (rendered for the live site) cannot know.
+   */
+  readonly connectSources?: readonly string[];
 }
 
 /** A gateway-wide failure budget, one bucket per client. */
@@ -602,7 +609,9 @@ async function serveFile(
     "Content-Type": entry.type,
     ...mediaSecurityHeaders(entry.type),
     // #1454 — the headers Publish live ships with this build.
-    ...(isHtmlContentType(entry.type) ? pageHeadersFor(build, served, state.host) : {}),
+    ...(isHtmlContentType(entry.type)
+      ? withConnectSources(pageHeadersFor(build, served, state.host), deps.connectSources ?? [])
+      : {}),
   });
   const rewrite =
     state.host !== null && served.buildOrigin !== null && isRewritableContentType(entry.type);

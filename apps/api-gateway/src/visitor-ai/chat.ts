@@ -51,6 +51,7 @@ import { type LedgerRefusal, releaseTurn, reserveTurn, settleTurn } from "./ledg
 import { systemPrompt } from "./prompt.js";
 import { readVisitorAiKey, visitorAiModel } from "./provider.js";
 import { loadVisitorAi, loadVisitorConfig, pricingNow } from "./published.js";
+import { resolveAiChatTools } from "./route.js";
 import {
   buildTools,
   type ResolvedTool,
@@ -256,6 +257,28 @@ export function turnWorstCase(
       }) ?? 0;
   }
   return total;
+}
+
+/**
+ * Why a conversation cannot answer now, or null: what the widget asks
+ * before a visitor types, so it can say "unavailable" at once. The same
+ * checks every turn makes, without the visitor's input.
+ */
+export async function aiChatAvailable(
+  adapter: DatabaseAdapter,
+  chat: { readonly pluginId: string; readonly op: AiChatOperationManifest },
+): Promise<string | null> {
+  if (!resolveAiChatTools(chat.op).ok) return "a tool's plugin is not active";
+  const loaded = await loadVisitorAi(adapter);
+  const s = loaded.settings;
+  if (!s) return loaded.problem ?? "no settings";
+  if (!s.enabled) return "switched off";
+  if (s.keyProvider !== s.provider) return `no ${s.provider} key is stored`;
+  if (!pricingNow(s)) return `${s.provider}/${s.model} is unpriced`;
+  const key = await readVisitorAiKey();
+  if (!key.ok) return key.problem;
+  if (key.provider !== s.provider) return `the key is for ${key.provider}`;
+  return null;
 }
 
 /** Answer one ai-chat request. */

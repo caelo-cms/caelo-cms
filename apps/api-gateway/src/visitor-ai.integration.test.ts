@@ -456,6 +456,25 @@ afterAll(async () => {
 describe("a visitor conversation (#1654)", () => {
   let firstTurn = "";
 
+  it("tells the widget whether it can answer and where to stream from", async () => {
+    const info = async () => {
+      const r = await handleRequest(
+        new Request(`http://localhost${PATH}`, { headers: headersFor() }),
+      );
+      expect(r.headers.get("access-control-allow-origin")).toBe(TEST_LIVE_ORIGIN);
+      return ((await r.json()) as { data: Record<string, unknown> }).data;
+    };
+    expect(await info()).toEqual({
+      available: true,
+      streamOrigin: null,
+      captcha: "pow",
+      limits: { maxTurns: 3, maxQuestionChars: 200 },
+    });
+    await writeFile(keyFile, "{}");
+    expect((await info()).available).toBe(false);
+    await writeFile(keyFile, JSON.stringify({ provider: "anthropic", apiKey: KEY }));
+  });
+
   it("needs a proof of work to start", async () => {
     useModel();
     const r = await ask({ question: "Was kostet das Starter-Paket?", lang: "de" });

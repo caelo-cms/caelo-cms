@@ -105,6 +105,7 @@ import {
   gatewayRefreshAudience,
   gatewayRefreshPingsOn,
   SESSION_ENTRY,
+  visitorAiStreamOrigin,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -184,7 +185,12 @@ import {
   resolveVisitor,
   visitorIdDeclared,
 } from "./visitor.js";
-import { aiChatPreflight, aiChatRefusal, aiChatResponse } from "./visitor-ai/chat.js";
+import {
+  aiChatAvailable,
+  aiChatPreflight,
+  aiChatRefusal,
+  aiChatResponse,
+} from "./visitor-ai/chat.js";
 import {
   collectionToolRuntime,
   declaredAiChatOperation,
@@ -986,6 +992,7 @@ async function stagingRequest(
     failures: site.failures,
     api: (admitted) => visitorRequest(admitted, conn, requestId),
     secure: process.env.NODE_ENV === "production",
+    connectSources: await stagingConnectSources(),
   });
 }
 
@@ -1066,7 +1073,15 @@ async function visitorRequest(
   // #1361 — the cheap gates above passed: confirm the published state the
   // rest answers from (settings, registry, rate-limit specs, consent rule).
   await confirmPublishedStateOn(adapter);
-  if (collectionRoute) return collectionOperation(url, collectionRoute, requestId);
+  if (collectionRoute) {
+    // #1654 — a declared conversation answers its GET with what the widget needs.
+    await syncDispatchPlugins();
+    const chat = collectionRoute.releaseOnly
+      ? null
+      : declaredAiChatOperation(collectionRoute.slug, collectionRoute.operation);
+    if (chat) return aiChatInfoResponse(req, chat, requestId);
+    return collectionOperation(url, collectionRoute, requestId);
+  }
   if (oneClick) return mailOneClick(req, url, oneClick, requestId);
   let settings: GatewaySettings;
   try {
@@ -1087,6 +1102,93 @@ async function visitorRequest(
   const chat = declaredAiChatOperation(pluginRoute.slug, pluginRoute.operation);
   if (chat) return aiChatOperation(req, settings, client.value, pluginRoute, chat, requestId);
   return pluginOperation(req, settings, client.value, pluginRoute, requestId);
+}
+
+let streamOrigin: Promise<string | null> | null = null;
+
+/**
+ * #1654 — what the staged pages may also connect to: this gateway's own
+ * stream origin while a conversation is attached. The build renders the
+ * live site's (static-generator CSP), never staging's.
+ */
+async function stagingConnectSources(): Promise<string[]> {
+  const chats = loadedPlugins.all().some((p) => (p.definition.aiChatOperations ?? []).length > 0);
+  if (!chats) return [];
+  try {
+    const origin = await ownStreamOrigin();
+    return origin ? [origin] : [];
+  } catch (e) {
+    console.warn(`[api-gateway] staging: no stream origin for the CSP: ${describeFailure(e)}`);
+    return [];
+  }
+}
+
+/**
+ * #1654 — where the widget streams this gateway's conversations from: its
+ * run.app origin on gcp-firebase (the Firebase rewrite buffers), the
+ * site's own elsewhere (shared visitor-ai-origin.ts). Learned once: a
+ * service's address does not change while it runs.
+ */
+function ownStreamOrigin(): Promise<string | null> {
+  if (!streamOrigin) {
+    streamOrigin = visitorAiStreamOrigin(process.env, { service: process.env.K_SERVICE });
+    streamOrigin.catch(() => {
+      streamOrigin = null;
+    });
+  }
+  return streamOrigin;
+}
+
+/**
+ * #1654 — `GET` of a declared conversation: whether it can answer now,
+ * where to stream from and the limits a widget shows. No key, budget or
+ * prompt is in it; the turn itself checks everything again.
+ */
+async function aiChatInfoResponse(
+  req: Request,
+  chat: NonNullable<ReturnType<typeof declaredAiChatOperation>>,
+  requestId: string,
+): Promise<Response> {
+  const adapter = cachedAdapter as DatabaseAdapter;
+  let settings: GatewaySettings;
+  try {
+    settings = await loadSettings(adapter);
+  } catch (e) {
+    return settingsUnavailable(e, requestId);
+  }
+  let origin: string | null;
+  try {
+    origin = await ownStreamOrigin();
+  } catch (e) {
+    return errorResponse("ServiceUnavailable", 503, requestId, {
+      log: `ai-chat stream origin: ${describeFailure(e)}`,
+    });
+  }
+  const available = await aiChatAvailable(adapter, chat);
+  const response = jsonResponse(
+    {
+      ok: true,
+      data: {
+        available: available === null,
+        streamOrigin: origin,
+        captcha: chat.op.captcha,
+        limits: {
+          maxTurns: chat.op.limits.maxTurns,
+          maxQuestionChars: chat.op.limits.maxQuestionChars,
+        },
+      },
+    },
+    { requestId },
+  );
+  if (available !== null)
+    console.warn(`[api-gateway] request ${requestId}: ai-chat unavailable: ${available}`);
+  const requestOrigin = req.headers.get("origin");
+  if (requestOrigin !== null && (settings.liveOrigins ?? []).includes(requestOrigin)) {
+    response.headers.set("Access-Control-Allow-Origin", requestOrigin);
+    response.headers.set("Vary", "Origin");
+    response.headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+  }
+  return response;
 }
 
 /** This gateway's environment, which its visitor-AI key, turns and ledger belong to. */

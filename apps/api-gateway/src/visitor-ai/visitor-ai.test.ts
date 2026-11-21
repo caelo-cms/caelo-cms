@@ -6,7 +6,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { worstCaseTextMicrocents } from "@caelo-cms/shared";
+import {
+  cloudRunServiceOrigin,
+  visitorAiStreamOrigin,
+  worstCaseTextMicrocents,
+} from "@caelo-cms/shared";
 import { turnWorstCase } from "./chat.js";
 import { CORE_RULES, systemPrompt } from "./prompt.js";
 import { sitePath, TurnSources } from "./tools.js";
@@ -143,5 +147,30 @@ describe("a turn's worst case", () => {
     const three = turnWorstCase(pricing, ["system", "question"], 3, 300);
     // Later steps carry the tool results: far more than three first steps.
     expect(three).toBeGreaterThan(3 * one);
+  });
+});
+
+describe("the stream origin", () => {
+  const metadata = (async () =>
+    new Response("projects/123456789/regions/europe-west1")) as unknown as typeof fetch;
+
+  it("is the site's own except on gcp-firebase, where it is the gateway's run.app URL", async () => {
+    expect(
+      await visitorAiStreamOrigin({ CAELO_PROVIDER: "gcp" }, { service: "x" }, metadata),
+    ).toBeNull();
+    expect(
+      await visitorAiStreamOrigin(
+        { CAELO_PROVIDER: "gcp-firebase" },
+        { service: "caelo-production-data-gateway" },
+        metadata,
+      ),
+    ).toBe("https://caelo-production-data-gateway-123456789.europe-west1.run.app");
+    expect(
+      await visitorAiStreamOrigin({ CAELO_VISITOR_AI_STREAM_ORIGIN: "" }, { service: undefined }),
+    ).toBeNull();
+    await expect(
+      visitorAiStreamOrigin({ CAELO_PROVIDER: "gcp-firebase" }, { service: undefined }, metadata),
+    ).rejects.toThrow("cms-provision upgrade");
+    expect(() => cloudRunServiceOrigin("Bad_Name", "1", "europe-west1")).toThrow();
   });
 });
