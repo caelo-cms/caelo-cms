@@ -248,6 +248,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
 
   // ── internal: not an agent action ─────────────────────────────────────
   "chat.append_message": { kind: "internal", reason: "chat-runner transcript persistence" },
+  "chat.record_ai_call": {
+    kind: "internal",
+    reason:
+      "settles the spend ledger row of an AI call the chat-runner or a tool made (ai-spend.ts, #1653); the cost of a call, never an agent action",
+  },
   "chat.pin_skills_index": {
     kind: "internal",
     reason:

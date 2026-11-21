@@ -16,6 +16,7 @@ import formsPlugin from "@caelo-cms/plugin-forms";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import newsletterPlugin from "@caelo-cms/plugin-newsletter";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
+import siteSearchPlugin from "@caelo-cms/plugin-site-search";
 
 /** The shipped plugins, dependencies first (ratings requires consent-manager). */
 export const SHIPPED_PLUGINS = [
@@ -26,6 +27,7 @@ export const SHIPPED_PLUGINS = [
   formsPlugin,
   newsletterPlugin,
   ratingsPlugin,
+  siteSearchPlugin,
 ] as const;
 
 /** Their slugs. */

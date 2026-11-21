@@ -4,6 +4,7 @@ import { describe, expect, it } from "bun:test";
 import {
   type CollectionDocInput,
   configDefaults,
+  indexCheckedQuery,
   manifestFromDefinition,
   type PageOutputFacts,
   type PageOutputModule,
@@ -353,7 +354,9 @@ function fakeCtx() {
     query: async () => ({ state: "none" as const, error: null, status: 503, body: null }),
   });
   const tables = new Map<string, Record<string, unknown>[]>();
-  const adminQuery = {
+  // The host's read rule in front of list() (#1536): a read no declared
+  // index can drive fails here as it would in storage.
+  const adminQuery = indexCheckedQuery(plugin, "adminSchema", {
     list: async (
       table: string,
       filter: { anyOf?: Record<string, unknown[]>; limit?: number } = {},
@@ -372,7 +375,7 @@ function fakeCtx() {
         (tables.get(table) ?? []).map((r) => (r.id === id ? { ...r, ...patch } : r)),
       );
     },
-  };
+  });
   const values = configDefaults(parseConfigSchema(SITE_SEARCH_CONFIG));
   const ctx = {
     config: {

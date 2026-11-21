@@ -1102,3 +1102,149 @@ exports[`shipped plugins' public surface (#1332) ratings: matches the reviewed s
   },
 }
 `;
+
+exports[`shipped plugins' public surface (#1332) site-search: matches the reviewed surface 1`] = `
+{
+  "mailTemplates": {},
+  "mailUnsubscribe": null,
+  "publicOperations": [
+    {
+      "captcha": "required",
+      "inputJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "search",
+              "click",
+            ],
+            "type": "string",
+          },
+          "lang": {
+            "pattern": "^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$",
+            "type": "string",
+          },
+          "previous": {
+            "maxLength": 200,
+            "type": "string",
+          },
+          "results": {
+            "maximum": 1000000,
+            "minimum": 0,
+            "type": "integer",
+          },
+          "target": {
+            "maxLength": 500,
+            "type": "string",
+          },
+          "text": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string",
+          },
+          "website": {
+            "maxLength": 200,
+            "type": "string",
+          },
+        },
+        "required": [
+          "kind",
+          "text",
+          "lang",
+          "results",
+        ],
+        "type": "object",
+      },
+      "kind": "write",
+      "name": "record",
+      "rateLimit": {
+        "max": 30,
+        "windowSeconds": 60,
+      },
+      "reads": [],
+      "run": {
+        "action": "insert",
+        "answer": {
+          "recorded": true,
+        },
+        "drop": {
+          "answer": {
+            "recorded": true,
+          },
+          "field": "text",
+          "patterns": [
+            "email",
+            "phone",
+            "long-number",
+          ],
+        },
+        "honeypot": {
+          "answer": {
+            "recorded": true,
+          },
+          "field": "website",
+          "store": "nothing",
+        },
+        "onlyIf": {
+          "answer": {
+            "recorded": true,
+          },
+          "column": "counting",
+          "equals": true,
+          "source": {
+            "of": "adminSchema",
+            "table": "public_settings",
+          },
+        },
+        "table": "search_events",
+        "values": {
+          "day": {
+            "from": "today",
+          },
+          "kind": {
+            "field": "kind",
+            "from": "input",
+          },
+          "lang": {
+            "field": "lang",
+            "from": "input",
+          },
+          "previous": {
+            "field": "previous",
+            "from": "input",
+            "optional": true,
+            "trim": true,
+          },
+          "results": {
+            "field": "results",
+            "from": "input",
+          },
+          "target": {
+            "field": "target",
+            "from": "input",
+            "optional": true,
+          },
+          "text": {
+            "field": "text",
+            "from": "input",
+            "trim": true,
+          },
+        },
+      },
+      "writes": [
+        "search_events",
+      ],
+    },
+  ],
+  "requires": [],
+  "tables": {
+    "search_events": {
+      "kind": "inbox",
+      "visitorPrivileges": [
+        "INSERT",
+      ],
+    },
+  },
+}
+`;

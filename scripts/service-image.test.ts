@@ -331,8 +331,19 @@ describe("the gateway image", () => {
   it("carries no plugin code: no Deno, no dist, no validator (#1340)", () => {
     // No Deno stage, binary or env (the header comment names what it lacks).
     expect(dockerfile).not.toMatch(/^FROM denoland|--from=deno|CAELO_DENO_BINARY/m);
-    expect(gatewaySpec.binaries.map((b) => b.path)).toEqual(["usr/local/bin/bun"]);
-    expect(gatewaySpec.copy.some((c) => c.includes("dist"))).toBe(false);
+    // Bun, plus the embedding models' ONNX graphs (#1650): data a visitor's
+    // query runs through inside WebAssembly, never plugin code.
+    expect(
+      gatewaySpec.binaries
+        .map((b) => b.path)
+        .filter((p) => !/^opt\/caelo\/models\/.+\.onnx$/.test(p)),
+    ).toEqual(["usr/local/bin/bun"]);
+    // No plugin dist. The one dist it copies from is ONNX Runtime's
+    // WebAssembly build (#1650), which CAELO_ORT_WASM_DIR points at.
+    expect(gatewaySpec.copy.filter((c) => c.includes("dist"))).toEqual([
+      "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm",
+      "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs",
+    ]);
     expect(gatewaySpec.bundle.external).toEqual([]);
     expect(gatewaySpec.runtimePackages).toEqual([]);
     expect(gatewaySpec.nodeModules).toEqual([]);

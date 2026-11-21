@@ -178,6 +178,13 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       // the request a build carrier holds open (in-process on the CI install).
       `${A}/build-carrier/**`,
       `${A}/ops/build_orders.ts`,
+      // Epic #1644 — every Stage plans the plugins' search indexes and page
+      // output, starts their Stage batches, and Publish live promotes the
+      // releases; each step runs on every Stage, a plugin using it or not.
+      `${A}/collections/stage.ts`,
+      `${A}/collections/promote.ts`,
+      `${A}/ops/page_output.ts`,
+      `${A}/plugin-batches/triggers.ts`,
       `${A}/snapshots/**`,
       `${A}/deploy/**`,
       `${A}/draft.ts`,
@@ -563,6 +570,15 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${ADMIN}/lib/server/upgrader.ts`,
   `${ADMIN}/lib/server/release-check.ts`,
   `${ADMIN}/lib/server/mcp-*.ts`,
+  // Epic #1644 — what runs only for a plugin that builds a search index,
+  // runs batch jobs or has settings awaiting approval (site-search): the
+  // index and batch jobs, collection clean-up, the embedding catalog. No
+  // CI scenario activates such a plugin; their integration tests and the
+  // site-search browser test drive them.
+  `${A}/collections/{gc,index-job,index-job-kind,ops}.ts`,
+  `${A}/plugin-batches/{job,job-kind,ops}.ts`,
+  `${A}/ops/plugin_config_pending.ts`,
+  `${SHARED}/embedding-models.ts`,
 ];
 
 /**
