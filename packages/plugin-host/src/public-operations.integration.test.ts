@@ -19,12 +19,7 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { registerAdminOps } from "@caelo-cms/admin-core";
-import {
-  definePlugin,
-  type PublicOperationDef,
-  PublicOperationError,
-  z,
-} from "@caelo-cms/plugin-sdk";
+import { definePlugin, type PublicOperationDef, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import fc from "fast-check";
@@ -66,6 +61,13 @@ async function wipe(): Promise<void> {
   } finally {
     await sql.end();
   }
+  // What a run stored goes with the plugin.
+  const pub = new SQL(PUBLIC_URL as string);
+  try {
+    await pub.unsafe('DROP SCHEMA IF EXISTS "plugin_test_public_ops" CASCADE');
+  } finally {
+    await pub.end();
+  }
 }
 
 beforeAll(async () => {
@@ -86,11 +88,33 @@ afterAll(async () => {
 
 const noteInput = z.object({ text: z.string().min(1).max(100), stars: z.number().int() }).strict();
 
-/** What the handlers received, to prove what never reached them. */
-const received: unknown[] = [];
+/** The plugin's stored notes, read in its RLS scope: what a run wrote. */
+async function storedNotes(): Promise<{ text: string; stars: number }[]> {
+  const admin = new SQL(ADMIN_URL as string);
+  let id: string | undefined;
+  try {
+    const rows = (await admin.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`;
+    })) as unknown as { id: string }[];
+    id = rows[0]?.id;
+  } finally {
+    await admin.end();
+  }
+  if (!id) return [];
+  const pub = new SQL(PUBLIC_URL as string);
+  try {
+    return (await pub.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`SELECT set_config('caelo.plugin_id', ${id}, true)`;
+      return tx.unsafe(`SELECT text, stars FROM "plugin_test_public_ops".notes`);
+    })) as unknown as { text: string; stars: number }[];
+  } finally {
+    await pub.end();
+  }
+}
 
 async function load(publicOperations?: PublicOperationDef[]): Promise<void> {
-  received.length = 0;
   const def = definePlugin({
     slug: SLUG,
     version: "0.1.0",
@@ -101,25 +125,8 @@ async function load(publicOperations?: PublicOperationDef[]): Promise<void> {
     },
     tableKinds: { notes: "visitor-state", secrets: "visitor-state" },
     ...(publicOperations ? { publicOperations } : {}),
-    operations: {
-      submit: async (_ctx, args) => {
-        received.push(args);
-        // A handler that trusts its typed input, as handlers do.
-        const a = args as { text: string; stars: number };
-        return { length: a.text.length, stars: a.stars.toFixed(0) };
-      },
-      moderate: async () => ({ moderated: true }),
-      // A handler bug: it reads a field its (empty) input never has, and the
-      // runtime's TypeError text must not reach the visitor.
-      crash: async (_ctx, args) => {
-        const { missing } = args as { missing: { length: number } };
-        return { length: missing.length };
-      },
-      refuse: async () => {
-        throw new PublicOperationError("this form is closed");
-      },
-      peek: async (ctx) => ({ rows: await ctx.query.list("secrets", { limit: 1 }) }),
-    },
+    // #1340 — only admin-side code: no code answers a visitor.
+    operations: { moderate: async () => ({ moderated: true }) },
   });
   const report = await bootstrap({
     infra,
@@ -134,12 +141,25 @@ const SUBMIT: PublicOperationDef = {
   kind: "write",
   input: noteInput,
   writes: ["notes"],
+  run: {
+    action: "insert",
+    table: "notes",
+    values: { text: { from: "input", field: "text" }, stars: { from: "input", field: "stars" } },
+    answer: { saved: true },
+  },
 };
 const open = (name: string, extra: Partial<PublicOperationDef> = {}): PublicOperationDef => ({
   name,
   kind: "write",
   captcha: "none",
   input: z.object({}).strict(),
+  writes: ["notes"],
+  run: {
+    action: "insert",
+    table: "notes",
+    values: { text: { from: "const", value: "x" } },
+    answer: {},
+  },
   ...extra,
 });
 
@@ -154,10 +174,11 @@ function call(operationName: string, args: unknown, visitorContext = VISITOR) {
 }
 
 describe("visitor-facing dispatch", () => {
-  it("allows a declared public operation", async () => {
+  it("runs a declared public operation", async () => {
     await load([SUBMIT]);
     const r = await call("submit", { text: "hi", stars: 4 });
-    expect(r).toEqual({ ok: true, value: { length: 2, stars: "4" } });
+    expect(r).toEqual({ ok: true, value: { saved: true } });
+    expect(await storedNotes()).toEqual([{ text: "hi", stars: 4 }]);
   });
 
   it("refuses an operation that is not declared public", async () => {
@@ -191,15 +212,16 @@ describe("visitor-facing dispatch", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("refuses to load a plugin whose public list names a missing operation", async () => {
-    // A typo here silently 404s the visitor surface, or advertises one
-    // that does not exist. Both are caught at load.
+  it("refuses to load a plugin whose public operation is also code (#1340)", async () => {
+    // A code operation of the same name would read as "this code answers
+    // visitors" while it never runs: refused at load.
     const def = definePlugin({
-      slug: `${SLUG}-typo`,
+      slug: `${SLUG}-code`,
       version: "0.1.0",
       tier: 1,
-      schema: {},
-      publicOperations: [open("submitt")],
+      schema: { notes: { text: "string", stars: "int" } },
+      tableKinds: { notes: "visitor-state" },
+      publicOperations: [open("submit")],
       operations: { submit: async () => ({}) },
     });
     const report = await bootstrap({
@@ -208,17 +230,17 @@ describe("visitor-facing dispatch", () => {
       testPlugins: [{ definition: def }],
     });
     expect(report.failed).toHaveLength(1);
-    expect(report.failed[0]?.reason).toContain("publicOperations");
+    expect(report.failed[0]?.reason).toContain("also a code operation");
   });
 });
 
 describe("the declared captcha (#1332, E4)", () => {
-  it("refuses a write without a verified proof before the handler runs", async () => {
+  it("refuses a write without a verified proof before the run", async () => {
     await load([SUBMIT]);
     const r = await call("submit", { text: "hi", stars: 4 }, NO_PROOF);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.kind).toBe("CaptchaRequired");
-    expect(received).toHaveLength(0);
+    expect(await storedNotes()).toEqual([]);
   });
 
   it("lets an operation declared captcha none through on its rate limit alone", async () => {
@@ -234,14 +256,14 @@ describe("the declared captcha (#1332, E4)", () => {
 });
 
 describe("the declared input (#1332, M3)", () => {
-  it("refuses a body of the wrong shape before the handler runs", async () => {
+  it("refuses a body of the wrong shape before the run", async () => {
     await load([SUBMIT]);
     for (const body of [{ text: 7, stars: 1 }, { text: "x" }, { text: "x", stars: 1, extra: 1 }]) {
       const r = await call("submit", body);
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error.kind).toBe("InvalidInput");
     }
-    expect(received).toHaveLength(0);
+    expect(await storedNotes()).toEqual([]);
   });
 
   it("removes the gateway's proof field before validating", async () => {
@@ -252,29 +274,39 @@ describe("the declared input (#1332, M3)", () => {
       _caelo_captcha: { challenge: "c", nonce: "n" },
     });
     expect(r.ok).toBe(true);
-    expect(received).toEqual([{ text: "hi", stars: 2 }]);
+    expect(await storedNotes()).toEqual([{ text: "hi", stars: 2 }]);
   });
 
-  it("never hands a handler a value its schema refuses (fuzz)", async () => {
+  it("stores only what its schema accepts (fuzz)", async () => {
     await load([SUBMIT]);
     await fc.assert(
       fc.asyncProperty(fc.oneof(fc.anything(), fc.object(), fc.jsonValue()), async (body) => {
-        received.length = 0;
         const r = await call("submit", body);
-        for (const args of received) expect(noteInput.safeParse(args).success).toBe(true);
         if (!r.ok) {
           expect(["InvalidInput"]).toContain(r.error.kind);
           expect(r.error.message).not.toMatch(/TypeError|undefined is not|Cannot read/);
+        } else {
+          expect(noteInput.safeParse(body).success).toBe(true);
         }
       }),
       { numRuns: 150 },
     );
+    for (const row of await storedNotes()) expect(noteInput.safeParse(row).success).toBe(true);
   });
 });
 
 describe("what a visitor reads of a failure (#1332, M3)", () => {
-  it("answers a crashing handler generically, never with its TypeError", async () => {
-    await load([open("crash")]);
+  it("answers a failing run generically, never with its error text", async () => {
+    // A declaration naming an input field its own schema never guarantees.
+    const crash = open("crash", {
+      run: {
+        action: "insert",
+        table: "notes",
+        values: { text: { from: "input", field: "missing" } },
+        answer: {},
+      },
+    });
+    await load([crash]);
     const r = await call("crash", {});
     expect(r).toEqual({
       ok: false,
@@ -282,23 +314,37 @@ describe("what a visitor reads of a failure (#1332, M3)", () => {
     });
   });
 
-  it("passes a refusal the handler worded for the visitor", async () => {
-    await load([open("refuse")]);
+  it("passes a refusal the declaration words for the visitor", async () => {
+    const refuse = open("refuse", {
+      run: {
+        action: "insert",
+        table: "notes",
+        values: { text: { from: "const", value: "x" } },
+        checks: [{ check: "not-blank", field: "nothing", refusal: "this form is closed" }],
+        answer: {},
+      },
+    });
+    await load([refuse]);
     const r = await call("refuse", {});
     expect(r).toEqual({ ok: false, error: { kind: "Rejected", message: "this form is closed" } });
   });
 });
 
 describe("the declared table access (#1332)", () => {
-  it("refuses a read of a table the operation does not declare", async () => {
-    await load([open("peek", { kind: "read" })]);
-    const r = await call("peek", {});
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.kind).toBe("OperationFailed");
+  const peek = (reads: string[]): PublicOperationDef =>
+    open("peek", {
+      kind: "read",
+      writes: [],
+      reads,
+      run: { action: "list", table: "secrets", limit: 1, columns: ["value"], as: "rows" },
+    });
+
+  it("refuses to load a read of a table the operation does not declare", async () => {
+    await expect(load([peek([])])).rejects.toThrow("list it in reads");
   });
 
   it("serves a read of a declared table", async () => {
-    await load([open("peek", { kind: "read", reads: ["secrets"] })]);
-    expect((await call("peek", {})).ok).toBe(true);
+    await load([peek(["secrets"])]);
+    expect(await call("peek", {})).toEqual({ ok: true, value: { rows: [] } });
   });
 });
