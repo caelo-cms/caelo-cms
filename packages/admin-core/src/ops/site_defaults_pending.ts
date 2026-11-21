@@ -4,21 +4,24 @@
  * site_defaults.{propose_set_seo, execute_proposal, reject_proposal,
  * list_pending} — the §11.A gate in front of `site_defaults.set_seo`.
  *
- * The site SEO settings (public base URL, sitemap toggle, Organization
- * JSON-LD) used to be writable only from the Owner's Settings → SEO page,
+ * The site SEO settings (public base URL, sitemap toggle, feed and IndexNow
+ * toggles, Organization JSON-LD) used to be writable only from the Owner's Settings → SEO page,
  * yet the static generator refuses to build without a base URL (#551). The
  * agent could see the blocker and had no way to clear it — the operator
  * had to leave the conversation. Now the AI proposes and the Owner approves
  * (in the chat, or for a Power-MCP caller on the Settings → SEO page).
  *
- * Why every field is gated, not just the base URL: the three settings are
- * one Owner op that writes them together, they change rarely, and each is
+ * Why every field is gated, not just the base URL: the settings are one
+ * Owner op that writes them together, they change rarely, and each is
  * published on every page — the base URL rewrites every canonical, og:url,
  * hreflang target and sitemap entry; the sitemap toggle drops sitemap.xml
- * and the robots.txt Sitemap line; the Organization JSON-LD states the
- * site's identity to search engines. A single click for a rare site-wide
- * change is cheap; a second, ungated write path for two of the three
- * fields would split one setting across two contracts.
+ * and the robots.txt Sitemap line; the feed toggle drops /feed.xml, the
+ * feed link on every page and the WebSub ping; the IndexNow toggle decides
+ * whether a Publish live tells the IndexNow engines what changed; the
+ * Organization JSON-LD states the site's identity to search engines. A
+ * single click for a rare site-wide change is cheap; a second, ungated
+ * write path for some of the fields would split one setting across two
+ * contracts.
  *
  * The proposal carries only the fields the AI wants to change. At approve
  * time the omitted ones are read fresh, so an Owner edit made while the
@@ -54,16 +57,20 @@ type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 interface StoredSeo {
   siteBaseUrl: string | null;
   sitemapEnabled: boolean;
+  feedEnabled: boolean;
+  indexNowEnabled: boolean;
   organizationJson: SiteDefaultsSetSeoInput["organizationJson"];
 }
 
 async function readStoredSeo(tx: Tx): Promise<StoredSeo | null> {
   const rows = (await tx.execute(sql`
-    SELECT site_base_url, sitemap_enabled, organization_json
+    SELECT site_base_url, sitemap_enabled, feed_enabled, indexnow_enabled, organization_json
     FROM site_defaults WHERE id = 1 LIMIT 1
   `)) as unknown as {
     site_base_url: string | null;
     sitemap_enabled: boolean;
+    feed_enabled: boolean;
+    indexnow_enabled: boolean;
     organization_json: unknown;
   }[];
   const r = rows[0];
@@ -71,6 +78,8 @@ async function readStoredSeo(tx: Tx): Promise<StoredSeo | null> {
   return {
     siteBaseUrl: r.site_base_url,
     sitemapEnabled: r.sitemap_enabled,
+    feedEnabled: r.feed_enabled,
+    indexNowEnabled: r.indexnow_enabled,
     organizationJson: (r.organization_json ?? {}) as SiteDefaultsSetSeoInput["organizationJson"],
   };
 }
@@ -112,8 +121,8 @@ export const proposeSiteSeoSetOp = defineOperation({
       return err({ kind: "HandlerError", operation: op, message: MISSING_ROW_MESSAGE });
     }
     if (payload.siteBaseUrl === undefined && !current.siteBaseUrl) {
-      // `set_seo` writes all three fields and needs a base URL; a
-      // sitemap- or organization-only proposal could never be applied
+      // `set_seo` writes every field and needs a base URL; a proposal of
+      // the other fields could never be applied
       // while none is stored, so refuse it before the Owner sees a card.
       return err({
         kind: "HandlerError",
@@ -128,6 +137,15 @@ export const proposeSiteSeoSetOp = defineOperation({
     }
     if (payload.sitemapEnabled !== undefined && payload.sitemapEnabled !== current.sitemapEnabled) {
       changes.sitemapEnabled = { from: current.sitemapEnabled, to: payload.sitemapEnabled };
+    }
+    if (payload.feedEnabled !== undefined && payload.feedEnabled !== current.feedEnabled) {
+      changes.feedEnabled = { from: current.feedEnabled, to: payload.feedEnabled };
+    }
+    if (
+      payload.indexNowEnabled !== undefined &&
+      payload.indexNowEnabled !== current.indexNowEnabled
+    ) {
+      changes.indexNowEnabled = { from: current.indexNowEnabled, to: payload.indexNowEnabled };
     }
     if (
       payload.organizationJson !== undefined &&
@@ -146,7 +164,7 @@ export const proposeSiteSeoSetOp = defineOperation({
     const preview = {
       changes,
       effect:
-        "applies on approve; the next publish rebuilds canonical URLs, og:url, hreflang, JSON-LD, robots.txt and the sitemap from these settings",
+        "applies on approve; the next publish rebuilds canonical URLs, og:url, hreflang, JSON-LD, robots.txt, the sitemap and the feed from these settings, and announces itself to search engines as they say",
     };
     const payloadHash = await hashProposalPayload(payload);
     const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
@@ -202,6 +220,8 @@ const executeSiteDefaultsProposalOpDefinition = defineOperation({
   output: z.object({
     siteBaseUrl: z.string(),
     sitemapEnabled: z.boolean(),
+    feedEnabled: z.boolean(),
+    indexNowEnabled: z.boolean(),
     organizationJson: z.record(z.string(), z.unknown()),
   }),
   handler: async (ctx, input, tx) => {
@@ -242,6 +262,8 @@ const executeSiteDefaultsProposalOpDefinition = defineOperation({
     const merged: SiteDefaultsSetSeoInput = {
       siteBaseUrl,
       sitemapEnabled: payload.sitemapEnabled ?? current.sitemapEnabled,
+      feedEnabled: payload.feedEnabled ?? current.feedEnabled,
+      indexNowEnabled: payload.indexNowEnabled ?? current.indexNowEnabled,
       organizationJson: payload.organizationJson ?? current.organizationJson,
     };
     const r = await siteDefaultsSetSeoOp.handler(ctx, merged, tx);
@@ -270,7 +292,7 @@ const executeSiteDefaultsProposalOpDefinition = defineOperation({
       input,
       succeeded: true,
       entityId: input.proposalId,
-      resultSummary: `base=${merged.siteBaseUrl},sitemap=${merged.sitemapEnabled}`,
+      resultSummary: `base=${merged.siteBaseUrl},sitemap=${merged.sitemapEnabled},feed=${merged.feedEnabled},indexnow=${merged.indexNowEnabled}`,
     });
     return ok(merged);
   },

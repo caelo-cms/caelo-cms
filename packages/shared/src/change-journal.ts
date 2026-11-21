@@ -286,6 +286,12 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   release_check_cache: RUNTIME,
   deploy_targets: "deploy target configuration; read by the deploy ops",
   deploy_runs: "deploy runs; reach editors as the op-classified `deploys` topic",
+  live_page_versions:
+    "the record of what production serves per page, appended only by the runs that change production (docs/dev/search-engine-feed.md); nothing is derived from its changes",
+  staged_page_changes:
+    "what a Stage found changed against live_page_versions, read once by the Publish live that ships it",
+  search_engine_notifications:
+    "the WebSub and IndexNow sends of production runs; read by their sender and Settings → SEO",
   redirect_sync_state: RUNTIME,
   projection_boot_publish: RUNTIME,
   gateway_refresh_state: RUNTIME,

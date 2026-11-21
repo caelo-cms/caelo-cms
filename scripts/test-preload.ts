@@ -94,6 +94,10 @@ import { findDoubleEncodedJsonb } from "./jsonb-double-encoding-scan.ts";
 // 3 (not 1) avoids the single-connection self-deadlock; see resolvePoolMax.
 process.env.CAELO_DB_POOL_MAX ??= "3";
 
+// docs/dev/search-engine-feed.md — a test's Publish live must never ping the
+// public WebSub hub or IndexNow; the sender's own tests pass a fake fetch.
+process.env.CAELO_SEARCH_NOTIFY ??= "off";
+
 // Default hook + test timeout. Integration `wipe()` helpers open a
 // fresh Bun.SQL pool every call; the cold-connect path can spike past
 // the 5-second Bun default under load. 30s matches the longest

@@ -19,6 +19,13 @@ export {
   neutralizeBakeMarkers,
   replaceBakeRegions,
 } from "./bake-regions.js";
+// docs/dev/search-engine-feed.md — what a build changes live per page.
+export {
+  bodyContentDigest,
+  pageContentFingerprint,
+  pluginRegionsDigest,
+} from "./content-fingerprint.js";
+export { ContentStates, type FeedEntry } from "./content-states.js";
 // issue #150 — theme web-font resolver (see fonts-resolver.ts header
 // for why it lives here). admin-core re-exports this surface.
 // #592 — the build's content-variants pass (resolution + loud refusal).
@@ -57,6 +64,11 @@ export {
   renderVariants,
   withListOverlays,
 } from "./list-data.js";
+export {
+  parseAtomFeed,
+  patchSitemapLastmod,
+  updateAtomFeed,
+} from "./live-search-files.js";
 // #1271 — the build's media pass (references by stored digest).
 export { type MediaDelivery, MediaPass } from "./media-pass.js";
 // #802 — the file the designated 404 page ships as (the quality audit

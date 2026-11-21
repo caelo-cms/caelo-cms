@@ -12,6 +12,7 @@
  * | bug forwarding (send)        | every tick  |
  * | public mail outboxes (#1337) | every tick  |
  * | reporting jobs (#1359)       | every tick  |
+ * | search engine notify retry   | every tick  |
  * | plugin-data build (#1155)    | 5 minutes   |
  * | update scheduler             | 15 minutes  |
  * | release check                | hourly      |
@@ -50,6 +51,7 @@ import { sweepExpiredRateLimitBuckets } from "../rate-limit-gc-worker.js";
 import { retryRedirectSync } from "../redirect-sync-worker.js";
 import { type ReleaseCheckOpts, runReleaseCheck } from "../release-check-worker.js";
 import { runReportingJobBackstop, sweepFinishedReportingJobs } from "../reporting-jobs/backstop.js";
+import { sendSearchNotifications } from "../search-feed/notify.js";
 import { DEFAULT_TASK_LEASE_SECONDS, type ScheduledTask } from "./task.js";
 
 const MINUTE = 60;
@@ -142,6 +144,16 @@ export function coreScheduledTasks(deps: CoreTaskDeps): ScheduledTask[] {
     // #1359 — restart a reporting job (the quality audit's) whose lease ran
     // out, start one for work that has none. Every tick: an audit waits.
     task("reporting-jobs", 0, () => runReportingJobBackstop({ adapter, registry })),
+    // The WebSub pings and IndexNow submissions a Publish live could not
+    // send at once (docs/dev/search-engine-feed.md). It announces what is
+    // already live; it publishes nothing.
+    task("search-notify", 0, async () => {
+      const r = await sendSearchNotifications({ adapter, registry });
+      const total = r.sent + r.retrying + r.failed;
+      return total > 0
+        ? `${r.sent} sent, ${r.retrying} waiting for a retry, ${r.failed} failed`
+        : undefined;
+    }),
     task("plugin-data-build", 5 * MINUTE, async () => {
       // The due-table spaces the runs; the op's own spacing would only
       // skip a run the tick already decided is due.

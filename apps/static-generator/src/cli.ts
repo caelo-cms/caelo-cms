@@ -105,6 +105,18 @@ function emit(line: Record<string, unknown>): void {
   process.stdout.write(`${encodeBuildPayload(line)}\n`);
 }
 
+/**
+ * The last line of a run, written before the process exits. A write to a
+ * pipe is asynchronous: `process.exit` right after it cuts a line of a few
+ * megabytes short (a large site's page changes ride the done event), and the
+ * admin then sees no done event at all. Resolves once stdout took the line.
+ */
+function emitFinal(line: Record<string, unknown>): Promise<void> {
+  return new Promise((resolve) => {
+    process.stdout.write(`${encodeBuildPayload(line)}\n`, () => resolve());
+  });
+}
+
 async function main(): Promise<void> {
   const lines = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -193,7 +205,7 @@ async function main(): Promise<void> {
       // the 0392 timeouts and allows no nested checkout.
       { holder: "static-generator.build" },
     );
-    emit({ kind: "done", ...result });
+    await emitFinal({ kind: "done", ...result });
   } finally {
     lines.close();
     await adapter.close();
@@ -203,11 +215,11 @@ async function main(): Promise<void> {
 main()
   // The admin keeps stdin open for plugin answers; leave explicitly.
   .then(() => process.exit(0))
-  .catch((e: unknown) => {
+  .catch(async (e: unknown) => {
     const message = e instanceof Error ? e.message : String(e);
     // #1240 — the render gate's failures cross as structure: the admin
     // builds the operator's text from them.
-    emit({
+    await emitFinal({
       kind: "error",
       message,
       ...(e instanceof RenderFailureError ? { renderFailures: e.failures } : {}),

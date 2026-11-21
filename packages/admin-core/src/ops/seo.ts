@@ -65,6 +65,7 @@ import {
 } from "../seo/share-image.js";
 import type { PageSeoState } from "../snapshots/state.js";
 import { loadPageContentTexts } from "./content/page-content-text.js";
+import { recentSearchNotifications, searchNotificationShape } from "./search-notifications.js";
 
 const seoRowOutput = z.object({
   pageId: z.string(),
@@ -651,14 +652,15 @@ export const pagesSeoListStaleOp = defineOperation({
 });
 
 // ---------------------------------------------------------------------
-// site_defaults.set_seo — Owner-only base URL + sitemap toggle + Org JSON.
+// site_defaults.set_seo — Owner-only base URL + sitemap / feed / IndexNow
+// toggles + Org JSON.
 // ---------------------------------------------------------------------
 
 export const siteDefaultsSetSeoOp = defineOperation({
   name: "site_defaults.set_seo",
   readScope: "request",
-  // Why human-only: Owner-only — site-level config (base URL, sitemap toggle,
-  // organization JSON) published on every page. The AI reaches it through the
+  // Why human-only: Owner-only — site-level config (base URL, sitemap, feed
+  // and IndexNow toggles, organization JSON) published on every page. The AI reaches it through the
   // §11.A gate: site_defaults.propose_set_seo → execute_proposal (Owner).
   actorScope: ["human", "system"],
   database: "cms_admin",
@@ -669,6 +671,8 @@ export const siteDefaultsSetSeoOp = defineOperation({
       UPDATE site_defaults SET
         site_base_url = ${input.siteBaseUrl},
         sitemap_enabled = ${input.sitemapEnabled},
+        feed_enabled = ${input.feedEnabled},
+        indexnow_enabled = ${input.indexNowEnabled},
         organization_json = ${JSON.stringify(input.organizationJson)}::text::jsonb,
         updated_at = now(),
         updated_by = ${ctx.actorId}::uuid
@@ -680,7 +684,7 @@ export const siteDefaultsSetSeoOp = defineOperation({
       operation: "site_defaults.set_seo",
       input,
       succeeded: true,
-      resultSummary: `base=${input.siteBaseUrl},sitemap=${input.sitemapEnabled}`,
+      resultSummary: `base=${input.siteBaseUrl},sitemap=${input.sitemapEnabled},feed=${input.feedEnabled},indexnow=${input.indexNowEnabled}`,
     });
     return ok({});
   },
@@ -702,16 +706,28 @@ export const siteDefaultsGetSeoOp = defineOperation({
     /** null = not configured yet (#551); never a substituted default. */
     siteBaseUrl: z.string().nullable(),
     sitemapEnabled: z.boolean(),
+    /** /feed.xml + the WebSub ping (docs/dev/search-engine-feed.md). */
+    feedEnabled: z.boolean(),
+    /** IndexNow submissions after Publish live. */
+    indexNowEnabled: z.boolean(),
+    /** The site's IndexNow key, public by design (served at /<key>.txt). */
+    indexNowKey: z.string(),
     organizationJson: z.record(z.string(), z.unknown()),
+    /** The latest WebSub pings and IndexNow submissions, newest first. */
+    searchNotifications: z.array(searchNotificationShape),
   }),
   handler: async (_ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
-      SELECT site_base_url, sitemap_enabled, organization_json
+      SELECT site_base_url, sitemap_enabled, feed_enabled, indexnow_enabled, indexnow_key,
+             organization_json
       FROM site_defaults WHERE id = 1
       LIMIT 1
     `)) as unknown as {
       site_base_url: string | null;
       sitemap_enabled: boolean;
+      feed_enabled: boolean;
+      indexnow_enabled: boolean;
+      indexnow_key: string;
       organization_json: Record<string, unknown>;
     }[];
     const r = rows[0];
@@ -725,7 +741,11 @@ export const siteDefaultsGetSeoOp = defineOperation({
     return ok({
       siteBaseUrl: r.site_base_url,
       sitemapEnabled: r.sitemap_enabled,
+      feedEnabled: r.feed_enabled,
+      indexNowEnabled: r.indexnow_enabled,
+      indexNowKey: r.indexnow_key,
       organizationJson: r.organization_json,
+      searchNotifications: await recentSearchNotifications(tx, 4),
     });
   },
 });

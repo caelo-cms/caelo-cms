@@ -44,6 +44,14 @@ export type RenderFingerprint = z.infer<typeof renderFingerprintSchema>;
 const RENDERED_SITE_SETTINGS = {
   site_base_url: { label: "site base URL", value: sql`sd.site_base_url` },
   sitemap_enabled: { label: "sitemap", value: sql`sd.sitemap_enabled::text` },
+  // docs/dev/search-engine-feed.md — the feed link on every page, /feed.xml
+  // and the IndexNow key file.
+  feed_enabled: { label: "feed", value: sql`sd.feed_enabled::text` },
+  indexnow_enabled: { label: "IndexNow", value: sql`sd.indexnow_enabled::text` },
+  indexnow_key: {
+    label: "IndexNow key",
+    value: sql`CASE WHEN sd.indexnow_enabled THEN sd.indexnow_key END`,
+  },
   organization_json: { label: "Organization JSON-LD", value: sql`sd.organization_json::text` },
   site_language: { label: "site language", value: sql`sd.site_language` },
   media_cdn_copy_enabled: {

@@ -22,7 +22,7 @@ export const proposeSetSiteSeoTool = makeProposeTool({
   pendingQueuePath: "/settings/seo",
   when:
     "Set site-wide SEO settings. Read current values with `get_site_seo` first.\n" +
-    "USE FOR: site status `Site URL: not configured`; publish failed with `Site base URL is not configured`; preview flags `site-base-url-unset`; operator names the site's domain or asks for sitemap / organization changes.\n" +
+    "USE FOR: site status `Site URL: not configured`; publish failed with `Site base URL is not configured`; preview flags `site-base-url-unset`; operator names the site's domain or asks for sitemap / feed / IndexNow / organization changes.\n" +
     "DO NOT USE FOR: site language (`set_site_identity`); per-page SEO (`set_page_seo_many`).\n" +
     "CORE RULES: pass only changed fields (omitted keep their value), except while the base URL is unset every proposal must include `siteBaseUrl`.",
   schema: siteSeoProposalInputSchema,
@@ -40,6 +40,16 @@ export const proposeSetSiteSeoTool = makeProposeTool({
       sitemapEnabled: {
         type: "boolean",
         description: "Emit sitemap.xml + the robots.txt Sitemap line.",
+      },
+      feedEnabled: {
+        type: "boolean",
+        description:
+          "Emit /feed.xml (Atom, the pages changed last), link it from every page and robots.txt, and ping the WebSub hub after each Publish live.",
+      },
+      indexNowEnabled: {
+        type: "boolean",
+        description:
+          "Serve the IndexNow key file and submit the URLs each Publish live changed (Bing, Yandex, Seznam, Naver, Yep; not Google).",
       },
       organizationJson: {
         type: "object",
@@ -63,19 +73,38 @@ export const proposeSetSiteSeoTool = makeProposeTool({
 export const getSiteSeoTool = makeReadTool<Record<string, never>>({
   name: "get_site_seo",
   description:
-    "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `organizationJson`. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; default share image: `set_theme_asset` slot socialShare; site language: `get_site_defaults`.",
+    "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `feedEnabled`, `indexNowEnabled`, `organizationJson`, and how the latest WebSub pings / IndexNow submissions went. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; default share image: `set_theme_asset` slot socialShare; site language: `get_site_defaults`.",
   opName: "site_defaults.get_seo",
   input: z.object({}).strict(),
   format: (value) => {
     const v = value as {
       siteBaseUrl: string | null;
       sitemapEnabled: boolean;
+      feedEnabled: boolean;
+      indexNowEnabled: boolean;
       organizationJson: Record<string, unknown>;
+      searchNotifications: {
+        channel: string;
+        status: string;
+        urlCount: number;
+        detail: string | null;
+        createdAt: string;
+      }[];
     };
     return [
       `siteBaseUrl: ${v.siteBaseUrl ?? "(not configured — publishing fails until propose_set_site_seo({siteBaseUrl}) is approved)"}`,
       `sitemapEnabled: ${v.sitemapEnabled}`,
+      `feedEnabled: ${v.feedEnabled}`,
+      `indexNowEnabled: ${v.indexNowEnabled}`,
       `organizationJson: ${JSON.stringify(v.organizationJson)}`,
+      v.searchNotifications.length === 0
+        ? "search engine notifications: none yet (sent after a Publish live)"
+        : `search engine notifications (newest first):\n${v.searchNotifications
+            .map(
+              (n) =>
+                `- ${n.createdAt} ${n.channel} ${n.status}${n.channel === "indexnow" ? ` (${n.urlCount} URLs)` : ""}${n.detail ? `: ${n.detail}` : ""}`,
+            )
+            .join("\n")}`,
     ].join("\n");
   },
 });

@@ -143,7 +143,12 @@ async function readSeo(): Promise<{
 }> {
   const r = await execute(registry, adapter, SYSTEM, "site_defaults.get_seo", {});
   if (!r.ok) throw new Error(JSON.stringify(r.error));
-  return r.value as Awaited<ReturnType<typeof readSeo>>;
+  const v = r.value as Awaited<ReturnType<typeof readSeo>>;
+  return {
+    siteBaseUrl: v.siteBaseUrl,
+    sitemapEnabled: v.sitemapEnabled,
+    organizationJson: v.organizationJson,
+  };
 }
 
 function build(runId: string) {

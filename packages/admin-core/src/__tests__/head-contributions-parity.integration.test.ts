@@ -283,7 +283,10 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
       expect(result.sitemapEmitted).toBe(false);
       expect(existsSync(join(offDir, "sitemap.xml"))).toBe(false);
       expect(
-        buildRobotsTxtWithSitemap("index", "https://example.com", result.sitemapEmitted),
+        buildRobotsTxtWithSitemap("index", "https://example.com", {
+          sitemap: result.sitemapEmitted,
+          feed: false,
+        }),
       ).not.toContain("Sitemap:");
     } finally {
       rmSync(offDir, { recursive: true, force: true });

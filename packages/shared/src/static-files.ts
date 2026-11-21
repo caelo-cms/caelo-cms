@@ -100,6 +100,7 @@ const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._~-]*$/;
 const RESERVED_ROOT_FILES: ReadonlySet<string> = new Set([
   "robots.txt",
   "sitemap.xml",
+  "feed.xml",
   "routing-manifest.json",
   "cdn_manifest.json",
   "render-deps.json",
