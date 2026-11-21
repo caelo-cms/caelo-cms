@@ -28,12 +28,26 @@
  *
  * Nothing here reads or writes cms_admin; attached plugins answer visitor calls only
  * (dispatch.ts enforces `publicOperations`).
+ *
+ * #1340 (epic #763 E2-B) — and no plugin code runs here: a plugin is
+ * attached as its manifest (manifest-definition.ts), the signed one in the
+ * image for a release-signed plugin and the approved, published one for an
+ * installed plugin. Its definition has no code operation; visitor calls
+ * run their declarations with core code. The image carries no dist, no
+ * Deno and no plugin validator.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { releaseManifestDigest } from "@caelo-cms/plugin-sandbox";
-import type { PluginContext, PluginContextTier1, PluginDefinition } from "@caelo-cms/plugin-sdk";
+import { externalArtifactDigest, releaseManifestDigest } from "@caelo-cms/plugin-sandbox/artifact";
+import {
+  manifestFromDefinition,
+  type PluginContext,
+  type PluginContextTier1,
+  type PluginDefinition,
+  type PluginManifest,
+  pluginManifest,
+} from "@caelo-cms/plugin-sdk";
 import { makePluginContext } from "./capabilities.js";
 import {
   type LoadedPlugin,
@@ -44,15 +58,12 @@ import {
   setHostSystemActorId,
 } from "./dispatch.js";
 import { readExternalApproval } from "./external-authorization.js";
-import { externalPluginDefinition } from "./external-plugin.js";
 import {
-  type InMemoryPlugin,
-  type LoadReport,
+  declarativeDefinition,
   resolveTrustRoot,
   unapprovedCapabilities,
-  verifyDiskPlugin,
-  verifyInMemoryPlugin,
-} from "./loader.js";
+  verifyDiskManifest,
+} from "./manifest-definition.js";
 import {
   ProjectionNotPublishedError,
   readPublishedArtifact,
@@ -71,20 +82,30 @@ export interface DispatchOnlyBootstrapOpts {
   readonly systemActorId: string;
   /** Trust root override (same precedence as the admin host's bootstrap). */
   readonly publicKeyHex?: string;
-  /** Tests: definitions verified in memory instead of read from disk. */
-  readonly testPlugins?: ReadonlyArray<InMemoryPlugin>;
+  /**
+   * Tests: plugins given as definitions; the gateway still attaches only
+   * their manifests (`manifestFromDefinition`), never their code.
+   */
+  readonly testPlugins?: ReadonlyArray<{
+    readonly definition: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
+  }>;
 }
 
-type Definition = PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>;
+/** What a dispatch-only bootstrap reports. */
+export interface DispatchOnlyLoadReport {
+  readonly loaded: ReadonlyArray<{ slug: string; version: string; tier: number }>;
+  readonly inactive: ReadonlyArray<string>;
+  readonly failed: ReadonlyArray<{ slug: string; reason: string }>;
+}
 
-/** A release-signed plugin this gateway verified, with its manifest's digest (#1332). */
+/** A release-signed plugin's manifest this gateway verified, with its digest (#1332). */
 interface VerifiedRelease {
-  readonly definition: Definition;
+  readonly manifest: PluginManifest;
   readonly manifestDigest: string;
 }
 
-function verifiedRelease(v: { definition: Definition; manifest: unknown }): VerifiedRelease {
-  return { definition: v.definition, manifestDigest: releaseManifestDigest(v.manifest) };
+function verifiedRelease(manifest: PluginManifest): VerifiedRelease {
+  return { manifest, manifestDigest: releaseManifestDigest(manifest) };
 }
 
 /**
@@ -100,7 +121,7 @@ function releaseApprovalProblem(
 ): string | null {
   if (!release) return null;
   const unapproved = unapprovedCapabilities(
-    release.definition.requestedCapabilities ?? [],
+    release.manifest.requestedCapabilities ?? [],
     row.approved_capabilities,
   );
   if (unapproved.length > 0) {
@@ -150,7 +171,9 @@ let state: {
  * being migrated, the role has no password yet) is not fatal: the report
  * says so and the next {@link syncDispatchPlugins} retries.
  */
-export async function bootstrapDispatchOnly(opts: DispatchOnlyBootstrapOpts): Promise<LoadReport> {
+export async function bootstrapDispatchOnly(
+  opts: DispatchOnlyBootstrapOpts,
+): Promise<DispatchOnlyLoadReport> {
   setHostInfra(opts.infra);
   setHostSystemActorId(opts.systemActorId);
   setContextFactory(makePluginContext);
@@ -161,7 +184,7 @@ export async function bootstrapDispatchOnly(opts: DispatchOnlyBootstrapOpts): Pr
   if (opts.testPlugins) {
     for (const tp of opts.testPlugins) {
       try {
-        verified.set(tp.definition.slug, verifiedRelease(await verifyInMemoryPlugin(tp)));
+        verified.set(tp.definition.slug, verifiedRelease(manifestFromDefinition(tp.definition)));
       } catch (e) {
         failed.push({ slug: tp.definition.slug, reason: (e as Error).message });
       }
@@ -170,8 +193,8 @@ export async function bootstrapDispatchOnly(opts: DispatchOnlyBootstrapOpts): Pr
     const publicKeyHex = resolveTrustRoot(opts);
     for (const disk of diskPlugins(opts.pluginsRoot, failed)) {
       try {
-        const v = await verifyDiskPlugin({ ...disk, publicKeyHex });
-        verified.set(v.definition.slug, verifiedRelease(v));
+        const manifest = await verifyDiskManifest({ ...disk, publicKeyHex });
+        verified.set(manifest.slug, verifiedRelease(manifest));
       } catch (e) {
         failed.push({ slug: disk.slug, reason: (e as Error).message });
       }
@@ -358,7 +381,7 @@ function attachReleaseSigned(
   release: VerifiedRelease | undefined,
 ): LoadedPlugin | null {
   if (!release) return null; // active in the admin, not shipped in this image
-  const { definition } = release;
+  const definition = declarativeDefinition(release.manifest);
   // #1267 / #1332 — the admin host's gate (loader.ts), applied to the
   // release this gateway runs: a plugin waiting for the Owner's approval
   // runs no visitor-facing operation either.
@@ -392,14 +415,14 @@ async function attachRuntimeAuthored(
     infra: opts.infra,
     systemActorId: opts.systemActorId,
   });
-  const definition = externalPluginDefinition({
-    pluginId: row.id,
-    approval,
-    manifest: artifact?.manifest_json,
-    source,
-    infra: opts.infra,
-    systemActorId: opts.systemActorId,
-  });
+  // The approved artifact is the manifest and its source: the source is
+  // hashed to prove the manifest is the approved one, never run here.
+  if (externalArtifactDigest(artifact?.manifest_json, source) !== approval.artifactDigest) {
+    throw new Error("ExternalPluginArtifactMismatch");
+  }
+  const manifest = pluginManifest.parse(artifact?.manifest_json);
+  if (manifest.tier !== 2) throw new Error("ExternalPluginRejected: not a tier-2 manifest");
+  const definition = declarativeDefinition(manifest);
   if (definition.slug !== row.slug || definition.version !== row.version) {
     throw new Error("ExternalPluginIdentityMismatch");
   }

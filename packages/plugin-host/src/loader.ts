@@ -77,6 +77,7 @@ import { describeLoadError } from "./load-error.js";
 import { loadReported, reportLoadFailure } from "./load-outcome.js";
 import { timedStep } from "./load-timing.js";
 import { resetLocalLoadOutcomes } from "./local-availability.js";
+import { resolveTrustRoot, unapprovedCapabilities } from "./manifest-definition.js";
 import { CONFIG_OPS, withHostConfigTables } from "./plugin-config.js";
 import { inactiveRequiredPlugins, requirementsMessage } from "./plugin-dependencies.js";
 import { notifyPluginRegistered } from "./plugin-registered.js";
@@ -176,18 +177,6 @@ export interface InMemoryPlugin {
  * manifest asks for capabilities the Owner has not approved for it.
  */
 export const AWAITING_CAPABILITY_APPROVAL = "awaiting_capability_approval";
-
-/**
- * The capabilities `requested` asks for beyond what the Owner `approved`
- * (null = nothing approved yet), sorted.
- */
-export function unapprovedCapabilities(
-  requested: readonly string[],
-  approved: readonly string[] | null,
-): string[] {
-  const ok = new Set(approved ?? []);
-  return [...new Set(requested)].filter((c) => !ok.has(c)).sort();
-}
 
 /**
  * #1306 — why a load returned no plugin, for the deploy gate, the Settings
@@ -666,27 +655,6 @@ async function loadTier2Row(
   for (const tool of definition.tools ?? []) pluginToolsRegistry.register(row.slug, tool);
   const registered = loadedPlugins.bySlug(row.slug);
   if (registered) notifyPluginRegistered(registered);
-}
-
-/**
- * Trust-root resolution (#387): explicit option → env override → the
- * `.tier1-trust-root` drop file written by the signer next to the
- * plugins it signed → the embedded release key inside
- * verifyManifestSignature. The drop file makes dev checkouts and
- * container images self-contained (the key travels with the manifests
- * it covers; image provenance is cosign's job).
- */
-export function resolveTrustRoot(
-  opts: Pick<BootstrapOpts, "publicKeyHex" | "pluginsRoot">,
-): string | undefined {
-  const explicit = opts.publicKeyHex ?? process.env.CAELO_TIER1_PUBLIC_KEY;
-  if (explicit) return explicit;
-  try {
-    return readFileSync(resolvePath(opts.pluginsRoot, ".tier1-trust-root"), "utf8").trim();
-  } catch {
-    // no drop file — the embedded release key is the trust root
-    return undefined;
-  }
 }
 
 interface LoadOpts {

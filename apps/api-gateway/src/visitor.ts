@@ -49,7 +49,7 @@ import {
   VISITOR_ID_PURPOSE,
   type VisitorConsentRule,
   visitorConsentGranted,
-} from "@caelo-cms/plugin-host";
+} from "@caelo-cms/plugin-host/gateway";
 import { SESSION_ENTRY } from "@caelo-cms/shared";
 import { GatewayCookies, VISITOR_COOKIE_MAX_AGE } from "./gateway-cookies.js";
 import { verifySignedCookie } from "./middleware/signed-cookie.js";

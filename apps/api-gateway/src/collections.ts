@@ -44,7 +44,7 @@ import {
   storeFromUrl,
   type TextQuery,
 } from "@caelo-cms/collection-index";
-import { isPluginDisabled, loadedPlugins } from "@caelo-cms/plugin-host";
+import { isPluginDisabled, loadedPlugins } from "@caelo-cms/plugin-host/gateway";
 import {
   type CollectionOperationManifest,
   collectionOperationManifest,

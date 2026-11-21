@@ -1,32 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
-import type {
-  PluginContext,
-  PluginDefinition,
-  PublicOperationDef,
-  PublicOperationManifest,
-} from "@caelo-cms/plugin-sdk";
+import type { PluginContext, PluginDefinition } from "@caelo-cms/plugin-sdk";
 /** Load external definitions as RPC proxies; source is never imported by the Bun host. */
 import { z } from "zod";
-
-/** A manifest's public operation as the definition dispatch enforces. */
-export function publicOperationFromManifest(op: PublicOperationManifest): PublicOperationDef {
-  return {
-    name: op.name,
-    kind: op.kind,
-    captcha: op.captcha,
-    input: z.fromJSONSchema(op.inputJsonSchema),
-    ...(op.rateLimit ? { rateLimit: op.rateLimit } : {}),
-    reads: op.reads,
-    writes: op.writes,
-    // #1340 — the declaration the host runs; the sandbox never answers a visitor.
-    run: op.run,
-  };
-}
-
 import type { PluginHostInfra } from "./dispatch.js";
 import { assertExternalApproval, type ExternalApproval } from "./external-authorization.js";
+import { publicOperationFromManifest } from "./manifest-definition.js";
 import { runSandbox } from "./sandbox-runtime.js";
 
 /** Build a definition containing host-generated handlers for only the reviewed operation names. */

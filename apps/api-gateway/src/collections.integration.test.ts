@@ -359,7 +359,9 @@ describe("declarative collection operations in the gateway", () => {
     // 400 searches in a burst: past the generic per-operation burst of 300.
     const statuses = new Set<number>();
     for (let i = 0; i < 400; i++) {
-      const r = await handleRequest(get(`/api/plugin/${SLUG}/suggest?q=Lo&lang=de&release=${releaseKey}`));
+      const r = await handleRequest(
+        get(`/api/plugin/${SLUG}/suggest?q=Lo&lang=de&release=${releaseKey}`),
+      );
       statuses.add(r.status);
       await r.arrayBuffer();
     }

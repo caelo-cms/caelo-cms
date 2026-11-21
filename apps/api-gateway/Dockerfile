@@ -15,17 +15,15 @@
 #     (`scripts/service-image.ts verify`), with a high/critical Trivy finding,
 #     or that does not boot (release-images.yml).
 #
-# Until plugins leave the gateway (E2-B, v0.13) it also carries Deno, the
-# signed plugin dists with their trust root, and the packages the plugin
-# dists and the sandbox bundler resolve from disk — see image.ts.
+# #1340 (epic #763 E2-B): it runs no plugin code. Of the plugins it carries
+# only their signed manifests and the trust root (data the gateway attaches
+# plugins from); no plugin dist, no Deno, no plugin validator — see image.ts.
 #
 # Every FROM is pinned by digest; Dependabot (docker ecosystem) proposes the
-# bumps. The `cc` distroless variant because Deno links libgcc_s.
+# bumps. The `cc` distroless variant for the C++ runtime Bun links.
 #
 # CLAUDE.md §11.C: published to ghcr.io/caelo-cms/gateway by the
 # .github/workflows/release-images.yml workflow on every release.
-
-FROM denoland/deno:bin-2.9.8@sha256:b507583d3c68ba69f3ed2ce5969ae5b8b70f43421c781279c7aea06435263543 AS deno
 
 FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS builder
 
@@ -64,14 +62,14 @@ COPY apps/api-gateway apps/api-gateway/
 COPY packages packages/
 
 # @caelo-cms/shared ships to npm, so its non-Bun export conditions point at
-# dist/. The sandbox bundler builds for the browser target and resolves
-# those, so dist/ must exist before staging.
+# dist/; the plugin build below resolves them.
 RUN bun run --filter @caelo-cms/shared build
 
 # #387 — build every Tier-1 plugin's dist and sign the manifests with a
-# throwaway build key (mirrors the admin Dockerfile). The .tier1-trust-root
-# drop file carries the verification key next to the manifests; the private
-# half is deleted in the same layer and never staged.
+# throwaway build key (mirrors the admin Dockerfile). The dists exist only in
+# this builder stage, to project the manifests; the image stages the signed
+# manifests and the .tier1-trust-root drop file, never a dist (#1340). The
+# private half of the key is deleted in the same layer and never staged.
 RUN bunx tsc -b packages/plugins/*
 COPY apps/admin/scripts/sign-tier1-manifest.ts apps/admin/scripts/
 RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-dev-key
@@ -84,9 +82,8 @@ RUN bun scripts/service-image.ts stage apps/api-gateway/image.ts /stage
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2 AS runtime
 
 COPY --from=builder /usr/local/bin/bun /usr/local/bin/bun
-COPY --from=deno /deno /usr/local/bin/deno
 # Owned by root and not writable by the service user: the app is immutable
-# at run time. The sandbox writes only to its own temp dir under /tmp.
+# at run time.
 COPY --from=builder /stage/app /app
 
 # #1338 — the CA bundles every database URL names as sslrootcert
@@ -96,8 +93,6 @@ COPY packages/shared/certs/ /etc/caelo/db-ca/
 WORKDIR /app
 
 ENV NODE_ENV=production
-# The sandbox spawns this binary directly (plugin-host sandbox-runtime.ts).
-ENV CAELO_DENO_BINARY=/usr/local/bin/deno
 # The image is read-only for the service; Bun must not try to cache
 # transpiled sources (the plugin SDK is TypeScript) under $HOME.
 ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=0

@@ -10,7 +10,7 @@
  * plugin's or a person's.
  */
 
-import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox/artifact";
 import { PLUGIN_TOOL_PERMISSIONS } from "@caelo-cms/plugin-sdk";
 import {
   defineOperation,

@@ -210,7 +210,6 @@ export {
   loadActivatedPlugin,
   pluginHostBootstrapped,
   resetPluginHost,
-  unapprovedCapabilities,
   verifyDiskPlugin,
 } from "./loader.js";
 // #1008 — whether a plugin runs in this process: where its skills are
@@ -220,6 +219,13 @@ export {
   pluginRunsHere,
 } from "./local-availability.js";
 export { verifyMailUnsubscribeToken } from "./mail-link-token.js";
+// #1340 — a plugin as its manifest alone (the gateway's view).
+export {
+  declarativeDefinition,
+  resolveTrustRoot,
+  unapprovedCapabilities,
+  verifyDiskManifest,
+} from "./manifest-definition.js";
 export {
   type ComposedModuleRef,
   canonicalSitePath,
