@@ -75,6 +75,26 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
         return config.configured(z.tuple([entityKind]).parse(args)[0]);
     }
   }
+  if (method === "chatTools.run") {
+    const chatTools = ctx.chatTools;
+    if (!chatTools) throw new Error("SandboxCapabilityDenied: chatTools");
+    const [conversation, tool, input, opts] = z
+      .tuple([
+        z.string().max(120),
+        z.object({ plugin: z.string().max(55), operation: z.string().max(120) }).strict(),
+        z.record(z.string().max(40), z.string().max(2000)),
+        z
+          .object({
+            lang: z.string().max(35),
+            runId: z.string().uuid().optional(),
+            at: z.enum(["staged", "live"]).optional(),
+          })
+          .strict(),
+      ])
+      .parse(args);
+    // The host handle checks the conversation, the tool and its plugin.
+    return chatTools.run(conversation, tool, input, opts);
+  }
   if (method.startsWith("collections.")) {
     const collections = ctx.collections;
     if (!collections) throw new Error("SandboxCapabilityDenied: collections");
@@ -446,6 +466,7 @@ export async function runSandboxWithBundler(
       callLimit: invocation.callLimit ?? SANDBOX_CALL_LIMIT,
       hasConfig: Boolean(context.config),
       collections: Object.keys(context.collections ?? {}),
+      hasChatTools: Boolean(context.chatTools),
       // No sessionToken: it is the visitor's login bearer credential (the
       // `login` entry of the HttpOnly `__session` cookie). Handing it to
       // runtime-authored code would let a plugin collect tokens in its own

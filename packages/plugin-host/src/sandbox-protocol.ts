@@ -61,6 +61,8 @@ export const sandboxMethod = z.enum([
   "collections.query",
   "collections.getMany",
   "collections.setProfile",
+  // #1655 — the declared tools of the plugin's own conversations.
+  "chatTools.run",
 ]);
 
 export const sandboxMessage = z.discriminatedUnion("kind", [

@@ -31,7 +31,7 @@ import type {
 } from "@caelo-cms/plugin-sdk";
 import { type DatabaseAdapter, execute } from "@caelo-cms/query-api";
 import { LIVE_BUILD_REFUSAL, type LiveBuildUrls } from "@caelo-cms/shared";
-import { makePluginCollections } from "./collections-host.js";
+import { makePluginChatTools, makePluginCollections } from "./collections-host.js";
 import { hasConfig, makePluginConfigReader } from "./config-handle.js";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
 import {
@@ -147,6 +147,19 @@ export async function makePluginContext(
         // writes are refused by the handle.
         { collections: makePluginCollections(plugin, infra, invocation) }
       : {};
+  // #1655 — a conversation's declared tools, run as the gateway runs them
+  // (the Stage audit, previews): on the admin side, with the visitor_ai grant.
+  const visitorAiGranted =
+    plugin.provenance === "runtime-authored"
+      ? (plugin.externalApproval?.capabilities.includes("visitor_ai") ?? false)
+      : requested.has("visitor_ai");
+  const chatToolsHandle =
+    visitorAiGranted &&
+    (plugin.definition.aiChatOperations ?? []).length > 0 &&
+    !isPublicSideHost(infra) &&
+    invocation.origin !== "visitor"
+      ? { chatTools: makePluginChatTools(plugin, infra) }
+      : {};
   const baseCtx: PluginContext = {
     query: makePluginQuery(plugin, infra, invocation, opts.publicOperation),
     api: makePluginApi(plugin, infra),
@@ -156,6 +169,7 @@ export async function makePluginContext(
     invocation: Object.freeze({ ...invocation }),
     ...configHandle,
     ...collectionsHandle,
+    ...chatToolsHandle,
   };
 
   // Runtime-installed plugins run in the sandbox and get only what an

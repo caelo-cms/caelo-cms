@@ -155,7 +155,34 @@ function synonymsOf(profile: SearchProfile, lang: string): ReadonlyMap<string, r
   );
 }
 
-/** Runs one declared operation against an open release. */
+/** Hits a visitor conversation's search tool asks for (#1654): the model reads at most these. */
+export const AI_CHAT_SEARCH_HITS = 5;
+
+/**
+ * #1654 / #1655 — the parameters of one `ai-chat` tool call: what the
+ * gateway sends for the model's input, and what an admin-side run (the
+ * Stage audit, a preview) sends for the same input, so both see the same
+ * pages. `input` is the model's: `{ query }` for a search tool, the read
+ * operation's key (`url`, or `id`) for a read tool.
+ */
+export function aiChatToolParams(
+  op: CollectionOperationManifest,
+  input: Readonly<Record<string, string>>,
+  lang: string,
+): URLSearchParams {
+  if (op.kind === "search")
+    return new URLSearchParams({
+      q: input.query ?? "",
+      lang,
+      limit: String(Math.min(AI_CHAT_SEARCH_HITS, op.maxResults)),
+    });
+  if (op.kind === "read") {
+    const value = input[op.by === "id" ? "id" : op.by] ?? "";
+    return new URLSearchParams(op.by === "id" ? { id: value } : { value });
+  }
+  throw new Error(`a ${op.kind} operation is no ai-chat tool`);
+}
+
 /** What a run needs besides the operation and its release. */
 export interface RunCollectionOptions {
   readonly embedQuery: QueryEmbedder;

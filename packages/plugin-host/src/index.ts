@@ -71,6 +71,8 @@ export {
   withAssetContent,
 } from "./client-assets.js";
 export {
+  AI_CHAT_SEARCH_HITS,
+  aiChatToolParams,
   type CollectionAnswer,
   type HitExplanation,
   MAX_QUERY_WORDS,

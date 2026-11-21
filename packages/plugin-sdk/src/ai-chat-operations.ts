@@ -178,3 +178,51 @@ export function checkAiChatOperations(
     }
   }
 }
+
+/**
+ * #1655 — `ctx.chatTools`: the declared tools of the plugin's own `ai-chat`
+ * operations, run on the admin side exactly as the gateway runs them for a
+ * visitor (the same parameters, the same executor): on a Stage's release
+ * for the Stage audit, on the newest staged or the live release for a
+ * preview. Only a tool a conversation declares runs, and only while its
+ * plugin is active; nothing else of another plugin is reachable.
+ */
+export interface PluginChatTools {
+  /**
+   * Runs one declared tool of `conversation` with the model's input:
+   * `{ query }` for a search tool, `{ url }` (or `{ id }`) for a read tool.
+   * `lang` is the visitor's language, which a search filters by.
+   */
+  run(
+    conversation: string,
+    tool: AiChatTool,
+    input: Readonly<Record<string, string>>,
+    opts: ChatToolRunOptions,
+  ): Promise<ChatToolResult>;
+}
+
+/** Which release a {@link PluginChatTools.run} reads. */
+export interface ChatToolRunOptions {
+  readonly lang: string;
+  /** A Stage's release (its run id); otherwise `at`. */
+  readonly runId?: string;
+  /** `staged` (default): the newest Stage with a ready index; `live`: what visitors get. */
+  readonly at?: "staged" | "live";
+}
+
+/** One page a tool returned: what the gateway would number as a source. */
+export interface ChatToolHit {
+  /** The collection document's id (the page id for site-search). */
+  readonly id: string;
+  readonly url: string;
+  readonly title: string;
+  /** The section the hit points at, when the tool names one. */
+  readonly anchor: string | null;
+}
+
+/** What a {@link PluginChatTools.run} answers. */
+export interface ChatToolResult {
+  readonly state: "pending" | "ready" | "failed" | "none";
+  readonly error: string | null;
+  readonly hits: readonly ChatToolHit[];
+}
