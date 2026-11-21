@@ -46,6 +46,7 @@ COPY packages/plugin-sdk/package.json packages/plugin-sdk/
 COPY packages/plugin-component-kit/package.json packages/plugin-component-kit/
 COPY packages/plugin-sandbox/package.json packages/plugin-sandbox/
 COPY packages/plugin-host/package.json packages/plugin-host/
+COPY packages/collection-index/package.json packages/collection-index/
 COPY packages/site-importer/package.json packages/site-importer/
 COPY packages/migrations/package.json packages/migrations/
 COPY packages/mcp-server/package.json packages/mcp-server/
@@ -57,6 +58,7 @@ COPY packages/plugins/ratings/package.json packages/plugins/ratings/
 COPY packages/plugins/auth/package.json packages/plugins/auth/
 COPY packages/plugins/international-site/package.json packages/plugins/international-site/
 COPY packages/plugins/consent-manager/package.json packages/plugins/consent-manager/
+COPY packages/plugins/site-search/package.json packages/plugins/site-search/
 
 RUN bun install --frozen-lockfile
 
