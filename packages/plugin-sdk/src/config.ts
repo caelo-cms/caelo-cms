@@ -360,7 +360,9 @@ export function entityConfigSchema(
 ): z.ZodType<Record<string, unknown>> {
   const shape: Record<string, z.ZodType> = {};
   for (const [name, field] of Object.entries(fields))
-    shape[name] = (field.type === "pageRef" ? uuid : scalarValueSchema(field)).nullable().optional();
+    shape[name] = (field.type === "pageRef" ? uuid : scalarValueSchema(field))
+      .nullable()
+      .optional();
   return z.object(shape).strict() as unknown as z.ZodType<Record<string, unknown>>;
 }
 
