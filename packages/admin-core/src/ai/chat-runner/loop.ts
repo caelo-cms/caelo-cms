@@ -31,6 +31,7 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
+import { aiSpendRunner } from "../ai-spend.js";
 import { type LongPromptPricing, longPromptRateMultiplier } from "../long-prompt-pricing.js";
 import type {
   AIProvider,
@@ -78,6 +79,7 @@ import { RepeatedFailureTracker } from "./repeat-failure-guard.js";
 import { type RunPolicy, streamProviderTurn, type UsageAccumulator } from "./streaming.js";
 import type { FilteredTool } from "./tool-catalogue.js";
 import { type JudgeTurnCompleteness, judgeTurnCompleteness } from "./turn-completeness-judge.js";
+import type { TurnSpend } from "./turn-spend.js";
 import type {
   ApprovalRequest,
   ChatRunnerOptions,
@@ -194,6 +196,13 @@ export interface ToolLoopArgs {
   outputCost: number;
   /** Prompt-length pricing of the active model, undefined when it has none. */
   longPrompt?: LongPromptPricing | undefined;
+  /**
+   * #1653 — the turn's seat in the AI spend ledger: every request reserves
+   * its worst case before it goes out (the run prologue for a run's first
+   * request, the stopWhen policy for each continuation). Absent in tests
+   * that drive the loop without a database ledger.
+   */
+  spend?: TurnSpend;
 }
 
 export async function* runToolLoop(
@@ -497,6 +506,19 @@ export async function* runToolLoop(
       // deferring step always stops on tool_use ("tool-calls"), and a search
       // dropped at the next request (#1479) must not keep the run alive.
       if (last && last.finishReason !== "tool-calls") return true;
+      // #1653 — the next request reserves its worst case before it goes
+      // out; one that does not fit any AI budget never starts.
+      if (args.spend) {
+        const refusal = await args.spend.beforeRequest(
+          history.messages,
+          maxOutputTokensThisTurn,
+          steps,
+        );
+        if (refusal !== null) {
+          trip.budgetNotice = refusal;
+          return true;
+        }
+      }
       return false;
     },
     prepareStep: async () => {
@@ -531,6 +553,17 @@ export async function* runToolLoop(
     }
     await runPreCallInjections();
     if (aborted()) break;
+    // #1653 — the run's first request reserves its worst case first.
+    if (args.spend) {
+      args.spend.startRun(args.usage);
+      const refusal = await args.spend.beforeRequest(history.messages, maxOutputTokensThisTurn);
+      if (refusal !== null) {
+        trip.budgetNotice = refusal;
+        yield* yieldBudgetPause();
+        stopReason = "cost_ceiling";
+        break;
+      }
+    }
 
     const consumedForceToolChoice = forceToolChoice;
     forceToolChoice = false;
@@ -1084,18 +1117,17 @@ export async function* runToolLoop(
           toolNames: [...turnToolNames],
           assistantText: run.finalStepText,
           ...(abortSignal ? { abortSignal } : {}),
+          // §7 / #1653 — the judge is a billable sub-call: it reserves in the
+          // AI spend ledger and is attributed to this chat.
+          ...(args.spend
+            ? {
+                spend: aiSpendRunner({ registry, adapter }, args.spend.spender, {
+                  what: "the turn-completeness check",
+                  record: { ctx: humanCtx, chatSessionId, parentChatSessionId: chatSessionId },
+                }),
+              }
+            : {}),
         });
-        // §7 — the judge is a billable sub-call; attribute it to this chat.
-        if (verdict) {
-          await execute(registry, adapter, humanCtx, "chat.record_ai_call", {
-            chatSessionId,
-            parentChatSessionId: chatSessionId,
-            provider: verdict.providerName,
-            model: verdict.model,
-            inputTokens: verdict.inputTokens,
-            outputTokens: verdict.outputTokens,
-          }).catch(() => undefined);
-        }
         // A null verdict means the judge could not decide — declining to
         // force is the safe direction.
         if (verdict && !verdict.finished) {

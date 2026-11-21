@@ -15,8 +15,9 @@
  *   different input it is refused.
  * - The budget is reserved before the paid call: every image `ai_budgets`
  *   cap (site, per actor, per session) and, for plugins, the plugin's own
- *   cap are checked under one lock, so concurrent requests cannot both
- *   pass. The reservation is an `ai_calls` row at the maximum cost.
+ *   cap are checked under the one AI ledger lock (ai-ledger.ts, shared with
+ *   text calls), so concurrent requests cannot both pass. The reservation
+ *   is an `ai_calls` row at the maximum cost.
  * - An uncertain outcome keeps its reservation and is never retried
  *   automatically: retrying would pay twice.
  * - Provenance is recorded at reservation (operation, prompt, references,
@@ -25,6 +26,7 @@
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { AI_LEDGER_LOCK, checkAiCaps } from "./ai-ledger.js";
 
 /** A recorded request, as callers read it back. */
 export interface ImageRequestRecord {
@@ -75,8 +77,6 @@ export type ReservationRefusal =
   | { kind: "session-required" }
   | { kind: "budget"; scope: string }
   | { kind: "plugin-budget" };
-
-const LEDGER_LOCK = sql`SELECT pg_advisory_xact_lock(220, 1)`;
 
 /** Read one request by scope + id, with its current cost. */
 export async function readImageRequest(
@@ -144,64 +144,46 @@ export async function reserveImageRequest(
   { existing: ImageRequestRecord } | { refused: ReservationRefusal } | { callId: string }
 > {
   // Every reservation, from every caller, serialises against every other.
-  await tx.execute(LEDGER_LOCK);
+  await tx.execute(AI_LEDGER_LOCK);
   const existing = await readImageRequest(tx, input.scope, input.requestId);
   if (existing) {
     if (existing.inputSha256 !== input.inputSha256) return { refused: { kind: "conflict" } };
     return { existing };
   }
-  // Per-session caps: a chat session id, or (plugins) the chat-branch tag.
-  const sessionCondition = input.chatSessionId
-    ? sql`AND chat_session_id = ${input.chatSessionId}::uuid`
-    : input.sessionTag
-      ? sql`AND request_id = ${input.sessionTag}`
-      : null;
-  const budgets = (await tx.execute(sql`
-    SELECT scope, cap_microcents FROM ai_budgets
-    WHERE operation_type = 'image' AND cap_microcents IS NOT NULL
-  `)) as unknown as { scope: string; cap_microcents: string }[];
-  for (const budget of budgets) {
-    if (budget.scope === "session" && !sessionCondition) {
-      return { refused: { kind: "session-required" } };
-    }
-    const scoped =
-      budget.scope === "day-per-actor"
-        ? sql`AND actor_id = ${input.actorId}::uuid`
-        : budget.scope === "session"
-          ? (sessionCondition ?? sql``)
-          : sql``;
-    const since =
-      budget.scope === "session" ? sql`` : sql`AND created_at > now() - interval '24 hours'`;
-    const usage = (await tx.execute(sql`
-      SELECT coalesce(sum(cost_estimate_microcents), 0)::bigint AS spent FROM ai_calls
-      WHERE operation_type = 'image' ${since} ${scoped}
-    `)) as unknown as { spent: string }[];
-    if (Number(usage[0]?.spent ?? 0) + input.maxCostMicrocents > Number(budget.cap_microcents)) {
-      return { refused: { kind: "budget", scope: budget.scope } };
-    }
-  }
-  if (input.pluginId) {
-    const plugin = (await tx.execute(sql`
-      SELECT p.ai_cost_cap_microcents AS cap,
-             coalesce((SELECT sum(cost_estimate_microcents) FROM ai_calls
-                       WHERE plugin_id = p.id AND created_at > now() - interval '24 hours'), 0)::bigint AS spent
-      FROM plugins p WHERE p.id = ${input.pluginId}::uuid
-    `)) as unknown as { cap: string | null; spent: string }[];
-    const cap = plugin[0]?.cap;
-    if (cap !== null && cap !== undefined) {
-      if (Number(plugin[0]?.spent) + input.maxCostMicrocents > Number(cap)) {
-        return { refused: { kind: "plugin-budget" } };
-      }
-    }
+  // Every cap (#1653's shared check): the image budgets, per session keyed
+  // on the chat session or (plugins) the chat-branch tag, and the plugin's cap.
+  const refused = await checkAiCaps(tx, {
+    spender: input.pluginId
+      ? {
+          kind: "plugin",
+          pluginId: input.pluginId,
+          actorId: input.actorId,
+          chatSessionId: input.chatSessionId ?? null,
+        }
+      : { kind: "actor", actorId: input.actorId, chatSessionId: input.chatSessionId ?? null },
+    operationType: "image",
+    amountMicrocents: input.maxCostMicrocents,
+    session: input.chatSessionId
+      ? { chatSessionId: input.chatSessionId }
+      : input.sessionTag
+        ? { tag: input.sessionTag }
+        : null,
+    requireSession: true,
+  });
+  if (refused) {
+    if (refused.kind === "budget") return { refused: { kind: "budget", scope: refused.scope } };
+    if (refused.kind === "session-required") return { refused: { kind: "session-required" } };
+    return { refused: { kind: "plugin-budget" } };
   }
   const callId = crypto.randomUUID();
   await tx.execute(sql`
     INSERT INTO ai_calls (id, actor_id, plugin_id, chat_session_id, provider, model,
       input_tokens, output_tokens, cached_tokens, cost_estimate_microcents, succeeded,
-      operation_type, image_count, request_id)
+      operation_type, image_count, request_id, spender, reservation)
     VALUES (${callId}::uuid, ${input.actorId}::uuid, ${input.pluginId ?? null}::uuid,
       ${input.chatSessionId ?? null}::uuid, ${input.provider}, ${input.model}, 0, 0, 0,
-      ${input.maxCostMicrocents}, false, 'image', 1, ${input.sessionTag ?? input.scope})
+      ${input.maxCostMicrocents}, false, 'image', 1, ${input.sessionTag ?? input.scope},
+      ${input.pluginId ? "plugin" : "actor"}, 'reserved')
   `);
   await tx.execute(sql`
     INSERT INTO image_requests (scope, id, plugin_id, chat_session_id, actor_id, input_sha256,
@@ -235,7 +217,7 @@ export async function finishImageRequest(
   `);
   await tx.execute(sql`
     UPDATE ai_calls SET cost_estimate_microcents = ${input.costMicrocents},
-      duration_ms = ${input.durationMs}, succeeded = true
+      duration_ms = ${input.durationMs}, succeeded = true, reservation = 'settled'
     WHERE id = ${input.callId}::uuid
   `);
 }

@@ -4,11 +4,13 @@
  * P16 hardening — track consecutive cap-lookup failures so a flaky DB
  * query doesn't silently disable AI cost enforcement.
  *
- * The plugin-host's `ctx.ai.complete` and chat-runner's daily-budget
- * pre-flight both consult `ai_calls.aggregate_per_plugin` /
- * `ai_budgets.status` before dispatching to the provider. Today a thrown
- * error there is swallowed (so a working plugin doesn't break on a DB
- * hiccup). That's the right default — but unbounded silent retries =
+ * #1653 — every paid AI call reserves its worst-case cost in the AI spend
+ * ledger before it reaches the provider (`ai_ledger.reserve`, plugin-host
+ * ai-ledger.ts): the chat-runner per request of a turn, a plugin's
+ * `ctx.ai`, the core helpers (moduleize, query_page_html, the completeness
+ * judge), images. A ledger that cannot be reached lets the call through
+ * (it is recorded after it ran, so a working chat or plugin does not break
+ * on a DB hiccup). That's the right default — but unbounded silent passes =
  * "no enforcement at all under sustained DB pressure".
  *
  * The counter trips a per-key fail-closed mode after `LOOKUP_FAIL_THRESHOLD`

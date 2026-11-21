@@ -54,6 +54,7 @@ describe("ctx.ai on an AI-delegated call (#741)", () => {
     let dbCalls = 0;
     const infra = {
       aiProvider: {
+        resolve: async () => ({ provider: "anthropic", model: "test-model" }),
         complete: async () => {
           providerCalls += 1;
           throw new Error("provider must not be called");
@@ -101,6 +102,7 @@ describe("ctx.ai.generateObject (structured output, CLAUDE.md §12)", () => {
     const seen: unknown[] = [];
     const infra = {
       aiProvider: {
+        resolve: async () => ({ provider: "anthropic", model: "test-model" }),
         complete: async () => {
           throw new Error("text path must not be used");
         },
@@ -137,6 +139,7 @@ describe("ctx.ai.generateObject (structured output, CLAUDE.md §12)", () => {
     let providerCalls = 0;
     const infra = {
       aiProvider: {
+        resolve: async () => ({ provider: "anthropic", model: "test-model" }),
         complete: async () => {
           providerCalls += 1;
           throw new Error("provider must not be called");

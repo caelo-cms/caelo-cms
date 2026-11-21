@@ -596,6 +596,7 @@ import {
   spendWindowOp,
 } from "./ops/security/ai_calls.js";
 import { aggregateAuditByOpPrefixOp } from "./ops/security/ai_calls_by_op.js";
+import { AI_LEDGER_OPS } from "./ops/security/ai_ledger.js";
 import {
   listAiMemoryOp,
   listMemoryProposalsOp,
@@ -1396,6 +1397,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listPendingPluginConfigProposalsOp);
   // Epic #1644 (#1647) — page output delivered to plugin observers at a Stage.
   for (const op of PAGE_OUTPUT_OPS) registry.register(op as never);
+  for (const op of AI_LEDGER_OPS) registry.register(op as never);
   for (const op of PLUGIN_BATCH_OPS) registry.register(op as never);
   for (const op of COLLECTION_GC_OPS) registry.register(op as never);
   // Epic #1644 (#1648) — a Stage's collection index.

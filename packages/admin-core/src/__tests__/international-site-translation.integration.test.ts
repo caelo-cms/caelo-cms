@@ -92,6 +92,8 @@ const aiCalls: Array<{
 }> = [];
 const aiScript: Array<() => unknown> = [];
 const scriptedProvider = {
+  // #1653 — the host reserves the call on this model before it runs.
+  resolve: async () => ({ provider: "anthropic", model: "scripted-model" }),
   complete: async () => {
     throw new Error("scripted provider: page translation must use generateObject");
   },

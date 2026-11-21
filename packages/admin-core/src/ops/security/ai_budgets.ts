@@ -4,9 +4,12 @@
  * P16 — ai_budgets ops + budget-status query.
  *
  * Six rows max: 3 scopes (session / day-global / day-per-actor) × 2
- * operation_types (text / image). NULL cap = unlimited. warn_at_pct
- * surfaces a soft warning in chat-runner before blocking; default 0.80.
+ * operation_types (text / image). NULL cap = unlimited. warn_at_pct is
+ * the status reading's warning threshold; default 0.80.
  *
+ * Enforced by the AI spend ledger (#1653, plugin-host ai-ledger.ts): every
+ * paid call reserves its worst case against each cap that applies before
+ * it starts, under one lock, and a call that does not fit never starts.
  * Text and image budgets enforce INDEPENDENTLY — exhausting the image
  * cap never blocks text generation in the same chat session.
  */
@@ -140,8 +143,9 @@ const statusRow = z.object({
 });
 
 /**
- * Live budget status. Chat-runner consults before every provider call;
- * the cost dashboard surfaces. day-global rolls up all actors;
+ * Live budget status for the cost dashboard and the AI's get_ai_budgets
+ * (the ledger checks the caps itself before every call). It counts running
+ * calls at their reserved worst case. day-global rolls up all actors;
  * day-per-actor filters by `ctx.actorId`. session-scope is left at NULL
  * spent in this op because the chat-runner already tracks session spend
  * via `chat_sessions.cost_estimate_microcents` — included here as a

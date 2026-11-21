@@ -20,6 +20,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { type ExecutionContext, type ModuleField, slugifyModuleName } from "@caelo-cms/shared";
+import { aiSpendRunner } from "../ai-spend.js";
 import { moduleize } from "../moduleize.js";
 import { describeError, toolError } from "./_describe-error.js";
 import { bindCssToTheme } from "./_theme-binding.js";
@@ -160,23 +161,21 @@ export async function prepareModuleMint(
             costMicrocents: 0,
           }).catch(() => {});
         },
-        onUsage: async (u) => {
-          // The priced spend row (ai_calls) the cost dashboard and the
-          // Power-MCP cap read. Best-effort like the chat-runner's own
-          // recording: the provider is already paid.
-          await execute(toolCtx.registry, toolCtx.adapter, ctx, "chat.record_ai_call", {
+        // #1653 — every inference call reserves its worst case in the AI
+        // spend ledger and settles the real cost (the person the chat runs
+        // for pays; the chat's session budget counts it).
+        spend: aiSpendRunner(
+          { registry: toolCtx.registry, adapter: toolCtx.adapter },
+          {
+            kind: "actor",
+            actorId: toolCtx.humanCtx?.actorId ?? ctx.actorId,
             chatSessionId: toolCtx.chatSessionId ?? null,
-            provider: toolCtx.provider?.name ?? "unknown",
-            model: u.model,
-            inputTokens: u.inputTokens,
-            outputTokens: u.outputTokens,
-          }).catch((e: unknown) => {
-            console.error("[moduleize] ai_calls row not recorded — spend is understated", {
-              model: u.model,
-              error: e instanceof Error ? e.message : String(e),
-            });
-          });
-        },
+          },
+          {
+            what: "module inference",
+            record: { ctx, chatSessionId: toolCtx.chatSessionId ?? null },
+          },
+        ),
       });
       html = mod.html;
       fields = mod.fields;

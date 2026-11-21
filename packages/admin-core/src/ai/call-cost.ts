@@ -98,3 +98,35 @@ export function computeAiCallCostMicrocents(
   );
   return { costMicrocents, unpriced: false };
 }
+
+/** What a text request can cost at most, before it runs (#1653). */
+export interface WorstCaseTextInput {
+  /** An upper bound of the request's prompt tokens (every input lane). */
+  promptTokens: number;
+  /** The request's output ceiling (`maxOutputTokens`), thinking included. */
+  maxOutputTokens: number;
+}
+
+/**
+ * The most a text request can cost: every prompt token at the dearest
+ * input lane (a cache WRITE, ~1.25x the input rate — a cold prompt may be
+ * written to the cache in full), every output token the ceiling allows,
+ * and the prompt-length card when the prompt bound is over its threshold.
+ * A reservation at this amount cannot be overrun by the call it covers.
+ * Null pricing → null: the caller decides whether an unpriced call may run.
+ */
+export function worstCaseTextMicrocents(
+  pricing: PricingRow | null,
+  req: WorstCaseTextInput,
+): number | null {
+  if (pricing === null) return null;
+  const tier = longPromptRateMultiplier(pricing, req.promptTokens);
+  const inRate = Math.max(
+    pricing.inputMicrocents,
+    pricing.cacheCreationMicrocents ?? pricing.inputMicrocents * 1.25,
+  );
+  const outRate = pricing.outputMicrocents ?? 0;
+  return Math.ceil(
+    ((req.promptTokens * inRate) / 1000 + (req.maxOutputTokens * outRate) / 1000) * tier,
+  );
+}
