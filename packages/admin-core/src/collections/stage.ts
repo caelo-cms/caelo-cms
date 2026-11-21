@@ -87,7 +87,15 @@ async function configuredVectorModels(
   return { models, failed };
 }
 
-/** After a successful Stage: commit page output, plan and start the index. Returns a note for the run, or null. */
+/**
+ * After a successful Stage: plan the index, commit the page output, start
+ * the index job. Returns a note for the run, or null.
+ *
+ * The plan comes first: it claims the run's writes (and discards a failed
+ * plugin's), and only then does the page output count as delivered. A plan
+ * that fails leaves nothing recorded, so the next Stage delivers those
+ * pages again; a commit that fails after it costs only a redelivery.
+ */
 export async function afterStageBuild(
   deps: AdminJobDeps,
   sys: ExecutionContext,
@@ -99,22 +107,28 @@ export async function afterStageBuild(
     ...failed,
     ...vectors.failed.filter((v) => !failed.some((f) => f.pluginId === v.pluginId)),
   ];
-  // A failed plugin's writes are discarded when its index is planned, so it
-  // records nothing of this run: the next Stage delivers its pages and
-  // removals again instead of the bookkeeping running ahead of the index.
-  const committed = await execute(deps.registry, deps.adapter, sys, "page_output.commit_run", {
-    runId,
-    failedPluginIds: failures.map((f) => f.pluginId),
-  });
-  if (!committed.ok)
-    return `the page output of this Stage could not be recorded (${describeError(committed.error)}); the next Stage sends those pages again`;
   const planned = await execute(deps.registry, deps.adapter, sys, "collections.plan_run", {
     runId,
     failed: failures.map((f) => ({ pluginId: f.pluginId, error: f.error.slice(0, 2000) })),
     vectorModels: vectors.models,
   });
-  if (!planned.ok)
+  if (!planned.ok) {
+    // Nothing of the run counts: its writes never reach an index and its
+    // pages come again with the next Stage.
+    await afterFailedStage(deps, sys, runId);
     return `the search index of this Stage could not be planned (${describeError(planned.error)}); Stage again`;
+  }
+  // A failed plugin's writes were discarded by the plan, so it records
+  // nothing of this run: the next Stage delivers its pages and removals
+  // again instead of the bookkeeping running ahead of the index.
+  const committed = await execute(deps.registry, deps.adapter, sys, "page_output.commit_run", {
+    runId,
+    failedPluginIds: failures.map((f) => f.pluginId),
+  });
+  if (!committed.ok)
+    console.error(
+      `[collections] run ${runId}: the page output could not be recorded (${describeError(committed.error)}); the next Stage sends those pages again`,
+    );
   const { pending } = planned.value as { pending: number };
   if (pending === 0) return null;
   // Never fails the Stage: the releases are planned, and a start that went

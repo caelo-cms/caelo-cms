@@ -174,16 +174,20 @@ export const planCollectionRunOp = defineOperation({
         failed++;
         continue;
       }
-      // The run's own writes, and every unapplied write of a Stage that
-      // succeeded (its index is still building or failed) or of no Stage.
-      // A Stage still running, or one that failed, keeps its writes: its
-      // outcome decides them (its own plan, or its discard), never this run.
+      // The run's own writes, every unapplied write of a Stage whose plan
+      // recorded this collection (its index is still building or failed;
+      // a failed plugin's writes it discarded), and writes of no Stage. A
+      // Stage not yet planned keeps its writes: still running, or finished
+      // but before its plan decided them (a failed observer's partial
+      // writes). Its own plan or its discard decides them, never this run.
+      // The per-collection lock orders this with that plan.
       const claimed = (await tx.execute(sql`
         UPDATE collection_changes c SET run_id = ${input.runId}::uuid
         WHERE c.plugin_id = ${c.pluginId}::uuid AND c.collection = ${c.collection}
           AND c.applied_run_id IS NULL AND c.discarded_at IS NULL
           AND (c.run_id IS NULL OR c.run_id = ${input.runId}::uuid
-               OR EXISTS (SELECT 1 FROM deploy_runs r WHERE r.id = c.run_id AND r.status = 'succeeded'))
+               OR EXISTS (SELECT 1 FROM collection_releases r WHERE r.run_id = c.run_id
+                            AND r.plugin_id = c.plugin_id AND r.collection = c.collection))
         RETURNING c.id
       `)) as unknown as { id: string }[];
       const digest = declarationDigest(c.decl);

@@ -1199,13 +1199,10 @@ async function runTrigger(
     if (heldBack !== null) {
       redirectNote ??= `The Staged redirect changes stay Staged: ${heldBack}; the next Publish live plans them again.`;
     }
-    // #1359 — the audit row committed with the run; start its job now,
-    // inside this request, instead of waiting for the next tick.
-    const queuedAuditRunId = (finished.value as { queuedAuditRunId: string | null })
-      .queuedAuditRunId;
-    if (queuedAuditRunId) await startQualityAuditJob({ adapter, registry }, queuedAuditRunId);
     // #1647 / #1648 — the observers' deliveries count now, and the run's
     // collections get their releases (the index job builds the changed ones).
+    // Before the audit starts: a plugin's audit rule reads this Stage's
+    // index state, which is "none" until the releases are planned.
     if (plan.target.env === "staging") {
       const note = await afterStageBuild(
         { adapter, registry },
@@ -1217,6 +1214,11 @@ async function runTrigger(
       // #1646 — plugins' `stage` batches run on what this Stage published.
       await enqueueStageBatches({ adapter, registry }, runId);
     }
+    // #1359 — the audit row committed with the run; start its job now,
+    // inside this request, instead of waiting for the next tick.
+    const queuedAuditRunId = (finished.value as { queuedAuditRunId: string | null })
+      .queuedAuditRunId;
+    if (queuedAuditRunId) await startQualityAuditJob({ adapter, registry }, queuedAuditRunId);
     // The run is recorded; now put the live redirects on the build
     // production serves, in a transaction of its own. A failure is recorded
     // and retried by the redirect-sync worker (the target stays behind).
