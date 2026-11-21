@@ -81,6 +81,39 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
     const name = collectionName.parse(args[0]);
     const handle = Object.hasOwn(collections, name) ? collections[name] : undefined;
     if (!handle) throw new Error(`SandboxCollectionNotDeclared: ${name}`);
+    if (method === "collections.replace") {
+      const [, field, values, docs] = z
+        .tuple([
+          z.string(),
+          z.string().max(40),
+          z.array(z.string().max(500)).max(10_000),
+          z.array(record).max(500),
+        ])
+        .parse(args);
+      return handle.replace(field, values, docs as never);
+    }
+    if (method === "collections.getMany") {
+      const [, ids] = z.tuple([z.string(), z.array(z.string().min(1).max(500)).max(1000)]).parse(args);
+      const r = await handle.getMany(ids);
+      return { docs: [...r.docs.values()], pending: r.pending };
+    }
+    if (method === "collections.query") {
+      const [, operation, params, opts] = z
+        .tuple([
+          z.string(),
+          z.string().max(120),
+          z.record(z.string().max(40), z.union([z.string().max(500), z.array(z.string().max(500)).max(20)])),
+          z
+            .object({
+              runId: z.string().uuid().optional(),
+              at: z.enum(["staged", "live"]).optional(),
+              explain: z.boolean().optional(),
+            })
+            .strict(),
+        ])
+        .parse(args);
+      return handle.query(operation, params, opts);
+    }
     if (args.length !== 2) throw new Error("SandboxArgumentsInvalid");
     // The host handle validates documents, ids and the profile in full.
     switch (method) {

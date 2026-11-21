@@ -85,8 +85,36 @@ export interface PluginCollectionHandle {
   upsert(docs: readonly CollectionDocInput[]): Promise<void>;
   /** Removes documents by id for the next index. At most 1000 per call. */
   delete(ids: readonly string[]): Promise<void>;
+  /**
+   * Removes every document whose keyword `field` holds one of `values`, then
+   * adds `docs`, as one change: what one source said is replaced whole
+   * (a page's anchor texts). `docs` may be empty (a removal by field).
+   */
+  replace(field: string, values: readonly string[], docs: readonly CollectionDocInput[]): Promise<void>;
   /** A document as the newest staged index holds it, or null. */
   get(id: string): Promise<CollectionDocInput | null>;
+  /**
+   * Many documents as the newest staged index holds them (absent ids are
+   * missing from the map). `pending` is true when changes no index holds yet
+   * exist (other than this Stage's own): the index is then not what the
+   * plugin last wrote, and a comparison against it must not skip a write.
+   */
+  getMany(ids: readonly string[]): Promise<{
+    readonly docs: ReadonlyMap<string, CollectionDocInput>;
+    readonly pending: boolean;
+  }>;
+  /**
+   * Runs one of the plugin's declared collection operations on this
+   * collection in the admin, exactly as the gateway answers visitors: for a
+   * preview the AI shows the operator, or a Stage check. `state` is the
+   * release's (`pending` while its index is built, `none` before the first);
+   * `body` is the gateway's answer when it is `ready`.
+   */
+  query(
+    operation: string,
+    params: Readonly<Record<string, string | readonly string[]>>,
+    opts?: CollectionQueryOptions,
+  ): Promise<CollectionQueryResult>;
   /**
    * Sets the collection's search profile for the next index: what the
    * operator tuned (weights, synonyms, best bets, protected terms, …), as the
@@ -94,6 +122,24 @@ export interface PluginCollectionHandle {
    * `searchProfile`; the release keeps the last one set.
    */
   setProfile(profile: SearchProfileInput): Promise<void>;
+}
+
+/** Which release a {@link PluginCollectionHandle.query} reads. */
+export interface CollectionQueryOptions {
+  /** A Stage's release (its run id); otherwise `at`. */
+  readonly runId?: string;
+  /** `staged` (default): the newest Stage with a ready index; `live`: what visitors search. */
+  readonly at?: "staged" | "live";
+  /** Each hit says where it comes from (fields, synonyms, typos, anchor texts, meaning, pinned). */
+  readonly explain?: boolean;
+}
+
+/** What a {@link PluginCollectionHandle.query} answers. */
+export interface CollectionQueryResult {
+  readonly state: "pending" | "ready" | "failed" | "none";
+  readonly error: string | null;
+  readonly status: number;
+  readonly body: unknown;
 }
 
 /** `ctx.collections`: one handle per declared collection. */

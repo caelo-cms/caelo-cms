@@ -55,6 +55,20 @@ export const searchOperationManifest = z
     /** CDN lifetime of one answer; the release id in the URL makes a new Stage a new URL. */
     cacheSeconds: z.number().int().min(60).max(86_400).default(3600),
     rateLimit: rateLimit.optional(),
+    /**
+     * #1651 — anchor texts: documents of `collection` whose text matches the
+     * query describe the document their keyword `target` names (its id). A
+     * document found only through them is a hit too. `sources`, a number
+     * field, weighs a text by how many pages use it.
+     */
+    anchors: z
+      .object({
+        collection: z.string().min(1).max(40),
+        target: fieldName,
+        sources: fieldName.optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -219,6 +233,20 @@ export function checkCollectionOperations(
     if (op.kind === "search") {
       if (op.snippet && kindOf(op.snippet) !== "passages")
         issue([...path, "snippet"], `"${op.snippet}" must be a passages field`);
+      if (op.anchors) {
+        const a = collections?.[op.anchors.collection];
+        if (!a || op.anchors.collection === op.collection)
+          issue(
+            [...path, "anchors", "collection"],
+            `"${op.anchors.collection}" must be another declared collection`,
+          );
+        else {
+          if (a.fields[op.anchors.target]?.kind !== "keyword")
+            issue([...path, "anchors", "target"], `"${op.anchors.target}" must be a keyword field`);
+          if (op.anchors.sources && a.fields[op.anchors.sources]?.kind !== "number")
+            issue([...path, "anchors", "sources"], `"${op.anchors.sources}" must be a number field`);
+        }
+      }
       for (const f of op.filters)
         if (kindOf(f) !== "keyword") issue([...path, "filters"], `"${f}" must be a keyword field`);
       for (const f of op.ranges)

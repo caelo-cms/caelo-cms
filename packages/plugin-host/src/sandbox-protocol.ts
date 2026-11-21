@@ -57,6 +57,9 @@ export const sandboxMethod = z.enum([
   "collections.upsert",
   "collections.delete",
   "collections.get",
+  "collections.replace",
+  "collections.query",
+  "collections.getMany",
   "collections.setProfile",
 ]);
 

@@ -79,7 +79,27 @@ export function remoteBatchContext(order: BatchOrder, call: Call): PluginContext
           for (let i = 0; i < ids.length; i += 1000)
             await call("collections.delete", [name, ids.slice(i, i + 1000)]);
         },
+        replace: async (field: string, values: readonly string[], docs: readonly unknown[]) => {
+          await call("collections.replace", [name, field, values, docs.slice(0, 200)]);
+          for (let i = 200; i < docs.length; i += 200)
+            await call("collections.upsert", [name, docs.slice(i, i + 200)]);
+        },
         get: (id: string) => call("collections.get", [name, id]),
+        getMany: async (ids: readonly string[]) => {
+          const docs = new Map<string, unknown>();
+          let pending = false;
+          for (let i = 0; i < ids.length; i += 1000) {
+            const r = (await call("collections.getMany", [name, ids.slice(i, i + 1000)])) as {
+              docs: { id: string }[];
+              pending: boolean;
+            };
+            for (const d of r.docs) docs.set(d.id, d);
+            pending ||= r.pending;
+          }
+          return { docs, pending };
+        },
+        query: (operation: string, params: unknown, opts: unknown) =>
+          call("collections.query", [name, operation, params, opts ?? {}]),
         setProfile: (profile: unknown) => call("collections.setProfile", [name, profile]),
       }),
     ]),

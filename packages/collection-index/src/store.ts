@@ -214,7 +214,8 @@ export function gcsStore(
         await authed({
           method: "POST",
           headers: { "Content-Type": "application/octet-stream" },
-          body: data,
+          // A Blob, not the view: the DOM's BodyInit takes no shared-buffer view.
+          body: new Blob([data as Uint8Array<ArrayBuffer>]),
         }),
       );
       // 412: an immutable name that already exists — the same bytes by construction.

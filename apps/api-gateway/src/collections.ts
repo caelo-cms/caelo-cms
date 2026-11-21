@@ -32,45 +32,30 @@
  */
 
 import {
-  analyze,
   type CollectionStore,
   FileCache,
-  foldDiacritics,
-  fuse,
-  highlight,
-  idTerm,
-  type KeyedDoc,
-  keywordTerm,
-  lookupDocs,
-  type OpenRelease,
   openRelease,
-  type Passage,
   parseRelease,
   prefixedCache,
-  primaryLanguage,
   readProfile,
   scopedStore,
-  searchText,
-  searchVectors,
-  snippet,
   storeFromUrl,
-  type TextQuery,
 } from "@caelo-cms/collection-index";
-import type { Embedder } from "@caelo-cms/models";
-import { isPluginDisabled, loadedPlugins } from "@caelo-cms/plugin-host";
+import {
+  isPluginDisabled,
+  loadedPlugins,
+  type OpenEntry,
+  wasmQueryEmbedder,
+} from "@caelo-cms/plugin-host";
 import {
   type CollectionOperationManifest,
   collectionOperationManifest,
-  type SearchProfile,
   searchProfile,
 } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
-import {
-  EMBEDDING_MODELS,
-  type EmbeddingModel,
-  embeddingModelFingerprint,
-} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+
+export { type CollectionAnswer, MAX_QUERY_WORDS, runCollectionOperation } from "@caelo-cms/plugin-host";
 
 /** The env var of each environment's collection store. */
 const STORE_ENV = {
@@ -84,8 +69,6 @@ const CACHE_BYTES = Number(process.env.CAELO_COLLECTIONS_CACHE_MB ?? 256) * 1024
 /** Releases one gateway keeps open (the newest few; a Publish live replaces one). */
 const OPEN_RELEASES = 8;
 
-/** Words a query may have; more is refused, not cut. */
-export const MAX_QUERY_WORDS = 10;
 
 const PATH = /^\/api\/plugin\/([a-z][a-z0-9-]{0,54})\/([a-z_][a-z0-9_]{0,119})(\/release)?$/;
 
@@ -96,86 +79,6 @@ export function parseCollectionPath(
   const m = PATH.exec(pathname);
   if (!m) return null;
   return { slug: m[1] as string, operation: m[2] as string, releaseOnly: m[3] !== undefined };
-}
-
-/** One answer of the module: a status, a JSON body and how it may be cached. */
-export interface CollectionAnswer {
-  readonly status: number;
-  readonly body: unknown;
-  /** Seconds the CDN may keep it; null: no-store. */
-  readonly cacheSeconds: number | null;
-}
-
-interface OpenEntry {
-  readonly release: OpenRelease;
-  readonly profile: SearchProfile | null;
-}
-
-/** Embeds a visitor's query; the gateway's is WebAssembly (see {@link wasmQueryEmbedder}). */
-export type QueryEmbedder = (fingerprint: string, query: string) => Promise<Float32Array>;
-
-/** Query vectors kept per gateway: a query is embedded once, whatever page or filter follows. */
-const QUERY_VECTORS = 2000;
-
-/** Candidates the vector side ranks before the fusion. */
-const VECTOR_CANDIDATES = 50;
-
-/** The model a release's fingerprint names is not in this gateway's catalog. */
-export class ModelUnavailableError extends Error {
-  override readonly name = "ModelUnavailableError";
-}
-
-/** The catalog model behind a release's vector fingerprint, or undefined. */
-export function modelOfFingerprint(fingerprint: string): EmbeddingModel | undefined {
-  return EMBEDDING_MODELS.find((m) => embeddingModelFingerprint(m) === fingerprint);
-}
-
-/**
- * The gateway's query embedder: one WebAssembly embedder per model, loaded
- * on first use (about half a second and 570 MB, bench/semantic-results.md)
- * and kept; query vectors in a small LRU. The runtime is imported lazily,
- * so a gateway without semantic search never loads it.
- */
-export function wasmQueryEmbedder(): QueryEmbedder & { warm(fingerprint: string): void } {
-  const embedders = new Map<string, Promise<Embedder>>();
-  const vectors = new Map<string, Float32Array>();
-  const embedderOf = (fingerprint: string): Promise<Embedder> => {
-    let e = embedders.get(fingerprint);
-    if (!e) {
-      const model = modelOfFingerprint(fingerprint);
-      if (!model) {
-        return Promise.reject(
-          new ModelUnavailableError(
-            `the release was embedded with ${fingerprint}, which this gateway's model catalog does not have (an admin and gateway of different releases?)`,
-          ),
-        );
-      }
-      e = import("@caelo-cms/models/wasm").then((m) => m.createWasmEmbedder(model));
-      e.catch(() => embedders.delete(fingerprint));
-      embedders.set(fingerprint, e);
-    }
-    return e;
-  };
-  const embed = async (fingerprint: string, query: string): Promise<Float32Array> => {
-    const key = `${fingerprint}\n${query}`;
-    const hit = vectors.get(key);
-    if (hit) {
-      vectors.delete(key);
-      vectors.set(key, hit);
-      return hit;
-    }
-    const [vector] = await (await embedderOf(fingerprint)).embed([query], "query");
-    vectors.set(key, vector as Float32Array);
-    while (vectors.size > QUERY_VECTORS) vectors.delete(vectors.keys().next().value as string);
-    return vector as Float32Array;
-  };
-  return Object.assign(embed, {
-    warm: (fingerprint: string) => {
-      embedderOf(fingerprint).catch((e: unknown) =>
-        console.error(`[collections] ${e instanceof Error ? e.message : String(e)}`),
-      );
-    },
-  });
 }
 
 /** The gateway's collection state: the store, the published release keys and the open releases. */
@@ -267,304 +170,12 @@ export class GatewayCollections {
   }
 }
 
-function fail(status: number, kind: string, message: string): CollectionAnswer {
-  return { status, body: { ok: false, error: { kind, message } }, cacheSeconds: null };
-}
-
-/** A language tag the engine accepts. */
-function languageOf(raw: string | null): string | null {
-  if (raw === null) return null;
-  return /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$/.test(raw) ? raw.toLowerCase() : null;
-}
-
-/** The text a best bet is matched on: folded words, single-spaced. */
-export function normalizeQuery(text: string, lang: string): string {
-  return analyze(text, lang, { keepStopwords: true })
-    .map((t) => t.exact)
-    .join(" ");
-}
-
-function returned(doc: KeyedDoc, fields: readonly string[]): Record<string, unknown> {
-  const out: Record<string, unknown> = { id: doc.id, lang: doc.lang };
-  for (const f of fields) if (f in doc.values) out[f] = doc.values[f];
-  return out;
-}
-
-function synonymsOf(profile: SearchProfile, lang: string): ReadonlyMap<string, readonly string[]> {
-  const table = profile.synonyms[primaryLanguage(lang)] ?? {};
-  return new Map(
-    Object.entries(table).map(([w, alts]) => [foldDiacritics(w.toLowerCase()), alts] as const),
-  );
-}
-
-/** Runs one declared operation against an open release. */
-export async function runCollectionOperation(
-  op: CollectionOperationManifest,
-  entry: OpenEntry,
-  releaseKey: string,
-  params: URLSearchParams,
-  embedQuery: QueryEmbedder = defaultQueryEmbedder(),
-): Promise<CollectionAnswer> {
-  const { release, profile } = entry;
-  if (op.kind === "read") {
-    const value = op.by === "id" ? params.get("id") : params.get("value");
-    if (!value || value.length > 500)
-      return fail(400, "InvalidInput", `pass ${op.by === "id" ? "id" : "value"}`);
-    const docs = (
-      await lookupDocs(release, [op.by === "id" ? idTerm(value) : keywordTerm(op.by, value)])
-    ).slice(0, op.maxDocuments);
-    const anchor = params.get("passage");
-    return {
-      status: 200,
-      cacheSeconds: op.cacheSeconds,
-      body: {
-        release: releaseKey,
-        documents: docs.map((d) => {
-          const out = returned(d, op.returns);
-          if (op.passages) {
-            const all = (d.values[op.passages] ?? []) as Passage[];
-            out[op.passages] = anchor ? all.filter((p) => p.anchor === anchor) : all;
-          }
-          return out;
-        }),
-      },
-    };
-  }
-  if (!profile)
-    return fail(
-      503,
-      "ProfileMissing",
-      "the collection has no search profile yet: the plugin sets it at the next Stage",
-    );
-  const lang = languageOf(params.get("lang"));
-  if (!lang) return fail(400, "InvalidInput", "pass lang, the visitor's language tag (e.g. de)");
-  const q = (params.get("q") ?? "").trim();
-  if (q.length > (op.kind === "search" ? op.maxQueryChars : 120))
-    return fail(400, "InvalidInput", "the query is too long");
-  if (analyze(q, lang).length > MAX_QUERY_WORDS)
-    return fail(400, "InvalidInput", `at most ${MAX_QUERY_WORDS} words`);
-  const langFilter =
-    op.kind === "search" && op.language === "visitor" && !profile.crossLanguage
-      ? [lang]
-      : undefined;
-
-  if (op.kind === "suggest") {
-    const curated = profile.suggestions[primaryLanguage(lang)] ?? [];
-    const folded = foldDiacritics(q.toLowerCase());
-    const queries = (
-      q === ""
-        ? curated
-        : curated.filter(
-            (s) =>
-              foldDiacritics(s.text.toLowerCase())
-                .split(/\s+/)
-                .some((w) => w.startsWith(folded)) ||
-              foldDiacritics(s.text.toLowerCase()).startsWith(folded),
-          )
-    ).slice(0, op.maxResults);
-    let docs: Record<string, unknown>[] = [];
-    if (q !== "" && profile.prefix) {
-      const r = await searchText(release, {
-        text: q,
-        lang,
-        weights: profile.weights,
-        limit: op.maxResults,
-        prefix: true,
-        typos: false,
-        compounds: profile.compounds,
-        synonyms: synonymsOf(profile, lang),
-        protectedTerms: new Set(profile.protectedTerms),
-        filter: { langs: [lang] },
-      });
-      docs = await storedOf(
-        release,
-        r.hits.map((h) => h.key),
-        op.returns,
-      );
-    }
-    return {
-      status: 200,
-      cacheSeconds: op.cacheSeconds,
-      body: { release: releaseKey, queries, docs },
-    };
-  }
-
-  // search
-  if (q === "") return fail(400, "InvalidInput", "pass q, the query");
-  const limit = Math.min(Number.parseInt(params.get("limit") ?? "10", 10) || 10, op.maxResults);
-  const page = Math.max(1, Math.min(Number.parseInt(params.get("page") ?? "1", 10) || 1, 50));
-  const keywords: Record<string, string[]> = {};
-  for (const f of op.filters) {
-    const values = params
-      .getAll(`f.${f}`)
-      .filter((v) => v.length <= 200)
-      .slice(0, 20);
-    if (values.length > 0) keywords[f] = values;
-  }
-  const ranges: Record<string, { gte?: number; lte?: number }> = {};
-  for (const f of op.ranges) {
-    const gte = Number(params.get(`min.${f}`) ?? Number.NaN);
-    const lte = Number(params.get(`max.${f}`) ?? Number.NaN);
-    if (Number.isFinite(gte) || Number.isFinite(lte))
-      ranges[f] = {
-        ...(Number.isFinite(gte) ? { gte } : {}),
-        ...(Number.isFinite(lte) ? { lte } : {}),
-      };
-  }
-  const query: TextQuery = {
-    text: q,
-    lang,
-    weights: profile.weights,
-    limit: limit * page * (profile.boosts.length > 0 ? 3 : 1),
-    facets: op.facets,
-    typos: profile.typos,
-    compounds: profile.compounds,
-    synonyms: synonymsOf(profile, lang),
-    protectedTerms: new Set(profile.protectedTerms.map((t) => foldDiacritics(t.toLowerCase()))),
-    filter: { ...(langFilter ? { langs: langFilter } : {}), keywords, ranges },
-  };
-  const r = await searchText(release, query);
-  let keys = r.hits.map((h) => h.key);
-  // #1650 — the meaning side: the query's vector against the passages'.
-  const fingerprint = release.manifest.vectorModel?.id;
-  const bestPassage = new Map<number, number>();
-  if (profile.semantic && fingerprint) {
-    let vector: Float32Array;
-    try {
-      vector = await embedQuery(fingerprint, q);
-    } catch (e) {
-      if (e instanceof ModelUnavailableError) return fail(503, "ModelUnavailable", e.message);
-      throw e;
-    }
-    const near = await searchVectors(release, {
-      vector,
-      limit: Math.max(VECTOR_CANDIDATES, limit * page),
-      minSimilarity: profile.semantic.minSimilarity,
-      filter: query.filter ?? {},
-    });
-    for (const h of near) bestPassage.set(h.key, h.passage);
-    keys = fuse(
-      [
-        { keys, weight: 1 },
-        { keys: near.map((h) => h.key), weight: profile.semantic.weight },
-      ],
-      query.limit + near.length,
-    ).map((h) => h.key);
-  }
-  // Boosts reorder by stored keyword values, so the candidates load first.
-  let stored = await storedMap(release, keys);
-  if (profile.boosts.length > 0) {
-    // Boosts multiply a document's place score: its word score, or, after
-    // the fusion, its fused rank turned into a descending score.
-    const score = new Map(
-      bestPassage.size > 0
-        ? keys.map((k, i) => [k, keys.length - i] as const)
-        : r.hits.map((h) => [h.key, h.score] as const),
-    );
-    const boosted = (k: number): number => {
-      const doc = stored.get(k);
-      let s = score.get(k) ?? 0;
-      for (const b of profile.boosts) {
-        const v = doc?.values[b.field];
-        for (const value of Array.isArray(v) ? v : [v])
-          if (typeof value === "string" && b.values[value] !== undefined)
-            s *= b.values[value] as number;
-      }
-      return s;
-    };
-    keys = [...keys].sort((a, b) => boosted(b) - boosted(a) || a - b);
-  }
-  // Best bets: the documents the operator pinned for this query come first, in order.
-  const pinnedIds =
-    (profile.bestBets[primaryLanguage(lang)] ?? []).find(
-      (b) => normalizeQuery(b.query, lang) === normalizeQuery(q, lang),
-    )?.ids ?? [];
-  const pinnedDocs = pinnedIds.length > 0 ? await lookupDocs(release, pinnedIds.map(idTerm)) : [];
-  const pinnedOrder = pinnedIds
-    .map((id) => pinnedDocs.find((d) => d.id === id))
-    .filter((d): d is KeyedDoc => d !== undefined);
-  for (const d of pinnedOrder) stored.set(d.key, d);
-  const ordered = [
-    ...pinnedOrder.map((d) => d.key),
-    ...keys.filter((k) => !pinnedOrder.some((d) => d.key === k)),
-  ];
-  const pageKeys = ordered.slice((page - 1) * limit, page * limit);
-  stored = stored.size >= pageKeys.length ? stored : await storedMap(release, pageKeys);
-  const hits = pageKeys
-    .map((k) => stored.get(k))
-    .filter((d): d is KeyedDoc => d !== undefined)
-    .map((d) => {
-      const out = returned(d, op.returns);
-      if (typeof d.values.title === "string" && op.returns.includes("title"))
-        out.titleHighlights = highlight(d.values.title, r.terms, d.lang).highlights;
-      if (op.snippet) {
-        // A document only the meaning side found shows its closest passage.
-        const lexical = r.hits.some((h) => h.key === d.key);
-        out.snippet = snippet(
-          (d.values[op.snippet] ?? []) as Passage[],
-          r.terms,
-          d.lang,
-          220,
-          lexical ? undefined : bestPassage.get(d.key),
-        );
-      }
-      if (pinnedOrder.some((p) => p.key === d.key)) out.pinned = true;
-      return out;
-    });
-  return {
-    status: 200,
-    cacheSeconds: op.cacheSeconds,
-    body: {
-      release: releaseKey,
-      query: q,
-      total:
-        Math.max(r.total, keys.length) + pinnedOrder.filter((d) => !keys.includes(d.key)).length,
-      page,
-      hits,
-      facets: r.facets,
-      corrections: r.corrections,
-      splits: r.splits,
-    },
-  };
-}
-
 let gatewayEmbedder: ReturnType<typeof wasmQueryEmbedder> | null = null;
 
 /** The process's query embedder (one per gateway process). */
 export function defaultQueryEmbedder(): ReturnType<typeof wasmQueryEmbedder> {
   gatewayEmbedder ??= wasmQueryEmbedder();
   return gatewayEmbedder;
-}
-
-async function storedMap(
-  release: OpenRelease,
-  keys: readonly number[],
-): Promise<Map<number, KeyedDoc>> {
-  const out = new Map<number, KeyedDoc>();
-  for (const seg of release.segments) {
-    const want = keys.filter(
-      (k) =>
-        !seg.removed.has(k) &&
-        k >= seg.reader.manifest.firstKey &&
-        k <= seg.reader.manifest.lastKey &&
-        !out.has(k),
-    );
-    if (want.length === 0) continue;
-    for (const [k, d] of await seg.reader.stored(want)) if (!seg.removed.has(k)) out.set(k, d);
-  }
-  return out;
-}
-
-async function storedOf(
-  release: OpenRelease,
-  keys: readonly number[],
-  fields: readonly string[],
-): Promise<Record<string, unknown>[]> {
-  const map = await storedMap(release, keys);
-  return keys
-    .map((k) => map.get(k))
-    .filter((d): d is KeyedDoc => d !== undefined)
-    .map((d) => returned(d, fields));
 }
 
 /** The declared operation of an active plugin, re-validated (the gateway trusts no published data blindly). */
@@ -581,9 +192,3 @@ export function declaredCollectionOperation(
   return { pluginId: plugin.pluginId, op: parsed.data };
 }
 
-/** Whether any active plugin declares a collection operation. */
-export function servesCollectionOperations(): boolean {
-  return loadedPlugins
-    .all()
-    .some((p) => (p.definition.collectionOperations ?? []).length > 0 && !isPluginDisabled(p.slug));
-}

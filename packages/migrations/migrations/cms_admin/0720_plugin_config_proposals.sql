@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MPL-2.0
+--
 -- Epic #1644 (R6, issue #1645) — the §11.A queue of plugin configuration.
 --
 -- A plugin's configuration lives in host-owned tables of its own schema

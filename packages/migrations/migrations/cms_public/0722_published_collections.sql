@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MPL-2.0
+--
 -- Epic #1644 (R2 #1648, R3 #1649) — the collections of the pointed release.
 --
 -- One row per active plugin's collection: the release file in this

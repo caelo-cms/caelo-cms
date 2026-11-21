@@ -34,6 +34,8 @@ import {
   type CollectionSchema,
   type CollectionStore,
   FileCache,
+  keywordTerm,
+  lookupDocs,
   openRelease,
   parseRelease,
   readProfile,
@@ -97,7 +99,19 @@ export interface FoldedChanges {
   readonly reset: boolean;
   readonly upserts: Map<string, CollectionDoc>;
   readonly deletes: Set<string>;
+  /**
+   * Keyword terms whose documents in the previous release are removed
+   * (#1651 `replace`): every document upserted before the removal was
+   * dropped from `upserts` already; the ones after it stay.
+   */
+  readonly deleteWhere: readonly { readonly field: string; readonly value: string }[];
   readonly profile: SearchProfile | undefined;
+}
+
+/** Whether `doc`'s keyword `field` holds `value`. */
+function holds(doc: CollectionDoc, field: string, value: string): boolean {
+  const v = doc.values[field];
+  return Array.isArray(v) ? v.includes(value) : v === value;
 }
 
 /** Folds change files in order. */
@@ -108,6 +122,7 @@ export async function foldChanges(
   let reset = false;
   const upserts = new Map<string, CollectionDoc>();
   const deletes = new Set<string>();
+  const deleteWhere = new Map<string, { field: string; value: string }>();
   let profile: SearchProfile | undefined;
   for (const key of keys) {
     const change = decodeChangeFile(await store.read(key));
@@ -115,6 +130,13 @@ export async function foldChanges(
       reset = true;
       upserts.clear();
       deletes.clear();
+      deleteWhere.clear();
+    }
+    for (const w of change.deleteWhere ?? []) {
+      for (const value of w.values) {
+        deleteWhere.set(`${w.field}\u0000${value}`, { field: w.field, value });
+        for (const [id, d] of upserts) if (holds(d, w.field, value)) upserts.delete(id);
+      }
     }
     for (const d of change.upserts) {
       upserts.set(d.id, d as CollectionDoc);
@@ -126,7 +148,7 @@ export async function foldChanges(
     }
     if (change.profile) profile = change.profile;
   }
-  return { reset, upserts, deletes, profile };
+  return { reset, upserts, deletes, deleteWhere: [...deleteWhere.values()], profile };
 }
 
 function onlyDeclared(
@@ -248,7 +270,8 @@ export async function indexCollection(
             if (
               seg.removed.has(doc.key) ||
               folded.upserts.has(doc.id) ||
-              folded.deletes.has(doc.id)
+              folded.deletes.has(doc.id) ||
+              folded.deleteWhere.some((w) => holds(doc, w.field, w.value))
             )
               continue;
             yield onlyDeclared(doc, task.fields);
@@ -259,6 +282,15 @@ export async function indexCollection(
     };
     applied = await buildRelease(docs(), { schema, sink, protectedTerms, profile, ...vectors });
   } else {
+    // Documents of the previous release a `replace` removed, by their terms.
+    if (folded.deleteWhere.length > 0 && previous) {
+      const opened = await openRelease(previous, cache);
+      for (const d of await lookupDocs(
+        opened,
+        folded.deleteWhere.map((w) => keywordTerm(w.field, w.value)),
+      ))
+        if (!folded.upserts.has(d.id)) folded.deletes.add(d.id);
+    }
     applied = await applyChanges(
       previous,
       { upserts: [...folded.upserts.values()], deletes: [...folded.deletes] },

@@ -86,7 +86,8 @@ export function buildProfile(
   config: ProfileConfig,
   lists: ProfileLists,
   siteLangs: readonly string[],
-  knownPages: ReadonlySet<string>,
+  /** Pages that are results; a pinned page outside it is reported. */
+  knownPages: { has(pageId: string): boolean },
 ): BuiltProfile {
   const notes: string[] = [];
   const langs = siteLangs.length > 0 ? siteLangs : ["de", "en"];

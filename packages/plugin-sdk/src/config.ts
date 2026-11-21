@@ -181,9 +181,18 @@ const configField: z.ZodType<ConfigField, ConfigFieldInput> = z.lazy(() =>
 export const pluginConfigSchema = z.record(fieldName, configField);
 export type PluginConfigSchema = Readonly<Record<string, ConfigField>>;
 
-const entityFields = z.record(fieldName, scalarField).optional();
+const pageRefLeaf = refLeaves[0];
 
-/** Fields a plugin keeps per core entity. Leaves only; no groups, no references. */
+/**
+ * A field kept per entity: a scalar, or a page reference (a module's home
+ * page, say). No groups, no lists, no models.
+ */
+const entityField = z.union([scalarField, pageRefLeaf]);
+export type ConfigEntityField = ConfigScalarField | z.output<typeof pageRefLeaf>;
+
+const entityFields = z.record(fieldName, entityField).optional();
+
+/** Fields a plugin keeps per core entity. Leaves only: scalars and page references. */
 export const pluginEntityConfigSchema = z
   .object({
     page: entityFields,
@@ -193,7 +202,7 @@ export const pluginEntityConfigSchema = z
   })
   .strict();
 export type PluginEntityConfigSchema = Partial<
-  Record<ConfigEntityKind, Readonly<Record<string, ConfigScalarField>>>
+  Record<ConfigEntityKind, Readonly<Record<string, ConfigEntityField>>>
 >;
 
 /** Most leaves one plugin's configuration may have: the generated form and the AI tool stay readable. */
@@ -347,17 +356,17 @@ export function mapValue(
 
 /** The Zod schema of one entity's configuration (every field optional; an unset field takes its default). */
 export function entityConfigSchema(
-  fields: Readonly<Record<string, ConfigScalarField>>,
+  fields: Readonly<Record<string, ConfigEntityField>>,
 ): z.ZodType<Record<string, unknown>> {
   const shape: Record<string, z.ZodType> = {};
   for (const [name, field] of Object.entries(fields))
-    shape[name] = scalarValueSchema(field).nullable().optional();
+    shape[name] = (field.type === "pageRef" ? uuid : scalarValueSchema(field)).nullable().optional();
   return z.object(shape).strict() as unknown as z.ZodType<Record<string, unknown>>;
 }
 
 /** One entity's effective configuration: its stored values over the declared defaults. */
 export function entityConfigValue(
-  fields: Readonly<Record<string, ConfigScalarField>>,
+  fields: Readonly<Record<string, ConfigEntityField>>,
   stored: Readonly<Record<string, unknown>> | undefined,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};

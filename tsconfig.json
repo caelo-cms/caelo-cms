@@ -8,6 +8,7 @@
     { "path": "./packages/font-service" },
     { "path": "./packages/shared" },
     { "path": "./packages/models" },
+    { "path": "./packages/collection-index" },
     { "path": "./packages/query-api" },
     { "path": "./packages/admin-core" },
     { "path": "./packages/plugin-sdk" },

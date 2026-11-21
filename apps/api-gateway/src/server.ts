@@ -118,6 +118,7 @@ import {
 } from "./client-ip.js";
 import {
   declaredCollectionOperation,
+  defaultQueryEmbedder,
   GatewayCollections,
   parseCollectionPath,
   runCollectionOperation,
@@ -1145,6 +1146,15 @@ async function collectionOperation(
         cacheSeconds: null,
       };
     } else if (route.releaseOnly) {
+      // The warm-up: open the release (and load its embedding model) while
+      // the visitor still types, without making this answer wait for it.
+      void collections
+        .release(route.slug, declared.op.collection, key)
+        .then((e) => {
+          const fp = e.release.manifest.vectorModel?.id;
+          if (fp && e.profile?.semantic) defaultQueryEmbedder().warm(fp);
+        })
+        .catch(() => {});
       answer = { status: 200, body: { release: key }, cacheSeconds: null };
     } else if (asked !== null && asked !== key) {
       // A newer Stage went live: the client asks again under the new key.
@@ -1155,7 +1165,17 @@ async function collectionOperation(
       };
     } else {
       const entry = await collections.release(route.slug, declared.op.collection, key);
-      const ran = await runCollectionOperation(declared.op, entry, key, url.searchParams);
+      // #1651 — the anchor collection of the same Stage, when the op declares one.
+      const anchorsOf = declared.op.kind === "search" ? declared.op.anchors : undefined;
+      const anchorKey = anchorsOf ? keys.get(`${declared.pluginId}:${anchorsOf.collection}`) : undefined;
+      const anchors =
+        anchorsOf && anchorKey
+          ? await collections.release(route.slug, anchorsOf.collection, anchorKey)
+          : null;
+      const ran = await runCollectionOperation(declared.op, entry, key, url.searchParams, {
+        embedQuery: defaultQueryEmbedder(),
+        anchors,
+      });
       answer = {
         ...ran,
         cacheSeconds: asked === key && ran.status === 200 ? ran.cacheSeconds : null,

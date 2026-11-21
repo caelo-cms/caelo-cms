@@ -94,6 +94,20 @@ async function readSource(
 }
 
 /** The quality audit's kind of reporting job. */
+/** The deploy run an audit run audits, remembered per audit (a plugin check calls many times). */
+const auditedRuns = new Map<string, string>();
+async function auditedDeployRun(deps: AdminJobDeps, auditRunId: string): Promise<string> {
+  const known = auditedRuns.get(auditRunId);
+  if (known) return known;
+  const r = await op<{ run: { deployRunId: string } | null }>(deps, "quality_audits.get", {
+    auditRunId,
+  });
+  if (!r.run) throw new ActionRefusal(`there is no audit run ${auditRunId}`);
+  auditedRuns.set(auditRunId, r.run.deployRunId);
+  while (auditedRuns.size > 100) auditedRuns.delete(auditedRuns.keys().next().value as string);
+  return r.run.deployRunId;
+}
+
 export const qualityAuditJobKind: ReportingJobKindDef = {
   kind: "quality_audit",
   label: "quality audit",
@@ -141,17 +155,20 @@ export const qualityAuditJobKind: ReportingJobKindDef = {
     },
     "plugin-findings": {
       input: auditPluginCallSchema,
-      async handle(_deps, _subjectId, input: z.infer<typeof auditPluginCallSchema>) {
+      async handle(deps, subjectId, input: z.infer<typeof auditPluginCallSchema>) {
         if (!auditFindingContributors().includes(input.slug)) {
           throw new ActionRefusal(
             `plugin "${input.slug}" no longer contributes audit findings (it was deactivated while the audit ran)`,
           );
         }
         try {
+          // #1651 — the plugin learns which Stage it audits (a search plugin
+          // runs its test queries against that Stage's index).
+          const runId = await auditedDeployRun(deps, subjectId);
           return {
             value: await pluginAuditFindingsCall(
               input.slug,
-              input.args as Parameters<typeof pluginAuditFindingsCall>[1],
+              { ...(input.args as Parameters<typeof pluginAuditFindingsCall>[1]), runId },
               input.label,
             ),
           };

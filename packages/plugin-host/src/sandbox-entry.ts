@@ -143,7 +143,23 @@ const collectionHandle = (name) => ObjectFreeze({
   delete: async (ids) => {
     for (let i = 0; i < ids.length; i += 1000) await rpc("collections.delete", name, ids.slice(i, i + 1000));
   },
+  // Removals by field, then the first documents, in one call; the rest follow.
+  replace: async (field, values, docs) => {
+    await rpc("collections.replace", name, field, values, docs.slice(0, 200));
+    for (let i = 200; i < docs.length; i += 200) await rpc("collections.upsert", name, docs.slice(i, i + 200));
+  },
   get: (id) => rpc("collections.get", name, id),
+  query: (operation, params, opts) => rpc("collections.query", name, operation, params, opts || {}),
+  getMany: async (ids) => {
+    const docs = new MapCtor();
+    let pending = false;
+    for (let i = 0; i < ids.length; i += 1000) {
+      const r = await rpc("collections.getMany", name, ids.slice(i, i + 1000));
+      for (let j = 0; j < r.docs.length; j++) MapSet(docs, r.docs[j].id, r.docs[j]);
+      pending = pending || r.pending;
+    }
+    return { docs, pending };
+  },
   setProfile: (profile) => rpc("collections.setProfile", name, profile),
 });
 const collectionsOf = (names) => {

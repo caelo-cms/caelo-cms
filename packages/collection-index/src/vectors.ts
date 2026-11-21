@@ -61,13 +61,6 @@ function popcount32(x: number): number {
   return (((v + (v >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
 }
 
-/** One candidate passage. */
-export interface VectorHit {
-  readonly key: number;
-  readonly passage: number;
-  readonly score: number;
-}
-
 /** Keeps the `k` smallest values seen, with their payloads, in a bounded max-heap. */
 class BoundedHeap {
   private readonly values: number[] = [];

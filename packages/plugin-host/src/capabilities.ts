@@ -142,9 +142,10 @@ export async function makePluginContext(
     collectionsGranted &&
     Object.keys(plugin.definition.collections ?? {}).length > 0 &&
     !isPublicSideHost(infra) &&
-    invocation.origin !== "visitor" &&
-    invocation.origin !== "render"
-      ? { collections: makePluginCollections(plugin, infra, invocation) }
+    invocation.origin !== "visitor"
+      ? // A render (and the Stage audit, which calls as one) may query; its
+        // writes are refused by the handle.
+        { collections: makePluginCollections(plugin, infra, invocation) }
       : {};
   const baseCtx: PluginContext = {
     query: makePluginQuery(plugin, infra, invocation, opts.publicOperation),

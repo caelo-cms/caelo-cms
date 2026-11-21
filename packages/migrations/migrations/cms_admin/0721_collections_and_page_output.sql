@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MPL-2.0
+--
 -- Epic #1644 (R1 #1647, R2 #1648) — plugin collections and page output.
 --
 -- collection_changes        what plugins wrote to their collections, waiting

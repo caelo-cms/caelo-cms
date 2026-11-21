@@ -945,6 +945,8 @@ export interface PluginAuditPageFacts {
 /** What an `auditFindingsOperation` is called with: the staged build's pages. */
 export interface PluginAuditFindingsArgs {
   readonly pages: readonly { readonly pageId: string; readonly path: string }[];
+  /** #1651 — the Stage's deploy run the audit checks (its collection releases, say). */
+  readonly runId?: string;
   /**
    * Present on the calls that answer a `factBatches` request: the facts
    * of one batch's pages, in the order requested.

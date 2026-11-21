@@ -16,6 +16,7 @@
  * the pages or the plugin's settings, and the next Stage re-derives it.
  */
 
+import { type OpenEntry, runCollectionOperation, wasmQueryEmbedder } from "./collection-query.js";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import {
   type CollectionStore,
@@ -24,10 +25,14 @@ import {
   lookupDocs,
   openRelease,
   parseRelease,
+  readProfile,
   storeFromUrl,
 } from "@caelo-cms/collection-index";
 import {
   type CollectionDocInput,
+  type CollectionQueryOptions,
+  type CollectionQueryResult,
+  collectionOperationManifest,
   type PluginCollectionHandle,
   type PluginCollectionManifest,
   type PluginCollections,
@@ -185,6 +190,12 @@ export interface CollectionChangeFile {
   readonly upserts: readonly CollectionDocInput[];
   readonly deletes: readonly string[];
   readonly replaceAll: boolean;
+  /**
+   * #1651 — documents whose keyword `field` holds one of `values` are
+   * removed before this file's upserts apply (a page's anchor texts
+   * replaced as one change). Absent in files written before it.
+   */
+  readonly deleteWhere?: readonly { readonly field: string; readonly values: readonly string[] }[];
   /** A new search profile, validated (absent: unchanged). */
   readonly profile?: SearchProfile;
 }
@@ -206,6 +217,8 @@ export function decodeChangeFile(data: Uint8Array): CollectionChangeFile {
 export const COLLECTION_OPS = {
   write: "collections.write_changes",
   get: "collections.get_doc",
+  releaseOf: "collections.release_of",
+  getMany: "collections.get_docs",
 } as const;
 
 /** Defines the collection operations. `store` resolves the staging store (env in production, a directory in tests). */
@@ -225,6 +238,17 @@ export function makeCollectionOps(
         upserts: z.array(z.unknown()).max(MAX_UPSERTS),
         deletes: z.array(z.string().min(1).max(200)).max(MAX_DELETES),
         replaceAll: z.boolean().default(false),
+        deleteWhere: z
+          .array(
+            z
+              .object({
+                field: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/),
+                values: z.array(z.string().min(1).max(500)).min(1).max(MAX_DELETES),
+              })
+              .strict(),
+          )
+          .max(4)
+          .default([]),
         profile: z.unknown().optional(),
         stageRunId: z.string().uuid().optional(),
       })
@@ -258,17 +282,30 @@ export function makeCollectionOps(
             problems.push(`profile.${issue.path.join(".")}: ${issue.message}`);
         else profile = parsed.data;
       }
+      for (const [i, w] of input.deleteWhere.entries()) {
+        if (decl.fields[w.field]?.kind !== "keyword")
+          problems.push(
+            `deleteWhere.${i}.field: "${w.field}" is not a keyword field of collection "${input.collection}"`,
+          );
+      }
       if (problems.length > 0)
         refuse(
           op,
           `collection "${input.collection}" refused the write: ${problems.slice(0, 10).join("; ")}`,
         );
-      if (upserts.length === 0 && input.deletes.length === 0 && !input.replaceAll && !profile)
-        refuse(op, "nothing to write: pass upserts, deletes, replaceAll or a profile");
+      if (
+        upserts.length === 0 &&
+        input.deletes.length === 0 &&
+        input.deleteWhere.length === 0 &&
+        !input.replaceAll &&
+        !profile
+      )
+        refuse(op, "nothing to write: pass upserts, deletes, deleteWhere, replaceAll or a profile");
       const data = encodeChangeFile({
         upserts,
         deletes: input.deletes,
         replaceAll: input.replaceAll,
+        ...(input.deleteWhere.length > 0 ? { deleteWhere: input.deleteWhere } : {}),
         ...(profile ? { profile } : {}),
       });
       const changeId = crypto.randomUUID();
@@ -316,7 +353,126 @@ export function makeCollectionOps(
       return ok({ doc: doc ? { id: doc.id, lang: doc.lang, values: doc.values } : null });
     },
   });
-  return [write, get] as unknown as OperationDefinition<unknown, unknown>[];
+  const releaseOf = defineOperation({
+    name: COLLECTION_OPS.releaseOf,
+    readScope: "request",
+    // Why plugin-only: a plugin reads which release of its own collections to query.
+    actorScope: ["plugin"],
+    database: "cms_admin",
+    input: z
+      .object({
+        collections: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,39}$/)).min(1).max(2),
+        /** A Stage's run; absent: `at`. */
+        runId: z.string().uuid().optional(),
+        /** `staged`: the newest Stage with a ready index; `live`: what visitors search. */
+        at: z.enum(["staged", "live"]).default("staged"),
+      })
+      .strict(),
+    output: z.object({
+      releases: z.array(
+        z.object({
+          collection: z.string(),
+          state: z.enum(["pending", "ready", "failed", "none"]),
+          releaseKey: z.string().nullable(),
+          error: z.string().nullable(),
+          runId: z.string().nullable(),
+        }),
+      ),
+    }),
+    handler: async (ctx, input, tx) => {
+      const plugin = declaredCollection(COLLECTION_OPS.releaseOf, ctx.pluginId, input.collections[0] as string).plugin;
+      for (const c of input.collections) declaredCollection(COLLECTION_OPS.releaseOf, ctx.pluginId, c);
+      const out = [];
+      for (const collection of input.collections) {
+        const rows = (await tx.execute(
+          input.runId
+            ? sql`SELECT run_id::text AS run_id, state, release_key, error FROM collection_releases
+                  WHERE plugin_id = ${plugin.pluginId}::uuid AND collection = ${collection} AND run_id = ${input.runId}::uuid`
+            : input.at === "live"
+              ? sql`SELECT c.run_id::text AS run_id, c.state, c.release_key, c.error FROM collection_releases c
+                    JOIN projection_release_pointers p ON p.run_id = c.run_id AND p.environment = 'live'
+                    WHERE c.plugin_id = ${plugin.pluginId}::uuid AND c.collection = ${collection}`
+              : sql`SELECT run_id::text AS run_id, state, release_key, error FROM collection_releases
+                    WHERE plugin_id = ${plugin.pluginId}::uuid AND collection = ${collection} AND state = 'ready'
+                    ORDER BY created_at DESC LIMIT 1`,
+        )) as unknown as { run_id: string; state: "pending" | "ready" | "failed"; release_key: string | null; error: string | null }[];
+        const r = rows[0];
+        out.push(
+          r
+            ? { collection, state: r.state, releaseKey: r.release_key, error: r.error, runId: r.run_id }
+            : { collection, state: "none" as const, releaseKey: null, error: null, runId: null },
+        );
+      }
+      return ok({ releases: out });
+    },
+  });
+  const getMany = defineOperation({
+    name: COLLECTION_OPS.getMany,
+    readScope: "request",
+    // Why plugin-only: see write.
+    actorScope: ["plugin"],
+    database: "cms_admin",
+    input: z
+      .object({
+        collection: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/),
+        ids: z.array(z.string().min(1).max(200)).min(1).max(1000),
+        /** The Stage the caller writes for: its own changes are not "pending". */
+        stageRunId: z.string().uuid().optional(),
+      })
+      .strict(),
+    output: z.object({ docs: z.array(z.unknown()), pending: z.boolean() }),
+    handler: async (ctx, input, tx) => {
+      const { plugin } = declaredCollection(COLLECTION_OPS.getMany, ctx.pluginId, input.collection);
+      // Changes no index holds yet, other than this Stage's own: the newest
+      // index is then not what the plugin last wrote.
+      const pendingRows = (await tx.execute(sql`
+        SELECT 1 FROM collection_changes
+        WHERE plugin_id = ${plugin.pluginId}::uuid AND collection = ${input.collection}
+          AND applied_run_id IS NULL
+          AND (${input.stageRunId ?? null}::uuid IS NULL OR run_id IS DISTINCT FROM ${input.stageRunId ?? null}::uuid)
+        LIMIT 1
+      `)) as unknown as unknown[];
+      const rows = (await tx.execute(sql`
+        SELECT release_key FROM collection_releases
+        WHERE plugin_id = ${plugin.pluginId}::uuid AND collection = ${input.collection} AND state = 'ready'
+        ORDER BY created_at DESC LIMIT 1
+      `)) as unknown as { release_key: string }[];
+      const releaseKey = rows[0]?.release_key;
+      if (!releaseKey) return ok({ docs: [], pending: pendingRows.length > 0 });
+      const entry = await openAdminRelease(store(), collectionPrefix(plugin.slug, input.collection), releaseKey);
+      const found = await lookupDocs(entry.release, input.ids.map(idTerm));
+      return ok({
+        docs: found.map((d) => ({ id: d.id, lang: d.lang, values: d.values })),
+        pending: pendingRows.length > 0,
+      });
+    },
+  });
+  return [write, get, releaseOf, getMany] as unknown as OperationDefinition<unknown, unknown>[];
+}
+
+/** Open releases of the admin's queries (previews, audits), newest few kept. */
+const adminReleases = new Map<string, Promise<OpenEntry>>();
+const ADMIN_OPEN_RELEASES = 6;
+let adminEmbedder: ReturnType<typeof wasmQueryEmbedder> | null = null;
+
+async function openAdminRelease(store: CollectionStore, prefix: string, releaseKey: string): Promise<OpenEntry> {
+  const id = `${store.describe}|${prefix}|${releaseKey}`;
+  let entry = adminReleases.get(id);
+  if (!entry) {
+    entry = (async () => {
+      const cache = new FileCache({ read: (f) => store.read(`${prefix}/${f}`) }, 64 * 1024 * 1024);
+      const manifest = parseRelease(await store.read(`${prefix}/${releaseKey}`));
+      const release = await openRelease(manifest, cache);
+      const raw = await readProfile(manifest, cache);
+      const parsed = raw === null ? null : searchProfile.safeParse(raw);
+      return { release, profile: parsed?.success ? parsed.data : null };
+    })();
+    entry.catch(() => adminReleases.delete(id));
+    adminReleases.set(id, entry);
+    while (adminReleases.size > ADMIN_OPEN_RELEASES)
+      adminReleases.delete(adminReleases.keys().next().value as string);
+  }
+  return entry;
 }
 
 /** Registers the collection operations once. */
@@ -386,6 +542,96 @@ export function makePluginCollections(
             ...(invocation.stageRunId ? { stageRunId: invocation.stageRunId } : {}),
           });
         }
+      },
+      replace: async (field: string, values: readonly string[], docs: readonly CollectionDocInput[]) => {
+        assertWriting("replace");
+        // The removals first, then the documents: change files apply in order.
+        for (let i = 0; i < values.length; i += MAX_DELETES) {
+          const first = i === 0;
+          await run(COLLECTION_OPS.write, {
+            collection: name,
+            upserts: first ? docs.slice(0, MAX_UPSERTS) : [],
+            deletes: [],
+            deleteWhere: [{ field, values: values.slice(i, i + MAX_DELETES) }],
+            ...(invocation.stageRunId ? { stageRunId: invocation.stageRunId } : {}),
+          });
+        }
+        for (let i = values.length === 0 ? 0 : MAX_UPSERTS; i < docs.length; i += MAX_UPSERTS) {
+          await run(COLLECTION_OPS.write, {
+            collection: name,
+            upserts: docs.slice(i, i + MAX_UPSERTS),
+            deletes: [],
+            ...(invocation.stageRunId ? { stageRunId: invocation.stageRunId } : {}),
+          });
+        }
+      },
+      query: async (
+        operation: string,
+        params: Readonly<Record<string, string | readonly string[]>>,
+        opts: CollectionQueryOptions = {},
+      ): Promise<CollectionQueryResult> => {
+        const op = (plugin.definition.collectionOperations ?? [])
+          .map((o) => collectionOperationManifest.parse(o))
+          .find((o) => o.name === operation && o.collection === name);
+        if (!op)
+          throw new Error(
+            `ctx.collections.${name}.query: plugin "${plugin.slug}" declares no collection operation "${operation}" on "${name}"`,
+          );
+        const anchorsName = op.kind === "search" ? op.anchors?.collection : undefined;
+        const resolved = await run<{
+          releases: {
+            collection: string;
+            state: CollectionQueryResult["state"];
+            releaseKey: string | null;
+            error: string | null;
+            runId: string | null;
+          }[];
+        }>(COLLECTION_OPS.releaseOf, {
+          collections: anchorsName ? [name, anchorsName] : [name],
+          ...(opts.runId ? { runId: opts.runId } : { at: opts.at ?? "staged" }),
+        });
+        const main = resolved.releases[0];
+        if (!main || main.state !== "ready" || !main.releaseKey)
+          return {
+            state: main?.state ?? "none",
+            error: main?.error ?? null,
+            status: 503,
+            body: null,
+          };
+        // The live store when the live release is asked for; the staging one otherwise.
+        const store = collectionStoreFromEnv(
+          opts.at === "live" && !opts.runId ? LIVE_COLLECTION_STORE_ENV : STAGING_COLLECTION_STORE_ENV,
+        );
+        const entry = await openAdminRelease(store, collectionPrefix(plugin.slug, name), main.releaseKey);
+        const a = resolved.releases[1];
+        const anchors =
+          anchorsName && a?.state === "ready" && a.releaseKey
+            ? await openAdminRelease(store, collectionPrefix(plugin.slug, anchorsName), a.releaseKey)
+            : null;
+        const search = new URLSearchParams();
+        for (const [k, v] of Object.entries(params))
+          for (const one of Array.isArray(v) ? v : [v as string]) search.append(k, one);
+        adminEmbedder ??= wasmQueryEmbedder();
+        const answer = await runCollectionOperation(op, entry, main.releaseKey, search, {
+          embedQuery: adminEmbedder,
+          anchors,
+          explain: opts.explain === true,
+        });
+        return { state: "ready", error: null, status: answer.status, body: answer.body };
+      },
+      getMany: async (ids: readonly string[]) => {
+        const docs = new Map<string, CollectionDocInput>();
+        let pending = false;
+        for (let i = 0; i < ids.length; i += 1000) {
+          const r = await run<{ docs: CollectionDocInput[]; pending: boolean }>(COLLECTION_OPS.getMany, {
+            collection: name,
+            ids: ids.slice(i, i + 1000),
+            ...(invocation.stageRunId ? { stageRunId: invocation.stageRunId } : {}),
+          });
+          for (const d of r.docs) docs.set(d.id, d);
+          pending ||= r.pending;
+        }
+        return { docs, pending };
       },
       get: async (id: string) =>
         (
