@@ -1389,13 +1389,13 @@ async function captchaChallenge(
   clientIp: string,
   requestId: string,
 ): Promise<Response> {
-  const purpose = /^([a-z][a-z0-9-]{0,54})\.([a-z_][a-z0-9_]{0,119})$/.exec(
-    url.searchParams.get("for") ?? "",
-  );
+  // `<slug>.<op>`, split at its one dot (no pattern over visitor input).
+  const purpose = url.searchParams.get("for") ?? "";
+  const dot = purpose.indexOf(".");
   let forChat = false;
-  if (purpose) {
+  if (purpose.length <= 180 && dot > 0 && dot === purpose.lastIndexOf(".")) {
     await syncDispatchPlugins();
-    forChat = declaredAiChatOperation(purpose[1] as string, purpose[2] as string) !== null;
+    forChat = declaredAiChatOperation(purpose.slice(0, dot), purpose.slice(dot + 1)) !== null;
   }
   if (forChat) {
     const response = await captchaChallengeFor(

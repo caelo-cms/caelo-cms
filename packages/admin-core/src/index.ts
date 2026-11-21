@@ -236,6 +236,12 @@ export {
   syncOperatorAccess,
 } from "./ops/user_access.js";
 export * from "./ops/users.js";
+export {
+  PROVIDER_HARD_LIMIT_HINT,
+  VISITOR_AI_PROVIDERS,
+  type VisitorAiSettings,
+  visitorAiSettingsShape,
+} from "./ops/visitor_ai.js";
 export * from "./password.js";
 export * from "./permissions.js";
 // #696 Phase 5 — the auto-update scheduler (a task on the #1140 scheduler tick).
@@ -433,3 +439,10 @@ export {
 } from "./stage/stage-chats.js";
 export * from "./tokens.js";
 export * from "./untrusted/public-data.js";
+// #1654 — the visitor AI: the Owner's key actions (Settings → Visitor AI and
+// the approval card of propose_set_visitor_ai) and the settings it reads.
+export {
+  removeVisitorAiKey,
+  storeVisitorAiKey,
+  type VisitorAiKeyResult,
+} from "./visitor-ai/key-actions.js";

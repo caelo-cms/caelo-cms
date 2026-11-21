@@ -415,7 +415,40 @@
    * agent's card only records the decision, the agent's own call resumes ITS
    * turn and receives the result. No AI turn starts here for it.
    */
+  /**
+   * #1654 — the key of a visitor-AI approval card, pasted by the approver.
+   * It goes straight to the secret store (POST /api/visitor-ai/key) before
+   * the Approve, never into the chat or the approval: the AI never sees it.
+   */
+  let visitorAiKeys = $state<Record<string, { provider: string; apiKey: string; staging: boolean }>>({});
+
+  function visitorAiKeyOf(a: SdkApproval): { provider: string; apiKey: string; staging: boolean } {
+    const found = visitorAiKeys[a.approvalId];
+    if (found) return found;
+    const provider = /\b(anthropic|openai|google)\b/.exec(a.preview)?.[1] ?? "anthropic";
+    return { provider, apiKey: "", staging: true };
+  }
+
+  async function storeVisitorAiKeyFirst(a: SdkApproval): Promise<boolean> {
+    if (a.name !== "propose_set_visitor_ai") return true;
+    const k = visitorAiKeyOf(a);
+    if (k.apiKey.trim() === "") return true;
+    const res = await fetch("/api/visitor-ai/key", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
+      body: JSON.stringify({ provider: k.provider, apiKey: k.apiKey.trim(), staging: k.staging ? "same" : "none" }),
+    });
+    const r = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; nextStep?: string } | null;
+    if (!res.ok || !r?.ok) {
+      chatError = `The key was not stored: ${r?.error ?? res.status}. ${r?.nextStep ?? ""}`;
+      return false;
+    }
+    visitorAiKeys = { ...visitorAiKeys, [a.approvalId]: { ...k, apiKey: "" } };
+    return true;
+  }
+
   async function resolveSdkApproval(a: SdkApproval, approved: boolean): Promise<void> {
+    if (approved && !(await storeVisitorAiKeyFirst(a))) return;
     if (sdkApprovalRoute(a.requestedVia) === "resume-turn") {
       // Hidden only while the resume is on its way: once it ended, the
       // server's list is the truth again — a resume that failed before it
@@ -2856,6 +2889,55 @@
                     class="mb-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-words font-sans text-[11px]"
                     data-testid="chat-approval-preview">{a.preview ||
                       a.name}</pre>
+                  {#if a.name === "propose_set_visitor_ai" && missing.length === 0}
+                    {@const k = visitorAiKeyOf(a)}
+                    <div class="mb-2 grid gap-1.5 text-[11px]" data-testid="chat-approval-visitor-ai-key">
+                      <span class="text-muted-foreground">
+                        Paste the visitor AI's key when the change above needs one (or to replace
+                        it). It goes straight to the secret store; the AI never sees it. Set a
+                        spending limit for it at the provider too.
+                      </span>
+                      <div class="flex gap-1.5">
+                        <select
+                          class="rounded border bg-background px-1 py-0.5"
+                          value={k.provider}
+                          onchange={(e) =>
+                            (visitorAiKeys = {
+                              ...visitorAiKeys,
+                              [a.approvalId]: { ...k, provider: (e.currentTarget as HTMLSelectElement).value },
+                            })}
+                        >
+                          <option value="anthropic">anthropic</option>
+                          <option value="openai">openai</option>
+                          <option value="google">google</option>
+                        </select>
+                        <input
+                          type="password"
+                          autocomplete="off"
+                          class="min-w-0 flex-1 rounded border bg-background px-1.5 py-0.5"
+                          placeholder="API key"
+                          value={k.apiKey}
+                          oninput={(e) =>
+                            (visitorAiKeys = {
+                              ...visitorAiKeys,
+                              [a.approvalId]: { ...k, apiKey: (e.currentTarget as HTMLInputElement).value },
+                            })}
+                        />
+                      </div>
+                      <label class="flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={k.staging}
+                          onchange={(e) =>
+                            (visitorAiKeys = {
+                              ...visitorAiKeys,
+                              [a.approvalId]: { ...k, staging: (e.currentTarget as HTMLInputElement).checked },
+                            })}
+                        />
+                        Also on staging
+                      </label>
+                    </div>
+                  {/if}
                   {#if missing.length > 0}
                     <p
                       class="mb-2 text-[11px] text-muted-foreground"

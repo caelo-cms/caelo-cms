@@ -354,4 +354,23 @@
       {/if}
     </CardContent>
   </Card>
+  <!-- #1654 — visitors' AI conversations: their own key and budgets -->
+  <Card data-testid="costs-visitor-ai">
+    <CardHeader>
+      <CardTitle class="text-base">Visitor AI</CardTitle>
+      <CardDescription>
+        What visitors' conversations spent on the visitor-AI key, as the gateway's ledger reports
+        it. Not part of the totals above: it has <a class="underline" href="/settings/visitor-ai">budgets of its own</a>.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      {#if data.visitorAi}
+        <p class="text-sm">
+          {fmtUsd(data.visitorAi.last24hUsd)} in the last 24 hours · {fmtUsd(data.visitorAi.last30dUsd)} in the last 30 days{data.visitorAi.dropped > 0 ? ` (${data.visitorAi.dropped} malformed rows ignored)` : ""}
+        </p>
+      {:else}
+        <p class="text-sm text-muted-foreground">The visitor-AI ledger could not be read.</p>
+      {/if}
+    </CardContent>
+  </Card>
 </div>

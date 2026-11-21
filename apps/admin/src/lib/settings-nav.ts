@@ -314,6 +314,14 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         keywords: ["cost", "tokens", "usage", "money"],
       },
       {
+        href: "/settings/visitor-ai",
+        label: "Visitor AI",
+        description: "The AI that answers your visitors: its key, model and budgets.",
+        permission: "settings.write",
+        icon: "bot",
+        keywords: ["assistant", "chatbot", "visitors", "key", "budget"],
+      },
+      {
         href: "/settings/ai/budgets",
         label: "Spending limits",
         description: "Caps that stop the AI before it spends more than you allow.",
