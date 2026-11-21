@@ -179,7 +179,13 @@ export class PageOutputCollector {
     const needed = new Set(
       await this.plugins.pageOutputNeeds(
         this.runId,
-        firsts.map((p) => ({ pageId: p.pageId, htmlHash: hashes.get(p.pageId) as string })),
+        firsts.map((p) => ({
+          pageId: p.pageId,
+          htmlHash: hashes.get(p.pageId) as string,
+          modules: [...new Set(p.composed.map((m) => m.moduleId))].map(
+            (id) => [id, this.modules.get(id)?.count ?? 0] as const,
+          ),
+        })),
         this.publishedPageCount,
       ),
     );

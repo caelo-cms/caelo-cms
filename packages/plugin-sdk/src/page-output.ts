@@ -129,8 +129,40 @@ export const pageOutputObserverManifest = z
   .object({
     /** The operation core calls; it must be in `operations`. */
     operation: z.string().min(1).max(120),
+    /**
+     * Placement steps: the plugin treats a module by how many pages it is
+     * on (a footer on every page counts differently from a block on three).
+     * The thresholds are int fields of the plugin's configuration, by path;
+     * a module whose placement count crosses one (or, with `halfFrom`, comes
+     * to be on more than half of all pages while on at least `halfFrom`)
+     * makes the same Stage deliver every page it is on again. A count that
+     * moves within a step re-delivers nothing.
+     */
+    placementSteps: z
+      .object({
+        thresholds: z.array(z.string().min(1).max(200)).min(1).max(4),
+        halfFrom: z.number().int().min(2).max(100_000).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
+
+/**
+ * The step of a module on `count` of `pages` published pages under
+ * `thresholds` (ascending): 0 up to the first, 1 up to the second, …; past
+ * the last, or on more than half of the pages from `halfFrom`, the last step.
+ */
+export function placementStep(
+  count: number,
+  pages: number,
+  thresholds: readonly number[],
+  halfFrom?: number,
+): number {
+  if (halfFrom !== undefined && count >= halfFrom && count * 2 > pages) return thresholds.length;
+  const i = thresholds.findIndex((t) => count <= t);
+  return i === -1 ? thresholds.length : i;
+}
 export type PageOutputObserverManifest = z.infer<typeof pageOutputObserverManifest>;
 
 /** Pages per observer call. */

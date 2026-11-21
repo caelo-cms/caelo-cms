@@ -28,6 +28,7 @@ import {
   type PlacementChange,
   type PluginCapability,
   parseConfigSchema,
+  placementStep,
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -45,6 +46,8 @@ import {
 export interface OfferedPage {
   readonly pageId: string;
   readonly htmlHash: string;
+  /** The modules the page composes, each with its placement count over the build. */
+  readonly modules?: readonly (readonly [moduleId: string, placementCount: number])[];
 }
 
 /** One page's facts, with the HTML hash they were read from. */
@@ -81,6 +84,8 @@ interface RunState {
   readonly offered: Map<string, Map<string, string>>;
   /** Per plugin with page settings, per offered page: the hash of those settings. */
   readonly settings: Map<string, Map<string, string>>;
+  /** Per plugin with placement steps: its thresholds this Stage (from its configuration). */
+  readonly steps: Map<string, { thresholds: number[]; halfFrom?: number }>;
   /** Plugins whose observer failed in this run, with the first error. */
   readonly failed: Map<string, string>;
   publishedPageCount: number;
@@ -96,6 +101,7 @@ function stateOf(runId: string): RunState {
       digests: new Map(),
       offered: new Map(),
       settings: new Map(),
+      steps: new Map(),
       failed: new Map(),
       publishedPageCount: 0,
     };
@@ -184,18 +190,62 @@ function withoutPaths(
   return out;
 }
 
+/** The plugin's placement thresholds for this Stage, read from its configuration. */
+async function placementThresholds(
+  plugin: LoadedPlugin,
+  runId: string,
+  state: RunState,
+): Promise<{ thresholds: number[]; halfFrom?: number } | null> {
+  const declared = plugin.definition.pageOutputObserver?.placementSteps;
+  if (!declared) return null;
+  const known = state.steps.get(plugin.pluginId);
+  if (known) return known;
+  const values = await makePluginConfigReader(plugin, hostInfra(), observerInvocation(runId)).get();
+  const thresholds = declared.thresholds.map((path) => {
+    let at: unknown = values;
+    for (const part of path.split(".")) at = (at as Record<string, unknown> | undefined)?.[part];
+    if (typeof at !== "number" || !Number.isInteger(at))
+      throw new Error(
+        `plugin "${plugin.slug}" names placement threshold "${path}", which is not an int field of its configuration`,
+      );
+    return at;
+  });
+  const steps = {
+    thresholds: [...thresholds].sort((a, b) => a - b),
+    ...(declared.halfFrom !== undefined ? { halfFrom: declared.halfFrom } : {}),
+  };
+  state.steps.set(plugin.pluginId, steps);
+  return steps;
+}
+
 /**
- * Per page, the hash recorded for the plugin: its HTML, and the plugin's
- * settings for the page when it keeps any (their hash goes to `settings`).
+ * Per page, the hash recorded for the plugin: its HTML, the plugin's
+ * settings for the page when it keeps any (their hash goes to `settings`),
+ * and the placement step of each of its modules when the plugin declares
+ * steps — so a module crossing a step re-delivers every page it is on.
  */
 async function offeredHashes(
   plugin: LoadedPlugin,
   runId: string,
   pages: readonly OfferedPage[],
+  state: RunState,
   settingsOut: Map<string, string>,
 ): Promise<Map<string, string>> {
+  const steps = await placementThresholds(plugin, runId, state);
+  const stepsOf = (p: OfferedPage): string =>
+    steps
+      ? (p.modules ?? [])
+          .map(
+            ([id, count]) =>
+              `${id}:${placementStep(count, state.publishedPageCount, steps.thresholds, steps.halfFrom)}`,
+          )
+          .sort()
+          .join(",")
+      : "";
+  const withSteps = (p: OfferedPage, base: string): string =>
+    steps ? sha256(`${base}\n${stepsOf(p)}`) : base;
   if (!plugin.definition.entityConfig?.page || !hasConfig(plugin)) {
-    return new Map(pages.map((p) => [p.pageId, p.htmlHash] as const));
+    return new Map(pages.map((p) => [p.pageId, withSteps(p, p.htmlHash)] as const));
   }
   const reader = makePluginConfigReader(plugin, hostInfra(), observerInvocation(runId));
   const settings = await reader.entities(
@@ -206,7 +256,7 @@ async function offeredHashes(
   for (const p of pages) {
     const settingsHash = sha256(stableJson(settings.get(p.pageId) ?? {}));
     settingsOut.set(p.pageId, settingsHash);
-    out.set(p.pageId, sha256(`${p.htmlHash}\n${settingsHash}`));
+    out.set(p.pageId, withSteps(p, sha256(`${p.htmlHash}\n${settingsHash}`)));
   }
   return out;
 }
@@ -245,7 +295,7 @@ export async function pageOutputNeeds(
         settings = new Map();
         state.settings.set(plugin.pluginId, settings);
       }
-      const hashes = await offeredHashes(plugin, runId, chunk, settings);
+      const hashes = await offeredHashes(plugin, runId, chunk, state, settings);
       let offered = state.offered.get(plugin.pluginId);
       if (!offered) {
         offered = new Map();

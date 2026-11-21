@@ -293,6 +293,15 @@ beforeAll(async () => {
           },
           // A rule that shapes every document, and a per-page setting.
           config: {
+            full_max: {
+              type: "int",
+              label: "Pages a module counts fully on",
+              description: "Above this, a module counts differently (placement step).",
+              effect: "rebuild",
+              min: 1,
+              max: 1000,
+              default: 2,
+            },
             title_only: {
               type: "bool",
               label: "Titles only",
@@ -312,7 +321,10 @@ beforeAll(async () => {
               },
             },
           },
-          pageOutputObserver: { operation: "observe" },
+          pageOutputObserver: {
+            operation: "observe",
+            placementSteps: { thresholds: ["full_max"] },
+          },
           operations: {
             observe: async (ctx, args) => {
               const a = args as PageOutputObserverArgs;
@@ -500,6 +512,11 @@ describe("page output and collections through Stage and Publish live", () => {
     await ok("pages.update", { pageId: pageIds.get(PAGES[1] as string), status: "draft" });
     const run = await stage();
     expect(calls.at(-1)?.removed).toEqual([pageIds.get(PAGES[1] as string)]);
+    // The text module went from 3 pages to 2: below the plugin's step
+    // (full_max 2), so the pages it stays on come again, unchanged HTML and all.
+    expect(calls.flatMap((c) => c.pages.map((p) => p.path)).sort()).toEqual(
+      ["/", `/${PAGES[0]}`].sort(),
+    );
     const index = await indexState(run);
     expect(index.stats.docCount).toBe(2);
     await ok("pages.update", { pageId: pageIds.get(PAGES[1] as string), status: "published" });
