@@ -13,6 +13,10 @@
  * SDK + retried once by the outer loop; a second all-silent call becomes
  * a VISIBLE persisted notice, never an indefinite hang.
  *
+ * #1653 — the silent call may have been billed (it went out; only its first
+ * chunk never came), so the retry reserves it and the retry together, and
+ * the turn settles with it at its worst case.
+ *
  * Provider + Query API are fixtures (no DB); the hang is scripted at the
  * MOCK MODEL level (a stream that never enqueues) so the REAL SDK
  * timeout machinery fires.
@@ -31,6 +35,7 @@ import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
 import { RepeatedFailureTracker } from "./repeat-failure-guard.js";
 import { streamProviderTurn, type UsageAccumulator } from "./streaming.js";
+import { TurnSpend } from "./turn-spend.js";
 import type { ChatRunnerOptions, ClientEvent, RunChatTurnFn } from "./types.js";
 
 /**
@@ -83,9 +88,35 @@ function buildFixtureQueryApi(): {
   registry: OperationRegistry;
   adapter: DatabaseAdapter;
   appendedMessages: { role: string; content: string }[];
+  ledger: { op: string; input: Record<string, unknown> }[];
 } {
   const appendedMessages: { role: string; content: string }[] = [];
+  const ledger: { op: string; input: Record<string, unknown> }[] = [];
   const registry = new OperationRegistry();
+  // The ledger's ops record what the turn asked for (#1653).
+  for (const [name, value] of [
+    [
+      "ai_ledger.reserve",
+      { callId: "00000000-0000-4000-8000-00000000c411", reservedMicrocents: 1 },
+    ],
+    ["ai_ledger.extend", { reservedMicrocents: 1 }],
+    ["ai_ledger.settle", { costMicrocents: 1, settled: true }],
+  ] as const) {
+    registry.register(
+      defineOperation({
+        name,
+        readScope: "request",
+        actorScope: ["system"],
+        database: "cms_admin",
+        input: z.looseObject({}),
+        output: z.looseObject({}),
+        handler: async (_ctx, input) => {
+          ledger.push({ op: name, input: input as Record<string, unknown> });
+          return ok(value);
+        },
+      }),
+    );
+  }
   registry.register(
     defineOperation({
       name: "chat.append_message",
@@ -118,16 +149,18 @@ function buildFixtureQueryApi(): {
       input: unknown,
     ) => op.handler(ctx, input, {} as TransactionRunner),
   } as unknown as DatabaseAdapter;
-  return { registry, adapter, appendedMessages };
+  return { registry, adapter, appendedMessages, ledger };
 }
 
 async function runLoop(
   provider: AIProvider,
   fixture: ReturnType<typeof buildFixtureQueryApi>,
-): Promise<{ events: ClientEvent[]; result: ToolLoopResult }> {
+  spend?: TurnSpend,
+): Promise<{ events: ClientEvent[]; result: ToolLoopResult; usage: UsageAccumulator }> {
   const ctx: ExecutionContext = { actorId: "op-1", actorKind: "human", requestId: "req-1" };
   const usage: UsageAccumulator = { totalIn: 0, totalOut: 0, totalCached: 0 };
   const gen = runToolLoop({
+    ...(spend ? { spend } : {}),
     registry: fixture.registry,
     adapter: fixture.adapter,
     humanCtx: ctx,
@@ -158,7 +191,7 @@ async function runLoop(
   const events: ClientEvent[] = [];
   for (;;) {
     const step = await gen.next();
-    if (step.done) return { events, result: step.value };
+    if (step.done) return { events, result: step.value, usage };
     events.push(step.value);
   }
 }
@@ -275,6 +308,33 @@ describe("runToolLoop — first-event-timeout retry (run #10 D5)", () => {
     expect(result.succeeded).toBe(true);
     expect(events.filter((e) => e.kind === "error")).toEqual([]);
     expect(fixture.appendedMessages.some((m) => m.content.includes("after the hang"))).toBe(true);
+  });
+
+  it("the retry reserves the silent request and itself, and the turn settles with both (#1653)", async () => {
+    const provider = new HangingProvider(1);
+    const fixture = buildFixtureQueryApi();
+    const spend = new TurnSpend(
+      { registry: fixture.registry, adapter: fixture.adapter },
+      { kind: "actor", actorId: "00000000-0000-4000-8000-0000000000a1", chatSessionId: null },
+      { provider: "anthropic", model: "fixture-hang" },
+      [""],
+      { requestId: null, parentAiCallId: null },
+    );
+    const { result, usage } = await runLoop(provider, fixture, spend);
+    expect(result.succeeded).toBe(true);
+    await spend.settle(usage, 10, true);
+    const [reserve, extend, settle, ...rest] = fixture.ledger;
+    expect(rest).toEqual([]);
+    expect(reserve?.op).toBe("ai_ledger.reserve");
+    const silent = reserve?.input.request;
+    // The retry's own reservation carries the silent request along.
+    expect(extend?.op).toBe("ai_ledger.extend");
+    expect(extend?.input.unreported).toEqual([silent]);
+    expect(extend?.input.used).toMatchObject({ inputTokens: 0, outputTokens: 0 });
+    // The settlement: the retry's real usage, plus the silent request at its worst case.
+    expect(settle?.op).toBe("ai_ledger.settle");
+    expect(settle?.input.unreported).toEqual([silent]);
+    expect(settle?.input.usage).toMatchObject({ inputTokens: 10, outputTokens: 5 });
   });
 
   it("persists a visible notice when the retry is silent too", async () => {

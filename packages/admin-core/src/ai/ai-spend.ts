@@ -137,7 +137,7 @@ export function aiSpendRunner(
                 usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 },
                 durationMs: Date.now() - startedAt,
                 succeeded: false,
-                usageMissing: true,
+                unreported: [request],
               })
           ).catch(() => undefined);
         }
@@ -159,7 +159,7 @@ export function aiSpendRunner(
           },
           durationMs,
           succeeded: true,
-          usageMissing: false,
+          unreported: [],
         }).catch((e: unknown) => ({ ok: false as const, error: e }));
         // The row keeps its reservation when the settle failed: overstated, never under.
         if (!settled.ok) console.error("[ai-spend] reservation not settled", { what: opts.what });

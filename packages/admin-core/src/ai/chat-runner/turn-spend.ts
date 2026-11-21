@@ -54,6 +54,12 @@ type Usage = {
 /** Why the turn's next request may not start: the text the operator and the model read. */
 export type SpendRefusal = string;
 
+/** One request's bounds, as the ledger reserves it. */
+type RequestBounds = { promptTokens: number; maxOutputTokens: number };
+
+/** The running run: the requests it let go out, and the turn's counters at its start. */
+type RunRequests = { reportsAtStart: number; unbilledAtStart: number; sent: RequestBounds[] };
+
 /** The ledger seat of one chat turn. */
 export class TurnSpend {
   #callId: string | null = null;
@@ -65,8 +71,16 @@ export class TurnSpend {
   #pendingHistoryBound = 0;
   /** The ledger could not be reached at the start: record the turn at its end instead. */
   #unaccounted = false;
-  /** Requests this turn let go out; each one reports usage, or fails. */
-  #sent = 0;
+  /** The current run's requests; each one reports usage, or fails. */
+  #run: RunRequests | null = null;
+  /**
+   * Requests of ended runs that never reported usage, and whose failure does
+   * not prove the provider billed nothing (an abort, a first-chunk timeout,
+   * a connection lost while they ran). Each counts at its worst case in
+   * every later extension and in the settlement, so the retry of a timed-out
+   * request never replaces its reservation (#1653).
+   */
+  #unreported: RequestBounds[] = [];
 
   constructor(
     private readonly deps: { registry: OperationRegistry; adapter: DatabaseAdapter },
@@ -94,7 +108,28 @@ export class TurnSpend {
 
   /** A new run of the turn starts: what the turn spent so far is in `usage`. */
   startRun(usage: UsageAccumulator): void {
+    this.#closeRun(usage);
     this.#runStart = fromAccumulator(usage);
+    this.#run = {
+      reportsAtStart: usage.usageReports ?? 0,
+      unbilledAtStart: usage.unbilledFailures ?? 0,
+      sent: [],
+    };
+  }
+
+  /**
+   * The current run ended: its last requests without a usage report (a run
+   * ends at the request in flight) and without a failure proving them
+   * unbilled join the turn's unreported requests.
+   */
+  #closeRun(usage: UsageAccumulator): void {
+    const run = this.#run;
+    if (run === null) return;
+    this.#run = null;
+    const reported = (usage.usageReports ?? 0) - run.reportsAtStart;
+    const unbilled = (usage.unbilledFailures ?? 0) - run.unbilledAtStart;
+    const missing = run.sent.length - reported - unbilled;
+    if (missing > 0) this.#unreported.push(...run.sent.slice(-missing));
   }
 
   /**
@@ -108,16 +143,23 @@ export class TurnSpend {
     maxOutputTokens: number,
     steps: readonly ProviderStepSummary[] = [],
   ): Promise<SpendRefusal | null> {
-    const refusal = await this.#check(history, maxOutputTokens, steps);
-    if (refusal === null) this.#sent += 1;
+    const next = this.#nextRequest(history, maxOutputTokens, steps);
+    const refusal = await this.#check(next, steps);
+    if (refusal === null) {
+      // Every request runs inside a run (loop.ts starts one before its first).
+      if (this.#run === null)
+        throw new Error("TurnSpend: a request before startRun is not counted");
+      this.#run.sent.push(next);
+    }
     return refusal;
   }
 
-  async #check(
+  /** The next request's bounds, from the turn's real prompt sizes so far. */
+  #nextRequest(
     history: readonly ChatMessageInput[],
     maxOutputTokens: number,
     steps: readonly ProviderStepSummary[],
-  ): Promise<SpendRefusal | null> {
+  ): RequestBounds {
     const historyBound = tokenBoundOf(history);
     const lastStep = steps[steps.length - 1];
     if (lastStep?.usage) {
@@ -137,7 +179,13 @@ export class TurnSpend {
             PROVIDER_REQUEST_OVERHEAD_TOKENS,
         )
       : full;
-    const next = { promptTokens, maxOutputTokens };
+    return { promptTokens, maxOutputTokens };
+  }
+
+  async #check(
+    next: RequestBounds,
+    steps: readonly ProviderStepSummary[],
+  ): Promise<SpendRefusal | null> {
     if (this.#unaccounted) return null;
     const capKey = `chat:${this.spenderOf.actorId}`;
     const what = "this chat step";
@@ -158,6 +206,7 @@ export class TurnSpend {
               spender: this.spenderOf,
               ...this.target,
               used: this.used(steps),
+              unreported: this.#unreported,
               next,
               what,
             });
@@ -209,24 +258,23 @@ export class TurnSpend {
    *
    * A request that went out without reporting usage, and whose failure does
    * not prove the provider billed nothing (an abort or a lost connection
-   * while it ran), keeps its worst case: the row stays at least at its
-   * reservation, overstated, never under.
+   * while it ran), is booked at its worst case: overstated, never under.
    */
   async settle(
     usage: UsageAccumulator,
     durationMs: number,
     succeeded: boolean,
   ): Promise<{ aiCallId: string; costMicrocents: number } | null> {
+    this.#closeRun(usage);
     if (this.#callId === null) return null;
     const u = fromAccumulator(usage);
-    const unreported = this.#sent - (usage.usageReports ?? 0) - (usage.unbilledFailures ?? 0);
     const r = await execute(this.deps.registry, this.deps.adapter, LEDGER_CTX, "ai_ledger.settle", {
       callId: this.#callId,
       ...this.target,
       usage: u,
       durationMs,
       succeeded,
-      usageMissing: unreported > 0,
+      unreported: this.#unreported,
     }).catch((e: unknown) => ({ ok: false as const, error: { kind: String(e) } }));
     if (!r.ok) {
       // The row keeps its last reservation: overstated, never under.

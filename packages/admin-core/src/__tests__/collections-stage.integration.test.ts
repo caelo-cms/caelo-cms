@@ -98,6 +98,8 @@ let root = "";
 let writePublic = false;
 /** The observer fails after it wrote its documents (a partial delivery). */
 let failAfterWrite = false;
+/** Only the observer's final call fails, after it applied the removals. */
+let failOnFinal = false;
 /** The plugin sets its profile when it changes: here, once. */
 let profileSet = false;
 const calls: PageOutputObserverArgs[] = [];
@@ -419,7 +421,8 @@ beforeAll(async () => {
                 if (a.removed.length > 0 || excluded.length > 0)
                   await c.delete([...a.removed, ...excluded]);
               }
-              if (failAfterWrite) throw new Error("t1644: the observer fails after writing");
+              if (failAfterWrite || (failOnFinal && a.final))
+                throw new Error("t1644: the observer fails after writing");
               if (a.final && !profileSet) {
                 profileSet = true;
                 const profile = {
@@ -700,6 +703,29 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(
       await searchStore(join(root, "collections-staging"), index.releaseKey as string, "März"),
     ).toEqual([`/${PAGES[0]}`]);
+  });
+
+  it("a page taken offline while the observer's last call fails is removed by the next Stage", async () => {
+    const page = pageIds.get(PAGES[1] as string) as string;
+    const before = await indexState(await stage());
+    expect(before.state).toBe("ready");
+    await ok("pages.update", { pageId: page, status: "draft" });
+    failOnFinal = true;
+    let failedRun: string;
+    try {
+      failedRun = await stage();
+    } finally {
+      failOnFinal = false;
+    }
+    expect(calls.at(-1)?.removed).toEqual([page]);
+    expect((await indexState(failedRun)).state).toBe("failed");
+    // Nothing of the failed run was recorded: the removal comes again.
+    const next = await stage();
+    expect(calls.at(-1)?.removed).toEqual([page]);
+    const index = await indexState(next);
+    expect(index.state).toBe("ready");
+    expect(index.stats.docCount).toBe((before.stats.docCount as number) - 1);
+    await ok("pages.update", { pageId: page, status: "published" });
   });
 
   it("what an observer wrote in a failed Stage never reaches a later index", async () => {

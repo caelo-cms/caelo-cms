@@ -7,10 +7,13 @@
  *
  *   ai_ledger.reserve  worst case of the first request → a reserved ai_calls row
  *   ai_ledger.extend   a multi-step call: spent so far + the next request's worst case
- *   ai_ledger.settle   the real tokens and cost; at least the reservation while
- *                      a request's usage is missing (overstated, never under)
+ *   ai_ledger.settle   the real tokens and cost
  *   ai_ledger.release  the call failed, and the failure proves the provider
  *                      billed nothing (plugin-host `failureProvedUnbilled`)
+ *
+ * A request that went out and never reported usage, without a failure that
+ * proves it unbilled, is passed as `unreported` to every later extension and
+ * to the settlement and counts at its worst case: overstated, never under.
  *
  * A refusal is an error with `refusal: true` and a message that names the
  * budget, the figures and the next step. An unpriced model may run only
@@ -63,6 +66,22 @@ const requestInput = z
     maxOutputTokens: tokens,
   })
   .strict();
+
+/**
+ * Requests of the call that went out and never reported usage, and whose
+ * failure does not prove the provider billed nothing (plugin-host
+ * `failureProvedUnbilled`): each counts at its worst case, in every later
+ * extension and in the settlement, so a retry never replaces it.
+ */
+const unreportedInput = z.array(requestInput).max(64);
+
+/** What the unreported requests may have cost: each at its worst case (0 while unpriced). */
+function unreportedCost(
+  pricing: Awaited<ReturnType<typeof lookupPricing>>,
+  unreported: readonly z.infer<typeof requestInput>[],
+): number {
+  return unreported.reduce((sum, r) => sum + (worstCaseTextMicrocents(pricing, r) ?? 0), 0);
+}
 
 const usageInput = z
   .object({
@@ -169,6 +188,8 @@ export const aiLedgerExtendOp = defineOperation({
       model: z.string().min(1).max(200),
       /** What the call's finished requests spent. */
       used: usageInput,
+      /** Requests that went out without reporting usage (each at its worst case). */
+      unreported: unreportedInput,
       /** The next request. */
       next: requestInput,
       what: z.string().min(1).max(200),
@@ -186,7 +207,7 @@ export const aiLedgerExtendOp = defineOperation({
     }).costMicrocents;
     const worst = await worstCase(tx, op, spender, input.provider, input.model, input.next);
     if (!worst.ok) return refuse(op, worst.message);
-    const amount = spent + worst.amount;
+    const amount = spent + unreportedCost(pricing, input.unreported) + worst.amount;
     const r = await extendAiSpend(tx, input.callId, amount);
     if ("refused" in r) return refuse(op, describeAiCapRefusal(r.refused, input.what));
     if ("gone" in r)
@@ -209,13 +230,7 @@ export const aiLedgerSettleOp = defineOperation({
       usage: usageInput,
       durationMs: z.number().int().nonnegative(),
       succeeded: z.boolean(),
-      /**
-       * A request went out and its usage never came back, and its failure
-       * does not prove that nothing was billed (`failureProvedUnbilled`):
-       * the call keeps at least its reservation, which holds that request's
-       * worst case.
-       */
-      usageMissing: z.boolean(),
+      unreported: unreportedInput,
     })
     .strict(),
   output: z.object({ costMicrocents: z.number().int(), settled: z.boolean() }),
@@ -223,7 +238,7 @@ export const aiLedgerSettleOp = defineOperation({
     const u = input.usage;
     // Every request reported, none used a token, and the call failed: the
     // provider billed nothing and the reservation goes.
-    if (!input.usageMissing && !input.succeeded && u.inputTokens + u.outputTokens === 0) {
+    if (input.unreported.length === 0 && !input.succeeded && u.inputTokens + u.outputTokens === 0) {
       const released = await releaseAiSpend(tx, input.callId);
       return ok({ costMicrocents: 0, settled: released });
     }
@@ -239,6 +254,7 @@ export const aiLedgerSettleOp = defineOperation({
         model: input.model,
       });
     }
+    const cost = mapped.costMicrocents + unreportedCost(pricing, input.unreported);
     const settled = await settleAiSpend(tx, input.callId, {
       provider: input.provider,
       model: input.model,
@@ -246,12 +262,11 @@ export const aiLedgerSettleOp = defineOperation({
       outputTokens: u.outputTokens,
       cachedTokens: u.cachedTokens,
       cacheCreationTokens: u.cacheCreationTokens,
-      costMicrocents: mapped.costMicrocents,
+      costMicrocents: cost,
       durationMs: input.durationMs,
       succeeded: input.succeeded,
-      usageMissing: input.usageMissing,
     });
-    return ok({ costMicrocents: settled ?? mapped.costMicrocents, settled: settled !== null });
+    return ok({ costMicrocents: cost, settled });
   },
 });
 

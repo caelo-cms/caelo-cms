@@ -46,7 +46,7 @@ A turn keeps one row. The run prologue reserves before each run's first request;
 - before a request: ends the turn with a notice that names the budget and the next step (`stopReason: "cost_ceiling"`);
 - between steps: stops the run cleanly, and the steps that ran stay billed.
 
-The turn settles the row to its real totals at the end. Step usage comes from the SDK's own per-step `usage` (`ProviderStepSummary.usage`). The turn counts the requests it let go out against the usage reports: a request that reported none (cut off by Stop, a timeout, a connection lost while it ran) keeps its worst case, so the row settles at least at its reservation (`ai_ledger.settle` with `usageMissing`).
+The turn settles the row to its real totals at the end. Step usage comes from the SDK's own per-step `usage` (`ProviderStepSummary.usage`). The turn counts each run's requests against its usage reports: a request that reported none (cut off by Stop, a first-chunk timeout, a connection lost while it ran) and was not proven unbilled is carried as `unreported` into every later extension and into the settlement, at its worst case. So the retry after a timeout reserves the timed-out request and the retry together, never one request's allowance for both.
 
 ## When a failed call gives its reservation back
 

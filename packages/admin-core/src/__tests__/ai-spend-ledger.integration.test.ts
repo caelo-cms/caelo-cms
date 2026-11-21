@@ -288,7 +288,7 @@ describe("the AI spend ledger (#1653)", () => {
       usage: { inputTokens: 500, outputTokens: 200 },
       durationMs: 10,
       succeeded: true,
-      usageMissing: false,
+      unreported: [],
     });
     // 500 × 2,000/1K + 200 × 5,000/1K = 2,000.
     expect((settle.ok ? settle.value : null) as unknown).toMatchObject({ costMicrocents: 2_000 });
@@ -301,6 +301,7 @@ describe("the AI spend ledger (#1653)", () => {
       provider: PROVIDER,
       model: MODEL,
       used: { inputTokens: 1_000, outputTokens: 400 },
+      unreported: [],
       next: UNIT,
       what: "this chat step",
     });
@@ -313,6 +314,7 @@ describe("the AI spend ledger (#1653)", () => {
       provider: PROVIDER,
       model: MODEL,
       used: { inputTokens: 2_000, outputTokens: 800 },
+      unreported: [],
       next: { promptTokens: 4_000, maxOutputTokens: 1_000 },
       what: "this chat step",
     });
@@ -370,47 +372,59 @@ describe("the AI spend ledger (#1653)", () => {
     expect(await spent({ pluginId: plugin.pluginId })).toBe(1_400);
   });
 
-  it("a call whose usage is missing keeps its reservation; known usage never lowers it", async () => {
+  it("a request that never reported counts at its worst case: in the retry's extension and the settlement", async () => {
+    // UNIT's worst case is UNIT_COST (1,000 prompt tokens at the dearest
+    // input lane, 5,000/1K, and 1,000 output tokens at 5,000/1K).
     const a = await reserve({ kind: "actor", actorId: alice, chatSessionId: null });
-    const { callId } = (a.ok ? a.value : null) as { callId: string };
-    const reserved = (await sys((tx) =>
-      tx.execute(
-        sql`SELECT cost_estimate_microcents::int AS c FROM ai_calls WHERE id = ${callId}::uuid`,
-      ),
-    )) as unknown as { c: number }[];
+    const { callId, reservedMicrocents } = (a.ok ? a.value : null) as {
+      callId: string;
+      reservedMicrocents: number;
+    };
+    expect(reservedMicrocents).toBe(UNIT_COST);
+    // The first request timed out without usage; the retry reserves both.
+    const retry = await execute(registry, adapter, SYSTEM, "ai_ledger.extend", {
+      callId,
+      spender: { kind: "actor", actorId: alice, chatSessionId: null },
+      provider: PROVIDER,
+      model: MODEL,
+      used: { inputTokens: 0, outputTokens: 0 },
+      unreported: [UNIT],
+      next: UNIT,
+      what: "this chat step",
+    });
+    expect((retry.ok ? retry.value : null) as unknown).toEqual({
+      reservedMicrocents: 2 * UNIT_COST,
+    });
+    // The retry reported 500 / 200 (2,000); the timed-out request stays at its worst case.
     const settle = await execute(registry, adapter, SYSTEM, "ai_ledger.settle", {
       callId,
       provider: PROVIDER,
       model: MODEL,
       usage: { inputTokens: 500, outputTokens: 200 },
       durationMs: 10,
-      succeeded: false,
-      usageMissing: true,
+      succeeded: true,
+      unreported: [UNIT],
     });
-    // 2,000 known, but the request that never reported keeps the worst case.
     expect((settle.ok ? settle.value : null) as unknown).toEqual({
-      costMicrocents: reserved[0]?.c,
+      costMicrocents: 2_000 + UNIT_COST,
       settled: true,
     });
-    expect(reserved[0]?.c).toBeGreaterThan(2_000);
-    // Without tokens and with usage missing, it is not released either.
+    // A call cut off before it reported anything is booked, never released.
     const b = await reserve({ kind: "actor", actorId: alice, chatSessionId: null });
     const bId = ((b.ok ? b.value : null) as { callId: string }).callId;
-    const none = await execute(registry, adapter, SYSTEM, "ai_ledger.settle", {
+    const cut = await execute(registry, adapter, SYSTEM, "ai_ledger.settle", {
       callId: bId,
       provider: PROVIDER,
       model: MODEL,
       usage: { inputTokens: 0, outputTokens: 0 },
       durationMs: 10,
       succeeded: false,
-      usageMissing: true,
+      unreported: [UNIT],
     });
-    expect((none.ok ? none.value : null) as { settled: boolean } | null).toMatchObject({
+    expect((cut.ok ? cut.value : null) as unknown).toEqual({
+      costMicrocents: UNIT_COST,
       settled: true,
     });
-    expect(((none.ok ? none.value : null) as { costMicrocents: number }).costMicrocents).toBe(
-      reserved[0]?.c,
-    );
   });
 
   it("a plugin call the provider refused gives its reservation back; any other failure keeps it", async () => {

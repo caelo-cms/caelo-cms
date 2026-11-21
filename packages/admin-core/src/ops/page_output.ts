@@ -201,9 +201,35 @@ export const pageOutputCommitRunOp = defineOperation({
   // Why system-only: the Stage's finish step commits what it delivered.
   actorScope: ["system"],
   database: "cms_admin",
-  input: z.object({ runId: uuid }).strict(),
+  input: z
+    .object({
+      runId: uuid,
+      /**
+       * Plugins whose observer failed in this run, or whose index cannot be
+       * built from it: their collection writes are discarded, so they record
+       * nothing of the run either (observations, removals, placement counts,
+       * digest). The next Stage delivers those pages again.
+       */
+      failedPluginIds: z.array(uuid).max(64),
+    })
+    .strict(),
   output: z.object({ pages: z.number().int() }),
   handler: async (_ctx, input, tx) => {
+    if (input.failedPluginIds.length > 0) {
+      const failed = uuidArray(input.failedPluginIds);
+      await tx.execute(sql`
+        DELETE FROM plugin_page_observation_pending
+        WHERE run_id = ${input.runId}::uuid AND plugin_id = ANY(${failed})
+      `);
+      await tx.execute(sql`
+        DELETE FROM plugin_module_count_pending
+        WHERE run_id = ${input.runId}::uuid AND plugin_id = ANY(${failed})
+      `);
+      await tx.execute(sql`
+        DELETE FROM plugin_page_observer_pending
+        WHERE run_id = ${input.runId}::uuid AND plugin_id = ANY(${failed})
+      `);
+    }
     // One statement per step: data-modifying CTEs of one statement share a
     // snapshot, so a delete and an insert of the same key would collide.
     const gone = (await tx.execute(sql`

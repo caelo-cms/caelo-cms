@@ -94,16 +94,20 @@ export async function afterStageBuild(
   runId: string,
   failed: readonly FailedObserver[],
 ): Promise<string | null> {
-  const committed = await execute(deps.registry, deps.adapter, sys, "page_output.commit_run", {
-    runId,
-  });
-  if (!committed.ok)
-    return `the page output of this Stage could not be recorded (${describeError(committed.error)}); the next Stage sends those pages again`;
   const vectors = await configuredVectorModels(deps, sys);
   const failures = [
     ...failed,
     ...vectors.failed.filter((v) => !failed.some((f) => f.pluginId === v.pluginId)),
   ];
+  // A failed plugin's writes are discarded when its index is planned, so it
+  // records nothing of this run: the next Stage delivers its pages and
+  // removals again instead of the bookkeeping running ahead of the index.
+  const committed = await execute(deps.registry, deps.adapter, sys, "page_output.commit_run", {
+    runId,
+    failedPluginIds: failures.map((f) => f.pluginId),
+  });
+  if (!committed.ok)
+    return `the page output of this Stage could not be recorded (${describeError(committed.error)}); the next Stage sends those pages again`;
   const planned = await execute(deps.registry, deps.adapter, sys, "collections.plan_run", {
     runId,
     failed: failures.map((f) => ({ pluginId: f.pluginId, error: f.error.slice(0, 2000) })),

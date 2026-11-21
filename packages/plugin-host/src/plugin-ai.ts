@@ -158,7 +158,7 @@ export function makePluginAi(
           plugin,
           infra,
           callId,
-          { failed: e, target },
+          { failed: e, target, request: { promptTokens, maxOutputTokens } },
           Date.now() - startedAt,
         );
       }
@@ -258,7 +258,11 @@ async function reservePluginAiCall(
 type PluginAiOutcome =
   | AIObjectCompletion
   | AICompletion
-  | { readonly failed: unknown; readonly target: { provider: string; model: string } };
+  | {
+      readonly failed: unknown;
+      readonly target: { provider: string; model: string };
+      readonly request: { promptTokens: number; maxOutputTokens: number };
+    };
 
 /**
  * Settle a reservation at the call's real cost. A call that threw gives the
@@ -285,7 +289,7 @@ async function settlePluginAiCall(
               usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 },
               durationMs,
               succeeded: false,
-              usageMissing: true,
+              unreported: [outcome.request],
             })
         : await ledger("ai_ledger.settle", {
             callId,
@@ -299,7 +303,7 @@ async function settlePluginAiCall(
             },
             durationMs,
             succeeded: true,
-            usageMissing: false,
+            unreported: [],
           });
     if (!r.ok) throw new Error(r.error.kind);
   } catch (e) {
