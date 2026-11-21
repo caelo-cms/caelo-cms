@@ -22,11 +22,12 @@
  *   - `actor`         a person's work (chat, subagents, core AI helpers):
  *                     the day-global, day-per-actor and session budgets;
  *   - `plugin`        a plugin's `ctx.ai` / images: the same budgets for the
- *                     person it acts for, plus the plugin's own cap;
- *   - `plugin-visitor` a plugin's visitor-facing AI (a site assistant,
- *                     #1654): the day-global budget, the plugin's cap and
- *                     the visitor surface's own daily cap, which is
- *                     required — visitor traffic is unbounded.
+ *                     person it acts for, plus the plugin's own cap.
+ *
+ * Visitors' AI conversations (#1654) are not in this ledger: they run in
+ * the public gateway, which has no cms_admin login, on a key and budgets of
+ * their own, and the gateway keeps their ledger in cms_public with the
+ * same pricing (@caelo-cms/shared ai-cost.ts, docs/dev/visitor-ai.md).
  *
  * It lives in plugin-host because admin-core depends on plugin-host, not
  * the other way round: the image ledger (image-ledger.ts) and admin-core's
@@ -57,14 +58,6 @@ export type AiSpender =
       /** The person the plugin acts for, or the system actor (workers, observers). */
       readonly actorId: string;
       readonly chatSessionId: string | null;
-    }
-  | {
-      readonly kind: "plugin-visitor";
-      readonly pluginId: string;
-      /** The plugin's own actor (rows need one; no person is behind a visitor). */
-      readonly actorId: string;
-      /** The visitor surface's daily cap; required, an uncapped visitor AI is refused. */
-      readonly dailyCapMicrocents: number;
     };
 
 /** Per-session budgets: the chat session, or (plugin images) a request tag. */
@@ -86,17 +79,10 @@ export type AiCapRefusal =
       readonly spentMicrocents: number;
       readonly requestedMicrocents: number;
     }
-  | {
-      readonly kind: "visitor-budget";
-      readonly capMicrocents: number;
-      readonly spentMicrocents: number;
-      readonly requestedMicrocents: number;
-    }
   /** A per-session cap is set and the call has no session to count against. */
   | { readonly kind: "session-required"; readonly operationType: "text" | "image" };
 
 function sessionKeyOf(spender: AiSpender): AiSessionKey {
-  if (spender.kind === "plugin-visitor") return null;
   const session =
     spender.kind === "actor"
       ? (spender.parentChatSessionId ?? spender.chatSessionId)
@@ -136,9 +122,6 @@ export async function checkAiCaps(
     ORDER BY scope
   `)) as unknown as { scope: "session" | "day-global" | "day-per-actor"; cap_microcents: string }[];
   for (const budget of budgets) {
-    // A visitor's call has no person and no chat behind it: only the
-    // site-wide budget (and the plugin's caps below) bound it.
-    if (spender.kind === "plugin-visitor" && budget.scope !== "day-global") continue;
     let filter: ReturnType<typeof sql>;
     if (budget.scope === "day-global") {
       filter = sql`created_at > now() - interval '24 hours'`;
@@ -190,23 +173,6 @@ export async function checkAiCaps(
       }
     }
   }
-  if (spender.kind === "plugin-visitor") {
-    const cap = spender.dailyCapMicrocents;
-    const usage = (await tx.execute(sql`
-      SELECT coalesce(sum(cost_estimate_microcents), 0)::bigint AS spent FROM ai_calls
-      WHERE plugin_id = ${spender.pluginId}::uuid AND spender = 'plugin-visitor'
-        AND created_at > now() - interval '24 hours' ${exclude}
-    `)) as unknown as { spent: string }[];
-    const spent = num(usage[0]?.spent);
-    if (!(cap > 0) || spent + amount > cap) {
-      return {
-        kind: "visitor-budget",
-        capMicrocents: cap,
-        spentMicrocents: spent,
-        requestedMicrocents: amount,
-      };
-    }
-  }
   return null;
 }
 
@@ -227,7 +193,7 @@ export interface AiReservation {
 }
 
 function chatSessionOf(spender: AiSpender): string | null {
-  return spender.kind === "plugin-visitor" ? null : spender.chatSessionId;
+  return spender.chatSessionId;
 }
 
 /**
@@ -292,14 +258,11 @@ async function readReservation(tx: TransactionRunner, callId: string): Promise<R
  * Moves a running reservation to `amountMicrocents` (what a multi-step call
  * spent so far plus its next step's worst case), checked against the same
  * caps with this row left out. A row that is no longer reserved is refused.
- *
- * @param dailyCapMicrocents a `plugin-visitor` row's cap (not stored on the row).
  */
 export async function extendAiSpend(
   tx: TransactionRunner,
   callId: string,
   amountMicrocents: number,
-  opts: { readonly dailyCapMicrocents?: number } = {},
 ): Promise<{ readonly ok: true } | { readonly refused: AiCapRefusal } | { readonly gone: true }> {
   await tx.execute(AI_LEDGER_LOCK);
   const row = await readReservation(tx, callId);
@@ -312,19 +275,12 @@ export async function extendAiSpend(
           chatSessionId: row.chat_session_id,
           parentChatSessionId: row.parent_chat_session_id,
         }
-      : row.spender === "plugin"
-        ? {
-            kind: "plugin",
-            pluginId: row.plugin_id as string,
-            actorId: row.actor_id,
-            chatSessionId: row.chat_session_id,
-          }
-        : {
-            kind: "plugin-visitor",
-            pluginId: row.plugin_id as string,
-            actorId: row.actor_id,
-            dailyCapMicrocents: opts.dailyCapMicrocents ?? 0,
-          };
+      : {
+          kind: "plugin",
+          pluginId: row.plugin_id as string,
+          actorId: row.actor_id,
+          chatSessionId: row.chat_session_id,
+        };
   const refused = await checkAiCaps(tx, {
     spender,
     operationType: row.operation_type,
@@ -403,10 +359,6 @@ export function describeAiCapRefusal(refusal: AiCapRefusal, what: string): strin
     }
     case "plugin-budget":
       return `AiBudgetReached (plugin): the plugin's own AI cap is reached (${usd(refusal.spentMicrocents)} of ${usd(refusal.capMicrocents)} in the last 24 hours; ${what} could cost up to ${usd(refusal.requestedMicrocents)}). The Owner can raise it in Settings → Plugins (the AI can propose it with propose_set_plugin_ai_cost_cap).`;
-    case "visitor-budget":
-      return refusal.capMicrocents > 0
-        ? `AiBudgetReached (visitors): the daily AI budget for visitors is reached (${usd(refusal.spentMicrocents)} of ${usd(refusal.capMicrocents)} in the last 24 hours).`
-        : "AiBudgetReached (visitors): no daily AI budget for visitors is set, so no visitor AI call runs. The Owner sets one in the plugin's settings.";
     case "session-required":
       return `AiBudgetReached (session): a per-chat ${refusal.operationType === "image" ? "image" : "AI text"} budget is set, so ${what} runs only inside a chat.`;
   }

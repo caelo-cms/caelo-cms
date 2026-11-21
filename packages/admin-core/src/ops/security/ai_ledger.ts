@@ -52,14 +52,6 @@ export const aiSpenderInput = z.discriminatedUnion("kind", [
       chatSessionId: uuid.nullable(),
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal("plugin-visitor"),
-      pluginId: uuid,
-      actorId: uuid,
-      dailyCapMicrocents: z.number().int().nonnegative(),
-    })
-    .strict(),
 ]);
 
 const requestInput = z
@@ -87,7 +79,6 @@ function refuse(operation: string, message: string) {
 
 /** Whether any cap bounds this spender's text calls (an unpriced model may then not run). */
 async function capsApply(tx: TransactionRunner, spender: AiSpender): Promise<boolean> {
-  if (spender.kind === "plugin-visitor") return true;
   const budgets = (await tx.execute(sql`
     SELECT 1 FROM ai_budgets WHERE operation_type = 'text' AND cap_microcents IS NOT NULL LIMIT 1
   `)) as unknown as unknown[];
@@ -194,11 +185,7 @@ export const aiLedgerExtendOp = defineOperation({
     const worst = await worstCase(tx, op, spender, input.provider, input.model, input.next);
     if (!worst.ok) return refuse(op, worst.message);
     const amount = spent + worst.amount;
-    const r = await extendAiSpend(tx, input.callId, amount, {
-      ...(spender.kind === "plugin-visitor"
-        ? { dailyCapMicrocents: spender.dailyCapMicrocents }
-        : {}),
-    });
+    const r = await extendAiSpend(tx, input.callId, amount);
     if ("refused" in r) return refuse(op, describeAiCapRefusal(r.refused, input.what));
     if ("gone" in r)
       return refuse(op, `${op}: the reservation ${input.callId} is no longer running`);

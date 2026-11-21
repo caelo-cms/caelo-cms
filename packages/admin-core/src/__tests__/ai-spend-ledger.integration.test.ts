@@ -83,8 +83,7 @@ type Spender =
       chatSessionId: string | null;
       parentChatSessionId?: string | null;
     }
-  | { kind: "plugin"; pluginId: string; actorId: string; chatSessionId: string | null }
-  | { kind: "plugin-visitor"; pluginId: string; actorId: string; dailyCapMicrocents: number };
+  | { kind: "plugin"; pluginId: string; actorId: string; chatSessionId: string | null };
 
 /** 1,000 prompt tokens + 1,000 output tokens = 10,000 µ¢ worst case at the test prices. */
 const UNIT = { promptTokens: 1_000, maxOutputTokens: 1_000 };
@@ -378,27 +377,5 @@ describe("the AI spend ledger (#1653)", () => {
     expect(
       capped.ok ? "" : capped.error.kind === "HandlerError" ? capped.error.message : "",
     ).toContain("AiModelUnpriced");
-  });
-
-  it("a visitor spender needs its own daily cap and is bounded by it", async () => {
-    const uncapped = await reserve({
-      kind: "plugin-visitor",
-      pluginId: plugin.pluginId,
-      actorId: plugin.pluginActorId,
-      dailyCapMicrocents: 0,
-    });
-    expect(
-      uncapped.ok ? "" : uncapped.error.kind === "HandlerError" ? uncapped.error.message : "",
-    ).toContain("no daily AI budget for visitors is set");
-    const visitor = {
-      kind: "plugin-visitor" as const,
-      pluginId: plugin.pluginId,
-      actorId: plugin.pluginActorId,
-      dailyCapMicrocents: 25_000,
-    };
-    const results = await Promise.all(Array.from({ length: 6 }, () => reserve(visitor)));
-    expect(results.filter((r) => r.ok)).toHaveLength(2);
-    // A person's call is not bounded by the visitors' cap.
-    expect((await reserve({ kind: "actor", actorId: alice, chatSessionId: null })).ok).toBe(true);
   });
 });

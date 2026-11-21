@@ -24,13 +24,12 @@ Reservations and extensions take one advisory lock (`AI_LEDGER_LOCK`), shared wi
 |---|---|
 | `actor`: a person's work (chat turns, subagents, moduleize, `query_page_html`, the completeness judge) | day-global, day-per-actor, session. A subagent counts toward its parent chat's session. |
 | `plugin`: a plugin's `ctx.ai` and images | The same for the person it acts for (the operator of a chat call, the author of a panel call, else the system actor), plus `plugins.ai_cost_cap_microcents`. |
-| `plugin-visitor`: a plugin's visitor-facing AI (#1654) | day-global, the plugin's cap, and the visitor surface's own daily cap. The cap is required: a visitor spender with none is refused, because visitor traffic is unbounded. |
 
 A text call without a chat session skips the session budget (a plugin worker has no chat). An image call refuses instead (`requireSession`), as before.
 
 ## The worst case
 
-`worstCaseTextMicrocents` (`ai/call-cost.ts`) bills every prompt token at the dearest input lane, every output token the request's ceiling allows, and the prompt-length card when the bound crosses its threshold. The dearest input lane is the cache write, about 1.25× input, because a cold prompt may be written to the cache in full.
+`worstCaseTextMicrocents` (`@caelo-cms/shared` `ai-cost.ts`, shared with the gateway's visitor-AI ledger) bills every prompt token at the dearest input lane, every output token the request's ceiling allows, and the prompt-length card when the bound crosses its threshold. The dearest input lane is the cache write, about 1.25× input, because a cold prompt may be written to the cache in full.
 
 The prompt bound (`tokenBoundOf`, `promptTokenBound`):
 - counts every UTF-8 byte of the request's JSON text as one token, because a byte-level BPE token is at least one byte;
@@ -53,6 +52,6 @@ The turn settles the row to its real totals at the end. Step usage comes from th
 
 - A single-shot call: wrap it in `aiSpendRunner(deps, spender, { what, record }).run(target, { promptTokens, maxOutputTokens }, call, usageOf)`. Pass the output ceiling to the provider explicitly, so the reservation covers exactly what can be billed. A refusal throws `AiSpendRefusedError`; turn it into the tool's own answer.
 - A plugin call goes through `ctx.ai`, never around it.
-- A visitor surface (#1654) reserves with `{ kind: "plugin-visitor", pluginId, actorId, dailyCapMicrocents }`, the cap read from the Owner's approved setting.
+- A visitor surface is not in this ledger. Visitors' AI conversations (#1654) run in the public gateway, which has no cms_admin login, on a key and budgets of their own; the gateway keeps their ledger in cms_public (`visitor_ai_calls`) with the same pricing code (`@caelo-cms/shared` `ai-cost.ts`). See [visitor-ai.md](./visitor-ai.md).
 
 A ledger that cannot be reached lets the call through and records it afterwards (`chat.record_ai_call`). After three misses in a row it fails closed (`shared/src/cap-failures.ts`).

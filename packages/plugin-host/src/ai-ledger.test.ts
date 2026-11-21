@@ -36,15 +36,9 @@ describe("refusal messages", () => {
     expect(m).toContain("propose_set_plugin_ai_cost_cap");
   });
 
-  it("says a session cap needs a chat and an uncapped visitor surface runs nothing", () => {
+  it("says a session cap needs a chat", () => {
     expect(
       describeAiCapRefusal({ kind: "session-required", operationType: "image" }, "this image"),
     ).toContain("runs only inside a chat");
-    expect(
-      describeAiCapRefusal(
-        { kind: "visitor-budget", capMicrocents: 0, spentMicrocents: 0, requestedMicrocents: 1 },
-        "x",
-      ),
-    ).toContain("no daily AI budget for visitors is set");
   });
 });
