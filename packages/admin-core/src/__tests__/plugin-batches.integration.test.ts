@@ -298,7 +298,7 @@ describe("plugin batches (#1646)", () => {
     await until(async () => (await runs(SHIPPED)).some((r) => r.trigger === "activation"));
     const first = (await runs(SHIPPED)).find((r) => r.trigger === "activation") as BatchRun;
     const done = await settled(first.id);
-    expect(done.state).toBe("completed");
+    expect({ state: done.state, error: done.error }).toEqual({ state: "completed", error: null });
     expect(done.result).toEqual({ count: 3, trigger: "activation", invocation: "batch" });
     // The plugin loads again (another instance's boot, a reload): no second run.
     resetPluginHost();
@@ -329,7 +329,7 @@ describe("plugin batches (#1646)", () => {
     );
     expect(run.trigger).toBe("operator");
     const done = await settled(run.id);
-    expect(done.state).toBe("completed");
+    expect({ state: done.state, error: done.error }).toEqual({ state: "completed", error: null });
     expect(done.result).toMatchObject({ count: 5, trigger: "operator" });
     const changes = await adapter.withAdminTransaction(
       SYSTEM,
@@ -409,7 +409,7 @@ describe("plugin batches (#1646)", () => {
     });
     await runReportingJobBackstop({ adapter, registry });
     const done = await settled(runId);
-    expect(done.state).toBe("completed");
+    expect({ state: done.state, error: done.error }).toEqual({ state: "completed", error: null });
     expect(done.result).toMatchObject({ count: 1 });
   });
 
@@ -463,5 +463,27 @@ describe("plugin batches (#1646)", () => {
       `)) as unknown as { n: number }[],
     );
     expect(changes[0]?.n).toBe(1);
+  });
+
+  it("a plugin reads its own batch runs, never another plugin's input or result", async () => {
+    const own = installed[0]?.pluginId as string;
+    const ids = async (ctx: ExecutionContext) =>
+      adapter.withAdminTransaction(
+        ctx,
+        async (tx) =>
+          (await tx.execute(
+            sql`SELECT DISTINCT plugin_id::text AS id FROM plugin_batch_runs`,
+          )) as unknown as {
+            id: string;
+          }[],
+      );
+    // The people and the system see every plugin's runs ...
+    const all = (await ids(owner)).map((r) => r.id);
+    expect(all).toContain(own);
+    expect(all.length).toBeGreaterThan(1);
+    // ... a plugin only its own, whatever it asks for.
+    const asPlugin = { ...SYSTEM, actorKind: "plugin" as const, pluginId: own };
+    expect((await ids(asPlugin)).map((r) => r.id)).toEqual([own]);
+    expect(await ids({ ...asPlugin, pluginId: crypto.randomUUID() })).toEqual([]);
   });
 });

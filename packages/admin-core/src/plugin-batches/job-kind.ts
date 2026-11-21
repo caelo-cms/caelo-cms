@@ -36,7 +36,8 @@ import {
   REPORTING_JOB_CTX,
   type ReportingJobKindDef,
 } from "../reporting-jobs/kind.js";
-import { type BatchRun, declaredBatch } from "./ops.js";
+import { declaredBatch } from "./declared.js";
+import type { BatchRun } from "./ops.js";
 
 /** The admin env var naming the Cloud Run job a batch runs in. */
 export const PLUGIN_BATCH_JOB_ENV_VAR = "CAELO_PLUGIN_BATCH_JOB";
@@ -217,6 +218,9 @@ export const pluginBatchJobKind: ReportingJobKindDef = {
       input: z.object({ error: z.string().min(1).max(4000) }).strict(),
       async handle(deps, runId, input) {
         await op(deps, "plugin_batches.finish", { runId, state: "failed", error: input.error });
+        // Operators read the job's outcome in the logs too, not only on the
+        // plugin's page: the plugin's own error text, never its data.
+        console.warn(`[plugin-batch] run ${runId} failed: ${input.error.slice(0, 500)}`);
         return { value: {}, done: { outcome: "completed", note: "the batch failed" } };
       },
     },

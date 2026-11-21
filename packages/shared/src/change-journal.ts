@@ -288,6 +288,12 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   release_check_cache: RUNTIME,
   deploy_targets: "deploy target configuration; read by the deploy ops",
   deploy_runs: "deploy runs; reach editors as the op-classified `deploys` topic",
+  live_page_versions:
+    "the record of what production serves per page, appended only by the runs that change production (docs/dev/search-engine-feed.md); nothing is derived from its changes",
+  staged_page_changes:
+    "what a Stage found changed against live_page_versions, read once by the Publish live that ships it",
+  search_engine_notifications:
+    "the WebSub and IndexNow sends of production runs; read by their sender and Settings → SEO",
   redirect_sync_state: RUNTIME,
   projection_boot_publish: RUNTIME,
   gateway_refresh_state: RUNTIME,
@@ -310,6 +316,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
     "derived from Stage output (#1647): the digest an observer last saw every page under; losing it only re-sends every page at the next Stage",
   plugin_page_observer_pending:
     "a running Stage's observer digests (#1647), committed or dropped with the run",
+  plugin_batch_runs:
+    "the run log of plugin batch operations (#1646): queued, running and how each ended; read by its list op, nothing is derived from it",
   content_instance_refs:
     "derived (synchronous, #1287): the ids and media slugs each content instance's values reference, maintained by triggers on the journaled content_instances; rebuilt by content_instances.rebuild_refs",
   content_instance_snapshot_refs:

@@ -57,9 +57,11 @@ export {
   idTerm,
   type KeyedDoc,
   keywordTerm,
+  keywordValues,
   langTerm,
   layoutOf,
   MAX_SLOTS,
+  numberValue,
   type Passage,
   type SchemaLayout,
 } from "./schema.js";

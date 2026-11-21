@@ -19,13 +19,14 @@
 
 /** One counted event, as the inbox stores it. */
 export interface SearchEvent {
-  readonly kind: "search" | "click" | "reformulation";
+  readonly kind: "search" | "click";
   readonly text: string;
   readonly lang: string;
   readonly day: string;
   readonly results: number;
-  readonly target: string;
-  readonly previous: string;
+  readonly target: string | null;
+  /** The query the same tab searched just before this one, if any. */
+  readonly previous: string | null;
 }
 
 /** A query key: folded text in its language (stored, so printable). */
@@ -79,12 +80,8 @@ export function aggregate(events: readonly SearchEvent[]): {
       q.days.add(e.day);
       if (e.results > 0) q.withResults++;
     } else if (e.kind === "click") q.clicks++;
-    // A search that names the query before it is also a reformulation.
-    if (
-      (e.kind === "search" || e.kind === "reformulation") &&
-      e.previous &&
-      e.previous !== e.text
-    ) {
+    // A search that names the query before it is a reformulation.
+    if (e.kind === "search" && e.previous && e.previous !== e.text) {
       const rk = `${queryKey(e.previous, lang)}>${key}`;
       const r = reforms.get(rk) ?? { from: e.previous, to: e.text, lang, count: 0 };
       r.count++;

@@ -103,6 +103,27 @@ interface PageMeta {
   readonly terms: Record<string, string[]>;
 }
 
+/** `value` as JSON with its object keys sorted, so equal data hashes equal. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson((value as Record<string, unknown>)[k])}`)
+      .join(",")}}`;
+  return JSON.stringify(value ?? null);
+}
+
+/**
+ * What an observer receives of a page, hashed: its HTML and the page data
+ * the facts carry beside it (type, short title, properties, terms). A term
+ * or type change that leaves the HTML alone still changes what the page
+ * means to an index, so it must deliver the page again.
+ */
+function pageOutputHash(html: string, meta: PageMeta | undefined): string {
+  return pageHtmlHash(`${html}\u0000${stableJson(meta ?? null)}`);
+}
+
 async function loadPageMeta(
   tx: TransactionRunner,
   pageIds: readonly string[],
@@ -131,6 +152,8 @@ async function loadPageMeta(
     list.push(t.item_id);
     m[t.list_slug] = list;
   }
+  // A stable order: the meta is part of the page's output hash.
+  for (const m of termsByPage.values()) for (const list of Object.values(m)) list.sort();
   const parse = (v: unknown): Record<string, unknown> =>
     typeof v === "string"
       ? (JSON.parse(v) as Record<string, unknown>)
@@ -200,7 +223,13 @@ export class PageOutputCollector {
     const firsts = pages.filter((p) => !p.followUp);
     for (const p of firsts) this.built.push(p.pageId);
     if (firsts.length === 0) return;
-    const hashes = new Map(firsts.map((p) => [p.pageId, pageHtmlHash(p.html)] as const));
+    const meta = await loadPageMeta(
+      this.tx,
+      firsts.map((p) => p.pageId),
+    );
+    const hashes = new Map(
+      firsts.map((p) => [p.pageId, pageOutputHash(p.html, meta.get(p.pageId))] as const),
+    );
     const needed = new Set(
       await this.plugins.pageOutputNeeds(
         this.runId,
@@ -224,10 +253,6 @@ export class PageOutputCollector {
     );
     const wanted = firsts.filter((p) => needed.has(p.pageId));
     if (wanted.length === 0) return;
-    const meta = await loadPageMeta(
-      this.tx,
-      wanted.map((p) => p.pageId),
-    );
     const delivered = wanted.map((p) => ({
       htmlHash: hashes.get(p.pageId) as string,
       facts: this.factsOf(p, meta.get(p.pageId)),

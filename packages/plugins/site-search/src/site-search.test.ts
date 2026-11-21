@@ -4,6 +4,7 @@ import { describe, expect, it } from "bun:test";
 import {
   type CollectionDocInput,
   configDefaults,
+  indexCheckedQuery,
   manifestFromDefinition,
   type PageOutputFacts,
   type PageOutputModule,
@@ -286,6 +287,27 @@ describe("counting visitors' searches", () => {
     ]);
     expect(isPopularCandidate(few.queries[0] as never)).toBe(false);
   });
+
+  it("a search naming the query before it is a reformulation; a first search is none", () => {
+    const search = (text: string, previous: string | null) =>
+      ({
+        kind: "search",
+        text,
+        lang: "de",
+        day: "2026-11-01",
+        results: 1,
+        target: null,
+        previous,
+      }) as const;
+    const { reformulations, queries } = aggregate([
+      search("rabat", null),
+      search("rabatte", "rabat"),
+      search("Rabatte", "rabat"),
+      search("rabatte", "rabatte"),
+    ]);
+    expect(reformulations).toEqual([{ from: "rabat", to: "rabatte", lang: "de", count: 2 }]);
+    expect(queries.find((q) => q.text === "rabatte")?.searches).toBe(3);
+  });
 });
 
 /** An in-memory stand-in for the host's handles, enough for the observer. */
@@ -332,7 +354,9 @@ function fakeCtx() {
     query: async () => ({ state: "none" as const, error: null, status: 503, body: null }),
   });
   const tables = new Map<string, Record<string, unknown>[]>();
-  const adminQuery = {
+  // The host's read rule in front of list() (#1536): a read no declared
+  // index can drive fails here as it would in storage.
+  const adminQuery = indexCheckedQuery(plugin, "adminSchema", {
     list: async (
       table: string,
       filter: { anyOf?: Record<string, unknown[]>; limit?: number } = {},
@@ -351,7 +375,7 @@ function fakeCtx() {
         (tables.get(table) ?? []).map((r) => (r.id === id ? { ...r, ...patch } : r)),
       );
     },
-  };
+  });
   const values = configDefaults(parseConfigSchema(SITE_SEARCH_CONFIG));
   const ctx = {
     config: {

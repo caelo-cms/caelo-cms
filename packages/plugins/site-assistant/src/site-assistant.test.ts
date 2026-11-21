@@ -74,8 +74,7 @@ describe("the site assistant's declaration", () => {
       answer: { recorded: true },
     });
     expect(run.drop).toEqual({
-      field: "question",
-      alsoFields: ["note"],
+      fields: ["question", "note"],
       patterns: ["email", "phone", "long-number"],
       answer: { recorded: true },
     });

@@ -35,7 +35,7 @@ export const SITE_SEARCH_SKILLS: ReadonlyArray<PluginSkillSpec> = [
       "   </section>",
       '   <div data-caelo-plugin="site-search" data-page-id="{{page.id}}"></div>',
       "The placeholder carries the approved popular queries (it stays empty and invisible otherwise). Set the page noindex and out of the sitemap with set_page_seo_many, and name it the results page: update_plugin_config {results_page: <its id>}.",
-      "Matches arrive as <mark> inside title and snippet: style `mark`. The summary element gets data-total and, after a typo fix, data-correction; show 'no results' text with CSS on [data-total=\"0\"] or keep it in the module (site texts, never hard-coded).",
+      'Matches arrive as <mark> inside title and snippet: style `mark`. A `data-field="section"` element in the template gets the matching section\'s heading on its own; without one, the snippet starts with it. The summary element gets data-total and, after a typo fix, data-correction; show \'no results\' text with CSS on [data-total="0"] or keep it in the module (site texts, never hard-coded).',
       "",
       "## 2. The search field",
       "Put the field where visitors expect it (usually the header layout): a module with",

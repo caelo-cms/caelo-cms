@@ -472,7 +472,13 @@ export async function* runToolLoop(
       // step can jump spend far past the ceiling; pausing here trips the
       // moment it crosses, within the same turn).
       if (budgetGate !== null) {
-        budgetGate = await fetchBudgetGate(registry, adapter, humanCtx, chatSessionId);
+        budgetGate = await fetchBudgetGate(
+          registry,
+          adapter,
+          humanCtx,
+          chatSessionId,
+          args.spend?.callId ?? null,
+        );
         if (await enforceBudgetGate("post-step")) return true;
       }
       // P10.5 #3 — subagent soft cost cap. Pre-#442 this aborted mid-stream
@@ -544,7 +550,13 @@ export async function* runToolLoop(
     // starts already over budget (the pre-#442 loop-0 check; prepareStep
     // cannot stop the SDK loop pre-call, so the pre-run seat is this one).
     if (attempts === 1 || budgetGate !== null) {
-      budgetGate = await fetchBudgetGate(registry, adapter, humanCtx, chatSessionId);
+      budgetGate = await fetchBudgetGate(
+        registry,
+        adapter,
+        humanCtx,
+        chatSessionId,
+        args.spend?.callId ?? null,
+      );
     }
     if (await enforceBudgetGate("pre-run")) {
       yield* yieldBudgetPause();

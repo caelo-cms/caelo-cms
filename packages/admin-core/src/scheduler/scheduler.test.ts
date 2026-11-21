@@ -43,6 +43,7 @@ describe("coreScheduledTasks", () => {
       "core:bug-forwarding-send": 0,
       "core:mail-outbox": 0,
       "core:reporting-jobs": 0,
+      "core:search-notify": 0,
       "core:plugin-data-build": 300,
       "core:update-scheduler": 900,
       "core:release-check": 3600,

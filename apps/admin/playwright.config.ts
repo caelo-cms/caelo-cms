@@ -97,6 +97,9 @@ export default defineConfig({
       // release registry and write update emails into the suite's database;
       // settings-updates.browser.ts drives the policy page itself.
       CAELO_UPDATE_SCHEDULER: "off",
+      // docs/dev/search-engine-feed.md — a suite's Publish live must not
+      // ping the public WebSub hub or IndexNow.
+      CAELO_SEARCH_NOTIFY: "off",
       // #696 — Settings → Updates shows the upgrade command for Google
       // Cloud installs only; the suite runs without a cloud provider.
       // Test-only, ignored when NODE_ENV=production (lib/upgrade-path.ts).

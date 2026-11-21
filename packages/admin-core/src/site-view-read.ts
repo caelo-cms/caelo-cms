@@ -73,6 +73,7 @@ export interface MediaRow {
 interface SettingsRow {
   readonly site_base_url: string | null;
   readonly sitemap_enabled: boolean;
+  readonly feed_enabled: boolean;
   readonly organization_json: string | null;
   readonly site_language: string | null;
 }
@@ -128,8 +129,8 @@ async function readMedia(tx: TransactionRunner, ids?: readonly string[]): Promis
 
 async function readSettings(tx: TransactionRunner): Promise<SettingsRow> {
   const rows = (await tx.execute(sql`
-    SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
-           site_language
+    SELECT site_base_url, sitemap_enabled, feed_enabled,
+           organization_json::text AS organization_json, site_language
     FROM site_defaults WHERE id = 1
   `)) as unknown as SettingsRow[];
   const s = rows[0];
@@ -407,6 +408,7 @@ export function siteViewOf(
     settings: {
       siteBaseUrl: s.site_base_url,
       sitemapEnabled: s.sitemap_enabled,
+      feedEnabled: s.feed_enabled,
       organizationJson: s.organization_json,
       siteLanguage: s.site_language,
       homePageId,

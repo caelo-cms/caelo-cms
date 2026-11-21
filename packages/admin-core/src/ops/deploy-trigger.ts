@@ -63,6 +63,7 @@ import {
   type QueryError,
 } from "@caelo-cms/query-api";
 import {
+  buildSearchFeedSchema,
   CAELO_VERSION,
   type ExecutionContext,
   err,
@@ -145,6 +146,9 @@ import {
   releaseRedirectChanges,
   takeOverRedirectsOnFirstPublishedPages,
 } from "../redirects/release.js";
+import { applyLiveChanges, recordStagedChanges } from "../search-feed/live-versions.js";
+import { queueSearchNotifications } from "../search-feed/notifications.js";
+import { sendSearchNotificationsAfterPublish } from "../search-feed/notify.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
@@ -618,6 +622,12 @@ export const finishTriggerOp = defineOperation({
         .default([]),
       /** The live table that plan was made against (redirects.release_plan's `liveFingerprint`). */
       redirectLiveFingerprint: z.string().nullable().default(null),
+      /**
+       * What the build changes live per page, its feed and IndexNow key
+       * (docs/dev/search-engine-feed.md): a Stage keeps it for its Publish
+       * live, a production build makes it the live record.
+       */
+      searchFeed: buildSearchFeedSchema,
     })
     .strict(),
   output: z.object({
@@ -726,6 +736,25 @@ export const finishTriggerOp = defineOperation({
       await tx.execute(sql`
         UPDATE deploy_runs SET projection_run_id = ${input.runId}::uuid WHERE id = ${input.runId}::uuid
       `);
+    }
+    // docs/dev/search-engine-feed.md — a Stage keeps what its build changes
+    // for the Publish live that ships it; a production build makes it the
+    // live record and queues its WebSub ping and IndexNow submission (sent
+    // after this commit, deploy.trigger).
+    if (input.env === "staging") {
+      await recordStagedChanges(tx, {
+        runId: input.runId,
+        targetId: input.targetId,
+        feed: input.searchFeed,
+      });
+    }
+    if (input.env === "production") {
+      const { announced } = await applyLiveChanges(tx, {
+        runId: input.runId,
+        feed: input.searchFeed,
+        shippedAt: await deployRunStartedAt(tx, input.runId),
+      });
+      await queueSearchNotifications(tx, { runId: input.runId, announced });
     }
     await tx.execute(sql`
       UPDATE deploy_runs
@@ -1163,6 +1192,7 @@ async function runTrigger(
       renderReport,
       redirectChanges,
       redirectLiveFingerprint: redirectFingerprint,
+      searchFeed: built.searchFeed,
     });
     if (!finished.ok) return await fail(describeError(finished.error));
     const heldBack = (finished.value as { redirectsHeldBack: string | null }).redirectsHeldBack;
@@ -1203,6 +1233,9 @@ async function runTrigger(
           error: describeError(synced.error),
         });
       }
+      // The build is live: tell the WebSub hub and IndexNow, inside this
+      // request (docs/dev/search-engine-feed.md); the tick retries.
+      await sendSearchNotificationsAfterPublish({ adapter, registry, runId });
     }
     logRunTimings(runKind, runId, timer, {
       status: "succeeded",

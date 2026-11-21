@@ -21,6 +21,7 @@
 
 import { createHash } from "node:crypto";
 import {
+  type ConfigEntityKind,
   configLeaves,
   PAGE_OUTPUT_BATCH,
   type PageOutputFacts,
@@ -146,7 +147,7 @@ function observerInvocation(runId: string) {
  * What shapes a plugin's view of every page: its version and approved
  * artifact, its configuration (the fields that wait for a Stage; an
  * `immediate` field has no visitor-visible effect by contract) and its
- * module settings. A change makes the next Stage deliver every page again,
+ * settings per module, content block and page type. A change makes the next Stage deliver every page again,
  * so a plugin whose rules changed rebuilds what it derived from the site.
  */
 async function observerDigest(plugin: LoadedPlugin, runId: string): Promise<string> {
@@ -164,10 +165,17 @@ async function observerDigest(plugin: LoadedPlugin, runId: string): Promise<stri
         .map((l) => l.path),
     );
     parts.config = withoutPaths(value, immediate);
-    if (plugin.definition.entityConfig?.module) {
-      const ids = [...(await reader.configured("module"))].sort();
-      const modules = ids.length > 0 ? await reader.entities("module", ids) : new Map();
-      parts.modules = ids.map((id) => [id, modules.get(id) ?? {}]);
+    // Settings per module, content block or page type reach every page that
+    // shows one, so they are part of the digest. A page's own settings are
+    // per page (the page's settings hash, offeredHashes).
+    const entityKinds = Object.keys(plugin.definition.entityConfig ?? {})
+      .filter((kind) => kind !== "page")
+      .sort();
+    for (const kind of entityKinds) {
+      const ids = [...(await reader.configured(kind as ConfigEntityKind))].sort();
+      const values =
+        ids.length > 0 ? await reader.entities(kind as ConfigEntityKind, ids) : new Map();
+      parts[`entities:${kind}`] = ids.map((id) => [id, values.get(id) ?? {}]);
     }
   }
   return sha256(stableJson(parts));

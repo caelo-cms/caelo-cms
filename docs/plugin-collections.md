@@ -62,7 +62,7 @@ Targets and measurements at 50,000 pages: `docs/dev/scale-gate.md` (collections 
 
 `GET /api/plugin/<slug>/<op>?release=<key>&q=…&lang=…` answers from the release the request names. Such an answer is `public, max-age=60, s-maxage=<cacheSeconds>`, so the CDN answers a repeated query. A request naming another release gets 409 with the current key. `/release` names the current key uncached; it is the warm-up call, and it starts loading the release's model in the background. No cookie is read or set.
 
-Collection reads have their own in-memory budget: 10 per second per client and 100 per second per operation and instance. The executor is shared with the admin (`packages/plugin-host/src/collection-query.ts`), so the AI's preview answers exactly as visitors' searches do. Visitors' queries are kept out of the request logs (a Cloud Logging exclusion, `docs/dev/gateway-hardening.md`).
+Collection reads have their own in-memory budget: 10 per second per client and 100 per second per operation and instance. The executor is shared with the admin (`packages/plugin-host/src/collection-query.ts`), so the AI's preview answers exactly as visitors' searches do. Visitors' queries are kept out of the request logs (a Cloud Logging exclusion), and a read writes nothing to the database: no request-log row, whatever it answers (`docs/dev/gateway-hardening.md`).
 
 ## Stores and clean-up
 

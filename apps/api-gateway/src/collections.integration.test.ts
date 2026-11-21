@@ -103,6 +103,17 @@ const fixture = definePlugin({
     },
     semantic: semanticCollection,
     unknown_model: semanticCollection,
+    // #1651 — the words other pages link a page with.
+    anchors: {
+      description: "Link texts and the page each names.",
+      fields: {
+        text: { kind: "text" },
+        target: { kind: "keyword" },
+        sources: { kind: "number" },
+      },
+      maxDocuments: 1000,
+      maxDocumentBytes: 10_000,
+    },
   },
   config: {
     semantic_model: {
@@ -126,6 +137,14 @@ const fixture = definePlugin({
       snippet: "sections",
       filters: ["page_type"],
       facets: ["page_type"],
+    },
+    {
+      name: "linked",
+      kind: "search",
+      collection: "pages",
+      description: "Site search with link texts.",
+      returns: ["url", "title"],
+      anchors: { collection: "anchors", target: "target", sources: "sources" },
     },
     {
       name: "suggest",
@@ -153,6 +172,7 @@ let pluginId = "";
 let root = "";
 let releaseKey = "";
 let semanticKey = "";
+let anchorsKey = "";
 let unknownKey = "";
 const envBefore: Record<string, string | undefined> = {};
 
@@ -351,6 +371,30 @@ beforeAll(async () => {
     return (name: string, data: Uint8Array) =>
       void w.push(target.write(name, data, { immutable: true }));
   };
+  const wa: Promise<void>[] = [];
+  const anchors = await buildRelease(
+    [{ id: "a1", lang: "de", values: { text: "Kosten", target: "de-logfile", sources: 4 } }],
+    {
+      schema: { fields: fixture.collections?.anchors?.fields as never },
+      sink: sinkFor("anchors", wa),
+      profile: {
+        weights: { text: 1 },
+        boosts: [],
+        synonyms: {},
+        bestBets: {},
+        protectedTerms: [],
+        typos: false,
+        compounds: false,
+        prefix: false,
+        crossLanguage: false,
+        semantic: null,
+        suggestions: {},
+      },
+    },
+  );
+  await Promise.all(wa);
+  anchorsKey = anchors.file;
+  await publish("anchors", anchors);
   if (MODELS.dir) {
     const embedder = await createNativeEmbedder(MODEL, { dir: MODELS.dir, threads: 2 });
     const w: Promise<void>[] = [];
@@ -539,6 +583,53 @@ describe("declarative collection operations in the gateway", () => {
       await r.arrayBuffer();
     }
     expect([...statuses]).toEqual([200]);
+  });
+
+  it("a search over link texts is named by both releases, and caches only under the pair", async () => {
+    const named = await json(`/api/plugin/${SLUG}/linked/release`);
+    const pair = `${releaseKey}+${anchorsKey}`;
+    expect(named.body).toEqual({ release: pair });
+    // The pages release alone no longer names the answer: a new anchors
+    // release must not be served from a cache entry of the old one.
+    const alone = await handleRequest(
+      get(`/api/plugin/${SLUG}/linked?q=Kosten&lang=de&release=${releaseKey}`),
+    );
+    expect(alone.status).toBe(409);
+    expect(((await alone.json()) as { release: string }).release).toBe(pair);
+    const r = await handleRequest(
+      get(`/api/plugin/${SLUG}/linked?q=Kosten&lang=de&release=${encodeURIComponent(pair)}`),
+    );
+    expect(r.status).toBe(200);
+    expect(r.headers.get("cache-control")).toContain("s-maxage");
+    // Only another page's link text says "Kosten" about the logfile page.
+    const body = (await r.json()) as { release: string; hits: { url: string }[] };
+    expect(body.release).toBe(pair);
+    expect(body.hits.map((h) => h.url)).toContain("/logfile/");
+  });
+
+  it("the search path writes nothing to the database, answered or failed", async () => {
+    const logged = () =>
+      onDb(
+        PUBLIC_ADMIN_URL as string,
+        async (tx) =>
+          (
+            (await tx`SELECT count(*)::int AS n FROM gateway_request_log WHERE plugin_slug = ${SLUG}`) as {
+              n: number;
+            }[]
+          )[0]?.n ?? 0,
+      );
+    const before = await logged();
+    for (const path of [
+      `/api/plugin/${SLUG}/search?q=Preise&lang=de&release=${releaseKey}`,
+      `/api/plugin/${SLUG}/suggest?q=Pr&lang=de`,
+      `/api/plugin/${SLUG}/search?q=Preise&lang=de&release=another`,
+      `/api/plugin/${SLUG}/search/release`,
+    ]) {
+      const r = await handleRequest(get(path));
+      expect(r.status).toBeLessThan(500);
+      await r.arrayBuffer();
+    }
+    expect(await logged()).toBe(before);
   });
 
   it("refuses too many words, an unknown operation, and serves 503 without a release", async () => {

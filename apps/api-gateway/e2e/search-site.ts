@@ -21,7 +21,13 @@ import {
   stagingPublicAdapter,
 } from "@caelo-cms/admin-core";
 import { buildRelease, directoryStore, scopedStore } from "@caelo-cms/collection-index";
-import { bootstrap, bootstrapDispatchOnly, resetPluginHost } from "@caelo-cms/plugin-host";
+import {
+  bootstrap,
+  bootstrapDispatchOnly,
+  releaseManifestDigest,
+  resetPluginHost,
+} from "@caelo-cms/plugin-host";
+import { manifestFromDefinition } from "@caelo-cms/plugin-sdk";
 import siteSearch from "@caelo-cms/plugin-site-search";
 import { RUNTIME_CSS, RUNTIME_JS } from "@caelo-cms/plugin-site-search/runtime";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
@@ -63,10 +69,27 @@ const root = mkdtempSync(join(tmpdir(), "caelo-e2e-1651-"));
 process.env.CAELO_COLLECTIONS_LIVE_STORE = `file://${root}/live`;
 process.env.CAELO_GATEWAY_ENVIRONMENT = "live";
 
-const before = await onDb(
-  ADMIN_URL,
-  async (tx) => ((await tx`SELECT id FROM plugins WHERE slug = ${SLUG}`) as unknown[]).length > 0,
-);
+// The admin under test discovered the shipped plugin (awaiting activation):
+// this fixture is the Owner activating it, approving what it asks for, as
+// plugins.activate does. A row a load finds keeps its status, so without
+// this the release the gateway attaches from would not hold it.
+// An existing row may hold the approval of an earlier build of the plugin:
+// a changed manifest is a new artifact (#1332), so approve this one too.
+const manifest = manifestFromDefinition(siteSearch);
+const before = await onDb(ADMIN_URL, async (tx) => {
+  const rows = (await tx`SELECT status, approved_capabilities, approved_manifest_digest
+      FROM plugins WHERE slug = ${SLUG}`) as {
+    status: string;
+    approved_capabilities: string[] | null;
+    approved_manifest_digest: string | null;
+  }[];
+  await tx`UPDATE plugins SET status = 'active',
+    approved_capabilities = ARRAY(SELECT jsonb_array_elements_text(
+      (${JSON.stringify(manifest.requestedCapabilities ?? [])}::text)::jsonb)),
+    approved_manifest_digest = ${releaseManifestDigest(manifest)}
+    WHERE slug = ${SLUG}`;
+  return rows[0] ?? null;
+});
 
 async function restore(): Promise<void> {
   // List types a crashed run left behind belong to no plugin row any more.
@@ -74,7 +97,16 @@ async function restore(): Promise<void> {
     await tx`DELETE FROM list_types WHERE slug LIKE 'site-search-%'
              AND (plugin_id IS NULL OR plugin_id NOT IN (SELECT id FROM plugins))`;
   });
-  if (!before)
+  if (before)
+    await onDb(ADMIN_URL, async (tx) => {
+      const approved = JSON.stringify(before.approved_capabilities);
+      await tx`UPDATE plugins SET status = ${before.status},
+        approved_capabilities = CASE WHEN (${approved}::text)::jsonb = 'null'::jsonb THEN NULL
+          ELSE ARRAY(SELECT jsonb_array_elements_text((${approved}::text)::jsonb)) END,
+        approved_manifest_digest = ${before.approved_manifest_digest}
+        WHERE slug = ${SLUG}`;
+    });
+  else
     await onDb(ADMIN_URL, async (tx) => {
       await tx`DELETE FROM site_snapshots WHERE actor_id IN (SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${SLUG}))`;
       await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${SLUG})`;
@@ -130,7 +162,8 @@ async function prepare(): Promise<DatabaseAdapter> {
       ((await tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`) as { id: string }[])[0]
         ?.id as string,
   );
-  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, new Map([[SLUG, null]]));
+  // Release the main line as a Stage plus Publish live does, as loaded.
+  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, undefined, "as-loaded");
   resetPluginHost();
   await adminAdapter.close();
 
@@ -232,7 +265,14 @@ function routes(pathname: string): Response {
 
 let gatewayAdapter: DatabaseAdapter;
 try {
-  await restore();
+  // What a crashed run left behind (orphaned list types, a published index).
+  await onDb(ADMIN_URL, async (tx) => {
+    await tx`DELETE FROM list_types WHERE slug LIKE 'site-search-%'
+             AND (plugin_id IS NULL OR plugin_id NOT IN (SELECT id FROM plugins))`;
+  });
+  await onDb(PUBLIC_ADMIN_URL, async (tx) => {
+    await tx`DELETE FROM published_collections`;
+  });
   gatewayAdapter = await prepare();
 } catch (e) {
   await restore();

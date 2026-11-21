@@ -94,6 +94,10 @@ import { findDoubleEncodedJsonb } from "./jsonb-double-encoding-scan.ts";
 // 3 (not 1) avoids the single-connection self-deadlock; see resolvePoolMax.
 process.env.CAELO_DB_POOL_MAX ??= "3";
 
+// docs/dev/search-engine-feed.md — a test's Publish live must never ping the
+// public WebSub hub or IndexNow; the sender's own tests pass a fake fetch.
+process.env.CAELO_SEARCH_NOTIFY ??= "off";
+
 // Default hook + test timeout. Integration `wipe()` helpers open a
 // fresh Bun.SQL pool every call; the cold-connect path can spike past
 // the 5-second Bun default under load. 30s matches the longest
@@ -250,6 +254,17 @@ async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promis
       // DELETE after the truncate: churn rows referencing these tables
       // are already gone, and the FKs' ON DELETE SET NULL keeps the
       // seeded rows in `actors` / `themes` alive.
+      // A plugin's list types (0357) are kept on purpose when its row goes
+      // (they become the operator's site types), so deleting `plugins`
+      // here would hand the next file a type its plugin's activation
+      // refuses as someone else's. They go with the plugin rows the reset
+      // removes; the shipped seed types (no plugin) stay.
+      if (
+        deleteTargets.includes("plugins") &&
+        allTables.some((t) => t.tablename === "list_types")
+      ) {
+        await tx.unsafe("DELETE FROM list_types WHERE plugin_id IS NOT NULL");
+      }
       for (const t of deleteTargets) {
         await tx.unsafe(`DELETE FROM "${t}"`);
       }

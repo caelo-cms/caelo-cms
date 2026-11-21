@@ -40,6 +40,7 @@ import { readFile } from "node:fs/promises";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
+  FEED_FILE,
   PhaseTimer,
   parseSiteHeaderSet,
   parseStaticFilesManifest,
@@ -451,11 +452,10 @@ async function releaseAsTarget(args: {
   const allFiles = await listVersionFiles(site, sourceVersionId, token);
 
   const { buildRobotsTxtWithSitemap } = await import("@caelo-cms/static-generator");
-  const robotsBody = buildRobotsTxtWithSitemap(
-    args.target.robotsDefault,
-    args.siteBaseUrl,
-    allFiles.some((f) => f.path === "/sitemap.xml"),
-  );
+  const robotsBody = buildRobotsTxtWithSitemap(args.target.robotsDefault, args.siteBaseUrl, {
+    sitemap: allFiles.some((f) => f.path === "/sitemap.xml"),
+    feed: allFiles.some((f) => f.path === `/${FEED_FILE}`),
+  });
   const { body: robotsGzipped, sha256: robotsSha256 } = await gzipAndHashBytes(
     Buffer.from(robotsBody, "utf-8"),
   );

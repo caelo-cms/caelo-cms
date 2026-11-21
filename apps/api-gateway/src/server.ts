@@ -1307,8 +1307,16 @@ async function collectionOperation(
   try {
     const keys = await collections.releaseKeys(adapter, SYSTEM_CTX, () => mayCacheRead(startedAt));
     const key = keys.get(`${declared.pluginId}:${declared.op.collection}`);
+    // #1651 — a search over link texts answers from two releases: both name
+    // the answer (a cached one must not outlive either), so the release the
+    // client sends back is the pair.
+    const anchorsOf = declared.op.kind === "search" ? declared.op.anchors : undefined;
+    const anchorKey = anchorsOf
+      ? keys.get(`${declared.pluginId}:${anchorsOf.collection}`)
+      : undefined;
+    const identity = key && anchorKey ? `${key}+${anchorKey}` : key;
     const asked = url.searchParams.get("release");
-    if (!key) {
+    if (!key || !identity) {
       answer = {
         status: 503,
         body: { ok: false, error: { kind: "IndexNotReady", requestId } },
@@ -1324,32 +1332,28 @@ async function collectionOperation(
           if (fp && e.profile?.semantic) defaultQueryEmbedder().warm(fp);
         })
         .catch(() => {});
-      answer = { status: 200, body: { release: key }, cacheSeconds: null };
-    } else if (asked !== null && asked !== key) {
+      answer = { status: 200, body: { release: identity }, cacheSeconds: null };
+    } else if (asked !== null && asked !== identity) {
       // A newer Stage went live: the client asks again under the new key.
       answer = {
         status: 409,
-        body: { ok: false, error: { kind: "ReleaseMoved", requestId }, release: key },
+        body: { ok: false, error: { kind: "ReleaseMoved", requestId }, release: identity },
         cacheSeconds: null,
       };
     } else {
       const entry = await collections.release(route.slug, declared.op.collection, key);
       // #1651 — the anchor collection of the same Stage, when the op declares one.
-      const anchorsOf = declared.op.kind === "search" ? declared.op.anchors : undefined;
-      const anchorKey = anchorsOf
-        ? keys.get(`${declared.pluginId}:${anchorsOf.collection}`)
-        : undefined;
       const anchors =
         anchorsOf && anchorKey
           ? await collections.release(route.slug, anchorsOf.collection, anchorKey)
           : null;
-      const ran = await runCollectionOperation(declared.op, entry, key, url.searchParams, {
+      const ran = await runCollectionOperation(declared.op, entry, identity, url.searchParams, {
         embedQuery: defaultQueryEmbedder(),
         anchors,
       });
       answer = {
         ...ran,
-        cacheSeconds: asked === key && ran.status === 200 ? ran.cacheSeconds : null,
+        cacheSeconds: asked === identity && ran.status === 200 ? ran.cacheSeconds : null,
       };
     }
   } catch (e) {
@@ -1357,21 +1361,17 @@ async function collectionOperation(
       log: `collection ${route.slug}.${route.operation}: ${e instanceof Error ? e.message : String(e)}`,
     });
   }
-  // Logged like every visitor call, without the query (#1649).
-  await recordRequest({
-    pluginSlug: route.slug,
-    operation: route.operation,
-    statusCode: answer.status,
-    durationMs: Math.round(performance.now() - start),
-    bodyBytes: 0,
-    wasRateLimited: false,
-    wasHoneypotCaught: false,
-    captchaPassed: false,
-    errorKind:
-      answer.status >= 400
-        ? String((answer.body as { error?: { kind?: string } }).error?.kind ?? "Error")
-        : null,
-  });
+  // #1649 — the search path writes nothing to the database: no request-log
+  // row, so search-as-you-type, a flood or a store outage (every answer a
+  // 503) never becomes write load. The platform's request metrics count the
+  // answers and their latency; a server-side failure is one log line, which
+  // never carries the query.
+  if (answer.status >= 500) {
+    const kind = (answer.body as { error?: { kind?: string } }).error?.kind ?? "Error";
+    console.warn(
+      `[api-gateway] collection ${route.slug}.${route.operation}: ${answer.status} ${kind} after ${Math.round(performance.now() - start)} ms (request ${requestId})`,
+    );
+  }
   return cacheableJsonResponse(answer.body, answer.status, answer.cacheSeconds, requestId);
 }
 

@@ -376,8 +376,7 @@ export default definePlugin({
         honeypot: { field: "website", store: "nothing", answer: ANSWER },
         onlyIf: { config: "feedback.enabled", equals: true, answer: ANSWER },
         drop: {
-          field: "question",
-          alsoFields: ["note"],
+          fields: ["question", "note"],
           patterns: ["email", "phone", "long-number"],
           answer: ANSWER,
         },

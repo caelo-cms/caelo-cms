@@ -16,7 +16,7 @@
  *     <ol data-caelo-search-list></ol>
  *     <template data-caelo-search-hit>
  *       <li><a data-field="link"><span data-field="title"></span></a>
- *           <p data-field="snippet"></p></li>
+ *           <p data-field="snippet"></p></li>   (optional: data-field="section", url)
  *     </template>
  *     <button data-caelo-search-more hidden>Mehr</button>
  *   </div>
@@ -36,7 +36,9 @@
 export const RUNTIME_JS = String.raw`(function () {
   "use strict";
   var API = "/api/plugin/site-search/";
-  var release = null;
+  // The release each operation answers from: a search over link texts is
+  // named by two releases, a suggestion by one, so each keeps its own.
+  var releases = {};
   var releaseAsked = null;
   var lastQuery = null;
 
@@ -47,16 +49,20 @@ export const RUNTIME_JS = String.raw`(function () {
 
   function get(op, params) {
     var qs = new URLSearchParams(params);
-    if (release) qs.set("release", release);
+    if (releases[op]) qs.set("release", releases[op]);
     return fetch(API + op + "?" + qs.toString(), { credentials: "omit" }).then(function (res) {
       if (res.status === 409) {
         return res.json().then(function (body) {
-          release = body && body.release ? body.release : null;
+          if (!(body && body.release) || body.release === releases[op]) throw new Error(op + " 409");
+          releases[op] = body.release;
           return get(op, params);
         });
       }
       if (!res.ok) throw new Error(op + " " + res.status);
-      return res.json();
+      return res.json().then(function (body) {
+        if (body && body.release) releases[op] = body.release;
+        return body;
+      });
     });
   }
 
@@ -64,7 +70,7 @@ export const RUNTIME_JS = String.raw`(function () {
     if (releaseAsked) return releaseAsked;
     releaseAsked = fetch(API + "search/release", { credentials: "omit" })
       .then(function (res) { return res.ok ? res.json() : null; })
-      .then(function (body) { if (body && body.release) release = body.release; })
+      .then(function (body) { if (body && body.release) releases.search = body.release; })
       .catch(function () { releaseAsked = null; });
     return releaseAsked;
   }
@@ -270,6 +276,7 @@ export const RUNTIME_JS = String.raw`(function () {
     var summary = root.querySelector("[data-caelo-search-summary]");
     var more = root.querySelector("[data-caelo-search-more]");
     if (!listEl || !tpl) return;
+    var hasSection = tpl.content.querySelector('[data-field="section"]') !== null;
     var q = (new URLSearchParams(location.search).get("q") || "").trim();
     if (q === "") return;
     var page = 1;
@@ -289,7 +296,19 @@ export const RUNTIME_JS = String.raw`(function () {
               record({ kind: "click", text: q, lang: lang(), results: body.total || 0, target: h.url });
             });
           } else if (f === "title") highlighted(el, h.title, h.titleHighlights);
-          else if (f === "snippet") highlighted(el, h.snippet ? h.snippet.text : "", h.snippet ? h.snippet.highlights : []);
+          // The snippet: the section's heading (its own field, or in front
+          // of the text) and its best sentence, each with its highlights.
+          else if (f === "section") highlighted(el, h.snippet ? h.snippet.heading.text : "", h.snippet ? h.snippet.heading.highlights : []);
+          else if (f === "snippet") {
+            var sn = h.snippet;
+            if (!sn) el.textContent = "";
+            else if (hasSection || !sn.heading.text) highlighted(el, sn.text.text, sn.text.highlights);
+            else {
+              var off = sn.heading.text.length + 3;
+              highlighted(el, sn.heading.text + " — " + sn.text.text, sn.heading.highlights.concat(
+                sn.text.highlights.map(function (r) { return [r[0] + off, r[1] + off]; })));
+            }
+          }
           else if (f === "url") text(el, h.url);
         });
         listEl.appendChild(node);
@@ -301,14 +320,17 @@ export const RUNTIME_JS = String.raw`(function () {
         else summary.removeAttribute("data-correction");
         summary.dispatchEvent(new CustomEvent("caelo-search-results", { bubbles: true, detail: body }));
       }
-      if (more) more.hidden = page * (body.hits || []).length >= (body.total || 0) || (body.hits || []).length === 0;
+      if (more) more.hidden = body.more !== true;
     }
 
     warm().then(function () {
       return get("search", { q: q, lang: lang(), page: "1" });
     }).then(function (body) {
       show(body, false);
-      record({ kind: "search", text: q, lang: lang(), results: body.total || 0, previous: lastQueryOf(q) });
+      var searched = { kind: "search", text: q, lang: lang(), results: body.total || 0 };
+      var previous = lastQueryOf(q);
+      if (previous) searched.previous = previous;
+      record(searched);
     }).catch(function () {
       root.setAttribute("data-caelo-search-error", "true");
     });
@@ -321,13 +343,21 @@ export const RUNTIME_JS = String.raw`(function () {
 
   // A reformulation: the query this tab searched just before, within two
   // minutes. Kept in memory and sessionStorage of this tab only.
+  // A query that may be personal data (an address, a long number) is never
+  // remembered as the one before: the gateway would drop the next search
+  // with it, and the tab need not keep it either.
+  function mayBePersonal(q) {
+    return q.indexOf("@") !== -1 || /\d{6}/.test(q.replace(/[\s().\/+-]/g, ""));
+  }
+
   function lastQueryOf(q) {
     var prev = null;
     try {
       var raw = sessionStorage.getItem("caelo-search-last");
       var last = raw ? JSON.parse(raw) : null;
       if (last && last.q !== q && Date.now() - last.at < 120000) prev = last.q;
-      sessionStorage.setItem("caelo-search-last", JSON.stringify({ q: q, at: Date.now() }));
+      if (mayBePersonal(q)) sessionStorage.removeItem("caelo-search-last");
+      else sessionStorage.setItem("caelo-search-last", JSON.stringify({ q: q, at: Date.now() }));
     } catch (e) {}
     lastQuery = q;
     return prev;

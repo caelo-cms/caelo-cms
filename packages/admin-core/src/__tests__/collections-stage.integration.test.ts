@@ -356,6 +356,19 @@ beforeAll(async () => {
                 default: false,
               },
             },
+            contentInstance: {
+              mode: {
+                type: "enum",
+                options: [
+                  { value: "full", label: "Fully" },
+                  { value: "never", label: "Not at all" },
+                ],
+                label: "Counts as",
+                description: "Whether a shared content block's text counts on the pages it is on.",
+                effect: "pages",
+                default: "full",
+              },
+            },
           },
           pageOutputObserver: {
             operation: "observe",
@@ -494,6 +507,26 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(await published(PUBLIC_URL as string)).toEqual([index.releaseKey as string]);
   });
 
+  it("a plugin reads its own index releases, never another plugin's", async () => {
+    const releasesAs = async (kind: string, pluginId: string) => {
+      const conn = new SQL(ADMIN_URL as string);
+      try {
+        return (await conn.begin(async (tx) => {
+          await tx`SELECT set_config('caelo.actor_kind', ${kind}, true),
+                          set_config('caelo.plugin_id', ${pluginId}, true)`;
+          return tx`SELECT DISTINCT plugin_id::text AS id FROM collection_releases`;
+        })) as { id: string }[];
+      } finally {
+        await conn.end();
+      }
+    };
+    const [own] = (await releasesAs("system", "")).map((r) => r.id);
+    expect(own).toBeDefined();
+    expect((await releasesAs("human", "")).map((r) => r.id)).toContain(own as string);
+    expect((await releasesAs("plugin", own as string)).map((r) => r.id)).toEqual([own as string]);
+    expect(await releasesAs("plugin", crypto.randomUUID())).toEqual([]);
+  });
+
   it("a second Stage delivers only the changed page and writes a delta", async () => {
     await setText(PAGES[1] as string, "Neu: Versand in die Schweiz.");
     const run = await stage();
@@ -551,6 +584,35 @@ describe("page output and collections through Stage and Publish live", () => {
     const back = await stage();
     expect(calls.flatMap((c) => c.pages.map((p) => p.path))).toEqual([`/${PAGES[0]}`]);
     expect((await indexState(back)).stats.docCount).toBe(3);
+  });
+
+  it("a page's data the HTML does not show (short title) delivers that page again", async () => {
+    const pageId = pageIds.get(PAGES[0] as string) as string;
+    await ok("pages.update", { pageId, shortTitle: "Preise kurz" });
+    await stage();
+    expect(calls.flatMap((c) => c.pages.map((p) => p.path))).toEqual([`/${PAGES[0]}`]);
+    expect(calls.flatMap((c) => c.pages.map((p) => p.shortTitle))).toEqual(["Preise kurz"]);
+    await stage();
+    expect(calls.flatMap((c) => c.pages)).toEqual([]);
+  });
+
+  it("a content block's setting delivers every page again, once", async () => {
+    const id = instances.get(PAGES[0] as string) as string;
+    await ok("plugin_config.set_entities", {
+      pluginSlug: PLUGIN,
+      items: [{ kind: "contentInstance", id, values: { mode: "never" } }],
+    });
+    await stage();
+    expect(calls.flatMap((c) => c.pages.map((p) => p.path)).sort()).toEqual(
+      ["/", ...PAGES.map((s) => `/${s}`)].sort(),
+    );
+    await stage();
+    expect(calls.flatMap((c) => c.pages)).toEqual([]);
+    await ok("plugin_config.set_entities", {
+      pluginSlug: PLUGIN,
+      items: [{ kind: "contentInstance", id, values: { mode: null } }],
+    });
+    await stage();
   });
 
   it("a page taken offline reaches the observer as removed and leaves the index", async () => {

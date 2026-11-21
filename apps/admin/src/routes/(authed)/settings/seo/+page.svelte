@@ -21,7 +21,8 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">SEO settings</h1>
     <p class="text-sm text-muted-foreground">
-      Site-level base URL, sitemap toggle, Organization JSON-LD, site language, and the stale-SEO queue.
+      Site-level base URL, sitemap, feed and IndexNow, Organization JSON-LD, site language, and the
+      stale-SEO queue.
     </p>
   </div>
 
@@ -34,6 +35,9 @@
 
   {#if data.pendingError}
     <Alert variant="destructive"><AlertDescription>{data.pendingError}</AlertDescription></Alert>
+  {/if}
+  {#if data.settingsError}
+    <Alert variant="destructive"><AlertDescription>{data.settingsError}</AlertDescription></Alert>
   {/if}
   {#if data.pendingProposals.length > 0}
     <Card data-testid="seo-pending-proposals">
@@ -118,6 +122,38 @@
           />
           <Label for="sitemapEnabled">Emit sitemap.xml on production deploys</Label>
         </div>
+        <div class="space-y-1">
+          <div class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="feedEnabled"
+              name="feedEnabled"
+              checked={data.settings.feedEnabled}
+            />
+            <Label for="feedEnabled">Publish a feed of the latest changes (/feed.xml)</Label>
+          </div>
+          <p class="pl-6 text-xs text-muted-foreground">
+            Lists the pages whose content changed last, with the date it changed, and links it from
+            every page. After every Publish live the feed's hub is told, so search engines and feed
+            readers learn of the change right away.
+          </p>
+        </div>
+        <div class="space-y-1">
+          <div class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="indexNowEnabled"
+              name="indexNowEnabled"
+              checked={data.settings.indexNowEnabled}
+            />
+            <Label for="indexNowEnabled">Tell IndexNow search engines what changed</Label>
+          </div>
+          <p class="pl-6 text-xs text-muted-foreground">
+            After every Publish live the changed addresses go to IndexNow, which Bing, Yandex,
+            Seznam, Naver and Yep share. Google does not take part; it reads the sitemap and the
+            feed.
+          </p>
+        </div>
         <div class="space-y-2">
           <Label for="organizationJson">Organization JSON</Label>
           <Textarea
@@ -133,6 +169,43 @@
         </div>
         <Button type="submit">Save settings</Button>
       </form>
+    </CardContent>
+  </Card>
+
+  <Card data-testid="search-notifications">
+    <CardHeader>
+      <CardTitle class="text-base">Search engine notifications</CardTitle>
+      <CardDescription>
+        What the last Publish lives told search engines. Failed sends are retried automatically.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      {#if data.settings.searchNotifications.length === 0}
+        <p class="text-sm text-muted-foreground">
+          None yet: they are sent after the next Publish live that changes a page.
+        </p>
+      {:else}
+        <ul class="space-y-1 text-sm">
+          {#each data.settings.searchNotifications as n (n.id)}
+            <li>
+              <span class="font-medium">{n.channel === "websub" ? "Feed hub (WebSub)" : "IndexNow"}</span>
+              <span class="text-muted-foreground">
+                — {n.status === "sent"
+                  ? "sent"
+                  : n.status === "pending"
+                    ? "waiting to be sent"
+                    : n.status === "skipped"
+                      ? "not sent"
+                      : "failed"}{n.channel === "indexnow" ? `, ${n.urlCount} addresses` : ""},
+                {new Date(n.createdAt).toISOString().slice(0, 16).replace("T", " ")} UTC
+              </span>
+              {#if n.detail}
+                <p class="text-xs text-muted-foreground">{n.detail}</p>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </CardContent>
   </Card>
 

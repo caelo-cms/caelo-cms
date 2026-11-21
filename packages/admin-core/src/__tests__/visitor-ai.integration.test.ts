@@ -237,7 +237,7 @@ describe("the visitor AI's settings (#1654, §11.A)", () => {
     expect(Number(stage?.daily_cap_microcents)).toBe(100_000_000);
     expect(stage?.key_provider).toBeNull();
     // The model's prices travel with it, so the gateway can count what a turn may cost.
-    expect((live?.pricing as unknown[]).length).toBeGreaterThan(0);
+    expect(((live?.pricing ?? []) as unknown[]).length).toBeGreaterThan(0);
   });
 
   it("lets a plugin that requires it be activated only while it can run", async () => {

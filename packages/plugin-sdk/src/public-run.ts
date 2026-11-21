@@ -200,16 +200,10 @@ export const publicRun = z.discriminatedUnion("action", [
             .strict(),
         ])
         .optional(),
-      /**
-       * A field that looks like personal data answers `answer` and stores
-       * nothing. `alsoFields` (#1655) are checked with the same patterns:
-       * every free-text field a row stores belongs here, or one of them is a
-       * way around the drop.
-       */
+      /** Any of these fields looking like personal data answers `answer` and stores nothing. */
       drop: z
         .object({
-          field: inputField,
-          alsoFields: z.array(inputField).min(1).max(4).optional(),
+          fields: z.array(inputField).min(1).max(8),
           patterns: z.array(z.enum(PUBLIC_DROP_PATTERNS)).min(1).max(PUBLIC_DROP_PATTERNS.length),
           answer: publicAnswer,
         })
@@ -654,7 +648,43 @@ export function checkPublicRun(
       issue(["reads"], `"${op.name}" reads "${t}": list it in reads`);
 }
 
-const EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+/**
+ * Whether the part after an `@` (up to the next `@`) is a domain: a dot with
+ * at least one character on each side. The first dot past the first
+ * character decides: if it is the last character, no dot qualifies.
+ */
+function hasDomainDot(domain: string): boolean {
+  const dot = domain.indexOf(".", 1);
+  return dot !== -1 && dot < domain.length - 1;
+}
+
+/**
+ * Whether `value` is an e-mail address as a form field takes it: one `@`,
+ * something before it, a domain with a dot after it, no whitespace. Written
+ * with indexOf, linear in the length: the regex `^[^\s@]+@[^\s@]+\.[^\s@]+$`
+ * backtracks polynomially on visitor input like `a@a.a.a.a…` (CodeQL).
+ */
+export function isEmailAddress(value: string): boolean {
+  if (/\s/.test(value)) return false;
+  const at = value.indexOf("@");
+  if (at <= 0 || at !== value.lastIndexOf("@")) return false;
+  return hasDomainDot(value.slice(at + 1));
+}
+
+/**
+ * Whether `text` contains something shaped like an e-mail address anywhere
+ * (`[^\s@]+@[^\s@]+\.[^\s@]+`), in linear time: within each run without
+ * whitespace, an `@` with a character before it and a domain after it.
+ */
+function containsEmailAddress(text: string): boolean {
+  for (const token of text.split(/\s+/)) {
+    const parts = token.split("@");
+    for (let i = 0; i + 1 < parts.length; i++) {
+      if ((parts[i] as string).length > 0 && hasDomainDot(parts[i + 1] as string)) return true;
+    }
+  }
+  return false;
+}
 /**
  * A phone number starts like one (`+49`, a national `0…`, an area code in
  * brackets) and carries at least seven digits; two years side by side
@@ -669,7 +699,7 @@ const DIGIT_GROUPS = /\b\d{4}(?: \d{4}){3}\b/;
 /** Whether `text` looks like one of the patterns (an address, a phone number, a long digit run). */
 export function matchesDropPattern(text: string, patterns: readonly PublicDropPattern[]): boolean {
   for (const p of patterns) {
-    if (p === "email" && EMAIL.test(text)) return true;
+    if (p === "email" && containsEmailAddress(text)) return true;
     if (p === "phone") {
       const m = PHONE.exec(text);
       if (m && m[0].replace(/\D/g, "").length >= 7) return true;

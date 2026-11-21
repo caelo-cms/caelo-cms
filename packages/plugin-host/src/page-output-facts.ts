@@ -127,7 +127,13 @@ export function canonicalSitePath(pathname: string): string {
     // A malformed escape stays as written.
   }
   p = p.replace(/\/index\.html?$/i, "/");
-  if (p.length > 1) p = p.replace(/\/+$/, "");
+  // Trailing slashes off, in linear time (a `/\/+$/` scan is quadratic on
+  // a path of many slashes, and the path comes from the page's markup).
+  if (p.length > 1) {
+    let end = p.length;
+    while (end > 0 && p.charCodeAt(end - 1) === 47) end--;
+    p = p.slice(0, end);
+  }
   return p === "" ? "/" : p;
 }
 
