@@ -106,11 +106,22 @@ beforeAll(async () => {
   // the write schema should fail here, loudly, not silently reshape.
   // #551 — an unset base URL (NULL) is a valid ambient state; it has no
   // set_seo form, so it is restored by clearing the column afterwards.
-  const before = (await sysOp("site_defaults.get_seo", {})) as { siteBaseUrl: string | null };
+  const before = (await sysOp("site_defaults.get_seo", {})) as {
+    siteBaseUrl: string | null;
+    sitemapEnabled: boolean;
+    feedEnabled: boolean;
+    indexNowEnabled: boolean;
+    organizationJson: Record<string, unknown>;
+  };
   seoBaseUnset = before.siteBaseUrl === null;
+  // get_seo also reports the IndexNow key and the latest notifications,
+  // which the write schema does not take: pick what set_seo writes.
   seoBeforeFile = siteDefaultsSetSeoInputSchema.parse({
-    ...before,
     siteBaseUrl: before.siteBaseUrl ?? BASE,
+    sitemapEnabled: before.sitemapEnabled,
+    feedEnabled: before.feedEnabled,
+    indexNowEnabled: before.indexNowEnabled,
+    organizationJson: before.organizationJson,
   });
   await sysOp("site_defaults.set_seo", { ...seoBeforeFile, siteBaseUrl: BASE });
 });

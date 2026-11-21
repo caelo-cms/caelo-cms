@@ -35,6 +35,7 @@ import {
   type OperationRegistry,
 } from "@caelo-cms/query-api";
 import {
+  buildSearchFeedSchema,
   DB_POOL_MAX_ENV,
   DB_PUBLIC_POOL_MAX_ENV,
   databaseUrlFromEnv,
@@ -146,6 +147,8 @@ const subprocessDoneSchema = z.object({
       failed: z.array(z.object({ pluginId: z.string(), slug: z.string(), error: z.string() })),
     })
     .nullable(),
+  /** What the build changes live per page, its feed and IndexNow key (docs/dev/search-engine-feed.md). */
+  searchFeed: buildSearchFeedSchema,
 });
 
 /** What a finished generator run reports. */

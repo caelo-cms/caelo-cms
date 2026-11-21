@@ -263,7 +263,7 @@ export default definePlugin({
   schema: {
     search_events: {
       id: "uuid",
-      kind: "enum:search,click,reformulation",
+      kind: "enum:search,click",
       text: "string",
       lang: "string",
       day: "string",

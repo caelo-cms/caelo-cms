@@ -16,7 +16,7 @@
  *     <ol data-caelo-search-list></ol>
  *     <template data-caelo-search-hit>
  *       <li><a data-field="link"><span data-field="title"></span></a>
- *           <p data-field="snippet"></p></li>
+ *           <p data-field="snippet"></p></li>   (optional: data-field="section", url)
  *     </template>
  *     <button data-caelo-search-more hidden>Mehr</button>
  *   </div>
@@ -270,6 +270,7 @@ export const RUNTIME_JS = String.raw`(function () {
     var summary = root.querySelector("[data-caelo-search-summary]");
     var more = root.querySelector("[data-caelo-search-more]");
     if (!listEl || !tpl) return;
+    var hasSection = tpl.content.querySelector('[data-field="section"]') !== null;
     var q = (new URLSearchParams(location.search).get("q") || "").trim();
     if (q === "") return;
     var page = 1;
@@ -289,7 +290,19 @@ export const RUNTIME_JS = String.raw`(function () {
               record({ kind: "click", text: q, lang: lang(), results: body.total || 0, target: h.url });
             });
           } else if (f === "title") highlighted(el, h.title, h.titleHighlights);
-          else if (f === "snippet") highlighted(el, h.snippet ? h.snippet.text : "", h.snippet ? h.snippet.highlights : []);
+          // The snippet: the section's heading (its own field, or in front
+          // of the text) and its best sentence, each with its highlights.
+          else if (f === "section") highlighted(el, h.snippet ? h.snippet.heading.text : "", h.snippet ? h.snippet.heading.highlights : []);
+          else if (f === "snippet") {
+            var sn = h.snippet;
+            if (!sn) el.textContent = "";
+            else if (hasSection || !sn.heading.text) highlighted(el, sn.text.text, sn.text.highlights);
+            else {
+              var off = sn.heading.text.length + 3;
+              highlighted(el, sn.heading.text + " — " + sn.text.text, sn.heading.highlights.concat(
+                sn.text.highlights.map(function (r) { return [r[0] + off, r[1] + off]; })));
+            }
+          }
           else if (f === "url") text(el, h.url);
         });
         listEl.appendChild(node);
@@ -308,7 +321,10 @@ export const RUNTIME_JS = String.raw`(function () {
       return get("search", { q: q, lang: lang(), page: "1" });
     }).then(function (body) {
       show(body, false);
-      record({ kind: "search", text: q, lang: lang(), results: body.total || 0, previous: lastQueryOf(q) });
+      var searched = { kind: "search", text: q, lang: lang(), results: body.total || 0 };
+      var previous = lastQueryOf(q);
+      if (previous) searched.previous = previous;
+      record(searched);
     }).catch(function () {
       root.setAttribute("data-caelo-search-error", "true");
     });

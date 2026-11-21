@@ -286,6 +286,27 @@ describe("counting visitors' searches", () => {
     ]);
     expect(isPopularCandidate(few.queries[0] as never)).toBe(false);
   });
+
+  it("a search naming the query before it is a reformulation; a first search is none", () => {
+    const search = (text: string, previous: string | null) =>
+      ({
+        kind: "search",
+        text,
+        lang: "de",
+        day: "2026-11-01",
+        results: 1,
+        target: null,
+        previous,
+      }) as const;
+    const { reformulations, queries } = aggregate([
+      search("rabat", null),
+      search("rabatte", "rabat"),
+      search("Rabatte", "rabat"),
+      search("rabatte", "rabatte"),
+    ]);
+    expect(reformulations).toEqual([{ from: "rabat", to: "rabatte", lang: "de", count: 2 }]);
+    expect(queries.find((q) => q.text === "rabatte")?.searches).toBe(3);
+  });
 });
 
 /** An in-memory stand-in for the host's handles, enough for the observer. */
