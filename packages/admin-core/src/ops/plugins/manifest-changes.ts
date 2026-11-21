@@ -62,6 +62,13 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   requiresPlugins: "Required plugins",
   consentPurposes: "Visitor consent purposes",
   bakedData: "Data baked into pages",
+  config: "Its settings",
+  entityConfig: "Its settings per page, module or page type",
+  configPreviewOperation: "Preview of setting changes",
+  collections: "Search indexes it keeps",
+  collectionOperations: "What visitors can search and read",
+  pageOutputObserver: "What it reads from your pages at each Stage",
+  batchOperations: "Long-running tasks it runs",
 };
 
 /** Stable JSON: two values compare equal whatever their key order in jsonb. */

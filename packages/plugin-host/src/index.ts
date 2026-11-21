@@ -56,6 +56,12 @@ export {
   withAssetContent,
 } from "./client-assets.js";
 export {
+  type ConfigurablePlugin,
+  configurablePlugins,
+  ensureConfigOps,
+  hasConfig,
+} from "./config-handle.js";
+export {
   consentPurposeDeclared,
   declaredConsentPurposes,
   pluginDeclaresConsentPurpose,
@@ -198,6 +204,21 @@ export {
   pluginRunsHere,
 } from "./local-availability.js";
 export { verifyMailUnsubscribeToken } from "./mail-link-token.js";
+export {
+  applyApprovedConfig,
+  CONFIG_OPS,
+  type ConfigChange,
+  type ConfigFieldInfo,
+  type ConfigPluginLookup,
+  describeConfig,
+  describeEntityConfig,
+  entityRowId,
+  gatedLeaves,
+  hostRowId,
+  loadedConfigLookup,
+  parsedConfigOf,
+  previewConfigPatch,
+} from "./plugin-config.js";
 export {
   activeDependentsOf,
   dependentsMessage,

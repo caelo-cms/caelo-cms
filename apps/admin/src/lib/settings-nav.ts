@@ -410,6 +410,14 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         ],
       },
       {
+        href: "/settings/plugin-config",
+        label: "Plugin settings",
+        description: "Settings of your active plugins, and the changes waiting for your approval.",
+        permission: "settings.write",
+        icon: "sliders",
+        keywords: ["configuration", "search settings", "plugin options"],
+      },
+      {
         href: "/settings/plugins/installations",
         label: "Install external plugins",
         description: "Upload a plugin package and review each access it asks for.",

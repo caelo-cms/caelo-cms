@@ -10,12 +10,17 @@
  * branch snapshot that shows in the chat's draft, is undone with the chat,
  * reaches main with the Stage and goes live with Publish live.
  *
- * Two rows hold the configuration: the release row (every field with scope
- * `release`, branch-aware) and the immediate row (fields with scope
- * `immediate`, always on main). Keeping them apart is what lets an immediate
- * field change at once while a chat holds an unmerged snapshot of the
- * release row; one row would let the Stage merge write the stale immediate
- * value back.
+ * Three rows hold the configuration, by each top-level field's metadata:
+ *
+ * - the release row: routine fields, branch-aware;
+ * - the immediate row: fields with scope `immediate`, always on main;
+ * - the approved row: fields with gate `approval`, written on main only by
+ *   the approval path (`plugin_config.execute_proposal`).
+ *
+ * A branch snapshot holds the whole state of one row. With one row, a
+ * chat's unmerged snapshot would carry the old value of an immediate or an
+ * approved field, and its Stage merge would write it back over the newer
+ * one. Separate rows keep each field written by exactly one path.
  *
  * Entity rows have a deterministic id (UUID v5 of kind and entity id), so
  * two chats writing the same entity meet on one row and the row lock
@@ -70,7 +75,11 @@ export const CONFIG_TABLE = "caelo_config";
 /** Host-owned table of the per-entity configuration rows. */
 export const ENTITY_CONFIG_TABLE = "caelo_entity_config";
 
-const CONFIG_COLUMNS = { id: "uuid", scope: "enum:release,immediate", values: "jsonb" } as const;
+const CONFIG_COLUMNS = {
+  id: "uuid",
+  scope: "enum:release,immediate,approved",
+  values: "jsonb",
+} as const;
 const ENTITY_COLUMNS = {
   id: "uuid",
   entity_kind: "enum:page,module,contentInstance,pageType",
@@ -93,6 +102,8 @@ export function hostRowId(name: string): string {
 
 const RELEASE_ROW = hostRowId("config:release");
 const IMMEDIATE_ROW = hostRowId("config:immediate");
+const APPROVED_ROW = hostRowId("config:approved");
+const ROWS = [RELEASE_ROW, IMMEDIATE_ROW, APPROVED_ROW] as const;
 
 /** The row id of one entity's configuration. */
 export function entityRowId(kind: ConfigEntityKind, entityId: string): string {
@@ -157,19 +168,41 @@ function refuse(operation: string, message: string): never {
   throw new OperationAbortError({ kind: "HandlerError", operation, message });
 }
 
-/** Splits a value into the release part and the immediate part, by each top-level field's scope. */
-function splitByScope(
+type RowKind = "release" | "immediate" | "approved";
+
+/** The row a top-level field lives in. */
+function rowOf(field: PluginConfigSchema[string]): RowKind {
+  if (field.type === "group") return "release";
+  if (field.gate === "approval") return "approved";
+  return field.scope === "immediate" ? "immediate" : "release";
+}
+
+const ROW_IDS: Readonly<Record<RowKind, string>> = {
+  release: RELEASE_ROW,
+  immediate: IMMEDIATE_ROW,
+  approved: APPROVED_ROW,
+};
+
+/** Splits a value into its three rows, by each top-level field. */
+function splitByRow(
   schema: PluginConfigSchema,
   value: Readonly<Record<string, unknown>>,
-): { release: Record<string, unknown>; immediate: Record<string, unknown> } {
-  const release: Record<string, unknown> = {};
-  const immediate: Record<string, unknown> = {};
-  for (const [name, field] of Object.entries(schema)) {
-    if (!(name in value)) continue;
-    const isImmediate = field.type !== "group" && field.scope === "immediate";
-    (isImmediate ? immediate : release)[name] = value[name];
-  }
-  return { release, immediate };
+): Record<RowKind, Record<string, unknown>> {
+  const out: Record<RowKind, Record<string, unknown>> = {
+    release: {},
+    immediate: {},
+    approved: {},
+  };
+  for (const [name, field] of Object.entries(schema))
+    if (name in value) out[rowOf(field)][name] = value[name];
+  return out;
+}
+
+function mergedRows(rows: ReadonlyMap<string, Record<string, unknown>>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const id of ROWS)
+    Object.assign(out, (rows.get(id)?.values ?? {}) as Record<string, unknown>);
+  return out;
 }
 
 /** Looks up a loaded plugin's declarations by slug; the host supplies it. */
@@ -231,21 +264,14 @@ export async function readConfigValue(
   slug: string,
   schema: PluginConfigSchema,
 ): Promise<Record<string, unknown>> {
-  const rows = await readRows(tx, ctx, slug, CONFIG_TABLE, CONFIG_COLUMNS, [
-    RELEASE_ROW,
-    IMMEDIATE_ROW,
-  ]);
-  const release = rows.get(RELEASE_ROW);
-  if (!release) {
+  const rows = await readRows(tx, ctx, slug, CONFIG_TABLE, CONFIG_COLUMNS, [...ROWS]);
+  if (!rows.get(RELEASE_ROW)) {
     refuse(
       "plugin_config.get",
       `the configuration of plugin "${slug}" is not stored: deactivate and activate the plugin again (Settings → Plugins) so its defaults are written`,
     );
   }
-  const value = {
-    ...((release.values ?? {}) as Record<string, unknown>),
-    ...((rows.get(IMMEDIATE_ROW)?.values ?? {}) as Record<string, unknown>),
-  };
+  const value = mergedRows(rows);
   const parsed = configValueSchema(schema).safeParse(value);
   if (!parsed.success) {
     refuse(
@@ -270,14 +296,8 @@ export async function seedConfig(
   locker: PluginRowLocker | undefined,
 ): Promise<{ reset: string[] }> {
   const defaults = configDefaults(schema);
-  const rows = await readRows(tx, ctx, slug, CONFIG_TABLE, CONFIG_COLUMNS, [
-    RELEASE_ROW,
-    IMMEDIATE_ROW,
-  ]);
-  const stored = {
-    ...((rows.get(RELEASE_ROW)?.values ?? {}) as Record<string, unknown>),
-    ...((rows.get(IMMEDIATE_ROW)?.values ?? {}) as Record<string, unknown>),
-  };
+  const rows = await readRows(tx, ctx, slug, CONFIG_TABLE, CONFIG_COLUMNS, [...ROWS]);
+  const stored = mergedRows(rows);
   const reset: string[] = [];
   const migrate = (
     fields: PluginConfigSchema,
@@ -308,13 +328,9 @@ export async function seedConfig(
     return out;
   };
   const value = migrate(schema, stored, defaults, "");
-  const { release, immediate } = splitByScope(schema, value);
+  const split = splitByRow(schema, value);
   const t = { schema: schemaName(slug), table: CONFIG_TABLE };
-  const write = async (
-    rowId: string,
-    scope: "release" | "immediate",
-    values: Record<string, unknown>,
-  ) => {
+  const write = async (rowId: string, scope: RowKind, values: Record<string, unknown>) => {
     const existing = rows.get(rowId);
     if (!existing) {
       const r = await privateInsert(
@@ -341,8 +357,8 @@ export async function seedConfig(
       if (!r.ok) refuse("plugin_config.seed", r.message);
     }
   };
-  await write(RELEASE_ROW, "release", release);
-  await write(IMMEDIATE_ROW, "immediate", immediate);
+  for (const kind of ["release", "immediate", "approved"] as const)
+    await write(ROW_IDS[kind], kind, split[kind]);
   return { reset };
 }
 
@@ -400,32 +416,20 @@ export async function updateConfig(
       op,
       `the result does not validate: ${valid.error.issues[0]?.path.join(".")}: ${valid.error.issues[0]?.message}`,
     );
-  const beforeSplit = splitByScope(schema, before);
-  const afterSplit = splitByScope(schema, after);
+  const beforeSplit = splitByRow(schema, before);
+  const afterSplit = splitByRow(schema, after);
   const t = { schema: schemaName(slug), table: CONFIG_TABLE };
-  if (JSON.stringify(beforeSplit.release) !== JSON.stringify(afterSplit.release)) {
+  // Immediate and approved fields never wait for a Stage: on main, whatever branch the caller is on.
+  const main = { ...ctx, chatBranchId: undefined, chatTaskId: undefined };
+  for (const kind of ["release", "immediate", "approved"] as const) {
+    if (JSON.stringify(beforeSplit[kind]) === JSON.stringify(afterSplit[kind])) continue;
     const r = await privateUpdate(
       tx,
-      ctx,
+      kind === "release" ? ctx : main,
       t,
-      RELEASE_ROW,
-      { values: afterSplit.release },
-      [sql`"values" = ${sql.param(afterSplit.release)}`],
-      locker,
-      op,
-    );
-    if (!r.ok) refuse(op, r.message);
-  }
-  if (JSON.stringify(beforeSplit.immediate) !== JSON.stringify(afterSplit.immediate)) {
-    // Immediate fields never wait for a Stage: on main, whatever branch the caller is on.
-    const main = { ...ctx, chatBranchId: undefined, chatTaskId: undefined };
-    const r = await privateUpdate(
-      tx,
-      main,
-      t,
-      IMMEDIATE_ROW,
-      { values: afterSplit.immediate },
-      [sql`"values" = ${sql.param(afterSplit.immediate)}`],
+      ROW_IDS[kind],
+      { values: afterSplit[kind] },
+      [sql`"values" = ${sql.param(afterSplit[kind])}`],
       locker,
       op,
     );
@@ -605,6 +609,7 @@ export const CONFIG_OPS = {
   getEntities: "plugin_config.get_entities",
   setEntities: "plugin_config.set_entities",
   seed: "plugin_config.seed",
+  preview: "plugin_config.preview",
 } as const;
 
 function declared(
@@ -629,21 +634,31 @@ export function makeConfigOps(deps: Deps): OperationDefinition<unknown, unknown>
     actorScope: ["human", "ai", "system", "plugin"],
     database: "cms_admin",
     input: z.object({ pluginSlug: slugInput }).strict(),
-    output: z.object({ values: z.record(z.string(), z.unknown()) }),
+    output: z.object({
+      values: z.record(z.string(), z.unknown()),
+      fields: z.array(z.record(z.string(), z.unknown())),
+      entityFields: z.record(z.string(), z.array(z.record(z.string(), z.unknown()))),
+    }),
     handler: async (ctx, input, tx) => {
       const { pluginId, parsed } = declared(deps, CONFIG_OPS.get, input.pluginSlug);
-      if (!parsed.config)
+      if (!parsed.config && !parsed.entityConfig)
         refuse(CONFIG_OPS.get, `plugin "${input.pluginSlug}" declares no configuration`);
       if (ctx.actorKind === "plugin" && ctx.pluginId !== pluginId)
         refuse(CONFIG_OPS.get, "a plugin reads only its own configuration");
       await scopeToPlugin(tx, pluginId);
       return ok({
-        values: await readConfigValue(
-          tx,
-          pluginCtx(ctx, pluginId),
-          input.pluginSlug,
-          parsed.config,
-        ),
+        values: parsed.config
+          ? await readConfigValue(tx, pluginCtx(ctx, pluginId), input.pluginSlug, parsed.config)
+          : {},
+        fields: parsed.config
+          ? (describeConfig(parsed.config) as unknown as Record<string, unknown>[])
+          : [],
+        entityFields: parsed.entityConfig
+          ? (describeEntityConfig(parsed.entityConfig) as unknown as Record<
+              string,
+              Record<string, unknown>[]
+            >)
+          : {},
       });
     },
   });
@@ -793,7 +808,19 @@ export function makeConfigOps(deps: Deps): OperationDefinition<unknown, unknown>
       );
     },
   });
-  return [get, update, getEntities, setEntities, seed] as unknown as OperationDefinition<
+  const preview = defineOperation({
+    name: CONFIG_OPS.preview,
+    readScope: "request",
+    actorScope: ["human", "ai", "system"],
+    database: "cms_admin",
+    input: z.object({ pluginSlug: slugInput, patch: z.record(z.string(), z.unknown()) }).strict(),
+    output: z.object({ changes: z.array(z.record(z.string(), z.unknown())) }),
+    handler: async (ctx, input, tx) => {
+      const r = await previewConfigPatch(tx, ctx, deps.lookup, input.pluginSlug, input.patch);
+      return ok({ changes: r.changes as unknown as Record<string, unknown>[] });
+    },
+  });
+  return [get, update, getEntities, setEntities, seed, preview] as unknown as OperationDefinition<
     unknown,
     unknown
   >[];
@@ -804,16 +831,45 @@ export function registerPluginConfigOps(registry: OperationRegistry, deps: Deps)
   for (const op of makeConfigOps(deps)) if (!registry.has(op.name)) registry.register(op);
 }
 
+/** One leaf as the AI's read tool and the generated form describe it. */
+export interface ConfigFieldInfo {
+  readonly path: string;
+  readonly type: string;
+  readonly label: string;
+  readonly description: string;
+  readonly effect: string;
+  readonly gate: string;
+  readonly scope: string;
+  /** Bounds, options or keys in a few words: "1–50", "words | hybrid", "per page type". */
+  readonly allowed: string;
+  /** The leaf's declaration, for the generated form. */
+  readonly spec: Readonly<Record<string, unknown>>;
+}
+
+function allowedOf(field: ConfigLeaf["field"]): string {
+  switch (field.type) {
+    case "bool":
+      return "true | false";
+    case "int":
+    case "number":
+      return `${field.min}–${field.max}`;
+    case "enum":
+      return field.options.map((o) => o.value).join(" | ");
+    case "string":
+      return `text, at most ${field.maxLength} characters`;
+    case "pageRef":
+      return "a page id, or null";
+    case "listRef":
+      return `a list id of list type "${field.listType}", or null`;
+    case "catalogModel":
+      return "a model id from the model catalog, or null";
+    case "map":
+      return `per ${field.keys === "pageType" ? "page type slug" : field.keys === "language" ? "language tag" : "module id"}: ${allowedOf(field.value as ConfigLeaf["field"])}`;
+  }
+}
+
 /** Every leaf path with its metadata, for the AI's get tool and the generated form. */
-export function describeConfig(schema: PluginConfigSchema): {
-  path: string;
-  type: string;
-  label: string;
-  description: string;
-  effect: string;
-  gate: string;
-  scope: string;
-}[] {
+export function describeConfig(schema: PluginConfigSchema): ConfigFieldInfo[] {
   return configLeaves(schema).map((l) => ({
     path: l.path,
     type: l.field.type,
@@ -822,7 +878,31 @@ export function describeConfig(schema: PluginConfigSchema): {
     effect: l.field.effect,
     gate: l.field.gate,
     scope: l.field.scope,
+    allowed: allowedOf(l.field),
+    spec: l.field as unknown as Record<string, unknown>,
   }));
+}
+
+/** Entity fields per kind, described the same way. */
+export function describeEntityConfig(
+  entityConfig: PluginEntityConfigSchema,
+): Record<string, ConfigFieldInfo[]> {
+  const out: Record<string, ConfigFieldInfo[]> = {};
+  for (const [kind, fields] of Object.entries(entityConfig)) {
+    if (!fields) continue;
+    out[kind] = Object.entries(fields).map(([name, f]) => ({
+      path: name,
+      type: f.type,
+      label: f.label,
+      description: f.description,
+      effect: f.effect,
+      gate: f.gate,
+      scope: f.scope,
+      allowed: `${allowedOf(f)}; default ${JSON.stringify(f.default)}`,
+      spec: f as unknown as Record<string, unknown>,
+    }));
+  }
+  return out;
 }
 
 /** The lookup over the host's loaded plugins: active (loaded and not disabled) plugins only. */
@@ -837,4 +917,89 @@ export function loadedConfigLookup(
     if (!p || isDisabled(slug)) return null;
     return { pluginId: p.pluginId, declaration: p.definition };
   };
+}
+
+/** One field a patch changes, as an approval card shows it. */
+export interface ConfigChange {
+  readonly path: string;
+  readonly label: string;
+  readonly before: unknown;
+  readonly after: unknown;
+  readonly gate: string;
+  readonly effect: string;
+}
+
+function valueAt(value: Readonly<Record<string, unknown>>, path: string): unknown {
+  let at: unknown = value;
+  for (const part of path.split(".")) at = (at as Record<string, unknown> | undefined)?.[part];
+  return at;
+}
+
+/**
+ * Validates a patch against an active plugin's schema and describes what it
+ * would change, without writing. Runs inside the caller's transaction (the
+ * approval path's propose step).
+ */
+export async function previewConfigPatch(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  lookup: ConfigPluginLookup,
+  slug: string,
+  patch: unknown,
+): Promise<{ pluginId: string; changes: ConfigChange[] }> {
+  const op = "plugin_config.preview";
+  const found = lookup(slug);
+  if (!found)
+    refuse(op, `plugin "${slug}" is not active: list_plugins shows which plugins are installed`);
+  const parsed = parsedConfigOf(found.declaration);
+  if (!parsed.config) refuse(op, `plugin "${slug}" declares no configuration`);
+  const checked = configPatchSchema(parsed.config).safeParse(patch);
+  if (!checked.success) {
+    refuse(
+      op,
+      `the patch does not fit plugin "${slug}"'s configuration: ${checked.error.issues
+        .slice(0, 5)
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ")}`,
+    );
+  }
+  await scopeToPlugin(tx, found.pluginId);
+  const before = await readConfigValue(tx, pluginCtx(ctx, found.pluginId), slug, parsed.config);
+  const after = applyConfigPatch(parsed.config, before, checked.data);
+  const changes = patchedLeaves(parsed.config, checked.data).map((l) => ({
+    path: l.path,
+    label: l.field.label,
+    before: valueAt(before, l.path) ?? null,
+    after: valueAt(after, l.path) ?? null,
+    gate: l.field.gate,
+    effect: l.field.effect,
+  }));
+  return { pluginId: found.pluginId, changes };
+}
+
+/** Applies an approved patch on main (the approver's context), gated fields included. */
+export async function applyApprovedConfig(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  lookup: ConfigPluginLookup,
+  slug: string,
+  patch: unknown,
+  locker: PluginRowLocker | undefined,
+): Promise<ConfigUpdateResult> {
+  const found = lookup(slug);
+  if (!found)
+    refuse(
+      "plugin_config.execute_proposal",
+      `plugin "${slug}" is no longer active: nothing was applied`,
+    );
+  const parsed = parsedConfigOf(found.declaration);
+  if (!parsed.config)
+    refuse("plugin_config.execute_proposal", `plugin "${slug}" declares no configuration`);
+  await scopeToPlugin(tx, found.pluginId);
+  const main = {
+    ...pluginCtx(ctx, found.pluginId),
+    chatBranchId: undefined,
+    chatTaskId: undefined,
+  };
+  return updateConfig(tx, main, slug, parsed.config, patch, locker, true);
 }

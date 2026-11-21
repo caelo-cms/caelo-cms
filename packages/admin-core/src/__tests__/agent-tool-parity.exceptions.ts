@@ -206,6 +206,7 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     note: "site memory is loaded into every turn's system prompt (persistence.loadMemory); changes go through site_memory_propose",
   },
   "static_files.list_pending": PENDING_QUEUE,
+  "plugin_config.list_pending": PENDING_QUEUE,
   "users.list_pending": PENDING_QUEUE,
   // #970 — the sync job's per-run report. The AI sees it where it acts: every
   // approved user change folds the run's refused members into the tool

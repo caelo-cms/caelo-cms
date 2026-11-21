@@ -465,6 +465,12 @@ import {
 } from "./ops/platform-update-scheduler.js";
 import { platformUpdatesSkipScheduledOp } from "./ops/platform-update-skip.js";
 import { platformUpdateStatusOp, platformUpdatesCheckNowOp } from "./ops/platform-updates.js";
+import {
+  executePluginConfigProposalOp,
+  listPendingPluginConfigProposalsOp,
+  proposePluginConfigOp,
+  rejectPluginConfigProposalOp,
+} from "./ops/plugin_config_pending.js";
 import { markPluginDataPagesOp } from "./ops/plugin-data.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
@@ -1379,6 +1385,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeDeleteStaticFilesOp);
   registry.register(previewDeleteStaticFilesOp);
   registry.register(executeStaticFileProposalOp);
+  // Epic #1644 (#1645) — approval-gated plugin configuration fields.
+  registry.register(proposePluginConfigOp);
+  registry.register(executePluginConfigProposalOp);
+  registry.register(rejectPluginConfigProposalOp);
+  registry.register(listPendingPluginConfigProposalsOp);
   registry.register(rejectStaticFileProposalOp);
   registry.register(listPendingStaticFileProposalsOp);
   // P14 — Site Import Wizard.

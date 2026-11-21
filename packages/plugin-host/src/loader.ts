@@ -433,6 +433,9 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   bootOpts = opts;
   // #1361 — confirmed at request start, not on a timer (runtime-health.ts).
   configureRuntimeHeartbeat(opts.infra, opts.systemActorId);
+  // #1645 — the configuration operations the AI tools reach, whether or not
+  // a loaded plugin declares a configuration yet.
+  ensureConfigOps(opts.infra);
 
   const loaded: Array<{ slug: string; version: string; tier: 1 | 2 }> = [];
   const inactive: Array<{ slug: string; version: string; status: string }> = [];

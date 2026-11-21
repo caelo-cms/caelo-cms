@@ -147,6 +147,9 @@ async function wipe(): Promise<void> {
     await tx.unsafe(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
     const byPluginActor = `SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`;
     await tx.unsafe(`DELETE FROM plugin_row_snapshots WHERE schema_name = '${SCHEMA}'`);
+    await tx.unsafe(
+      `DELETE FROM plugin_config_pending_actions WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`,
+    );
     await tx.unsafe(`DELETE FROM site_snapshots WHERE actor_id IN (${byPluginActor})`);
     await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (${byPluginActor})`);
     await tx.unsafe(
@@ -319,6 +322,94 @@ describe("plugin configuration (#1645)", () => {
     expect(sneaky.ok).toBe(false);
   });
 
+  it("applies an approval-gated field only through an approved proposal, on main", async () => {
+    const g = await newChat("g");
+    const proposed = await execute(registry, adapter, g.ai, "plugin_config.propose_update", {
+      pluginSlug: SLUG,
+      patch: { cap: 500 },
+      reason: "More traffic expected.",
+    });
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const { proposalId, preview } = proposed.value as {
+      proposalId: string;
+      preview: { changes: { path: string; before: unknown; after: unknown }[] };
+    };
+    expect(preview.changes).toEqual([
+      expect.objectContaining({ path: "cap", before: 100, after: 500 }),
+    ]);
+    const dup = await execute(registry, adapter, g.ai, "plugin_config.propose_update", {
+      pluginSlug: SLUG,
+      patch: { cap: 500 },
+      reason: "Again.",
+    });
+    expect(dup.ok).toBe(false);
+    const listed = await execute(registry, adapter, g.ai, "pending_proposals.list", {});
+    expect(JSON.stringify(listed.ok ? listed.value : null)).toContain(proposalId);
+    expect(
+      (await execute(registry, adapter, g.ai, "plugin_config.execute_proposal", { proposalId })).ok,
+    ).toBe(false);
+    const noRole = await execute(
+      registry,
+      adapter,
+      {
+        actorId: "00000000-0000-0000-0000-00000000bbbb",
+        actorKind: "human",
+        requestId: "pcfg-norole",
+      },
+      "plugin_config.execute_proposal",
+      { proposalId },
+    );
+    expect(noRole.ok).toBe(false);
+    expect((await read(MAIN)).cap).toBe(100);
+    const applied = await execute(registry, adapter, humanCtx, "plugin_config.execute_proposal", {
+      proposalId,
+    });
+    if (!applied.ok) throw new Error(JSON.stringify(applied.error));
+    expect((await read(MAIN)).cap).toBe(500);
+    expect((await read(g.invocation)).cap).toBe(500);
+    expect(
+      (await execute(registry, adapter, humanCtx, "plugin_config.execute_proposal", { proposalId }))
+        .ok,
+    ).toBe(false);
+  });
+
+  it("refuses an approval whose field changed after the proposal", async () => {
+    const h = await newChat("h");
+    const first = await execute(registry, adapter, h.ai, "plugin_config.propose_update", {
+      pluginSlug: SLUG,
+      patch: { cap: 600 },
+      reason: "A.",
+    });
+    const second = await execute(registry, adapter, h.ai, "plugin_config.propose_update", {
+      pluginSlug: SLUG,
+      patch: { cap: 700 },
+      reason: "B.",
+    });
+    if (!first.ok || !second.ok) throw new Error("propose failed");
+    const a = (first.value as { proposalId: string }).proposalId;
+    const b = (second.value as { proposalId: string }).proposalId;
+    expect(
+      (
+        await execute(registry, adapter, humanCtx, "plugin_config.execute_proposal", {
+          proposalId: b,
+        })
+      ).ok,
+    ).toBe(true);
+    const stale = await execute(registry, adapter, humanCtx, "plugin_config.execute_proposal", {
+      proposalId: a,
+    });
+    expect(stale.ok).toBe(false);
+    expect(JSON.stringify(stale.ok ? null : stale.error)).toContain("changed after this proposal");
+    expect((await read(MAIN)).cap).toBe(700);
+    expect(
+      (
+        await execute(registry, adapter, humanCtx, "plugin_config.reject_proposal", {
+          proposalId: a,
+        })
+      ).ok,
+    ).toBe(true);
+  });
+
   it("reports every invalid path of a patch", async () => {
     const c = await newChat("c");
     const r = await execute(registry, adapter, c.ai, "plugin_config.update", {
@@ -393,7 +484,7 @@ describe("plugin configuration (#1645)", () => {
     });
     const value = await read(MAIN);
     expect(value.semantic).toBe(false);
-    // The stored 100 no longer fits max 50: reset to the new default.
+    // The stored 700 no longer fits max 50: reset to the new default.
     expect(value.cap).toBe(25);
     expect(value.results).toBe(20);
   });

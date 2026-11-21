@@ -75,3 +75,25 @@ export function makePluginConfigReader(
       (await entities(kind, undefined, true)).map((e) => e.id),
   });
 }
+
+/** An active plugin with something to configure, for the settings overview. */
+export interface ConfigurablePlugin {
+  readonly slug: string;
+  readonly version: string;
+  readonly hasConfig: boolean;
+  readonly entityKinds: readonly string[];
+}
+
+/** Every active plugin that declares `config` or `entityConfig`, by slug. */
+export function configurablePlugins(): ConfigurablePlugin[] {
+  return loadedPlugins
+    .all()
+    .filter((p) => hasConfig(p) && !isPluginDisabled(p.slug))
+    .map((p) => ({
+      slug: p.slug,
+      version: p.version,
+      hasConfig: Boolean(p.definition.config),
+      entityKinds: Object.keys(p.definition.entityConfig ?? {}),
+    }))
+    .sort((a, b) => a.slug.localeCompare(b.slug));
+}
