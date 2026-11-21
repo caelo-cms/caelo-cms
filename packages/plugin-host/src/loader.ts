@@ -917,6 +917,9 @@ export async function activateApprovedExternalPlugin(
       "image_generation",
       "site_media_read",
       "consent_provider",
+      "collections",
+      "page_output",
+      "batch_jobs",
     ]);
     for (const capability of manifest.requestedCapabilities ?? [])
       if (!supported.has(capability))

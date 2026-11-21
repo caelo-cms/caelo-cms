@@ -117,6 +117,8 @@ const ADMIN_TABLES = [
   "plugin_page_observation_pending",
   "plugin_module_counts",
   "plugin_module_count_pending",
+  "plugin_page_observers",
+  "plugin_page_observer_pending",
   "redirect_pending_actions",
   "static_files",
 

@@ -26,6 +26,11 @@
 --                           page as seen.
 -- plugin_module_counts      per observing plugin, the placement counts it last
 --                           received, to report changes (with a pending twin).
+-- plugin_page_observers     per observing plugin, the digest of what shapes
+--                           its view of every page (its version, its
+--                           configuration, its module settings): a new
+--                           digest makes the next Stage deliver every page
+--                           again (with a pending twin).
 --
 -- Expand-only: new tables the previous release does not read.
 
@@ -107,12 +112,26 @@ CREATE TABLE plugin_module_count_pending (
 );
 CREATE INDEX plugin_module_count_pending_plugin_idx ON plugin_module_count_pending (plugin_id);
 
+CREATE TABLE plugin_page_observers (
+  plugin_id uuid PRIMARY KEY REFERENCES plugins(id) ON DELETE CASCADE,
+  digest    text NOT NULL
+);
+
+CREATE TABLE plugin_page_observer_pending (
+  run_id    uuid NOT NULL REFERENCES deploy_runs(id) ON DELETE CASCADE,
+  plugin_id uuid NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+  digest    text NOT NULL,
+  PRIMARY KEY (run_id, plugin_id)
+);
+CREATE INDEX plugin_page_observer_pending_plugin_idx ON plugin_page_observer_pending (plugin_id);
+
 DO $$
 DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY ARRAY[
     'collection_changes', 'collection_releases', 'plugin_page_observations',
-    'plugin_page_observation_pending', 'plugin_module_counts', 'plugin_module_count_pending'
+    'plugin_page_observation_pending', 'plugin_module_counts', 'plugin_module_count_pending',
+    'plugin_page_observers', 'plugin_page_observer_pending'
   ] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);

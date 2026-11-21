@@ -90,8 +90,9 @@ const write = (value, strictCas = false) => {
 };
 const pending = new MapCtor();
 let nextId = 0;
+let callLimit = 1024;
 const rpc = (method, ...args) => new PromiseCtor((resolve, reject) => {
-  if (nextId >= 1024) return reject(new ErrorCtor("SandboxCallLimit"));
+  if (nextId >= callLimit) return reject(new ErrorCtor("SandboxCallLimit"));
   const id = nextId;
   MapSet(pending, id, { resolve, reject });
   // A refused call consumes no sequence number and leaves nothing pending,
@@ -113,9 +114,47 @@ const handles = (prefix, names) => {
   return ObjectFreeze(out);
 };
 const QUERY_METHODS = ["insert", "list", "update", "updateMany", "compareAndSwap", "delete"];
+// Epic #1644 — config.entities answers entry pairs (JSON has no Map).
+const configHandle = () => ObjectFreeze({
+  get: () => rpc("config.get"),
+  entity: (kind, id) => rpc("config.entity", kind, id),
+  entities: async (kind, ids) => new MapCtor(await rpc("config.entities", kind, ids)),
+  configured: (kind) => rpc("config.configured", kind),
+});
+// A batch of documents travels in messages below the 1 MB line limit: the
+// bootstrap splits it, so a plugin need not know the wire's size.
+const UPSERT_CHUNK_BYTES = 768 * 1024;
+const collectionHandle = (name) => ObjectFreeze({
+  upsert: async (docs) => {
+    let chunk = [];
+    let bytes = 0;
+    for (let i = 0; i < docs.length; i++) {
+      const size = encodeText(JSONStringify(docs[i])).length + 1;
+      if (chunk.length > 0 && (bytes + size > UPSERT_CHUNK_BYTES || chunk.length === 500)) {
+        await rpc("collections.upsert", name, chunk);
+        chunk = [];
+        bytes = 0;
+      }
+      chunk[chunk.length] = docs[i];
+      bytes += size;
+    }
+    if (chunk.length > 0) await rpc("collections.upsert", name, chunk);
+  },
+  delete: async (ids) => {
+    for (let i = 0; i < ids.length; i += 1000) await rpc("collections.delete", name, ids.slice(i, i + 1000));
+  },
+  get: (id) => rpc("collections.get", name, id),
+  setProfile: (profile) => rpc("collections.setProfile", name, profile),
+});
+const collectionsOf = (names) => {
+  const out = {};
+  for (let i = 0; i < names.length; i++) out[names[i]] = collectionHandle(names[i]);
+  return ObjectFreeze(out);
+};
 let initialized = false;
 let buffer = "";
 const execute = async (message) => {
+  if (NumberIsFinite(message.callLimit)) callLimit = message.callLimit;
   const ctx = ObjectFreeze({
     query: handles("query", QUERY_METHODS),
     ...(message.hasAdminQuery ? { adminQuery: handles("adminQuery", QUERY_METHODS) } : {}),
@@ -124,6 +163,8 @@ const execute = async (message) => {
     ...(message.hasSiteMedia ? { siteMedia: handles("siteMedia", ["find", "inspect", "readChunk"]) } : {}),
     ...(message.hasConsentPurposes ? { consentPurposes: handles("consentPurposes", ["list"]) } : {}),
     ...(message.hasPrivateFiles ? { privateFiles: handles("privateFiles", ["begin", "writeChunk", "commit", "stat", "readChunk", "remove"]) } : {}),
+    ...(message.hasConfig ? { config: configHandle() } : {}),
+    ...(message.collections && message.collections.length > 0 ? { collections: collectionsOf(message.collections) } : {}),
     api: handles("api", ["list", "get"]),
     captcha: handles("captcha", ["requireProof"]),
     theme: ObjectFreeze(message.theme), visitor: ObjectFreeze(message.visitor),

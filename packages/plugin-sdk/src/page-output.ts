@@ -92,6 +92,8 @@ export interface PageOutputFacts {
    * login-protected pages; withheld content is what an observer can tell.
    */
   readonly hasDeferredContent: boolean;
+  /** Text past 200,000 characters or links past 2,000 were left out of these facts. */
+  readonly truncated: boolean;
   readonly modules: readonly PageOutputModule[];
   readonly texts: readonly PageOutputText[];
   readonly links: readonly PageOutputLink[];

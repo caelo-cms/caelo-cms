@@ -74,6 +74,8 @@ export interface PageHtmlFacts {
   readonly links: readonly PageHtmlLink[];
   /** A module withheld by a plugin (`data-caelo-deferred`) or a baked plugin region. */
   readonly hasDeferredContent: boolean;
+  /** Text or links past the bounds were left out. */
+  readonly truncated: boolean;
   /** SHA-256 of the facts above: equal digests, equal facts. */
   readonly outputHash: string;
 }
@@ -160,6 +162,12 @@ export interface PageHtmlInput {
   readonly siteOrigins: ReadonlySet<string>;
 }
 
+/** Text characters one page's facts carry at most (about 120 printed pages). */
+export const MAX_PAGE_TEXT_CHARS = 200_000;
+
+/** Links one page's facts carry at most. */
+export const MAX_PAGE_LINKS = 2_000;
+
 /** Reads the facts of one page's final HTML. */
 export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
   const zoneOf = new Map(input.composed.map((m) => [m.moduleId, m.zone] as const));
@@ -169,6 +177,7 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
   let metaDescription: string | null = null;
   let robots: string | null = null;
   let hasDeferredContent = false;
+  let truncated = false;
   let anchor: string | null = null;
   let inTitle = false;
   let titleText = "";
@@ -178,9 +187,17 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
   const open: { href: string; label: string | null; scope: Scope; text: string; depth: number }[] =
     [];
   const top = (): Scope => stack[stack.length - 1] ?? ROOT;
+  let textChars = 0;
   const addText = (raw: string, scope: Scope, source: string): void => {
     const text = collapse(raw);
     if (text === "" || !/\p{L}|\p{N}/u.test(text)) return;
+    // A page's facts stay deliverable in one observer call (the sandbox's
+    // 1 MB line): text past the bound is left out and the facts say so.
+    if (textChars + text.length > MAX_PAGE_TEXT_CHARS) {
+      truncated = true;
+      return;
+    }
+    textChars += text.length;
     texts.push({
       text,
       moduleId: scope.moduleId,
@@ -298,8 +315,9 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
     robots,
     modules: [...modules.values()],
     texts,
-    links,
+    links: links.slice(0, MAX_PAGE_LINKS),
     hasDeferredContent,
+    truncated: truncated || links.length > MAX_PAGE_LINKS,
   };
   return { ...facts, outputHash: createHash("sha256").update(JSON.stringify(facts)).digest("hex") };
 }

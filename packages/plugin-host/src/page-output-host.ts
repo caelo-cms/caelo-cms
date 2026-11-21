@@ -19,15 +19,19 @@
  * refuses with the reason.
  */
 
+import { createHash } from "node:crypto";
 import {
+  configLeaves,
   PAGE_OUTPUT_BATCH,
   type PageOutputFacts,
   type PageOutputObserverArgs,
   type PlacementChange,
   type PluginCapability,
+  parseConfigSchema,
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { hasConfig, makePluginConfigReader } from "./config-handle.js";
 import {
   hostInfra,
   hostSystemActorId,
@@ -71,6 +75,12 @@ export function pageOutputObservers(): LoadedPlugin[] {
 interface RunState {
   /** Per plugin, per needed page: the facts hash it last received (null: never). */
   readonly needs: Map<string, Map<string, string | null>>;
+  /** Per plugin, the digest it sees this Stage's pages under. */
+  readonly digests: Map<string, string>;
+  /** Per plugin, per offered page: the hash recorded for it (HTML + the plugin's page settings). */
+  readonly offered: Map<string, Map<string, string>>;
+  /** Per plugin with page settings, per offered page: the hash of those settings. */
+  readonly settings: Map<string, Map<string, string>>;
   /** Plugins whose observer failed in this run, with the first error. */
   readonly failed: Map<string, string>;
   publishedPageCount: number;
@@ -81,7 +91,14 @@ const runs = new Map<string, RunState>();
 function stateOf(runId: string): RunState {
   let s = runs.get(runId);
   if (!s) {
-    s = { needs: new Map(), failed: new Map(), publishedPageCount: 0 };
+    s = {
+      needs: new Map(),
+      digests: new Map(),
+      offered: new Map(),
+      settings: new Map(),
+      failed: new Map(),
+      publishedPageCount: 0,
+    };
     runs.set(runId, s);
   }
   return s;
@@ -101,6 +118,109 @@ async function op<T>(name: string, input: unknown): Promise<T> {
   return r.value as T;
 }
 
+const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+
+/** JSON with sorted keys, so equal values hash equally. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    );
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+function observerInvocation(runId: string) {
+  return { origin: "observer" as const, actorId: hostSystemActorId(), stageRunId: runId };
+}
+
+/**
+ * What shapes a plugin's view of every page: its version and approved
+ * artifact, its configuration (the fields that wait for a Stage; an
+ * `immediate` field has no visitor-visible effect by contract) and its
+ * module settings. A change makes the next Stage deliver every page again,
+ * so a plugin whose rules changed rebuilds what it derived from the site.
+ */
+async function observerDigest(plugin: LoadedPlugin, runId: string): Promise<string> {
+  const parts: Record<string, unknown> = {
+    version: plugin.definition.version,
+    artifact: plugin.externalApproval?.artifactDigest ?? null,
+  };
+  if (plugin.definition.config && hasConfig(plugin)) {
+    const schema = parseConfigSchema(plugin.definition.config);
+    const reader = makePluginConfigReader(plugin, hostInfra(), observerInvocation(runId));
+    const value = await reader.get();
+    const immediate = new Set(
+      configLeaves(schema)
+        .filter((l) => "scope" in l.field && l.field.scope === "immediate")
+        .map((l) => l.path),
+    );
+    parts.config = withoutPaths(value, immediate);
+    if (plugin.definition.entityConfig?.module) {
+      const ids = [...(await reader.configured("module"))].sort();
+      const modules = ids.length > 0 ? await reader.entities("module", ids) : new Map();
+      parts.modules = ids.map((id) => [id, modules.get(id) ?? {}]);
+    }
+  }
+  return sha256(stableJson(parts));
+}
+
+function withoutPaths(
+  value: Readonly<Record<string, unknown>>,
+  paths: ReadonlySet<string>,
+  prefix = "",
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    const path = prefix ? `${prefix}.${k}` : k;
+    if (paths.has(path)) continue;
+    out[k] =
+      v !== null && typeof v === "object" && !Array.isArray(v)
+        ? withoutPaths(v as Record<string, unknown>, paths, path)
+        : v;
+  }
+  return out;
+}
+
+/**
+ * Per page, the hash recorded for the plugin: its HTML, and the plugin's
+ * settings for the page when it keeps any (their hash goes to `settings`).
+ */
+async function offeredHashes(
+  plugin: LoadedPlugin,
+  runId: string,
+  pages: readonly OfferedPage[],
+  settingsOut: Map<string, string>,
+): Promise<Map<string, string>> {
+  if (!plugin.definition.entityConfig?.page || !hasConfig(plugin)) {
+    return new Map(pages.map((p) => [p.pageId, p.htmlHash] as const));
+  }
+  const reader = makePluginConfigReader(plugin, hostInfra(), observerInvocation(runId));
+  const settings = await reader.entities(
+    "page",
+    pages.map((p) => p.pageId),
+  );
+  const out = new Map<string, string>();
+  for (const p of pages) {
+    const settingsHash = sha256(stableJson(settings.get(p.pageId) ?? {}));
+    settingsOut.set(p.pageId, settingsHash);
+    out.set(p.pageId, sha256(`${p.htmlHash}\n${settingsHash}`));
+  }
+  return out;
+}
+
+/**
+ * What a plugin last received for a page, as recorded: the facts, and its
+ * settings for the page when it keeps any — a changed setting is a change
+ * the plugin must see even when the page's facts are the same.
+ */
+function receivedHash(state: RunState, pluginId: string, facts: PageOutputFacts): string {
+  const settings = state.settings.get(pluginId)?.get(facts.pageId);
+  return settings ? sha256(`${facts.outputHash}\n${settings}`) : facts.outputHash;
+}
+
 /** The pages whose facts some observer needs. */
 export async function pageOutputNeeds(
   runId: string,
@@ -111,14 +231,36 @@ export async function pageOutputNeeds(
   if (observers.length === 0 || pages.length === 0) return [];
   const state = stateOf(runId);
   state.publishedPageCount = publishedPageCount;
+  for (const plugin of observers) {
+    if (!state.digests.has(plugin.pluginId))
+      state.digests.set(plugin.pluginId, await observerDigest(plugin, runId));
+  }
   const out = new Set<string>();
   for (let i = 0; i < pages.length; i += 1000) {
+    const chunk = pages.slice(i, i + 1000);
+    const plugins = [];
+    for (const plugin of observers) {
+      let settings = state.settings.get(plugin.pluginId);
+      if (!settings) {
+        settings = new Map();
+        state.settings.set(plugin.pluginId, settings);
+      }
+      const hashes = await offeredHashes(plugin, runId, chunk, settings);
+      let offered = state.offered.get(plugin.pluginId);
+      if (!offered) {
+        offered = new Map();
+        state.offered.set(plugin.pluginId, offered);
+      }
+      for (const [pageId, hash] of hashes) offered.set(pageId, hash);
+      plugins.push({
+        pluginId: plugin.pluginId,
+        digest: state.digests.get(plugin.pluginId) as string,
+        pages: chunk.map((p) => ({ pageId: p.pageId, hash: hashes.get(p.pageId) as string })),
+      });
+    }
     const r = await op<{ needs: { pluginId: string; pageId: string; factsHash: string | null }[] }>(
       "page_output.needs",
-      {
-        pluginIds: observers.map((p) => p.pluginId),
-        pages: pages.slice(i, i + 1000),
-      },
+      { plugins },
     );
     for (const n of r.needs) {
       let m = state.needs.get(n.pluginId);
@@ -145,13 +287,41 @@ async function callObserver(
     pluginSlug: plugin.slug,
     operationName: operation,
     args,
-    invocation: { origin: "observer", actorId: hostSystemActorId(), stageRunId: runId },
+    invocation: observerInvocation(runId),
   });
   if (!r.ok) {
     state.failed.set(plugin.pluginId, r.error.message);
     return false;
   }
   return true;
+}
+
+/**
+ * The bytes one observer call's pages may take: an installed plugin's call
+ * crosses the sandbox's 1 MB message line with its other arguments.
+ */
+export const PAGE_OUTPUT_BATCH_BYTES = 768 * 1024;
+
+/** Splits facts into calls of at most {@link PAGE_OUTPUT_BATCH} pages and {@link PAGE_OUTPUT_BATCH_BYTES}. */
+export function factBatches(facts: readonly PageOutputFacts[]): PageOutputFacts[][] {
+  const out: PageOutputFacts[][] = [];
+  let batch: PageOutputFacts[] = [];
+  let bytes = 0;
+  for (const f of facts) {
+    const size = Buffer.byteLength(JSON.stringify(f));
+    if (
+      batch.length > 0 &&
+      (batch.length === PAGE_OUTPUT_BATCH || bytes + size > PAGE_OUTPUT_BATCH_BYTES)
+    ) {
+      out.push(batch);
+      batch = [];
+      bytes = 0;
+    }
+    batch.push(f);
+    bytes += size;
+  }
+  if (batch.length > 0) out.push(batch);
+  return out;
 }
 
 /** Delivers facts to every observer that has not seen them. */
@@ -164,15 +334,16 @@ export async function observePageOutputs(
     const needs = state.needs.get(plugin.pluginId);
     if (!needs) continue;
     const mine = delivered.filter((d) => needs.has(d.facts.pageId));
-    const changed = mine.filter((d) => needs.get(d.facts.pageId) !== d.facts.outputHash);
-    for (let i = 0; i < changed.length; i += PAGE_OUTPUT_BATCH) {
-      const batch = changed.slice(i, i + PAGE_OUTPUT_BATCH);
+    const changed = mine.filter(
+      (d) => needs.get(d.facts.pageId) !== receivedHash(state, plugin.pluginId, d.facts),
+    );
+    for (const batch of factBatches(changed.map((d) => d.facts))) {
       const ok = await callObserver(
         plugin,
         runId,
         {
           runId,
-          pages: batch.map((d) => d.facts),
+          pages: batch,
           removed: [],
           placementChanges: [],
           final: false,
@@ -191,8 +362,8 @@ export async function observePageOutputs(
           pluginId: plugin.pluginId,
           pages: mine.slice(i, i + 1000).map((d) => ({
             pageId: d.facts.pageId,
-            htmlHash: d.htmlHash,
-            factsHash: d.facts.outputHash,
+            htmlHash: state.offered.get(plugin.pluginId)?.get(d.facts.pageId) ?? d.htmlHash,
+            factsHash: receivedHash(state, plugin.pluginId, d.facts),
           })),
         });
       }
@@ -225,6 +396,7 @@ export async function finishPageOutput(
         {
           runId,
           pluginId: plugin.pluginId,
+          digest: state.digests.get(plugin.pluginId) ?? (await observerDigest(plugin, runId)),
           builtPageIds,
           moduleCounts,
         },

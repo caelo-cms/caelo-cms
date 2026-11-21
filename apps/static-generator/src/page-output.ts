@@ -235,6 +235,7 @@ export class PageOutputCollector {
       noindex: (html.robots ?? "").includes("noindex"),
       notFoundPage: page.pageId === this.notFoundPageId,
       hasDeferredContent: html.hasDeferredContent,
+      truncated: html.truncated,
       modules,
       texts: html.texts,
       links: html.links.map((l) => ({

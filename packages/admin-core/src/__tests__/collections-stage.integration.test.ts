@@ -282,32 +282,66 @@ beforeAll(async () => {
               maxDocumentBytes: 100_000,
             },
           },
+          // A rule that shapes every document, and a per-page setting.
+          config: {
+            title_only: {
+              type: "bool",
+              label: "Titles only",
+              description: "Index only the page titles.",
+              effect: "rebuild",
+              default: false,
+            },
+          },
+          entityConfig: {
+            page: {
+              excluded: {
+                type: "bool",
+                label: "Leave out of the search",
+                description: "The page does not appear in the site search.",
+                effect: "pages",
+                default: false,
+              },
+            },
+          },
           pageOutputObserver: { operation: "observe" },
           operations: {
             observe: async (ctx, args) => {
               const a = args as PageOutputObserverArgs;
               calls.push(a);
+              const config = ctx.config;
+              if (!config) throw new Error("ctx.config missing");
+              const titleOnly = (await config.get()).title_only === true;
+              const settings = await config.entities(
+                "page",
+                a.pages.map((p) => p.pageId),
+              );
+              const excluded = a.pages
+                .filter((p) => settings.get(p.pageId)?.excluded === true)
+                .map((p) => p.pageId);
 
               if (writePublic) await ctx.query.insert("hits", { query: "staged" });
               const pages = (ctx as { collections?: PluginCollections }).collections?.pages;
               if (!pages) throw new Error("ctx.collections.pages missing");
-              const docs = a.pages.map((p) => ({
-                id: p.pageId,
-                lang: p.lang || "de",
-                values: {
-                  title: p.title,
-                  sections: [
-                    {
-                      anchor: p.texts.find((t) => t.anchor)?.anchor ?? "",
-                      heading: "",
-                      text: p.texts.map((t) => t.text).join(" "),
-                    },
-                  ],
-                  url: p.path,
-                },
-              }));
+              const docs = a.pages
+                .filter((p) => !excluded.includes(p.pageId))
+                .map((p) => ({
+                  id: p.pageId,
+                  lang: p.lang || "de",
+                  values: {
+                    title: p.title,
+                    sections: [
+                      {
+                        anchor: p.texts.find((t) => t.anchor)?.anchor ?? "",
+                        heading: "",
+                        text: titleOnly ? "" : p.texts.map((t) => t.text).join(" "),
+                      },
+                    ],
+                    url: p.path,
+                  },
+                }));
               if (docs.length > 0) await pages.upsert(docs);
-              if (a.removed.length > 0) await pages.delete(a.removed);
+              if (a.removed.length > 0 || excluded.length > 0)
+                await pages.delete([...a.removed, ...excluded]);
               if (a.final && !profileSet) {
                 profileSet = true;
                 await pages.setProfile({
@@ -408,6 +442,42 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(calls.flatMap((c) => c.pages)).toEqual([]);
     const index = await indexState(run);
     expect(index.stats.carried).toBe(true);
+  });
+
+  it("a configuration change delivers every page again, once", async () => {
+    await ok("plugin_config.update", { pluginSlug: PLUGIN, patch: { title_only: true } });
+    const run = await stage();
+    expect(calls.flatMap((c) => c.pages.map((p) => p.path)).sort()).toEqual(
+      ["/", ...PAGES.map((s) => `/${s}`)].sort(),
+    );
+    const index = await indexState(run);
+    expect(index.state).toBe("ready");
+    expect(
+      await searchStore(join(root, "collections-staging"), index.releaseKey as string, "Versand"),
+    ).toEqual([]);
+    await stage();
+    expect(calls.flatMap((c) => c.pages)).toEqual([]);
+    await ok("plugin_config.update", { pluginSlug: PLUGIN, patch: { title_only: false } });
+    await stage();
+  });
+
+  it("a page setting delivers that page again", async () => {
+    const pageId = pageIds.get(PAGES[0] as string) as string;
+    await ok("plugin_config.set_entities", {
+      pluginSlug: PLUGIN,
+      items: [{ kind: "page", id: pageId, values: { excluded: true } }],
+    });
+    const run = await stage();
+    expect(calls.flatMap((c) => c.pages.map((p) => p.path))).toEqual([`/${PAGES[0]}`]);
+    const index = await indexState(run);
+    expect(index.stats.docCount).toBe(2);
+    await ok("plugin_config.set_entities", {
+      pluginSlug: PLUGIN,
+      items: [{ kind: "page", id: pageId, values: { excluded: null } }],
+    });
+    const back = await stage();
+    expect(calls.flatMap((c) => c.pages.map((p) => p.path))).toEqual([`/${PAGES[0]}`]);
+    expect((await indexState(back)).stats.docCount).toBe(3);
   });
 
   it("a page taken offline reaches the observer as removed and leaves the index", async () => {

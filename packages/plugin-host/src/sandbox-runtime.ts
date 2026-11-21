@@ -25,16 +25,75 @@ export interface SandboxInvocation {
   readonly authorize: () => Promise<void>;
   readonly timeoutMs?: number;
   readonly denySdkCalls?: boolean;
+  /** SDK calls this invocation may make (default {@link SANDBOX_CALL_LIMIT}). */
+  readonly callLimit?: number;
 }
 
 const table = z
   .string()
   .regex(/^[a-z_][a-z0-9_]*$/)
   .max(120);
+const collectionName = z.string().regex(/^[a-z][a-z0-9_]{0,39}$/);
+const entityKind = z.enum(["page", "module"]);
 const record = z.record(z.string(), z.unknown());
 const id = z.string().uuid();
 
+/**
+ * Run one SDK call a sandboxed plugin made, on the host's context for it.
+ * Exported for the batch job's remote broker (#1646): a call the plugin
+ * makes in a job container is answered by the admin through this same
+ * function, on a context the admin built — the job's word grants nothing.
+ * Results must be JSON: a Map (config.entities) travels as entry pairs.
+ */
+export async function brokerSandboxCall(
+  ctx: PluginContext,
+  method: string,
+  args: unknown[],
+): Promise<unknown> {
+  return broker(ctx, method, args);
+}
+
 async function broker(ctx: PluginContext, method: string, args: unknown[]): Promise<unknown> {
+  if (method.startsWith("config.")) {
+    const config = ctx.config;
+    if (!config) throw new Error("SandboxCapabilityDenied: config (the plugin declares none)");
+    switch (method) {
+      case "config.get":
+        if (args.length !== 0) throw new Error("SandboxArgumentsInvalid");
+        return config.get();
+      case "config.entity": {
+        const [kind, entityId] = z.tuple([entityKind, z.string().min(1).max(64)]).parse(args);
+        return config.entity(kind, entityId);
+      }
+      case "config.entities": {
+        const [kind, ids] = z
+          .tuple([entityKind, z.array(z.string().min(1).max(64)).max(1000)])
+          .parse(args);
+        return [...(await config.entities(kind, ids)).entries()];
+      }
+      case "config.configured":
+        return config.configured(z.tuple([entityKind]).parse(args)[0]);
+    }
+  }
+  if (method.startsWith("collections.")) {
+    const collections = ctx.collections;
+    if (!collections) throw new Error("SandboxCapabilityDenied: collections");
+    const name = collectionName.parse(args[0]);
+    const handle = Object.hasOwn(collections, name) ? collections[name] : undefined;
+    if (!handle) throw new Error(`SandboxCollectionNotDeclared: ${name}`);
+    if (args.length !== 2) throw new Error("SandboxArgumentsInvalid");
+    // The host handle validates documents, ids and the profile in full.
+    switch (method) {
+      case "collections.upsert":
+        return handle.upsert(z.array(record).max(500).parse(args[1]) as never);
+      case "collections.delete":
+        return handle.delete(z.array(z.string().max(500)).max(1000).parse(args[1]));
+      case "collections.get":
+        return handle.get(z.string().min(1).max(500).parse(args[1]));
+      case "collections.setProfile":
+        return handle.setProfile(record.parse(args[1]) as never);
+    }
+  }
   if (method.startsWith("images.")) {
     const images = (ctx as PluginContextTier1).images;
     if (!images) throw new Error("SandboxCapabilityDenied: image_generation");
@@ -346,6 +405,9 @@ export async function runSandboxWithBundler(
       hasPrivateFiles: Boolean((context as PluginContextTier1).privateFiles),
       hasSiteMedia: Boolean((context as PluginContextTier1).siteMedia),
       hasConsentPurposes: Boolean((context as PluginContextTier1).consentPurposes),
+      callLimit: invocation.callLimit ?? SANDBOX_CALL_LIMIT,
+      hasConfig: Boolean(context.config),
+      collections: Object.keys(context.collections ?? {}),
       // No sessionToken: it is the visitor's login bearer credential (the
       // `login` entry of the HttpOnly `__session` cookie). Handing it to
       // runtime-authored code would let a plugin collect tokens in its own
@@ -367,7 +429,7 @@ export async function runSandboxWithBundler(
         await bounded(invocation.authorize());
         return message.value;
       }
-      if (message.id !== nextCall++ || nextCall > SANDBOX_CALL_LIMIT)
+      if (message.id !== nextCall++ || nextCall > (invocation.callLimit ?? SANDBOX_CALL_LIMIT))
         throw new Error("SandboxCallLimitOrSequence");
       await bounded(invocation.authorize());
       if (invocation.denySdkCalls) throw new Error("SandboxInstallationCannotCallSdk");

@@ -57,6 +57,11 @@ export function externalPluginDefinition(opts: {
         "image_generation",
         "site_media_read",
         "consent_provider",
+        // Epic #1644 — brokered by the sandbox (collections) or delivered
+        // as arguments (page output); a batch runs in the same sandbox in a job.
+        "collections",
+        "page_output",
+        "batch_jobs",
       ].includes(capability)
     )
       throw new Error(`External capability broker unavailable: ${capability}`);

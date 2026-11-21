@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { canonicalSitePath, extractPageHtmlFacts, sitePathOf } from "./page-output-facts.js";
+import {
+  canonicalSitePath,
+  extractPageHtmlFacts,
+  MAX_PAGE_TEXT_CHARS,
+  sitePathOf,
+} from "./page-output-facts.js";
+import { factBatches, PAGE_OUTPUT_BATCH_BYTES } from "./page-output-host.js";
 
 const ORIGINS = new Set(["https://example.com", "https://www.example.com"]);
 
@@ -101,6 +107,36 @@ describe("extractPageHtmlFacts", () => {
       siteOrigins: ORIGINS,
     });
     expect(again.outputHash).toBe(facts.outputHash);
+  });
+});
+
+describe("bounded facts", () => {
+  it("leaves text past the bound out and says so", () => {
+    const para = `<p>${"Wort ".repeat(10_000)}</p>`;
+    const facts = extractPageHtmlFacts({
+      pageId: "p",
+      path: "/p/",
+      url: "https://example.com/p/",
+      html: `<html lang="de"><head><title>T</title></head><body>${para.repeat(10)}</body></html>`,
+      composed: [],
+      siteOrigins: ORIGINS,
+    });
+    expect(facts.truncated).toBe(true);
+    expect(facts.texts.reduce((n, t) => n + t.text.length, 0)).toBeLessThanOrEqual(
+      MAX_PAGE_TEXT_CHARS,
+    );
+  });
+
+  it("splits observer calls by bytes as well as by pages", () => {
+    const page = (i: number, chars: number) =>
+      ({ pageId: String(i), texts: [{ text: "x".repeat(chars) }] }) as never;
+    const small = factBatches(Array.from({ length: 450 }, (_, i) => page(i, 10)));
+    expect(small.map((b) => b.length)).toEqual([200, 200, 50]);
+    const large = factBatches(Array.from({ length: 10 }, (_, i) => page(i, 300_000)));
+    expect(large.every((b) => JSON.stringify(b).length <= PAGE_OUTPUT_BATCH_BYTES + 300_100)).toBe(
+      true,
+    );
+    expect(large.length).toBe(5);
   });
 });
 

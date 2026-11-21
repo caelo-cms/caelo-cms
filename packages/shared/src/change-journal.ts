@@ -304,6 +304,10 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
     "derived from Stage output (#1647): the placement counts an observer last received",
   plugin_module_count_pending:
     "a running Stage's placement counts (#1647), committed or dropped with the run",
+  plugin_page_observers:
+    "derived from Stage output (#1647): the digest an observer last saw every page under; losing it only re-sends every page at the next Stage",
+  plugin_page_observer_pending:
+    "a running Stage's observer digests (#1647), committed or dropped with the run",
   content_instance_refs:
     "derived (synchronous, #1287): the ids and media slugs each content instance's values reference, maintained by triggers on the journaled content_instances; rebuilt by content_instances.rebuild_refs",
   content_instance_snapshot_refs:

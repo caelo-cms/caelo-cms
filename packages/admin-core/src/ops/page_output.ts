@@ -32,11 +32,23 @@ export const pageOutputNeedsOp = defineOperation({
   database: "cms_admin",
   input: z
     .object({
-      pluginIds: z.array(uuid).min(1).max(32),
-      pages: z
-        .array(z.object({ pageId: uuid, htmlHash: hash }).strict())
+      plugins: z
+        .array(
+          z
+            .object({
+              pluginId: uuid,
+              /** What shapes the plugin's view of every page; a new one means every page. */
+              digest: hash,
+              /** Per page, the hash of its HTML and the plugin's settings for it. */
+              pages: z
+                .array(z.object({ pageId: uuid, hash }).strict())
+                .min(1)
+                .max(1000),
+            })
+            .strict(),
+        )
         .min(1)
-        .max(1000),
+        .max(32),
     })
     .strict(),
   output: z.object({
@@ -45,10 +57,17 @@ export const pageOutputNeedsOp = defineOperation({
     ),
   }),
   handler: async (_ctx, input, tx) => {
+    const pluginIds = input.plugins.map((p) => p.pluginId);
+    const digests = (await tx.execute(sql`
+      SELECT plugin_id::text AS plugin_id, digest FROM plugin_page_observers
+      WHERE plugin_id = ANY(${uuidArray(pluginIds)})
+    `)) as unknown as { plugin_id: string; digest: string }[];
+    const stored = new Map(digests.map((d) => [d.plugin_id, d.digest] as const));
+    const pageIds = [...new Set(input.plugins.flatMap((p) => p.pages.map((x) => x.pageId)))];
     const rows = (await tx.execute(sql`
       SELECT plugin_id::text AS plugin_id, page_id::text AS page_id, html_hash, facts_hash
       FROM plugin_page_observations
-      WHERE plugin_id = ANY(${uuidArray(input.pluginIds)}) AND page_id = ANY(${uuidArray(input.pages.map((p) => p.pageId))})
+      WHERE plugin_id = ANY(${uuidArray(pluginIds)}) AND page_id = ANY(${uuidArray(pageIds)})
     `)) as unknown as {
       plugin_id: string;
       page_id: string;
@@ -57,11 +76,19 @@ export const pageOutputNeedsOp = defineOperation({
     }[];
     const seen = new Map(rows.map((r) => [`${r.plugin_id}:${r.page_id}`, r] as const));
     const needs: { pluginId: string; pageId: string; factsHash: string | null }[] = [];
-    for (const pluginId of input.pluginIds) {
-      for (const page of input.pages) {
-        const row = seen.get(`${pluginId}:${page.pageId}`);
-        if (!row || row.html_hash !== page.htmlHash)
-          needs.push({ pluginId, pageId: page.pageId, factsHash: row?.facts_hash ?? null });
+    for (const plugin of input.plugins) {
+      // A new version, configuration or module setting: the plugin sees
+      // every page again, unchanged facts included (factsHash null).
+      const fresh = stored.get(plugin.pluginId) !== plugin.digest;
+      for (const page of plugin.pages) {
+        const row = seen.get(`${plugin.pluginId}:${page.pageId}`);
+        if (fresh) needs.push({ pluginId: plugin.pluginId, pageId: page.pageId, factsHash: null });
+        else if (!row || row.html_hash !== page.hash)
+          needs.push({
+            pluginId: plugin.pluginId,
+            pageId: page.pageId,
+            factsHash: row?.facts_hash ?? null,
+          });
       }
     }
     return ok({ needs });
@@ -110,6 +137,8 @@ export const pageOutputFinishPlanOp = defineOperation({
     .object({
       runId: uuid,
       pluginId: uuid,
+      /** The digest the plugin saw this Stage's pages under (page_output.needs). */
+      digest: hash,
       /** Every published page the Stage built. */
       builtPageIds: z.array(uuid).max(500_000),
       /** Placement count per module over the built pages. */
@@ -147,6 +176,11 @@ export const pageOutputFinishPlanOp = defineOperation({
     for (const [moduleId, count] of before)
       if (!after.has(moduleId) && count !== 0)
         placementChanges.push({ moduleId, before: count, after: 0 });
+    await tx.execute(sql`
+      INSERT INTO plugin_page_observer_pending (run_id, plugin_id, digest)
+      VALUES (${input.runId}::uuid, ${input.pluginId}::uuid, ${input.digest})
+      ON CONFLICT (run_id, plugin_id) DO UPDATE SET digest = EXCLUDED.digest
+    `);
     await tx.execute(
       sql`DELETE FROM plugin_module_count_pending WHERE run_id = ${input.runId}::uuid AND plugin_id = ${input.pluginId}::uuid`,
     );
@@ -199,6 +233,14 @@ export const pageOutputCommitRunOp = defineOperation({
     await tx.execute(
       sql`DELETE FROM plugin_module_count_pending WHERE run_id = ${input.runId}::uuid`,
     );
+    await tx.execute(sql`
+      INSERT INTO plugin_page_observers (plugin_id, digest)
+      SELECT plugin_id, digest FROM plugin_page_observer_pending WHERE run_id = ${input.runId}::uuid
+      ON CONFLICT (plugin_id) DO UPDATE SET digest = EXCLUDED.digest
+    `);
+    await tx.execute(
+      sql`DELETE FROM plugin_page_observer_pending WHERE run_id = ${input.runId}::uuid`,
+    );
     const delivered = [{ n: gone.length + kept.length }];
     return ok({ pages: delivered[0]?.n ?? 0 });
   },
@@ -218,6 +260,9 @@ export const pageOutputDiscardRunOp = defineOperation({
     );
     await tx.execute(
       sql`DELETE FROM plugin_module_count_pending WHERE run_id = ${input.runId}::uuid`,
+    );
+    await tx.execute(
+      sql`DELETE FROM plugin_page_observer_pending WHERE run_id = ${input.runId}::uuid`,
     );
     return ok({});
   },
