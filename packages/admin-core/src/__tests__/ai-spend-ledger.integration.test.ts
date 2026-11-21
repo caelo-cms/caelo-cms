@@ -27,6 +27,7 @@ import {
 import { definePlugin, type PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { type ExecutionContext, resetCapLookupCounters } from "@caelo-cms/shared";
+import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { makePluginAi } from "../../../plugin-host/src/plugin-ai.js";
 import { invalidateAllPricing } from "../ai/pricing-cache.js";
@@ -46,6 +47,24 @@ const registry = new OperationRegistry();
 const alice = crypto.randomUUID();
 const bob = crypto.randomUUID();
 let plugin: LoadedPlugin;
+
+/**
+ * Test-only cleanup on its own connection, outside the adapter's tagged
+ * transactions: it removes this file's rows by its made-up provider, a
+ * filter no product query uses (the query index gate reads only the tagged
+ * ones), as the other spend suites do.
+ */
+async function wipeCalls(): Promise<void> {
+  const conn = new SQL(process.env.ADMIN_DATABASE_URL as string);
+  try {
+    await conn.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`DELETE FROM ai_calls WHERE provider = ${PROVIDER}`;
+    });
+  } finally {
+    await conn.end();
+  }
+}
 
 async function sys<T>(
   fn: (tx: Parameters<Parameters<DatabaseAdapter["withAdminTransaction"]>[1]>[0]) => Promise<T>,
@@ -159,8 +178,8 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   resetCapLookupCounters();
+  await wipeCalls();
   await sys(async (tx) => {
-    await tx.execute(sql`DELETE FROM ai_calls WHERE provider = ${PROVIDER}`);
     await tx.execute(
       sql`UPDATE ai_budgets SET cap_microcents = NULL WHERE operation_type = 'text'`,
     );
@@ -169,8 +188,8 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  await wipeCalls();
   await sys(async (tx) => {
-    await tx.execute(sql`DELETE FROM ai_calls WHERE provider = ${PROVIDER}`);
     await tx.execute(sql`DELETE FROM ai_pricing WHERE provider = ${PROVIDER}`);
     await tx.execute(
       sql`UPDATE ai_budgets SET cap_microcents = NULL WHERE operation_type = 'text'`,

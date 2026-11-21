@@ -15,7 +15,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -314,7 +314,12 @@ describe("the key store (#1654)", () => {
       await handle.close();
     }
     await store.write(null);
-    expect(await readFile(file, "utf8")).toBe("{}");
+    const cleared = await open(file, "r");
+    try {
+      expect(await cleared.readFile("utf8")).toBe("{}");
+    } finally {
+      await cleared.close();
+    }
   });
 
   it("refuses on AWS and Azure, and without a store", () => {

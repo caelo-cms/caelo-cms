@@ -78,6 +78,7 @@ COPY packages/plugins/auth/package.json packages/plugins/auth/
 COPY packages/plugins/international-site/package.json packages/plugins/international-site/
 COPY packages/plugins/consent-manager/package.json packages/plugins/consent-manager/
 COPY packages/plugins/site-search/package.json packages/plugins/site-search/
+COPY packages/plugins/site-assistant/package.json packages/plugins/site-assistant/
 
 RUN bun install --frozen-lockfile
 

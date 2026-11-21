@@ -38,10 +38,16 @@ export default defineConfig({
         "**/site-assistant-visitor.browser.ts",
       ],
     },
-    // Epic #1644 — both visitor sites activate the site search and publish
-    // its index (published_collections, the plugin's row): one after the
-    // other, never side by side. Nothing in `main` touches either.
-    { name: "site-search-visitor", testMatch: "**/site-search-visitor.browser.ts" },
+    // Epic #1644 — both visitor sites activate the site search, publish its
+    // index (published_collections, the plugin's row) and the plugin
+    // registry their gateway attaches from. A `main` spec that republishes
+    // the registry (the consent site) detached the site search mid-test, so
+    // they run after `main`, one after the other.
+    {
+      name: "site-search-visitor",
+      testMatch: "**/site-search-visitor.browser.ts",
+      dependencies: ["main"],
+    },
     {
       name: "site-assistant-visitor",
       testMatch: "**/site-assistant-visitor.browser.ts",
@@ -52,7 +58,7 @@ export default defineConfig({
     {
       name: "no-ai-key",
       testMatch: "**/no-ai-key.browser.ts",
-      dependencies: ["main", "site-assistant-visitor"],
+      dependencies: ["site-assistant-visitor"],
       fullyParallel: false,
     },
   ],
