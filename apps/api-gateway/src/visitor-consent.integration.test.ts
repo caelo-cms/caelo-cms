@@ -613,7 +613,7 @@ describe("a decision under an outdated policy version (#677)", () => {
 
 describe("a consent provider that cannot answer (#677)", () => {
   it("answers 503 ConsentUnavailable instead of guessing, and sets no cookie", async () => {
-    // Its settings row is what `visitor_consent_rule` reads; without it the
+    // Its settings row is what the consent rule reads; without it the
     // provider is running but cannot say which policy version counts.
     const saved = await asAdmin(
       async (tx) =>

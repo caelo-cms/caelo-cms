@@ -16,7 +16,8 @@
  *
  *   - stores it only when some ACTIVE plugin declares `visitor_id` AND the
  *     visitor's current decision grants that purpose's category (the
- *     consent provider's `visitor_consent_rule` maps purpose → category
+ *     consent rule core computes from the provider's `consentProvider`
+ *     declaration (#1340) maps purpose → category
  *     from the declarations it lists through `ctx.consentPurposes`) —
  *     never on first contact, never after "reject all", never on a site
  *     with no consent provider (nobody can have agreed) and never when no

@@ -71,7 +71,7 @@ const categoryKey = z
   .max(64)
   .regex(/^[a-z][a-z0-9_-]*$/, "a category key");
 
-/** What the provider's `visitor_consent_rule` operation returns. */
+/** The consent rule core computes from the provider's declaration (#1340). */
 export const visitorConsentRule = z
   .object({
     /** A decision counts only when it carries this version. */
