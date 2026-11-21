@@ -64,6 +64,7 @@ import { readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { collectionRollbackProblem } from "../collections/gc.js";
 import {
   DEPLOY_RUN_HEARTBEAT_MS,
   DEPLOY_RUN_LEASE_TTL_MS,
@@ -167,6 +168,7 @@ export const startRollbackOp = defineOperation({
     if (!target) return refuse(`target not found: ${input.targetName}`);
     const priorRows = (await tx.execute(sql`
       SELECT r.build_id, r.publish_summary->>'location' AS location, r.caelo_version,
+             r.projection_run_id::text AS projection_run_id,
              source.security_headers IS NOT NULL AS has_security_headers
       FROM deploy_runs r
       LEFT JOIN deploy_runs source ON source.id = CASE
@@ -181,10 +183,17 @@ export const startRollbackOp = defineOperation({
       build_id: string;
       location: string | null;
       caelo_version: string | null;
+      projection_run_id: string | null;
       has_security_headers: boolean | null;
     }[];
     const prior = priorRows[0];
     if (!prior) return refuse("no matching succeeded build for that target");
+    // #1648 — a build whose search index was cleaned up would go live with
+    // a search that answers nothing.
+    if (target.env === "production" && prior.projection_run_id) {
+      const problem = await collectionRollbackProblem(tx, prior.projection_run_id);
+      if (problem) return refuse(problem);
+    }
     // #1155 — the run carries the Caelo version that rendered the restored
     // build: it is what is live once the rollback released it, and a
     // plugin-data build refreshes regions only while the running version

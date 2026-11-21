@@ -10,6 +10,7 @@ import {
 // The gateway runs these too, so they live in plugin-host (gateway-ops.ts, #634).
 import { commentArchiveListForPageOp } from "@caelo-cms/plugin-host";
 import type { OperationRegistry } from "@caelo-cms/query-api";
+import { COLLECTION_GC_OPS } from "./collections/gc.js";
 import { COLLECTION_INDEX_OPS } from "./collections/ops.js";
 import {
   bugClustersToRefreshOp,
@@ -1396,6 +1397,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // Epic #1644 (#1647) — page output delivered to plugin observers at a Stage.
   for (const op of PAGE_OUTPUT_OPS) registry.register(op as never);
   for (const op of PLUGIN_BATCH_OPS) registry.register(op as never);
+  for (const op of COLLECTION_GC_OPS) registry.register(op as never);
   // Epic #1644 (#1648) — a Stage's collection index.
   for (const op of COLLECTION_INDEX_OPS) registry.register(op as never);
   registry.register(rejectStaticFileProposalOp);

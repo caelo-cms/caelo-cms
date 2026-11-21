@@ -68,6 +68,9 @@ CREATE TABLE collection_releases (
   error           text,
   created_at      timestamptz NOT NULL DEFAULT now(),
   finished_at     timestamptz,
+  -- Set when the clean-up deleted the files only this release used: a
+  -- rollback to its build is refused instead of serving a missing index.
+  collected_at    timestamptz,
   PRIMARY KEY (run_id, plugin_id, collection),
   CHECK ((state = 'ready') = (release_key IS NOT NULL))
 );

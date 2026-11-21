@@ -45,6 +45,7 @@ import {
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { runCollectionsGc } from "../collections/gc.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { drainProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
 import { registerAdminOps } from "../register.js";
@@ -214,6 +215,14 @@ async function indexState(runId: string): Promise<{
     await Bun.sleep(50);
   }
   throw new Error("the index job did not finish");
+}
+
+/** Every file under a store directory, recursively. */
+async function listFiles(dir: string): Promise<string[]> {
+  const { readdir } = await import("node:fs/promises");
+  return (await readdir(dir, { recursive: true, withFileTypes: true }))
+    .filter((e) => e.isFile())
+    .map((e) => join(e.parentPath, e.name));
 }
 
 async function searchStore(storeDir: string, releaseKey: string, text: string): Promise<string[]> {
@@ -523,5 +532,38 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(
       await searchStore(join(root, "collections-staging"), index.releaseKey as string, "Januar"),
     ).toEqual([`/${PAGES[0]}`]);
+  });
+
+  it("the clean-up deletes what no kept release names, keeps the newest index searchable, and drops applied change files", async () => {
+    const newest = await stage();
+    await setText(PAGES[0] as string, "Neue Preise ab Januar und Februar.");
+    const latest = await stage();
+    const index = await indexState(latest);
+    const before = (await listFiles(join(root, "collections-staging"))).length;
+    const report = await runCollectionsGc(
+      { adapter, registry },
+      { keepStages: 2, keepPublishes: 1 },
+    );
+    expect(report.deletedFiles).toBeGreaterThan(0);
+    expect(report.deletedChanges).toBeGreaterThan(0);
+    expect((await listFiles(join(root, "collections-staging"))).length).toBeLessThan(before);
+    expect(
+      await searchStore(join(root, "collections-staging"), index.releaseKey as string, "Februar"),
+    ).toEqual([`/${PAGES[0]}`]);
+    // The release of the Stage before still serves (kept: the last two).
+    expect((await indexState(newest)).state).toBe("ready");
+    const left = await sqlSystem(
+      async (tx) =>
+        (await tx`SELECT count(*)::int AS n FROM collection_changes WHERE applied_run_id IS NOT NULL`) as {
+          n: number;
+        }[],
+    );
+    expect(left[0]?.n).toBe(0);
+    // A second run finds nothing more to do.
+    const again = await runCollectionsGc(
+      { adapter, registry },
+      { keepStages: 2, keepPublishes: 1 },
+    );
+    expect(again.deletedFiles + again.deletedChanges).toBe(0);
   });
 });
