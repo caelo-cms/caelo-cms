@@ -353,6 +353,13 @@
         "zod": "4.6.7",
       },
     },
+    "packages/search-index": {
+      "name": "@caelo-cms/search-index",
+      "version": "0.0.0",
+      "dependencies": {
+        "@orama/stemmers": "3.1.18",
+      },
+    },
     "packages/shared": {
       "name": "@caelo-cms/shared",
       "version": "0.0.0",
@@ -531,6 +538,8 @@
     "@caelo-cms/provisioning": ["@caelo-cms/provisioning@workspace:packages/provisioning"],
 
     "@caelo-cms/query-api": ["@caelo-cms/query-api@workspace:packages/query-api"],
+
+    "@caelo-cms/search-index": ["@caelo-cms/search-index@workspace:packages/search-index"],
 
     "@caelo-cms/shared": ["@caelo-cms/shared@workspace:packages/shared"],
 
@@ -795,6 +804,8 @@
     "@opentelemetry/sdk-trace-node": ["@opentelemetry/sdk-trace-node@2.11.0", "", { "dependencies": { "@opentelemetry/context-async-hooks": "2.11.0", "@opentelemetry/core": "2.11.0", "@opentelemetry/sdk-trace-base": "2.11.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-CuvCMJmZxswhNLlM2LfuLOW3h3fZujA4hsG4B+Sz4dX2zvaXO8Ng74cnDHWD64gLszTlhiG3c0iNUjj4g+0/sA=="],
 
     "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.43.0", "", {}, "sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg=="],
+
+    "@orama/stemmers": ["@orama/stemmers@3.1.18", "", {}, "sha512-xXs5fpiUvBs4jJZtnayJmUSomdxxiwwwvTbAzPHSyI6geLM7bxXHgpVlYz4JeMBycHX8bHF7j9m7F35BxhuZ8g=="],
 
     "@oxc-parser/binding-android-arm-eabi": ["@oxc-parser/binding-android-arm-eabi@0.158.0", "", { "os": "android", "cpu": "arm" }, "sha512-eZ4sHtg/u9mzPaRPWXZ7MmJ3tSFYPDCoDrnAJEXBOIQfdAy0TnzlaJx7nq0HZwE8DkYLQg6GqGZlcjaJrnijKg=="],
 

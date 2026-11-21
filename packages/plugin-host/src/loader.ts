@@ -56,6 +56,7 @@ import { z } from "zod";
 import { runActivationSerialized } from "./activation-lock.js";
 import { makePluginContext } from "./capabilities.js";
 import { registerPluginChangeOps } from "./change-consumers.js";
+import { ensureConfigOps } from "./config-handle.js";
 import {
   hostSystemActorId,
   type LoadedPlugin,
@@ -76,6 +77,7 @@ import { describeLoadError } from "./load-error.js";
 import { loadReported, reportLoadFailure } from "./load-outcome.js";
 import { timedStep } from "./load-timing.js";
 import { resetLocalLoadOutcomes } from "./local-availability.js";
+import { CONFIG_OPS, withHostConfigTables } from "./plugin-config.js";
 import { inactiveRequiredPlugins, requirementsMessage } from "./plugin-dependencies.js";
 import { resetPluginRuntimeStats } from "./plugin-runtime-stats.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
@@ -601,12 +603,18 @@ async function loadTier2Row(
       indexes: definition.indexes?.schema,
       tableKinds: definition.tableKinds,
     });
-    if (definition.adminSchema && Object.keys(definition.adminSchema).length) {
+    // #1645 — a declared configuration adds the host's config tables.
+    const admin1 = withHostConfigTables(
+      definition,
+      definition.adminSchema,
+      definition.indexes?.adminSchema,
+    );
+    if (Object.keys(admin1.adminSchema).length) {
       const privateSchema = adminSchemaFromSpec({
         pluginId: row.id,
         slug: row.slug,
-        adminSchema: definition.adminSchema,
-        indexes: definition.indexes?.adminSchema,
+        adminSchema: admin1.adminSchema,
+        indexes: admin1.indexes,
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
         pluginId: row.id,
@@ -969,12 +977,17 @@ export async function activateApprovedExternalPlugin(
       indexes: manifest.indexes?.schema,
       tableKinds: manifest.tableKinds,
     });
-    if (manifest.adminSchema) {
+    const admin2 = withHostConfigTables(
+      manifest,
+      manifest.adminSchema,
+      manifest.indexes?.adminSchema,
+    );
+    if (Object.keys(admin2.adminSchema).length) {
       const privateSchema = adminSchemaFromSpec({
         pluginId: artifact.pluginId,
         slug: manifest.slug,
-        adminSchema: manifest.adminSchema,
-        indexes: manifest.indexes?.adminSchema,
+        adminSchema: admin2.adminSchema,
+        indexes: admin2.indexes,
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
         pluginId: artifact.pluginId,
@@ -1425,12 +1438,13 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // requires the cms_admin_schema capability). The emitted DDL adds the
   // columns a version bump declares and drops the ones it no longer
   // declares (#1146, pre-1.0; audited), host caelo_ columns untouched.
-  if (def.adminSchema && Object.keys(def.adminSchema).length > 0) {
+  const admin3 = withHostConfigTables(def, def.adminSchema, def.indexes?.adminSchema);
+  if (Object.keys(admin3.adminSchema).length > 0) {
     const emitted = adminSchemaFromSpec({
       pluginId,
       slug: def.slug,
-      adminSchema: def.adminSchema,
-      indexes: def.indexes?.adminSchema,
+      adminSchema: admin3.adminSchema,
+      indexes: admin3.indexes,
       // #635 — the declared projection's tables republish on every write.
       projectedTables: Object.keys(def.visitorProjection ?? {}),
     });
@@ -1469,6 +1483,32 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     } catch (e) {
       loadedPlugins.unload(def.slug);
       throw e;
+    }
+  }
+
+  // #1645 — the declared configuration's defaults (or the migration of what
+  // a previous version stored), on main, before anything can read them.
+  if (def.config) {
+    ensureConfigOps(opts.infra);
+    const seeded = await execute(
+      opts.infra.registry,
+      opts.infra.adapter,
+      {
+        actorId: opts.systemActorId,
+        actorKind: "system",
+        requestId: `plugin-config-seed-${def.slug}`,
+      },
+      CONFIG_OPS.seed,
+      { pluginSlug: def.slug },
+    );
+    if (!seeded.ok) {
+      loadedPlugins.unload(def.slug);
+      throw new PluginLoadError(
+        "activate",
+        new Error(
+          `plugin "${def.slug}": its configuration could not be stored (${"message" in seeded.error ? String(seeded.error.message) : seeded.error.kind})`,
+        ),
+      );
     }
   }
 

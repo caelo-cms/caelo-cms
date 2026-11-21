@@ -31,6 +31,7 @@ import type {
 } from "@caelo-cms/plugin-sdk";
 import { type DatabaseAdapter, execute } from "@caelo-cms/query-api";
 import { LIVE_BUILD_REFUSAL, type LiveBuildUrls } from "@caelo-cms/shared";
+import { hasConfig, makePluginConfigReader } from "./config-handle.js";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
 import {
   hostSystemActorId,
@@ -124,6 +125,12 @@ export async function makePluginContext(
     };
   }
 
+  // #1645 — the plugin's own configuration, on every admin-side origin. The
+  // gateway has no cms_admin login and visitors' calls never read it.
+  const configHandle =
+    hasConfig(plugin) && !isPublicSideHost(infra) && invocation.origin !== "visitor"
+      ? { config: makePluginConfigReader(plugin, infra, invocation) }
+      : {};
   const baseCtx: PluginContext = {
     query: makePluginQuery(plugin, infra, invocation, opts.publicOperation),
     api: makePluginApi(plugin, infra),
@@ -131,6 +138,7 @@ export async function makePluginContext(
     visitor: makePluginVisitor(visitorContext),
     captcha: makePluginCaptcha(visitorContext),
     invocation: Object.freeze({ ...invocation }),
+    ...configHandle,
   };
 
   // Runtime-installed plugins run in the sandbox and get only what an

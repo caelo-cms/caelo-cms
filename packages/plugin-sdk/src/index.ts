@@ -37,6 +37,27 @@ import {
 } from "@caelo-cms/shared/lists-model";
 import { z } from "zod";
 import { checkAdminPanels, type PluginAdminPanel, pluginAdminPanel } from "./admin-panels.js";
+import { MAX_BATCH_OPERATIONS, pluginBatchOperation } from "./batch.js";
+import {
+  type CollectionOperationInput,
+  checkCollectionOperations,
+  collectionOperationManifest,
+  MAX_COLLECTION_OPERATIONS,
+} from "./collection-operations.js";
+import {
+  checkCollections,
+  collectionName,
+  type PluginCollectionManifest,
+  type PluginCollections,
+  pluginCollectionManifest,
+} from "./collections.js";
+import {
+  type ConfigEntityKind,
+  type ConfigFieldInput,
+  checkConfig,
+  pluginConfigSchema,
+  pluginEntityConfigSchema,
+} from "./config.js";
 import {
   checkEditorToolbar,
   type PluginEditorToolbarItem,
@@ -50,6 +71,7 @@ import {
   type PluginMailUnsubscribe,
   pluginMailTemplates,
 } from "./mail-templates.js";
+import { type PageOutputObserverManifest, pageOutputObserverManifest } from "./page-output.js";
 import {
   checkPublicSurface,
   type PluginRequirement,
@@ -163,6 +185,9 @@ export const pluginCapability = z.enum([
   "content_variants",
   "link_resolve",
   "consent_provider",
+  "page_output",
+  "collections",
+  "batch_jobs",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -1342,9 +1367,71 @@ export const pluginManifest = z
     consentPurposes: z.array(pluginConsentPurpose).max(20).optional(),
     /** See `PluginDefinition.bakedData` (#1155). */
     bakedData: pluginBakedData.optional(),
+    /** See `PluginDefinition.config` (#1645). */
+    config: pluginConfigSchema.optional(),
+    /** See `PluginDefinition.entityConfig` (#1645). */
+    entityConfig: pluginEntityConfigSchema.optional(),
+    /** See `PluginDefinition.configPreviewOperation` (#1645). */
+    configPreviewOperation: z.string().min(1).max(120).optional(),
+    /** See `PluginDefinition.collections` (#1648). Needs the `collections` capability. */
+    collections: z.record(collectionName, pluginCollectionManifest).optional(),
+    /** See `PluginDefinition.collectionOperations` (#1649). */
+    collectionOperations: z
+      .array(collectionOperationManifest)
+      .max(MAX_COLLECTION_OPERATIONS)
+      .optional(),
+    /** See `PluginDefinition.pageOutputObserver` (#1647). Needs the `page_output` capability. */
+    pageOutputObserver: pageOutputObserverManifest.optional(),
+    /** See `PluginDefinition.batchOperations` (#1646). Needs the `batch_jobs` capability. */
+    batchOperations: z.array(pluginBatchOperation).max(MAX_BATCH_OPERATIONS).optional(),
   })
   .strict()
   .superRefine((m, ctx) => {
+    const issueAt = (path: readonly (string | number)[], message: string) =>
+      ctx.addIssue({ code: "custom", path: [...path], message });
+    for (const [zone, map] of [
+      ["schema", m.schema],
+      ["adminSchema", m.adminSchema ?? {}],
+    ] as const) {
+      for (const table of Object.keys(map)) {
+        if (table.startsWith("caelo_"))
+          issueAt(
+            [zone, table],
+            `table names starting with "caelo_" are the host's (configuration tables): rename "${table}"`,
+          );
+      }
+    }
+    checkConfig(m.config, m.entityConfig, issueAt);
+    checkCollections(m.collections, m.config, issueAt);
+    checkCollectionOperations(
+      m.collectionOperations,
+      m.collections,
+      [...m.operations, ...(m.publicOperations ?? []).map((o) => o.name)],
+      issueAt,
+    );
+    const named = (path: readonly (string | number)[], op: string | undefined, what: string) => {
+      if (op !== undefined && !m.operations.includes(op))
+        issueAt(path, `${what} "${op}" is not one of the plugin's operations`);
+    };
+    named(["configPreviewOperation"], m.configPreviewOperation, "configPreviewOperation");
+    if (m.configPreviewOperation !== undefined && !m.config)
+      issueAt(["configPreviewOperation"], "a config preview needs a `config` to preview");
+    named(
+      ["pageOutputObserver", "operation"],
+      m.pageOutputObserver?.operation,
+      "the page-output observer",
+    );
+    for (const [i, b] of (m.batchOperations ?? []).entries()) {
+      named(["batchOperations", i, "operation"], b.operation, "the batch operation");
+      if (b.pageOutput && !m.pageOutputObserver)
+        issueAt(
+          ["batchOperations", i, "pageOutput"],
+          "a batch that reads page output belongs to a plugin with a `pageOutputObserver`",
+        );
+    }
+    const batchNames = (m.batchOperations ?? []).map((b) => b.operation);
+    if (new Set(batchNames).size !== batchNames.length)
+      issueAt(["batchOperations"], "a batch operation is declared twice");
     checkPluginIndexes(m, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["indexes", ...path], message }),
     );
@@ -2075,6 +2162,30 @@ export interface PluginContext {
   readonly captcha: PluginCaptcha;
   /** Who this call acts for, and on which branch. */
   readonly invocation: PluginInvocation;
+  /**
+   * #1645 — the plugin's configuration as this call sees it: a chat's
+   * branch values in a chat, the staged values at a Stage and in jobs.
+   * Present when the plugin declares `config` or `entityConfig`; absent in
+   * the gateway.
+   */
+  readonly config?: PluginConfigReader;
+  /** #1648 — write handles of the plugin's collections; present in admin and batch calls of a plugin with the grant. */
+  readonly collections?: PluginCollections;
+}
+
+/** Reads a plugin's configuration (#1645). Missing stored configuration is an error, never a silent default. */
+export interface PluginConfigReader {
+  /** The whole configuration value. */
+  get(): Promise<Readonly<Record<string, unknown>>>;
+  /** One entity's fields, unset ones as their declared defaults. */
+  entity(kind: ConfigEntityKind, id: string): Promise<Readonly<Record<string, unknown>>>;
+  /** Many entities' fields at once; every id gets an entry. */
+  entities(
+    kind: ConfigEntityKind,
+    ids: readonly string[],
+  ): Promise<ReadonlyMap<string, Readonly<Record<string, unknown>>>>;
+  /** The ids of every entity of a kind that has at least one stored field. */
+  configured(kind: ConfigEntityKind): Promise<readonly string[]>;
 }
 
 /** Private immutable files, scoped to this installation and an authenticated author.
@@ -2870,6 +2981,44 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    *   },
    */
   readonly bakedData?: PluginBakedData;
+  /**
+   * #1645 — what can be configured, as a schema: the host stores it on the
+   * branch-aware plugin storage, seeds the defaults at activation, validates
+   * every write, freezes it with the Stage and generates the settings form
+   * and the AI tools (`get_plugin_config`, `update_plugin_config`). Every
+   * leaf says what a change touches (`effect`), whether it needs the
+   * operator's click (`gate`) and when it applies (`scope`). Read it with
+   * `ctx.config.get()`.
+   */
+  readonly config?: Readonly<Record<string, ConfigFieldInput>>;
+  /** #1645 — fields kept per page, module, content instance or page type; read with `ctx.config.entity(…)`. */
+  readonly entityConfig?: Partial<
+    Record<ConfigEntityKind, Readonly<Record<string, ConfigFieldInput>>>
+  >;
+  /**
+   * #1645 — an operation that previews a config change before it applies
+   * (`{ patch }` → a short report, e.g. how the test queries' results move).
+   * Shown on the approval card and returned by the AI's dry run.
+   */
+  readonly configPreviewOperation?: string;
+  /**
+   * #1648 — collections: documents in private object storage, indexed for
+   * full-text, prefix and vector search, frozen with the Stage and live with
+   * Publish live. Written through `ctx.collections.<name>`; visitors reach
+   * them only through `collectionOperations`. Needs the `collections` grant.
+   */
+  readonly collections?: Readonly<Record<string, PluginCollectionManifest>>;
+  /** #1649 — declarative visitor operations over the collections (`search`, `suggest`, `read`); core runs them in the gateway. */
+  readonly collectionOperations?: ReadonlyArray<CollectionOperationInput>;
+  /**
+   * #1647 — the operation core calls at every Stage with the facts of the
+   * pages whose output changed (`PageOutputObserverArgs`). Needs the
+   * `page_output` grant. In this call the plugin may write only its
+   * collections and its private storage.
+   */
+  readonly pageOutputObserver?: PageOutputObserverManifest;
+  /** #1646 — operations that run in a job container, in the sandbox, with the plugin's grants. Needs the `batch_jobs` grant. */
+  readonly batchOperations?: ReadonlyArray<z.input<typeof pluginBatchOperation>>;
 }
 
 /**
@@ -2935,6 +3084,15 @@ export function manifestFromDefinition(def: {
   readonly requiresPlugins?: ReadonlyArray<string>;
   readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
   readonly bakedData?: PluginBakedData;
+  readonly config?: Readonly<Record<string, ConfigFieldInput>>;
+  readonly entityConfig?: Partial<
+    Record<ConfigEntityKind, Readonly<Record<string, ConfigFieldInput>>>
+  >;
+  readonly configPreviewOperation?: string;
+  readonly collections?: Readonly<Record<string, PluginCollectionManifest>>;
+  readonly collectionOperations?: ReadonlyArray<CollectionOperationInput>;
+  readonly pageOutputObserver?: PageOutputObserverManifest;
+  readonly batchOperations?: ReadonlyArray<z.input<typeof pluginBatchOperation>>;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -3019,6 +3177,17 @@ export function manifestFromDefinition(def: {
           },
         }
       : {}),
+    ...(def.config ? { config: def.config } : {}),
+    ...(def.entityConfig ? { entityConfig: def.entityConfig } : {}),
+    ...(def.configPreviewOperation ? { configPreviewOperation: def.configPreviewOperation } : {}),
+    ...(def.collections ? { collections: def.collections } : {}),
+    ...(def.collectionOperations && def.collectionOperations.length > 0
+      ? { collectionOperations: [...def.collectionOperations] }
+      : {}),
+    ...(def.pageOutputObserver ? { pageOutputObserver: { ...def.pageOutputObserver } } : {}),
+    ...(def.batchOperations && def.batchOperations.length > 0
+      ? { batchOperations: [...def.batchOperations] }
+      : {}),
   });
 }
 
@@ -3043,3 +3212,9 @@ export type {
   PluginPreviewSelection,
   PluginPreviewTarget,
 } from "@caelo-cms/shared";
+
+export * from "./batch.js";
+export * from "./collection-operations.js";
+export * from "./collections.js";
+export * from "./config.js";
+export * from "./page-output.js";
