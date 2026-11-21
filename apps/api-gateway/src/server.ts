@@ -1241,9 +1241,8 @@ async function servedToVisitors(
   await syncDispatchPlugins();
   const plugin = loadedPlugins.bySlug(slug);
   if (!plugin) return unpublishedRegistryError() ? "unpublished" : "unknown";
-  const served =
-    Object.hasOwn(plugin.definition.operations, operation) &&
-    publicOperationOf(plugin.definition.publicOperations, operation) !== undefined;
+  // #1340 — a public operation is its declaration; there is no code to find.
+  const served = publicOperationOf(plugin.definition.publicOperations, operation) !== undefined;
   return served ? "served" : "unknown";
 }
 

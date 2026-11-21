@@ -1574,8 +1574,10 @@ export const pluginManifest = z
           message: "bakedData needs a staticRender: it declares when that output goes stale",
         });
       }
+      // #1340 — a trigger may be a public operation too (a visitor's vote).
+      const triggerable = [...m.operations, ...(m.publicOperations ?? []).map((o) => o.name)];
       for (const [i, t] of m.bakedData.triggers.entries()) {
-        if (!m.operations.includes(t.operation)) {
+        if (!triggerable.includes(t.operation)) {
           ctx.addIssue({
             code: "custom",
             path: ["bakedData", "triggers", i, "operation"],

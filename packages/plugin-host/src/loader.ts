@@ -1125,14 +1125,14 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       }
     }
   }
-  // A `publicOperations` entry naming an operation that does not exist
-  // reads as "this is exposed" while exposing nothing — and the reverse
-  // typo (an intended-public op misspelled) silently 404s the visitor
-  // surface. Both are caught here, at load, rather than in production.
-  for (const { name } of def.publicOperations ?? []) {
-    if (!def.operations[name]) {
+  // #1340 — a public operation runs its declaration, never plugin code: an
+  // entry that is also a code operation would read as "this code answers
+  // visitors" while the code never runs. The manifest lint refuses it; the
+  // loader checks again for a definition that skipped the projection.
+  for (const op of def.publicOperations ?? []) {
+    if (Object.hasOwn(def.operations, op.name) || !op.run) {
       throw new Error(
-        `plugin "${def.slug}" lists "${name}" in publicOperations, which is not one of its operations`,
+        `plugin "${def.slug}" lists "${op.name}" in publicOperations ${op.run ? "and also as a code operation" : "without a run"}: a public operation is only its declared run`,
       );
     }
   }

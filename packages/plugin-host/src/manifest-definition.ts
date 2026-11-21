@@ -72,6 +72,8 @@ export function declarativeDefinition(manifest: PluginManifest): PluginDefinitio
     ...(m.consentProvider ? { consentProvider: m.consentProvider } : {}),
     ...(m.mailTemplates ? { mailTemplates: m.mailTemplates } : {}),
     ...(m.mailUnsubscribe ? { mailUnsubscribe: m.mailUnsubscribe } : {}),
+    // #1155 — which visitor operations mark a page's baked output stale.
+    ...(m.bakedData ? { bakedData: m.bakedData } : {}),
     ...(m.collections ? { collections: m.collections } : {}),
     ...(m.collectionOperations ? { collectionOperations: m.collectionOperations } : {}),
   } as unknown as PluginDefinition<PluginContext>);

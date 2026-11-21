@@ -231,7 +231,7 @@ async function runList(
   };
   if (run.orderBy) filter.orderBy = run.orderBy;
   if (run.orderDir) filter.orderDir = run.orderDir;
-  const rows = await ctx.query.list(run.table, filter);
+  const rows = await sourceQuery(ctx, run.of ?? "schema").list(run.table, filter);
   return {
     [run.as]: rows.map((r) => Object.fromEntries(run.columns.map((c) => [c, r[c] ?? null]))),
   };

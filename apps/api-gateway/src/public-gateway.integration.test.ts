@@ -31,7 +31,7 @@ import {
   resetPluginHost,
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
-import { definePlugin, type PluginAdminQuery, z } from "@caelo-cms/plugin-sdk";
+import { definePlugin, manifestFromDefinition, z } from "@caelo-cms/plugin-sdk";
 import {
   AdminDatabaseUnavailableError,
   DatabaseAdapter,
@@ -67,8 +67,6 @@ const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SLUG = "t635-gw";
 const SCHEMA = "plugin_t635_gw";
 
-type AdminCtx = { adminQuery?: PluginAdminQuery };
-
 const fixture = definePlugin({
   slug: SLUG,
   version: "1.0.0",
@@ -82,6 +80,7 @@ const fixture = definePlugin({
   // Only `settings.label` crosses to the public side.
   visitorProjection: { settings: ["label"] },
   requestedCapabilities: ["cms_admin_schema"],
+  // #1340 — declarations the host runs; no plugin code answers a visitor.
   publicOperations: [
     {
       name: "save",
@@ -90,30 +89,32 @@ const fixture = definePlugin({
       input: z.looseObject({}),
       reads: ["notes"],
       writes: ["notes"],
+      run: {
+        action: "insert" as const,
+        table: "notes",
+        values: {
+          visitor_id: { from: "visitor" as const, key: "id" as const },
+          message: { from: "input" as const, field: "message" },
+        },
+        honeypot: { field: "hp_address", store: "nothing" as const, answer: { id: null } },
+        answer: { id: { from: "inserted-id" as const } },
+      },
     },
+    // A visitor-facing read of the private storage's projection (the
+    // consent-manager `record_consent` checks read it the same way).
     {
       name: "read_setting",
-      kind: "write" as const,
+      kind: "read" as const,
       captcha: "none" as const,
       input: z.looseObject({}),
-      reads: ["notes"],
-      writes: ["notes"],
-    },
-    {
-      name: "read_internal",
-      kind: "write" as const,
-      captcha: "none" as const,
-      input: z.looseObject({}),
-      reads: ["notes"],
-      writes: ["notes"],
-    },
-    {
-      name: "write_setting",
-      kind: "write" as const,
-      captcha: "none" as const,
-      input: z.looseObject({}),
-      reads: ["notes"],
-      writes: ["notes"],
+      run: {
+        action: "list" as const,
+        table: "settings",
+        of: "adminSchema" as const,
+        limit: 1,
+        columns: ["id", "label"],
+        as: "settings",
+      },
     },
     {
       name: "vote",
@@ -122,6 +123,12 @@ const fixture = definePlugin({
       input: z.looseObject({}),
       reads: ["notes"],
       writes: ["notes"],
+      run: {
+        action: "insert" as const,
+        table: "notes",
+        values: { message: { from: "const" as const, value: "vote" } },
+        answer: {},
+      },
     },
   ],
   // #1155 — a visitor's vote changes what the plugin bakes into its page.
@@ -131,31 +138,6 @@ const fixture = definePlugin({
     triggers: [{ operation: "vote", pageIds: { from: "args", key: "pageId" } }],
   },
   operations: {
-    vote: async () => ({}),
-    save: async (ctx, args) => {
-      const r = await ctx.query.insert("notes", {
-        visitor_id: ctx.visitor.id,
-        message: (args as { message: string }).message,
-      });
-      return { id: r.id };
-    },
-    // Visitor-facing read of the private storage's projection — the
-    // consent-manager `record_consent` shape.
-    read_setting: async (ctx) => {
-      const q = (ctx as AdminCtx).adminQuery;
-      if (!q) throw new Error("ctx.adminQuery missing");
-      const rows = await q.list<"settings", { label: string }>("settings", { limit: 1 });
-      return { label: rows[0]?.label ?? null, keys: Object.keys(rows[0] ?? {}).sort() };
-    },
-    read_internal: async (ctx) => {
-      const q = (ctx as AdminCtx).adminQuery as PluginAdminQuery;
-      return { drafts: await q.list("drafts", { limit: 1 }) };
-    },
-    write_setting: async (ctx) => {
-      const q = (ctx as AdminCtx).adminQuery as PluginAdminQuery;
-      await q.insert("settings", { label: "from-a-visitor" });
-      return { written: true };
-    },
     admin_only: async () => ({ secret: true }),
   },
 });
@@ -450,26 +432,32 @@ describe("/api/* served from cms_public alone (#635)", () => {
   it("a visitor operation reads the declared projection of private storage, nothing more", async () => {
     const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
     await expectStatus(r, 200);
-    const { data } = (await r.json()) as { data: { label: string; keys: string[] } };
-    expect(data.label).toBe("from-the-admin");
-    // `internal_note` was never published.
-    expect(data.keys).toEqual(["id", "label"]);
+    const { data } = (await r.json()) as { data: { settings: Record<string, unknown>[] } };
+    expect(data.settings[0]?.label).toBe("from-the-admin");
+    // `internal_note` was never published, so no declaration can name it.
+    expect(Object.keys(data.settings[0] ?? {}).sort()).toEqual(["id", "label"]);
   });
 
-  it("an undeclared table is unreachable, and private storage is read-only", async () => {
-    // #1326 — the plugin's error text reaches the log, never the visitor.
-    const internal = await withErrorLog(() =>
-      handleRequest(post(`/api/plugin/${SLUG}/read_internal`, {})),
-    );
-    expect(internal.value.status).toBe(500);
-    expect(await internal.value.text()).not.toContain("visitorProjection");
-    expect(internal.log).toContain("not in the plugin's visitorProjection");
-    const write = await withErrorLog(() =>
-      handleRequest(post(`/api/plugin/${SLUG}/write_setting`, {})),
-    );
-    expect(write.value.status).toBe(500);
-    expect(await write.value.text()).not.toContain("private storage");
-    expect(write.log).toContain("cannot write private storage");
+  it("an undeclared table is unreachable, and private storage is read-only: no declaration can say otherwise (#1340)", () => {
+    const declaring = (run: Record<string, unknown>) => () =>
+      manifestFromDefinition({
+        ...fixture,
+        publicOperations: [
+          { name: "probe", kind: "read", captcha: "none", input: z.looseObject({}), run: run as never },
+        ],
+      });
+    // A draft table the plugin does not publish.
+    expect(
+      declaring({ action: "list", table: "drafts", of: "adminSchema", limit: 1, columns: ["body"], as: "x" }),
+    ).toThrow("visitorProjection does not publish");
+    // A column of a published table that is not published itself.
+    expect(
+      declaring({ action: "list", table: "settings", of: "adminSchema", limit: 1, columns: ["internal_note"], as: "x" }),
+    ).toThrow("visitorProjection does not publish");
+    // No action writes private storage: an insert names only a public table.
+    expect(
+      declaring({ action: "insert", table: "settings", values: {}, answer: {} }),
+    ).toThrow("not a table of this plugin's schema");
   });
 
   it("serves an admin write only once it is released, never from the outbox (#1329, N6)", async () => {
@@ -482,13 +470,13 @@ describe("/api/* served from cms_public alone (#635)", () => {
     await publish();
     const before = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
     await expectStatus(before, 200);
-    expect(((await before.json()) as { data: { label: string } }).data.label).toBe(
+    expect(((await before.json()) as { data: { settings: { label: string }[] } }).data.settings[0]?.label).toBe(
       "from-the-admin",
     );
     await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, DECLARATIONS);
     invalidateGatewaySettings();
     const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
-    expect(((await r.json()) as { data: { label: string } }).data.label).toBe(
+    expect(((await r.json()) as { data: { settings: { label: string }[] } }).data.settings[0]?.label).toBe(
       "changed-by-the-owner",
     );
   });
@@ -505,7 +493,7 @@ describe("/api/* served from cms_public alone (#635)", () => {
     expect(elsewhere.sections.live).toContain(`plugin:${pluginId}`);
     const kept = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
     await expectStatus(kept, 200);
-    expect(((await kept.json()) as { data: { label: string } }).data.label).toBe(
+    expect(((await kept.json()) as { data: { settings: { label: string }[] } }).data.settings[0]?.label).toBe(
       "changed-by-the-owner",
     );
   });

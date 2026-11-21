@@ -184,6 +184,12 @@ export const publicRun = z.discriminatedUnion("action", [
     .object({
       action: z.literal("list"),
       table: identifier,
+      /**
+       * `schema` (default): a published or visitor-state table of the
+       * plugin's public schema. `adminSchema`: the columns of an admin
+       * table the plugin publishes (`visitorProjection`), read-only.
+       */
+      of: z.enum(["schema", "adminSchema"]).optional(),
       where: z.record(identifier, publicValueRef).optional(),
       orderBy: identifier.optional(),
       orderDir: z.enum(["asc", "desc"]).optional(),
@@ -376,7 +382,7 @@ export function runTables(run: PublicRun): { reads: Set<string>; writes: Set<str
     for (const c of run.checks ?? [])
       if ("source" in c && c.source.of === "schema") reads.add(c.source.table);
   } else if (run.action === "list") {
-    reads.add(run.table);
+    if ((run.of ?? "schema") === "schema") reads.add(run.table);
   } else {
     for (const t of blockTables(run.block, run.options)) {
       reads.add(t.table);
@@ -471,6 +477,12 @@ export function checkPublicRun(
               );
       }
     }
+  } else if (run.action === "list" && run.of === "adminSchema") {
+    if (op.kind !== "read") issue(["kind"], `"${op.name}" only lists, so it is kind "read"`);
+    const projected = m.visitorProjection?.[run.table];
+    const wanted = [...run.columns, ...Object.keys(run.where ?? {}), ...(run.orderBy ? [run.orderBy] : [])];
+    if (!projected) issue(["run", "table"], `"${op.name}" lists admin table "${run.table}", which visitorProjection does not publish`);
+    else for (const c of wanted) if (c !== "id" && !projected.includes(c)) issue(["run", "columns"], `"${op.name}" names "${run.table}.${c}", which visitorProjection does not publish`);
   } else if (run.action === "list") {
     if (op.kind !== "read") issue(["kind"], `"${op.name}" only lists, so it is kind "read"`);
     if (ownTable(["run", "table"], run.table, VISITOR_READABLE, "read")) {
