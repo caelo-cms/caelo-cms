@@ -92,6 +92,11 @@ CREATE TABLE IF NOT EXISTS live_page_versions (
   -- What the plugins baked into the page shows (comments, say): NULL when
   -- no plugin bakes into it. A change of either fingerprint is a change.
   plugin_fingerprint text NULL CHECK (plugin_fingerprint IS NULL OR plugin_fingerprint ~ '^[0-9a-f]{64}$'),
+  -- The title and meta description the page was published with: what its
+  -- feed entry shows, from what was published, never from a page row that
+  -- may hold unpublished edits. NULL once it is no longer live.
+  title        text NULL CHECK (title IS NULL OR char_length(title) <= 1000),
+  summary      text NULL CHECK (summary IS NULL OR char_length(summary) <= 2000),
   -- The URL it was live at before this row; NULL when it was not live.
   prev_url     text NULL CHECK (prev_url IS NULL OR char_length(prev_url) <= 2048),
   -- When its live content last changed: the date the feed and the sitemap show.
@@ -99,6 +104,7 @@ CREATE TABLE IF NOT EXISTS live_page_versions (
   recorded_at  timestamptz NOT NULL DEFAULT clock_timestamp(),
   CHECK ((url IS NULL) = (fingerprint IS NULL)),
   CHECK (url IS NOT NULL OR plugin_fingerprint IS NULL),
+  CHECK ((url IS NULL) = (title IS NULL) AND (url IS NULL) = (summary IS NULL)),
   CHECK ((kind = 'removed') = (url IS NULL))
 );
 -- The newest row per page (the live state), for a page and for every page.
@@ -116,11 +122,17 @@ CREATE TABLE IF NOT EXISTS staged_page_changes (
   -- What the plugins baked into the page shows (comments, say): NULL when
   -- no plugin bakes into it. A change of either fingerprint is a change.
   plugin_fingerprint text NULL CHECK (plugin_fingerprint IS NULL OR plugin_fingerprint ~ '^[0-9a-f]{64}$'),
+  -- The title and meta description the page was published with: what its
+  -- feed entry shows, from what was published, never from a page row that
+  -- may hold unpublished edits. NULL once it is no longer live.
+  title        text NULL CHECK (title IS NULL OR char_length(title) <= 1000),
+  summary      text NULL CHECK (summary IS NULL OR char_length(summary) <= 2000),
   prev_url     text NULL CHECK (prev_url IS NULL OR char_length(prev_url) <= 2048),
   changed_at   timestamptz NOT NULL,
   PRIMARY KEY (run_id, page_id),
   CHECK ((url IS NULL) = (fingerprint IS NULL)),
   CHECK (url IS NOT NULL OR plugin_fingerprint IS NULL),
+  CHECK ((url IS NULL) = (title IS NULL) AND (url IS NULL) = (summary IS NULL)),
   CHECK ((kind = 'removed') = (url IS NULL))
 );
 CREATE INDEX IF NOT EXISTS staged_page_changes_target_idx ON staged_page_changes (target_id, run_id);

@@ -58,6 +58,8 @@ describe("pageChangeSchema", () => {
     url: "https://example.com/a/",
     fingerprint: "a".repeat(64),
     pluginFingerprint: null,
+    title: "A",
+    summary: "",
     prevUrl: "https://example.com/a/",
     changedAt: "2026-11-20T12:00:00.000Z",
   };
@@ -65,8 +67,14 @@ describe("pageChangeSchema", () => {
   it("accepts a change and a removal", () => {
     expect(pageChangeSchema.safeParse(change).success).toBe(true);
     expect(
-      pageChangeSchema.safeParse({ ...change, kind: "removed", url: null, fingerprint: null })
-        .success,
+      pageChangeSchema.safeParse({
+        ...change,
+        kind: "removed",
+        url: null,
+        fingerprint: null,
+        title: null,
+        summary: null,
+      }).success,
     ).toBe(true);
   });
 
@@ -77,7 +85,22 @@ describe("pageChangeSchema", () => {
         kind: "removed",
         url: null,
         fingerprint: null,
+        title: null,
+        summary: null,
         pluginFingerprint: "b".repeat(64),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("refuses a live page without a title or a removed one with one", () => {
+    expect(pageChangeSchema.safeParse({ ...change, title: null }).success).toBe(false);
+    expect(
+      pageChangeSchema.safeParse({
+        ...change,
+        kind: "removed",
+        url: null,
+        fingerprint: null,
+        summary: null,
       }).success,
     ).toBe(false);
   });

@@ -36,6 +36,8 @@ interface RecordState {
   readonly url: string | null;
   readonly fingerprint: string | null;
   readonly pluginFingerprint: string | null;
+  readonly title: string | null;
+  readonly summary: string | null;
   readonly changedAt: string;
 }
 
@@ -46,6 +48,8 @@ interface VersionRow {
   readonly url: string | null;
   readonly fingerprint: string | null;
   readonly pluginFingerprint: string | null;
+  readonly title: string | null;
+  readonly summary: string | null;
   readonly prevUrl: string | null;
   readonly changedAt: string;
 }
@@ -81,7 +85,7 @@ async function recordAt(
   if (head === null) return out;
   const rows = (await tx.execute(sql`
     SELECT DISTINCT ON (page_id) page_id::text AS page_id, url, fingerprint,
-           plugin_fingerprint, changed_at
+           plugin_fingerprint, title, summary, changed_at
     FROM live_page_versions
     WHERE id <= ${head}
     ORDER BY page_id, id DESC
@@ -90,6 +94,8 @@ async function recordAt(
     url: string | null;
     fingerprint: string | null;
     plugin_fingerprint: string | null;
+    title: string | null;
+    summary: string | null;
     changed_at: string | Date;
   }[];
   for (const r of rows) {
@@ -97,6 +103,8 @@ async function recordAt(
       url: r.url,
       fingerprint: r.fingerprint,
       pluginFingerprint: r.plugin_fingerprint,
+      title: r.title,
+      summary: r.summary,
       changedAt: iso(r.changed_at),
     });
   }
@@ -116,17 +124,20 @@ async function appendRows(
       url: r.url,
       fingerprint: r.fingerprint,
       plugin_fingerprint: r.pluginFingerprint,
+      title: r.title,
+      summary: r.summary,
       prev_url: r.prevUrl,
       changed_at: r.changedAt,
     }));
     await tx.execute(sql`
       INSERT INTO live_page_versions
-        (run_id, page_id, kind, url, fingerprint, plugin_fingerprint, prev_url, changed_at)
+        (run_id, page_id, kind, url, fingerprint, plugin_fingerprint, title, summary, prev_url,
+         changed_at)
       SELECT ${runId}::uuid, x.page_id, x.kind, x.url, x.fingerprint, x.plugin_fingerprint,
-             x.prev_url, x.changed_at
+             x.title, x.summary, x.prev_url, x.changed_at
       FROM jsonb_to_recordset((${JSON.stringify(batch)}::text)::jsonb) AS x(
         page_id uuid, kind text, url text, fingerprint text, plugin_fingerprint text,
-        prev_url text, changed_at timestamptz
+        title text, summary text, prev_url text, changed_at timestamptz
       )
     `);
   }
@@ -182,18 +193,20 @@ export async function recordStagedChanges(
       url: c.url,
       fingerprint: c.fingerprint,
       plugin_fingerprint: c.pluginFingerprint,
+      title: c.title,
+      summary: c.summary,
       prev_url: c.prevUrl,
       changed_at: c.changedAt,
     }));
     await tx.execute(sql`
       INSERT INTO staged_page_changes
-        (target_id, run_id, page_id, kind, url, fingerprint, plugin_fingerprint, prev_url,
-         changed_at)
+        (target_id, run_id, page_id, kind, url, fingerprint, plugin_fingerprint, title, summary,
+         prev_url, changed_at)
       SELECT ${targetId}::uuid, ${runId}::uuid, x.page_id, x.kind, x.url, x.fingerprint,
-             x.plugin_fingerprint, x.prev_url, x.changed_at
+             x.plugin_fingerprint, x.title, x.summary, x.prev_url, x.changed_at
       FROM jsonb_to_recordset((${JSON.stringify(batch)}::text)::jsonb) AS x(
         page_id uuid, kind text, url text, fingerprint text, plugin_fingerprint text,
-        prev_url text, changed_at timestamptz
+        title text, summary text, prev_url text, changed_at timestamptz
       )
     `);
   }
@@ -230,8 +243,8 @@ export async function readStagedChanges(
   // Missing rows of such a Stage are not "every page removed".
   if (!run.page_changes_recorded) return null;
   const rows = (await tx.execute(sql`
-    SELECT page_id::text AS page_id, kind, url, fingerprint, plugin_fingerprint, prev_url,
-           changed_at
+    SELECT page_id::text AS page_id, kind, url, fingerprint, plugin_fingerprint, title, summary,
+           prev_url, changed_at
     FROM staged_page_changes
     WHERE run_id = ${runId}::uuid
     ORDER BY page_id
@@ -241,6 +254,8 @@ export async function readStagedChanges(
     url: string | null;
     fingerprint: string | null;
     plugin_fingerprint: string | null;
+    title: string | null;
+    summary: string | null;
     prev_url: string | null;
     changed_at: string | Date;
   }[];
@@ -252,6 +267,8 @@ export async function readStagedChanges(
       url: r.url,
       fingerprint: r.fingerprint,
       pluginFingerprint: r.plugin_fingerprint,
+      title: r.title,
+      summary: r.summary,
       prevUrl: r.prev_url,
       changedAt: iso(r.changed_at),
     })),
@@ -283,6 +300,8 @@ const notLive = (changedAt: string): RecordState => ({
   url: null,
   fingerprint: null,
   pluginFingerprint: null,
+  title: null,
+  summary: null,
   changedAt,
 });
 
@@ -340,6 +359,8 @@ async function reconcile(
       url: c.url,
       fingerprint: c.fingerprint,
       pluginFingerprint: c.pluginFingerprint,
+      title: c.title,
+      summary: c.summary,
       changedAt: c.changedAt,
     });
   }
@@ -360,6 +381,8 @@ async function reconcile(
       url: to.url,
       fingerprint: to.url === null ? null : to.fingerprint,
       pluginFingerprint: to.url === null ? null : to.pluginFingerprint,
+      title: to.url === null ? null : to.title,
+      summary: to.url === null ? null : to.summary,
       prevUrl: from?.url ?? null,
       changedAt: change?.changedAt ?? args.shippedAt,
     });
@@ -395,6 +418,9 @@ export interface PluginDataChange {
   readonly url: string;
   readonly fingerprint: string;
   readonly pluginFingerprint: string | null;
+  /** The title and summary it is published with (what its feed entry shows). */
+  readonly title: string;
+  readonly summary: string;
 }
 
 /**
@@ -409,7 +435,7 @@ export async function pluginDataChanges(
   if (digests.length === 0) return [];
   const rows = (await tx.execute(sql`
     SELECT DISTINCT ON (v.page_id) v.page_id::text AS page_id, v.url, v.fingerprint,
-           v.plugin_fingerprint
+           v.plugin_fingerprint, v.title, v.summary
     FROM live_page_versions v
     WHERE v.page_id IN (
       SELECT jsonb_array_elements_text((${JSON.stringify(digests.map((d) => d.pageId))}::text)::jsonb)::uuid
@@ -420,18 +446,23 @@ export async function pluginDataChanges(
     url: string | null;
     fingerprint: string | null;
     plugin_fingerprint: string | null;
+    title: string | null;
+    summary: string | null;
   }[];
   const live = new Map(rows.map((r) => [r.page_id, r]));
   const out: PluginDataChange[] = [];
   for (const d of digests) {
     const r = live.get(d.pageId);
     if (!r || r.url === null || r.fingerprint === null) continue;
+    if (r.title === null || r.summary === null) continue;
     if (r.plugin_fingerprint === d.pluginFingerprint) continue;
     out.push({
       pageId: d.pageId,
       url: r.url,
       fingerprint: r.fingerprint,
       pluginFingerprint: d.pluginFingerprint,
+      title: r.title,
+      summary: r.summary,
     });
   }
   return out.sort((a, b) => (a.pageId < b.pageId ? -1 : a.pageId > b.pageId ? 1 : 0));
@@ -465,6 +496,8 @@ export async function applyPluginDataChanges(
       url: c.url,
       fingerprint: c.fingerprint,
       pluginFingerprint: c.pluginFingerprint,
+      title: c.title,
+      summary: c.summary,
       prevUrl: c.url,
       changedAt: args.changedAt,
     })),
@@ -485,7 +518,10 @@ export async function applyPluginDataChanges(
 
 /**
  * A rollback put `restoredRunId`'s build live again: the record gets that
- * build's state back, dated `at` (live content did change at that moment).
+ * build's state back, each page with the date it had in that build — the
+ * date its restored feed and sitemap show — so the record describes the
+ * files served; a page the build did not ship is removed as of `at`. The
+ * changed pages are still announced (IndexNow takes their URLs).
  * A build from before the record began has no state to restore; then
  * nothing is appended and the record keeps describing the newer build until
  * the next Publish live (`restorable: false`).
@@ -526,8 +562,13 @@ export async function restoreLiveVersions(
       url: to.url,
       fingerprint: to.url === null ? null : to.fingerprint,
       pluginFingerprint: to.url === null ? null : to.pluginFingerprint,
+      title: to.url === null ? null : to.title,
+      summary: to.url === null ? null : to.summary,
       prevUrl: from?.url ?? null,
-      changedAt: args.at,
+      // The restored build's own feed and sitemap show the page as it was
+      // published then, with that date: the record matches the files it
+      // serves. A removal has no such date: it happened now.
+      changedAt: to.url === null ? args.at : to.changedAt,
     });
   }
   const announced = await appendRows(tx, args.runId, rows);

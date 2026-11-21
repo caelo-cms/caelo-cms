@@ -20,7 +20,7 @@
  * `bake-regions.ts`) with a fresh `staticRender` of current plugin data.
  * docs/dev/search-engine-feed.md — the pages whose baked content changed
  * also get their `<lastmod>` in the live sitemap and their entry in the live
- * feed brought up to date (titles from the published page files), a row in
+ * feed brought up to date (titles as the live record holds them), a row in
  * the live page record, and their WebSub / IndexNow announcement.
  * Every other byte, file, header, redirect and setting is the published
  * build's; the publisher releases exactly that tree. So it can carry no
@@ -113,7 +113,6 @@ import {
   findBakeRegions,
   patchSitemapLastmod,
   pluginRegionsDigest,
-  publishedTitleAndSummary,
   replaceBakeRegions,
   updateAtomFeed,
 } from "@caelo-cms/static-generator";
@@ -212,10 +211,9 @@ interface TargetBake {
   readonly unknownLinks: ReadonlyMap<string, readonly string[]>;
   /**
    * docs/dev/search-engine-feed.md — per re-baked page, what its plugins
-   * now show (`pluginRegionsDigest` of its own file), and that file.
+   * now show (`pluginRegionsDigest` of its own file).
    */
   readonly pluginDigests: readonly PluginDigest[];
-  readonly pageHtml: ReadonlyMap<string, string>;
 }
 
 const routingManifestSchema = z.object({
@@ -400,14 +398,11 @@ async function bakeTarget(args: {
   // paginated overview's follow-ups carry the same regions): compared with
   // the live record when the run is recorded.
   const pluginDigests: PluginDigest[] = [];
-  const pageHtml = new Map<string, string>();
   for (const [pageId, paths] of pathOf) {
     const own = paths[0];
     const body = own === undefined ? undefined : changed.get(own);
     if (body === undefined) continue;
-    const html = body.toString("utf8");
-    pageHtml.set(pageId, html);
-    pluginDigests.push({ pageId, pluginFingerprint: pluginRegionsDigest(html) });
+    pluginDigests.push({ pageId, pluginFingerprint: pluginRegionsDigest(body.toString("utf8")) });
   }
   return {
     files: changed,
@@ -416,15 +411,47 @@ async function bakeTarget(args: {
     versionMismatch: [...versionMismatch].sort(),
     unknownLinks,
     pluginDigests,
-    pageHtml,
   };
+}
+
+/** A page whose baked content this plugin-data build changes (`search_feed.plan_plugin_data`). */
+export interface PlannedSearchChange {
+  readonly pageId: string;
+  readonly url: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly pluginFingerprint: string | null;
+  readonly firstPublishedAt: string;
+}
+
+/**
+ * The changes one target's copy ships. The live record is one per site, so
+ * once an earlier target of this build recorded a page, the record already
+ * holds it and the plan for the next target finds nothing; that target's
+ * copy still carries the re-baked page and needs the same sitemap and feed
+ * entries. `changedThisBuild` collects the changes across the targets.
+ */
+export function searchChangesForTarget(
+  planned: readonly PlannedSearchChange[],
+  digests: readonly PluginDigest[],
+  changedThisBuild: Map<string, PlannedSearchChange>,
+): PlannedSearchChange[] {
+  const changes = new Map(planned.map((c) => [c.pageId, c]));
+  for (const d of digests) {
+    const earlier = changedThisBuild.get(d.pageId);
+    if (earlier && earlier.pluginFingerprint === d.pluginFingerprint && !changes.has(d.pageId)) {
+      changes.set(d.pageId, earlier);
+    }
+  }
+  for (const c of changes.values()) changedThisBuild.set(c.pageId, c);
+  return [...changes.values()];
 }
 
 /**
  * docs/dev/search-engine-feed.md — bring the live sitemap's `<lastmod>` and
  * the live feed's entries of the pages whose baked content changed up to
- * date, in the files this release ships. Only those entries move; the
- * titles and summaries come from the published page files, never from page
+ * date, in the files this release ships. Only those entries move; titles
+ * and summaries are the published ones the live record holds, never page
  * rows nobody published.
  */
 async function patchSearchFiles(args: {
@@ -432,7 +459,7 @@ async function patchSearchFiles(args: {
   target: DeployTarget;
   live: LiveBuildRef;
   bake: TargetBake;
-  changes: readonly { pageId: string; url: string; firstPublishedAt: string }[];
+  changes: readonly PlannedSearchChange[];
   changedAt: string;
 }): Promise<void> {
   const { publisher, target, live, bake, changes, changedAt } = args;
@@ -448,23 +475,14 @@ async function patchSearchFiles(args: {
   }
   const feed = files.get(FEED_FILE);
   if (feed) {
-    const entries = changes.map((c) => {
-      const html = bake.pageHtml.get(c.pageId);
-      if (html === undefined) {
-        throw new Error(
-          `plugin-data build: page ${c.pageId} changed but its file was not re-baked`,
-        );
-      }
-      const { title, summary } = publishedTitleAndSummary(html);
-      return {
-        pageId: c.pageId,
-        url: c.url,
-        title,
-        summary,
-        changedAt,
-        publishedAt: c.firstPublishedAt,
-      };
-    });
+    const entries = changes.map((c) => ({
+      pageId: c.pageId,
+      url: c.url,
+      title: c.title,
+      summary: c.summary,
+      changedAt,
+      publishedAt: c.firstPublishedAt,
+    }));
     bake.files.set(FEED_FILE, Buffer.from(updateAtomFeed(feed.toString("utf8"), entries), "utf8"));
   }
 }
@@ -1058,6 +1076,8 @@ async function runPluginDataBuild(
   }));
   const sys = { actorId: SYSTEM_ACTOR_ID, actorKind: "system" as const, requestId: ctx.requestId };
   const runIds: string[] = [];
+  /** docs/dev/search-engine-feed.md — the pages this build changed, across its targets. */
+  const changedThisBuild = new Map<string, PlannedSearchChange>();
   let bakedPages = 0;
   let changedFiles = 0;
   const notes: string[] = [];
@@ -1172,17 +1192,18 @@ async function runPluginDataBuild(
           `the plugin-data build could not read the live record: ${describeError(planned.error)}`,
         );
       }
+      const changes = searchChangesForTarget(
+        (planned.value as { changes: PlannedSearchChange[] }).changes,
+        bake.pluginDigests,
+        changedThisBuild,
+      );
       try {
         await patchSearchFiles({
           publisher,
           target,
           live,
           bake,
-          changes: (
-            planned.value as {
-              changes: { pageId: string; url: string; firstPublishedAt: string }[];
-            }
-          ).changes,
+          changes,
           changedAt: plan.bakedAt,
         });
       } catch (e) {

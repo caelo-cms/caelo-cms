@@ -5,12 +5,7 @@ import { FEED_ENTRY_LIMIT } from "@caelo-cms/shared";
 import { renderAtomFeed } from "./atom-feed.js";
 import { bakeRegion } from "./bake-regions.js";
 import { pluginRegionsDigest } from "./content-fingerprint.js";
-import {
-  parseAtomFeed,
-  patchSitemapLastmod,
-  publishedTitleAndSummary,
-  updateAtomFeed,
-} from "./live-search-files.js";
+import { parseAtomFeed, patchSitemapLastmod, updateAtomFeed } from "./live-search-files.js";
 
 const P1 = "11111111-1111-4111-8111-111111111111";
 const P2 = "22222222-2222-4222-8222-222222222222";
@@ -109,16 +104,6 @@ describe("patchSitemapLastmod", () => {
     expect(patchSitemapLastmod(sitemap, new Map([["https://example.com/none/", "x"]]))).toBe(
       sitemap,
     );
-  });
-});
-
-describe("publishedTitleAndSummary", () => {
-  it("reads the title and description a page shipped with", () => {
-    expect(
-      publishedTitleAndSummary(
-        '<html><head><title>Hello &amp; you</title><meta name="description" content="What &quot;it&quot; is" /></head><body><title>no</title></body></html>',
-      ),
-    ).toEqual({ title: "Hello & you", summary: 'What "it" is' });
   });
 });
 

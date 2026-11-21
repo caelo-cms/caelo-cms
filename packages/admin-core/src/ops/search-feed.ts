@@ -4,7 +4,7 @@
  * `search_feed.plan_plugin_data` — which live pages a plugin-data build
  * changes for search engines (docs/dev/search-engine-feed.md): the re-baked
  * pages whose plugin content differs from the live record, with what their
- * feed entry needs. Read while the build holds the live-release lease, so
+ * feed entry needs (as published: the record's title and summary). Read while the build holds the live-release lease, so
  * the record cannot move before `deploy.finish_plugin_data_run` appends the
  * same pages.
  */
@@ -34,7 +34,14 @@ export const planPluginDataSearchFeedOp = defineOperation({
   input: z.object({ digests: z.array(digestShape).max(2000) }).strict(),
   output: z.object({
     changes: z.array(
-      z.object({ pageId: z.string(), url: z.string(), firstPublishedAt: z.string() }),
+      z.object({
+        pageId: z.string(),
+        url: z.string(),
+        title: z.string(),
+        summary: z.string(),
+        pluginFingerprint: z.string().nullable(),
+        firstPublishedAt: z.string(),
+      }),
     ),
   }),
   handler: async (_ctx, input, tx) => {
@@ -47,7 +54,14 @@ export const planPluginDataSearchFeedOp = defineOperation({
       )
     `)) as unknown as { id: string; first_published_at: string | Date | null }[];
     const published = new Map(rows.map((r) => [r.id, r.first_published_at]));
-    const out: { pageId: string; url: string; firstPublishedAt: string }[] = [];
+    const out: {
+      pageId: string;
+      url: string;
+      title: string;
+      summary: string;
+      pluginFingerprint: string | null;
+      firstPublishedAt: string;
+    }[] = [];
     for (const c of changes) {
       const at = published.get(c.pageId);
       // A page the live record holds went live with a Publish live, which
@@ -62,6 +76,9 @@ export const planPluginDataSearchFeedOp = defineOperation({
       out.push({
         pageId: c.pageId,
         url: c.url,
+        title: c.title,
+        summary: c.summary,
+        pluginFingerprint: c.pluginFingerprint,
         firstPublishedAt: (at instanceof Date ? at : new Date(at)).toISOString(),
       });
     }

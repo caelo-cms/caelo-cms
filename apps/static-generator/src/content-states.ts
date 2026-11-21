@@ -32,6 +32,9 @@ interface LiveState {
   readonly url: string | null;
   readonly fingerprint: string | null;
   readonly pluginFingerprint: string | null;
+  /** What its feed entry shows, as published; null when not live. */
+  readonly title: string | null;
+  readonly summary: string | null;
   readonly changedAt: string;
 }
 
@@ -107,7 +110,7 @@ export class ContentStates {
     if (base !== null) {
       const rows = (await tx.execute(sql`
         SELECT DISTINCT ON (page_id) page_id::text AS page_id, url, fingerprint,
-               plugin_fingerprint, changed_at
+               plugin_fingerprint, title, summary, changed_at
         FROM live_page_versions
         WHERE id <= ${base}
         ORDER BY page_id, id DESC
@@ -116,6 +119,8 @@ export class ContentStates {
         url: string | null;
         fingerprint: string | null;
         plugin_fingerprint: string | null;
+        title: string | null;
+        summary: string | null;
         changed_at: string | Date;
       }[];
       for (const r of rows) {
@@ -123,6 +128,8 @@ export class ContentStates {
           url: r.url,
           fingerprint: r.fingerprint,
           pluginFingerprint: r.plugin_fingerprint,
+          title: r.title,
+          summary: r.summary,
           changedAt: iso(r.changed_at),
         });
       }
@@ -142,6 +149,8 @@ export class ContentStates {
         readonly url: string | null;
         readonly fingerprint: string | null;
         readonly pluginFingerprint: string | null;
+        readonly title: string | null;
+        readonly summary: string | null;
         readonly changedAt: string;
       }
     >;
@@ -158,7 +167,10 @@ export class ContentStates {
     }
     const live = this.live.get(page.pageId);
     let changedAt: string;
-    let change: Omit<PageChange, "pageId" | "url" | "fingerprint" | "pluginFingerprint"> | null;
+    let change: Omit<
+      PageChange,
+      "pageId" | "url" | "fingerprint" | "pluginFingerprint" | "title" | "summary"
+    > | null;
     if (live === undefined) {
       // Never recorded. Before the first record (base null), a page that
       // was live already is the baseline: dated as the sitemap dated it
@@ -197,6 +209,8 @@ export class ContentStates {
         url: page.url,
         fingerprint: page.fingerprint,
         pluginFingerprint: page.pluginFingerprint,
+        title: page.title,
+        summary: page.summary,
         ...change,
       });
     }
@@ -223,6 +237,8 @@ export class ContentStates {
           url: null,
           fingerprint: null,
           pluginFingerprint: null,
+          title: null,
+          summary: null,
           prevUrl: live.url,
           changedAt: this.publishAt,
         });
@@ -250,33 +266,27 @@ export class ContentStates {
       .sort(([, a], [, b]) => (a.changedAt < b.changedAt ? 1 : a.changedAt > b.changedAt ? -1 : 0))
       .slice(0, FEED_ENTRY_LIMIT);
     if (candidates.length === 0) return [];
+    // Title and summary as the record has them — what was published, never
+    // a page row that may hold unpublished edits. The first publication is
+    // a fact Publish live stamped.
     const rows = (await tx.execute(sql`
-      SELECT p.id::text AS id, p.title, coalesce(s.meta_description, '') AS summary,
-             p.first_published_at
-      FROM pages p
-      LEFT JOIN pages_seo s ON s.page_id = p.id
-      WHERE p.id IN (
+      SELECT id::text AS id, first_published_at FROM pages
+      WHERE id IN (
         SELECT jsonb_array_elements_text((${JSON.stringify(candidates.map(([id]) => id))}::text)::jsonb)::uuid
       )
-        AND p.chat_branch_id IS NULL AND p.deleted_at IS NULL AND p.status = 'published'
-    `)) as unknown as {
-      id: string;
-      title: string;
-      summary: string;
-      first_published_at: string | Date | null;
-    }[];
-    const byId = new Map(rows.map((r) => [r.id, r]));
+    `)) as unknown as { id: string; first_published_at: string | Date | null }[];
+    const published = new Map(rows.map((r) => [r.id, r.first_published_at]));
     return candidates.flatMap(([pageId, s]) => {
-      const r = byId.get(pageId);
-      if (r === undefined || s.url === null) return [];
+      const at = published.get(pageId);
+      if (at === undefined || s.url === null || s.title === null || s.summary === null) return [];
       return [
         {
           pageId,
           url: s.url,
-          title: r.title,
-          summary: r.summary,
+          title: s.title,
+          summary: s.summary,
           changedAt: s.changedAt,
-          publishedAt: r.first_published_at === null ? this.publishAt : iso(r.first_published_at),
+          publishedAt: at === null ? this.publishAt : iso(at),
         },
       ];
     });

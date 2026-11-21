@@ -119,6 +119,9 @@ export const pageChangeSchema = z
       .string()
       .regex(/^[0-9a-f]{64}$/)
       .nullable(),
+    /** The title and meta description it is published with; null when removed. */
+    title: z.string().max(1000).nullable(),
+    summary: z.string().max(2000).nullable(),
     /** Where it was live before; null when it was not. */
     prevUrl: z.string().max(2048).nullable(),
     /** The date the feed and the sitemap show for it (ISO). */
@@ -130,6 +133,10 @@ export const pageChangeSchema = z
   .refine(
     (c) => c.url !== null || c.pluginFingerprint === null,
     "a removed page has no plugin fingerprint",
+  )
+  .refine(
+    (c) => (c.url === null) === (c.title === null) && (c.url === null) === (c.summary === null),
+    "a live page has a title and a summary, a removed one neither",
   );
 export type PageChange = z.infer<typeof pageChangeSchema>;
 

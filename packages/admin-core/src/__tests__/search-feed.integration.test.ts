@@ -101,6 +101,8 @@ function change(pageId: string, over: Partial<PageChange>): PageChange {
     url: url(pageId),
     fingerprint: FP("a"),
     pluginFingerprint: null,
+    title: `Page ${pageId.slice(0, 4)}`,
+    summary: "",
     prevUrl: url(pageId),
     changedAt: "2026-11-20T10:00:00.000Z",
     ...over,
@@ -306,6 +308,16 @@ describe("the live record", () => {
       { page_id: P1, kind: "restored", url: url(P1), prev_url: url(P1) },
       { page_id: P3, kind: "removed", url: null, prev_url: url(P3) },
     ]);
+    // The restored page carries the date the restored build's own feed and
+    // sitemap show; the removal is dated with the rollback.
+    const dates = (await admin(
+      (tx) => tx`SELECT page_id::text AS page_id, changed_at FROM live_page_versions
+                 WHERE run_id = ${rollback}::uuid ORDER BY page_id`,
+    )) as { page_id: string; changed_at: Date }[];
+    expect(dates.map((d) => [d.page_id, d.changed_at.toISOString()])).toEqual([
+      [P1, "2026-11-20T10:00:00.000Z"],
+      [P3, "2026-11-20T10:00:00.000Z"],
+    ]);
   });
 
   it("a Publish live of a Stage from before the record removes nothing", async () => {
@@ -481,7 +493,14 @@ describe("the notifications", () => {
       publish(
         [
           change(P1, { kind: "added", prevUrl: null }),
-          change(P2, { kind: "removed", url: null, fingerprint: null, prevUrl: url(P2) }),
+          change(P2, {
+            kind: "removed",
+            url: null,
+            fingerprint: null,
+            title: null,
+            summary: null,
+            prevUrl: url(P2),
+          }),
         ],
         "2026-11-20T08:00:00Z",
       ),

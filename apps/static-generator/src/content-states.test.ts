@@ -32,6 +32,8 @@ function states(
       url: string | null;
       fingerprint: string | null;
       pluginFingerprint: string | null;
+      title: string | null;
+      summary: string | null;
       changedAt: string;
     }
   >,
@@ -53,6 +55,8 @@ describe("ContentStates", () => {
         url: "https://example.com/p1/",
         fingerprint: FP_A,
         pluginFingerprint: null,
+        title: null,
+        summary: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
     });
@@ -67,6 +71,8 @@ describe("ContentStates", () => {
         url: "https://example.com/p1/",
         fingerprint: FP_A,
         pluginFingerprint: null,
+        title: null,
+        summary: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
     });
@@ -79,6 +85,8 @@ describe("ContentStates", () => {
         url: "https://example.com/p1/",
         fingerprint: FP_B,
         pluginFingerprint: null,
+        title: "Page p1",
+        summary: "",
         prevUrl: "https://example.com/p1/",
         changedAt: PUBLISH_AT,
       },
@@ -91,6 +99,8 @@ describe("ContentStates", () => {
         url: "https://example.com/p1/",
         fingerprint: FP_A,
         pluginFingerprint: FP_A,
+        title: null,
+        summary: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
     });
@@ -106,6 +116,8 @@ describe("ContentStates", () => {
         url: "https://example.com/old/",
         fingerprint: FP_A,
         pluginFingerprint: null,
+        title: null,
+        summary: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
     });
@@ -128,6 +140,8 @@ describe("ContentStates", () => {
         url: null,
         fingerprint: null,
         pluginFingerprint: null,
+        title: null,
+        summary: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
     });
@@ -160,18 +174,24 @@ describe("ContentStates", () => {
         url: "https://example.com/p1/",
         fingerprint: FP_A,
         pluginFingerprint: null,
+        title: null,
+        summary: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
       gone: {
         url: "https://example.com/gone/",
         fingerprint: FP_A,
         pluginFingerprint: null,
+        title: null,
+        summary: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
       wasGone: {
         url: null,
         fingerprint: null,
         pluginFingerprint: null,
+        title: null,
+        summary: null,
         changedAt: "2026-11-01T00:00:00.000Z",
       },
     });
@@ -183,6 +203,8 @@ describe("ContentStates", () => {
         url: null,
         fingerprint: null,
         pluginFingerprint: null,
+        title: null,
+        summary: null,
         prevUrl: "https://example.com/gone/",
         changedAt: PUBLISH_AT,
       },
@@ -196,6 +218,8 @@ describe("ContentStates", () => {
           url: "https://example.com/other/",
           fingerprint: FP_A,
           pluginFingerprint: null,
+          title: null,
+          summary: null,
           changedAt: "2026-11-01T00:00:00.000Z",
         },
       },
@@ -207,6 +231,37 @@ describe("ContentStates", () => {
     // the fake tx answers no rows).
     const tx = { execute: async () => [] } as unknown as TransactionRunner;
     expect((await s.finish(tx)).changes.map((c) => c.kind)).toEqual(["added"]);
+  });
+
+  it("an incremental build feeds the pages it did not render with their published title", async () => {
+    const s = states(
+      {
+        other: {
+          url: "https://example.com/other/",
+          fingerprint: FP_A,
+          pluginFingerprint: null,
+          title: "Published title",
+          summary: "Published summary",
+          changedAt: "2026-11-02T00:00:00.000Z",
+        },
+      },
+      7,
+      false,
+    );
+    s.record(page("p1"));
+    // Only the first publication is read from the page row.
+    const tx = {
+      execute: async () => [{ id: "other", first_published_at: "2026-10-01T00:00:00.000Z" }],
+    } as unknown as TransactionRunner;
+    const { feed } = await s.finish(tx);
+    expect(feed.find((e) => e.pageId === "other")).toEqual({
+      pageId: "other",
+      url: "https://example.com/other/",
+      title: "Published title",
+      summary: "Published summary",
+      changedAt: "2026-11-02T00:00:00.000Z",
+      publishedAt: "2026-10-01T00:00:00.000Z",
+    });
   });
 
   it("feeds the pages changed last, newest first, at most the limit", async () => {

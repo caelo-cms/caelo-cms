@@ -174,39 +174,3 @@ export function patchSitemapLastmod(
   }
   return out + xml.slice(at);
 }
-
-/**
- * The `<title>` and meta description a live page shipped with: what a feed
- * entry shows for a page that joins the feed through a plugin-data build,
- * taken from the published file and never from the stored page row, which
- * may hold what nobody published.
- */
-export function publishedTitleAndSummary(pageHtml: string): { title: string; summary: string } {
-  let title = "";
-  let summary = "";
-  let inTitle = false;
-  let seenTitle = false;
-  const parser = new Parser(
-    {
-      onopentag(name, attrs) {
-        if (name === "title" && !seenTitle) inTitle = true;
-        if (name === "meta" && attrs.name === "description" && summary === "") {
-          summary = attrs.content ?? "";
-        }
-      },
-      ontext(t) {
-        if (inTitle) title += t;
-      },
-      onclosetag(name) {
-        if (name === "title" && inTitle) {
-          inTitle = false;
-          seenTitle = true;
-        }
-      },
-    },
-    { decodeEntities: true, lowerCaseTags: true, lowerCaseAttributeNames: true },
-  );
-  parser.write(pageHtml);
-  parser.end();
-  return { title: title.trim(), summary: summary.trim() };
-}

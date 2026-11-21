@@ -67,7 +67,6 @@ export {
 export {
   parseAtomFeed,
   patchSitemapLastmod,
-  publishedTitleAndSummary,
   updateAtomFeed,
 } from "./live-search-files.js";
 // #1271 — the build's media pass (references by stored digest).

@@ -58,8 +58,11 @@ append, in the transaction that records the run:
   compared with what is live now.
 - **An Owner's production build** appends its own delta the same way.
 - **Rollback** appends the restored build's state, read back from the record
-  at that run's head (`deploy_runs.live_versions_head`), dated with the
-  rollback, because live content changed at that moment. A build from before
+  at that run's head (`deploy_runs.live_versions_head`). Each restored page
+  keeps the date it had in that build, the date its restored feed and
+  sitemap show, so the record describes the files served; a page the build
+  did not ship is removed as of the rollback. IndexNow still gets the URLs
+  that changed. A build from before
   the record began has no state to restore. Then nothing is appended until
   the next Publish live. A plugin-data release (#1155) appends its own
   rows and serves its base release's feed and key file, so a rollback to it
@@ -85,12 +88,15 @@ fingerprint of each re-baked page from its live file, appends a `changed`
 row dated when the content went live for every page that moved, brings that
 page's `<lastmod>` and feed entry up to date in the live `sitemap.xml` and
 `feed.xml`, and announces it like a Publish live, inside the tick's request.
-The entry's title and summary come from the published page file, never from
-page rows nobody published. Those are the only bytes it writes besides the
+The entry's title and summary are the published ones the record holds,
+never page rows nobody published. When several production targets serve
+the same build, each target's copy gets the same entries. Those are the only bytes it writes besides the
 regions (`search_feed.plan_plugin_data`, `applyPluginDataChanges`).
 
 An incremental build renders only the pages a change reached. It records
-their changes and takes the other pages' dates from the record. It cannot
+their changes and takes the other pages' dates, titles and summaries from
+the record (each row stores the title and meta description the page was
+published with), never from page rows that may hold unpublished edits. It cannot
 tell which pages were removed.
 
 ## The feed
