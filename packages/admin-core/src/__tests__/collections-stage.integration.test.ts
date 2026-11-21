@@ -817,6 +817,35 @@ describe("page output and collections through Stage and Publish live", () => {
     expect(row).toEqual({ applied: null, discarded: true });
   });
 
+  it("the clean-up keeps the newest ready index however many failed Stages follow it", async () => {
+    // The next plan builds on the newest ready release (previousReady): if
+    // failed Stages pushed it out of the retention window and the clean-up
+    // took its files, no later Stage could index again.
+    const ready = await stage();
+    expect((await indexState(ready)).state).toBe("ready");
+    failAfterWrite = true;
+    await setText(PAGES[0] as string, "Neue Preise ab April.");
+    let failed: string;
+    try {
+      failed = await stage();
+    } finally {
+      failAfterWrite = false;
+    }
+    expect((await indexState(failed)).state).toBe("failed");
+    const plan = await execute(
+      registry,
+      adapter,
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t1644-gc-newest" },
+      "collections.gc_plan",
+      { changeLimit: 1000, keepStages: 1, keepPublishes: 1 },
+    );
+    if (!plan.ok) throw new Error(JSON.stringify(plan.error));
+    const pages = (
+      plan.value as { collections: { collection: string; keep: { runId: string }[] }[] }
+    ).collections.find((c) => c.collection === "pages");
+    expect(pages?.keep.map((k) => k.runId)).toContain(ready);
+  });
+
   it("the clean-up deletes what no kept release names, keeps the newest index searchable, and drops applied change files", async () => {
     const newest = await stage();
     await setText(PAGES[0] as string, "Neue Preise ab Januar und Februar.");

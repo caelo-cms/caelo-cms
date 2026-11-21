@@ -112,6 +112,14 @@ export const collectionsGcPlanOp = defineOperation({
       bases AS (
         SELECT previous_run_id AS run_id, plugin_id, collection FROM collection_releases
          WHERE state = 'pending' AND previous_run_id IS NOT NULL
+      ),
+      -- The newest ready release is what the next plan builds on
+      -- (collections/ops.ts previousReady), however many failed Stages
+      -- followed it: it stays whatever the retention window says.
+      newest AS (
+        SELECT DISTINCT ON (plugin_id, collection) run_id, plugin_id, collection
+          FROM collection_releases WHERE state = 'ready'
+         ORDER BY plugin_id, collection, created_at DESC
       )
       SELECT k.run_id::text AS run_id, k.plugin_id::text AS plugin_id, p.slug, k.collection,
              k.state, k.release_key, k.collected_at IS NOT NULL AS collected,
@@ -120,7 +128,9 @@ export const collectionsGcPlanOp = defineOperation({
               OR k.run_id IN (SELECT run_id FROM published)
               OR k.run_id IN (SELECT run_id FROM pointed)
               OR EXISTS (SELECT 1 FROM bases b WHERE b.run_id = k.run_id
-                           AND b.plugin_id = k.plugin_id AND b.collection = k.collection)) AS kept
+                           AND b.plugin_id = k.plugin_id AND b.collection = k.collection)
+              OR EXISTS (SELECT 1 FROM newest w WHERE w.run_id = k.run_id
+                           AND w.plugin_id = k.plugin_id AND w.collection = k.collection)) AS kept
         FROM ranked k JOIN plugins p ON p.id = k.plugin_id
     `)) as unknown as {
       run_id: string;

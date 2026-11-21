@@ -28,6 +28,7 @@ import {
   type PageOutputObserverArgs,
   type PlacementChange,
   type PluginCapability,
+  type PluginConfigReader,
   parseConfigSchema,
   placementStep,
 } from "@caelo-cms/plugin-sdk";
@@ -151,13 +152,29 @@ function observerInvocation(runId: string) {
  * so a plugin whose rules changed rebuilds what it derived from the site.
  */
 async function observerDigest(plugin: LoadedPlugin, runId: string): Promise<string> {
+  return observerDigestOf(
+    plugin,
+    hasConfig(plugin)
+      ? makePluginConfigReader(plugin, hostInfra(), observerInvocation(runId))
+      : null,
+  );
+}
+
+/**
+ * The digest of what shapes an observer's view of every page, from its
+ * config reader (null: the plugin declares no configuration). Exported
+ * for tests.
+ */
+export async function observerDigestOf(
+  plugin: LoadedPlugin,
+  reader: PluginConfigReader | null,
+): Promise<string> {
   const parts: Record<string, unknown> = {
     version: plugin.definition.version,
     artifact: plugin.externalApproval?.artifactDigest ?? null,
   };
-  if (plugin.definition.config && hasConfig(plugin)) {
+  if (reader && plugin.definition.config) {
     const schema = parseConfigSchema(plugin.definition.config);
-    const reader = makePluginConfigReader(plugin, hostInfra(), observerInvocation(runId));
     const value = await reader.get();
     const immediate = new Set(
       configLeaves(schema)
@@ -165,9 +182,12 @@ async function observerDigest(plugin: LoadedPlugin, runId: string): Promise<stri
         .map((l) => l.path),
     );
     parts.config = withoutPaths(value, immediate);
+  }
+  if (reader) {
     // Settings per module, content block or page type reach every page that
-    // shows one, so they are part of the digest. A page's own settings are
-    // per page (the page's settings hash, offeredHashes).
+    // shows one, so they are part of the digest, with or without a global
+    // configuration. A page's own settings are per page (the page's
+    // settings hash, offeredHashes).
     const entityKinds = Object.keys(plugin.definition.entityConfig ?? {})
       .filter((kind) => kind !== "page")
       .sort();

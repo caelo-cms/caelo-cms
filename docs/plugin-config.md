@@ -71,7 +71,7 @@ Row ids are deterministic (uuid v5 of slug and scope). Entity settings live in `
 
 `ctx.config.get()` returns the merged value as the call's branch sees it (a chat sees its draft, an observer and a batch see main). `ctx.config.entity(kind, id)`, `entities(kind, ids)` (a Map) and `configured(kind)` read the per-entity settings; an unset field reads as its default. In the sandbox, `config.entities` travels as entry pairs and comes back as a Map. `entities` takes any number of ids: the host reads them in bounded chunks (1000 per sandbox call, 5000 per host operation).
 
-A page-output observer gets every page again after a change to the plugin's version, its `release` and `approved` settings or its module settings (the observer digest), and one page again after a change to that page's settings (`plugin-page-output.md`).
+A page-output observer gets every page again after a change to the plugin's version, its `release` and `approved` settings or its settings per module, content block and page type (the observer digest; also for a plugin that declares only `entityConfig`), and one page again after a change to that page's settings (`plugin-page-output.md`).
 
 ## The AI's tools and the operator's form
 
