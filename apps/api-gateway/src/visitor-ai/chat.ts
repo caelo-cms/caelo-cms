@@ -68,8 +68,8 @@ export const AI_CHAT_MAX_BODY_BYTES = 256 * 1024;
 /** Streams one client address may hold open on one gateway instance. */
 const STREAMS_PER_CLIENT = 2;
 
-/** A turn's deadline: the provider's time included. */
-const TURN_DEADLINE_MS = 90_000;
+/** A turn's deadline, the provider's time included: inside the staging gateway's 60 s request timeout. */
+const TURN_DEADLINE_MS = 55_000;
 
 /** Tool calls one turn may make; later ones get a refusal (and the worst case counts them). */
 export const MAX_TOOL_CALLS_PER_TURN = 6;

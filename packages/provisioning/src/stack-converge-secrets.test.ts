@@ -376,6 +376,8 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
       // staging projection (#1330), never the live gateway.
       // #845 — and which forwarded address is the visitor.
       "CAELO_TRUSTED_PROXY_HOPS",
+      // #1654 — the visitor-AI key file only this gateway mounts.
+      "CAELO_VISITOR_AI_KEY_FILE",
       "PUBLIC_DATABASE_PASSWORD",
     ]);
   });

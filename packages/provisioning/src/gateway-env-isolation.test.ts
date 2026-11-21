@@ -45,6 +45,7 @@ import {
   RETIRED_SERVICE_ENV,
   runtimeSecretBindings,
   SERVICE_SECRET_ENV,
+  SERVICE_SECRET_FILES,
   stackIamInvariants,
   stagingGatewayEnvContract,
 } from "./stack-contract.js";
@@ -69,6 +70,9 @@ const GCP_GATEWAY_SECRETS = [
   // key. Neither is a cms_admin credential.
   "mcp-oauth-seal-key",
   "operator-oauth-client",
+  // #1654 — the live site's visitor-AI key: a provider key of its own, never
+  // the admin's AI key and no database credential.
+  "visitor-ai-key",
 ];
 
 /** The source of a stack program. */
@@ -160,6 +164,55 @@ describe("gcp + gcp-firebase: the gateway env contract (#635)", () => {
   });
 });
 
+describe("gcp + gcp-firebase: the visitor-AI keys (#1654)", () => {
+  for (const provider of ["gcp", "gcp-firebase"] as const) {
+    it(`${provider}: each gateway reads only its own environment's key, and the admin none`, () => {
+      const inv = stackIamInvariants(provider);
+      const readers = (secret: string) =>
+        inv
+          .filter(
+            (i) =>
+              i.role === "roles/secretmanager.secretAccessor" &&
+              i.target.kind === "secret" &&
+              i.target.name === secret,
+          )
+          .map((i) => i.member);
+      expect(readers("visitor-ai-key")).toEqual(["gateway-sa"]);
+      expect(readers("visitor-ai-staging-key")).toEqual(["staging-gateway-sa"]);
+      // The admin may add a version (store or remove a key), on these two only.
+      const adders = inv
+        .filter((i) => i.role === "roles/secretmanager.secretVersionAdder")
+        .map((i) => (i.target.kind === "secret" ? `${i.member} ${i.target.name}` : "project-wide"));
+      expect(adders.sort()).toEqual([
+        "run-sa operator-oauth-client",
+        "run-sa visitor-ai-key",
+        "run-sa visitor-ai-staging-key",
+      ]);
+    });
+  }
+
+  it("the live gateway's env names the live key file, the staging gateway's its own secret", () => {
+    const inputs = {
+      provider: "gcp" as const,
+      projectId: "acme",
+      env: "production",
+      domain: "example.com",
+      region: "europe-west1",
+      stagingHost: "staging.example.com",
+      databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
+    };
+    const file = (env: readonly { name: string; value?: unknown }[]) =>
+      env.find((v) => v.name === "CAELO_VISITOR_AI_KEY_FILE")?.value;
+    expect(file(gatewayEnvContract(inputs) as never)).toBe("/secrets/visitor-ai/key.json");
+    expect(file(stagingGatewayEnvContract(inputs) as never)).toBe("/secrets/visitor-ai/key.json");
+    expect(SERVICE_SECRET_FILES.gateway.map((f) => f.secret)).toEqual(["visitor-ai-key"]);
+    expect(SERVICE_SECRET_FILES["staging-gateway"].map((f) => f.secret)).toEqual([
+      "visitor-ai-staging-key",
+    ]);
+    expect(SERVICE_SECRET_FILES.admin).toEqual([]);
+  });
+});
+
 describe("self-hosted: the generated compose gateway service (#635)", () => {
   it("holds public_role on cms_public and nothing else", () => {
     const out = generateDockerCompose({
@@ -188,12 +241,13 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
     expect(gateway).not.toMatch(STAGING_ACCESS);
     expect(gateway).not.toMatch(/superpw|adminpw|gatewaypw|stagingpw/);
     expect(gateway).toContain('CAELO_GATEWAY_ENVIRONMENT: "live"');
-    // No other way in: no Compose secrets, no env file, and two read-only
+    // No other way in: no Compose secrets, no env file, and three read-only
     // mounts — the database CA certificate (#1338), public, no credential,
-    // and the live collection store (epic #1644), never the staging one.
+    // the live collection store (epic #1644), never the staging one, and
+    // (#1654) the live site's visitor-AI key directory, never staging's.
     expect(gateway).not.toMatch(/^ {4}(secrets|env_file):/m);
     expect(gateway).toContain(
-      "    volumes:\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro\n      - ./collections/live:/srv/collections/live:ro\n    restart:",
+      "    volumes:\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro\n      - ./collections/live:/srv/collections/live:ro\n      - ./visitor-ai/live:/secrets/visitor-ai:ro\n    restart:",
     );
     const env = gateway.slice(gateway.indexOf("    environment:"));
     const keys = [...env.matchAll(/^ {6}([A-Z_][A-Z0-9_]*):/gm)].map((m) => m[1]);
@@ -204,6 +258,8 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
       // #1329 — the live site's gateway.
       "CAELO_GATEWAY_ENVIRONMENT",
       "CAELO_TRUSTED_PROXY_HOPS",
+      // #1654 — the live site's visitor-AI key file (its own directory, read-only).
+      "CAELO_VISITOR_AI_KEY_FILE",
       "GATEWAY_PORT",
       "NODE_ENV",
       "PUBLIC_DATABASE_URL",
