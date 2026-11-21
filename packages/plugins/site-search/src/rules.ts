@@ -71,7 +71,7 @@ export function moduleWeighting(
 ): ModuleVerdict {
   const homePage = moduleSettings?.homePage ?? null;
   const explicit =
-    instanceMode && instanceMode !== "auto" ? instanceMode : moduleSettings?.mode ?? "auto";
+    instanceMode && instanceMode !== "auto" ? instanceMode : (moduleSettings?.mode ?? "auto");
   if (explicit !== "auto") {
     if (explicit === "home")
       return homePage === pageId
@@ -85,13 +85,16 @@ export function moduleWeighting(
       : { weighting: "none", reason: "chrome" };
   }
   if (m.zone === "template") return { weighting: "full", reason: "template" };
+  // What repeats is the content, not the design: a text module with each
+  // page's own words counts on each page.
   const step = placementStep(
-    m.placementCount,
+    m.contentPlacementCount,
     publishedPages,
     [counting.fullMax, counting.reducedMax],
     HALF_RULE_FROM,
   );
-  if (step === 0) return { weighting: "full", reason: m.placementCount <= 1 ? "own" : "few-pages" };
+  if (step === 0)
+    return { weighting: "full", reason: m.contentPlacementCount <= 1 ? "own" : "few-pages" };
   if (step === 1) return { weighting: "reduced", reason: "few-pages" };
   if (homePage === pageId) return { weighting: "full", reason: "home-page" };
   return { weighting: "none", reason: homePage ? "not-home-page" : "no-home-page" };

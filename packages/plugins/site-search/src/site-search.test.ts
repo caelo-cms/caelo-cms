@@ -15,8 +15,10 @@ import { SITE_SEARCH_CONFIG } from "./config.js";
 import { anchorDocuments, normalizeAnchorText, pageDocument, sectionsOf } from "./documents.js";
 import plugin from "./index.js";
 import { aggregate, cleanQuery, isPopularCandidate, looksPersonal } from "./learn.js";
+
 const observeOp = (ctx: unknown, a: PageOutputObserverArgs) =>
   (plugin.operations.observe as (c: unknown, x: unknown) => Promise<{ indexed: number }>)(ctx, a);
+
 import { buildProfile, linkedPageId } from "./profile.js";
 import { moduleWeighting, pageExclusion } from "./rules.js";
 
@@ -30,6 +32,7 @@ const mod = (over: Partial<PageOutputModule>): PageOutputModule => ({
   contentInstanceId: null,
   placementCount: 1,
   ...over,
+  contentPlacementCount: over.contentPlacementCount ?? over.placementCount ?? 1,
 });
 
 const text = (t: string, over: Partial<PageOutputFacts["texts"][number]> = {}) => ({
@@ -41,6 +44,7 @@ const text = (t: string, over: Partial<PageOutputFacts["texts"][number]> = {}) =
   heading: null,
   anchor: null,
   inForm: false,
+  inLink: false,
   ...over,
 });
 
@@ -75,9 +79,33 @@ function facts(over: Partial<PageOutputFacts> = {}): PageOutputFacts {
       text("Bewertungen", { pluginSlug: "ratings" }),
     ],
     links: [
-      { href: "/kontakt/", path: "/kontakt/", targetPageId: "p-kontakt", text: "Kontakt", moduleId: "m-footer", zone: "layout", pluginSlug: null },
-      { href: "/blog/", path: "/blog/", targetPageId: "p-blog", text: "Unser Blog", moduleId: "m-body", zone: "page", pluginSlug: null },
-      { href: "https://x.org", path: null, targetPageId: null, text: "extern", moduleId: "m-body", zone: "page", pluginSlug: null },
+      {
+        href: "/kontakt/",
+        path: "/kontakt/",
+        targetPageId: "p-kontakt",
+        text: "Kontakt",
+        moduleId: "m-footer",
+        zone: "layout",
+        pluginSlug: null,
+      },
+      {
+        href: "/blog/",
+        path: "/blog/",
+        targetPageId: "p-blog",
+        text: "Unser Blog",
+        moduleId: "m-body",
+        zone: "page",
+        pluginSlug: null,
+      },
+      {
+        href: "https://x.org",
+        path: null,
+        targetPageId: null,
+        text: "extern",
+        moduleId: "m-body",
+        zone: "page",
+        pluginSlug: null,
+      },
     ],
     outputHash: "h",
     ...over,
@@ -99,25 +127,48 @@ describe("what counts (rules)", () => {
     expect(w(mod({ placementCount: 5 }))).toBe("full");
     expect(w(mod({ placementCount: 30 }))).toBe("reduced");
     expect(w(mod({ placementCount: 300 }))).toBe("none");
-    expect(w(mod({ placementCount: 300 }), "home", { mode: "auto", homePage: "home" })).toBe("full");
+    expect(w(mod({ placementCount: 300 }), "home", { mode: "auto", homePage: "home" })).toBe(
+      "full",
+    );
   });
   it("more than half of a small site's pages is the last step from 11 pages on", () => {
-    expect(moduleWeighting(mod({ placementCount: 12 }), "p", 20, COUNTING, undefined, undefined).weighting).toBe("none");
-    expect(moduleWeighting(mod({ placementCount: 10 }), "p", 15, COUNTING, undefined, undefined).weighting).toBe("full");
+    expect(
+      moduleWeighting(mod({ placementCount: 12 }), "p", 20, COUNTING, undefined, undefined)
+        .weighting,
+    ).toBe("none");
+    expect(
+      moduleWeighting(mod({ placementCount: 10 }), "p", 15, COUNTING, undefined, undefined)
+        .weighting,
+    ).toBe("full");
   });
   it("chrome text counts only on its home page; templates always; explicit modes win", () => {
     expect(w(mod({ zone: "layout", placementCount: 3 }))).toBe("none");
-    expect(w(mod({ zone: "layout" }), "contact", { mode: "auto", homePage: "contact" })).toBe("full");
+    expect(w(mod({ zone: "layout" }), "contact", { mode: "auto", homePage: "contact" })).toBe(
+      "full",
+    );
     expect(w(mod({ zone: "template", placementCount: 5000 }))).toBe("full");
     expect(w(mod({ placementCount: 300 }), "p", { mode: "full", homePage: null })).toBe("full");
     expect(
-      moduleWeighting(mod({ placementCount: 2, contentInstanceId: "ci" }), "p", 10, COUNTING, { mode: "full", homePage: null }, "never").weighting,
+      moduleWeighting(
+        mod({ placementCount: 2, contentInstanceId: "ci" }),
+        "p",
+        10,
+        COUNTING,
+        { mode: "full", homePage: null },
+        "never",
+      ).weighting,
     ).toBe("none");
   });
   it("leaves out noindex, 404, the results page and excluded pages", () => {
-    expect(pageExclusion(facts({ noindex: true }), { resultsPage: null, excluded: false })).toBe("noindex");
-    expect(pageExclusion(facts({ notFoundPage: true }), { resultsPage: null, excluded: false })).toBe("not-found-page");
-    expect(pageExclusion(facts(), { resultsPage: "p-preise", excluded: false })).toBe("results-page");
+    expect(pageExclusion(facts({ noindex: true }), { resultsPage: null, excluded: false })).toBe(
+      "noindex",
+    );
+    expect(
+      pageExclusion(facts({ notFoundPage: true }), { resultsPage: null, excluded: false }),
+    ).toBe("not-found-page");
+    expect(pageExclusion(facts(), { resultsPage: "p-preise", excluded: false })).toBe(
+      "results-page",
+    );
     expect(pageExclusion(facts(), { resultsPage: null, excluded: true })).toBe("excluded");
     expect(pageExclusion(facts(), { resultsPage: null, excluded: false })).toBeNull();
   });
@@ -175,12 +226,15 @@ describe("the profile", () => {
       {
         synonyms: [
           { node: "synonym", values: { words: "Kosten, Preise", lang: "de" } },
-          { node: "synonym", values: { words: "seo, suchmaschinenoptimierung", one_way: true, lang: "de" } },
+          {
+            node: "synonym",
+            values: { words: "seo, suchmaschinenoptimierung", one_way: true, lang: "de" },
+          },
           { node: "synonym", values: { words: "allein" } },
         ],
         bestBets: [
-          { node: "bet", values: { query: "Angebot", page: { href: pageRef }, lang: "de" } },
-          { node: "bet", values: { query: "Angebot", page: { href: "https://x.org" } } },
+          { node: "bet", values: { query: "Angebot", target_page: { href: pageRef }, lang: "de" } },
+          { node: "bet", values: { query: "Angebot", target_page: { href: "https://x.org" } } },
         ],
         suggestions: [{ node: "suggestion", values: { text: "Was kostet es?", lang: "de" } }],
         protectedTerms: [{ node: "term", values: { word: "searchVIU" } }],
@@ -192,7 +246,9 @@ describe("the profile", () => {
     expect(r.profile.synonyms?.de?.preise).toEqual(["Kosten"]);
     expect(r.profile.synonyms?.de?.seo).toEqual(["suchmaschinenoptimierung"]);
     expect(r.profile.synonyms?.de?.suchmaschinenoptimierung).toBeUndefined();
-    expect(r.profile.bestBets?.de).toEqual([{ query: "Angebot", ids: ["11111111-1111-4111-8111-111111111111"] }]);
+    expect(r.profile.bestBets?.de).toEqual([
+      { query: "Angebot", ids: ["11111111-1111-4111-8111-111111111111"] },
+    ]);
     expect(r.profile.suggestions?.de).toEqual([{ text: "Was kostet es?", source: "curated" }]);
     expect(r.profile.protectedTerms).toEqual(["searchviu"]);
     expect(r.profile.boosts).toEqual([{ field: "page_type", values: { product: 1.5 } }]);
@@ -205,15 +261,36 @@ describe("counting visitors' searches", () => {
   it("drops what looks like personal data", () => {
     for (const t of ["max@example.com", "+49 30 1234567", "0049301234567", "Kundennummer 12345678"])
       expect(looksPersonal(t)).toBe(true);
-    for (const t of ["Preise", "SEO Tool 2026", "Logfile Analyse"]) expect(looksPersonal(t)).toBe(false);
+    for (const t of ["Preise", "SEO Tool 2026", "Logfile Analyse"])
+      expect(looksPersonal(t)).toBe(false);
     expect(cleanQuery("  a   b ")).toBe("a b");
   });
   it("calls a query popular after 5 searches on 3 days that found something", () => {
     const ev = (day: string, results = 3) =>
-      ({ kind: "search", text: "Preise", lang: "de", day, results, target: "", previous: "" }) as const;
-    const { queries } = aggregate([ev("2026-11-01"), ev("2026-11-01"), ev("2026-11-02"), ev("2026-11-03"), ev("2026-11-03")]);
+      ({
+        kind: "search",
+        text: "Preise",
+        lang: "de",
+        day,
+        results,
+        target: "",
+        previous: "",
+      }) as const;
+    const { queries } = aggregate([
+      ev("2026-11-01"),
+      ev("2026-11-01"),
+      ev("2026-11-02"),
+      ev("2026-11-03"),
+      ev("2026-11-03"),
+    ]);
     expect(isPopularCandidate(queries[0] as never)).toBe(true);
-    const few = aggregate([ev("2026-11-01"), ev("2026-11-01"), ev("2026-11-01"), ev("2026-11-01"), ev("2026-11-02")]);
+    const few = aggregate([
+      ev("2026-11-01"),
+      ev("2026-11-01"),
+      ev("2026-11-01"),
+      ev("2026-11-01"),
+      ev("2026-11-02"),
+    ]);
     expect(isPopularCandidate(few.queries[0] as never)).toBe(false);
   });
 });
@@ -239,14 +316,23 @@ function fakeCtx() {
       calls.push({ op: "delete", collection: name, n: ids.length });
       for (const id of ids) coll(name).delete(id);
     },
-    replace: async (field: string, values: readonly string[], docs: readonly CollectionDocInput[]) => {
+    replace: async (
+      field: string,
+      values: readonly string[],
+      docs: readonly CollectionDocInput[],
+    ) => {
       calls.push({ op: "replace", collection: name, n: docs.length });
-      for (const [id, d] of coll(name)) if (values.includes(String(d.values[field]))) coll(name).delete(id);
+      for (const [id, d] of coll(name))
+        if (values.includes(String(d.values[field]))) coll(name).delete(id);
       for (const d of docs) coll(name).set(d.id, d);
     },
     get: async (id: string) => coll(name).get(id) ?? null,
     getMany: async (ids: readonly string[]) => ({
-      docs: new Map(ids.flatMap((id) => (coll(name).has(id) ? [[id, coll(name).get(id) as CollectionDocInput]] : []))),
+      docs: new Map(
+        ids.flatMap((id) =>
+          coll(name).has(id) ? [[id, coll(name).get(id) as CollectionDocInput]] : [],
+        ),
+      ),
       pending: false,
     }),
     setProfile: async () => {},
@@ -254,7 +340,10 @@ function fakeCtx() {
   });
   const tables = new Map<string, Record<string, unknown>[]>();
   const adminQuery = {
-    list: async (table: string, filter: { anyOf?: Record<string, unknown[]>; limit?: number } = {}) =>
+    list: async (
+      table: string,
+      filter: { anyOf?: Record<string, unknown[]>; limit?: number } = {},
+    ) =>
       (tables.get(table) ?? [])
         .filter((r) => Object.entries(filter.anyOf ?? {}).every(([k, vs]) => vs.includes(r[k])))
         .slice(0, filter.limit ?? 1000),
@@ -264,7 +353,10 @@ function fakeCtx() {
       return { id };
     },
     update: async (table: string, id: string, patch: Record<string, unknown>) => {
-      tables.set(table, (tables.get(table) ?? []).map((r) => (r.id === id ? { ...r, ...patch } : r)));
+      tables.set(
+        table,
+        (tables.get(table) ?? []).map((r) => (r.id === id ? { ...r, ...patch } : r)),
+      );
     },
   };
   const values = configDefaults(parseConfigSchema(SITE_SEARCH_CONFIG));
@@ -300,7 +392,9 @@ describe("the observer", () => {
     calls.length = 0;
     // The footer's text changed (it does not count), its links did not.
     const footerEdited = facts({
-      texts: facts().texts.map((t) => (t.moduleId === "m-footer" ? { ...t, text: "Impressum · AGB" } : t)),
+      texts: facts().texts.map((t) =>
+        t.moduleId === "m-footer" ? { ...t, text: "Impressum · AGB" } : t,
+      ),
     });
     const r = await observeOp(ctx, args([footerEdited]));
     expect(r.indexed).toBe(0);
@@ -312,11 +406,16 @@ describe("the observer", () => {
     await observeOp(ctx, args([facts()]));
     calls.length = 0;
     const renamed = facts({
-      links: facts().links.map((l) => (l.moduleId === "m-footer" ? { ...l, text: "Kontakt & Anfahrt" } : l)),
+      links: facts().links.map((l) =>
+        l.moduleId === "m-footer" ? { ...l, text: "Kontakt & Anfahrt" } : l,
+      ),
     });
     await observeOp(ctx, args([renamed]));
     expect(calls.some((c) => c.collection === "anchors" && c.op === "replace")).toBe(true);
-    expect([...coll("anchors").values()].map((d) => d.values.text).sort()).toEqual(["Kontakt & Anfahrt", "Unser Blog"]);
+    expect([...coll("anchors").values()].map((d) => d.values.text).sort()).toEqual([
+      "Kontakt & Anfahrt",
+      "Unser Blog",
+    ]);
   });
 
   it("removes an excluded page's document but keeps its links as anchor texts", async () => {

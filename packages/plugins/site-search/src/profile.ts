@@ -64,8 +64,14 @@ function fold(word: string): string {
   return word.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().trim();
 }
 
-function add(table: Record<string, Record<string, string[]>>, lang: string, word: string, alts: string[]) {
-  const forLang = (table[lang] ??= {});
+function add(
+  table: Record<string, Record<string, string[]>>,
+  lang: string,
+  word: string,
+  alts: string[],
+) {
+  const forLang = table[lang] ?? {};
+  table[lang] = forLang;
   const key = fold(word);
   const merged = new Set([...(forLang[key] ?? []), ...alts.filter((a) => fold(a) !== key)]);
   if (merged.size > 0) forLang[key] = [...merged].slice(0, 10);
@@ -112,7 +118,7 @@ export function buildProfile(
   const bestBets: Record<string, { query: string; ids: string[] }[]> = {};
   for (const [i, e] of lists.bestBets.entries()) {
     const query = str(e.values.query);
-    const pageId = linkedPageId(e.values.page);
+    const pageId = linkedPageId(e.values.target_page);
     if (!query || !pageId) {
       notes.push(`pinned result ${i + 1} ("${query}") names no page of the site`);
       continue;
@@ -122,7 +128,8 @@ export function buildProfile(
       continue;
     }
     for (const lang of expand(langOf(e), langs)) {
-      const list = (bestBets[lang] ??= []);
+      const list = bestBets[lang] ?? [];
+      bestBets[lang] = list;
       const found = list.find((b) => fold(b.query) === fold(query));
       if (found) {
         if (!found.ids.includes(pageId) && found.ids.length < 5) found.ids.push(pageId);
@@ -134,12 +141,15 @@ export function buildProfile(
     const text = str(e.values.text);
     if (!text) continue;
     for (const lang of expand(langOf(e), langs)) {
-      const list = (suggestions[lang] ??= []);
+      const list = suggestions[lang] ?? [];
+      suggestions[lang] = list;
       if (list.length < 50) list.push({ text: text.slice(0, 120), source: "curated" });
     }
   }
   const protectedTerms = [
-    ...new Set(lists.protectedTerms.map((e) => fold(str(e.values.word))).filter((w) => w.length > 0)),
+    ...new Set(
+      lists.protectedTerms.map((e) => fold(str(e.values.word))).filter((w) => w.length > 0),
+    ),
   ].slice(0, 2000);
   const typeWeights = Object.entries(config.pageTypeWeights).filter(([, w]) => w !== 1);
   return {
@@ -165,7 +175,9 @@ export function buildProfile(
       compounds: true,
       prefix: true,
       crossLanguage: config.crossLanguage,
-      semantic: config.semantic.enabled ? { weight: config.semantic.weight, minSimilarity: 0.3 } : null,
+      semantic: config.semantic.enabled
+        ? { weight: config.semantic.weight, minSimilarity: 0.3 }
+        : null,
       suggestions,
     },
     notes,

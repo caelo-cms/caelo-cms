@@ -150,6 +150,7 @@
         "@caelo-cms/plugin-consent-manager": "workspace:*",
         "@caelo-cms/plugin-host": "workspace:*",
         "@caelo-cms/plugin-sandbox": "workspace:*",
+        "@caelo-cms/plugin-site-search": "workspace:*",
         "@caelo-cms/query-api": "workspace:*",
         "@caelo-cms/shared": "workspace:*",
         "@caelo-cms/site-importer": "workspace:*",

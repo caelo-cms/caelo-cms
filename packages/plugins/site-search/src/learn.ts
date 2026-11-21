@@ -42,9 +42,9 @@ export interface SearchEvent {
   readonly previous: string;
 }
 
-/** A query key: folded text in its language. */
+/** A query key: folded text in its language (stored, so printable). */
 export function queryKey(text: string, lang: string): string {
-  return `${lang.split("-")[0]}\u0000${text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()}`;
+  return `${lang.split("-")[0]}|${text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()}`;
 }
 
 export interface QueryStats {
@@ -70,7 +70,14 @@ export function aggregate(events: readonly SearchEvent[]): {
 } {
   const byKey = new Map<
     string,
-    { text: string; lang: string; searches: number; days: Set<string>; withResults: number; clicks: number }
+    {
+      text: string;
+      lang: string;
+      searches: number;
+      days: Set<string>;
+      withResults: number;
+      clicks: number;
+    }
   >();
   const reforms = new Map<string, { from: string; to: string; lang: string; count: number }>();
   for (const e of events) {
@@ -87,7 +94,7 @@ export function aggregate(events: readonly SearchEvent[]): {
       if (e.results > 0) q.withResults++;
     } else if (e.kind === "click") q.clicks++;
     else if (e.kind === "reformulation" && e.previous) {
-      const rk = `${queryKey(e.previous, lang)}\u0001${key}`;
+      const rk = `${queryKey(e.previous, lang)}>${key}`;
       const r = reforms.get(rk) ?? { from: e.previous, to: e.text, lang, count: 0 };
       r.count++;
       reforms.set(rk, r);

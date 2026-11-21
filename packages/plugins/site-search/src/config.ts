@@ -132,7 +132,8 @@ export const SITE_SEARCH_CONFIG: Readonly<Record<string, ConfigFieldInput>> = {
       typos: {
         type: "bool",
         label: "Tolerate typos",
-        description: "Find 'Logfiel' for 'Logfile' (one letter off in short words, two in long ones).",
+        description:
+          "Find 'Logfiel' for 'Logfile' (one letter off in short words, two in long ones).",
         effect: "query",
         default: true,
       },
@@ -287,8 +288,19 @@ export const SITE_SEARCH_ENTITY_CONFIG: NonNullable<PluginDefinition["entityConf
 };
 
 const text = (name: string, label: string, required = false) =>
-  ({ name, label, type: "text" as const, ...(required ? { required: true } : {}), maxLength: 200 }) as const;
-const lang = { name: "lang", label: "Language (empty: every language)", type: "text", maxLength: 16 } as const;
+  ({
+    name,
+    label,
+    type: "text" as const,
+    ...(required ? { required: true } : {}),
+    maxLength: 200,
+  }) as const;
+const lang = {
+  name: "lang",
+  label: "Language (empty: every language)",
+  type: "text",
+  maxLength: 16,
+} as const;
 
 /** The list types the plugin ships (owned by it, live while it runs). */
 export const SITE_SEARCH_LIST_TYPES: readonly ListTypeDef[] = [
@@ -303,8 +315,16 @@ export const SITE_SEARCH_LIST_TYPES: readonly ListTypeDef[] = [
       synonym: {
         label: "Synonym",
         fields: [
-          text("words", "Words, comma-separated (the first is the one a one-way entry expands)", true),
-          { name: "one_way", label: "One way (the first word finds the others, not back)", type: "boolean" },
+          text(
+            "words",
+            "Words, comma-separated (the first is the one a one-way entry expands)",
+            true,
+          ),
+          {
+            name: "one_way",
+            label: "One way (the first word finds the others, not back)",
+            type: "boolean",
+          },
           lang,
         ],
       },
@@ -321,7 +341,7 @@ export const SITE_SEARCH_LIST_TYPES: readonly ListTypeDef[] = [
         label: "Pinned result",
         fields: [
           text("query", "Query", true),
-          { name: "page", label: "Page shown first", type: "link", required: true },
+          { name: "target_page", label: "Page shown first", type: "link", required: true },
           lang,
         ],
       },

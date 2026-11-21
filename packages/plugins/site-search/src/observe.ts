@@ -30,7 +30,22 @@ type Ctx = PluginContext & Partial<Pick<PluginContextTier1, "adminQuery" | "cms"
 
 /** The languages a list entry without a language applies to: every one the engine stems. */
 export const ALL_LANGUAGES = [
-  "ar", "da", "de", "en", "es", "fi", "fr", "hu", "it", "nl", "no", "pt", "ro", "ru", "sv", "tr",
+  "ar",
+  "da",
+  "de",
+  "en",
+  "es",
+  "fi",
+  "fr",
+  "hu",
+  "it",
+  "nl",
+  "no",
+  "pt",
+  "ro",
+  "ru",
+  "sv",
+  "tr",
 ] as const;
 
 function collectionsOf(ctx: Ctx): PluginCollections & {
@@ -39,7 +54,9 @@ function collectionsOf(ctx: Ctx): PluginCollections & {
 } {
   const c = ctx.collections;
   if (!c?.pages || !c.anchors)
-    throw new Error("site-search: the collections grant is missing (Settings → Plugins approves it)");
+    throw new Error(
+      "site-search: the collections grant is missing (Settings → Plugins approves it)",
+    );
   return c as never;
 }
 
@@ -92,10 +109,10 @@ async function chromeDigests(ctx: Ctx, moduleIds: readonly string[]): Promise<Ma
   const out = new Map<string, string>();
   if (!ctx.adminQuery || moduleIds.length === 0) return out;
   for (let i = 0; i < moduleIds.length; i += 1000) {
-    for (const r of await ctx.adminQuery.list<"module_counting", { module_id: string; anchors_digest: string }>(
+    for (const r of await ctx.adminQuery.list<
       "module_counting",
-      { anyOf: { module_id: moduleIds.slice(i, i + 1000) }, limit: 1000 },
-    ))
+      { module_id: string; anchors_digest: string }
+    >("module_counting", { anyOf: { module_id: moduleIds.slice(i, i + 1000) }, limit: 1000 }))
       if (r.anchors_digest) out.set(r.module_id, r.anchors_digest);
   }
   return out;
@@ -122,7 +139,10 @@ export function verdictsOf(
   for (const m of facts.modules) {
     const ms = moduleSettings.get(m.moduleId);
     const settings: ModuleSettings | undefined = ms
-      ? { mode: (ms.mode as SearchMode) ?? "auto", homePage: (ms.home_page as string | null) ?? null }
+      ? {
+          mode: (ms.mode as SearchMode) ?? "auto",
+          homePage: (ms.home_page as string | null) ?? null,
+        }
       : undefined;
     const instanceMode = m.contentInstanceId
       ? (instanceSettings.get(m.contentInstanceId)?.mode as SearchMode | undefined)
@@ -136,7 +156,11 @@ export function verdictsOf(
 }
 
 async function listEntries(ctx: Ctx, listId: unknown): Promise<ListEntry[]> {
-  if (typeof listId !== "string" || !ctx.cms) return [];
+  if (typeof listId !== "string") return [];
+  if (!ctx.cms)
+    throw new Error(
+      "site-search: reading its lists needs the cms_admin grant (Settings → Plugins approves it)",
+    );
   const r = await ctx.cms.call<{ id: string }, { list: { items: ListEntry[] } }>("lists.get", {
     id: listId,
   });
@@ -174,7 +198,8 @@ export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<O
     args.pages.map((p) => p.pageId),
   );
   const placement = new Map<string, number>();
-  for (const p of args.pages) for (const m of p.modules) placement.set(m.moduleId, m.placementCount);
+  for (const p of args.pages)
+    for (const m of p.modules) placement.set(m.moduleId, m.placementCount);
 
   // What the index holds for these pages: a page whose document and
   // anchor texts come out the same is not written again (an edit of the
@@ -202,7 +227,8 @@ export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<O
         if (!list.some((x) => x.id === d.id)) list.push(d);
         chrome.set(d.values.source.slice(2), list);
       }
-    for (const m of facts.modules) if (m.zone === "layout" && !chrome.has(m.moduleId)) chrome.set(m.moduleId, []);
+    for (const m of facts.modules)
+      if (m.zone === "layout" && !chrome.has(m.moduleId)) chrome.set(m.moduleId, []);
     const anchorsDigest = digestOf(own.map((d) => [d.id, d.values.text]).sort());
     const old = before.docs.get(facts.pageId);
     const ownChanged = !trust || old?.values.anchors_digest !== anchorsDigest;
@@ -237,7 +263,7 @@ export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<O
         moduleId: m.moduleId,
         name: m.name,
         zone: m.zone,
-        placement: m.placementCount,
+        placement: m.contentPlacementCount,
         weighting: v.weighting,
         reason: v.reason,
       });
@@ -272,12 +298,20 @@ export async function observe(ctx: Ctx, args: PageOutputObserverArgs): Promise<O
   if (args.final) {
     if (args.removed.length > 0) {
       await pages.delete(args.removed);
-      await anchors.replace("source", args.removed.map((id) => `p:${id}`), []);
+      await anchors.replace(
+        "source",
+        args.removed.map((id) => `p:${id}`),
+        [],
+      );
       await anchors.replace("target", args.removed, []);
     }
     const goneModules = args.placementChanges.filter((c) => c.after === 0);
     if (goneModules.length > 0)
-      await anchors.replace("source", goneModules.map((c) => `m:${c.moduleId}`), []);
+      await anchors.replace(
+        "source",
+        goneModules.map((c) => `m:${c.moduleId}`),
+        [],
+      );
     const lists = (values.lists ?? {}) as Record<string, unknown>;
     const built = buildProfile(
       profileConfigOf(values),

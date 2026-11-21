@@ -39,7 +39,10 @@ export function sectionsOf(
   for (const t of facts.texts) {
     if (!keep(t)) continue;
     const anchor = t.anchor ?? "";
-    const startsSection = current === null || current.anchor !== anchor || (t.heading !== null && current.text.length > 0);
+    const startsSection =
+      current === null ||
+      current.anchor !== anchor ||
+      (t.heading !== null && current.text.length > 0);
     if (startsSection) {
       if (out.length >= MAX_SECTIONS) break;
       current = { anchor, heading: [], text: [], chars: 0 };
@@ -68,10 +71,17 @@ export function pageDocument(
 ): CollectionDocInput {
   const weighting = (moduleId: string | null) =>
     moduleId === null ? "none" : (verdicts.get(moduleId)?.weighting ?? "none");
-  const sections = sectionsOf(facts, (t) => textMayCount(t) && weighting(t.moduleId) === "full");
+  // A link's words describe its target (they count there as anchor text):
+  // on the page that carries the link they count reduced.
+  const sections = sectionsOf(
+    facts,
+    (t) => textMayCount(t) && !t.inLink && weighting(t.moduleId) === "full",
+  );
   const reduced = sectionsOf(
     facts,
-    (t) => textMayCount(t) && weighting(t.moduleId) === "reduced",
+    (t) =>
+      textMayCount(t) &&
+      (weighting(t.moduleId) === "reduced" || (t.inLink && weighting(t.moduleId) === "full")),
   );
   const terms = Object.entries(facts.terms).flatMap(([list, ids]) =>
     ids.map((id) => `${list}:${id}`),
@@ -124,10 +134,7 @@ export function anchorId(source: string, target: string, text: string): string {
 }
 
 /** The anchor source of a link: its chrome module, or the page it sits on. */
-export function anchorSource(
-  link: PageOutputFacts["links"][number],
-  pageId: string,
-): string {
+export function anchorSource(link: PageOutputFacts["links"][number], pageId: string): string {
   return link.zone === "layout" && link.moduleId ? `m:${link.moduleId}` : `p:${pageId}`;
 }
 
@@ -145,7 +152,8 @@ export function anchorDocuments(
 ): AnchorDoc[] {
   const out = new Map<string, AnchorDoc>();
   for (const link of facts.links) {
-    if (!link.targetPageId || link.targetPageId === facts.pageId || link.pluginSlug !== null) continue;
+    if (!link.targetPageId || link.targetPageId === facts.pageId || link.pluginSlug !== null)
+      continue;
     const text = normalizeAnchorText(link.text);
     if (text.length < 2) continue;
     const chrome = link.zone === "layout" && link.moduleId !== null;

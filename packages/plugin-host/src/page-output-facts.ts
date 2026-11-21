@@ -46,6 +46,8 @@ export interface PageHtmlText {
   readonly heading: number | null;
   readonly anchor: string | null;
   readonly inForm: boolean;
+  /** Inside a link: its words describe the page the link points to. */
+  readonly inLink: boolean;
 }
 
 /** One link of the body. */
@@ -207,6 +209,7 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
       heading: scope.heading,
       anchor,
       inForm: scope.inForm,
+      inLink: open.length > 0,
     });
   };
   const parser = new Parser(

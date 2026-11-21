@@ -74,6 +74,28 @@ export async function loadModuleIndex(
   return new Map(rows.map((r) => [r.id, { name: r.display_name, kind: r.kind, count: r.n }]));
 }
 
+/**
+ * On how many shipped pages each content instance shows: one placed per
+ * page counts 1, a synced one (the same content everywhere) its pages.
+ */
+export async function loadInstanceCounts(
+  tx: TransactionRunner,
+  statusFilter: SQL,
+): Promise<Map<string, number>> {
+  const rows = (await tx.execute(sql`
+    WITH shipped AS (
+      SELECT p.id FROM pages p JOIN templates t ON t.id = p.template_id
+      WHERE p.deleted_at IS NULL AND p.chat_branch_id IS NULL AND t.deleted_at IS NULL ${statusFilter}
+    )
+    SELECT pm.content_instance_id::text AS id, count(DISTINCT pm.page_id)::int AS n
+    FROM page_modules pm JOIN shipped s ON s.id = pm.page_id
+    WHERE pm.content_instance_id IS NOT NULL
+    GROUP BY pm.content_instance_id
+    HAVING count(DISTINCT pm.page_id) > 1
+  `)) as unknown as { id: string; n: number }[];
+  return new Map(rows.map((r) => [r.id, r.n]));
+}
+
 interface PageMeta {
   readonly shortTitle: string | null;
   readonly pageType: string | null;
@@ -138,6 +160,7 @@ export class PageOutputCollector {
     private readonly siteOrigins: ReadonlySet<string>,
     private readonly notFoundPageId: string | null,
     private readonly modules: Map<string, ModuleInfo>,
+    private readonly instances: Map<string, number>,
     private readonly publishedPageCount: number,
     private readonly pageIdByPath: ReadonlyMap<string, string>,
   ) {}
@@ -156,6 +179,7 @@ export class PageOutputCollector {
   }): Promise<PageOutputCollector | null> {
     if (!(await args.plugins.hasPageOutputObservers())) return null;
     const modules = await loadModuleIndex(args.tx, args.statusFilter);
+    const instances = await loadInstanceCounts(args.tx, args.statusFilter);
     const byPath = new Map(args.pages.map((p) => [canonicalSitePath(p.path), p.pageId] as const));
     return new PageOutputCollector(
       args.plugins,
@@ -165,6 +189,7 @@ export class PageOutputCollector {
       new Set(args.siteOrigins),
       args.notFoundPageId,
       modules,
+      instances,
       args.pages.length,
       byPath,
     );
@@ -182,9 +207,17 @@ export class PageOutputCollector {
         firsts.map((p) => ({
           pageId: p.pageId,
           htmlHash: hashes.get(p.pageId) as string,
-          modules: [...new Set(p.composed.map((m) => m.moduleId))].map(
-            (id) => [id, this.modules.get(id)?.count ?? 0] as const,
-          ),
+          // Keyed by what repeats: the content instance, or the module without one.
+          modules: [
+            ...new Map(
+              p.composed.map((m) => {
+                const key = m.contentInstanceId
+                  ? `${m.moduleId}/${m.contentInstanceId}`
+                  : m.moduleId;
+                return [key, this.contentCount(m.moduleId, m.contentInstanceId)] as const;
+              }),
+            ),
+          ],
         })),
         this.publishedPageCount,
       ),
@@ -201,6 +234,12 @@ export class PageOutputCollector {
     }));
     for (let i = 0; i < delivered.length; i += 200)
       await this.plugins.observePageOutputs(this.runId, delivered.slice(i, i + 200));
+  }
+
+  /** On how many pages a placement shows the same content (its instance's, else its module's). */
+  private contentCount(moduleId: string, instanceId: string | null): number {
+    if (instanceId) return this.instances.get(instanceId) ?? 1;
+    return this.modules.get(moduleId)?.count ?? 0;
   }
 
   private factsOf(page: OutputPage, meta: PageMeta | undefined): PageOutputFacts {
@@ -222,6 +261,7 @@ export class PageOutputCollector {
         zone: m.zone,
         contentInstanceId: m.contentInstanceId,
         placementCount: info?.count ?? 0,
+        contentPlacementCount: this.contentCount(m.moduleId, m.contentInstanceId),
       };
     });
     // The digest covers everything an observer reads, so a changed short

@@ -296,16 +296,6 @@ beforeAll(async () => {
           schema: { hits: { query: "text" } },
           tableKinds: { hits: "published" },
           requestedCapabilities: ["collections", "page_output"],
-          config: {
-            semantic_model: {
-              type: "catalogModel",
-              purpose: "embedding",
-              label: "Model",
-              description: "The model the semantic collection embeds with.",
-              effect: "rebuild",
-              default: MODELS.dir ? DEFAULT_EMBEDDING_MODEL_ID : null,
-            },
-          },
           collections: {
             pages: {
               description: "Every published page, for the site search.",
@@ -329,8 +319,16 @@ beforeAll(async () => {
               maxDocumentBytes: 100_000,
             },
           },
-          // A rule that shapes every document, and a per-page setting.
+          // A rule that shapes every document, the semantic model, and a per-page setting.
           config: {
+            semantic_model: {
+              type: "catalogModel",
+              purpose: "embedding",
+              label: "Model",
+              description: "The model the semantic collection embeds with.",
+              effect: "rebuild",
+              default: MODELS.dir ? DEFAULT_EMBEDDING_MODEL_ID : null,
+            },
             full_max: {
               type: "int",
               label: "Pages a module counts fully on",
@@ -480,6 +478,7 @@ describe("page output and collections through Stage and Publish live", () => {
     }>("deploy.stage_status", { deployRunId: first });
     expect(status.runs[0]?.searchIndexes).toEqual([
       { plugin: PLUGIN, collection: "pages", state: "ready", error: null },
+      { plugin: PLUGIN, collection: "semantic", state: "ready", error: null },
     ] as never);
     // The staging gateway learns the Stage's index; the live one still has none.
     expect(await published(STAGING_URL as string)).toEqual([index.releaseKey as string]);
@@ -558,11 +557,10 @@ describe("page output and collections through Stage and Publish live", () => {
     await ok("pages.update", { pageId: pageIds.get(PAGES[1] as string), status: "draft" });
     const run = await stage();
     expect(calls.at(-1)?.removed).toEqual([pageIds.get(PAGES[1] as string)]);
-    // The text module went from 3 pages to 2: below the plugin's step
-    // (full_max 2), so the pages it stays on come again, unchanged HTML and all.
-    expect(calls.flatMap((c) => c.pages.map((p) => p.path)).sort()).toEqual(
-      ["/", `/${PAGES[0]}`].sort(),
-    );
+    // The text module shows each page's own content (one instance per
+    // page), so no placement step moves and no other page comes again; a
+    // shared block crossing a step is the site search test's (#1651).
+    expect(calls.flatMap((c) => c.pages.map((p) => p.path))).toEqual([]);
     const index = await indexState(run);
     expect(index.stats.docCount).toBe(2);
     await ok("pages.update", { pageId: pageIds.get(PAGES[1] as string), status: "published" });
@@ -686,7 +684,10 @@ describe("semantic search through the Stage (#1650)", () => {
     expect(semantic.state).toBe("ready");
     expect(semantic.vectorModel).toBeNull();
     expect(semantic.stats).toMatchObject({ rebuilt: true, vectorModel: null, passagesEmbedded: 0 });
-    // The word collection did not change and is carried over.
-    expect((await indexState(run, "pages")).stats.carried).toBe(true);
+    // A configuration change delivers every page again (the observer's
+    // digest), so the word collection is written again, the same documents.
+    const pages = await indexState(run, "pages");
+    expect(pages.state).toBe("ready");
+    expect(pages.stats.docCount).toBe(3);
   });
 });

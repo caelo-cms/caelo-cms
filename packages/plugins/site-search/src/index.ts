@@ -136,9 +136,12 @@ async function writeReport(
     else await q.insert("index_report", row);
   }
   if (counting !== null) {
-    const [s] = await q.list<"public_settings", { id: string; counting: boolean }>("public_settings", {
-      limit: 1,
-    });
+    const [s] = await q.list<"public_settings", { id: string; counting: boolean }>(
+      "public_settings",
+      {
+        limit: 1,
+      },
+    );
     if (!s) await q.insert("public_settings", { counting });
     else if (s.counting !== counting) await q.update("public_settings", s.id, { counting });
   }
@@ -152,14 +155,19 @@ async function approvedPopular(ctx: Ctx): Promise<Record<string, string[]>> {
   );
   const out: Record<string, string[]> = {};
   for (const r of rows) {
-    const list = (out[r.lang] ??= []);
+    const list = out[r.lang] ?? [];
+    out[r.lang] = list;
     if (list.length < 20) list.push(r.text);
   }
   return out;
 }
 
 function escapeAttr(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 async function resultsPageIds(ctx: Ctx): Promise<string[]> {
@@ -179,11 +187,12 @@ interface TestQuery {
 async function testQueries(ctx: Ctx): Promise<TestQuery[]> {
   const values = (await ctx.config?.get()) ?? {};
   const listId = ((values.lists ?? {}) as Record<string, unknown>).test_queries;
-  if (typeof listId !== "string" || !ctx.cms) return [];
-  const r = await ctx.cms.call<{ id: string }, { list: { items: { values: Record<string, unknown> }[] } }>(
-    "lists.get",
-    { id: listId },
-  );
+  if (typeof listId !== "string") return [];
+  if (!ctx.cms) throw new Error("site-search: reading its lists needs the cms_admin grant");
+  const r = await ctx.cms.call<
+    { id: string },
+    { list: { items: { values: Record<string, unknown> }[] } }
+  >("lists.get", { id: listId });
   const out: TestQuery[] = [];
   for (const it of r.list.items) {
     const query = typeof it.values.query === "string" ? it.values.query.trim() : "";
@@ -194,7 +203,8 @@ async function testQueries(ctx: Ctx): Promise<TestQuery[]> {
       query,
       expect,
       within: Number.isInteger(within) && within >= 1 && within <= 20 ? within : 3,
-      lang: typeof it.values.lang === "string" && it.values.lang.trim() ? it.values.lang.trim() : null,
+      lang:
+        typeof it.values.lang === "string" && it.values.lang.trim() ? it.values.lang.trim() : null,
     });
   }
   return out;
@@ -204,14 +214,17 @@ async function testQueries(ctx: Ctx): Promise<TestQuery[]> {
 async function pinnedQueries(ctx: Ctx): Promise<Set<string>> {
   const values = (await ctx.config?.get()) ?? {};
   const listId = ((values.lists ?? {}) as Record<string, unknown>).best_bets;
-  if (typeof listId !== "string" || !ctx.cms) return new Set();
-  const r = await ctx.cms.call<{ id: string }, { list: { items: { values: Record<string, unknown> }[] } }>(
-    "lists.get",
-    { id: listId },
-  );
+  if (typeof listId !== "string") return new Set();
+  if (!ctx.cms) throw new Error("site-search: reading its lists needs the cms_admin grant");
+  const r = await ctx.cms.call<
+    { id: string },
+    { list: { items: { values: Record<string, unknown> }[] } }
+  >("lists.get", { id: listId });
   return new Set(
     r.list.items
-      .map((it) => (typeof it.values.query === "string" ? it.values.query.trim().toLowerCase() : ""))
+      .map((it) =>
+        typeof it.values.query === "string" ? it.values.query.trim().toLowerCase() : "",
+      )
       .filter(Boolean),
   );
 }
@@ -320,7 +333,8 @@ export default definePlugin({
   listTypes: [...SITE_SEARCH_LIST_TYPES],
   collections: {
     pages: {
-      description: "Every page of the site that is a search result: its words by section, title and type.",
+      description:
+        "Every page of the site that is a search result: its words by section, title and type.",
       fields: {
         title: { kind: "text", prefix: true },
         short_title: { kind: "text", prefix: true },
@@ -340,7 +354,8 @@ export default definePlugin({
       maxDocumentBytes: 400_000,
     },
     anchors: {
-      description: "The words pages link each other with: one text to one target from one page or navigation block.",
+      description:
+        "The words pages link each other with: one text to one target from one page or navigation block.",
       fields: {
         text: { kind: "text" },
         target: { kind: "keyword" },
@@ -432,10 +447,11 @@ export default definePlugin({
       const input = recordInput.parse(args);
       // A filled honeypot gets the same answer, and nothing is stored.
       if ((args as Record<string, unknown>).website) return { recorded: false };
-      const [settings] = await (ctx as Ctx).adminQuery?.list<"public_settings", { counting: boolean }>(
-        "public_settings",
-        { limit: 1 },
-      ) ?? [];
+      const [settings] =
+        (await (ctx as Ctx).adminQuery?.list<"public_settings", { counting: boolean }>(
+          "public_settings",
+          { limit: 1 },
+        )) ?? [];
       if (settings?.counting !== true) return { recorded: false };
       const text = cleanQuery(input.text);
       const previous = input.previous ? cleanQuery(input.previous) : "";
@@ -451,7 +467,12 @@ export default definePlugin({
         day: today(),
         results: input.results,
         target: input.kind === "click" ? (input.target ?? "").slice(0, 500) : "",
-        previous: input.kind === "search" && previous ? previous : input.kind === "reformulation" ? previous : "",
+        previous:
+          input.kind === "search" && previous
+            ? previous
+            : input.kind === "reformulation"
+              ? previous
+              : "",
       });
       // A search after another in the same tab is also a reformulation.
       if (input.kind === "search" && previous && previous !== text) {
@@ -482,10 +503,13 @@ export default definePlugin({
       for (const s of queries) {
         const key = queryKey(s.text, s.lang);
         if (isPopularCandidate(s)) {
-          const [row] = await q.list<"popular_queries", { id: string; status: string }>("popular_queries", {
-            key,
-            limit: 1,
-          });
+          const [row] = await q.list<"popular_queries", { id: string; status: string }>(
+            "popular_queries",
+            {
+              key,
+              limit: 1,
+            },
+          );
           if (!row) {
             await q.insert("popular_queries", {
               text: s.text,
@@ -520,7 +544,7 @@ export default definePlugin({
       }
       for (const r of reformulations) {
         if (r.count < 3) continue;
-        const ik = `r:${queryKey(r.from, r.lang)}\u0001${queryKey(r.to, r.lang)}`;
+        const ik = `r:${queryKey(r.from, r.lang)}>${queryKey(r.to, r.lang)}`;
         const [row] = await q.list<"insights", { id: string }>("insights", { key: ik, limit: 1 });
         if (row) await q.update("insights", row.id, { count: r.count });
         else {
@@ -559,7 +583,9 @@ export default definePlugin({
       for (const p of pending) {
         const r = await c.ai.generateObject({
           system: MODERATION_SYSTEM,
-          messages: [{ role: "user", content: `Language: ${p.lang}\nQuery: ${JSON.stringify(p.text)}` }],
+          messages: [
+            { role: "user", content: `Language: ${p.lang}\nQuery: ${JSON.stringify(p.text)}` },
+          ],
           jsonSchema: MODERATION_SCHEMA as unknown as Record<string, unknown>,
           maxTokens: 120,
           temperature: 0,
@@ -574,7 +600,11 @@ export default definePlugin({
         });
         if (verdict === "approved") approved++;
       }
-      return { decided: pending.length, approved, pageIds: approved > 0 ? await resultsPageIds(c) : [] };
+      return {
+        decided: pending.length,
+        approved,
+        pageIds: approved > 0 ? await resultsPageIds(c) : [],
+      };
     },
 
     decide_popular: async (ctx, args) => {
@@ -618,14 +648,18 @@ export default definePlugin({
     index_report: async (ctx) => {
       const c = ctx as Ctx;
       const modules = await listAll(
-        (f) => adminQueryOf(c).list<"module_counting", Record<string, unknown> & { id: string }>("module_counting", f),
+        (f) =>
+          adminQueryOf(c).list<"module_counting", Record<string, unknown> & { id: string }>(
+            "module_counting",
+            f,
+          ),
         {},
         5000,
       );
-      const [report] = await adminQueryOf(c).list<"index_report", { notes: string; run_id: string }>(
+      const [report] = await adminQueryOf(c).list<
         "index_report",
-        { limit: 1 },
-      );
+        { notes: string; run_id: string }
+      >("index_report", { limit: 1 });
       const staged = await c.collections?.pages?.query("read", { value: "/" }, { at: "staged" });
       return {
         stageRunId: report?.run_id ?? null,
@@ -646,7 +680,10 @@ export default definePlugin({
       const input = z
         .object({
           query: z.string().min(1).max(120),
-          lang: z.string().regex(/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$/).optional(),
+          lang: z
+            .string()
+            .regex(/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$/)
+            .optional(),
           at: z.enum(["staged", "live"]).default("staged"),
         })
         .strict()
@@ -654,7 +691,11 @@ export default definePlugin({
       const pages = (ctx as Ctx).collections?.pages;
       if (!pages) throw new Error("site-search: the collections grant is missing");
       const lang = input.lang ?? "de";
-      const r = await pages.query("search", { q: input.query, lang, limit: "10" }, { at: input.at, explain: true });
+      const r = await pages.query(
+        "search",
+        { q: input.query, lang, limit: "10" },
+        { at: input.at, explain: true },
+      );
       if (r.state !== "ready") return { state: r.state, error: r.error, hits: [] };
       return { state: "ready", ...(r.body as object) };
     },
@@ -670,10 +711,18 @@ export default definePlugin({
       const findings: PluginAuditFinding[] = [];
       const until = Date.now() + AUDIT_INDEX_WAIT_MS;
       for (const t of tests) {
-        let r = await pages.query("search", { q: t.query, lang: t.lang ?? "de", limit: String(Math.max(t.within, 3)) }, { runId: a.runId });
+        let r = await pages.query(
+          "search",
+          { q: t.query, lang: t.lang ?? "de", limit: String(Math.max(t.within, 3)) },
+          { runId: a.runId },
+        );
         while (r.state === "pending" && Date.now() < until) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
-          r = await pages.query("search", { q: t.query, lang: t.lang ?? "de", limit: String(Math.max(t.within, 3)) }, { runId: a.runId });
+          r = await pages.query(
+            "search",
+            { q: t.query, lang: t.lang ?? "de", limit: String(Math.max(t.within, 3)) },
+            { runId: a.runId },
+          );
         }
         if (r.state === "pending") {
           findings.push({
@@ -681,7 +730,10 @@ export default definePlugin({
             severity: "error",
             message:
               "Search index still building: the test queries could not run against this Stage yet. Publish live waits for the index anyway; run the audit again once it is ready.",
-            fix: { tool: "retry_quality_audit", hint: "Run the Stage's audit again in a few minutes." },
+            fix: {
+              tool: "retry_quality_audit",
+              hint: "Run the Stage's audit again in a few minutes.",
+            },
           });
           break;
         }
@@ -690,7 +742,10 @@ export default definePlugin({
             rule: "index-missing",
             severity: "error",
             message: `Search index not built: this Stage has no search index (${r.error ?? r.state}). Visitors would get no answers.`,
-            fix: { tool: "get_stage_status", hint: "See why the index failed, fix it, Stage again." },
+            fix: {
+              tool: "get_stage_status",
+              hint: "See why the index failed, fix it, Stage again.",
+            },
           });
           break;
         }
@@ -703,7 +758,10 @@ export default definePlugin({
             severity: "error",
             pageId: t.expect,
             message: `Pinned result not first: "${t.query}" should open with its pinned page, but ${at === -1 ? "it is not among the results" : `it is at place ${at + 1}`}.`,
-            fix: { tool: "preview_site_search", hint: `Check "${t.query}" and the pinned-results list entry for it.` },
+            fix: {
+              tool: "preview_site_search",
+              hint: `Check "${t.query}" and the pinned-results list entry for it.`,
+            },
           });
         } else if (at === -1 || at >= t.within) {
           findings.push({
@@ -711,7 +769,10 @@ export default definePlugin({
             severity: "warning",
             pageId: t.expect,
             message: `Test query missed: "${t.query}" should show its page within the first ${t.within} results, but ${at === -1 ? "it is not among them" : `it is at place ${at + 1}`}.`,
-            fix: { tool: "preview_site_search", hint: `See where the hits of "${t.query}" come from; add a synonym, a pinned result or a weight.` },
+            fix: {
+              tool: "preview_site_search",
+              hint: `See where the hits of "${t.query}" come from; add a synonym, a pinned result or a weight.`,
+            },
           });
         }
       }
@@ -794,7 +855,8 @@ export default definePlugin({
     {
       slug: "search",
       title: "Site search",
-      description: "What the search counts, the queries visitors may be offered, and what they searched for in vain.",
+      description:
+        "What the search counts, the queries visitors may be offered, and what they searched for in vain.",
       icon: "search",
       permission: "plugins.approve",
       sections: [
@@ -819,7 +881,8 @@ export default definePlugin({
           kind: "table",
           id: "popular",
           title: "Popular queries",
-          description: "Queries visitors ask often. Pending ones wait for a decision; approved ones are offered.",
+          description:
+            "Queries visitors ask often. Pending ones wait for a decision; approved ones are offered.",
           operation: "list_popular",
           rowsKey: "queries",
           rowKey: "id",

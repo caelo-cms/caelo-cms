@@ -34,6 +34,13 @@ export interface PageOutputModule {
   readonly contentInstanceId: string | null;
   /** On how many published pages this module appears, counting every zone. */
   readonly placementCount: number;
+  /**
+   * On how many published pages this placement shows the SAME content: its
+   * content instance's pages (1 for a page's own, all of them for synced
+   * content), or the module's count when it has no instance. A design
+   * reused with each page's own words is not a repeated block.
+   */
+  readonly contentPlacementCount: number;
 }
 
 /** One visible text run. */
@@ -50,6 +57,8 @@ export interface PageOutputText {
   readonly anchor: string | null;
   /** True inside a `<form>`; field labels and buttons are form text. */
   readonly inForm: boolean;
+  /** True inside a link (`<a href>`): its words describe the page it points to. */
+  readonly inLink: boolean;
 }
 
 /** One link of the page body. */
