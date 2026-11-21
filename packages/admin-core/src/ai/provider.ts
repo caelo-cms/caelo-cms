@@ -239,6 +239,13 @@ export interface ProviderStepSummary {
   readonly clientToolNames: readonly string[];
   /** True when the step paused a gated tool on a tool-approval-request. */
   readonly hasApprovalRequests: boolean;
+  /** #1653 — the step's token usage (zeros when the provider reported none). */
+  readonly usage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly cachedTokens: number;
+    readonly cacheCreationTokens: number;
+  };
 }
 
 /**

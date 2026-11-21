@@ -25,10 +25,11 @@
  * fetch on demand (spends the external-fetch budget) and cache it.
  */
 
-import { execute } from "@caelo-cms/query-api";
+import { promptTokenBound } from "@caelo-cms/plugin-host";
 import { siteData } from "@caelo-cms/shared";
 import { fetchRenderedHtml, htmlToMarkdown } from "@caelo-cms/site-importer";
 import { z } from "zod";
+import { AiSpendRefusedError, aiSpendRunner } from "../ai-spend.js";
 import { catalogModel } from "../model-catalog.js";
 import { getActiveProviderForModel } from "../provider-resolver.js";
 import {
@@ -333,30 +334,54 @@ export const queryPageHtmlTool: ToolDefinitionWithHandler<Input> = {
           "query_page_html(describe): could not resolve a small extraction model (no active AI provider / key). Use `keyword` instead, or the operator configures the provider at /settings/ai.",
       };
     }
-    const result = await resolved.provider.generateObject({
-      systemPrompt:
-        "You extract from a web page's raw HTML. Return ONLY what the caller asks for — the relevant HTML fragment(s) verbatim, or the requested info. Do not summarise the whole page. If the requested content is absent, set found=false and result to an empty string.",
-      messages: [
-        {
-          role: "user",
-          content: `Page: ${page.url}\nCaller needs: ${toolInput.describe}\n\nHTML:\n${cappedHtml}`,
-        },
-      ],
-      jsonSchema: DESCRIBE_SCHEMA as unknown as Record<string, unknown>,
-      // Thinking is on by default on the fast model and shares this cap.
-      maxTokens: 16_000,
-    });
-
-    // §7 — record the sub-call's cost/tokens (attributed to this chat).
-    if (toolCtx.registry && toolCtx.adapter && toolCtx.humanCtx && toolCtx.chatSessionId) {
-      await execute(toolCtx.registry, toolCtx.adapter, toolCtx.humanCtx, "chat.record_ai_call", {
-        chatSessionId: toolCtx.chatSessionId,
-        parentChatSessionId: toolCtx.chatSessionId,
-        provider: resolved.providerName,
-        model: resolved.model,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-      }).catch(() => undefined);
+    const systemPrompt =
+      "You extract from a web page's raw HTML. Return ONLY what the caller asks for — the relevant HTML fragment(s) verbatim, or the requested info. Do not summarise the whole page. If the requested content is absent, set found=false and result to an empty string.";
+    const userContent = `Page: ${page.url}\nCaller needs: ${toolInput.describe}\n\nHTML:\n${cappedHtml}`;
+    // Thinking is on by default on the fast model and shares this cap.
+    const maxTokens = 16_000;
+    const call = () =>
+      resolved.provider.generateObject({
+        systemPrompt,
+        messages: [{ role: "user", content: userContent }],
+        jsonSchema: DESCRIBE_SCHEMA as unknown as Record<string, unknown>,
+        maxTokens,
+      });
+    // §7 / #1653 — the sub-call reserves its worst case in the AI spend
+    // ledger and settles its real cost, attributed to this chat.
+    let result: Awaited<ReturnType<typeof call>>;
+    try {
+      result = toolCtx.humanCtx
+        ? await aiSpendRunner(
+            { registry: toolCtx.registry, adapter: toolCtx.adapter },
+            {
+              kind: "actor",
+              actorId: toolCtx.humanCtx.actorId,
+              chatSessionId: toolCtx.chatSessionId ?? null,
+            },
+            {
+              what: "the extraction call",
+              record: {
+                ctx: toolCtx.humanCtx,
+                chatSessionId: toolCtx.chatSessionId ?? null,
+                parentChatSessionId: toolCtx.chatSessionId ?? null,
+              },
+            },
+          ).run(
+            { provider: resolved.providerName, model: resolved.model },
+            {
+              promptTokens: promptTokenBound(systemPrompt, userContent, DESCRIBE_SCHEMA),
+              maxOutputTokens: maxTokens,
+            },
+            call,
+            (r) => ({ inputTokens: r.inputTokens, outputTokens: r.outputTokens, model: r.model }),
+          )
+        : await call();
+    } catch (e) {
+      if (!(e instanceof AiSpendRefusedError)) throw e;
+      return {
+        ok: false,
+        content: `query_page_html(describe): ${e.message} Use \`keyword\`, \`cssSelector\` or \`xpath\` instead (no AI call).`,
+      };
     }
 
     if (result.failure) {
