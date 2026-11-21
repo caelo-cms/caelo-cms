@@ -15,7 +15,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -302,8 +302,17 @@ describe("the key store (#1654)", () => {
     const file = join(dir, "visitor-ai-key.json");
     const store = visitorAiKeyStore("live", { CAELO_VISITOR_AI_KEY_FILE: file });
     await store.write({ provider: "openai", apiKey: KEY });
-    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ provider: "openai", apiKey: KEY });
-    expect((await stat(file)).mode & 0o777).toBe(0o640);
+    // One handle for the mode and the content: what is checked is what is read.
+    const handle = await open(file, "r");
+    try {
+      expect((await handle.stat()).mode & 0o777).toBe(0o640);
+      expect(JSON.parse(await handle.readFile("utf8"))).toEqual({
+        provider: "openai",
+        apiKey: KEY,
+      });
+    } finally {
+      await handle.close();
+    }
     await store.write(null);
     expect(await readFile(file, "utf8")).toBe("{}");
   });

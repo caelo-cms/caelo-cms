@@ -348,6 +348,50 @@ export function runSandbox(invocation: SandboxInvocation): Promise<unknown> {
  * validator would refuse still reaches Deno, proving the second layer
  * (permissions, prelude, code-generation ban) holds on its own.
  */
+/** Bytes of a crashed child's stderr kept to say why it exited. */
+const STDERR_HEAD_BYTES = 2048;
+
+/** The first `limit` bytes of a stream, reading it to its end (the rest is dropped). */
+async function streamHead(stream: ReadableStream<Uint8Array>, limit: number): Promise<Uint8Array> {
+  const head = new Uint8Array(limit);
+  let kept = 0;
+  try {
+    for await (const chunk of stream) {
+      if (kept >= limit) continue;
+      const take = Math.min(limit - kept, chunk.byteLength);
+      head.set(chunk.subarray(0, take), kept);
+      kept += take;
+    }
+  } catch {
+    // The child was killed mid-write: what arrived is enough.
+  }
+  return head.subarray(0, kept);
+}
+
+/**
+ * Why a child exited, from the start of its stderr (Deno's "error: …" for an
+ * uncaught exception): one line, control characters dropped, at most 300
+ * characters. It is the plugin's own text, as a thrown error's message is.
+ */
+function exitReason(stderr: Uint8Array): string {
+  const text = new TextDecoder().decode(stderr);
+  let line = "";
+  for (const raw of text.split("\n")) {
+    const trimmed = raw.trim();
+    if (trimmed !== "") {
+      line = trimmed;
+      break;
+    }
+  }
+  let out = "";
+  for (const ch of line) {
+    const c = ch.codePointAt(0) ?? 0;
+    out += c < 32 || c === 127 ? " " : ch;
+    if (out.length >= 300) break;
+  }
+  return out;
+}
+
 export async function runSandboxWithBundler(
   invocation: SandboxInvocation,
   build: (source: string) => Promise<string>,
@@ -395,10 +439,13 @@ export async function runSandboxWithBundler(
         env: { DENO_DIR: directory, TMPDIR: directory, NO_COLOR: "1" },
         stdin: "pipe",
         stdout: "pipe",
-        stderr: "ignore",
+        // Read for its first bytes only (why a crashed child exited), and
+        // drained to the end so a chatty plugin can never block on a full pipe.
+        stderr: "pipe",
       },
     );
-    const proc = child as Bun.Subprocess<"pipe", "pipe", "ignore">;
+    const proc = child as Bun.Subprocess<"pipe", "pipe", "pipe">;
+    const stderrHead = streamHead(proc.stderr, STDERR_HEAD_BYTES);
     let rejectTimeout: (error: Error) => void = () => {};
     const deadline = new Promise<never>((_resolve, reject) => {
       rejectTimeout = reject;
@@ -483,7 +530,10 @@ export async function runSandboxWithBundler(
         });
       }
     }
-    throw new Error(timedOut ? "SandboxTimeout" : `SandboxExited: code ${await proc.exited}`);
+    if (timedOut) throw new Error("SandboxTimeout");
+    const exitCode = await proc.exited;
+    const why = exitReason(await stderrHead);
+    throw new Error(`SandboxExited: code ${exitCode}${why ? ` (${why})` : ""}`);
   } finally {
     if (timer) clearTimeout(timer);
     if (child) {

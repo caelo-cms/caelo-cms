@@ -377,7 +377,12 @@ function emitComposeFiles(cfg: CaeloConfig): void {
   }
   for (const environment of ["live", "staging"]) {
     const key = resolve(CAELO_DIR, VISITOR_AI_DIR, environment, "key.json");
-    if (!existsSync(key)) writeFileSync(key, "{}", { mode: 0o640 });
+    // Created once and never overwritten: a stored key stays (exclusive create).
+    try {
+      writeFileSync(key, "{}", { mode: 0o640, flag: "wx" });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
   }
 }
 

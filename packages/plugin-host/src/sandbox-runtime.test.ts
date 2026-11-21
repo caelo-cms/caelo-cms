@@ -286,6 +286,28 @@ describe("runtime layer without the validator in front", () => {
     );
   }
 
+  it("a child that crashes says why, in one bounded line", async () => {
+    // An exception outside the operation's promise: nothing the protocol
+    // can carry, so the exit has to.
+    await expect(
+      invokeUnvalidated(
+        'setTimeout(() => { throw new Error("boom-before-the-call"); }, 0);',
+        "await new Promise(() => {});",
+      ),
+    ).rejects.toThrow(/SandboxExited: code 1 \(.*boom-before-the-call.*\)/);
+  });
+
+  it("a plugin that floods stderr neither blocks nor fills the host", async () => {
+    const started = performance.now();
+    expect(
+      await invokeUnvalidated(
+        "",
+        'for (let i = 0; i < 10000; i++) console.error("x".repeat(1000)); return "done";',
+      ),
+    ).toBe("done");
+    expect(performance.now() - started).toBeLessThan(20_000);
+  });
+
   it("the validator does refuse these sources on the production path", async () => {
     await expect(
       invoke('return globalThis["De"+"no"].readTextFileSync("/etc/passwd");'),
