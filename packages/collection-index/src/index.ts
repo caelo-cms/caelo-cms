@@ -38,6 +38,7 @@ export {
   passageEmbeddingText,
   type ReleaseManifest,
   type ReleaseSegment,
+  readProfile,
   releaseFiles,
   schemaDigest,
 } from "./release.js";
@@ -73,6 +74,17 @@ export {
 } from "./search.js";
 export { compareTerms, type SegmentManifest } from "./segment.js";
 export { type Highlighted, highlight, type Snippet, snippet } from "./snippet.js";
+export {
+  type AccessTokenSource,
+  type CollectionStore,
+  copyMissing,
+  directoryStore,
+  gcsStore,
+  isStoreKey,
+  metadataTokenSource,
+  scopedStore,
+  storeFromUrl,
+} from "./store.js";
 export { binaryCode, type EncodedVector, encodeVector, normalize } from "./vectors.js";
 export { closestWord, editDistance } from "./vocabulary.js";
 export {

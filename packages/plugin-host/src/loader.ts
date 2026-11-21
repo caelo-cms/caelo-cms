@@ -1175,6 +1175,22 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // Epic #1107 — list sources, list types and list-resolve overlays each
   // change what pages render, so each needs its own grant; refused here,
   // before any side effect, like tools and workers above.
+  // Epic #1644 — collections, page output and batch jobs each need their grant.
+  if (Object.keys(def.collections ?? {}).length > 0 && !grantedCaps.has("collections")) {
+    throw new Error(
+      `plugin "${def.slug}" declares collections without the collections capability — registration refused`,
+    );
+  }
+  if (def.pageOutputObserver !== undefined && !grantedCaps.has("page_output")) {
+    throw new Error(
+      `plugin "${def.slug}" declares a page-output observer without the page_output capability — registration refused`,
+    );
+  }
+  if ((def.batchOperations?.length ?? 0) > 0 && !grantedCaps.has("batch_jobs")) {
+    throw new Error(
+      `plugin "${def.slug}" declares batch operations without the batch_jobs capability — registration refused`,
+    );
+  }
   if ((def.listTypes?.length ?? 0) > 0 && !grantedCaps.has("list_types")) {
     throw new Error(
       `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,

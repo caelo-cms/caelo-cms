@@ -83,6 +83,7 @@ import { readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { collectionGateProblem, copyRunCollectionsToLive } from "../collections/promote.js";
 import {
   DEPLOY_RUN_HEARTBEAT_MS,
   DEPLOY_RUN_LEASE_TTL_MS,
@@ -317,6 +318,9 @@ export const startPromoteOp = defineOperation({
           `the staged build ${fromRow.id} was staged before Caelo froze the plugin data with each Stage, so Publish live cannot release what it showed. Stage again, then Publish live.`,
         );
       }
+      // #1648 — the Stage's search indexes go live with it, so they must be ready.
+      const collections = await collectionGateProblem(tx, fromRow.id);
+      if (collections) return refused(collections);
     }
 
     // #553 — the quality gate. Every Publish-live path runs this step (the
@@ -720,6 +724,19 @@ async function runPromote(
         if (!still.ok) throw new ReleaseRefusedError(describeError(still.error));
       }
     };
+    // #1648 — the Stage's index files reach the live store before anything
+    // goes live: the live pointer then names only releases whose files are there.
+    if (plan.to.env === "production") {
+      try {
+        await copyRunCollectionsToLive({ registry, adapter }, sys, plan.fromRunId);
+      } catch (e) {
+        timer.lap("collections");
+        return await fail(
+          `the search index could not be copied to the live store, so nothing went live: ${e instanceof Error ? e.message : String(e)}. Publish live again.`,
+        );
+      }
+      timer.lap("collections");
+    }
     let summary: PublishResult;
     try {
       // v0.2.78 — delegate to the per-provider StaticPublisher. Self-hosted

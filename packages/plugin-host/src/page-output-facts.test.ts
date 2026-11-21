@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: MPL-2.0
+
+import { describe, expect, it } from "bun:test";
+import { canonicalSitePath, extractPageHtmlFacts, sitePathOf } from "./page-output-facts.js";
+
+const ORIGINS = new Set(["https://example.com", "https://www.example.com"]);
+
+const HTML = `<!doctype html><html lang="de"><head><title> Preise | Firma </title>
+<meta name="description" content="Was es kostet."><meta name="robots" content="index,follow">
+<script>var hidden = "nicht im Text";</script></head><body>
+<header data-caelo-module-id="m-head"><a href="/de/preise/">Preise</a> <a href="https://other.org/x">Partner</a></header>
+<main><section id="intro" data-caelo-module-id="m-hero"><h1>Unsere Preise</h1><p>Monatlich <b>kündbar</b>.</p>
+<div data-caelo-module-id="m-nested"><p>Verschachtelt</p></div></section>
+<h2 id="faq">Fragen</h2><p>Antwort eins.</p>
+<form data-caelo-module-id="m-form"><label>E-Mail</label><input type="submit" value="Senden"></form>
+<div data-caelo-deferred="consent-manager"><p>Video</p></div>
+<pre>code text</pre></main></body></html>`;
+
+describe("extractPageHtmlFacts", () => {
+  const facts = extractPageHtmlFacts({
+    pageId: "p1",
+    path: "/de/preise/",
+    url: "https://example.com/de/preise/",
+    html: HTML,
+    composed: [
+      { moduleId: "m-head", zone: "layout", contentInstanceId: null },
+      { moduleId: "m-hero", zone: "page", contentInstanceId: "ci-1" },
+      { moduleId: "m-form", zone: "page", contentInstanceId: "ci-2" },
+    ],
+    siteOrigins: ORIGINS,
+  });
+
+  it("reads the head", () => {
+    expect([facts.lang, facts.title, facts.metaDescription, facts.robots]).toEqual([
+      "de",
+      "Preise | Firma",
+      "Was es kostet.",
+      "index,follow",
+    ]);
+  });
+
+  it("attributes every run to module, zone, heading, anchor and form, and skips scripts", () => {
+    const by = (t: string) => facts.texts.find((x) => x.text === t);
+    expect(by("Unsere Preise")).toMatchObject({
+      moduleId: "m-hero",
+      heading: 1,
+      anchor: "intro",
+      inForm: false,
+    });
+    expect(by("kündbar")).toMatchObject({ heading: null, anchor: "intro" });
+    expect(by("Verschachtelt")).toMatchObject({ moduleId: "m-nested", anchor: "intro" });
+    expect(by("Antwort eins.")).toMatchObject({ moduleId: null, anchor: "faq" });
+    expect(by("E-Mail")).toMatchObject({ inForm: true, moduleId: "m-form" });
+    expect(by("Senden")).toMatchObject({ inForm: true, source: "value" });
+    expect(by("code text")?.source).toBe("literal");
+    expect(facts.texts.some((t) => t.text.includes("nicht im Text"))).toBe(false);
+  });
+
+  it("gives a nested module its parent's zone and lists it once", () => {
+    expect(facts.modules.find((m) => m.moduleId === "m-nested")).toEqual({
+      moduleId: "m-nested",
+      zone: "page",
+      contentInstanceId: null,
+    });
+    expect(facts.modules.filter((m) => m.moduleId === "m-hero")).toHaveLength(1);
+  });
+
+  it("resolves site links to paths and leaves external ones without", () => {
+    expect(facts.links).toEqual([
+      {
+        href: "/de/preise/",
+        path: "/de/preise",
+        text: "Preise",
+        moduleId: "m-head",
+        zone: "layout",
+        pluginSlug: null,
+      },
+      {
+        href: "https://other.org/x",
+        path: null,
+        text: "Partner",
+        moduleId: "m-head",
+        zone: "layout",
+        pluginSlug: null,
+      },
+    ]);
+  });
+
+  it("flags withheld content and hashes the facts, not the markup", () => {
+    expect(facts.hasDeferredContent).toBe(true);
+    const again = extractPageHtmlFacts({
+      pageId: "p1",
+      path: "/de/preise/",
+      url: "https://example.com/de/preise/",
+      html: HTML.replace("<b>", '<b class="x">'),
+      composed: [
+        { moduleId: "m-head", zone: "layout", contentInstanceId: null },
+        { moduleId: "m-hero", zone: "page", contentInstanceId: "ci-1" },
+        { moduleId: "m-form", zone: "page", contentInstanceId: "ci-2" },
+      ],
+      siteOrigins: ORIGINS,
+    });
+    expect(again.outputHash).toBe(facts.outputHash);
+  });
+});
+
+describe("site paths", () => {
+  it("spells a path one way", () => {
+    expect(canonicalSitePath("/de/preise/index.html")).toBe("/de/preise");
+    expect(canonicalSitePath("/")).toBe("/");
+    expect(canonicalSitePath("/caf%C3%A9/")).toBe("/café");
+    expect(sitePathOf("mailto:x@y.z", "https://example.com/", ORIGINS)).toBeNull();
+    expect(sitePathOf("#top", "https://example.com/", ORIGINS)).toBeNull();
+    expect(sitePathOf("https://www.example.com/a/?q=1#b", "https://example.com/", ORIGINS)).toBe(
+      "/a",
+    );
+  });
+});

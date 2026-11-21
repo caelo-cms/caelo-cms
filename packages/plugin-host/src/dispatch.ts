@@ -372,6 +372,9 @@ export function assertInvocationConsistent(
   if (invocation.origin === "chat" && !invocation.chatBranchId) {
     throw new Error("PluginInvocationInvalid: a chat invocation needs the chat's branch");
   }
+  if (invocation.origin === "observer" && !invocation.stageRunId) {
+    throw new Error("PluginInvocationInvalid: an observer invocation needs its Stage's run id");
+  }
   // A branch is allowed for a chat, a branch preview render, and an
   // approved action whose approver cannot publish (it stays in the chat).
   if (

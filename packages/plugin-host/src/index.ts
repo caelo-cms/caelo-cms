@@ -56,6 +56,20 @@ export {
   withAssetContent,
 } from "./client-assets.js";
 export {
+  COLLECTION_OPS,
+  type CollectionChangeFile,
+  collectionDocSchema,
+  collectionPrefix,
+  collectionStoreFromEnv,
+  decodeChangeFile,
+  encodeChangeFile,
+  LIVE_COLLECTION_STORE_ENV,
+  makePluginCollections,
+  registerCollectionOps,
+  resetCollectionStores,
+  STAGING_COLLECTION_STORE_ENV,
+} from "./collections-host.js";
+export {
   type ConfigurablePlugin,
   configurablePlugins,
   ensureConfigOps,
@@ -204,6 +218,29 @@ export {
   pluginRunsHere,
 } from "./local-availability.js";
 export { verifyMailUnsubscribeToken } from "./mail-link-token.js";
+export {
+  type ComposedModuleRef,
+  canonicalSitePath,
+  extractPageHtmlFacts,
+  type PageHtmlFacts,
+  type PageHtmlInput,
+  type PageHtmlLink,
+  type PageHtmlText,
+  type PageOutputZone,
+  pageHtmlHash,
+  sitePathOf,
+} from "./page-output-facts.js";
+export {
+  type DeliveredPage,
+  finishPageOutput,
+  hasGrantedCapability,
+  type OfferedPage,
+  observePageOutputs,
+  type PageOutputFinish,
+  pageOutputNeeds,
+  pageOutputObservers,
+  resetPageOutputRuns,
+} from "./page-output-host.js";
 export {
   applyApprovedConfig,
   CONFIG_OPS,

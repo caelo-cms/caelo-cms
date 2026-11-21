@@ -76,6 +76,7 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { afterFailedStage, afterStageBuild } from "../collections/stage.js";
 import {
   buildDirOf,
   mediaDeliveryFor,
@@ -884,6 +885,8 @@ async function runTrigger(
     });
     // Unrecorded, the run's lease lapses and the next run marks it failed.
     if (!r.ok) console.error("[deploy] could not record the failed run", { runId, error: r.error });
+    // #1647 — a failed Stage delivered no page output: its pages go again next time.
+    if (plan.target.env === "staging") await afterFailedStage({ adapter, registry }, sys, runId);
     // A given-up upload serves nothing (no-op once publishStaging finished it).
     await upload?.abort();
     logRunTimings(runKind, runId, timer, { status: "failed" }, { message: stored, refusal });
@@ -1170,6 +1173,17 @@ async function runTrigger(
     const queuedAuditRunId = (finished.value as { queuedAuditRunId: string | null })
       .queuedAuditRunId;
     if (queuedAuditRunId) await startQualityAuditJob({ adapter, registry }, queuedAuditRunId);
+    // #1647 / #1648 — the observers' deliveries count now, and the run's
+    // collections get their releases (the index job builds the changed ones).
+    if (plan.target.env === "staging") {
+      const note = await afterStageBuild(
+        { adapter, registry },
+        sys,
+        runId,
+        built.pageOutput?.failed ?? [],
+      );
+      if (note !== null) console.error("[deploy] Stage collections", { runId, note });
+    }
     // The run is recorded; now put the live redirects on the build
     // production serves, in a transaction of its own. A failure is recorded
     // and retried by the redirect-sync worker (the target stays behind).

@@ -1,0 +1,351 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Epic #1644 (R2, issue #1648) — a Stage's collection index, the admin's
+ * bookkeeping.
+ *
+ *   collections.plan_run     after the build: one release row per active
+ *                            collection — carried over when nothing
+ *                            changed, pending for the index job, failed
+ *                            when the plugin's observer failed
+ *   collections.index_tasks  the job asks what to index
+ *   collections.index_done   the job reports a release file
+ *   collections.index_failed the job reports a failure
+ *   collections.run_state    every collection release of a run (Publish live's gate)
+ *
+ * A change belongs to the run that claims it and counts as applied once that
+ * run's release is ready; a failed index leaves it unapplied, so the next
+ * Stage claims it again and nothing is lost.
+ */
+
+import { schemaDigest } from "@caelo-cms/collection-index";
+import { isPluginDisabled, loadedPlugins } from "@caelo-cms/plugin-host";
+import type { PluginCollectionManifest } from "@caelo-cms/plugin-sdk";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { err, ok } from "@caelo-cms/shared";
+import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { jsonbParam } from "../sql-helpers.js";
+
+const uuid = z.string().uuid();
+
+/** An active plugin's declared collection. */
+export interface ActiveCollection {
+  readonly pluginId: string;
+  readonly slug: string;
+  readonly collection: string;
+  readonly decl: PluginCollectionManifest;
+}
+
+/** Every collection of every active plugin that holds the `collections` grant. */
+export function activeCollections(): ActiveCollection[] {
+  const out: ActiveCollection[] = [];
+  for (const p of loadedPlugins.all()) {
+    if (isPluginDisabled(p.slug)) continue;
+    const granted =
+      p.provenance === "runtime-authored"
+        ? (p.externalApproval?.capabilities.includes("collections") ?? false)
+        : (p.definition.requestedCapabilities ?? []).includes("collections");
+    if (!granted) continue;
+    for (const [collection, decl] of Object.entries(p.definition.collections ?? {})) {
+      out.push({ pluginId: p.pluginId, slug: p.slug, collection, decl });
+    }
+  }
+  return out;
+}
+
+/** The engine schema digest of a declaration (fields only). */
+export function declarationDigest(decl: PluginCollectionManifest): string {
+  return schemaDigest({ fields: decl.fields });
+}
+
+interface ReleaseRow {
+  run_id: string;
+  release_key: string;
+  stats: Record<string, unknown>;
+}
+
+async function previousReady(
+  tx: TransactionRunner,
+  pluginId: string,
+  collection: string,
+): Promise<ReleaseRow | null> {
+  const rows = (await tx.execute(sql`
+    SELECT run_id::text AS run_id, release_key, stats FROM collection_releases
+    WHERE plugin_id = ${pluginId}::uuid AND collection = ${collection} AND state = 'ready'
+    ORDER BY created_at DESC LIMIT 1
+  `)) as unknown as ReleaseRow[];
+  return rows[0] ?? null;
+}
+
+export const planCollectionRunOp = defineOperation({
+  name: "collections.plan_run",
+  readScope: "request",
+  // Why system-only: the Stage's trigger plans its own index.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: uuid,
+      /** Plugins whose page-output observer failed in this Stage. */
+      failed: z
+        .array(z.object({ pluginId: uuid, error: z.string().max(2000) }).strict())
+        .max(64)
+        .default([]),
+    })
+    .strict(),
+  output: z.object({
+    pending: z.number().int(),
+    carried: z.number().int(),
+    failed: z.number().int(),
+  }),
+  handler: async (_ctx, input, tx) => {
+    const failedBy = new Map(input.failed.map((f) => [f.pluginId, f.error] as const));
+    let pending = 0;
+    let carried = 0;
+    let failed = 0;
+    for (const c of activeCollections()) {
+      const previous = await previousReady(tx, c.pluginId, c.collection);
+      const failure = failedBy.get(c.pluginId);
+      if (failure !== undefined) {
+        await tx.execute(sql`
+          INSERT INTO collection_releases (run_id, plugin_id, collection, state, previous_run_id, error, finished_at)
+          VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'failed', ${previous?.run_id ?? null},
+                  ${`the plugin's page-output observer failed: ${failure}`}, now())
+          ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
+        `);
+        failed++;
+        continue;
+      }
+      const claimed = (await tx.execute(sql`
+        UPDATE collection_changes SET run_id = ${input.runId}::uuid
+        WHERE plugin_id = ${c.pluginId}::uuid AND collection = ${c.collection} AND applied_run_id IS NULL
+        RETURNING id
+      `)) as unknown as { id: string }[];
+      const digest = declarationDigest(c.decl);
+      const unchanged =
+        previous !== null && claimed.length === 0 && previous.stats.schemaDigest === digest;
+      if (unchanged) {
+        await tx.execute(sql`
+          INSERT INTO collection_releases (run_id, plugin_id, collection, state, release_key, previous_run_id, stats, finished_at)
+          VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'ready', ${previous.release_key},
+                  ${previous.run_id}::uuid, ${jsonbParam({ ...previous.stats, carried: true })}, now())
+          ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
+        `);
+        carried++;
+      } else {
+        await tx.execute(sql`
+          INSERT INTO collection_releases (run_id, plugin_id, collection, state, previous_run_id)
+          VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'pending', ${previous?.run_id ?? null})
+          ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
+        `);
+        pending++;
+      }
+    }
+    return ok({ pending, carried, failed });
+  },
+});
+
+/** One collection the index job builds. */
+export const indexTaskSchema = z.object({
+  pluginId: z.string(),
+  slug: z.string(),
+  collection: z.string(),
+  /** The collection's declared fields (the engine schema). */
+  fields: z.record(z.string(), z.record(z.string(), z.unknown())),
+  schemaDigest: z.string(),
+  maxDocuments: z.number().int(),
+  previousReleaseKey: z.string().nullable(),
+  previousSchemaDigest: z.string().nullable(),
+  /** Change files of the run, oldest first. */
+  changeKeys: z.array(z.string()),
+});
+export type IndexTask = z.infer<typeof indexTaskSchema>;
+
+export const collectionIndexTasksOp = defineOperation({
+  name: "collections.index_tasks",
+  readScope: "request",
+  // Why system-only: the index job reaches it through its reports.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ runId: uuid }).strict(),
+  output: z.object({ tasks: z.array(indexTaskSchema) }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT r.plugin_id::text AS plugin_id, r.collection, p.release_key AS previous_key, p.stats AS previous_stats
+      FROM collection_releases r
+      LEFT JOIN collection_releases p ON p.run_id = r.previous_run_id AND p.plugin_id = r.plugin_id AND p.collection = r.collection
+      WHERE r.run_id = ${input.runId}::uuid AND r.state = 'pending'
+    `)) as unknown as {
+      plugin_id: string;
+      collection: string;
+      previous_key: string | null;
+      previous_stats: Record<string, unknown> | null;
+    }[];
+    const active = new Map(
+      activeCollections().map((c) => [`${c.pluginId}:${c.collection}`, c] as const),
+    );
+    const tasks: IndexTask[] = [];
+    for (const r of rows) {
+      const c = active.get(`${r.plugin_id}:${r.collection}`);
+      if (!c) continue;
+      const changes = (await tx.execute(sql`
+        SELECT store_key FROM collection_changes
+        WHERE run_id = ${input.runId}::uuid AND plugin_id = ${r.plugin_id}::uuid AND collection = ${r.collection}
+        ORDER BY created_at, id
+      `)) as unknown as { store_key: string }[];
+      tasks.push({
+        pluginId: r.plugin_id,
+        slug: c.slug,
+        collection: r.collection,
+        fields: c.decl.fields as Record<string, Record<string, unknown>>,
+        schemaDigest: declarationDigest(c.decl),
+        maxDocuments: c.decl.maxDocuments,
+        previousReleaseKey: r.previous_key,
+        previousSchemaDigest:
+          typeof r.previous_stats?.schemaDigest === "string" ? r.previous_stats.schemaDigest : null,
+        changeKeys: changes.map((x) => x.store_key),
+      });
+    }
+    return ok({ tasks });
+  },
+});
+
+export const collectionIndexDoneOp = defineOperation({
+  name: "collections.index_done",
+  readScope: "request",
+  // Why system-only: see index_tasks.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: uuid,
+      pluginId: uuid,
+      collection: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/),
+      releaseKey: z.string().regex(/^[a-z0-9-]+\.json$/),
+      stats: z.record(z.string(), z.unknown()),
+    })
+    .strict(),
+  output: z.object({}),
+  handler: async (_ctx, input, tx) => {
+    const updated = (await tx.execute(sql`
+      UPDATE collection_releases SET state = 'ready', release_key = ${input.releaseKey}, stats = ${jsonbParam(input.stats)},
+             error = NULL, finished_at = now()
+      WHERE run_id = ${input.runId}::uuid AND plugin_id = ${input.pluginId}::uuid AND collection = ${input.collection} AND state = 'pending'
+      RETURNING run_id
+    `)) as unknown as unknown[];
+    if (updated.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "collections.index_done",
+        message: "no pending release of this run and collection",
+      });
+    }
+    await tx.execute(sql`
+      UPDATE collection_changes SET applied_run_id = ${input.runId}::uuid
+      WHERE run_id = ${input.runId}::uuid AND plugin_id = ${input.pluginId}::uuid AND collection = ${input.collection}
+    `);
+    return ok({});
+  },
+});
+
+export const collectionIndexFailedOp = defineOperation({
+  name: "collections.index_failed",
+  readScope: "request",
+  // Why system-only: see index_tasks.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      runId: uuid,
+      pluginId: uuid.optional(),
+      collection: z.string().max(40).optional(),
+      error: z.string().min(1).max(4000),
+    })
+    .strict(),
+  output: z.object({ failed: z.number().int() }),
+  handler: async (_ctx, input, tx) => {
+    // Without a plugin: the whole run's pending releases (the job gave up).
+    const rows = (await tx.execute(
+      input.pluginId
+        ? sql`UPDATE collection_releases SET state = 'failed', error = ${input.error}, finished_at = now()
+              WHERE run_id = ${input.runId}::uuid AND plugin_id = ${input.pluginId}::uuid
+                AND collection = ${input.collection ?? ""} AND state = 'pending' RETURNING run_id`
+        : sql`UPDATE collection_releases SET state = 'failed', error = ${input.error}, finished_at = now()
+              WHERE run_id = ${input.runId}::uuid AND state = 'pending' RETURNING run_id`,
+    )) as unknown as unknown[];
+    return ok({ failed: rows.length });
+  },
+});
+
+/** One collection release of a run, as the gate and the Stage status read it. */
+export const runCollectionSchema = z.object({
+  pluginId: z.string(),
+  collection: z.string(),
+  state: z.enum(["pending", "ready", "failed"]),
+  releaseKey: z.string().nullable(),
+  error: z.string().nullable(),
+  stats: z.record(z.string(), z.unknown()),
+});
+
+export const collectionRunStateOp = defineOperation({
+  name: "collections.run_state",
+  readScope: "request",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ runId: uuid }).strict(),
+  output: z.object({ collections: z.array(runCollectionSchema) }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(
+      sql`SELECT plugin_id::text AS plugin_id, collection, state, release_key, error, stats
+          FROM collection_releases WHERE run_id = ${input.runId}::uuid ORDER BY plugin_id, collection`,
+    )) as unknown as {
+      plugin_id: string;
+      collection: string;
+      state: "pending" | "ready" | "failed";
+      release_key: string | null;
+      error: string | null;
+      stats: Record<string, unknown>;
+    }[];
+    return ok({
+      collections: rows.map((r) => ({
+        pluginId: r.plugin_id,
+        collection: r.collection,
+        state: r.state,
+        releaseKey: r.release_key,
+        error: r.error,
+        stats: r.stats ?? {},
+      })),
+    });
+  },
+});
+
+export const collectionUnstartedRunsOp = defineOperation({
+  name: "collections.unstarted_runs",
+  readScope: "request",
+  // Why system-only: the scheduler's backstop starts an index whose start was lost.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({ limit: z.number().int().min(1).max(100) }).strict(),
+  output: z.object({ runIds: z.array(z.string()) }),
+  handler: async (_ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      SELECT DISTINCT r.run_id::text AS run_id
+      FROM collection_releases r
+      WHERE r.state = 'pending' AND r.created_at < now() - interval '2 minutes'
+        AND NOT EXISTS (SELECT 1 FROM reporting_jobs j WHERE j.kind = 'collection_index' AND j.subject_id = r.run_id)
+      LIMIT ${input.limit}
+    `)) as unknown as { run_id: string }[];
+    return ok({ runIds: rows.map((r) => r.run_id) });
+  },
+});
+
+/** Every collection op, for register.ts. */
+export const COLLECTION_INDEX_OPS = [
+  planCollectionRunOp,
+  collectionIndexTasksOp,
+  collectionIndexDoneOp,
+  collectionIndexFailedOp,
+  collectionRunStateOp,
+  collectionUnstartedRunsOp,
+] as const;

@@ -893,6 +893,11 @@ interface Snapshot {
   redirectChanges?: Row[];
   /** Each target's release state to publish, narrowed; absent: not wanted. */
   releases?: Record<PublicTarget, ReleaseState | null>;
+  /**
+   * #1648 — each target's collections: the ready collection releases of the
+   * run its pointer names, of active plugins only. Published with the release.
+   */
+  collections?: Record<PublicTarget, Row[]>;
   /** Full comment resync. */
   allComments?: Row[];
   /** Per-entity comment changes: archive id → approved row, or null to remove. */
@@ -1069,6 +1074,25 @@ async function readSnapshot(
       live: pointed.live && narrowRelease(pointed.live, now),
       staging: pointed.staging && narrowRelease(pointed.staging, now),
     };
+    // #1648 — the ready collection releases of each pointed run: a collection
+    // goes live exactly with its Stage, and a deactivated plugin's at once not.
+    const collections = (await rows(
+      tx,
+      sql`SELECT p.environment, c.plugin_id::text AS plugin_id, c.collection, c.release_key
+          FROM projection_release_pointers p
+          JOIN collection_releases c ON c.run_id = p.run_id AND c.state = 'ready'
+          ORDER BY c.plugin_id, c.collection`,
+    )) as unknown as {
+      environment: PublicTarget;
+      plugin_id: string;
+      collection: string;
+      release_key: string;
+    }[];
+    const of = (env: PublicTarget): Row[] =>
+      collections
+        .filter((c) => c.environment === env && now.activePluginIds.has(c.plugin_id))
+        .map(({ plugin_id, collection, release_key }) => ({ plugin_id, collection, release_key }));
+    snap.collections = { live: of("live"), staging: of("staging") };
   }
   if (fullComments) {
     snap.allComments = await rows(tx, commentQuery(sql`true`));
@@ -1088,7 +1112,18 @@ async function readSnapshot(
 const COMMENT_RECORDSET =
   "id uuid, public_row_id uuid, page_id uuid, parent_id uuid, author_name text, content text, submitted_at timestamptz, archived_at timestamptz";
 
-async function writeRelease(tx: ProjectionTx, release: ReleaseState): Promise<ProjectionSection[]> {
+async function writeRelease(
+  tx: ProjectionTx,
+  release: ReleaseState,
+  collections: readonly Row[],
+): Promise<ProjectionSection[]> {
+  await replaceAll(
+    tx,
+    "published_collections",
+    "plugin_id, collection, release_key",
+    "plugin_id uuid, collection text, release_key text",
+    collections,
+  );
   await replaceAll(
     tx,
     "published_plugins",
@@ -1303,7 +1338,9 @@ async function writeSnapshot(
     sections.push("redirects");
   }
   const release = snap.releases?.[target];
-  if (release && (await may("plugins", true))) sections.push(...(await writeRelease(tx, release)));
+  if (release && (await may("plugins", true))) {
+    sections.push(...(await writeRelease(tx, release, snap.collections?.[target] ?? [])));
+  }
   let comments = 0;
   if (snap.allComments !== undefined || snap.commentChanges.size > 0) {
     const written = await writeComments(tx, snap, gen);

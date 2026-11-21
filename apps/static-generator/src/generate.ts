@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
+
 import { fontReader } from "@caelo-cms/font-service";
+import type { ComposedModuleRef, PageOutputFinish } from "@caelo-cms/plugin-host";
+import { PageOutputCollector } from "./page-output.js";
 
 /**
  * Static generator entry point. Takes a transaction handle on `cms_admin`
@@ -256,6 +259,11 @@ export interface GenerateResult {
   readonly renderFailures: readonly RenderFailure[];
   /** How many render failures the build had in all (`renderFailures` lists the first). */
   readonly renderFailureCount: number;
+  /**
+   * #1647 — page output delivered to plugin observers: null when no plugin
+   * observes it or the build is no Stage; else whose observer failed.
+   */
+  readonly pageOutput: PageOutputFinish | null;
 }
 
 /** One page linking to a page this build does not ship. */
@@ -747,6 +755,22 @@ async function buildSite(
   if (notFoundError !== null) throw new BuildRefusal(notFoundError);
   // #1604 — the page a staging build's plugin-list failure names, by path.
   const pagePathOf = new Map(pageRows.map((p) => [p.page_id, p.current_path]));
+  // #1647 — a Stage (a full staging build) delivers its page output to the
+  // plugins that observe it; every other build delivers none.
+  const pageOutput = reportsRenderFailures
+    ? await PageOutputCollector.open({
+        plugins: args.plugins,
+        tx,
+        runId,
+        siteBaseUrl: seoSettings.siteBaseUrl,
+        siteOrigins: [
+          ...new Set([new URL(seoSettings.siteBaseUrl).origin, new URL(target.baseUrl).origin]),
+        ],
+        notFoundPageId,
+        statusFilter,
+        pages: pageRows.map((p) => ({ pageId: p.page_id, path: p.current_path })),
+      })
+    : null;
   const outputPathOf = (p: PageRow): string =>
     builtPageOutputPath(
       { pageId: p.page_id, currentPath: p.current_path },
@@ -1161,6 +1185,7 @@ async function buildSite(
         pageId: page.page_id,
         pageSlug: page.slug,
         pageTitle: page.title,
+        ...(pageOutput && n === 1 ? { composed: composedRefs(blocks, layoutBlocks) } : {}),
         relPath:
           n === 1
             ? outputPathOf(page)
@@ -1339,6 +1364,21 @@ async function buildSite(
       );
     });
     fileCount += pages.length;
+    if (pageOutput) {
+      await timer.measure(parts, "page-output", () =>
+        pageOutput.chunk(
+          pages.map((p) => ({
+            pageId: p.pageId,
+            html: p.html,
+            path: pagePathOf.get(p.pageId) ?? `/${p.relPath}`,
+            title: p.pageTitle,
+            breadcrumbTrail: p.breadcrumbTrail,
+            composed: p.composed ?? [],
+            followUp: p.followUp !== undefined,
+          })),
+        ),
+      );
+    }
     args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
     // #1271 — a full collection after each chunk. What the chunk held is
     // garbage now, but the engine grows its heap with the allocation rate,
@@ -1420,6 +1460,7 @@ async function buildSite(
   timer.lapParts(parts, "batches");
   // P13 — every fresh plugin bake of the build, upserted in one order.
   await bakes.flush(tx);
+  const pageOutputFinish = pageOutput ? await pageOutput.finish() : null;
 
   const reportedRenderFailures = reportsRenderFailures
     ? stagedRenderFailures(renderFailures)
@@ -1627,6 +1668,7 @@ async function buildSite(
     truncatedLists,
     renderFailures: reportedRenderFailures?.failures ?? [],
     renderFailureCount: reportedRenderFailures?.total ?? 0,
+    pageOutput: pageOutputFinish,
     securityHeaders,
   };
 }
@@ -1742,6 +1784,8 @@ interface BuiltPage {
   breadcrumbTrail: readonly string[] | null;
   /** #1257 — page `n` ≥ 2 of a paginated overview, and whether it may be indexed. */
   followUp?: { page: number; indexable: boolean };
+  /** #1647 — the modules the composition placed, with their zone (page 1 only). */
+  composed?: ComposedModuleRef[];
 }
 
 /** Builds a self-hosted target keeps under `builds/` for rollback. */
@@ -1797,4 +1841,33 @@ export function faviconAsset(row: {
     mediaId: row.favicon_media_id,
     ...themeFaviconRendition(row.favicon_slug, row.favicon_mime),
   };
+}
+
+/** #1647 — the modules of one page's composition with their zone, each once. */
+function composedRefs(
+  blocks: readonly {
+    readonly modules: readonly { readonly moduleId: string; readonly contentInstanceId?: string }[];
+  }[],
+  layoutBlocks: readonly {
+    readonly modules: readonly { readonly moduleId: string; readonly contentInstanceId?: string }[];
+  }[],
+): ComposedModuleRef[] {
+  const out = new Map<string, ComposedModuleRef>();
+  for (const b of layoutBlocks)
+    for (const m of b.modules)
+      if (!out.has(m.moduleId))
+        out.set(m.moduleId, {
+          moduleId: m.moduleId,
+          zone: "layout",
+          contentInstanceId: m.contentInstanceId ?? null,
+        });
+  for (const b of blocks)
+    for (const m of b.modules)
+      if (!out.has(m.moduleId))
+        out.set(m.moduleId, {
+          moduleId: m.moduleId,
+          zone: "page",
+          contentInstanceId: m.contentInstanceId ?? null,
+        });
+  return [...out.values()];
 }

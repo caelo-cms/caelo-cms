@@ -27,6 +27,7 @@
     "@ai-sdk/openai": "^4.0.117",
     "@caelo-cms/migrations": "workspace:*",
     "@caelo-cms/plugin-consent-manager": "workspace:*",
+    "@caelo-cms/collection-index": "workspace:*",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",

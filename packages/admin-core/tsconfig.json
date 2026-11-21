@@ -19,6 +19,7 @@
     { "path": "../plugin-sandbox" },
     { "path": "../plugin-sdk" },
     { "path": "../plugin-host" },
+    { "path": "../collection-index" },
     { "path": "../../apps/static-generator" }
   ],
   "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]

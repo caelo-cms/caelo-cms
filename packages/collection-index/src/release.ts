@@ -52,6 +52,8 @@ export interface ReleaseManifest {
   readonly nextKey: number;
   readonly docCount: number;
   readonly vectorModel: { readonly id: string; readonly dims: number } | null;
+  /** The search profile's file (JSON), or null when the plugin set none. */
+  readonly profile: string | null;
 }
 
 /** A release opened for reading. */
@@ -176,6 +178,8 @@ export interface ApplyOptions {
   /** Rewrite into one segment regardless of the policy (a rebuild). */
   readonly forceMerge?: boolean;
   readonly protectedTerms?: ReadonlySet<string>;
+  /** A new search profile (JSON), or undefined to keep the previous release's. */
+  readonly profile?: unknown;
 }
 
 /** What `applyChanges` produced. */
@@ -365,6 +369,7 @@ export async function applyChanges(
     docCount: segments.reduce((n, s) => n + s.docCount - s.removedCount, 0),
     vectorModel:
       vectorField && o.vectorModel ? { id: o.vectorModel.id, dims: o.vectorModel.dims } : null,
+    profile: o.profile === undefined ? (previous?.profile ?? null) : writeProfile(o.profile, sink),
   };
   const data = utf8.encode(JSON.stringify(manifest));
   const file = contentName("release", data, "json");
@@ -454,6 +459,7 @@ export async function buildRelease(
     docCount: written.manifest.docCount,
     vectorModel:
       vectorField && o.vectorModel ? { id: o.vectorModel.id, dims: o.vectorModel.dims } : null,
+    profile: o.profile === undefined ? null : writeProfile(o.profile, sink),
   };
   const data = utf8.encode(JSON.stringify(manifest));
   const file = contentName("release", data, "json");
@@ -500,12 +506,29 @@ async function segmentVectors(
   return out;
 }
 
+/** Writes a profile as a content-addressed JSON file and returns its name. */
+function writeProfile(profile: unknown, sink: FileSink): string {
+  const data = utf8.encode(JSON.stringify(profile));
+  const file = contentName("p", data, "json");
+  sink(file, data);
+  return file;
+}
+
+/** Reads a release's search profile, or null when it has none. */
+export async function readProfile(
+  release: ReleaseManifest,
+  cache: FileCache,
+): Promise<unknown | null> {
+  if (!release.profile) return null;
+  return cache.get(release.profile, (d) => parseJson<unknown>(d));
+}
+
 /** Every file a release references, for copies and garbage collection. */
 export async function releaseFiles(
   manifest: ReleaseManifest,
   cache: FileCache,
 ): Promise<Set<string>> {
-  const files = new Set<string>();
+  const files = new Set<string>(manifest.profile ? [manifest.profile] : []);
   for (const s of manifest.segments) {
     files.add(s.manifest);
     if (s.removed) files.add(s.removed);

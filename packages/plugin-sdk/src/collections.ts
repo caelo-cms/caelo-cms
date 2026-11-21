@@ -16,6 +16,7 @@
  */
 
 import { z } from "zod";
+import type { SearchProfileInput } from "./collection-operations.js";
 import type { PluginConfigSchema } from "./config.js";
 
 const fieldName = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/, "must be snake_case");
@@ -86,6 +87,13 @@ export interface PluginCollectionHandle {
   delete(ids: readonly string[]): Promise<void>;
   /** A document as the newest staged index holds it, or null. */
   get(id: string): Promise<CollectionDocInput | null>;
+  /**
+   * Sets the collection's search profile for the next index: what the
+   * operator tuned (weights, synonyms, best bets, protected terms, …), as the
+   * gateway's `search` and `suggest` read it. Validated against
+   * `searchProfile`; the release keeps the last one set.
+   */
+  setProfile(profile: SearchProfileInput): Promise<void>;
 }
 
 /** `ctx.collections`: one handle per declared collection. */

@@ -140,6 +140,12 @@ const subprocessDoneSchema = z.object({
   renderFailureCount: z.number().int().nonnegative(),
   /** #1454 — the headers of the build's pages. */
   securityHeaders: siteHeaderSetSchema,
+  /** #1647 — page output delivered to observers; null when none observe or the build is no Stage. */
+  pageOutput: z
+    .object({
+      failed: z.array(z.object({ pluginId: z.string(), slug: z.string(), error: z.string() })),
+    })
+    .nullable(),
 });
 
 /** What a finished generator run reports. */

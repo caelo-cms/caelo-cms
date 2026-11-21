@@ -80,14 +80,17 @@ export interface PageOutputFacts {
   readonly properties: Readonly<Record<string, unknown>>;
   /** Vocabulary terms per vocabulary key. */
   readonly terms: Readonly<Record<string, readonly string[]>>;
-  readonly breadcrumb: readonly { readonly pageId: string; readonly title: string }[];
+  /** The titles of the page's breadcrumb trail, as its breadcrumbs show them (empty without breadcrumbs). */
+  readonly breadcrumb: readonly string[];
   /** `<meta name="robots">` holds `noindex`. */
   readonly noindex: boolean;
-  /** Behind a login (an auth plugin's protected route). */
-  readonly protected: boolean;
   /** The site's 404 page. */
   readonly notFoundPage: boolean;
-  /** The page carries a `data-caelo-defer` module or baked plugin region: visitors may see different text. */
+  /**
+   * The page carries a module a plugin withholds (`data-caelo-deferred`) or
+   * a baked plugin region: some visitors see different text. Core has no
+   * login-protected pages; withheld content is what an observer can tell.
+   */
   readonly hasDeferredContent: boolean;
   readonly modules: readonly PageOutputModule[];
   readonly texts: readonly PageOutputText[];

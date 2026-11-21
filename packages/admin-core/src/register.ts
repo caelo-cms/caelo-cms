@@ -10,6 +10,7 @@ import {
 // The gateway runs these too, so they live in plugin-host (gateway-ops.ts, #634).
 import { commentArchiveListForPageOp } from "@caelo-cms/plugin-host";
 import type { OperationRegistry } from "@caelo-cms/query-api";
+import { COLLECTION_INDEX_OPS } from "./collections/ops.js";
 import {
   bugClustersToRefreshOp,
   bugForwardingIdentityOp,
@@ -439,6 +440,7 @@ import {
 } from "./ops/owner_settings_staging.js";
 import { anyBootstrapTokenIssuedOp, insertBootstrapTokenOp } from "./ops/owner-bootstrap-tokens.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
+import { PAGE_OUTPUT_OPS } from "./ops/page_output.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import { appliedAdminMigrationsOp, appliedPublicMigrationsOp } from "./ops/platform_health.js";
 import { platformUpdatesAgentStatusOp } from "./ops/platform-update-agent.js";
@@ -1390,6 +1392,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executePluginConfigProposalOp);
   registry.register(rejectPluginConfigProposalOp);
   registry.register(listPendingPluginConfigProposalsOp);
+  // Epic #1644 (#1647) — page output delivered to plugin observers at a Stage.
+  for (const op of PAGE_OUTPUT_OPS) registry.register(op as never);
+  // Epic #1644 (#1648) — a Stage's collection index.
+  for (const op of COLLECTION_INDEX_OPS) registry.register(op as never);
   registry.register(rejectStaticFileProposalOp);
   registry.register(listPendingStaticFileProposalsOp);
   // P14 — Site Import Wizard.

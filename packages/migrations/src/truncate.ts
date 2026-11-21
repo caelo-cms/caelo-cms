@@ -111,6 +111,12 @@ const ADMIN_TABLES = [
   // #1461 — static files are site content; their snapshots cascade.
   "static_file_pending_actions",
   "plugin_config_pending_actions",
+  "collection_changes",
+  "collection_releases",
+  "plugin_page_observations",
+  "plugin_page_observation_pending",
+  "plugin_module_counts",
+  "plugin_module_count_pending",
   "redirect_pending_actions",
   "static_files",
 

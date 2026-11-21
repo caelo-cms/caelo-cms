@@ -2062,7 +2062,13 @@ export type PluginInvocationOrigin =
   | "worker"
   | "render"
   | "visitor"
-  | "system";
+  | "system"
+  /** #1647 — core delivers a Stage's page output to the plugin's observer:
+   *  it may write its collections and private storage (main), never a
+   *  public table, which visitors would see before Publish live. */
+  | "observer"
+  /** #1646 — a batch operation in a job container; the same write rules as `observer`. */
+  | "batch";
 
 /**
  * Who a plugin call acts for and on which chat branch. Every dispatch
@@ -2109,6 +2115,12 @@ export interface PluginInvocation {
    * Set by the host only; a plugin reads it, never chooses it.
    */
   readonly siteBaseUrl?: string;
+  /**
+   * #1647 / #1648 — set for origins `observer` and `batch`: the Stage's
+   * deploy run whose output the call reads. Collection writes of the call
+   * belong to that run's index.
+   */
+  readonly stageRunId?: string;
 }
 
 /** Prefix of the error the host throws when a plugin calls `ctx.ai` or
