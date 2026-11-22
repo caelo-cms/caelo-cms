@@ -19,8 +19,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
+  branchOverlayReadCount,
+  clearBranchOverlayCache,
+  loadBranchOverlay,
+  loadBranchRowStates,
   MAIN_RENDER,
   type PluginHostInfra,
+  type PluginRowState,
   resetPluginHost,
   resolveListSources,
   runPluginOperation,
@@ -34,6 +39,7 @@ import {
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { sql } from "drizzle-orm";
 import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
 
@@ -112,6 +118,12 @@ const plugin = definePlugin({
       return {};
     },
     list: async (ctx) => q(ctx).list("notes", { orderBy: "label", orderDir: "asc" }),
+    // #1669 — changes the rows a list returned, then lists again.
+    list_after_changing: async (ctx) => {
+      const rows = await q(ctx).list("notes", { orderBy: "label", orderDir: "asc" });
+      for (const row of rows) row.label = "changed-in-memory";
+      return q(ctx).list("notes", { orderBy: "label", orderDir: "asc" });
+    },
     // #1213 — keyset paging by id (+ an optional anyOf), `pageSize` rows a read.
     page_by_id: async (ctx, args) => {
       const a = args as { pageSize: number; labels?: string[] };
@@ -664,5 +676,132 @@ describe("branch-aware plugin storage", () => {
       invocation: author,
     });
     expect(write.ok).toBe(false);
+  });
+});
+
+async function pluginIdOf(): Promise<string> {
+  const rows = await withSystemSql(
+    async (tx) =>
+      (await tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`) as { id: string }[],
+  );
+  const id = rows[0]?.id;
+  if (!id) throw new Error(`plugin ${SLUG} not installed`);
+  return id;
+}
+
+const sortedStates = (m: ReadonlyMap<string, PluginRowState>) =>
+  [...m.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
+
+/** The remembered pending rows of `notes` on the branch are what a fresh read gives (#1669). */
+async function expectOverlayExact(chatBranchId: string): Promise<void> {
+  const input = { pluginId: await pluginIdOf(), table: "notes", chatBranchId };
+  await adapter.withAdminTransaction(humanCtx, async (tx) => {
+    const remembered = await loadBranchOverlay(tx, input);
+    const fresh = await loadBranchRowStates(tx, input);
+    expect(sortedStates(remembered)).toEqual(sortedStates(fresh));
+  });
+}
+
+describe("#1669 — a branch's pending rows, carried by the journal between reads", () => {
+  it("reads them once, again only after a change, and stays exact through every kind of change", async () => {
+    const x = await newChat("x1669");
+    const y = await newChat("y1669");
+    for (const label of ["x-one", "x-two", "x-three"]) {
+      const added = await call(x.invocation, "add", { label });
+      if (!added.ok) throw new Error(added.error.message);
+    }
+    const main = await labels(MAIN);
+    const live = await liveRows();
+    const mainRow = live.find(
+      (r) => r.caelo_chat_branch_id === null && r.caelo_deleted_at === null,
+    );
+    if (!mainRow) throw new Error("no main row");
+    const byLabel = (label: string) => live.find((r) => r.label === label)?.id;
+
+    clearBranchOverlayCache();
+    const before = branchOverlayReadCount();
+    const first = await labels(x.invocation);
+    expect(first).toEqual([...main, "x-one", "x-three", "x-two"].sort());
+    expect(await labels(x.invocation)).toEqual(first);
+    expect(await labels(x.invocation)).toEqual(first);
+    // Three lists, one read of the pending rows.
+    expect(branchOverlayReadCount()).toBe(before + 1);
+    await expectOverlayExact(x.chatBranchId);
+
+    // An update and a delete on the branch: each is seen by the next list.
+    expect(
+      (await call(x.invocation, "rename", { id: byLabel("x-two"), label: "x-two-b" })).ok,
+    ).toBe(true);
+    expect(await labels(x.invocation)).toContain("x-two-b");
+    expect((await call(x.invocation, "remove", { id: byLabel("x-three") })).ok).toBe(true);
+    expect(await labels(x.invocation)).not.toContain("x-three");
+    await expectOverlayExact(x.chatBranchId);
+
+    // A takeover moves x's pending rename of a main row to y.
+    expect((await call(x.invocation, "rename", { id: mainRow.id, label: "main-x" })).ok).toBe(true);
+    expect(await labels(x.invocation)).toContain("main-x");
+    expect((await call(y.invocation, "rename", { id: mainRow.id, label: "main-y" })).ok).toBe(true);
+    expect(await labels(x.invocation)).not.toContain("main-x");
+    expect(await labels(x.invocation)).toContain(mainRow.label);
+    expect(await labels(y.invocation)).toContain("main-y");
+    await expectOverlayExact(x.chatBranchId);
+    await expectOverlayExact(y.chatBranchId);
+
+    // Stage: x's rows leave the branch's pending set and are main rows now.
+    const merged = await execute(registry, adapter, humanCtx, "chat.merge_to_main", {
+      chatSessionId: x.chatSessionId,
+    });
+    if (!merged.ok) throw new Error(JSON.stringify(merged.error));
+    expect(await labels(MAIN)).toEqual(expect.arrayContaining(["x-one", "x-two-b"]));
+    await expectOverlayExact(x.chatBranchId);
+    await expectOverlayExact(y.chatBranchId);
+  });
+
+  it("hands out copies: a caller that changes a listed row changes no later read", async () => {
+    const w = await newChat("w1669");
+    const added = await call(w.invocation, "add", { label: "w-kept" });
+    if (!added.ok) throw new Error(added.error.message);
+    const expected = await labels(w.invocation);
+    expect(expected).toContain("w-kept");
+    const changed = await call(w.invocation, "list_after_changing");
+    if (!changed.ok) throw new Error(changed.error.message);
+    expect((changed.value as { label: string }[]).map((n) => n.label)).toEqual(expected);
+    expect(await labels(w.invocation)).toEqual(expected);
+    await expectOverlayExact(w.chatBranchId);
+  });
+
+  it("never keeps what a transaction saw of its own uncommitted writes", async () => {
+    const z = await newChat("z1669");
+    const added = await call(z.invocation, "add", { label: "z-kept" });
+    if (!added.ok) throw new Error(added.error.message);
+    // Remembered now.
+    expect(await labels(z.invocation)).toContain("z-kept");
+    const input = { pluginId: await pluginIdOf(), table: "notes", chatBranchId: z.chatBranchId };
+    const phantom = crypto.randomUUID();
+    const state = JSON.stringify({
+      schemaVersion: 1,
+      values: { id: phantom, label: "z-phantom" },
+      deletedAt: null,
+      version: 1,
+    });
+    const rolledBack = adapter.withAdminTransaction(humanCtx, async (tx) => {
+      await tx.execute(sql`
+        WITH h AS (
+          INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
+          VALUES (${HUMAN}::uuid, 'plugin_storage.insert', ${`${PFX}phantom`},
+                  ${z.chatSessionId}::uuid, ${z.chatBranchId}::uuid)
+          RETURNING id)
+        INSERT INTO plugin_row_snapshots (site_snapshot_id, plugin_id, schema_name, table_name, row_id, state)
+        SELECT h.id, ${input.pluginId}::uuid, ${SCHEMA}, 'notes', ${phantom}::uuid, (${state}::text)::jsonb
+          FROM h`);
+      // The transaction sees its own pending row...
+      expect((await loadBranchOverlay(tx, input)).has(phantom)).toBe(true);
+      throw new Error("roll back");
+    });
+    await expect(rolledBack).rejects.toThrow("roll back");
+    // ...and nothing of it is remembered once it rolled back.
+    expect(await labels(z.invocation)).not.toContain("z-phantom");
+    expect(await labels(z.invocation)).toContain("z-kept");
+    await expectOverlayExact(z.chatBranchId);
   });
 });

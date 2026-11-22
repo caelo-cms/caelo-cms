@@ -12,7 +12,9 @@
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
+  clearBranchOverlayCache,
   clearLinkResolveCache,
+  forgetIndexLeadColumns,
   pluginWorkerScheduler,
   resetPluginHost,
   runPluginOperation,
@@ -248,6 +250,10 @@ export async function setupCostSite(opts: {
       // would be carried forward by the journal (#1270), and a site that
       // grew by more than a delta takes would first try one.
       clearSiteViewCache();
+      // And for the pending plugin rows a branch render overlays and the
+      // index leads a plugin list is checked against (#1669).
+      clearBranchOverlayCache();
+      forgetIndexLeadColumns();
       const cold = await count({ pageId: page.pageId });
       const warm = await count({ pageId: page.pageId });
       const branchCold = await count({ pageId: page.pageId, chatBranchId: branchId });
