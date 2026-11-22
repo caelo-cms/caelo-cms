@@ -174,22 +174,28 @@ export const planCollectionRunOp = defineOperation({
         failed++;
         continue;
       }
-      // The run's own writes, every unapplied write of a Stage whose plan
-      // recorded this collection (its index is still building or failed;
-      // a failed plugin's writes it discarded), and writes of no Stage. A
-      // Stage not yet planned keeps its writes: still running, or finished
-      // but before its plan decided them (a failed observer's partial
-      // writes). Its own plan or its discard decides them, never this run.
-      // The per-collection lock orders this with that plan.
+      // The release's members: every change no ready release applied yet
+      // that the run wrote, that no Stage wrote, or that a Stage wrote whose
+      // plan recorded this collection (its index still building or failed;
+      // a failed plugin's writes it discarded). A change stays with the run
+      // that wrote it and with every release that has it as a member: an
+      // earlier release still being built keeps its own, this one builds
+      // them in too, on the newest ready release. A Stage not yet planned
+      // keeps its writes (still running, or finished before its plan
+      // discarded a failed observer's partial writes): its own plan or its
+      // discard decides them. The per-collection lock orders this with that
+      // plan and with every index completion.
       const claimed = (await tx.execute(sql`
-        UPDATE collection_changes c SET run_id = ${input.runId}::uuid
+        INSERT INTO collection_release_changes (run_id, plugin_id, collection, change_id)
+        SELECT ${input.runId}::uuid, c.plugin_id, c.collection, c.id FROM collection_changes c
         WHERE c.plugin_id = ${c.pluginId}::uuid AND c.collection = ${c.collection}
           AND c.applied_run_id IS NULL AND c.discarded_at IS NULL
           AND (c.run_id IS NULL OR c.run_id = ${input.runId}::uuid
                OR EXISTS (SELECT 1 FROM collection_releases r WHERE r.run_id = c.run_id
                             AND r.plugin_id = c.plugin_id AND r.collection = c.collection))
-        RETURNING c.id
-      `)) as unknown as { id: string }[];
+        ON CONFLICT DO NOTHING
+        RETURNING change_id
+      `)) as unknown as { change_id: string }[];
       const digest = declarationDigest(c.decl);
       const model = modelOf.get(`${c.pluginId}:${c.collection}`) ?? null;
       // A model change is a rebuild: the job re-embeds every passage.
@@ -266,10 +272,12 @@ export const collectionIndexTasksOp = defineOperation({
     for (const r of rows) {
       const c = active.get(`${r.plugin_id}:${r.collection}`);
       if (!c) continue;
+      // The release's members, in the order they were written.
       const changes = (await tx.execute(sql`
-        SELECT store_key FROM collection_changes
-        WHERE run_id = ${input.runId}::uuid AND plugin_id = ${r.plugin_id}::uuid AND collection = ${r.collection}
-        ORDER BY created_at, id
+        SELECT c.store_key FROM collection_release_changes m
+        JOIN collection_changes c ON c.id = m.change_id
+        WHERE m.run_id = ${input.runId}::uuid AND m.plugin_id = ${r.plugin_id}::uuid AND m.collection = ${r.collection}
+        ORDER BY c.created_at, c.id
       `)) as unknown as { store_key: string }[];
       tasks.push({
         pluginId: r.plugin_id,
@@ -320,9 +328,13 @@ export const collectionIndexDoneOp = defineOperation({
         message: "no pending release of this run and collection",
       });
     }
+    // Its members are in a ready release now; one an earlier ready release
+    // applied keeps that mark.
     await tx.execute(sql`
-      UPDATE collection_changes SET applied_run_id = ${input.runId}::uuid
-      WHERE run_id = ${input.runId}::uuid AND plugin_id = ${input.pluginId}::uuid AND collection = ${input.collection}
+      UPDATE collection_changes c SET applied_run_id = ${input.runId}::uuid
+      FROM collection_release_changes m
+      WHERE m.run_id = ${input.runId}::uuid AND m.plugin_id = ${input.pluginId}::uuid
+        AND m.collection = ${input.collection} AND c.id = m.change_id AND c.applied_run_id IS NULL
     `);
     return ok({});
   },

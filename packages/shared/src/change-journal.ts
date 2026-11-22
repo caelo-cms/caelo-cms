@@ -302,6 +302,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   static_bakes: "derived build output of plugin-baked regions",
   collection_changes:
     "plugin collection writes waiting for an index (#1648): the indexing job consumes them, nothing reads them as state",
+  collection_release_changes:
+    "build state of a Stage (#1648): which changes each collection release is built from",
   collection_releases:
     "build state of a Stage like deploy_runs (#1648): which collection release each run produced; the projection publishes the pointed run's",
   plugin_page_observations:

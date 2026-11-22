@@ -65,6 +65,21 @@ CREATE INDEX collection_changes_unapplied_idx ON collection_changes (plugin_id, 
 CREATE INDEX collection_changes_discarded_idx ON collection_changes (discarded_at)
   WHERE discarded_at IS NOT NULL;
 
+-- Which changes each release builds in (its members). A change keeps the
+-- run that wrote it (run_id) for good; a later Stage's plan includes the
+-- changes no index applied yet as members of its own release without
+-- taking them from an earlier release still being built, so every release
+-- is built from exactly the changes its plan chose.
+CREATE TABLE collection_release_changes (
+  run_id      uuid NOT NULL REFERENCES deploy_runs(id) ON DELETE CASCADE,
+  plugin_id   uuid NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+  collection  text NOT NULL,
+  change_id   uuid NOT NULL REFERENCES collection_changes(id) ON DELETE CASCADE,
+  PRIMARY KEY (run_id, plugin_id, collection, change_id)
+);
+CREATE INDEX collection_release_changes_change_idx ON collection_release_changes (change_id);
+CREATE INDEX collection_release_changes_plugin_idx ON collection_release_changes (plugin_id);
+
 CREATE TABLE collection_releases (
   run_id          uuid NOT NULL REFERENCES deploy_runs(id) ON DELETE CASCADE,
   plugin_id       uuid NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
@@ -140,7 +155,7 @@ DO $$
 DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY ARRAY[
-    'collection_changes', 'collection_releases', 'plugin_page_observations',
+    'collection_changes', 'collection_release_changes', 'collection_releases', 'plugin_page_observations',
     'plugin_page_observation_pending', 'plugin_module_counts', 'plugin_module_count_pending',
     'plugin_page_observers', 'plugin_page_observer_pending'
   ] LOOP

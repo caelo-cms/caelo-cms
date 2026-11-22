@@ -859,6 +859,71 @@ describe("page output and collections through Stage and Publish live", () => {
     }
   });
 
+  it("a release still being built keeps its changes when a later Stage plans", async () => {
+    // Stage A's index job starts late: Stage B plans (and finishes) first.
+    // B builds A's changes in too, but A's release must still hold its own:
+    // a plan never takes changes from a release being built.
+    let held: Parameters<ReturnType<typeof inProcessJobLauncher>["launch"]>[0] | null = null;
+    setInProcessJobLauncher((kind) => {
+      const real = inProcessJobLauncher({ adapter, registry }, kind);
+      if (kind !== "collection_index" || held !== null) return real;
+      return {
+        ...real,
+        async launch(order) {
+          held = order;
+          return "held by the test";
+        },
+      };
+    });
+    let a: string;
+    try {
+      await setText(PAGES[0] as string, "Erdbeeren frisch vom Feld.");
+      a = await stage();
+    } finally {
+      setInProcessJobLauncher((kind) => inProcessJobLauncher({ adapter, registry }, kind));
+    }
+    expect(held).not.toBeNull();
+    await setText(PAGES[1] as string, "Kirschen aus dem Garten.");
+    const b = await stage();
+    const indexB = await indexState(b);
+    expect(indexB.state).toBe("ready");
+    // B applied A's changes, but A still builds from them: the clean-up
+    // keeps their files.
+    const members = (
+      (await sqlSystem(
+        async (tx) =>
+          tx`SELECT change_id::text AS id FROM collection_release_changes WHERE run_id = ${a}::uuid`,
+      )) as { id: string }[]
+    ).map((r) => r.id);
+    expect(members.length).toBeGreaterThan(0);
+    const plan = await execute(
+      registry,
+      adapter,
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t1644-gc-members" },
+      "collections.gc_plan",
+      { changeLimit: 1000, keepStages: 10, keepPublishes: 20 },
+    );
+    if (!plan.ok) throw new Error(JSON.stringify(plan.error));
+    const collectable = (plan.value as { changes: { id: string }[] }).changes.map((c) => c.id);
+    expect(members.filter((id) => collectable.includes(id))).toEqual([]);
+    // A's job runs now, after B planned and was indexed.
+    await inProcessJobLauncher({ adapter, registry }, "collection_index").launch(
+      held as unknown as Parameters<ReturnType<typeof inProcessJobLauncher>["launch"]>[0],
+    );
+    const indexA = await indexState(a);
+    expect(indexA.state).toBe("ready");
+    const staging = join(root, "collections-staging");
+    expect(await searchStore(staging, indexA.releaseKey as string, "Erdbeeren")).toEqual([
+      `/${PAGES[0]}`,
+    ]);
+    expect(await searchStore(staging, indexB.releaseKey as string, "Erdbeeren")).toEqual([
+      `/${PAGES[0]}`,
+    ]);
+    expect(await searchStore(staging, indexB.releaseKey as string, "Kirschen")).toEqual([
+      `/${PAGES[1]}`,
+    ]);
+  });
+
   it("a Stage's index releases are planned before its audit starts", async () => {
     // A plugin's audit rule reads the Stage's index state: before the plan
     // it is "none", and the audit would report a missing index.

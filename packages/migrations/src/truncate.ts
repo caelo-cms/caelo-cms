@@ -112,6 +112,7 @@ const ADMIN_TABLES = [
   "static_file_pending_actions",
   "plugin_config_pending_actions",
   "collection_changes",
+  "collection_release_changes",
   "collection_releases",
   "plugin_page_observations",
   "plugin_page_observation_pending",
