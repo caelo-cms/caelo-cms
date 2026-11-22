@@ -483,6 +483,9 @@ export function rotationRefusal(name: string): string | null {
   if (name === "operator-oauth-client") {
     return "operator-oauth-client is the install's Google sign-in client (IAP sign-in and remote MCP); the Owner replaces it under Settings → Google sign-in (create a new client secret in the Google console first).";
   }
+  if (name === "visitor-ai-key" || name === "visitor-ai-staging-key") {
+    return `${name} holds the visitor AI's provider key, which the Owner sets: rotate it under Settings → Visitor AI (create a new key at the provider first, then revoke the old one there).`;
+  }
   if (name === "secret-kek") {
     return "secret-kek encrypts the AI provider keys and other at-rest secrets in cms_admin; a new KEK would make them unreadable. Rotating it needs a re-encryption step that does not exist yet.";
   }

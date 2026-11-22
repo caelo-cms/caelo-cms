@@ -128,6 +128,78 @@ describe("collectBuildAssets", () => {
     expect(html).not.toContain("inlineScripts");
   });
 
+  it("lets the pages connect to the stream origin of a visitor conversation (#1654)", async () => {
+    const chat = definePlugin({
+      slug: `${SLUG}-chat`,
+      version: "0.1.0",
+      tier: 1,
+      schema: {},
+      requestedCapabilities: ["collections", "visitor_ai"],
+      requires: ["visitor-ai"],
+      collections: {
+        pages: {
+          description: "Pages.",
+          fields: { title: { kind: "text" }, url: { kind: "keyword" } },
+          maxDocuments: 10,
+          maxDocumentBytes: 1024,
+        },
+      },
+      config: {
+        tone: {
+          type: "string",
+          label: "Tone",
+          description: "How it answers.",
+          effect: "query",
+          maxLength: 200,
+          default: "kurz",
+          visitorVisible: true,
+        },
+      },
+      collectionOperations: [
+        {
+          name: "search",
+          kind: "search",
+          collection: "pages",
+          description: "Search.",
+          returns: ["url"],
+        },
+      ],
+      aiChatOperations: [
+        {
+          name: "ask",
+          kind: "ai-chat",
+          description: "Answer visitors.",
+          prompt: { fields: ["tone"] },
+          tools: [{ plugin: `${SLUG}-chat`, operation: "search" }],
+        },
+      ],
+      operations: { noop: async () => ({}) },
+    });
+    await load(chat);
+    const before = process.env.CAELO_VISITOR_AI_STREAM_ORIGIN;
+    try {
+      // The site's own origin streams (gcp, self-hosted): nothing to add.
+      process.env.CAELO_VISITOR_AI_STREAM_ORIGIN = "";
+      expect(await collectBuildAssets(PAGE_IDS, MAIN_RENDER)).toEqual([]);
+      // Buffered there (gcp-firebase): the gateway's own origin, for the CSP only.
+      process.env.CAELO_VISITOR_AI_STREAM_ORIGIN = "https://gw-123.europe-west1.run.app";
+      const assets = await collectBuildAssets(PAGE_IDS, MAIN_RENDER);
+      expect(assets).toEqual([
+        {
+          pluginSlug: `${SLUG}-chat`,
+          fileName: "csp-sources.json",
+          kind: "csp",
+          content: '{"origins":{"connect":["https://gw-123.europe-west1.run.app"]}}',
+          relPath: "",
+          publicPath: "",
+        },
+      ]);
+    } finally {
+      if (before === undefined) delete process.env.CAELO_VISITOR_AI_STREAM_ORIGIN;
+      else process.env.CAELO_VISITOR_AI_STREAM_ORIGIN = before;
+    }
+  });
+
   it("gives identical content the same name and changed content a new one", async () => {
     // The name is what a CDN caches against; if it did not move when the
     // behaviour moved, a deploy would leave stale plugin code live.

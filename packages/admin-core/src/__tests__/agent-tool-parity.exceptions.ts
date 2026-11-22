@@ -206,6 +206,12 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     note: "site memory is loaded into every turn's system prompt (persistence.loadMemory); changes go through site_memory_propose",
   },
   "static_files.list_pending": PENDING_QUEUE,
+  "plugin_config.list_pending": PENDING_QUEUE,
+  "collections.run_state": {
+    kind: "covered",
+    by: ["get_stage_status"],
+    note: "#1648 — deploy.stage_status reports every succeeded Stage's search indexes (ready, still building, failed with the reason); run_state is the Publish live gate's and the panels' per-run read",
+  },
   "users.list_pending": PENDING_QUEUE,
   // #970 — the sync job's per-run report. The AI sees it where it acts: every
   // approved user change folds the run's refused members into the tool
@@ -242,6 +248,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
 
   // ── internal: not an agent action ─────────────────────────────────────
   "chat.append_message": { kind: "internal", reason: "chat-runner transcript persistence" },
+  "chat.record_ai_call": {
+    kind: "internal",
+    reason:
+      "settles the spend ledger row of an AI call the chat-runner or a tool made (ai-spend.ts, #1653); the cost of a call, never an agent action",
+  },
   "chat.pin_skills_index": {
     kind: "internal",
     reason:

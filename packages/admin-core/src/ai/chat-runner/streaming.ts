@@ -27,6 +27,7 @@
  * stays in loop.ts and reaches the SDK through the `policy` callbacks.
  */
 
+import { failureProvedUnbilled } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -79,6 +80,14 @@ export interface UsageAccumulator {
   /** Longest single prompt (all input lanes of one step) this turn. Decides
    *  prompt-length pricing, which applies per request, not per turn (#1477). */
   largestPromptTokens?: number;
+  /** Requests that reported their usage this turn (one `usage` event each, #1653). */
+  usageReports?: number;
+  /**
+   * Runs that ended in a failure proving the provider billed nothing for
+   * their open request (`failureProvedUnbilled`, #1653). A request that
+   * neither reported usage nor failed this way keeps its reservation.
+   */
+  unbilledFailures?: number;
 }
 
 /**
@@ -335,6 +344,8 @@ export async function* streamProviderTurn(
   const queue = new EventQueue<ClientEvent>();
   const quiescence = new PumpQuiescence();
 
+  /** This run's failure proved the provider billed nothing (#1653). */
+  let failureUnbilled = false;
   const result: StreamTurnResult = {
     loopStop: "end_turn",
     providerErr: false,
@@ -950,6 +961,7 @@ export async function* streamProviderTurn(
         break;
       }
       case "usage": {
+        args.usage.usageReports = (args.usage.usageReports ?? 0) + 1;
         args.usage.totalIn += ev.inputTokens;
         args.usage.totalOut += ev.outputTokens;
         args.usage.totalCached += ev.cachedTokens;
@@ -967,6 +979,7 @@ export async function* streamProviderTurn(
         break;
       }
       case "error": {
+        if (ev.unbilled) failureUnbilled = true;
         if (aborted()) break;
         result.providerErr = true;
         if (isPromptTooLongError(ev.message)) {
@@ -1047,6 +1060,7 @@ export async function* streamProviderTurn(
         handleProviderEvent(ev);
       }
     } catch (e) {
+      if (failureProvedUnbilled(e)) failureUnbilled = true;
       if (!aborted()) {
         const message = e instanceof Error ? e.message : String(e);
         console.error("[chat-runner] provider stream threw", {
@@ -1067,6 +1081,8 @@ export async function* streamProviderTurn(
         result.loopStop = "error";
       }
     } finally {
+      // One run ends in at most one failure; it is counted once.
+      if (failureUnbilled) args.usage.unbilledFailures = (args.usage.unbilledFailures ?? 0) + 1;
       queue.close();
     }
   })();

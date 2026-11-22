@@ -2,6 +2,10 @@
 
 The cheap setup (gcp-firebase) has no load balancer and no WAF in front of the API gateway, and the gateway stays reachable on `*.run.app` (epic #763, decision E3). So every protection lives in the gateway and in the database itself. Where a provider has a WAF (gcp: Cloud Armor), it is an extra layer, never the only one. This page describes the gateway's own layers from #1326 (P1) and #1338 (P8).
 
+## No plugin code (E2-B, #1340)
+
+The gateway runs no plugin code: no shipped plugin's dist, no installed plugin's sandbox. It attaches a plugin as its manifest (`plugin-host/manifest-definition.ts`): a release-signed plugin's signed `manifest.json` from the image, verified against the trust root, and an installed plugin's approved manifest from the published registry, whose source is only hashed against the approval's artifact digest. A visitor call runs the operation's declared `run` with core code (`public-run-host.ts`, the building blocks in `public-blocks/`, [../plugin-public-surface.md](../plugin-public-surface.md)), and the consent rule is computed by core from the provider's `consentProvider` declaration. The gateway imports only `@caelo-cms/plugin-host/gateway`, whose import graph reaches no loader, sandbox, validator or plugin package (`gateway-entry.test.ts` walks it), and its image carries no Deno, no dist and no oxc-parser (`apps/api-gateway/image.ts`). So a hole in a plugin cannot run in the process that holds the gateway's credentials: the visitor-AI key of #1654 can live there.
+
 ## A gateway whose feature is off (E14 a, #1339)
 
 Every public service is provisioned on every install at zero minimum instances, so one that nobody uses costs nothing. While its feature is off it answers the fixed 404 of a path that names no route (`{ ok: false, error: { kind: "NotFound", requestId } }`, no cookie), before it reads the request and before any database access. The one path a gateway reads anything of while off is the admin's refresh ping, `POST /api/_caelo/refresh`: it checks the ping's token header without the database, and anything but a valid ping gets the same fixed 404 (below).
@@ -56,7 +60,7 @@ In practice a switched-off gateway sees junk at most, for which Cloud Run runs o
 
 | Step | What | Database? | Answer |
 |---|---|---|---|
-| 1 | Route: `GET /api/captcha/challenge` or `POST /api/plugin/<slug>/<op>` with slug ≤ 64 and op ≤ 120 characters (`middleware/plugin-request-filter.ts`). The remote-MCP routes and health are routed before this and keep their own rules. | no | 404 `NotFound` |
+| 1 | Route: `GET /api/captcha/challenge`, `POST /api/plugin/<slug>/<op>` with slug ≤ 64 and op ≤ 120 characters (`middleware/plugin-request-filter.ts`), or `GET /api/plugin/<slug>/<op>[/release]` for a declared collection operation (epic #1644, `collections.ts`, below). The remote-MCP routes and health are routed before this and keep their own rules. | no | 404 `NotFound` |
 | 2 | Per-client in-memory budget (`middleware/memory-limiter.ts`, `VISITOR_MEMORY_LIMIT`: burst 120, then 2/s, keyed by the client's rate-limit address). | no | 429 `RateLimited` |
 | 3 | Settings and live origins, read from the projection (cached while the LISTEN holds). | read | 503 when not published |
 | 4 | Plugin POSTs only: `Content-Type: application/json`, and `Origin` one of the live site origins. | no | 415 / 403 |
@@ -70,6 +74,27 @@ An invented slug or operation therefore never creates a rate-limit bucket, a req
 
 On gcp-firebase the only `X-Forwarded-For` entry nobody can forge is the one Cloud Run appends, and that is a Google front-end proxy that changes per request (measured in #1325, [firebase-hosting-behaviour.md](./firebase-hosting-behaviour.md)). Per-client buckets there are close to one bucket per request. The per-operation budget is what bounds a flood from many addresses. It is per instance; Cloud Run runs at most `gatewayMaxInstances` of them.
 
+## Collection operations: search, suggest, read (epic #1644, #1649)
+
+A plugin's declared collection operation answers a GET with no plugin code: the gateway runs the collection engine over the release its own store holds (`apps/api-gateway/src/collections.ts`). The same steps as above apply (route, the per-client and per-operation budgets, the registry), then:
+
+- **Its own store only.** The live gateway reads `CAELO_COLLECTIONS_LIVE_STORE`, the staging gateway `CAELO_COLLECTIONS_STAGING_STORE`; each account may read its own bucket and nothing else, and neither may write (`packages/provisioning/src/collections-setup.ts`, the self-hosted mounts are read-only). `gateway-env-isolation.test.ts` pins both directions on every adapter that has a store.
+- **Cacheable, cookie-free.** An answer for the release the request names is `Cache-Control: public, max-age=60, s-maxage=<the operation's cacheSeconds>`; without a release it is `no-store`; for another release a 409 with the current key; `/release` names the key, `no-store`. No cookie is read or set. On gcp Cloud CDN on the live gateway's backend keeps exactly those answers (`GATEWAY_CDN_POLICY`: `USE_ORIGIN_HEADERS`, the query string in the key, no negative caching; the staging gateway's backend has no CDN). On gcp-firebase Hosting's CDN keeps them from the rewrite: no version header sets Cache-Control on `/api/**` (`static-publisher-firebase-headers.test.ts`), so the gateway's header decides. Hosting adds `Vary: cookie`, so the site's search client should fetch with `credentials: "omit"` to share one cache entry per query (to be measured on a scratch install, [firebase-hosting-behaviour.md](./firebase-hosting-behaviour.md)).
+- **Throttled, never banned, at the edge.** On gcp Cloud Armor throttles (429) collection reads above 600 a minute per IP (priority 820) before the general `/api/` ban, so search-as-you-type never earns a ban. Cache hits never reach the policy.
+- **No query in the logs.** Google Cloud writes a request log entry with the full URL for every request Cloud Run, the load balancer or Firebase Hosting serves. The CLI puts the exclusion `caelo-<env>-visitor-queries` (`GET` with a URL `/api/plugin/<slug>/<op>?…`, `packages/provisioning/src/visitor-query-logs.ts`) on `_Default` and on gcp's edge log sink to BigQuery (the stack declares it there too), so a visitor's query is never stored.
+- **No database on the search path.** A collection read writes no request-log row (plugin POSTs keep theirs): search-as-you-type, a flood or a store outage that makes every answer a 503 never becomes write load on the database. Cloud Run's request metrics count the answers and their latency; a server-side failure (5xx) is one log line with the operation, the status and the request id, never the query. What visitors search is the site-search plugin's own counting (`record`, only while the Owner turned it on, anonymous).
+- **Memory.** Both gateways run with 1 GiB (`GATEWAY_MEMORY_DEFAULT`): parsed index files stay cached in memory (`CAELO_COLLECTIONS_CACHE_MB`, 256 MiB by default).
+
+## Visitor conversations (epic #1644, #1654)
+
+A declared `ai-chat` operation answers a POST as Server-Sent Events, core code only ([visitor-ai.md](./visitor-ai.md)). On top of the steps above:
+
+- **Paid, so gated first.** Origin (the published site origins only, also for a cross-site call from the gateway's run.app origin on gcp-firebase), JSON, at most 256 KiB, the per-operation memory budget, two open streams per client per instance; then the published settings and the key; then the signed history; a proof of work for every new conversation, whatever the site's captcha setting; the ledger's reservation last. The provider sees nothing before the worst case is reserved.
+- **Budgets that hold under concurrency.** One advisory lock over the ledger: the rolling 24 hours and 30 days, the conversation's total and turns, one running turn per conversation, the turns running site-wide.
+- **No write to reach.** The model's only tools are the declared search and read operations of active plugins, run on this environment's release; sources are built from their results only.
+- **No row per request** beyond the ledger's, no query and no answer in a log.
+- **Stream through the edge.** gcp's load balancer and Caddy stream `/api/*`; Firebase Hosting buffers its rewrite, so there the widget streams from the gateway's own run.app origin with CORS for the site's origins, and the CSP's `connect-src` names it while a conversation is active. A turn ends within 55 s, inside the staging gateway's 60 s request timeout.
+
 ## The edge per provider (E3, #1339)
 
 No protection on this page depends on a WAF. Where a provider has one it is an extra layer; `packages/provisioning/src/public-service-shape.ts` is the per-provider table (E11), and `public-service-shape.test.ts` pins every stack, the CLI setup modules, the Compose file and the GCP cost table to it.
@@ -81,6 +106,7 @@ No protection on this page depends on a WAF. Where a provider has one it is an e
   |---|---|---|
   | 800 | `^/api/plugin/auth/(signup\|login\|request_password_reset\|reset_password)$` | ban an IP for 10 min above 30 a minute |
   | 810 | `/api/captcha/challenge` | throttle (429) above 60 a minute |
+  | 820 | `GET` `^/api/plugin/<slug>/<op>(/release)?$` (collection operations, epic #1644) | throttle (429) above 600 a minute, no ban |
   | 1001 | any path containing `/api/` | ban an IP for 10 min above 100 a minute (replaces the old catch-all at 1000, which the converge deletes only after the new rules are in) |
   | 2000, 2001 | OWASP sqli / xss, sensitivity 1 | deny (403) |
 

@@ -58,7 +58,6 @@ import {
   liveMaxInstances,
   liveTimeoutSeconds,
   liveVolumes,
-  planAdminMemory,
   planContractEnv,
   planCpuIdle,
   planMaxInstances,
@@ -66,6 +65,7 @@ import {
   planNoVpc,
   planRequestTimeout,
   planSecretFiles,
+  planServiceMemory,
   rollService,
   serviceRollArgs,
 } from "../stack-converge.js";
@@ -309,10 +309,11 @@ export async function planAppRoll(
   }
   const warnings: string[] = [];
   const rolls = services.map((s): RollPlan => {
-    // #553 — the admin runs the Lighthouse quality audit; raise it to the
-    // stack's memory default (never lowered; an unparsable value is kept).
-    const memory = s.slug === "admin" ? planAdminMemory(s.liveMemory) : null;
-    if (memory && !memory.ok) warnings.push(`admin memory left as is: ${memory.error}`);
+    // #553 — the admin runs the Lighthouse quality audit; epic #1644 — both
+    // gateways keep collection index files in memory. Raise each to its
+    // floor (never lowered; an unparsable value is kept).
+    const memory = planServiceMemory(s.slug, s.liveMemory);
+    if (!memory.ok) warnings.push(`${s.slug} memory left as is: ${memory.error}`);
     // #806 — the MCP-Auth-Proxy streams remote-MCP chat turns
     // (stack-contract.ts MCP_AUTH_PROXY_TIMEOUT_SECONDS). The other services'
     // timeouts are the stacks' alone.
@@ -320,7 +321,7 @@ export async function planAppRoll(
       s.slug === "mcp-auth-proxy"
         ? planRequestTimeout(s.liveTimeout, MCP_AUTH_PROXY_TIMEOUT_SECONDS)
         : null;
-    const memoryFlags = memory?.ok ? memory.flags : [];
+    const memoryFlags = memory.ok ? memory.flags : [];
     const timeoutFlags = timeout?.ok ? timeout.flags : [];
     const cpu = planCpuIdle(s.liveCpuIdle, SERVICE_CPU_IDLE[s.slug]);
     const cpuFlags = cpu.ok ? cpu.flags : [];

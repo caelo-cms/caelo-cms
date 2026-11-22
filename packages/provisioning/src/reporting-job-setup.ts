@@ -4,7 +4,8 @@
  * #1359 (#1140 category A) — set up (and converge) a reporting job on a
  * Google Cloud install (`gcp`, `gcp-firebase`): a Cloud Run job that runs
  * long, bounded work (a Stage's quality audit, #1359; a site import's crawl,
- * #1360) outside the admin and reports back to it by request, so the admin
+ * #1360; a Stage's collection index and a plugin's batch run, epic #1644)
+ * outside the admin and reports back to it by request, so the admin
  * only works inside requests (CLAUDE.md §11.B Tier 5) — or, the build
  * carrier (#1574), holds the request a build runs in. Run by the wizard
  * after `pulumi up` and by `cms-provision upgrade`'s converge (and the
@@ -24,9 +25,11 @@
  *     operator-access sync job keeps it there, operator-access.ts);
  *   - `roles/logging.logWriter`.
  *
- * plus its kind's own grants (the audit runner: {@link auditRunnerJobSpec};
- * the site-import crawler and the build carrier have none,
- * {@link importCrawlJobSpec}, {@link buildCarrierJobSpec}).
+ * plus its kind's own grants, declared by its entry in reporting-job-catalog.ts
+ * (the audit runner reads the staged build and the Lighthouse results and
+ * starts the Lighthouse tasks; the collection index job reads and creates
+ * files in the staging collection store; the site-import crawler, the build
+ * carrier and the plugin batch job have none).
  * Nothing else: no Secret Manager, no Cloud SQL, no VPC egress. Passing IAP
  * reaches nothing by itself: the admin's report endpoint takes a report of
  * a kind only from that kind's account AND with the token the admin minted
@@ -36,29 +39,29 @@
  * the job has none of. IAP access goes only to jobs that run no browser
  * and execute nothing they fetch; every render stays in the capture job
  * and the Lighthouse tasks, which have no IAP access (capture-job-setup.ts).
+ * The plugin batch job runs plugin code, but only an Owner-approved
+ * artifact, in the Deno sandbox (no network, no files, no env): the
+ * plugin reaches the admin only through the job's host side, report by
+ * report, never with the job's credential.
  *
  * The admin's run SA may run the job WITH overrides (it passes each
  * attempt's order: the work, the attempt, its token, the admin's URL) and
  * read its executions. {@link REPORTING_JOB_FORBIDDEN_ROLES} names the line;
- * the tests assert no grant crosses it.
+ * the tests assert no grant crosses it, but for the two reviewed exceptions
+ * a kind declares itself: the jobs it starts ({@link ReportingJobSpec.runJobs})
+ * and the buckets it creates files in ({@link ReportingJobSpec.writeBuckets}).
  */
 
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
-import {
-  auditJobName,
-  auditJobResource,
-  auditRunnerJobName,
-  auditRunnerServiceAccountId,
-  buildCarrierJobName,
-  buildCarrierServiceAccountId,
-  gcpBucketName,
-  importCrawlJobName,
-  importCrawlServiceAccountId,
-  runServiceAccountEmail,
-} from "./gcp-names.js";
+import { runServiceAccountEmail } from "./gcp-names.js";
 import { type IapResource, iapResourceArgs } from "./mcp-iap.js";
-import type { GcpProvider } from "./stack-contract.js";
+import {
+  type ReportingJobKindEntry,
+  type ReportingJobPlace,
+  type ReportingJobSpec,
+  reportingJobSpec,
+} from "./reporting-job-catalog.js";
 
 /** Where the admin image ships every reporting job's entry point. */
 export const REPORTING_JOB_SCRIPT = "/app/packages/admin-core/src/reporting-jobs/job-entry.ts";
@@ -67,7 +70,10 @@ export const REPORTING_JOB_SCRIPT = "/app/packages/admin-core/src/reporting-jobs
  * Roles a reporting job's identity must never hold anywhere. Prefix matches
  * (`roles/secretmanager.` = every Secret Manager role). `roles/run.` roles
  * are allowed only on a job a kind names in {@link ReportingJobSpec.runJobs}
- * (the audit runner starts the Lighthouse tasks); the tests assert that.
+ * (the audit runner starts the Lighthouse tasks), and
+ * `roles/storage.objectCreator` only on a bucket a kind names in
+ * {@link ReportingJobSpec.writeBuckets} (the collection index job writes
+ * its releases); the tests assert both.
  */
 export const REPORTING_JOB_FORBIDDEN_ROLES = [
   "roles/owner",
@@ -91,33 +97,8 @@ export const REPORTING_JOB_FORBIDDEN_ROLES = [
   "roles/run.invoker",
 ] as const;
 
-/** What one kind of reporting job needs beyond the shared grants. */
-export interface ReportingJobSpec {
-  /** How the CLI names it ("quality-audit runner"). */
-  readonly label: string;
-  readonly jobName: string;
-  readonly serviceAccountId: string;
-  readonly displayName: string;
-  readonly description: string;
-  /** The job's env (`KEY=value`; never a secret). */
-  readonly env: readonly string[];
-  readonly cpu: string;
-  readonly memory: string;
-  /** One execution's ceiling (admin-core protocol.ts `JOB_TIMING.maxRunSeconds`). */
-  readonly taskTimeoutSeconds: number;
-  /** Read-only bucket access it needs, each with the reason. */
-  readonly readBuckets: readonly { readonly bucket: string; readonly why: string }[];
-  /** Jobs it starts itself, with its order as an override (and reads their executions). */
-  readonly runJobs: readonly { readonly job: string; readonly why: string }[];
-}
-
 /** Where one install's reporting job goes. */
-export interface ReportingJobTarget {
-  readonly provider: GcpProvider;
-  readonly projectId: string;
-  readonly region: string;
-  /** Pulumi stack name (`production`). */
-  readonly env: string;
+export interface ReportingJobTarget extends ReportingJobPlace {
   /** The admin image the job runs, digest-pinned (`…/admin@sha256:…`). */
   readonly adminImageRef: string;
   /** The admin's IAP resource (the service on gcp-firebase, the LB backend on gcp). */
@@ -127,100 +108,6 @@ export interface ReportingJobTarget {
 export type ReportingJobResult =
   | { readonly ok: true; readonly done: string[]; readonly serviceAccount: string }
   | { readonly ok: false; readonly done: string[]; readonly error: string };
-
-/**
- * The audit runner (#1359): the whole quality audit of a Stage. It serves
- * the staged build from its staging slot to its own findings checks, starts
- * the Lighthouse tasks on the audit job (#875) and reads their results.
- */
-export function auditRunnerJobSpec(
-  target: Pick<ReportingJobTarget, "provider" | "projectId" | "region" | "env">,
-): ReportingJobSpec {
-  const { projectId, region, env, provider } = target;
-  const staging = gcpBucketName(projectId, env, "staging");
-  const results = gcpBucketName(projectId, env, "audit-results");
-  return {
-    label: "quality-audit runner",
-    jobName: auditRunnerJobName(env),
-    serviceAccountId: auditRunnerServiceAccountId(env),
-    displayName: "Caelo quality-audit runner",
-    description:
-      "Runs a Stage's quality audit and reports to the admin; reads the staged build and the Lighthouse results, starts the Lighthouse tasks, nothing else.",
-    env: [
-      `CAELO_PROVIDER=${provider}`,
-      `CAELO_STAGING_BUCKET=${staging}`,
-      `CAELO_AUDIT_JOB=${auditJobResource(projectId, region, env)}`,
-      `CAELO_AUDIT_RESULTS_BUCKET=${results}`,
-    ],
-    cpu: "1",
-    memory: "2Gi",
-    // admin-core JOB_TIMING.quality_audit.maxRunSeconds.
-    taskTimeoutSeconds: 3600,
-    readBuckets: [
-      { bucket: staging, why: "it serves the staged build to the findings checks" },
-      { bucket: results, why: "it reads the Lighthouse tasks' results" },
-    ],
-    runJobs: [{ job: auditJobName(env), why: "it starts the Lighthouse tasks" }],
-  };
-}
-
-/**
- * The site-import crawler (#1360): one site import's crawl. It reads
- * third-party pages, so it holds nothing beyond the shared grants: no
- * bucket, no other job. It fetches robots.txt and sitemaps itself, through
- * the SSRF guard; every page render is the admin's, which starts the
- * capture job and keeps the screenshot, so the crawler never runs a
- * browser and never touches the capture job or its bucket.
- */
-export function importCrawlJobSpec(
-  target: Pick<ReportingJobTarget, "provider" | "env">,
-): ReportingJobSpec {
-  return {
-    label: "site-import crawler",
-    jobName: importCrawlJobName(target.env),
-    serviceAccountId: importCrawlServiceAccountId(target.env),
-    displayName: "Caelo site-import crawler",
-    description:
-      "Crawls a site the Owner approved for import and reports each page to the admin; fetches robots.txt and sitemaps through the SSRF guard, nothing else.",
-    env: [`CAELO_PROVIDER=${target.provider}`],
-    cpu: "1",
-    // The frontier and up to four rendered pages' HTML at once.
-    memory: "2Gi",
-    // admin-core JOB_TIMING.site_import.maxRunSeconds: a longer crawl goes
-    // on in the next attempt, from its checkpoint.
-    taskTimeoutSeconds: 6 * 3600,
-    readBuckets: [],
-    runJobs: [],
-  };
-}
-
-/**
- * The build carrier (#1574): one Stage's, Publish live's or production
- * build's request. It sends one report, `run`, and the admin runs the build
- * inside that request on its own database and rights, so the carrier holds
- * nothing beyond the shared grants: it reads nothing, fetches nothing,
- * builds nothing. Smallest machine: it only waits for the answer.
- */
-export function buildCarrierJobSpec(
-  target: Pick<ReportingJobTarget, "provider" | "env">,
-): ReportingJobSpec {
-  return {
-    label: "build carrier",
-    jobName: buildCarrierJobName(target.env),
-    serviceAccountId: buildCarrierServiceAccountId(target.env),
-    displayName: "Caelo build carrier",
-    description:
-      "Holds the admin request a Stage, Publish live or production build runs in, so the build ends when nobody waits for it; reports to the admin, nothing else.",
-    env: [`CAELO_PROVIDER=${target.provider}`],
-    cpu: "1",
-    memory: "512Mi",
-    // admin-core JOB_TIMING.build.maxRunSeconds: the admin's request limit
-    // (the build stops two minutes before it) plus room to start and end.
-    taskTimeoutSeconds: 3600 + 5 * 60,
-    readBuckets: [],
-    runJobs: [],
-  };
-}
 
 /** Ensure a reporting job and everything it needs. Never throws for a gcloud failure. */
 export async function ensureReportingJob(
@@ -342,6 +229,24 @@ export async function ensureReportingJob(
     done.push(`${spec.label}: roles/storage.objectViewer on gs://${b.bucket}`);
   }
 
+  // 5b. Where its kind creates files (create only: no overwrite, no delete).
+  for (const b of spec.writeBuckets) {
+    const r = await retry([
+      "storage",
+      "buckets",
+      "add-iam-policy-binding",
+      `gs://${b.bucket}`,
+      `--member=${member}`,
+      "--role=roles/storage.objectCreator",
+      "--condition=None",
+      project,
+      "--quiet",
+      "--format=none",
+    ]);
+    if (!r.ok) return fail(`grant roles/storage.objectCreator on gs://${b.bucket} (${b.why})`, r);
+    done.push(`${spec.label}: roles/storage.objectCreator on gs://${b.bucket}`);
+  }
+
   // 6. The jobs its kind starts.
   for (const j of spec.runJobs) {
     for (const role of ["roles/run.jobsExecutorWithOverrides", "roles/run.viewer"]) {
@@ -406,26 +311,14 @@ export async function ensureReportingJob(
   return { ok: true, done, serviceAccount: sa };
 }
 
-/** Ensure the quality-audit runner (#1359). */
-export function ensureAuditRunnerJob(
+/**
+ * Ensure the job of one catalog kind (reporting-job-catalog.ts): what the
+ * wizard and every converge run for each entry, in catalog order.
+ */
+export function ensureReportingJobKind(
+  entry: ReportingJobKindEntry,
   target: ReportingJobTarget,
   deps: { run?: GcloudRunner; sleep?: Sleep } = {},
 ): Promise<ReportingJobResult> {
-  return ensureReportingJob(target, auditRunnerJobSpec(target), deps);
-}
-
-/** Ensure the site-import crawler (#1360). */
-export function ensureImportCrawlJob(
-  target: ReportingJobTarget,
-  deps: { run?: GcloudRunner; sleep?: Sleep } = {},
-): Promise<ReportingJobResult> {
-  return ensureReportingJob(target, importCrawlJobSpec(target), deps);
-}
-
-/** Ensure the build carrier (#1574). */
-export function ensureBuildCarrierJob(
-  target: ReportingJobTarget,
-  deps: { run?: GcloudRunner; sleep?: Sleep } = {},
-): Promise<ReportingJobResult> {
-  return ensureReportingJob(target, buildCarrierJobSpec(target), deps);
+  return ensureReportingJob(target, reportingJobSpec(entry, target), deps);
 }

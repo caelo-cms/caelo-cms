@@ -82,10 +82,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
 import {
   bootstrapDispatchOnly,
-  ensureDevSignedManifests,
   hostInfra,
   loadedPlugins,
   markDispatchRegistryStale,
@@ -93,11 +91,12 @@ import {
   registerGatewayOperations,
   runPluginOperation,
   servesVisitorOperations,
+  setPublishedVisitorConfigReader,
   syncDispatchPlugins,
   unpublishedRegistryError,
   VISITOR_ID_PURPOSE,
   verifyMailUnsubscribeToken,
-} from "@caelo-cms/plugin-host";
+} from "@caelo-cms/plugin-host/gateway";
 import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
 import {
@@ -107,6 +106,7 @@ import {
   gatewayRefreshAudience,
   gatewayRefreshPingsOn,
   SESSION_ENTRY,
+  visitorAiStreamOrigin,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import {
@@ -116,6 +116,13 @@ import {
   rateLimitAddress,
   trustedProxyHopsFromEnv,
 } from "./client-ip.js";
+import {
+  declaredCollectionOperation,
+  defaultQueryEmbedder,
+  GatewayCollections,
+  parseCollectionPath,
+  runCollectionOperation,
+} from "./collections.js";
 import {
   databaseIsolationProblems,
   GATEWAY_ENVIRONMENTS,
@@ -136,6 +143,8 @@ import { HARD_MAX_BODY_BYTES, readBodyWithCap } from "./middleware/body-cap.js";
 import { type CaptchaConfig, issuePowChallenge, verifyPowProof } from "./middleware/captcha.js";
 import { checkHoneypot } from "./middleware/honeypot.js";
 import {
+  COLLECTION_CLIENT_MEMORY_LIMIT,
+  COLLECTION_OPERATION_MEMORY_LIMIT,
   MemoryRateLimiter,
   OPERATION_MEMORY_LIMIT,
   VISITOR_MEMORY_LIMIT,
@@ -177,6 +186,18 @@ import {
   resolveVisitor,
   visitorIdDeclared,
 } from "./visitor.js";
+import {
+  aiChatAvailable,
+  aiChatPreflight,
+  aiChatRefusal,
+  aiChatResponse,
+} from "./visitor-ai/chat.js";
+import { loadVisitorConfig } from "./visitor-ai/published.js";
+import {
+  collectionToolRuntime,
+  declaredAiChatOperation,
+  resolveAiChatTools,
+} from "./visitor-ai/route.js";
 
 export {
   GATEWAY_DATABASE_ENV,
@@ -683,6 +704,9 @@ export function setGatewayAdapter(adapter: DatabaseAdapter): void {
   cachedAdapter = adapter;
   sweepGatewayStateIfDue = gatewayStateGc(adapter);
   addressHashKeys = ipHashKeys(adapter);
+  // #1655 — a declaration's `onlyIf: { config }` reads the released
+  // visitor-visible configuration, cached like the conversations read it.
+  setPublishedVisitorConfigReader((pluginId) => loadVisitorConfig(adapter, pluginId));
 }
 
 /**
@@ -1028,13 +1052,22 @@ async function visitorRequest(
   // ---- #1326: the input filter, before any database access ----
   const isCaptchaChallenge = req.method === "GET" && url.pathname === "/api/captcha/challenge";
   const pluginRoute = req.method === "POST" ? parsePluginPath(url.pathname) : null;
+  // #1654 — the CORS preflight of a conversation the widget runs from the
+  // site's own origin against this gateway's run.app origin (gcp-firebase).
+  const preflight = req.method === "OPTIONS" ? parsePluginPath(url.pathname) : null;
   const oneClick = req.method === "POST" ? parseMailLinkPath(url.pathname) : null;
-  if (!isCaptchaChallenge && !pluginRoute && !oneClick) {
+  // #1649 — a declared collection operation answers a GET: cacheable, no cookie.
+  const collectionRoute =
+    req.method === "GET" && !isCaptchaChallenge ? parseCollectionPath(url.pathname) : null;
+  if (!isCaptchaChallenge && !pluginRoute && !oneClick && !collectionRoute && !preflight) {
     return errorResponse("NotFound", 404, requestId);
   }
   const client = requestClientAddress(req, conn, requestId);
   if (!client.ok) return client.response;
-  const memoryLimited = memoryRateLimited(client.value, requestId);
+  // #1649 — collection reads have their own budget (no database, cheap CPU).
+  const memoryLimited = collectionRoute
+    ? collectionClientRateLimited(client.value, requestId)
+    : memoryRateLimited(client.value, requestId);
   if (memoryLimited) return memoryLimited;
 
   if (!cachedAdapter) {
@@ -1044,6 +1077,15 @@ async function visitorRequest(
   // #1361 — the cheap gates above passed: confirm the published state the
   // rest answers from (settings, registry, rate-limit specs, consent rule).
   await confirmPublishedStateOn(adapter);
+  if (collectionRoute) {
+    // #1654 — a declared conversation answers its GET with what the widget needs.
+    await syncDispatchPlugins();
+    const chat = collectionRoute.releaseOnly
+      ? null
+      : declaredAiChatOperation(collectionRoute.slug, collectionRoute.operation);
+    if (chat) return aiChatInfoResponse(req, chat, requestId);
+    return collectionOperation(url, collectionRoute, requestId);
+  }
   if (oneClick) return mailOneClick(req, url, oneClick, requestId);
   let settings: GatewaySettings;
   try {
@@ -1052,28 +1094,330 @@ async function visitorRequest(
     return settingsUnavailable(e, requestId);
   }
 
-  if (isCaptchaChallenge) return captchaChallenge(req, settings, client.value, requestId);
+  if (isCaptchaChallenge) return captchaChallenge(req, url, settings, client.value, requestId);
+  if (preflight) {
+    await syncDispatchPlugins();
+    if (!declaredAiChatOperation(preflight.slug, preflight.operation))
+      return errorResponse("NotFound", 404, requestId);
+    return aiChatPreflight(req, settings.liveOrigins ?? [], requestId);
+  }
   if (!pluginRoute) return errorResponse("NotFound", 404, requestId);
+  await syncDispatchPlugins();
+  const chat = declaredAiChatOperation(pluginRoute.slug, pluginRoute.operation);
+  if (chat) return aiChatOperation(req, settings, client.value, pluginRoute, chat, requestId);
   return pluginOperation(req, settings, client.value, pluginRoute, requestId);
+}
+
+let streamOrigin: Promise<string | null> | null = null;
+
+/**
+ * #1654 — where the widget streams this gateway's conversations from: its
+ * run.app origin on gcp-firebase (the Firebase rewrite buffers), the
+ * site's own elsewhere (shared visitor-ai-origin.ts). Learned once: a
+ * service's address does not change while it runs.
+ */
+function ownStreamOrigin(): Promise<string | null> {
+  if (!streamOrigin) {
+    streamOrigin = visitorAiStreamOrigin(process.env, {
+      service: process.env.K_SERVICE,
+      environment: process.env.CAELO_GATEWAY_ENVIRONMENT === "staging" ? "staging" : "live",
+    });
+    streamOrigin.catch(() => {
+      streamOrigin = null;
+    });
+  }
+  return streamOrigin;
+}
+
+/**
+ * #1654 — `GET` of a declared conversation: whether it can answer now,
+ * where to stream from and the limits a widget shows. No key, budget or
+ * prompt is in it; the turn itself checks everything again.
+ */
+async function aiChatInfoResponse(
+  req: Request,
+  chat: NonNullable<ReturnType<typeof declaredAiChatOperation>>,
+  requestId: string,
+): Promise<Response> {
+  const adapter = cachedAdapter as DatabaseAdapter;
+  let settings: GatewaySettings;
+  try {
+    settings = await loadSettings(adapter);
+  } catch (e) {
+    return settingsUnavailable(e, requestId);
+  }
+  let origin: string | null;
+  try {
+    origin = await ownStreamOrigin();
+  } catch (e) {
+    return errorResponse("ServiceUnavailable", 503, requestId, {
+      log: `ai-chat stream origin: ${describeFailure(e)}`,
+    });
+  }
+  const { problem: available, limits } = await aiChatAvailable(adapter, chat);
+  const response = jsonResponse(
+    {
+      ok: true,
+      data: {
+        available: available === null,
+        streamOrigin: origin,
+        captcha: chat.op.captcha,
+        // The limits the turn enforces (the Owner may lower the plugin's).
+        limits: { maxTurns: limits.maxTurns, maxQuestionChars: limits.maxQuestionChars },
+      },
+    },
+    { requestId },
+  );
+  if (available !== null)
+    console.warn(`[api-gateway] request ${requestId}: ai-chat unavailable: ${available}`);
+  const requestOrigin = req.headers.get("origin");
+  if (requestOrigin !== null && (settings.liveOrigins ?? []).includes(requestOrigin)) {
+    response.headers.set("Access-Control-Allow-Origin", requestOrigin);
+    response.headers.set("Vary", "Origin");
+    response.headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+  }
+  return response;
+}
+
+/** This gateway's environment, which its visitor-AI key, turns and ledger belong to. */
+function gatewayEnvironment(): "live" | "staging" {
+  return process.env.CAELO_GATEWAY_ENVIRONMENT === "staging" ? "staging" : "live";
+}
+
+/**
+ * #1654 — one turn of a declared `ai-chat` conversation, streamed
+ * (visitor-ai/chat.ts). Core code only; the per-operation memory budget
+ * first, nothing written but the ledger's reservation.
+ */
+async function aiChatOperation(
+  req: Request,
+  settings: GatewaySettings,
+  clientIp: string,
+  route: { readonly slug: string; readonly operation: string },
+  chat: NonNullable<ReturnType<typeof declaredAiChatOperation>>,
+  requestId: string,
+): Promise<Response> {
+  const adapter = cachedAdapter as DatabaseAdapter;
+  const origins = settings.liveOrigins ?? [];
+  const origin = req.headers.get("origin");
+  const allowed = origin !== null && origins.includes(origin) ? origin : null;
+  const take = operationMemoryLimiter.take(`${route.slug}.${route.operation}`);
+  if (!take.allowed)
+    return aiChatRefusal(
+      "RateLimited",
+      allowed,
+      requestId,
+      "site-wide operation budget",
+      take.retryAfterSec,
+    );
+  const startedAt = publishedCacheGeneration();
+  return aiChatResponse(req, {
+    adapter,
+    environment: gatewayEnvironment(),
+    plugin: { pluginId: chat.pluginId, slug: route.slug, config: chat.config },
+    op: chat.op,
+    tools: resolveAiChatTools(chat.op),
+    runtime: collectionToolRuntime(adapter, collectionsOfGateway(), () => mayCacheRead(startedAt)),
+    siteOrigins: origins,
+    verifyCaptcha: (proof) => verifyPowProof(adapter, proof, `${route.slug}.${route.operation}`),
+    clientKey: rateLimitAddress(clientIp),
+    requestId,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// #1649 — declared collection operations: search, suggest, read.
+// ---------------------------------------------------------------------------
+
+const collectionClientLimiter = new MemoryRateLimiter(COLLECTION_CLIENT_MEMORY_LIMIT);
+const collectionOperationLimiter = new MemoryRateLimiter(COLLECTION_OPERATION_MEMORY_LIMIT, 10_000);
+
+function collectionClientRateLimited(address: string, requestId: string): Response | null {
+  const take = collectionClientLimiter.take(rateLimitAddress(address));
+  if (take.allowed) return null;
+  return errorResponse("RateLimited", 429, requestId, { retryAfterSec: take.retryAfterSec });
+}
+
+/** This gateway's collection state; its environment decides which store it reads. */
+let gatewayCollections: GatewayCollections | null = null;
+
+function collectionsOfGateway(): GatewayCollections {
+  if (!gatewayCollections) {
+    gatewayCollections = new GatewayCollections(
+      process.env.CAELO_GATEWAY_ENVIRONMENT === "staging" ? "staging" : "live",
+    );
+    onPublishedChange(() => gatewayCollections?.invalidate());
+  }
+  return gatewayCollections;
+}
+
+/** A JSON answer the CDN may keep for `sMaxAge` seconds (no cookie, ever). */
+function cacheableJsonResponse(
+  body: unknown,
+  status: number,
+  sMaxAge: number | null,
+  requestId: string,
+): Response {
+  const response = jsonResponse(body, { status, requestId });
+  if (sMaxAge !== null)
+    response.headers.set("Cache-Control", `public, max-age=60, s-maxage=${sMaxAge}`);
+  return response;
+}
+
+async function collectionOperation(
+  url: URL,
+  route: { readonly slug: string; readonly operation: string; readonly releaseOnly: boolean },
+  requestId: string,
+): Promise<Response> {
+  const adapter = cachedAdapter as DatabaseAdapter;
+  await syncDispatchPlugins();
+  const declared = declaredCollectionOperation(route.slug, route.operation);
+  if (!declared) {
+    if (unpublishedRegistryError()) return errorResponse("ProjectionNotPublished", 503, requestId);
+    return errorResponse("NotFound", 404, requestId);
+  }
+  const take = collectionOperationLimiter.take(`${route.slug}.${route.operation}`);
+  if (!take.allowed) {
+    return errorResponse("RateLimited", 429, requestId, {
+      retryAfterSec: take.retryAfterSec,
+      log: `site-wide search budget of ${route.slug}.${route.operation} spent on this instance`,
+    });
+  }
+  const start = performance.now();
+  const collections = collectionsOfGateway();
+  const startedAt = publishedCacheGeneration();
+  let answer: { status: number; body: unknown; cacheSeconds: number | null };
+  try {
+    const keys = await collections.releaseKeys(adapter, SYSTEM_CTX, () => mayCacheRead(startedAt));
+    const key = keys.get(`${declared.pluginId}:${declared.op.collection}`);
+    // #1651 — a search over link texts answers from two releases: both name
+    // the answer (a cached one must not outlive either), so the release the
+    // client sends back is the pair.
+    const anchorsOf = declared.op.kind === "search" ? declared.op.anchors : undefined;
+    const anchorKey = anchorsOf
+      ? keys.get(`${declared.pluginId}:${anchorsOf.collection}`)
+      : undefined;
+    const identity = key && anchorKey ? `${key}+${anchorKey}` : key;
+    const asked = url.searchParams.get("release");
+    if (!key || !identity) {
+      answer = {
+        status: 503,
+        body: { ok: false, error: { kind: "IndexNotReady", requestId } },
+        cacheSeconds: null,
+      };
+    } else if (route.releaseOnly) {
+      // The warm-up: open the release (and load its embedding model) while
+      // the visitor still types, without making this answer wait for it.
+      void collections
+        .release(route.slug, declared.op.collection, key)
+        .then((e) => {
+          const fp = e.release.manifest.vectorModel?.id;
+          if (fp && e.profile?.semantic) defaultQueryEmbedder().warm(fp);
+        })
+        .catch(() => {});
+      answer = { status: 200, body: { release: identity }, cacheSeconds: null };
+    } else if (asked !== null && asked !== identity) {
+      // A newer Stage went live: the client asks again under the new key.
+      answer = {
+        status: 409,
+        body: { ok: false, error: { kind: "ReleaseMoved", requestId }, release: identity },
+        cacheSeconds: null,
+      };
+    } else {
+      const entry = await collections.release(route.slug, declared.op.collection, key);
+      // #1651 — the anchor collection of the same Stage, when the op declares one.
+      const anchors =
+        anchorsOf && anchorKey
+          ? await collections.release(route.slug, anchorsOf.collection, anchorKey)
+          : null;
+      const ran = await runCollectionOperation(declared.op, entry, identity, url.searchParams, {
+        embedQuery: defaultQueryEmbedder(),
+        anchors,
+      });
+      answer = {
+        ...ran,
+        cacheSeconds: asked === identity && ran.status === 200 ? ran.cacheSeconds : null,
+      };
+    }
+  } catch (e) {
+    return errorResponse("ServiceUnavailable", 503, requestId, {
+      log: `collection ${route.slug}.${route.operation}: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+  // #1649 — the search path writes nothing to the database: no request-log
+  // row, so search-as-you-type, a flood or a store outage (every answer a
+  // 503) never becomes write load. The platform's request metrics count the
+  // answers and their latency; a server-side failure is one log line, which
+  // never carries the query.
+  if (answer.status >= 500) {
+    const kind = (answer.body as { error?: { kind?: string } }).error?.kind ?? "Error";
+    console.warn(
+      `[api-gateway] collection ${route.slug}.${route.operation}: ${answer.status} ${kind} after ${Math.round(performance.now() - start)} ms (request ${requestId})`,
+    );
+  }
+  return cacheableJsonResponse(answer.body, answer.status, answer.cacheSeconds, requestId);
 }
 
 /** How long a `Busy` (503) answer asks the client to wait (#1334). */
 const BUSY_RETRY_AFTER_SEC = 2;
 
-/** `GET /api/captcha/challenge`: a PoW challenge, bounded per client address. */
+/**
+ * `GET /api/captcha/challenge`: a PoW challenge, bounded per client address.
+ *
+ * #1654 — `?for=<slug>.<op>` naming a declared ai-chat operation gets a
+ * proof of work whatever the site's captcha setting: a conversation spends
+ * money, so it always starts with one. The site's pages may fetch it from
+ * another origin (the gateway's run.app origin on gcp-firebase), so an
+ * allowed origin gets CORS.
+ */
 async function captchaChallenge(
   req: Request,
+  url: URL,
+  settings: GatewaySettings,
+  clientIp: string,
+  requestId: string,
+): Promise<Response> {
+  // `<slug>.<op>`, split at its one dot (no pattern over visitor input).
+  const purpose = url.searchParams.get("for") ?? "";
+  const dot = purpose.indexOf(".");
+  let forChat = false;
+  if (purpose.length <= 180 && dot > 0 && dot === purpose.lastIndexOf(".")) {
+    await syncDispatchPlugins();
+    forChat = declaredAiChatOperation(purpose.slice(0, dot), purpose.slice(dot + 1)) !== null;
+  }
+  if (forChat) {
+    const response = await captchaChallengeFor(
+      req,
+      { provider: "pow", powTargetPrefix: settings.captcha.powTargetPrefix },
+      settings,
+      clientIp,
+      requestId,
+    );
+    const origin = req.headers.get("origin");
+    if (origin !== null && (settings.liveOrigins ?? []).includes(origin)) {
+      response.headers.set("Access-Control-Allow-Origin", origin);
+      response.headers.set("Vary", "Origin");
+      response.headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+    }
+    return response;
+  }
+  return captchaChallengeFor(req, settings.captcha, settings, clientIp, requestId);
+}
+
+async function captchaChallengeFor(
+  req: Request,
+  captcha: CaptchaConfig,
   settings: GatewaySettings,
   clientIp: string,
   requestId: string,
 ): Promise<Response> {
   const adapter = cachedAdapter as DatabaseAdapter;
-  if (settings.captcha.provider === "off") {
+  if (captcha.provider === "off") {
     return new Response(null, { status: 204 });
   }
-  if (settings.captcha.provider !== "pow") {
+  if (captcha.provider !== "pow") {
     return errorResponse("NotImplemented", 501, requestId, {
-      log: `captcha provider ${settings.captcha.provider} is not wired yet`,
+      log: `captcha provider ${captcha.provider} is not wired yet`,
     });
   }
   const opLimited = operationRateLimited("_captcha.challenge", requestId);
@@ -1094,7 +1438,7 @@ async function captchaChallenge(
       retryAfterSec: challengeRl.retryAfterSec,
     });
   }
-  const challenge = await issuePowChallenge(adapter, { config: settings.captcha });
+  const challenge = await issuePowChallenge(adapter, { config: captcha });
   return jsonResponse(
     { ok: true, data: challenge },
     { setCookies: visitor.cookies.setCookieHeaders() },
@@ -1116,9 +1460,8 @@ async function servedToVisitors(
   await syncDispatchPlugins();
   const plugin = loadedPlugins.bySlug(slug);
   if (!plugin) return unpublishedRegistryError() ? "unpublished" : "unknown";
-  const served =
-    Object.hasOwn(plugin.definition.operations, operation) &&
-    publicOperationOf(plugin.definition.publicOperations, operation) !== undefined;
+  // #1340 — a public operation is its declaration; there is no code to find.
+  const served = publicOperationOf(plugin.definition.publicOperations, operation) !== undefined;
   return served ? "served" : "unknown";
 }
 
@@ -1576,21 +1919,9 @@ if (import.meta.main) {
       "[api-gateway] refresh pings: none (this gateway has CPU between requests and hears every publish notification as it arrives)",
     );
   }
-  // #387 one-trust-path: same dev auto-signing + verified disk load as
-  // the admin host. Non-production boots regenerate stale manifests
-  // with the repo dev key; the loader verifies via the trust-root drop
-  // file (or the embedded release key in production).
-  if (process.env.NODE_ENV !== "production") {
-    const signed = await ensureDevSignedManifests({
-      pluginsRoot: PLUGINS_ROOT,
-      keyPath: resolve(PLUGINS_ROOT, "../../.caelo-dev-key"),
-    });
-    for (const r of signed.reports) {
-      if (r.status === "failed" || r.status === "skipped") {
-        console.warn(`[api-gateway] plugin dev-sign ${r.status}: ${r.slug} — ${r.reason}`);
-      }
-    }
-  }
+  // #1340 — the gateway verifies the shipped manifests and runs none of
+  // the plugins' code; in a dev checkout the admin signs the manifests it
+  // generates (the gateway never imports a dist, so it signs nothing).
   // Dispatch-only: verify what this image ships, attach what the admin's
   // registry marks active, write nothing (#613).
   const report = await bootstrapDispatchOnly({

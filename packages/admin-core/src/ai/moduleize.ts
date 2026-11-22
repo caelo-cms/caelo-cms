@@ -27,11 +27,13 @@ import {
   type ModuleKind,
   moduleFieldSchema,
   moduleKindSchema,
+  promptTokenBound,
   validateListItems,
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { validateTemplatizedModule } from "../ops/content/extract-module-structure.js";
 import { claimedListSourceNames } from "../ops/content/list-source-names.js";
+import type { AiSpendRunner } from "./ai-spend.js";
 import type { AIProvider } from "./provider.js";
 import {
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -87,6 +89,12 @@ export interface ModuleizeArgs {
     readonly outputTokens: number;
   }) => Promise<void>;
   readonly abortSignal?: AbortSignal;
+  /**
+   * #1653 — run every provider call inside the AI spend ledger (reserve the
+   * worst case, settle the real cost). With it, `onUsage` is not needed: the
+   * ledger records the spend.
+   */
+  readonly spend?: AiSpendRunner;
 }
 
 /**
@@ -164,6 +172,9 @@ function userMessage(args: ModuleizeArgs): string {
   return parts.join("");
 }
 
+/** The output ceiling of one moduleize call (what its reservation covers). */
+const MODULEIZE_MAX_TOKENS = 8192;
+
 /** Run one structured-output call, returning the parsed object + usage. */
 async function runOnce(
   provider: AIProvider,
@@ -172,6 +183,7 @@ async function runOnce(
   temperature: number,
   jsonSchema: Record<string, unknown>,
   abortSignal?: AbortSignal,
+  spend?: AiSpendRunner,
 ): Promise<{
   args: unknown | undefined;
   inputTokens: number;
@@ -180,14 +192,26 @@ async function runOnce(
   providerError?: string;
 }> {
   try {
-    const result = await provider.generateObject({
-      systemPrompt,
-      messages: [{ role: "user", content: message }],
-      jsonSchema,
-      maxTokens: 8192,
-      temperature,
-      ...(abortSignal ? { abortSignal } : {}),
-    });
+    const call = () =>
+      provider.generateObject({
+        systemPrompt,
+        messages: [{ role: "user", content: message }],
+        jsonSchema,
+        maxTokens: MODULEIZE_MAX_TOKENS,
+        temperature,
+        ...(abortSignal ? { abortSignal } : {}),
+      });
+    const result = spend
+      ? await spend.run(
+          { provider: provider.name, model: provider.model },
+          {
+            promptTokens: promptTokenBound(systemPrompt, message, jsonSchema),
+            maxOutputTokens: MODULEIZE_MAX_TOKENS,
+          },
+          call,
+          (r) => ({ inputTokens: r.inputTokens, outputTokens: r.outputTokens, model: r.model }),
+        )
+      : await call();
     // `object === undefined` is the SDK's NoObjectGeneratedError (the model
     // replied but nothing parsed to the schema) — a REPAIRABLE outcome, so
     // return it as undefined args and let validate() re-prompt. A thrown
@@ -384,7 +408,15 @@ export async function moduleize(args: ModuleizeArgs): Promise<ModuleizeResult> {
       outputTokens: ot,
       model: m,
       providerError,
-    } = await runOnce(args.provider, SYSTEM, message, temperature, jsonSchema, args.abortSignal);
+    } = await runOnce(
+      args.provider,
+      SYSTEM,
+      message,
+      temperature,
+      jsonSchema,
+      args.abortSignal,
+      args.spend,
+    );
     inputTokens += it;
     outputTokens += ot;
     model = m;

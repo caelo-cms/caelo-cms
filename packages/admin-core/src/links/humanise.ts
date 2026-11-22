@@ -41,6 +41,9 @@ export function withHumanisedLinks<I, O>(
     ...def,
     handler: async (ctx, input, tx) => {
       const r = await inner(ctx, input, tx);
+      // People and the AI read paths; a plugin reads the references as
+      // stored (`caelo:page/<id>`): ids it can act on, stable across renames.
+      if (ctx.actorKind === "plugin") return r;
       return r.ok ? ok(await humaniseForRead(tx, ctx, r.value)) : r;
     },
   };

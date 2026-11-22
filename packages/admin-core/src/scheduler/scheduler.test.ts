@@ -52,6 +52,7 @@ describe("coreScheduledTasks", () => {
       "core:bug-forwarding-status": 21_600,
       "core:proposal-gc": 86_400,
       "core:chat-image-gc": 86_400,
+      "core:collections-gc": 86_400,
       "core:reporting-jobs-gc": 86_400,
     });
     for (const t of tasks) expect(SCHEDULED_TASK_KEY.test(t.key)).toBe(true);

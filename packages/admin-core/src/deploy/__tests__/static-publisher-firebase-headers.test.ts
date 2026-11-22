@@ -323,6 +323,11 @@ describe("VERSION_CONFIG_HEADERS — Cache-Control per path class", () => {
       "/_caelo/plugin/consent-manager/runtime.js",
       "/api",
       "/api/forms/submit",
+      // Epic #1644 — a collection operation's answer: the gateway's own
+      // Cache-Control (public, s-maxage for the current release) decides
+      // what Hosting's CDN keeps, never a version header.
+      "/api/plugin/site-search/search",
+      "/api/plugin/site-search/suggest",
     ]) {
       expect(cacheControlsFor(p)).toEqual([]);
     }

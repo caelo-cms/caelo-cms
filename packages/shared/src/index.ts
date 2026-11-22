@@ -2,6 +2,7 @@
 
 export const PROJECT_NAME = "caelo-cms";
 
+export * from "./ai-cost.js";
 export * from "./ai-tools.js";
 export * from "./auth-forms.js";
 export * from "./auto-update.js";
@@ -24,6 +25,7 @@ export * from "./database-url.js";
 export * from "./design-draft-shell.js";
 export * from "./document-language.js";
 export * from "./edit-markers.js";
+export * from "./embedding-models.js";
 export * from "./escaped-line-breaks.js";
 export * from "./font-assets.js";
 export * from "./font-axis-policy.js";
@@ -57,6 +59,11 @@ export {
 export * from "./markup-structure.js";
 export * from "./mcp-access.js";
 export * from "./media.js";
+export {
+  CONTENT_INSTANCE_ATTRIBUTE,
+  stripContentInstances,
+  tagContentInstance,
+} from "./module-id-tag.js";
 export * from "./nested-module-render.js";
 export * from "./owner-setup-token.js";
 export * from "./page-log.js";
@@ -123,3 +130,4 @@ export {
   isNewerVersion,
   parseVersion,
 } from "./version.js";
+export * from "./visitor-ai-origin.js";

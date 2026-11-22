@@ -61,6 +61,21 @@ export const stageStatusRunSchema = z.object({
   eta: stageEtaSchema.nullable(),
   /** Why there is no estimate for a queued or running run; null otherwise. */
   etaUnavailable: z.string().nullable(),
+  /**
+   * #1648 — the search indexes (plugin collections) this Stage built, once
+   * its build succeeded: Publish live waits for every one to be ready.
+   * Absent for a run that has none (no plugin keeps a collection) or no row yet.
+   */
+  searchIndexes: z
+    .array(
+      z.object({
+        plugin: z.string(),
+        collection: z.string(),
+        state: z.enum(["pending", "ready", "failed"]),
+        error: z.string().nullable(),
+      }),
+    )
+    .optional(),
 });
 export type StageStatusRun = z.infer<typeof stageStatusRunSchema>;
 
@@ -93,6 +108,19 @@ export function describeStageEta(run: Pick<StageStatusRun, "eta" | "etaUnavailab
  * about 1 min 40 s left (from this run's pace)" or "Failed in generator
  * after 1 min 34 s: <reason>".
  */
+/** The search indexes' part of a succeeded Stage's line ("" without any). */
+function describeSearchIndexes(run: StageStatusRun): string {
+  const indexes = run.searchIndexes ?? [];
+  if (indexes.length === 0) return "";
+  const failed = indexes.filter((i) => i.state === "failed");
+  const pending = indexes.filter((i) => i.state === "pending");
+  if (failed.length > 0)
+    return `; search index FAILED (${failed.map((i) => `${i.plugin}/${i.collection}: ${i.error ?? "no reason recorded"}`).join("; ")}) — Publish live is refused until a Stage builds it`;
+  if (pending.length > 0)
+    return `; search index still building (${pending.map((i) => `${i.plugin}/${i.collection}`).join(", ")}) — Publish live waits for it`;
+  return "; search index ready";
+}
+
 export function describeStageRun(run: StageStatusRun): string {
   const n = (v: number) => v.toLocaleString("en-US");
   switch (run.phase) {
@@ -105,7 +133,7 @@ export function describeStageRun(run: StageStatusRun): string {
     case "publishing":
       return `All ${n(run.pagesTotal ?? 0)} pages built, publishing to staging — ${describeStageEta(run)}`;
     case "succeeded":
-      return `Succeeded in ${formatStageDuration(run.elapsedMs)}${run.pagesTotal === null ? "" : ` (${n(run.pagesTotal)} pages)`}`;
+      return `Succeeded in ${formatStageDuration(run.elapsedMs)}${run.pagesTotal === null ? "" : ` (${n(run.pagesTotal)} pages)`}${describeSearchIndexes(run)}`;
     case "failed":
       return `Failed${run.failedPhase ? ` in ${run.failedPhase}` : ""} after ${formatStageDuration(run.elapsedMs)}: ${run.error ?? "no reason recorded"}`;
   }

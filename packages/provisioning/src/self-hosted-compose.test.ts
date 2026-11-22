@@ -145,12 +145,14 @@ describe("self-hosted Compose — release images (#696)", () => {
   it("mounts the bootstrap-token, site output + media dirs, never .caelo/ with its secrets", () => {
     const admin = service(yaml, "caelo-admin");
     expect(admin).toContain(
-      "    volumes:\n      - ./bootstrap:/app/.caelo\n      - ./output:/srv/caelo\n      - ./media:/data/media\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro",
+      "    volumes:\n      - ./bootstrap:/app/.caelo\n      - ./output:/srv/caelo\n      - ./media:/data/media\n      - ./collections:/data/collections\n      - ./visitor-ai:/data/visitor-ai\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro",
     );
     expect(yaml).not.toMatch(/- \.\/?:/);
-    // The gateway mounts the database CA (#1338) and nothing else.
+    // The gateway mounts the database CA (#1338), the live collection store
+    // (epic #1644) and the live site's visitor-AI key directory (#1654),
+    // all read-only, nothing else.
     expect(service(yaml, "caelo-gateway")).toContain(
-      "    volumes:\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro\n    restart:",
+      "    volumes:\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro\n      - ./collections/live:/srv/collections/live:ro\n      - ./visitor-ai/live:/secrets/visitor-ai:ro\n    restart:",
     );
     expect(admin).toContain('CAELO_OUTPUT_ROOT: "/srv/caelo"');
     expect(admin).toContain('MEDIA_ROOT_DIR: "/data/media"');
@@ -196,8 +198,12 @@ describe("self-hosted Compose — release images (#696)", () => {
       "Caddyfile",
       "bootstrap",
       "bootstrap.sh",
+      // Epic #1644 — `up` creates collections/staging and collections/live.
+      "collections",
       "media",
       "output",
+      // #1654 — `up` creates visitor-ai/live and visitor-ai/staging with `{}`.
+      "visitor-ai",
     ]);
   });
 

@@ -433,14 +433,25 @@ const logWorkspace = new azure.operationalinsights.Workspace(`${namePrefix}-logs
 // before #750 either.
 //
 // FIXME(issue #750): no reporting-job Container Apps job yet (#1359, #1360,
-// #1574). On GCP a Stage's whole quality audit and a site import's crawl each
-// run in their own job that reports back to the admin, and the build carrier
-// holds the request a build nobody else waits for runs in
-// (src/reporting-job-setup.ts); the Azure equivalent is a Container Apps job
-// execution per audit, crawl or carried build behind admin-core
-// reporting-jobs/launcher.ts `JobLauncher`, reporting through Easy Auth.
-// Until it exists the admin records every audit, every site import and every
-// carried build as failed with that gap instead of running it on its own CPU.
+// #1574, epic #1644). On GCP a Stage's whole quality audit, a site import's
+// crawl, a Stage's collection index and a plugin's batch run each run in
+// their own job that reports back to the admin, and the build carrier holds
+// the request a build nobody else waits for runs in
+// (src/reporting-job-catalog.ts); the Azure equivalent is a Container Apps
+// job execution per kind behind admin-core reporting-jobs/launcher.ts
+// `JobLauncher`, reporting through Easy Auth. Until it exists the admin
+// records every such run as failed with that gap instead of running it on
+// its own CPU.
+//
+// FIXME(issue #750): no collection store yet (epic #1644). On GCP plugin
+// collections (a site search's index) live in two private buckets, staging
+// and live, each gateway reading only its own (src/collections-setup.ts);
+// the Azure equivalent is two private Blob containers with the same
+// per-app role assignments and CAELO_COLLECTIONS_{STAGING,LIVE}_STORE on the
+// apps. Until it exists no app gets a store: a plugin's collection write
+// fails with this gap (plugin-host collections-host.ts), the Stage records
+// its collections as failed, and Publish live refuses until the plugin is
+// deactivated.
 //
 // FIXME(issue #750): no capture Container Apps job yet. On GCP every
 // server-side browser render (screenshots, external page renders, the

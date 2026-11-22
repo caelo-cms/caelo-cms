@@ -39,10 +39,8 @@ function manifest(
     schema: SCHEMA,
     tableKinds,
     publicOperations: ops,
-    operations: {
-      noop: async () => null,
-      ...Object.fromEntries(ops.map((o) => [o.name, async () => null])),
-    },
+    // #1340 — public operations are declarations, not code operations.
+    operations: { noop: async () => null },
   };
   try {
     return { success: true, data: manifestFromDefinition(def) } as ReturnType<
@@ -57,11 +55,23 @@ function messages(r: ReturnType<typeof manifest>): string {
   return r.success ? "" : (r.error as z.ZodError).issues.map((i) => i.message).join("\n");
 }
 
-const op = (o: Partial<PublicOperationDef> & { name: string }): PublicOperationDef => ({
-  kind: "write",
-  input: z.object({}).strict(),
-  ...o,
-});
+/**
+ * A probe operation; its run (#1340) touches the first table it declares,
+ * so the lint of its reads and writes is what the case is about.
+ */
+const op = (o: Partial<PublicOperationDef> & { name: string }): PublicOperationDef => {
+  const kind = o.kind ?? "write";
+  const run: PublicOperationDef["run"] =
+    kind === "read"
+      ? { action: "list", table: o.reads?.[0] ?? "settings", limit: 1, columns: ["id"], as: "rows" }
+      : {
+          action: "insert",
+          table: o.writes?.[0] ?? "entries",
+          values: { id: { from: "const", value: null } },
+          answer: { ok: true },
+        };
+  return { kind: "write", input: z.object({}).strict(), run, ...o };
+};
 
 describe("public surface lint (#1332)", () => {
   it("accepts reads of published and visitor-state, writes of inbox and visitor-state", () => {

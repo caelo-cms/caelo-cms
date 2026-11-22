@@ -115,7 +115,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...secretsInstall, replication: regional },
       { run },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(Array(7).fill("present"));
+    expect(outcomes.map((o) => o.status)).toEqual(Array(9).fill("present"));
     expect(lines().some((l) => l.includes(" create ") || l.includes(" add "))).toBe(false);
   });
 
@@ -126,7 +126,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...secretsInstall, replication: regional },
       { run, generate: () => `generated-value-${++n}` },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(Array(7).fill("applied"));
+    expect(outcomes.map((o) => o.status)).toEqual(Array(9).fill("applied"));
     const creates = calls.filter((c) => c.line.startsWith("secrets create"));
     // #806 — the seal key is 32 random bytes in base64 (not the injected hex generator).
     const sealKey = creates.find((c) => c.line.includes("mcp-oauth-seal-key"))?.stdin ?? "";
@@ -164,6 +164,15 @@ describe("ensureGeneratedSecrets", () => {
       {
         line: "secrets create caelo-production-mcp-oauth-seal-key --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
         stdin: sealKey,
+      },
+      // #1654 — the visitor AI's keys start as "no key"; the Owner adds one.
+      {
+        line: "secrets create caelo-production-visitor-ai-key --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+        stdin: "{}",
+      },
+      {
+        line: "secrets create caelo-production-visitor-ai-staging-key --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+        stdin: "{}",
       },
     ]);
     for (const c of calls) expect(c.line).not.toContain("generated-value");
@@ -204,6 +213,8 @@ describe("ensureGeneratedSecrets", () => {
       "secrets versions list caelo-production-staging-gate-secret": [ok("v/1")],
       "secrets versions list caelo-production-operator-oauth-client": [ok("v/1")],
       "secrets versions list caelo-production-mcp-oauth-seal-key": [ok("v/1")],
+      "secrets versions list caelo-production-visitor-ai-key": [ok("v/1")],
+      "secrets versions list caelo-production-visitor-ai-staging-key": [ok("v/1")],
     });
     const outcomes = await ensureGeneratedSecrets(
       { ...secretsInstall, replication: { kind: "automatic" } },
@@ -211,6 +222,8 @@ describe("ensureGeneratedSecrets", () => {
     );
     expect(outcomes.map((o) => o.status)).toEqual([
       "applied",
+      "present",
+      "present",
       "present",
       "present",
       "present",
@@ -251,7 +264,7 @@ describe("ensureGeneratedSecrets", () => {
       { ...secretsInstall, replication: { kind: "automatic" } },
       { run, generate: () => "v" },
     );
-    expect(outcomes.map((o) => o.status)).toEqual(Array(7).fill("applied"));
+    expect(outcomes.map((o) => o.status)).toEqual(Array(9).fill("applied"));
     expect(outcomes.every((o) => o.detail?.includes("gcp.resourceLocations"))).toBe(true);
     const creates = lines().filter((l) => l.startsWith("secrets create"));
     // One refused automatic attempt; then every secret — the refused one
@@ -266,6 +279,8 @@ describe("ensureGeneratedSecrets", () => {
       "secrets create caelo-production-staging-gate-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       "secrets create caelo-production-operator-oauth-client --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       "secrets create caelo-production-mcp-oauth-seal-key --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+      "secrets create caelo-production-visitor-ai-key --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+      "secrets create caelo-production-visitor-ai-staging-key --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
     ]);
   });
 
@@ -293,7 +308,7 @@ describe("ensureGeneratedSecrets", () => {
       { run, generate: () => "v" },
     );
     expect(outcomes.every((o) => o.status === "failed")).toBe(true);
-    expect(lines().filter((l) => l.startsWith("secrets create"))).toHaveLength(7);
+    expect(lines().filter((l) => l.startsWith("secrets create"))).toHaveLength(9);
   });
 });
 

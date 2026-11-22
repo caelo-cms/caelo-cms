@@ -213,6 +213,27 @@ export function pluginBackgroundLines(h: {
 }
 
 /** One plugin's detail + its last-24h AI spend against its cap. */
+/** #1646 — the batches a plugin declares, as get_plugin lists them. */
+function batchesLine(raw: unknown): string {
+  if (!Array.isArray(raw) || raw.length === 0) return "(none)";
+  return raw
+    .map((b) => {
+      const x = b as {
+        operation?: string;
+        description?: string;
+        triggers?: string[];
+        schedule?: string;
+      };
+      const how = (x.triggers ?? [])
+        .map((t) =>
+          t === "operator" ? "start_plugin_batch" : t === "schedule" ? `schedule ${x.schedule}` : t,
+        )
+        .join(", ");
+      return `${x.operation} (${how}): ${x.description ?? ""}`;
+    })
+    .join("; ");
+}
+
 export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
   name: "get_plugin",
   description:
@@ -240,6 +261,12 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
       `requires plugins: ${plugin.requiresPlugins.join(", ") || "(none)"} (each must be active first)`,
       `required by (active): ${plugin.requiredBy.join(", ") || "(none)"}`,
       `consent purposes: ${consentPurposesLine(m.consentPurposes)}`,
+      `batches: ${batchesLine(m.batchOperations)}`,
+      `collections: ${
+        m.collections && typeof m.collections === "object"
+          ? Object.keys(m.collections).join(", ") || "(none)"
+          : "(none)"
+      }${m.config ? "; has settings (get_plugin_config)" : ""}`,
     ];
     const h = plugin.health;
     lines.push(

@@ -174,6 +174,7 @@ const ENV = {
     renderFailures: [],
     renderFailureCount: 0,
     securityHeaders: composeSiteHeaders(DEFAULT_SITE_SECURITY_POLICY, EMPTY_CSP_FACTS),
+    pageOutput: null,
     searchFeed: { base: null, changes: [], feedUrl: null, indexNowKey: null },
   }),
 };

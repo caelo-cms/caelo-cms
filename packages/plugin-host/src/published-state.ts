@@ -32,7 +32,7 @@
  * visitor call is audited by the op event this module writes.
  */
 
-import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox/artifact";
 import type { PluginAdminQuery, PluginQueryFilter } from "@caelo-cms/plugin-sdk";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";

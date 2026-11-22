@@ -365,6 +365,8 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
     expect(plan.ok && plan.services.gateway.changes.map((c) => c.name).sort()).toEqual([
       "ADMIN_DATABASE_PASSWORD",
       "ADMIN_DATABASE_URL",
+      // Epic #1644 — where it reads the live collection releases.
+      "CAELO_COLLECTIONS_LIVE_STORE",
       // #1329 — the gateway says it is the live site's.
       "CAELO_GATEWAY_ENVIRONMENT",
       // Whose refresh pings it takes: the admin's account.
@@ -374,6 +376,8 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
       // staging projection (#1330), never the live gateway.
       // #845 — and which forwarded address is the visitor.
       "CAELO_TRUSTED_PROXY_HOPS",
+      // #1654 — the visitor-AI key file only this gateway mounts.
+      "CAELO_VISITOR_AI_KEY_FILE",
       "PUBLIC_DATABASE_PASSWORD",
     ]);
   });

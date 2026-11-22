@@ -42,6 +42,7 @@ import {
 } from "../bug-forwarding/worker.js";
 import { sweepChangeJournal } from "../change-journal-gc-worker.js";
 import { sweepChatImagesOnce } from "../chat-image-gc-worker.js";
+import { runCollectionsGc } from "../collections/gc.js";
 import { describeDrain, drainPublicOutboxes } from "../email/outbox.js";
 import { type AutoUpdateSchedulerOpts, runAutoUpdateTick } from "../platform-updates/scheduler.js";
 import { runPluginDataBuildIfDue } from "../plugin-data/worker.js";
@@ -203,6 +204,13 @@ export function coreScheduledTasks(deps: CoreTaskDeps): ScheduledTask[] {
       const r = await sweepChatImagesOnce({ adapter });
       return r.deletedObjects + r.clearedRows > 0
         ? `${r.deletedObjects} image(s) deleted, ${r.clearedRows} message(s) cleared`
+        : undefined;
+    }),
+    // #1648 — index files no servable release names, applied change files.
+    task("collections-gc", 24 * HOUR, async () => {
+      const r = await runCollectionsGc({ adapter, registry });
+      return r.deletedFiles + r.deletedChanges > 0
+        ? `${r.deletedFiles} index file(s) and ${r.deletedChanges} change file(s) deleted, ${r.collectedReleases} release(s) cleaned up`
         : undefined;
     }),
     task("reporting-jobs-gc", 24 * HOUR, async () => {

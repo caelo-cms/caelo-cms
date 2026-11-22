@@ -138,3 +138,24 @@ bun scripts/scale-gate/run.ts --fixture /tmp/sg/fixture.json --base-url http://l
 ```
 
 A laptop run cannot pin the admin to one vCPU, so its numbers are better than the gate's; compare runs on the same machine only. A run leaves the variants it created, so re-seeding needs a fresh database (`docker rm -f sg-pg`, then from the top).
+
+## Collections: the search engine at 50,000 pages (#1652)
+
+The collection engine (`packages/collection-index`, `plugin-collections.md`) has its own harness, since it runs without the admin: `bun run packages/collection-index/bench/run.ts` (`BENCH_PAGES`, default 50,000 synthetic pages: Zipf-distributed vocabulary, 70 % English, 30 % German, log-normal page length with a median of 550 words, shared blocks). Measured on one core (M3 Pro, Bun 1.4.4):
+
+| Measure | Value | Target |
+|---|---|---|
+| Full build, streamed to disk | 104 s (480 pages/s), peak heap growth 1.3 GB | inside the index job's 4 GiB |
+| Index on disk | 339 MB in 4,776 files, largest term shard 0.2 MB | — |
+| Warm query, words (1,500 queries) | p50 1.7 ms, p95 7.5 ms, p99 10.5 ms | p95 < 30 ms |
+| Warm query, search as you type | p50 3.6 ms, p95 17 ms | p95 < 30 ms |
+| Cold query, object store (30 ms per file) | p50 125 ms, p95 147 ms; 18–21 files, 2.2–2.4 MB | first query < 300 ms |
+| Answer, 10 hits with snippets | 4.6 KB before compression | < 10 KB |
+| Delta of 1 / 100 / 1,000 changed pages | 0.25 s / 0.48 s / 2.1 s; 0 / 1.7 / 10 MB written | per Stage, seconds |
+| Fully cached index in memory | 240 MB | within the gateway's 1 GiB with `CAELO_COLLECTIONS_CACHE_MB=256` |
+
+Semantic search adds the query embedding in WebAssembly (p50 9.9 ms, p95 16.4 ms with the default model) and, for a first index, about 35 minutes of embedding on 4 vCPUs at 50,000 pages. Details are in `docs/dev/embedding-models.md` and `packages/collection-index/bench/semantic-results.md`.
+
+The PR CI guard `packages/collection-index/src/scale-guard.test.ts` measures what time cannot measure reliably on CI machines: the files and bytes one cold query loads. On 4,000 pages that is 9 files and 0.48 MB at p95, against bounds of 20 files and 1 MB. A change that reads more must say why here.
+
+Not measured yet: the latency on a Cloud Run gateway with one vCPU, and whether Firebase Hosting's CDN keeps the cacheable answers. Both are part of the next fresh-install scratch test (`docs/dev/firebase-hosting-behaviour.md`).

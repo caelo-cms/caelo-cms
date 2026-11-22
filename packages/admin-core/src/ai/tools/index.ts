@@ -147,6 +147,8 @@ import {
   upsertPageTypesManyTool,
 } from "./page-type-tools.js";
 import { patchPageModuleFieldsTool } from "./patch-page-module-fields.js";
+import { PLUGIN_BATCH_TOOLS } from "./plugin-batch-tools.js";
+import { PLUGIN_CONFIG_TOOLS } from "./plugin-config-tools.js";
 import {
   listPluginGrantsTool,
   listPluginInstallationsTool,
@@ -272,6 +274,7 @@ import { submitResultTool } from "./submit-result.js";
 import { tuneRateLimitTool } from "./tune-rate-limit.js";
 import { updateRedirectChangesTool } from "./update-redirect-changes.js";
 import { updateThemeTokensTool } from "./update-theme-tokens.js";
+import { getVisitorAiTool, proposeSetVisitorAiTool } from "./visitor-ai-tools.js";
 
 let processRegistry: ToolRegistry | null = null;
 
@@ -640,6 +643,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetPluginAiCostCapTool);
   registry.register(proposeSetMailCapsTool);
   registry.register(getMailCapsTool);
+  // #1654 — the visitor AI: settings through the owner-settings gate.
+  registry.register(proposeSetVisitorAiTool);
+  registry.register(getVisitorAiTool);
   registry.register(proposeRotateGatewayCookieSecretTool);
   // Issue #650 — the protected staging domain's access gate.
   registry.register(getStagingAccessTool);
@@ -654,6 +660,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeSetStaticFilesTool);
   registry.register(proposeExternalRedirectTool);
   registry.register(proposeDeleteStaticFilesTool);
+  // Epic #1644 (#1645) — every plugin's declared configuration.
+  for (const tool of PLUGIN_CONFIG_TOOLS) registry.register(tool as never);
+  for (const tool of PLUGIN_BATCH_TOOLS) registry.register(tool as never);
   // v0.2.37 — AI can withdraw its own pending proposals.
   registry.register(cancelProposalTool);
   // v0.11.0 — themes primitive (#45). Routine + the §11.A propose

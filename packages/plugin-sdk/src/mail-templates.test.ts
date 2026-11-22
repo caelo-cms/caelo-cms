@@ -19,14 +19,22 @@ const base = {
   slug: "mailer",
   version: "1.0.0",
   tier: 1 as const,
-  schema: {},
-  operations: { confirm: async () => ({}), other: async () => ({}) },
+  schema: { subs: { id: "uuid", unsub_at: "timestamp_nullable" } },
+  tableKinds: { subs: "visitor-state" as const },
+  operations: { other: async () => ({}) },
 };
 
+/** A public write taking the token; #1340 — declared, run by core's block. */
 const confirmOp = {
   name: "confirm",
   kind: "write" as const,
   input: z.object({ token: z.string().min(16).max(128) }).strict(),
+  writes: ["subs"],
+  run: {
+    action: "block" as const,
+    block: "mail.unsubscribe" as const,
+    options: { table: "subs", column: "unsub_at" },
+  },
 };
 
 describe("mail templates in the manifest", () => {
@@ -93,11 +101,7 @@ describe("mail templates in the manifest", () => {
       manifestFromDefinition({
         ...def,
         publicOperations: [
-          {
-            name: "confirm",
-            kind: "write",
-            input: z.object({ token: z.string().optional() }).strict(),
-          },
+          { ...confirmOp, input: z.object({ token: z.string().optional() }).strict() },
         ],
         mailTemplates: {
           t: { subject: "S", body: ["B"], link: { operation: "confirm", label: "L", done: "D" } },

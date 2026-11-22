@@ -29,6 +29,7 @@
 
 import { CADDY_REDIRECTS_FILE, SELF_HOSTED_CA_FILE, verifyFullQuery } from "@caelo-cms/shared";
 import { caddyRedirectReloadCommand } from "./caddy-redirects.js";
+import { COLLECTIONS_LIVE_STORE_ENV, COLLECTIONS_STAGING_STORE_ENV } from "./collection-stores.js";
 import { DEFAULT_MAX_CONNECTIONS, stackPoolBudget } from "./pool-budget-stack.js";
 import {
   SELF_HOSTED_DB_HOST,
@@ -118,6 +119,35 @@ export const COMPOSE_REDIRECT_SNIPPETS = `${SITE_OUTPUT_ROOT}/output/*/current/$
 export const MEDIA_DIR = "media";
 /** Where {@link MEDIA_DIR} appears in the admin container (its `MEDIA_ROOT_DIR`). */
 export const MEDIA_ROOT = "/data/media";
+
+/**
+ * Epic #1644 — `.caelo/<this>/` holds the plugin collection stores:
+ * `staging/` (change files and the releases each Stage builds; the index
+ * job runs inside the admin here) and `live/` (what Publish live copied).
+ * On the host, so a recreated container keeps them, like the media.
+ */
+export const COLLECTIONS_DIR = "collections";
+/** Where {@link COLLECTIONS_DIR} appears in the admin container (read-write). */
+export const COLLECTIONS_ROOT = "/data/collections";
+/**
+ * Where a gateway sees its own environment's store, read-only: the live
+ * gateway `live/`, the staging gateway `staging/`, never the other one.
+ */
+export const GATEWAY_COLLECTIONS_ROOT = "/srv/collections";
+
+/**
+ * #1654 — the visitor AI's key per environment: `live/key.json` and
+ * `staging/key.json` on the host. The admin replaces a file when the Owner
+ * stores or removes a key and reads none (no admin code path opens it); each
+ * gateway mounts its own environment's directory read-only, never the other.
+ * A directory, not the file: the admin replaces the file atomically (a new
+ * inode), which a single-file bind mount would never see.
+ */
+export const VISITOR_AI_DIR = "visitor-ai";
+/** Where {@link VISITOR_AI_DIR} appears in the admin container (read-write). */
+export const VISITOR_AI_ROOT = "/data/visitor-ai";
+/** Where a gateway sees its own environment's key directory. */
+export const GATEWAY_VISITOR_AI_DIR = "/secrets/visitor-ai";
 
 /** The gateway's HTTP port inside the Compose network. */
 export const COMPOSE_GATEWAY_PORT = 8090;
@@ -492,6 +522,11 @@ ${serviceRuntime(
     `./${BOOTSTRAP_DIR}:/app/.caelo`,
     `./output:${SITE_OUTPUT_ROOT}`,
     `./${MEDIA_DIR}:${MEDIA_ROOT}`,
+    // Epic #1644 — both collection stores: the admin writes change files,
+    // builds a Stage's releases in-process and copies them to live.
+    `./${COLLECTIONS_DIR}:${COLLECTIONS_ROOT}`,
+    // #1654 — where the Owner's visitor-AI keys are stored, one per environment.
+    `./${VISITOR_AI_DIR}:${VISITOR_AI_ROOT}`,
     DATABASE_CA_MOUNT,
   ],
 )}
@@ -516,6 +551,10 @@ ${serviceRuntime(
       PORT: "${COMPOSE_ADMIN_PORT}"
       CAELO_OUTPUT_ROOT: "${SITE_OUTPUT_ROOT}"
       MEDIA_ROOT_DIR: "${MEDIA_ROOT}"
+      ${COLLECTIONS_STAGING_STORE_ENV}: "file://${COLLECTIONS_ROOT}/staging"
+      ${COLLECTIONS_LIVE_STORE_ENV}: "file://${COLLECTIONS_ROOT}/live"
+      CAELO_VISITOR_AI_KEY_FILE: "${VISITOR_AI_ROOT}/live/key.json"
+      CAELO_VISITOR_AI_STAGING_KEY_FILE: "${VISITOR_AI_ROOT}/staging/key.json"
       CAELO_PROVIDER: "self-hosted"
 ${poolEnvLines("admin")}
       NODE_ENV: production
@@ -525,7 +564,13 @@ ${env("RESEND_API_KEY", spec.resendApiKey)}`;
 
 function gatewayService(spec: ComposeSpec): string {
   return `  caelo-gateway:
-${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts", [DATABASE_CA_MOUNT])}
+${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts", [
+  DATABASE_CA_MOUNT,
+  // Epic #1644 — the live collection store only, read-only.
+  `./${COLLECTIONS_DIR}/live:${GATEWAY_COLLECTIONS_ROOT}/live:ro`,
+  // #1654 — the live site's visitor-AI key only, read-only.
+  `./${VISITOR_AI_DIR}/live:${GATEWAY_VISITOR_AI_DIR}:ro`,
+])}
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -536,6 +581,8 @@ ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts
       # #1329 — the live site's gateway: it refuses anything of the staging data.
       ${GATEWAY_ENVIRONMENT_ENV}: "live"
       GATEWAY_PORT: "${COMPOSE_GATEWAY_PORT}"
+      ${COLLECTIONS_LIVE_STORE_ENV}: "file://${GATEWAY_COLLECTIONS_ROOT}/live"
+      CAELO_VISITOR_AI_KEY_FILE: "${GATEWAY_VISITOR_AI_DIR}/key.json"
       # Caddy is the one proxy in front (client-ip.ts in the gateway).
       ${TRUSTED_PROXY_HOPS_ENV}: "${GATEWAY_TRUSTED_PROXY_HOPS["self-hosted"]}"
 ${poolEnvLines("gateway")}
@@ -555,6 +602,10 @@ function stagingGatewayService(spec: ComposeSpec): string {
 ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts", [
   DATABASE_CA_MOUNT,
   `./output/output/staging:${STAGING_GATEWAY_STORAGE_DIR}:ro`,
+  // Epic #1644 — the staging collection store only, read-only.
+  `./${COLLECTIONS_DIR}/staging:${GATEWAY_COLLECTIONS_ROOT}/staging:ro`,
+  // #1654 — staging's own visitor-AI key, never the live one's directory.
+  `./${VISITOR_AI_DIR}/staging:${GATEWAY_VISITOR_AI_DIR}:ro`,
 ])}
     restart: unless-stopped
     depends_on:
@@ -564,6 +615,8 @@ ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts
       ${GATEWAY_ENVIRONMENT_ENV}: "staging"
       GATEWAY_PORT: "${COMPOSE_STAGING_GATEWAY_PORT}"
       ${STAGING_STORAGE_ENV}: "file://${STAGING_GATEWAY_STORAGE_DIR}"
+      ${COLLECTIONS_STAGING_STORE_ENV}: "file://${GATEWAY_COLLECTIONS_ROOT}/staging"
+      CAELO_VISITOR_AI_KEY_FILE: "${GATEWAY_VISITOR_AI_DIR}/key.json"
       # Caddy is the one proxy in front (client-ip.ts in the gateway).
       ${TRUSTED_PROXY_HOPS_ENV}: "${STAGING_GATEWAY_TRUSTED_PROXY_HOPS["self-hosted"]}"
 ${poolEnvLines("gateway")}

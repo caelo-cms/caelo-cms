@@ -47,6 +47,7 @@ import { recordAudit } from "../../audit.js";
 import { type EmailConfigRow, emailDeliveryProblem } from "../../email/transport.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
+import { readVisitorAi, visitorAiBlocked } from "../visitor_ai.js";
 import {
   describeDiscoveryFailure,
   type PluginHealth,
@@ -980,7 +981,16 @@ export async function unmetHostRequirement(
   manifest: unknown,
 ): Promise<string | null> {
   const requires = (manifest as { requires?: unknown } | null)?.requires;
-  if (!Array.isArray(requires) || !requires.includes("email")) return null;
+  if (!Array.isArray(requires)) return null;
+  // #1654 — a visitor conversation without a key or a budget would answer
+  // every visitor "unavailable"; the Owner sets both first.
+  if (requires.includes("visitor-ai")) {
+    const v = await readVisitorAi(tx);
+    const blocked = visitorAiBlocked(v.settings, v.keys.live);
+    if (blocked !== null)
+      return `plugin "${slug}" answers visitors with AI, and the visitor AI cannot run (${blocked}): set it up first (Settings → Visitor AI, or ask the AI — it proposes provider and budgets with propose_set_visitor_ai and you paste the key on its card), then activate "${slug}" again`;
+  }
+  if (!requires.includes("email")) return null;
   const rows = (await tx.execute(sql`
     SELECT transport, from_address, config_json FROM email_config WHERE id = 1
   `)) as unknown as {

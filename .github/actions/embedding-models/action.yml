@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Fetches the core catalog's embedding models (#1650) for the tests that
+# load them, from an actions/cache entry keyed by the catalog (every file
+# is pinned by SHA-256 there, so the key changes exactly when the files
+# do). The fetch script verifies the cached files too: a cache entry that
+# is not the pinned bytes is downloaded again, never used. Exports
+# CAELO_MODELS_DIR and CAELO_MODELS=required, which turns a missing model
+# into a test failure instead of a skip (packages/models src/testing.ts).
+# Requires `bun install` to have run.
+name: Fetch the embedding models
+description: The catalog's embedding models, cached and verified
+
+runs:
+  using: composite
+  steps:
+    - name: Restore cached embedding models
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/caelo-models
+        key: embedding-models-${{ hashFiles('packages/shared/src/embedding-models.ts') }}
+
+    - name: Fetch and verify the embedding models
+      shell: bash
+      env:
+        CAELO_MODELS_DIR: ${{ runner.temp }}/caelo-models
+      run: |
+        bun run models:fetch
+        echo "CAELO_MODELS_DIR=$CAELO_MODELS_DIR" >> "$GITHUB_ENV"
+        echo "CAELO_MODELS=required" >> "$GITHUB_ENV"
+
+    - name: Save the embedding models to the cache
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/caelo-models
+        key: embedding-models-${{ hashFiles('packages/shared/src/embedding-models.ts') }}

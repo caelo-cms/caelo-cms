@@ -8,13 +8,20 @@
  * Uses a slow provider that yields one token, awaits a tick, yields
  * another. The test aborts after the first yield so the runner sees the
  * abort mid-stream.
+ *
+ * #1653 — the turn's AI spend: a request cut off after it streamed reported
+ * no usage, but the provider read its prompt and generated, so the turn
+ * keeps that request's reservation; a provider that refused with an error
+ * status before generating billed nothing, and the reservation goes.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { APICallError } from "ai";
 import { SQL } from "bun";
 import { runChatTurn } from "../ai/chat-runner.js";
+import { invalidateAllPricing } from "../ai/pricing-cache.js";
 import { FixtureProvider } from "../ai/providers/anthropic.js";
 import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { registerAdminOps } from "../register.js";
@@ -37,10 +44,13 @@ const AI: ExecutionContext = {
   requestId: "p5-2-abort-ai",
 };
 
+/** A priced model, so a reservation is worth something (2,000 / 5,000 µ¢ per 1K). */
+const MODEL = "claude-t1653-abort";
+
 class SlowProvider extends FixtureProvider {
   readonly #onFirstYield: () => void;
   constructor(onFirstYield: () => void) {
-    super([], "claude-test-1");
+    super([], MODEL);
     this.#onFirstYield = onFirstYield;
   }
   // issue #442 — scripted at the raw model-stream level so the REAL SDK
@@ -77,6 +87,22 @@ class SlowProvider extends FixtureProvider {
   }
 }
 
+/** Refuses every request with an error status before generating anything. */
+class RefusingProvider extends FixtureProvider {
+  constructor() {
+    super([], MODEL);
+  }
+  protected override nextStepStream(): ReadableStream<unknown> | null {
+    throw new APICallError({
+      message: "Overloaded",
+      url: "https://provider.test/v1/messages",
+      requestBodyValues: {},
+      statusCode: 529,
+      isRetryable: false,
+    });
+  }
+}
+
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
   try {
@@ -85,6 +111,26 @@ async function wipe(): Promise<void> {
       await tx`DELETE FROM chat_messages WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE 'p5-2-abort-%')`;
       await tx`DELETE FROM ai_calls WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE 'p5-2-abort-%')`;
       await tx`DELETE FROM chat_sessions WHERE title LIKE 'p5-2-abort-%'`;
+      await tx`DELETE FROM ai_pricing WHERE model = ${MODEL}`;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+/** The chat turn's ledger row (the turn's own model; helpers book their own rows). */
+async function turnRow(chatSessionId: string): Promise<{ reservation: string; cost: number }> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const rows = (await tx`
+        SELECT reservation, cost_estimate_microcents::int AS cost FROM ai_calls
+        WHERE chat_session_id = ${chatSessionId}::uuid AND model = ${MODEL}
+          AND operation_type = 'text' AND plugin_id IS NULL
+      `) as unknown as { reservation: string; cost: number }[];
+      expect(rows).toHaveLength(1);
+      return rows[0] as { reservation: string; cost: number };
     });
   } finally {
     await sql.end();
@@ -93,6 +139,20 @@ async function wipe(): Promise<void> {
 
 beforeAll(async () => {
   await wipe();
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`
+        INSERT INTO ai_pricing (provider, model, operation_type, input_microcents, output_microcents,
+                                cached_microcents, cache_creation_microcents)
+        VALUES ('anthropic', ${MODEL}, 'text', 2000, 5000, 200, 5000)
+      `;
+    });
+  } finally {
+    await sql.end();
+  }
+  invalidateAllPricing();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -150,5 +210,31 @@ describe("chat-runner abort handling", () => {
       await sql.end();
     }
     expect(interruptedCount).toBe(1);
+    // The cut-off request reported no usage: its worst case stays booked.
+    const row = await turnRow(chatSessionId);
+    expect(row.reservation).toBe("settled");
+    expect(row.cost).toBeGreaterThan(0);
+  });
+
+  it("a provider that refuses before generating gives the turn's reservation back", async () => {
+    const session = await execute(registry, adapter, HUMAN, "chat.create_session", {
+      title: "p5-2-abort-refused",
+    });
+    if (!session.ok) throw new Error("session");
+    const { chatSessionId } = session.value as { chatSessionId: string };
+    for await (const _ of runChatTurn(
+      {
+        adapter,
+        registry,
+        provider: new RefusingProvider(),
+        tools: createDefaultToolRegistry(),
+        aiCtx: AI,
+        humanCtx: HUMAN,
+      },
+      { chatSessionId, content: "say something", chips: [] },
+    )) {
+      // drain
+    }
+    expect(await turnRow(chatSessionId)).toEqual({ reservation: "released", cost: 0 });
   });
 });

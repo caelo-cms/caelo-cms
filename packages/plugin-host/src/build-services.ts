@@ -68,6 +68,15 @@ import {
   resolveListSources,
 } from "./list-source-resolution.js";
 import { pluginListSourcesRegistry } from "./list-sources.js";
+import {
+  type DeliveredPage,
+  finishPageOutput,
+  type OfferedPage,
+  observePageOutputs,
+  type PageOutputFinish,
+  pageOutputNeeds,
+  pageOutputObservers,
+} from "./page-output-host.js";
 import { type PublicUrlContext, type PublicUrlPage, resolvePublicPageUrls } from "./public-urls.js";
 import { recordPluginError } from "./runtime-health.js";
 import { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
@@ -139,6 +148,22 @@ export interface BuildPluginServices {
    * its dates and numbers in the page's language (#1511).
    */
   staticRender(pluginSlug: string, pageId: string, context: StaticRenderContext): Promise<string>;
+  /** #1647 — whether any active plugin observes page output (else the build sends none). */
+  hasPageOutputObservers(): Promise<boolean>;
+  /** #1647 — which offered pages some observer has not seen in this form. */
+  pageOutputNeeds(
+    runId: string,
+    pages: OfferedPage[],
+    publishedPageCount: number,
+  ): Promise<string[]>;
+  /** #1647 — the facts of pages an observer needs. */
+  observePageOutputs(runId: string, pages: DeliveredPage[]): Promise<void>;
+  /** #1647 — the end of the build: every built page and the placement counts. */
+  finishPageOutput(
+    runId: string,
+    builtPageIds: string[],
+    moduleCounts: [string, number][],
+  ): Promise<PageOutputFinish>;
 }
 
 /** What one `staticRender` of a build renders for: the origin, URL style and page language. */
@@ -193,6 +218,12 @@ export const localBuildPluginServices: BuildPluginServices = {
       pageUrlStyle: context.pageUrlStyle,
       lang: context.lang,
     })) ?? "",
+  hasPageOutputObservers: async () => pageOutputObservers().length > 0,
+  pageOutputNeeds: (runId, pages, publishedPageCount) =>
+    pageOutputNeeds(runId, pages, publishedPageCount),
+  observePageOutputs: (runId, pages) => observePageOutputs(runId, pages),
+  finishPageOutput: (runId, builtPageIds, moduleCounts) =>
+    finishPageOutput(runId, builtPageIds, moduleCounts),
 };
 
 /**
@@ -269,6 +300,10 @@ export const BUILD_PLUGIN_METHODS = [
   "metaSignatureBatch",
   "metaSignature",
   "staticRender",
+  "hasPageOutputObservers",
+  "pageOutputNeeds",
+  "observePageOutputs",
+  "finishPageOutput",
 ] as const satisfies ReadonlyArray<keyof BuildPluginServices>;
 
 export type BuildPluginMethod = (typeof BUILD_PLUGIN_METHODS)[number];

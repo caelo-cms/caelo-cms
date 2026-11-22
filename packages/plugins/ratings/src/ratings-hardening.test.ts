@@ -1,9 +1,32 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, test } from "bun:test";
-import { indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { refusePublicCall, runDeclaredPublicOperation } from "@caelo-cms/plugin-host";
+import {
+  indexCheckedQuery,
+  type PluginContextTier1,
+  type PublicOperationDef,
+  publicOperationOf,
+} from "@caelo-cms/plugin-sdk";
 import newsletterPlugin from "../../newsletter/src/index.js";
 import ratingsPlugin from "./index.js";
+
+/**
+ * #1340 — a visitor call as the host makes it: the declared input schema
+ * first, then the operation's declaration (core code; no plugin handler).
+ */
+async function asVisitor(
+  plugin: { publicOperations?: ReadonlyArray<PublicOperationDef> },
+  name: string,
+  ctx: PluginContextTier1,
+  args: unknown,
+): Promise<unknown> {
+  const op = publicOperationOf(plugin.publicOperations, name);
+  if (!op) throw new Error(`${name} missing`);
+  const checked = refusePublicCall(op, { enforced: false, proofVerified: false }, args);
+  if (!checked.ok) throw new Error(`${checked.error.kind}: ${checked.error.message}`);
+  return runDeclaredPublicOperation(op, ctx, checked.args);
+}
 
 describe("ratings & newsletter plugin input & deduplication hardening", () => {
   test("ratings.submit rejects missing or empty pageId and only ever adds a vote (#1333)", async () => {
@@ -28,11 +51,11 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
       }),
     } as unknown as PluginContextTier1;
 
-    await expect(ratingsPlugin.operations.submit(ctx, { pageId: "   ", score: 5 })).rejects.toThrow(
-      "pageId",
-    );
+    await expect(
+      asVisitor(ratingsPlugin, "submit", ctx, { pageId: "   ", score: 5 }),
+    ).rejects.toThrow(/InvalidInput: [\s\S]*pageId/);
 
-    const res = await ratingsPlugin.operations.submit(ctx, { pageId: "page-1", score: 4 });
+    const res = await asVisitor(ratingsPlugin, "submit", ctx, { pageId: "page-1", score: 4 });
     expect(res).toEqual({ recorded: true, id: "row-new" });
     expect(inserted).toEqual([{ page_id: "page-1", visitor_id: "vis-1", score: 4 }]);
   });
@@ -122,7 +145,7 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
       }),
     } as unknown as PluginContextTier1;
 
-    const subRes = await newsletterPlugin.operations.subscribe(ctx, {
+    const subRes = await asVisitor(newsletterPlugin, "subscribe", ctx, {
       email: "reader@example.com",
     });
     expect(subRes).toEqual({ awaitingConfirm: true });
@@ -134,12 +157,13 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
     expect(updates[0]?.confirm_token).toBe(queued[0]?.token);
     expect(typeof updates[0]?.confirm_expires_at).toBe("string");
 
-    await expect(newsletterPlugin.operations.confirm(ctx, { token: "" })).rejects.toThrow(
-      "confirm: invalid token",
+    // The declared input refuses both before the block runs.
+    await expect(asVisitor(newsletterPlugin, "confirm", ctx, { token: "" })).rejects.toThrow(
+      "InvalidInput",
     );
-    await expect(newsletterPlugin.operations.unsubscribe(ctx, { token: "short" })).rejects.toThrow(
-      "unsubscribe: invalid token",
-    );
+    await expect(
+      asVisitor(newsletterPlugin, "unsubscribe", ctx, { token: "short" }),
+    ).rejects.toThrow("InvalidInput");
     // #1337 — a still valid link is mailed again unchanged, never voided.
     const validQueued: Array<{ token?: string }> = [];
     const validCtx = {
@@ -163,11 +187,13 @@ describe("ratings & newsletter plugin input & deduplication hardening", () => {
         },
       }),
     } as unknown as PluginContextTier1;
-    await newsletterPlugin.operations.subscribe(validCtx, { email: "again@example.com" });
+    await asVisitor(newsletterPlugin, "subscribe", validCtx, { email: "again@example.com" });
     expect(validQueued[0]?.token).toBe("99999999-2222-3333-4444-555555555555");
     // #1337 — an expired link is refused.
     await expect(
-      newsletterPlugin.operations.confirm(ctx, { token: "11111111-2222-3333-4444-555555555555" }),
+      asVisitor(newsletterPlugin, "confirm", ctx, {
+        token: "11111111-2222-3333-4444-555555555555",
+      }),
     ).rejects.toThrow("confirm: the link has expired");
   });
 });

@@ -24,7 +24,7 @@ import {
   LIVE_PUBLIC_GRANT_TARGET,
   STAGING_PUBLIC_GRANT_TARGET,
   schemaFromSpec,
-} from "@caelo-cms/plugin-sandbox";
+} from "@caelo-cms/plugin-sandbox/schema";
 import type { PluginIndexMap, PluginSchemaMap, PluginTableKinds } from "@caelo-cms/plugin-sdk";
 import type { PluginHostInfra } from "./dispatch.js";
 
