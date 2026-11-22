@@ -190,6 +190,87 @@ export async function listPlacementsInView(
   return sortByPath(inView);
 }
 
+/**
+ * The instances of `contentInstanceIds` that a placement on a page other
+ * than `pageId` binds, as `branchId` sees the site: the instances of
+ * {@link listPlacementsInView} with a placement off `pageId`, which is all
+ * `page_module_content.list_for_page` needs to know (#1674). That op runs
+ * once per translated page, and listing every placement made it read all
+ * pages a shared instance sits on, with their pending layouts. Each of the
+ * two reads here stops at the first page it finds per instance: an
+ * instance shared by 50,000 pages, pending or live, costs one row. Only
+ * proving a "no" reads further: an instance whose every other page has a
+ * pending layout without it is checked page by page.
+ *
+ * Both reads are `CROSS JOIN LATERAL (… LIMIT 1)`, not `EXISTS`: under
+ * RLS the planner estimates the policy terms at a fraction of the rows and
+ * turned an `EXISTS` into a hash semi join over every reference of the
+ * instances (240,000 buffers on the rows-read fixture, 30 this way). A
+ * lateral subquery with a limit is never flattened into a join.
+ */
+export async function placedOutsidePage(
+  tx: Tx,
+  contentInstanceIds: readonly string[],
+  branchId: string | null,
+  pageId: string,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const ids = [...new Set(contentInstanceIds.map((id) => id.toLowerCase()))];
+  if (ids.length === 0) return out;
+  if (branchId !== null) {
+    // A pending layout of another page that places one. The reference
+    // index (0592) names the pages whose pending rows reference it; for
+    // each, the page's head (its newest pending layout row, the order
+    // `headOverlaySql` reads) decides whether a placement binds it. Asking
+    // the head of each referencing row, not whether that row is the head,
+    // answers at the first page: a page several chats changed has older
+    // rows that need not be the head.
+    const pending = (await tx.execute(sql`
+      SELECT c.id::text AS id FROM unnest(${uuidArray(ids)}) AS c(id)
+       CROSS JOIN LATERAL (
+         SELECT 1 FROM page_layout_snapshot_refs r
+           JOIN draft_pending_entities d ON d.snapshot_row_id = r.snapshot_row_id
+          WHERE r.ref_kind = 'id' AND r.ref = c.id::text
+            AND d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'pageLayout'
+            AND d.entity_id <> ${pageId}::uuid
+            AND EXISTS (
+              SELECT 1
+                FROM (SELECT h.snapshot_row_id FROM draft_pending_entities h
+                       WHERE h.chat_branch_id = d.chat_branch_id AND h.entity_kind = d.entity_kind
+                         AND h.entity_id = d.entity_id AND h.entity_sub = d.entity_sub
+                       ORDER BY h.header_created_at DESC, h.row_created_at DESC,
+                                h.snapshot_row_id DESC
+                       LIMIT 1) head
+                JOIN page_layout_snapshots es ON es.id = head.snapshot_row_id
+                JOIN pages p ON p.id = d.entity_id
+               WHERE es.state @> jsonb_build_object('blocks', jsonb_build_array(
+                       jsonb_build_object('placements', jsonb_build_array(
+                         jsonb_build_object('contentInstanceId', c.id::text))))))
+          LIMIT 1) hit
+    `)) as unknown as { id: string }[];
+    for (const r of pending) out.add(r.id);
+  }
+  const rest = ids.filter((id) => !out.has(id));
+  if (rest.length === 0) return out;
+  // A live placement on another page, unless that page has a pending
+  // layout: the branch shows that layout instead (`listPlacementsInView`).
+  const notOverlaid = branchId
+    ? sql`AND NOT EXISTS (
+        SELECT 1 FROM draft_pending_entities d
+         WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'pageLayout'
+           AND d.entity_id = pm.page_id)`
+    : sql``;
+  const live = (await tx.execute(sql`
+    SELECT c.id::text AS id FROM unnest(${uuidArray(rest)}) AS c(id)
+     CROSS JOIN LATERAL (
+       SELECT 1 FROM page_modules pm JOIN pages p ON p.id = pm.page_id
+        WHERE pm.content_instance_id = c.id AND pm.page_id <> ${pageId}::uuid ${notOverlaid}
+        LIMIT 1) hit
+  `)) as unknown as { id: string }[];
+  for (const r of live) out.add(r.id);
+  return out;
+}
+
 function sortByPath(placements: PlacementInView[]): PlacementInView[] {
   return placements.sort(
     (a, b) =>
