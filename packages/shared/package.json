@@ -28,6 +28,13 @@
       "development": "./src/lists/model.ts",
       "import": "./dist/lists/model.js",
       "default": "./dist/lists/model.js"
+    },
+    "./embedding-models": {
+      "types": "./dist/embedding-models.d.ts",
+      "bun": "./src/embedding-models.ts",
+      "development": "./src/embedding-models.ts",
+      "import": "./dist/embedding-models.js",
+      "default": "./dist/embedding-models.js"
     }
   },
   "files": [

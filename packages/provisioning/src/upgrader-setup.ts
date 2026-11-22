@@ -80,12 +80,9 @@ import { ensureCloudSqlIamUser } from "./cloudsql-iam-user.js";
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
-  auditRunnerServiceAccountEmail,
   auditServiceAccountEmail,
-  buildCarrierServiceAccountEmail,
   captureServiceAccountEmail,
   gatewayServiceAccountEmail,
-  importCrawlServiceAccountEmail,
   mcpAuthProxyServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
@@ -96,6 +93,7 @@ import {
 } from "./gcp-names.js";
 import { readAdminConfig } from "./migration-runner.js";
 import { type CustomRoleSpec, customRoleName, ensureCustomRole } from "./operator-access.js";
+import { REPORTING_JOB_CATALOG, reportingJobServiceAccountEmail } from "./reporting-job-catalog.js";
 import { OPS_INSTALL_PREFIX, opsBucketName } from "./state-backend.js";
 
 /** Cloud SQL backups for the pre-upgrade backup — nothing else on the instance. */
@@ -291,21 +289,12 @@ export function upgraderAccountGrants(projectId: string, env: string): UpgraderA
       role: "roles/iam.serviceAccountUser",
       why: "the app-roll moves the capture job, which runs as it, onto the new image",
     },
-    {
-      account: auditRunnerServiceAccountEmail(projectId, env),
+    // #1359, #1360, #1574, epic #1644 — every reporting job (reporting-job-catalog.ts).
+    ...REPORTING_JOB_CATALOG.map((e) => ({
+      account: reportingJobServiceAccountEmail(e, projectId, env),
       role: "roles/iam.serviceAccountUser",
-      why: "the app-roll moves the quality-audit runner, which runs as it, onto the new image",
-    },
-    {
-      account: importCrawlServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "the app-roll moves the site-import crawler, which runs as it, onto the new image",
-    },
-    {
-      account: buildCarrierServiceAccountEmail(projectId, env),
-      role: "roles/iam.serviceAccountUser",
-      why: "the app-roll moves the build carrier, which runs as it, onto the new image",
-    },
+      why: `the app-roll moves the ${e.label}, which runs as it, onto the new image`,
+    })),
     {
       account: mcpIapServiceAccountEmail(projectId),
       role: "roles/iam.serviceAccountTokenCreator",

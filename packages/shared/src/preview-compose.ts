@@ -30,7 +30,7 @@ import type { ModuleFieldKind } from "./content.js";
 import { findInteractionIds, interactionAssets } from "./interactions.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import type { ListPageContext } from "./lists/resolve.js";
-import { MODULE_ID_ATTRIBUTE, tagModuleId } from "./module-id-tag.js";
+import { MODULE_ID_ATTRIBUTE, tagContentInstance, tagModuleId } from "./module-id-tag.js";
 import {
   type NestedModuleResource,
   type NestedRenderFailure,
@@ -137,6 +137,17 @@ export interface ComposeTheme {
   };
 }
 
+/** The placement's content instance on its root, when an observer reads the page. */
+function stampPlacement(
+  html: string,
+  m: { readonly contentInstanceId?: string },
+  input: { readonly stampContentInstances?: boolean },
+): string {
+  return input.stampContentInstances && m.contentInstanceId
+    ? tagContentInstance(html, m.contentInstanceId)
+    : html;
+}
+
 /**
  * issue #150 — self-hosted web fonts resolved by the caller (font
  * resolver in admin-core; static generator + preview op thread the
@@ -150,6 +161,12 @@ export interface ComposeFonts {
 }
 
 export interface ComposeInput {
+  /**
+   * Epic #1644 — stamp each placement's content instance on its root
+   * (module-id-tag.ts CONTENT_INSTANCE_ATTRIBUTE) for page-output
+   * observers; the generator strips it before the file is written.
+   */
+  readonly stampContentInstances?: boolean;
   readonly templateHtml: string;
   readonly templateCss: string;
   readonly blocks: readonly ComposeBlock[];
@@ -299,7 +316,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       const rendered = renderModuleFields(m, input);
       recordFailures(moduleFailures, block.blockName, m, rendered.failures);
       nestedAssetIds.push(...rendered.nestedModuleIds);
-      return tagModuleId(rendered.html, m.moduleId);
+      return stampPlacement(tagModuleId(rendered.html, m.moduleId), m, input);
     });
     const html = renderedModuleHtml.join("\n");
     contentByName.set(block.blockName, html);
@@ -776,7 +793,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeWit
         nestedAssetIds.push(id);
       }
     }
-    const tagged = tagModuleId(baseHtml, m.moduleId);
+    const tagged = stampPlacement(tagModuleId(baseHtml, m.moduleId), m, input);
     if (!deferral) return tagged;
     if (deferral.omit) {
       if (deferral.editorNotice) deferredCss.add(deferral.editorNotice.css);

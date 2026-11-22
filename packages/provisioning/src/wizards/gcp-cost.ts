@@ -14,6 +14,7 @@
 import { GATEWAY_ARMOR_BILLED_RULES } from "../gateway-edge.js";
 import {
   ADMIN_MEMORY_DEFAULT,
+  GATEWAY_MEMORY_DEFAULT,
   memoryQuantityMiB,
   parseSchedulerIntervalMinutes,
   RUNTIME_SECRETS,
@@ -231,6 +232,15 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
         "one small container per such build for the build's length (1 vCPU / 512 MiB, waiting for the admin's answer): ~$0.001 per build minute, a 2-minute Stage ~$0.002; mostly in the free tier",
     },
     {
+      // Epic #1644 — a Stage whose plugin collections changed (a site
+      // search's pages) builds their new index in its own job; nothing runs
+      // without a plugin that declares collections.
+      name: "Search indexes (Cloud Run collection index job)",
+      monthlyUsd: 0,
+      notes:
+        "one container per Stage whose plugin collections changed (2 vCPU / 4 GiB): a delta of 1,000 pages ~30 s (~$0.002), a full 50,000-page rebuild a few minutes (~$0.01-0.02); nothing without such a plugin; mostly in the free tier",
+    },
+    {
       name: "Screenshots (Cloud Run capture job)",
       monthlyUsd: 1,
       notes:
@@ -243,8 +253,8 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       monthlyUsd: inputs.gatewayMinInstances === 0 ? 1 : 1 + inputs.gatewayMinInstances * 15,
       notes:
         inputs.gatewayMinInstances === 0
-          ? "scale-to-zero; ~$1/mo light traffic"
-          : `${inputs.gatewayMinInstances} min-instance${inputs.gatewayMinInstances > 1 ? "s" : ""}`,
+          ? `scale-to-zero, ${GATEWAY_MEMORY_DEFAULT} (search indexes cached in memory, #1644); ~$1/mo light traffic`
+          : `${inputs.gatewayMinInstances} min-instance${inputs.gatewayMinInstances > 1 ? "s" : ""}, ${GATEWAY_MEMORY_DEFAULT}`,
     },
     {
       // #1330 — the staging gateway serves the staged site behind the
@@ -253,8 +263,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       // answers a fixed 404 while no staging host is set.
       name: "Cloud Run staging gateway",
       monthlyUsd: 0,
-      notes:
-        "scale-to-zero, request-based CPU; only the team's visits to staging wake it, mostly in the free tier",
+      notes: `scale-to-zero, request-based CPU, ${GATEWAY_MEMORY_DEFAULT}; only the team's visits to staging wake it, mostly in the free tier`,
     },
     {
       // #1328 — remote MCP's sign-in service, its own service on every
@@ -281,7 +290,8 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
           {
             name: "Cloud CDN cache",
             monthlyUsd: 1,
-            notes: "Free egress at edge cache hits",
+            notes:
+              "Free egress at edge cache hits; also caches visitor search answers on the gateway backend (#1644): ~$0.0075 per 10,000 lookups",
           },
           {
             // #1339 — the gateway's policy (src/gateway-edge.ts): its rules
@@ -305,10 +315,10 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
               "own policy ($5) with 2 rules ($2): per-IP throttle for remote MCP clients; requests ~$0",
           },
           {
-            name: "Cloud Storage (static + media + staging)",
+            name: "Cloud Storage (static + media + staging + collection stores)",
             monthlyUsd: 1,
             notes:
-              "~5 GB storage + low egress; the staging bucket holds two complete builds (#1330 A/B slots); growth roughly $0.02/GB",
+              "~5 GB storage + low egress; the staging bucket holds two complete builds (#1330 A/B slots); a 50,000-page site search index ~350 MB per environment (#1644); growth roughly $0.02/GB",
           },
           {
             name: "BigQuery edge log sink",
@@ -324,10 +334,10 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
               "Free tier: 10 GB storage + 360 MB/day egress; the staging site (#1330) only rewrites to the staging gateway and stores nothing",
           },
           {
-            name: "Cloud Storage (media + staging)",
+            name: "Cloud Storage (media + staging + collection stores)",
             monthlyUsd: 1,
             notes:
-              "~5 GB storage + low egress; static lives on Firebase; the private staging bucket holds two complete builds (#1330 A/B slots); growth roughly $0.02/GB",
+              "~5 GB storage + low egress; static lives on Firebase; the private staging bucket holds two complete builds (#1330 A/B slots); a 50,000-page site search index ~350 MB per environment (#1644); growth roughly $0.02/GB",
           },
           {
             name: "Cloud Logging (service logs, the edge log sink)",

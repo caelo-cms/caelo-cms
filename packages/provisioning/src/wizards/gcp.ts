@@ -44,6 +44,7 @@ import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
 import { ensureCaptureJob } from "../capture-job-setup.js";
 import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
 import { redactCredentials } from "../checkpoint-secrets.js";
+import { ensureCollectionStores } from "../collections-setup.js";
 import { ensureConvergeJob } from "../converge-job-setup.js";
 import { removeDefaultFirewallRules } from "../default-firewall.js";
 import {
@@ -80,10 +81,7 @@ import {
   serviceAccountExists,
 } from "../gcloud.js";
 import {
-  auditRunnerServiceAccountEmail,
-  buildCarrierServiceAccountEmail,
   GCP_STACK_ENV,
-  importCrawlServiceAccountEmail,
   schedulerServiceAccountEmail,
   upgraderServiceAccountEmail,
 } from "../gcp-names.js";
@@ -136,10 +134,11 @@ import {
   resolveStackRemoteMcpIdentity,
 } from "../remote-mcp.js";
 import {
-  ensureAuditRunnerJob,
-  ensureBuildCarrierJob,
-  ensureImportCrawlJob,
-} from "../reporting-job-setup.js";
+  REPORTING_JOB_CATALOG,
+  type ReportingJobKindEntry,
+  reportingJobServiceAccounts,
+} from "../reporting-job-catalog.js";
+import { ensureReportingJobKind } from "../reporting-job-setup.js";
 import type { RunMode } from "../run-mode.js";
 import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
@@ -631,30 +630,19 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // Before the upgrader, which gets actAs on the job's service account.
   await stepAuditJob(projectId, region, provider);
 
-  // === 11.32. The quality-audit runner: a Stage's audit in its own job (#1359) ===
-  // After the audit job (it starts its Lighthouse tasks), before the
-  // upgrader (actAs on its account) and operator access (keeps it on IAP).
-  await stepReportingJob(projectId, region, provider, ownerEmail, {
-    starting: "Setting up the quality-audit runner (audits outside the admin)...",
-    ready: "Quality-audit runner ready",
-    ensure: ensureAuditRunnerJob,
-  });
+  // === 11.32. The collection stores + the search-query log exclusion (epic #1644) ===
+  // After the staging gateway (its account reads the staging store), before
+  // the collection index job (it writes there).
+  await stepCollectionStores(projectId, region, provider);
 
-  // === 11.33. The site-import crawler: a site import's crawl in its own job (#1360) ===
-  // Before the upgrader and operator access, for the same reasons.
-  await stepReportingJob(projectId, region, provider, ownerEmail, {
-    starting: "Setting up the site-import crawler (crawls outside the admin)...",
-    ready: "Site-import crawler ready",
-    ensure: ensureImportCrawlJob,
-  });
-
-  // === 11.34. The build carrier: holds the request a build nobody waits for runs in (#1574) ===
-  // Before the upgrader and operator access, for the same reasons.
-  await stepReportingJob(projectId, region, provider, ownerEmail, {
-    starting: "Setting up the build carrier (builds that outlast their request)...",
-    ready: "Build carrier ready",
-    ensure: ensureBuildCarrierJob,
-  });
+  // === 11.33. Every reporting job of the catalog (#1359, #1360, #1574, epic #1644) ===
+  // In catalog order, each after what it needs: the quality-audit runner
+  // after the audit job (it starts its Lighthouse tasks), the collection
+  // index job after the stores. All before the upgrader (actAs on their
+  // accounts) and operator access (keeps them on IAP).
+  for (const entry of REPORTING_JOB_CATALOG) {
+    await stepReportingJob(projectId, region, provider, ownerEmail, entry);
+  }
 
   // === 11.35. The capture job: server-side screenshots outside the admin (#1217) ===
   // Before the upgrader as well, which gets actAs on its service account.
@@ -689,10 +677,8 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
     [
       ...(keepScheduler ? [schedulerServiceAccountEmail(projectId, GCP_STACK_ENV)] : []),
-      // #1359 / #1360 / #1574 — set up above (a failure stops the wizard there).
-      auditRunnerServiceAccountEmail(projectId, GCP_STACK_ENV),
-      importCrawlServiceAccountEmail(projectId, GCP_STACK_ENV),
-      buildCarrierServiceAccountEmail(projectId, GCP_STACK_ENV),
+      // Every reporting job: set up above (a failure stops the wizard there).
+      ...reportingJobServiceAccounts(projectId, GCP_STACK_ENV),
     ],
   );
 
@@ -1556,9 +1542,8 @@ async function stepAuditJob(
 }
 
 /**
- * #1359 / #1360 — set up a reporting job (reporting-job-setup.ts) on the
- * deployed admin's image: the quality-audit runner (a Stage's whole audit)
- * or the site-import crawler (a site import's crawl), each reporting back
+ * #1359 — set up one reporting job of the catalog (reporting-job-catalog.ts,
+ * reporting-job-setup.ts) on the deployed admin's image, reporting back
  * through IAP. A failure stops the wizard: without it that work fails.
  * Idempotent, so it runs on every wizard pass.
  */
@@ -1567,14 +1552,10 @@ async function stepReportingJob(
   region: string,
   provider: "gcp" | "gcp-firebase",
   ownerEmail: string,
-  job: {
-    readonly starting: string;
-    readonly ready: string;
-    readonly ensure: typeof ensureAuditRunnerJob;
-  },
+  entry: ReportingJobKindEntry,
 ): Promise<void> {
   const s = spinner();
-  s.start(job.starting);
+  s.start(entry.wizard.starting);
   const image = await resolveAdminImage({ projectId, region, env: GCP_STACK_ENV });
   const resolved = image.ok
     ? await resolveOperatorAccessTarget({
@@ -1589,7 +1570,7 @@ async function stepReportingJob(
     ? { ok: false as const, done: [], error: image.error }
     : !resolved?.ok
       ? { ok: false as const, done: [], error: resolved?.error ?? "no IAP resource" }
-      : await job.ensure({
+      : await ensureReportingJobKind(entry, {
           provider,
           projectId,
           region,
@@ -1603,7 +1584,32 @@ async function stepReportingJob(
     cancel("Aborted.");
     process.exit(1);
   }
-  s.stop(green(`${job.ready} (${r.done.length} steps)`));
+  s.stop(green(`${entry.wizard.ready} (${r.done.length} steps)`));
+}
+
+/**
+ * Epic #1644 — the collection stores and who may read them, plus the log
+ * exclusion for visitors' search queries (collections-setup.ts). A failure
+ * stops the wizard: without the stores every Stage's plugin collections
+ * fail. Idempotent, so it runs on every wizard pass. A staging gateway
+ * whose setup failed above gets its read access from the next `upgrade`.
+ */
+async function stepCollectionStores(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+): Promise<void> {
+  const s = spinner();
+  s.start("Setting up the collection stores (plugin indexes such as site search)...");
+  const r = await ensureCollectionStores({ provider, projectId, region, env: GCP_STACK_ENV });
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.error}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green(`Collection stores ready (${r.done.length} steps)`));
+  for (const p of r.pending) log.warn(`  ${p}`);
 }
 
 /**

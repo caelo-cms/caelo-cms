@@ -10,9 +10,10 @@
  *   db/cms_admin.dump    pg_dump -Fc (the same dumps `upgrade` takes)
  *   db/cms_public.dump
  *   db/globals.sql       the cluster's roles — reference only, see restore
- *   files.tar            the published site (`/srv/caelo`) and the uploaded
- *                        media (`/data/media`), read through the admin's
- *                        own mounts
+ *   files.tar            the published site (`/srv/caelo`), the uploaded
+ *                        media (`/data/media`) and the plugin collection
+ *                        stores (`/data/collections/{staging,live}`, epic
+ *                        #1644), read through the admin's own mounts
  * Secrets (`.caelo/config.json`, incl. the KEK that decrypts stored
  * provider keys) are NOT in the archive: it may be copied off-host, and a
  * restore targets the install whose config is already there.
@@ -54,7 +55,7 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { COMPOSE_APP_SERVICES, MEDIA_ROOT, SITE_OUTPUT_ROOT } from "./compose.js";
+import { COLLECTIONS_ROOT, COMPOSE_APP_SERVICES, MEDIA_ROOT, SITE_OUTPUT_ROOT } from "./compose.js";
 import type { HostRunner } from "./self-hosted-release.js";
 import type { ConvergeOutcome } from "./self-hosted-roles.js";
 import {
@@ -73,8 +74,19 @@ const MANIFEST = "manifest.json";
 const DB_DIR = "db";
 const FILES_TAR = "files.tar";
 
-/** The content directories inside the admin container, as `tar -C /` paths. */
-const CONTENT_PATHS = [SITE_OUTPUT_ROOT, MEDIA_ROOT].map((p) => p.replace(/^\//, ""));
+/**
+ * The content directories inside the admin container, as `tar -C /` paths.
+ * Epic #1644 — the collection stores go with the site they were published
+ * with: the restored databases name the releases they hold. Each store is
+ * its own path, so a restore empties it and keeps the directory the
+ * gateways mount.
+ */
+const CONTENT_PATHS = [
+  SITE_OUTPUT_ROOT,
+  MEDIA_ROOT,
+  `${COLLECTIONS_ROOT}/staging`,
+  `${COLLECTIONS_ROOT}/live`,
+].map((p) => p.replace(/^\//, ""));
 
 export interface BackupManifest {
   readonly format: number;

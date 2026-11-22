@@ -57,7 +57,8 @@ const mailer = definePlugin<PluginContextTier1>({
   slug: SLUG,
   version: "1.0.0",
   tier: 1,
-  schema: {},
+  schema: { confirmations: { id: "uuid", token: "string" } },
+  tableKinds: { confirmations: "visitor-state" },
   requires: ["email"],
   requestedCapabilities: ["email"],
   mailTemplates: {
@@ -73,10 +74,16 @@ const mailer = definePlugin<PluginContextTier1>({
       name: "confirm",
       kind: "write",
       input: z.object({ token: z.string().min(16).max(128) }).strict(),
+      writes: ["confirmations"],
+      run: {
+        action: "insert",
+        table: "confirmations",
+        values: { token: { from: "input", field: "token" } },
+        answer: { confirmed: true },
+      },
     },
   ],
   operations: {
-    confirm: async () => ({ confirmed: true }),
     // An admin-side caller (an Owner panel action) queueing a mail.
     queue_it: async (ctx, args) => {
       const { to } = args as { to: string };

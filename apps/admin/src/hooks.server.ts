@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { resolve as resolvePath } from "node:path";
 import {
   assertDurableMediaRoot,
+  bootstrapPluginBatchTriggers,
   buildEmailTransport,
   configureMcpBridge,
   configurePluginUninstallFinalizer,
@@ -466,6 +467,8 @@ function bootstrapReportingJobs(): void {
   reportingJobsBootstrapped = true;
   const { adapter, registry } = getQueryContext();
   setInProcessJobLauncher((kind) => inProcessJobLauncher({ adapter, registry }, kind));
+  // #1646 — a plugin's activation batches are queued when it loads.
+  bootstrapPluginBatchTriggers({ adapter, registry });
 }
 
 // #817 — once per process: an upgrade the Owner ran from Cloud Shell never

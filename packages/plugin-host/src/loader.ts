@@ -56,6 +56,7 @@ import { z } from "zod";
 import { runActivationSerialized } from "./activation-lock.js";
 import { makePluginContext } from "./capabilities.js";
 import { registerPluginChangeOps } from "./change-consumers.js";
+import { ensureConfigOps } from "./config-handle.js";
 import {
   hostSystemActorId,
   type LoadedPlugin,
@@ -76,7 +77,10 @@ import { describeLoadError } from "./load-error.js";
 import { loadReported, reportLoadFailure } from "./load-outcome.js";
 import { timedStep } from "./load-timing.js";
 import { resetLocalLoadOutcomes } from "./local-availability.js";
+import { resolveTrustRoot, unapprovedCapabilities } from "./manifest-definition.js";
+import { CONFIG_OPS, withHostConfigTables } from "./plugin-config.js";
 import { inactiveRequiredPlugins, requirementsMessage } from "./plugin-dependencies.js";
+import { notifyPluginRegistered } from "./plugin-registered.js";
 import { resetPluginRuntimeStats } from "./plugin-runtime-stats.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { provisionPluginPublicSchemas } from "./public-schemas.js";
@@ -173,18 +177,6 @@ export interface InMemoryPlugin {
  * manifest asks for capabilities the Owner has not approved for it.
  */
 export const AWAITING_CAPABILITY_APPROVAL = "awaiting_capability_approval";
-
-/**
- * The capabilities `requested` asks for beyond what the Owner `approved`
- * (null = nothing approved yet), sorted.
- */
-export function unapprovedCapabilities(
-  requested: readonly string[],
-  approved: readonly string[] | null,
-): string[] {
-  const ok = new Set(approved ?? []);
-  return [...new Set(requested)].filter((c) => !ok.has(c)).sort();
-}
 
 /**
  * #1306 — why a load returned no plugin, for the deploy gate, the Settings
@@ -431,6 +423,9 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   bootOpts = opts;
   // #1361 — confirmed at request start, not on a timer (runtime-health.ts).
   configureRuntimeHeartbeat(opts.infra, opts.systemActorId);
+  // #1645 — the configuration operations the AI tools reach, whether or not
+  // a loaded plugin declares a configuration yet.
+  ensureConfigOps(opts.infra);
 
   const loaded: Array<{ slug: string; version: string; tier: 1 | 2 }> = [];
   const inactive: Array<{ slug: string; version: string; status: string }> = [];
@@ -601,12 +596,18 @@ async function loadTier2Row(
       indexes: definition.indexes?.schema,
       tableKinds: definition.tableKinds,
     });
-    if (definition.adminSchema && Object.keys(definition.adminSchema).length) {
+    // #1645 — a declared configuration adds the host's config tables.
+    const admin1 = withHostConfigTables(
+      definition,
+      definition.adminSchema,
+      definition.indexes?.adminSchema,
+    );
+    if (Object.keys(admin1.adminSchema).length) {
       const privateSchema = adminSchemaFromSpec({
         pluginId: row.id,
         slug: row.slug,
-        adminSchema: definition.adminSchema,
-        indexes: definition.indexes?.adminSchema,
+        adminSchema: admin1.adminSchema,
+        indexes: admin1.indexes,
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
         pluginId: row.id,
@@ -652,27 +653,8 @@ async function loadTier2Row(
   });
   pluginToolsRegistry.unregisterPlugin(row.slug);
   for (const tool of definition.tools ?? []) pluginToolsRegistry.register(row.slug, tool);
-}
-
-/**
- * Trust-root resolution (#387): explicit option → env override → the
- * `.tier1-trust-root` drop file written by the signer next to the
- * plugins it signed → the embedded release key inside
- * verifyManifestSignature. The drop file makes dev checkouts and
- * container images self-contained (the key travels with the manifests
- * it covers; image provenance is cosign's job).
- */
-export function resolveTrustRoot(
-  opts: Pick<BootstrapOpts, "publicKeyHex" | "pluginsRoot">,
-): string | undefined {
-  const explicit = opts.publicKeyHex ?? process.env.CAELO_TIER1_PUBLIC_KEY;
-  if (explicit) return explicit;
-  try {
-    return readFileSync(resolvePath(opts.pluginsRoot, ".tier1-trust-root"), "utf8").trim();
-  } catch {
-    // no drop file — the embedded release key is the trust root
-    return undefined;
-  }
+  const registered = loadedPlugins.bySlug(row.slug);
+  if (registered) notifyPluginRegistered(registered);
 }
 
 interface LoadOpts {
@@ -906,6 +888,10 @@ export async function activateApprovedExternalPlugin(
       "image_generation",
       "site_media_read",
       "consent_provider",
+      "collections",
+      "page_output",
+      "batch_jobs",
+      "visitor_ai",
     ]);
     for (const capability of manifest.requestedCapabilities ?? [])
       if (!supported.has(capability))
@@ -969,12 +955,17 @@ export async function activateApprovedExternalPlugin(
       indexes: manifest.indexes?.schema,
       tableKinds: manifest.tableKinds,
     });
-    if (manifest.adminSchema) {
+    const admin2 = withHostConfigTables(
+      manifest,
+      manifest.adminSchema,
+      manifest.indexes?.adminSchema,
+    );
+    if (Object.keys(admin2.adminSchema).length) {
       const privateSchema = adminSchemaFromSpec({
         pluginId: artifact.pluginId,
         slug: manifest.slug,
-        adminSchema: manifest.adminSchema,
-        indexes: manifest.indexes?.adminSchema,
+        adminSchema: admin2.adminSchema,
+        indexes: admin2.indexes,
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
         pluginId: artifact.pluginId,
@@ -1135,14 +1126,14 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       }
     }
   }
-  // A `publicOperations` entry naming an operation that does not exist
-  // reads as "this is exposed" while exposing nothing — and the reverse
-  // typo (an intended-public op misspelled) silently 404s the visitor
-  // surface. Both are caught here, at load, rather than in production.
-  for (const { name } of def.publicOperations ?? []) {
-    if (!def.operations[name]) {
+  // #1340 — a public operation runs its declaration, never plugin code: an
+  // entry that is also a code operation would read as "this code answers
+  // visitors" while the code never runs. The manifest lint refuses it; the
+  // loader checks again for a definition that skipped the projection.
+  for (const op of def.publicOperations ?? []) {
+    if (Object.hasOwn(def.operations, op.name) || !op.run) {
       throw new Error(
-        `plugin "${def.slug}" lists "${name}" in publicOperations, which is not one of its operations`,
+        `plugin "${def.slug}" lists "${op.name}" in publicOperations ${op.run ? "and also as a code operation" : "without a run"}: a public operation is only its declared run`,
       );
     }
   }
@@ -1159,6 +1150,28 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // Epic #1107 — list sources, list types and list-resolve overlays each
   // change what pages render, so each needs its own grant; refused here,
   // before any side effect, like tools and workers above.
+  // Epic #1644 — collections, page output and batch jobs each need their grant.
+  if (Object.keys(def.collections ?? {}).length > 0 && !grantedCaps.has("collections")) {
+    throw new Error(
+      `plugin "${def.slug}" declares collections without the collections capability — registration refused`,
+    );
+  }
+  if (def.pageOutputObserver !== undefined && !grantedCaps.has("page_output")) {
+    throw new Error(
+      `plugin "${def.slug}" declares a page-output observer without the page_output capability — registration refused`,
+    );
+  }
+  // #1654 — a visitor conversation spends the Owner's visitor-AI budget.
+  if ((def.aiChatOperations?.length ?? 0) > 0 && !grantedCaps.has("visitor_ai")) {
+    throw new Error(
+      `plugin "${def.slug}" declares ai-chat operations without the visitor_ai capability — registration refused`,
+    );
+  }
+  if ((def.batchOperations?.length ?? 0) > 0 && !grantedCaps.has("batch_jobs")) {
+    throw new Error(
+      `plugin "${def.slug}" declares batch operations without the batch_jobs capability — registration refused`,
+    );
+  }
   if ((def.listTypes?.length ?? 0) > 0 && !grantedCaps.has("list_types")) {
     throw new Error(
       `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,
@@ -1425,12 +1438,13 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // requires the cms_admin_schema capability). The emitted DDL adds the
   // columns a version bump declares and drops the ones it no longer
   // declares (#1146, pre-1.0; audited), host caelo_ columns untouched.
-  if (def.adminSchema && Object.keys(def.adminSchema).length > 0) {
+  const admin3 = withHostConfigTables(def, def.adminSchema, def.indexes?.adminSchema);
+  if (Object.keys(admin3.adminSchema).length > 0) {
     const emitted = adminSchemaFromSpec({
       pluginId,
       slug: def.slug,
-      adminSchema: def.adminSchema,
-      indexes: def.indexes?.adminSchema,
+      adminSchema: admin3.adminSchema,
+      indexes: admin3.indexes,
       // #635 — the declared projection's tables republish on every write.
       projectedTables: Object.keys(def.visitorProjection ?? {}),
     });
@@ -1469,6 +1483,32 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     } catch (e) {
       loadedPlugins.unload(def.slug);
       throw e;
+    }
+  }
+
+  // #1645 — the declared configuration's defaults (or the migration of what
+  // a previous version stored), on main, before anything can read them.
+  if (def.config) {
+    ensureConfigOps(opts.infra);
+    const seeded = await execute(
+      opts.infra.registry,
+      opts.infra.adapter,
+      {
+        actorId: opts.systemActorId,
+        actorKind: "system",
+        requestId: `plugin-config-seed-${def.slug}`,
+      },
+      CONFIG_OPS.seed,
+      { pluginSlug: def.slug },
+    );
+    if (!seeded.ok) {
+      loadedPlugins.unload(def.slug);
+      throw new PluginLoadError(
+        "activate",
+        new Error(
+          `plugin "${def.slug}": its configuration could not be stored (${"message" in seeded.error ? String(seeded.error.message) : seeded.error.kind})`,
+        ),
+      );
     }
   }
 
@@ -1645,6 +1685,10 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // there is nothing left to mark inert at boot. `applyPluginLifecycle`
   // (lifecycle.ts) stays the live path for a disable that happens WHILE
   // the host is running.
+  // Announced only now: a listener (the activation batch, #1646) may read
+  // the configuration seeded above and run what onActivate prepared, so it
+  // must never see a plugin halfway through its registration.
+  notifyPluginRegistered(lp);
   return { plugin: lp, status: persistedStatus };
 }
 

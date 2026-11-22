@@ -24,6 +24,13 @@
  *     falls through to the general rule below.
  *   - The captcha challenge is throttled (429, no ban) at 60 a minute, the
  *     gateway's own per-client budget (`CAPTCHA_CHALLENGE_RATE_LIMIT`).
+ *   - Epic #1644 — a plugin's collection operations (search, suggest,
+ *     read: GETs that read a published index, write nothing) are throttled
+ *     (429, no ban) at 600 a minute. Search-as-you-type sends a request
+ *     per pause in typing, and a visitor must never be banned for using
+ *     the site's search; Cloud CDN answers repeats before this policy
+ *     sees them (stack-contract.ts GATEWAY_CDN_POLICY), and the gateway
+ *     limits every client and operation itself.
  *   - Every other path containing `/api/` keeps the original ban of 100 a
  *     minute. It used to match every request, so a reviewer who browsed a
  *     few staged pages (each with its styles, scripts, fonts and images)
@@ -90,6 +97,14 @@ export type GatewayArmorRule = ArmorRateRule | ArmorDenyRule;
 export const CREDENTIAL_PATH_PATTERN =
   "^/api/plugin/auth/(?:signup|login|request_password_reset|reset_password)$";
 
+/**
+ * Epic #1644 — a declared collection operation and its release lookup
+ * (apps/api-gateway collections.ts `parseCollectionPath`), anchored. No
+ * capture group: Cloud Armor refuses them.
+ */
+export const COLLECTION_OPERATION_PATH_PATTERN =
+  "^/api/plugin/[a-z][a-z0-9-]{0,54}/[a-z_][a-z0-9_]{0,119}(?:/release)?$";
+
 /** Priority of Cloud Armor's default rule (it allows; every policy has one). */
 export const DEFAULT_RULE_PRIORITY = 2147483647;
 
@@ -112,6 +127,15 @@ export const GATEWAY_ARMOR_RULES: readonly GatewayArmorRule[] = [
     expression: "request.path == '/api/captcha/challenge'",
     action: "throttle",
     count: 60,
+    intervalSec: 60,
+  },
+  {
+    kind: "rate",
+    priority: 820,
+    description: "Caelo gateway: per-IP throttle on collection reads (site search)",
+    expression: `request.method == 'GET' && request.path.matches('${COLLECTION_OPERATION_PATH_PATTERN}')`,
+    action: "throttle",
+    count: 600,
     intervalSec: 60,
   },
   {

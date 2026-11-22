@@ -28,7 +28,7 @@ A service that takes untrusted traffic gets a minimal image: the API gateway tod
 
 ## What the bundle hides, the image still says
 
-- **SBOM.** An image scanner finds npm packages by their `package.json`, and a bundle has none. `stage` writes `bundled-packages.cdx.json` (CycloneDX) next to the bundle. It lists every npm package the bundle inlines, plus each binary that has a package URL (Deno as `pkg:cargo/deno@<version>`). CI scans it with `trivy sbom`, and operators can scan it too. Bun has no advisory database entry, so its digest-pinned image tag is its version.
+- **SBOM.** An image scanner finds npm packages by their `package.json`, and a bundle has none. `stage` writes `bundled-packages.cdx.json` (CycloneDX) next to the bundle. It lists every npm package the bundle inlines, plus each binary that has a package URL. CI scans it with `trivy sbom`, and operators can scan it too. Bun has no advisory database entry, so its digest-pinned image tag is its version.
 - **Licences.** `third-party-licenses.txt`, next to the bundle, carries the licence text of each inlined package. MIT, BSD, ISC and Zlib all require the notice in copies. A package without a licence file and without a `license` field fails the build.
 
 ## CI gates
@@ -36,7 +36,7 @@ A service that takes untrusted traffic gets a minimal image: the API gateway tod
 1. `bun scripts/service-image.ts verify <spec> <image>`: every entry of the layers the image adds to its base must be allowlisted, and none may replace or delete (whiteout) a base file; every required path must exist; every `FROM` of the Dockerfile must be pinned by digest. No shell (`sh`, `bash`, `busybox`, …) may exist anywhere, not even in the base. The image needs a numeric non-root `USER` and an exec-form `ENTRYPOINT`.
 2. Trivy (`aquasec/trivy`, pinned by digest, run as an image rather than through trivy-action). It scans the image and the bundle SBOM for high and critical findings with `--ignore-unfixed`: a finding without a fixed version leaves a PR nothing to do.
 3. A boot smoke, per service. For the gateway:
-   - `image-self-check.js` verifies every shipped plugin against the trust root and runs a probe through the Deno sandbox (`checkPluginRuntime`, plugin-host);
+   - `image-self-check.js` verifies the signature of every shipped plugin manifest against the trust root (`checkShippedManifests`, plugin-host). #1340 — the gateway runs no plugin code, so its image holds no Deno, no plugin dist and no plugin validator: only the bundle, the signed manifests and the trust root;
    - the image then boots against a migrated Postgres and answers `/api/_caelo/health?deep=1`;
    - no plugin may fail to load.
 

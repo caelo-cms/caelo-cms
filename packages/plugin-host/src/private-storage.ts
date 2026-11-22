@@ -19,7 +19,7 @@
  * main and on a branch (the overlay comes from JSON snapshots).
  */
 
-import { privateReadColumns } from "@caelo-cms/plugin-sandbox";
+import { privateReadColumns } from "@caelo-cms/plugin-sandbox/schema";
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";

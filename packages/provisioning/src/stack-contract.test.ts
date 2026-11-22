@@ -103,6 +103,10 @@ describe("adminEnvContract", () => {
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
       CAELO_UPGRADER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
+      // #1654 — where the Owner's visitor-AI keys are added; never read.
+      CAELO_VISITOR_AI_KEY_STORE: "projects/acme/secrets/caelo-production-visitor-ai-key",
+      CAELO_VISITOR_AI_STAGING_KEY_STORE:
+        "projects/acme/secrets/caelo-production-visitor-ai-staging-key",
       CAELO_CONVERGE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-converge",
       CAELO_AUDIT_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-audit",
       CAELO_AUDIT_RESULTS_BUCKET: "acme-caelo-production-audit-results",
@@ -118,6 +122,17 @@ describe("adminEnvContract", () => {
       // #1574 — and for the build carrier.
       CAELO_BUILD_CARRIER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-build",
       CAELO_BUILD_CARRIER_SERVICE_ACCOUNT: "caelo-production-build@acme.iam.gserviceaccount.com",
+      // Epic #1644 — the collection index job and the plugin batch job
+      // (reporting-job-catalog.ts), and both collection stores.
+      CAELO_COLLECTION_INDEX_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-index",
+      CAELO_COLLECTION_INDEX_SERVICE_ACCOUNT: "caelo-production-index@acme.iam.gserviceaccount.com",
+      CAELO_PLUGIN_BATCH_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch",
+      CAELO_PLUGIN_BATCH_SERVICE_ACCOUNT:
+        "caelo-production-plugin-batch@acme.iam.gserviceaccount.com",
+      CAELO_COLLECTIONS_STAGING_STORE: "gs://acme-caelo-production-coll-staging",
+      CAELO_COLLECTIONS_LIVE_STORE: "gs://acme-caelo-production-coll-live",
       CAELO_STATIC_BUCKET: "acme-caelo-production-static",
       CAELO_STAGING_BUCKET: "acme-caelo-production-staging",
       // #1330 — every provider serves staging at its own host now.
@@ -161,6 +176,10 @@ describe("adminEnvContract", () => {
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
       CAELO_UPGRADER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
+      // #1654 — where the Owner's visitor-AI keys are added; never read.
+      CAELO_VISITOR_AI_KEY_STORE: "projects/acme/secrets/caelo-production-visitor-ai-key",
+      CAELO_VISITOR_AI_STAGING_KEY_STORE:
+        "projects/acme/secrets/caelo-production-visitor-ai-staging-key",
       CAELO_CONVERGE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-converge",
       CAELO_AUDIT_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-audit",
       CAELO_AUDIT_RESULTS_BUCKET: "acme-caelo-production-audit-results",
@@ -176,6 +195,17 @@ describe("adminEnvContract", () => {
       // #1574 — and for the build carrier.
       CAELO_BUILD_CARRIER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-build",
       CAELO_BUILD_CARRIER_SERVICE_ACCOUNT: "caelo-production-build@acme.iam.gserviceaccount.com",
+      // Epic #1644 — the collection index job and the plugin batch job
+      // (reporting-job-catalog.ts), and both collection stores.
+      CAELO_COLLECTION_INDEX_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-index",
+      CAELO_COLLECTION_INDEX_SERVICE_ACCOUNT: "caelo-production-index@acme.iam.gserviceaccount.com",
+      CAELO_PLUGIN_BATCH_JOB:
+        "projects/acme/locations/europe-west1/jobs/caelo-production-plugin-batch",
+      CAELO_PLUGIN_BATCH_SERVICE_ACCOUNT:
+        "caelo-production-plugin-batch@acme.iam.gserviceaccount.com",
+      CAELO_COLLECTIONS_STAGING_STORE: "gs://acme-caelo-production-coll-staging",
+      CAELO_COLLECTIONS_LIVE_STORE: "gs://acme-caelo-production-coll-live",
       CAELO_FIREBASE_SITE: "caelo-production-site-abc123",
       CAELO_GATEWAY_SERVICE: "caelo-production-gateway-1a2b3c4",
       CAELO_GATEWAY_REGION: "europe-west1",
@@ -236,9 +266,13 @@ describe("gatewayEnvContract", () => {
       CAELO_TRUSTED_PROXY_HOPS: "2",
       PUBLIC_DATABASE_URL:
         "postgresql://public_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
+      // Epic #1644 — the live collection store, never the staging one.
+      CAELO_COLLECTIONS_LIVE_STORE: "gs://acme-caelo-production-coll-live",
       // The only account whose refresh pings it takes: the admin's runtime
       // account. An identity, nothing secret.
       CAELO_GATEWAY_REFRESH_ACCOUNT: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
+      // #1654 — the live site's visitor-AI key, a file only this gateway mounts.
+      CAELO_VISITOR_AI_KEY_FILE: "/secrets/visitor-ai/key.json",
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
       // No remote-MCP env: the broker is the MCP-Auth-Proxy's (#1328); no
       // staging gate key: the staging gateway's, through its projection (#1330).
@@ -269,7 +303,11 @@ describe("gatewayEnvContract", () => {
         PUBLIC_DATABASE_URL:
           "postgresql://public_staging_role@db1.p-label.europe-west1.sql-psa.goog:5432/cms_public_staging?sslmode=verify-full&sslrootcert=/etc/caelo/db-ca/cloudsql-global.pem",
         CAELO_STAGING_STORAGE: "gs://acme-caelo-production-staging",
+        // Epic #1644 — the staging collection store, never the live one.
+        CAELO_COLLECTIONS_STAGING_STORE: "gs://acme-caelo-production-coll-staging",
         CAELO_GATEWAY_REFRESH_ACCOUNT: "caelo-production-run-sa@acme.iam.gserviceaccount.com",
+        // #1654 — staging's own key file (its own secret), at the same path.
+        CAELO_VISITOR_AI_KEY_FILE: "/secrets/visitor-ai/key.json",
         PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-staging-role-password:latest",
       });
     }
@@ -286,7 +324,11 @@ describe("gatewayEnvContract", () => {
   });
 
   it("shares no secret with the live gateway and reads exactly its own login", () => {
-    expect(serviceSecrets("staging-gateway")).toEqual(["public-staging-role-password"]);
+    expect(serviceSecrets("staging-gateway")).toEqual([
+      "public-staging-role-password",
+      // #1654 — staging's own visitor-AI key: never the live one's secret.
+      "visitor-ai-staging-key",
+    ]);
     const live = new Set(serviceSecrets("gateway"));
     expect(serviceSecrets("staging-gateway").some((x) => live.has(x))).toBe(false);
     expect(serviceSecrets("gateway")).not.toContain("staging-gate-secret");
@@ -318,7 +360,8 @@ describe("gatewayEnvContract", () => {
   });
 
   it("the gateway's run SA reads no admin-only secret (admin password, KEK, internal, tool approval)", () => {
-    expect(serviceSecrets("gateway")).toEqual(["public-role-password"]);
+    // #1654 — plus the live site's visitor-AI key, which no admin reads.
+    expect(serviceSecrets("gateway")).toEqual(["public-role-password", "visitor-ai-key"]);
     for (const v of gateway) {
       expect(v.name).not.toMatch(/KEK|INTERNAL|TOOL_APPROVAL|PUBLIC_ADMIN/);
     }
@@ -411,11 +454,23 @@ describe("runtime secrets", () => {
         secret: "public-role-password",
         stackResource: "gateway-public-role-password-binding",
       },
+      // #1654 — the live site's visitor-AI key (a file), the live gateway only.
+      {
+        service: "gateway",
+        secret: "visitor-ai-key",
+        stackResource: "gateway-visitor-ai-key-binding",
+      },
       // #1330 — the staging gateway: its own login only.
       {
         service: "staging-gateway",
         secret: "public-staging-role-password",
         stackResource: "staging-gateway-public-staging-role-password-binding",
+      },
+      // #1654 — and its own visitor-AI key, never the live one's.
+      {
+        service: "staging-gateway",
+        secret: "visitor-ai-staging-key",
+        stackResource: "staging-gateway-visitor-ai-staging-key-binding",
       },
       // #1328 — the broker's seal key (env) and Google sign-in client (a
       // file, which counts like an env secret: the SA reads it).
@@ -502,19 +557,21 @@ describe("stackIamInvariants", () => {
     }
   });
 
-  it("grants the gateway SA only its own role password + telemetry roles (#1330: no staging gate key)", () => {
+  it("grants the gateway SA only its own role password, its visitor-AI key + telemetry roles (#1330: no staging gate key)", () => {
     for (const provider of ["gcp", "gcp-firebase"] as const) {
       const gateway = stackIamInvariants(provider).filter((i) => i.member === "gateway-sa");
       expect(gateway.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
         'roles/logging.logWriter {"kind":"project"}',
         'roles/monitoring.metricWriter {"kind":"project"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"public-role-password"}',
+        'roles/secretmanager.secretAccessor {"kind":"secret","name":"visitor-ai-key"}',
       ]);
       const staging = stackIamInvariants(provider).filter((i) => i.member === "staging-gateway-sa");
       expect(staging.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
         'roles/logging.logWriter {"kind":"project"}',
         'roles/monitoring.metricWriter {"kind":"project"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"public-staging-role-password"}',
+        'roles/secretmanager.secretAccessor {"kind":"secret","name":"visitor-ai-staging-key"}',
       ]);
     }
   });
@@ -612,7 +669,8 @@ describe("MCP-Auth-Proxy contract (#1328)", () => {
     }
     expect(SERVICE_VPC_EGRESS["mcp-auth-proxy"]).toBe(false);
     expect(SERVICE_SECRET_FILES["mcp-auth-proxy"]).toHaveLength(1);
-    expect(SERVICE_SECRET_FILES.gateway).toEqual([]);
+    // #1654 — the gateways hold their visitor-AI key, never the sign-in client.
+    expect(SERVICE_SECRET_FILES.gateway.map((f) => f.secret)).toEqual(["visitor-ai-key"]);
   });
 
   it("retires the broker's env, file and secret access on the gateway", () => {

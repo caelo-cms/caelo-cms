@@ -136,6 +136,25 @@ export const VISITOR_MEMORY_LIMIT: MemoryLimitSpec = { capacity: 120, refillPerS
 export const OPERATION_MEMORY_LIMIT: MemoryLimitSpec = { capacity: 300, refillPerSec: 5 };
 
 /**
+ * #1649 — a declared collection operation (search, suggest, read) per
+ * client: a burst of 60, then 10 per second. Search-as-you-type sends a
+ * request every few keystrokes; the answer costs no database round trip
+ * (the release key is cached while the published-state LISTEN holds) and a
+ * few milliseconds of CPU, and the CDN answers a repeated query.
+ */
+export const COLLECTION_CLIENT_MEMORY_LIMIT: MemoryLimitSpec = { capacity: 60, refillPerSec: 10 };
+
+/**
+ * #1649 — a collection operation per instance, whoever calls it: a burst of
+ * 1,000, then 100 per second (a 1-vCPU instance answers a few hundred
+ * warm queries a second; the autoscaler adds instances before this binds).
+ */
+export const COLLECTION_OPERATION_MEMORY_LIMIT: MemoryLimitSpec = {
+  capacity: 1000,
+  refillPerSec: 100,
+};
+
+/**
  * The deep health check (`?deep=1`, health.ts) per client: it opens a
  * database round trip, and the upgrade probe calls it a few times a minute.
  */

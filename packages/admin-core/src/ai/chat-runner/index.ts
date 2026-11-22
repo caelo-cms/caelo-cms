@@ -20,7 +20,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
-import { longPromptRateMultiplier } from "../long-prompt-pricing.js";
+import { longPromptRateMultiplier } from "@caelo-cms/shared";
 import { chatPluginInvocation } from "../plugin-invocation.js";
 import type { ChatMessageInput } from "../provider.js";
 import { composeSystemPromptChunks } from "../system-prompt.js";
@@ -61,6 +61,7 @@ import {
 import type { UsageAccumulator } from "./streaming.js";
 import { buildToolCatalogue, resolveExcludedToolNames } from "./tool-catalogue.js";
 import { defaultChatTurnSerializer, queryApiChatTurnLeaseStore } from "./turn-serializer.js";
+import { chatTurnSpender, TurnSpend } from "./turn-spend.js";
 import type { ChatRunnerOptions, ClientEvent } from "./types.js";
 
 export { abortLocalAgentRuns, readAgentStopEpoch } from "./agent-runs.js";
@@ -565,8 +566,19 @@ async function* runSerializedChatTurn(
     }),
   });
 
+  // #1653 — the turn's seat in the AI spend ledger (one ai_calls row,
+  // reserved before each request, settled at the end).
+  const turnSpend = new TurnSpend(
+    { registry, adapter },
+    chatTurnSpender(humanCtx.actorId, input.chatSessionId, aiCtx.parentChatSessionId),
+    { provider: provider.name, model: provider.model },
+    [systemChunks, filteredTools],
+    { requestId: aiCtx.requestId ?? null, parentAiCallId: aiCtx.parentAiCallId ?? null },
+  );
+
   // 3. Run the tool loop.
   const { stopReason, succeeded, lastAssistantMessageId } = yield* runToolLoop({
+    spend: turnSpend,
     registry,
     adapter,
     humanCtx,
@@ -612,24 +624,34 @@ async function* runSerializedChatTurn(
   // BEFORE the `usage` event so the event can carry the price actually
   // billed: the op prices from the ai_pricing table, with cache reads at
   // their reduced rate and cache writes at their premium.
-  const billed = await recordAiCall(registry, adapter, humanCtx, {
-    chatSessionId: input.chatSessionId,
-    provider: provider.name,
-    model: provider.model,
-    inputTokens: usage.totalIn,
-    outputTokens: usage.totalOut,
-    cachedTokens: usage.totalCached,
-    cacheCreationTokens: usage.totalCacheCreation ?? 0,
-    largestPromptTokens: usage.largestPromptTokens ?? 0,
-    // P16 — canonical price comes from the ai_pricing table inside the op.
-    durationMs: Date.now() - startedAt,
-    succeeded: succeeded && stopReason !== "error" && !aborted(),
-    // P10.5 — parent attribution flows through aiCtx for subagent turns.
-    parentChatSessionId: aiCtx.parentChatSessionId,
-    parentAiCallId: aiCtx.parentAiCallId,
-    // P16 — request_id flows through aiCtx if hooks.server.ts threaded it.
-    requestId: aiCtx.requestId ?? null,
-  });
+  const turnSucceeded = succeeded && stopReason !== "error" && !aborted();
+  const settled = await turnSpend.settle(usage, Date.now() - startedAt, turnSucceeded);
+  // Without a reservation (the ledger was unreachable at the turn's start)
+  // the turn is recorded the way it was before the ledger. A turn refused
+  // before its first request spent nothing and records nothing.
+  const recordUnreserved = turnSpend.callId === null && turnSpend.unaccounted;
+  const billed =
+    settled ??
+    (!recordUnreserved
+      ? null
+      : await recordAiCall(registry, adapter, humanCtx, {
+          chatSessionId: input.chatSessionId,
+          provider: provider.name,
+          model: provider.model,
+          inputTokens: usage.totalIn,
+          outputTokens: usage.totalOut,
+          cachedTokens: usage.totalCached,
+          cacheCreationTokens: usage.totalCacheCreation ?? 0,
+          largestPromptTokens: usage.largestPromptTokens ?? 0,
+          // P16 — canonical price comes from the ai_pricing table inside the op.
+          durationMs: Date.now() - startedAt,
+          succeeded: turnSucceeded,
+          // P10.5 — parent attribution flows through aiCtx for subagent turns.
+          parentChatSessionId: aiCtx.parentChatSessionId,
+          parentAiCallId: aiCtx.parentAiCallId,
+          // P16 — request_id flows through aiCtx if hooks.server.ts threaded it.
+          requestId: aiCtx.requestId ?? null,
+        }));
 
   // `finalUsdCost` is cache-BLIND — it charges every input token at the full
   // input rate. On a turn that reads 4.7M tokens from cache that is roughly 4x

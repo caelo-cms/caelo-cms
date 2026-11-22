@@ -61,6 +61,8 @@ type Schema = {
 };
 
 const scriptedProvider = {
+  // #1653 — the host reserves the call on this model before it runs.
+  resolve: async () => ({ provider: "anthropic", model: "scripted-model" }),
   complete: async () => {
     throw new Error("translations use generateObject");
   },

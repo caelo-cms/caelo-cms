@@ -46,7 +46,9 @@ import {
   type CloudRunSlug,
   DATABASE_URL_VARS,
   databaseUrls,
+  GATEWAY_CDN_POLICY,
   type GcpProvider,
+  gatewayBackendPrefix,
   gatewayEnvContract,
   type IamInvariant,
   type IamTarget,
@@ -60,6 +62,7 @@ import {
   type RetiredIamBinding,
   type RetiredSecretFile,
   type RuntimeEnvInputs,
+  SERVICE_MEMORY_FLOOR,
   type SecretFileContract,
   type ServiceEnvInputs,
   STATIC_CDN_POLICY,
@@ -631,6 +634,104 @@ async function ensureCdnPolicy(
     : { ...base, status: "failed", error: update.stderr.trim() };
 }
 
+/**
+ * Epic #1644 (#1649) — bring the `gcp` stack's live gateway backend to
+ * {@link GATEWAY_CDN_POLICY}: Cloud CDN on, caching only what the gateway
+ * marks cacheable, the query string in the key. Without it every visitor's
+ * search reaches the gateway; with it a repeated query is answered at the
+ * edge.
+ */
+export async function ensureGatewayCdnPolicy(
+  install: InstallTarget,
+  run: GcloudRunner,
+): Promise<InvariantOutcome> {
+  const prefix = gatewayBackendPrefix(install.env);
+  const base = {
+    id: `Cloud CDN on ${prefix}*`,
+    onFailure: "warn" as const,
+    why: "visitors' repeated searches are answered at the edge instead of by the gateway (#1649)",
+  };
+  const project = `--project=${install.projectId}`;
+  const list = await run([
+    "compute",
+    "backend-services",
+    "list",
+    project,
+    "--global",
+    `--filter=name~^${prefix}`,
+    "--format=value(name)",
+  ]);
+  if (!list.ok) return { ...base, status: "failed", error: list.stderr.trim() };
+  const names = list.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  // The gateway is declared with `deployGateways` only; an install that
+  // has not deployed it yet has no backend to cache in front of.
+  if (names.length === 0) return { ...base, status: "present" };
+  if (names.length > 1) {
+    return {
+      ...base,
+      status: "failed",
+      error: `more than one backend service starts with ${prefix} (${names.join(", ")}); remove the one the load balancer does not use`,
+    };
+  }
+  const name = names[0] as string;
+  const describe = await run([
+    "compute",
+    "backend-services",
+    "describe",
+    name,
+    project,
+    "--global",
+    "--format=json",
+  ]);
+  if (describe.ok) {
+    const live = JSON.parse(describe.stdout) as {
+      enableCDN?: boolean;
+      cdnPolicy?: {
+        cacheMode?: string;
+        negativeCaching?: boolean;
+        serveWhileStale?: number;
+        cacheKeyPolicy?: Record<string, unknown>;
+      };
+    };
+    const cdn = live.cdnPolicy;
+    const key = cdn?.cacheKeyPolicy ?? {};
+    const inShape =
+      live.enableCDN === true &&
+      cdn?.cacheMode === GATEWAY_CDN_POLICY.cacheMode &&
+      (cdn.negativeCaching ?? false) === GATEWAY_CDN_POLICY.negativeCaching &&
+      (cdn.serveWhileStale ?? 0) === GATEWAY_CDN_POLICY.serveWhileStale &&
+      Object.entries(GATEWAY_CDN_POLICY.cacheKeyPolicy).every(([k, v]) => key[k] === v);
+    if (inShape) return { ...base, status: "present" };
+  }
+  const update = await run(gatewayCdnUpdateArgs(name, install.projectId));
+  return update.ok
+    ? { ...base, status: "applied" }
+    : { ...base, status: "failed", error: update.stderr.trim() };
+}
+
+/** The `gcloud compute backend-services update` argv that applies {@link GATEWAY_CDN_POLICY}. */
+export function gatewayCdnUpdateArgs(name: string, projectId: string): string[] {
+  return [
+    "compute",
+    "backend-services",
+    "update",
+    name,
+    `--project=${projectId}`,
+    "--global",
+    "--enable-cdn",
+    `--cache-mode=${GATEWAY_CDN_POLICY.cacheMode}`,
+    GATEWAY_CDN_POLICY.negativeCaching ? "--negative-caching" : "--no-negative-caching",
+    `--serve-while-stale=${GATEWAY_CDN_POLICY.serveWhileStale}`,
+    "--cache-key-include-host",
+    "--cache-key-include-protocol",
+    "--cache-key-include-query-string",
+    "--quiet",
+  ];
+}
+
 /** The ingress of a described service (`all`, `internal-and-cloud-load-balancing`, …; null: unset). */
 export function liveIngress(serviceJson: string): string | null {
   const svc = JSON.parse(serviceJson) as {
@@ -737,6 +838,7 @@ export async function ensureStackInvariants(
   outcomes.push(...(await ensureIam(checkable, install, projectNumber, run, sleep)));
   if (install.provider === "gcp") {
     outcomes.push(await ensureCdnPolicy(install, run));
+    outcomes.push(await ensureGatewayCdnPolicy(install, run));
     outcomes.push(await ensureSvgDownloads(install, run));
   }
   if (install.provider === "gcp-firebase") {
@@ -876,16 +978,35 @@ const CLOUD_RUN_DEFAULT_MEMORY = "512Mi";
 export function planAdminMemory(
   live: string | null,
   desired: string = ADMIN_MEMORY_DEFAULT,
-):
+): MemoryPlan {
+  return planMemoryFloor(live, desired, "admin");
+}
+
+/** What {@link planServiceMemory} decided. */
+export type MemoryPlan =
   | { readonly ok: true; readonly flags: readonly string[]; readonly from: string | null }
-  | { readonly ok: false; readonly error: string } {
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * #553, epic #1644 — raise a Cloud Run service to its memory floor
+ * ({@link SERVICE_MEMORY_FLOOR}: the admin for the quality audit, both
+ * gateways for the collection index files they keep in memory). Never
+ * lowers; a service without a floor keeps what the stack gave it.
+ */
+export function planServiceMemory(slug: CloudRunSlug, live: string | null): MemoryPlan {
+  const floor = SERVICE_MEMORY_FLOOR[slug];
+  if (floor === null) return { ok: true, flags: [], from: live };
+  return planMemoryFloor(live, floor, slug);
+}
+
+function planMemoryFloor(live: string | null, desired: string, service: string): MemoryPlan {
   const desiredMiB = memoryQuantityMiB(desired);
   if (desiredMiB === null) return { ok: false, error: `invalid desired memory "${desired}"` };
   const liveMiB = memoryQuantityMiB(live ?? CLOUD_RUN_DEFAULT_MEMORY);
   if (liveMiB === null) {
     return {
       ok: false,
-      error: `the admin's memory "${live}" is not a quantity upgrade understands`,
+      error: `the ${service}'s memory "${live}" is not a quantity upgrade understands`,
     };
   }
   if (liveMiB >= desiredMiB) return { ok: true, flags: [], from: live };

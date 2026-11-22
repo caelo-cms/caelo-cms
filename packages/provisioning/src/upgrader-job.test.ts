@@ -522,6 +522,9 @@ describe("runUpgraderJob", () => {
         "iam projects/acme/serviceAccounts/caelo-production-capture@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-gateway-sa@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-import@acme.iam.gserviceaccount.com",
+        // Epic #1644 — the collection index job and the plugin batch job.
+        "iam projects/acme/serviceAccounts/caelo-production-index@acme.iam.gserviceaccount.com",
+        "iam projects/acme/serviceAccounts/caelo-production-plugin-batch@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-mcp-proxy-sa@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-run-sa@acme.iam.gserviceaccount.com",
         "iam projects/acme/serviceAccounts/caelo-production-stg-gw-sa@acme.iam.gserviceaccount.com",

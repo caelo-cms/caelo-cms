@@ -76,6 +76,7 @@ import {
   databaseUrls,
   defaultStagingHost,
   fixedCloudRunServiceName,
+  GATEWAY_MEMORY_DEFAULT,
   gatewayEnvContract,
   MCP_AUTH_PROXY_TIMEOUT_SECONDS,
   mcpAuthProxyEnvContract,
@@ -287,6 +288,9 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   // then; IAP login, IAP programmatic access and the remote-MCP broker) and
   // the broker's seal key, both CLI-generated.
   "operator-oauth-client": gcpSecretId(env, "operator-oauth-client"),
+  // #1654 — the visitor AI's key per environment, CLI-generated as `{}`.
+  "visitor-ai-key": gcpSecretId(env, "visitor-ai-key"),
+  "visitor-ai-staging-key": gcpSecretId(env, "visitor-ai-staging-key"),
   "mcp-oauth-seal-key": gcpSecretId(env, "mcp-oauth-seal-key"),
 };
 
@@ -546,6 +550,28 @@ new gcp.secretmanager.SecretIamMember(
   `${namePrefix}-admin-operator-oauth-client-version-adder`,
   {
     secretId: runtimeSecretIds["operator-oauth-client"],
+    role: "roles/secretmanager.secretVersionAdder",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+
+// #1654 — the Owner's visitor-AI keys, one secret per environment, the same
+// add-version-only grant: the admin stores or removes a key, never reads
+// one; each gateway reads only its own (stack-contract.ts GCP_COMMON).
+new gcp.secretmanager.SecretIamMember(
+  `${namePrefix}-admin-visitor-ai-key-version-adder`,
+  {
+    secretId: runtimeSecretIds["visitor-ai-key"],
+    role: "roles/secretmanager.secretVersionAdder",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+new gcp.secretmanager.SecretIamMember(
+  `${namePrefix}-admin-visitor-ai-staging-key-version-adder`,
+  {
+    secretId: runtimeSecretIds["visitor-ai-staging-key"],
     role: "roles/secretmanager.secretVersionAdder",
     member: pulumi.interpolate`serviceAccount:${runSa.email}`,
   },
@@ -861,7 +887,8 @@ const gatewaySvc = deployGateways
       resourceName: `${namePrefix}-data-gateway`,
       minInstances: gatewayMinInstances,
       maxInstances: gatewayMaxInstances,
-      memory: "512Mi",
+      // Epic #1644 — collection index files are cached in memory.
+      memory: GATEWAY_MEMORY_DEFAULT,
       // Firebase Hosting cuts a rewritten request at 60 s anyway.
       timeout: "300s",
       // All traffic: the Firebase rewrite arrives from Google's edge, and it is

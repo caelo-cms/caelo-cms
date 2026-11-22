@@ -22,12 +22,7 @@ import {
   resetPluginHost,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
-import {
-  definePlugin,
-  mailUnsubscribeRecipient,
-  type PluginContextTier1,
-  z,
-} from "@caelo-cms/plugin-sdk";
+import { definePlugin, type PluginContextTier1, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
@@ -81,24 +76,27 @@ const fixture = definePlugin<PluginContextTier1>({
       rateLimit: { max: 3, windowSeconds: 60 },
       reads: ["recipients"],
       writes: ["recipients"],
+      // #1340 — core's block: the token names the row, the host checked its signature.
+      run: {
+        action: "block",
+        block: "mail.unsubscribe",
+        options: { table: "recipients", column: "unsubscribed_at" },
+      },
     },
-    { name: "other", kind: "write", input: tokenInput },
+    {
+      name: "other",
+      kind: "write",
+      input: tokenInput,
+      writes: ["recipients"],
+      run: {
+        action: "insert",
+        table: "recipients",
+        values: { unsub_token: { from: "input", field: "token" } },
+        answer: { ran: true },
+      },
+    },
   ],
   operations: {
-    other: async () => ({ ran: true }),
-    leave: async (ctx, args) => {
-      const id = mailUnsubscribeRecipient((args as { token: string }).token);
-      const rows = await ctx.query.list<"recipients", { id: string }>("recipients", {
-        unsub_token: id as string,
-        limit: 1,
-      });
-      if (rows[0]) {
-        await ctx.query.update("recipients", rows[0].id, {
-          unsubscribed_at: new Date().toISOString(),
-        });
-      }
-      return { left: true };
-    },
     mail_with_link: async (ctx, args) => {
       await ctx.email?.send({
         to: "reader@t1432.test",
@@ -168,7 +166,8 @@ async function unsubscribedAt(recipientId: string): Promise<string | null> {
 async function addRecipient(): Promise<string> {
   const id = crypto.randomUUID();
   await asPlugin((tx) =>
-    tx.unsafe(`INSERT INTO ${SCHEMA}.recipients (unsub_token) VALUES ($1)`, [id]),
+    // The signed token names the row (core's block swaps that row).
+    tx.unsafe(`INSERT INTO ${SCHEMA}.recipients (id, unsub_token) VALUES ($1::uuid, $1)`, [id]),
   );
   return id;
 }

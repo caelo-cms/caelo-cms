@@ -7,12 +7,21 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { runDeclaredPublicOperation } from "@caelo-cms/plugin-host";
 import {
   indexCheckedQuery,
   isPublicOperationError,
   type PluginContextTier1,
+  publicOperationOf,
 } from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
+
+/** The declared `submit`, as the host runs it for a visitor (#1340). */
+function submit(ctx: PluginContextTier1, args: unknown): Promise<unknown> {
+  const op = publicOperationOf(plugin.publicOperations, "submit");
+  if (!op) throw new Error("submit missing");
+  return runDeclaredPublicOperation(op, ctx, args);
+}
 
 const SLUG = "secret-partner-intake";
 
@@ -43,10 +52,8 @@ function harness(form: typeof FORM | null) {
 }
 
 async function refusal(form: typeof FORM | null, data: Record<string, unknown>): Promise<Error> {
-  const op = plugin.operations.submit;
-  if (!op) throw new Error("submit missing");
   try {
-    await op(harness(form).ctx, { formSlug: SLUG, data });
+    await submit(harness(form).ctx, { formSlug: SLUG, data });
   } catch (e) {
     return e as Error;
   }
@@ -69,11 +76,18 @@ describe("forms submit refusals", () => {
   }
 
   it("stores a submission that matches the form's fields", async () => {
-    const op = plugin.operations.submit;
-    if (!op) throw new Error("submit missing");
     const h = harness(FORM);
-    const r = await op(h.ctx, { formSlug: SLUG, data: { name: "A", email: "a@x.io" } });
+    const r = await submit(h.ctx, { formSlug: SLUG, data: { name: "A", email: "a@x.io" } });
     expect(r).toEqual({ submissionId: "44444444-4444-4444-8444-444444444444" });
-    expect(h.inserted).toHaveLength(1);
+    expect(h.inserted).toEqual([
+      { form_slug: SLUG, page_id: "", data: { name: "A", email: "a@x.io" }, status: "new" },
+    ]);
+  });
+
+  it("stores a filled honeypot as spam and answers like success", async () => {
+    const h = harness(FORM);
+    const r = await submit(h.ctx, { formSlug: SLUG, data: {}, honeypot: "bot" });
+    expect(r).toEqual({ submissionId: "44444444-4444-4444-8444-444444444444", honeypot: true });
+    expect((h.inserted[0] as { status: string }).status).toBe("spam");
   });
 });

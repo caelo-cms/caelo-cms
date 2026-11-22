@@ -5,7 +5,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateSource } from "@caelo-cms/plugin-sandbox";
-import type { PluginContext, PluginContextTier1, PluginManifest } from "@caelo-cms/plugin-sdk";
+import {
+  CONFIG_ENTITY_KINDS,
+  type PluginContext,
+  type PluginContextTier1,
+  type PluginManifest,
+} from "@caelo-cms/plugin-sdk";
 import { z } from "zod";
 import { sandboxEntrySource, sandboxPreludeSource } from "./sandbox-entry.js";
 import {
@@ -25,16 +30,134 @@ export interface SandboxInvocation {
   readonly authorize: () => Promise<void>;
   readonly timeoutMs?: number;
   readonly denySdkCalls?: boolean;
+  /** SDK calls this invocation may make (default {@link SANDBOX_CALL_LIMIT}). */
+  readonly callLimit?: number;
 }
 
 const table = z
   .string()
   .regex(/^[a-z_][a-z0-9_]*$/)
   .max(120);
+const collectionName = z.string().regex(/^[a-z][a-z0-9_]{0,39}$/);
+/** Every entity kind the SDK's config reader takes (pages, modules, content blocks, page types). */
+const entityKind = z.enum(CONFIG_ENTITY_KINDS);
 const record = z.record(z.string(), z.unknown());
 const id = z.string().uuid();
 
+/**
+ * Run one SDK call a sandboxed plugin made, on the host's context for it.
+ * Exported for the batch job's remote broker (#1646): a call the plugin
+ * makes in a job container is answered by the admin through this same
+ * function, on a context the admin built — the job's word grants nothing.
+ * Results must be JSON: a Map (config.entities) travels as entry pairs.
+ */
+export async function brokerSandboxCall(
+  ctx: PluginContext,
+  method: string,
+  args: unknown[],
+): Promise<unknown> {
+  return broker(ctx, method, args);
+}
+
 async function broker(ctx: PluginContext, method: string, args: unknown[]): Promise<unknown> {
+  if (method.startsWith("config.")) {
+    const config = ctx.config;
+    if (!config) throw new Error("SandboxCapabilityDenied: config (the plugin declares none)");
+    switch (method) {
+      case "config.get":
+        if (args.length !== 0) throw new Error("SandboxArgumentsInvalid");
+        return config.get();
+      case "config.entity": {
+        const [kind, entityId] = z.tuple([entityKind, z.string().min(1).max(64)]).parse(args);
+        return config.entity(kind, entityId);
+      }
+      case "config.entities": {
+        const [kind, ids] = z
+          .tuple([entityKind, z.array(z.string().min(1).max(64)).max(1000)])
+          .parse(args);
+        return [...(await config.entities(kind, ids)).entries()];
+      }
+      case "config.configured":
+        return config.configured(z.tuple([entityKind]).parse(args)[0]);
+    }
+  }
+  if (method === "chatTools.run") {
+    const chatTools = ctx.chatTools;
+    if (!chatTools) throw new Error("SandboxCapabilityDenied: chatTools");
+    const [conversation, tool, input, opts] = z
+      .tuple([
+        z.string().max(120),
+        z.object({ plugin: z.string().max(55), operation: z.string().max(120) }).strict(),
+        z.record(z.string().max(40), z.string().max(2000)),
+        z
+          .object({
+            lang: z.string().max(35),
+            runId: z.string().uuid().optional(),
+            at: z.enum(["staged", "live"]).optional(),
+          })
+          .strict(),
+      ])
+      .parse(args);
+    // The host handle checks the conversation, the tool and its plugin.
+    return chatTools.run(conversation, tool, input, opts);
+  }
+  if (method.startsWith("collections.")) {
+    const collections = ctx.collections;
+    if (!collections) throw new Error("SandboxCapabilityDenied: collections");
+    const name = collectionName.parse(args[0]);
+    const handle = Object.hasOwn(collections, name) ? collections[name] : undefined;
+    if (!handle) throw new Error(`SandboxCollectionNotDeclared: ${name}`);
+    if (method === "collections.replace") {
+      const [, field, values, docs] = z
+        .tuple([
+          z.string(),
+          z.string().max(40),
+          z.array(z.string().max(500)).max(10_000),
+          z.array(record).max(500),
+        ])
+        .parse(args);
+      return handle.replace(field, values, docs as never);
+    }
+    if (method === "collections.getMany") {
+      const [, ids] = z
+        .tuple([z.string(), z.array(z.string().min(1).max(500)).max(1000)])
+        .parse(args);
+      const r = await handle.getMany(ids);
+      return { docs: [...r.docs.values()], pending: r.pending };
+    }
+    if (method === "collections.query") {
+      const [, operation, params, opts] = z
+        .tuple([
+          z.string(),
+          z.string().max(120),
+          z.record(
+            z.string().max(40),
+            z.union([z.string().max(500), z.array(z.string().max(500)).max(20)]),
+          ),
+          z
+            .object({
+              runId: z.string().uuid().optional(),
+              at: z.enum(["staged", "live"]).optional(),
+              explain: z.boolean().optional(),
+            })
+            .strict(),
+        ])
+        .parse(args);
+      return handle.query(operation, params, opts);
+    }
+    if (args.length !== 2) throw new Error("SandboxArgumentsInvalid");
+    // The host handle validates documents, ids and the profile in full.
+    switch (method) {
+      case "collections.upsert":
+        return handle.upsert(z.array(record).max(500).parse(args[1]) as never);
+      case "collections.delete":
+        return handle.delete(z.array(z.string().max(500)).max(1000).parse(args[1]));
+      case "collections.get":
+        return handle.get(z.string().min(1).max(500).parse(args[1]));
+      case "collections.setProfile":
+        return handle.setProfile(record.parse(args[1]) as never);
+    }
+  }
   if (method.startsWith("images.")) {
     const images = (ctx as PluginContextTier1).images;
     if (!images) throw new Error("SandboxCapabilityDenied: image_generation");
@@ -251,6 +374,57 @@ export function runSandbox(invocation: SandboxInvocation): Promise<unknown> {
  * validator would refuse still reaches Deno, proving the second layer
  * (permissions, prelude, code-generation ban) holds on its own.
  */
+/** Bytes of a crashed child's stderr kept to say why it exited. */
+const STDERR_HEAD_BYTES = 2048;
+
+/**
+ * The first `limit` bytes of a stream, reading it to its end (the rest is
+ * dropped), so a child writing more can never block on a full pipe.
+ * Exported for its unit test.
+ */
+export async function streamHead(
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+): Promise<Uint8Array> {
+  const head = new Uint8Array(limit);
+  let kept = 0;
+  try {
+    for await (const chunk of stream) {
+      if (kept >= limit) continue;
+      const take = Math.min(limit - kept, chunk.byteLength);
+      head.set(chunk.subarray(0, take), kept);
+      kept += take;
+    }
+  } catch {
+    // The child was killed mid-write: what arrived is enough.
+  }
+  return head.subarray(0, kept);
+}
+
+/**
+ * Why a child exited, from the start of its stderr (Deno's "error: …" for an
+ * uncaught exception): one line, control characters dropped, at most 300
+ * characters. It is the plugin's own text, as a thrown error's message is.
+ */
+export function exitReason(stderr: Uint8Array): string {
+  const text = new TextDecoder().decode(stderr);
+  let line = "";
+  for (const raw of text.split("\n")) {
+    const trimmed = raw.trim();
+    if (trimmed !== "") {
+      line = trimmed;
+      break;
+    }
+  }
+  let out = "";
+  for (const ch of line) {
+    const c = ch.codePointAt(0) ?? 0;
+    out += c < 32 || c === 127 ? " " : ch;
+    if (out.length >= 300) break;
+  }
+  return out.trim();
+}
+
 export async function runSandboxWithBundler(
   invocation: SandboxInvocation,
   build: (source: string) => Promise<string>,
@@ -298,10 +472,13 @@ export async function runSandboxWithBundler(
         env: { DENO_DIR: directory, TMPDIR: directory, NO_COLOR: "1" },
         stdin: "pipe",
         stdout: "pipe",
-        stderr: "ignore",
+        // Read for its first bytes only (why a crashed child exited), and
+        // drained to the end so a chatty plugin can never block on a full pipe.
+        stderr: "pipe",
       },
     );
-    const proc = child as Bun.Subprocess<"pipe", "pipe", "ignore">;
+    const proc = child as Bun.Subprocess<"pipe", "pipe", "pipe">;
+    const stderrHead = streamHead(proc.stderr, STDERR_HEAD_BYTES);
     let rejectTimeout: (error: Error) => void = () => {};
     const deadline = new Promise<never>((_resolve, reject) => {
       rejectTimeout = reject;
@@ -346,6 +523,10 @@ export async function runSandboxWithBundler(
       hasPrivateFiles: Boolean((context as PluginContextTier1).privateFiles),
       hasSiteMedia: Boolean((context as PluginContextTier1).siteMedia),
       hasConsentPurposes: Boolean((context as PluginContextTier1).consentPurposes),
+      callLimit: invocation.callLimit ?? SANDBOX_CALL_LIMIT,
+      hasConfig: Boolean(context.config),
+      collections: Object.keys(context.collections ?? {}),
+      hasChatTools: Boolean(context.chatTools),
       // No sessionToken: it is the visitor's login bearer credential (the
       // `login` entry of the HttpOnly `__session` cookie). Handing it to
       // runtime-authored code would let a plugin collect tokens in its own
@@ -367,7 +548,7 @@ export async function runSandboxWithBundler(
         await bounded(invocation.authorize());
         return message.value;
       }
-      if (message.id !== nextCall++ || nextCall > SANDBOX_CALL_LIMIT)
+      if (message.id !== nextCall++ || nextCall > (invocation.callLimit ?? SANDBOX_CALL_LIMIT))
         throw new Error("SandboxCallLimitOrSequence");
       await bounded(invocation.authorize());
       if (invocation.denySdkCalls) throw new Error("SandboxInstallationCannotCallSdk");
@@ -383,7 +564,10 @@ export async function runSandboxWithBundler(
         });
       }
     }
-    throw new Error(timedOut ? "SandboxTimeout" : `SandboxExited: code ${await proc.exited}`);
+    if (timedOut) throw new Error("SandboxTimeout");
+    const exitCode = await proc.exited;
+    const why = exitReason(await stderrHead);
+    throw new Error(`SandboxExited: code ${exitCode}${why ? ` (${why})` : ""}`);
   } finally {
     if (timer) clearTimeout(timer);
     if (child) {

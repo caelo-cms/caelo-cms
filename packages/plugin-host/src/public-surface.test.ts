@@ -53,6 +53,8 @@ describe("shipped plugins' public surface (#1332)", () => {
       "international-site",
       "newsletter",
       "ratings",
+      "site-assistant",
+      "site-search",
     ]);
   });
 

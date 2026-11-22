@@ -12,18 +12,28 @@
     "dev": "bun --env-file=../../.env src/dev.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.104",
+    "@ai-sdk/google": "^4.0.120",
+    "@ai-sdk/openai": "^4.0.117",
+    "@caelo-cms/collection-index": "workspace:*",
+    "@caelo-cms/models": "workspace:*",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
-    "google-auth-library": "^11.3.4"
+    "ai": "^7.0.172",
+    "google-auth-library": "^11.3.4",
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@ai-sdk/provider": "^4.0.38",
     "@caelo-cms/admin-core": "workspace:*",
     "@caelo-cms/plugin-comments": "workspace:*",
     "@caelo-cms/plugin-consent-manager": "workspace:*",
     "@caelo-cms/plugin-ratings": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*",
     "@caelo-cms/plugin-sdk": "workspace:*",
+    "@caelo-cms/plugin-site-assistant": "workspace:*",
+    "@caelo-cms/plugin-site-search": "workspace:*",
     "@caelo-cms/static-generator": "workspace:*",
     "drizzle-orm": "0.45.4"
   }

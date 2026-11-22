@@ -96,6 +96,9 @@ describe("ensureUpgraderJob", () => {
         "iam service-accounts add-iam-policy-binding caelo-production-import@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         // #1574 — and the build carrier.
         "iam service-accounts add-iam-policy-binding caelo-production-build@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
+        // Epic #1644 — and the collection index job and the plugin batch job.
+        "iam service-accounts add-iam-policy-binding caelo-production-index@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
+        "iam service-accounts add-iam-policy-binding caelo-production-plugin-batch@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → roles/storage.objectUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → projects/acme/roles/caeloUpgraderOpsList",
       ].sort(),

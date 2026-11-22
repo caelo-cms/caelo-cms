@@ -7,11 +7,14 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { computeAiCallCostMicrocents } from "./call-cost.js";
+import {
+  computeAiCallCostMicrocents,
+  longPromptRateMultiplier,
+  type PricingCandidate,
+  pickPricingRow,
+} from "@caelo-cms/shared";
 import { pickModelRates } from "./chat-runner/model-cost.js";
 import { estimateImportAiCost } from "./import-cost-model.js";
-import { longPromptRateMultiplier } from "./long-prompt-pricing.js";
-import { type PricingCandidate, pickPricingRow } from "./pricing-cache.js";
 
 // The row migration 0637 seeds.
 const haiku55 = {

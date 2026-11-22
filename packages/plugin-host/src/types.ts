@@ -14,6 +14,11 @@ export interface AIMessage {
 
 export interface AIProvider {
   /**
+   * #1653 — the provider and model a call with this `purpose` runs on, so
+   * the host can reserve the call's worst-case cost before it starts.
+   */
+  resolve(purpose?: string): Promise<{ readonly provider: string; readonly model: string }>;
+  /**
    * Single-shot completion. The host wraps this for `ctx.ai.complete(...)`.
    * `purpose` is the plugin's declared use; the implementation picks the
    * model for it (the Owner's per-purpose choice, else the chat model) and

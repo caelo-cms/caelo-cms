@@ -99,6 +99,10 @@ describe("the staging gateway service", () => {
       expect.stringMatching(
         /^secrets add-iam-policy-binding caelo-production-public-staging-role-password .*secretAccessor/,
       ),
+      // #1654 — staging's own visitor-AI key, never the live one's.
+      expect.stringMatching(
+        /^secrets add-iam-policy-binding caelo-production-visitor-ai-staging-key .*secretAccessor/,
+      ),
       expect.stringMatching(
         /^storage buckets add-iam-policy-binding gs:\/\/acme-caelo-production-staging .*--role=roles\/storage\.objectViewer/,
       ),

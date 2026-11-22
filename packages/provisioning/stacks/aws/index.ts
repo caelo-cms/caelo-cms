@@ -455,15 +455,24 @@ new aws.cloudwatch.LogDelivery(
 // (quality/lighthouse-runner-select.ts) instead of measuring on its own
 // shared CPU. Nothing is staged on AWS before #749 either.
 //
-// FIXME(issue #749): no reporting-job task yet (#1359, #1360, #1574). On GCP
-// a Stage's whole quality audit and a site import's crawl each run in their
-// own job that reports back to the admin, and the build carrier holds the
-// request a build nobody else waits for runs in (src/reporting-job-setup.ts);
-// the AWS equivalent is an ECS task per audit, crawl or carried build behind
-// admin-core reporting-jobs/launcher.ts `JobLauncher`, reporting through the
-// ALB's Cognito gate. Until it exists the admin records every audit, every
-// site import and every carried build as failed with that gap instead of
-// running it on its own CPU.
+// FIXME(issue #749): no reporting-job task yet (#1359, #1360, #1574, epic
+// #1644). On GCP a Stage's whole quality audit, a site import's crawl, a
+// Stage's collection index and a plugin's batch run each run in their own
+// job that reports back to the admin, and the build carrier holds the
+// request a build nobody else waits for runs in (src/reporting-job-catalog.ts);
+// the AWS equivalent is an ECS task per kind behind admin-core
+// reporting-jobs/launcher.ts `JobLauncher`, reporting through the ALB's
+// Cognito gate. Until it exists the admin records every such run as failed
+// with that gap instead of running it on its own CPU.
+//
+// FIXME(issue #749): no collection store yet (epic #1644). On GCP plugin
+// collections (a site search's index) live in two private buckets, staging
+// and live, each gateway reading only its own (src/collections-setup.ts);
+// the AWS equivalent is two private S3 buckets with the same per-task
+// grants and CAELO_COLLECTIONS_{STAGING,LIVE}_STORE on the tasks. Until it
+// exists no task gets a store: a plugin's collection write fails with this
+// gap (plugin-host collections-host.ts), the Stage records its collections
+// as failed, and Publish live refuses until the plugin is deactivated.
 //
 // FIXME(issue #749): no capture task definition yet. On GCP every
 // server-side browser render (screenshots, external page renders, the

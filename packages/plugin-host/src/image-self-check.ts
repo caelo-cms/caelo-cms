@@ -25,7 +25,8 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { type PluginContext, type PluginManifest, pluginManifest } from "@caelo-cms/plugin-sdk";
-import { resolveTrustRoot, verifyDiskPlugin } from "./loader.js";
+import { verifyDiskPlugin } from "./loader.js";
+import { resolveTrustRoot } from "./manifest-definition.js";
 import { runSandbox } from "./sandbox-runtime.js";
 
 /** What {@link checkPluginRuntime} found. `ok` is false when anything failed. */

@@ -156,6 +156,12 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
                chat_session_id::text
           FROM static_file_pending_actions WHERE status = 'pending'
         UNION ALL
+        -- Epic #1644 (#1645) — approval-gated plugin configuration fields.
+        SELECT 'plugin_config', kind, id::text, proposed_by::text, created_at,
+               COALESCE(preview->>'summary', 'plugin configuration'),
+               chat_session_id::text
+          FROM plugin_config_pending_actions WHERE status = 'pending'
+        UNION ALL
         -- #1358 — redirects to another domain.
         SELECT 'redirects', kind, id::text, proposed_by::text, created_at,
                COALESCE(preview->>'summary', 'external redirect'),
@@ -264,6 +270,7 @@ export const listPendingProposalsAcrossDomainsOp = defineOperation({
         UNION ALL SELECT 'templates' FROM template_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'domains' FROM domain_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'static_files' FROM static_file_pending_actions WHERE status = 'pending'
+        UNION ALL SELECT 'plugin_config' FROM plugin_config_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'redirects' FROM redirect_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'themes' FROM theme_pending_actions WHERE status = 'pending'
         UNION ALL SELECT 'site_defaults' FROM site_defaults_pending_actions WHERE status = 'pending'

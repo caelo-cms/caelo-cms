@@ -98,23 +98,35 @@ const guestbook = definePlugin({
   version: "0.1.0",
   tier: 1,
   requestedCapabilities: ["cms_admin"],
-  schema: {},
+  schema: { votes: { id: "uuid", page_id: "string" } },
+  tableKinds: { votes: "visitor-state" },
+  // #1340 — declared inserts; the op events this suite seeds name them.
   publicOperations: [
     {
       name: "vote",
       kind: "write" as const,
       captcha: "none" as const,
       input: z.looseObject({}),
-      reads: [],
-      writes: [],
+      writes: ["votes"],
+      run: {
+        action: "insert" as const,
+        table: "votes",
+        values: { page_id: { from: "input" as const, field: "pageId", orElse: "" } },
+        answer: {},
+      },
     },
     {
       name: "noop",
       kind: "write" as const,
       captcha: "none" as const,
       input: z.looseObject({}),
-      reads: [],
-      writes: [],
+      writes: ["votes"],
+      run: {
+        action: "insert" as const,
+        table: "votes",
+        values: { page_id: { from: "input" as const, field: "pageId", orElse: "" } },
+        answer: {},
+      },
     },
   ],
   operations: {
@@ -123,8 +135,6 @@ const guestbook = definePlugin({
       entries.push(a.text);
       return { pageId: a.pageId };
     },
-    vote: async (_ctx, args) => ({ pageId: (args as { pageId: string }).pageId }),
-    noop: async (_ctx, args) => ({ pageId: (args as { pageId: string }).pageId }),
   },
   staticRender: async (ctx, { pageId, pageUrlStyle }) => {
     const html = entries.map((e) => `<p class="entry">${e}</p>`).join("");

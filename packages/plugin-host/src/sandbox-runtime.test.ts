@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, PluginManifest } from "@caelo-cms/plugin-sdk";
 import { previewContext } from "./preview-context.js";
-import { buildIsolatedBundle, runSandbox, runSandboxWithBundler } from "./sandbox-runtime.js";
+import {
+  buildIsolatedBundle,
+  exitReason,
+  runSandbox,
+  runSandboxWithBundler,
+  streamHead,
+} from "./sandbox-runtime.js";
 
 const manifest: PluginManifest = {
   slug: "sandbox-probe",
@@ -49,6 +55,106 @@ function invoke(body: string, overrides: Partial<Parameters<typeof runSandbox>[0
     ...overrides,
   });
 }
+describe("configuration and collections through the sandbox (#1645, #1648)", () => {
+  it("reads config and entity settings, chunks a large upsert below the line limit, and refuses an undeclared collection", async () => {
+    const upserts: number[] = [];
+    const deleted: string[][] = [];
+    const ctx: PluginContext = {
+      ...context,
+      invocation: {
+        origin: "observer",
+        actorId: "system",
+        stageRunId: "33333333-3333-4333-8333-333333333333",
+      },
+      config: {
+        get: async () => ({ limit: 7 }),
+        entity: async (_k, id) => ({ excluded: id === "p1" }),
+        entities: async (_k, ids) =>
+          new Map(ids.map((id) => [id, { excluded: id === "p1" }] as const)),
+        configured: async () => ["p1"],
+      },
+      collections: {
+        pages: {
+          upsert: async (docs) => {
+            upserts.push(docs.length);
+          },
+          delete: async (ids) => {
+            deleted.push([...ids]);
+          },
+          get: async (id) => ({ id, lang: "de", values: {} }),
+          setProfile: async () => {},
+        },
+      },
+    };
+    const value = await invoke(
+      `const c = await ctx.config.get();
+       const m = await ctx.config.entities("page", ["p1", "p2"]);
+       const big = "x".repeat(20000);
+       const docs = [];
+       for (let i = 0; i < 120; i++) docs.push({ id: "d" + i, lang: "de", values: { title: big } });
+       await ctx.collections.pages.upsert(docs);
+       await ctx.collections.pages.delete(["a", "b"]);
+       let refused = "";
+       try { await ctx.collections.other?.upsert([]); refused = ctx.collections.other ? "present" : "absent"; } catch (e) { refused = e.message; }
+       return { limit: c.limit, isMap: m instanceof Map, p1: m.get("p1").excluded, p2: m.get("p2").excluded, refused };`,
+      { context: ctx },
+    );
+    expect(value).toEqual({ limit: 7, isMap: true, p1: true, p2: false, refused: "absent" });
+    // 120 documents of ~20 KB: more than one 1 MB message, so several calls, all of them.
+    expect(upserts.length).toBeGreaterThan(2);
+    expect(upserts.reduce((a, b) => a + b, 0)).toBe(120);
+    expect(deleted).toEqual([["a", "b"]]);
+  });
+
+  it("reads any number of entity settings, as the SDK promises (the broker takes 1000 per call)", async () => {
+    const calls: number[] = [];
+    const ctx: PluginContext = {
+      ...context,
+      config: {
+        get: async () => ({}),
+        entity: async () => ({}),
+        entities: async (_k, ids) => {
+          calls.push(ids.length);
+          return new Map(ids.map((id) => [id, { n: id }] as const));
+        },
+        configured: async () => [],
+      },
+    };
+    const value = await invoke(
+      `const ids = [];
+       for (let i = 0; i < 2500; i++) ids.push("m" + i);
+       const m = await ctx.config.entities("module", ids);
+       return { size: m.size, last: m.get("m2499").n };`,
+      { context: ctx },
+    );
+    expect(value).toEqual({ size: 2500, last: "m2499" });
+    expect(calls).toEqual([1000, 1000, 500]);
+  });
+
+  it("refuses a collection call naming a collection the host did not attach", async () => {
+    const ctx: PluginContext = {
+      ...context,
+      collections: {
+        pages: {
+          upsert: async () => {},
+          delete: async () => {},
+          get: async () => null,
+          setProfile: async () => {},
+        },
+      },
+    };
+    await expect(
+      invoke('await ctx.collections.pages.get("x"); return Object.keys(ctx.collections);', {
+        context: ctx,
+      }),
+    ).resolves.toEqual(["pages"]);
+    // A plugin without the grant has no handle at all.
+    await expect(invoke("return typeof ctx.collections + typeof ctx.config;")).resolves.toBe(
+      "undefinedundefined",
+    );
+  });
+});
+
 describe("actual Deno plugin execution", () => {
   it("brokers validated SDK calls and returns host identity/theme", async () => {
     expect(
@@ -58,11 +164,9 @@ describe("actual Deno plugin execution", () => {
     ).toEqual({ rows: [{ body: "host result" }], color: "blue", visitor: "visitor" });
   });
   it("does not expose host globals, credentials or elevated handles", async () => {
-    expect(await invoke("return [typeof Bun, typeof ctx.cms, typeof ctx.ai];")).toEqual([
-      "undefined",
-      "undefined",
-      "undefined",
-    ]);
+    expect(
+      await invoke("return [typeof Bun, typeof ctx.cms, typeof ctx.ai, typeof process];"),
+    ).toEqual(["undefined", "undefined", "undefined", "undefined"]);
     expect(await invoke('try { return process.env.HOME; } catch { return "denied"; }')).toBe(
       "denied",
     );
@@ -210,6 +314,17 @@ describe("runtime layer without the validator in front", () => {
       buildIsolatedBundle,
     );
   }
+
+  it("a child that crashes says why, in one bounded line", async () => {
+    // An exception outside the operation's promise: nothing the protocol
+    // can carry, so the exit has to.
+    await expect(
+      invokeUnvalidated(
+        'setTimeout(() => { throw new Error("boom-before-the-call"); }, 0);',
+        "await new Promise(() => {});",
+      ),
+    ).rejects.toThrow(/SandboxExited: code 1 \(.*boom-before-the-call.*\)/);
+  });
 
   it("the validator does refuse these sources on the production path", async () => {
     await expect(
@@ -435,5 +550,30 @@ describe("ctx.consentPurposes through the broker (consent_provider)", () => {
       refused: ["SandboxArgumentsInvalid", "SandboxArgumentsInvalid"],
       after: HOST_LIST,
     });
+  });
+});
+
+describe("why a child exited", () => {
+  it("keeps the first 2 KB of stderr and reads the rest to the end", async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(1024).fill(120);
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled++ >= 10_000) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+    const head = await streamHead(stream, 2048);
+    expect(head.byteLength).toBe(2048);
+    expect(pulled).toBe(10_001);
+  });
+
+  it("names the first line, without control characters, at most 300 characters", () => {
+    const enc = new TextEncoder();
+    expect(exitReason(enc.encode("\n\nerror: Uncaught Error: boom\u0007\n    at x\n"))).toBe(
+      "error: Uncaught Error: boom",
+    );
+    expect(exitReason(enc.encode(`error: ${"y".repeat(1000)}`))).toHaveLength(300);
+    expect(exitReason(new Uint8Array())).toBe("");
   });
 });

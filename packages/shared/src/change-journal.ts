@@ -277,6 +277,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   email_config: "Owner email configuration; read per send",
   mail_delivery_caps:
     "#1337: the Owner's delivery caps of the public mail outboxes; read per drain",
+  visitor_ai_settings:
+    "#1654: the Owner's visitor-AI settings; read per call, and published to the gateways by its projection trigger",
   public_mail_deliveries:
     "#1337: the ledger of mails the admin sent from the public mail outboxes; only counted for the delivery caps",
   telemetry_settings: "the install's telemetry consent",
@@ -298,6 +300,28 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   redirect_changes:
     "which transactions changed redirects, folded by the redirect sync; the journaled redirects table is the source",
   static_bakes: "derived build output of plugin-baked regions",
+  collection_changes:
+    "plugin collection writes waiting for an index (#1648): the indexing job consumes them, nothing reads them as state",
+  stage_output_commits:
+    "build state of a Stage (#1647): which Stages' page output counts, in build order",
+  collection_release_changes:
+    "build state of a Stage (#1648): which changes each collection release is built from",
+  collection_releases:
+    "build state of a Stage like deploy_runs (#1648): which collection release each run produced; the projection publishes the pointed run's",
+  plugin_page_observations:
+    "derived from Stage output (#1647): the hashes an observer last received; losing it only re-sends pages at the next Stage",
+  plugin_page_observation_pending:
+    "a running Stage's observer deliveries (#1647), committed or dropped with the run",
+  plugin_module_counts:
+    "derived from Stage output (#1647): the placement counts an observer last received",
+  plugin_module_count_pending:
+    "a running Stage's placement counts (#1647), committed or dropped with the run",
+  plugin_page_observers:
+    "derived from Stage output (#1647): the digest an observer last saw every page under; losing it only re-sends every page at the next Stage",
+  plugin_page_observer_pending:
+    "a running Stage's observer digests (#1647), committed or dropped with the run",
+  plugin_batch_runs:
+    "the run log of plugin batch operations (#1646): queued, running and how each ended; read by its list op, nothing is derived from it",
   content_instance_refs:
     "derived (synchronous, #1287): the ids and media slugs each content instance's values reference, maintained by triggers on the journaled content_instances; rebuilt by content_instances.rebuild_refs",
   content_instance_snapshot_refs:
@@ -360,6 +384,7 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   deploy_pending_actions: QUEUE,
   domain_pending_actions: QUEUE,
   static_file_pending_actions: QUEUE,
+  plugin_config_pending_actions: QUEUE,
   redirect_pending_actions: QUEUE,
   email_config_pending_actions: QUEUE,
   layout_pending_actions: QUEUE,

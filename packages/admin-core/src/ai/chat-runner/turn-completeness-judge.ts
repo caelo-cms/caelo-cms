@@ -28,6 +28,8 @@
  * the judgment delays only the turn's close, never the visible answer.
  */
 
+import { promptTokenBound } from "@caelo-cms/shared";
+import type { AiSpendRunner } from "../ai-spend.js";
 import { catalogModel } from "../model-catalog.js";
 import { getActiveProviderForModel } from "../provider-resolver.js";
 
@@ -90,6 +92,12 @@ export interface TurnCompletenessInput {
   /** The assistant's closing text — the message that ended the turn. */
   readonly assistantText: string;
   readonly abortSignal?: AbortSignal;
+  /**
+   * #1653 — run the judge's call inside the AI spend ledger (it is paid
+   * like any other). A budget that refuses it makes the judge decline:
+   * no verdict, so the turn is not forced.
+   */
+  readonly spend?: AiSpendRunner;
 }
 
 /** The judge's answer, plus the tokens to attribute to the chat. */
@@ -117,6 +125,9 @@ export type JudgeTurnCompleteness = (
   input: TurnCompletenessInput,
 ) => Promise<TurnCompletenessVerdict | null>;
 
+/** The judge's output ceiling (its reservation covers exactly this). */
+const JUDGE_MAX_TOKENS = 300;
+
 export const judgeTurnCompleteness: JudgeTurnCompleteness = async (input) => {
   try {
     const resolved = await getActiveProviderForModel(JUDGE_MODEL);
@@ -126,23 +137,31 @@ export const judgeTurnCompleteness: JudgeTurnCompleteness = async (input) => {
     }
     const toolList =
       input.toolNames.length > 0 ? input.toolNames.join(", ") : "(no tools were called)";
-    const result = await resolved.provider.generateObject({
-      systemPrompt: JUDGE_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: [
-            `## Operator's request\n${input.userRequest}`,
-            `## Tools the assistant called this turn\n${toolList}`,
-            `## The assistant's closing message\n${input.assistantText}`,
-          ].join("\n\n"),
-        },
-      ],
-      jsonSchema: VERDICT_SCHEMA as unknown as Record<string, unknown>,
-      maxTokens: 300,
-      temperature: 0,
-      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-    });
+    const content = [
+      `## Operator's request\n${input.userRequest}`,
+      `## Tools the assistant called this turn\n${toolList}`,
+      `## The assistant's closing message\n${input.assistantText}`,
+    ].join("\n\n");
+    const call = () =>
+      resolved.provider.generateObject({
+        systemPrompt: JUDGE_SYSTEM_PROMPT,
+        messages: [{ role: "user", content }],
+        jsonSchema: VERDICT_SCHEMA as unknown as Record<string, unknown>,
+        maxTokens: JUDGE_MAX_TOKENS,
+        temperature: 0,
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      });
+    const result = input.spend
+      ? await input.spend.run(
+          { provider: resolved.providerName, model: resolved.model },
+          {
+            promptTokens: promptTokenBound(JUDGE_SYSTEM_PROMPT, content, VERDICT_SCHEMA),
+            maxOutputTokens: JUDGE_MAX_TOKENS,
+          },
+          call,
+          (r) => ({ inputTokens: r.inputTokens, outputTokens: r.outputTokens, model: r.model }),
+        )
+      : await call();
     const obj = result.object as { finished?: unknown; reason?: unknown } | undefined;
     if (typeof obj?.finished !== "boolean") {
       console.error("[chat-runner] turn-completeness judge: no usable verdict", {

@@ -20,6 +20,7 @@ import {
   MAIN_RENDER,
   resetPluginHost,
   resolveListSources,
+  resolveVisitorConsentRule,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -91,6 +92,33 @@ async function cleanup(): Promise<void> {
   } finally {
     await pub.end();
   }
+}
+
+/**
+ * The consent rule as the gateway computes it (#1340: core's, from the
+ * provider's `consentProvider` declaration and the declared purposes).
+ */
+async function rule() {
+  try {
+    return { ok: true as const, value: await resolveVisitorConsentRule() };
+  } catch (e) {
+    return { ok: false as const, error: { message: (e as Error).message } };
+  }
+}
+
+/** A visitor's call, as the gateway dispatches it: the declaration runs. */
+async function visit(operationName: string, args: unknown) {
+  return runPluginOperation({
+    invocation: { origin: "visitor", actorId: "anonymous-visitor" },
+    pluginSlug: "consent-manager",
+    operationName,
+    args,
+    visitorContext: {
+      visitorId: null,
+      sessionToken: null,
+      captcha: { enforced: true, proofVerified: false },
+    },
+  });
 }
 
 async function call(operationName: string, args: unknown = {}) {
@@ -227,7 +255,7 @@ describe("#451 — consent-manager", () => {
   });
 
   it("classifies no purpose and names only its own cookie while no plugin declares one", async () => {
-    const r = await call("visitor_consent_rule");
+    const r = await rule();
     if (!r.ok) throw new Error(JSON.stringify(r.error));
     expect(r.value).toEqual({ policyVersion: 1, purposes: {} });
     const status = await call("consent_status");
@@ -266,7 +294,7 @@ describe("#451 — consent-manager", () => {
     });
     declare("t677-rates", [visitorId("functional")]);
     try {
-      const r = await call("visitor_consent_rule");
+      const r = await rule();
       if (!r.ok) throw new Error(JSON.stringify(r.error));
       expect(r.value).toEqual({ policyVersion: 1, purposes: { visitor_id: "functional" } });
       // The AI names the same cookie, in the same category, in the banner copy.
@@ -291,7 +319,7 @@ describe("#451 — consent-manager", () => {
           cookies: [{ name: "t677_views", lifetime: "1 year", purpose: "Counts views." }],
         },
       ]);
-      const stricter = await call("visitor_consent_rule");
+      const stricter = await rule();
       if (!stricter.ok) throw new Error(JSON.stringify(stricter.error));
       // One key, two categories: the stricter one governs it.
       expect((stricter.value as { purposes: Record<string, string> }).purposes).toEqual({
@@ -353,7 +381,7 @@ describe("#451 — consent-manager", () => {
   });
 
   it("records a visitor's decision", async () => {
-    const r = await call("record_consent", {
+    const r = await visit("record_consent", {
       consentId: CONSENT_ID,
       granted: ["necessary", "analytics"],
       policyVersion: 1,
@@ -388,27 +416,28 @@ describe("#451 — consent-manager", () => {
   it("rejects a malformed decision instead of storing a half-record", async () => {
     // A consent row is evidence; one with the wrong shape is worse than
     // none, because it looks like proof.
-    const r = await call("record_consent", {
+    const r = await visit("record_consent", {
       consentId: CONSENT_ID,
       granted: "everything",
       policyVersion: 1,
     });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.message).toContain("array of category keys");
+    // The host refuses it at the declared input schema, before any write.
+    if (!r.ok) expect(r.error.kind).toBe("InvalidInput");
   });
 
   it("rejects a decision naming a category the site never offered", async () => {
-    const r = await call("record_consent", {
+    const r = await visit("record_consent", {
       consentId: CONSENT_ID,
       granted: ["necessary", "crypto-mining"],
       policyVersion: 1,
     });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.message).toContain("unknown consent categories: crypto-mining");
+    if (!r.ok) expect(r.error.message).toContain("unknown consent categories");
   });
 
   it("rejects a decision made under an outdated policy version", async () => {
-    const r = await call("record_consent", {
+    const r = await visit("record_consent", {
       consentId: CONSENT_ID,
       granted: ["necessary"],
       policyVersion: 99,

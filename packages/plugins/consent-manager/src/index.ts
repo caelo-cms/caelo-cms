@@ -38,7 +38,6 @@ import {
   type ModuleDeferralSpec,
   type PluginAdminQuery,
   type PluginContextTier1,
-  PublicOperationError,
   VISITOR_CONSENT_HEADER,
   z,
 } from "@caelo-cms/plugin-sdk";
@@ -285,7 +284,7 @@ async function seedDefaults(q: PluginAdminQuery): Promise<{ firstActivation: boo
 
 export default definePlugin<PluginContextTier1>({
   slug: SLUG,
-  version: "0.1.0",
+  version: "0.2.0",
   tier: 1,
   requestedCapabilities: [
     "cms_admin_schema",
@@ -408,8 +407,49 @@ export default definePlugin<PluginContextTier1>({
       captcha: "none",
       rateLimit: { max: 20, windowSeconds: 60 },
       writes: ["consent_log"],
+      // #1340 — declared, run by the host. A consent row is evidence: one
+      // with a category or policy version the site never offered is worse
+      // than none, because it looks like proof. The record holds the
+      // decision and the consent cookie's own random id, nothing that
+      // identifies the visitor anywhere else.
+      run: {
+        action: "insert",
+        table: "consent_log",
+        values: {
+          consent_id: { from: "input", field: "consentId" },
+          granted: { from: "input", field: "granted", distinct: true },
+          policy_version: { from: "input", field: "policyVersion" },
+        },
+        checks: [
+          {
+            check: "equals-row",
+            field: "policyVersion",
+            source: { table: "settings", of: "adminSchema" },
+            column: "policy_version",
+            refusal:
+              "record_consent: the policy version is not the current one; the visitor must be asked again",
+          },
+          {
+            check: "all-in",
+            field: "granted",
+            source: { table: "categories", of: "adminSchema" },
+            column: "key",
+            refusal: "record_consent: unknown consent categories",
+          },
+        ],
+        answer: { recorded: true },
+      },
     },
   ],
+  /**
+   * #1340 — the rule core applies in the gateway (which purpose sits under
+   * which category, under which policy version), computed from this and
+   * the purposes the active plugins declare, without running this plugin.
+   */
+  consentProvider: {
+    policyVersion: { table: "settings", column: "policy_version" },
+    strictness: ["functional", "analytics", "marketing"],
+  },
   /** #1332 — the proof of consent is an inbox: visitors write it, only the admin reads it. */
   tableKinds: { consent_log: "inbox" },
 
@@ -545,42 +585,6 @@ export default definePlugin<PluginContextTier1>({
      * gateway; it takes no identity from the caller beyond what the
      * gateway itself resolved.
      */
-    record_consent: async (ctx, args) => {
-      // A consent row is evidence: one with a shape, category or policy
-      // version the site never offered is worse than none, because it
-      // looks like proof.
-      const parsed = recordConsentArgs.safeParse(args);
-      if (!parsed.success) {
-        throw new Error(
-          "record_consent: expected `consentId` as a UUID, `granted` as an array of category keys (at most 32) and `policyVersion` as a positive integer",
-        );
-      }
-      const { consentId, granted, policyVersion } = parsed.data;
-      const q = adminQueryOf(ctx);
-      const settings = await settingsOf(q);
-      if (policyVersion !== settings.policy_version) {
-        throw new PublicOperationError(
-          `record_consent: policy version ${policyVersion} is not the current one (${settings.policy_version}); the visitor must be asked again`,
-        );
-      }
-      const known = new Set((await categoriesOf(q)).map((c) => c.key));
-      const unknown = granted.filter((k) => !known.has(k));
-      if (unknown.length > 0) {
-        throw new PublicOperationError(
-          `record_consent: unknown consent categories: ${unknown.join(", ")}`,
-        );
-      }
-      // The record holds the decision and the consent cookie's own random
-      // id, nothing that identifies the visitor anywhere else: the visitor
-      // id belongs to the plugins that declared it (#1136 round).
-      await ctx.query.insert("consent_log", {
-        consent_id: consentId,
-        granted: [...new Set(granted)],
-        policy_version: policyVersion,
-      });
-      return { recorded: true };
-    },
-
     consent_data_lists: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
       const q = adminQueryOf(ctx);
@@ -969,35 +973,6 @@ export default definePlugin<PluginContextTier1>({
         if (reachedWindow || oldest.length < batch) break;
       }
       return { deleted, cutoff: new Date(cutoff).toISOString() };
-    },
-
-    /**
-     * Core's question to the consent provider (#677): which policy
-     * version a decision must carry to count, and which category covers
-     * each purpose the active plugins declare. The API gateway asks before
-     * it stores a visitor id (the `visitor_id` purpose); the decision
-     * itself reaches it in the `x-caelo-consent` header this plugin's
-     * runtime produces (#1343).
-     *
-     * The categories are the declaring plugins' own (`consentPurposes`,
-     * read through `ctx.consentPurposes`): the plugin that needs a purpose
-     * knows what it is for. Two plugins declaring one key under different
-     * categories get the stricter one (marketing > analytics >
-     * functional), so a visitor is never recognised under a looser
-     * consent than one of the uses asks for. No declaring plugin, no
-     * entry — and the gateway sets no cookie for a purpose nobody uses.
-     */
-    visitor_consent_rule: async (ctx) => {
-      const settings = await settingsOf(adminQueryOf(ctx));
-      const strictness = ["functional", "analytics", "marketing"];
-      const purposes: Record<string, string> = {};
-      for (const p of await consentPurposesOf(ctx)) {
-        const current = purposes[p.key];
-        if (current === undefined || strictness.indexOf(p.category) > strictness.indexOf(current)) {
-          purposes[p.key] = p.category;
-        }
-      }
-      return { policyVersion: settings.policy_version, purposes };
     },
 
     /**

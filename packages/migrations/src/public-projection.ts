@@ -498,6 +498,12 @@ export interface ReleaseState {
   readonly pluginRows: readonly Row[];
   /** The plugins whose `plugin:<id>` section the state publishes. */
   readonly projected: readonly string[];
+  /**
+   * #1654 — `published_plugin_visitor_config` rows: each active plugin's
+   * visitor-visible configuration (`{ plugin_id, values }`, values keyed by
+   * leaf path). Absent in states frozen before it existed: nothing published.
+   */
+  readonly visitorConfig?: readonly Row[];
 }
 
 const releaseState = {
@@ -510,7 +516,8 @@ const releaseState = {
       !Array.isArray(v.plugins) ||
       !Array.isArray(v.grants) ||
       !Array.isArray(v.pluginRows) ||
-      !Array.isArray(v.projected)
+      !Array.isArray(v.projected) ||
+      (v.visitorConfig !== undefined && !Array.isArray(v.visitorConfig))
     ) {
       throw new Error("projection_releases.state has an unknown shape (expected version 1)");
     }
@@ -570,6 +577,70 @@ async function readPluginRows(
   }
   await tx.execute(sql`SELECT set_config('caelo.plugin_id', '', true)`);
   return out;
+}
+
+/**
+ * #1654 — the paths of a manifest's visitor-visible config leaves (the
+ * plugin SDK's `visitorVisibleLeaves`, read from the stored manifest: this
+ * package does not depend on the SDK). Only a scalar leaf with scope
+ * `release` can be marked; the manifest lint refuses anything else.
+ */
+export function visitorVisiblePaths(manifest: unknown): string[] {
+  const config = (manifest as { config?: unknown } | null)?.config;
+  const out: string[] = [];
+  const walk = (fields: unknown, prefix: string, depth: number): void => {
+    if (depth > 3 || fields === null || typeof fields !== "object") return;
+    for (const [name, field] of Object.entries(fields as Record<string, unknown>)) {
+      if (!IDENT_RE.test(name) || field === null || typeof field !== "object") continue;
+      const f = field as { type?: unknown; fields?: unknown; visitorVisible?: unknown };
+      const path = prefix ? `${prefix}.${name}` : name;
+      if (f.type === "group") walk(f.fields, path, depth + 1);
+      else if (f.visitorVisible === true) out.push(path);
+    }
+  };
+  walk(config, "", 1);
+  return out;
+}
+
+/** The value at `path` (dot-separated) of a nested config value, or undefined. */
+function valueAt(values: unknown, path: string): unknown {
+  let at: unknown = values;
+  for (const part of path.split(".")) {
+    if (at === null || typeof at !== "object") return undefined;
+    at = (at as Record<string, unknown>)[part];
+  }
+  return at;
+}
+
+/**
+ * #1654 — a plugin's visitor-visible configuration on the main line: its
+ * configuration rows (`caelo_config`, plugin-config.ts; one per scope, each
+ * holding its own top-level fields) merged, and the marked leaves taken
+ * out. Null when the table is not provisioned or holds no row yet.
+ */
+async function readVisitorConfig(
+  tx: ProjectionTx,
+  plugin: ActivePlugin,
+  paths: readonly string[],
+): Promise<Row | null> {
+  const schema = `plugin_${plugin.slug.replace(/-/g, "_")}`;
+  if (!(await provisioned(tx, schema, { caelo_config: ["values"] }))) return null;
+  await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${plugin.id}, true)`);
+  const found = (await rows(
+    tx,
+    sql`SELECT t."values" AS v FROM ${sql.raw(`"${schema}"."caelo_config"`)} t
+        WHERE t."caelo_deleted_at" IS NULL AND t."caelo_chat_branch_id" IS NULL`,
+  )) as unknown as { v: Record<string, unknown> | null }[];
+  await tx.execute(sql`SELECT set_config('caelo.plugin_id', '', true)`);
+  if (found.length === 0) return null;
+  const merged: Record<string, unknown> = {};
+  for (const r of found) Object.assign(merged, r.v ?? {});
+  const values: Record<string, unknown> = {};
+  for (const path of paths) {
+    const v = valueAt(merged, path);
+    if (v !== undefined) values[path] = v;
+  }
+  return { plugin_id: plugin.id, values };
 }
 
 /** Why the current main line cannot be frozen in this process. */
@@ -633,6 +704,25 @@ async function readCurrentRelease(
   );
   const pluginRows: Row[] = [];
   const projected: string[] = [];
+  // #1654 — what each plugin marks visitor-visible, from its stored
+  // manifest (the admin's own record of what the Owner approved).
+  const manifests = (await rows(
+    tx,
+    sql`SELECT id::text AS id, manifest_json FROM plugins WHERE status = 'active' ORDER BY slug`,
+  )) as unknown as { id: string; manifest_json: unknown }[];
+  const visitorConfig: Row[] = [];
+  for (const plugin of active) {
+    const paths = visitorVisiblePaths(manifests.find((m) => m.id === plugin.id)?.manifest_json);
+    if (paths.length === 0) continue;
+    const found = await readVisitorConfig(tx, plugin, paths);
+    if (found === null) {
+      if (completeness === "as-loaded") continue;
+      throw new ReleaseFreezeError(
+        `plugin "${plugin.slug}" marks configuration visitor-visible but has no configuration stored yet, so it cannot be frozen; reload it (activation stores its defaults)`,
+      );
+    }
+    visitorConfig.push(found);
+  }
   for (const plugin of active) {
     if (!declarations.has(plugin.slug)) {
       if (completeness === "as-loaded") continue;
@@ -652,7 +742,7 @@ async function readCurrentRelease(
     pluginRows.push(...found);
     projected.push(plugin.id);
   }
-  return { version: 1, plugins, grants, pluginRows, projected };
+  return { version: 1, plugins, grants, pluginRows, projected, visitorConfig };
 }
 
 /** Why a frozen release state was taken. */
@@ -872,6 +962,7 @@ export function narrowRelease(state: ReleaseState, now: CurrentNarrowing): Relea
     grants: state.grants.filter((g) => active(g.plugin_id) && now.liveGrantIds.has(String(g.id))),
     pluginRows: state.pluginRows.filter((r) => active(r.plugin_id)),
     projected: state.projected.filter((id) => active(id)),
+    visitorConfig: (state.visitorConfig ?? []).filter((c) => active(c.plugin_id)),
   };
 }
 
@@ -884,6 +975,8 @@ type SettingsRows = Record<PublicTarget, Row[]>;
 
 interface Snapshot {
   settings?: SettingsRows;
+  /** #1654 — each environment's visitor-AI row; published with `settings`. */
+  visitorAi?: SettingsRows;
   staging?: Row[];
   /** #1330 — the staging gateway's row: the gate and the served build (staging database only). */
   stagingSite?: Row[];
@@ -893,6 +986,11 @@ interface Snapshot {
   redirectChanges?: Row[];
   /** Each target's release state to publish, narrowed; absent: not wanted. */
   releases?: Record<PublicTarget, ReleaseState | null>;
+  /**
+   * #1648 — each target's collections: the ready collection releases of the
+   * run its pointer names, of active plugins only. Published with the release.
+   */
+  collections?: Record<PublicTarget, Row[]>;
   /** Full comment resync. */
   allComments?: Row[];
   /** Per-entity comment changes: archive id → approved row, or null to remove. */
@@ -982,6 +1080,86 @@ async function readSettings(tx: ProjectionTx): Promise<SettingsRows> {
   };
 }
 
+/**
+ * #1654 — the visitor AI's row of each environment: the Owner's settings
+ * (cms_admin `visitor_ai_settings`), staging with its own small daily
+ * budget, and every `ai_pricing` candidate of the model, which the gateway
+ * picks the row in force from at call time (shared `pickPricingRow`), so a
+ * price window that starts later needs no publish. Which provider each
+ * environment's key is for, never the key: the admin cannot read it.
+ */
+async function readVisitorAi(tx: ProjectionTx): Promise<SettingsRows> {
+  const found = (await rows(
+    tx,
+    sql`SELECT enabled, provider, model, daily_budget_microcents::text AS daily,
+               monthly_budget_microcents::text AS monthly,
+               conversation_budget_microcents::text AS conversation,
+               staging_daily_budget_microcents::text AS staging_daily, max_concurrent,
+               max_turns, max_question_chars, max_answer_tokens,
+               live_key_provider, staging_key_provider
+        FROM visitor_ai_settings WHERE id = 1`,
+  )) as unknown as {
+    enabled: boolean;
+    provider: string;
+    model: string;
+    daily: string;
+    monthly: string;
+    conversation: string;
+    staging_daily: string;
+    max_concurrent: number;
+    max_turns: number | null;
+    max_question_chars: number | null;
+    max_answer_tokens: number | null;
+    live_key_provider: string | null;
+    staging_key_provider: string | null;
+  }[];
+  const s = found[0];
+  if (!s) return { live: [], staging: [] };
+  const pricing = await rows(
+    tx,
+    sql`SELECT model, input_microcents::float8 AS "inputMicrocents",
+               output_microcents::float8 AS "outputMicrocents",
+               cached_microcents::float8 AS "cachedMicrocents",
+               cache_creation_microcents::float8 AS "cacheCreationMicrocents",
+               long_prompt_threshold_tokens AS "longPromptThresholdTokens",
+               long_prompt_multiplier AS "longPromptMultiplier",
+               (extract(epoch from effective_from) * 1000)::float8 AS "effectiveFromMs",
+               (extract(epoch from valid_from) * 1000)::float8 AS "validFromMs",
+               (extract(epoch from valid_to) * 1000)::float8 AS "validToMs"
+        FROM ai_pricing
+        WHERE provider = ${s.provider} AND model IN (${s.model}, '*') AND operation_type = 'text'
+        ORDER BY model, effective_from`,
+  );
+  const n = (v: string) => Number(v);
+  const row = (daily: number, monthly: number, conversation: number, key: string | null): Row => ({
+    enabled: s.enabled,
+    provider: s.provider,
+    model: s.model,
+    pricing,
+    daily_cap_microcents: daily,
+    monthly_cap_microcents: monthly,
+    conversation_cap_microcents: conversation,
+    max_concurrent: s.max_concurrent,
+    max_turns: s.max_turns,
+    max_question_chars: s.max_question_chars,
+    max_answer_tokens: s.max_answer_tokens,
+    key_provider: key,
+  });
+  const stagingDaily = n(s.staging_daily);
+  return {
+    live: [row(n(s.daily), n(s.monthly), n(s.conversation), s.live_key_provider)],
+    // Staging spends its own small budget, never the live one's.
+    staging: [
+      row(
+        stagingDaily,
+        Math.min(n(s.monthly), stagingDaily * 30),
+        Math.min(n(s.conversation), stagingDaily),
+        s.staging_key_provider,
+      ),
+    ],
+  };
+}
+
 async function readSnapshot(
   tx: ProjectionTx,
   want: ReadonlySet<ProjectionSection>,
@@ -989,7 +1167,10 @@ async function readSnapshot(
   commentIds: ReadonlySet<string>,
 ): Promise<Snapshot> {
   const snap: Snapshot = { commentChanges: new Map() };
-  if (want.has("settings")) snap.settings = await readSettings(tx);
+  if (want.has("settings")) {
+    snap.settings = await readSettings(tx);
+    snap.visitorAi = await readVisitorAi(tx);
+  }
   if (want.has("staging")) {
     snap.staging = await rows(
       tx,
@@ -1069,6 +1250,25 @@ async function readSnapshot(
       live: pointed.live && narrowRelease(pointed.live, now),
       staging: pointed.staging && narrowRelease(pointed.staging, now),
     };
+    // #1648 — the ready collection releases of each pointed run: a collection
+    // goes live exactly with its Stage, and a deactivated plugin's at once not.
+    const collections = (await rows(
+      tx,
+      sql`SELECT p.environment, c.plugin_id::text AS plugin_id, c.collection, c.release_key
+          FROM projection_release_pointers p
+          JOIN collection_releases c ON c.run_id = p.run_id AND c.state = 'ready'
+          ORDER BY c.plugin_id, c.collection`,
+    )) as unknown as {
+      environment: PublicTarget;
+      plugin_id: string;
+      collection: string;
+      release_key: string;
+    }[];
+    const of = (env: PublicTarget): Row[] =>
+      collections
+        .filter((c) => c.environment === env && now.activePluginIds.has(c.plugin_id))
+        .map(({ plugin_id, collection, release_key }) => ({ plugin_id, collection, release_key }));
+    snap.collections = { live: of("live"), staging: of("staging") };
   }
   if (fullComments) {
     snap.allComments = await rows(tx, commentQuery(sql`true`));
@@ -1088,7 +1288,18 @@ async function readSnapshot(
 const COMMENT_RECORDSET =
   "id uuid, public_row_id uuid, page_id uuid, parent_id uuid, author_name text, content text, submitted_at timestamptz, archived_at timestamptz";
 
-async function writeRelease(tx: ProjectionTx, release: ReleaseState): Promise<ProjectionSection[]> {
+async function writeRelease(
+  tx: ProjectionTx,
+  release: ReleaseState,
+  collections: readonly Row[],
+): Promise<ProjectionSection[]> {
+  await replaceAll(
+    tx,
+    "published_collections",
+    "plugin_id, collection, release_key",
+    "plugin_id uuid, collection text, release_key text",
+    collections,
+  );
   await replaceAll(
     tx,
     "published_plugins",
@@ -1109,6 +1320,14 @@ async function writeRelease(tx: ProjectionTx, release: ReleaseState): Promise<Pr
     "plugin_id, table_name, row_id, row",
     "plugin_id uuid, table_name text, row_id uuid, row jsonb",
     release.pluginRows,
+  );
+  // #1654 — the released visitor-visible configuration (ai-chat prompts).
+  await replaceAll(
+    tx,
+    "published_plugin_visitor_config",
+    'plugin_id, "values"',
+    'plugin_id uuid, "values" jsonb',
+    release.visitorConfig ?? [],
   );
   // A plugin the release no longer publishes loses its section, so the
   // gateway cannot keep serving it.
@@ -1241,7 +1460,19 @@ async function writeSnapshot(
     return false;
   };
   const settings = snap.settings?.[target];
-  if (!(await may("settings", settings !== undefined))) {
+  const claimedSettings = await may("settings", settings !== undefined);
+  if (claimedSettings) {
+    // #1654 — independent of the cookie secret: an environment without
+    // visitor-AI settings has no row, and its gateway refuses every chat.
+    await replaceAll(
+      tx,
+      "published_visitor_ai",
+      "enabled, provider, model, pricing, daily_cap_microcents, monthly_cap_microcents, conversation_cap_microcents, max_concurrent, max_turns, max_question_chars, max_answer_tokens, key_provider",
+      "enabled boolean, provider text, model text, pricing jsonb, daily_cap_microcents bigint, monthly_cap_microcents bigint, conversation_cap_microcents bigint, max_concurrent int, max_turns int, max_question_chars int, max_answer_tokens int, key_provider text",
+      snap.visitorAi?.[target] ?? [],
+    );
+  }
+  if (!claimedSettings) {
     // Not carried, or a newer publish wrote it.
   } else if (settings && settings.length > 0) {
     await replaceAll(
@@ -1303,7 +1534,9 @@ async function writeSnapshot(
     sections.push("redirects");
   }
   const release = snap.releases?.[target];
-  if (release && (await may("plugins", true))) sections.push(...(await writeRelease(tx, release)));
+  if (release && (await may("plugins", true))) {
+    sections.push(...(await writeRelease(tx, release, snap.collections?.[target] ?? [])));
+  }
   let comments = 0;
   if (snap.allComments !== undefined || snap.commentChanges.size > 0) {
     const written = await writeComments(tx, snap, gen);

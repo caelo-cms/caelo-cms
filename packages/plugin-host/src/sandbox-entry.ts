@@ -60,8 +60,14 @@ export const readStdin = () => readerRead(stdinReader);
 // included) would corrupt the protocol or fill a host-side buffer.
 console.log = console.info = console.debug = console.warn = console.error = () => {};
 delete globalThis.Deno;
-// Fail closed: a runtime that refuses the delete must not run plugin code.
+// Node's \`process\` is Deno's compatibility layer over the namespace just
+// removed: touching it would reach back for \`Deno\` (newer Deno throws
+// there asynchronously and takes the child down). A plugin reads no
+// environment, argv or exit code anyway, so it goes too.
+delete globalThis.process;
+// Fail closed: a runtime that refuses a delete must not run plugin code.
 if (typeof globalThis.Deno !== "undefined") throw new Error("SandboxPreludeFailed: Deno namespace still reachable");
+if (typeof globalThis.process !== "undefined") throw new Error("SandboxPreludeFailed: process still reachable");
 `;
 
 /** Entry module: prelude first, then the plugin, then the protocol loop. */
@@ -90,8 +96,9 @@ const write = (value, strictCas = false) => {
 };
 const pending = new MapCtor();
 let nextId = 0;
+let callLimit = 1024;
 const rpc = (method, ...args) => new PromiseCtor((resolve, reject) => {
-  if (nextId >= 1024) return reject(new ErrorCtor("SandboxCallLimit"));
+  if (nextId >= callLimit) return reject(new ErrorCtor("SandboxCallLimit"));
   const id = nextId;
   MapSet(pending, id, { resolve, reject });
   // A refused call consumes no sequence number and leaves nothing pending,
@@ -113,9 +120,71 @@ const handles = (prefix, names) => {
   return ObjectFreeze(out);
 };
 const QUERY_METHODS = ["insert", "list", "update", "updateMany", "compareAndSwap", "delete"];
+// Epic #1644 — config.entities answers entry pairs (JSON has no Map), and
+// takes any number of ids, as the SDK promises: the broker reads 1000 per call.
+const CONFIG_ENTITY_CHUNK = 1000;
+const configHandle = () => ObjectFreeze({
+  get: () => rpc("config.get"),
+  entity: (kind, id) => rpc("config.entity", kind, id),
+  entities: async (kind, ids) => {
+    const out = new MapCtor();
+    for (let i = 0; i < ids.length; i += CONFIG_ENTITY_CHUNK) {
+      for (const [id, values] of await rpc("config.entities", kind, ids.slice(i, i + CONFIG_ENTITY_CHUNK))) out.set(id, values);
+    }
+    return out;
+  },
+  configured: (kind) => rpc("config.configured", kind),
+});
+// A batch of documents travels in messages below the 1 MB line limit: the
+// bootstrap splits it, so a plugin need not know the wire's size.
+const UPSERT_CHUNK_BYTES = 768 * 1024;
+const collectionHandle = (name) => ObjectFreeze({
+  upsert: async (docs) => {
+    let chunk = [];
+    let bytes = 0;
+    for (let i = 0; i < docs.length; i++) {
+      const size = encodeText(JSONStringify(docs[i])).length + 1;
+      if (chunk.length > 0 && (bytes + size > UPSERT_CHUNK_BYTES || chunk.length === 500)) {
+        await rpc("collections.upsert", name, chunk);
+        chunk = [];
+        bytes = 0;
+      }
+      chunk[chunk.length] = docs[i];
+      bytes += size;
+    }
+    if (chunk.length > 0) await rpc("collections.upsert", name, chunk);
+  },
+  delete: async (ids) => {
+    for (let i = 0; i < ids.length; i += 1000) await rpc("collections.delete", name, ids.slice(i, i + 1000));
+  },
+  // Removals by field, then the first documents, in one call; the rest follow.
+  replace: async (field, values, docs) => {
+    await rpc("collections.replace", name, field, values, docs.slice(0, 200));
+    for (let i = 200; i < docs.length; i += 200) await rpc("collections.upsert", name, docs.slice(i, i + 200));
+  },
+  get: (id) => rpc("collections.get", name, id),
+  query: (operation, params, opts) => rpc("collections.query", name, operation, params, opts || {}),
+  getMany: async (ids) => {
+    const docs = new MapCtor();
+    let pending = false;
+    for (let i = 0; i < ids.length; i += 1000) {
+      const r = await rpc("collections.getMany", name, ids.slice(i, i + 1000));
+      for (let j = 0; j < r.docs.length; j++) MapSet(docs, r.docs[j].id, r.docs[j]);
+      pending = pending || r.pending;
+    }
+    return { docs, pending };
+  },
+  setProfile: (profile) => rpc("collections.setProfile", name, profile),
+});
+const collectionsOf = (names) => {
+  const out = {};
+  for (let i = 0; i < names.length; i++) out[names[i]] = collectionHandle(names[i]);
+  return ObjectFreeze(out);
+};
 let initialized = false;
 let buffer = "";
 const execute = async (message) => {
+  if (NumberIsFinite(message.callLimit)) callLimit = message.callLimit;
   const ctx = ObjectFreeze({
     query: handles("query", QUERY_METHODS),
     ...(message.hasAdminQuery ? { adminQuery: handles("adminQuery", QUERY_METHODS) } : {}),
@@ -124,6 +193,9 @@ const execute = async (message) => {
     ...(message.hasSiteMedia ? { siteMedia: handles("siteMedia", ["find", "inspect", "readChunk"]) } : {}),
     ...(message.hasConsentPurposes ? { consentPurposes: handles("consentPurposes", ["list"]) } : {}),
     ...(message.hasPrivateFiles ? { privateFiles: handles("privateFiles", ["begin", "writeChunk", "commit", "stat", "readChunk", "remove"]) } : {}),
+    ...(message.hasConfig ? { config: configHandle() } : {}),
+    ...(message.collections && message.collections.length > 0 ? { collections: collectionsOf(message.collections) } : {}),
+    ...(message.hasChatTools ? { chatTools: ObjectFreeze({ run: (conversation, tool, input, opts) => rpc("chatTools.run", conversation, tool, input, opts || {}) }) } : {}),
     api: handles("api", ["list", "get"]),
     captcha: handles("captcha", ["requireProof"]),
     theme: ObjectFreeze(message.theme), visitor: ObjectFreeze(message.visitor),

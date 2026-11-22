@@ -35,6 +35,7 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { deletePluginCollectionFiles } from "../../collections/gc.js";
 import { requiresApproverPermission } from "../_approver-permission.js";
 import {
   DUPLICATE_PROPOSAL_MESSAGE,
@@ -320,6 +321,14 @@ const executeUninstallPluginOpDefinition = defineOperation({
       label: `drop the admin data schema "${schemaName}" of uninstalled plugin "${slug}"`,
       entityId: payload.pluginId,
       run: () => drops.dropAdminSchema(schemaName),
+    });
+    // #1648 — its search indexes and change files go with its tables.
+    afterCommit(tx, {
+      label: `delete the collection files of uninstalled plugin "${slug}"`,
+      entityId: payload.pluginId,
+      run: async () => {
+        await deletePluginCollectionFiles(slug);
+      },
     });
 
     return ok({

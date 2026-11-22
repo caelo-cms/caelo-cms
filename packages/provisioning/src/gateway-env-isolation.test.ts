@@ -36,6 +36,7 @@ import {
   secretsReadPolicy,
 } from "./aws-task-roles.js";
 import { AZURE_SERVICE_DATABASE_SECRETS } from "./azure-secrets.js";
+import { COLLECTION_STORE_GRANTS } from "./collections-setup.js";
 import { generateDockerCompose } from "./compose.js";
 import {
   databaseUrls,
@@ -44,7 +45,9 @@ import {
   RETIRED_SERVICE_ENV,
   runtimeSecretBindings,
   SERVICE_SECRET_ENV,
+  SERVICE_SECRET_FILES,
   stackIamInvariants,
+  stagingGatewayEnvContract,
 } from "./stack-contract.js";
 
 /** Anything in a gateway env value or name that reaches the authoring database. */
@@ -67,6 +70,9 @@ const GCP_GATEWAY_SECRETS = [
   // key. Neither is a cms_admin credential.
   "mcp-oauth-seal-key",
   "operator-oauth-client",
+  // #1654 — the live site's visitor-AI key: a provider key of its own, never
+  // the admin's AI key and no database credential.
+  "visitor-ai-key",
 ];
 
 /** The source of a stack program. */
@@ -158,6 +164,55 @@ describe("gcp + gcp-firebase: the gateway env contract (#635)", () => {
   });
 });
 
+describe("gcp + gcp-firebase: the visitor-AI keys (#1654)", () => {
+  for (const provider of ["gcp", "gcp-firebase"] as const) {
+    it(`${provider}: each gateway reads only its own environment's key, and the admin none`, () => {
+      const inv = stackIamInvariants(provider);
+      const readers = (secret: string) =>
+        inv
+          .filter(
+            (i) =>
+              i.role === "roles/secretmanager.secretAccessor" &&
+              i.target.kind === "secret" &&
+              i.target.name === secret,
+          )
+          .map((i) => i.member);
+      expect(readers("visitor-ai-key")).toEqual(["gateway-sa"]);
+      expect(readers("visitor-ai-staging-key")).toEqual(["staging-gateway-sa"]);
+      // The admin may add a version (store or remove a key), on these two only.
+      const adders = inv
+        .filter((i) => i.role === "roles/secretmanager.secretVersionAdder")
+        .map((i) => (i.target.kind === "secret" ? `${i.member} ${i.target.name}` : "project-wide"));
+      expect(adders.sort()).toEqual([
+        "run-sa operator-oauth-client",
+        "run-sa visitor-ai-key",
+        "run-sa visitor-ai-staging-key",
+      ]);
+    });
+  }
+
+  it("the live gateway's env names the live key file, the staging gateway's its own secret", () => {
+    const inputs = {
+      provider: "gcp" as const,
+      projectId: "acme",
+      env: "production",
+      domain: "example.com",
+      region: "europe-west1",
+      stagingHost: "staging.example.com",
+      databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
+    };
+    const file = (env: readonly { name: string; value?: unknown }[]) =>
+      env.find((v) => v.name === "CAELO_VISITOR_AI_KEY_FILE")?.value;
+    expect(file(gatewayEnvContract(inputs) as never)).toBe("/secrets/visitor-ai/key.json");
+    expect(file(stagingGatewayEnvContract(inputs) as never)).toBe("/secrets/visitor-ai/key.json");
+    expect(SERVICE_SECRET_FILES.gateway.map((f) => f.secret)).toEqual(["visitor-ai-key"]);
+    expect(SERVICE_SECRET_FILES["staging-gateway"].map((f) => f.secret)).toEqual([
+      "visitor-ai-staging-key",
+    ]);
+    expect(SERVICE_SECRET_FILES.admin).toEqual([]);
+  });
+});
+
 describe("self-hosted: the generated compose gateway service (#635)", () => {
   it("holds public_role on cms_public and nothing else", () => {
     const out = generateDockerCompose({
@@ -186,20 +241,25 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
     expect(gateway).not.toMatch(STAGING_ACCESS);
     expect(gateway).not.toMatch(/superpw|adminpw|gatewaypw|stagingpw/);
     expect(gateway).toContain('CAELO_GATEWAY_ENVIRONMENT: "live"');
-    // No other way in: no Compose secrets, no env file, and exactly one
-    // mount — the database CA certificate (#1338), public, no credential.
+    // No other way in: no Compose secrets, no env file, and three read-only
+    // mounts — the database CA certificate (#1338), public, no credential,
+    // the live collection store (epic #1644), never the staging one, and
+    // (#1654) the live site's visitor-AI key directory, never staging's.
     expect(gateway).not.toMatch(/^ {4}(secrets|env_file):/m);
     expect(gateway).toContain(
-      "    volumes:\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro\n    restart:",
+      "    volumes:\n      - ./postgres-tls/ca.crt:/etc/caelo/db-ca/self-hosted-ca.pem:ro\n      - ./collections/live:/srv/collections/live:ro\n      - ./visitor-ai/live:/secrets/visitor-ai:ro\n    restart:",
     );
     const env = gateway.slice(gateway.indexOf("    environment:"));
     const keys = [...env.matchAll(/^ {6}([A-Z_][A-Z0-9_]*):/gm)].map((m) => m[1]);
     expect(keys.sort()).toEqual([
       // #1254 — its cms_public pool size (pool-budget-stack.ts).
+      "CAELO_COLLECTIONS_LIVE_STORE",
       "CAELO_DB_PUBLIC_POOL_MAX",
       // #1329 — the live site's gateway.
       "CAELO_GATEWAY_ENVIRONMENT",
       "CAELO_TRUSTED_PROXY_HOPS",
+      // #1654 — the live site's visitor-AI key file (its own directory, read-only).
+      "CAELO_VISITOR_AI_KEY_FILE",
       "GATEWAY_PORT",
       "NODE_ENV",
       "PUBLIC_DATABASE_URL",
@@ -302,5 +362,83 @@ describe("aws: the stack (#635)", () => {
         expect(AWS_SERVICE_SECRETS[service as keyof typeof AWS_SERVICE_SECRETS]).toContain(secret);
       }
     }
+  });
+});
+
+/**
+ * Epic #1644 — the collection stores follow the same split: the live
+ * gateway reads only the live index, the staging gateway only the staging
+ * one (staged content never reaches the live side, and a staging gateway
+ * cannot serve what is live), and neither writes.
+ */
+describe("collection stores: each gateway reads only its own environment's (#1644)", () => {
+  const inputs = {
+    projectId: "acme",
+    env: "production",
+    domain: "example.com",
+    region: "europe-west1",
+    stagingHost: "staging.example.com",
+    databaseUrls: databaseUrls("db1.p-label.europe-west1.sql-psa.goog"),
+  };
+  const STAGING_STORE = /coll-staging|COLLECTIONS_STAGING|collections\/staging/;
+  const LIVE_STORE = /coll-live|COLLECTIONS_LIVE|collections\/live/;
+  const flat = (env: { name: string; value?: unknown }[]) =>
+    env.map((v) => `${v.name}=${typeof v.value === "string" ? v.value : ""}`).join("\n");
+
+  for (const provider of ["gcp", "gcp-firebase"] as const) {
+    it(`${provider}: the env contracts name only the gateway's own store`, () => {
+      const live = flat(gatewayEnvContract({ ...inputs, provider }));
+      const staging = flat(stagingGatewayEnvContract({ ...inputs, provider }));
+      expect(live).toMatch(LIVE_STORE);
+      expect(live).not.toMatch(STAGING_STORE);
+      expect(staging).toMatch(STAGING_STORE);
+      expect(staging).not.toMatch(LIVE_STORE);
+    });
+  }
+
+  it("Google Cloud: the gateways' accounts get read access to their own store and nothing else", () => {
+    const byMember = (m: string) =>
+      COLLECTION_STORE_GRANTS.filter((g) => g.member === m).map((g) => [g.bucket, g.role]);
+    expect(byMember("gateway")).toEqual([["coll-live", "roles/storage.objectViewer"]]);
+    expect(byMember("staging-gateway")).toEqual([["coll-staging", "roles/storage.objectViewer"]]);
+  });
+
+  it("self-hosted: each gateway mounts its own store read-only and is told only that one", () => {
+    const out = generateDockerCompose({
+      domain: "example.com",
+      postgresPassword: "superpw",
+      rolePasswords: { admin: "adminpw", public: "publicpw", publicStaging: "stagingpw" },
+      caeloSecretKek: "0".repeat(64),
+      dbTlsServerCertSha256: "ab".repeat(32),
+      internalSecret: "i".repeat(48),
+      stagingHost: "staging.example.com",
+      stagingGateSecret: "g".repeat(64),
+      diskSize: "20Gi",
+      images: {
+        mode: "release" as const,
+        admin: `ghcr.io/caelo-cms/admin@sha256:${"a".repeat(64)}`,
+        gateway: `ghcr.io/caelo-cms/gateway@sha256:${"b".repeat(64)}`,
+      },
+      ports: { http: 80, https: 443 },
+      project: "caelo-example-com",
+    });
+    const service = (name: string) => {
+      const start = out.indexOf(`  ${name}:`);
+      const end = out.indexOf("\n  caelo-", start + 1);
+      return out.slice(start, end === -1 ? undefined : end);
+    };
+    const live = service("caelo-gateway");
+    const staging = service("caelo-staging-gateway");
+    expect(live).toContain("- ./collections/live:/srv/collections/live:ro");
+    expect(live).toContain('CAELO_COLLECTIONS_LIVE_STORE: "file:///srv/collections/live"');
+    expect(live).not.toMatch(STAGING_STORE);
+    expect(staging).toContain("- ./collections/staging:/srv/collections/staging:ro");
+    expect(staging).toContain('CAELO_COLLECTIONS_STAGING_STORE: "file:///srv/collections/staging"');
+    expect(staging).not.toMatch(LIVE_STORE);
+    // The admin writes both (it builds a Stage's index in-process here).
+    const admin = service("caelo-admin");
+    expect(admin).toContain("- ./collections:/data/collections\n");
+    expect(admin).toContain('CAELO_COLLECTIONS_STAGING_STORE: "file:///data/collections/staging"');
+    expect(admin).toContain('CAELO_COLLECTIONS_LIVE_STORE: "file:///data/collections/live"');
   });
 });

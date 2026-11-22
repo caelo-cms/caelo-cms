@@ -31,8 +31,9 @@
  *   rating_aggregates — denormalised count + sum + average for fast static reads.
  *
  * Operations:
- *   submit            — PUBLIC. Visitor scores 1-5; adds a vote.
- *   list_aggregates   — PUBLIC read of the published averages.
+ *   submit            — PUBLIC, declared (#1340): inserts the vote.
+ *   list_aggregates   — PUBLIC, declared: lists the published averages.
+ *   panel_aggregates  — the same averages for the admin panel and AI tool.
  *   _refresh          — worker (every 5 min, each public database) + owner
  *                       panel + AI tool (live). Recomputes the averages from
  *                       the votes; idempotent.
@@ -48,7 +49,6 @@ import {
   defineComponent,
   definePlugin,
   type PluginContextTier1,
-  PublicOperationError,
   VISITOR_ID_COOKIE,
   z,
 } from "@caelo-cms/plugin-sdk";
@@ -91,7 +91,7 @@ interface AggregateRow {
 
 export default definePlugin<PluginContextTier1>({
   slug: "ratings",
-  version: "1.0.0",
+  version: "1.1.0",
   tier: 1,
   schema: {
     ratings: {
@@ -146,6 +146,20 @@ export default definePlugin<PluginContextTier1>({
       rateLimit: { max: 20, windowSeconds: 60 },
       // Adds a vote; the recompute finds the visitor's earlier one.
       writes: ["ratings"],
+      // One vote row per submit. A consented visitor's id lets the
+      // recompute keep only their newest vote per page; without consent
+      // (#677) the vote is anonymous and counts on its own, bounded by the
+      // per-address rate limit and the captcha.
+      run: {
+        action: "insert",
+        table: "ratings",
+        values: {
+          page_id: { from: "input", field: "pageId", trim: true },
+          visitor_id: { from: "visitor", key: "id" },
+          score: { from: "input", field: "score" },
+        },
+        answer: { recorded: true, id: { from: "inserted-id" } },
+      },
     },
     {
       name: "list_aggregates",
@@ -153,6 +167,17 @@ export default definePlugin<PluginContextTier1>({
       captcha: "none",
       input: listAggregatesInput,
       reads: ["rating_aggregates"],
+      // Most-rated first, like the admin panel.
+      run: {
+        action: "list",
+        table: "rating_aggregates",
+        where: { page_id: { from: "input", field: "pageId", optional: true } },
+        orderBy: "count",
+        orderDir: "desc",
+        limit: 200,
+        columns: ["id", "page_id", "count", "sum", "average", "updated_at"],
+        as: "aggregates",
+      },
     },
   ],
   /**
@@ -162,31 +187,8 @@ export default definePlugin<PluginContextTier1>({
    */
   tableKinds: { ratings: "inbox", rating_aggregates: "published" },
   operations: {
-    submit: async (ctx, args) => {
-      const parsed = submitInput.safeParse(args);
-      if (!parsed.success) {
-        // The host validates visitor calls first (#1332); this words a
-        // direct call's refusal the same way.
-        throw new PublicOperationError(
-          parsed.error.issues.some((i) => i.path[0] === "score")
-            ? "submit: score must be 1..5"
-            : "submit: pageId must be a non-empty string up to 200 chars",
-        );
-      }
-      const input = parsed.data;
-      // One vote row per submit. A consented visitor's id lets the
-      // recompute keep only their newest vote per page; without consent
-      // (#677) the vote is anonymous and counts on its own, bounded by the
-      // gateway's per-address rate limit and the captcha.
-      const r = await ctx.query.insert("ratings", {
-        page_id: input.pageId,
-        visitor_id: ctx.visitor.id,
-        score: input.score,
-      });
-      return { recorded: true, id: r.id };
-    },
-
-    list_aggregates: async (ctx, args) => {
+    /** The averages for the admin panel and the AI tool (the visitor read is declared). */
+    panel_aggregates: async (ctx, args) => {
       const input = listAggregatesInput.parse(args ?? {});
       // Most-rated first: the admin panel lists them in this order.
       const filter: Record<string, unknown> = { limit: 200, orderBy: "count", orderDir: "desc" };
@@ -320,7 +322,7 @@ export default definePlugin<PluginContextTier1>({
           title: "Page ratings",
           description:
             "Most-rated pages first. Ratings are recounted every five minutes; refresh to recount now.",
-          operation: "list_aggregates",
+          operation: "panel_aggregates",
           rowsKey: "aggregates",
           emptyMessage: "No ratings yet.",
           columns: [
@@ -347,7 +349,7 @@ export default definePlugin<PluginContextTier1>({
       description:
         "Read visitor star ratings per page: vote count, sum and average (average is ×100, so 437 = 4.37 stars). Optional pageId to scope to one page. " +
         "Aggregates are recomputed every 5 minutes; call refresh_rating_aggregates first if the operator needs the very latest votes.",
-      operationName: "list_aggregates",
+      operationName: "panel_aggregates",
       inputJsonSchema: {
         type: "object",
         additionalProperties: false,

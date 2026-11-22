@@ -222,6 +222,9 @@ jobs:
           cat "$RUNNER_TEMP/firestore-emulator.log"
           exit 1
 
+      - name: Fetch the embedding models (semantic search tests, #1650)
+        uses: ./.github/actions/embedding-models
+
       - name: Build the workspace packages (tsc -b)
         # The tests load built package outputs — every shipped plugin's
         # `dist/` (shipped-plugins-validate, public-surface) among them —
@@ -476,6 +479,9 @@ jobs:
           chmod +x packages/migrations/src/bootstrap.sh
           packages/migrations/src/bootstrap.sh
           bun run db:migrate
+
+      - name: Fetch the embedding models (semantic search tests, #1650)
+        uses: ./.github/actions/embedding-models
 
       - name: Integration tier under the plan log
         # Bounded so a stalled run still reaches the steps below, which print

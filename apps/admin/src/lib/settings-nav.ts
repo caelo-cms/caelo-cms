@@ -314,6 +314,14 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         keywords: ["cost", "tokens", "usage", "money"],
       },
       {
+        href: "/settings/visitor-ai",
+        label: "Visitor AI",
+        description: "The AI that answers your visitors: its key, model and budgets.",
+        permission: "settings.write",
+        icon: "bot",
+        keywords: ["assistant", "chatbot", "visitors", "key", "budget"],
+      },
+      {
         href: "/settings/ai/budgets",
         label: "Spending limits",
         description: "Caps that stop the AI before it spends more than you allow.",
@@ -408,6 +416,14 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
             permission: "settings.write",
           },
         ],
+      },
+      {
+        href: "/settings/plugin-config",
+        label: "Plugin settings",
+        description: "Settings of your active plugins, and the changes waiting for your approval.",
+        permission: "settings.write",
+        icon: "sliders",
+        keywords: ["configuration", "search settings", "plugin options"],
       },
       {
         href: "/settings/plugins/installations",
@@ -609,6 +625,12 @@ export const SETTINGS_SUB_PAGES: readonly SettingsSubPage[] = [
   { route: "/settings/layouts/[id]", parent: "/settings/layouts", permission: "roles.manage" },
   { route: "/settings/import/[runId]", parent: "/settings/import", permission: "settings.write" },
   { route: "/settings/audit/[requestId]", parent: SETTINGS_ROOT, permission: "settings.read" },
+  // #1645 — one plugin's settings, opened from the list of plugins with settings.
+  {
+    route: "/settings/plugin-config/[slug]",
+    parent: "/settings/plugin-config",
+    permission: "settings.write",
+  },
   // #1550 — the queue URL the AI's Go live now card posts to; a visit lands
   // on Settings → Redirects, which lists the queue.
   {

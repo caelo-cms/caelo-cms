@@ -63,6 +63,7 @@ import { redactCredentials } from "./checkpoint-secrets.js";
 import { cliUsage, initDelegatesToWizard, resolveCliRoute } from "./cli-routing.js";
 import {
   BOOTSTRAP_DIR,
+  COLLECTIONS_DIR,
   COMPOSE_ADMIN_UPSTREAM,
   COMPOSE_GATEWAY_UPSTREAM,
   COMPOSE_MCP_AUTH_PROXY_UPSTREAM,
@@ -76,6 +77,7 @@ import {
   type RolePasswords,
   SITE_OUTPUT_ROOT,
   selfHostedSiteUrl,
+  VISITOR_AI_DIR,
 } from "./compose.js";
 import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
 import { ACCEPT_RELEASE_CANDIDATE_FLAG } from "./release-candidate.js";
@@ -361,7 +363,27 @@ function emitComposeFiles(cfg: CaeloConfig): void {
   );
   // The bind-mounted content dirs, created by the CLI so Docker does not
   // create them root-owned on a Linux host.
-  for (const dir of ["output", MEDIA_DIR]) mkdirSync(resolve(CAELO_DIR, dir), { recursive: true });
+  // Epic #1644 — and the two collection stores the gateways mount one each.
+  for (const dir of [
+    "output",
+    MEDIA_DIR,
+    `${COLLECTIONS_DIR}/staging`,
+    `${COLLECTIONS_DIR}/live`,
+    // #1654 — the visitor AI's key per environment; no key until the Owner stores one.
+    `${VISITOR_AI_DIR}/live`,
+    `${VISITOR_AI_DIR}/staging`,
+  ]) {
+    mkdirSync(resolve(CAELO_DIR, dir), { recursive: true });
+  }
+  for (const environment of ["live", "staging"]) {
+    const key = resolve(CAELO_DIR, VISITOR_AI_DIR, environment, "key.json");
+    // Created once and never overwritten: a stored key stays (exclusive create).
+    try {
+      writeFileSync(key, "{}", { mode: 0o640, flag: "wx" });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+  }
 }
 
 /** The Compose file for `cfg` running `images` (secrets come from config.json). */
