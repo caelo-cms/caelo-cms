@@ -4,18 +4,19 @@
  * Epic #1644 (R2, issue #1648) — a Stage's collection index, the admin's
  * bookkeeping.
  *
- *   collections.plan_run     after the build: one release row per active
- *                            collection — carried over when nothing
- *                            changed, pending for the index job, failed
- *                            when the plugin's observer failed
- *   collections.index_tasks  the job asks what to index
- *   collections.index_done   the job reports a release file
- *   collections.index_failed the job reports a failure
- *   collections.run_state    every collection release of a run (Publish live's gate)
+ *   collections.finish_stage  after the build, one Stage at a time in build
+ *                             order: one release row per active collection
+ *                             (carried over, pending for the index job, or
+ *                             failed) and the page-output commit; a Stage a
+ *                             newer one finished before is superseded
+ *   collections.index_tasks   the job asks what to index (a release's members)
+ *   collections.index_done    the job reports a release file
+ *   collections.index_failed  the job reports a failure
+ *   collections.run_state     every collection release of a run (Publish live's gate)
  *
- * A change belongs to the run that claims it and counts as applied once that
- * run's release is ready; a failed index leaves it unapplied, so the next
- * Stage claims it again and nothing is lost.
+ * A change keeps the run that wrote it and counts as applied once a ready
+ * release has it as a member; a failed index leaves it unapplied, so the
+ * next Stage builds it in again and nothing is lost.
  */
 
 import { schemaDigest } from "@caelo-cms/collection-index";
@@ -25,6 +26,7 @@ import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { commitPageOutputRun, discardPageOutputRun } from "../ops/page_output.js";
 import { jsonbParam } from "../sql-helpers.js";
 
 const uuid = z.string().uuid();
@@ -70,6 +72,12 @@ interface ReleaseRow {
 const COLLECTION_LOCK_CLASS = 1644;
 
 /**
+ * The advisory-lock class (key 0) that orders every Stage's finish: its
+ * collection plan and its page-output commit, one Stage at a time.
+ */
+const STAGE_FINISH_LOCK_CLASS = 1666;
+
+/**
  * Serialises a collection's release selection with its index completion.
  * A plan reads the newest ready release and claims every change no index
  * applied: both reads must see one state. Without the lock an index that
@@ -99,10 +107,10 @@ async function previousReady(
   return rows[0] ?? null;
 }
 
-export const planCollectionRunOp = defineOperation({
-  name: "collections.plan_run",
+export const collectionsFinishStageOp = defineOperation({
+  name: "collections.finish_stage",
   readScope: "request",
-  // Why system-only: the Stage's trigger plans its own index.
+  // Why system-only: the Stage's trigger finishes its own page output.
   actorScope: ["system"],
   database: "cms_admin",
   input: z
@@ -136,94 +144,165 @@ export const planCollectionRunOp = defineOperation({
     })
     .strict(),
   output: z.object({
+    /** A newer Stage finished first: this one records nothing of its own. */
+    superseded: z.boolean(),
     pending: z.number().int(),
     carried: z.number().int(),
     failed: z.number().int(),
   }),
   handler: async (_ctx, input, tx) => {
-    const failedBy = new Map(input.failed.map((f) => [f.pluginId, f.error] as const));
-    const modelOf = new Map(
-      input.vectorModels.map((v) => [`${v.pluginId}:${v.collection}`, v.model] as const),
-    );
-    let pending = 0;
-    let carried = 0;
-    let failed = 0;
-    // One lock order for every plan: no two plans wait on each other.
-    const collections = [...activeCollections()].sort((a, b) =>
-      `${a.pluginId}:${a.collection}`.localeCompare(`${b.pluginId}:${b.collection}`),
-    );
-    for (const c of collections) {
-      await lockCollection(tx, c.pluginId, c.collection);
-      const previous = await previousReady(tx, c.pluginId, c.collection);
-      const failure = failedBy.get(c.pluginId);
-      if (failure !== undefined) {
-        await tx.execute(sql`
-          INSERT INTO collection_releases (run_id, plugin_id, collection, state, previous_run_id, error, finished_at)
-          VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'failed', ${previous?.run_id ?? null},
-                  ${`the plugin's page-output observer failed: ${failure}`}, now())
-          ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
-        `);
-        // What the observer wrote before it failed is not its delivery: its
-        // pages are delivered again by the next Stage, so these partial
-        // writes are discarded, never claimed by a later index.
-        await tx.execute(sql`
-          UPDATE collection_changes SET discarded_at = now()
-          WHERE plugin_id = ${c.pluginId}::uuid AND collection = ${c.collection}
-            AND run_id = ${input.runId}::uuid AND applied_run_id IS NULL AND discarded_at IS NULL
-        `);
-        failed++;
-        continue;
-      }
-      // The release's members: every change no ready release applied yet
-      // that the run wrote, that no Stage wrote, or that a Stage wrote whose
-      // plan recorded this collection (its index still building or failed;
-      // a failed plugin's writes it discarded). A change stays with the run
-      // that wrote it and with every release that has it as a member: an
-      // earlier release still being built keeps its own, this one builds
-      // them in too, on the newest ready release. A Stage not yet planned
-      // keeps its writes (still running, or finished before its plan
-      // discarded a failed observer's partial writes): its own plan or its
-      // discard decides them. The per-collection lock orders this with that
-      // plan and with every index completion.
-      const claimed = (await tx.execute(sql`
-        INSERT INTO collection_release_changes (run_id, plugin_id, collection, change_id)
-        SELECT ${input.runId}::uuid, c.plugin_id, c.collection, c.id FROM collection_changes c
-        WHERE c.plugin_id = ${c.pluginId}::uuid AND c.collection = ${c.collection}
-          AND c.applied_run_id IS NULL AND c.discarded_at IS NULL
-          AND (c.run_id IS NULL OR c.run_id = ${input.runId}::uuid
-               OR EXISTS (SELECT 1 FROM collection_releases r WHERE r.run_id = c.run_id
-                            AND r.plugin_id = c.plugin_id AND r.collection = c.collection))
-        ON CONFLICT DO NOTHING
-        RETURNING change_id
-      `)) as unknown as { change_id: string }[];
-      const digest = declarationDigest(c.decl);
-      const model = modelOf.get(`${c.pluginId}:${c.collection}`) ?? null;
-      // A model change is a rebuild: the job re-embeds every passage.
-      const unchanged =
-        previous !== null &&
-        claimed.length === 0 &&
-        previous.stats.schemaDigest === digest &&
-        previous.vector_model === model;
-      if (unchanged) {
-        await tx.execute(sql`
-          INSERT INTO collection_releases (run_id, plugin_id, collection, state, release_key, previous_run_id, stats, vector_model, finished_at)
-          VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'ready', ${previous.release_key},
-                  ${previous.run_id}::uuid, ${jsonbParam({ ...previous.stats, carried: true })}, ${model}, now())
-          ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
-        `);
-        carried++;
-      } else {
-        await tx.execute(sql`
-          INSERT INTO collection_releases (run_id, plugin_id, collection, state, previous_run_id, vector_model)
-          VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'pending', ${previous?.run_id ?? null}, ${model})
-          ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
-        `);
-        pending++;
-      }
-    }
-    return ok({ pending, carried, failed });
+    // Every Stage finishes one at a time, in the order its build started.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${STAGE_FINISH_LOCK_CLASS}::int, 0)`);
+    const [run] = (await tx.execute(sql`
+      SELECT started_at FROM deploy_runs WHERE id = ${input.runId}::uuid AND started_at IS NOT NULL
+    `)) as unknown as { started_at: string }[];
+    if (!run)
+      return err({
+        kind: "HandlerError",
+        operation: "collections.finish_stage",
+        message: `run ${input.runId} has no started build to finish`,
+      });
+    const [newer] = (await tx.execute(sql`
+      SELECT run_id::text AS run_id FROM stage_output_commits
+      WHERE started_at > ${run.started_at}::timestamptz
+      ORDER BY started_at DESC LIMIT 1
+    `)) as unknown as { run_id: string }[];
+    if (newer) return ok(await supersede(tx, input.runId, newer.run_id));
+    const planned = await planCollections(tx, input);
+    await commitPageOutputRun(tx, {
+      runId: input.runId,
+      failedPluginIds: input.failed.map((f) => f.pluginId),
+    });
+    await tx.execute(sql`
+      INSERT INTO stage_output_commits (run_id, started_at) VALUES (${input.runId}::uuid, ${run.started_at}::timestamptz)
+      ON CONFLICT (run_id) DO NOTHING
+    `);
+    return ok({ superseded: false, ...planned });
   },
 });
+
+/**
+ * Plans a Stage's collection releases (inside `collections.finish_stage`):
+ * each active collection's release is carried over, pending with its
+ * members, or failed (the plugin's observer failed, or its embedding model
+ * is missing: the run's writes of that plugin are discarded).
+ */
+async function planCollections(
+  tx: TransactionRunner,
+  input: z.infer<typeof collectionsFinishStageOp.input>,
+): Promise<{ pending: number; carried: number; failed: number }> {
+  const failedBy = new Map(input.failed.map((f) => [f.pluginId, f.error] as const));
+  const modelOf = new Map(
+    input.vectorModels.map((v) => [`${v.pluginId}:${v.collection}`, v.model] as const),
+  );
+  let pending = 0;
+  let carried = 0;
+  let failed = 0;
+  // One lock order for every plan: no two plans wait on each other.
+  const collections = [...activeCollections()].sort((a, b) =>
+    `${a.pluginId}:${a.collection}`.localeCompare(`${b.pluginId}:${b.collection}`),
+  );
+  for (const c of collections) {
+    await lockCollection(tx, c.pluginId, c.collection);
+    const previous = await previousReady(tx, c.pluginId, c.collection);
+    const failure = failedBy.get(c.pluginId);
+    if (failure !== undefined) {
+      await tx.execute(sql`
+        INSERT INTO collection_releases (run_id, plugin_id, collection, state, previous_run_id, error, finished_at)
+        VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'failed', ${previous?.run_id ?? null},
+                ${`the plugin's page-output observer failed: ${failure}`}, now())
+        ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
+      `);
+      // What the observer wrote before it failed is not its delivery: its
+      // pages are delivered again by the next Stage, so these partial
+      // writes are discarded, never claimed by a later index.
+      await tx.execute(sql`
+        UPDATE collection_changes SET discarded_at = now()
+        WHERE plugin_id = ${c.pluginId}::uuid AND collection = ${c.collection}
+          AND run_id = ${input.runId}::uuid AND applied_run_id IS NULL AND discarded_at IS NULL
+      `);
+      failed++;
+      continue;
+    }
+    // The release's members: every change no ready release applied yet
+    // that the run wrote, that no Stage wrote, or that a Stage wrote whose
+    // plan recorded this collection (its index still building or failed;
+    // a failed plugin's writes it discarded). A change stays with the run
+    // that wrote it and with every release that has it as a member: an
+    // earlier release still being built keeps its own, this one builds
+    // them in too, on the newest ready release. A Stage not yet planned
+    // keeps its writes (still running, or finished before its plan
+    // discarded a failed observer's partial writes): its own plan or its
+    // discard decides them. The per-collection lock orders this with that
+    // plan and with every index completion.
+    const claimed = (await tx.execute(sql`
+      INSERT INTO collection_release_changes (run_id, plugin_id, collection, change_id)
+      SELECT ${input.runId}::uuid, c.plugin_id, c.collection, c.id FROM collection_changes c
+      WHERE c.plugin_id = ${c.pluginId}::uuid AND c.collection = ${c.collection}
+        AND c.applied_run_id IS NULL AND c.discarded_at IS NULL
+        AND (c.run_id IS NULL OR c.run_id = ${input.runId}::uuid
+             OR EXISTS (SELECT 1 FROM collection_releases r WHERE r.run_id = c.run_id
+                          AND r.plugin_id = c.plugin_id AND r.collection = c.collection))
+      ON CONFLICT DO NOTHING
+      RETURNING change_id
+    `)) as unknown as { change_id: string }[];
+    const digest = declarationDigest(c.decl);
+    const model = modelOf.get(`${c.pluginId}:${c.collection}`) ?? null;
+    // A model change is a rebuild: the job re-embeds every passage.
+    const unchanged =
+      previous !== null &&
+      claimed.length === 0 &&
+      previous.stats.schemaDigest === digest &&
+      previous.vector_model === model;
+    if (unchanged) {
+      await tx.execute(sql`
+        INSERT INTO collection_releases (run_id, plugin_id, collection, state, release_key, previous_run_id, stats, vector_model, finished_at)
+        VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'ready', ${previous.release_key},
+                ${previous.run_id}::uuid, ${jsonbParam({ ...previous.stats, carried: true })}, ${model}, now())
+        ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
+      `);
+      carried++;
+    } else {
+      await tx.execute(sql`
+        INSERT INTO collection_releases (run_id, plugin_id, collection, state, previous_run_id, vector_model)
+        VALUES (${input.runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'pending', ${previous?.run_id ?? null}, ${model})
+        ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
+      `);
+      pending++;
+    }
+  }
+  return { pending, carried, failed };
+}
+
+/**
+ * A newer Stage finished first. It delivered everything that differs from
+ * the observations it found, which this Stage never committed, so it covers
+ * this Stage's pages: this Stage records nothing (its deliveries and writes
+ * are dropped) and its index is superseded. Applying its older writes over
+ * the newer index would bring old text back.
+ */
+async function supersede(
+  tx: TransactionRunner,
+  runId: string,
+  newerRunId: string,
+): Promise<{ superseded: true; pending: 0; carried: 0; failed: number }> {
+  await discardPageOutputRun(tx, runId);
+  await tx.execute(sql`
+    UPDATE collection_changes SET discarded_at = now()
+    WHERE run_id = ${runId}::uuid AND applied_run_id IS NULL AND discarded_at IS NULL
+  `);
+  let failed = 0;
+  for (const c of activeCollections()) {
+    await tx.execute(sql`
+      INSERT INTO collection_releases (run_id, plugin_id, collection, state, error, finished_at)
+      VALUES (${runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'failed',
+              ${`superseded: a newer Stage (run ${newerRunId}) finished first and indexes these pages`}, now())
+      ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
+    `);
+    failed++;
+  }
+  return { superseded: true, pending: 0, carried: 0, failed };
+}
 
 /** One collection the index job builds. */
 export const indexTaskSchema = z.object({
@@ -463,7 +542,7 @@ export const collectionDiscardRunChangesOp = defineOperation({
 /** Every collection op, for register.ts. */
 export const COLLECTION_INDEX_OPS = [
   collectionDiscardRunChangesOp,
-  planCollectionRunOp,
+  collectionsFinishStageOp,
   collectionIndexTasksOp,
   collectionIndexDoneOp,
   collectionIndexFailedOp,

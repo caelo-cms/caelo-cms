@@ -119,7 +119,7 @@ reproduces the old vectors. With intra-op threads this costs no throughput.
    reads each collection's `vectorModelConfig` leaf on main (the state the
    Stage built). A model the catalog does not have fails that plugin's index
    with the step to take.
-2. **`collections.plan_run` records it.** The model goes into
+2. **`collections.finish_stage` records it.** The model goes into
    `collection_releases.vector_model` (migration 0725). If the model differs
    from the previous release's, the release is not carried over.
 3. **The index job embeds.** `collections/index-job.ts` embeds new and changed

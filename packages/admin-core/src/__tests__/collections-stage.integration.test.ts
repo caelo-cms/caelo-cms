@@ -924,6 +924,69 @@ describe("page output and collections through Stage and Publish live", () => {
     ]);
   });
 
+  it("a Stage that finishes after a newer one records nothing of its own", async () => {
+    // Stage A's build started first, but its finish was delayed past Stage
+    // B's: B compared against observations A never committed, so it
+    // delivered A's pages too. A's older writes over B's index, or its older
+    // observations over B's, would bring old text back.
+    const b = await stage();
+    expect((await indexState(b)).state).toBe("ready");
+    const [plugin] = (await sqlSystem(
+      async (tx) => tx`SELECT id::text AS id FROM plugins WHERE slug = ${PLUGIN}`,
+    )) as { id: string }[];
+    const page = pageIds.get(PAGES[0] as string) as string;
+    const a = crypto.randomUUID();
+    const [write] = (await sqlSystem(async (tx) => {
+      await tx`INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, finished_at)
+               SELECT ${a}::uuid, t.id, ${SYSTEM_ACTOR_ID}::uuid, 'succeeded',
+                      r.started_at - interval '1 minute', now()
+               FROM deploy_targets t, deploy_runs r WHERE t.name = 'staging' AND r.id = ${b}::uuid`;
+      await tx`INSERT INTO plugin_page_observation_pending (run_id, plugin_id, page_id, html_hash, facts_hash)
+               VALUES (${a}::uuid, ${plugin?.id}::uuid, ${page}::uuid, 't-older', 't-older')`;
+      return tx`INSERT INTO collection_changes (plugin_id, collection, run_id, store_key, upserts, deletes, bytes)
+                VALUES (${plugin?.id}::uuid, 'pages', ${a}::uuid, ${`${PLUGIN}/pages/changes/t-older.json`}, 1, 0, 10)
+                RETURNING id::text AS id`;
+    })) as { id: string }[];
+    const observed = async () =>
+      (
+        (await sqlSystem(
+          async (tx) =>
+            tx`SELECT html_hash FROM plugin_page_observations WHERE plugin_id = ${plugin?.id}::uuid AND page_id = ${page}::uuid`,
+        )) as { html_hash: string }[]
+      )[0]?.html_hash;
+    const before = await observed();
+    try {
+      const r = await execute(
+        registry,
+        adapter,
+        { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t1644-superseded" },
+        "collections.finish_stage",
+        { runId: a, failed: [], vectorModels: [] },
+      );
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      expect((r.value as { superseded: boolean }).superseded).toBe(true);
+      // B's observation stands; A's write never reaches an index.
+      expect(await observed()).toBe(before as string);
+      const [row] = (await sqlSystem(
+        async (tx) =>
+          tx`SELECT discarded_at IS NOT NULL AS discarded,
+                    (SELECT count(*)::int FROM collection_release_changes m WHERE m.change_id = c.id) AS members
+             FROM collection_changes c WHERE c.id = ${write?.id}::uuid`,
+      )) as { discarded: boolean; members: number }[];
+      expect(row).toEqual({ discarded: true, members: 0 });
+      const states = await ok<{ collections: { state: string; error: string | null }[] }>(
+        "collections.run_state",
+        { runId: a },
+      );
+      expect(states.collections.length).toBeGreaterThan(0);
+      expect(
+        states.collections.every((c) => c.state === "failed" && c.error?.includes("superseded")),
+      ).toBe(true);
+    } finally {
+      await sqlSystem(async (tx) => tx`DELETE FROM deploy_runs WHERE id = ${a}::uuid`);
+    }
+  });
+
   it("a Stage's index releases are planned before its audit starts", async () => {
     // A plugin's audit rule reads the Stage's index state: before the plan
     // it is "none", and the audit would report a missing index.

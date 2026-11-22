@@ -113,6 +113,7 @@ const ADMIN_TABLES = [
   "plugin_config_pending_actions",
   "collection_changes",
   "collection_release_changes",
+  "stage_output_commits",
   "collection_releases",
   "plugin_page_observations",
   "plugin_page_observation_pending",

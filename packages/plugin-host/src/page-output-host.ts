@@ -12,8 +12,8 @@
  * placement counts changed, in a final call.
  *
  * Deliveries are recorded as pending for the run (`page_output.record`) and
- * count only once the Stage succeeds (`page_output.commit_run` in the
- * trigger's finish step); a failed Stage drops them, so its pages are sent
+ * count only once the Stage succeeds (`collections.finish_stage` in the
+ * trigger's finish step, Stages in build order); a failed Stage drops them, so its pages are sent
  * again next time. An observer that throws leaves its pages unrecorded and
  * marks its collections' release of this run failed, which Publish live
  * refuses with the reason.

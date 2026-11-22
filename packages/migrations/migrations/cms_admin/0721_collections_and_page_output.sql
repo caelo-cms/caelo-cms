@@ -80,6 +80,17 @@ CREATE TABLE collection_release_changes (
 CREATE INDEX collection_release_changes_change_idx ON collection_release_changes (change_id);
 CREATE INDEX collection_release_changes_plugin_idx ON collection_release_changes (plugin_id);
 
+-- Which Stages' page output counts, by when their build started. A Stage
+-- finishes (plans its index, commits its deliveries) one at a time; one
+-- whose build started before a Stage already recorded here is superseded:
+-- the newer one delivered everything it would have.
+CREATE TABLE stage_output_commits (
+  run_id       uuid PRIMARY KEY REFERENCES deploy_runs(id) ON DELETE CASCADE,
+  started_at   timestamptz NOT NULL,
+  committed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX stage_output_commits_started_idx ON stage_output_commits (started_at);
+
 CREATE TABLE collection_releases (
   run_id          uuid NOT NULL REFERENCES deploy_runs(id) ON DELETE CASCADE,
   plugin_id       uuid NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
@@ -155,7 +166,7 @@ DO $$
 DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY ARRAY[
-    'collection_changes', 'collection_release_changes', 'collection_releases', 'plugin_page_observations',
+    'collection_changes', 'collection_release_changes', 'stage_output_commits', 'collection_releases', 'plugin_page_observations',
     'plugin_page_observation_pending', 'plugin_module_counts', 'plugin_module_count_pending',
     'plugin_page_observers', 'plugin_page_observer_pending'
   ] LOOP
