@@ -348,8 +348,11 @@ jobs:
           docker run -d --name rows-read-pg --network host \
             -e POSTGRES_USER -e POSTGRES_PASSWORD -e POSTGRES_DB \
             postgres:17-alpine \
-            -c shared_preload_libraries=pg_stat_statements \
+            -c shared_preload_libraries=pg_stat_statements,auto_explain \
             -c pg_stat_statements.track=top \
+            -c auto_explain.log_min_duration=2 \
+            -c auto_explain.log_analyze=on \
+            -c auto_explain.log_buffers=on \
             -c autovacuum=off
           # Over TCP: the image's init phase answers on its socket only, then
           # restarts; a socket check would pass before the server is up.
@@ -386,6 +389,10 @@ jobs:
           CAELO_ROWS_READ: "1"
           CAELO_ROWS_READ_DETAIL: "page_module_content.list_for_page"
         run: bun run test ./packages/admin-core/src/__tests__/rows-read.integration.test.ts --timeout 1500000
+
+      - name: Plans of the placed-elsewhere read (temporary)
+        if: always()
+        run: docker logs rows-read-pg 2>&1 | grep -B2 -A45 "CROSS JOIN LATERAL" | grep -A47 "page_layout_snapshot_refs r" | head -600
 
   query-index-gate:
     name: Query index gate (unindexed filters)
