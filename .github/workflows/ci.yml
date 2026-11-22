@@ -384,6 +384,7 @@ jobs:
       - name: Rows-read test
         env:
           CAELO_ROWS_READ: "1"
+          CAELO_ROWS_READ_DETAIL: "page_module_content.list_for_page"
         run: bun run test ./packages/admin-core/src/__tests__/rows-read.integration.test.ts --timeout 1500000
 
   query-index-gate:
