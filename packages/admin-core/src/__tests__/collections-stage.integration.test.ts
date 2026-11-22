@@ -987,6 +987,64 @@ describe("page output and collections through Stage and Publish live", () => {
     }
   });
 
+  it("a Stage finishes inside its build lease, so the next build compares against what it recorded", async () => {
+    // The next Stage's build reads the committed observations: if this one
+    // released its lease first, the next could read the observations from
+    // before it and skip a page this one changed and the next one reverts.
+    const seen: { status: string; finished: boolean }[] = [];
+    setInProcessJobLauncher((kind) => {
+      const real = inProcessJobLauncher({ adapter, registry }, kind);
+      if (kind !== "collection_index") return real;
+      return {
+        ...real,
+        async launch(order) {
+          const [row] = (await sqlSystem(
+            async (tx) =>
+              tx`SELECT r.status, EXISTS (SELECT 1 FROM stage_output_commits c WHERE c.run_id = r.id) AS finished
+                 FROM deploy_runs r WHERE r.id = ${order.subjectId}::uuid`,
+          )) as { status: string; finished: boolean }[];
+          if (row) seen.push(row);
+          return real.launch(order);
+        },
+      };
+    });
+    let run: string;
+    try {
+      await setText(PAGES[0] as string, "Neue Öffnungszeiten ab Montag.");
+      run = await stage();
+    } finally {
+      setInProcessJobLauncher((kind) => inProcessJobLauncher({ adapter, registry }, kind));
+    }
+    expect(seen).toEqual([{ status: "running", finished: true }]);
+    expect((await indexState(run)).state).toBe("ready");
+    // A failure after the finish (finish_trigger) keeps what a release took in.
+    const [member] = (await sqlSystem(
+      async (tx) =>
+        tx`SELECT m.change_id::text AS id FROM collection_release_changes m
+           JOIN collection_changes c ON c.id = m.change_id
+           WHERE m.run_id = ${run}::uuid AND c.run_id = ${run}::uuid LIMIT 1`,
+    )) as { id: string }[];
+    expect(member).toBeDefined();
+    await sqlSystem(
+      async (tx) =>
+        tx`UPDATE collection_changes SET applied_run_id = NULL WHERE id = ${member?.id}::uuid`,
+    );
+    await afterFailedStage(
+      { adapter, registry },
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t1644-late-failure" },
+      run,
+    );
+    const [row] = (await sqlSystem(
+      async (tx) =>
+        tx`SELECT discarded_at IS NOT NULL AS discarded FROM collection_changes WHERE id = ${member?.id}::uuid`,
+    )) as { discarded: boolean }[];
+    expect(row).toEqual({ discarded: false });
+    await sqlSystem(
+      async (tx) =>
+        tx`UPDATE collection_changes SET applied_run_id = ${run}::uuid WHERE id = ${member?.id}::uuid`,
+    );
+  });
+
   it("a Stage's index releases are planned before its audit starts", async () => {
     // A plugin's audit rule reads the Stage's index state: before the plan
     // it is "none", and the audit would report a missing index.

@@ -1172,6 +1172,22 @@ async function runTrigger(
         console.error("[deploy] production build", { runId, redirectNote });
     }
 
+    // #1647 / #1648 — the observers' deliveries count now, and the run's
+    // collections get their releases (the index job builds the changed ones).
+    // Inside the build lease, before finish_trigger releases it: the next
+    // Stage's build compares against the observations this one commits, so
+    // it must not start before they are recorded. And before the audit: a
+    // plugin's audit rule reads this Stage's index state.
+    if (plan.target.env === "staging") {
+      const note = await afterStageBuild(
+        { adapter, registry },
+        sys,
+        runId,
+        built.pageOutput?.failed ?? [],
+      );
+      if (note !== null) console.error("[deploy] Stage collections", { runId, note });
+    }
+
     timer.lap("finish");
     const finished = await execute(registry, adapter, ctx, "deploy.finish_trigger", {
       runId,
@@ -1199,21 +1215,8 @@ async function runTrigger(
     if (heldBack !== null) {
       redirectNote ??= `The Staged redirect changes stay Staged: ${heldBack}; the next Publish live plans them again.`;
     }
-    // #1647 / #1648 — the observers' deliveries count now, and the run's
-    // collections get their releases (the index job builds the changed ones).
-    // Before the audit starts: a plugin's audit rule reads this Stage's
-    // index state, which is "none" until the releases are planned.
-    if (plan.target.env === "staging") {
-      const note = await afterStageBuild(
-        { adapter, registry },
-        sys,
-        runId,
-        built.pageOutput?.failed ?? [],
-      );
-      if (note !== null) console.error("[deploy] Stage collections", { runId, note });
-      // #1646 — plugins' `stage` batches run on what this Stage published.
-      await enqueueStageBatches({ adapter, registry }, runId);
-    }
+    // #1646 — plugins' `stage` batches run on what this Stage published.
+    if (plan.target.env === "staging") await enqueueStageBatches({ adapter, registry }, runId);
     // #1359 — the audit row committed with the run; start its job now,
     // inside this request, instead of waiting for the next tick.
     const queuedAuditRunId = (finished.value as { queuedAuditRunId: string | null })

@@ -154,8 +154,8 @@ export const collectionsFinishStageOp = defineOperation({
     // Every Stage finishes one at a time, in the order its build started.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(${STAGE_FINISH_LOCK_CLASS}::int, 0)`);
     const [run] = (await tx.execute(sql`
-      SELECT started_at FROM deploy_runs WHERE id = ${input.runId}::uuid AND started_at IS NOT NULL
-    `)) as unknown as { started_at: string }[];
+      SELECT started_at, status FROM deploy_runs WHERE id = ${input.runId}::uuid AND started_at IS NOT NULL
+    `)) as unknown as { started_at: string; status: string }[];
     if (!run)
       return err({
         kind: "HandlerError",
@@ -167,7 +167,25 @@ export const collectionsFinishStageOp = defineOperation({
       WHERE started_at > ${run.started_at}::timestamptz
       ORDER BY started_at DESC LIMIT 1
     `)) as unknown as { run_id: string }[];
-    if (newer) return ok(await supersede(tx, input.runId, newer.run_id));
+    if (newer)
+      return ok(
+        await supersede(
+          tx,
+          input.runId,
+          `superseded: a newer Stage (run ${newer.run_id}) finished first and indexes these pages`,
+        ),
+      );
+    // A Stage finishes inside its own build (its lease held): one that was
+    // given up meanwhile, its lease lapsed and another build took over,
+    // records nothing either.
+    if (run.status !== "running")
+      return ok(
+        await supersede(
+          tx,
+          input.runId,
+          `superseded: this Stage's build was given up (${run.status}) before it finished`,
+        ),
+      );
     const planned = await planCollections(tx, input);
     await commitPageOutputRun(tx, {
       runId: input.runId,
@@ -275,16 +293,17 @@ async function planCollections(
 }
 
 /**
- * A newer Stage finished first. It delivered everything that differs from
- * the observations it found, which this Stage never committed, so it covers
- * this Stage's pages: this Stage records nothing (its deliveries and writes
- * are dropped) and its index is superseded. Applying its older writes over
- * the newer index would bring old text back.
+ * A Stage that may not count: a newer one finished first (it delivered
+ * everything that differs from the observations it found, which this Stage
+ * never committed, so it covers this Stage's pages), or its build was given
+ * up. It records nothing (its deliveries and writes are dropped) and its
+ * releases fail with `reason`. Its older writes over the newer index would
+ * bring old text back.
  */
 async function supersede(
   tx: TransactionRunner,
   runId: string,
-  newerRunId: string,
+  reason: string,
 ): Promise<{ superseded: true; pending: 0; carried: 0; failed: number }> {
   await discardPageOutputRun(tx, runId);
   await tx.execute(sql`
@@ -296,7 +315,7 @@ async function supersede(
     await tx.execute(sql`
       INSERT INTO collection_releases (run_id, plugin_id, collection, state, error, finished_at)
       VALUES (${runId}::uuid, ${c.pluginId}::uuid, ${c.collection}, 'failed',
-              ${`superseded: a newer Stage (run ${newerRunId}) finished first and indexes these pages`}, now())
+              ${reason}, now())
       ON CONFLICT (run_id, plugin_id, collection) DO NOTHING
     `);
     failed++;
@@ -531,8 +550,11 @@ export const collectionDiscardRunChangesOp = defineOperation({
   output: z.object({ discarded: z.number().int() }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
-      UPDATE collection_changes SET discarded_at = now()
-      WHERE run_id = ${input.runId}::uuid AND applied_run_id IS NULL AND discarded_at IS NULL
+      UPDATE collection_changes c SET discarded_at = now()
+      WHERE c.run_id = ${input.runId}::uuid AND c.applied_run_id IS NULL AND c.discarded_at IS NULL
+        -- A change a release took in is decided: the Stage finished (its
+        -- page output counts) before it failed later on.
+        AND NOT EXISTS (SELECT 1 FROM collection_release_changes m WHERE m.change_id = c.id)
       RETURNING id
     `)) as unknown as { id: string }[];
     return ok({ discarded: rows.length });
