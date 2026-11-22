@@ -25,7 +25,7 @@ import {
   loadBranchedModuleStates,
   loadContentInstanceBranchStates,
 } from "../../snapshots/index.js";
-import { listPlacementsInView } from "./content-instance-reach.js";
+import { placedOutsidePage } from "./content-instance-reach.js";
 import { findContentInstancesContaining, idNeedles } from "./content-instance-refs.js";
 
 /** A module field as readers of the page's text need it. */
@@ -276,8 +276,8 @@ export async function loadNestedContent(
  *   sharing.
  *
  * Only the page's own tree is read (its instances' parents through the
- * reference index, their placements by instance id), never the whole
- * site: `list_for_page` runs once per translated page.
+ * reference index, and per instance whether any placement elsewhere binds
+ * it), never the whole site: `list_for_page` runs once per translated page.
  */
 async function exclusiveToPage(
   tx: TransactionRunner,
@@ -287,11 +287,7 @@ async function exclusiveToPage(
   nestedIds: readonly string[],
 ): Promise<Set<string>> {
   const treeIds = [...tree];
-  const placedElsewhere = new Set(
-    (await listPlacementsInView(tx, treeIds, chatBranchId))
-      .filter((p) => p.pageId !== pageId)
-      .map((p) => p.contentInstanceId),
-  );
+  const placedElsewhere = await placedOutsidePage(tx, treeIds, chatBranchId, pageId);
   // Children of each tree instance, and the instances shared at the
   // source: placed on another page, or listed by an instance outside the
   // tree. Sharing then flows down to everything below them.

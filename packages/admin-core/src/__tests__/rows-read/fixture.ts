@@ -109,7 +109,7 @@ async function pendingContentHistory(tx: SQL, moduleId: string): Promise<void> {
       SELECT ss.id AS header, ps.page_id, pm.content_instance_id AS ci
         FROM site_snapshots ss
         JOIN page_snapshots ps ON ps.site_snapshot_id = ss.id
-        JOIN page_modules pm ON pm.page_id = ps.page_id
+        JOIN page_modules pm ON pm.page_id = ps.page_id AND pm.position = 0
        WHERE ss.description LIKE '${RR_PREFIX}pending%'
          AND NOT EXISTS (SELECT 1 FROM content_instance_snapshots c WHERE c.site_snapshot_id = ss.id)),
     c AS (
@@ -124,9 +124,11 @@ async function pendingContentHistory(tx: SQL, moduleId: string): Promise<void> {
     INSERT INTO page_layout_snapshots (id, site_snapshot_id, page_id, state)
     SELECT ${stableId("'pls-' || header::text")}, header, page_id,
            jsonb_build_object('schemaVersion', 1, 'blocks', jsonb_build_array(jsonb_build_object(
-             'blockName', 'content', 'moduleIds', jsonb_build_array('${moduleId}'),
-             'placements', jsonb_build_array(jsonb_build_object(
-               'moduleId', '${moduleId}', 'contentInstanceId', ci::text, 'syncMode', 'unsynced')))))
+             'blockName', 'content', 'moduleIds', jsonb_build_array('${moduleId}', '${moduleId}'),
+             'placements', jsonb_build_array(
+               jsonb_build_object('moduleId', '${moduleId}', 'contentInstanceId', ci::text, 'syncMode', 'unsynced'),
+               jsonb_build_object('moduleId', '${moduleId}', 'contentInstanceId', ${SHARED_INSTANCE}::text,
+                                  'syncMode', 'synced')))))
       FROM hp`);
 }
 
@@ -140,6 +142,9 @@ async function pendingContentHistory(tx: SQL, moduleId: string): Promise<void> {
 function stableId(seed: string): string {
   return `overlay(overlay(md5(${seed}) placing '4' from 13) placing '8' from 17)::uuid`;
 }
+
+/** The instance every fixture page places second (SQL expression). */
+const SHARED_INSTANCE = stableId("'shared-ci'");
 
 async function count(url: string, query: string): Promise<number> {
   const rows = await asSystem(url, (tx) => tx.unsafe(query) as Promise<{ n: number }[]>);
@@ -228,6 +233,14 @@ export async function growFixture(
           n: number;
         }[]
       )[0]?.n ?? 0;
+    // #1674 — one instance every page also places (synced), as a
+    // site-wide call to action is: its placements grow with the site, so a
+    // read of the page's content that lists them shows here.
+    await tx.unsafe(`
+      INSERT INTO content_instances (id, module_id, "values")
+      VALUES (${SHARED_INSTANCE}, '${moduleId}',
+              jsonb_build_object('heading', 'Shared call to action', 'body', '<p>Shared</p>'))
+      ON CONFLICT (id) DO NOTHING`);
     if (pagesNow < size.pages) {
       await tx.unsafe(`
         WITH p AS (
@@ -245,7 +258,9 @@ export async function growFixture(
             FROM (SELECT id, row_number() OVER () AS n FROM p) p
             JOIN (SELECT id, row_number() OVER () AS n FROM ci) c USING (n))
         INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)
-        SELECT page_id, 'content', 0, '${moduleId}', ci_id, 'unsynced' FROM pairs`);
+        SELECT page_id, 'content', 0, '${moduleId}'::uuid, ci_id, 'unsynced' FROM pairs
+        UNION ALL
+        SELECT page_id, 'content', 1, '${moduleId}'::uuid, ${SHARED_INSTANCE}, 'synced' FROM pairs`);
     }
     const listsNow =
       (
@@ -444,7 +459,7 @@ export async function growFixture(
       tx`SELECT
           (SELECT id::text FROM pages WHERE slug = ${`${RR_PREFIX}p-1`}) AS page_id,
           (SELECT pm.content_instance_id::text FROM page_modules pm JOIN pages p ON p.id = pm.page_id
-            WHERE p.slug = ${`${RR_PREFIX}p-1`} LIMIT 1) AS instance_id,
+            WHERE p.slug = ${`${RR_PREFIX}p-1`} AND pm.position = 0) AS instance_id,
           (SELECT id::text FROM lists WHERE slug = ${`${RR_PREFIX}l-1`}) AS list_id,
           (SELECT id::text FROM media_assets WHERE slug = ${`${RR_PREFIX}m-1`}) AS media_id` as Promise<
         { page_id: string; instance_id: string; list_id: string; media_id: string }[]
