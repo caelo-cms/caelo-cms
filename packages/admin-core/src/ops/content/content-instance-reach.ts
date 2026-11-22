@@ -225,12 +225,16 @@ export async function placedOutsidePage(
     // the head of each referencing row, not whether that row is the head,
     // answers at the first page: a page several chats changed has older
     // rows that need not be the head.
+    // The ids go in as text: `r.ref = c.ref` is then a leakproof text
+    // comparison, an index condition under the refs table's RLS policy,
+    // where `r.ref = c.id::text` (a uuid cast, not leakproof) was only a
+    // filter over every id reference of the site (#1297 rule 2).
     const pending = (await tx.execute(sql`
-      SELECT c.id::text AS id FROM unnest(${uuidArray(ids)}) AS c(id)
+      SELECT c.ref AS id FROM unnest(${textArray(ids)}) AS c(ref)
        CROSS JOIN LATERAL (
          SELECT 1 FROM page_layout_snapshot_refs r
            JOIN draft_pending_entities d ON d.snapshot_row_id = r.snapshot_row_id
-          WHERE r.ref_kind = 'id' AND r.ref = c.id::text
+          WHERE r.ref_kind = 'id' AND r.ref = c.ref
             AND d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'pageLayout'
             AND d.entity_id <> ${pageId}::uuid
             AND EXISTS (
@@ -245,7 +249,7 @@ export async function placedOutsidePage(
                 JOIN pages p ON p.id = d.entity_id
                WHERE es.state @> jsonb_build_object('blocks', jsonb_build_array(
                        jsonb_build_object('placements', jsonb_build_array(
-                         jsonb_build_object('contentInstanceId', c.id::text))))))
+                         jsonb_build_object('contentInstanceId', c.ref))))))
           LIMIT 1) hit
     `)) as unknown as { id: string }[];
     for (const r of pending) out.add(r.id);
