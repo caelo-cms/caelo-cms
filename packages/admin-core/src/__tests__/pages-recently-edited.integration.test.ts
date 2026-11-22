@@ -83,6 +83,39 @@ describe("#1207 — pages.list_recently_edited", () => {
     expect(after).toContain(second);
   });
 
+  it("reads on past snapshots without page changes, in batches (#1676)", async () => {
+    const { templateId } = await op<{ templateId: string }>("templates.create", {
+      pageType: "home",
+      slug: `i1676-tpl-${TS}`,
+      displayName: "T",
+      html: '<body><caelo-slot name="content">_</caelo-slot></body>',
+    });
+    const { pageId: early } = await op<{ pageId: string }>("pages.create", {
+      slug: `i1676-early-${TS}`,
+      title: "Early",
+      templateId,
+    });
+    await op("pages.update", { pageId: early, title: "Early, edited" });
+    // More snapshots than one batch reads, none of them touching a page.
+    for (let i = 0; i < 120; i++) {
+      await op("modules.create", {
+        slug: `i1676-m-${i}-${TS}`,
+        displayName: `M ${i}`,
+        html: "<p>m</p>",
+      });
+    }
+    const { pageId: late } = await op<{ pageId: string }>("pages.create", {
+      slug: `i1676-late-${TS}`,
+      title: "Late",
+      templateId,
+    });
+    const ids = await recentIds();
+    expect(ids.indexOf(late)).toBeGreaterThanOrEqual(0);
+    expect(ids.indexOf(early)).toBeGreaterThan(ids.indexOf(late));
+    // Each page once, at its latest edit.
+    expect(ids.filter((id) => id === early)).toHaveLength(1);
+  });
+
   it("is not open to the AI", async () => {
     const r = await execute(
       registry,
