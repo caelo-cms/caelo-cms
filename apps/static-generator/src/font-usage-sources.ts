@@ -271,7 +271,11 @@ function ordered(sources: ReadonlyMap<string, FontUsageSource>): FontUsageSource
  * forward to the most readers.
  */
 function remember(set: SourceSet): void {
-  if (cached === null || snapshotFollows(cached.mark.snapshot, set.mark.snapshot)) cached = set;
+  if (
+    cached === null ||
+    snapshotFollows(cached.mark.snapshot, set.mark.snapshot, cached.mark.ownXid)
+  )
+    cached = set;
 }
 
 /**
@@ -289,7 +293,9 @@ async function sourcesFor(tx: TransactionRunner): Promise<SourceSet> {
   const { fresh, mark } = await checkJournalMark(tx, base?.mark ?? null, FONT_USAGE_FILTER);
   if (base !== null && fresh) return base;
   const sources =
-    base !== null && !mark.dirty && snapshotFollows(base.mark.snapshot, mark.snapshot)
+    base !== null &&
+    !mark.dirty &&
+    snapshotFollows(base.mark.snapshot, mark.snapshot, base.mark.ownXid)
       ? await readDelta(tx, base, mark)
       : null;
   if (base !== null && sources !== null) {

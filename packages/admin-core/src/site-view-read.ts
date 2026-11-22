@@ -241,7 +241,7 @@ export async function readSiteDelta(
   // can be at the target's xmax, where `readChanges` would leave them out;
   // such a view is not cached anyway (`loadSiteView`).
   if (to.dirty) return { wholeRead: "the reader already wrote rows of the view" };
-  if (!snapshotFollows(from.snapshot, to.snapshot)) {
+  if (!snapshotFollows(from.snapshot, to.snapshot, from.ownXid)) {
     return { wholeRead: "the reader's snapshot is older than the cached view" };
   }
   const read = await readChanges(tx, {

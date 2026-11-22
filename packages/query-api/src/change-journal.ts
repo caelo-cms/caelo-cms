@@ -249,16 +249,30 @@ function snapshotBounds(snapshot: string): SnapshotBounds {
  * reader whose snapshot is older than the cache (a long build
  * transaction) must read afresh. The same test `checkJournalMark` makes
  * in SQL, on the snapshot texts.
+ *
+ * `earlierOwnXid` is the marked transaction's own xid
+ * ({@link JournalMark.ownXid}). Its snapshot leaves that xid out of the
+ * in-flight list although the cached read saw none of its writes (a mark
+ * that saw some is `dirty` and never kept), so it counts as unseen here:
+ * a later reader for which that transaction is still in flight has not
+ * missed anything the cached read holds. Counting it as seen made every
+ * reader running alongside the one that filled a cache read the whole
+ * site again (#1672).
  */
-export function snapshotFollows(earlier: string, later: string): boolean {
+export function snapshotFollows(
+  earlier: string,
+  later: string,
+  earlierOwnXid: string | null,
+): boolean {
   const e = snapshotBounds(earlier);
   const l = snapshotBounds(later);
   const eMax = BigInt(e.xmax);
   if (eMax > BigInt(l.xmax)) return false;
-  const inFlightEarlier = new Set(e.xip);
+  const unseenByEarlier = new Set(e.xip);
+  if (earlierOwnXid !== null) unseenByEarlier.add(earlierOwnXid);
   // A transaction `earlier` saw committed (below its xmax, not in its
-  // xip) must not still be in flight for `later`.
-  return l.xip.every((x) => BigInt(x) >= eMax || inFlightEarlier.has(x));
+  // xip, not its own) must not still be in flight for `later`.
+  return l.xip.every((x) => BigInt(x) >= eMax || unseenByEarlier.has(x));
 }
 
 /**
@@ -341,7 +355,11 @@ export interface JournalMark {
    * The reading transaction's own xid, when it had one. Postgres counts a
    * transaction's own xid as visible in its snapshots, but the read saw
    * only that transaction's writes made BEFORE it; a later write by it
-   * must still invalidate, so freshness treats this xid as unseen.
+   * must still invalidate, so freshness treats this xid as unseen: its
+   * journal rows, and the transaction itself when it is still in flight
+   * for a later reader ({@link snapshotFollows}). A mark that is not
+   * `dirty` saw none of its writes, which holds only while the read the
+   * mark describes follows it with no write of its own in between.
    */
   readonly ownXid: string | null;
   /**
@@ -373,7 +391,8 @@ export interface JournalCheck {
  * `cached` is fresh when, under the reader's single snapshot:
  * - the reader has seen every transaction the marked snapshot saw (so
  *   nothing the cached read included is invisible to this reader — a
- *   build transaction older than the cache must not be served it);
+ *   build transaction older than the cache must not be served it), the
+ *   marked transaction itself aside (see {@link snapshotFollows});
  * - no matching journal row the reader can see (its own included) is
  *   unseen by the mark;
  * - no garbage collection removed a row this comparison needs.
@@ -398,6 +417,7 @@ export async function checkJournalMark(
             AND NOT EXISTS (
               SELECT 1 FROM pg_snapshot_xip(r.s) AS x(xid)
                WHERE x.xid < pg_snapshot_xmax(c.s) AND pg_visible_in_snapshot(x.xid, c.s)
+                 AND x.xid IS DISTINCT FROM c.own
             )
             AND NOT EXISTS (
               SELECT 1 FROM ${cached ? unseenRows(snapshotBounds(cached.snapshot), ownXid) : sql`(SELECT * FROM entity_changes WHERE false)`} ec
