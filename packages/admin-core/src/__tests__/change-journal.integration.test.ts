@@ -25,9 +25,12 @@ import {
   DatabaseAdapter,
   execute,
   finishConsumerRebuild,
+  type JournalMark,
   OperationRegistry,
   pollChanges,
+  readChanges,
   registerConsumer,
+  snapshotFollows,
   type TransactionRunner,
 } from "@caelo-cms/query-api";
 import type { ExecutionContext, LiveTopic } from "@caelo-cms/shared";
@@ -424,6 +427,104 @@ describe("#1267 — the journal never serialises writers and its cursor never sk
       checkJournalMark(tx, first.mark, filter),
     );
     expect(after.fresh).toBe(false);
+  });
+
+  it("a check and a read of the journal give the reader no transaction id (#1672)", async () => {
+    const filter = { kinds: ["module"] };
+    for (const actorKind of ["human", "ai", "system"] as const) {
+      const ctx: ExecutionContext = { actorId: ACTOR, actorKind, requestId: "t1672-reader" };
+      const seen = await adapter.withAdminTransaction(ctx, async (tx) => {
+        const first = await checkJournalMark(tx, null, filter);
+        await checkJournalMark(tx, first.mark, filter);
+        await readChanges(tx, {
+          cursor: first.mark.snapshot,
+          target: null,
+          after: null,
+          filter,
+          limit: 10,
+        });
+        const rows = (await tx.execute(
+          sql`SELECT pg_current_xact_id_if_assigned()::text AS own`,
+        )) as unknown as { own: string | null }[];
+        const row = rows[0];
+        if (!row) throw new Error("no row");
+        return { markOwn: first.mark.ownXid, own: row.own };
+      });
+      // The read policy's "own rows" term assigned one while planning (0750).
+      expect({ actorKind, ...seen }).toEqual({ actorKind, markOwn: null, own: null });
+    }
+  });
+
+  it("a mark of a transaction with an xid stays fresh for a reader beside it (#1672)", async () => {
+    const filter = { kinds: ["redirect"] };
+    const HUMAN: ExecutionContext = { actorId: ACTOR, actorKind: "human", requestId: "t1672" };
+    let started!: () => void;
+    const hasStarted = new Promise<void>((r) => {
+      started = r;
+    });
+    let go!: () => void;
+    const mayMark = new Promise<void>((r) => {
+      go = r;
+    });
+    let marked!: (mark: JournalMark) => void;
+    const hasMarked = new Promise<JournalMark>((r) => {
+      marked = r;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((r) => {
+      release = r;
+    });
+    const later = crypto.randomUUID();
+    // A writer that reads a cached view (an op, a plugin's write then list):
+    // it holds an xid when it takes the mark, and writes after its read.
+    const holder = adapter.withAdminTransaction(SYS, async (tx) => {
+      await tx.execute(sql`SELECT pg_current_xact_id()`);
+      started();
+      await mayMark;
+      marked((await checkJournalMark(tx, null, filter)).mark);
+      await released;
+      await tx.execute(sql`
+        INSERT INTO redirects (id, from_path, to_path, created_by)
+        VALUES (${later}::uuid, ${`/${PFX}after-mark`}, '/x', ${ACTOR}::uuid)`);
+    });
+    try {
+      await hasStarted;
+      // A later xid commits first, so the holder's own xid lies below its
+      // mark's xmax, outside its in-flight list: the case the follow test
+      // counted as seen.
+      await otherAdapter.withAdminTransaction(SYS, (tx) =>
+        tx.execute(sql`SELECT pg_current_xact_id()`),
+      );
+      go();
+      const mark = await hasMarked;
+      const own = mark.ownXid;
+      if (own === null) throw new Error("the holder had no xid at its mark");
+      expect(mark.dirty).toBe(false);
+      expect(BigInt(own)).toBeLessThan(BigInt(mark.snapshot.split(":")[1] ?? "0"));
+
+      const beside = await otherAdapter.withAdminTransaction(HUMAN, (tx) =>
+        checkJournalMark(tx, mark, filter),
+      );
+      // The holder is in flight for this reader…
+      expect(beside.mark.snapshot.split(":")[2]?.split(",")).toContain(own);
+      // …which has missed nothing the marked read holds.
+      expect(beside.fresh).toBe(true);
+      expect(snapshotFollows(mark.snapshot, beside.mark.snapshot, own)).toBe(true);
+
+      release();
+      await holder;
+      // Its write after the mark still invalidates, for both marks.
+      for (const m of [mark, beside.mark]) {
+        const after = await otherAdapter.withAdminTransaction(HUMAN, (tx) =>
+          checkJournalMark(tx, m, filter),
+        );
+        expect(after.fresh).toBe(false);
+      }
+    } finally {
+      go();
+      release();
+      await holder;
+    }
   });
 
   it("two transactions writing different rows never wait on each other", async () => {

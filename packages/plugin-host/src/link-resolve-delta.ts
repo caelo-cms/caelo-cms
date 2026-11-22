@@ -82,7 +82,7 @@ async function deltaOf(
 ): Promise<LinkResolveDelta> {
   const { pluginId, schema, pageColumns, from, to, filter } = input;
   if (to.dirty) return { whole: "the reader already wrote rows the answers read" };
-  if (!snapshotFollows(from.snapshot, to.snapshot)) {
+  if (!snapshotFollows(from.snapshot, to.snapshot, from.ownXid)) {
     return { whole: "the reader's snapshot is older than the kept answers" };
   }
   const read = await readChanges(tx, {

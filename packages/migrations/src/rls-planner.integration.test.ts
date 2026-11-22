@@ -16,6 +16,13 @@
  *    can never be an index condition on an RLS table. ILIKE is not
  *    leakproof, so a trigram index never serves `ILIKE '%q%'` for
  *    admin_role. Rule: no trigram index on an RLS table.
+ * 3. #1672 — `pg_current_xact_id()` assigns a transaction id, and the
+ *    planner already evaluates it while planning, so a read policy that
+ *    calls it gives every reader of the table an xid (even an EXPLAIN).
+ *    A cache filled by such a reader then looks stale to every reader
+ *    running beside it. Rule: no policy that guards reads calls it;
+ *    `pg_current_xact_id_if_assigned()` answers "my own rows" without
+ *    assigning one.
  *
  * The planner proofs run as admin_role (the role every admin read uses)
  * on a scratch table with FORCEd RLS and realistic row counts.
@@ -47,6 +54,8 @@ interface PolicyRow {
   readonly schema: string;
   readonly table: string;
   readonly policy: string;
+  /** `pg_policy.polcmd`: r = SELECT, a = INSERT, w = UPDATE, d = DELETE, * = ALL. */
+  readonly cmd: string;
   readonly qual: string | null;
   readonly check: string | null;
 }
@@ -56,6 +65,7 @@ async function policies(url: string): Promise<PolicyRow[]> {
   try {
     return (await db`
       SELECT n.nspname AS schema, c.relname AS table, p.polname AS policy,
+             p.polcmd::text AS cmd,
              pg_get_expr(p.polqual, p.polrelid) AS qual,
              pg_get_expr(p.polwithcheck, p.polrelid) AS check
       FROM pg_policy p
@@ -101,6 +111,16 @@ describe("#1297 — RLS policy rules", () => {
       // Spell `current_setting('caelo.x', true) = 'v'` as
       // caelo_setting_is('caelo.x', 'v') and `= ANY (ARRAY[...])` as
       // caelo_setting_in('caelo.x', ARRAY[...]) — see migration 0475.
+      expect(offenders).toEqual([]);
+    });
+
+    it(`${label}: no policy that guards reads assigns a transaction id (#1672)`, async () => {
+      const offenders = (await policies(url))
+        .filter(
+          (p) => (p.cmd === "r" || p.cmd === "*") && /\bpg_current_xact_id\(\)/.test(p.qual ?? ""),
+        )
+        .map((p) => `${p.schema}.${p.table} ${p.policy}`);
+      // Spell "the reader's own rows" as `xid = pg_current_xact_id_if_assigned()` (0750).
       expect(offenders).toEqual([]);
     });
 
