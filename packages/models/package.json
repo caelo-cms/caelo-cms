@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/models",
-  "version": "0.0.0",
+  "version": "0.12.12",
   "private": true,
   "license": "MPL-2.0",
   "description": "The core embedding-model catalog's runtime (epic #1644, R7): verified model files, the tokenizer, and embedders on ONNX Runtime, native in the index job and WebAssembly in the gateway.",
