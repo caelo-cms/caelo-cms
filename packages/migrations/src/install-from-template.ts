@@ -26,6 +26,7 @@
 import {
   databaseUrlFromEnv,
   INSTALL_NAMES_ENV,
+  type InstallNames,
   installNamesFromEnv,
   parseInstallNames,
 } from "@caelo-cms/shared";
@@ -47,14 +48,29 @@ function required(name: string): string {
   return value;
 }
 
+/** A name map from the JSON in `variable`. */
+function namesFrom(variable: string): InstallNames {
+  let json: unknown;
+  try {
+    json = JSON.parse(required(variable));
+  } catch {
+    console.error(`install-from-template: ${variable} is not JSON (an install name map, #1689)`);
+    process.exit(1);
+  }
+  return parseInstallNames(json, variable);
+}
+
 const superuserUrl = databaseUrlFromEnv(["CAELO_SUPERUSER_DATABASE_URL"]);
 if (!superuserUrl) required("CAELO_SUPERUSER_DATABASE_URL");
 const base = new URL(superuserUrl as string);
-const maintenanceDatabase = decodeURIComponent(base.pathname.replace(/^\//, "")) || "postgres";
-const template = parseInstallNames(
-  JSON.parse(required("CAELO_TEMPLATE_INSTALL_NAMES")),
-  "CAELO_TEMPLATE_INSTALL_NAMES",
-);
+const maintenanceDatabase = decodeURIComponent(base.pathname.replace(/^\//, ""));
+if (maintenanceDatabase === "") {
+  console.error(
+    "install-from-template: CAELO_SUPERUSER_DATABASE_URL names no database; name the server's maintenance database (e.g. /postgres)",
+  );
+  process.exit(1);
+}
+const template = namesFrom("CAELO_TEMPLATE_INSTALL_NAMES");
 required(INSTALL_NAMES_ENV);
 const target = installNamesFromEnv();
 const limit = process.env.ADMIN_ROLE_CONNECTION_LIMIT;

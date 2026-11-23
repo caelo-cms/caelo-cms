@@ -45,10 +45,20 @@ import {
 } from "./role-audit.js";
 import { type MigrationTarget, runMigrations } from "./runner.js";
 
-const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
-  ?.SQL as unknown as new (
+const SQL = (globalThis as { Bun?: { SQL: new (url: string, o?: { max?: number }) => SQLType } })
+  .Bun?.SQL as unknown as new (
   url: string,
+  o?: { max?: number },
 ) => SQLType;
+
+/**
+ * Connections each pool of this run may open. A run needs two at most (a
+ * migration's transaction, the projection's read next to its write); Bun's
+ * default of 10 per pool would make the four pools of a run ask for 40, more
+ * than an admin login bounded on a shared server allows (#1689,
+ * ADMIN_ROLE_CONNECTION_LIMIT), and more than the run uses.
+ */
+const RUN_POOL_MAX = 2;
 
 /** Per target: the logical database and the URL var it is reached by. */
 const TARGETS: Readonly<Record<MigrationTarget, { database: LogicalDatabase; urlEnv: string }>> = {
@@ -106,9 +116,9 @@ async function publishProjection(): Promise<void> {
     );
   }
   const clients = {
-    admin: new SQL(urls.admin),
-    live: new SQL(urls.live),
-    staging: new SQL(urls.staging),
+    admin: new SQL(urls.admin, { max: RUN_POOL_MAX }),
+    live: new SQL(urls.live, { max: RUN_POOL_MAX }),
+    staging: new SQL(urls.staging, { max: RUN_POOL_MAX }),
   };
   try {
     const report = await publishProjectionOver(clients);
@@ -127,7 +137,7 @@ async function publishProjection(): Promise<void> {
   }
 }
 
-const sql = new SQL(url);
+const sql = new SQL(url, { max: RUN_POOL_MAX });
 try {
   await assertConnectedTo(sql, spec.database);
   await runMigrations(sql, migrationsDir, { names, target });
