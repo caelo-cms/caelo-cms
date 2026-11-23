@@ -140,6 +140,24 @@ export const DEFAULT_INSTALL_NAMES: InstallNames = Object.freeze({
   }),
 });
 
+/**
+ * Databases every Postgres server has for itself: the maintenance and
+ * template databases and the ones a managed service keeps (Cloud SQL, RDS,
+ * Azure). They hold no install's data, and a managed service may restrict
+ * them to, or open them for, the group a single install's admin role
+ * belongs to, so the isolation checks never count them as another
+ * install's (migrations role-audit.ts, the gateway's boot probe).
+ */
+export const SERVER_DATABASES: readonly string[] = Object.freeze([
+  "postgres",
+  "template0",
+  "template1",
+  "cloudsqladmin",
+  "rdsadmin",
+  "azure_maintenance",
+  "azure_sys",
+]);
+
 /** The logical database names op definitions and pools use. */
 export type LogicalDatabase = "cms_admin" | "cms_public" | "cms_public_staging";
 

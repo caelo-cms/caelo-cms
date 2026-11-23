@@ -195,6 +195,11 @@ async function createRoles(admin: SQL, opts: InstallFromTemplateOptions): Promis
   ]);
   const created: string[] = [];
   await admin.begin(async (tx) => {
+    // CREATE ROLE takes the password in its text (no bind parameters for
+    // utility statements); keep that text out of the server log.
+    await tx.unsafe("SET LOCAL log_statement = 'none'");
+    await tx.unsafe("SET LOCAL log_min_duration_statement = -1");
+    await tx.unsafe("SET LOCAL log_min_error_statement = 'panic'");
     for (const role of rows) {
       const name = map.get(role.rolname);
       if (name === undefined) continue;
@@ -405,16 +410,21 @@ export async function installFromTemplate(
   const createdDatabases: string[] = [];
   let createdRoles: string[] = [];
   try {
-    const [version] = (await admin.unsafe(
-      "SELECT current_setting('server_version_num')::int AS v, (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS su",
-    )) as { v: number; su: boolean }[];
-    if (!version?.su) {
+    const [server] = (await admin.unsafe(
+      "SELECT current_setting('server_version_num')::int AS v, current_setting('standard_conforming_strings') AS scs, (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS su",
+    )) as { v: number; scs: string; su: boolean }[];
+    if (!server?.su) {
       throw new Error("install from template: connect as a superuser of the server (#1689)");
     }
-    if (version.v < 160000) {
+    if (server.v < 160000) {
       throw new Error(
         "install from template: needs PostgreSQL 16 or later (role membership options)",
       );
+    }
+    // `literal` doubles quotes only, which is the whole escaping exactly
+    // while backslashes are plain characters.
+    if (server.scs !== "on") {
+      throw new Error("install from template: needs standard_conforming_strings = on");
     }
     await assertFreshTarget(admin, template, target);
 

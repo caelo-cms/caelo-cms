@@ -34,6 +34,7 @@ import {
   type InstallNames,
   installNamesFromEnv,
   physicalDatabaseName,
+  SERVER_DATABASES,
 } from "@caelo-cms/shared";
 
 /** The env var that names which environment this gateway serves. */
@@ -429,9 +430,10 @@ export async function databaseIsolationProblems(
     names.databases.publicStaging,
   ]);
   const closedEither = [names.databases.admin, foreignEnvironment(environment, names).database];
-  for (const db of closedEither) {
+  for (const db of [...closedEither, ...SERVER_DATABASES]) {
     if (!/^[a-z_][a-z0-9_]*$/.test(db)) throw new Error(`"${db}" is not a database name`);
   }
+  const list = (dbs: readonly string[]) => dbs.map((db) => `'${db}'`).join(", ");
   const [row] = (await sql.unsafe(`
     SELECT current_user::text AS who,
            current_database()::text AS db,
@@ -440,8 +442,9 @@ export async function databaseIsolationProblems(
              WHERE d.datallowconn
                AND d.datname <> current_database()
                AND has_database_privilege(current_user, d.oid, 'CONNECT')
-               AND (d.datname IN (${closedEither.map((db) => `'${db}'`).join(", ")})
-                    OR NOT has_database_privilege('public', d.oid, 'CONNECT'))) AS reachable,
+               AND (d.datname IN (${list(closedEither)})
+                    OR (NOT has_database_privilege('public', d.oid, 'CONNECT')
+                        AND d.datname NOT IN (${list(SERVER_DATABASES)})))) AS reachable,
            (SELECT coalesce(array_agg(extname::text ORDER BY extname), ARRAY[]::text[])
               FROM pg_extension WHERE extname IN ('dblink', 'postgres_fdw')) AS bridges,
            (SELECT count(*)::int FROM pg_foreign_server) AS foreign_servers

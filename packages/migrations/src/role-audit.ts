@@ -67,6 +67,7 @@ import {
   type LogicalDatabase,
   parseInstallNames,
   physicalDatabaseName,
+  SERVER_DATABASES,
 } from "@caelo-cms/shared";
 
 /** A public database, by its logical name (#1329). */
@@ -111,14 +112,6 @@ export function jobRoles(names: InstallNames): string[] {
  * names them can never be met by a Caelo role.
  */
 const MANAGED_GROUPS = ["cloudsqlsuperuser", "rds_superuser", "azure_pg_admin"] as const;
-
-/**
- * Databases the managed service keeps for itself on every server. No
- * install's login may reach them, but a single install's admin role can
- * be granted access to them by the service, so they never count as
- * another install's.
- */
-const MANAGED_DATABASES = ["cloudsqladmin", "rdsadmin", "azure_maintenance", "azure_sys"] as const;
 
 /**
  * Groups that carry privileges far beyond any application grant: the
@@ -496,8 +489,8 @@ export function crossDatabaseGrantViolations(
  * Issue #1689 — the CTEs both cross-install checks share: the install's
  * roles and every role that is a member of one (the jobs' IAM logins, the
  * update agent), and the OTHER private databases on the server — neither
- * this install's, nor open to every login, nor kept by the managed
- * service. Only another install (or another tenant of the server) has
+ * this install's, nor open to every login, nor one of the server's own
+ * ({@link SERVER_DATABASES}). Only another install (or another tenant of the server) has
  * such a database, so a role that may connect to one belongs to it.
  */
 function installScopeCtes(names: InstallNames): string {
@@ -519,7 +512,7 @@ other_databases AS MATERIALIZED (
   SELECT d.oid, d.datname FROM pg_database d
    WHERE d.datallowconn
      AND d.datname NOT IN (${sqlList(installDatabases(names))})
-     AND d.datname NOT IN (${sqlList(MANAGED_DATABASES)})
+     AND d.datname NOT IN (${sqlList(SERVER_DATABASES)})
      AND NOT has_database_privilege('public', d.oid, 'CONNECT')
 )`;
 }
