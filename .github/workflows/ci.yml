@@ -393,7 +393,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 52
     # Issue #1293 (docs/dev/query-index-gate.md) — the integration tier runs
     # against a Postgres with `enable_seqscan=off` and auto_explain logging
     # every plan; the job fails on a filtered full scan from a Query API
@@ -485,8 +485,10 @@ jobs:
 
       - name: Integration tier under the plan log
         # Bounded so a stalled run still reaches the steps below, which print
-        # what stalled it.
-        timeout-minutes: 28
+        # what stalled it. The bound sits well above a healthy run: the tier
+        # took 16–18 min early in November and 26–27 min on 2026-11-23 after
+        # epic #1644's tests, so 28 min cut runs that were still passing.
+        timeout-minutes: 40
         run: |
           # Every 20 s, the server's sessions busy for more than 5 s and what
           # they wait on (activity.sql), printed below when the run fails.
