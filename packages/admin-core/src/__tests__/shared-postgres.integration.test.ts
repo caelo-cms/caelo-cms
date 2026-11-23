@@ -565,7 +565,7 @@ describe("two installs on one server (#1689)", () => {
   });
 });
 
-describe("names that are Postgres keywords (Codex review)", () => {
+describe("names Postgres reserves (Codex review)", () => {
   // A keyword would need quoting in the CREATE ROLE, GRANT and renamed
   // migration statements, which splice names unquoted.
   const KW = prefixedInstallNames("ci1689kw");
@@ -588,20 +588,26 @@ describe("names that are Postgres keywords (Codex review)", () => {
     expect(accepted).toEqual([]);
   });
 
-  it("bootstrap.sh refuses a keyword before it creates anything", async () => {
-    const withKeyword: InstallNames = { ...KW, roles: { ...KW.roles, admin: "select" } };
-    let failure = "";
-    try {
-      await run(["sh", "src/bootstrap.sh"], {
-        ...installNamesEnv(withKeyword),
-        ADMIN_ROLE_PASSWORD: PASSWORDS.admin,
-        PUBLIC_ROLE_PASSWORD: PASSWORDS.public,
-        PUBLIC_STAGING_ROLE_PASSWORD: PASSWORDS.publicStaging,
-      });
-    } catch (e) {
-      failure = String(e);
+  it("bootstrap.sh refuses a keyword, or a role named public, before it creates anything", async () => {
+    const bad: [InstallNames, string][] = [
+      [{ ...KW, roles: { ...KW.roles, admin: "select" } }, "roles,admin"],
+      // Postgres reserves "public" for its PUBLIC pseudo-role (Codex review).
+      [{ ...KW, roles: { ...KW.roles, public: "public" } }, "roles,public"],
+    ];
+    for (const [names, slot] of bad) {
+      let failure = "";
+      try {
+        await run(["sh", "src/bootstrap.sh"], {
+          ...installNamesEnv(names),
+          ADMIN_ROLE_PASSWORD: PASSWORDS.admin,
+          PUBLIC_ROLE_PASSWORD: PASSWORDS.public,
+          PUBLIC_STAGING_ROLE_PASSWORD: PASSWORDS.publicStaging,
+        });
+      } catch (e) {
+        failure = String(e);
+      }
+      expect(failure).toContain(`no valid name at ${slot}`);
     }
-    expect(failure).toContain("no valid name at roles,admin");
     // Every name of the map starts with its prefix (prefixedInstallNames).
     const prefix = "ci1689kw\\_%";
     const roles = (await su`

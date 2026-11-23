@@ -63,26 +63,37 @@ const postgresName = z
     `must not start with ${RESERVED_PREFIXES.join(", ")} (reserved by Postgres and the managed services)`,
   );
 
+/**
+ * A role name: a {@link postgresName} that is not `public`, which Postgres
+ * reserves for its PUBLIC pseudo-role and refuses in `CREATE ROLE` even
+ * quoted (Codex review). `none` and `current_user`-style names are
+ * keywords and already refused.
+ */
+const roleName = postgresName.refine(
+  (name) => name !== "public",
+  'must not be "public" (Postgres reserves it for the PUBLIC pseudo-role)',
+);
+
 /** The roles of one install. */
 export const RoleNamesSchema = z
   .object({
     /** The authoring + migration login (cms_admin, and the admin's pools on both public databases). */
-    admin: postgresName,
+    admin: roleName,
     /** The live gateway's only login, on the live public database. */
-    public: postgresName,
+    public: roleName,
     /** The staging gateway's only login, on the staging public database (#1329). */
-    publicStaging: postgresName,
+    publicStaging: roleName,
     /** NOLOGIN role of the operator-access sync job (cms_admin migration 0239). */
-    operatorAccessReader: postgresName,
+    operatorAccessReader: roleName,
     /** NOLOGIN role of the upgrader job and the self-hosted update agent (migration 0267). */
-    platformUpdater: postgresName,
+    platformUpdater: roleName,
     /**
      * The gateway's former cms_admin login (gone since #635). An install
      * that never had it still names it, so the migrations that strip what
      * an old one holds rename it like every other role, and never touch
      * another install's.
      */
-    formerGateway: postgresName,
+    formerGateway: roleName,
   })
   .strict();
 

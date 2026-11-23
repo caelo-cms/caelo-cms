@@ -81,6 +81,15 @@ describe("install name map (#1689)", () => {
         parseInstallNames({ ...t1, databases: { ...t1.databases, admin: bad } }, "map"),
       ).toThrow("databases.admin");
     }
+    // Postgres reserves "public" for its PUBLIC pseudo-role (Codex review); a
+    // database may still be called that.
+    expect(() =>
+      parseInstallNames({ ...t1, roles: { ...t1.roles, public: "public" } }, "map"),
+    ).toThrow("roles.public");
+    expect(
+      parseInstallNames({ ...t1, databases: { ...t1.databases, publicStaging: "public" } }, "map")
+        .databases.publicStaging,
+    ).toBe("public");
     expect(() => prefixedInstallNames("T1")).toThrow("must match");
     expect(() => prefixedInstallNames("pg")).toThrow("must not start with");
   });

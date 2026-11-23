@@ -44,10 +44,11 @@ PSQL="psql -v ON_ERROR_STOP=1 --username ${POSTGRES_USER} --dbname ${POSTGRES_DB
 # the postgres image has no jq — and the map reaches it as a psql variable,
 # which :'names' quotes. Only a plain identifier comes back, outside the
 # prefixes install-names.ts reserves and no keyword this server would need
-# quoted (pg_get_keywords, as install-names.ts): every name is spliced into
-# the statements below.
+# quoted (pg_get_keywords, as install-names.ts), and no role named public,
+# which Postgres reserves for its PUBLIC pseudo-role: every name is spliced
+# into the statements below.
 install_name() {
-  printf "%s\n" "SELECT CASE WHEN v ~ '^[a-z_][a-z0-9_]{0,62}\$' AND v !~ '^(pg_|cloudsql|rds_|rdsadmin|azure_)' AND v NOT IN (SELECT word FROM pg_get_keywords() WHERE catcode <> 'U') THEN v END FROM (SELECT (:'names')::jsonb #>> '{$1}' AS v) s;" \
+  printf "%s\n" "SELECT CASE WHEN v ~ '^[a-z_][a-z0-9_]{0,62}\$' AND v !~ '^(pg_|cloudsql|rds_|rdsadmin|azure_)' AND v NOT IN (SELECT word FROM pg_get_keywords() WHERE catcode <> 'U') AND ('$1' NOT LIKE 'roles,%' OR v <> 'public') THEN v END FROM (SELECT (:'names')::jsonb #>> '{$1}' AS v) s;" \
     | $PSQL -v names="${CAELO_INSTALL_NAMES}" -At
 }
 # Fail unless every argument differs from every other one: two slots with
