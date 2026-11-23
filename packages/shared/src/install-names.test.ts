@@ -70,6 +70,12 @@ describe("install name map (#1689)", () => {
       "pg_admin",
       "cloudsql_x",
       "rds_x",
+      // Postgres keywords, one per category that needs quoting (Codex review):
+      // reserved, type/function name, column name.
+      "select",
+      "user",
+      "left",
+      "int",
     ]) {
       expect(() =>
         parseInstallNames({ ...t1, databases: { ...t1.databases, admin: bad } }, "map"),

@@ -45,6 +45,7 @@ import {
   installNamesEnv,
   installRoles,
   type LogicalDatabase,
+  parseInstallNames,
   physicalDatabaseName,
   prefixedInstallNames,
 } from "@caelo-cms/shared";
@@ -561,5 +562,55 @@ describe("two installs on one server (#1689)", () => {
       await adapter.close();
       await stagingAdapter.close();
     }
+  });
+});
+
+describe("names that are Postgres keywords (Codex review)", () => {
+  // A keyword would need quoting in the CREATE ROLE, GRANT and renamed
+  // migration statements, which splice names unquoted.
+  const KW = prefixedInstallNames("ci1689kw");
+
+  it("the name map refuses every keyword this server needs quoted", async () => {
+    const rows = (await su`
+      SELECT word FROM pg_get_keywords() WHERE catcode <> 'U' ORDER BY word
+    `) as { word: string }[];
+    expect(rows.length).toBeGreaterThan(100);
+    const accepted = rows
+      .map((r) => r.word)
+      .filter((word) => {
+        try {
+          parseInstallNames({ ...KW, roles: { ...KW.roles, admin: word } }, "map");
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    expect(accepted).toEqual([]);
+  });
+
+  it("bootstrap.sh refuses a keyword before it creates anything", async () => {
+    const withKeyword: InstallNames = { ...KW, roles: { ...KW.roles, admin: "select" } };
+    let failure = "";
+    try {
+      await run(["sh", "src/bootstrap.sh"], {
+        ...installNamesEnv(withKeyword),
+        ADMIN_ROLE_PASSWORD: PASSWORDS.admin,
+        PUBLIC_ROLE_PASSWORD: PASSWORDS.public,
+        PUBLIC_STAGING_ROLE_PASSWORD: PASSWORDS.publicStaging,
+      });
+    } catch (e) {
+      failure = String(e);
+    }
+    expect(failure).toContain("no valid name at roles,admin");
+    // Every name of the map starts with its prefix (prefixedInstallNames).
+    const prefix = "ci1689kw\\_%";
+    const roles = (await su`
+      SELECT rolname FROM pg_roles WHERE rolname LIKE ${prefix}
+    `) as { rolname: string }[];
+    const databases = (await su`
+      SELECT datname FROM pg_database WHERE datname LIKE ${prefix}
+    `) as { datname: string }[];
+    expect(roles).toEqual([]);
+    expect(databases).toEqual([]);
   });
 });

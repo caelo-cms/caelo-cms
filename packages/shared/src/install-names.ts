@@ -29,6 +29,7 @@
  */
 
 import { z } from "zod";
+import { POSTGRES_KEYWORDS_NEEDING_QUOTES } from "./postgres-keywords.js";
 
 /** The env var that carries an install's name map, as JSON ({@link InstallNames}). */
 export const INSTALL_NAMES_ENV = "CAELO_INSTALL_NAMES";
@@ -45,13 +46,18 @@ const MAX_IDENTIFIER_BYTES = 63;
 const RESERVED_PREFIXES = ["pg_", "cloudsql", "rds_", "rdsadmin", "azure_"] as const;
 
 /**
- * A role or database name: a plain lower-case identifier, so it never
- * needs quoting and every SQL builder can splice it as a whole word.
+ * A role or database name: a plain lower-case identifier that is no
+ * Postgres keyword, so it never needs quoting and every SQL builder can
+ * splice it as a whole word.
  */
 const postgresName = z
   .string()
   .max(MAX_IDENTIFIER_BYTES, `must be at most ${MAX_IDENTIFIER_BYTES} characters`)
   .regex(/^[a-z_][a-z0-9_]*$/, "must be a lower-case identifier ([a-z_][a-z0-9_]*)")
+  .refine(
+    (name) => !POSTGRES_KEYWORDS_NEEDING_QUOTES.has(name),
+    "must not be a Postgres keyword (it would need quoting in CREATE ROLE, GRANT and the migrations)",
+  )
   .refine(
     (name) => !RESERVED_PREFIXES.some((p) => name.startsWith(p)),
     `must not start with ${RESERVED_PREFIXES.join(", ")} (reserved by Postgres and the managed services)`,
