@@ -58,6 +58,12 @@ if (missing.length > 0) throw new Error(`${missing.join(", ")} required (see .en
 const MIGRATIONS = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "migrations");
 const HOST = new URL(env.ADMIN_DATABASE_URL as string).hostname;
 const PASSWORDS = { admin: "b-admin-pw", public: "b-public-pw", publicStaging: "b-staging-pw" };
+/**
+ * Install B's admin login is bounded, as on a shared server: its migration
+ * runs, its copies' (which take the template's limit) and the adapters
+ * below must all fit under it.
+ */
+const ADMIN_CONNECTION_LIMIT = 12;
 const A = DEFAULT_INSTALL_NAMES;
 const B = prefixedInstallNames("ci1689b");
 const C1 = prefixedInstallNames("ci1689c1");
@@ -264,6 +270,7 @@ beforeAll(async () => {
     ADMIN_ROLE_PASSWORD: PASSWORDS.admin,
     PUBLIC_ROLE_PASSWORD: PASSWORDS.public,
     PUBLIC_STAGING_ROLE_PASSWORD: PASSWORDS.publicStaging,
+    ADMIN_ROLE_CONNECTION_LIMIT: String(ADMIN_CONNECTION_LIMIT),
   });
   await migrate(B);
 }, 600_000);
@@ -290,6 +297,11 @@ describe("a template copy (#1689)", () => {
       });
     const [r1, r2] = await Promise.all([copy(C1), copy(C2)]);
     expect(r1.databases).toEqual(installDatabases(C1));
+    const [limit] =
+      (await su`SELECT rolconnlimit AS n FROM pg_roles WHERE rolname = ${C1.roles.admin}`) as {
+        n: number;
+      }[];
+    expect(limit?.n).toBe(ADMIN_CONNECTION_LIMIT);
     expect(r2.databases).toEqual(installDatabases(C2));
     const fresh = await fingerprint(B);
     expect(fresh.length).toBeGreaterThan(500);
