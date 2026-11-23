@@ -42,12 +42,25 @@ PSQL="psql -v ON_ERROR_STOP=1 --username ${POSTGRES_USER} --dbname ${POSTGRES_DB
 
 # One name of the map at `path` (e.g. roles,admin). psql parses the JSON —
 # the postgres image has no jq — and the map reaches it as a psql variable,
-# which :'names' quotes. Only a plain identifier comes back: every name is
-# spliced into the statements below. migrate.ts validates the whole map
-# (install-names.ts) before any migration runs.
+# which :'names' quotes. Only a plain identifier comes back, outside the
+# prefixes install-names.ts reserves: every name is spliced into the
+# statements below.
 install_name() {
-  printf "%s\n" "SELECT CASE WHEN v ~ '^[a-z_][a-z0-9_]{0,62}\$' AND v !~ '^pg_' THEN v END FROM (SELECT (:'names')::jsonb #>> '{$1}' AS v) s;" \
+  printf "%s\n" "SELECT CASE WHEN v ~ '^[a-z_][a-z0-9_]{0,62}\$' AND v !~ '^(pg_|cloudsql|rds_|rdsadmin|azure_)' THEN v END FROM (SELECT (:'names')::jsonb #>> '{$1}' AS v) s;" \
     | $PSQL -v names="${CAELO_INSTALL_NAMES}" -At
+}
+# Fail unless every argument differs from every other one: two slots with
+# one name would make a statement below act on the wrong role (the former
+# gateway role's DROP OWNED on the admin role), so the whole map is checked
+# before the first statement runs, not only by migrate.ts afterwards.
+all_different() {
+  kind=$1
+  shift
+  dup=$(printf "%s\n" "$@" | sort | uniq -d | head -n 1)
+  if [ -n "$dup" ]; then
+    echo "bootstrap.sh: CAELO_INSTALL_NAMES names two ${kind} \"${dup}\" (#1689: every one has a name of its own); nothing was changed" >&2
+    exit 1
+  fi
 }
 name_or_fail() {
   value=$(install_name "$1")
@@ -68,6 +81,8 @@ if [ -n "${CAELO_INSTALL_NAMES}" ]; then
   ADMIN_DB=$(name_or_fail databases,admin)
   PUBLIC_DB=$(name_or_fail databases,public)
   STAGING_DB=$(name_or_fail databases,publicStaging)
+  all_different roles "${ADMIN_ROLE}" "${PUBLIC_ROLE}" "${STAGING_ROLE}" "${READER_ROLE}" "${UPDATER_ROLE}" "${GATEWAY_ROLE}"
+  all_different databases "${ADMIN_DB}" "${PUBLIC_DB}" "${STAGING_DB}"
 else
   ADMIN_ROLE=admin_role
   PUBLIC_ROLE=public_role

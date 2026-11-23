@@ -519,21 +519,33 @@ other_databases AS MATERIALIZED (
 
 /**
  * Issue #1689 — every role of the install (and member of one) that may
- * connect to another install's database (see {@link installScopeCtes}).
- * Superusers reach every database by definition and are no install's role.
- * The database ACLs are cluster-wide, so it runs on any database.
+ * connect to another install's database (see {@link installScopeCtes}),
+ * itself or through any role it belongs to. A membership counts whatever
+ * its options: without INHERIT the role still reaches the other role's
+ * privileges with `SET ROLE` (it can then grant itself CONNECT there, since
+ * database privileges live in the shared catalog), so `has_database_privilege`
+ * of the role alone would miss it. Superusers reach every database by
+ * definition and are no install's role. The database ACLs are
+ * cluster-wide, so it runs on any database.
  */
 export function crossInstallConnectSql(installNames: InstallNames): string {
   const names = checked(installNames);
   return `
-WITH RECURSIVE ${installScopeCtes(names)}
-SELECT r.rolname::text AS rolname, d.datname::text AS datname
-  FROM install_members i
-  JOIN pg_roles r ON r.oid = i.oid
+WITH RECURSIVE ${installScopeCtes(names)},
+reachable(member, via) AS (
+  SELECT i.oid, i.oid FROM install_members i
+  UNION
+  SELECT i.oid, m.roleid FROM install_members i JOIN membership m ON m.member = i.oid
+)
+SELECT DISTINCT r.rolname::text AS rolname, d.datname::text AS datname,
+       CASE WHEN x.via = x.member THEN NULL ELSE v.rolname::text END AS via
+  FROM reachable x
+  JOIN pg_roles r ON r.oid = x.member
+  JOIN pg_roles v ON v.oid = x.via
   CROSS JOIN other_databases d
  WHERE NOT r.rolsuper
-   AND has_database_privilege(r.oid, d.oid, 'CONNECT')
- ORDER BY 1, 2
+   AND has_database_privilege(x.via, d.oid, 'CONNECT')
+ ORDER BY 1, 2, 3
 `;
 }
 
@@ -541,13 +553,15 @@ SELECT r.rolname::text AS rolname, d.datname::text AS datname
 export interface CrossInstallConnectRow {
   readonly rolname: string;
   readonly datname: string;
+  /** The role it belongs to that holds the CONNECT, or null when it holds it itself. */
+  readonly via?: string | null;
 }
 
 /** The violation text for each other install's database a role of this install may open. */
 export function crossInstallConnectViolations(rows: readonly CrossInstallConnectRow[]): string[] {
   return rows.map(
     (r) =>
-      `${r.rolname} can connect to ${r.datname}, a database of another install (#1689: an install's roles reach its own databases only; revoke the CONNECT or the membership that carries it)`,
+      `${r.rolname} can connect to ${r.datname}${r.via ? ` through its membership in ${r.via}` : ""}, a database of another install (#1689: an install's roles reach its own databases only; revoke the CONNECT or the membership that carries it)`,
   );
 }
 

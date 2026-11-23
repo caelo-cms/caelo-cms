@@ -25,7 +25,11 @@
  *      roles held on the template's databases to the new roles, and
  *      applies the template's per-database settings (`ALTER DATABASE …
  *      SET`): neither is part of a copy;
- *   5. refuses the result unless no reference to a template role is left,
+ *   5. draws every secret a migration drew at random for the template
+ *      anew (cookie and unsubscribe-link signing keys, template-secrets.ts)
+ *      and republishes the gateways' projection from the copy, so no two
+ *      installs share a signing key;
+ *   6. refuses the result unless no reference to a template role is left,
  *      no function body names the template's roles or databases, and the
  *      role audit migrate.ts runs after every migration passes for the new
  *      install (role-audit.ts) — the same bar as a freshly migrated one.
@@ -49,6 +53,7 @@ import {
   physicalDatabaseName,
 } from "@caelo-cms/shared";
 import type { SQL } from "bun";
+import { publishProjectionOver } from "./projection-publish.js";
 import { assertNoRlsPolicyDrift } from "./rls.js";
 import {
   assertNoForeignReferences,
@@ -63,6 +68,9 @@ import {
   staleFunctionBodiesSql,
   templateReferencesSql,
 } from "./template-rebind.js";
+import { drawInstallSecrets } from "./template-secrets.js";
+
+export { INSTALL_SECRETS, type InstallSecret } from "./template-secrets.js";
 
 /** Opens a superuser connection to the named database (the caller owns closing it). */
 export type ConnectAs = (database: string) => SQL;
@@ -350,7 +358,27 @@ async function copyDatabaseAclAndSettings(
   }
 }
 
-/** Step 5 — the checks migrate.ts runs after every migration, for the new install. */
+/**
+ * Step 5 — the copy's own secrets (template-secrets.ts): every value a
+ * migration drew at random for the template is drawn again, and the
+ * gateways' projection is published from the copy's admin database, so
+ * neither public database keeps the template's signing keys.
+ */
+async function drawSecretsAndRepublish(connect: ConnectAs, target: InstallNames): Promise<void> {
+  const clients = {
+    admin: connect(target.databases.admin),
+    live: connect(target.databases.public),
+    staging: connect(target.databases.publicStaging),
+  };
+  try {
+    await drawInstallSecrets(clients.admin);
+    await publishProjectionOver(clients);
+  } finally {
+    await Promise.all([clients.admin.end(), clients.live.end(), clients.staging.end()]);
+  }
+}
+
+/** Step 6 — the checks migrate.ts runs after every migration, for the new install. */
 async function auditNewInstall(connect: ConnectAs, target: InstallNames): Promise<void> {
   for (const logical of LOGICAL_DATABASES) {
     const db = connect(physicalDatabaseName(target, logical));
@@ -466,6 +494,7 @@ export async function installFromTemplate(
         map,
       );
     }
+    await drawSecretsAndRepublish(opts.connect, target);
     await auditNewInstall(opts.connect, target);
     const rebindMs = performance.now() - t;
 

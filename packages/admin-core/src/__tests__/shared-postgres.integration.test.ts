@@ -13,9 +13,11 @@
  *     cross-database query without a bridge, which the audit refuses), and
  *     no role of one may SET ROLE to a role of the other;
  *   - a plugin provisioned for B grants to B's roles only;
- *   - the role audit fails on a cross-install grant, CONNECT or policy;
+ *   - the role audit fails on a cross-install grant, CONNECT, policy or
+ *     role membership (with or without INHERIT);
  *   - a template copy has exactly the privilege fingerprint of the freshly
- *     migrated template, two copies at once both succeed, a copy never
+ *     migrated template, two copies at once both succeed, each copy has
+ *     signing secrets of its own (also in its public databases), a copy never
  *     overwrites an existing install, and the copy migrates and audits
  *     clean afterwards.
  *
@@ -32,7 +34,7 @@ import {
   assertPublicDatabaseOwnsItsLogin,
   assertRoleIsolation,
 } from "@caelo-cms/migrations/role-audit";
-import { installFromTemplate } from "@caelo-cms/migrations/template-install";
+import { INSTALL_SECRETS, installFromTemplate } from "@caelo-cms/migrations/template-install";
 import { provisionPluginPublicSchemas } from "@caelo-cms/plugin-host";
 import { adminGrantTarget, adminSchemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
@@ -295,6 +297,41 @@ describe("a template copy (#1689)", () => {
     expect(await fingerprint(C2)).toEqual(fresh);
   }, 300_000);
 
+  it("draws every per-install secret anew and publishes the copy's own (Codex review)", async () => {
+    const secretsOf = async (names: InstallNames) => {
+      const admin = new SQL(url(names.databases.admin), { max: 1 });
+      const live = new SQL(url(names.databases.public), { max: 1 });
+      const staging = new SQL(url(names.databases.publicStaging), { max: 1 });
+      try {
+        const values: Record<string, string | null> = {};
+        for (const s of INSTALL_SECRETS) {
+          const [row] = (await admin.unsafe(`SELECT ${s.column}::text AS v FROM ${s.table}`)) as {
+            v: string | null;
+          }[];
+          values[`${s.table}.${s.column}`] = row?.v ?? null;
+        }
+        const published = async (db: SQL) =>
+          (
+            (await db.unsafe("SELECT cookie_secret FROM published_gateway_settings")) as {
+              cookie_secret: string;
+            }[]
+          )[0]?.cookie_secret ?? null;
+        return { values, live: await published(live), staging: await published(staging) };
+      } finally {
+        await Promise.all([admin.end(), live.end(), staging.end()]);
+      }
+    };
+    const [b, c1, c2] = await Promise.all([secretsOf(B), secretsOf(C1), secretsOf(C2)]);
+    for (const key of Object.keys(b.values)) {
+      expect({ key, set: b.values[key] !== null }).toEqual({ key, set: true });
+      expect(new Set([b.values[key], c1.values[key], c2.values[key]]).size).toBe(3);
+    }
+    for (const c of [c1, c2]) {
+      expect(c.live).toBe(c.values["site_settings.gateway_cookie_secret"] ?? "missing");
+      expect(c.staging).toBe(c.values["site_settings.gateway_staging_cookie_secret"] ?? "missing");
+    }
+  });
+
   it("never takes over an install that exists, and leaves it intact", async () => {
     const before = await fingerprint(C1);
     await expect(
@@ -409,6 +446,27 @@ describe("two installs on one server (#1689)", () => {
     const aAgain = new SQL(url(A.databases.admin), { max: 1 });
     try {
       await assertNoForeignReferences(aAgain, "cms_admin", A);
+    } finally {
+      await aAgain.end();
+    }
+  });
+
+  it("the role audit fails on a membership in another install's role, even without INHERIT (Codex review)", async () => {
+    // SET ROLE reaches the other role's privileges whatever INHERIT says:
+    // A's admin could switch to B's admin and grant itself CONNECT on B.
+    await su.unsafe(`GRANT "${B.roles.admin}" TO "${A.roles.admin}" WITH INHERIT FALSE, SET TRUE`);
+    const aAdmin = new SQL(url(A.databases.admin), { max: 1 });
+    try {
+      await expect(assertRoleIsolation(aAdmin, A)).rejects.toThrow(
+        `${A.roles.admin} can connect to ${B.databases.admin} through its membership in ${B.roles.admin}, a database of another install`,
+      );
+    } finally {
+      await su.unsafe(`REVOKE "${B.roles.admin}" FROM "${A.roles.admin}"`);
+      await aAdmin.end();
+    }
+    const aAgain = new SQL(url(A.databases.admin), { max: 1 });
+    try {
+      await assertRoleIsolation(aAgain, A);
     } finally {
       await aAgain.end();
     }

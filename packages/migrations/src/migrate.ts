@@ -34,9 +34,7 @@ import {
 // a value-import of "bun" — avoids the SvelteKit/Vite chain inlining
 // a stub package when admin transitively imports this module.
 import type { SQL as SQLType } from "bun";
-import { sql as dsql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/bun-sql";
-import { type ProjectionDatabases, publishPublicProjection } from "./public-projection.js";
+import { publishProjectionOver } from "./projection-publish.js";
 import { assertNoRlsPolicyDrift } from "./rls.js";
 import {
   assertNoForeignReferences,
@@ -46,7 +44,6 @@ import {
   publicDatabaseLogin,
 } from "./role-audit.js";
 import { type MigrationTarget, runMigrations } from "./runner.js";
-import { readShippedVisitorProjections } from "./shipped-declarations.js";
 
 const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
   ?.SQL as unknown as new (
@@ -113,24 +110,8 @@ async function publishProjection(): Promise<void> {
     live: new SQL(urls.live),
     staging: new SQL(urls.staging),
   };
-  const admin = drizzle(clients.admin);
-  const pub = { live: drizzle(clients.live), staging: drizzle(clients.staging) };
-  const asSystem = dsql`SELECT set_config('caelo.actor_kind', 'system', true)`;
-  const dbs: ProjectionDatabases = {
-    readAdmin: (fn) =>
-      admin.transaction(async (tx) => {
-        await tx.execute(asSystem);
-        return fn(tx);
-      }),
-    writePublic: (target, fn) =>
-      pub[target].transaction(async (tx) => {
-        await tx.execute(asSystem);
-        await fn(tx);
-      }),
-  };
   try {
-    const declarations = readShippedVisitorProjections(resolve(here, "..", "..", "plugins"));
-    const report = await publishPublicProjection(dbs, declarations, { comments: true });
+    const report = await publishProjectionOver(clients);
     console.log(
       `gateway projection published — cms_public: ${report.sections.live.join(", ")}; cms_public_staging: ${report.sections.staging.join(", ")}`,
     );
