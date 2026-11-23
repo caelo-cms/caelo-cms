@@ -3,8 +3,7 @@
 /**
  * The converge half of an upgrade (epic #696): everything that changes IAM,
  * service accounts, secrets or other cloud resources so the install matches
- * what the release's stacks declare — the gateway's run SA and the
- * CLI-generated runtime secrets, the stack's IAM/CDN/firewall invariants,
+ * what the release's stacks declare — the stack's IAM/CDN/firewall invariants,
  * MCP access through IAP, the staging database and its gateway login
  * (#1329), the gateway logins' Cloud SQL role memberships (#633),
  * the gateway's and public_role's database logins, the operator-access sync
@@ -30,6 +29,10 @@
  * gets its password after migrations, before the gateway rolls onto it), so
  * a converge is a {@link ConvergeSession}: a part before the app-roll, the
  * {@link AppRollHooks} the app-roll calls in between, and a part after it.
+ *
+ * The gateway's run SA and the CLI-generated runtime secrets come before all
+ * of it, in the upgrade's pre-flight (`ensureRuntimeIdentities`, #1682):
+ * the services that pre-flight sets up are granted those secrets.
  */
 
 import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
@@ -58,13 +61,7 @@ import {
   reportingJobServiceAccountEmail,
 } from "../reporting-job-catalog.js";
 import { ensureReportingJobKind } from "../reporting-job-setup.js";
-import {
-  ensureGatewayServiceAccount,
-  ensureGeneratedSecrets,
-  type HttpFetch,
-  plainGeneratedSecretSeed,
-  readSecretReplication,
-} from "../runtime-secrets.js";
+import type { HttpFetch } from "../runtime-secrets.js";
 import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
 import {
@@ -188,41 +185,6 @@ export function startConverge(
   // thing they point at could not be set up.
   const leaveUntouched: string[] = [];
   let publicRole: ReturnType<typeof planPublicRoleSwitch> | null = null;
-
-  async function runtimeIdentities(): Promise<boolean> {
-    // The gateway's own run SA and the CLI-generated secrets the env
-    // contract references. Created once, never overwritten; must exist
-    // before the invariants bind them and the rolls reference them.
-    const s = r.step("Ensuring the gateway service account + generated runtime secrets...");
-    const secretsTarget = { projectId: install.projectId, env: install.env };
-    const replication = await readSecretReplication(secretsTarget, runDeps);
-    const outcomes = [
-      await ensureGatewayServiceAccount(secretsTarget, runDeps),
-      ...(replication.ok
-        ? await ensureGeneratedSecrets(
-            {
-              ...secretsTarget,
-              region: install.region,
-              replication: replication.replication,
-              seed: plainGeneratedSecretSeed(service("admin").liveEnv),
-            },
-            runDeps,
-          )
-        : [{ id: "secret replication", status: "failed" as const, error: replication.error }]),
-    ];
-    const failed = outcomes.filter((o) => o.status === "failed");
-    if (failed.length > 0) {
-      s.failed("Runtime identities/secrets could not be ensured. Aborting upgrade.");
-      for (const o of failed) r.error(`  FAILED: ${o.id}\n    ${o.error ?? ""}`);
-      r.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
-      return false;
-    }
-    s.done("Gateway service account + runtime secrets ok");
-    for (const o of outcomes.filter((o) => o.status === "applied")) {
-      r.info(`  created: ${o.id}${o.detail ? ` (${o.detail})` : ""}`);
-    }
-    return true;
-  }
 
   async function stackInvariants(): Promise<boolean> {
     // IAM bindings + CDN policy added to the stacks after this install was
@@ -1034,7 +996,6 @@ export function startConverge(
   return {
     async beforeAppRoll() {
       if (deps.provisionerIdentity && !(await deps.provisionerIdentity())) return false;
-      if (!(await runtimeIdentities())) return false;
       if (!(await stackInvariants())) return false;
       if (!(await stagingDatabase())) return false;
       if (!(await publicRoleIsolation())) return false;
