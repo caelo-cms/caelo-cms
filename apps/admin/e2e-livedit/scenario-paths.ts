@@ -510,8 +510,9 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${SHARED}/staging-plugin-stub.ts`,
   // The install's role and database names (#1689): read once at boot by
   // every process; an install with its own map runs on a shared server no
-  // scenario provisions.
+  // scenario provisions. The keyword list is part of its validation.
   `${SHARED}/install-names.ts`,
+  `${SHARED}/postgres-keywords.ts`,
   `${A}/security/**`,
   `${A}/ops/security/**`,
   `${A}/ops/step-up.ts`,
