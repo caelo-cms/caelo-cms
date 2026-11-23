@@ -338,19 +338,53 @@ const ANY_WRITE =
   /\b(create|update|update-traffic|delete|add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|execute|enable|add|restore)\b/;
 
 /**
- * #1328 — the only writes allowed before the backup: the MCP-Auth-Proxy's
- * account, its secretAccessor on its two secrets, and the services an older
- * install lacks (mcp-auth-proxy-setup.ts), with (#1654) the staging
- * gateway's read of its own visitor-AI key. Additive; nothing serves on them.
+ * #1328 — the only writes allowed before the backup: the gateway's account
+ * and the CLI-generated secrets an older install lacks (#1682), the
+ * MCP-Auth-Proxy's account, its secretAccessor on its two secrets, and the
+ * services an older install lacks (mcp-auth-proxy-setup.ts), with (#1654)
+ * the staging gateway's read of its own visitor-AI key. Additive; nothing
+ * serves on them.
  */
 const PRE_PLAN_WRITE =
-  /^(iam service-accounts create caelo-production-(mcp-proxy-sa|stg-gw-sa) |secrets add-iam-policy-binding caelo-production-(mcp-oauth-seal-key|operator-oauth-client) .*--member=serviceAccount:caelo-production-mcp-proxy-sa@|secrets add-iam-policy-binding caelo-production-(public-staging-role-password|visitor-ai-staging-key) .*--member=serviceAccount:caelo-production-stg-gw-sa@|storage buckets (create|add-iam-policy-binding) gs:\/\/acme-caelo-production-staging |run services replace |run deploy caelo-production-(mcp-auth-proxy|staging-gateway) |run services add-iam-policy-binding caelo-production-staging-gateway .*--member=allUsers )/;
+  /^(iam service-accounts create caelo-production-(gateway-sa|mcp-proxy-sa|stg-gw-sa) |secrets (create|versions add) caelo-production-\S+ |secrets add-iam-policy-binding caelo-production-(mcp-oauth-seal-key|operator-oauth-client) .*--member=serviceAccount:caelo-production-mcp-proxy-sa@|secrets add-iam-policy-binding caelo-production-(public-staging-role-password|visitor-ai-staging-key) .*--member=serviceAccount:caelo-production-stg-gw-sa@|storage buckets (create|add-iam-policy-binding) gs:\/\/acme-caelo-production-staging |run services replace |run deploy caelo-production-(mcp-auth-proxy|staging-gateway) |run services add-iam-policy-binding caelo-production-staging-gateway .*--member=allUsers )/;
 
 const indexOf = (events: string[], pattern: RegExp): number => {
   const i = events.findIndex((e) => pattern.test(e));
   if (i < 0) throw new Error(`no event matches ${pattern}:\n${events.join("\n")}`);
   return i;
 };
+
+/**
+ * #1682 — Secret Manager as on an install that predates the secrets `names`:
+ * each is missing until `secrets create` makes it, and a grant on a missing
+ * one answers 404, as gcloud does.
+ */
+function secretsMissing(names: readonly string[]): [RegExp, Answer][] {
+  const ids = names.map((n) => `caelo-production-${n}`).join("|");
+  const created = new Set<string>();
+  const secretOf = (line: string) => line.split(" ")[line.startsWith("secrets versions") ? 3 : 2];
+  const known = (line: string, answer: GcloudResult): GcloudResult =>
+    created.has(secretOf(line) as string)
+      ? answer
+      : fail(
+          `ERROR: (gcloud.secrets) Status code: 404. Secret [projects/42/secrets/${secretOf(line)}] not found.`,
+        );
+  return [
+    [
+      new RegExp(`^secrets create (${ids}) `),
+      (l) => {
+        created.add(secretOf(l) as string);
+        return ok("");
+      },
+    ],
+    [new RegExp(`^secrets describe (${ids}) `), (l) => known(l, ok("name\n"))],
+    [
+      new RegExp(`^secrets versions list (${ids}) `),
+      (l) => known(l, ok(`projects/42/secrets/${secretOf(l)}/versions/1\n`)),
+    ],
+    [new RegExp(`^secrets add-iam-policy-binding (${ids}) `), (l) => known(l, ok("{}"))],
+  ];
+}
 
 describe("upgradeGcpInstall — converge, then app-roll", () => {
   it("takes the backup first, migrates before rolling, checks health, records the digests", async () => {
@@ -369,8 +403,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     const deep = indexOf(events, /^health deep 0\.11\.0/);
     const digests = indexOf(events, /^record digests/);
 
-    // Before the backup only the additive pre-plan step writes (#1328): the
-    // MCP-Auth-Proxy's account and its two secret grants.
+    // Before the backup only the additive pre-plan step writes (#1328, #1682).
     for (const e of events.slice(0, backup)) expect(e).not.toMatch(/^(migrate|record)/);
     for (const e of events.slice(0, backup).filter((e) => e.startsWith("gcloud "))) {
       const call = e.slice("gcloud ".length);
@@ -387,6 +420,31 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(deep).toBeLessThan(digests);
     expect(recorded.digests).toEqual([DIGEST]);
     expect(lines).toContain(`done: Pre-upgrade backup ${BACKUP_ID} of ${SQL} taken`);
+  });
+
+  it("an install without the secrets a release adds gets them before anything is granted on them (#1682)", async () => {
+    // caelo-cms.com updating 0.12.6 → 0.12.11: the staging gateway's grant
+    // on its visitor-AI key ran in the pre-flight, the key was created after
+    // the backup, and every update stopped on a 404.
+    const added = ["visitor-ai-key", "visitor-ai-staging-key"];
+    for (const target of [TARGET, GCP_TARGET]) {
+      const events: string[] = [];
+      const { deps } = upgradeDeps(events, { overrides: secretsMissing(added) });
+      expect(await upgradeGcpInstall(target, deps)).toBe(true);
+      const backup = indexOf(events, /^gcloud sql backups create/);
+      for (const name of added) {
+        const created = indexOf(
+          events,
+          new RegExp(`^gcloud secrets create caelo-production-${name} `),
+        );
+        const granted = indexOf(
+          events,
+          new RegExp(`^gcloud secrets add-iam-policy-binding caelo-production-${name} `),
+        );
+        expect(created).toBeLessThan(granted);
+        expect(created).toBeLessThan(backup);
+      }
+    }
   });
 
   it("sets up the upgrader job after migrations, before operator access keeps its caelo-mcp grant (#696)", async () => {

@@ -5,13 +5,15 @@
  * app-roll (epic #696). The order, and why:
  *
  *   1. plan: release digests, the services, the env contract — read-only
- *      but for the services an older install lacks (#1328, additive and
- *      serving nothing yet: mcp-auth-proxy-setup.ts)
+ *      but for what an older install lacks, all additive and serving
+ *      nothing yet: the gateway's account and the CLI-generated secrets
+ *      first (#1682, runtime-secrets.ts), then the services (#1328,
+ *      mcp-auth-proxy-setup.ts), which are granted those secrets
  *   2. verify the images' signatures
  *   3. pre-upgrade Cloud SQL backup — the first change; if it fails, the
  *      install is exactly as it was
- *   4. converge, the part before the roll (keyless provisioner, IAM, secrets,
- *      MCP access)
+ *   4. converge, the part before the roll (keyless provisioner, IAM, MCP
+ *      access)
  *   5. app-roll: health baseline, migrations, the converge steps that must
  *      follow migrations, admin, gateway and MCP-Auth-Proxy rolls, deep
  *      health check, rollback
@@ -33,10 +35,12 @@
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import type { ImageDigests } from "../install-state.js";
 import { ensureReleaseServices } from "../mcp-auth-proxy-setup.js";
-import type { HttpFetch } from "../runtime-secrets.js";
+import { ensureRuntimeIdentities, type HttpFetch } from "../runtime-secrets.js";
 import { SERVICE_IMAGE } from "../stack-contract.js";
+import { liveContainerEnv } from "../stack-converge.js";
 import {
   type AppRollPlan,
+  describeLiveService,
   executeAppRoll,
   planAppRoll,
   type ReleaseImage,
@@ -213,19 +217,42 @@ export async function upgradeGcpInstallOutcome(
     sPre.failed("The gateway image's signature did not verify");
     return failed;
   }
-  const ensured = await ensureReleaseServices(
-    {
-      provider: target.provider,
-      projectId,
-      region: target.region,
-      env: target.env,
-      domain: target.domain,
-      stagingHost: target.stagingHost,
-      mcpAuthProxyImageRef: proxyImage.imageRef,
-      gatewayImageRef: gatewayImage.imageRef,
-    },
-    { run },
-  );
+  // #1682 — the gateway's account and every CLI-generated secret first:
+  // the services set up next are granted the secrets they read, a secret
+  // this release adds included (#1654's visitor-AI keys). A secret the
+  // admin still runs as a plain env var keeps that value.
+  const install = {
+    provider: target.provider,
+    projectId,
+    region: target.region,
+    env: target.env,
+    domain: target.domain,
+    stagingHost: target.stagingHost,
+    credentials: target.credentials,
+  };
+  const admin = await describeLiveService(install, "admin", run);
+  if (!admin.ok) {
+    sPre.failed("Pre-flight failed");
+    r.error(admin.error);
+    return failed;
+  }
+  const identities = await ensureRuntimeIdentities(install, liveContainerEnv(admin.json), {
+    run,
+    ...(deps.sleep ? { sleep: deps.sleep } : {}),
+  });
+  const ensured = identities.some((o) => o.status === "failed")
+    ? identities
+    : [
+        ...identities,
+        ...(await ensureReleaseServices(
+          {
+            ...install,
+            mcpAuthProxyImageRef: proxyImage.imageRef,
+            gatewayImageRef: gatewayImage.imageRef,
+          },
+          { run, ...(deps.sleep ? { sleep: deps.sleep } : {}) },
+        )),
+      ];
   const ensureFailed = ensured.filter((o) => o.status === "failed");
   if (ensureFailed.length > 0) {
     sPre.failed("The services this release runs could not be set up. Nothing was changed.");
@@ -235,20 +262,7 @@ export async function upgradeGcpInstallOutcome(
   for (const o of ensured.filter((o) => o.status === "applied")) {
     r.info(`  created: ${o.id}${o.detail ? ` (${o.detail})` : ""}`);
   }
-  const planned = await planAppRoll(
-    {
-      provider: target.provider,
-      projectId,
-      region: target.region,
-      env: target.env,
-      domain: target.domain,
-      stagingHost: target.stagingHost,
-      credentials: target.credentials,
-    },
-    images.images,
-    run,
-    { secretVolumes: true },
-  );
+  const planned = await planAppRoll(install, images.images, run, { secretVolumes: true });
   if (!planned.ok) {
     sPre.failed("Pre-flight failed");
     r.error(planned.error);
