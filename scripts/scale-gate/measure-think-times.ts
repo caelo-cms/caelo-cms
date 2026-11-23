@@ -14,7 +14,7 @@
  * The editors' pause is kept from the existing file: nothing measures it yet.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { ThinkTimes } from "./think.ts";
 
 interface TranscriptChat {
@@ -63,8 +63,15 @@ function main(): void {
   }
   const steps = stepThinkSeconds(chats);
   if (steps.length < 100) throw new Error(`only ${steps.length} steps: add more runs`);
-  const previous = existsSync(out) ? (JSON.parse(readFileSync(out, "utf8")) as ThinkTimes) : null;
-  if (!previous) throw new Error(`${out} must exist: it keeps the editors' pause`);
+  // Read, never check first: the file keeps the editors' pause.
+  let previous: ThinkTimes;
+  try {
+    previous = JSON.parse(readFileSync(out, "utf8")) as ThinkTimes;
+  } catch (e) {
+    throw new Error(
+      `${out} must exist and hold JSON: it keeps the editors' pause (${(e as Error).message})`,
+    );
+  }
   const times: ThinkTimes = {
     source,
     agentStepSeconds: steps.sort((a, b) => a - b),
