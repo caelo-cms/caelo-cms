@@ -28,6 +28,6 @@
   },
   "devDependencies": {
     "@caelo-cms/admin-core": "workspace:*",
-    "fontverter": "2.0.0"
+    "fontverter": "2.1.0"
   }
 }
