@@ -6,10 +6,13 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import {
+  adminGrantTarget,
   adminSchemaFromSpec,
   generateManifestKeyPair,
   privateReadColumns,
+  publicGrantTargets,
   schemaFromSpec,
   signManifest,
   validateManifest,
@@ -17,6 +20,9 @@ import {
   validateSource,
   verifyManifestSignature,
 } from "./index.js";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
+const ADMIN_TARGET = adminGrantTarget(DEFAULT_INSTALL_NAMES.roles);
 
 const helloWorldManifest = {
   slug: "hello-world",
@@ -234,6 +240,7 @@ describe("validatePlugin", () => {
 describe("schemaFromSpec", () => {
   it("emits a schema name from the slug", () => {
     const out = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: { greetings: "visitor-state" },
       pluginId: "00000000-0000-0000-0000-000000000001",
       slug: "hello-world",
@@ -251,6 +258,7 @@ describe("schemaFromSpec", () => {
 
   it("emits enum CHECK constraints", () => {
     const out = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: { comments: "visitor-state" },
       pluginId: "00000000-0000-0000-0000-000000000002",
       slug: "comments",
@@ -262,6 +270,7 @@ describe("schemaFromSpec", () => {
 
   it("auto-adds an id column when not declared", () => {
     const out = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: { rows: "visitor-state" },
       pluginId: "00000000-0000-0000-0000-000000000003",
       slug: "empty",
@@ -349,6 +358,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
 
   it("adds the host-owned branch + history columns to every private table", () => {
     const { sql } = adminSchemaFromSpec({
+      target: ADMIN_TARGET,
       pluginId: PID,
       slug: "probe",
       adminSchema: { settings: { id: "uuid", label: "string" } },
@@ -368,6 +378,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
 
   it("does not add them to public tables", () => {
     const { sql } = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: { signups: "visitor-state" },
       pluginId: PID,
       slug: "probe",
@@ -380,6 +391,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
   it("rejects a manifest declaring a caelo_ column, in either zone", () => {
     expect(() =>
       adminSchemaFromSpec({
+        target: ADMIN_TARGET,
         pluginId: PID,
         slug: "probe",
         adminSchema: { t: { id: "uuid", caelo_chat_branch_id: "uuid" } },
@@ -388,6 +400,7 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
     ).toThrow("reserved");
     expect(() =>
       schemaFromSpec({
+        target: LIVE_TARGET,
         tableKinds: { t: "visitor-state" },
         pluginId: PID,
         slug: "probe",
@@ -407,7 +420,7 @@ describe("private storage and the former gateway_role (#613, #635)", () => {
   };
 
   it("grants the public side nothing and revokes what the former gateway_role held", () => {
-    const { sql } = adminSchemaFromSpec(spec);
+    const { sql } = adminSchemaFromSpec({ ...spec, target: ADMIN_TARGET });
     expect(sql).not.toMatch(/GRANT [^;]*(gateway_role|public_role)/);
     expect(sql).toContain('REVOKE ALL ON ALL TABLES IN SCHEMA "plugin_probe" FROM gateway_role;');
     expect(sql).toContain('REVOKE ALL ON SCHEMA "plugin_probe" FROM gateway_role;');
@@ -430,6 +443,7 @@ describe("identifiers past Postgres' 63-byte limit (#515 review)", () => {
   it("refuses them instead of letting Postgres truncate them into a shared name", () => {
     expect(() =>
       adminSchemaFromSpec({
+        target: ADMIN_TARGET,
         pluginId: "11111111-1111-4111-8111-111111111111",
         slug: "probe",
         adminSchema: { [`t${"x".repeat(64)}`]: { body: "text" } },
@@ -511,6 +525,7 @@ describe("security hardening — AST escapes and schema pluginId validation", ()
   it("rejects non-UUID pluginId in schemaFromSpec and adminSchemaFromSpec", () => {
     expect(() =>
       schemaFromSpec({
+        target: LIVE_TARGET,
         tableKinds: { rows: "visitor-state" },
         pluginId: "not-a-uuid'); DROP TABLE users; --",
         slug: "probe",
@@ -520,6 +535,7 @@ describe("security hardening — AST escapes and schema pluginId validation", ()
     ).toThrow("not a valid UUID");
     expect(() =>
       adminSchemaFromSpec({
+        target: ADMIN_TARGET,
         pluginId: "not-a-uuid'); DROP TABLE users; --",
         slug: "probe",
         adminSchema: { rows: { name: "string" } },

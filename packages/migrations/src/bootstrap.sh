@@ -8,6 +8,12 @@
 # docker-entrypoint-initdb.d (first container boot, connects via Unix socket)
 # and CI (connects via TCP to a service container).
 #
+# Issue #1689 — with CAELO_INSTALL_NAMES set (the install's name map, JSON,
+# @caelo-cms/shared install-names.ts) it creates that install's roles and
+# databases instead, so several installs can share one server: run it once
+# per install. Every database is closed to PUBLIC and opened to the
+# install's own roles only.
+#
 # Idempotent: safe to re-run; existing roles/databases are skipped.
 #
 # Env vars:
@@ -15,6 +21,13 @@
 #   ADMIN_ROLE_PASSWORD                 — required
 #   PUBLIC_ROLE_PASSWORD                — required
 #   PUBLIC_STAGING_ROLE_PASSWORD        — required (#1329)
+#   CAELO_INSTALL_NAMES                 — optional (#1689): the install's
+#                                         role and database names; today's
+#                                         names when unset
+#   ADMIN_ROLE_CONNECTION_LIMIT         — optional (#1689): the admin
+#                                         login's CONNECTION LIMIT, for an
+#                                         install that shares its server;
+#                                         unlimited when unset
 #   PGHOST / PGPORT / PGPASSWORD        — optional; libpq picks them up so the
 #                                         same script works for CI (TCP) and
 #                                         initdb.d (socket) without code change.
@@ -27,6 +40,46 @@ set -e
 
 PSQL="psql -v ON_ERROR_STOP=1 --username ${POSTGRES_USER} --dbname ${POSTGRES_DB}"
 
+# One name of the map at `path` (e.g. roles,admin). psql parses the JSON —
+# the postgres image has no jq — and the map reaches it as a psql variable,
+# which :'names' quotes. Only a plain identifier comes back: every name is
+# spliced into the statements below. migrate.ts validates the whole map
+# (install-names.ts) before any migration runs.
+install_name() {
+  printf "%s\n" "SELECT CASE WHEN v ~ '^[a-z_][a-z0-9_]{0,62}\$' AND v !~ '^pg_' THEN v END FROM (SELECT (:'names')::jsonb #>> '{$1}' AS v) s;" \
+    | $PSQL -v names="${CAELO_INSTALL_NAMES}" -At
+}
+name_or_fail() {
+  value=$(install_name "$1")
+  if [ -z "$value" ]; then
+    echo "bootstrap.sh: CAELO_INSTALL_NAMES has no valid name at $1 (#1689: a lower-case identifier, every name set)" >&2
+    exit 1
+  fi
+  printf "%s" "$value"
+}
+
+if [ -n "${CAELO_INSTALL_NAMES}" ]; then
+  ADMIN_ROLE=$(name_or_fail roles,admin)
+  PUBLIC_ROLE=$(name_or_fail roles,public)
+  STAGING_ROLE=$(name_or_fail roles,publicStaging)
+  READER_ROLE=$(name_or_fail roles,operatorAccessReader)
+  UPDATER_ROLE=$(name_or_fail roles,platformUpdater)
+  GATEWAY_ROLE=$(name_or_fail roles,formerGateway)
+  ADMIN_DB=$(name_or_fail databases,admin)
+  PUBLIC_DB=$(name_or_fail databases,public)
+  STAGING_DB=$(name_or_fail databases,publicStaging)
+else
+  ADMIN_ROLE=admin_role
+  PUBLIC_ROLE=public_role
+  STAGING_ROLE=public_staging_role
+  READER_ROLE=operator_access_reader
+  UPDATER_ROLE=platform_updater
+  GATEWAY_ROLE=gateway_role
+  ADMIN_DB=cms_admin
+  PUBLIC_DB=cms_public
+  STAGING_DB=cms_public_staging
+fi
+
 # Run each DDL as its own invocation — psql -c / multi-statement stdin can
 # wrap CREATE DATABASE in an implicit transaction, which Postgres rejects.
 exists_role() {
@@ -36,44 +89,52 @@ exists_db() {
   $PSQL -Atc "SELECT 1 FROM pg_database WHERE datname = '$1'" | grep -q 1
 }
 
-exists_role admin_role \
-  || $PSQL -c "CREATE ROLE admin_role NOINHERIT LOGIN PASSWORD '${ADMIN_ROLE_PASSWORD}';"
-exists_role public_role \
-  || $PSQL -c "CREATE ROLE public_role NOINHERIT LOGIN PASSWORD '${PUBLIC_ROLE_PASSWORD}';"
+exists_role "${ADMIN_ROLE}" \
+  || $PSQL -c "CREATE ROLE ${ADMIN_ROLE} NOINHERIT LOGIN PASSWORD '${ADMIN_ROLE_PASSWORD}';"
+exists_role "${PUBLIC_ROLE}" \
+  || $PSQL -c "CREATE ROLE ${PUBLIC_ROLE} NOINHERIT LOGIN PASSWORD '${PUBLIC_ROLE_PASSWORD}';"
 # Issue #1329 — the staging gateway's only login, on cms_public_staging only.
-exists_role public_staging_role \
-  || $PSQL -c "CREATE ROLE public_staging_role NOINHERIT LOGIN PASSWORD '${PUBLIC_STAGING_ROLE_PASSWORD}';"
+exists_role "${STAGING_ROLE}" \
+  || $PSQL -c "CREATE ROLE ${STAGING_ROLE} NOINHERIT LOGIN PASSWORD '${PUBLIC_STAGING_ROLE_PASSWORD}';"
 
 # Read-only role of the operator-access sync job (migration 0239 grants it
 # its columns). Created here because the local admin_role has no CREATEROLE;
 # on Cloud SQL the migration creates it. admin_role may SET ROLE to it so the
 # integration tests can prove what the role can and cannot do.
-exists_role operator_access_reader \
-  || $PSQL -c "CREATE ROLE operator_access_reader NOLOGIN;"
-$PSQL -c "GRANT operator_access_reader TO admin_role;"
+exists_role "${READER_ROLE}" \
+  || $PSQL -c "CREATE ROLE ${READER_ROLE} NOLOGIN;"
+$PSQL -c "GRANT ${READER_ROLE} TO ${ADMIN_ROLE};"
 
 # The upgrader job's role (migration 0267 grants it exactly the update
 # request/event/policy columns it may touch). Same reason as above: created
 # here because the local admin_role has no CREATEROLE; admin_role may SET
 # ROLE to it so the integration tests can prove its limits.
-exists_role platform_updater \
-  || $PSQL -c "CREATE ROLE platform_updater NOLOGIN;"
-$PSQL -c "GRANT platform_updater TO admin_role;"
+exists_role "${UPDATER_ROLE}" \
+  || $PSQL -c "CREATE ROLE ${UPDATER_ROLE} NOLOGIN;"
+$PSQL -c "GRANT ${UPDATER_ROLE} TO ${ADMIN_ROLE};"
 
-exists_db cms_admin  || $PSQL -c "CREATE DATABASE cms_admin OWNER admin_role;"
-exists_db cms_public || $PSQL -c "CREATE DATABASE cms_public OWNER admin_role;"
-exists_db cms_public_staging || $PSQL -c "CREATE DATABASE cms_public_staging OWNER admin_role;"
+exists_db "${ADMIN_DB}"  || $PSQL -c "CREATE DATABASE ${ADMIN_DB} OWNER ${ADMIN_ROLE};"
+exists_db "${PUBLIC_DB}" || $PSQL -c "CREATE DATABASE ${PUBLIC_DB} OWNER ${ADMIN_ROLE};"
+exists_db "${STAGING_DB}" || $PSQL -c "CREATE DATABASE ${STAGING_DB} OWNER ${ADMIN_ROLE};"
 
-$PSQL -c "REVOKE ALL ON DATABASE cms_admin  FROM PUBLIC;"
-$PSQL -c "REVOKE ALL ON DATABASE cms_public FROM PUBLIC;"
-$PSQL -c "REVOKE ALL ON DATABASE cms_public_staging FROM PUBLIC;"
-$PSQL -c "GRANT CONNECT ON DATABASE cms_admin  TO admin_role;"
-$PSQL -c "GRANT CONNECT ON DATABASE cms_public TO public_role, admin_role;"
-$PSQL -c "GRANT CONNECT ON DATABASE cms_public_staging TO public_staging_role, admin_role;"
+$PSQL -c "REVOKE ALL ON DATABASE ${ADMIN_DB}  FROM PUBLIC;"
+$PSQL -c "REVOKE ALL ON DATABASE ${PUBLIC_DB} FROM PUBLIC;"
+$PSQL -c "REVOKE ALL ON DATABASE ${STAGING_DB} FROM PUBLIC;"
+$PSQL -c "GRANT CONNECT ON DATABASE ${ADMIN_DB}  TO ${ADMIN_ROLE};"
+$PSQL -c "GRANT CONNECT ON DATABASE ${PUBLIC_DB} TO ${PUBLIC_ROLE}, ${ADMIN_ROLE};"
+$PSQL -c "GRANT CONNECT ON DATABASE ${STAGING_DB} TO ${STAGING_ROLE}, ${ADMIN_ROLE};"
 # Each gateway's login reaches its own database only (#1329): a database
 # from before carries no such grant, but a hand-made one might.
-$PSQL -c "REVOKE ALL ON DATABASE cms_public_staging FROM public_role;"
-$PSQL -c "REVOKE ALL ON DATABASE cms_public FROM public_staging_role;"
+$PSQL -c "REVOKE ALL ON DATABASE ${STAGING_DB} FROM ${PUBLIC_ROLE};"
+$PSQL -c "REVOKE ALL ON DATABASE ${PUBLIC_DB} FROM ${STAGING_ROLE};"
+
+# Issue #1689 — pg_trgm (cms_admin migration 0024) belongs to the
+# superuser, not to the admin role: ALTER EXTENSION has no OWNER TO, so an
+# extension the admin role owned would tie a template copy of this
+# database to the template's role (install-from-template.ts). The
+# migration's CREATE EXTENSION IF NOT EXISTS then finds it. A database
+# from before keeps the admin role's pg_trgm; only a template needs this.
+$PSQL -d "${ADMIN_DB}" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
 
 # public_role gets zero default-schema privileges on cms_admin by omission;
 # enforced by the role-isolation.integration.test suite.
@@ -83,24 +144,36 @@ $PSQL -c "REVOKE ALL ON DATABASE cms_public FROM public_staging_role;"
 # migration role may; here admin_role has no CREATEROLE). The role audit
 # fails the migrations while one is missing. Re-run on every self-hosted
 # upgrade, so a value changed here reaches existing installs.
-$PSQL -c "ALTER ROLE public_role CONNECTION LIMIT 30;"
-$PSQL -c "ALTER ROLE public_role SET statement_timeout = '5s';"
-$PSQL -c "ALTER ROLE public_role SET idle_in_transaction_session_timeout = '15s';"
-$PSQL -c "ALTER ROLE public_role SET work_mem = '1MB';"
+$PSQL -c "ALTER ROLE ${PUBLIC_ROLE} CONNECTION LIMIT 30;"
+$PSQL -c "ALTER ROLE ${PUBLIC_ROLE} SET statement_timeout = '5s';"
+$PSQL -c "ALTER ROLE ${PUBLIC_ROLE} SET idle_in_transaction_session_timeout = '15s';"
+$PSQL -c "ALTER ROLE ${PUBLIC_ROLE} SET work_mem = '1MB';"
 # Issue #1329 — the staging gateway's login gets the same bounds (cms_admin
 # migration 0530).
-$PSQL -c "ALTER ROLE public_staging_role CONNECTION LIMIT 30;"
-$PSQL -c "ALTER ROLE public_staging_role SET statement_timeout = '5s';"
-$PSQL -c "ALTER ROLE public_staging_role SET idle_in_transaction_session_timeout = '15s';"
-$PSQL -c "ALTER ROLE public_staging_role SET work_mem = '1MB';"
+$PSQL -c "ALTER ROLE ${STAGING_ROLE} CONNECTION LIMIT 30;"
+$PSQL -c "ALTER ROLE ${STAGING_ROLE} SET statement_timeout = '5s';"
+$PSQL -c "ALTER ROLE ${STAGING_ROLE} SET idle_in_transaction_session_timeout = '15s';"
+$PSQL -c "ALTER ROLE ${STAGING_ROLE} SET work_mem = '1MB';"
+
+# Issue #1689 — on a server several installs share, the admin login is
+# bounded too, so one install cannot take every connection of the server.
+if [ -n "${ADMIN_ROLE_CONNECTION_LIMIT}" ]; then
+  case "${ADMIN_ROLE_CONNECTION_LIMIT}" in
+    *[!0-9]*)
+      echo "bootstrap.sh: ADMIN_ROLE_CONNECTION_LIMIT must be a whole number (got ${ADMIN_ROLE_CONNECTION_LIMIT})" >&2
+      exit 1
+      ;;
+  esac
+  $PSQL -c "ALTER ROLE ${ADMIN_ROLE} CONNECTION LIMIT ${ADMIN_ROLE_CONNECTION_LIMIT};"
+fi
 
 # Issue #635 — the API gateway has no cms_admin login any more. A database
 # from before still holds the former gateway_role; migration 0285 strips its
 # grants but cannot drop a role the superuser created. Drop it here, with
 # whatever it still holds in either database.
-if exists_role gateway_role; then
-  $PSQL -d cms_admin -c "DROP OWNED BY gateway_role;"
-  $PSQL -d cms_public -c "DROP OWNED BY gateway_role;"
-  $PSQL -d cms_public_staging -c "DROP OWNED BY gateway_role;"
-  $PSQL -c "DROP ROLE gateway_role;"
+if exists_role "${GATEWAY_ROLE}"; then
+  $PSQL -d "${ADMIN_DB}" -c "DROP OWNED BY ${GATEWAY_ROLE};"
+  $PSQL -d "${PUBLIC_DB}" -c "DROP OWNED BY ${GATEWAY_ROLE};"
+  $PSQL -d "${STAGING_DB}" -c "DROP OWNED BY ${GATEWAY_ROLE};"
+  $PSQL -c "DROP ROLE ${GATEWAY_ROLE};"
 fi

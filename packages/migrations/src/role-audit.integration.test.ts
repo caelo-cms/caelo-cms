@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { assertPublicDatabaseIsolated, assertRoleIsolation } from "./role-audit.js";
 
@@ -144,10 +145,10 @@ describe("public_role isolation on a Cloud SQL-shaped database (#633)", () => {
 
   it("the audit refuses public_role in cloudsqlsuperuser with CONNECT on cms_admin", async () => {
     expect(await canConnect(publicOnAdmin)).toBe(true);
-    await expect(assertRoleIsolation(admin)).rejects.toThrow(
+    await expect(assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES)).rejects.toThrow(
       "public_role is a member of cloudsqlsuperuser (it must be of none)",
     );
-    await expect(assertRoleIsolation(admin)).rejects.toThrow(
+    await expect(assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES)).rejects.toThrow(
       "public_role can connect to cms_admin",
     );
   });
@@ -171,7 +172,7 @@ describe("public_role isolation on a Cloud SQL-shaped database (#633)", () => {
     await su.unsafe("REVOKE cloudsqlsuperuser FROM public_role");
     for (let run = 0; run < 2; run++) {
       await runMigration0278();
-      const audit = await assertRoleIsolation(admin);
+      const audit = await assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES);
       expect(audit.violations).toEqual([]);
       // The local admin_role has no CREATEROLE, so it could not drop them.
       expect(audit.warnings).toEqual([
@@ -199,7 +200,7 @@ describe("public_role isolation on a Cloud SQL-shaped database (#633)", () => {
       await runMigration0278();
       expect(await attributes()).toEqual({ rolcreaterole: false, rolcreatedb: false });
       await runMigration0278();
-      const audit = await assertRoleIsolation(admin);
+      const audit = await assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES);
       expect(audit).toEqual({ violations: [], warnings: [] });
     } finally {
       await su.unsafe("REVOKE public_role FROM admin_role");
@@ -210,7 +211,7 @@ describe("public_role isolation on a Cloud SQL-shaped database (#633)", () => {
   it("refuses again if anything puts public_role back into the group", async () => {
     await su.unsafe("GRANT cloudsqlsuperuser TO public_role");
     try {
-      await expect(assertRoleIsolation(admin)).rejects.toThrow(
+      await expect(assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES)).rejects.toThrow(
         "public_role is a member of cloudsqlsuperuser",
       );
     } finally {
@@ -224,7 +225,7 @@ describe("the public side reaches no cms_admin object (#635)", () => {
     await su.unsafe("GRANT SELECT ON pages TO public_role");
     await su.unsafe("GRANT UPDATE (title) ON pages TO public_role");
     try {
-      const run = assertRoleIsolation(admin);
+      const run = assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES);
       await expect(run).rejects.toThrow("public_role holds a privilege on cms_admin table pages");
       await expect(run).rejects.toThrow(
         "public_role holds a privilege on cms_admin column pages.title",
@@ -232,13 +233,13 @@ describe("the public side reaches no cms_admin object (#635)", () => {
     } finally {
       await su.unsafe("REVOKE ALL ON pages FROM public_role");
     }
-    await expect(assertRoleIsolation(admin)).resolves.toBeDefined();
+    await expect(assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES)).resolves.toBeDefined();
   });
 
   it("fails on a privilege granted to PUBLIC, which every login inherits", async () => {
     await su.unsafe("GRANT SELECT ON site_settings TO PUBLIC");
     try {
-      await expect(assertRoleIsolation(admin)).rejects.toThrow(
+      await expect(assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES)).rejects.toThrow(
         "PUBLIC holds a privilege on cms_admin table site_settings",
       );
     } finally {
@@ -249,12 +250,12 @@ describe("the public side reaches no cms_admin object (#635)", () => {
   it("fails when cms_public holds a bridge to other databases", async () => {
     const pub = new SQL(superuserUrl("cms_public"), { max: 1 });
     try {
-      await assertPublicDatabaseIsolated(pub, "cms_public");
+      await assertPublicDatabaseIsolated(pub, "cms_public", DEFAULT_INSTALL_NAMES);
       await pub.unsafe("CREATE FOREIGN DATA WRAPPER caelo_t635_fdw");
       try {
-        await expect(assertPublicDatabaseIsolated(pub, "cms_public")).rejects.toThrow(
-          "cms_public has a foreign data wrapper caelo_t635_fdw",
-        );
+        await expect(
+          assertPublicDatabaseIsolated(pub, "cms_public", DEFAULT_INSTALL_NAMES),
+        ).rejects.toThrow("cms_public has a foreign data wrapper caelo_t635_fdw");
       } finally {
         await pub.unsafe("DROP FOREIGN DATA WRAPPER caelo_t635_fdw");
       }
@@ -272,7 +273,7 @@ describe("the former gateway_role (#635)", () => {
     try {
       await su.unsafe("GRANT CONNECT ON DATABASE cms_admin TO gateway_role");
       await su.unsafe("GRANT SELECT (gateway_cookie_secret) ON site_settings TO gateway_role");
-      const run = assertRoleIsolation(admin);
+      const run = assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES);
       await expect(run).rejects.toThrow("gateway_role can connect to cms_admin");
       await expect(run).rejects.toThrow(
         "gateway_role holds a privilege on cms_admin column site_settings.gateway_cookie_secret",
@@ -284,7 +285,7 @@ describe("the former gateway_role (#635)", () => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
         await tx.unsafe(body);
       });
-      await expect(assertRoleIsolation(admin)).resolves.toBeDefined();
+      await expect(assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES)).resolves.toBeDefined();
     } finally {
       await su.unsafe("DROP OWNED BY gateway_role");
       await su.unsafe("DROP ROLE IF EXISTS gateway_role");

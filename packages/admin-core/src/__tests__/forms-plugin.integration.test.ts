@@ -28,12 +28,15 @@ import {
   resetPluginHost,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
-import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { publicGrantTargets, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { publishProjectionOnce, stagingPublicAdapter } from "../public-projection.js";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
 
 /** #1329 — the admin's adapter on the staging twin of cms_public. */
 const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
@@ -102,6 +105,7 @@ async function provisionSchemaFor(
   );
   if (!id) throw new Error(`provisionSchemaFor: no plugin row for ${slug}`);
   const emitted = schemaFromSpec({
+    target: LIVE_TARGET,
     tableKinds: Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const])),
     pluginId: id,
     slug,

@@ -50,7 +50,11 @@ import {
 } from "@caelo-cms/migrations/public-projection";
 import { loadedPlugins } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
-import { ADMIN_PUBLIC_STAGING_POOL_MAX } from "@caelo-cms/shared";
+import {
+  ADMIN_PUBLIC_STAGING_POOL_MAX,
+  type InstallNames,
+  installNamesFromEnv,
+} from "@caelo-cms/shared";
 
 const SYSTEM_CTX = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -63,13 +67,21 @@ const SYSTEM_CTX = {
  * (cms_public_staging), as admin_role. Public-only, so nothing reaches
  * cms_admin through it, with the fixed pool the connection budget
  * reserves (`ADMIN_PUBLIC_STAGING_POOL_MAX`).
+ *
+ * @param names #1689 — the install's names; the process's map
+ *   (`CAELO_INSTALL_NAMES`) unless given, the same the admin's own adapter
+ *   reads. Only a process that works on several installs passes one.
  */
-export function stagingPublicAdapter(url: string): DatabaseAdapter {
+export function stagingPublicAdapter(
+  url: string,
+  names: InstallNames = installNamesFromEnv(),
+): DatabaseAdapter {
   return new DatabaseAdapter({
     adminDatabaseUrl: null,
     publicDatabaseUrl: url,
     publicDatabase: "cms_public_staging",
-    expectedRoles: { admin: null, public: ["admin_role"] },
+    names,
+    expectedRoles: { admin: null, public: [names.roles.admin] },
     publicPoolMax: ADMIN_PUBLIC_STAGING_POOL_MAX,
   });
 }

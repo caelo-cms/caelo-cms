@@ -54,7 +54,15 @@ describe("the host agent's login (#696 Phase 4c)", () => {
       script.indexOf("GRANT platform_updater TO caelo_agent"),
     );
     expect(script.indexOf("\\connect cms_admin")).toBeLessThan(
-      script.indexOf("PERFORM caelo_grant_platform_updater()"),
+      script.indexOf("PERFORM caelo_grant_platform_updater("),
+    );
+    // #1689 — cms_admin 0780's version takes the install's names; 0270's
+    // (no arguments) is what a database before that migration still has.
+    expect(script).toContain(
+      "PERFORM caelo_grant_platform_updater('platform_updater', 'cms_admin', 'cms_public')",
+    );
+    expect(script).toContain(
+      "ELSIF to_regprocedure('caelo_grant_platform_updater()') IS NOT NULL THEN PERFORM caelo_grant_platform_updater();",
     );
   });
 });
@@ -189,7 +197,12 @@ describe("the gateway logins' limits (#1338, H3; #1329)", () => {
       resolve(import.meta.dir, "../../migrations/src/bootstrap.sh"),
       "utf8",
     );
-    for (const st of statements) expect(bootstrap).toContain(st);
+    // bootstrap.sh names the logins through the install's name map (#1689).
+    const asBootstrapWritesIt = (st: string) =>
+      st
+        .replace(/^ALTER ROLE public_role /, `ALTER ROLE \${PUBLIC_ROLE} `)
+        .replace(/^ALTER ROLE public_staging_role /, `ALTER ROLE \${STAGING_ROLE} `);
+    for (const st of statements) expect(bootstrap).toContain(asBootstrapWritesIt(st));
   });
 
   it("refuse to run against a stopped database", async () => {

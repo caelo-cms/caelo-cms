@@ -13,7 +13,13 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DB_PUBLIC_POOL_MAX_ENV, GATEWAY_POOL_MAX } from "@caelo-cms/shared";
+import {
+  DB_PUBLIC_POOL_MAX_ENV,
+  DEFAULT_INSTALL_NAMES,
+  GATEWAY_POOL_MAX,
+  installNamesEnv,
+  prefixedInstallNames,
+} from "@caelo-cms/shared";
 import {
   adminDatabaseAccessInEnv,
   type GatewayEnvironment,
@@ -302,13 +308,61 @@ describe("gatewayDatabaseUrls (#635)", () => {
     }
   });
 
-  it("returns the environment and its public URL", () => {
+  it("returns the environment, its install's names and its public URL", () => {
     expect(gatewayDatabaseUrls({ ...OWN, CAELO_GATEWAY_ENVIRONMENT: "live" }, NO_FILES)).toEqual({
       environment: "live",
+      names: DEFAULT_INSTALL_NAMES,
       public: OWN.PUBLIC_DATABASE_URL,
     });
     expect(
       gatewayDatabaseUrls({ ...STAGING_OWN, CAELO_GATEWAY_ENVIRONMENT: "staging" }, NO_FILES),
-    ).toEqual({ environment: "staging", public: STAGING_OWN.PUBLIC_DATABASE_URL });
+    ).toEqual({
+      environment: "staging",
+      names: DEFAULT_INSTALL_NAMES,
+      public: STAGING_OWN.PUBLIC_DATABASE_URL,
+    });
+  });
+});
+
+describe("an install with its own names on a shared server (#1689)", () => {
+  const T2 = prefixedInstallNames("t2");
+  const T2_ENV = installNamesEnv(T2);
+  const T2_OWN = {
+    PUBLIC_DATABASE_URL: "postgres://t2_public_role:p@db:5432/t2_cms_public?sslmode=verify-full",
+  };
+
+  it("accepts its own login on its own database, and the name map itself", () => {
+    expect(check({ ...T2_OWN, ...T2_ENV })).toEqual([]);
+    expect(
+      gatewayDatabaseUrls({ ...T2_OWN, ...T2_ENV, CAELO_GATEWAY_ENVIRONMENT: "live" }, NO_FILES),
+    ).toEqual({
+      environment: "live",
+      names: T2,
+      public: T2_OWN.PUBLIC_DATABASE_URL,
+    });
+  });
+
+  it("refuses the default install's login and database for its own URL", () => {
+    expect(check({ ...OWN, ...T2_ENV })).toEqual([
+      'PUBLIC_DATABASE_URL: a URL for database "cms_public" (the live gateway\'s is t2_cms_public)',
+    ]);
+  });
+
+  it("refuses a value naming its own admin database or roles, or the default install's", () => {
+    for (const value of [
+      "t2_cms_admin",
+      "t2_admin_role",
+      "cms_admin",
+      "admin_role",
+      "t2_cms_public_staging",
+    ]) {
+      expect(check({ ...T2_OWN, ...T2_ENV, LEAK: value })).toHaveLength(1);
+    }
+  });
+
+  it("refuses to boot on a name map that does not parse", () => {
+    expect(() => check({ ...T2_OWN, CAELO_INSTALL_NAMES: '{"roles":{}}' })).toThrow(
+      "is not a complete install name map",
+    );
   });
 });

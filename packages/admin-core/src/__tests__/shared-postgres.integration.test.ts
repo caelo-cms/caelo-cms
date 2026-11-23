@@ -1,0 +1,495 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Issue #1689 — several installs on one Postgres server, against the real
+ * thing. Install A is the default install every suite uses; install B is
+ * bootstrapped (bootstrap.sh with its name map) and migrated (migrate.ts,
+ * with every audit) here, then copied twice at once into C1 and C2
+ * (install-from-template.ts). Proves:
+ *
+ *   - both installs migrate fully on one server, each audit passing;
+ *   - no login of A connects to a database of B and no login of B to one
+ *     of A (so neither reads nor writes the other's data — Postgres has no
+ *     cross-database query without a bridge, which the audit refuses), and
+ *     no role of one may SET ROLE to a role of the other;
+ *   - a plugin provisioned for B grants to B's roles only;
+ *   - the role audit fails on a cross-install grant, CONNECT or policy;
+ *   - a template copy has exactly the privilege fingerprint of the freshly
+ *     migrated template, two copies at once both succeed, a copy never
+ *     overwrites an existing install, and the copy migrates and audits
+ *     clean afterwards.
+ *
+ * Needs the superuser (POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_PORT,
+ * as role-audit.integration.test.ts) and psql on PATH (bootstrap.sh). Every
+ * role and database it creates is dropped again.
+ */
+
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  assertNoForeignReferences,
+  assertPublicDatabaseOwnsItsLogin,
+  assertRoleIsolation,
+} from "@caelo-cms/migrations/role-audit";
+import { installFromTemplate } from "@caelo-cms/migrations/template-install";
+import { provisionPluginPublicSchemas } from "@caelo-cms/plugin-host";
+import { adminGrantTarget, adminSchemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { DatabaseAdapter } from "@caelo-cms/query-api";
+import {
+  DEFAULT_INSTALL_NAMES,
+  type InstallNames,
+  installDatabases,
+  installNamesEnv,
+  installRoles,
+  type LogicalDatabase,
+  physicalDatabaseName,
+  prefixedInstallNames,
+} from "@caelo-cms/shared";
+import { SQL } from "bun";
+
+const env = process.env;
+const missing = ["POSTGRES_USER", "POSTGRES_PORT", "ADMIN_DATABASE_URL"].filter((n) => !env[n]);
+if (missing.length > 0) throw new Error(`${missing.join(", ")} required (see .env.example)`);
+
+/** packages/migrations, where bootstrap.sh and migrate.ts live. */
+const MIGRATIONS = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "migrations");
+const HOST = new URL(env.ADMIN_DATABASE_URL as string).hostname;
+const PASSWORDS = { admin: "b-admin-pw", public: "b-public-pw", publicStaging: "b-staging-pw" };
+const A = DEFAULT_INSTALL_NAMES;
+const B = prefixedInstallNames("ci1689b");
+const C1 = prefixedInstallNames("ci1689c1");
+const C2 = prefixedInstallNames("ci1689c2");
+const OURS = [B, C1, C2];
+const LOGICAL: readonly LogicalDatabase[] = ["cms_admin", "cms_public", "cms_public_staging"];
+
+/** A URL on this server for `user` (password `password`, or the superuser's) on `database`. */
+function url(
+  database: string,
+  user = env.POSTGRES_USER as string,
+  password = env.POSTGRES_PASSWORD,
+): string {
+  const u = new URL(`postgres://${HOST}/${database}`);
+  u.port = env.POSTGRES_PORT as string;
+  u.username = user;
+  if (password) u.password = password;
+  return u.toString();
+}
+
+/** Install A's three logins, from the suite's own URLs. */
+function loginsOfA(): { user: string; password: string }[] {
+  return ["ADMIN_DATABASE_URL", "PUBLIC_DATABASE_URL", "PUBLIC_STAGING_DATABASE_URL"].map((v) => {
+    const u = new URL(env[v] as string);
+    return { user: decodeURIComponent(u.username), password: decodeURIComponent(u.password) };
+  });
+}
+
+/** Install `names`' three logins with the test passwords. */
+function loginsOf(names: InstallNames): { user: string; password: string }[] {
+  return [
+    { user: names.roles.admin, password: PASSWORDS.admin },
+    { user: names.roles.public, password: PASSWORDS.public },
+    { user: names.roles.publicStaging, password: PASSWORDS.publicStaging },
+  ];
+}
+
+/** Whether a login may open `database` at all (Postgres' CONNECT privilege). */
+async function canConnect(user: string, password: string, database: string): Promise<boolean> {
+  const sql = new SQL(url(database, user, password), { max: 1 });
+  try {
+    await sql`SELECT 1`;
+    return true;
+  } catch (e) {
+    if (/permission denied for database/i.test(String(e))) return false;
+    throw e;
+  } finally {
+    await sql.end();
+  }
+}
+
+/** Run a command with the superuser's psql env and `extra`; throws with its output on failure. */
+async function run(cmd: string[], extra: Record<string, string>): Promise<void> {
+  const proc = Bun.spawn(cmd, {
+    cwd: MIGRATIONS,
+    env: {
+      PATH: env.PATH ?? "",
+      HOME: env.HOME ?? "",
+      PGHOST: HOST,
+      PGPORT: env.POSTGRES_PORT as string,
+      PGPASSWORD: env.POSTGRES_PASSWORD ?? "",
+      POSTGRES_USER: env.POSTGRES_USER as string,
+      POSTGRES_DB: "postgres",
+      ...extra,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [out, err, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (code !== 0) throw new Error(`${cmd.join(" ")} exited ${code}:\n${out}\n${err}`);
+}
+
+/** The env migrate.ts takes for the install `names`. */
+function migrateEnv(names: InstallNames): Record<string, string> {
+  const d = names.databases;
+  const admin = (db: string) => url(db, names.roles.admin, PASSWORDS.admin);
+  return {
+    ...installNamesEnv(names),
+    ADMIN_DATABASE_URL: admin(d.admin),
+    PUBLIC_ADMIN_DATABASE_URL: admin(d.public),
+    PUBLIC_STAGING_ADMIN_DATABASE_URL: admin(d.publicStaging),
+  };
+}
+
+async function migrate(names: InstallNames): Promise<void> {
+  for (const target of ["admin", "public", "public-staging"]) {
+    await run(["bun", "run", "src/migrate.ts", target], migrateEnv(names));
+  }
+}
+
+/** Drop every database and role of `names` (a test install), whatever exists of it. */
+async function dropInstall(su: SQL, names: InstallNames): Promise<void> {
+  for (const db of installDatabases(names)) {
+    await su.unsafe(`DROP DATABASE IF EXISTS "${db}" WITH (FORCE)`);
+  }
+  for (const role of [...installRoles(names)].reverse()) {
+    await su.unsafe(`DROP ROLE IF EXISTS "${role}"`);
+  }
+}
+
+/**
+ * Every owner, privilege, policy and database-level grant or setting of the
+ * install `names`, with its role and database names replaced by their
+ * slot, so two installs of the same schema compare equal.
+ */
+async function fingerprint(names: InstallNames): Promise<string[]> {
+  const slots = new Map<string, string>([
+    ...Object.entries(names.roles).map(([k, v]) => [v, `<role:${k}>`] as const),
+    ...Object.entries(names.databases).map(([k, v]) => [v, `<db:${k}>`] as const),
+  ]);
+  const normalise = (line: string) =>
+    line.replace(/[a-z_][a-z0-9_]*/g, (word) => slots.get(word) ?? word);
+  const lines: string[] = [];
+  for (const logical of LOGICAL) {
+    const db = new SQL(url(physicalDatabaseName(names, logical)), { max: 1 });
+    try {
+      const rows = (await db.unsafe(`
+        SELECT 'owner|' || c.oid::regclass || '|' || c.relkind::text || '|' || pg_get_userbyid(c.relowner) AS l
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_toast%'
+        UNION ALL
+        SELECT 'acl|' || c.oid::regclass || '|' || coalesce(pg_get_userbyid(nullif(a.grantee, 0)), 'PUBLIC')
+               || '|' || a.privilege_type || '|' || a.is_grantable || '|' || pg_get_userbyid(a.grantor)
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          CROSS JOIN LATERAL aclexplode(c.relacl) a
+         WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+        UNION ALL
+        SELECT 'colacl|' || att.attrelid::regclass || '.' || att.attname || '|'
+               || coalesce(pg_get_userbyid(nullif(a.grantee, 0)), 'PUBLIC') || '|' || a.privilege_type
+          FROM pg_attribute att CROSS JOIN LATERAL aclexplode(att.attacl) a
+         WHERE att.attacl IS NOT NULL
+        UNION ALL
+        SELECT 'schema|' || n.nspname || '|' || pg_get_userbyid(n.nspowner) || '|' || coalesce(n.nspacl::text, '')
+          FROM pg_namespace n WHERE n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
+        UNION ALL
+        SELECT 'routine|' || p.oid::regprocedure || '|' || pg_get_userbyid(p.proowner) || '|' || coalesce(p.proacl::text, '')
+          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+        UNION ALL
+        SELECT 'policy|' || pol.polrelid::regclass || '|' || pol.polname || '|' || pol.polcmd::text || '|'
+               || (SELECT string_agg(coalesce(pg_get_userbyid(nullif(u, 0)), 'PUBLIC'), ',' ORDER BY 1) FROM unnest(pol.polroles) u)
+               || '|' || coalesce(pg_get_expr(pol.polqual, pol.polrelid), '')
+               || '|' || coalesce(pg_get_expr(pol.polwithcheck, pol.polrelid), '')
+          FROM pg_policy pol
+        UNION ALL
+        SELECT 'extension|' || extname || '|' || (SELECT rolsuper FROM pg_roles WHERE oid = extowner) FROM pg_extension
+        UNION ALL
+        SELECT 'migration|' || hash FROM __drizzle_migrations
+      `)) as { l: string }[];
+      lines.push(...rows.map((r) => `${logical}|${normalise(r.l)}`));
+    } finally {
+      await db.end();
+    }
+  }
+  const su = new SQL(url("postgres"), { max: 1 });
+  try {
+    const shared = (await su.unsafe(`
+      SELECT 'database|' || d.datname || '|' || pg_get_userbyid(d.datdba) || '|'
+             || coalesce(pg_get_userbyid(nullif(a.grantee, 0)), 'PUBLIC') || '|' || a.privilege_type AS l
+        FROM pg_database d CROSS JOIN LATERAL aclexplode(d.datacl) a
+       WHERE d.datname IN (${installDatabases(names)
+         .map((n) => `'${n}'`)
+         .join(", ")})
+      UNION ALL
+      SELECT 'dbsetting|' || d.datname || '|' || coalesce(pg_get_userbyid(nullif(s.setrole, 0)), '*') || '|' || array_to_string(s.setconfig, ',')
+        FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase
+       WHERE d.datname IN (${installDatabases(names)
+         .map((n) => `'${n}'`)
+         .join(", ")})
+      UNION ALL
+      SELECT 'role|' || r.rolname || '|' || r.rolcanlogin || '|' || r.rolinherit || '|' || r.rolconnlimit
+             || '|' || coalesce(array_to_string(r.rolconfig, ','), '') || '|' || r.rolsuper || r.rolcreatedb || r.rolcreaterole
+        FROM pg_roles r WHERE r.rolname IN (${installRoles(names)
+          .map((n) => `'${n}'`)
+          .join(", ")})
+      UNION ALL
+      SELECT 'member|' || g.rolname || '|' || m.rolname || '|' || a.admin_option || a.inherit_option || a.set_option
+        FROM pg_auth_members a JOIN pg_roles g ON g.oid = a.roleid JOIN pg_roles m ON m.oid = a.member
+       WHERE g.rolname IN (${installRoles(names)
+         .map((n) => `'${n}'`)
+         .join(", ")})
+         AND m.rolname IN (${installRoles(names)
+           .map((n) => `'${n}'`)
+           .join(", ")})
+    `)) as { l: string }[];
+    lines.push(...shared.map((r) => normalise(r.l)));
+  } finally {
+    await su.end();
+  }
+  return lines.sort();
+}
+
+let su: SQL;
+
+beforeAll(async () => {
+  su = new SQL(url("postgres"), { max: 2 });
+  for (const names of OURS) await dropInstall(su, names);
+  await run(["sh", "src/bootstrap.sh"], {
+    ...installNamesEnv(B),
+    ADMIN_ROLE_PASSWORD: PASSWORDS.admin,
+    PUBLIC_ROLE_PASSWORD: PASSWORDS.public,
+    PUBLIC_STAGING_ROLE_PASSWORD: PASSWORDS.publicStaging,
+  });
+  await migrate(B);
+}, 600_000);
+
+afterAll(async () => {
+  try {
+    for (const names of OURS) await dropInstall(su, names);
+  } finally {
+    await su.end();
+  }
+}, 120_000);
+
+describe("a template copy (#1689)", () => {
+  // Runs first: nothing may be connected to the template (install B) while
+  // CREATE DATABASE copies it.
+  it("two copies at once both succeed, with the fingerprint of fresh migrations", async () => {
+    const copy = (target: InstallNames) =>
+      installFromTemplate({
+        connect: (database) => new SQL(url(database), { max: 2 }),
+        maintenanceDatabase: "postgres",
+        template: B,
+        target,
+        passwords: PASSWORDS,
+      });
+    const [r1, r2] = await Promise.all([copy(C1), copy(C2)]);
+    expect(r1.databases).toEqual(installDatabases(C1));
+    expect(r2.databases).toEqual(installDatabases(C2));
+    const fresh = await fingerprint(B);
+    expect(fresh.length).toBeGreaterThan(500);
+    expect(await fingerprint(C1)).toEqual(fresh);
+    expect(await fingerprint(C2)).toEqual(fresh);
+  }, 300_000);
+
+  it("never takes over an install that exists, and leaves it intact", async () => {
+    const before = await fingerprint(C1);
+    await expect(
+      installFromTemplate({
+        connect: (database) => new SQL(url(database), { max: 2 }),
+        maintenanceDatabase: "postgres",
+        template: B,
+        target: C1,
+        passwords: PASSWORDS,
+      }),
+    ).rejects.toThrow("already exist on the server");
+    expect(await fingerprint(C1)).toEqual(before);
+  }, 120_000);
+
+  it("the copy migrates and audits clean as its own install", async () => {
+    await migrate(C1);
+    expect(await canConnect(C1.roles.admin, PASSWORDS.admin, C1.databases.admin)).toBe(true);
+  }, 300_000);
+});
+
+describe("two installs on one server (#1689)", () => {
+  it("no login of one install opens any database of the other, in both directions", async () => {
+    for (const [logins, other] of [
+      [loginsOfA(), B],
+      [loginsOf(B), A],
+      [loginsOf(B), C1],
+      [loginsOf(C1), B],
+    ] as const) {
+      for (const { user, password } of logins) {
+        for (const db of installDatabases(other)) {
+          expect({ user, db, connects: await canConnect(user, password, db) }).toEqual({
+            user,
+            db,
+            connects: false,
+          });
+        }
+      }
+    }
+  }, 120_000);
+
+  it("no role of one install may SET ROLE to a role of the other", async () => {
+    const adminOfA = new SQL(env.ADMIN_DATABASE_URL as string, { max: 1 });
+    const adminOfB = new SQL(url(B.databases.admin, B.roles.admin, PASSWORDS.admin), { max: 1 });
+    try {
+      for (const [session, other] of [
+        [adminOfA, B],
+        [adminOfB, A],
+      ] as const) {
+        for (const role of installRoles(other)) {
+          const exists = (await su`SELECT 1 FROM pg_roles WHERE rolname = ${role}`) as unknown[];
+          if (exists.length === 0) continue;
+          await expect(
+            (async () => {
+              await session.begin(async (tx) => {
+                await tx.unsafe(`SET LOCAL ROLE "${role}"`);
+              });
+            })(),
+          ).rejects.toThrow(/permission denied to set role/);
+        }
+      }
+    } finally {
+      await adminOfA.end();
+      await adminOfB.end();
+    }
+  });
+
+  it("the role audit of each install passes with the other on the server", async () => {
+    for (const names of [A, B]) {
+      for (const logical of LOGICAL) {
+        const db = new SQL(url(physicalDatabaseName(names, logical)), { max: 1 });
+        try {
+          await assertNoForeignReferences(db, logical, names);
+          if (logical === "cms_admin") await assertRoleIsolation(db, names);
+          else await assertPublicDatabaseOwnsItsLogin(db, logical, names);
+        } finally {
+          await db.end();
+        }
+      }
+    }
+  });
+
+  it("the role audit fails on a cross-install grant, CONNECT or policy", async () => {
+    const aAdmin = new SQL(url(A.databases.admin), { max: 1 });
+    const bAdmin = new SQL(url(B.databases.admin), { max: 1 });
+    try {
+      await aAdmin.unsafe(`GRANT SELECT ON pages TO "${B.roles.public}"`);
+      await aAdmin.unsafe(`GRANT CONNECT ON DATABASE ${A.databases.admin} TO "${B.roles.admin}"`);
+      await bAdmin.unsafe(
+        `CREATE POLICY ci1689_foreign ON pages FOR SELECT TO "${A.roles.public}" USING (false)`,
+      );
+      await expect(assertNoForeignReferences(aAdmin, "cms_admin", A)).rejects.toThrow(
+        `${B.roles.public}, a role of another install, holds a privilege on table pages`,
+      );
+      await expect(assertNoForeignReferences(aAdmin, "cms_admin", A)).rejects.toThrow(
+        `${B.roles.admin}, a role of another install, holds a privilege on database ${A.databases.admin}`,
+      );
+      await expect(assertRoleIsolation(bAdmin, B)).rejects.toThrow(
+        `${B.roles.admin} can connect to ${A.databases.admin}, a database of another install`,
+      );
+      await expect(assertNoForeignReferences(bAdmin, "cms_admin", B)).rejects.toThrow(
+        `${A.roles.public}, a role of another install, is named by policy ci1689_foreign on table pages`,
+      );
+    } finally {
+      await aAdmin.unsafe(`REVOKE SELECT ON pages FROM "${B.roles.public}"`);
+      await aAdmin.unsafe(
+        `REVOKE CONNECT ON DATABASE ${A.databases.admin} FROM "${B.roles.admin}"`,
+      );
+      await bAdmin.unsafe("DROP POLICY IF EXISTS ci1689_foreign ON pages");
+      await aAdmin.end();
+      await bAdmin.end();
+    }
+    const aAgain = new SQL(url(A.databases.admin), { max: 1 });
+    try {
+      await assertNoForeignReferences(aAgain, "cms_admin", A);
+    } finally {
+      await aAgain.end();
+    }
+  });
+
+  it("an adapter refuses another install's URL, and accepts its own", async () => {
+    const wrong = new DatabaseAdapter({
+      adminDatabaseUrl: url(B.databases.admin, B.roles.admin, PASSWORDS.admin),
+      publicDatabaseUrl: url(B.databases.public, B.roles.admin, PASSWORDS.admin),
+      names: A,
+    });
+    const right = new DatabaseAdapter({
+      adminDatabaseUrl: url(B.databases.admin, B.roles.admin, PASSWORDS.admin),
+      publicDatabaseUrl: url(B.databases.public, B.roles.admin, PASSWORDS.admin),
+      names: B,
+    });
+    try {
+      await expect(wrong.verifyRoles()).rejects.toThrow(
+        `expected (admin_role, cms_admin) but connected as (${B.roles.admin}, ${B.databases.admin})`,
+      );
+      await right.verifyRoles();
+    } finally {
+      await wrong.close();
+      await right.close();
+    }
+  });
+
+  it("a plugin provisioned for install B grants to B's roles only", async () => {
+    const pluginId = "16891689-1689-4689-8689-168916891689";
+    const adapter = new DatabaseAdapter({
+      adminDatabaseUrl: url(B.databases.admin, B.roles.admin, PASSWORDS.admin),
+      publicDatabaseUrl: url(B.databases.public, B.roles.admin, PASSWORDS.admin),
+      names: B,
+    });
+    const stagingAdapter = new DatabaseAdapter({
+      adminDatabaseUrl: null,
+      publicDatabaseUrl: url(B.databases.publicStaging, B.roles.admin, PASSWORDS.admin),
+      publicDatabase: "cms_public_staging",
+      names: B,
+      expectedRoles: { admin: null, public: [B.roles.admin] },
+    });
+    try {
+      await provisionPluginPublicSchemas(
+        { adapter, stagingAdapter },
+        {
+          pluginId,
+          slug: "ci1689-probe",
+          schema: { notes: { body: "text" }, inbox: { body: "text" } },
+          indexes: undefined,
+          tableKinds: { notes: "published", inbox: "inbox" },
+        },
+      );
+      await adapter.provisionPluginAdminSchema({
+        pluginId,
+        sql: adminSchemaFromSpec({
+          pluginId,
+          slug: "ci1689-probe",
+          adminSchema: { settings: { label: "string" } },
+          indexes: undefined,
+          target: adminGrantTarget(adapter.installNames.roles),
+        }).sql,
+      });
+      for (const logical of LOGICAL) {
+        const db = new SQL(url(physicalDatabaseName(B, logical)), { max: 1 });
+        try {
+          const grantees = (await db.unsafe(`
+            SELECT DISTINCT pg_get_userbyid(a.grantee) AS role
+              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              CROSS JOIN LATERAL aclexplode(c.relacl) a
+             WHERE n.nspname = 'plugin_ci1689_probe'
+          `)) as { role: string }[];
+          expect(grantees.length).toBeGreaterThan(0);
+          for (const { role } of grantees) expect(installRoles(B)).toContain(role);
+          await assertNoForeignReferences(db, logical, B);
+        } finally {
+          await db.end();
+        }
+      }
+    } finally {
+      await adapter.close();
+      await stagingAdapter.close();
+    }
+  });
+});

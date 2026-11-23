@@ -9,6 +9,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { DEFAULT_INSTALL_NAMES, type InstallNames } from "@caelo-cms/shared";
 import type { SQL } from "bun";
 import { MigrationRunOrderError, type PendingMigration, runOrderViolations } from "./run-order.js";
 
@@ -66,47 +67,80 @@ async function applyOutsideTransaction(
 }
 
 /**
- * Issue #1329 — the role the cms_public migrations name for the gateway's
- * visitor-facing login. The staging database `cms_public_staging` is the
- * same schema with its own login (`public_staging_role`), so its run takes
- * the same files with that one name swapped ({@link retargetVisitorRole}).
+ * Which database a migration run is for. The cms_public files serve both
+ * public databases: the staging run (#1329) takes the same files with the
+ * visitor login retargeted to the staging gateway's.
  */
-export const LIVE_VISITOR_ROLE = "public_role";
-
-/** The staging gateway's login in `cms_public_staging` (#1329). */
-export const STAGING_VISITOR_ROLE = "public_staging_role";
-
-const LIVE_VISITOR_ROLE_TOKEN = /(?<![A-Za-z0-9_$])public_role(?![A-Za-z0-9_$])/g;
+export type MigrationTarget = "admin" | "public" | "public-staging";
 
 /**
- * A cms_public migration with every whole-word `public_role` replaced by
- * `role`: its GRANTs, its `TO public_role` policies and its role checks
- * then target the staging gateway's login. One set of files, so the two
- * public databases cannot drift apart; whole words only, so a longer
- * identifier that merely contains the name stays as it is. The role audit
- * proves the outcome: in cms_public_staging nothing is granted to
- * public_role, in cms_public nothing to public_staging_role
- * (role-audit.ts `assertPublicDatabaseOwnsItsRole`).
+ * Issue #1689 — the role and database names the committed migration files
+ * are written with: today's names ({@link DEFAULT_INSTALL_NAMES}). The
+ * runner renames each whole-word occurrence to the install's own name
+ * ({@link renameForInstall}), so one set of files serves every install on a
+ * shared Postgres server and no file is edited.
+ */
+const WRITTEN_ROLES = DEFAULT_INSTALL_NAMES.roles;
+const WRITTEN_DATABASES = DEFAULT_INSTALL_NAMES.databases;
+
+/**
+ * What each name in the migration files becomes for `names` and `target`:
+ * every role and database the install's own name, and in the staging run
+ * the live visitor login (`public_role`) the staging one — the #1329
+ * retarget, so the staging database grants its own gateway what the live
+ * one grants the live gateway. The role audit proves the outcome
+ * (role-audit.ts `assertPublicDatabaseOwnsItsLogin`, `assertNoForeignGrantees`).
+ */
+export function installNameTokens(
+  names: InstallNames,
+  target: MigrationTarget,
+): ReadonlyMap<string, string> {
+  const visitor = target === "public-staging" ? names.roles.publicStaging : names.roles.public;
+  return new Map<string, string>([
+    [WRITTEN_ROLES.admin, names.roles.admin],
+    [WRITTEN_ROLES.public, visitor],
+    [WRITTEN_ROLES.publicStaging, names.roles.publicStaging],
+    [WRITTEN_ROLES.operatorAccessReader, names.roles.operatorAccessReader],
+    [WRITTEN_ROLES.platformUpdater, names.roles.platformUpdater],
+    [WRITTEN_ROLES.formerGateway, names.roles.formerGateway],
+    [WRITTEN_DATABASES.admin, names.databases.admin],
+    [WRITTEN_DATABASES.public, names.databases.public],
+    [WRITTEN_DATABASES.publicStaging, names.databases.publicStaging],
+  ]);
+}
+
+/**
+ * A migration with every whole-word written name replaced by the
+ * install's (`tokens` from {@link installNameTokens}): its GRANTs, its
+ * `TO <role>` policies, its role checks and its `ON DATABASE` statements
+ * then target this install's roles and databases. One pass, whole words
+ * only: a longer identifier that merely contains a name
+ * (`caelo_grant_platform_updater`, `my_public_role`) stays as it is, and a
+ * replacement is never replaced again.
  *
- * @example retargetVisitorRole("GRANT SELECT ON t TO public_role;", "public_staging_role")
+ * @example renameForInstall("GRANT SELECT ON t TO public_role;", installNameTokens(DEFAULT_INSTALL_NAMES, "public-staging"))
  *   // → "GRANT SELECT ON t TO public_staging_role;"
  */
-export function retargetVisitorRole(body: string, role: string): string {
-  if (role === LIVE_VISITOR_ROLE) return body;
-  if (!/^[a-z_][a-z0-9_]*$/.test(role)) {
-    throw new Error(`retargetVisitorRole: "${role}" is not a role name`);
+export function renameForInstall(body: string, tokens: ReadonlyMap<string, string>): string {
+  if ([...tokens].every(([from, to]) => from === to)) return body;
+  for (const to of tokens.values()) {
+    // The names come from a validated map; this keeps a hand-built map
+    // from splicing anything but an identifier into a migration.
+    if (!/^[a-z_][a-z0-9_]*$/.test(to)) {
+      throw new Error(`renameForInstall: "${to}" is not a role or database name`);
+    }
   }
-  return body.replace(LIVE_VISITOR_ROLE_TOKEN, role);
+  const alternatives = [...tokens.keys()].sort((a, b) => b.length - a.length).join("|");
+  const word = new RegExp(`(?<![A-Za-z0-9_$])(?:${alternatives})(?![A-Za-z0-9_$])`, "g");
+  return body.replace(word, (name) => tokens.get(name) ?? name);
 }
 
 /** Options of {@link runMigrations}. */
 export interface RunMigrationsOptions {
-  /**
-   * The visitor role this database's migrations grant to; `public_role`
-   * unless given. The cms_public_staging run passes
-   * {@link STAGING_VISITOR_ROLE}.
-   */
-  readonly visitorRole?: string;
+  /** The install's names; {@link DEFAULT_INSTALL_NAMES} unless given. */
+  readonly names?: InstallNames;
+  /** Which database the run is for; `admin` unless given (only the renaming depends on it). */
+  readonly target?: MigrationTarget;
 }
 
 /** The file name a migration is recorded under. */
@@ -124,7 +158,10 @@ export async function runMigrations(
   dir: string,
   options: RunMigrationsOptions = {},
 ): Promise<string[]> {
-  const visitorRole = options.visitorRole ?? LIVE_VISITOR_ROLE;
+  const tokens = installNameTokens(
+    options.names ?? DEFAULT_INSTALL_NAMES,
+    options.target ?? "admin",
+  );
   const { Glob } = await import("bun");
   const glob = new Glob("*.sql");
   const files = (await Array.fromAsync(glob.scan({ cwd: dir, absolute: true }))).sort();
@@ -137,9 +174,9 @@ export async function runMigrations(
     )
   `;
   // Bookkeeping table: never touched via the Query API, always via this runner
-  // as admin_role. Enable RLS (without FORCE) so the "every table has RLS"
-  // invariant is mechanically true; an open policy keeps admin_role writes
-  // working. public_role has no GRANT here either way.
+  // as the install's admin role. Enable RLS (without FORCE) so the "every
+  // table has RLS" invariant is mechanically true; an open policy keeps the
+  // admin role's writes working. The visitor login has no GRANT here either way.
   await sql.unsafe(`ALTER TABLE __drizzle_migrations ENABLE ROW LEVEL SECURITY`);
   await sql.unsafe(
     `DROP POLICY IF EXISTS __drizzle_migrations_bookkeeping ON __drizzle_migrations`,
@@ -154,7 +191,7 @@ export async function runMigrations(
   for (const file of files) {
     const name = migrationName(file);
     if (appliedBefore.has(name)) continue;
-    pending.push({ name, body: retargetVisitorRole(await readFile(file, "utf8"), visitorRole) });
+    pending.push({ name, body: renameForInstall(await readFile(file, "utf8"), tokens) });
   }
   const violations = runOrderViolations({
     pending,
