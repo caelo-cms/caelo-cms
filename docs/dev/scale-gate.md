@@ -64,6 +64,17 @@ It writes a JSON file with the editors' session tokens and chats, the MCP tokens
 - **20 agents**, one per MCP token, each with its own work session (`POST /api/mcp/session`, `newSession: true`), translating one page at a time with the full context and no batching (#1253 decisions): `inspect_page_render` (read), `create_variant` (write), `set_page_module_content_many` on the new variant (write), all through `POST /api/mcp/tool`.
 - **5 editors**, each with a session cookie: open Live Mode on a page (`GET /edit?page=…&chat=…`), preview a page on the shared draft (`GET /edit/preview-by-path/<path>?branch=<draft>`), then preview it again unchanged.
 
+### Think times
+
+Every client waits before each call, as a real one does (`scripts/scale-gate/think.ts`):
+
+- **An agent** waits for its model to write the next tool call. Each wait is one of the measured steps in `scripts/scale-gate/think-times.json`, drawn by a generator seeded per agent (`--think-seed`, default 1267), so two runs of the same build wait alike. The three calls per page depend on each other (the variant needs the read, the content needs the variant), so each one is a step of its own.
+- **An editor** pauses before each action, uniformly within `editorPauseSeconds` (5–20 s). That range is an assumption, not a measurement. No install has logged enough Live Edit use to measure it (caelo-cms.com: two previews in 14 days). Replace it once one has.
+
+The agent steps are measured from real model runs: the chat transcripts the real-AI suite uploads (`e2e-livedit-transcripts-*` artifacts of `e2e-livedit.yml`). A step is the gap from its last tool result to the next assistant message of the same chat. Measured on 2026-11-23 over 13 runs and 386 steps, the median is 2.9 s, p75 5.7 s, p90 15.7 s and the mean 5.8 s, with 1.9 tool calls per step. The Power-MCP calls of caelo-cms.com's admin over 60 days (Cloud Run request log, 134 gaps between one client's calls) agree: p75 6.8 s, p90 20 s. Their median of 0.5 s comes from the calls a model sends together in one step. Refresh the file with `scripts/scale-gate/measure-think-times.ts` when the models change.
+
+Why the pauses: without them every client fires its next call the moment the last one answers. 25 such clients need some 40–50 calls a second to stay under the targets, which the smallest install cannot give, and the run then measures how many calls a second it survives rather than the latency twenty agents and five editors see (#1685's measurements). `--no-think` still drops the pauses for a stress run, which never passes the gate (`scripts/scale-gate-workflow.test.ts` keeps it out of the workflow).
+
 Every call has a timeout (`--call-timeout`, default 30 s), so a run against a slow build finishes and records numbers instead of hanging: a timed-out call counts as one sample at the timeout and is counted separately.
 
 Before the load (#1390) the harness refuses to start until `list_plugins` reports every shipped plugin `running`, and (`--settle-consumers`) waits up to `--settle-timeout` (default 900 s) until every plugin change consumer has finished the first rebuild a fresh activation starts with: that rebuild is a one-off over the whole site, and the gate measures the steady state. The wait is reported; not settling in time fails the gate.

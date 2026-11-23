@@ -115,6 +115,8 @@ describe("scale-gate.yml", () => {
     const load = job?.steps.find((s) => s.name === "Run the load")?.run ?? "";
     expect(load).toContain("set -o pipefail");
     expect(load).not.toContain("--baseline");
+    // Without think times a run measures throughput, never the SLOs.
+    expect(load).not.toContain("--no-think");
   });
 
   it("W6: Postgres gets the db-f1-micro CPU share before the admin starts", () => {
