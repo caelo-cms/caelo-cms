@@ -1,6 +1,6 @@
 # Row-level security and the query planner
 
-Every table in both databases has row-level security, FORCEd for owners too (CLAUDE.md §2). Postgres plans a query on such a table differently from one on a table without RLS. Two consequences shape how we write policies and indexes (#1297).
+Every table in both databases has row-level security, FORCEd for owners too (CLAUDE.md §2). Postgres plans a query on such a table differently from one on a table without RLS. Three consequences shape how we write policies, indexes and the functions policies call (#1297, #1685).
 
 ## 1. Write a setting test as `caelo_setting_is` / `caelo_setting_in`
 
@@ -40,3 +40,13 @@ The planner may run a user predicate before a table's policy quals only if the p
 | pg_trgm `%`, `<%`, array `@>` / `&&`, tsvector `@@` | no | always a row filter |
 
 Only a superuser can mark a function `LEAKPROOF`, and Cloud SQL grants no superuser. So `ILIKE '%q%'` (redirects, media, content-instance and chat-title search) is a scan of the table's rows on every install, and a pg_trgm GIN or GiST index on an RLS table only adds cost to every write. Migration 0476 dropped the one that existed (`media_assets_alt_trgm_idx`), and the same test refuses new ones. A search that has to be index-driven needs an operator that is leakproof: exact or prefix matching, or equality on a precomputed token column.
+
+## 3. A helper that reads a table is plpgsql, not SQL
+
+The planner inlines an SQL function only when its body is a single expression without a subquery, a `FROM` or a CTE, as `caelo_setting_is` is. Any other `LANGUAGE sql` function runs as a call of its own, and Postgres 17 plans its body again in every statement that calls it: only the calls within one statement share the plan. (Postgres 18 caches those plans; every install runs 17.) A plpgsql function caches its plans for the whole session.
+
+The difference is large for a helper that every request runs. `caelo_branch_visible`, which the Query API asks before every op that names a branch, cost about 350 µs of Postgres CPU per call as SQL and about 35 µs as plpgsql with the same body. It was the most expensive statement of the scale gate's load phase (#1685). A policy is worse still, because it runs on every read of its table: the MCP token policy called `caelo_mcp_token_principal()` on every MCP request.
+
+So a helper whose body reads a table or has a CTE is written in plpgsql. Migration 0770 rewrote the existing ones with the same queries. `packages/migrations/src/rls-planner.integration.test.ts` fails when a policy calls an SQL function with `FROM` or `WITH` in its body, and when the branch check or the chat-owner lookup is SQL again.
+
+Mind the name resolution when you move a body. SQL resolves a bare name to a column first, while plpgsql raises an error when a parameter and a column share a name. Qualify every column, or keep such a function in SQL until it is rewritten (`plugin_skill_available` is one).
