@@ -9,7 +9,11 @@
  * Read-only, main line — what the staged build was rendered from.
  */
 
-import type { PluginAuditFinding, PluginAuditPageFacts } from "@caelo-cms/plugin-sdk";
+import type {
+  PluginAuditFinding,
+  PluginAuditFindingsArgs,
+  PluginAuditPageFacts,
+} from "@caelo-cms/plugin-sdk";
 import { z } from "@caelo-cms/plugin-sdk";
 import {
   type AuditState,
@@ -37,26 +41,41 @@ const MAX_FINDINGS_PER_ANSWER = 499;
 
 const SEVERITY_ORDER = { error: 0, warning: 1, info: 2 } as const;
 
-const auditArgs = z
-  .object({
-    pages: z.array(z.object({ pageId: z.string(), path: z.string() }).strict()),
-    // Core builds the facts (admin-core quality/checks/page-facts.ts); the
-    // SDK type is the contract, checked here for the fields the rules read.
-    facts: z
-      .array(
-        z
-          .object({
-            pageId: z.string(),
-            path: z.string(),
-            alternates: z.array(z.unknown()),
-            links: z.array(z.unknown()),
-            texts: z.array(z.unknown()),
-          })
-          .passthrough(),
-      )
-      .optional(),
-  })
-  .strict();
+/**
+ * What core sends, key for key (`PluginAuditFindingsArgs`). The object is
+ * strict, so every key the SDK names must be listed here, read or not: a
+ * missing `runId` failed every Stage audit of a site with this plugin once
+ * core started sending it (#1651). `satisfies` stops the build when the SDK
+ * gains a key this list lacks.
+ */
+const auditArgShape = {
+  pages: z.array(z.object({ pageId: z.string(), path: z.string() }).strict()),
+  // The Stage's deploy run. Unread: the audit reads the main line the
+  // staged build was rendered from, not one run's output.
+  runId: z.string().optional(),
+  // Core builds the facts (admin-core quality/checks/page-facts.ts); the
+  // SDK type is the contract, checked here for the fields the rules read.
+  facts: z
+    .array(
+      z
+        .object({
+          pageId: z.string(),
+          path: z.string(),
+          alternates: z.array(z.unknown()),
+          links: z.array(z.unknown()),
+          texts: z.array(z.unknown()),
+        })
+        .passthrough(),
+    )
+    .optional(),
+} satisfies Record<keyof PluginAuditFindingsArgs, z.ZodType>;
+
+const auditArgs = z.object(auditArgShape).strict();
+
+/** Parses one call of `audit_findings`; throws on a key core does not send. */
+export function parseAuditArgs(args: unknown): z.infer<typeof auditArgs> {
+  return auditArgs.parse(args);
+}
 
 /**
  * Per language, the plugin texts whose current translation reads the same
@@ -197,7 +216,7 @@ export async function auditFindings(
   deps: ChromeDeps,
   args: unknown,
 ): Promise<{ findings: PluginAuditFinding[]; factBatches?: string[][] }> {
-  const parsed = auditArgs.parse(args);
+  const parsed = parseAuditArgs(args);
   const model = new BuildModel(await loadAuditState(deps, parsed.pages));
   if (parsed.facts) {
     return {
