@@ -82,18 +82,33 @@ function pem(label: string, der: Uint8Array): string {
 }
 
 /**
+ * The serial number's INTEGER from 16 random bytes: positive (the high bit
+ * of the first byte clear) and minimally encoded (the first byte never
+ * zero). A leading zero byte before a byte below 0x80 is not DER, and
+ * BoringSSL refuses such a certificate outright (`INVALID_INTEGER`): one
+ * certificate in 256 failed the audit's origin that way.
+ */
+export function serialInteger(random: Uint8Array): Uint8Array {
+  const serial = Uint8Array.from(random);
+  serial[0] = 0x40 | ((serial[0] ?? 0) & 0x3f);
+  return tlv(0x02, serial);
+}
+
+/**
  * A fresh key and a certificate valid from an hour before `now` to a day
  * after it (an audit takes minutes; the hour absorbs a skewed clock).
+ *
+ * @param random - the serial's 16 random bytes (a test pins them).
  */
-export function createLoopbackTls(now: Date = new Date()): LoopbackTls {
+export function createLoopbackTls(
+  now: Date = new Date(),
+  random: Uint8Array = randomBytes(16),
+): LoopbackTls {
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const spki = publicKey.export({ type: "spki", format: "der" });
-  // A positive serial: the high bit of the first byte is clear.
-  const serial = randomBytes(16);
-  serial[0] = (serial[0] ?? 0) & 0x7f;
   const tbs = seq(
     tlv(0xa0, tlv(0x02, Uint8Array.of(2))),
-    tlv(0x02, serial),
+    serialInteger(random),
     ECDSA_WITH_SHA256,
     NAME,
     seq(

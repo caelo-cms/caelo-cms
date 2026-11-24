@@ -2,8 +2,9 @@
 
 import { describe, expect, it } from "bun:test";
 import { createHash, X509Certificate } from "node:crypto";
+import { createSecureServer } from "node:http2";
 import { createServer, get } from "node:https";
-import { createLoopbackTls } from "../loopback-tls.js";
+import { createLoopbackTls, serialInteger } from "../loopback-tls.js";
 
 describe("createLoopbackTls", () => {
   const now = new Date("2026-11-24T10:00:00Z");
@@ -22,6 +23,36 @@ describe("createLoopbackTls", () => {
   it("names its own key as the browser's trust entry", () => {
     const spki = cert.publicKey.export({ type: "spki", format: "der" });
     expect(tls.spkiSha256).toBe(createHash("sha256").update(spki).digest("base64"));
+  });
+
+  it("encodes every serial as a positive, minimal DER INTEGER", () => {
+    // 0x00 or 0x80 first: masking the sign bit alone left a leading zero
+    // byte before 0x12, which BoringSSL refuses (INVALID_INTEGER).
+    for (const first of [0x00, 0x80, 0x3f, 0xff]) {
+      const random = new Uint8Array(16).fill(0x12);
+      random[0] = first;
+      const der = serialInteger(random);
+      expect(der[0]).toBe(0x02);
+      expect(der[1]).toBe(16);
+      expect(der[2]).toBeGreaterThanOrEqual(0x40);
+      expect(der[2]).toBeLessThan(0x80);
+      expect([...der.slice(3)]).toEqual([...random.slice(1)]);
+    }
+  });
+
+  it("starts a TLS server whatever the serial's random bytes (#1695 gate run)", async () => {
+    for (const first of [0x00, 0x80]) {
+      const random = new Uint8Array(16).fill(0x12);
+      random[0] = first;
+      const fresh = createLoopbackTls(now, random);
+      expect(new X509Certificate(fresh.cert).serialNumber).toMatch(/^[4-7][0-9A-F]{31}$/);
+      const server = createSecureServer({ key: fresh.key, cert: fresh.cert });
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => resolve());
+      });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("is a fresh key every time", () => {
