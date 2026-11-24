@@ -26,10 +26,10 @@
  *    chat branch each takes the row's lock, so a change by another chat in
  *    the shared draft that this chat has not seen is the usual conflict (it
  *    names `get_plugin_draft_rows`, #1387).
- * 2. Across lines, at the Stage. The upsert records the table's key
- *    (key-merge.ts), and the merge applies a row the branch created for a
- *    key main already holds onto that main row and drops the branch's row
- *    (the branch's state wins, as at every merge).
+ * 2. Across lines, at the Stage. The upsert records the table's key, and
+ *    the merge lands a branch's state of the key under the same lock and by
+ *    the same rule (key-merge.ts): the smallest id among the key's rows is
+ *    the key's row, the others are deleted, the branch's state wins.
  *
  * Step 2 is why the upsert never reads other branches' rows: a lookup of
  * them could only walk every pending row of the table (no declared index
@@ -42,7 +42,7 @@ import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { loadBranchOverlay } from "./branch-overlay.js";
-import { recordUpsertKey } from "./key-merge.js";
+import { lockUpsertKey, recordUpsertKey } from "./key-merge.js";
 import {
   type ListPlan,
   lockPrivateRow,
@@ -53,9 +53,6 @@ import {
   privateListSql,
   privateUpdate,
 } from "./private-storage.js";
-
-/** Advisory lock class of an upsert's key (the `hashtextextended` seed). */
-const UPSERT_KEY_LOCK_SEED = 1659;
 
 /** Rows of one key one upsert folds at most (the ceiling of one read). */
 export const UPSERT_FOLD_MAX = 1000;
@@ -98,12 +95,6 @@ export function upsertKeyPlan(key: Readonly<Record<string, unknown>>): ListPlan 
   };
 }
 
-/** The lock's name: plugin, table and the (normalised) key. */
-function keyLockName(pluginId: string, t: Target, key: UpsertWrite["key"]): string {
-  const pairs = Object.entries(key).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return JSON.stringify([pluginId, t.schema, t.table, pairs]);
-}
-
 /**
  * Insert or update THE row of `u.key` (see the header).
  *
@@ -119,9 +110,8 @@ export async function privateUpsert(
 ): Promise<Outcome<{ id: string; created: boolean }>> {
   const pluginId = ctx.pluginId;
   if (!pluginId) throw new Error("plugin storage: no plugin id on the context");
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${keyLockName(pluginId, t, u.key)}, ${UPSERT_KEY_LOCK_SEED}))`,
-  );
+  // The same lock the Stage takes for the key (key-merge.ts).
+  await lockUpsertKey(tx, pluginId, t.schema, t.table, u.key);
   await recordUpsertKey(tx, pluginId, t.table, Object.keys(u.key));
 
   const plan = upsertKeyPlan(u.key);

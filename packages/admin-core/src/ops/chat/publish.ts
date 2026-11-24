@@ -21,10 +21,9 @@
  */
 
 import {
-  applyPluginRowStateOnMerge,
   insertPluginRowSnapshot,
+  mergePluginRows,
   type PluginRowState,
-  withPluginScope,
 } from "@caelo-cms/plugin-host";
 import { defineOperation, OperationAbortError, textArray, uuidArray } from "@caelo-cms/query-api";
 import type { ChatPublishInput, ExecutionContext } from "@caelo-cms/shared";
@@ -968,28 +967,24 @@ export async function mergeWindowToMain(
   // applied (refreshLivePathsAfterMerge compares against them).
   const preMergePaths =
     pluginRowRows.length > 0 ? await composeLivePathsBeforePluginMerge(tx) : null;
-  const droppedByMerge = new Set(
-    pluginRowRows
-      .filter((r) => (r.state as PluginRowState).deletedAt !== null)
-      .map((r) => r.entity_id),
+  // #1659 — rows of an upserted key land by the key's identity rule, under
+  // the key's lock (plugin-host key-merge.ts), so a Stage — and a Stage
+  // replayed after a failed build — leaves the key one row.
+  const written = await mergePluginRows(
+    tx,
+    pluginRowRows.map((r) => ({
+      ref: {
+        pluginId: r.plugin_id,
+        schema: r.schema_name,
+        table: r.table_name,
+        rowId: r.entity_id,
+      },
+      state: r.state as PluginRowState,
+    })),
   );
-  for (const r of pluginRowRows) {
-    const ref = {
-      pluginId: r.plugin_id,
-      schema: r.schema_name,
-      table: r.table_name,
-      rowId: r.entity_id,
-    };
-    const state = r.state as PluginRowState;
-    // #1659 — a row this branch created for an upserted key that main
-    // already holds lands on that main row, so the key stays one row.
-    const written = await withPluginScope(tx, r.plugin_id, () =>
-      applyPluginRowStateOnMerge(tx, ref, state, window.branchId, droppedByMerge),
-    );
-    // The main-line copies under the merge's header: undo after publish.
-    for (const w of written) {
-      await insertPluginRowSnapshot(tx, result.siteSnapshotId, w.ref, w.state);
-    }
+  // The main-line copies under the merge's header: undo after publish.
+  for (const w of written) {
+    await insertPluginRowSnapshot(tx, result.siteSnapshotId, w.ref, w.state);
   }
 
   // Layout chrome: the merged block state becomes the live placement list

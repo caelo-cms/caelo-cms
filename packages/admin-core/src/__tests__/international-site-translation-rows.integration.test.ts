@@ -309,9 +309,14 @@ describe("international-site — one stored translation per key (#1659)", () => 
 
     // The Stage lands the chat's row on the placeholder.
     await stage(chat.id);
-    expect(await propRows("reading")).toEqual([
-      { id: placeholder?.id as string, value: "5 Min.", status: "translated", branch: null },
-    ]);
+    // (Which of the two ids stays follows from the ids: the smaller.)
+    expect(
+      (await propRows("reading")).map((r) => ({
+        value: r.value,
+        status: r.status,
+        branch: r.branch,
+      })),
+    ).toEqual([{ value: "5 Min.", status: "translated", branch: null }]);
     expect(await propStatus(MAIN)).toMatchObject({ translated: 1, missing: 1 });
   });
 

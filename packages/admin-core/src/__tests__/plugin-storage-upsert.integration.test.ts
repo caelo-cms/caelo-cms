@@ -231,6 +231,16 @@ async function physicalRows(address: string): Promise<PhysicalRow[]> {
   });
 }
 
+/**
+ * A key's live rows without their ids: which row is the key's row follows
+ * from the ids (the smallest), which are random here.
+ */
+async function liveRows(
+  address: string,
+): Promise<{ value: string | null; branch: string | null }[]> {
+  return (await physicalRows(address)).map((r) => ({ value: r.value, branch: r.branch }));
+}
+
 /** The values of a key as `invocation` reads them. */
 async function seen(invocation: PluginInvocation, address: string): Promise<(string | null)[]> {
   const rows = await landed<{ value: string | null }[]>(
@@ -252,33 +262,71 @@ async function readDraftRows(chat: Chat, rowIds: string[]): Promise<void> {
   expect(isUntrustedToolResult(r.content)).toBe(true);
 }
 
-/** The Stage of draft chats (the merge the Stage flow runs). */
 /** The Stage of a chat on an isolated branch (its whole branch). */
 async function stageIsolated(chat: Chat): Promise<void> {
   const r = await execute(registry, adapter, SYS, "chat.merge_to_main", { chatSessionId: chat.id });
   if (!r.ok) throw new Error(`chat.merge_to_main: ${JSON.stringify(r.error)}`);
 }
 
+/**
+ * The Stage of draft chats (the merge the Stage flow runs). With
+ * `deferConsume` the merge leaves the chats' changes pending, as the Stage
+ * flow does until its build succeeded: a failed build stages them again.
+ */
 async function stage(...chats: Chat[]): Promise<void> {
+  await mergeDraft(chats, false);
+}
+
+async function mergeDraft(chats: readonly Chat[], deferConsume: boolean): Promise<void> {
   const r = await execute(registry, adapter, SYS, "chat.merge_draft_to_main", {
     chatSessionIds: chats.map((c) => c.id),
+    ...(deferConsume ? { deferConsume } : {}),
   });
   if (!r.ok) throw new Error(`chat.merge_draft_to_main: ${JSON.stringify(r.error)}`);
 }
 
+/** A main-line row of the entries table with a chosen id (ids decide the key's row). */
+async function insertMainRow(id: string, address: string, value: string | null): Promise<void> {
+  await withSystemSql(async (tx) => {
+    const [p] = (await tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`) as {
+      id: string;
+    }[];
+    await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${p?.id}', true)`);
+    await tx.unsafe(
+      `INSERT INTO "${SCHEMA}".entries (id, lang, address, value) VALUES ($1::uuid, 'de', $2, $3)`,
+      [id, address, value],
+    );
+  });
+}
+
+/** Holds the plugin's registry row: every private write takes it `FOR SHARE` first. */
+const holdPluginRow = (tx: Bun.SQL) =>
+  tx`SELECT 1 FROM plugins WHERE slug = ${SLUG} FOR UPDATE` as Promise<unknown>;
+
 /**
- * Run `calls` while the plugin's registry row is held: every private
- * write takes it `FOR SHARE` first, so they all wait at the same point
- * and go on together once it is released — two writers racing for one
- * key, made repeatable.
+ * Holds plugin_row_snapshots against inserts: every plugin row write — an
+ * upsert's, a merge's — records its snapshot there after it wrote the row,
+ * so each waits holding what it has read and written so far.
  */
-async function atOnce<T>(calls: () => Promise<T>[], waiting: number): Promise<T[]> {
+const holdRowSnapshots = (tx: Bun.SQL) =>
+  tx.unsafe("LOCK TABLE plugin_row_snapshots IN SHARE MODE") as Promise<unknown>;
+
+/**
+ * Run `calls` while `hold` keeps them waiting at the same point; they go
+ * on together once it is released — writers racing for one key, made
+ * repeatable.
+ */
+async function atOnce<T>(
+  calls: () => Promise<T>[],
+  waiting: number,
+  hold: (tx: Bun.SQL) => Promise<unknown> = holdPluginRow,
+): Promise<T[]> {
   const sql = new SQL(ADMIN_URL as string);
   const held = await sql.reserve();
   try {
     await held.unsafe("BEGIN");
     await held.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-    await held`SELECT 1 FROM plugins WHERE slug = ${SLUG} FOR UPDATE`;
+    await hold(held as unknown as Bun.SQL);
     const running = calls();
     for (let i = 0; i < 500; i += 1) {
       const [row] = (await sql`
@@ -414,9 +462,7 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     expect(await seen(MAIN, key)).toEqual([null]);
 
     await stage(a);
-    expect(await physicalRows(key)).toEqual([
-      { id: placeholder.id, value: "translated", branch: null },
-    ]);
+    expect(await liveRows(key)).toEqual([{ value: "translated", branch: null }]);
   });
 
   it("two branches each holding a row of the key leave one row after both Stages", async () => {
@@ -440,7 +486,7 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     expect(afterFirst.filter((r) => r.branch !== null).map((r) => r.value)).toEqual(["from-x"]);
     // The later Stage lands on the key's main row and drops its own.
     await stageIsolated(x);
-    expect(await physicalRows(key)).toEqual([{ id: mine.id, value: "from-x", branch: null }]);
+    expect(await liveRows(key)).toEqual([{ value: "from-x", branch: null }]);
   });
 
   it("a main-line write with two unstaged duplicates on two branches leaves one row after the Stages", async () => {
@@ -459,11 +505,11 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     expect(await physicalRows(key)).toHaveLength(3);
 
     await stageIsolated(x);
-    expect((await physicalRows(key)).filter((r) => r.branch === null)).toEqual([
-      { id: main.id, value: "from-x", branch: null },
+    expect((await liveRows(key)).filter((r) => r.branch === null)).toEqual([
+      { value: "from-x", branch: null },
     ]);
     await stageIsolated(y);
-    expect(await physicalRows(key)).toEqual([{ id: main.id, value: "from-y", branch: null }]);
+    expect(await liveRows(key)).toEqual([{ value: "from-y", branch: null }]);
   });
 
   it("two unstaged duplicates in the shared draft fold into the key's main row at one Stage", async () => {
@@ -472,16 +518,14 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     const b = await newChat("dup-b");
     await landed(await call(a.invocation, "insert", { address: key, value: "from-a" }));
     await landed(await call(b.invocation, "insert", { address: key, value: "from-b" }));
-    const main = await landed<{ id: string }>(
-      await call(MAIN, "upsert", { address: key, value: "main" }),
-    );
+    await landed(await call(MAIN, "upsert", { address: key, value: "main" }));
 
     // A draft Stage takes every pending plugin row of the draft (they can
-    // shape URLs): both land on the main row, and one row is left.
+    // shape URLs): both land on the key's row, and one row is left.
     await stage(a);
-    const rows = await physicalRows(key);
+    const rows = await liveRows(key);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id: main.id, branch: null });
+    expect(rows[0]?.branch).toBeNull();
     expect(["from-a", "from-b"]).toContain(rows[0]?.value as string);
   });
 
@@ -500,7 +544,7 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     expect(await seen(MAIN, key)).toEqual(["fixed"]);
 
     await stage(a);
-    expect(await physicalRows(key)).toEqual([{ id: existing.id, value: "from-a", branch: null }]);
+    expect(await liveRows(key)).toEqual([{ value: "from-a", branch: null }]);
   });
 
   it("a chat's write of a key with a main row and another branch's unstaged row leaves one row", async () => {
@@ -561,6 +605,47 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
       if (r.ok) throw new Error(`expected ${JSON.stringify(key)} to be refused`);
       expect(r.error.message).toContain(message);
     }
+  });
+
+  it("a Stage replayed after a failed build lands the same way: one row, same id, same value", async () => {
+    const key = nextKey();
+    const a = await newChat("retry-a");
+    await landed(await call(a.invocation, "upsert", { address: key, value: "translated" }));
+    // A main row of the key with the smallest id: the key's row, onto which
+    // the Stage lands the chat's row and drops it.
+    const mainId = `00000000-0000-4000-8000-${String(keyCounter).padStart(12, "0")}`;
+    await insertMainRow(mainId, key, null);
+
+    // The Stage merges, its build fails: the chat's changes stay pending.
+    await mergeDraft([a], true);
+    const first = await physicalRows(key);
+    expect(first).toEqual([{ id: mainId, value: "translated", branch: null }]);
+    // The retry merges the same pending states again.
+    await mergeDraft([a], true);
+    expect(await physicalRows(key)).toEqual(first);
+    await stage(a);
+    expect(await physicalRows(key)).toEqual(first);
+  });
+
+  it("a main-line upsert racing a Stage for a key without a main row leaves one row", async () => {
+    const key = nextKey();
+    const a = await newChat("race-stage-a");
+    await landed(await call(a.invocation, "upsert", { address: key, value: "translated" }));
+
+    // Both hold what they read until the other may have written: the
+    // upsert its insert, the Stage the chat's row graduated to main.
+    const results = await atOnce<unknown>(
+      () => [
+        mergeDraft([a], false),
+        call(MAIN, "upsert", { address: key, value: null, keep: true }),
+      ],
+      2,
+      holdRowSnapshots,
+    );
+    await landed(results[1] as Awaited<ReturnType<typeof call>>);
+    const rows = await physicalRows(key);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ value: "translated", branch: null });
   });
 
   it("keep leaves an existing row as it is", async () => {
