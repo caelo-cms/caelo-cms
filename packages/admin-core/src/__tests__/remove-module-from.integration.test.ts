@@ -6,11 +6,16 @@
  * remove_module_from_layout. Real Postgres (§6). Covers both targets, slug +
  * uuid targetRef resolution, the "not attached" failure, and the invariant
  * that removal does NOT delete the module row.
+ *
+ * #1663 — a module placed more than once loses only the addressed
+ * placement, the others keep THEIR content (live and on a chat branch), an
+ * unaddressed call is refused with the placements and their content listed,
+ * and removing every placement takes an explicit `allPlacements: true`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, removeModuleFromToolInput } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { moveModuleTool } from "../ai/tools/move-module.js";
@@ -128,6 +133,81 @@ beforeAll(async () => {
   });
 });
 
+async function op<T>(ctx: ExecutionContext, name: string, input: unknown): Promise<T> {
+  const r = await execute(registry, adapter, ctx, name, input);
+  if (!r.ok) throw new Error(`${name}: ${JSON.stringify(r.error)}`);
+  return r.value as T;
+}
+
+/** The `content` block as `module:body` labels, so content travels visibly. */
+async function contentLabels(ctx: ExecutionContext, pageId: string): Promise<string[]> {
+  const got = await op<{
+    page: {
+      blocks: {
+        blockName: string;
+        modules: { slug: string; contentInstanceId: string | null }[];
+      }[];
+    };
+  }>(ctx, "pages.get_with_modules", { pageId });
+  const out: string[] = [];
+  for (const m of got.page.blocks.find((b) => b.blockName === "content")?.modules ?? []) {
+    const ci = await op<{ instance: { values: { body?: string } } }>(ctx, "content_instances.get", {
+      id: m.contentInstanceId,
+    });
+    out.push(`${m.slug.split("-").at(-1)}:${ci.instance.values.body ?? ""}`);
+  }
+  return out;
+}
+
+/**
+ * content: [cta "Book a call", text "intro", cta "Call us now", text "outro"]
+ * — the #1663 page: one module (cta) placed twice with different content.
+ */
+async function seedRepeatedPage(ctx: ExecutionContext, name: string) {
+  const cta = await makeModule(`${PFX}-${name}-cta`);
+  const text = await makeModule(`${PFX}-${name}-text`);
+  const { pageId } = await op<{ pageId: string }>(ctx, "pages.create", {
+    slug: `${PFX}-${name}`,
+    title: name,
+    templateId,
+  });
+  await op(ctx, "pages.set_modules", {
+    pageId,
+    blocks: [{ blockName: "content", moduleIds: [cta, text, cta, text] }],
+  });
+  const got = await op<{
+    page: { blocks: { blockName: string; modules: { contentInstanceId: string }[] }[] };
+  }>(ctx, "pages.get_with_modules", { pageId });
+  const bodies = ["Book a call", "intro", "Call us now", "outro"];
+  const placed = got.page.blocks.find((b) => b.blockName === "content")?.modules ?? [];
+  for (const [i, m] of placed.entries()) {
+    await op(ctx, "content_instances.set_values", {
+      id: m.contentInstanceId,
+      values: { body: bodies[i] },
+    });
+  }
+  return { pageId, cta, text };
+}
+
+async function chatCtx(title: string): Promise<ExecutionContext> {
+  const v = await op<{ chatSessionId: string; chatBranchId: string }>(
+    SYSTEM,
+    "chat.create_session",
+    { title: `${PFX}-${title}` },
+  );
+  return {
+    actorId: SYSTEM.actorId,
+    actorKind: "ai",
+    requestId: `${PFX}-${title}`,
+    chatBranchId: v.chatBranchId,
+    chatTaskId: v.chatSessionId,
+  };
+}
+
+async function remove(ctx: ExecutionContext, input: Record<string, unknown>) {
+  return removeModuleFromTool.handler(ctx, removeModuleFromToolInput.parse(input), toolCtx());
+}
+
 afterAll(async () => {
   await wipe();
   await adapter.close();
@@ -202,6 +282,129 @@ describe("remove_module_from — target='page'", () => {
       toolCtx(),
     );
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("#1663 — remove_module_from removes one placement of a repeated module", () => {
+  for (const mode of ["live", "chat branch"] as const) {
+    it(`removes the addressed placement; the other keeps its own content (${mode})`, async () => {
+      const ctx = mode === "live" ? SYSTEM : await chatCtx("one");
+      const { pageId, cta } = await seedRepeatedPage(ctx, `one-${mode.replace(" ", "")}`);
+      expect(await contentLabels(ctx, pageId)).toEqual([
+        "cta:Book a call",
+        "text:intro",
+        "cta:Call us now",
+        "text:outro",
+      ]);
+
+      // The FIRST placement goes: set_modules' FIFO alone would have handed
+      // its content ("Book a call") to the placement that stays.
+      const r = await remove(ctx, {
+        target: "page",
+        targetRef: pageId,
+        moduleId: cta,
+        blockName: "content",
+        position: 0,
+      });
+      expect(r.ok).toBe(true);
+      expect(r.content).toContain('block "content" position 0');
+      expect(r.content).toContain('now at block "content" position 1');
+      expect(await contentLabels(ctx, pageId)).toEqual([
+        "text:intro",
+        "cta:Call us now",
+        "text:outro",
+      ]);
+    });
+  }
+
+  it("refuses an unaddressed call, listing each placement with its content", async () => {
+    const { pageId, cta } = await seedRepeatedPage(SYSTEM, "ambiguous");
+    const r = await remove(SYSTEM, { target: "page", targetRef: pageId, moduleId: cta });
+    expect(r.ok).toBe(false);
+    expect(r.refusal).toBe(true);
+    expect(r.content).toContain("placed 2 times");
+    expect(r.content).toContain('block "content" position 0');
+    expect(r.content).toContain('body="Book a call"');
+    expect(r.content).toContain('block "content" position 2');
+    expect(r.content).toContain('body="Call us now"');
+    expect(r.content).toContain("blockName + position");
+    expect(await contentLabels(SYSTEM, pageId)).toEqual([
+      "cta:Book a call",
+      "text:intro",
+      "cta:Call us now",
+      "text:outro",
+    ]);
+  });
+
+  it("refuses an address the module is not at, naming the real placements", async () => {
+    const { pageId, cta } = await seedRepeatedPage(SYSTEM, "wrongpos");
+    const r = await remove(SYSTEM, {
+      target: "page",
+      targetRef: pageId,
+      moduleId: cta,
+      blockName: "content",
+      position: 1,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.content).toContain('no placement at block "content" position 1');
+    expect(r.content).toContain('block "content" position 2');
+    expect(await contentLabels(SYSTEM, pageId)).toHaveLength(4);
+  });
+
+  it("removes every placement with allPlacements; the other modules keep their content", async () => {
+    const { pageId, cta } = await seedRepeatedPage(SYSTEM, "all");
+    const r = await remove(SYSTEM, {
+      target: "page",
+      targetRef: pageId,
+      moduleId: cta,
+      allPlacements: true,
+    });
+    expect(r.ok).toBe(true);
+    expect(await contentLabels(SYSTEM, pageId)).toEqual(["text:intro", "text:outro"]);
+    expect(await moduleExists(cta)).toBe(true);
+  });
+});
+
+describe("#1663 — remove_module_from on a layout holding a module twice", () => {
+  it("refuses unaddressed, removes the named block's placement, or all with allPlacements", async () => {
+    const logo = await makeModule(`${PFX}-logo`);
+    for (const blockName of ["header", "footer"]) {
+      await op(SYSTEM, "layout_modules.set", { layoutId, blockName, moduleIds: [logo] });
+    }
+    const blockOf = async (blockName: string) =>
+      (await op<{ moduleIds: string[] }>(SYSTEM, "layout_modules.get", { layoutId, blockName }))
+        .moduleIds;
+
+    const unaddressed = await remove(SYSTEM, {
+      target: "layout",
+      targetRef: layoutSlug,
+      moduleId: logo,
+    });
+    expect(unaddressed.ok).toBe(false);
+    expect(unaddressed.content).toContain('block "header" position 0');
+    expect(unaddressed.content).toContain('block "footer" position 0');
+    expect(await blockOf("header")).toEqual([logo]);
+
+    const footerOnly = await remove(SYSTEM, {
+      target: "layout",
+      targetRef: layoutSlug,
+      moduleId: logo,
+      blockName: "footer",
+    });
+    expect(footerOnly.ok).toBe(true);
+    expect(await blockOf("header")).toEqual([logo]);
+    expect(await blockOf("footer")).toEqual([]);
+
+    await op(SYSTEM, "layout_modules.set", { layoutId, blockName: "footer", moduleIds: [logo] });
+    const all = await remove(SYSTEM, {
+      target: "layout",
+      targetRef: layoutId,
+      moduleId: logo,
+      allPlacements: true,
+    });
+    expect(all.ok).toBe(true);
+    expect(await blockOf("header")).toEqual([]);
+    expect(await blockOf("footer")).toEqual([]);
   });
 });
 

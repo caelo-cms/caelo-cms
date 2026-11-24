@@ -631,6 +631,24 @@ export const removeModuleFromToolInput = z
     // A page path can run to ~390 chars (6 levels x 64-char slugs).
     targetRef: z.string().min(1).max(500),
     moduleId: z.string().uuid(),
+    /**
+     * #1663 — which placement of `moduleId` to remove when the target holds
+     * it more than once: its block and 0-based position there (the same
+     * address `set_placement_content` and `move_module` take). Needed only
+     * then; the refusal names the placements.
+     */
+    blockName: z.string().min(1).max(80).optional(),
+    position: z.preprocess(
+      (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
+      z.number().int().min(0).max(1000).optional(),
+    ),
+    /**
+     * #1663 — remove EVERY placement of the module on the target (only in
+     * `blockName` when given). Without it a module placed twice is refused,
+     * because removing them all silently took the other placement's content
+     * with it.
+     */
+    allPlacements: z.boolean().optional(),
   })
   .strict();
 export type RemoveModuleFromToolInput = z.infer<typeof removeModuleFromToolInput>;
