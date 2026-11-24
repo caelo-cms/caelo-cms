@@ -121,11 +121,21 @@ async function measureCpu(
   }
 }
 
-/** Launch the browser and calibrate the CPU slowdown to this host. */
-export async function startLighthouseSession(): Promise<SessionStart> {
+/**
+ * Launch the browser and calibrate the CPU slowdown to this host.
+ *
+ * @param opts.trustSpki - the audited loopback origin's certificate key
+ *   (`StagedOrigin.browser.trustSpki`), the one the browser accepts.
+ */
+export async function startLighthouseSession(
+  opts: { readonly trustSpki?: string } = {},
+): Promise<SessionStart> {
   const lighthouse = await loadLighthouse();
   const port = await freeLoopbackPort();
-  const launched = await launchBundledChromium({ remoteDebuggingPort: port });
+  const launched = await launchBundledChromium({
+    remoteDebuggingPort: port,
+    ...(opts.trustSpki ? { trustCertificateSpki: opts.trustSpki } : {}),
+  });
   if (!launched.ok) {
     return { ok: false, code: `browser-${launched.reason}`, message: launched.message };
   }

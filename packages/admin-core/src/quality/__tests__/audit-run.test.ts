@@ -137,6 +137,15 @@ describe("resolveStagingOrigin", () => {
           ? { kind: "staging-slot", location: "_slots/a", runId: RUN_ID, baseUrl: r.baseUrl }
           : undefined,
       );
+      // The browser on this machine loads the build over HTTP/2 (TLS); a
+      // parallel task serves its own copy that way, so a slot gets none here.
+      if (provider === "gcp" || provider === "gcp-firebase") {
+        expect(r.browserOrigin).toBeUndefined();
+      } else {
+        expect(r.browserOrigin?.servedAt).toBe(r.baseUrl);
+        expect(r.browserOrigin?.baseUrl).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/);
+        expect(r.browserOrigin?.trustSpki).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+      }
       await r.close?.();
     }
   });
