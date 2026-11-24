@@ -508,7 +508,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(setMediaAltManyTool);
   registry.register(setMediaSourceManyTool);
   registry.register(setMediaVisibilityManyTool);
-  // run #10 D4 — recovery for "media references unresolved" deploy failures.
+  // run #10 D4 — recovery for a media variant a page names but the asset lacks.
   registry.register(regenerateMediaVariantsTool);
   // Recovery for "stored files … are missing" deploy failures.
   registry.register(listMissingMediaTool);
