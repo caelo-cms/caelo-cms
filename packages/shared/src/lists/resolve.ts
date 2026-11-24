@@ -37,6 +37,7 @@ import {
   type SourceDef,
   type SystemSourceName,
 } from "./list-type.js";
+import { type PagePropertyIndex, pagePropertyIndex, pagePropUnknownMarker } from "./page-props.js";
 import {
   type EffectivePagination,
   effectivePagination,
@@ -61,6 +62,7 @@ import {
   dateValue,
   EMPTY_LIST,
   EMPTY_TEXT,
+  emptyValueOf,
   fieldValue,
   linkValue,
   listValue,
@@ -435,6 +437,7 @@ export function createListRenderContext(
     pageList,
     itemsOf,
     dormant: opts.dormantPluginSources ?? {},
+    pageProps: pagePropertyIndex(data.pageTypes),
   };
   return {
     overlayIssues,
@@ -450,6 +453,8 @@ interface SharedState {
   readonly pageList: readonly ListPageRecord[];
   readonly itemsOf: (list: LoadedList) => Map<string, { item: ListItem; depth: number }>;
   readonly dormant: Readonly<Record<string, string>>;
+  /** #1561 — every property the site's page types declare. */
+  readonly pageProps: PagePropertyIndex;
 }
 
 function makeDateFormatter(language: string): (iso: string) => string {
@@ -757,21 +762,38 @@ function createPageContext(
 
   // ── Pages ──
 
+  /**
+   * `props.<name>` of a page. A property the page's type does not declare
+   * is absent when another page type declares it (a module shared by
+   * several page types) and a loud failure when none does (#1561,
+   * `page-props.ts`).
+   */
   const propsValue = (p: ListPageRecord): ScopeValue => {
     const defs = data.pageTypes.get(p.pageTypeSlug)?.def.properties ?? [];
     const propOverlay = overlay?.pageProps.get(p.id);
-    const memo = new Map<string, ScopeValue | undefined>();
+    const memo = new Map<string, ScopeValue>();
+    const compute = (key: string): ScopeValue => {
+      const def = defs.find((d) => d.name === key);
+      if (def) {
+        const raw = propOverlay?.has(key) ? propOverlay.get(key) : p.properties[key];
+        return fieldValue(def, raw, valueEnv);
+      }
+      const elsewhere = s.pageProps.declaration(key);
+      return elsewhere
+        ? emptyValueOf(elsewhere)
+        : { kind: "failed", marker: pagePropUnknownMarker(key) };
+    };
     return {
       kind: "record",
       text: null,
       present: true,
       get(key) {
-        if (!memo.has(key)) {
-          const def = defs.find((d) => d.name === key);
-          const raw = propOverlay?.has(key) ? propOverlay.get(key) : p.properties[key];
-          memo.set(key, def ? fieldValue(def, raw, valueEnv) : undefined);
+        let v = memo.get(key);
+        if (v === undefined) {
+          v = compute(key);
+          memo.set(key, v);
         }
-        return memo.get(key);
+        return v;
       },
     };
   };

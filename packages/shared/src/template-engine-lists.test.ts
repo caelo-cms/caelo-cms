@@ -19,7 +19,12 @@ import {
   TERM,
 } from "./lists/list-fixtures.test.js";
 import { createListRenderContext, type ListPageContext } from "./lists/resolve.js";
-import { renderTemplate, type TemplateField, templateFieldsFromJson } from "./template-engine.js";
+import {
+  isFieldPathMarker,
+  renderTemplate,
+  type TemplateField,
+  templateFieldsFromJson,
+} from "./template-engine.js";
 
 function ctx(
   pageId: string | null = PAGE.home,
@@ -371,6 +376,123 @@ describe("lists — {{page.*}}", () => {
     const r = render("{{page.title}}", [], {}, null);
     expect(r.html).toBe("{{page.title}}");
     expect(r.missingSlots).toContain("list-context-unavailable:page");
+  });
+
+  // #1561 — one module on pages of several types (a help-page head also on
+  // the home page) reads a property only some of the types declare.
+  describe("a property the page's own type does not declare (#1561)", () => {
+    /** The fixture site plus the `page` type (home, about, …) declaring `intro` and `cta`. */
+    const typedCtx = (pageId: string): ListPageContext => {
+      const data = fixtureData();
+      const pageTypes = new Map(data.pageTypes);
+      pageTypes.set("page", {
+        id: "00000000-0000-4000-8000-000000000702",
+        def: {
+          slug: "page",
+          name: "Page",
+          purpose: "Standalone pages.",
+          collection: false,
+          templates: ["00000000-0000-4000-8000-000000000801"],
+          defaultTemplate: "00000000-0000-4000-8000-000000000801",
+          properties: [
+            { name: "intro", label: "Intro", type: "text" },
+            { name: "cta", label: "CTA", type: "link" },
+          ],
+          vocabularies: [],
+        },
+      });
+      return createListRenderContext({ ...data, pageTypes }).forPage(pageId, {
+        linkResolver: fixtureLinkIndex().forPage(pageId),
+      });
+    };
+    const LABEL: TemplateField = { name: "label", kind: "text", default: "Rating:" };
+    const HEAD =
+      "{{#page.props.rating}}<ul><li><b>{{label}}</b> {{page.props.rating}}</li></ul>{{/page.props.rating}}" +
+      "{{^page.props.rating}}<p>unrated</p>{{/page.props.rating}}";
+
+    it("is absent when another page type declares it: its section is left out, the inverted one renders", () => {
+      const home = render(HEAD, [LABEL], {}, typedCtx(PAGE.home));
+      expect(home.html).toBe("<p>unrated</p>");
+      expect(home.missingSlots).toEqual([]);
+      const news = render(HEAD, [LABEL], {}, typedCtx(PAGE.newsA));
+      expect(news.html).toBe("<ul><li><b>Rating:</b> 4</li></ul>");
+      expect(news.missingSlots).toEqual([]);
+    });
+
+    it("reads as the other type's empty value, paths included", () => {
+      const home = render(
+        "[{{page.props.rating}}|{{page.props.event_date.formatted}}]",
+        [],
+        {},
+        typedCtx(PAGE.home),
+      );
+      expect(home.html).toBe("[|]");
+      expect(home.missingSlots).toEqual([]);
+      const news = render(
+        "[{{page.props.cta}}|{{page.props.cta.href}}|{{#page.props.cta}}go{{/page.props.cta}}]",
+        [],
+        {},
+        typedCtx(PAGE.newsA),
+      );
+      expect(news.html).toBe("[||]");
+      expect(news.missingSlots).toEqual([]);
+    });
+
+    it("a property no page type declares stays raw and fails, never falsy", () => {
+      const html =
+        "{{#page.props.ratnig}}<b>{{label}}</b> {{page.props.ratnig}}{{/page.props.ratnig}}";
+      for (const pageId of [PAGE.home, PAGE.newsA]) {
+        const r = render(html, [LABEL], {}, typedCtx(pageId));
+        expect(r.html).toBe(html);
+        expect(r.missingSlots).toEqual(["page-prop-unknown:ratnig"]);
+      }
+      const inverted = render(
+        "{{^page.props.ratnig}}unrated{{/page.props.ratnig}}",
+        [],
+        {},
+        typedCtx(PAGE.home),
+      );
+      expect(inverted.html).toBe("{{^page.props.ratnig}}unrated{{/page.props.ratnig}}");
+      expect(inverted.missingSlots).toEqual(["page-prop-unknown:ratnig"]);
+      // A path through it names the property, not the key after it.
+      const path = render("{{page.props.cta_link.href}}", [], {}, typedCtx(PAGE.home));
+      expect(path.html).toBe("{{page.props.cta_link.href}}");
+      expect(path.missingSlots).toEqual(["page-prop-unknown:cta_link"]);
+      // The preview lists it with what blocks Publish live.
+      expect(isFieldPathMarker("page-prop-unknown:ratnig")).toBe(true);
+    });
+
+    it("query entries read another type's property as absent and an unknown one loudly", () => {
+      const fields: TemplateField[] = [
+        {
+          name: "latest",
+          kind: "list",
+          listType: "links",
+          bind: "source",
+          source: {
+            kind: "query",
+            editable: [],
+            defaults: { page_type: "news", order: "prop_asc:rating", limit: 5 },
+          },
+        },
+      ];
+      const ok = render(
+        "{{#latest}}{{props.rating}}[{{props.intro}}];{{/latest}}",
+        fields,
+        {},
+        typedCtx(PAGE.home),
+      );
+      expect(ok.html).toBe("4[];5[];");
+      expect(ok.missingSlots).toEqual([]);
+      const typo = render(
+        "{{#latest}}{{props.ratng}};{{/latest}}",
+        fields,
+        {},
+        typedCtx(PAGE.home),
+      );
+      expect(typo.html).toBe("{{props.ratng}};{{props.ratng}};");
+      expect(typo.missingSlots).toContain("page-prop-unknown:ratng");
+    });
   });
 
   it("query entries expose summary, image (url/alt) and props", () => {

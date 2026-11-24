@@ -21,7 +21,8 @@
  * that names the pages; a failure on one page belongs to that page.
  *
  * Rules: `render/<marker kind>` (`render/field-path-unknown`,
- * `render/module-missing`, `render/link-target-missing`, …), plus
+ * `render/page-prop-unknown`, `render/module-missing`,
+ * `render/link-target-missing`, …), plus
  * `render/limit-reached` (info) when the run recorded more failures than
  * it lists.
  */

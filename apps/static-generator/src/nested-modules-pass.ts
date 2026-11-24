@@ -179,7 +179,8 @@ function isUuid(id: string): boolean {
  * surface and do not stop a deploy. `plugin-list-unavailable` is refused
  * separately, with plugin-specific guidance (assertNoPluginMarkers). A
  * dotted path into a field that exists (`field-path-unknown:`,
- * `field-value-empty:`, #1433) is no copy and stays a failure.
+ * `field-value-empty:`, #1433) is no copy and stays a failure, and so is a
+ * page property no page type declares (`page-prop-unknown:`, #1561).
  */
 const LOUD_RAW_MARKERS = [
   "field-not-declared:",
@@ -378,6 +379,8 @@ export function assertNoRenderFailures(lines: readonly RenderFailure[]): void {
       "A `field-path-unknown:<path>` is a placeholder its field cannot answer: a `link` field has {{f}}, {{f.href}}, {{f.target}} and {{f.title}}, " +
       "so fix the module HTML with update_modules_many (a link's label is a text field of its own). " +
       "A `field-value-empty:<path>` is a link field with no value: set it, or wrap the markup in {{#f}}…{{/f}}. " +
+      "A `page-prop-unknown:<name>` is a {{page.props.<name>}} no page type of the site declares (list_page_types shows each type's properties): " +
+      "correct the name in the module HTML (update_modules_many) or declare the property on a page type (upsert_page_types_many). " +
       "A `link-target-missing:page/<id>` (or `media/<id>`) is a link to a page (image) that was deleted: " +
       "set the link to an existing page's path from list_pages (or an existing image from find_media) or remove it; " +
       "a `link-ref-malformed:<text>` is a link written in a form no page or file matches — fix it the same way. " +
