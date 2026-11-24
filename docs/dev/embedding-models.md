@@ -72,6 +72,7 @@ to ONNX Runtime (`packages/models/src/files.ts`):
 |---|---|---|
 | `collection_index` job (and a self-hosted admin's in-process job) | `onnxruntime-node` (native CPU), `@caelo-cms/models/native` | Embeds a whole site's passages, about five times faster than WebAssembly. Runs no visitor input. |
 | Gateway (live and staging) | `onnxruntime-web` WebAssembly, `@caelo-cms/models/wasm` | Embeds one visitor query. No native code touches a visitor's text next to the gateway's credentials (the reasoning of the capture job, #1217). |
+| Admin (search preview, the Stage audit's test queries) | `onnxruntime-web` WebAssembly, `@caelo-cms/models/wasm` | Embeds one query the way the gateway does, so the preview ranks like the live search. |
 
 Both runtimes are 1.31.1 (MIT). The tokenizer is `@huggingface/tokenizers`
 0.2.0 (Apache-2.0, pure JavaScript). `packages/models/src/model.test.ts`
@@ -86,7 +87,11 @@ How each image carries the runtimes:
   `pkg:huggingface/<repo>@<revision>`.
 - **Admin.** The Dockerfile drops every native library but linux x64 and
   every WebAssembly build but the SIMD one. That removes about 400 MB of the
-  435 MB the two packages install.
+  435 MB the two packages install. The SvelteKit server does NOT bundle
+  ONNX Runtime (`ssr.external` in `apps/admin/vite.config.ts`): both builds
+  find their runtime files next to their own module, so inlined into a
+  server chunk they look in `build/server/chunks/` and fail (0.12.11: every
+  semantic query in the admin failed on `ort-wasm-simd-threaded.mjs`).
 
 Memory and speed of the default model (M3 Pro, one thread):
 
@@ -149,6 +154,12 @@ reproduces the old vectors. With intra-op threads this costs no throughput.
   and that a model change rebuilds.
 - The Stage test (`collections-stage.integration.test.ts`) and the gateway
   test (`collections.integration.test.ts`) run semantic search end to end.
+- The images' smokes embed a probe with every catalog model from the code
+  each image runs: the gateway's bundled `image-self-check.js` on
+  WebAssembly with the image's `CAELO_ORT_WASM_DIR` (`release-images.yml`),
+  and the admin's built server chunks on both runtimes, which must agree
+  (`packages/models/scripts/bundle-self-check.ts`, the `admin-prod-image`
+  job in `ci.yml`). A check from source would pass while the bundle fails.
 
 Tests that load a model run when `CAELO_MODELS_DIR` holds it, and skip with a
 warning otherwise. CI fetches the models through
