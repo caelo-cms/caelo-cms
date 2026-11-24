@@ -426,12 +426,12 @@ async function reconcileTargets(
     await deps.q.update(row.table, u.id, { status: u.status, orphaned_at: u.orphanedAt });
     updatedCount += 1;
   }
-  // #1659 — a placeholder only where the key has no row anywhere: never
-  // over a translation written meanwhile, and a chat's unstaged row of the
-  // key becomes its main-line row instead of a second one beside it.
-  // (Rows that came to share a key before are left to the next write of the
-  // key, which folds them under the key's lock with what it writes; until
-  // then every read takes the same one, translation-rows.ts.)
+  // #1659 — a placeholder only where the key has no main row: never over a
+  // translation written meanwhile. A chat's unstaged translation of the key
+  // lands on this placeholder at its Stage instead of beside it. (Rows that
+  // came to share a key before are left to the next write of the key, which
+  // folds them under the key's lock with what it writes; until then every
+  // read takes the same one, translation-rows.ts.)
   const missing = { source_hash: null, status: "missing", orphaned_at: null } as const;
   const placeholder = { ifExists: "keep" } as const;
   for (const ins of plan.inserts) {

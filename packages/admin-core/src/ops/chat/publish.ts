@@ -21,7 +21,7 @@
  */
 
 import {
-  applyPluginRowState,
+  applyPluginRowStateOnMerge,
   insertPluginRowSnapshot,
   type PluginRowState,
   withPluginScope,
@@ -968,6 +968,11 @@ export async function mergeWindowToMain(
   // applied (refreshLivePathsAfterMerge compares against them).
   const preMergePaths =
     pluginRowRows.length > 0 ? await composeLivePathsBeforePluginMerge(tx) : null;
+  const droppedByMerge = new Set(
+    pluginRowRows
+      .filter((r) => (r.state as PluginRowState).deletedAt !== null)
+      .map((r) => r.entity_id),
+  );
   for (const r of pluginRowRows) {
     const ref = {
       pluginId: r.plugin_id,
@@ -976,9 +981,15 @@ export async function mergeWindowToMain(
       rowId: r.entity_id,
     };
     const state = r.state as PluginRowState;
-    await withPluginScope(tx, r.plugin_id, () => applyPluginRowState(tx, ref, state));
-    // The main-line copy under the merge's header: undo after publish.
-    await insertPluginRowSnapshot(tx, result.siteSnapshotId, ref, state);
+    // #1659 — a row this branch created for an upserted key that main
+    // already holds lands on that main row, so the key stays one row.
+    const written = await withPluginScope(tx, r.plugin_id, () =>
+      applyPluginRowStateOnMerge(tx, ref, state, window.branchId, droppedByMerge),
+    );
+    // The main-line copies under the merge's header: undo after publish.
+    for (const w of written) {
+      await insertPluginRowSnapshot(tx, result.siteSnapshotId, w.ref, w.state);
+    }
   }
 
   // Layout chrome: the merged block state becomes the live placement list

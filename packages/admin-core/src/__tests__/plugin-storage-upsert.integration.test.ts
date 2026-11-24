@@ -12,11 +12,11 @@
  *     same timing;
  *   - rows that already share a key fold into one on the next write (the
  *     refusal international-site used to raise is gone);
- *   - a main-line placeholder (`ifExists: "keep"`) for a key a chat holds
- *     unstaged takes over that row instead of adding a second one, and the
- *     chat's value wins at its Stage;
- *   - a chat writing a key another branch created takes that row over;
- *   - `keep` never overwrites, and a key no index can drive is refused.
+ *   - rows of one key in different lines (main and a chat, two chats, two
+ *     branches, however many) leave one row once staged: the Stage lands a
+ *     branch's row on the key's main row, the branch's state winning;
+ *   - typed keys take one spelling, `id` is never written, `keep` never
+ *     overwrites, and a key no index can drive is refused.
  *
  * Integration tier against a throwaway Postgres (never the dev DB).
  */
@@ -73,10 +73,16 @@ const plugin = definePlugin({
     entries: { lang: "string", address: "text", value: "text", created_at: "timestamp" },
     loose: { name: "string", value: "text" },
     typed: { page_id: "uuid", n: "int", note: "text", created_at: "timestamp" },
+    // A table may declare its primary key; an upsert still never writes it.
+    ided: { id: "uuid", name: "string", note: "text" },
   },
   aiReadableTables: ["entries"],
   indexes: {
-    adminSchema: { entries: [["lang", "address"]], typed: [["page_id", "n"], ["created_at"]] },
+    adminSchema: {
+      entries: [["lang", "address"]],
+      typed: [["page_id", "n"], ["created_at"]],
+      ided: [["name"]],
+    },
   },
   requestedCapabilities: ["cms_admin_schema", "cms_admin"],
   operations: {
@@ -109,6 +115,11 @@ const plugin = definePlugin({
     },
     list_typed: async (ctx, args) =>
       q(ctx).list("typed", { page_id: (args as { pageId: string }).pageId, limit: 100 }),
+    upsert_ided: async (ctx, args) => {
+      const a = args as { key: Record<string, string>; values: Record<string, unknown> };
+      return q(ctx).upsert("ided", a.key, a.values);
+    },
+    list_ided: async (ctx) => q(ctx).list("ided", { name: "a", limit: 10 }),
     upsert_unindexed: async (ctx) => q(ctx).upsert("loose", { name: "a" }, { value: "x" }),
     upsert_null_key: async (ctx) =>
       q(ctx).upsert("entries", { lang: "de", address: null as unknown as string }, {}),
@@ -242,6 +253,12 @@ async function readDraftRows(chat: Chat, rowIds: string[]): Promise<void> {
 }
 
 /** The Stage of draft chats (the merge the Stage flow runs). */
+/** The Stage of a chat on an isolated branch (its whole branch). */
+async function stageIsolated(chat: Chat): Promise<void> {
+  const r = await execute(registry, adapter, SYS, "chat.merge_to_main", { chatSessionId: chat.id });
+  if (!r.ok) throw new Error(`chat.merge_to_main: ${JSON.stringify(r.error)}`);
+}
+
 async function stage(...chats: Chat[]): Promise<void> {
   const r = await execute(registry, adapter, SYS, "chat.merge_draft_to_main", {
     chatSessionIds: chats.map((c) => c.id),
@@ -381,7 +398,7 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     expect((await physicalRows(key)).map((r) => r.value)).toEqual(["fixed"]);
   });
 
-  it("a main-line placeholder takes over a chat's unstaged row of the key; the chat's value wins at its Stage", async () => {
+  it("a main-line placeholder beside a chat's unstaged row: the chat's value lands on it at the Stage", async () => {
     const key = nextKey();
     const a = await newChat("adopt-a");
     const mine = await landed<{ id: string; created: boolean }>(
@@ -393,58 +410,97 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     const placeholder = await landed<{ id: string; created: boolean }>(
       await call(MAIN, "upsert", { address: key, value: null, keep: true }),
     );
-    expect(placeholder).toEqual({ id: mine.id, created: true });
-    expect(await physicalRows(key)).toEqual([{ id: mine.id, value: null, branch: null }]);
+    expect(placeholder.created).toBe(true);
     expect(await seen(MAIN, key)).toEqual([null]);
-    expect(await seen(a.invocation, key)).toEqual(["translated"]);
 
     await stage(a);
-    expect(await physicalRows(key)).toEqual([{ id: mine.id, value: "translated", branch: null }]);
+    expect(await physicalRows(key)).toEqual([
+      { id: placeholder.id, value: "translated", branch: null },
+    ]);
   });
 
-  it("a chat writing a key another branch created takes that row over", async () => {
+  it("two branches each holding a row of the key leave one row after both Stages", async () => {
     const key = nextKey();
     const x = await newChat("other-x", "experiment");
-    const theirs = await landed<{ id: string }>(
-      await call(x.invocation, "upsert", { address: key, value: "from-x" }),
-    );
+    await landed(await call(x.invocation, "upsert", { address: key, value: "from-x" }));
     const a = await newChat("other-a");
     const mine = await landed<{ id: string; created: boolean }>(
       await call(a.invocation, "upsert", { address: key, value: "from-a" }),
     );
-    expect(mine).toEqual({ id: theirs.id, created: false });
-    const rows = await physicalRows(key);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.branch).toBe(a.ai.chatBranchId as string);
-    // The other branch's change moved with the row.
-    expect(await seen(x.invocation, key)).toEqual([]);
+    // Neither line sees the other's row; each holds one.
+    expect(mine.created).toBe(true);
+    expect(await seen(x.invocation, key)).toEqual(["from-x"]);
     expect(await seen(a.invocation, key)).toEqual(["from-a"]);
 
     await stage(a);
-    expect(await physicalRows(key)).toEqual([{ id: theirs.id, value: "from-a", branch: null }]);
+    const afterFirst = await physicalRows(key);
+    expect(afterFirst.filter((r) => r.branch === null)).toEqual([
+      { id: mine.id, value: "from-a", branch: null },
+    ]);
+    expect(afterFirst.filter((r) => r.branch !== null).map((r) => r.value)).toEqual(["from-x"]);
+    // The later Stage lands on the key's main row and drops its own.
+    await stageIsolated(x);
+    expect(await physicalRows(key)).toEqual([{ id: mine.id, value: "from-x", branch: null }]);
+  });
+
+  it("a main-line write with two unstaged duplicates on two branches leaves one row after the Stages", async () => {
+    // What writers left before #1659: two chats each inserted a row of the
+    // key, neither staged.
+    const key = nextKey();
+    const x = await newChat("dup-x", "experiment");
+    const y = await newChat("dup-y", "experiment");
+    await landed(await call(x.invocation, "insert", { address: key, value: "from-x" }));
+    await landed(await call(y.invocation, "insert", { address: key, value: "from-y" }));
+
+    const main = await landed<{ id: string; created: boolean }>(
+      await call(MAIN, "upsert", { address: key, value: "main" }),
+    );
+    expect(main.created).toBe(true);
+    expect(await physicalRows(key)).toHaveLength(3);
+
+    await stageIsolated(x);
+    expect((await physicalRows(key)).filter((r) => r.branch === null)).toEqual([
+      { id: main.id, value: "from-x", branch: null },
+    ]);
+    await stageIsolated(y);
+    expect(await physicalRows(key)).toEqual([{ id: main.id, value: "from-y", branch: null }]);
+  });
+
+  it("two unstaged duplicates in the shared draft fold into the key's main row at one Stage", async () => {
+    const key = nextKey();
+    const a = await newChat("dup-a");
+    const b = await newChat("dup-b");
+    await landed(await call(a.invocation, "insert", { address: key, value: "from-a" }));
+    await landed(await call(b.invocation, "insert", { address: key, value: "from-b" }));
+    const main = await landed<{ id: string }>(
+      await call(MAIN, "upsert", { address: key, value: "main" }),
+    );
+
+    // A draft Stage takes every pending plugin row of the draft (they can
+    // shape URLs): both land on the main row, and one row is left.
+    await stage(a);
+    const rows = await physicalRows(key);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: main.id, branch: null });
+    expect(["from-a", "from-b"]).toContain(rows[0]?.value as string);
   });
 
   it("a main-line write of a key with a main row and a chat's unstaged row leaves one row after the Stage", async () => {
-    // What two writers left before #1659: a main row, and a second row of
-    // the key a chat inserted and has not staged.
     const key = nextKey();
-    await landed(await call(MAIN, "insert", { address: key, value: "main" }));
-    const a = await newChat("legacy-main-a");
-    const theirs = await landed<{ id: string }>(
-      await call(a.invocation, "insert", { address: key, value: "from-a" }),
+    const existing = await landed<{ id: string }>(
+      await call(MAIN, "insert", { address: key, value: "main" }),
     );
+    const a = await newChat("legacy-main-a");
+    await landed(await call(a.invocation, "insert", { address: key, value: "from-a" }));
 
     const written = await landed<{ id: string; created: boolean }>(
       await call(MAIN, "upsert", { address: key, value: "fixed" }),
     );
-    // The chat's row became the key's main row; the other main row went.
-    expect(written).toEqual({ id: theirs.id, created: false });
-    expect(await physicalRows(key)).toEqual([{ id: theirs.id, value: "fixed", branch: null }]);
+    expect(written).toEqual({ id: existing.id, created: false });
     expect(await seen(MAIN, key)).toEqual(["fixed"]);
-    expect(await seen(a.invocation, key)).toEqual(["from-a"]);
 
     await stage(a);
-    expect(await physicalRows(key)).toEqual([{ id: theirs.id, value: "from-a", branch: null }]);
+    expect(await physicalRows(key)).toEqual([{ id: existing.id, value: "from-a", branch: null }]);
   });
 
   it("a chat's write of a key with a main row and another branch's unstaged row leaves one row", async () => {
@@ -456,11 +512,29 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     const a = await newChat("legacy-other-a");
     await landed(await call(a.invocation, "upsert", { address: key, value: "from-a" }));
     expect(await seen(a.invocation, key)).toEqual(["from-a"]);
-    // The other branch's change moved to this chat with its row.
-    expect(await seen(x.invocation, key)).toEqual(["main"]);
 
     await stage(a);
-    expect((await physicalRows(key)).map((r) => [r.value, r.branch])).toEqual([["from-a", null]]);
+    await stageIsolated(x);
+    expect((await physicalRows(key)).map((r) => [r.value, r.branch])).toEqual([["from-x", null]]);
+  });
+
+  it("never writes id: a key or values naming it are refused, naming the fix", async () => {
+    const id = crypto.randomUUID();
+    const stored = await landed<{ id: string }>(
+      await call(MAIN, "upsert_ided", { key: { name: "a" }, values: { note: "first" } }),
+    );
+    for (const args of [
+      { key: { name: "a" }, values: { id, note: "moved" } },
+      { key: { id }, values: { note: "x" } },
+    ]) {
+      const r = await call(MAIN, "upsert_ided", args);
+      if (r.ok) throw new Error(`expected ${JSON.stringify(args)} to be refused`);
+      expect(r.error.message).toContain(
+        '"id" is the row\'s primary key, which an upsert never writes',
+      );
+    }
+    const rows = await landed<{ id: string; note: string }[]>(await call(MAIN, "list_ided"));
+    expect(rows).toEqual([expect.objectContaining({ id: stored.id, note: "first" })]);
   });
 
   it("takes a typed key in its column's spelling only, so equal keys name one row", async () => {

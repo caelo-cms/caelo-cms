@@ -351,6 +351,8 @@ export const JOURNAL_EXEMPT_TABLES: Readonly<Record<string, string>> = {
   plugin_runtime: RUNTIME,
   plugin_schema_migrations: "plugin DDL bookkeeping",
   plugin_schema_provisions: "plugin DDL bookkeeping",
+  plugin_storage_keys:
+    "#1659: the key each private plugin table is upserted by, read by the Stage merge; host bookkeeping, nothing derives from it",
   plugin_private_file_chunks:
     "the bytes of plugin_private_files rows, journaled through the file row",
   public_projection_outbox: "the outbox of the cms_public projection, drained by its publisher",

@@ -212,7 +212,10 @@ function requireTargetLocale(deps: ChromeDeps, localeCode: string): LocaleRow {
  * @returns how many variants were newly marked `needs_update`.
  */
 export async function refreshChromeStaleness(deps: ChromeDeps): Promise<number> {
-  const variants = await loadChromeVariants(deps.q);
+  // Every stored row, not the one per key reads take (#1659): an
+  // up-to-date duplicate left as it is would become the row reads take
+  // once the other is marked, and hide that the translation is outdated.
+  const variants = await loadChromeVariantRows(deps.q);
   if (variants.length === 0) return 0;
   const byKey = new Map((await loadChromeTargets(deps.cms)).map((t) => [t.key, t]));
   let marked = 0;

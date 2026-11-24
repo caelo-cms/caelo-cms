@@ -1832,15 +1832,14 @@ export interface PluginAdminQuery extends PluginQuery {
    *   over another chat's change this chat has not seen is a conflict, as
    *   for `update` — the error names `get_plugin_draft_rows`, and the write
    *   repeated after that read goes through (the later write wins);
-   * - a row of the key that another branch created and has not staged is
-   *   taken over by a chat (its pending change moves to the writing chat,
-   *   as for every write across branches); a main-line write (a worker,
-   *   the Owner panel) makes that row the key's main row instead, with the
-   *   main state, and the branch's change applies over it when the branch
-   *   is staged;
-   * - rows that already share the key (written by `insert`) are folded:
-   *   one of them is updated, the others are deleted. With
-   *   `ifExists: "keep"` nothing changes once the caller sees a row.
+   * - a row a branch creates is invisible to the main line and to other
+   *   branches until its Stage, so two lines can each hold a row of the
+   *   key; the Stage lands the branch's row on the key's main row (the
+   *   branch's state wins, as at every merge) and drops its own;
+   * - rows that already share the key in the caller's view (written by
+   *   `insert`) are folded: one of them is updated, the others are
+   *   deleted. With `ifExists: "keep"` nothing changes once the caller
+   *   sees a row.
    *
    * `key`: 1–4 declared columns, each value of its column's type (a
    * string for string, text and enum columns, an integer for int, a
@@ -1848,8 +1847,10 @@ export interface PluginAdminQuery extends PluginQuery {
    * or jsonb column cannot be part of a key), one of which leads a
    * declared index (the read rule of `list`, docs/plugin-indexes.md).
    * `values`: other declared columns, written on insert and on update;
-   * columns in neither get their default on insert. A plugin that writes
-   * a key with `upsert` writes it with `upsert` only.
+   * columns in neither get their default on insert. `id` is in neither:
+   * the key names the row. A plugin that writes a key with `upsert`
+   * writes it with `upsert` only, and a table has one key (the latest
+   * upsert's counts at the Stage).
    *
    * @returns the key's row and whether it was created.
    *

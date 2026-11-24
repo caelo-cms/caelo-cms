@@ -256,6 +256,7 @@ beforeAll(async () => {
         properties: [
           { name: "teaser", label: "Teaser", type: "text" },
           { name: "reading", label: "Reading time", type: "text" },
+          { name: "level", label: "Level", type: "text" },
         ],
         vocabularies: [],
       },
@@ -285,7 +286,7 @@ afterAll(async () => {
 });
 
 describe("international-site — one stored translation per key (#1659)", () => {
-  it("a chat's translation and the change consumer's placeholder stay one row", async () => {
+  it("a chat's translation and the change consumer's placeholder leave one row at the Stage", async () => {
     // A property the source gains on the main line; the consumer has not run yet.
     await sysOp("pages.update", {
       pageId: ids.en,
@@ -298,23 +299,42 @@ describe("international-site — one stored translation per key (#1659)", () => 
     const [mine] = await propRows("reading");
     expect(mine?.branch).not.toBeNull();
 
-    // The consumer reconciles on the main line, where the chat's row is invisible.
+    // The consumer reconciles on the main line, where the chat's row is
+    // invisible: its placeholder sits beside it until the Stage. The chat
+    // reads the translation (translation-rows.ts).
     await tick();
-    const rows = await propRows("reading");
-    expect(rows).toEqual([
-      { id: mine?.id as string, value: null, status: "missing", branch: null },
-    ]);
+    const placeholder = (await propRows("reading")).find((r) => r.branch === null);
+    expect(placeholder).toMatchObject({ value: null, status: "missing" });
     expect(await propStatus(chat.invocation)).toMatchObject({ translated: 1, missing: 1 });
 
-    // The write that refused here before ("holds two rows … a write race").
-    await op(chat.invocation, "apply_translations", translate("reading", "5 Minuten"));
-    expect(await propRows("reading")).toHaveLength(1);
-
+    // The Stage lands the chat's row on the placeholder.
     await stage(chat.id);
     expect(await propRows("reading")).toEqual([
-      { id: mine?.id as string, value: "5 Minuten", status: "translated", branch: null },
+      { id: placeholder?.id as string, value: "5 Min.", status: "translated", branch: null },
     ]);
     expect(await propStatus(MAIN)).toMatchObject({ translated: 1, missing: 1 });
+  });
+
+  it("the chat's next write of such a key goes through and its Stage leaves one row", async () => {
+    await sysOp("pages.update", {
+      pageId: ids.en,
+      properties: { teaser: "Three more domains", reading: "5 min", level: "Beginner" },
+    });
+    const chat = await draftChat("prop-again");
+    await op(chat.invocation, "apply_translations", translate("level", "Einsteiger"));
+    await tick();
+    expect(await propRows("level")).toHaveLength(2);
+
+    // The write that refused here before ("holds two rows … a write race").
+    await op(chat.invocation, "apply_translations", translate("level", "Anfänger"));
+    await stage(chat.id);
+    expect(
+      (await propRows("level")).map((r) => ({
+        value: r.value,
+        status: r.status,
+        branch: r.branch,
+      })),
+    ).toEqual([{ value: "Anfänger", status: "translated", branch: null }]);
   });
 
   it("a key that already holds a translation and a placeholder reads as translated and folds", async () => {
@@ -331,14 +351,14 @@ describe("international-site — one stored translation per key (#1659)", () => 
       `,
     );
     expect(await propRows("reading")).toHaveLength(2);
-    expect(await propStatus(MAIN)).toMatchObject({ translated: 1, missing: 1 });
+    expect(await propStatus(MAIN)).toMatchObject({ translated: 2, missing: 1 });
     // The consumer's reconcile reads them the same way: nothing to insert.
     const rebuilt = await op<{ lists: { inserted: number } }>(
       MAIN,
       "rebuild_translation_staleness",
     );
     expect(rebuilt.lists.inserted).toBe(0);
-    expect(await propStatus(MAIN)).toMatchObject({ translated: 1, missing: 1 });
+    expect(await propStatus(MAIN)).toMatchObject({ translated: 2, missing: 1 });
 
     // A chat's write of the key goes through and leaves one row.
     const chat = await draftChat("heal");

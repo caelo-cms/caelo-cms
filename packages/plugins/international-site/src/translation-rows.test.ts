@@ -9,6 +9,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { indexCheckedQuery } from "@caelo-cms/plugin-sdk";
+import { type ChromeDeps, loadChromeVariants, refreshChromeStaleness } from "./chrome-ops.js";
+import plugin from "./index.js";
 import { translationIndexOf } from "./list-translation-ops.js";
 import {
   onePerChromeTarget,
@@ -129,5 +132,56 @@ describe("#1659 — one stored translation per key", () => {
     expect(
       onePerChromeTarget([chrome("1", "needs_update"), chrome("2", "up_to_date")]).rows,
     ).toEqual([chrome("2", "up_to_date")]);
+  });
+
+  it("a source change marks every stored row of a chrome key stale, not only the one reads take", async () => {
+    const key = "instance:00000000-0000-4000-8000-0000000016d1";
+    const variant = (id: string) => ({
+      id,
+      target_key: key,
+      locale_code: "de",
+      mode: "translated",
+      module_id: null,
+      values: { title: "Alt" },
+      translation_status: "up_to_date",
+      source_hash: "hash-of-the-old-source",
+      created_at: "2026-11-19T10:00:00.000Z",
+    });
+    const rows = [variant("a"), variant("b")];
+    const deps = {
+      q: indexCheckedQuery(plugin, "adminSchema", {
+        list: async () => rows.map((r) => ({ ...r })),
+        update: async (_t: string, id: string, patch: Record<string, unknown>) => {
+          const row = rows.find((r) => r.id === id);
+          if (row) Object.assign(row, patch);
+        },
+      }),
+      cms: {
+        call: async (op: string) => {
+          if (op !== "pages.list_shared_content") throw new Error(`unexpected ${op}`);
+          return {
+            layoutPlacements: [],
+            sharedInstances: [
+              {
+                contentInstanceId: key.slice("instance:".length),
+                moduleName: "Banner",
+                slug: null,
+                pageIds: [],
+                fields: [{ name: "title", kind: "text" }],
+                values: { title: "New" },
+              },
+            ],
+          };
+        },
+      },
+      locales: new Map(),
+      listTypes: new Map(),
+    } as unknown as ChromeDeps;
+
+    expect(await refreshChromeStaleness(deps)).toBe(2);
+    expect(rows.map((r) => r.translation_status)).toEqual(["needs_update", "needs_update"]);
+    expect((await loadChromeVariants(deps.q)).map((r) => r.translation_status)).toEqual([
+      "needs_update",
+    ]);
   });
 });

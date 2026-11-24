@@ -203,6 +203,8 @@ export {
   listIndexRefusal,
   rememberedIndexLeadColumns,
 } from "./index-coverage.js";
+// #1659 — the Stage keeps an upserted key of a private table at one row.
+export { applyPluginRowStateOnMerge } from "./key-merge.js";
 export {
   applyPluginLifecycle,
   deregisterPlugin,

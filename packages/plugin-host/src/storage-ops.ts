@@ -216,7 +216,11 @@ function upsertKeyOf(
     return `${op}: key must name 1..${UPSERT_KEY_MAX} columns`;
   }
   const key: Record<string, string | number | boolean> = {};
+  // A table may declare `id`, but it is the row's primary key: an update
+  // never writes it (patchFragments), and neither does an upsert.
+  const noId = `${op}: "id" is the row's primary key, which an upsert never writes — name the row by its other columns in key, and leave id out of key and values`;
   for (const [k, v] of entries) {
+    if (k === "id") return noId;
     const problem = checkColumn(op, columns, k);
     if (problem) return problem;
     const value = keyValueOf(op, k, columns[k] as string, v);
@@ -224,6 +228,7 @@ function upsertKeyOf(
     key[k] = value;
   }
   for (const [k, v] of Object.entries(values)) {
+    if (k === "id") return noId;
     const problem = checkColumn(op, columns, k) ?? undefinedValueProblem(op, "data", k, v);
     if (problem) return problem;
     if (k in key) return `${op}: column "${k}" is in the key — values cannot change it`;
