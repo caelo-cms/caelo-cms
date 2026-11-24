@@ -45,6 +45,18 @@
  *     without — so the link cannot dangle, and site chrome (the brand
  *     link, `/#features` nav items) is routinely written before the
  *     homepage. Once the homepage exists, `/` canonicalises as usual.
+ *
+ * Media variants (#1600): a media link that names a variant
+ * (`/_caelo/media/hero/webp-800`) is only valid when the asset HAS that
+ * variant — the pipeline never upscales, so a 760 px source has no
+ * `webp-800`, and the build cannot publish what does not exist. Which
+ * variants an asset has is not part of {@link LinkTargetLookup} (loading
+ * them for the whole library would make every write read the site): the
+ * run lists each such link in `run.mediaVariantRefs`, the caller loads the
+ * variants of exactly those assets and {@link reportMissingMediaVariants}
+ * turns a missing one into an issue. It is refused, not rewritten to
+ * another size: which of the sizes that do exist the author wants (a
+ * smaller WebP or the original) is a choice, not a spelling.
  */
 
 import { blankNonMarkup } from "./html-blank.js";
@@ -56,6 +68,7 @@ import {
   parseLinkRef,
 } from "./link-refs.js";
 import { MEDIA_URL_PREFIX } from "./media.js";
+import { replacementMediaUrls } from "./responsive-images.js";
 
 /** What the canonicaliser needs to know about the site. */
 export interface LinkTargetLookup {
@@ -97,6 +110,7 @@ export interface LinkCanonicaliseIssue {
   readonly kind:
     | "unknown-page-path"
     | "unknown-media"
+    | "unknown-media-variant"
     | "dangling-page-ref"
     | "dangling-media-ref"
     | "unknown-file"
@@ -106,6 +120,33 @@ export interface LinkCanonicaliseIssue {
   readonly value: string;
   /** Where it was found: `values.cta_href`, `html`, `fields.nav.default[2].href`, `items[0].href`. */
   readonly where: string;
+  /**
+   * `unknown-media-variant` only (#1600): the variants the asset has, and
+   * the media URLs to write instead, the size `find_media` hands out first
+   * and then the original. Empty when the link was written as a
+   * `caelo:media/…` reference (no slug to spell a URL with) or the asset
+   * has no variant at all.
+   */
+  readonly media?: { readonly variants: readonly string[]; readonly instead: readonly string[] };
+}
+
+/**
+ * A media link that names a variant (#1600), for the caller to check
+ * against the variants its asset has ({@link reportMissingMediaVariants}).
+ */
+export interface MediaVariantRef {
+  readonly mediaId: string;
+  /** The variant tag the link names (`webp-800`); never `orig`. */
+  readonly variant: string;
+  /** The link as written (trimmed). */
+  readonly value: string;
+  readonly where: string;
+  /**
+   * The asset segment of a `/_caelo/media/<ref>/<variant>` URL as written:
+   * its slug, or the asset id of the legacy form. Null for a link written
+   * as a `caelo:media/…` reference.
+   */
+  readonly urlRef: string | null;
 }
 
 /** A canonicalisation run over one write. */
@@ -122,6 +163,11 @@ export interface LinkCanonicaliseRun {
   readonly issues: LinkCanonicaliseIssue[];
   /** Links to planned pages (see {@link LinkTargetLookup.isPendingPagePath}). */
   readonly pending: PendingLinkTarget[];
+  /**
+   * Media links to an existing asset that name a variant and are not
+   * grandfathered; see the file header and {@link reportMissingMediaVariants}.
+   */
+  readonly mediaVariantRefs: MediaVariantRef[];
 }
 
 /** Start a run. */
@@ -135,6 +181,7 @@ export function linkCanonicaliseRun(
     grandfathered: opts.grandfathered ?? new Set(),
     issues: [],
     pending: [],
+    mediaVariantRefs: [],
   };
 }
 
@@ -259,11 +306,15 @@ function canonicaliseMediaPath(
     return raw;
   }
   // `orig` is the original, which a reference expresses as no variant.
-  return formatLinkRef({
-    kind: "media",
-    mediaId: id,
-    variant: variant === "orig" ? null : variant,
-  });
+  const named = variant === "orig" ? null : variant;
+  const ref = formatLinkRef({ kind: "media", mediaId: id, variant: named });
+  // A stored reference reads back as this very URL (tool results humanise
+  // it), so an edit that carries an old one along is grandfathered by
+  // either spelling.
+  if (named !== null && !run.grandfathered.has(raw) && !run.grandfathered.has(ref)) {
+    run.mediaVariantRefs.push({ mediaId: id, variant: named, value: raw, where, urlRef: first });
+  }
+  return ref;
 }
 
 /**
@@ -284,8 +335,17 @@ export function canonicaliseUrl(
 
   const ref = parseLinkRef(v);
   if (ref) {
-    if (!targetExists(ref, run.lookup) && !run.grandfathered.has(v)) {
+    if (run.grandfathered.has(v)) return v;
+    if (!targetExists(ref, run.lookup)) {
       issue(run, ref.kind === "page" ? "dangling-page-ref" : "dangling-media-ref", v, where);
+    } else if (ref.kind === "media" && ref.variant !== null) {
+      run.mediaVariantRefs.push({
+        mediaId: ref.mediaId,
+        variant: ref.variant,
+        value: v,
+        where,
+        urlRef: null,
+      });
     }
     return v;
   }
@@ -356,6 +416,32 @@ export function canonicaliseUrl(
 
 function targetExists(ref: LinkRef, lookup: LinkTargetLookup): boolean {
   return ref.kind === "page" ? lookup.pageExists(ref.pageId) : lookup.mediaExists(ref.mediaId);
+}
+
+/**
+ * #1600 — record an `unknown-media-variant` issue for every link in
+ * `run.mediaVariantRefs` whose asset lacks the variant it names. The
+ * caller loads the variants of exactly those assets (the run's media
+ * links decide which), so a write reads what it names, not the library.
+ *
+ * @param variantsByMedia every variant tag (`media_variants.variant`) of
+ *   each asset the run named; an asset missing from the map has none.
+ */
+export function reportMissingMediaVariants(
+  run: LinkCanonicaliseRun,
+  variantsByMedia: ReadonlyMap<string, readonly string[]>,
+): void {
+  for (const r of run.mediaVariantRefs) {
+    const variants = variantsByMedia.get(r.mediaId) ?? [];
+    if (variants.includes(r.variant)) continue;
+    const instead = r.urlRef === null ? [] : replacementMediaUrls(r.urlRef, variants);
+    run.issues.push({
+      kind: "unknown-media-variant",
+      value: r.value,
+      where: r.where,
+      media: { variants: [...variants].sort(), instead },
+    });
+  }
 }
 
 // Attribute scanner: `name="…"` / `name='…'` for the four link-bearing
@@ -686,6 +772,8 @@ const NOTHING_RESOLVES: LinkTargetLookup = {
 const ISSUE_TEXT: Readonly<Record<LinkCanonicaliseIssue["kind"], string>> = {
   "unknown-page-path": "is not the path of any page on this site",
   "unknown-media": "names no image or file in the media library",
+  "unknown-media-variant":
+    "names a size (variant) this image does not have, so no build can publish it (the image pipeline makes a size only when the source is at least that wide, and none for an animated GIF or a non-raster file; one the source is wide enough for is made by regenerate_media_variants)",
   "dangling-page-ref": "links to a page that was deleted",
   "dangling-media-ref": "links to an image or file that was deleted",
   "unknown-file":
@@ -702,7 +790,9 @@ const ISSUE_TEXT: Readonly<Record<LinkCanonicaliseIssue["kind"], string>> = {
  * sees reference ids except for a reference that is already broken.
  */
 export function describeLinkIssues(issues: readonly LinkCanonicaliseIssue[]): string {
-  const lines = issues.slice(0, 10).map((i) => `${i.where}: "${i.value}" ${ISSUE_TEXT[i.kind]}`);
+  const lines = issues
+    .slice(0, 10)
+    .map((i) => `${i.where}: "${i.value}" ${ISSUE_TEXT[i.kind]}${mediaVariantHint(i)}`);
   const more = issues.length > 10 ? ` (and ${issues.length - 10} more)` : "";
   return (
     `Internal link check failed — ${lines.join("; ")}${more}. ` +
@@ -712,4 +802,18 @@ export function describeLinkIssues(issues: readonly LinkCanonicaliseIssue[]): st
     "shell) or leave the link out and add it once the page exists. The site root `/` is always valid. " +
     "For a link to another site, write the full https:// URL."
   );
+}
+
+/** What an `unknown-media-variant` issue's author writes instead (#1600); empty for other kinds. */
+function mediaVariantHint(i: LinkCanonicaliseIssue): string {
+  if (i.kind !== "unknown-media-variant" || i.media === undefined) return "";
+  const { variants, instead } = i.media;
+  if (variants.length === 0) {
+    return " — it has no variant at all: run regenerate_media_variants on it, or use another image from find_media";
+  }
+  const write =
+    instead.length === 0
+      ? "write the image's url from find_media instead"
+      : `write ${instead.map((u) => `"${u}"`).join(" or ")} instead`;
+  return ` — it has: ${variants.join(", ")}; ${write} (find_media's url always names a size that exists)`;
 }

@@ -502,17 +502,22 @@ export async function validateNestedRefs(
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
-/** The module's fields in the caller's view, then {@link normaliseListFieldValues}. */
+/**
+ * The module's fields in the caller's view, then {@link normaliseListFieldValues}.
+ *
+ * @param previousValues the stored values a `set_values` replaces; undefined for a create.
+ */
 async function normaliseInstanceListValues(
   tx: Tx,
   ctx: ExecutionContext,
   branchId: string | null,
   moduleId: string,
   values: Record<string, unknown>,
+  previousValues?: Readonly<Record<string, unknown>>,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   const owner = await loadModuleStateWithBranchOverlay(tx, moduleId, branchId);
   if (owner === null) return { ok: true };
-  return normaliseListFieldValues(tx, ctx, branchId, owner.fields, values);
+  return normaliseListFieldValues(tx, ctx, branchId, owner.fields, values, previousValues);
 }
 
 function rowToContentInstance(
@@ -967,6 +972,8 @@ export const createContentInstanceOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.create",
         message: listValues.message,
+        // The entries the write sent are refused, with the fix (#1600).
+        refusal: true,
       });
     }
 
@@ -1205,12 +1212,15 @@ export const setContentInstanceValuesOp = defineOperation({
       branchId,
       prev.moduleId,
       input.values,
+      prev.values,
     );
     if (!listValues.ok) {
       return err({
         kind: "HandlerError",
         operation: "content_instances.set_values",
         message: listValues.message,
+        // The entries the write sent are refused, with the fix (#1600).
+        refusal: true,
       });
     }
 

@@ -21,7 +21,10 @@
  *     into a lookup-less run); only PERMANENT redirects pin a link; layout
  *     HTML is canonicalised; snapshot rows carry the reference form;
  *     content written in a chat reads the module's fields and pages as
- *     that chat's branch has them; bulk refusals name the failing entry.
+ *     that chat's branch has them; bulk refusals name the failing entry;
+ *   - #1600: a media size the image does not have (`webp-800` of a 760 px
+ *     source) is refused on every surface, with the sizes it has and the
+ *     URL to write; one already stored stays editable around.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -44,6 +47,8 @@ const SYSTEM: ExecutionContext = {
 
 const PFX = `lcw-${Date.now().toString(36)}`;
 const SHA = `1c0a${"7".repeat(60)}`;
+// #1600 — a 760 px source: the pipeline made webp-400, never a webp-800.
+const NARROW_SHA = `1c0a${"8".repeat(60)}`;
 const OWN_HOST = `${PFX}.example.org`;
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -52,6 +57,8 @@ let aboutId = "";
 let pricingId = "";
 let mediaId = "";
 let mediaSlug = "";
+let narrowId = "";
+let narrowSlug = "";
 let savedBaseUrl: string | null = null;
 const SESSION_PREFIX = `${PFX}-chat-`;
 
@@ -83,8 +90,12 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${`${PFX}-tpl`})`;
     await tx`DELETE FROM templates WHERE slug = ${`${PFX}-tpl`}`;
-    await tx`DELETE FROM media_variants WHERE asset_id IN (SELECT id FROM media_assets WHERE sha256 = ${SHA})`;
-    await tx`DELETE FROM media_assets WHERE sha256 = ${SHA}`;
+    await tx`DELETE FROM list_snapshots WHERE list_id IN (SELECT id FROM lists WHERE slug LIKE ${`${PFX}%`})`;
+    await tx`DELETE FROM lists WHERE slug LIKE ${`${PFX}%`}`;
+    await tx`DELETE FROM list_type_snapshots WHERE list_type_id IN (SELECT id FROM list_types WHERE slug LIKE ${`${PFX}%`})`;
+    await tx`DELETE FROM list_types WHERE slug LIKE ${`${PFX}%`}`;
+    await tx`DELETE FROM media_variants WHERE asset_id IN (SELECT id FROM media_assets WHERE sha256 IN (${SHA}, ${NARROW_SHA}))`;
+    await tx`DELETE FROM media_assets WHERE sha256 IN (${SHA}, ${NARROW_SHA})`;
   });
 }
 
@@ -187,24 +198,67 @@ beforeAll(async () => {
     name: `${PFX} hero`,
     mime: "image/png",
     sizeBytes: 4,
-    width: 4,
-    height: 4,
+    width: 1600,
+    height: 900,
     alt: "",
     storageKey: `${SHA}/orig.png`,
     variants: [
       {
         variant: "orig",
         format: "png",
-        width: 4,
-        height: 4,
+        width: 1600,
+        height: 900,
         sizeBytes: 4,
         storageKey: `${SHA}/orig.png`,
+        digest: TEST_MEDIA_DIGEST,
+      },
+      {
+        variant: "webp-800",
+        format: "webp",
+        width: 800,
+        height: 450,
+        sizeBytes: 4,
+        storageKey: `${SHA}/webp-800.webp`,
         digest: TEST_MEDIA_DIGEST,
       },
     ],
   });
   mediaId = media.assetId;
   mediaSlug = media.slug;
+
+  const narrow = await run<{ assetId: string; slug: string }>("media.upload", {
+    sha256: NARROW_SHA,
+    originalName: `${PFX}-url-history.png`,
+    name: `${PFX} url history`,
+    mime: "image/png",
+    sizeBytes: 4,
+    width: 760,
+    height: 291,
+    alt: "",
+    storageKey: `${NARROW_SHA}/orig.png`,
+    variants: [
+      {
+        variant: "orig",
+        format: "png",
+        width: 760,
+        height: 291,
+        sizeBytes: 4,
+        storageKey: `${NARROW_SHA}/orig.png`,
+        digest: TEST_MEDIA_DIGEST,
+      },
+      {
+        variant: "webp-400",
+        format: "webp",
+        width: 400,
+        height: 153,
+        sizeBytes: 4,
+        storageKey: `${NARROW_SHA}/webp-400.webp`,
+        digest: TEST_MEDIA_DIGEST,
+      },
+    ],
+  });
+  narrowId = narrow.assetId;
+  narrowSlug = narrow.slug;
 
   const base = await asSystem((tx) => tx`SELECT site_base_url FROM site_defaults WHERE id = 1`);
   savedBaseUrl = (base as { site_base_url: string | null }[])[0]?.site_base_url ?? null;
@@ -703,5 +757,184 @@ describe("malformed references (#724 A/B review carry-over)", () => {
       values: { cta_href: `/${PFX}-about#a b` },
     });
     expect(message).toContain("query or #anchor a stored link cannot carry");
+  });
+});
+
+describe("media sizes the image does not have (#1600)", () => {
+  const missing = () => `/_caelo/media/${narrowSlug}/webp-800`;
+  const has = () => `/_caelo/media/${narrowSlug}/webp-400`;
+  /** The refusal names the place, the sizes the image has and the URL to write. */
+  const expectSizeRefusal = (message: string, where: string) => {
+    expect(message).toContain(
+      `${where}: "${missing()}" names a size (variant) this image does not have`,
+    );
+    expect(message).toContain("it has: orig, webp-400");
+    expect(message).toContain(`write "${has()}" or "/_caelo/media/${narrowSlug}" instead`);
+  };
+  const photoType = () => `${PFX}-photos`;
+
+  beforeAll(async () => {
+    await run("list_types.upsert_many", {
+      listTypes: [
+        {
+          slug: photoType(),
+          name: `${PFX} photos`,
+          purpose: "Photo strip fixture.",
+          role: "content",
+          root: { allow: ["photo"] },
+          nodes: {
+            photo: { label: "Photo", fields: [{ name: "image", label: "Image", type: "media" }] },
+          },
+        },
+      ],
+    });
+  });
+
+  it("content values: refuses one on create and set_values, stores a size it has", async () => {
+    const moduleId = await makeModule("figure", '<img src="{{figure_src}}" alt="">', [
+      { name: "figure_src", kind: "image", label: "Figure" },
+    ]);
+    expectSizeRefusal(
+      await refused("content_instances.create", { moduleId, values: { figure_src: missing() } }),
+      "values.figure_src",
+    );
+    const { contentInstanceId } = await run<{ contentInstanceId: string }>(
+      "content_instances.create",
+      { moduleId, values: { figure_src: has() } },
+    );
+    expect((await storedValues(contentInstanceId)).figure_src).toBe(
+      `caelo:media/${narrowId}/webp-400`,
+    );
+    expectSizeRefusal(
+      await refused("content_instances.set_values", {
+        id: contentInstanceId,
+        values: { figure_src: missing() },
+      }),
+      "values.figure_src",
+    );
+    expect((await storedValues(contentInstanceId)).figure_src).toBe(
+      `caelo:media/${narrowId}/webp-400`,
+    );
+  });
+
+  it("module HTML and field defaults: refuses one in a src, a srcset and a default", async () => {
+    expectSizeRefusal(
+      await refused("modules.create", {
+        slug: `${PFX}-size-html`,
+        displayName: `${PFX} size html`,
+        description: "Link canonicalisation fixture.",
+        html: `<img src="${has()}" srcset="${missing()} 800w" alt="">{{note}}`,
+        fields: NOTE_FIELD,
+      }),
+      "html",
+    );
+    expectSizeRefusal(
+      await refused("modules.create", {
+        slug: `${PFX}-size-default`,
+        displayName: `${PFX} size default`,
+        description: "Link canonicalisation fixture.",
+        html: '<img src="{{figure_src}}" alt="">',
+        fields: [{ name: "figure_src", kind: "image", label: "Figure", default: missing() }],
+      }),
+      "fields.figure_src.default",
+    );
+    const moduleId = await makeModule("size-update", "<p>{{note}}</p>", NOTE_FIELD);
+    expectSizeRefusal(
+      await refused("modules.update", {
+        moduleId,
+        html: `<p><img src="${missing()}" alt="">{{note}}</p>`,
+      }),
+      "html",
+    );
+  });
+
+  it("layout HTML: refuses one", async () => {
+    expectSizeRefusal(
+      await refused("layouts.create", {
+        slug: `${PFX}-size-layout`,
+        displayName: `${PFX} size layout`,
+        html: `<body><img src="${missing()}" alt=""><caelo-slot name="content">_</caelo-slot></body>`,
+        blocks: [{ name: "content", displayName: "Content", position: 0 }],
+      }),
+      "html",
+    );
+  });
+
+  it("list entries: refuses one in a shared list and in a module's own list", async () => {
+    const entries = (image: string) => [{ node: "photo", values: { image } }];
+    expectSizeRefusal(
+      await refused("lists.upsert_many", {
+        lists: [
+          {
+            slug: `${PFX}-strip`,
+            name: `${PFX} strip`,
+            purpose: "A photo strip.",
+            type: photoType(),
+            items: entries(missing()),
+          },
+        ],
+      }),
+      "items[0].values.image",
+    );
+    await run("lists.upsert_many", {
+      lists: [
+        {
+          slug: `${PFX}-strip`,
+          name: `${PFX} strip`,
+          purpose: "A photo strip.",
+          type: photoType(),
+          items: entries(has()),
+        },
+      ],
+    });
+
+    const moduleId = await makeModule(
+      "strip",
+      '<ul>{{#photos}}<li><img src="{{image.url}}" alt=""></li>{{/photos}}</ul>',
+      [{ name: "photos", kind: "list", label: "Photos", listType: photoType() }],
+    );
+    const message = await refused("content_instances.create", {
+      moduleId,
+      values: { photos: entries(missing()) },
+    });
+    expectSizeRefusal(message, "values.photos[0].values.image");
+    const { contentInstanceId } = await run<{ contentInstanceId: string }>(
+      "content_instances.create",
+      { moduleId, values: { photos: entries(has()) } },
+    );
+    expect(JSON.stringify((await storedValues(contentInstanceId)).photos)).toContain(
+      `"image":"caelo:media/${narrowId}/webp-400"`,
+    );
+  });
+
+  it("grandfathers a stored one: an edit that carries it along is not refused", async () => {
+    const moduleId = await makeModule("legacy-figure", '<img src="{{figure_src}}" alt="">', [
+      { name: "figure_src", kind: "image", label: "Figure" },
+      { name: "caption", kind: "text", label: "Caption" },
+    ]);
+    const { contentInstanceId } = await run<{ contentInstanceId: string }>(
+      "content_instances.create",
+      { moduleId, values: { caption: "Before" } },
+    );
+    // Content an older release stored, before writes checked the size.
+    await asSystem(
+      (tx) => tx`UPDATE content_instances
+                 SET "values" = (${JSON.stringify({ caption: "Before", figure_src: `caelo:media/${narrowId}/webp-800` })}::text)::jsonb
+                 WHERE id = ${contentInstanceId}::uuid`,
+    );
+    // The AI reads the values back humanised and sends them with its edit.
+    const got = await run<{ instance: { values: Record<string, unknown> } }>(
+      "content_instances.get",
+      { id: contentInstanceId },
+    );
+    expect(got.instance.values.figure_src).toBe(missing());
+    await run("content_instances.set_values", {
+      id: contentInstanceId,
+      values: { ...got.instance.values, caption: "After" },
+    });
+    expect(await storedValues(contentInstanceId)).toEqual({
+      caption: "After",
+      figure_src: `caelo:media/${narrowId}/webp-800`,
+    });
   });
 });

@@ -124,6 +124,20 @@ export function buildMediaUrl(slug: string, variant: MediaVariantTag | string): 
 }
 
 /**
+ * The media URL of an asset segment as {@link extractMediaRefs} reads it
+ * back: {@link buildMediaUrl} for a slug, and for a legacy asset id the
+ * `/_caelo/media/<id>/<variant>` form with the variant always named
+ * (`/_caelo/media/<id>` alone reads as a slug).
+ *
+ * @param ref a slug, or a legacy asset id.
+ */
+export function mediaUrlForRef(ref: string, variant: string): string {
+  return MEDIA_UUID_RE.test(ref)
+    ? `${MEDIA_URL_PREFIX}/${ref}/${variant}`
+    : buildMediaUrl(ref, variant);
+}
+
+/**
  * The favicon rendition of a raster image bound to the theme's favicon
  * slot: a square PNG, `FAVICON_VARIANT_PX` on each side. Browsers show a
  * favicon at 16-32 CSS px (64 covers 2x screens). The `orig` of a raster

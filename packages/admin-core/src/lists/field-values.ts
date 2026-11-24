@@ -22,6 +22,7 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext, ListItem, ListTypeDef } from "@caelo-cms/shared";
 import {
+  describeLinkIssues,
   listPaginationSchema,
   pageQueryPartialSchema,
   splitPaginationValue,
@@ -35,6 +36,12 @@ import { loadListEntities, loadListEntity } from "./store.js";
 
 type Outcome<T> = { ok: true; value: T } | { ok: false; message: string };
 
+/**
+ * One `list` field value, checked and normalised.
+ *
+ * @param previous the stored value this write replaces (undefined for a
+ *   create): links already in it are grandfathered, as on every link write.
+ */
 async function normaliseOne(
   tx: TransactionRunner,
   ctx: ExecutionContext,
@@ -42,6 +49,7 @@ async function normaliseOne(
   field: ListFieldDef,
   value: unknown,
   where: string,
+  previous?: unknown,
 ): Promise<Outcome<unknown>> {
   const types = await loadListEntities(tx, "listType", branchId, { slugs: [field.listType] });
   const type = types[0];
@@ -66,9 +74,16 @@ async function normaliseOne(
         tx,
         ctx,
         (run) => canonicaliseEntryLinks(def, value as ListItem[], run, where),
-        { mode: "report" },
+        { mode: "report", previous },
       );
-      if (canon.ok) input = canon.value;
+      if (canon.ok) {
+        // #1600 — the caller's pass reads entries by key name only, so a
+        // media field's size is checked here: one the image does not have
+        // would stop every build that publishes it.
+        const sizes = canon.issues.filter((i) => i.kind === "unknown-media-variant");
+        if (sizes.length > 0) return { ok: false, message: describeLinkIssues(sizes) };
+        input = canon.value;
+      }
     }
     const validated = validateListItems(type.state.definition, input, { path: where });
     if (validated.issues.length > 0) {
@@ -198,12 +213,16 @@ async function normaliseOne(
 /**
  * Normalise the `list` fields' defaults of a module field array (ids
  * assigned, values checked). Returns the fields to persist.
+ *
+ * @param previousFields the module's stored fields this write replaces
+ *   (their defaults' links are grandfathered); empty for a create.
  */
 export async function normaliseListFieldDefaults<F>(
   tx: TransactionRunner,
   ctx: ExecutionContext,
   branchId: string | null,
   fields: readonly F[],
+  previousFields: readonly unknown[] = [],
 ): Promise<Outcome<F[]>> {
   const out: F[] = [];
   for (const f of fields) {
@@ -220,7 +239,16 @@ export async function normaliseListFieldDefaults<F>(
       out.push(f);
       continue;
     }
-    const r = await normaliseOne(tx, ctx, branchId, lf, lf.default, `fields.${lf.name}.default`);
+    const previous = listFieldsOf(previousFields).find((p) => p.name === lf.name)?.default;
+    const r = await normaliseOne(
+      tx,
+      ctx,
+      branchId,
+      lf,
+      lf.default,
+      `fields.${lf.name}.default`,
+      previous,
+    );
     if (!r.ok) return r;
     out.push({ ...(f as object), default: r.value } as F);
   }
@@ -231,6 +259,9 @@ export async function normaliseListFieldDefaults<F>(
  * Normalise a content instance's values for the module's `list` fields
  * (in place, like the url coercion of content_instances). A value for a
  * shared field whose module fixes the list is refused: the module decides.
+ *
+ * @param previousValues the stored values this write replaces (their links
+ *   are grandfathered); undefined for a create.
  */
 export async function normaliseListFieldValues(
   tx: TransactionRunner,
@@ -238,6 +269,7 @@ export async function normaliseListFieldValues(
   branchId: string | null,
   moduleFields: readonly unknown[],
   values: Record<string, unknown>,
+  previousValues?: Readonly<Record<string, unknown>>,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   for (const f of listFieldsOf(moduleFields)) {
     const v = values[f.name];
@@ -245,7 +277,15 @@ export async function normaliseListFieldValues(
     if (bindingOf(f) === "shared" && f.list !== undefined) {
       return { ok: false, message: await sharedBoundRefusal(tx, branchId, f.name, f.list) };
     }
-    const r = await normaliseOne(tx, ctx, branchId, f, v, `values.${f.name}`);
+    const r = await normaliseOne(
+      tx,
+      ctx,
+      branchId,
+      f,
+      v,
+      `values.${f.name}`,
+      previousValues?.[f.name],
+    );
     if (!r.ok) return r;
     values[f.name] = r.value;
   }

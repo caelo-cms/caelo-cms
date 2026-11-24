@@ -439,6 +439,8 @@ export const createModuleOp = defineOperation({
         kind: "HandlerError",
         operation: "modules.create",
         message: listDefaults.message,
+        // The defaults the write sent are refused, with the fix (#1600).
+        refusal: true,
       });
     }
     const persistedFields = listDefaults.value;
@@ -743,12 +745,20 @@ export const updateModuleOp = defineOperation({
     let persistedFields = linkCanon.value.fields;
     if (persistedFields !== undefined) {
       // Epic #1107 — `list` field defaults: entries validated, ids assigned.
-      const listDefaults = await normaliseListFieldDefaults(tx, ctx, branchId, persistedFields);
+      const listDefaults = await normaliseListFieldDefaults(
+        tx,
+        ctx,
+        branchId,
+        persistedFields,
+        prevFields,
+      );
       if (!listDefaults.ok) {
         return err({
           kind: "HandlerError",
           operation: "modules.update",
           message: listDefaults.message,
+          // The defaults the write sent are refused, with the fix (#1600).
+          refusal: true,
         });
       }
       persistedFields = listDefaults.value;
