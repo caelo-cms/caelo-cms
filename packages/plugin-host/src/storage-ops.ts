@@ -173,10 +173,37 @@ function patchFragments(
 }
 
 /**
+ * #1659 — one key value in the one spelling its column stores, or the
+ * reason it is refused. Two spellings of one value (`"01"` and `1` for an
+ * int, an upper- and a lowercase uuid) would take two locks and miss each
+ * other's pending row, so a key takes only the column's own type, and a
+ * uuid is lowercased as Postgres prints it. A timestamp or jsonb column
+ * names no row by equality and cannot be part of a key.
+ */
+function keyValueOf(
+  op: string,
+  column: string,
+  spec: string,
+  v: unknown,
+): string | number | boolean | { problem: string } {
+  const refuse = (what: string) => ({
+    problem: `${op}: key value for column "${column}" is ${v === null ? "null" : JSON.stringify(v)} — the ${spec} column takes ${what} as a key`,
+  });
+  if (spec === "uuid" || spec.startsWith("ref:")) {
+    return typeof v === "string" && UUID_RE.test(v) ? v.toLowerCase() : refuse("a uuid string");
+  }
+  if (spec === "int") return Number.isInteger(v) ? (v as number) : refuse("an integer");
+  if (spec === "bool") return typeof v === "boolean" ? v : refuse("true or false");
+  if (spec === "string" || spec === "text" || spec.startsWith("enum:")) {
+    return typeof v === "string" ? v : refuse("a string");
+  }
+  return { problem: `${op}: the ${spec} column "${column}" cannot be part of a key` };
+}
+
+/**
  * #1659 — the key of an upsert, or the reason the call is refused: 1–4
- * declared key columns with a string, number or boolean each (a key names
- * a row, so neither `null` nor a jsonb value can be one), and values on
- * other declared columns.
+ * declared key columns, each value in its column's spelling
+ * ({@link keyValueOf}), and values on other declared columns.
  */
 function upsertKeyOf(
   op: string,
@@ -192,11 +219,9 @@ function upsertKeyOf(
   for (const [k, v] of entries) {
     const problem = checkColumn(op, columns, k);
     if (problem) return problem;
-    if (columns[k] === "jsonb") return `${op}: the jsonb column "${k}" cannot be part of a key`;
-    if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") {
-      return `${op}: key value for column "${k}" is ${v === null ? "null" : typeof v} — a key column holds a string, number or boolean`;
-    }
-    key[k] = v;
+    const value = keyValueOf(op, k, columns[k] as string, v);
+    if (typeof value === "object") return value.problem;
+    key[k] = value;
   }
   for (const [k, v] of Object.entries(values)) {
     const problem = checkColumn(op, columns, k) ?? undefinedValueProblem(op, "data", k, v);
@@ -687,8 +712,7 @@ function makeUpsertOp(locker: PluginRowLocker | undefined) {
         {
           key,
           values: input.values,
-          sqlOf: (column) =>
-            valueSql(input.columns, column, column in key ? key[column] : input.values[column]),
+          bind: (column, value) => valueSql(input.columns, column, value),
           ifExists: input.ifExists,
         },
         locker,

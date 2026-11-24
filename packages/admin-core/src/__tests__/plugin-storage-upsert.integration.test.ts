@@ -72,9 +72,12 @@ const plugin = definePlugin({
   adminSchema: {
     entries: { lang: "string", address: "text", value: "text", created_at: "timestamp" },
     loose: { name: "string", value: "text" },
+    typed: { page_id: "uuid", n: "int", note: "text", created_at: "timestamp" },
   },
   aiReadableTables: ["entries"],
-  indexes: { adminSchema: { entries: [["lang", "address"]] } },
+  indexes: {
+    adminSchema: { entries: [["lang", "address"]], typed: [["page_id", "n"], ["created_at"]] },
+  },
   requestedCapabilities: ["cms_admin_schema", "cms_admin"],
   operations: {
     upsert: async (ctx, args) => {
@@ -100,6 +103,12 @@ const plugin = definePlugin({
     },
     list: async (ctx, args) =>
       q(ctx).list("entries", { lang: "de", address: (args as EntryArgs).address, limit: 100 }),
+    upsert_typed: async (ctx, args) => {
+      const a = args as { key: Record<string, string | number | boolean>; note: string };
+      return q(ctx).upsert("typed", a.key, { note: a.note });
+    },
+    list_typed: async (ctx, args) =>
+      q(ctx).list("typed", { page_id: (args as { pageId: string }).pageId, limit: 100 }),
     upsert_unindexed: async (ctx) => q(ctx).upsert("loose", { name: "a" }, { value: "x" }),
     upsert_null_key: async (ctx) =>
       q(ctx).upsert("entries", { lang: "de", address: null as unknown as string }, {}),
@@ -415,6 +424,71 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     expect(await physicalRows(key)).toEqual([{ id: theirs.id, value: "from-a", branch: null }]);
   });
 
+  it("a main-line write of a key with a main row and a chat's unstaged row leaves one row after the Stage", async () => {
+    // What two writers left before #1659: a main row, and a second row of
+    // the key a chat inserted and has not staged.
+    const key = nextKey();
+    await landed(await call(MAIN, "insert", { address: key, value: "main" }));
+    const a = await newChat("legacy-main-a");
+    const theirs = await landed<{ id: string }>(
+      await call(a.invocation, "insert", { address: key, value: "from-a" }),
+    );
+
+    const written = await landed<{ id: string; created: boolean }>(
+      await call(MAIN, "upsert", { address: key, value: "fixed" }),
+    );
+    // The chat's row became the key's main row; the other main row went.
+    expect(written).toEqual({ id: theirs.id, created: false });
+    expect(await physicalRows(key)).toEqual([{ id: theirs.id, value: "fixed", branch: null }]);
+    expect(await seen(MAIN, key)).toEqual(["fixed"]);
+    expect(await seen(a.invocation, key)).toEqual(["from-a"]);
+
+    await stage(a);
+    expect(await physicalRows(key)).toEqual([{ id: theirs.id, value: "from-a", branch: null }]);
+  });
+
+  it("a chat's write of a key with a main row and another branch's unstaged row leaves one row", async () => {
+    const key = nextKey();
+    await landed(await call(MAIN, "insert", { address: key, value: "main" }));
+    const x = await newChat("legacy-other-x", "experiment");
+    await landed(await call(x.invocation, "insert", { address: key, value: "from-x" }));
+
+    const a = await newChat("legacy-other-a");
+    await landed(await call(a.invocation, "upsert", { address: key, value: "from-a" }));
+    expect(await seen(a.invocation, key)).toEqual(["from-a"]);
+    // The other branch's change moved to this chat with its row.
+    expect(await seen(x.invocation, key)).toEqual(["main"]);
+
+    await stage(a);
+    expect((await physicalRows(key)).map((r) => [r.value, r.branch])).toEqual([["from-a", null]]);
+  });
+
+  it("takes a typed key in its column's spelling only, so equal keys name one row", async () => {
+    const pageId = crypto.randomUUID();
+    const first = await landed<{ id: string; created: boolean }>(
+      await call(MAIN, "upsert_typed", { key: { page_id: pageId.toUpperCase(), n: 1 }, note: "a" }),
+    );
+    const again = await landed<{ id: string; created: boolean }>(
+      await call(MAIN, "upsert_typed", { key: { page_id: pageId, n: 1 }, note: "b" }),
+    );
+    expect(again).toEqual({ id: first.id, created: false });
+    const rows = await landed<{ note: string }[]>(await call(MAIN, "list_typed", { pageId }));
+    expect(rows.map((r) => r.note)).toEqual(["b"]);
+
+    for (const [key, message] of [
+      [{ page_id: pageId, n: "1" }, "the int column takes an integer as a key"],
+      [{ page_id: "not-a-uuid", n: 1 }, "the uuid column takes a uuid string as a key"],
+      [
+        { created_at: "2026-11-24T00:00:00Z" },
+        'the timestamp column "created_at" cannot be part of a key',
+      ],
+    ] as const) {
+      const r = await call(MAIN, "upsert_typed", { key, note: "x" });
+      if (r.ok) throw new Error(`expected ${JSON.stringify(key)} to be refused`);
+      expect(r.error.message).toContain(message);
+    }
+  });
+
   it("keep leaves an existing row as it is", async () => {
     const key = nextKey();
     const stored = await landed<{ id: string }>(
@@ -435,6 +509,6 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
 
     const nullKey = await call(MAIN, "upsert_null_key");
     if (nullKey.ok) throw new Error("expected the null key to be refused");
-    expect(nullKey.error.message).toContain("a key column holds a string, number or boolean");
+    expect(nullKey.error.message).toContain("is null — the text column takes a string as a key");
   });
 });

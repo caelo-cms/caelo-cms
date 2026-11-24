@@ -22,9 +22,11 @@
  *   3. then the later insert (the later write of the two);
  *   4. then the id, so two reads never differ.
  *
- * The other rows are folded away: by the write of the key (the upsert
- * keeps one row) and by the change consumer's reconcile of the key's target
- * on the main line (list-reconcile.ts).
+ * The other rows are folded away by the next write of the key: the upsert
+ * keeps one row, under the key's lock, with what it writes. Nothing folds
+ * them without a write: a fold has to choose which content stays, and a
+ * choice made outside that lock could overwrite a translation a Stage
+ * applied in between.
  */
 
 const STATUS_RANK: Readonly<Record<string, number>> = {

@@ -44,8 +44,7 @@ the conflict names, and wins (#1659,
 [docs/branch-aware-plugin-storage.md](../../../docs/branch-aware-plugin-storage.md)).
 Rows that came to share a key before read as one — a stored translation
 before a placeholder, then the current status, then the later insert —
-and the next write of the key or the reconcile of its target deletes the
-others (`src/translation-rows.ts`).
+and the next write of the key deletes the others (`src/translation-rows.ts`).
 
 A field is translated when it is `text` or `richtext` and its list type
 does not say otherwise: `ext: { "international-site": { translate: false } }`

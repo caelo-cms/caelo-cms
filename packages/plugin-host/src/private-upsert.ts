@@ -21,20 +21,25 @@
  * 1. A transaction lock on the key serialises every upsert of it. Each
  *    statement after the lock sees what committed before it (READ
  *    COMMITTED), so the later upsert finds the earlier one's row.
- * 2. Rows of the key in the caller's view (main rows plus its branch's
- *    pending states): the first by id is updated, the others are deleted —
- *    rows that came to share the key before. These are ordinary writes: on
- *    a chat branch each one takes the row's lock first, so a change by
- *    another chat in the shared draft that this chat has not seen is the
- *    usual conflict (it names `get_plugin_draft_rows`, #1387).
- * 3. Otherwise a row of the key that another branch created and has not
- *    staged, which the caller cannot see. A chat takes it over — across
- *    branches a write adopts the other branch's pending change (#620) —
- *    and the row moves to the chat's branch with it. The main line writes
- *    its state onto that row, which becomes the key's main-line row; the
- *    branch's pending state applies over it at the branch's Stage, as a
- *    merge does for every row (last writer wins).
- * 4. Otherwise an insert.
+ * 2. The key's rows are the ones the caller sees (main rows plus its
+ *    branch's pending states) and the ones other branches created and have
+ *    not staged, which it cannot see.
+ * 3. A chat takes every row of the key another branch holds over (across
+ *    branches a write adopts the other branch's pending change, #620); each
+ *    moves to the chat's branch with its change. Then the first row by id
+ *    is updated and the others are deleted. These are ordinary writes: each
+ *    takes the row's lock first, so a change by another chat in the shared
+ *    draft that this chat has not seen is the usual conflict (it names
+ *    `get_plugin_draft_rows`, #1387).
+ * 4. The main line cannot take a branch's change. When a branch holds a row
+ *    of the key, that row becomes the key's main-line row: the main state
+ *    goes onto it and the main rows of the key are deleted. The branch keeps
+ *    its pending state of the row and applies it at its Stage, as a merge
+ *    does for every row (last writer wins), so the Stage leaves one row.
+ *    Without a branch row, the main rows fold as in 3.
+ * 5. A key without any row gets an insert.
+ *
+ * `ifExists: "keep"` changes nothing when the caller sees a row of the key.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
@@ -62,12 +67,15 @@ export const UPSERT_FOLD_MAX = 1000;
 
 /** One upsert, its columns already checked against the table's declaration. */
 export interface UpsertWrite {
-  /** 1–4 key columns and their values. */
+  /**
+   * 1–4 key columns and their values, normalised to the column's type (a
+   * uuid in lowercase), so equal keys name one lock and match one row.
+   */
   readonly key: Readonly<Record<string, string | number | boolean>>;
   /** The other columns written on insert and on update (may be empty). */
   readonly values: Readonly<Record<string, unknown>>;
-  /** A key or values column's value, bound as the column's type needs. */
-  readonly sqlOf: (column: string) => SQL;
+  /** A value of a declared column, bound as the column's type needs. */
+  readonly bind: (column: string, value: unknown) => SQL;
   readonly ifExists: "update" | "keep";
 }
 
@@ -78,6 +86,7 @@ interface Target {
 }
 
 type Outcome<T> = { ok: true; value: T } | { ok: false; message: string };
+type Upserted = Outcome<{ id: string; created: boolean }>;
 
 const tableSql = (t: Target) => sql.raw(`"${t.schema}"."${t.table}"`);
 const col = (name: string) => sql.raw(`"${name}"`);
@@ -96,16 +105,15 @@ export function upsertKeyPlan(key: Readonly<Record<string, unknown>>): ListPlan 
   };
 }
 
-/**
- * The lock's name: plugin, table and key, the values as text (the column's
- * type decides equality, so `1` and `"1"` name the same row and must take
- * the same lock).
- */
+/** The lock's name: plugin, table and the (normalised) key. */
 function keyLockName(pluginId: string, t: Target, key: UpsertWrite["key"]): string {
-  const pairs = Object.entries(key)
-    .map(([k, v]) => [k, String(v)] as const)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const pairs = Object.entries(key).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return JSON.stringify([pluginId, t.schema, t.table, pairs]);
+}
+
+/** A key or values column's value from the write. */
+function given(u: UpsertWrite, column: string): unknown {
+  return column in u.key ? u.key[column] : u.values[column];
 }
 
 /**
@@ -120,7 +128,7 @@ export async function privateUpsert(
   u: UpsertWrite,
   locker: PluginRowLocker | undefined,
   operation: string,
-): Promise<Outcome<{ id: string; created: boolean }>> {
+): Promise<Upserted> {
   const pluginId = ctx.pluginId;
   if (!pluginId) throw new Error("plugin storage: no plugin id on the context");
   await tx.execute(
@@ -140,49 +148,58 @@ export async function privateUpsert(
       message: `${operation}: ${main.length} rows of "${t.table}" share the key ${JSON.stringify(u.key)}, more than one call folds — nothing was written. This is a fault in the stored rows, not in the call: report it with bug_report`,
     };
   }
+  const mainValues = new Map(main.map((r) => [String(r.row.id), rowToState(r.row).values]));
   const visible = [
-    ...main.map((r) => String(r.row.id)),
+    ...mainValues.keys(),
     ...[...overlay.entries()]
       .filter(([, s]) => s.deletedAt === null && overlayRowMatches(s.values, plan))
       .map(([id]) => String(id)),
   ].sort();
+  if (u.ifExists === "keep" && visible[0] !== undefined) {
+    return { ok: true, value: { id: visible[0], created: false } };
+  }
+  const hidden = await otherBranchRows(tx, ctx, pluginId, t, u);
 
-  const keeper = visible[0];
-  if (keeper !== undefined) {
-    if (u.ifExists === "keep") return { ok: true, value: { id: keeper, created: false } };
-    // Every row in one order first: each lock holds until commit, so two
-    // writers over the same rows must take them in the same order.
-    for (const rowId of visible) {
-      const busy = await lockPrivateRow(tx, ctx, locker, operation, rowId);
-      if (busy) return { ok: false, message: busy };
-    }
+  if (!ctx.chatBranchId && hidden[0]) {
+    return adoptOnMain(tx, ctx, t, u, hidden[0], visible, mainValues, locker, operation);
+  }
+  for (const row of hidden) {
+    const taken = await takeOver(tx, ctx, t, row, locker, operation);
+    if (!taken.ok) return taken;
+  }
+  const rows = [...visible, ...hidden.map((h) => h.id)].sort();
+  const keeper = rows[0];
+  if (keeper === undefined) {
+    const columns = [...Object.keys(u.key), ...Object.keys(u.values)];
+    const inserted = await privateInsert(
+      tx,
+      ctx,
+      t,
+      columns,
+      columns.map((c) => u.bind(c, given(u, c))),
+      locker,
+      operation,
+    );
+    if (!inserted.ok) return inserted;
+    return { ok: true, value: { id: inserted.value.id, created: true } };
+  }
+  // Every row in one order first: each lock holds until commit, so two
+  // writers over the same rows must take them in the same order.
+  for (const rowId of rows) {
+    const busy = await lockPrivateRow(tx, ctx, locker, operation, rowId);
+    if (busy) return { ok: false, message: busy };
+  }
+  // Keep mode gets here only when every row was another branch's (taken
+  // over above): their state stays, only the extra rows go.
+  if (u.ifExists === "update") {
     const updated = await updateWith(tx, ctx, t, keeper, u, locker, operation);
     if (!updated.ok) return updated;
-    for (const rowId of visible.slice(1)) {
-      const removed = await privateDelete(tx, ctx, t, rowId, locker, operation);
-      if (!removed.ok) return removed;
-    }
-    return { ok: true, value: { id: keeper, created: false } };
   }
-
-  const other = await otherBranchRow(tx, ctx, pluginId, t, u);
-  if (other && ctx.chatBranchId) {
-    return takeOver(tx, ctx, t, u, other, locker, operation);
+  for (const rowId of rows.slice(1)) {
+    const removed = await privateDelete(tx, ctx, t, rowId, locker, operation);
+    if (!removed.ok) return removed;
   }
-  if (other) return adoptOnMain(tx, ctx, t, u, other, operation);
-
-  const columns = [...Object.keys(u.key), ...Object.keys(u.values)];
-  const inserted = await privateInsert(
-    tx,
-    ctx,
-    t,
-    columns,
-    columns.map((c) => u.sqlOf(c)),
-    locker,
-    operation,
-  );
-  if (!inserted.ok) return inserted;
-  return { ok: true, value: { id: inserted.value.id, created: true } };
+  return { ok: true, value: { id: keeper, created: false } };
 }
 
 /** Write `u.values` onto a row the caller sees (nothing when there are none). */
@@ -203,7 +220,7 @@ async function updateWith(
     t,
     rowId,
     u.values,
-    names.map((c) => sql`${col(c)} = ${u.sqlOf(c)}`),
+    names.map((c) => sql`${col(c)} = ${u.bind(c, u.values[c])}`),
     locker,
     operation,
   );
@@ -215,18 +232,18 @@ interface OtherBranchRow {
 }
 
 /**
- * The key's row another branch created and still holds as a live pending
- * row, or null. A row its branch has deleted again is no row of the key:
+ * The key's rows other branches created and still hold as live pending
+ * rows, by id. A row its branch has deleted again is no row of the key:
  * that branch's Stage keeps it deleted.
  */
-async function otherBranchRow(
+async function otherBranchRows(
   tx: TransactionRunner,
   ctx: ExecutionContext,
   pluginId: string,
   t: Target,
   u: UpsertWrite,
-): Promise<OtherBranchRow | null> {
-  const keyWhere = Object.keys(u.key).map((c) => sql`t.${col(c)} = ${u.sqlOf(c)}`);
+): Promise<OtherBranchRow[]> {
+  const keyWhere = Object.keys(u.key).map((c) => sql`t.${col(c)} = ${u.bind(c, u.key[c])}`);
   const notMine = ctx.chatBranchId
     ? sql`AND t."caelo_chat_branch_id" <> ${ctx.chatBranchId}::uuid`
     : sql``;
@@ -238,6 +255,7 @@ async function otherBranchRow(
     ORDER BY t.id
     LIMIT ${UPSERT_FOLD_MAX}
   `)) as unknown as OtherBranchRow[];
+  const live: OtherBranchRow[] = [];
   for (const row of rows) {
     const states = await loadBranchRowStates(tx, {
       pluginId,
@@ -246,9 +264,9 @@ async function otherBranchRow(
       rowIds: [row.id],
     });
     const state = states.get(row.id);
-    if (state === undefined || state.deletedAt === null) return row;
+    if (state === undefined || state.deletedAt === null) live.push(row);
   }
-  return null;
+  return live;
 }
 
 /**
@@ -261,11 +279,10 @@ async function takeOver(
   tx: TransactionRunner,
   ctx: ExecutionContext,
   t: Target,
-  u: UpsertWrite,
   other: OtherBranchRow,
   locker: PluginRowLocker | undefined,
   operation: string,
-): Promise<Outcome<{ id: string; created: boolean }>> {
+): Promise<Outcome<Record<string, never>>> {
   const branchId = ctx.chatBranchId as string;
   const pluginId = ctx.pluginId as string;
   const busy = await lockPrivateRow(tx, ctx, locker, operation, other.id);
@@ -288,18 +305,17 @@ async function takeOver(
     UPDATE ${tableSql(t)} SET "caelo_chat_branch_id" = ${branchId}::uuid
     WHERE id = ${other.id}::uuid AND "caelo_chat_branch_id" = ${other.branch}::uuid
   `);
-  if (u.ifExists === "keep") return { ok: true, value: { id: other.id, created: false } };
-  const updated = await updateWith(tx, ctx, t, other.id, u, locker, operation);
-  if (!updated.ok) return updated;
-  return { ok: true, value: { id: other.id, created: false } };
+  return { ok: true, value: {} };
 }
 
 /**
- * The main line writes a key whose row a branch created: the main state
- * goes onto that row — every declared column as an insert would set it —
- * and the row becomes the key's main-line row. The branch keeps its
+ * The main line writes a key a branch holds a row of: that row becomes the
+ * key's main-line row, holding the main state — the written values over
+ * the key's current main row, every other declared column as an insert
+ * would set it — and the key's main rows are deleted. The branch keeps its
  * pending state of the row (its own view is unchanged), and its Stage
- * applies it over the main state.
+ * applies it over the main state. (Keep mode reaches this only for a key
+ * without a main row: it changes nothing where one exists.)
  */
 async function adoptOnMain(
   tx: TransactionRunner,
@@ -307,12 +323,19 @@ async function adoptOnMain(
   t: Target,
   u: UpsertWrite,
   other: OtherBranchRow,
+  mainRows: readonly string[],
+  mainValues: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
+  locker: PluginRowLocker | undefined,
   operation: string,
-): Promise<Outcome<{ id: string; created: boolean }>> {
-  const given = new Set([...Object.keys(u.key), ...Object.keys(u.values)]);
+): Promise<Upserted> {
+  const current = mainRows[0] === undefined ? undefined : mainValues.get(mainRows[0]);
   const sets = Object.keys(t.columns)
     .filter((c) => c !== "id")
-    .map((c) => (given.has(c) ? sql`${col(c)} = ${u.sqlOf(c)}` : sql`${col(c)} = DEFAULT`));
+    .map((c) => {
+      if (c in u.key || c in u.values) return sql`${col(c)} = ${u.bind(c, given(u, c))}`;
+      if (current && c in current) return sql`${col(c)} = ${u.bind(c, current[c])}`;
+      return sql`${col(c)} = DEFAULT`;
+    });
   const rows = (await tx.execute(sql`
     UPDATE ${tableSql(t)} AS t
     SET ${sql.join(
@@ -334,5 +357,9 @@ async function adoptOnMain(
     throw new Error(`${operation}: the "${t.table}" row ${other.id} vanished under the key lock`);
   }
   await snapshotPrivateRow(tx, ctx, "plugin_storage.insert", t, other.id, rowToState(row));
-  return { ok: true, value: { id: other.id, created: true } };
+  for (const rowId of mainRows) {
+    const removed = await privateDelete(tx, ctx, t, rowId, locker, operation);
+    if (!removed.ok) return removed;
+  }
+  return { ok: true, value: { id: other.id, created: mainRows.length === 0 } };
 }

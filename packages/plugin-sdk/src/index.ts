@@ -1835,17 +1835,21 @@ export interface PluginAdminQuery extends PluginQuery {
    * - a row of the key that another branch created and has not staged is
    *   taken over by a chat (its pending change moves to the writing chat,
    *   as for every write across branches); a main-line write (a worker,
-   *   the Owner panel) writes the main state onto that row instead, and the
-   *   branch's change applies over it when the branch is staged;
+   *   the Owner panel) makes that row the key's main row instead, with the
+   *   main state, and the branch's change applies over it when the branch
+   *   is staged;
    * - rows that already share the key (written by `insert`) are folded:
    *   one of them is updated, the others are deleted. With
-   *   `ifExists: "keep"` they are left as they are.
+   *   `ifExists: "keep"` nothing changes once the caller sees a row.
    *
-   * `key`: 1–4 declared columns with string, number or boolean values,
-   * one of which leads a declared index (the read rule of `list`,
-   * docs/plugin-indexes.md). `values`: other declared columns, written on
-   * insert and on update; columns in neither get their default on insert.
-   * A plugin that writes a key with `upsert` writes it with `upsert` only.
+   * `key`: 1–4 declared columns, each value of its column's type (a
+   * string for string, text and enum columns, an integer for int, a
+   * boolean for bool, a uuid string for uuid and ref: columns; a timestamp
+   * or jsonb column cannot be part of a key), one of which leads a
+   * declared index (the read rule of `list`, docs/plugin-indexes.md).
+   * `values`: other declared columns, written on insert and on update;
+   * columns in neither get their default on insert. A plugin that writes
+   * a key with `upsert` writes it with `upsert` only.
    *
    * @returns the key's row and whether it was created.
    *

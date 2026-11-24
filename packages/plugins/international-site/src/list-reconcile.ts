@@ -72,7 +72,6 @@ import {
   type ValueTranslationRow,
 } from "./list-translation-ops.js";
 import { chunked, listAll, listWhereAnyOf } from "./store-reads.js";
-import { onePerPageProp, onePerTerm, onePerValueAddress } from "./translation-rows.js";
 
 /** The targets one reconcile covers; `"all"` = the whole site (the rebuild). */
 export type ReconcileScope =
@@ -353,27 +352,21 @@ export async function reconcileListTranslations(
   deps: ChromeDeps,
   lastLiveAt: string | null,
   scope: ReconcileScope = "all",
-): Promise<{ updated: number; inserted: number; collected: number; folded: number }> {
+): Promise<{ updated: number; inserted: number; collected: number }> {
   const done = await reconcileTargets(deps, lastLiveAt, scope);
   const gc = await collectLiveOrphans(deps, lastLiveAt);
   return {
     updated: done.updated + gc.updated,
     inserted: done.inserted + gc.inserted,
     collected: done.collected + gc.collected,
-    folded: done.folded + gc.folded,
   };
 }
 
-/**
- * What one reconcile of a scope did; `touched` = every row it updated or
- * deleted; `folded` = rows deleted because another row of their key stays
- * (#1659).
- */
+/** What one reconcile of a scope did; `touched` = every row it updated or deleted. */
 interface ReconcileOutcome {
   readonly updated: number;
   readonly inserted: number;
   readonly collected: number;
-  readonly folded: number;
   readonly touched: ReadonlySet<string>;
 }
 
@@ -382,54 +375,7 @@ async function reconcileTargets(
   lastLiveAt: string | null,
   scope: ReconcileScope,
 ): Promise<ReconcileOutcome> {
-  const loaded = await loadReconcileInput(deps, scope);
-  // #1659 — rows that came to share a key before upsert fold into one here,
-  // on the main line, holding what every read already showed.
-  const folded: string[] = [];
-  const input = {
-    snapshot: loaded.snapshot,
-    values: await foldKeys(
-      deps,
-      "list_value_translations",
-      onePerValueAddress(loaded.values),
-      (r) => ({ locale_code: r.locale_code, address: r.address }),
-      (r) => ({
-        target: targetOfAddress(r.address),
-        value: r.value,
-        source_hash: r.source_hash,
-        status: r.status,
-        orphaned_at: r.orphaned_at,
-      }),
-      folded,
-    ),
-    terms: await foldKeys(
-      deps,
-      "term_translations",
-      onePerTerm(loaded.terms),
-      (r) => ({ locale_code: r.locale_code, list_id: r.list_id, item_id: r.item_id }),
-      (r) => ({
-        name: r.name,
-        slug: r.slug,
-        source_hash: r.source_hash,
-        status: r.status,
-        orphaned_at: r.orphaned_at,
-      }),
-      folded,
-    ),
-    props: await foldKeys(
-      deps,
-      "page_prop_translations",
-      onePerPageProp(loaded.props),
-      (r) => ({ locale_code: r.locale_code, page_id: r.page_id, field: r.field }),
-      (r) => ({
-        value: r.value,
-        source_hash: r.source_hash,
-        status: r.status,
-        orphaned_at: r.orphaned_at,
-      }),
-      folded,
-    ),
-  };
+  const input = await loadReconcileInput(deps, scope);
   const locales = [...deps.locales.values()].filter((l) => !l.is_default).map((l) => l.code);
   const rows: (ReconcileRow & { table: string })[] = [
     ...input.values.map((r) => ({
@@ -483,6 +429,9 @@ async function reconcileTargets(
   // #1659 — a placeholder only where the key has no row anywhere: never
   // over a translation written meanwhile, and a chat's unstaged row of the
   // key becomes its main-line row instead of a second one beside it.
+  // (Rows that came to share a key before are left to the next write of the
+  // key, which folds them under the key's lock with what it writes; until
+  // then every read takes the same one, translation-rows.ts.)
   const missing = { source_hash: null, status: "missing", orphaned_at: null } as const;
   const placeholder = { ifExists: "keep" } as const;
   for (const ins of plan.inserts) {
@@ -514,41 +463,8 @@ async function reconcileTargets(
     updated: updatedCount,
     inserted: plan.inserts.length,
     collected,
-    folded: folded.length,
-    touched: new Set([...plan.updates.map((u) => u.id), ...folded]),
+    touched: new Set(plan.updates.map((u) => u.id)),
   };
-}
-
-/**
- * #1659 — fold each key that holds several rows into one: an upsert of the
- * row every read takes (translation-rows.ts), so it runs under the key's
- * lock like a chat's write of it and leaves exactly one row. The kept
- * rows come back with the id that survived; `folded` collects the others.
- */
-async function foldKeys<R extends { readonly id: string }>(
-  deps: ChromeDeps,
-  table: string,
-  one: { readonly rows: readonly R[]; readonly folded: readonly R[] },
-  keyOf: (row: R) => Record<string, string>,
-  valuesOf: (row: R) => Record<string, unknown>,
-  folded: string[],
-): Promise<R[]> {
-  if (one.folded.length === 0) return [...one.rows];
-  const keyText = (r: R) => JSON.stringify(keyOf(r));
-  const groups = new Map<string, string[]>();
-  for (const r of one.folded) groups.set(keyText(r), [...(groups.get(keyText(r)) ?? []), r.id]);
-  const kept: R[] = [];
-  for (const winner of one.rows) {
-    const others = groups.get(keyText(winner));
-    if (!others) {
-      kept.push(winner);
-      continue;
-    }
-    const { id } = await deps.q.upsert(table, keyOf(winner), valuesOf(winner));
-    for (const rowId of [winner.id, ...others]) if (rowId !== id) folded.push(rowId);
-    kept.push({ ...winner, id });
-  }
-  return kept;
 }
 
 function isLive(liveAt: number | null, orphanedAt: string | null): boolean {
@@ -571,8 +487,8 @@ const TRANSLATION_TABLES = [
 async function collectLiveOrphans(
   deps: ChromeDeps,
   lastLiveAt: string | null,
-): Promise<{ updated: number; inserted: number; collected: number; folded: number }> {
-  const none = { updated: 0, inserted: 0, collected: 0, folded: 0 };
+): Promise<{ updated: number; inserted: number; collected: number }> {
+  const none = { updated: 0, inserted: 0, collected: 0 };
   if (lastLiveAt === null) return none;
   const { q } = deps;
   const mark = (
@@ -618,12 +534,7 @@ async function collectLiveOrphans(
   const value = { liveAt: lastLiveAt };
   if (mark) await q.update("settings", mark.id, { value });
   else await q.insert("settings", { key: ORPHANS_COLLECTED_KEY, value });
-  return {
-    updated: outcome.updated,
-    inserted: outcome.inserted,
-    collected: outcome.collected,
-    folded: outcome.folded,
-  };
+  return { updated: outcome.updated, inserted: outcome.inserted, collected: outcome.collected };
 }
 
 /** One change as the consumer receives it (the fields the scope reads). */

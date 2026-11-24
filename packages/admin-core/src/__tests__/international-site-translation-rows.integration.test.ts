@@ -13,8 +13,8 @@
  *     leaves one translated row;
  *   - an install whose key already holds a translation AND a placeholder
  *     reads it as translated (it read as missing and rendered the source
- *     text), the refused write goes through and folds the rows, and the
- *     change consumer's reconcile folds them on the main line.
+ *     text), also through the change consumer's reconcile, and the refused
+ *     write goes through and folds the rows.
  *
  * Integration tier against a throwaway Postgres (never the dev DB).
  */
@@ -332,6 +332,13 @@ describe("international-site — one stored translation per key (#1659)", () => 
     );
     expect(await propRows("reading")).toHaveLength(2);
     expect(await propStatus(MAIN)).toMatchObject({ translated: 1, missing: 1 });
+    // The consumer's reconcile reads them the same way: nothing to insert.
+    const rebuilt = await op<{ lists: { inserted: number } }>(
+      MAIN,
+      "rebuild_translation_staleness",
+    );
+    expect(rebuilt.lists.inserted).toBe(0);
+    expect(await propStatus(MAIN)).toMatchObject({ translated: 1, missing: 1 });
 
     // A chat's write of the key goes through and leaves one row.
     const chat = await draftChat("heal");
@@ -340,17 +347,5 @@ describe("international-site — one stored translation per key (#1659)", () => 
     expect(await propRows("reading")).toEqual([
       { id: translated?.id as string, value: "fünf Minuten", status: "translated", branch: null },
     ]);
-
-    // Without any write, the consumer's reconcile folds them on the main line.
-    await sqlAsPlugin(
-      (tx) => tx`
-        INSERT INTO plugin_international_site.page_prop_translations
-          (id, locale_code, page_id, field, value, source_hash, status, orphaned_at)
-        VALUES (${placeholderId.replace("659", "65a")}::uuid, 'de', ${ids.de}::uuid, 'reading', NULL, NULL, 'missing', NULL)
-      `,
-    );
-    const rebuilt = await op<{ lists: { folded: number } }>(MAIN, "rebuild_translation_staleness");
-    expect(rebuilt.lists.folded).toBe(1);
-    expect((await propRows("reading")).map((r) => r.value)).toEqual(["fünf Minuten"]);
   });
 });
