@@ -33,6 +33,15 @@
  * structured, AI-actionable error. The deploy fails loudly rather than
  * emitting broken `<img src>` URLs.
  *
+ * #1600 / #1604 — except on a Stage: a full staging build never stops on
+ * the site's content, so there (`unresolved: "report"`) a reference no
+ * asset or variant answers keeps its `/_caelo/media/...` URL, which is
+ * what the editor preview shows for it too (its media route answers 404),
+ * and {@link MediaPass.rewritePages} returns it for the build to record as
+ * a render failure; Publish live refuses such a build. Every other build
+ * refuses it with a {@link BuildRefusal}: it is the site's content, not a
+ * Caelo fault, and the message names what to change.
+ *
  * CDN copy: if `site_defaults.media_cdn_copy_enabled` is on, the pass
  * also writes `cdn_manifest.json` listing every (asset, variant) used
  * at least `media_cdn_usage_threshold` times. P7 emits the manifest
@@ -48,13 +57,18 @@ import {
   enrichResponsiveImages,
   extractMediaRefs,
   type ImageVariantInfo,
+  type MediaRef,
+  mediaFailureMarker,
+  mediaUrlForRef,
   parseVariantWidth,
   runBatched,
   variantFamily,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { AssetReference } from "./asset-references.js";
+import { BuildRefusal } from "./build-refusal.js";
 import { mediaAssetRelPath, mediaContentHash } from "./media-asset-path.js";
+import type { RenderFailure } from "./nested-modules-pass.js";
 
 /** Full-uuid shape — tells a legacy id ref from a slug ref (mirrors shared). */
 const MEDIA_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -69,6 +83,26 @@ const FS_PARALLELISM = 32;
  * layer reads (self-hosted `current/`).
  */
 export type MediaDelivery = "reference" | "link";
+
+/**
+ * What a reference no asset or variant answers does to the build:
+ * `refuse` stops it ({@link BuildRefusal}); `report` (a full staging
+ * build, #1604) ships it as written and returns it from
+ * {@link MediaPass.rewritePages}.
+ */
+export type UnresolvedMediaPolicy = "refuse" | "report";
+
+/** A media reference of one page the build could not resolve (#1600). */
+export interface UnresolvedMediaRef<P> {
+  readonly page: P;
+  /** The asset as the HTML names it: its slug, or a legacy id. */
+  readonly ref: string;
+  readonly isSlug: boolean;
+  /** The variant the HTML names (`orig` for the flat slug form). */
+  readonly variant: string;
+  /** Every variant the asset has, sorted; null when no live asset answers `ref`. */
+  readonly variants: readonly string[] | null;
+}
 
 interface VariantRow {
   asset_id: string;
@@ -135,6 +169,7 @@ export class MediaPass {
   readonly #mediaRoot: string;
   readonly #settings: MediaSettings;
   readonly #delivery: MediaDelivery;
+  readonly #unresolved: UnresolvedMediaPolicy;
   readonly #resolved = new Map<string, ResolvedRef>();
   /** `${ref}|${variant}` → published build-relative path. */
   readonly #published = new Map<string, string>();
@@ -150,12 +185,14 @@ export class MediaPass {
     mediaRoot: string;
     settings: MediaSettings;
     delivery: MediaDelivery;
+    unresolved: UnresolvedMediaPolicy;
   }) {
     this.#tx = args.tx;
     this.#buildDir = args.buildDir;
     this.#mediaRoot = resolve(args.mediaRoot);
     this.#settings = args.settings;
     this.#delivery = args.delivery;
+    this.#unresolved = args.unresolved;
   }
 
   /** The files the build references so far, by published path. */
@@ -172,45 +209,72 @@ export class MediaPass {
    * had, publish their variants, then swap every `/_caelo/media/...` URL
    * for its `/_assets/...` path (with srcset, dimensions and the LCP
    * preload, exactly as the editor preview enriches it).
+   *
+   * @returns the references no asset or variant answers, per page — always
+   *   empty under `unresolved: "refuse"`, which throws on the first batch
+   *   that has one.
    */
-  async rewritePages(pages: { html: string; pageSlug: string }[]): Promise<void> {
+  async rewritePages<P extends { html: string; pageSlug: string }>(
+    pages: P[],
+  ): Promise<UnresolvedMediaRef<P>[]> {
     // 1. Every (ref, variant) the batch references. `ref` is a slug (current
     //    embeds) or a legacy uuid id; the two never collide since the ref
     //    string IS the map key.
+    const pageRefs: MediaRef[][] = pages.map((p) => extractMediaRefs(p.html));
     const refs = new Map<string, { isSlug: boolean; variants: Set<string> }>();
-    for (const p of pages) {
-      for (const r of extractMediaRefs(p.html)) {
-        const entry = refs.get(r.ref) ?? { isSlug: r.isSlug, variants: new Set<string>() };
-        entry.variants.add(r.variant);
-        refs.set(r.ref, entry);
-      }
+    for (const r of pageRefs.flat()) {
+      const entry = refs.get(r.ref) ?? { isSlug: r.isSlug, variants: new Set<string>() };
+      entry.variants.add(r.variant);
+      refs.set(r.ref, entry);
     }
-    if (refs.size === 0) return;
+    if (refs.size === 0) return [];
     await this.#resolve([...refs].filter(([ref]) => !this.#resolved.has(ref)));
 
     // 2. Verify every referenced (ref, variant) is resolvable. Per the
     //    no-fallbacks rule this fails the deploy loudly when a module
-    //    references a deleted asset or an unemitted variant.
-    const missing: string[] = [];
+    //    references a deleted asset or an unemitted variant — except on a
+    //    Stage, which ships the reference as written and reports it (#1604).
+    const unresolvedKeys = new Set<string>();
     for (const [ref, info] of refs) {
       const res = this.#resolved.get(ref);
       for (const v of info.variants) {
-        if (!res?.variants.has(v)) missing.push(`${ref}/${v}`);
+        if (!res?.variants.has(v)) unresolvedKeys.add(publishedKey(ref, v));
       }
     }
-    if (missing.length > 0) {
+    const variantsOf = (ref: string): readonly string[] | null => {
+      const res = this.#resolved.get(ref);
+      return res === undefined || res.variants.size === 0 ? null : [...res.variants.keys()].sort();
+    };
+    if (unresolvedKeys.size > 0 && this.#unresolved === "refuse") {
+      const missing = [...refs].flatMap(([ref, info]) =>
+        [...info.variants]
+          .filter((v) => unresolvedKeys.has(publishedKey(ref, v)))
+          .map((v) => {
+            const has = variantsOf(ref);
+            return `${ref}/${v} (${has === null ? "no such image" : `has: ${has.join(", ")}`})`;
+          }),
+      );
       // run #10 D4 — AI-actionable failure surface (CLAUDE.md §11): name
       // the recovery op, and the by-design case where recovery means
       // re-pointing the HTML instead (source narrower than the
       // breakpoint / animated GIF — the pipeline never upscales).
-      throw new Error(
+      throw new BuildRefusal(
         `static-generator: media references unresolved (asset/variant pairs missing): ${missing.join(", ")}. ` +
-          "Next step: run media.regenerate_variants (AI tool: regenerate_media_variants) with these asset ids " +
-          "to re-run the image pipeline. If a variant still cannot be produced (source image narrower than " +
-          "the breakpoint, animated GIF, or non-raster kind), edit the referencing module HTML to use the " +
-          "result's bestUrl (e.g. /orig) — find the modules via media.list_usages.",
+          "Next step: point each at a size the image has (find_media's url always names one), or at another " +
+          "image — in module HTML via update_modules_many (list_media_usages finds the modules), in a content " +
+          "value via set_content_instance_values_many. A size the pipeline should have made can be re-made with " +
+          "regenerate_media_variants; it never makes one wider than the source, and none for an animated GIF or a " +
+          "non-raster file. A Stage ships such a reference and reports it instead of stopping; Publish live " +
+          "refuses it until it is repaired.",
       );
     }
+    const unresolved: UnresolvedMediaRef<P>[] = [];
+    pages.forEach((page, i) => {
+      for (const r of pageRefs[i] ?? []) {
+        if (!unresolvedKeys.has(publishedKey(r.ref, r.variant))) continue;
+        unresolved.push({ page, ...r, variants: variantsOf(r.ref) });
+      }
+    });
 
     // 3. Rewrite the HTML. Two passes:
     //    a. <img> tag rewriter — adds srcset / sizes / dims / loading,
@@ -222,10 +286,13 @@ export class MediaPass {
     //    `<link rel="preload" as="image">` for the LCP candidate (first
     //    image in the page) into <head>.
     const urlForRef = (ref: string, variant: string, _format: string): string => {
-      const path = this.#published.get(publishedKey(ref, variant));
+      const key = publishedKey(ref, variant);
+      const path = this.#published.get(key);
       if (path === undefined) {
-        // No-fallbacks: every img media ref was extracted, resolved and
-        // published above.
+        // A reported reference ships as written (#1604).
+        if (unresolvedKeys.has(key)) return mediaUrlForRef(ref, variant);
+        // No-fallbacks: every other img media ref was extracted, resolved
+        // and published above.
         throw new Error(
           `static-generator: media ref ${ref}/${variant} unpublished during URL rewrite`,
         );
@@ -244,6 +311,7 @@ export class MediaPass {
       p.html = rewriteCatchAllMediaUrls(p.html, this.#published);
       p.html = injectLcpPreload(p.html, this.#variantsByRef, this.#published);
     }
+    return unresolved;
   }
 
   /**
@@ -558,6 +626,41 @@ function missingMediaFilesError(
     "referencing it is fixed) — or remove it from the pages that use it (find them via media.list_usages) and delete it " +
     "with delete_media_many."
   );
+}
+
+/**
+ * #1600 — the render failure a Stage records for a media reference it could
+ * not publish. The media pass reads the composed page, which no longer says
+ * which module wrote the reference, so the place is the page and the
+ * reference itself names what to change.
+ *
+ * @param pagePath the page's path; the output path stands in for a page the
+ *   build's page list does not name.
+ */
+export function mediaRenderFailure(
+  u: UnresolvedMediaRef<{
+    readonly pageId: string;
+    readonly pageSlug: string;
+    readonly pageTitle: string;
+    readonly relPath: string;
+  }>,
+  pagePath: string | undefined,
+): RenderFailure {
+  const url = mediaUrlForRef(u.ref, u.variant);
+  return {
+    pageId: u.page.pageId,
+    pageTitle: u.page.pageTitle,
+    pagePath: pagePath ?? `/${u.page.relPath}`,
+    blockName: null,
+    moduleSlug: null,
+    field: null,
+    reason: mediaFailureMarker({ ref: u.ref, variant: u.variant, variants: u.variants }),
+    target: null,
+    line:
+      u.variants === null
+        ? `page "${u.page.pageSlug}": image ${url} names no image in the media library`
+        : `page "${u.page.pageSlug}": image ${url} names size "${u.variant}", which this image does not have (it has: ${u.variants.join(", ")})`,
+  };
 }
 
 /** Key of the published-path map: the ref as written in the HTML + the variant. */

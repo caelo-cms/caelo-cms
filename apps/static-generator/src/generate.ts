@@ -120,7 +120,12 @@ import {
   writeRenderDeps,
 } from "./list-data.js";
 import { BuildListOverlays, type OverlayBatchPage } from "./list-overlay-batches.js";
-import { type MediaDelivery, MediaPass, readMediaSettings } from "./media-pass.js";
+import {
+  type MediaDelivery,
+  MediaPass,
+  mediaRenderFailure,
+  readMediaSettings,
+} from "./media-pass.js";
 import { MinifyCache, minifyPageAssets, minifyPluginAsset } from "./minify-pass.js";
 import {
   assertNoRenderFailures,
@@ -1025,7 +1030,16 @@ async function buildSite(
   }
   const mediaSettings = await readMediaSettings(tx);
   const mediaRoot = resolve(root, process.env.MEDIA_ROOT_DIR ?? "data/media");
-  const media = new MediaPass({ tx, buildDir, mediaRoot, settings: mediaSettings, delivery });
+  const media = new MediaPass({
+    tx,
+    buildDir,
+    mediaRoot,
+    settings: mediaSettings,
+    delivery,
+    // #1600 — a Stage ships a reference no asset or variant answers and
+    // reports it (below); every other build refuses it.
+    unresolved: reportsRenderFailures ? "report" : "refuse",
+  });
   // issue #150 — the resolved woff2 files, as references (or links into the
   // build) under _assets/fonts/, so the @font-face URLs injected by the
   // composer resolve on the deployed site.
@@ -1328,7 +1342,11 @@ async function buildSite(
       rewritePreviewFontUrls(pages, shippedFonts);
       // P7 — swap /_caelo/media/... URLs for the content-hashed /_assets/...
       // paths of the stored files (#667, #1271: by stored digest, no read).
-      await media.rewritePages(pages);
+      // #1600 — on a Stage, a reference nothing answers stays as written
+      // (the preview's broken image) and becomes a render failure.
+      for (const u of await media.rewritePages(pages)) {
+        renderFailures.push(mediaRenderFailure(u, pagePathOf.get(u.page.pageId)));
+      }
     });
     // P8 — SEO: per-page <head> meta + canonical + JSON-LD (env-independent
     // so promote can ship a staging build verbatim; staging's noindex lives
