@@ -786,6 +786,21 @@ describe("media sizes the image does not have (#1600)", () => {
             photo: { label: "Photo", fields: [{ name: "image", label: "Image", type: "media" }] },
           },
         },
+        {
+          // A media field with a link-like key name: the generic content
+          // pass canonicalises it too, before the list type's pass.
+          slug: `${PFX}-figures`,
+          name: `${PFX} figures`,
+          purpose: "Figure strip fixture.",
+          role: "content",
+          root: { allow: ["figure"] },
+          nodes: {
+            figure: {
+              label: "Figure",
+              fields: [{ name: "image_src", label: "Image", type: "media" }],
+            },
+          },
+        },
       ],
     });
   });
@@ -936,5 +951,47 @@ describe("media sizes the image does not have (#1600)", () => {
       caption: "After",
       figure_src: `caelo:media/${narrowId}/webp-800`,
     });
+  });
+
+  it("grandfathers a stored URL in a module's own list through both of its passes", async () => {
+    const moduleId = await makeModule(
+      "legacy-figures",
+      '<p>{{caption}}</p><ul>{{#figures}}<li><img src="{{image_src.url}}" alt=""></li>{{/figures}}</ul>',
+      [
+        { name: "caption", kind: "text", label: "Caption" },
+        { name: "figures", kind: "list", label: "Figures", listType: `${PFX}-figures` },
+      ],
+    );
+    const { contentInstanceId } = await run<{ contentInstanceId: string }>(
+      "content_instances.create",
+      { moduleId, values: { caption: "Before" } },
+    );
+    const entry = { id: crypto.randomUUID(), node: "figure", values: { image_src: missing() } };
+    // A pre-#724 literal, stored before writes checked the size.
+    await asSystem(
+      (tx) => tx`UPDATE content_instances
+                 SET "values" = (${JSON.stringify({ caption: "Before", figures: [entry] })}::text)::jsonb
+                 WHERE id = ${contentInstanceId}::uuid`,
+    );
+    await run("content_instances.set_values", {
+      id: contentInstanceId,
+      values: { caption: "After", figures: [entry] },
+    });
+    const stored = await storedValues(contentInstanceId);
+    expect(stored.caption).toBe("After");
+    expect(JSON.stringify(stored.figures)).toContain(
+      `"image_src":"caelo:media/${narrowId}/webp-800"`,
+    );
+    // A new entry with the same mistake is still refused.
+    const added = {
+      node: "figure",
+      values: { image_src: `/_caelo/media/${narrowSlug}/webp-1200` },
+    };
+    expect(
+      await refused("content_instances.set_values", {
+        id: contentInstanceId,
+        values: { caption: "After", figures: [entry, added] },
+      }),
+    ).toContain(`"/_caelo/media/${narrowSlug}/webp-1200" names a size (variant)`);
   });
 });

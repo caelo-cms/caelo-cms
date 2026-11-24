@@ -338,7 +338,7 @@ export function canonicaliseUrl(
     if (run.grandfathered.has(v)) return v;
     if (!targetExists(ref, run.lookup)) {
       issue(run, ref.kind === "page" ? "dangling-page-ref" : "dangling-media-ref", v, where);
-    } else if (ref.kind === "media" && ref.variant !== null) {
+    } else if (ref.kind === "media" && ref.variant !== null && !storedAsMediaUrl(run, v)) {
       run.mediaVariantRefs.push({
         mediaId: ref.mediaId,
         variant: ref.variant,
@@ -412,6 +412,31 @@ export function canonicaliseUrl(
     return value;
   }
   return formatLinkRef({ kind: "page", pageId, query, anchor });
+}
+
+/** Per run: the media references the grandfathered media URLs stand for. */
+const grandfatheredMediaRefs = new WeakMap<LinkCanonicaliseRun, ReadonlySet<string>>();
+
+/**
+ * #1600 — whether `ref` (a `caelo:media/…` reference) was already stored as
+ * a media URL that resolves to it. The mirror of the URL branch's check: a
+ * write can carry a stored literal `/_caelo/media/<slug>/webp-800` in as the
+ * reference an earlier pass of the same write made of it (a module's own
+ * list entries are canonicalised twice), and that is still the old value,
+ * not a new one. Resolved once per run, against the run's own lookup.
+ */
+function storedAsMediaUrl(run: LinkCanonicaliseRun, ref: string): boolean {
+  let refs = grandfatheredMediaRefs.get(run);
+  if (refs === undefined) {
+    const scratch = linkCanonicaliseRun(run.lookup, { mode: "report" });
+    refs = new Set(
+      [...run.grandfathered]
+        .filter((literal) => literal.includes(`${MEDIA_URL_PREFIX}/`))
+        .map((literal) => canonicaliseUrl(literal, scratch, "", "media")),
+    );
+    grandfatheredMediaRefs.set(run, refs);
+  }
+  return refs.has(ref);
 }
 
 function targetExists(ref: LinkRef, lookup: LinkTargetLookup): boolean {

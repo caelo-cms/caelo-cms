@@ -560,4 +560,17 @@ describe("media variants (#1600)", () => {
     expect(r.mediaVariantRefs).toEqual([]);
     expect(r.issues).toEqual([]);
   });
+
+  it("grandfathers a stored media URL that reaches this run as the reference an earlier pass made", () => {
+    // A module's own list entries are canonicalised twice in one write: the
+    // first pass turns the stored literal into its reference.
+    const stored = collectLinkLiterals({
+      photos: [{ values: { image_src: "/_caelo/media/hero/webp-800" } }],
+    });
+    const r = linkCanonicaliseRun(lookup, { grandfathered: stored });
+    canonicaliseUrl(`caelo:media/${HERO}/webp-800`, r, "values.photos[0].values.image_src");
+    canonicaliseUrl(`caelo:media/${HERO}/webp-1200`, r, "values.photos[1].values.image_src");
+    reportMissingMediaVariants(r, variants);
+    expect(r.issues.map((i) => i.value)).toEqual([`caelo:media/${HERO}/webp-1200`]);
+  });
 });
