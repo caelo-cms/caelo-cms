@@ -28,7 +28,9 @@ import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-s
 import { localBuildArchiveDir } from "../ops/deploy-common.js";
 import type { CheckRegistry, LighthouseRunner } from "./checks/registry.js";
 import { runChecksOnStagedBuild } from "./checks/run-staged.js";
+import type { BrowserOrigin } from "./lighthouse-protocol.js";
 import type { AuditJobResult } from "./lighthouse-runner.js";
+import { createLoopbackTls } from "./loopback-tls.js";
 import type { StagedBuildSource } from "./staged-build-source.js";
 import {
   localBuildSource,
@@ -96,6 +98,13 @@ export type StagingOrigin =
        * reachable from anywhere (self-hosted staging).
        */
       readonly stagedBuild?: StagedBuildSource;
+      /**
+       * The same loopback build over HTTP/2 and TLS for an audit browser on
+       * this machine (staged-origin.ts), with the key it trusts. Absent
+       * when a parallel task serves the build (`stagedBuild`) or the origin
+       * is a staging host.
+       */
+      readonly browserOrigin?: BrowserOrigin;
     }
   | { readonly ok: false; readonly code: string; readonly message: string };
 
@@ -185,11 +194,25 @@ export async function resolveStagingOrigin(
       if ("code" in found) return { ok: false, code: found.code, message: found.message };
       source = found.source;
     }
-    const origin = await serveStagedBuild(source);
     const slotted = (provider === "gcp" || provider === "gcp-firebase") && run.stagingLocation;
+    // A slotted build's Lighthouse runs happen in parallel tasks that serve
+    // it themselves; otherwise the browser on this machine gets HTTP/2.
+    const origin = await serveStagedBuild(
+      source,
+      slotted ? {} : { browserTls: createLoopbackTls() },
+    );
     return {
       ok: true,
       baseUrl: origin.baseUrl,
+      ...(origin.browser
+        ? {
+            browserOrigin: {
+              servedAt: origin.baseUrl,
+              baseUrl: origin.browser.baseUrl,
+              trustSpki: origin.browser.trustSpki,
+            },
+          }
+        : {}),
       ...(run.stagingOrigin ? { displayBaseUrl: run.stagingOrigin } : {}),
       close: origin.close,
       ...(slotted
@@ -334,6 +357,7 @@ export async function auditClaimedRun(
         pages: run.pages.map((p) => ({ pageId: p.pageId, url: pageUrl(p) })),
         performanceRuns: run.performanceRuns,
         ...(origin.stagedBuild ? { stagedBuild: origin.stagedBuild } : {}),
+        ...(origin.browserOrigin ? { browserOrigin: origin.browserOrigin } : {}),
       });
     }
   } finally {

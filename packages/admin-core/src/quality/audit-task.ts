@@ -30,12 +30,10 @@ import {
 } from "./audit-task-protocol.js";
 import { LighthouseRunError, type RunMeasurement } from "./lighthouse-extract.js";
 import { startLighthouseSession } from "./lighthouse-session.js";
+import { createLoopbackTls } from "./loopback-tls.js";
 import { QUALITY_CATEGORIES } from "./ratchet.js";
+import { onOrigin, readdressed } from "./readdress.js";
 import { serveStagedBuild, stagingSlotSource } from "./staged-origin.js";
-
-function trimTrailingSlash(url: string): string {
-  return url.endsWith("/") ? url.slice(0, -1) : url;
-}
 
 /**
  * Re-address every occurrence of one origin in a result (page URL, final
@@ -44,32 +42,37 @@ function trimTrailingSlash(url: string): string {
  * its own loopback port reports as if it had used the admin's.
  */
 export function readdress(result: AuditTaskResult, from: string, to: string): AuditTaskResult {
-  const a = trimTrailingSlash(from);
-  const b = trimTrailingSlash(to);
-  if (a === b) return result;
-  return JSON.parse(JSON.stringify(result).split(a).join(b)) as AuditTaskResult;
+  return readdressed(result, from, to);
 }
 
 async function measure(order: AuditTaskOrder): Promise<AuditTaskResult> {
   let url = order.url;
   let close: (() => Promise<void>) | undefined;
   let taskBase: string | null = null;
+  let trustSpki: string | undefined;
   if (order.stagedBuild) {
+    // HTTP/2 over TLS, as the CDN serves staging (staged-origin.ts).
     const origin = await serveStagedBuild(
       stagingSlotSource(order.stagedBuild.location, order.stagedBuild.runId),
+      { browserTls: createLoopbackTls() },
     );
     close = origin.close;
-    taskBase = origin.baseUrl;
-    const base = trimTrailingSlash(order.stagedBuild.baseUrl);
-    if (url !== base && !url.startsWith(`${base}/`)) {
+    if (!origin.browser) {
       await close();
-      throw new Error(`order url ${url} is not on the staged build's origin ${base}`);
+      throw new Error("staged origin: served without the browser's TLS listener");
     }
-    url = `${trimTrailingSlash(taskBase)}${url.slice(base.length)}`;
+    taskBase = origin.browser.baseUrl;
+    trustSpki = origin.browser.trustSpki;
+    try {
+      url = onOrigin(url, order.stagedBuild.baseUrl, taskBase);
+    } catch (e) {
+      await close();
+      throw e;
+    }
   }
   let result: AuditTaskResult;
   try {
-    result = await runOnce(order.taskId, url, order.categories);
+    result = await runOnce(order.taskId, url, order.categories, trustSpki);
   } finally {
     await close?.();
   }
@@ -82,8 +85,9 @@ async function runOnce(
   taskId: string,
   url: string,
   categories: AuditTaskOrder["categories"],
+  trustSpki: string | undefined,
 ): Promise<AuditTaskResult> {
-  const started = await startLighthouseSession();
+  const started = await startLighthouseSession(trustSpki ? { trustSpki } : {});
   if (!started.ok) return { kind: "fatal", taskId, code: started.code, message: started.message };
   try {
     const run = await started.session.run(

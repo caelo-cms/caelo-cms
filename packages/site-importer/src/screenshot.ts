@@ -376,7 +376,10 @@ export const SCREENSHOT_MEMORY_ARGS = [
  * the screenshotter keeps Playwright's defaults and adds only the WebRTC
  * UDP lock it needs to render untrusted pages (browser-egress.ts).
  */
-export function bundledChromiumLaunchOptions(remoteDebuggingPort?: number): {
+export function bundledChromiumLaunchOptions(
+  remoteDebuggingPort?: number,
+  trustCertificateSpki?: string,
+): {
   readonly headless: true;
   readonly channel: "chromium";
   readonly args?: readonly string[];
@@ -401,6 +404,12 @@ export function bundledChromiumLaunchOptions(remoteDebuggingPort?: number): {
     args: [
       `--remote-debugging-port=${remoteDebuggingPort}`,
       "--remote-debugging-address=127.0.0.1",
+      // The audit's loopback origin serves HTTP/2 over TLS with a throwaway
+      // certificate (admin-core quality/loopback-tls.ts): trust exactly that
+      // key, and keep every other certificate error an error.
+      ...(trustCertificateSpki
+        ? [`--ignore-certificate-errors-spki-list=${trustCertificateSpki}`]
+        : []),
     ],
     ignoreDefaultArgs: ["--disable-back-forward-cache"],
   };
@@ -416,10 +425,12 @@ export function bundledChromiumLaunchOptions(remoteDebuggingPort?: number): {
  * 127.0.0.1 at that port (loopback only), which Lighthouse drives the
  * browser through, and keeps the back/forward cache enabled (see
  * `bundledChromiumLaunchOptions`). Playwright itself keeps talking over
- * its pipe.
+ * its pipe. `trustCertificateSpki` (with a DevTools port only) is the one
+ * public key the browser accepts without a CA: the audit's loopback origin.
  */
 export async function launchBundledChromium(opts?: {
   readonly remoteDebuggingPort?: number;
+  readonly trustCertificateSpki?: string;
 }): Promise<BundledChromiumLaunch> {
   // Playwright is intentionally NOT a static dependency — see file
   // header. Dynamic + cast-to-unknown so the type-check doesn't need
@@ -444,7 +455,9 @@ export async function launchBundledChromium(opts?: {
   }
   const port = opts?.remoteDebuggingPort;
   try {
-    const browser = await pw.chromium.launch(bundledChromiumLaunchOptions(port));
+    const browser = await pw.chromium.launch(
+      bundledChromiumLaunchOptions(port, opts?.trustCertificateSpki),
+    );
     return { ok: true, browser, ...(port !== undefined ? { remoteDebuggingPort: port } : {}) };
   } catch (e) {
     return {
