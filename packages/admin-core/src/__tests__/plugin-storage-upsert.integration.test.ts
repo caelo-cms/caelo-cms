@@ -1,0 +1,440 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Issue #1659 — `ctx.adminQuery.upsert` keeps a key of a plugin's private
+ * storage at one row, through the plugin host and the real storage
+ * operations, on the shared draft, an isolated branch and main:
+ *
+ *   - two draft chats writing one key at the same moment leave one row:
+ *     the later write meets the earlier one's row and is the usual draft
+ *     conflict, which the read it names clears; both Stages leave one
+ *     main row. The list-then-insert it replaces leaves two under the
+ *     same timing;
+ *   - rows that already share a key fold into one on the next write (the
+ *     refusal international-site used to raise is gone);
+ *   - a main-line placeholder (`ifExists: "keep"`) for a key a chat holds
+ *     unstaged takes over that row instead of adding a second one, and the
+ *     chat's value wins at its Stage;
+ *   - a chat writing a key another branch created takes that row over;
+ *   - `keep` never overwrites, and a key no index can drive is refused.
+ *
+ * Integration tier against a throwaway Postgres (never the dev DB).
+ */
+
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+  bootstrap,
+  type PluginHostInfra,
+  resetPluginHost,
+  runPluginOperation,
+} from "@caelo-cms/plugin-host";
+import { definePlugin, type PluginAdminQuery, type PluginInvocation } from "@caelo-cms/plugin-sdk";
+import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import { type ExecutionContext, isUntrustedToolResult } from "@caelo-cms/shared";
+import { SQL } from "bun";
+import { type ToolContext, ToolRegistry } from "../ai/tools/dispatch.js";
+import { getPluginDraftRowsTool } from "../ai/tools/get-plugin-draft-rows.js";
+import { lockPluginRow } from "../locks.js";
+import { registerAdminOps } from "../register.js";
+
+const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
+const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
+if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
+
+const SLUG = "t-ups";
+const SCHEMA = "plugin_t_ups";
+const PFX = "t-ups-";
+const HUMAN = "00000000-0000-0000-0000-00000000ffff";
+const SYS: ExecutionContext = { actorId: HUMAN, actorKind: "system", requestId: "ups" };
+
+let adapter: DatabaseAdapter;
+let registry: OperationRegistry;
+let tools: ToolRegistry;
+let keyCounter = 0;
+
+const q = (ctx: unknown): PluginAdminQuery => {
+  const handle = (ctx as { adminQuery?: PluginAdminQuery }).adminQuery;
+  if (!handle) throw new Error("adminQuery missing");
+  return handle;
+};
+
+interface EntryArgs {
+  readonly address: string;
+  readonly value: string | null;
+  readonly keep?: boolean;
+}
+
+const plugin = definePlugin({
+  slug: SLUG,
+  version: "0.1.0",
+  tier: 1,
+  schema: {},
+  adminSchema: {
+    entries: { lang: "string", address: "text", value: "text", created_at: "timestamp" },
+    loose: { name: "string", value: "text" },
+  },
+  aiReadableTables: ["entries"],
+  indexes: { adminSchema: { entries: [["lang", "address"]] } },
+  requestedCapabilities: ["cms_admin_schema", "cms_admin"],
+  operations: {
+    upsert: async (ctx, args) => {
+      const a = args as EntryArgs;
+      return q(ctx).upsert(
+        "entries",
+        { lang: "de", address: a.address },
+        { value: a.value },
+        a.keep ? { ifExists: "keep" } : undefined,
+      );
+    },
+    /** What international-site did before #1659: read, then insert when nothing was found. */
+    insert_if_missing: async (ctx, args) => {
+      const a = args as EntryArgs;
+      const found = await q(ctx).list("entries", { lang: "de", address: a.address, limit: 2 });
+      if (found.length > 0) return { inserted: false };
+      await q(ctx).insert("entries", { lang: "de", address: a.address, value: a.value });
+      return { inserted: true };
+    },
+    insert: async (ctx, args) => {
+      const a = args as EntryArgs;
+      return q(ctx).insert("entries", { lang: "de", address: a.address, value: a.value });
+    },
+    list: async (ctx, args) =>
+      q(ctx).list("entries", { lang: "de", address: (args as EntryArgs).address, limit: 100 }),
+    upsert_unindexed: async (ctx) => q(ctx).upsert("loose", { name: "a" }, { value: "x" }),
+    upsert_null_key: async (ctx) =>
+      q(ctx).upsert("entries", { lang: "de", address: null as unknown as string }, {}),
+  },
+});
+
+async function withSystemSql<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
+  const sql = new SQL(ADMIN_URL as string);
+  try {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return fn(tx as unknown as Bun.SQL);
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+async function wipe(): Promise<void> {
+  resetPluginHost();
+  await withSystemSql(async (tx) => {
+    await tx.unsafe(`DROP SCHEMA IF EXISTS "${SCHEMA}" CASCADE`);
+    const byPluginActor = `SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`;
+    await tx.unsafe(`DELETE FROM site_snapshots WHERE actor_id IN (${byPluginActor})`);
+    await tx.unsafe(`DELETE FROM audit_events WHERE actor_id IN (${byPluginActor})`);
+    await tx.unsafe(
+      `DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`,
+    );
+    await tx.unsafe(`DELETE FROM plugins WHERE slug = '${SLUG}'`);
+    await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${PFX}%`}`;
+  });
+}
+
+interface Chat {
+  readonly id: string;
+  readonly title: string;
+  readonly ai: ExecutionContext;
+  readonly invocation: PluginInvocation;
+}
+
+/** A new chat: on the site's shared draft, or on an isolated branch of its own. */
+async function newChat(name: string, isolation?: "experiment"): Promise<Chat> {
+  const title = `${PFX}${name}`;
+  const r = await execute(registry, adapter, SYS, "chat.create_session", {
+    title,
+    ...(isolation ? { isolation } : {}),
+  });
+  if (!r.ok) throw new Error(`chat.create_session: ${JSON.stringify(r.error)}`);
+  const { chatSessionId, chatBranchId, branchKind } = r.value as {
+    chatSessionId: string;
+    chatBranchId: string;
+    branchKind: string;
+  };
+  expect(branchKind).toBe(isolation ? "experiment" : "draft");
+  return {
+    id: chatSessionId,
+    title,
+    ai: {
+      actorId: HUMAN,
+      actorKind: "ai",
+      requestId: `ups-${name}`,
+      chatBranchId,
+      chatTaskId: chatSessionId,
+    },
+    invocation: {
+      origin: "chat",
+      actorId: HUMAN,
+      operatorActorId: HUMAN,
+      chatBranchId,
+      chatTaskId: chatSessionId,
+    },
+  };
+}
+
+const MAIN: PluginInvocation = { origin: "system", actorId: HUMAN };
+
+async function call(invocation: PluginInvocation, operationName: string, args: unknown = {}) {
+  return runPluginOperation({ pluginSlug: SLUG, operationName, args, invocation });
+}
+
+async function landed<T>(r: Awaited<ReturnType<typeof call>>): Promise<T> {
+  if (!r.ok) throw new Error(`expected the write to land: ${r.error.message}`);
+  return r.value as T;
+}
+
+function nextKey(): string {
+  keyCounter += 1;
+  return `${PFX}key-${keyCounter}`;
+}
+
+interface PhysicalRow {
+  id: string;
+  value: string | null;
+  branch: string | null;
+}
+
+/** The live rows of a key as stored, whatever branch created them. */
+async function physicalRows(address: string): Promise<PhysicalRow[]> {
+  return withSystemSql(async (tx) => {
+    const [p] = (await tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`) as {
+      id: string;
+    }[];
+    await tx.unsafe(`SELECT set_config('caelo.plugin_id', '${p?.id}', true)`);
+    return (await tx.unsafe(
+      `SELECT id::text AS id, value, caelo_chat_branch_id::text AS branch FROM "${SCHEMA}".entries
+       WHERE address = $1 AND caelo_deleted_at IS NULL ORDER BY id`,
+      [address],
+    )) as PhysicalRow[];
+  });
+}
+
+/** The values of a key as `invocation` reads them. */
+async function seen(invocation: PluginInvocation, address: string): Promise<(string | null)[]> {
+  const rows = await landed<{ value: string | null }[]>(
+    await call(invocation, "list", { address }),
+  );
+  return rows.map((r) => r.value);
+}
+
+/** The re-read a draft conflict names, as the AI makes it. */
+async function readDraftRows(chat: Chat, rowIds: string[]): Promise<void> {
+  const toolCtx: ToolContext = {
+    adapter,
+    registry,
+    chatBranchId: chat.ai.chatBranchId as string,
+    chatSessionId: chat.ai.chatTaskId as string,
+  };
+  const r = await tools.dispatch("get_plugin_draft_rows", { rowIds }, chat.ai, toolCtx);
+  if (!r.ok) throw new Error(`get_plugin_draft_rows: ${r.content}`);
+  expect(isUntrustedToolResult(r.content)).toBe(true);
+}
+
+/** The Stage of draft chats (the merge the Stage flow runs). */
+async function stage(...chats: Chat[]): Promise<void> {
+  const r = await execute(registry, adapter, SYS, "chat.merge_draft_to_main", {
+    chatSessionIds: chats.map((c) => c.id),
+  });
+  if (!r.ok) throw new Error(`chat.merge_draft_to_main: ${JSON.stringify(r.error)}`);
+}
+
+/**
+ * Run `calls` while the plugin's registry row is held: every private
+ * write takes it `FOR SHARE` first, so they all wait at the same point
+ * and go on together once it is released — two writers racing for one
+ * key, made repeatable.
+ */
+async function atOnce<T>(calls: () => Promise<T>[], waiting: number): Promise<T[]> {
+  const sql = new SQL(ADMIN_URL as string);
+  const held = await sql.reserve();
+  try {
+    await held.unsafe("BEGIN");
+    await held.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+    await held`SELECT 1 FROM plugins WHERE slug = ${SLUG} FOR UPDATE`;
+    const running = calls();
+    for (let i = 0; i < 500; i += 1) {
+      const [row] = (await sql`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock'
+      `) as { n: number }[];
+      if ((row?.n ?? 0) >= waiting) break;
+      await Bun.sleep(10);
+    }
+    await held.unsafe("COMMIT");
+    return await Promise.all(running);
+  } finally {
+    held.release();
+    await sql.end();
+  }
+}
+
+beforeAll(async () => {
+  adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  registry = new OperationRegistry();
+  registerAdminOps(registry);
+  tools = new ToolRegistry();
+  tools.register(getPluginDraftRowsTool);
+  await wipe();
+  const infra: PluginHostInfra = { adapter, registry, lockPluginRow };
+  const report = await bootstrap({
+    infra,
+    pluginsRoot: "/dev/null/unused",
+    systemActorId: HUMAN,
+    testPlugins: [{ definition: plugin }],
+  });
+  expect(report.failed).toEqual([]);
+});
+
+afterAll(async () => {
+  await wipe();
+  await adapter.close();
+});
+
+describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
+  it("the list-then-insert it replaces writes two rows when two chats write at once", async () => {
+    const key = nextKey();
+    const a = await newChat("race-old-a");
+    const b = await newChat("race-old-b");
+    const results = await atOnce(
+      () => [
+        call(a.invocation, "insert_if_missing", { address: key, value: "from-a" }),
+        call(b.invocation, "insert_if_missing", { address: key, value: "from-b" }),
+      ],
+      2,
+    );
+    for (const r of results) await landed(r);
+    // Each read found nothing, each insert went in: the race of the issue.
+    expect(await physicalRows(key)).toHaveLength(2);
+  });
+
+  it("two draft chats writing one key at once leave one row; the later write is a conflict its read clears", async () => {
+    const key = nextKey();
+    const a = await newChat("race-a");
+    const b = await newChat("race-b");
+    const results = await atOnce(
+      () => [
+        call(a.invocation, "upsert", { address: key, value: "from-a" }),
+        call(b.invocation, "upsert", { address: key, value: "from-b" }),
+      ],
+      2,
+    );
+    expect(await physicalRows(key)).toHaveLength(1);
+
+    const [first, later] = results[0]?.ok ? [a, b] : [b, a];
+    const refused = results[first === a ? 1 : 0];
+    if (!refused || refused.ok) throw new Error("expected the later write to be a draft conflict");
+    expect(refused.error.message).toContain("Conflict:");
+    expect(refused.error.message).toContain("get_plugin_draft_rows");
+    expect(refused.error.message).toContain(first.title);
+
+    // The read the conflict names clears it, and the later write wins.
+    const [row] = await physicalRows(key);
+    await readDraftRows(later, [row?.id as string]);
+    const laterValue = later === a ? "from-a" : "from-b";
+    const written = await landed<{ id: string; created: boolean }>(
+      await call(later.invocation, "upsert", { address: key, value: laterValue }),
+    );
+    expect(written).toEqual({ id: row?.id as string, created: false });
+    expect(await seen(first.invocation, key)).toEqual([laterValue]);
+
+    await stage(first);
+    await stage(later);
+    const live = await physicalRows(key);
+    expect(live).toEqual([{ id: row?.id as string, value: laterValue, branch: null }]);
+    expect(await seen(MAIN, key)).toEqual([laterValue]);
+  });
+
+  it("folds rows that already share the key: the write that used to refuse goes through", async () => {
+    const key = nextKey();
+    await landed(await call(MAIN, "insert", { address: key, value: "old-1" }));
+    await landed(await call(MAIN, "insert", { address: key, value: "old-2" }));
+    expect(await physicalRows(key)).toHaveLength(2);
+
+    const a = await newChat("fold-a");
+    const written = await landed<{ id: string; created: boolean }>(
+      await call(a.invocation, "upsert", { address: key, value: "fixed" }),
+    );
+    expect(written.created).toBe(false);
+    expect(await seen(a.invocation, key)).toEqual(["fixed"]);
+    // Main is untouched until the Stage, which leaves one row.
+    expect((await seen(MAIN, key)).sort()).toEqual(["old-1", "old-2"]);
+    await stage(a);
+    expect(await physicalRows(key)).toEqual([{ id: written.id, value: "fixed", branch: null }]);
+  });
+
+  it("folds on the main line too", async () => {
+    const key = nextKey();
+    await landed(await call(MAIN, "insert", { address: key, value: "old-1" }));
+    await landed(await call(MAIN, "insert", { address: key, value: "old-2" }));
+    await landed(await call(MAIN, "upsert", { address: key, value: "fixed" }));
+    expect((await physicalRows(key)).map((r) => r.value)).toEqual(["fixed"]);
+  });
+
+  it("a main-line placeholder takes over a chat's unstaged row of the key; the chat's value wins at its Stage", async () => {
+    const key = nextKey();
+    const a = await newChat("adopt-a");
+    const mine = await landed<{ id: string; created: boolean }>(
+      await call(a.invocation, "upsert", { address: key, value: "translated" }),
+    );
+    expect(mine.created).toBe(true);
+
+    // The change consumer runs on main and cannot see the chat's row.
+    const placeholder = await landed<{ id: string; created: boolean }>(
+      await call(MAIN, "upsert", { address: key, value: null, keep: true }),
+    );
+    expect(placeholder).toEqual({ id: mine.id, created: true });
+    expect(await physicalRows(key)).toEqual([{ id: mine.id, value: null, branch: null }]);
+    expect(await seen(MAIN, key)).toEqual([null]);
+    expect(await seen(a.invocation, key)).toEqual(["translated"]);
+
+    await stage(a);
+    expect(await physicalRows(key)).toEqual([{ id: mine.id, value: "translated", branch: null }]);
+  });
+
+  it("a chat writing a key another branch created takes that row over", async () => {
+    const key = nextKey();
+    const x = await newChat("other-x", "experiment");
+    const theirs = await landed<{ id: string }>(
+      await call(x.invocation, "upsert", { address: key, value: "from-x" }),
+    );
+    const a = await newChat("other-a");
+    const mine = await landed<{ id: string; created: boolean }>(
+      await call(a.invocation, "upsert", { address: key, value: "from-a" }),
+    );
+    expect(mine).toEqual({ id: theirs.id, created: false });
+    const rows = await physicalRows(key);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.branch).toBe(a.ai.chatBranchId as string);
+    // The other branch's change moved with the row.
+    expect(await seen(x.invocation, key)).toEqual([]);
+    expect(await seen(a.invocation, key)).toEqual(["from-a"]);
+
+    await stage(a);
+    expect(await physicalRows(key)).toEqual([{ id: theirs.id, value: "from-a", branch: null }]);
+  });
+
+  it("keep leaves an existing row as it is", async () => {
+    const key = nextKey();
+    const stored = await landed<{ id: string }>(
+      await call(MAIN, "upsert", { address: key, value: "real" }),
+    );
+    const kept = await landed<{ id: string; created: boolean }>(
+      await call(MAIN, "upsert", { address: key, value: null, keep: true }),
+    );
+    expect(kept).toEqual({ id: stored.id, created: false });
+    expect(await seen(MAIN, key)).toEqual(["real"]);
+  });
+
+  it("refuses a key no index can drive, and a key without a value", async () => {
+    const unindexed = await call(MAIN, "upsert_unindexed");
+    if (unindexed.ok) throw new Error("expected the unindexed key to be refused");
+    expect(unindexed.error.message).toContain("no index covers this read");
+    expect(unindexed.error.message).toContain('"loose"');
+
+    const nullKey = await call(MAIN, "upsert_null_key");
+    if (nullKey.ok) throw new Error("expected the null key to be refused");
+    expect(nullKey.error.message).toContain("a key column holds a string, number or boolean");
+  });
+});

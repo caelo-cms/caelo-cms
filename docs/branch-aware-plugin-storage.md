@@ -43,7 +43,8 @@ Plugin storage becomes a core Query API operation family, executed with the invo
 | `plugin_storage.insert` / `update` / `delete` | Single-row writes |
 | `plugin_storage.update_many` | One patch on up to 1000 rows: every row or none, one snapshot header for all of them (#1391) |
 | `plugin_storage.compare_and_swap` | One row, only while expected values still match |
-| `plugin_public_storage.*` | The same for the public zone |
+| `plugin_storage.upsert` | THE row of a key: inserted when the key has none, else updated (#1659, private zone only; see "One row per key" below) |
+| `plugin_public_storage.*` | The same for the public zone (without `upsert`: a public table declares a `unique` index instead) |
 
 - **Two zones, two families.** `plugin_storage.*` for the private zone (the plugin's `cms_admin` schema) and `plugin_public_storage.*` for the public zone (`cms_public.<slug>`). The one batch write is `update_many` (#1391): `international-site`'s staleness rebuild flags thousands of variants, and one write with its own snapshot per row took minutes of database time on a small instance, because the journal and draft-head triggers on the snapshot tables run once per statement. `ctx.adminQuery` and `ctx.query` keep their SDK shape and become thin brokers over these operations; the host no longer issues SQL for plugins (§14.7).
 - **Scoping is enforced twice:** the operation rejects tables not declared by the calling plugin, and RLS on `caelo.plugin_id` stays the backstop.
@@ -79,6 +80,23 @@ Writes follow the pattern `content_instances` and `modules` already use:
 - **Undo before publish** is discarding the chat's branch state: nothing live changed. There is no branch-discard operation in core today (`chat.archive_session` only hides the chat); `chat.discard_branch` (human + system) soft-deletes every row the branch created — core pages, modules, templates, layouts, content instances and plugin rows — releases the chat's locks and closes the chat (`discarded_at`); a discarded chat can never be merged, since that would resurrect what the discard dropped. Whatever the chat already staged is on main and is undone with the snapshot revert.
 - **Undo after publish** uses the main snapshots written at merge time.
 - **Enums and lists to extend:** the `site_snapshots.op_kind`, `chat_branch_publish_marks.entity_kind` and `chat_entity_locks.entity_kind` CHECKs; the `SnapshotEntity`, `LockedEntityKind` and stage-picker unions; the kind lists in the merge loop, pending-changes and change-count queries.
+
+### 4a. One row per key (#1659)
+
+Many plugin rows exist once per key: a translation per language and address, a setting per name. The private zone cannot hold a unique index for that (a chat's change is a snapshot, which no index sees, [plugin-indexes.md](./plugin-indexes.md)), and a `list` followed by an `insert` does not keep it either:
+
+- two chats in the shared draft both read before either insert commits, because a branch insert locks only its own new row;
+- a chat's insert is invisible to the main line and to other branches. international-site's change consumer, which runs on main, gave a page property a `missing` placeholder although a chat had translated it unstaged; each Stage carried its row to main, and the duplicate made every later write of the key refuse with a step no tool could take.
+
+`ctx.adminQuery.upsert(table, key, values)` (`plugin_storage.upsert`, `plugin-host/src/private-upsert.ts`) writes the key's row in one operation and keeps it at one row for every write through it:
+
+- A transaction lock on the key serialises its upserts, so the later one finds the earlier one's row.
+- **Inside the shared draft, the rule is the one every plugin row follows:** the key's row is one row for every chat, and a write over another chat's change this chat has not seen is a draft conflict. The error names `get_plugin_draft_rows`; the write repeated after that read goes through, so the later write wins after it has seen the earlier one. Two chats translating the same text therefore never leave two rows: the second one is told, reads, and overwrites.
+- **Across branches**, a chat writing a key whose row another branch created takes that row over, as every write across branches takes the other branch's pending change over (#620); the row moves to the chat's branch with it. **The main line** (a worker, the Owner panel, an approved action) writes its state onto that row, which becomes the key's main-line row; the branch keeps its pending state of the row and applies it at its Stage (merge is last-writer-wins).
+- Rows that already share a key (from before, or from `insert`) are folded: one is updated, the others are deleted, in the caller's scope.
+- `ifExists: "keep"` writes only when the key has no row: a placeholder never replaces a stored value.
+
+The key must lead a declared index, like a `list` filter. A plugin that writes a key with `upsert` writes it with `upsert` only; a table read whole and written by id (international-site's `chrome_variants`, which declares no index) keeps the list-then-insert, and its reads and next write fold what two writers left.
 
 ### 5. Render-time reads
 

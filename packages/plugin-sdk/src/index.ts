@@ -1814,7 +1814,74 @@ export interface PluginQuery {
  * in `adminSchema` (FKs to core tables are declared as `ref:` columns,
  * enforced by Postgres, never written through this handle).
  */
-export interface PluginAdminQuery extends PluginQuery {}
+export interface PluginAdminQuery extends PluginQuery {
+  /**
+   * #1659 — write THE row of `table` whose `key` columns hold these
+   * values: insert it when the key has none, else update it with
+   * `values`. Use it for every row that exists once per key (a translation
+   * per language and address, a setting per name). A `list` followed by an
+   * `insert` cannot promise that: two writers each find no row and each
+   * insert one, and a chat's row is invisible to the main line and to
+   * other branches until it is staged.
+   *
+   * Every write of a key through `upsert` keeps it at one row, on main and
+   * on every chat branch:
+   * - writes of one key run one after the other, so the later one finds
+   *   the earlier one's row;
+   * - in the shared draft the key's row is one row for every chat; a write
+   *   over another chat's change this chat has not seen is a conflict, as
+   *   for `update` — the error names `get_plugin_draft_rows`, and the write
+   *   repeated after that read goes through (the later write wins);
+   * - a row of the key that another branch created and has not staged is
+   *   taken over by a chat (its pending change moves to the writing chat,
+   *   as for every write across branches); a main-line write (a worker,
+   *   the Owner panel) writes the main state onto that row instead, and the
+   *   branch's change applies over it when the branch is staged;
+   * - rows that already share the key (written by `insert`) are folded:
+   *   one of them is updated, the others are deleted. With
+   *   `ifExists: "keep"` they are left as they are.
+   *
+   * `key`: 1–4 declared columns with string, number or boolean values,
+   * one of which leads a declared index (the read rule of `list`,
+   * docs/plugin-indexes.md). `values`: other declared columns, written on
+   * insert and on update; columns in neither get their default on insert.
+   * A plugin that writes a key with `upsert` writes it with `upsert` only.
+   *
+   * @returns the key's row and whether it was created.
+   *
+   * @example
+   * ```ts
+   * await ctx.adminQuery.upsert(
+   *   "translations",
+   *   { locale_code: "de", address: "list/…/item/…/label" },
+   *   { value: "Preise", status: "translated" },
+   * );
+   * ```
+   */
+  upsert<TableName extends string>(
+    table: TableName,
+    key: Record<string, string | number | boolean>,
+    values: Record<string, unknown>,
+    options?: PluginUpsertOptions,
+  ): Promise<PluginUpsertResult>;
+}
+
+/** #1659 — how {@link PluginAdminQuery.upsert} treats a key that has a row. */
+export interface PluginUpsertOptions {
+  /**
+   * `"update"` (the default) writes `values` over the key's row. `"keep"`
+   * leaves an existing row as it is and only creates the row when the key
+   * has none: a placeholder that must never replace a stored value.
+   */
+  readonly ifExists?: "update" | "keep";
+}
+
+/** The key's row after {@link PluginAdminQuery.upsert}. */
+export interface PluginUpsertResult {
+  readonly id: string;
+  /** True when the caller saw no row for the key, so the call wrote one. */
+  readonly created: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // #390 — URL composition point.

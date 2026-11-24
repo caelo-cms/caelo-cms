@@ -166,10 +166,11 @@ export interface IndexedStorageManifest {
 
 /**
  * For a plugin's unit tests: `inner` (a fake `ctx.query` or
- * `ctx.adminQuery`) with the host's read rule in front of `list()`. A read
- * no index of the manifest can drive throws the message the host's
- * storage operation fails with, so a test that reaches the read fails
- * before the plugin ships (#1536). Other methods pass through.
+ * `ctx.adminQuery`) with the host's read rule in front of `list()` and
+ * of `upsert()`, whose key the host reads the same way (#1659). A read no
+ * index of the manifest can drive throws the message the host's storage
+ * operation fails with, so a test that reaches the read fails before the
+ * plugin ships (#1536). Other methods pass through.
  *
  * @example
  * ```ts
@@ -183,8 +184,8 @@ export function indexCheckedQuery<Q extends { list: (...args: never[]) => Promis
   inner: Q,
 ): Q {
   const tables = zone === "schema" ? manifest.schema : (manifest.adminSchema ?? {});
-  const label = zone === "schema" ? "plugin_public_storage.list" : "plugin_storage.list";
-  const list = async (table: string, filter: Readonly<Record<string, unknown>> = {}) => {
+  const family = zone === "schema" ? "plugin_public_storage" : "plugin_storage";
+  const check = (label: string, table: string, filter: Readonly<Record<string, unknown>>) => {
     const columns = tables[table];
     if (!columns) throw new Error(`${label}: table "${table}" is not declared in ${zone}`);
     const access = listAccessOfFilter(filter);
@@ -198,7 +199,24 @@ export function indexCheckedQuery<Q extends { list: (...args: never[]) => Promis
       });
       if (refusal) throw new Error(refusal);
     }
+  };
+  const list = async (table: string, filter: Readonly<Record<string, unknown>> = {}) => {
+    check(`${family}.list`, table, filter);
     return (inner.list as unknown as (t: string, f: unknown) => Promise<unknown>)(table, filter);
   };
-  return { ...inner, list } as unknown as Q;
+  const innerUpsert = (inner as { upsert?: unknown }).upsert;
+  if (typeof innerUpsert !== "function") return { ...inner, list } as unknown as Q;
+  const upsert = async (
+    table: string,
+    key: Readonly<Record<string, unknown>>,
+    ...rest: unknown[]
+  ) => {
+    check(`${family}.upsert`, table, key);
+    return (innerUpsert as (t: string, k: unknown, ...r: unknown[]) => Promise<unknown>)(
+      table,
+      key,
+      ...rest,
+    );
+  };
+  return { ...inner, list, upsert } as unknown as Q;
 }

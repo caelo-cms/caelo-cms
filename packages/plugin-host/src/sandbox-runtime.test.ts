@@ -481,6 +481,43 @@ it("carries updateMany through the bridge and refuses a malformed id list (#1391
   expect(calls).toEqual([["notes", ["11111111-1111-4111-8111-111111111111"], { body: "bulk" }]]);
 });
 
+it("carries adminQuery.upsert through the bridge, on private storage only, and refuses a key JSON would change (#1659)", async () => {
+  const calls: unknown[][] = [];
+  const result = await invoke(
+    `
+    const written = await ctx.adminQuery.upsert("notes", { body: "key" }, { body: "v" }, { ifExists: "keep" });
+    const errors = [];
+    // undefined would vanish from the JSON and name another row.
+    try { await ctx.adminQuery.upsert("notes", { body: undefined }, {}); } catch (e) { errors.push(e.message); }
+    try { await ctx.adminQuery.upsert("notes", { body: { nested: 1 } }, {}); } catch (e) { errors.push("host refused"); }
+    try { await ctx.adminQuery.upsert("notes", { body: "k" }, {}, { ifExists: "merge" }); } catch (e) { errors.push("host refused"); }
+    return { written, errors, publicUpsert: typeof ctx.query.upsert };
+  `,
+    {
+      context: {
+        ...context,
+        adminQuery: {
+          ...context.query,
+          upsert: async (...args: unknown[]) => {
+            calls.push(args);
+            return { id: "11111111-1111-4111-8111-111111111111", created: true };
+          },
+        },
+      } as PluginContext,
+    },
+  );
+  expect(result).toEqual({
+    written: { id: "11111111-1111-4111-8111-111111111111", created: true },
+    errors: [
+      "a compareAndSwap or upsert call requires JSON values; undefined and non-finite values are forbidden",
+      "host refused",
+      "host refused",
+    ],
+    publicUpsert: "undefined",
+  });
+  expect(calls).toEqual([["notes", { body: "key" }, { body: "v" }, { ifExists: "keep" }]]);
+});
+
 it("preview denies public/private writes and cross-plugin RPC in the real sandbox", async () => {
   const readonly = previewContext({ ...context, adminQuery: context.query });
   const result = await invoke(
@@ -492,13 +529,14 @@ it("preview denies public/private writes and cross-plugin RPC in the real sandbo
         try { await target[method](...args); } catch (e) { denied.push(e.message); }
       }
     }
+    try { await ctx.adminQuery.upsert("notes", { body: "k" }, { body: "changed" }); } catch (e) { denied.push(e.message); }
     try { await ctx.api.get({}); } catch (e) { denied.push(e.message); }
     return { denied, rows: await ctx.adminQuery.list("notes") };
   `,
     { context: readonly },
   );
   expect(result).toEqual({
-    denied: Array(11).fill("PluginPreviewReadOnly"),
+    denied: Array(12).fill("PluginPreviewReadOnly"),
     rows: [{ body: "host result" }],
   });
 });
