@@ -99,20 +99,51 @@ export function siteName(): string {
   return site;
 }
 
+/**
+ * An ADC access token for a run of requests, asked for before each one.
+ *
+ * A token taken once and kept for a whole build expired mid-upload: the
+ * metadata server hands out the token it caches, which can be minutes
+ * from its expiry, and a six-minute build then failed in `populateFiles`
+ * with 401 ACCESS_TOKEN_EXPIRED (#1632). One client serves the run, and
+ * google-auth-library returns its cached token until it is within its
+ * eager-refresh threshold of expiring (five minutes by default), then
+ * fetches a new one — so a token handed out is never close to expiry.
+ * Calls while a fetch is in flight share it: when the refresh is due,
+ * fifty parallel uploads ask the metadata server once.
+ */
+export type AccessToken = () => Promise<string>;
+
+/** The {@link AccessToken} of the admin's service identity for `scopes`. */
+export async function googleAccessToken(
+  scopes: readonly string[] = ["https://www.googleapis.com/auth/firebase.hosting"],
+): Promise<AccessToken> {
+  // On Cloud Run ADC picks up the service account identity automatically.
+  // Lazy-import so self-hosted installs don't pull the dep.
+  const { GoogleAuth } = await import("google-auth-library");
+  const client = await new GoogleAuth({ scopes: [...scopes] }).getClient();
+  let inFlight: Promise<string> | null = null;
+  return () => {
+    inFlight ??= client
+      .getAccessToken()
+      .then((t) => {
+        if (!t.token) {
+          throw new Error("static-publisher-firebase: failed to obtain ADC access token");
+        }
+        return t.token;
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
+}
+
+/** One ADC access token, for a call of a few requests. */
 export async function googleAuthToken(
   scopes: readonly string[] = ["https://www.googleapis.com/auth/firebase.hosting"],
 ): Promise<string> {
-  // Use google-auth-library to fetch an ADC access token. On Cloud
-  // Run this picks up the service account identity automatically.
-  // Lazy-import so self-hosted installs don't pull the dep.
-  const { GoogleAuth } = await import("google-auth-library");
-  const auth = new GoogleAuth({ scopes: [...scopes] });
-  const client = await auth.getClient();
-  const token = await client.getAccessToken();
-  if (!token.token) {
-    throw new Error("static-publisher-firebase: failed to obtain ADC access token");
-  }
-  return token.token;
+  return (await googleAccessToken(scopes))();
 }
 
 /**
@@ -544,7 +575,8 @@ interface PendingFile {
  */
 class FirebaseBuildUpload implements BuildUpload {
   readonly #site: string;
-  readonly #token: string;
+  /** Asked before every request: a build outlasts one token (#1632). */
+  readonly #token: AccessToken;
   readonly #versionName: string;
   readonly #versionId: string;
   readonly #paths = new Set<string>();
@@ -565,7 +597,12 @@ class FirebaseBuildUpload implements BuildUpload {
   /** #1330 — a Stage's mirror into the staging slot it fills; null for other targets. */
   readonly #slot: GcsSlotSync | null;
 
-  private constructor(site: string, token: string, versionName: string, slot: GcsSlotSync | null) {
+  private constructor(
+    site: string,
+    token: AccessToken,
+    versionName: string,
+    slot: GcsSlotSync | null,
+  ) {
     this.#site = site;
     this.#token = token;
     this.#versionName = versionName;
@@ -582,7 +619,7 @@ class FirebaseBuildUpload implements BuildUpload {
     servedStagingLocation: string | null;
   }): Promise<FirebaseBuildUpload> {
     const site = siteName();
-    const token = await googleAuthToken();
+    const token = await googleAccessToken();
     const slot =
       args.target.env === "staging"
         ? await GcsSlotSync.open(await stagingBucket(), args.servedStagingLocation)
@@ -590,7 +627,7 @@ class FirebaseBuildUpload implements BuildUpload {
     const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
       method: "POST",
       body: JSON.stringify({}),
-      token,
+      token: await token(),
     });
     return new FirebaseBuildUpload(site, token, created.name, slot);
   }
@@ -636,7 +673,7 @@ class FirebaseBuildUpload implements BuildUpload {
         if (required.has(f.sha256) && !toUpload.has(f.sha256)) toUpload.set(f.sha256, f);
       }
       await runBatched([...toUpload.values()], PARALLEL_UPLOADS, async (f) => {
-        await uploadGzippedFile(this.#url(), f.sha256, f.gzipped, this.#token);
+        await uploadGzippedFile(this.#url(), f.sha256, f.gzipped, await this.#token());
       });
       this.#uploaded += toUpload.size;
     });
@@ -650,7 +687,7 @@ class FirebaseBuildUpload implements BuildUpload {
     for (const [path, sha] of files) filesMap[`/${path}`] = sha;
     const populate = await firebaseFetch<PopulateFilesResponse>(
       `sites/${this.#site}/versions/${this.#versionId}:populateFiles`,
-      { method: "POST", body: JSON.stringify({ files: filesMap }), token: this.#token },
+      { method: "POST", body: JSON.stringify({ files: filesMap }), token: await this.#token() },
     );
     this.#uploadUrl = populate.uploadUrl;
     const required = new Set<string>();
@@ -712,7 +749,7 @@ class FirebaseBuildUpload implements BuildUpload {
           toUpload.set(a.gzipSha256, a);
       }
       await runBatched([...toUpload.values()], PARALLEL_UPLOADS, async (a) => {
-        await uploadAsset(this.#url(), a, assetSourcePath(references, a), this.#token);
+        await uploadAsset(this.#url(), a, assetSourcePath(references, a), await this.#token());
       });
       assetUploads += toUpload.size;
     }
@@ -761,7 +798,7 @@ class FirebaseBuildUpload implements BuildUpload {
       {
         method: "PATCH",
         body: JSON.stringify({ status: "FINALIZED", config }),
-        token: this.#token,
+        token: await this.#token(),
       },
     );
     timer.lap("finalize");
@@ -789,7 +826,7 @@ class FirebaseBuildUpload implements BuildUpload {
     try {
       await firebaseFetch(`sites/${this.#site}/versions/${this.#versionId}`, {
         method: "DELETE",
-        token: this.#token,
+        token: await this.#token(),
       });
     } catch (e) {
       // An unfinalized version is never served; one left behind is only clutter.
@@ -798,11 +835,6 @@ class FirebaseBuildUpload implements BuildUpload {
         error: messageOf(e),
       });
     }
-  }
-
-  /** The token the upload authenticated with (for the release calls after it). */
-  get token(): string {
-    return this.#token;
   }
 
   get site(): string {
