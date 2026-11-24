@@ -55,6 +55,22 @@ describe("createLoopbackTls", () => {
     }
   });
 
+  it("every certificate the random parts can produce is one BoringSSL accepts", () => {
+    // The serial bug refused one certificate in 256 (25 of 5000 before the
+    // fix); 2000 certificates would pass with it about once in 2500 runs.
+    let refused = 0;
+    for (let i = 0; i < 2000; i += 1) {
+      const t = createLoopbackTls(now);
+      try {
+        const c = new X509Certificate(t.cert);
+        if (!c.verify(c.publicKey)) refused += 1;
+      } catch {
+        refused += 1;
+      }
+    }
+    expect(refused).toBe(0);
+  });
+
   it("is a fresh key every time", () => {
     expect(createLoopbackTls().spkiSha256).not.toBe(createLoopbackTls().spkiSha256);
   });
