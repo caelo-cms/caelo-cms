@@ -47,6 +47,7 @@ import {
   renderStyleGuideBlock,
   stripJsonFence,
 } from "./translation.js";
+import { onePerChromeTarget } from "./translation-rows.js";
 
 /** Core handle as the plugin uses it. */
 export interface ChromeCms {
@@ -170,8 +171,17 @@ export async function loadChromeTargets(cms: ChromeCms): Promise<ChromeTarget[]>
   ];
 }
 
-/** Every stored chrome variant. */
+/**
+ * Every stored chrome variant, one per target and language: rows that
+ * came to share a key read as the one every reader takes (#1659,
+ * translation-rows.ts); the next write of the key deletes the others.
+ */
 export async function loadChromeVariants(q: PluginAdminQuery): Promise<ChromeVariantRow[]> {
+  return onePerChromeTarget(await loadChromeVariantRows(q)).rows;
+}
+
+/** Every stored chrome variant row, as stored. */
+async function loadChromeVariantRows(q: PluginAdminQuery): Promise<ChromeVariantRow[]> {
   return (await listAll(q, "chrome_variants")) as unknown as ChromeVariantRow[];
 }
 
@@ -366,15 +376,49 @@ export async function resolveChromeVariants(
 // Writes: translate, detach (independent), re-attach.
 // ---------------------------------------------------------------------------
 
-async function upsertVariant(
+/**
+ * Write chrome variants, each the one row of its target and language: the
+ * row every read takes is updated (or one inserted), and the other rows of
+ * its key are deleted (#1659).
+ *
+ * `chrome_variants` declares no index (its reads take the whole table), so
+ * it cannot be written with `upsert`, whose key must lead an index; two
+ * chats translating the same chrome into the same language at the same
+ * moment can still each insert a row. Reads take one of them by the rule
+ * in translation-rows.ts, and the next write of the key folds the other.
+ */
+async function writeChromeVariants(
   q: PluginAdminQuery,
-  existing: ChromeVariantRow | undefined,
-  row: Omit<ChromeVariantRow, "id">,
+  rows: readonly { existing: ChromeVariantRow | undefined; row: Omit<ChromeVariantRow, "id"> }[],
 ): Promise<void> {
-  if (existing) {
-    await q.update("chrome_variants", existing.id, { ...row });
-  } else {
-    await q.insert("chrome_variants", { ...row });
+  const stored = await loadChromeVariantRows(q);
+  for (const { existing, row } of rows) {
+    let keepId: string;
+    if (existing) {
+      await q.update("chrome_variants", existing.id, { ...row });
+      keepId = existing.id;
+    } else {
+      keepId = (await q.insert("chrome_variants", { ...row })).id;
+    }
+    await deleteOtherVariants(q, stored, row, keepId);
+  }
+}
+
+/** Delete the stored rows of `key`'s target and language except `keepId`. */
+async function deleteOtherVariants(
+  q: PluginAdminQuery,
+  stored: readonly ChromeVariantRow[],
+  key: { readonly target_key: string; readonly locale_code: string },
+  keepId: string,
+): Promise<void> {
+  for (const other of stored) {
+    if (
+      other.target_key === key.target_key &&
+      other.locale_code === key.locale_code &&
+      other.id !== keepId
+    ) {
+      await q.delete("chrome_variants", other.id);
+    }
   }
 }
 
@@ -621,7 +665,7 @@ export async function writeChromeTranslation(
     if (!p.listState) throw new Error("chrome translation: list answers without a list state");
     listWritten = await writeListTranslations(deps, p.listState, p.locale, listAnswers);
   }
-  for (const { existing, row } of rows) await upsertVariant(deps.q, existing, row);
+  await writeChromeVariants(deps.q, rows);
   return rows.length + listWritten;
 }
 
@@ -747,7 +791,7 @@ export async function setChromeVariants(
       },
     });
   }
-  for (const { existing, row } of rows) await upsertVariant(deps.q, existing, row);
+  await writeChromeVariants(deps.q, rows);
   return {
     updated: rows.map(({ row }) => ({ targetKey: row.target_key, localeCode: row.locale_code })),
   };
@@ -838,15 +882,20 @@ export async function reattachChromeVariantDelegated(
       nextStep: `"${target.label}" has no text to translate, so there is nothing to re-attach; the ${locale.display_name} entry is unchanged.`,
     };
   }
-  const existing = (await loadChromeVariants(deps.q)).find(
-    (v) => v.target_key === args.targetKey && v.locale_code === locale.code,
-  );
+  const stored = await loadChromeVariantRows(deps.q);
+  const key = { target_key: args.targetKey, locale_code: locale.code };
+  const existing = onePerChromeTarget(
+    stored.filter((v) => v.target_key === key.target_key && v.locale_code === key.locale_code),
+  ).rows[0];
   if (existing) {
     await deps.q.update("chrome_variants", existing.id, {
       mode: "translated",
       translation_status: "needs_update",
       source_hash: null,
     });
+    // #1659 — once it is out of date, another row of its key (up to date)
+    // would be the one every read takes: it goes, so this one is.
+    await deleteOtherVariants(deps.q, stored, key, existing.id);
   }
   return {
     reattached: true,
