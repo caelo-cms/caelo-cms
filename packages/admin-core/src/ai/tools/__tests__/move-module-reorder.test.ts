@@ -112,8 +112,18 @@ describe("move_module — across blocks", () => {
     expect(writes[0]).toEqual({
       pageId: PAGE,
       blocks: [
-        { blockName: "header", moduleIds: [B, H], contentInstanceIds: [null, null] },
-        { blockName: "content", moduleIds: [A, C], contentInstanceIds: [null, null] },
+        {
+          blockName: "header",
+          moduleIds: [B, H],
+          contentInstanceIds: [null, null],
+          syncModes: [null, null],
+        },
+        {
+          blockName: "content",
+          moduleIds: [A, C],
+          contentInstanceIds: [null, null],
+          syncModes: [null, null],
+        },
       ],
     });
   });

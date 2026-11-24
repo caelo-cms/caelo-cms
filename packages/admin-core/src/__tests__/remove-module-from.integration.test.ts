@@ -365,6 +365,128 @@ describe("#1663 — remove_module_from removes one placement of a repeated modul
   });
 });
 
+describe("#1663 — one content instance shared across blocks with different sync modes", () => {
+  type Bound = { moduleId: string; contentInstanceId: string; syncMode: string };
+  type Block = "header" | "content";
+  const other = (b: Block): Block => (b === "header" ? "content" : "header");
+
+  /**
+   * header: [cta], content: [cta], both bound to ONE instance: unsynced in
+   * one block, synced in `syncedIn`. Both directions are tested because the
+   * op reads prior placements in block-name order live and in the stored
+   * order on a branch, so page order alone was right for one of them.
+   */
+  async function seedShared(ctx: ExecutionContext, name: string, syncedIn: Block) {
+    const { templateId: tpl } = await op<{ templateId: string }>(SYSTEM, "templates.create", {
+      pageType: "home",
+      slug: `${PFX}-${name}-tpl`,
+      displayName: "T2",
+      html: '<body><caelo-slot name="header">_</caelo-slot><caelo-slot name="content">_</caelo-slot></body>',
+      layoutId,
+    });
+    await op(SYSTEM, "template_blocks.set", {
+      templateId: tpl,
+      blocks: [
+        { name: "header", displayName: "Header", position: 0 },
+        { name: "content", displayName: "Content", position: 1 },
+      ],
+    });
+    const cta = await makeModule(`${PFX}-${name}-cta`);
+    const { pageId } = await op<{ pageId: string }>(ctx, "pages.create", {
+      slug: `${PFX}-${name}`,
+      title: name,
+      templateId: tpl,
+    });
+    await op(ctx, "pages.set_modules", {
+      pageId,
+      blocks: [
+        { blockName: "header", moduleIds: [cta] },
+        { blockName: "content", moduleIds: [cta] },
+      ],
+    });
+    const shared = (await placed(ctx, pageId))[other(syncedIn)]?.[0]?.contentInstanceId as string;
+    await op(ctx, "placement.set_content", {
+      pageId,
+      blockName: syncedIn,
+      position: 0,
+      contentInstanceId: shared,
+      syncMode: "synced",
+    });
+    return { pageId, cta, shared };
+  }
+
+  async function placed(ctx: ExecutionContext, pageId: string): Promise<Record<string, Bound[]>> {
+    const got = await op<{ page: { blocks: { blockName: string; modules: Bound[] }[] } }>(
+      ctx,
+      "pages.get_with_modules",
+      { pageId },
+    );
+    return Object.fromEntries(got.page.blocks.map((b) => [b.blockName, b.modules]));
+  }
+
+  for (const mode of ["live", "chat branch"] as const) {
+    for (const syncedIn of ["header", "content"] as const) {
+      it(`removing the unsynced placement leaves the ${syncedIn} one synced (${mode})`, async () => {
+        const ctx = mode === "live" ? SYSTEM : await chatCtx(`sync-${syncedIn}`);
+        const { pageId, cta, shared } = await seedShared(
+          ctx,
+          `sync-${syncedIn}-${mode.replace(" ", "")}`,
+          syncedIn,
+        );
+        const before = await placed(ctx, pageId);
+        expect(before[other(syncedIn)]?.[0]).toMatchObject({
+          contentInstanceId: shared,
+          syncMode: "unsynced",
+        });
+        expect(before[syncedIn]?.[0]).toMatchObject({
+          contentInstanceId: shared,
+          syncMode: "synced",
+        });
+
+        const r = await remove(ctx, {
+          target: "page",
+          targetRef: pageId,
+          moduleId: cta,
+          blockName: other(syncedIn),
+          position: 0,
+        });
+        expect(r.ok).toBe(true);
+        const after = await placed(ctx, pageId);
+        expect(after[other(syncedIn)]).toEqual([]);
+        expect(after[syncedIn]?.[0]).toMatchObject({
+          contentInstanceId: shared,
+          syncMode: "synced",
+        });
+      });
+    }
+  }
+
+  it("pages.set_modules refuses a sync mode the instance does not have there", async () => {
+    const { pageId, cta, shared } = await seedShared(SYSTEM, "sharedrefuse", "content");
+    const r = await execute(registry, adapter, SYSTEM, "pages.set_modules", {
+      pageId,
+      blocks: [
+        {
+          blockName: "header",
+          moduleIds: [cta],
+          contentInstanceIds: [shared],
+          syncModes: ["synced"],
+        },
+        {
+          blockName: "content",
+          moduleIds: [cta],
+          contentInstanceIds: [shared],
+          syncModes: ["synced"],
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect((r.error as { message?: string }).message).toContain('named with sync mode "synced"');
+    expect((await placed(SYSTEM, pageId)).header?.[0]?.syncMode).toBe("unsynced");
+  });
+});
+
 describe("#1663 — remove_module_from on a layout holding a module twice", () => {
   it("refuses unaddressed, removes the named block's placement, or all with allPlacements", async () => {
     const logo = await makeModule(`${PFX}-logo`);

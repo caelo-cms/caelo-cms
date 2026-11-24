@@ -34,7 +34,11 @@ interface PageWithModules {
   id: string;
   blocks: {
     blockName: string;
-    modules: { moduleId: string; contentInstanceId?: string | null }[];
+    modules: {
+      moduleId: string;
+      contentInstanceId: string | null;
+      syncMode: "synced" | "unsynced";
+    }[];
   }[];
 }
 interface LayoutDetail {
@@ -233,15 +237,17 @@ async function removeFromPage(
     }
   }
   const removed = new Set(pick.picked.map((p) => `${p.blockName}#${p.position}`));
-  // Every survivor is named by its content instance, so each keeps its own
-  // content — set_modules' per-(block, module) FIFO would hand the removed
-  // placement's content to a later placement of the same module.
+  // Every survivor is named by its content instance and sync mode, so each
+  // keeps its own content and mode — set_modules' per-(block, module) FIFO
+  // would hand the removed placement's content to a later placement of the
+  // same module, and an instance shared across blocks its mode.
   const blocks = page.blocks.map((b) => {
     const kept = b.modules.filter((_, i) => !removed.has(`${b.blockName}#${i}`));
     return {
       blockName: b.blockName,
       moduleIds: kept.map((m) => m.moduleId),
       contentInstanceIds: kept.map((m) => m.contentInstanceId ?? null),
+      syncModes: kept.map((m) => (m.contentInstanceId ? m.syncMode : null)),
     };
   });
   const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.set_modules", {

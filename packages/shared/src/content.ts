@@ -878,6 +878,16 @@ export const pageSetModulesSchema = z
            * order, which cannot tell repeated placements apart.
            */
           contentInstanceIds: z.array(z.string().uuid().nullable()).optional(),
+          /**
+           * #1663 — the sync mode each named placement had (same index; null
+           * where `contentInstanceIds` is null). Placements in different
+           * blocks may share one content instance with different sync
+           * modes, so the id alone cannot say which binding an entry is;
+           * the mode picks it. Omitted, a named id takes its bindings in
+           * page order. Never changes a sync mode: each must be one the
+           * instance has on this page (`placement.set_content` changes it).
+           */
+          syncModes: z.array(z.enum(["synced", "unsynced"]).nullable()).optional(),
         })
         .strict()
         .refine(
@@ -885,6 +895,18 @@ export const pageSetModulesSchema = z
             b.contentInstanceIds === undefined ||
             b.contentInstanceIds.length === b.moduleIds.length,
           { message: "contentInstanceIds needs one entry (or null) per moduleIds entry" },
+        )
+        .refine(
+          (b) =>
+            b.syncModes === undefined ||
+            (b.syncModes.length === b.moduleIds.length &&
+              b.syncModes.every(
+                (m, i) => m === null || (b.contentInstanceIds?.[i] ?? null) !== null,
+              )),
+          {
+            message:
+              "syncModes needs one entry per moduleIds entry, and a mode only where contentInstanceIds names the placement",
+          },
         ),
     ),
   })
