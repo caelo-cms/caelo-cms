@@ -144,12 +144,26 @@ export default defineConfig({
     // code through `__dirname`. Inlined into an ESM server chunk both
     // break (`__dirname is not defined`); left external they load from
     // node_modules, which the admin image ships.
+    //
+    // ONNX Runtime (#1650) stays external for the same reason: both
+    // builds find their runtime files next to their own module.
+    // onnxruntime-web resolves `ort-wasm-simd-threaded.{mjs,wasm}`
+    // against its `import.meta.url`, onnxruntime-node requires
+    // `../bin/napi-v6/<os>/<arch>/onnxruntime_binding.node`. Inlined into a
+    // server chunk, both look in `build/server/chunks/` and fail: the
+    // admin's semantic query (search preview, the Stage audit's test
+    // queries) and a self-hosted index job running in the admin.
+    // `packages/models/scripts/bundle-self-check.ts` runs both from the
+    // built chunks in the image's CI smoke.
     external: [
       "playwright-core",
       "@playwright/test",
       "@axe-core/playwright",
       "subset-font",
       "fontverter",
+      "onnxruntime-web",
+      "onnxruntime-node",
+      "onnxruntime-common",
     ],
   },
 });
