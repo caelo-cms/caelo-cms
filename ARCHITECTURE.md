@@ -128,6 +128,7 @@ flowchart LR
 | "add a footer on every page" | `add_module` (`target: 'layout'`) | all pages on the layout |
 | "move the hero to the header" | `move_module` (`toBlockName`; `fromBlockName` + `fromPosition` when the module is placed twice+) | same page, cross-block; one placement, its content moves with it |
 | "show testimonials before gallery" | `move_module` (no `toBlockName`) | same page, same block |
+| "remove the second CTA" | `remove_module_from` (`blockName` + `position` when the module is placed twice+; `allPlacements: true` only for "remove all of them") | one placement; the others keep their content |
 | "duplicate this page" | `duplicate_page` | modules carry by reference |
 | "switch this page to landing-tpl" | `repoint_page_template` | modules migrate; orphan disposition required |
 | "add Careers under Company" | `patch_list_items_many` | the shared menu list; every module bound to it |

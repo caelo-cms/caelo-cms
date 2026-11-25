@@ -209,6 +209,68 @@ describe("#1195 — move_module moves one placement", () => {
     });
   });
 
+  for (const mode of ["live", "chat branch"] as const) {
+    it(`keeps each sync mode of an instance shared across blocks (#1663, ${mode})`, async () => {
+      const ctx = mode === "live" ? SYSTEM : await chatCtx("syncmode");
+      const { pageId, m } = await seedPage(ctx, `syncmode-${mode.replace(" ", "")}`);
+      const shared = (await blocksOf(ctx, pageId)).find((b) => b.blockName === "content")
+        ?.modules[0]?.contentInstanceId;
+      // header m: shared, synced — content m at 0: shared, unsynced.
+      await op(ctx, "placement.set_content", {
+        pageId,
+        blockName: "header",
+        position: 0,
+        contentInstanceId: shared,
+        syncMode: "synced",
+      });
+      const modes = async () =>
+        Object.fromEntries(
+          (
+            await op<{
+              page: { blocks: { blockName: string; modules: { syncMode: string }[] }[] };
+            }>(ctx, "pages.get_with_modules", { pageId })
+          ).page.blocks.map((b) => [b.blockName, b.modules.map((p) => p.syncMode)]),
+        );
+      expect(await modes()).toEqual({
+        header: ["synced"],
+        content: ["unsynced", "unsynced", "unsynced"],
+      });
+
+      // A reorder in `content`, then a move across blocks: page order alone
+      // handed the shared id's modes out in whatever order the op read the
+      // prior placements (block-name order live), swapping them.
+      expect(
+        (
+          await move(ctx, {
+            pageId,
+            moduleId: m,
+            fromBlockName: "content",
+            fromPosition: 2,
+            position: "top",
+          })
+        ).ok,
+      ).toBe(true);
+      expect(await modes()).toEqual({
+        header: ["synced"],
+        content: ["unsynced", "unsynced", "unsynced"],
+      });
+      const res = await move(ctx, {
+        pageId,
+        moduleId: m,
+        fromBlockName: "header",
+        fromPosition: 0,
+        toBlockName: "content",
+        position: "bottom",
+      });
+      expect(res.ok).toBe(true);
+      expect(await labelled(ctx, pageId)).toEqual({ header: [], content: ["b", "a", "n", "a"] });
+      expect(await modes()).toEqual({
+        header: [],
+        content: ["unsynced", "unsynced", "unsynced", "synced"],
+      });
+    });
+  }
+
   it("refuses an unaddressed move of a repeated module, naming its placements", async () => {
     const { pageId, m } = await seedPage(SYSTEM, "ambiguous");
     const res = await move(SYSTEM, { pageId, moduleId: m, toBlockName: "header", position: 0 });

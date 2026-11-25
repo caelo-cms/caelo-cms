@@ -116,7 +116,7 @@ export async function buildPageContext(
         "- set_page_module_content_many({items:[{pageId, blockName, position, contentValues}]}) — change what a module shows on THIS page (that placement's fields). update_modules_many({items:[{moduleId, …}]}) — change the module itself (html/css/fields) on every page using it. Take ids, blocks and positions from the BEGIN markers above.",
         "- add_module (target='page', targetRef = this page's id) — insert a NEW module into a block on THIS page only. Use for one-off content (a CTA on the homepage, an FAQ on /about). Position is 'top', 'bottom', or a 0-based index.",
         '- add_module (target=\'template\', targetRef = the Template id above) — create a NEW module and fan it out to EVERY page using this template at the same block + position. Use only when the user explicitly asks for site-wide content ("add a footer to every page", "a header banner across the site").',
-        "- remove_module_from (target='page', targetRef = this page's id) — drop a module's reference from this page (the module row stays for re-use elsewhere). Use target='layout' to detach site-wide chrome.",
+        "- remove_module_from (target='page', targetRef = this page's id) — drop a module's placement from this page (the module row stays for re-use elsewhere); a module placed here twice+ needs blockName + position from its BEGIN marker. Use target='layout' to detach site-wide chrome.",
         "",
         "Tool guidance (page lifecycle — three independent identifiers):",
         "- A page has THREE separately-editable identifiers. Never silently substitute one for another:",

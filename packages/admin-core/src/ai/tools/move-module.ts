@@ -14,6 +14,8 @@
  * placement's content instance. Filtering by moduleId removed the
  * module's other placements in the source and target block, and a
  * cross-block move re-bound the moved placement to fresh empty content.
+ * #1663 — and its sync mode: one content instance can be synced in one
+ * block and unsynced in another, which the id alone cannot tell apart.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -26,7 +28,11 @@ interface PageWithModules {
   id: string;
   blocks: {
     blockName: string;
-    modules: { moduleId: string; contentInstanceId?: string | null }[];
+    modules: {
+      moduleId: string;
+      contentInstanceId?: string | null;
+      syncMode: "synced" | "unsynced";
+    }[];
   }[];
 }
 
@@ -34,6 +40,8 @@ interface PageWithModules {
 interface Placement {
   readonly moduleId: string;
   readonly contentInstanceId: string | null;
+  /** Null exactly when `contentInstanceId` is (a placement set_modules binds itself). */
+  readonly syncMode: "synced" | "unsynced" | null;
 }
 
 /** "block "content" position 2" for each placement of the module. */
@@ -113,6 +121,7 @@ export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
       b.modules.map((m) => ({
         moduleId: m.moduleId,
         contentInstanceId: m.contentInstanceId ?? null,
+        syncMode: m.contentInstanceId ? m.syncMode : null,
       }));
     const found = detail.blocks.flatMap((b) =>
       b.modules.flatMap((m, index) =>
@@ -189,6 +198,7 @@ export const moveModuleTool: ToolDefinitionWithHandler<MoveModuleToolInput> = {
       blockName,
       moduleIds: placements.map((p) => p.moduleId),
       contentInstanceIds: placements.map((p) => p.contentInstanceId),
+      syncModes: placements.map((p) => p.syncMode),
     });
     const blocks = detail.blocks.map((b) => {
       if (b.blockName === toBlock) {
