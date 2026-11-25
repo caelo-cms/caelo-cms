@@ -382,12 +382,15 @@ export interface RenderFault {
  * @returns `operator`: titles, paths and places only; `ai`: the failures as
  *   the generator named them, with the tools that repair them; `caeloFault`:
  *   set when the failures include a Caelo bug — a production build's link
- *   the check before it should have refused, or a render without its context.
+ *   the check before it should have refused, or a render without its context;
+ *   `nextAction`: the error's next step for the AI (#1718,
+ *   {@link renderRepairTools}).
  */
 export function describeRenderFailures(failures: readonly RenderFailure[]): {
   readonly operator: string;
   readonly ai: string;
   readonly caeloFault: RenderFault | null;
+  readonly nextAction: { readonly tool: string; readonly reason: string };
 } {
   const lines = operatorPlaces(failures);
   const contextless = failures.some((f) => isCaeloFaultMarker(f.reason));
@@ -410,12 +413,44 @@ export function describeRenderFailures(failures: readonly RenderFailure[]): {
     : links
       ? "This is a Caelo bug: the check before the build should have caught this, and it has been reported."
       : "The editor preview flags the same spots; ask the AI to repair them, then build again.";
+  const tools = renderRepairTools(failures);
+  const ai =
+    `The generator refused the build: ${technicalLines(failures, failures.length)}. ` +
+    `Repair: ${repairHints(failures)} Then build again.` +
+    (tools.length > 1 ? ` Tools these repairs need, most needed first: ${tools.join(", ")}.` : "") +
+    (caeloFault ? ` File it with bug_report: ${caeloFault.title.toLowerCase()}.` : "");
   return {
     operator: `The build stopped: ${lines.join("; ")}. ${next}`,
-    ai:
-      `The generator refused the build: ${technicalLines(failures, failures.length)}. ` +
-      `Repair: ${repairHints(failures)} Then build again.` +
-      (caeloFault ? ` File it with bug_report: ${caeloFault.title.toLowerCase()}.` : ""),
+    ai,
     caeloFault,
+    nextAction: { tool: firstTool(tools), reason: ai },
   };
+}
+
+/** The most needed tool; a stopped build has at least one failure, so at least one tool. */
+function firstTool(tools: readonly string[]): string {
+  const [first] = tools;
+  if (first === undefined)
+    throw new Error("describeRenderFailures: a stopped build names no failure");
+  return first;
+}
+
+/**
+ * #1718 — the tools a stopped build's failures need, by how many failures
+ * of each kind there are (most first; a tie keeps the order the build
+ * named them in): each kind's {@link renderRepairOf} tool, `check_links`
+ * for a link, and `bug_report` for a render without its context (a Caelo
+ * bug no content edit repairs).
+ */
+export function renderRepairTools(failures: readonly RenderFailure[]): string[] {
+  const byKind = new Map<string, { tool: string; count: number }>();
+  for (const f of failures) {
+    const kind = renderFailureKind(f.reason);
+    const tool = isCaeloFaultMarker(f.reason) ? "bug_report" : renderRepairOf(f).tool;
+    const hit = byKind.get(kind) ?? { tool, count: 0 };
+    hit.count += 1;
+    byKind.set(kind, hit);
+  }
+  const ranked = [...byKind.values()].sort((a, b) => b.count - a.count);
+  return [...new Set(ranked.map((k) => k.tool))];
 }

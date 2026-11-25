@@ -244,3 +244,42 @@ describe("renderRepairOf — a page key or path the page cannot answer (#1717)",
     for (const r of [text, link, select, terms]) expect(r.hint.length).toBeLessThan(500);
   });
 });
+
+describe("describeRenderFailures — the next step of a stopped build (#1718)", () => {
+  const pageProp = (over: Partial<RenderFailure> = {}) =>
+    failure({ reason: "page-prop-unknown:stnad", ...over });
+  const media = () =>
+    failure({ reason: "media-missing:old-logo/orig", blockName: null, moduleSlug: null });
+
+  it("a link failure still goes to check_links", () => {
+    expect(describeRenderFailures([linkFailure()]).nextAction.tool).toBe("check_links");
+  });
+
+  it("each kind goes to its own repair tool", () => {
+    expect(describeRenderFailures([pageProp()]).nextAction.tool).toBe("list_page_types");
+    expect(describeRenderFailures([media()]).nextAction.tool).toBe("find_media");
+    expect(
+      describeRenderFailures([failure({ reason: "page-key-unknown:titel" })]).nextAction.tool,
+    ).toBe("update_modules_many");
+  });
+
+  it("several kinds: the most frequent kind's tool, every tool in the reason", () => {
+    const next = describeRenderFailures([
+      media(),
+      pageProp(),
+      pageProp({ blockName: "footer" }),
+      linkFailure(),
+    ]).nextAction;
+    expect(next.tool).toBe("list_page_types");
+    expect(next.reason).toContain(
+      "Tools these repairs need, most needed first: list_page_types, find_media, check_links.",
+    );
+  });
+
+  it("a render without its context is a Caelo bug: bug_report", () => {
+    const next = describeRenderFailures([
+      failure({ reason: "list-context-unavailable:menu" }),
+    ]).nextAction;
+    expect(next.tool).toBe("bug_report");
+  });
+});

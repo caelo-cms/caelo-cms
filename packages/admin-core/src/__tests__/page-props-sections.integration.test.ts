@@ -22,7 +22,9 @@
  *
  * #1717 — the same end to end for a `{{page.*}}` key the page does not
  * have (`{{page.titel}}`) and a path a property cannot answer
- * (`{{page.props.stand.formatted}}` on a text property).
+ * (`{{page.props.stand.formatted}}` on a text property). #1718 — a build
+ * that stops on these names the tool that repairs them, not the link
+ * check.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -187,6 +189,18 @@ async function renderFindings(runId: string) {
       text: async () => null,
     },
   });
+}
+
+/** #1718 — a dev build stops on any render failure; its error's next step for the AI. */
+async function devBuildNextAction(): Promise<{ tool: string; reason: string }> {
+  const built = await execute(registry, adapter, OWNER, "deploy.trigger", {
+    targetName: "dev",
+    repoRoot: testRoot,
+  });
+  if (built.ok) throw new Error("the dev build rendered a broken placeholder");
+  const next = (built.error as { nextAction?: { tool: string; reason: string } }).nextAction;
+  if (!next) throw new Error(`no next step: ${JSON.stringify(built.error)}`);
+  return next;
 }
 
 beforeAll(async () => {
@@ -431,6 +445,12 @@ describe("#1561 — a property no page type declares fails loudly", () => {
       );
     }
   }, 120_000);
+
+  it("a build that stops on it sends the AI to the page types, not the link check (#1718)", async () => {
+    const next = await devBuildNextAction();
+    expect(next.tool).toBe("list_page_types");
+    expect(next.reason).toContain("page-prop-unknown:stnad");
+  }, 120_000);
 });
 
 describe("#1717 — a page key or path the page cannot answer fails loudly", () => {
@@ -501,6 +521,12 @@ describe("#1717 — a page key or path the page cannot answer fails loudly", () 
         "4 spots it could not render",
       );
     }
+  }, 120_000);
+
+  it("a build that stops on them sends the AI to the module HTML (#1718)", async () => {
+    const next = await devBuildNextAction();
+    expect(next.tool).toBe("update_modules_many");
+    expect(next.reason).toContain("page-key-unknown:titel");
   }, 120_000);
 
   it("valid keys and paths render unchanged", async () => {
