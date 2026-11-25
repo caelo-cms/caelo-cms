@@ -313,6 +313,19 @@ describe("renderRepairOf — a page key or path the page cannot answer (#1717)",
     expect(terms.hint).toContain("{{#page.terms.<vocabulary slug>}}");
     for (const r of [text, link, select, terms]) expect(r.hint.length).toBeLessThan(500);
   });
+
+  it("names the list-of-pages form for a property path, and only there (#1727)", () => {
+    const r = renderRepairOf({
+      reason: "page-path-unknown:props.stand:text",
+      moduleSlug: "latest-news",
+    });
+    expect(r.hint).toStartWith(
+      '{{page.props.stand.…}} (or {{props.stand.…}} in a list of pages, the same paths without "page.") in module "latest-news": page.props.stand (text) has no paths',
+    );
+    expect(r.hint.length).toBeLessThan(500);
+    const key = renderRepairOf({ reason: "page-path-unknown:title:text", moduleSlug: null });
+    expect(key.hint).not.toContain("in a list of pages");
+  });
 });
 
 describe("describeRenderFailures — the next step of a stopped build (#1718)", () => {

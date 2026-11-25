@@ -221,7 +221,14 @@ export function pageMarkerHint(marker: string, mod: string): string | undefined 
       );
     case PAGE_PATH_UNKNOWN: {
       const { path, type } = parsePagePathUnknown(body);
-      return `{{page.${path}.…}} in ${mod}: page.${path} (${type.split("|").join(" or ")}) ${pageValueAnswers(path, type)}. Correct the module HTML with update_modules_many.`;
+      // #1727 — a property path comes from the rendering page or from a
+      // page a list iterates; the marker does not say which, so the hint
+      // names both forms.
+      const inList =
+        path === "props" || path.startsWith("props.")
+          ? ` (or {{${path}.…}} in a list of pages, the same paths without "page.")`
+          : "";
+      return `{{page.${path}.…}}${inList} in ${mod}: page.${path} (${type.split("|").join(" or ")}) ${pageValueAnswers(path, type)}. Correct the module HTML with update_modules_many.`;
     }
     default:
       return undefined;
