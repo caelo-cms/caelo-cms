@@ -20,6 +20,7 @@ class FakeTracker implements IssueTracker {
   releasesList: ReleaseInfo[] = [];
   calls = { create: 0, update: 0, comment: 0 };
   failNextCreate = false;
+  failNextUpdate = false;
   #next = 100;
 
   /** Every call that changes something on GitHub. */
@@ -47,6 +48,10 @@ class FakeTracker implements IssueTracker {
   }
   async updateIssue(n: number, patch: { body?: string; state?: "open" | "closed" }) {
     this.calls.update++;
+    if (this.failNextUpdate) {
+      this.failNextUpdate = false;
+      throw new Error("GitHub said no");
+    }
     const i = this.issues.get(n)!;
     if (patch.body !== undefined) i.body = patch.body;
     if (patch.state === "open")
@@ -1020,5 +1025,25 @@ describe("IntakeService while the matcher is down (2026-11-23: a revoked key)", 
     await s.status([]);
     await s.status([]);
     expect([...store.deferred.keys()].length).toBe(0);
+  });
+
+  it("refreshes the issue again when that edit failed for a counted deferred report (Codex on #1714)", async () => {
+    const s = service();
+    const known = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = outage;
+    const d = await s.ingest(INSTALL_B, ai("c", "screenshot ignores selector"));
+    matcher.fail = null;
+    matcher.answer = known.clusterId;
+    later(61_000);
+    // Counted (a second install), then the body refresh fails.
+    tracker.failNextUpdate = true;
+    await s.status([d.clusterId]);
+    expect([...store.deferred.keys()].length).toBe(1);
+    expect(tracker.issues.get(100)?.body).toContain("| Installs reporting it | 1 |");
+
+    await s.status([d.clusterId]);
+    expect([...store.deferred.keys()]).toEqual([]);
+    expect(tracker.issues.get(100)?.body).toContain("| Installs reporting it | 2 |");
+    expect((await store.getCluster(known.clusterId))!.value.occurrences).toBe(2);
   });
 });

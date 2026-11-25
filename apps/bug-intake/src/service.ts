@@ -499,12 +499,15 @@ export class IntakeService {
     deferredReportId?: string,
   ): Promise<BugIntakeClusterInfo> {
     await this.#syncIssue(clusterId);
-    const { cluster, isNewReporter, isNewVersion } = await this.#update(clusterId, (c) => {
+    const { cluster, isNewReporter, isNewVersion, retried } = await this.#update(clusterId, (c) => {
       if (deferredReportId !== undefined) {
         // Counted by an earlier attempt whose later step failed (a GitHub
-        // create, the stand-in's write): the rest still runs, the count not.
+        // create or edit, the stand-in's write): the rest still runs, the
+        // count not. Which edit failed is not known, so a retry refreshes
+        // the issue again; both edits are idempotent (the body is rendered
+        // from the cluster, milestones are recorded once).
         if (c.countedDeferredReports.includes(deferredReportId))
-          return { isNewReporter: false, isNewVersion: false };
+          return { isNewReporter: false, isNewVersion: false, retried: true };
         c.countedDeferredReports = [...c.countedDeferredReports, deferredReportId].slice(
           -MAX_COUNTED_DEFERRED,
         );
@@ -533,7 +536,7 @@ export class IntakeService {
       c.blockedTask ||= report.blockedTask;
       c.occurrences += 1;
       c.lastSeen = this.#d.now().toISOString();
-      return { isNewReporter: isNewInstall || isNewRun, isNewVersion };
+      return { isNewReporter: isNewInstall || isNewRun, isNewVersion, retried: false };
     });
 
     let current = cluster;
@@ -576,7 +579,7 @@ export class IntakeService {
       ) {
         current = await this.#fileIssue(current);
       }
-    } else if (writable && (isNewReporter || isNewVersion)) {
+    } else if (writable && (isNewReporter || isNewVersion || retried)) {
       await this.#d.tracker.updateIssue(current.issueNumber, { body: issueBody(current) });
       const due = INSTALL_MILESTONES.filter(
         (m) => current.installHashes.length >= m && !current.milestonesCommented.includes(m),
