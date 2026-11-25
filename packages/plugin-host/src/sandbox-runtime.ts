@@ -235,6 +235,22 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
   if (method.startsWith("adminQuery.")) {
     const adminQuery = (ctx as PluginContextTier1).adminQuery;
     if (!adminQuery) throw new Error("SandboxCapabilityDenied: cms_admin_schema");
+    if (method === "adminQuery.upsert") {
+      // #1659 — private storage only, so it never reaches the `query.` switch.
+      const [t, key, values, options] = z
+        .tuple([
+          table,
+          z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
+          record,
+          z
+            .object({ ifExists: z.enum(["update", "keep"]).optional() })
+            .strict()
+            .optional(),
+        ])
+        .parse([args[0], args[1], args[2], args[3]]);
+      if (args.length > 4) throw new Error("InvalidArguments");
+      return adminQuery.upsert(t, key, values, options);
+    }
     return broker({ ...ctx, query: adminQuery }, method.replace("adminQuery.", "query."), args);
   }
   switch (method) {

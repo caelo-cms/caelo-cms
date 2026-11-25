@@ -37,6 +37,8 @@ export function previewContext(ctx: PluginContext | PluginContextTier1): PluginC
           }),
         }
       : {}),
-    ...(author.adminQuery ? { adminQuery: query(author.adminQuery) } : {}),
+    ...(author.adminQuery
+      ? { adminQuery: Object.freeze({ ...query(author.adminQuery), upsert: forbidden }) }
+      : {}),
   });
 }

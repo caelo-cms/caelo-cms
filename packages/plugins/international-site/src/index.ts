@@ -85,7 +85,6 @@ import { EVERY_LANGUAGE, setNeutralTerms } from "./neutral-terms.js";
 import {
   adoptedAfterSourceMetaFill,
   currentSourceFingerprint,
-  type GlossaryRow,
   loadPageSource,
   outcomeNextStep,
   type PageSource,
@@ -93,7 +92,6 @@ import {
   pageTranslationBasis,
   preparePageTranslation,
   SEO_STALE_NEXT_STEP,
-  type StyleGuideRow,
   translateVariantPage,
 } from "./page-translation.js";
 import { batchIn, onceIn, renderMemoOf } from "./render-memo.js";
@@ -2205,23 +2203,13 @@ export default definePlugin<PluginContextTier1>({
       if (!reg.byCode.has(localeCode)) {
         throw new Error(`locale "${localeCode}" is not registered — call set_locales first`);
       }
-      const existing = (await q.list("glossary", {
-        term,
-        locale_code: localeCode,
-        limit: 1,
-      })) as unknown as GlossaryRow[];
-      const prev = existing[0];
-      if (prev) {
-        await q.update("glossary", prev.id, { translation, context: context ?? null });
-        return { glossaryId: prev.id, updated: true };
-      }
-      const row = (await q.insert("glossary", {
-        term,
-        locale_code: localeCode,
-        translation,
-        context: context ?? null,
-      })) as { id: string };
-      return { glossaryId: row.id, updated: false };
+      // #1659 — one row per term and language, also for two chats at once.
+      const row = await q.upsert(
+        "glossary",
+        { term, locale_code: localeCode },
+        { translation, context: context ?? null },
+      );
+      return { glossaryId: row.id, updated: !row.created };
     },
 
     /** #1449 — add to and remove from the language-neutral terms. */
@@ -2252,19 +2240,9 @@ export default definePlugin<PluginContextTier1>({
       if (!reg.byCode.has(localeCode)) {
         throw new Error(`locale "${localeCode}" is not registered — call set_locales first`);
       }
-      const existing = (await q.list("style_guides", {
-        locale_code: localeCode,
-        limit: 1,
-      })) as unknown as StyleGuideRow[];
-      const prev = existing[0];
-      if (prev) {
-        await q.update("style_guides", prev.id, { body });
-        return { styleGuideId: prev.id, updated: true };
-      }
-      const row = (await q.insert("style_guides", { locale_code: localeCode, body })) as {
-        id: string;
-      };
-      return { styleGuideId: row.id, updated: false };
+      // #1659 — one style guide per language, also for two chats at once.
+      const row = await q.upsert("style_guides", { locale_code: localeCode }, { body });
+      return { styleGuideId: row.id, updated: !row.created };
     },
 
     /**
@@ -2333,14 +2311,12 @@ export default definePlugin<PluginContextTier1>({
         if (issue !== null) throw new Error(issue);
       }
       const key = `${LOCALE_SHARE_IMAGE_KEY_PREFIX}${localeCode}`;
-      const rows = (await q.list("settings", { key, limit: 1 })) as unknown as SettingRow[];
-      const row = rows[0];
       if (mediaId === null) {
-        if (row) await q.delete("settings", row.id);
-      } else if (row) {
-        await q.update("settings", row.id, { value: { assetId: mediaId } });
+        // Every row of the key (#1659: two could have been written at once).
+        const rows = (await q.list("settings", { key, limit: 100 })) as unknown as SettingRow[];
+        for (const row of rows) await q.delete("settings", row.id);
       } else {
-        await q.insert("settings", { key, value: { assetId: mediaId } });
+        await q.upsert("settings", { key }, { value: { assetId: mediaId } });
       }
       return {
         localeCode,

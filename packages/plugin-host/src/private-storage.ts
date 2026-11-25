@@ -643,3 +643,9 @@ function compare(a: unknown, b: unknown): number {
 function isTimestamp(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}T/.test(s) && !Number.isNaN(Date.parse(s));
 }
+
+/**
+ * #1659 — the helpers `privateUpsert` (private-upsert.ts) composes the same
+ * way the writes above do: the branch lock and the overlay filter.
+ */
+export { lock as lockPrivateRow, matches as overlayRowMatches };

@@ -294,6 +294,7 @@ export function makeProjectedAdminQuery(
     updateMany: refuse("updateMany"),
     delete: refuse("delete"),
     compareAndSwap: refuse("compareAndSwap"),
+    upsert: refuse("upsert"),
   };
 }
 

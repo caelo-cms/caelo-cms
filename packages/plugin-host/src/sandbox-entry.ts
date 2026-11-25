@@ -86,7 +86,7 @@ const write = (value, strictCas = false) => {
   const json = JSONStringify(value, strictCas ? (_key, item) => {
     if (item === undefined || ArrayIncludes(NON_JSON_TYPES, typeof item)
       || (typeof item === "number" && !NumberIsFinite(item)))
-      throw new ErrorCtor("compareAndSwap requires JSON values; undefined and non-finite values are forbidden");
+      throw new ErrorCtor("a compareAndSwap or upsert call requires JSON values; undefined and non-finite values are forbidden");
     return item;
   } : undefined);
   const bytes = encodeText(json + "\\n");
@@ -104,7 +104,9 @@ const rpc = (method, ...args) => new PromiseCtor((resolve, reject) => {
   // A refused call consumes no sequence number and leaves nothing pending,
   // so the plugin can catch the error and keep going.
   try {
-    write({ kind: "call", id, method, args }, StringEndsWith(method, ".compareAndSwap"));
+    // An upsert's key names its row: a value JSON would drop or turn into
+    // null names another row, so it is checked like a compare-and-swap.
+    write({ kind: "call", id, method, args }, StringEndsWith(method, ".compareAndSwap") || method === "adminQuery.upsert");
     nextId++;
   } catch (error) {
     MapDelete(pending, id);
@@ -120,6 +122,19 @@ const handles = (prefix, names) => {
   return ObjectFreeze(out);
 };
 const QUERY_METHODS = ["insert", "list", "update", "updateMany", "compareAndSwap", "delete"];
+// #1659 — upsert is private storage only. Its call is checked like a
+// compare-and-swap (no undefined), so options left out stay out of the call.
+const adminQueryHandle = () => {
+  const out = {};
+  for (let i = 0; i < QUERY_METHODS.length; i++) {
+    const name = QUERY_METHODS[i];
+    out[name] = (...args) => rpc("adminQuery." + name, ...args);
+  }
+  out.upsert = (table, key, values, options) => options === undefined
+    ? rpc("adminQuery.upsert", table, key, values)
+    : rpc("adminQuery.upsert", table, key, values, options);
+  return ObjectFreeze(out);
+};
 // Epic #1644 — config.entities answers entry pairs (JSON has no Map), and
 // takes any number of ids, as the SDK promises: the broker reads 1000 per call.
 const CONFIG_ENTITY_CHUNK = 1000;
@@ -187,7 +202,7 @@ const execute = async (message) => {
   if (NumberIsFinite(message.callLimit)) callLimit = message.callLimit;
   const ctx = ObjectFreeze({
     query: handles("query", QUERY_METHODS),
-    ...(message.hasAdminQuery ? { adminQuery: handles("adminQuery", QUERY_METHODS) } : {}),
+    ...(message.hasAdminQuery ? { adminQuery: adminQueryHandle() } : {}),
     ...(message.hasImages ? { images: handles("images", ["describe", "get", "generate", "edit", "transform"]) } : {}),
     ...(message.hasFonts ? { fonts: handles("fonts", ["find", "inspect", "resolve", "readChunk"]) } : {}),
     ...(message.hasSiteMedia ? { siteMedia: handles("siteMedia", ["find", "inspect", "readChunk"]) } : {}),

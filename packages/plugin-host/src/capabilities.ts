@@ -26,6 +26,7 @@ import type {
   PluginQueryFilter,
   PluginSnapshots,
   PluginTheme,
+  PluginUpsertResult,
   PluginVisitor,
   PublicOperationDef,
 } from "@caelo-cms/plugin-sdk";
@@ -360,7 +361,7 @@ function makeScopedQuery(
   infra: PluginHostInfra,
   invocation: PluginInvocation,
   scope: QueryScope,
-): PluginQuery {
+): PluginQuery & Partial<Pick<PluginAdminQuery, "upsert">> {
   const schemaName = pluginSchemaName(plugin.slug);
   validateIdent(schemaName, "schema");
   // Validated at construction so a bad id fails the moment the handle is
@@ -631,6 +632,29 @@ function makeScopedQuery(
       });
       return out.swapped;
     },
+
+    // #1659 — private storage only (see makePluginAdminQuery).
+    ...(scope.pool === "admin"
+      ? {
+          upsert: async (table, key, values, options) => {
+            const tableStr = table as string;
+            assertAuthoring("upsert");
+            const columns = tableColumns("upsert", tableStr);
+            assertDeclared("upsert", tableStr, columns, [
+              ...Object.keys(key),
+              ...Object.keys(values),
+            ]);
+            return run<PluginUpsertResult>(STORAGE_OPS.private.upsert, {
+              schema: schemaName,
+              table: tableStr,
+              columns,
+              key,
+              values,
+              ifExists: options?.ifExists ?? "update",
+            });
+          },
+        }
+      : {}),
   };
 }
 
@@ -663,12 +687,15 @@ function makePluginAdminQuery(
   infra: PluginHostInfra,
   invocation: PluginInvocation,
 ): PluginAdminQuery {
-  return makeScopedQuery(plugin, infra, invocation, {
+  const handle = makeScopedQuery(plugin, infra, invocation, {
     label: "ctx.adminQuery",
     schemaLabel: "adminSchema",
     schemaMap: plugin.definition.adminSchema ?? {},
     pool: "admin",
   });
+  const { upsert } = handle;
+  if (!upsert) throw new Error("ctx.adminQuery: the admin pool's handle has no upsert");
+  return { ...handle, upsert };
 }
 
 // ---------------------------------------------------------------------------

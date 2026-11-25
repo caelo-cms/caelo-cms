@@ -10,12 +10,13 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { PluginAdminQuery } from "@caelo-cms/plugin-sdk";
+import { indexCheckedQuery, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
 import {
   type ChromeDeps,
   type PreparedChromeTranslation,
   writeChromeTranslation,
 } from "./chrome-ops.js";
+import plugin from "./index.js";
 
 const ABOUT = "a1111111-1111-4111-8111-111111111111";
 const fields = [{ name: "body", kind: "richtext" }];
@@ -60,12 +61,15 @@ function fakeDeps(canonicalise: (input: { values: Record<string, unknown> }) => 
         return canonicalise(input as { values: Record<string, unknown> }) as O;
       },
     },
-    q: {
+    // No stored variants: the write reads them to fold a key's other rows (#1659).
+    q: indexCheckedQuery(plugin, "adminSchema", {
+      list: async () => [],
       insert: async (_t: string, row: unknown) => {
         inserted.push(row);
+        return { id: `row-${inserted.length}` };
       },
       update: async () => {},
-    } as unknown as PluginAdminQuery,
+    }) as unknown as PluginAdminQuery,
     locales: new Map(),
   } as unknown as ChromeDeps;
   return { deps, calls, inserted };

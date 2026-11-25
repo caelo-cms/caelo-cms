@@ -35,6 +35,17 @@ What is translated (a *unit*):
 | local list in a content instance (a module's `list` field) | `instance/<ciId>/<field>/item/<itemId>/<itemField>` — only for the languages of the pages the instance is placed on | `list_value_translations` |
 | page property of a language version | `page/<pageId>/props/<field>` — the group's source page holds the text | `page_prop_translations` |
 
+Each table holds one row per language and address (or entry, or page
+property). Every write goes through `ctx.adminQuery.upsert`, so two chats
+translating the same text at once, or a chat and the change consumer's
+`missing` placeholder, leave one row: in the shared draft the later
+write meets the earlier one as a draft conflict, clears it with the read
+the conflict names, and wins (#1659,
+[docs/branch-aware-plugin-storage.md](../../../docs/branch-aware-plugin-storage.md)).
+Rows that came to share a key before read as one — a stored translation
+before a placeholder, then the current status, then the later insert —
+and the next write of the key deletes the others (`src/translation-rows.ts`).
+
 A field is translated when it is `text` or `richtext` and its list type
 does not say otherwise: `ext: { "international-site": { translate: false } }`
 on the field (the plugin declares this attribute through `listExt`;
