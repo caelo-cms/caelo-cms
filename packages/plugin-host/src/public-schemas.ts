@@ -7,8 +7,11 @@
  * The live site's gateway reads cms_public, the staging site's gateway its
  * twin cms_public_staging. A plugin's declared `schema` exists in both, with
  * the GRANTs of each table's kind for that database's own visitor login
- * (plugin-sandbox `PUBLIC_GRANT_TARGETS`): public_role in cms_public,
- * public_staging_role in cms_public_staging, neither in the other.
+ * (plugin-sandbox `publicGrantTargets`): public_role in cms_public,
+ * public_staging_role in cms_public_staging, neither in the other. The
+ * roles are the install's (#1689: the adapter's `installNames`), so on a
+ * Postgres server several installs share, a plugin grants to its own
+ * install's logins only.
  *
  * Two databases, no shared transaction: the live schema is provisioned
  * first, then the staging one. Every provisioning is idempotent and every
@@ -21,8 +24,7 @@
 
 import {
   type EmittedSchema,
-  LIVE_PUBLIC_GRANT_TARGET,
-  STAGING_PUBLIC_GRANT_TARGET,
+  publicGrantTargets,
   schemaFromSpec,
 } from "@caelo-cms/plugin-sandbox/schema";
 import type { PluginIndexMap, PluginSchemaMap, PluginTableKinds } from "@caelo-cms/plugin-sdk";
@@ -48,7 +50,8 @@ export async function provisionPluginPublicSchemas(
   infra: Pick<PluginHostInfra, "adapter" | "stagingAdapter">,
   spec: PluginPublicSchemaSpec,
 ): Promise<EmittedSchema> {
-  const live = schemaFromSpec({ ...spec, target: LIVE_PUBLIC_GRANT_TARGET });
+  const targets = publicGrantTargets(infra.adapter.installNames.roles);
+  const live = schemaFromSpec({ ...spec, target: targets.live });
   const stagingAdapter = infra.stagingAdapter;
   // #1633 — two databases with pools of their own: provisioned side by
   // side, so a boot waits for one round of checks, not two.
@@ -56,7 +59,7 @@ export async function provisionPluginPublicSchemas(
     infra.adapter.provisionPluginPublicSchema({ pluginId: spec.pluginId, sql: live.sql }),
     stagingAdapter
       ? (async () => {
-          const staged = schemaFromSpec({ ...spec, target: STAGING_PUBLIC_GRANT_TARGET });
+          const staged = schemaFromSpec({ ...spec, target: targets.staging });
           const outcome = await stagingAdapter.provisionPluginPublicSchema({
             pluginId: spec.pluginId,
             sql: staged.sql,

@@ -34,6 +34,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import {
+  adminGrantTarget,
   adminSchemaFromSpec,
   generateManifestKeyPair,
   releaseManifestDigest,
@@ -608,6 +609,7 @@ async function loadTier2Row(
         slug: row.slug,
         adminSchema: admin1.adminSchema,
         indexes: admin1.indexes,
+        target: adminGrantTarget(opts.infra.adapter.installNames.roles),
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
         pluginId: row.id,
@@ -966,6 +968,7 @@ export async function activateApprovedExternalPlugin(
         slug: manifest.slug,
         adminSchema: admin2.adminSchema,
         indexes: admin2.indexes,
+        target: adminGrantTarget(opts.infra.adapter.installNames.roles),
       });
       await opts.infra.adapter.provisionPluginAdminSchema({
         pluginId: artifact.pluginId,
@@ -1447,6 +1450,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       indexes: admin3.indexes,
       // #635 — the declared projection's tables republish on every write.
       projectedTables: Object.keys(def.visitorProjection ?? {}),
+      target: adminGrantTarget(opts.infra.adapter.installNames.roles),
     });
     await timedStep("provision", () =>
       inPhase("provision", () =>

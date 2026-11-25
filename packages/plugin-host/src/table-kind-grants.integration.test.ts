@@ -9,23 +9,27 @@
  * compromised gateway would.
  *
  * Every public database the generator targets is checked: the live one
- * (`LIVE_PUBLIC_GRANT_TARGET`) and, since #1329, the staging twin
- * (`STAGING_PUBLIC_GRANT_TARGET`). The host provisions both on every load
+ * (`LIVE_TARGET`) and, since #1329, the staging twin
+ * (`STAGING_TARGET`). The host provisions both on every load
  * (public-schemas.ts); neither visitor login reaches the other's tables.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
-  LIVE_PUBLIC_GRANT_TARGET,
   type PublicGrantTarget,
-  STAGING_PUBLIC_GRANT_TARGET,
+  publicGrantTargets,
   schemaFromSpec,
   VISITOR_TABLE_PRIVILEGES,
 } from "@caelo-cms/plugin-sandbox";
 import { PLUGIN_TABLE_KINDS, type PluginTableKind } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { dropPluginPublicSchemas, provisionPluginPublicSchemas } from "./public-schemas.js";
+
+const { live: LIVE_TARGET, staging: STAGING_TARGET } = publicGrantTargets(
+  DEFAULT_INSTALL_NAMES.roles,
+);
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -47,9 +51,9 @@ const TARGETS: ReadonlyArray<{
   adminUrl: string;
   visitorUrl: string;
 }> = [
-  { target: LIVE_PUBLIC_GRANT_TARGET, adminUrl: PUBLIC_ADMIN_URL, visitorUrl: VISITOR_URL },
+  { target: LIVE_TARGET, adminUrl: PUBLIC_ADMIN_URL, visitorUrl: VISITOR_URL },
   {
-    target: STAGING_PUBLIC_GRANT_TARGET,
+    target: STAGING_TARGET,
     adminUrl: STAGING_ADMIN_URL,
     visitorUrl: STAGING_VISITOR_URL,
   },
@@ -196,7 +200,7 @@ describe("both public databases on every load (#1329)", () => {
     await provisionPluginPublicSchemas({ adapter, stagingAdapter }, spec);
     for (const { target, adminUrl } of TARGETS) {
       expect(await privilegesOf(adminUrl, target.visitorRole, "published")).toEqual(["SELECT"]);
-      const other = target === LIVE_PUBLIC_GRANT_TARGET ? "public_staging_role" : "public_role";
+      const other = target === LIVE_TARGET ? "public_staging_role" : "public_role";
       expect(await privilegesOf(adminUrl, other, "published")).toEqual([]);
     }
   });
@@ -204,7 +208,7 @@ describe("both public databases on every load (#1329)", () => {
   it("repairs a staging database that missed a load (an install from before it)", async () => {
     await dropSchema();
     // Only the live provisioning ran, as on an install before #1329.
-    await provision(tableKinds, LIVE_PUBLIC_GRANT_TARGET);
+    await provision(tableKinds, LIVE_TARGET);
     const t = `"${SCHEMA}"."published"`;
     await expect(asVisitor(STAGING_VISITOR_URL as string, `SELECT * FROM ${t}`)).rejects.toThrow(
       /does not exist/,

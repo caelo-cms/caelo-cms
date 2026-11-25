@@ -126,12 +126,14 @@ export interface ChromeTarget {
   readonly values: Readonly<Record<string, unknown>>;
 }
 
-interface SharedContent {
+/** What `pages.list_shared_content` answers, as far as this plugin reads it. */
+export interface SharedContent {
   layoutPlacements: {
     layoutId: string;
     layoutSlug: string;
     blockName: string;
     index: number;
+    moduleId: string;
     moduleName: string;
     fields: ChromeField[];
     values: Record<string, unknown>;
@@ -139,16 +141,27 @@ interface SharedContent {
   sharedInstances: {
     contentInstanceId: string;
     slug: string | null;
+    moduleId: string;
     moduleName: string;
     fields: ChromeField[];
     values: Record<string, unknown>;
     pageIds: string[];
   }[];
+  /** Every content instance holding a local list, with the pages it is placed on. */
+  listInstances: { contentInstanceId: string; pageIds: string[] }[];
 }
 
 /** Every chrome target of the live site. */
 export async function loadChromeTargets(cms: ChromeCms): Promise<ChromeTarget[]> {
-  const shared = await cms.call<SharedContent>("pages.list_shared_content", {});
+  return chromeTargetsOf(await cms.call<SharedContent>("pages.list_shared_content", {}));
+}
+
+/**
+ * The chrome targets of a `pages.list_shared_content` answer, for a
+ * caller that reads the answer once for several uses (the Stage audit,
+ * #1632).
+ */
+export function chromeTargetsOf(shared: SharedContent): ChromeTarget[] {
   return [
     ...shared.layoutPlacements.map((p) => ({
       key: layoutTargetKey(p.layoutId, p.blockName, p.index),

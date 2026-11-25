@@ -93,4 +93,28 @@ describe("renderFindings (#1604)", () => {
   it("reports nothing for a build that rendered everything", () => {
     expect(renderFindings([], 0, new Set([HOME]))).toEqual([]);
   });
+
+  it("files an image size the build could not publish as an image on the page (#1600)", () => {
+    const f = renderFindings(
+      [
+        failure({
+          blockName: null,
+          moduleSlug: null,
+          reason: "media-variant-missing:url-history/webp-800:orig,webp-400",
+        }),
+      ],
+      1,
+      new Set([HOME]),
+    );
+    expect(f[0]).toMatchObject({
+      ruleId: "render/media-variant-missing",
+      severity: "error",
+      pageId: HOME,
+      fix: { tool: "set_content_instance_values_many" },
+    });
+    expect(f[0]?.message).toStartWith("Could not be rendered: an image on the page (");
+    expect(f[0]?.message).not.toContain("site layout");
+    expect(f[0]?.fix?.hint).toContain("/_caelo/media/url-history/webp-400");
+    for (const x of f) expect(findingSchema.safeParse(x).success).toBe(true);
+  });
 });

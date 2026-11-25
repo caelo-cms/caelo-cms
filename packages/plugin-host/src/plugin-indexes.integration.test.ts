@@ -11,14 +11,20 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
+  adminGrantTarget,
   adminSchemaFromSpec,
   PRIVATE_LIVE_ROW_PREDICATE,
   pluginIndexName,
+  publicGrantTargets,
   schemaFromSpec,
 } from "@caelo-cms/plugin-sandbox";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerPluginStorageOps, STORAGE_OPS } from "./storage-ops.js";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
+const ADMIN_TARGET = adminGrantTarget(DEFAULT_INSTALL_NAMES.roles);
 
 function requiredUrl(name: string): string {
   const url = process.env[name];
@@ -93,6 +99,7 @@ const PUBLIC_TABLE = {
 describe("#1292 — emitted plugin indexes", () => {
   it("cms_public: creates the declared indexes, and a new version drops only what it stopped declaring", async () => {
     const v1 = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(
         Object.keys(PUBLIC_TABLE).map((t) => [t, "visitor-state" as const]),
       ),
@@ -113,6 +120,7 @@ describe("#1292 — emitted plugin indexes", () => {
     const statusOid = await oidOf(PUBLIC_URL, statusIx);
 
     const v2 = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(
         Object.keys(PUBLIC_TABLE).map((t) => [t, "visitor-state" as const]),
       ),
@@ -129,6 +137,7 @@ describe("#1292 — emitted plugin indexes", () => {
     expect(await oidOf(PUBLIC_URL, statusIx)).toBe(statusOid);
 
     const v3 = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(
         Object.keys(PUBLIC_TABLE).map((t) => [t, "visitor-state" as const]),
       ),
@@ -146,6 +155,7 @@ describe("#1292 — emitted plugin indexes", () => {
       variants: { page_id: "ref:pages:cascade", group_id: "uuid", locale_code: "string" },
     };
     const emitted = adminSchemaFromSpec({
+      target: ADMIN_TARGET,
       pluginId: PLUGIN_ID,
       slug: SLUG,
       adminSchema,
@@ -175,6 +185,7 @@ describe("#1292 — emitted plugin indexes", () => {
 
     // Dropping the declaration keeps the automatic ones.
     const bare = adminSchemaFromSpec({
+      target: ADMIN_TARGET,
       pluginId: PLUGIN_ID,
       slug: SLUG,
       adminSchema,
@@ -203,6 +214,7 @@ describe("#1292 — the list operation refuses reads no index covers", () => {
     });
   const provision = async (indexes: Parameters<typeof schemaFromSpec>[0]["indexes"]) => {
     const emitted = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(
         Object.keys(PUBLIC_TABLE).map((t) => [t, "visitor-state" as const]),
       ),

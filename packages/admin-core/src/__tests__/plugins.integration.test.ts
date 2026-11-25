@@ -14,12 +14,14 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { publicGrantTargets, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { DEFAULT_INSTALL_NAMES, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { registerAdminOps } from "../register.js";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -317,6 +319,7 @@ describe("plugins.activate", () => {
     if (!submit.ok) return;
     const pluginId = (submit.value as { pluginId: string }).pluginId;
     const emitted = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(
         Object.keys(helloManifest.schema).map((t) => [t, "visitor-state" as const]),
       ),

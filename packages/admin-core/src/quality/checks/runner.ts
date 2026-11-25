@@ -39,7 +39,8 @@ export interface FindingRunResult {
   readonly errors: readonly CheckRunError[];
 }
 
-async function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+/** `work`, or a rejection naming `what` once it has run `ms` without settling. */
+export async function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms} ms`)), ms);

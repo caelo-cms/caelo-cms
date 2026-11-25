@@ -89,8 +89,8 @@ export const regenerateMediaVariantsOp = defineOperation({
   transaction: "none",
   input: z
     .object({
-      /** Explicit targets — use the ids from the generator's
-       *  "media references unresolved" error. */
+      /** Explicit targets — the assets a `render/media-variant-missing`
+       *  finding or a refused build names (ids from find_media). */
       assetIds: z.array(z.string().uuid()).min(1).max(100).optional(),
       /** Scan the library for raster assets whose expected ladder is
        *  incomplete and regenerate those. Mutually exclusive with assetIds. */

@@ -254,7 +254,7 @@ jobs:
         if: matrix.spec
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
 
       - name: Image contents (allowlist, non-root, no shell)
         if: matrix.spec
@@ -294,15 +294,19 @@ jobs:
           # --ignore-unfixed: a finding with no fixed version anywhere has no
           # action a PR could take; it would block every merge until Debian
           # or the vendor ships one. Fixable high/critical findings block.
+          # --ignorefile: the few exceptions for a fixed finding the pinned
+          # base has not picked up yet, each version-pinned, reasoned and
+          # expiring (.trivyignore.yaml, scripts/trivy-ignore.test.ts).
           trivy() {
             docker run --rm \
               -v /var/run/docker.sock:/var/run/docker.sock \
               -v "${RUNNER_TEMP}/trivy-cache:/root/.cache/trivy" \
               -v "${RUNNER_TEMP}/sbom:/sbom:ro" \
+              -v "${GITHUB_WORKSPACE}/.trivyignore.yaml:/trivyignore.yaml:ro" \
               "${TRIVY}" "$@"
           }
-          trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "${IMAGE}"
-          trivy sbom --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 /sbom/bundle.cdx.json
+          trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --ignorefile /trivyignore.yaml --exit-code 1 "${IMAGE}"
+          trivy sbom --severity HIGH,CRITICAL --ignore-unfixed --ignorefile /trivyignore.yaml --exit-code 1 /sbom/bundle.cdx.json
 
       - name: Gateway boot smoke (Postgres, migrations, health, plugin self-check)
         if: matrix.service == 'gateway'

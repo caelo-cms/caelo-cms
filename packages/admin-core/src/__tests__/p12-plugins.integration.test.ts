@@ -25,10 +25,13 @@ import {
 } from "@caelo-cms/plugin-host";
 import newsletterPlugin from "@caelo-cms/plugin-newsletter";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
-import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { publicGrantTargets, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -99,6 +102,7 @@ async function provisionAll(
     );
     if (!id) throw new Error(`provisionAll: no plugin row for ${p.slug}`);
     const emitted = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: p.tableKinds,
       pluginId: id,
       slug: p.slug,

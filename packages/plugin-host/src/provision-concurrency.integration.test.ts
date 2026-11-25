@@ -10,9 +10,18 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { adminSchemaFromSpec, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import {
+  adminGrantTarget,
+  adminSchemaFromSpec,
+  publicGrantTargets,
+  schemaFromSpec,
+} from "@caelo-cms/plugin-sandbox";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
+const ADMIN_TARGET = adminGrantTarget(DEFAULT_INSTALL_NAMES.roles);
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -74,6 +83,7 @@ afterAll(async () => {
 describe("#1008 — concurrent plugin schema provisioning", () => {
   it("cms_public: every instance succeeds and one schema results", async () => {
     const emitted = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const])),
       pluginId: PLUGIN_ID,
       slug: SLUG,
@@ -89,6 +99,7 @@ describe("#1008 — concurrent plugin schema provisioning", () => {
 
   it("cms_admin: every instance succeeds and one schema results", async () => {
     const emitted = adminSchemaFromSpec({
+      target: ADMIN_TARGET,
       pluginId: PLUGIN_ID,
       slug: SLUG,
       adminSchema: schema,
@@ -103,6 +114,7 @@ describe("#1008 — concurrent plugin schema provisioning", () => {
 
   it("re-provisioning the same SQL skips the DDL (no ACCESS EXCLUSIVE on a live table)", async () => {
     const emitted = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const])),
       pluginId: PLUGIN_ID,
       slug: SLUG,
@@ -135,6 +147,7 @@ describe("#1008 — concurrent plugin schema provisioning", () => {
 
   it("a changed spec re-runs the DDL (additive evolution still applies)", async () => {
     const evolved = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: {
         locales: "visitor-state",
         glossary: "visitor-state",
@@ -153,6 +166,7 @@ describe("#1008 — concurrent plugin schema provisioning", () => {
 
   it("a dropped schema is re-created even when its digest was recorded", async () => {
     const emitted = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const])),
       pluginId: PLUGIN_ID,
       slug: SLUG,

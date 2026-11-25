@@ -2994,6 +2994,12 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * ({@link PluginAuditPageFacts}). Findings of every call land in the
    * report; an identical finding from two calls is filed once.
    *
+   * Each call has its own time budget (60 s, #1632), and the check as a
+   * whole has the audit's ceiling for one check (5 minutes). So read
+   * site-wide data in the first call, and in a batch call only what its
+   * pages show: a batch then costs the same on a small and a large site,
+   * and the batches add up to the site's size, not batches × site.
+   *
    * @example
    *   audit_findings: async (_ctx, { pages }) => ({
    *     findings: [{

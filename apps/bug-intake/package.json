@@ -10,10 +10,10 @@
     "start": "bun src/main.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.104",
+    "@ai-sdk/anthropic": "^4.0.107",
     "@caelo-cms/shared": "workspace:*",
     "@google-cloud/firestore": "9.4.1",
-    "ai": "^7.0.172",
+    "ai": "^7.0.179",
     "zod": "4.6.7"
   },
   "devDependencies": {

@@ -19,6 +19,6 @@
   "dependencies": {
     "@caelo-cms/plugin-sdk": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
-    "oxc-parser": "0.158.0"
+    "oxc-parser": "0.159.0"
   }
 }

@@ -8,13 +8,19 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import {
+  adminGrantTarget,
   adminSchemaFromSpec,
   PLUGIN_INDEX_PREFIX,
   PRIVATE_LIVE_ROW_PREDICATE,
   pluginIndexName,
+  publicGrantTargets,
   schemaFromSpec,
 } from "./index.js";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
+const ADMIN_TARGET = adminGrantTarget(DEFAULT_INSTALL_NAMES.roles);
 
 const PID = "11111111-1111-4111-8111-111111111111";
 
@@ -51,6 +57,7 @@ describe("schemaFromSpec — indexes", () => {
 
   it("emits declared (and unique) indexes on the whole table, and no host index", () => {
     const { sql } = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const])),
       pluginId: PID,
       slug: "probe",
@@ -69,6 +76,7 @@ describe("schemaFromSpec — indexes", () => {
 
   it("drops the table's caelo_ix_ indexes it does not emit — all of them when none is declared", () => {
     const { sql } = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: Object.fromEntries(Object.keys(schema).map((t) => [t, "visitor-state" as const])),
       pluginId: PID,
       slug: "probe",
@@ -83,6 +91,7 @@ describe("schemaFromSpec — indexes", () => {
   it("refuses indexes on an undeclared table or column, a jsonb or caelo_ column", () => {
     const emit = (indexes: Record<string, string[][]>) =>
       schemaFromSpec({
+        target: LIVE_TARGET,
         tableKinds: { entries: "visitor-state" },
         pluginId: PID,
         slug: "probe",
@@ -103,6 +112,7 @@ describe("adminSchemaFromSpec — indexes", () => {
 
   it("makes declared indexes partial on the live main-line rows the host reads", () => {
     const { sql } = adminSchemaFromSpec({
+      target: ADMIN_TARGET,
       pluginId: PID,
       slug: "probe",
       adminSchema,
@@ -121,6 +131,7 @@ describe("adminSchemaFromSpec — indexes", () => {
 
   it("indexes every ref: column and the branch column without a declaration", () => {
     const { sql } = adminSchemaFromSpec({
+      target: ADMIN_TARGET,
       pluginId: PID,
       slug: "probe",
       adminSchema,
@@ -137,6 +148,7 @@ describe("adminSchemaFromSpec — indexes", () => {
   it("refuses a unique private-storage index", () => {
     expect(() =>
       adminSchemaFromSpec({
+        target: ADMIN_TARGET,
         pluginId: PID,
         slug: "probe",
         adminSchema,

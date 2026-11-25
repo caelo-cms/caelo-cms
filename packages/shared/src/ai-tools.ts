@@ -786,8 +786,9 @@ export const findMediaToolInput = z
 export type FindMediaToolInput = z.infer<typeof findMediaToolInput>;
 
 /**
- * run #10 D4 — `regenerate_media_variants`. Recovery tool for the
- * staging generator's "media references unresolved" failure: re-runs
+ * run #10 D4 — `regenerate_media_variants`. Recovery tool for a media
+ * variant a page names but the asset lacks (#1600: a Stage records it,
+ * Publish live and production builds refuse it): re-runs
  * the image pipeline for the named assets (or every asset with an
  * incomplete ladder) and reports per-asset what was added or why
  * nothing could be.

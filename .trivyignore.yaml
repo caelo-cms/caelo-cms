@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Exceptions to the Trivy gate of the minimal service images
+# (.github/workflows/release-images.yml, docs/dev/service-images.md).
+#
+# An entry is the last resort, for a fixable finding in a digest-pinned base
+# image whose upstream has not rebuilt yet. Each one names the exact package
+# version (a purl with a version), says why the finding cannot be reached in
+# our images, and expires within 14 days: past `expired_at` Trivy blocks
+# again. scripts/trivy-ignore.test.ts enforces all three and fails on an
+# expired entry, so a stale exception is removed, never left behind. Delete the
+# entry in the PR that bumps the base digest to a build with the fix.
+
+vulnerabilities:
+  - id: CVE-2026-124851
+    purls:
+      # The libzstd1 of gcr.io/distroless/cc-debian13:nonroot
+      # @sha256:cb87acc5… (gateway, mcp-auth-proxy). Debian fixed it in
+      # 1.5.7+dfsg-1+deb13u1 (DSA-6657-1); the newest distroless build on
+      # 2026-11-25 (sha256:532c7a94…) still ships 1.5.7+dfsg-1.
+      - "pkg:deb/debian/libzstd1@1.5.7%2Bdfsg-1"
+    statement: >-
+      Not reachable: both images run only /usr/local/bin/bun, whose ELF NEEDED
+      entries are libc, ld-linux, libpthread, libdl and libm, so the system
+      libzstd is never loaded. Remove with the distroless digest bump that
+      ships 1.5.7+dfsg-1+deb13u1.
+    expired_at: 2026-12-02
