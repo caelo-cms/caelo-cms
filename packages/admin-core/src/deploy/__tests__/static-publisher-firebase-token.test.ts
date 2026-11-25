@@ -7,6 +7,10 @@
  * the metadata server hands out a cached token that can be minutes from
  * expiring, and a six-minute build failed with 401 ACCESS_TOKEN_EXPIRED.
  *
+ * Publish live has the same shape: it lists every file of the staged
+ * version, populates the copy and then waits on the lease fence
+ * (`beforeRelease`), which can take minutes, before the release.
+ *
  * The real publisher runs against an in-memory Hosting that refuses an
  * expired token the way Hosting does; google-auth-library's client is a
  * fake whose token the test expires mid-build.
@@ -104,6 +108,18 @@ class TokenCheckingHosting {
       this.seen.push({ kind: "finalize", token });
       return json({});
     }
+    if (method === "POST" && route === `sites/${SITE}/releases`) {
+      this.seen.push({ kind: "release", token });
+      return json({});
+    }
+    if (method === "GET" && /^sites\/[^/]+\/versions\/[^/]+\/files$/.test(route)) {
+      this.seen.push({ kind: "list", token });
+      return json({ files: [{ path: "/index.html", hash: "a".repeat(64), status: "ACTIVE" }] });
+    }
+    if (method === "GET" && /^sites\/[^/]+\/versions\/[^/]+$/.test(route)) {
+      this.seen.push({ kind: "config", token });
+      return json({ config: {} });
+    }
     throw new Error(`unhandled ${method} ${url}`);
   };
 }
@@ -191,6 +207,34 @@ describe("Firebase build upload — #1632 token lifetime", () => {
     expect(after.map((s) => s.kind)).toContain("upload");
     expect(after.at(-1)).toEqual({ kind: "finalize", token: "token-2" });
     expect(after.every((s) => s.token === "token-2")).toBe(true);
+  });
+
+  it("Publish live releases with a fresh token after a long wait at the lease fence", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    const summary = await firebaseHostingPublisher.promoteToProduction({
+      sourceRunId: "run-staged",
+      sourceBuildDir: buildDir,
+      sourceLocation: `sites/${SITE}/versions/staged`,
+      fromTarget: PRODUCTION,
+      toTarget: PRODUCTION,
+      siteBaseUrl: "https://example.test",
+      // The fence waits for its leases; meanwhile the first token expires.
+      beforeRelease: async () => {
+        hosting.expired.add("token-1");
+        adc.token = "token-2";
+      },
+    });
+    expect(summary.location).toBe(`sites/${SITE}/versions/v1`);
+    expect(hosting.seen.map((s) => s.kind)).toEqual([
+      "config",
+      "list",
+      "create",
+      "populate",
+      "upload",
+      "finalize",
+      "release",
+    ]);
+    expect(hosting.seen.at(-1)).toEqual({ kind: "release", token: "token-2" });
   });
 
   it("requests asked for at once share one token fetch", async () => {
