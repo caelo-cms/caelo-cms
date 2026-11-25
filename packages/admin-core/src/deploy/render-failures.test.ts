@@ -148,7 +148,9 @@ describe("renderRepairOf (#1604)", () => {
   it("sends a page property no page type declares to the page types and the module (#1561)", () => {
     const r = renderRepairOf({ reason: "page-prop-unknown:stnad", moduleSlug: "hilfe-kopf" });
     expect(r.tool).toBe("list_page_types");
-    expect(r.hint).toContain('{{page.props.stnad}} in module "hilfe-kopf"');
+    expect(r.hint).toContain(
+      '{{page.props.stnad}} (or {{props.stnad}} in a list of pages) in module "hilfe-kopf"',
+    );
     expect(r.hint).toContain("update_modules_many");
     expect(r.hint).toContain("upsert_page_types_many");
     // The render check truncates a hint at 500 characters.

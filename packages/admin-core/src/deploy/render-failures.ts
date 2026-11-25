@@ -139,13 +139,16 @@ const REFERENCE_REPAIR =
 /**
  * #1561 — how the AI repairs `{{page.props.<name>}}` when no page type of
  * the site declares `<name>`. Exported so the preview's next steps
- * (`inspect_page_render`) say the same as the Stage's report.
+ * (`inspect_page_render`) say the same as the Stage's report. The marker
+ * does not say which form the module wrote, so the hint names both: the
+ * rendering page's `page.props`, and `props` on a page a list iterates
+ * (a query, breadcrumbs, children).
  *
  * @param mod the place in the AI's terms (`module "hero"`).
  */
 export function pagePropUnknownHint(name: string, mod: string): string {
   return (
-    `{{page.props.${name}}} in ${mod}: no page type of the site declares "${name}" (a typo, or a removed property). ` +
+    `{{page.props.${name}}} (or {{props.${name}}} in a list of pages) in ${mod}: no page type of the site declares "${name}" (a typo, or a removed property). ` +
     "list_page_types shows each page type's properties: correct the name in the module HTML (update_modules_many), " +
     "or declare it on the page types that should show it (upsert_page_types_many). " +
     "A property another page type declares needs no guard: it is empty where a page's type lacks it."
