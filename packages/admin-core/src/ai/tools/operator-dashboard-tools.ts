@@ -278,6 +278,12 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
       );
     }
     if (h.problem) lines.push(`problem: ${formatPluginError(h.problem)}`);
+    // #1728 — current state, unlike the 7-day error history below.
+    for (const w of h.unscheduledWorkers) {
+      lines.push(
+        `worker off the schedule: ${w.workerName} (cron "${w.cron}": ${w.reason}). The plugin's other workers run; this one runs only after a release of the plugin fixes its pattern.`,
+      );
+    }
     for (const e of h.recentErrors) lines.push(`recent error: ${formatPluginError(e)}`);
     lines.push(...pluginBackgroundLines(h));
     if (plugin.rejectionReason) lines.push(`rejected: ${plugin.rejectionReason}`);

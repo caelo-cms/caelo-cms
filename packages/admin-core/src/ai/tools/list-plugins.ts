@@ -54,7 +54,8 @@ export function describeDiscoveryFailures(
 }
 
 /**
- * The `problem` cell: why the plugin does not run. Exported for its unit test.
+ * The `problem` cell: why the plugin, or a worker of it, does not run.
+ * Exported for its unit test.
  */
 export function healthProblem(h: PluginListRow["health"]): string {
   if (h.state === "awaiting_approval") {
@@ -65,6 +66,12 @@ export function healthProblem(h: PluginListRow["health"]): string {
   if (b) {
     parts.push(
       `change consumer failed ${b.consecutiveFailures}x, retried at ${b.nextRetryAt} (get_plugin)`,
+    );
+  }
+  // #1728 — for as long as the worker is off, however old its error-log entry.
+  for (const w of h.unscheduledWorkers) {
+    parts.push(
+      `worker ${w.workerName} off the schedule: its cron "${w.cron}" does not parse (${w.reason}); the plugin's other workers run, this one only after a release fixes the pattern`,
     );
   }
   return parts.join("; ");
@@ -83,6 +90,7 @@ interface PluginListRow {
     awaitingManifestDigest: string | null;
     problem: { message: string } | null;
     consumerBackoff: { consecutiveFailures: number; nextRetryAt: string } | null;
+    unscheduledWorkers: { workerName: string; cron: string; reason: string }[];
   };
   requiresPlugins: string[];
   requiredBy: string[];

@@ -35,6 +35,7 @@ import { sql } from "drizzle-orm";
 import type { PluginHostInfra } from "./dispatch.js";
 import { describeLoadError } from "./load-error.js";
 import { pluginRuntimeStats } from "./plugin-runtime-stats.js";
+import { type UnscheduledWorker, unscheduledWorkersOf } from "./unscheduled-workers.js";
 
 /** Where in a plugin's life a problem happened. */
 export type PluginPhase =
@@ -439,6 +440,13 @@ async function releaseBugIntakeClaim(
 interface RuntimeOutcome {
   readonly state: "loaded" | "error";
   readonly errorId: string | null;
+  /**
+   * #1728 — the plugin's workers this instance keeps off the schedule
+   * because croner refused their cron (empty unless `loaded`). The row
+   * carries them for as long as it is live, so plugin health reports them
+   * for as long as they are off, not only for its error log's 7 days.
+   */
+  readonly unscheduledWorkers: ReadonlyArray<UnscheduledWorker>;
   /** Its place among this instance's outcomes (see {@link nextOutcomeSeq}). */
   readonly seq: bigint;
 }
@@ -511,6 +519,8 @@ export async function recordPluginRuntime(opts: {
   const outcome: RuntimeOutcome = {
     state: opts.state,
     errorId: opts.errorId,
+    // Read when the outcome is decided: a load registers its workers first.
+    unscheduledWorkers: opts.state === "loaded" ? unscheduledWorkersOf(opts.slug) : [],
     seq: nextOutcomeSeq(),
   };
   currentOutcomes.set(opts.slug, outcome);
@@ -554,14 +564,16 @@ async function upsertOutcome(
         }
         await tx.execute(sql`
           INSERT INTO plugin_runtime
-            (instance_id, plugin_slug, revision, state, error_id, outcome_seq)
+            (instance_id, plugin_slug, revision, state, error_id, unscheduled_workers, outcome_seq)
           SELECT ${INSTANCE_ID}, ${slug}, ${REVISION}, ${outcome.state}, ${outcome.errorId}::uuid,
+                 (${JSON.stringify(outcome.unscheduledWorkers)}::text)::jsonb,
                  ${outcome.seq.toString()}::bigint
           WHERE ${outcome.errorId}::uuid IS NULL
              OR EXISTS (SELECT 1 FROM plugin_errors WHERE id = ${outcome.errorId}::uuid)
           ON CONFLICT (instance_id, plugin_slug) DO UPDATE SET
             state = EXCLUDED.state,
             error_id = EXCLUDED.error_id,
+            unscheduled_workers = EXCLUDED.unscheduled_workers,
             outcome_seq = EXCLUDED.outcome_seq,
             updated_at = now(),
             heartbeat_at = now()

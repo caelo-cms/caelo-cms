@@ -86,6 +86,18 @@ const consumerBackoff = z.object({
 });
 
 /**
+ * #1728 — a worker a live server keeps off the schedule because croner
+ * refuses its cron (#1720): the other workers run, this one does not until
+ * a release fixes its pattern. Reported for as long as it is off; the
+ * plugin's error log keeps the history.
+ */
+const unscheduledWorker = z.object({
+  workerName: z.string(),
+  cron: z.string(),
+  reason: z.string(),
+});
+
+/**
  * #1390 — one call the plugin made through its broker — a core operation
  * (`pages.list`) or its own storage (`plugin_storage.list`): calls, total
  * and longest ms.
@@ -129,6 +141,8 @@ export const pluginHealth = z.object({
   recentErrors: z.array(pluginErrorSummary),
   /** Its change consumer's failure backoff, when one is waiting (#1390). */
   consumerBackoff: consumerBackoff.nullable(),
+  /** #1728 — workers a live server keeps off the schedule, for as long as they are off. */
+  unscheduledWorkers: z.array(unscheduledWorker),
   /** The core operations it called and their time (#1390). */
   callCost: callCostSummary,
 });
@@ -309,6 +323,18 @@ export async function readPluginHealth(
     ORDER BY r.plugin_slug, (r.consumer_backoff->>'consecutiveFailures')::int DESC NULLS LAST
   `)) as unknown as { plugin_slug: string; consumer_backoff: unknown }[];
 
+  // #1728 — every live server's workers off the schedule, once each: servers
+  // of one release agree, and during a rollout each pattern still counts.
+  const unscheduled = (await tx.execute(sql`
+    SELECT DISTINCT r.plugin_slug, w->>'workerName' AS worker_name, w->>'cron' AS cron,
+           w->>'reason' AS reason
+    FROM plugin_runtime r, jsonb_array_elements(r.unscheduled_workers) w
+    WHERE r.plugin_slug = ANY(${slugArray})
+      AND r.state = 'loaded'
+      AND ${liveServer(sql`r`)}
+    ORDER BY r.plugin_slug, worker_name, cron
+  `)) as unknown as { plugin_slug: string; worker_name: unknown; cron: unknown; reason: unknown }[];
+
   // Summed over the live servers; each row is that server's total since it started.
   const costs = (await tx.execute(sql`
     SELECT r.plugin_slug, c.key AS op,
@@ -337,6 +363,19 @@ export async function readPluginHealth(
     }),
   );
   const problemBySlug = new Map(problems.map((p) => [p.plugin_slug, p]));
+  const unscheduledBySlug = new Map<string, z.infer<typeof unscheduledWorker>[]>();
+  for (const u of unscheduled) {
+    const parsed = unscheduledWorker.safeParse({
+      workerName: u.worker_name,
+      cron: u.cron,
+      reason: u.reason,
+    });
+    if (!parsed.success) continue;
+    unscheduledBySlug.set(u.plugin_slug, [
+      ...(unscheduledBySlug.get(u.plugin_slug) ?? []),
+      parsed.data,
+    ]);
+  }
   for (const p of plugins) {
     const s = serversBySlug.get(p.slug) ?? { loaded: 0, failing: 0 };
     const problem = problemBySlug.get(p.slug);
@@ -359,6 +398,7 @@ export async function readPluginHealth(
       problem: state === "failing" && problem ? summary(problem) : null,
       recentErrors: recent.filter((r) => r.plugin_slug === p.slug).map(summary),
       consumerBackoff: backoffBySlug.get(p.slug) ?? null,
+      unscheduledWorkers: unscheduledBySlug.get(p.slug) ?? [],
       callCost: costSummary(costs.filter((c) => c.plugin_slug === p.slug)),
     });
   }
