@@ -485,6 +485,61 @@ describe("#1663 — one content instance shared across blocks with different syn
     expect((r.error as { message?: string }).message).toContain('named with sync mode "synced"');
     expect((await placed(SYSTEM, pageId)).header?.[0]?.syncMode).toBe("unsynced");
   });
+
+  // Without a stated mode the op used to hand the shared id's modes out in
+  // the order it read them, which is not the caller's order: a guess.
+  it("pages.set_modules refuses to guess the mode of an id bound both ways", async () => {
+    const { pageId, cta, shared } = await seedShared(SYSTEM, "sharedguess", "content");
+    for (const blocks of [
+      // The survivor of a header removal, named by id alone.
+      [
+        { blockName: "header", moduleIds: [], contentInstanceIds: [] },
+        { blockName: "content", moduleIds: [cta], contentInstanceIds: [shared] },
+      ],
+      // Both placements named by id alone: still ambiguous.
+      [
+        { blockName: "header", moduleIds: [cta], contentInstanceIds: [shared] },
+        { blockName: "content", moduleIds: [cta], contentInstanceIds: [shared] },
+      ],
+    ]) {
+      const r = await execute(registry, adapter, SYSTEM, "pages.set_modules", { pageId, blocks });
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect((r.error as { message?: string }).message).toContain("both synced and unsynced");
+    }
+    const after = await placed(SYSTEM, pageId);
+    expect(after.header?.[0]?.syncMode).toBe("unsynced");
+    expect(after.content?.[0]?.syncMode).toBe("synced");
+  });
+
+  // add_module names every placement it keeps; it states their modes too.
+  for (const mode of ["live", "chat branch"] as const) {
+    for (const syncedIn of ["header", "content"] as const) {
+      it(`placing another module keeps the ${syncedIn} one synced (${mode})`, async () => {
+        const ctx = mode === "live" ? SYSTEM : await chatCtx(`place-${syncedIn}`);
+        const { pageId, cta, shared } = await seedShared(
+          ctx,
+          `place-${syncedIn}-${mode.replace(" ", "")}`,
+          syncedIn,
+        );
+        const extra = await makeModule(`${PFX}-place-${syncedIn}-${mode.replace(" ", "")}-x`);
+        await op(ctx, "pages.place_module", {
+          target: { kind: "pages", pageIds: [pageId] },
+          blockName: "content",
+          position: "top",
+          module: { moduleId: extra },
+        });
+        const after = await placed(ctx, pageId);
+        const ctaIn = (b: Block) => after[b]?.find((m) => m.moduleId === cta);
+        expect(ctaIn(syncedIn)).toMatchObject({ contentInstanceId: shared, syncMode: "synced" });
+        expect(ctaIn(other(syncedIn))).toMatchObject({
+          contentInstanceId: shared,
+          syncMode: "unsynced",
+        });
+        expect(after.content?.[0]?.moduleId).toBe(extra);
+      });
+    }
+  }
 });
 
 describe("#1663 — remove_module_from on a layout holding a module twice", () => {

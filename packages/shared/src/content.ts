@@ -883,9 +883,11 @@ export const pageSetModulesSchema = z
            * where `contentInstanceIds` is null). Placements in different
            * blocks may share one content instance with different sync
            * modes, so the id alone cannot say which binding an entry is;
-           * the mode picks it. Omitted, a named id takes its bindings in
-           * page order. Never changes a sync mode: each must be one the
-           * instance has on this page (`placement.set_content` changes it).
+           * the mode picks it. Omitted (or null for a named entry), the id
+           * must be bound with one sync mode only: an id bound both synced
+           * and unsynced is refused, never matched by order. Never changes a
+           * sync mode: each must be one the instance has on this page
+           * (`placement.set_content` changes it).
            */
           syncModes: z.array(z.enum(["synced", "unsynced"]).nullable()).optional(),
         })

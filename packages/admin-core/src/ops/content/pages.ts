@@ -1804,10 +1804,13 @@ export const setPageModulesOp = defineOperation({
       }
     }
     // #1663 — hand each name one of its id's bindings. A stated sync mode
-    // takes a binding with that mode (an id shared across blocks can be
-    // synced in one and unsynced in another, so page order alone gave a
-    // survivor the removed placement's mode); the others take what is left,
-    // in page order.
+    // takes a binding with that mode: an id shared across blocks can be
+    // synced in one and unsynced in another, and the order the op reads
+    // bindings in (block-name order live, stored order on a branch) need
+    // not be the caller's, so matching by order gave a survivor the removed
+    // placement's mode. An unstated name takes a remaining binding only
+    // when those all have one mode; otherwise the call is refused rather
+    // than guessed (no fallbacks pre-1.0).
     const namedSyncModes = new Map<string, SyncMode>();
     for (const [ciId, names] of namesById) {
       const left = (priorById.get(ciId) as PriorBinding[]).map((p) => p.syncMode);
@@ -1824,9 +1827,15 @@ export const setPageModulesOp = defineOperation({
         left.splice(at, 1);
         namedSyncModes.set(name.key, name.stated);
       }
-      for (const name of names) {
-        if (name.stated === null) namedSyncModes.set(name.key, left.shift() as SyncMode);
+      const unstated = names.filter((n) => n.stated === null);
+      if (unstated.length > 0 && new Set(left).size > 1) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.set_modules",
+          message: `content instance ${ciId} is bound on this page both synced and unsynced, so its id alone does not say which binding an entry keeps — pass syncModes with the syncMode pages.get_with_modules reports for each placement that names it.`,
+        });
       }
+      for (const name of unstated) namedSyncModes.set(name.key, left.shift() as SyncMode);
     }
     // Remaining claims per id: the FIFO pass skips that many queue entries
     // bound to it, since the named placements took those bindings.
