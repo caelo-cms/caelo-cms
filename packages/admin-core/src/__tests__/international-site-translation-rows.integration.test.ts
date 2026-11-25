@@ -6,11 +6,11 @@
  *
  *   - a chat translates a language version's page property before the
  *     change consumer has given the key its `missing` placeholder; the
- *     placeholder the consumer then writes on the main line takes over the
- *     chat's row instead of adding a second one, the chat's next write of
- *     the key goes through (it used to refuse: "holds two rows … a write
+ *     placeholder the consumer then writes on the main line sits beside the
+ *     chat's unstaged row, the chat reads the translation, its next write
+ *     of the key goes through (it used to refuse: "holds two rows … a write
  *     race; delete one and retry", a step no tool can take), and its Stage
- *     leaves one translated row;
+ *     lands the translation on the placeholder: one translated row;
  *   - an install whose key already holds a translation AND a placeholder
  *     reads it as translated (it read as missing and rendered the source
  *     text), also through the change consumer's reconcile, and the refused

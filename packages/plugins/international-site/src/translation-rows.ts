@@ -8,11 +8,14 @@
  * language, page and field, a hidden entry per language and address, a
  * chrome variant per target and language. The writes keep it that way
  * through `ctx.adminQuery.upsert`, which serialises the writers of a key
- * and sees rows of every scope (plugin-host private-upsert.ts).
+ * within a line and whose rows of one key the Stage lands as one
+ * (plugin-host private-upsert.ts, key-merge.ts).
  *
- * Rows written before that — a `list` then an `insert` from two chats at
- * once, or from a chat and the change consumer's `missing` placeholder —
- * can share a key. Every read then takes the same row, by the rule below,
+ * Rows can still share a key: written before that (a `list` then an
+ * `insert` from two chats at once, or from a chat and the change
+ * consumer's `missing` placeholder), or held by two lines until a Stage (a
+ * chat's unstaged row beside a main-line placeholder, as the chat reads
+ * them). Every read then takes the same row, by the rule below,
  * so the render, `intl_status`, the audit and the next write agree:
  *
  *   1. a row that holds a translation beats one that holds none (a
