@@ -958,4 +958,67 @@ describe("IntakeService while the matcher is down (2026-11-23: a revoked key)", 
     // A retry after the match answers with the real cluster's state.
     expect((await s.ingest(INSTALL_A, r)).issueUrl).toContain("/issues/100");
   });
+
+  it("gives a retried report its lost queue entry back (Codex on #1714)", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const r = ai("b", "Selector crop ignored");
+    // The report is stored, then the queue write fails: the install gets an
+    // error and retries.
+    const deferReport = store.deferReport.bind(store);
+    store.deferReport = async () => {
+      throw new Error("Firestore unavailable");
+    };
+    await expect(s.ingest(INSTALL_A, r)).rejects.toThrow("Firestore unavailable");
+    expect([...store.deferred.keys()]).toEqual([]);
+    store.deferReport = deferReport;
+    await s.ingest(INSTALL_A, r);
+    expect([...store.deferred.keys()]).toEqual([r.reportId]);
+
+    matcher.fail = null;
+    later(61_000);
+    const [after] = await s.status([(await store.getReport(r.reportId))!.clusterId]);
+    expect(after!.issueUrl).toContain("/issues/100");
+  });
+
+  it("counts a deferred report once when a later step of its matching fails (Codex on #1714)", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const d = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = null;
+    later(61_000);
+    // Counted, then GitHub refuses the issue: the report stays queued.
+    tracker.failNextCreate = true;
+    await s.status([d.clusterId]);
+    expect([...store.deferred.keys()].length).toBe(1);
+    const real = (await store.clusterIdForFingerprint("defect", "b".repeat(64)))!;
+    expect((await store.getCluster(real))!.value.occurrences).toBe(1);
+
+    const [after] = await s.status([d.clusterId]);
+    expect(after!.issueUrl).toContain("/issues/");
+    expect([...store.deferred.keys()]).toEqual([]);
+    expect((await store.getCluster(real))!.value.occurrences).toBe(1);
+    expect(tracker.issues.size).toBe(1);
+  });
+
+  it("starts no deferred report past its time budget, so the install's answer comes in time (Codex on #1714)", async () => {
+    const slow = new FakeMatcher();
+    const s = service(1, { matcher: slow });
+    slow.fail = outage;
+    for (const fp of ["b", "c", "d", "e", "f"]) await s.ingest(INSTALL_A, ai(fp, `Defect ${fp}`));
+    expect([...store.deferred.keys()].length).toBe(5);
+    slow.fail = null;
+    later(61_000);
+    // Each model call takes 1.5 s: two fit the 2.5 s budget, the rest wait.
+    const match = slow.match.bind(slow);
+    slow.match = async (r, c) => {
+      later(1_500);
+      return match(r, c);
+    };
+    await s.status([]);
+    expect([...store.deferred.keys()].length).toBe(3);
+    await s.status([]);
+    await s.status([]);
+    expect([...store.deferred.keys()].length).toBe(0);
+  });
 });

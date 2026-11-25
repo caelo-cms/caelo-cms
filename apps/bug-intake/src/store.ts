@@ -66,6 +66,12 @@ export interface ClusterRecord {
    * before this field are never stand-ins.
    */
   awaitingMatch: boolean;
+  /**
+   * Ids of deferred reports already counted into this cluster, so a matching
+   * retried after a failed later step counts none twice. Records stored
+   * before this field have none.
+   */
+  countedDeferredReports: string[];
 }
 
 /**

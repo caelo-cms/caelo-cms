@@ -165,6 +165,7 @@ const cluster = (id: string, over: Partial<ClusterRecord> = {}): ClusterRecord =
   lastIssueSyncAt: null,
   milestonesCommented: [],
   awaitingMatch: false,
+  countedDeferredReports: [],
   ...over,
 });
 

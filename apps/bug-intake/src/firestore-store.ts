@@ -129,8 +129,10 @@ function readCluster(data: Record<string, unknown>): ClusterRecord {
     ...(data as unknown as ClusterRecord),
     kind: storedKind(data.kind),
     ciRuns,
-    // A record stored before the matcher-outage path is never a stand-in.
+    // A record stored before the matcher-outage path is never a stand-in
+    // and has counted no deferred report.
     awaitingMatch: data.awaitingMatch === true,
+    countedDeferredReports: (data.countedDeferredReports ?? []) as string[],
   };
 }
 

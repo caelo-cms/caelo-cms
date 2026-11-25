@@ -63,12 +63,15 @@
  * claims no fingerprint and never gets an issue, the install is answered
  * with the stand-in's id, and the report waits in the deferred queue. Each
  * later request (a report or a status refresh) first matches up to
- * `DEFERRED_PER_REQUEST` deferred reports, oldest first, through the same
+ * `DEFERRED_PER_REQUEST` deferred reports, oldest first and within
+ * `DEFERRED_BUDGET_MS` (the install waits 10 s), through the same
  * three steps, so a report of the same defect arriving after the outage
  * finds the cluster the earlier one made. The stand-in then follows its
  * real cluster (`mergedInto`), so the install's status refresh learns the
  * issue. After a failure the matcher is not asked again for
- * `MATCHER_RETRY_MS`; exact repeats (step 1) never need it. Refusing the
+ * `MATCHER_RETRY_MS`; exact repeats (step 1) never need it. A deferred
+ * report is counted into its cluster once (`countedDeferredReports`), and a
+ * retried report whose queue entry was lost gets it back. Refusing the
  * report instead left it queued on the install, retried with backoff and
  * given up after its last attempt (2026-11-23: 27 hours of 503s on a
  * revoked key).
@@ -144,6 +147,14 @@ export interface IntakeServiceDeps {
 
 /** Deferred reports matched per request at most (see "Matcher outage"). */
 const DEFERRED_PER_REQUEST = 5;
+/**
+ * No further deferred report is started once a request spent this long on
+ * them: an install waits 10 s for its answer (admin-core
+ * bug-forwarding/client.ts), and the request's own work comes after.
+ */
+const DEFERRED_BUDGET_MS = 2_500;
+/** Deferred report ids a cluster remembers as counted (the newest stay). */
+const MAX_COUNTED_DEFERRED = 1_000;
 /** After a failed match, the matcher is not asked again for this long. */
 const MATCHER_RETRY_MS = 60_000;
 
@@ -243,7 +254,14 @@ export class IntakeService {
       if (prior.installHash !== installHash) {
         throw new IntakeRefusal(409, "This report id was already sent by another install.");
       }
-      // A retry of a report already counted (the answer got lost on the way back).
+      // A retry of a report already counted (the answer got lost on the way
+      // back), or of one still waiting on its stand-in: an earlier attempt
+      // may have stored the report but not its queue entry (the write failed
+      // or the process ended in between), so the entry is made sure of here.
+      const standIn = await this.#d.store.getCluster(prior.clusterId);
+      if (standIn?.value.awaitingMatch && standIn.value.mergedInto === null) {
+        await this.#d.store.deferReport(prior.reportId, prior.receivedAt);
+      }
       await this.#matchDeferred();
       const info = this.#info(await this.#resolve(prior.clusterId));
       await this.#fileQueuedIssues();
@@ -362,6 +380,7 @@ export class IntakeService {
       lastIssueSyncAt: null,
       milestonesCommented: [],
       awaitingMatch,
+      countedDeferredReports: [],
     };
   }
 
@@ -413,8 +432,10 @@ export class IntakeService {
 
   /**
    * Match up to `DEFERRED_PER_REQUEST` deferred reports, oldest first,
-   * through the normal three steps; stops at the first one the matcher
-   * cannot answer. Logged, not thrown, like the issue queue: it must not
+   * through the normal three steps, while the request has spent less than
+   * `DEFERRED_BUDGET_MS` on them; stops at the first one the matcher cannot
+   * answer. Each report is counted once (`countedDeferredReports`), so a
+   * retry after a failed later step does not count it again. Logged, not thrown, like the issue queue: it must not
    * fail an unrelated install's request. A matched report counts from now
    * (its cluster's `lastSeen`), not from when it arrived.
    */
@@ -422,8 +443,10 @@ export class IntakeService {
     if (this.#matchingDeferred) return;
     this.#matchingDeferred = true;
     const { store } = this.#d;
+    const started = this.#d.now().getTime();
     try {
       for (const reportId of await store.deferredReports(DEFERRED_PER_REQUEST)) {
+        if (this.#d.now().getTime() - started >= DEFERRED_BUDGET_MS) return;
         const stored = await store.getReport(reportId);
         const standIn = stored ? await store.getCluster(stored.clusterId) : null;
         if (!stored || !standIn || standIn.value.mergedInto !== null) {
@@ -438,7 +461,7 @@ export class IntakeService {
           throw e;
         }
         const info = await this.#withLock(clusterId, () =>
-          this.#record(clusterId, stored.installHash, stored.report),
+          this.#record(clusterId, stored.installHash, stored.report, reportId),
         );
         await this.#withLock(standIn.value.id, () =>
           this.#update(standIn.value.id, (c) => {
@@ -472,9 +495,20 @@ export class IntakeService {
     clusterId: string,
     installHash: string,
     report: BugIntakeReport,
+    /** Set for a deferred report: it is counted once, however often its matching is retried. */
+    deferredReportId?: string,
   ): Promise<BugIntakeClusterInfo> {
     await this.#syncIssue(clusterId);
     const { cluster, isNewReporter, isNewVersion } = await this.#update(clusterId, (c) => {
+      if (deferredReportId !== undefined) {
+        // Counted by an earlier attempt whose later step failed (a GitHub
+        // create, the stand-in's write): the rest still runs, the count not.
+        if (c.countedDeferredReports.includes(deferredReportId))
+          return { isNewReporter: false, isNewVersion: false };
+        c.countedDeferredReports = [...c.countedDeferredReports, deferredReportId].slice(
+          -MAX_COUNTED_DEFERRED,
+        );
+      }
       const { ciRun } = report;
       // #1416 — a CI run is not an install, whatever install id it signs with.
       const isNewRun = ciRun !== undefined && !c.ciRuns.some((r) => r.runUrl === ciRun.runUrl);
