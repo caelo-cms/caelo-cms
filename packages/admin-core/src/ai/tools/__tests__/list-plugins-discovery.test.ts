@@ -88,6 +88,7 @@ describe("list_plugins — plugins found but not verified", () => {
       awaitingRelease: false,
       awaitingManifestDigest: null,
       problem: null,
+      unscheduledWorkers: [],
     };
     const r = await listPluginsTool.handler(
       AI,
@@ -132,6 +133,7 @@ describe("list_plugins — plugins found but not verified", () => {
         awaitingManifestDigest: "abc",
         problem: null,
         consumerBackoff: null,
+        unscheduledWorkers: [],
       }),
     ).toBe(
       "awaits Owner approval (propose_approve_plugin_release, manifestDigest abc): its release asks for capabilities the Owner has not approved (change_journal, list_types)",
@@ -145,6 +147,7 @@ describe("list_plugins — plugins found but not verified", () => {
         awaitingManifestDigest: null,
         problem: null,
         consumerBackoff: null,
+        unscheduledWorkers: [],
       }),
     ).toContain("changes what it declares");
     // #1390 — a running plugin whose change consumer backs off says so.
@@ -156,8 +159,29 @@ describe("list_plugins — plugins found but not verified", () => {
         awaitingManifestDigest: null,
         problem: null,
         consumerBackoff: { consecutiveFailures: 3, nextRetryAt: "2026-11-03T10:00:04.000Z" },
+        unscheduledWorkers: [],
       }),
     ).toBe("change consumer failed 3x, retried at 2026-11-03T10:00:04.000Z (get_plugin)");
+    // #1728 — a worker off the schedule is named for as long as it is off.
+    expect(
+      healthProblem({
+        state: "running",
+        awaitingCapabilities: [],
+        awaitingRelease: false,
+        awaitingManifestDigest: null,
+        problem: null,
+        consumerBackoff: null,
+        unscheduledWorkers: [
+          {
+            workerName: "weekly_digest",
+            cron: "0 0 * * SUN6",
+            reason: "CronPattern: Syntax error, a month or day name has to stand alone ('SUN6')",
+          },
+        ],
+      }),
+    ).toBe(
+      "worker weekly_digest off the schedule: its cron \"0 0 * * SUN6\" does not parse (CronPattern: Syntax error, a month or day name has to stand alone ('SUN6')); the plugin's other workers run, this one only after a release fixes the pattern",
+    );
     const r = await listPluginsTool.handler(
       AI,
       {} as never,
@@ -174,6 +198,7 @@ describe("list_plugins — plugins found but not verified", () => {
               awaitingRelease: false,
               awaitingManifestDigest: null,
               problem: null,
+              unscheduledWorkers: [],
             },
             requiresPlugins: [],
             requiredBy: [],

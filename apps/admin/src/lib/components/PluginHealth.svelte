@@ -33,6 +33,8 @@
       recentErrors: PluginErrorSummary[];
       /** #1390 — its change consumer waits out a failure backoff. */
       consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
+      /** #1728 — workers a live server keeps off the schedule (their cron does not parse). */
+      unscheduledWorkers: { workerName: string; cron: string; reason: string }[];
       callCost: {
         since: string | null;
         calls: number;
@@ -112,6 +114,18 @@
     <p class="max-w-md text-xs text-red-700 dark:text-red-400" data-testid="plugin-health-problem-{slug}">
       {owner(health.problem)}: {health.problem.message}
     </p>
+  {/if}
+  {#if health.unscheduledWorkers.length > 0}
+    <div class="max-w-md text-xs text-amber-700 dark:text-amber-400" data-testid="plugin-health-unscheduled-{slug}">
+      {health.unscheduledWorkers.length === 1 ? "One background task does" : `${health.unscheduledWorkers.length} background tasks do`}
+      not run: the plugin's schedule for {health.unscheduledWorkers.length === 1 ? "it" : "them"} is not valid. Its other
+      tasks run; a release of the plugin that fixes the schedule starts {health.unscheduledWorkers.length === 1 ? "it" : "them"}.
+      <ul class="mt-1 list-disc pl-5">
+        {#each health.unscheduledWorkers as w (w.workerName + w.cron)}
+          <li><span class="font-mono">{w.workerName}</span> · <code class="break-all">{w.cron}</code> · {w.reason}</li>
+        {/each}
+      </ul>
+    </div>
   {/if}
   {#if health.consumerBackoff}
     <p class="max-w-md text-xs text-amber-700 dark:text-amber-400" data-testid="plugin-health-backoff-{slug}">
