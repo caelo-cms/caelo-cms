@@ -21,6 +21,7 @@ import {
   extractLinks,
   followRedirects,
   indexRedirects,
+  isUnpublishedMediaPath,
   pathKey,
   type RedirectRow,
   resolveLink,
@@ -334,6 +335,38 @@ describe("what is out of scope", () => {
     const { findings, probed } = await findingsOf([HOME, about, TEAM]);
     expect(rules(findings, about.pageId)).toEqual([]);
     expect(probed).toEqual([]);
+  });
+
+  it("leaves a media URL the build could not publish to the render check (#1600)", async () => {
+    // The build rewrites every media URL it can publish to /_assets/…; one
+    // still on the page is a recorded render failure, reported there with
+    // the URL to write instead. A path the media pass does not read stays
+    // a broken asset here.
+    const about = page(
+      2,
+      "/about",
+      mod(
+        TEXT,
+        [
+          '<img src="/_caelo/media/url-history/webp-800" alt="">',
+          '<img srcset="/_caelo/media/url-history/webp-1200 1200w" alt="">',
+          '<a href="https://example.com/_caelo/media/gone-file">x</a>',
+          '<img src="/_caelo/media/Not-A-Slug.png" alt="">',
+        ].join(""),
+      ),
+    );
+    const { findings, probed } = await findingsOf([HOME, about, TEAM]);
+    expect(rules(findings, about.pageId)).toEqual(["links/broken-asset"]);
+    expect(findings.find((f) => f.pageId === about.pageId)?.message).toContain(
+      '"/_caelo/media/Not-A-Slug.png"',
+    );
+    expect(probed).toEqual(["/_caelo/media/Not-A-Slug.png"]);
+    expect(isUnpublishedMediaPath("/_caelo/media/url-history/webp-800")).toBe(true);
+    expect(isUnpublishedMediaPath("/_caelo/media/url-history")).toBe(true);
+    expect(isUnpublishedMediaPath("/docs/_caelo/media/url-history")).toBe(false);
+    expect(isUnpublishedMediaPath("/_assets/url-history/webp-400.0123456789abcdef.webp")).toBe(
+      false,
+    );
   });
 
   it("resolves against <base href>", async () => {

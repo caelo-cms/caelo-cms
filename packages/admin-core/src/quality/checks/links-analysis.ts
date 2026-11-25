@@ -23,6 +23,7 @@
  * captcha. Plugin PAGES are ordinary pages of the build and are checked.
  */
 
+import { extractMediaUrlPaths } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
 
 /** A reference to a page (navigation, canonical, hreflang) or to a file. */
@@ -239,6 +240,19 @@ export const GATEWAY_PATH_PREFIX = "/api/";
 /** Paths served by the gateway, not the static build. */
 export function isRuntimePath(path: string): boolean {
   return path === "/api" || path.startsWith(GATEWAY_PATH_PREFIX);
+}
+
+/**
+ * #1600 — a `/_caelo/media/…` path as the build's media pass reads one
+ * (shared `extractMediaUrlPaths`, the same pattern). The build rewrites
+ * every media URL it can publish to its `/_assets/…` file, so one still on
+ * a staged page is a reference it could not publish: kept as the editor
+ * preview shows it and recorded as a render failure, which the `render`
+ * check reports with its repair (one defect, one finding).
+ */
+export function isUnpublishedMediaPath(path: string): boolean {
+  const first = extractMediaUrlPaths(path)[0];
+  return first !== undefined && path.startsWith(first.path);
 }
 
 /**

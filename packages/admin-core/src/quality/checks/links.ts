@@ -48,6 +48,7 @@ import {
   extractLinks,
   followRedirects,
   indexRedirects,
+  isUnpublishedMediaPath,
   type LinkKind,
   pathKey,
   type RedirectHop,
@@ -209,6 +210,8 @@ export async function linkFindings(
     for (const link of extracted.links) {
       const target = resolveLink(link.raw, base, hosts);
       if (target.kind === "skip") continue;
+      // #1600 — the render check reports it, with the URL to write instead.
+      if (isUnpublishedMediaPath(target.requestPath)) continue;
       occurrences.push({ ...link, page, target });
     }
   }
