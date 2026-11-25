@@ -57,6 +57,22 @@
  * has the fix → reopened as a regression; closed as not planned → wontfix;
  * closed as duplicate → the cluster follows the original issue.
  *
+ * Matcher outage: the semantic matcher is a model call, and a model call can
+ * fail (an outage, a revoked key). The report is accepted anyway: it is
+ * stored with a stand-in cluster (`awaitingMatch`) that counts nothing,
+ * claims no fingerprint and never gets an issue, the install is answered
+ * with the stand-in's id, and the report waits in the deferred queue. Each
+ * later request (a report or a status refresh) first matches up to
+ * `DEFERRED_PER_REQUEST` deferred reports, oldest first, through the same
+ * three steps, so a report of the same defect arriving after the outage
+ * finds the cluster the earlier one made. The stand-in then follows its
+ * real cluster (`mergedInto`), so the install's status refresh learns the
+ * issue. After a failure the matcher is not asked again for
+ * `MATCHER_RETRY_MS`; exact repeats (step 1) never need it. Refusing the
+ * report instead left it queued on the install, retried with backoff and
+ * given up after its last attempt (2026-11-23: 27 hours of 503s on a
+ * revoked key).
+ *
  * Writes to one cluster, and matching + cluster creation as a whole, are
  * serialised in-process, and the service runs as a single instance (Cloud
  * Run max-instances=1); the store's version checks and first-writer-wins
@@ -77,6 +93,7 @@ import { INSTALL_MILESTONES, issueBody, issueLabels, issueTitle } from "./issue-
 import type { ClusterMatcher } from "./matcher.js";
 import {
   type ClusterRecord,
+  type ClusterSummary,
   clusterSummary,
   type IntakeStore,
   REPORT_KINDS,
@@ -125,6 +142,14 @@ export interface IntakeServiceDeps {
   now?: () => Date;
 }
 
+/** Deferred reports matched per request at most (see "Matcher outage"). */
+const DEFERRED_PER_REQUEST = 5;
+/** After a failed match, the matcher is not asked again for this long. */
+const MATCHER_RETRY_MS = 60_000;
+
+/** The matcher could not answer; the report waits in the deferred queue. */
+class MatcherUnavailable extends Error {}
+
 /** Issue state is re-read at most this often per cluster. */
 const ISSUE_SYNC_INTERVAL_MS = 5 * 60_000;
 /** Cap on stored install hashes per cluster; beyond it the count shows as "N+". */
@@ -171,6 +196,14 @@ function newClusterId(kind: BugReportKind, fingerprint: string): string {
   return `${kind === "suggestion" ? "c_s" : "c_"}${fingerprint.slice(0, 20)}`;
 }
 
+/**
+ * Id of a report's stand-in cluster (see "Matcher outage"): derived from the
+ * report id, so a retried report finds the stand-in it already has.
+ */
+async function standInClusterId(reportId: string): Promise<string> {
+  return `c_m${(await sha256Hex(reportId)).slice(0, 20)}`;
+}
+
 export class IntakeService {
   readonly #d: Required<IntakeServiceDeps>;
   readonly #locks = new Map<string, Promise<unknown>>();
@@ -183,6 +216,9 @@ export class IntakeService {
     suggestion: null,
   };
   #draining = false;
+  #matchingDeferred = false;
+  /** When the matcher last failed (ms since epoch); null once it answers. */
+  #matcherFailedAt: number | null = null;
 
   constructor(deps: IntakeServiceDeps) {
     this.#d = { now: () => new Date(), ...deps };
@@ -208,12 +244,23 @@ export class IntakeService {
         throw new IntakeRefusal(409, "This report id was already sent by another install.");
       }
       // A retry of a report already counted (the answer got lost on the way back).
+      await this.#matchDeferred();
       const info = this.#info(await this.#resolve(prior.clusterId));
       await this.#fileQueuedIssues();
       return info;
     }
+    // Reports deferred earlier go first, so this one can join their clusters.
+    await this.#matchDeferred();
     const report = { ...sent, ...redactBugReportFields(sent) };
-    const clusterId = await this.#findOrCreateCluster(report);
+    let clusterId: string;
+    try {
+      clusterId = await this.#findOrCreateCluster(report);
+    } catch (e) {
+      if (!(e instanceof MatcherUnavailable)) throw e;
+      const deferred = await this.#defer(installHash, report);
+      await this.#fileQueuedIssues();
+      return deferred;
+    }
     const info = await this.#withLock(clusterId, () =>
       this.#record(clusterId, installHash, report),
     );
@@ -230,6 +277,8 @@ export class IntakeService {
 
   /** Current state of clusters an install reported into; unknown ids are left out. */
   async status(clusterIds: string[]): Promise<BugIntakeClusterInfo[]> {
+    // A stand-in asked about may have its cluster after this.
+    await this.#matchDeferred();
     const out: BugIntakeClusterInfo[] = [];
     for (const id of new Set(clusterIds)) {
       const resolved = await this.#resolve(id).catch(() => null);
@@ -251,7 +300,7 @@ export class IntakeService {
 
   /** Steps 2 and 3 of the file header; runs under `FIND_OR_CREATE_LOCK`. */
   async #matchOrCreate(report: BugIntakeReport): Promise<string> {
-    const { store, matcher } = this.#d;
+    const { store } = this.#d;
     const { kind, fingerprint } = report;
     // The report queued behind may have carried this very fingerprint.
     const known = await store.clusterIdForFingerprint(kind, fingerprint);
@@ -259,7 +308,7 @@ export class IntakeService {
 
     // Only clusters of the report's kind are offered, so the matcher cannot
     // put a suggestion into a defect's cluster or the other way round.
-    const matched = await matcher.match(report, await store.candidates(kind));
+    const matched = await this.#match(report, await store.candidates(kind));
     if (matched) {
       const link = await store.linkFingerprint(kind, fingerprint, matched);
       const id =
@@ -271,11 +320,25 @@ export class IntakeService {
       }
     }
 
+    const cluster = this.#newCluster(newClusterId(kind, fingerprint), report);
+    // Another intake instance (the store's backstop) may have created it already.
+    await store.putCluster(cluster, null);
+    const link = await store.linkFingerprint(kind, fingerprint, cluster.id);
+    if (link === "taken") {
+      const id = await store.clusterIdForFingerprint(kind, fingerprint);
+      if (id) return (await this.#resolve(id)).value.id;
+    }
+    await store.addCandidate(clusterSummary(cluster));
+    return cluster.id;
+  }
+
+  /** A new, empty cluster described by `report`. */
+  #newCluster(id: string, report: BugIntakeReport, awaitingMatch = false): ClusterRecord {
     const now = this.#d.now().toISOString();
-    const cluster: ClusterRecord = {
-      id: newClusterId(kind, fingerprint),
+    return {
+      id,
       createdAt: now,
-      kind,
+      kind: report.kind,
       source: report.source,
       suspectedTool: report.suspectedTool,
       title: report.title,
@@ -283,7 +346,8 @@ export class IntakeService {
       expected: report.expected,
       severity: report.severity,
       blockedTask: report.blockedTask,
-      fingerprints: [report.fingerprint],
+      // A stand-in claims no fingerprint: the real cluster will.
+      fingerprints: awaitingMatch ? [] : [report.fingerprint],
       installHashes: [],
       ciRuns: [],
       occurrences: 0,
@@ -297,16 +361,101 @@ export class IntakeService {
       mergedInto: null,
       lastIssueSyncAt: null,
       milestonesCommented: [],
+      awaitingMatch,
     };
-    // Another intake instance (the store's backstop) may have created it already.
-    await store.putCluster(cluster, null);
-    const link = await store.linkFingerprint(kind, fingerprint, cluster.id);
-    if (link === "taken") {
-      const id = await store.clusterIdForFingerprint(kind, fingerprint);
-      if (id) return (await this.#resolve(id)).value.id;
+  }
+
+  /**
+   * Ask the matcher, unless it failed within `MATCHER_RETRY_MS`. A failure
+   * is logged (the operator's alert reads this line) and becomes
+   * `MatcherUnavailable`.
+   */
+  async #match(report: BugIntakeReport, candidates: ClusterSummary[]): Promise<string | null> {
+    const now = this.#d.now().getTime();
+    const failedAt = this.#matcherFailedAt;
+    if (failedAt !== null && now - failedAt < MATCHER_RETRY_MS) {
+      throw new MatcherUnavailable("the matcher failed less than a minute ago");
     }
-    await store.addCandidate(clusterSummary(cluster));
-    return cluster.id;
+    try {
+      const matched = await this.#d.matcher.match(report, candidates);
+      this.#matcherFailedAt = null;
+      return matched;
+    } catch (e) {
+      this.#matcherFailedAt = now;
+      const message = e instanceof Error ? e.message : String(e);
+      console.error(
+        `[bug-intake] matcher unavailable; reports wait in the deferred queue until it answers: ${message}`,
+      );
+      throw new MatcherUnavailable(message);
+    }
+  }
+
+  /**
+   * Accept a report the matcher could not place: a stand-in cluster, the
+   * stored report and its place in the deferred queue (see "Matcher outage").
+   */
+  async #defer(installHash: string, report: BugIntakeReport): Promise<BugIntakeClusterInfo> {
+    const { store } = this.#d;
+    const standIn = this.#newCluster(await standInClusterId(report.reportId), report, true);
+    // A conflict means a crashed earlier attempt left it: keep that one.
+    await store.putCluster(standIn, null);
+    const receivedAt = this.#d.now().toISOString();
+    await store.putReport({
+      reportId: report.reportId,
+      installHash,
+      receivedAt,
+      clusterId: standIn.id,
+      report,
+    });
+    await store.deferReport(report.reportId, receivedAt);
+    return this.#info(standIn);
+  }
+
+  /**
+   * Match up to `DEFERRED_PER_REQUEST` deferred reports, oldest first,
+   * through the normal three steps; stops at the first one the matcher
+   * cannot answer. Logged, not thrown, like the issue queue: it must not
+   * fail an unrelated install's request. A matched report counts from now
+   * (its cluster's `lastSeen`), not from when it arrived.
+   */
+  async #matchDeferred(): Promise<void> {
+    if (this.#matchingDeferred) return;
+    this.#matchingDeferred = true;
+    const { store } = this.#d;
+    try {
+      for (const reportId of await store.deferredReports(DEFERRED_PER_REQUEST)) {
+        const stored = await store.getReport(reportId);
+        const standIn = stored ? await store.getCluster(stored.clusterId) : null;
+        if (!stored || !standIn || standIn.value.mergedInto !== null) {
+          await store.clearDeferredReport(reportId);
+          continue;
+        }
+        let clusterId: string;
+        try {
+          clusterId = await this.#findOrCreateCluster(stored.report);
+        } catch (e) {
+          if (e instanceof MatcherUnavailable) return;
+          throw e;
+        }
+        const info = await this.#withLock(clusterId, () =>
+          this.#record(clusterId, stored.installHash, stored.report),
+        );
+        await this.#withLock(standIn.value.id, () =>
+          this.#update(standIn.value.id, (c) => {
+            c.mergedInto = info.clusterId;
+            c.awaitingMatch = false;
+          }),
+        );
+        await store.clearDeferredReport(reportId);
+      }
+    } catch (e) {
+      console.error(
+        "[bug-intake] matching deferred reports failed; retried on a later request:",
+        e instanceof Error ? e.message : e,
+      );
+    } finally {
+      this.#matchingDeferred = false;
+    }
   }
 
   /** Follow duplicate merges to the cluster that now owns the defect. */

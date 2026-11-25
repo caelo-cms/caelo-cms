@@ -72,9 +72,12 @@ class FakeTracker implements IssueTracker {
 
 class FakeMatcher implements ClusterMatcher {
   answer: string | null = null;
+  /** Set: every call throws it, as a revoked key or an outage does. */
+  fail: Error | null = null;
   seen: number[] = [];
   async match(_r: BugIntakeReport, candidates: { id: string }[]) {
     this.seen.push(candidates.length);
+    if (this.fail) throw this.fail;
     return this.answer;
   }
 }
@@ -832,5 +835,127 @@ describe("IntakeService suggestions (#1192)", () => {
     );
     expect(exact.clusterId).not.toBe(exactDefect.clusterId);
     expect(exact.clusterId.startsWith("c_s")).toBe(true);
+  });
+});
+
+describe("IntakeService while the matcher is down (2026-11-23: a revoked key)", () => {
+  const outage = new Error("invalid x-api-key");
+  const later = (ms: number) => {
+    clock = new Date(clock.getTime() + ms);
+  };
+  const ai = (fp: string, title: string) =>
+    report({ source: "ai", fingerprint: fp.repeat(64), title, whatHappened: title });
+
+  it("accepts the report, files nothing and asks the matcher again only after a minute", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const first = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    // Accepted (no refusal, so the install stops retrying) on a stand-in.
+    expect(first).toMatchObject({ status: "open", issueUrl: null });
+    expect(first.clusterId.startsWith("c_m")).toBe(true);
+    const standIn = (await store.getCluster(first.clusterId))!.value;
+    expect(standIn).toMatchObject({ awaitingMatch: true, occurrences: 0, fingerprints: [] });
+    expect(await store.candidates("defect")).toEqual([]);
+    expect(await store.clusterIdForFingerprint("defect", "b".repeat(64))).toBeNull();
+    expect(tracker.calls.create).toBe(0);
+
+    const asked = matcher.seen.length;
+    await s.ingest(INSTALL_B, ai("c", "Crop selector has no effect"));
+    expect(matcher.seen.length).toBe(asked);
+    expect([...store.deferred.keys()].length).toBe(2);
+
+    // A minute later it is asked once more; still failing, nothing moves.
+    later(61_000);
+    await s.ingest(INSTALL_B, ai("d", "Another report"));
+    expect(matcher.seen.length).toBe(asked + 1);
+    expect([...store.deferred.keys()].length).toBe(3);
+    expect(tracker.calls.create).toBe(0);
+  });
+
+  it("counts an exact repeat of a known defect at once: it needs no matcher", async () => {
+    const s = service();
+    const known = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = outage;
+    const repeat = await s.ingest(INSTALL_B, ai("b", "Selector crop ignored"));
+    expect(repeat.clusterId).toBe(known.clusterId);
+    expect((await store.getCluster(known.clusterId))!.value.installHashes.length).toBe(2);
+    expect([...store.deferred.keys()]).toEqual([]);
+  });
+
+  it("matches the deferred reports oldest first once it answers; each stand-in follows its cluster", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const a = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    const b = await s.ingest(INSTALL_B, ai("c", "Stage fails on a missing site text"));
+    matcher.fail = null;
+    later(61_000);
+
+    // A status refresh is enough: it matches the queue before it answers.
+    const [sa, sb] = await s.status([a.clusterId, b.clusterId]);
+    expect(sa).toMatchObject({ clusterId: a.clusterId, status: "open" });
+    expect(sa!.issueUrl).toContain("/issues/100");
+    expect(sb!.issueUrl).toContain("/issues/101");
+    expect([...store.deferred.keys()]).toEqual([]);
+
+    const real = await store.clusterIdForFingerprint("defect", "b".repeat(64));
+    expect((await store.getCluster(a.clusterId))!.value).toMatchObject({
+      mergedInto: real,
+      awaitingMatch: false,
+    });
+    expect((await store.getCluster(real!))!.value).toMatchObject({
+      occurrences: 1,
+      title: "Selector crop ignored",
+    });
+    // The real clusters are candidates; the stand-ins never were.
+    expect((await store.candidates("defect")).map((c) => c.id).sort()).toEqual(
+      [real, await store.clusterIdForFingerprint("defect", "c".repeat(64))].sort(),
+    );
+  });
+
+  it("puts a deferred report the matcher places into that cluster, without a second issue", async () => {
+    const s = service();
+    const known = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = outage;
+    const d = await s.ingest(INSTALL_B, ai("c", "screenshot ignores selector"));
+    matcher.fail = null;
+    matcher.answer = known.clusterId;
+    later(61_000);
+
+    const [after] = await s.status([d.clusterId]);
+    expect(after).toMatchObject({ clusterId: d.clusterId, issueUrl: known.issueUrl });
+    expect(tracker.calls.create).toBe(1);
+    const c = (await store.getCluster(known.clusterId))!.value;
+    expect(c.installHashes.length).toBe(2);
+    expect(c.occurrences).toBe(2);
+    expect(await store.clusterIdForFingerprint("defect", "c".repeat(64))).toBe(known.clusterId);
+  });
+
+  it("matches the queue before a new report, so the new one can join a deferred defect", async () => {
+    const s = service();
+    matcher.fail = outage;
+    await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = null;
+    later(61_000);
+    await s.ingest(INSTALL_B, ai("c", "screenshot ignores selector"));
+    // The deferred report was matched first (empty pool), then the new one
+    // saw the cluster it made.
+    expect(matcher.seen.slice(-2)).toEqual([0, 1]);
+  });
+
+  it("keeps a report retried during the outage to one stand-in and one count", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const r = ai("b", "Selector crop ignored");
+    const first = await s.ingest(INSTALL_A, r);
+    const retry = await s.ingest(INSTALL_A, r);
+    expect(retry.clusterId).toBe(first.clusterId);
+    expect([...store.deferred.keys()]).toEqual([r.reportId]);
+    matcher.fail = null;
+    later(61_000);
+    await s.status([first.clusterId]);
+    const real = await store.clusterIdForFingerprint("defect", "b".repeat(64));
+    expect((await store.getCluster(real!))!.value.occurrences).toBe(1);
+    // A retry after the match answers with the real cluster's state.
+    expect((await s.ingest(INSTALL_A, r)).issueUrl).toContain("/issues/100");
   });
 });
