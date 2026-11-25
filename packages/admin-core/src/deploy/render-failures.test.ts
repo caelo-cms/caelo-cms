@@ -209,3 +209,38 @@ describe("media the build could not publish (#1600)", () => {
     expect(r?.aiText).toContain("media-variant-missing: set_content_instance_values_many");
   });
 });
+
+describe("renderRepairOf — a page key or path the page cannot answer (#1717)", () => {
+  it("lists the page's keys for a key it does not have", () => {
+    const r = renderRepairOf({ reason: "page-key-unknown:titel", moduleSlug: "hilfe-kopf" });
+    expect(r.tool).toBe("update_modules_many");
+    expect(r.hint).toContain('{{page.titel}} in module "hilfe-kopf": the page has no key "titel"');
+    expect(r.hint).toContain("title, short_title");
+    expect(r.hint).toContain("{{page.props.<name>}} (list_page_types)");
+    expect(r.hint.length).toBeLessThan(500);
+  });
+
+  it("names the property's type and what it answers", () => {
+    const text = renderRepairOf({
+      reason: "page-path-unknown:props.stand:text",
+      moduleSlug: "hilfe-kopf",
+    });
+    expect(text.tool).toBe("update_modules_many");
+    expect(text.hint).toContain("page.props.stand (text) has no paths: write {{page.props.stand}}");
+    const link = renderRepairOf({
+      reason: "page-path-unknown:props.cta:link|text",
+      moduleSlug: null,
+    });
+    expect(link.hint).toContain(
+      "page.props.cta (link or text) answers {{page.props.cta}} and {{page.props.cta.href}}, {{page.props.cta.target}}, {{page.props.cta.title}}",
+    );
+    const select = renderRepairOf({
+      reason: "page-path-unknown:props.layout:select",
+      moduleSlug: null,
+    });
+    expect(select.hint).toContain("or the option flag {{#page.props.layout_<option>}}");
+    const terms = renderRepairOf({ reason: "page-path-unknown:terms:terms", moduleSlug: null });
+    expect(terms.hint).toContain("{{#page.terms.<vocabulary slug>}}");
+    for (const r of [text, link, select, terms]) expect(r.hint.length).toBeLessThan(500);
+  });
+});

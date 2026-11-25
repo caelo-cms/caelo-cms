@@ -64,6 +64,9 @@
  * `{{props.<name>}}` on a page entry) when no page type of the site
  * declares `<name>`; a property only another page type declares reads as
  * absent instead (`lists/page-props.ts`).
+ * #1717: `page-key-unknown:<key>` for `{{page.<key>}}` with no such page
+ * key, `page-path-unknown:<path>:<type>` for a path (or a tag) the value
+ * at `page.<path>` cannot answer (`lists/page-paths.ts`).
  * Unlike `field-not-declared` these block Publish live: an unknown
  * `{{name}}` can be literal copy, a broken path cannot. A Stage reports
  * them instead of stopping (#1604).
@@ -97,6 +100,7 @@ import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
+import { PAGE_KEY_UNKNOWN, PAGE_PATH_UNKNOWN } from "./lists/page-paths.js";
 import { PAGE_PROP_UNKNOWN } from "./lists/page-props.js";
 import type { ListPaginationSettings } from "./lists/pagination.js";
 import type { ListHolder, ListPageContext } from "./lists/resolve.js";
@@ -574,9 +578,10 @@ export function shieldLiteralText(html: string, mkKey: (text: string) => string)
 }
 
 /**
- * A marker of a dotted path its field cannot answer (#1433), or of a page
+ * A marker of a dotted path its field cannot answer (#1433), of a page
  * property no page type of the site declares (`{{page.props.typo}}`,
- * #1561). The preview surfaces these, a Stage reports them and Publish
+ * #1561), or of a `{{page.*}}` key or path the page cannot answer
+ * (`{{page.titel}}`, #1717). The preview surfaces these, a Stage reports them and Publish
  * live refuses them (#1604): unlike an unknown `{{name}}`, they are never
  * literal copy.
  */
@@ -585,7 +590,9 @@ export function isFieldPathMarker(marker: string): boolean {
     marker.startsWith("field-path-unknown:") ||
     marker.startsWith("field-value-empty:") ||
     marker.startsWith("field-value-malformed:") ||
-    marker.startsWith(`${PAGE_PROP_UNKNOWN}:`)
+    marker.startsWith(`${PAGE_PROP_UNKNOWN}:`) ||
+    marker.startsWith(`${PAGE_KEY_UNKNOWN}:`) ||
+    marker.startsWith(`${PAGE_PATH_UNKNOWN}:`)
   );
 }
 

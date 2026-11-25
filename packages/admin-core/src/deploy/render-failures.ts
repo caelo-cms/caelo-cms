@@ -31,8 +31,13 @@ import {
   isLinkFailureMarker,
   type MediaFailure,
   mediaUrlForRef,
+  PAGE_KEY_TYPES,
+  PAGE_KEY_UNKNOWN,
+  PAGE_PATH_UNKNOWN,
   PAGE_PROP_UNKNOWN,
+  PAGE_VALUE_PATHS,
   parseMediaFailureMarker,
+  parsePagePathUnknown,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
@@ -171,6 +176,55 @@ export function pagePropUnknownHint(name: string, mod: string): string {
 }
 
 /**
+ * #1717 — how the AI repairs a `{{page.*}}` marker (`page-prop-unknown`,
+ * `page-key-unknown`, `page-path-unknown`, shared `lists/page-paths.ts`),
+ * or undefined for any other marker. Shared by the Stage's report, the
+ * audit's fix and `inspect_page_render`'s next steps.
+ *
+ * @param mod the place in the AI's terms (`module "hero"`).
+ */
+export function pageMarkerHint(marker: string, mod: string): string | undefined {
+  const kind = renderFailureKind(marker);
+  const body = renderFailureMarker(marker).slice(kind.length + 1);
+  switch (kind) {
+    case PAGE_PROP_UNKNOWN:
+      return pagePropUnknownHint(body, mod);
+    case PAGE_KEY_UNKNOWN:
+      return (
+        `{{page.${body}}} in ${mod}: the page has no key "${body}". It has ${Object.keys(PAGE_KEY_TYPES).join(", ")}; ` +
+        "a page type's property is {{page.props.<name>}} (list_page_types). Correct the module HTML with update_modules_many."
+      );
+    case PAGE_PATH_UNKNOWN: {
+      const { path, type } = parsePagePathUnknown(body);
+      return `{{page.${path}.…}} in ${mod}: page.${path} (${type.split("|").join(" or ")}) ${pageValueAnswers(path, type)}. Correct the module HTML with update_modules_many.`;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** What the value at `page.<path>` of type `type` answers, for {@link pageMarkerHint}. */
+function pageValueAnswers(path: string, type: string): string {
+  const tag = `{{page.${path}}}`;
+  if (type === "props") {
+    return "holds the page type's properties: write {{page.props.<name>}} with a name list_page_types shows";
+  }
+  if (type === "terms") {
+    return "holds the page's vocabularies: iterate {{#page.terms.<vocabulary slug>}}{{name}}{{/page.terms.<vocabulary slug>}} with a slug list_lists shows";
+  }
+  if (type === "term" || type === "list") {
+    return `is a list of entries: iterate it with {{#page.${path}}}{{name}}{{/page.${path}}}`;
+  }
+  const paths = [...new Set(type.split("|").flatMap((t) => PAGE_VALUE_PATHS[t] ?? []))];
+  const select = type.split("|").includes("select")
+    ? `, or the option flag {{#page.${path}_<option>}}`
+    : "";
+  return paths.length === 0
+    ? `has no paths: write ${tag}${select}`
+    : `answers ${tag} and ${paths.map((p) => `{{page.${path}.${p}}}`).join(", ")}${select}`;
+}
+
+/**
  * How the AI repairs one failure. The markers are the engine's (shared
  * template-engine.ts names them); a kind without its own entry gets the
  * content repair, which shows the stored value first.
@@ -215,6 +269,9 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
         tool: "list_page_types",
         hint: pagePropUnknownHint(path, mod),
       };
+    case PAGE_KEY_UNKNOWN:
+    case PAGE_PATH_UNKNOWN:
+      return { tool: "update_modules_many", hint: pageMarkerHint(marker, mod) as string };
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
   }
