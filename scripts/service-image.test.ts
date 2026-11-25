@@ -373,8 +373,8 @@ describe("the gateway image", () => {
       // biome-ignore lint/suspicious/noTemplateCurlyInString: workflow shell text under test
       'bun scripts/service-image.ts verify "${SPEC}" "${IMAGE}"',
       // biome-ignore lint/suspicious/noTemplateCurlyInString: workflow shell text under test
-      '--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "${IMAGE}"',
-      "--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 /sbom/bundle.cdx.json",
+      '--severity HIGH,CRITICAL --ignore-unfixed --ignorefile /trivyignore.yaml --exit-code 1 "${IMAGE}"',
+      "--severity HIGH,CRITICAL --ignore-unfixed --ignorefile /trivyignore.yaml --exit-code 1 /sbom/bundle.cdx.json",
       "apps/api-gateway/dist/image-self-check.js",
       "/api/_caelo/health?deep=1",
     ];
