@@ -231,8 +231,11 @@
             <th class="px-4 py-2 font-medium">Title</th>
             <th class="px-4 py-2 font-medium">Source</th>
             <th class="px-4 py-2 font-medium">Kind</th>
+            <!-- One status: where the report went and, once sent, what the
+                 Caelo team did with it. The report's own triage field is not
+                 shown: nothing on the site sets it, so it read "new" on every
+                 row next to "Fixed in …". -->
             <th class="px-4 py-2 font-medium">Status</th>
-            <th class="px-4 py-2 font-medium">Caelo team</th>
             <th class="px-4 py-2 font-medium">Suspected tool</th>
             <th class="px-4 py-2 font-medium">When</th>
           </tr>
@@ -274,7 +277,6 @@
                   {kindLabel(r)}
                 </span>
               </td>
-              <td class="px-4 py-2 text-muted-foreground">{r.status}</td>
               <td
                 class="px-4 py-2 whitespace-nowrap text-xs text-muted-foreground"
                 title={r.forwardError ?? forwardingLabel[r.forwardingState].hint}
@@ -288,7 +290,7 @@
             </tr>
             {#if expanded[r.id]}
               <tr class="border-b bg-muted/20 last:border-0">
-                <td colspan="7" class="space-y-3 px-4 py-3 text-sm">
+                <td colspan="6" class="space-y-3 px-4 py-3 text-sm">
                   <div>
                     <div class="text-xs font-semibold uppercase text-muted-foreground">
                       {r.kind === "suggestion" ? "What was missing" : "What happened"}
