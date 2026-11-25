@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/collection-index",
-  "version": "0.0.0",
+  "version": "0.12.15",
   "private": true,
   "license": "MPL-2.0",
   "description": "Plugin collections (epic #1644, R2/R3): language analysis, immutable content-addressed segments, and the search engine that runs the same in the indexing job and in the gateway.",
