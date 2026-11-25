@@ -248,7 +248,9 @@ export function isRuntimePath(path: string): boolean {
  * every media URL it can publish to its `/_assets/…` file, so one still on
  * a staged page is a reference it could not publish: kept as the editor
  * preview shows it and recorded as a render failure, which the `render`
- * check reports with its repair (one defect, one finding).
+ * check reports with its repair (one defect, one finding). It holds only
+ * outside baked plugin output: the build splices that in after the media
+ * pass, which never saw it, so the caller keeps a media URL there.
  */
 export function isUnpublishedMediaPath(path: string): boolean {
   const first = extractMediaUrlPaths(path)[0];
