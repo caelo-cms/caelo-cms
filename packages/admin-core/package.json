@@ -38,7 +38,7 @@
     "@caelo-cms/shared": "workspace:*",
     "@caelo-cms/site-importer": "workspace:*",
     "@caelo-cms/static-generator": "workspace:*",
-    "@google-cloud/storage": "^8.4.0",
+    "@google-cloud/storage": "^9.0.0",
     "ai": "^7.0.179",
     "croner": "11.0.1",
     "drizzle-orm": "0.45.4",
