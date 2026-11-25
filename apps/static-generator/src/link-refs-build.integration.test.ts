@@ -23,6 +23,7 @@ import { localBuildPluginServices } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { BuildRefusal } from "./build-refusal.js";
 import { type DeployTarget, generateSite, pageOutputPath } from "./generate.js";
 import { digestBytes } from "./published-digest.js";
 
@@ -38,6 +39,7 @@ const SYSTEM: ExecutionContext = {
 
 const PFX = `lrb-${Date.now().toString(36)}`;
 const MEDIA_SHA = `7e1f0b03${"d".repeat(56)}`;
+const NARROW_SHA = `7e1f0b03${"e".repeat(56)}`;
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let templateId = "";
@@ -64,7 +66,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM modules WHERE display_name LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${`${PFX}-tpl`})`;
     await tx`DELETE FROM templates WHERE slug = ${`${PFX}-tpl`}`;
-    await tx`DELETE FROM media_assets WHERE sha256 = ${MEDIA_SHA}`;
+    await tx`DELETE FROM media_assets WHERE sha256 IN (${MEDIA_SHA}, ${NARROW_SHA})`;
   });
 }
 
@@ -338,5 +340,76 @@ describe("static build — internal references", () => {
     const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
     expect(html).toContain(`<a class="dl" href="/_assets/${slug}.${hash}.png"`);
     expect(html).not.toContain("caelo:media/");
+  });
+
+  it("refuses a media size the image does not have outside a full Stage (#1600)", async () => {
+    const bytes = Buffer.from([0x52, 0x49, 0x46, 0x46]);
+    const upload = await execute(registry, adapter, SYSTEM, "media.upload", {
+      sha256: NARROW_SHA,
+      originalName: "url-history.png",
+      name: `${PFX} url history`,
+      mime: "image/png",
+      sizeBytes: bytes.length,
+      width: 760,
+      height: 291,
+      alt: "",
+      storageKey: `${NARROW_SHA}/orig.png`,
+      variants: [
+        {
+          variant: "orig",
+          format: "png",
+          width: 760,
+          height: 291,
+          sizeBytes: bytes.length,
+          storageKey: `${NARROW_SHA}/orig.png`,
+          digest: await digestBytes(bytes),
+        },
+      ],
+    });
+    if (!upload.ok) throw new Error(`media seed: ${JSON.stringify(upload.error)}`);
+    const { assetId, slug } = upload.value as { assetId: string; slug: string };
+    const page = await buildPage(
+      `${PFX}-narrow`,
+      "published",
+      `<img src="caelo:media/${assetId}" alt="">`,
+      {},
+      [],
+    );
+    // The write refuses a size the image does not have; a release that did
+    // not check it stored one.
+    await asSystem(
+      (tx) =>
+        tx`UPDATE modules SET html = ${`<img src="caelo:media/${assetId}/webp-800" alt="">`}
+           WHERE display_name = ${`${PFX} ${PFX}-narrow Body`}`,
+    );
+    const root = mkdtempSync(join(tmpdir(), "caelo-link-refs-build-"));
+    await mkdir(join(root, "data", "media", NARROW_SHA), { recursive: true });
+    await writeFile(join(root, "data", "media", NARROW_SHA, "orig.png"), bytes);
+    // An incremental staging build cannot speak for the pages it leaves
+    // alone, so it stops like a production build (#1604); only a full
+    // staging build reports instead.
+    for (const target of [
+      stagingTarget(),
+      {
+        ...stagingTarget(),
+        name: "production",
+        env: "production" as const,
+        robotsDefault: "index" as const,
+      },
+    ]) {
+      const build = adapter.withAdminTransaction(SYSTEM, (tx) =>
+        generateSite({
+          publishAt: new Date().toISOString(),
+          tx,
+          plugins: localBuildPluginServices,
+          target,
+          runId: `${PFX}-run-narrow-${target.env}`,
+          repoRoot: root,
+          changedPageIds: [page],
+        }),
+      );
+      await expect(build).rejects.toBeInstanceOf(BuildRefusal);
+      await expect(build).rejects.toThrow(`${slug}/webp-800 (has: orig)`);
+    }
   });
 });

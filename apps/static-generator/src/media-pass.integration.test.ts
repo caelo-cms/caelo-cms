@@ -30,7 +30,8 @@ import {
 } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { type MediaDelivery, MediaPass } from "./media-pass.js";
+import { BuildRefusal } from "./build-refusal.js";
+import { type MediaDelivery, MediaPass, type UnresolvedMediaPolicy } from "./media-pass.js";
 import { digestBytes } from "./published-digest.js";
 
 /** One build's media pass over `pages`, the way generate.ts runs it per batch. */
@@ -41,8 +42,13 @@ async function runMediaPass(args: {
   mediaRoot: string;
   settings: { cdnEnabled: boolean; threshold: number };
   delivery?: MediaDelivery;
+  unresolved?: UnresolvedMediaPolicy;
 }): Promise<MediaPass> {
-  const pass = new MediaPass({ ...args, delivery: args.delivery ?? "link" });
+  const pass = new MediaPass({
+    ...args,
+    delivery: args.delivery ?? "link",
+    unresolved: args.unresolved ?? "refuse",
+  });
   await pass.rewritePages(args.pages);
   await pass.finish();
   return pass;
@@ -473,11 +479,69 @@ describe("media-pass", () => {
     } catch (e) {
       thrown = e;
     }
-    expect(thrown).toBeInstanceOf(Error);
+    // #1600 — the site's content, not a Caelo fault: no bug is filed.
+    expect(thrown).toBeInstanceOf(BuildRefusal);
     expect((thrown as Error).message).toContain("media references unresolved");
+    expect((thrown as Error).message).toContain(
+      "00000000-0000-0000-0000-000000000000/webp-800 (no such image)",
+    );
     // run #10 D4 — the failure surface must carry the recovery step
     // (CLAUDE.md §11), not just the diagnosis.
     expect((thrown as Error).message).toContain("regenerate_media_variants");
+  });
+
+  it("#1600 — refuses a size the image does not have, naming the sizes it has", async () => {
+    // The logo has only its original (a source narrower than every breakpoint).
+    const pages = [
+      { html: `<img src="/_caelo/media/${assetSlug}/webp-800" alt="x" />`, pageSlug: "narrow" },
+    ];
+    const run = adapter.withAdminTransaction(systemCtx, (tx) =>
+      runMediaPass({
+        tx,
+        buildDir,
+        pages,
+        mediaRoot,
+        settings: { cdnEnabled: false, threshold: 5 },
+      }),
+    );
+    await expect(run).rejects.toBeInstanceOf(BuildRefusal);
+    await expect(run).rejects.toThrow(`${assetSlug}/webp-800 (has: orig)`);
+    await expect(run).rejects.toThrow("find_media");
+  });
+
+  it("#1600 — a Stage ships what it cannot resolve as written and returns it per page", async () => {
+    const pages = [
+      {
+        html: `<img src="/_caelo/media/${assetSlug}/webp-800" alt="x" /><img src="/_caelo/media/${heroSlug}/webp-400" alt="y" />`,
+        pageSlug: "narrow",
+      },
+      { html: `<div style="background:url(/_caelo/media/gone-image)"></div>`, pageSlug: "gone" },
+    ];
+    const unresolved = await adapter.withAdminTransaction(systemCtx, async (tx) => {
+      const p = new MediaPass({
+        tx,
+        buildDir,
+        mediaRoot,
+        settings: { cdnEnabled: false, threshold: 5 },
+        delivery: "link",
+        unresolved: "report",
+      });
+      return p.rewritePages(pages);
+    });
+    expect(unresolved.map((u) => ({ ...u, page: u.page.pageSlug }))).toEqual([
+      {
+        page: "narrow",
+        ref: assetSlug,
+        isSlug: true,
+        variant: "webp-800",
+        variants: ["orig"],
+      },
+      { page: "gone", ref: "gone-image", isSlug: true, variant: "orig", variants: null },
+    ]);
+    // As the editor preview shows it: the URL stays; the rest is published.
+    expect(pages[0]?.html).toContain(`src="/_caelo/media/${assetSlug}/webp-800"`);
+    expect(pages[0]?.html).toMatch(new RegExp(`/_assets/${heroSlug}/webp-400\\.${H}\\.webp`));
+    expect(pages[1]?.html).toContain("url(/_caelo/media/gone-image)");
   });
 
   it("#1271 — reference delivery names files by stored digest and reads none of them", async () => {

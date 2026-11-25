@@ -45,6 +45,7 @@ export async function runSeoPass(args: {
     mediaRoot: args.mediaRoot,
     settings: { cdnEnabled: false, threshold: 5 },
     delivery: "link",
+    unresolved: "refuse",
   });
   const seo = await prepareSeoPass({
     tx: args.tx,

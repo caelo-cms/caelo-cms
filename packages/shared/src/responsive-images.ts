@@ -16,6 +16,8 @@
  * precedence; ladders under two entries add no srcset.
  */
 
+import { mediaUrlForRef } from "./media.js";
+
 export interface ImageVariantInfo {
   readonly variant: string;
   readonly format: string;
@@ -80,6 +82,23 @@ export function pickAiImageVariant(existingVariants: readonly string[]): string 
   const above = webps.filter((v) => v.width > 800).sort((a, b) => a.width - b.width)[0];
   if (above) return above.variant;
   return "orig";
+}
+
+/**
+ * #1600 — the media URLs to write instead of a variant an asset does not
+ * have: the size {@link pickAiImageVariant} hands out, then the original,
+ * each only when the asset has it, spelled in the form `ref` was written in
+ * ({@link mediaUrlForRef}).
+ * Shared by the write-time refusal and the Stage's render report, so both
+ * point at the same URL.
+ *
+ * @param ref the asset segment as written: a slug, or a legacy asset id.
+ * @param existingVariants the variant tags the asset has.
+ */
+export function replacementMediaUrls(ref: string, existingVariants: readonly string[]): string[] {
+  return [...new Set([pickAiImageVariant(existingVariants), "orig"])]
+    .filter((v) => existingVariants.includes(v))
+    .map((v) => mediaUrlForRef(ref, v));
 }
 
 export interface EnrichResponsiveImagesOptions {

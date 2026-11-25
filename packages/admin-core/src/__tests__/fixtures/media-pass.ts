@@ -16,7 +16,7 @@ export async function runMediaPass(args: {
   mediaRoot: string;
   settings: { cdnEnabled: boolean; threshold: number };
 }): Promise<MediaPass> {
-  const pass = new MediaPass({ ...args, delivery: "link" });
+  const pass = new MediaPass({ ...args, delivery: "link", unresolved: "refuse" });
   await pass.rewritePages(args.pages);
   await pass.finish();
   return pass;
