@@ -27,6 +27,8 @@ It is a plain string, so `link`/`url` fields, `link` values in list entries (loc
 
 A link to no page is refused at write time with an AI-actionable message (CLAUDE.md §2 and §11). There is no fallback that guesses a path.
 
+A media link that names a variant the asset does not have (`/_caelo/media/hero/webp-800` on a 760 px source, which the pipeline never upscales) is refused the same way (#1600): the run lists every media link with a variant (`run.mediaVariantRefs`), the write op reads the variants of exactly those assets and `reportMissingMediaVariants` turns a missing one into an `unknown-media-variant` issue naming the sizes the image has and the URL to write instead. It is not rewritten to another size: a smaller WebP or the original is the author's choice. A reference an older release stored stays editable around (grandfathered by either spelling) and a Stage reports it as a `render/media-variant-missing` finding instead of stopping (`docs/quality-checks.md`, check `render`).
+
 ## Renames and moves
 
 A slug change (`pages.update` / `update_many`), a subtree move (`pages.move_many`), a chat's moves going live at publish, and a snapshot revert all go through one function: `applyPathMoveEffects` in `packages/admin-core/src/ops/content/path-moves.ts`. It:

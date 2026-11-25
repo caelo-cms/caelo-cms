@@ -23,6 +23,7 @@
  * captcha. Plugin PAGES are ordinary pages of the build and are checked.
  */
 
+import { extractMediaUrlPaths } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
 
 /** A reference to a page (navigation, canonical, hreflang) or to a file. */
@@ -239,6 +240,27 @@ export const GATEWAY_PATH_PREFIX = "/api/";
 /** Paths served by the gateway, not the static build. */
 export function isRuntimePath(path: string): boolean {
   return path === "/api" || path.startsWith(GATEWAY_PATH_PREFIX);
+}
+
+/**
+ * #1600 — a media URL the build's media pass read and could not publish.
+ * The build rewrites every media URL it can publish to its `/_assets/…`
+ * file, so one still on a staged page was kept as the editor preview shows
+ * it and recorded as a render failure, which the `render` check reports
+ * with its repair (one defect, one finding). The media pass reads the raw
+ * HTML with shared `extractMediaUrlPaths`, so the URL counts only when its
+ * spelling as written matches that pattern for the same path: a relative
+ * `_caelo/media/x` resolves to `/_caelo/media/x` but the pass never saw it.
+ * It holds only outside baked plugin output: the build splices that in
+ * after the media pass, so the caller keeps a media URL there.
+ *
+ * @param raw the attribute value as the page carries it.
+ * @param path the path it resolves to ({@link SameSiteUrl.requestPath}).
+ */
+export function isUnpublishedMediaUrl(raw: string, path: string): boolean {
+  const first = extractMediaUrlPaths(path)[0];
+  if (first === undefined || !path.startsWith(first.path)) return false;
+  return extractMediaUrlPaths(raw).some((m) => m.path === first.path);
 }
 
 /**

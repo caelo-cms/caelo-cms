@@ -350,6 +350,16 @@ describe("pages.render_preview — internal references", () => {
           storageKey: `${sha}/orig.pdf`,
           digest: TEST_MEDIA_DIGEST,
         },
+        // The variant the link names: a write refuses one the asset lacks (#1600).
+        {
+          variant: "thumb-200",
+          format: "png",
+          width: 200,
+          height: 283,
+          sizeBytes: 4,
+          storageKey: `${sha}/thumb-200.png`,
+          digest: TEST_MEDIA_DIGEST,
+        },
       ],
     });
     if (!upload.ok) throw new Error(`media seed: ${JSON.stringify(upload.error)}`);

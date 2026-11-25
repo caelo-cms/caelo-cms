@@ -10,11 +10,13 @@
   "exports": {
     ".": "./src/index.ts",
     "./native": "./src/native.ts",
-    "./wasm": "./src/wasm.ts"
+    "./wasm": "./src/wasm.ts",
+    "./self-check": "./src/self-check.ts"
   },
   "scripts": {
     "typecheck": "tsc -b",
-    "fetch": "bun run scripts/fetch-models.ts"
+    "fetch": "bun run scripts/fetch-models.ts",
+    "self-check:bundle": "bun run scripts/bundle-self-check.ts"
   },
   "dependencies": {
     "@caelo-cms/shared": "workspace:*",

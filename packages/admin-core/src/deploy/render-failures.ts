@@ -29,9 +29,13 @@
 import {
   isCaeloFaultMarker,
   isLinkFailureMarker,
+  type MediaFailure,
+  mediaUrlForRef,
   PAGE_PROP_UNKNOWN,
+  parseMediaFailureMarker,
   renderFailureKind,
   renderFailureMarker,
+  replacementMediaUrls,
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { languageName } from "../links/link-notice.js";
@@ -105,8 +109,12 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   const lines: string[] = [];
   const byProblem = new Map<string, { places: Set<string>; pages: Set<string> }>();
   const others = new Set<string>();
+  // #1600 — the media pass sees the composed page, not the module.
+  const imagePages = new Set<string>();
   for (const f of failures) {
-    if (isLinkFailureMarker(renderFailureMarker(f.reason))) {
+    if (parseMediaFailureMarker(f.reason) !== null) {
+      imagePages.add(`${f.pageTitle} (${f.pagePath})`);
+    } else if (isLinkFailureMarker(renderFailureMarker(f.reason))) {
       const problem = linkProblem(f);
       const g = byProblem.get(problem) ?? { places: new Set(), pages: new Set() };
       g.places.add(placeOf(f));
@@ -119,6 +127,13 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   for (const [problem, g] of byProblem) {
     lines.push(
       `${problem} — linked from ${[...g.places].join(", ")} of ${[...g.pages].join(", ")}`,
+    );
+  }
+  if (imagePages.size > 0) {
+    const pages = [...imagePages];
+    const more = pages.length > PLACES_LISTED ? ` and ${pages.length - PLACES_LISTED} more` : "";
+    lines.push(
+      `An image points at a size or file the media library does not have — on ${pages.slice(0, PLACES_LISTED).join(", ")}${more}`,
     );
   }
   const listed = [...others];
@@ -165,6 +180,8 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
   const kind = renderFailureKind(f.reason);
   const path = marker.slice(kind.length + 1);
   const mod = f.moduleSlug ? `module "${f.moduleSlug}"` : "the module";
+  const media = parseMediaFailureMarker(marker);
+  if (media !== null) return mediaRepair(media);
   if (isLinkFailureMarker(marker)) {
     return {
       tool: "check_links",
@@ -201,6 +218,37 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
   }
+}
+
+/**
+ * Where a media URL on a page is written, and the tools that rewrite it.
+ * Kept short: a finding's hint is cut at 500 characters (findings.ts) and
+ * names up to three media URLs before this, the most important text first.
+ */
+const MEDIA_WRITTEN_IN =
+  "in the module content (set_content_instance_values_many) or HTML (update_modules_many) that holds it (inspect_page_render lists the page's modules)";
+
+/** #1600 — how the AI repairs a media reference the build could not publish. */
+function mediaRepair(media: MediaFailure): RenderRepair {
+  const url = mediaUrlForRef(media.ref, media.variant);
+  if (media.variants === null) {
+    return {
+      tool: "find_media",
+      hint: `${url} names no image in the media library (deleted, or never uploaded): replace it with the url of an image from find_media, or remove it, ${MEDIA_WRITTEN_IN}.`,
+    };
+  }
+  const instead = replacementMediaUrls(media.ref, media.variants);
+  const write =
+    instead.length === 0
+      ? "point it at another image from find_media"
+      : `write ${instead.join(" or ")} instead`;
+  // The marker does not say whether the source is wide enough for the size:
+  // when it is (a ladder an older pipeline left incomplete), regenerating
+  // repairs the image without touching the page.
+  return {
+    tool: "set_content_instance_values_many",
+    hint: `${url} names size "${media.variant}", which this image does not have (it has: ${media.variants.join(", ") || "none"}): ${write}, ${MEDIA_WRITTEN_IN}; regenerate_media_variants makes a size the source is wide enough for.`,
+  };
 }
 
 /** Each distinct repair once, in the order the failures need them. */
