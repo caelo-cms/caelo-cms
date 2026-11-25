@@ -21,7 +21,8 @@
  * that names the pages; a failure on one page belongs to that page.
  *
  * Rules: `render/<marker kind>` (`render/field-path-unknown`,
- * `render/page-prop-unknown`, `render/module-missing`,
+ * `render/page-prop-unknown`, `render/page-key-unknown`,
+ * `render/page-path-unknown`, `render/module-missing`,
  * `render/link-target-missing`, `render/media-variant-missing`,
  * `render/media-missing`, `render/media-reference`, `render/og-image-missing`,
  * `render/og-image-reference`, …), plus

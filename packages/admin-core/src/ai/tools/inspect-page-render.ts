@@ -38,9 +38,8 @@ import {
   pluginsNotRunningHere,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
-import { PAGE_PROP_UNKNOWN } from "@caelo-cms/shared";
 import { z } from "zod";
-import { pagePropUnknownHint } from "../../deploy/render-failures.js";
+import { pageMarkerHint } from "../../deploy/render-failures.js";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -448,12 +447,14 @@ function pluginRenderFailedNextStep(
 }
 
 /**
- * #1561 — next step for `page-prop-unknown:<name>`: a page property no page
- * type of the site declares. Same text as the Stage's report.
+ * #1561 / #1717 — next step for a `{{page.*}}` the page cannot answer: a
+ * property no page type declares (`page-prop-unknown`), a key the page
+ * does not have (`page-key-unknown`), a path its value cannot answer
+ * (`page-path-unknown`). Same text as the Stage's report.
  */
-function pagePropUnknownNextStep(marker: string): string | undefined {
-  if (!marker.startsWith(`${PAGE_PROP_UNKNOWN}:`)) return undefined;
-  return `${pagePropUnknownHint(marker.slice(PAGE_PROP_UNKNOWN.length + 1), "a module on this page")} Publishing is blocked until it is fixed.`;
+function pageMarkerNextStep(marker: string): string | undefined {
+  const hint = pageMarkerHint(marker, "a module on this page");
+  return hint === undefined ? undefined : `${hint} Publishing is blocked until it is fixed.`;
 }
 
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
@@ -469,7 +470,7 @@ function siteSettingNextSteps(
         missingVariantLinkNextStep(m) ??
         pluginNotRunningNextStep(m) ??
         pluginRenderFailedNextStep(m, pluginFailures) ??
-        pagePropUnknownNextStep(m);
+        pageMarkerNextStep(m);
       return step ? [[m, step]] : [];
     }),
   );

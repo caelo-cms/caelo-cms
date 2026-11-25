@@ -317,9 +317,42 @@ describe("a template copy (#1689)", () => {
     expect(r2.databases).toEqual(installDatabases(C2));
     const fresh = await fingerprint(B);
     expect(fresh.length).toBeGreaterThan(500);
-    expect(await fingerprint(C1)).toEqual(fresh);
-    expect(await fingerprint(C2)).toEqual(fresh);
+    // The one difference: a copy drops the previous release's argument-less
+    // caelo_grant_platform_updater() (cms_admin 0780, template-rebind.ts
+    // DROP_IN_COPY_SQL), whose body names the template.
+    const isWrapper = (line: string) =>
+      line.startsWith("cms_admin|routine|caelo_grant_platform_updater()|");
+    expect(fresh.filter(isWrapper)).toHaveLength(1);
+    const copied = fresh.filter((line) => !isWrapper(line));
+    expect(await fingerprint(C1)).toEqual(copied);
+    expect(await fingerprint(C2)).toEqual(copied);
   }, 300_000);
+
+  it("keeps the previous release's wrapper on the template only, and the 3-argument function refuses another install's names (#1722)", async () => {
+    const template = new SQL(url(B.databases.admin), { max: 1 });
+    const copy = new SQL(url(C1.databases.admin), { max: 1 });
+    try {
+      // On the template (a migrated install) the wrapper is renamed to its
+      // own names, so the previous release's convergence call grants there.
+      await template.unsafe("SELECT caelo_grant_platform_updater()");
+      const [grant] = (await template`
+        SELECT has_table_privilege(${B.roles.platformUpdater}, 'platform_update_requests', 'SELECT') AS ok
+      `) as { ok: boolean }[];
+      expect(grant?.ok).toBe(true);
+      const [wrapper] = (await copy`
+        SELECT to_regprocedure('caelo_grant_platform_updater()') IS NULL AS gone
+      `) as { gone: boolean }[];
+      expect(wrapper?.gone).toBe(true);
+      await expect(
+        copy.unsafe(
+          `SELECT caelo_grant_platform_updater('${B.roles.platformUpdater}', '${B.databases.admin}', '${B.databases.public}')`,
+        ),
+      ).rejects.toThrow(`runs in its admin database ${C1.databases.admin}`);
+    } finally {
+      await template.end();
+      await copy.end();
+    }
+  });
 
   it("draws every per-install secret anew and publishes the copy's own (Codex review)", async () => {
     const secretsOf = async (names: InstallNames) => {

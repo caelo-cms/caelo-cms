@@ -1021,7 +1021,8 @@ async function runTrigger(
           kind: "HandlerError",
           operation: "deploy.trigger",
           message: text.operator,
-          nextAction: { tool: "check_links", reason: text.ai },
+          // #1718 — the tool the failures need, not always the link check.
+          nextAction: text.nextAction,
         });
       }
       const tail = subprocess.stderr ? `\n${subprocess.stderr.slice(-500)}` : "";

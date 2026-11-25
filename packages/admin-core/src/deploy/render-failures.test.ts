@@ -266,3 +266,77 @@ describe("reference images and share images the build could not publish (#1719)"
     expect(r?.aiText).toContain("og-image-missing: set_theme_asset");
   });
 });
+
+describe("renderRepairOf — a page key or path the page cannot answer (#1717)", () => {
+  it("lists the page's keys for a key it does not have", () => {
+    const r = renderRepairOf({ reason: "page-key-unknown:titel", moduleSlug: "hilfe-kopf" });
+    expect(r.tool).toBe("update_modules_many");
+    expect(r.hint).toContain('{{page.titel}} in module "hilfe-kopf": the page has no key "titel"');
+    expect(r.hint).toContain("title, short_title");
+    expect(r.hint).toContain("{{page.props.<name>}} (list_page_types)");
+    expect(r.hint.length).toBeLessThan(500);
+  });
+
+  it("names the property's type and what it answers", () => {
+    const text = renderRepairOf({
+      reason: "page-path-unknown:props.stand:text",
+      moduleSlug: "hilfe-kopf",
+    });
+    expect(text.tool).toBe("update_modules_many");
+    expect(text.hint).toContain("page.props.stand (text) has no paths: write {{page.props.stand}}");
+    const link = renderRepairOf({
+      reason: "page-path-unknown:props.cta:link|text",
+      moduleSlug: null,
+    });
+    expect(link.hint).toContain(
+      "page.props.cta (link or text) answers {{page.props.cta}} and {{page.props.cta.href}}, {{page.props.cta.target}}, {{page.props.cta.title}}",
+    );
+    const select = renderRepairOf({
+      reason: "page-path-unknown:props.layout:select",
+      moduleSlug: null,
+    });
+    expect(select.hint).toContain("or the option flag {{#page.props.layout_<option>}}");
+    const terms = renderRepairOf({ reason: "page-path-unknown:terms:terms", moduleSlug: null });
+    expect(terms.hint).toContain("{{#page.terms.<vocabulary slug>}}");
+    for (const r of [text, link, select, terms]) expect(r.hint.length).toBeLessThan(500);
+  });
+});
+
+describe("describeRenderFailures — the next step of a stopped build (#1718)", () => {
+  const pageProp = (over: Partial<RenderFailure> = {}) =>
+    failure({ reason: "page-prop-unknown:stnad", ...over });
+  const media = () =>
+    failure({ reason: "media-missing:old-logo/orig", blockName: null, moduleSlug: null });
+
+  it("a link failure still goes to check_links", () => {
+    expect(describeRenderFailures([linkFailure()]).nextAction.tool).toBe("check_links");
+  });
+
+  it("each kind goes to its own repair tool", () => {
+    expect(describeRenderFailures([pageProp()]).nextAction.tool).toBe("list_page_types");
+    expect(describeRenderFailures([media()]).nextAction.tool).toBe("find_media");
+    expect(
+      describeRenderFailures([failure({ reason: "page-key-unknown:titel" })]).nextAction.tool,
+    ).toBe("update_modules_many");
+  });
+
+  it("several kinds: the most frequent kind's tool, every tool in the reason", () => {
+    const next = describeRenderFailures([
+      media(),
+      pageProp(),
+      pageProp({ blockName: "footer" }),
+      linkFailure(),
+    ]).nextAction;
+    expect(next.tool).toBe("list_page_types");
+    expect(next.reason).toContain(
+      "Tools these repairs need, most needed first: list_page_types, find_media, check_links.",
+    );
+  });
+
+  it("a render without its context is a Caelo bug: bug_report", () => {
+    const next = describeRenderFailures([
+      failure({ reason: "list-context-unavailable:menu" }),
+    ]).nextAction;
+    expect(next.tool).toBe("bug_report");
+  });
+});
