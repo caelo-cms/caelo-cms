@@ -1122,6 +1122,8 @@ async function buildSite(
     contentStates,
     feed,
   });
+  // #1719 — on a Stage, the pages whose share image could not be published.
+  renderFailures.push(...seo.renderFailures);
   // #449 — plugin client assets: one call per contributing plugin for
   // the whole build, written under `_caelo/plugin/<slug>/` with the
   // content hash in the name, then referenced from every page. Minified

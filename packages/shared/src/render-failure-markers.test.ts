@@ -6,7 +6,11 @@ import {
   MEDIA_MISSING,
   MEDIA_VARIANT_MISSING,
   mediaFailureMarker,
+  mediaReferenceMarker,
+  ogImageFailureMarker,
   parseMediaFailureMarker,
+  parseMediaReferenceMarker,
+  parseOgImageFailureMarker,
   renderFailureKind,
   renderFailureMarker,
 } from "./render-failure-markers.js";
@@ -92,6 +96,49 @@ describe("media failure markers (#1600)", () => {
       "media-variant-missing:hero",
     ]) {
       expect(parseMediaFailureMarker(m)).toBeNull();
+    }
+  });
+});
+
+describe("reference image and share image markers (#1719)", () => {
+  const ID = "0f1e2d3c-4b5a-4968-8776-655443322110";
+
+  it("round-trips a reference image on a page", () => {
+    const marker = mediaReferenceMarker({ ref: "brand-guide", variant: "webp-800" });
+    expect(marker).toBe("media-reference:brand-guide/webp-800");
+    expect(renderFailureKind(marker)).toBe("media-reference");
+    expect(parseMediaReferenceMarker(marker)).toEqual({ ref: "brand-guide", variant: "webp-800" });
+    expect(parseMediaReferenceMarker(`<!-- caelo:missing reason=${marker} -->`)).toEqual({
+      ref: "brand-guide",
+      variant: "webp-800",
+    });
+    expect(parseMediaFailureMarker(marker)).toBeNull();
+    expect(isCaeloFaultMarker(marker)).toBe(false);
+  });
+
+  it("round-trips a share image the build cannot publish, with the level that chose it", () => {
+    for (const problem of ["missing", "reference"] as const) {
+      for (const source of ["page", "language", "site"] as const) {
+        const marker = ogImageFailureMarker({ problem, source, assetId: ID });
+        expect(marker).toBe(`og-image-${problem}:${source}/${ID}`);
+        expect(renderFailureKind(marker)).toBe(`og-image-${problem}`);
+        expect(parseOgImageFailureMarker(marker)).toEqual({ problem, source, assetId: ID });
+        expect(isCaeloFaultMarker(marker)).toBe(false);
+      }
+    }
+  });
+
+  it("parses nothing else", () => {
+    for (const m of [
+      "media-reference:Brand/webp-800",
+      "media-reference:brand",
+      `og-image-missing:none/${ID}`,
+      "og-image-missing:page/not-an-id",
+      `og-image-gone:page/${ID}`,
+      "media-missing:x/orig",
+    ]) {
+      expect(parseMediaReferenceMarker(m)).toBeNull();
+      expect(parseOgImageFailureMarker(m)).toBeNull();
     }
   });
 });

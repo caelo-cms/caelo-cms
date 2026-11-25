@@ -18,6 +18,7 @@ import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import type { RenderFailure } from "../deploy/render-failures.js";
 import { registerAdminOps } from "../register.js";
 import { TEST_MEDIA_DIGEST } from "./fixtures/media-digest.js";
 import { runSeoPass } from "./fixtures/seo-pass.js";
@@ -122,13 +123,17 @@ async function page(slug: string): Promise<string> {
 const bindSiteImage = (mediaId: string | null) =>
   op("themes.set_asset", { slot: "socialShare", mediaId });
 
-async function buildHead(pageId: string, siteShareImageAssetId: string | null): Promise<string> {
+async function buildHead(
+  pageId: string,
+  siteShareImageAssetId: string | null,
+  unresolved: "refuse" | "report" = "refuse",
+): Promise<{ html: string; renderFailures: readonly RenderFailure[] }> {
   const built = {
     pageId,
     pageSlug: "x",
     html: "<html><head><title>x</title></head><body>b</body></html>",
   };
-  await adapter.withAdminTransaction(SYS, (tx) =>
+  const { renderFailures } = await adapter.withAdminTransaction(SYS, (tx) =>
     runSeoPass({
       tx,
       plugins: localBuildPluginServices,
@@ -139,9 +144,10 @@ async function buildHead(pageId: string, siteShareImageAssetId: string | null): 
       pageUrlStyle: "directory",
       notFoundPageId: null,
       siteShareImageAssetId,
+      unresolved,
     }),
   );
-  return built.html;
+  return { html: built.html, renderFailures };
 }
 
 interface SeoRead {
@@ -210,7 +216,7 @@ describe("#1452 — default share image", () => {
   it("with no default a page ships without og:image, and every surface says so", async () => {
     await bindSiteImage(null);
     const p = await page("none");
-    const html = await buildHead(p, null);
+    const { html } = await buildHead(p, null);
     expect(html).not.toContain("og:image");
     expect(html).toContain('name="twitter:card" content="summary"');
     expect((await readSeo(p)).shareImage).toEqual({ source: "none", assetId: null, url: null });
@@ -221,7 +227,7 @@ describe("#1452 — default share image", () => {
     await bindSiteImage(siteImage.assetId);
     const p = await page("site");
 
-    const html = await buildHead(p, siteImage.assetId);
+    const { html } = await buildHead(p, siteImage.assetId);
     expect(html).toContain(`property="og:image" content="${BASE}/_assets/${siteImage.slug}`);
     expect(html).toContain('name="twitter:card" content="summary_large_image"');
 
@@ -247,7 +253,7 @@ describe("#1452 — default share image", () => {
     const p = await page("own");
     await op("pages_seo.set", { pageId: p, ogImageAssetId: ownImage.assetId });
 
-    const html = await buildHead(p, siteImage.assetId);
+    const { html } = await buildHead(p, siteImage.assetId);
     expect(html).toContain(`_assets/${ownImage.slug}`);
     expect(html).not.toContain(`_assets/${siteImage.slug}`);
     expect((await readSeo(p)).shareImage).toMatchObject({
@@ -269,7 +275,9 @@ describe("#1452 — default share image", () => {
       assetId: germanImage.assetId,
     });
     expect((await readSeo(english)).shareImage.source).toBe("site");
-    expect(await buildHead(german, siteImage.assetId)).toContain(`_assets/${germanImage.slug}`);
+    expect((await buildHead(german, siteImage.assetId)).html).toContain(
+      `_assets/${germanImage.slug}`,
+    );
     expect(await previewHtml(german)).toContain(`/_caelo/media/${germanImage.slug}`);
     expect(
       (await intl<{ shareImages: Record<string, string> }>("intl_status", {})).shareImages,
@@ -328,5 +336,16 @@ describe("#1452 — default share image", () => {
       url: null,
     });
     await expect(buildHead(p, doomed.assetId)).rejects.toThrow(/set_theme_asset slot socialShare/);
+    // #1719 — a Stage ships the page without og:image and reports it, at
+    // the level that chose the image.
+    const staged = await buildHead(p, doomed.assetId, "report");
+    expect(staged.html).not.toContain("og:image");
+    expect(staged.renderFailures).toEqual([
+      expect.objectContaining({
+        pageId: p,
+        pagePath: expect.stringContaining("deleted"),
+        reason: `og-image-missing:site/${doomed.assetId}`,
+      }),
+    ]);
   });
 });

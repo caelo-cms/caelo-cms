@@ -27,8 +27,11 @@
  *
  * Ordering: runs AFTER `media-pass` (URLs already rewritten to
  * /_assets/...) so the og:image href resolves to the deployed asset
- * path. Failures throw — per the no-fallbacks rule, a missing or
- * deleted og_image_asset_id stops the deploy loudly.
+ * path. Per the no-fallbacks rule a share image the build cannot publish
+ * (deleted, no image file, a reference image) refuses the deploy — except
+ * on a Stage (#1719, #1604), which ships those pages without `og:image`
+ * and reports each one ({@link SeoPass.renderFailures}); Publish live
+ * refuses that build.
  *
  * #1452 — a page without its own image shows its language's default (a
  * plugin's answer) or the site default (the active theme's `socialShare`
@@ -49,6 +52,8 @@ import {
   type BreadcrumbJsonLdItem,
   breadcrumbJsonLdItems,
   injectSeoIntoHead,
+  type OgImageFailure,
+  ogImageFailureMarker,
   type PageUrlStyle,
   pagedUrl,
   pickShareImage,
@@ -60,7 +65,8 @@ import {
 import { sql } from "drizzle-orm";
 import { pageContentFingerprint, pluginRegionsDigest } from "./content-fingerprint.js";
 import type { ContentStates } from "./content-states.js";
-import type { MediaPass } from "./media-pass.js";
+import type { MediaPass, OgImageOutcome } from "./media-pass.js";
+import type { RenderFailure } from "./nested-modules-pass.js";
 
 interface PageSeoBundle {
   pageId: string;
@@ -118,6 +124,12 @@ export interface SeoPass {
   writeSitemap(write: (relPath: string, content: string) => Promise<void>): Promise<boolean>;
   /** The public URL this build gave a page: what its canonical carries. */
   publicUrl(pageId: string): string;
+  /**
+   * #1719 — on a Stage, every page whose share image the build could not
+   * publish (it ships without `og:image`); always empty on other builds,
+   * which refused it while preparing.
+   */
+  readonly renderFailures: readonly RenderFailure[];
 }
 
 /** A JSON value bound as one jsonb parameter. */
@@ -149,7 +161,8 @@ export async function prepareSeoPass(args: {
   notFoundPageId: string | null;
   /** #1452 — the active theme's bound `socialShare` asset: the site's
    *  default share image, or null when none is bound. The raw binding, so
-   *  an asset deleted after binding stops the build instead of vanishing. */
+   *  an asset deleted after binding is refused (reported on a Stage)
+   *  instead of vanishing. */
   siteShareImageAssetId: string | null;
   /** The live record every indexable page is compared with (docs/dev/search-engine-feed.md). */
   contentStates: ContentStates;
@@ -222,16 +235,17 @@ export async function prepareSeoPass(args: {
   const languageImages = await plugins.resolveShareImages(
     seoBundles.filter((b) => b.ogImageAssetId === null).map((b) => b.pageId),
   );
-  const shareImageOf = new Map(
+  const pickedOf = new Map(
     seoBundles.map((b) => [
       b.pageId,
       pickShareImage({
         page: b.ogImageAssetId,
         language: languageImages.get(b.pageId) ?? null,
         site: args.siteShareImageAssetId,
-      }).assetId,
+      }),
     ]),
   );
+  const shareImageOf = new Map([...pickedOf].map(([pageId, p]) => [pageId, p.assetId]));
 
   // Resolve every shown image to a public URL and publish that file with
   // the build: the og:image need not appear on any page, so the media pass
@@ -239,10 +253,22 @@ export async function prepareSeoPass(args: {
   // (#667), so a file that is also on a page lands on the same path.
   const base = settings.siteBaseUrl.replace(/\/$/, "");
   const ogImageUrlByAsset = new Map<string, string>();
+  const unpublishable = new Map<string, Exclude<OgImageOutcome["kind"], "published">>();
   for (const id of new Set(shareImageOf.values())) {
     if (id === null) continue;
-    ogImageUrlByAsset.set(id, `${base}/${await args.media.publishOgImage(id)}`);
+    const outcome = await args.media.publishOgImage(id);
+    if (outcome.kind === "published") ogImageUrlByAsset.set(id, `${base}/${outcome.path}`);
+    else unpublishable.set(id, outcome.kind);
   }
+  // #1719 — a Stage ships those pages without og:image and reports each.
+  const renderFailures = seoBundles.flatMap((b): RenderFailure[] => {
+    const picked = pickedOf.get(b.pageId);
+    const problem = picked?.assetId ? unpublishable.get(picked.assetId) : undefined;
+    if (!picked?.assetId || picked.source === "none" || problem === undefined) return [];
+    return [
+      shareImageRenderFailure(b, { problem, source: picked.source, assetId: picked.assetId }),
+    ];
+  });
 
   // #391 — collect every plugin's head/sitemap contributions in ONE
   // batch call. Zod-validated + contradiction-checked by the host;
@@ -299,6 +325,8 @@ export async function prepareSeoPass(args: {
   const followUpsOf = new Map<string, number[]>();
 
   return {
+    renderFailures,
+
     recordStates(pages) {
       for (const p of pages) {
         const bundle = bundleById.get(p.pageId);
@@ -484,6 +512,38 @@ export function followUpHeadEntries<
   E extends { readonly kind: string; readonly hreflang?: string },
 >(entries: readonly E[] | undefined): E[] | undefined {
   return entries?.filter((e) => !(e.kind === "link" && e.hreflang !== undefined));
+}
+
+/** The level that chose a share image, in the words of a render failure line. */
+const SHARE_IMAGE_LEVEL: Readonly<Record<OgImageFailure["source"], string>> = {
+  page: "the page's own share image",
+  language: "its language's default share image",
+  site: "the site's default share image (theme slot socialShare)",
+};
+
+/**
+ * #1719 — the render failure a Stage records for a page whose share image
+ * the build could not publish; the page ships without `og:image`.
+ */
+function shareImageRenderFailure(
+  b: Pick<PageSeoBundle, "pageId" | "slug" | "title" | "currentPath">,
+  f: OgImageFailure,
+): RenderFailure {
+  const what =
+    f.problem === "missing"
+      ? "was deleted or has no image file"
+      : "is a reference image, which is never published";
+  return {
+    pageId: b.pageId,
+    pageTitle: b.title,
+    pagePath: b.currentPath,
+    blockName: null,
+    moduleSlug: null,
+    field: null,
+    reason: ogImageFailureMarker(f),
+    target: null,
+    line: `page "${b.slug}": ${SHARE_IMAGE_LEVEL[f.source]} (og:image, media ${f.assetId}) ${what}`,
+  };
 }
 
 /**

@@ -24,13 +24,16 @@
  * `render/page-prop-unknown`, `render/page-key-unknown`,
  * `render/page-path-unknown`, `render/module-missing`,
  * `render/link-target-missing`, `render/media-variant-missing`,
- * `render/media-missing`, …), plus
+ * `render/media-missing`, `render/media-reference`, `render/og-image-missing`,
+ * `render/og-image-reference`, …), plus
  * `render/limit-reached` (info) when the run recorded more failures than
  * it lists.
  */
 
 import {
   parseMediaFailureMarker,
+  parseMediaReferenceMarker,
+  parseOgImageFailureMarker,
   renderFailureKind,
   renderFailureMarker,
   truncateKeepingIds,
@@ -77,6 +80,9 @@ interface FailureGroup {
 function placeText(f: RenderFailure): string {
   // #1600 — the media pass finds these in the composed page, not in a block.
   if (parseMediaFailureMarker(f.reason) !== null) return "an image on the page";
+  // #1719 — a reference image on the page; the page's share image (its head).
+  if (parseMediaReferenceMarker(f.reason) !== null) return "an image on the page";
+  if (parseOgImageFailureMarker(f.reason) !== null) return "the page's share image (og:image)";
   const block = f.blockName === null ? "the site layout" : `the ${f.blockName}`;
   const mod = f.moduleSlug ? `, module "${f.moduleSlug}"` : "";
   const field = f.field ? `, field "${f.field}"` : "";

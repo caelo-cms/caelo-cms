@@ -31,7 +31,12 @@ import {
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { BuildRefusal } from "./build-refusal.js";
-import { type MediaDelivery, MediaPass, type UnresolvedMediaPolicy } from "./media-pass.js";
+import {
+  type MediaDelivery,
+  MediaPass,
+  mediaRenderFailure,
+  type UnresolvedMediaPolicy,
+} from "./media-pass.js";
 import { digestBytes } from "./published-digest.js";
 
 /** One build's media pass over `pages`, the way generate.ts runs it per batch. */
@@ -52,6 +57,25 @@ async function runMediaPass(args: {
   await pass.rewritePages(args.pages);
   await pass.finish();
   return pass;
+}
+
+/** A Stage's media pass (#1604): reports what it cannot publish. */
+function stagePass(tx: TransactionRunner, root: string): MediaPass {
+  return new MediaPass({
+    tx,
+    buildDir,
+    mediaRoot: root,
+    settings: { cdnEnabled: false, threshold: 5 },
+    delivery: "link",
+    unresolved: "report",
+  });
+}
+
+async function setVisibility(id: string, visibility: "library" | "reference"): Promise<void> {
+  const r = await execute(registry, adapter, systemCtx, "media.set_visibility_many", {
+    items: [{ assetId: id, visibility }],
+  });
+  if (!r.ok) throw new Error(JSON.stringify(r.error));
 }
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -415,6 +439,8 @@ describe("media-pass", () => {
     } finally {
       await mark("library");
     }
+    // #1719 — the site's content, not a Caelo fault: no bug is filed.
+    expect(thrown).toBeInstanceOf(BuildRefusal);
     expect((thrown as Error).message).toContain("reference images");
     expect((thrown as Error).message).toContain(assetSlug);
     expect((thrown as Error).message).toContain("set_media_visibility_many");
@@ -534,14 +560,105 @@ describe("media-pass", () => {
         ref: assetSlug,
         isSlug: true,
         variant: "webp-800",
+        problem: "variant-missing",
         variants: ["orig"],
       },
-      { page: "gone", ref: "gone-image", isSlug: true, variant: "orig", variants: null },
+      {
+        page: "gone",
+        ref: "gone-image",
+        isSlug: true,
+        variant: "orig",
+        problem: "missing",
+        variants: null,
+      },
     ]);
     // As the editor preview shows it: the URL stays; the rest is published.
     expect(pages[0]?.html).toContain(`src="/_caelo/media/${assetSlug}/webp-800"`);
     expect(pages[0]?.html).toMatch(new RegExp(`/_assets/${heroSlug}/webp-400\\.${H}\\.webp`));
     expect(pages[1]?.html).toContain("url(/_caelo/media/gone-image)");
+  });
+
+  it("#1719 — a Stage ships a reference image as written, publishes none of its files and returns it", async () => {
+    await setVisibility(assetId, "reference");
+    try {
+      const pages = [
+        {
+          html: `<img src="/_caelo/media/${assetSlug}" alt="x" /><img src="/_caelo/media/${heroSlug}/webp-400" alt="y" />`,
+          pageSlug: "guide",
+          pageId: "00000000-0000-4000-8000-000000000171",
+          pageTitle: "Guide",
+          relPath: "guide/index.html",
+        },
+      ];
+      const { unresolved, assets } = await adapter.withAdminTransaction(systemCtx, async (tx) => {
+        const p = stagePass(tx, mediaRoot);
+        return { unresolved: await p.rewritePages(pages), assets: p.assets() };
+      });
+      expect(unresolved.map((u) => ({ ...u, page: u.page.pageSlug }))).toEqual([
+        {
+          page: "guide",
+          ref: assetSlug,
+          isSlug: true,
+          variant: "orig",
+          problem: "reference",
+          variants: null,
+        },
+      ]);
+      expect(pages[0]?.html).toContain(`src="/_caelo/media/${assetSlug}"`);
+      expect(pages[0]?.html).toMatch(new RegExp(`/_assets/${heroSlug}/webp-400\\.${H}\\.webp`));
+      expect(assets.map((a) => a.path).filter((path) => path.includes(assetSlug))).toEqual([]);
+      const failure = unresolved[0];
+      if (!failure) throw new Error("nothing reported");
+      expect(mediaRenderFailure(failure, "/guide")).toMatchObject({
+        pageId: "00000000-0000-4000-8000-000000000171",
+        pagePath: "/guide",
+        reason: `media-reference:${assetSlug}/orig`,
+      });
+    } finally {
+      await setVisibility(assetId, "library");
+    }
+  });
+
+  it("#1719 — a share image a Stage cannot publish comes back as the outcome; every other build refuses it", async () => {
+    const gone = "00000000-0000-4000-8000-000000001719";
+    await adapter.withAdminTransaction(systemCtx, async (tx) => {
+      const p = stagePass(tx, mediaRoot);
+      expect(await p.publishOgImage(gone)).toEqual({ kind: "missing" });
+      const published = await p.publishOgImage(assetId);
+      expect(published).toEqual({ kind: "published", path: `_assets/${assetSlug}.${H}.png` });
+    });
+    const refused = adapter.withAdminTransaction(systemCtx, (tx) =>
+      new MediaPass({
+        tx,
+        buildDir,
+        mediaRoot,
+        settings: { cdnEnabled: false, threshold: 5 },
+        delivery: "link",
+        unresolved: "refuse",
+      }).publishOgImage(gone),
+    );
+    await expect(refused).rejects.toBeInstanceOf(BuildRefusal);
+    await expect(refused).rejects.toThrow("set_page_seo_many");
+
+    await setVisibility(assetId, "reference");
+    try {
+      await adapter.withAdminTransaction(systemCtx, async (tx) => {
+        expect(await stagePass(tx, mediaRoot).publishOgImage(assetId)).toEqual({
+          kind: "reference",
+        });
+      });
+    } finally {
+      await setVisibility(assetId, "library");
+    }
+  });
+
+  it("#1719 — a share image whose stored file is gone stops a Stage too (not content)", async () => {
+    const emptyRoot = mkdtempSync(join(tmpdir(), "caelo-media-pass-empty-og-"));
+    const run = adapter.withAdminTransaction(systemCtx, (tx) =>
+      stagePass(tx, emptyRoot).publishOgImage(assetId),
+    );
+    await expect(run).rejects.toThrow("is missing from");
+    await expect(run).rejects.not.toBeInstanceOf(BuildRefusal);
   });
 
   it("#1271 — reference delivery names files by stored digest and reads none of them", async () => {
