@@ -195,9 +195,13 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
   }
 }
 
-/** Where a media URL on a page is written, and the tools that rewrite it. */
+/**
+ * Where a media URL on a page is written, and the tools that rewrite it.
+ * Kept short: a finding's hint is cut at 500 characters (findings.ts) and
+ * names up to three media URLs before this, the most important text first.
+ */
 const MEDIA_WRITTEN_IN =
-  "where the page writes it: a module's content (get_content_instance, set_content_instance_values_many) or its HTML (read_content, update_modules_many); inspect_page_render lists the page's modules";
+  "in the module content (set_content_instance_values_many) or HTML (update_modules_many) that holds it (inspect_page_render lists the page's modules)";
 
 /** #1600 — how the AI repairs a media reference the build could not publish. */
 function mediaRepair(media: MediaFailure): RenderRepair {
@@ -213,9 +217,12 @@ function mediaRepair(media: MediaFailure): RenderRepair {
     instead.length === 0
       ? "point it at another image from find_media"
       : `write ${instead.join(" or ")} instead`;
+  // The marker does not say whether the source is wide enough for the size:
+  // when it is (a ladder an older pipeline left incomplete), regenerating
+  // repairs the image without touching the page.
   return {
     tool: "set_content_instance_values_many",
-    hint: `${url} names size "${media.variant}", which this image does not have (it has: ${media.variants.join(", ") || "none"}): ${write}, ${MEDIA_WRITTEN_IN}.`,
+    hint: `${url} names size "${media.variant}", which this image does not have (it has: ${media.variants.join(", ") || "none"}): ${write}, ${MEDIA_WRITTEN_IN}; regenerate_media_variants makes a size the source is wide enough for.`,
   };
 }
 

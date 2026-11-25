@@ -169,6 +169,11 @@ describe("media the build could not publish (#1600)", () => {
       "write /_caelo/media/url-history/webp-400 or /_caelo/media/url-history instead",
     );
     expect(r.hint).toContain("update_modules_many");
+    // A size the source is wide enough for (an incomplete ladder) is
+    // repaired by regenerating it, not by pointing the page elsewhere.
+    expect(r.hint).toContain(
+      "regenerate_media_variants makes a size the source is wide enough for",
+    );
   });
 
   it("sends an image the library does not have to find_media", () => {
