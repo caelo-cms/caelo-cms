@@ -35,6 +35,10 @@ Lighthouse simulates the CPU slowdown from observed task durations, so a run tha
 
 A cloud install never falls back to the in-process child (CLAUDE.md §2).
 
+**How the audit browser loads the build.** A staged build is served on a loopback origin (`staged-origin.ts`), never through the gated staging gateway, and it is served the way the CDN serves staging: the same headers, compressed, and over **HTTP/2 with TLS**. Lighthouse simulates the connections the browser really opened. Over HTTP/1.1 every parallel request opens its own connection and pays its own handshake, while over HTTP/2 they share one, as on every staging and live host.
+
+On HTTP/1.1, searchviu.com's home page scored Performance 99 (simulated LCP 1.8 to 2.0 s). With the same files on HTTP/2 it scored LCP 0.99 (1.6 s). Chromium speaks HTTP/2 only over TLS, so the listener the browser uses has a throwaway certificate (`loopback-tls.ts`, a fresh key per origin, never stored). The browser is started trusting exactly that key (`--ignore-certificate-errors-spki-list`), and every other certificate error stays an error. The plain HTTP listener of the same origin stays for the checks that fetch pages themselves. A parallel task serves its own copy of the slot (`audit-task.ts`); the in-process child gets the HTTP/2 address in its job (`browserOrigin`). Both report on the origin the admin addressed.
+
 Troubleshooting (the audit's failure message names which one):
 
 - **`CAELO_AUDIT_JOB / CAELO_AUDIT_RESULTS_BUCKET are not set`** or **`could not start the audit tasks`**: the job is missing. Run `cms-provision upgrade`; its "Ensuring the quality-audit job" step says what failed.

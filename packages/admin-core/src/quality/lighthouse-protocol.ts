@@ -16,6 +16,21 @@ import { stagedBuildSourceSchema } from "./staged-build-source.js";
 
 const categorySchema = z.enum(QUALITY_CATEGORIES);
 
+/**
+ * The audited loopback build over HTTP/2 and TLS (staged-origin.ts): the
+ * in-process child loads `pages[].url` there instead of on `servedAt`,
+ * trusting only `trustSpki`, and reports on `servedAt` again.
+ */
+export const browserOriginSchema = z
+  .object({
+    servedAt: z.string().url(),
+    baseUrl: z.string().url(),
+    trustSpki: z.string().min(1),
+  })
+  .strict();
+
+export type BrowserOrigin = z.infer<typeof browserOriginSchema>;
+
 export const auditJobSchema = z
   .object({
     pages: z.array(z.object({ pageId: z.string().uuid(), url: z.string().url() }).strict()).min(1),
@@ -27,6 +42,8 @@ export const auditJobSchema = z
      *  can open: a parallel audit task serves the same build itself. The
      *  in-process child ignores it (it shares the admin's loopback). */
     stagedBuild: stagedBuildSourceSchema.optional(),
+    /** Set for a loopback build this machine serves; parallel tasks serve their own. */
+    browserOrigin: browserOriginSchema.optional(),
   })
   .strict();
 

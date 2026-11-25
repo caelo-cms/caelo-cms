@@ -25,11 +25,19 @@
  *   `X-Robots-Tag: noindex`;
  * - compressed like the CDN in front of every staging and live host: an
  *   uncompressed document fails Lighthouse's document-latency insight, and
- *   would measure transfer costs no visitor pays.
+ *   would measure transfer costs no visitor pays;
+ * - to the audit browser over HTTP/2 like that CDN (`browserTls`): an
+ *   HTTP/1.1 origin makes Lighthouse simulate a connection and handshake per
+ *   parallel request, which cost searchviu.com's home page its Performance
+ *   100 (loopback-tls.ts). Chromium speaks HTTP/2 only over TLS, so this
+ *   listener serves a throwaway certificate the browser is told to trust;
+ *   the plain HTTP listener stays for the checks that fetch pages.
  */
 
 import { readFile, realpath } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingHttpHeaders } from "node:http";
+import { createSecureServer } from "node:http2";
+import type { Socket } from "node:net";
 import { join, sep } from "node:path";
 import { gzipSync } from "node:zlib";
 import {
@@ -48,6 +56,7 @@ import {
 import { StagedRunError } from "../deploy/staged-build-files.js";
 import { stagingBucket } from "../deploy/staging-slots.js";
 import { cacheControlForContentType, contentTypeFor } from "../deploy/static-file-policy.js";
+import type { LoopbackTls } from "./loopback-tls.js";
 
 /** One file of a staged build. */
 export interface StagedFile {
@@ -170,8 +179,44 @@ export function stagingSlotSource(location: string, runId: string): StagedFileSo
 
 /** A running loopback origin. */
 export interface StagedOrigin {
+  /** Plain HTTP, for the checks that fetch pages themselves. */
   readonly baseUrl: string;
+  /**
+   * The same build over HTTP/2 and TLS, for the audit browser; set when
+   * `serveStagedBuild` was given `browserTls`.
+   */
+  readonly browser?: {
+    readonly baseUrl: string;
+    /** The browser's trust entry for this origin's certificate (`LoopbackTls.spkiSha256`). */
+    readonly trustSpki: string;
+  };
   close(): Promise<void>;
+}
+
+/** The part of a request the handler reads, the same on HTTP/1.1 and HTTP/2. */
+interface OriginRequest {
+  readonly url?: string;
+  readonly method?: string;
+  readonly headers: IncomingHttpHeaders;
+  resume(): unknown;
+}
+
+/** The part of a response the handler writes, the same on HTTP/1.1 and HTTP/2. */
+interface OriginResponse {
+  readonly headersSent: boolean;
+  writeHead(status: number, headers?: Record<string, string>): unknown;
+  end(body?: Uint8Array | string): unknown;
+}
+
+/** Answer with one status, headers and body. */
+function reply(
+  res: OriginResponse,
+  status: number,
+  headers: Record<string, string>,
+  body?: Uint8Array | string,
+): void {
+  res.writeHead(status, headers);
+  res.end(body);
 }
 
 const COMPRESSIBLE_TYPE =
@@ -201,65 +246,16 @@ function encoded(
   };
 }
 
-/** Serve `source` on 127.0.0.1 at a random port until `close()`. */
-export async function serveStagedBuild(source: StagedFileSource): Promise<StagedOrigin> {
-  // #1454 — one set per build; a build from before them has none.
-  let headerSet: Promise<Readonly<Record<string, string>>> | null = null;
-  const siteHeaders = () => {
-    headerSet ??= source
-      .read(SECURITY_HEADERS_BUILD_FILE)
-      .then((file) =>
-        file ? parseSiteHeaderSet(new TextDecoder().decode(file.bytes)).headers : {},
-      );
-    return headerSet;
-  };
-  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    // #1326 interim — a plugin call never goes to live: the live gateway
-    // refuses the staged page (no live Origin), and must. Answer it here
-    // the way the gateway answers staging (staging-plugin-stub.ts), so the
-    // page logs no failed request and writes nothing into live data.
-    if (isPluginCallPath(new URL(req.url ?? "/", "http://staged.invalid").pathname)) {
-      if (req.method !== "GET" && req.method !== "HEAD") req.resume();
-      res
-        .writeHead(200, {
-          "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store",
-        })
-        .end(STAGING_PLUGIN_STUB_BODY);
-      return;
-    }
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      res.writeHead(405, { Allow: "GET, HEAD" }).end();
-      return;
-    }
-    const keys = stagedKeysFor(req.url ?? "/");
-    if (keys === null) {
-      res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("bad path");
-      return;
-    }
-    for (const key of keys) {
-      const file = await source.read(key);
-      if (!file) continue;
-      const { body, headers } = encoded(file, req.headers["accept-encoding"]);
-      res.writeHead(200, {
-        "Content-Type": file.contentType,
-        "Content-Length": String(body.byteLength),
-        "Cache-Control": cacheControlForContentType(file.contentType, key),
-        ...mediaSecurityHeaders(file.contentType),
-        ...(isHtmlContentType(file.contentType) ? await siteHeaders() : {}),
-        "X-Robots-Tag": "noindex",
-        ...headers,
-      });
-      res.end(req.method === "HEAD" ? undefined : body);
-      return;
-    }
-    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }).end("not in this build");
-  };
-  const server = createServer((req, res) => {
-    handle(req, res).catch((e: unknown) => {
-      if (!res.headersSent) res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end(`staged origin error: ${e instanceof Error ? e.message : String(e)}`);
-    });
+/** Listen on 127.0.0.1 at a random port; the port and a close that drops open connections. */
+async function listenOnLoopback(
+  server: ReturnType<typeof createServer> | ReturnType<typeof createSecureServer>,
+): Promise<{ port: number; close: () => Promise<void> }> {
+  // Every connection, HTTP/1.1 and HTTP/2 alike, so close() never waits for
+  // a browser's idle keep-alive or HTTP/2 session.
+  const sockets = new Set<Socket>();
+  server.on("connection", (socket: Socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -271,11 +267,104 @@ export async function serveStagedBuild(source: StagedFileSource): Promise<Staged
     throw new Error("staged origin: could not bind a loopback port");
   }
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    port: address.port,
     close: () =>
       new Promise<void>((resolve) => {
-        server.closeAllConnections?.();
+        for (const socket of sockets) socket.destroy();
         server.close(() => resolve());
       }),
+  };
+}
+
+/**
+ * Serve `source` on 127.0.0.1 at a random port until `close()`; with
+ * `browserTls`, also over HTTP/2 and TLS for the audit browser.
+ */
+export async function serveStagedBuild(
+  source: StagedFileSource,
+  opts: { readonly browserTls?: LoopbackTls } = {},
+): Promise<StagedOrigin> {
+  // #1454 — one set per build; a build from before them has none.
+  let headerSet: Promise<Readonly<Record<string, string>>> | null = null;
+  const siteHeaders = () => {
+    headerSet ??= source
+      .read(SECURITY_HEADERS_BUILD_FILE)
+      .then((file) =>
+        file ? parseSiteHeaderSet(new TextDecoder().decode(file.bytes)).headers : {},
+      );
+    return headerSet;
+  };
+  const handle = async (req: OriginRequest, res: OriginResponse): Promise<void> => {
+    // #1326 interim — a plugin call never goes to live: the live gateway
+    // refuses the staged page (no live Origin), and must. Answer it here
+    // the way the gateway answers staging (staging-plugin-stub.ts), so the
+    // page logs no failed request and writes nothing into live data.
+    if (isPluginCallPath(new URL(req.url ?? "/", "http://staged.invalid").pathname)) {
+      if (req.method !== "GET" && req.method !== "HEAD") req.resume();
+      reply(
+        res,
+        200,
+        { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+        STAGING_PLUGIN_STUB_BODY,
+      );
+      return;
+    }
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      reply(res, 405, { Allow: "GET, HEAD" });
+      return;
+    }
+    const keys = stagedKeysFor(req.url ?? "/");
+    if (keys === null) {
+      reply(res, 400, { "Content-Type": "text/plain; charset=utf-8" }, "bad path");
+      return;
+    }
+    for (const key of keys) {
+      const file = await source.read(key);
+      if (!file) continue;
+      const { body, headers } = encoded(file, req.headers["accept-encoding"]);
+      reply(
+        res,
+        200,
+        {
+          "Content-Type": file.contentType,
+          "Content-Length": String(body.byteLength),
+          "Cache-Control": cacheControlForContentType(file.contentType, key),
+          ...mediaSecurityHeaders(file.contentType),
+          ...(isHtmlContentType(file.contentType) ? await siteHeaders() : {}),
+          "X-Robots-Tag": "noindex",
+          ...headers,
+        },
+        req.method === "HEAD" ? undefined : body,
+      );
+      return;
+    }
+    reply(res, 404, { "Content-Type": "text/plain; charset=utf-8" }, "not in this build");
+  };
+  const listener = (req: OriginRequest, res: OriginResponse) => {
+    handle(req, res).catch((e: unknown) => {
+      if (!res.headersSent) res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(`staged origin error: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  };
+  const plain = await listenOnLoopback(createServer(listener));
+  if (!opts.browserTls) {
+    return { baseUrl: `http://127.0.0.1:${plain.port}`, close: plain.close };
+  }
+  const { key, cert, spkiSha256 } = opts.browserTls;
+  let secure: Awaited<ReturnType<typeof listenOnLoopback>>;
+  try {
+    // allowHTTP1: a client without HTTP/2 still gets the file; the audit
+    // browser negotiates h2 through ALPN.
+    secure = await listenOnLoopback(createSecureServer({ key, cert, allowHTTP1: true }, listener));
+  } catch (e) {
+    await plain.close();
+    throw e;
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${plain.port}`,
+    browser: { baseUrl: `https://127.0.0.1:${secure.port}`, trustSpki: spkiSha256 },
+    close: async () => {
+      await Promise.all([plain.close(), secure.close()]);
+    },
   };
 }

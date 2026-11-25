@@ -34,6 +34,7 @@ import {
 } from "./lighthouse-protocol.js";
 import { startLighthouseSession } from "./lighthouse-session.js";
 import { QUALITY_CATEGORIES } from "./ratchet.js";
+import { onOrigin, readdressed } from "./readdress.js";
 import { confirmationRunsNeeded } from "./run-selection.js";
 
 function emit(event: ChildEvent): void {
@@ -48,7 +49,14 @@ async function readJob(): Promise<AuditJob> {
 
 async function main(): Promise<void> {
   const job = await readJob();
-  const started = await startLighthouseSession();
+  // HTTP/2 over TLS when the admin serves the build that way (staged-origin.ts):
+  // load there, report on the origin the admin addressed.
+  const browser = job.browserOrigin;
+  const loadUrl = (url: string) =>
+    browser ? onOrigin(url, browser.servedAt, browser.baseUrl) : url;
+  const report = (event: ChildEvent) =>
+    emit(browser ? readdressed(event, browser.baseUrl, browser.servedAt) : event);
+  const started = await startLighthouseSession(browser ? { trustSpki: browser.trustSpki } : {});
   if (!started.ok) {
     emit({ kind: "fatal", code: started.code, message: started.message });
     return;
@@ -57,19 +65,20 @@ async function main(): Promise<void> {
   try {
     for (const page of job.pages) {
       try {
-        const runs: RunMeasurement[] = [await session.run(page.url, QUALITY_CATEGORIES)];
+        const url = loadUrl(page.url);
+        const runs: RunMeasurement[] = [await session.run(url, QUALITY_CATEGORIES)];
         for (let i = 1; i < job.performanceRuns; i += 1) {
-          runs.push(await session.run(page.url, ["performance"]));
+          runs.push(await session.run(url, ["performance"]));
         }
         // #1370 — runs that disagree are scored by their median of
         // MEDIAN_RUNS, so the page gets the confirmation runs first.
         const extra = confirmationRunsNeeded(performanceScoresOf(runs));
         for (let i = 0; i < extra; i += 1) {
-          runs.push(await session.run(page.url, ["performance"]));
+          runs.push(await session.run(url, ["performance"]));
         }
         const { measurement, performanceRuns } = combineRuns(runs);
         const finalUrl = runs[0]?.finalUrl;
-        emit({
+        report({
           kind: "page",
           pageId: page.pageId,
           url: page.url,
@@ -78,7 +87,7 @@ async function main(): Promise<void> {
           performanceRuns,
         });
       } catch (e) {
-        emit({
+        report({
           kind: "page-error",
           pageId: page.pageId,
           url: page.url,

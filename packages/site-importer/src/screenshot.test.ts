@@ -22,6 +22,16 @@ describe("bundledChromiumLaunchOptions", () => {
     expect(opts.args?.some((a) => a.includes("back-forward-cache"))).toBe(false);
   });
 
+  it("trusts exactly the audit origin's key when one is given, and no other certificate", () => {
+    const opts = bundledChromiumLaunchOptions(9333, "c2hhMjU2LW9mLXRoZS1zcGtp");
+    expect(opts.args).toContain("--ignore-certificate-errors-spki-list=c2hhMjU2LW9mLXRoZS1zcGtp");
+    // Never the blanket switch: every other certificate error stays an error.
+    expect(opts.args).not.toContain("--ignore-certificate-errors");
+    expect(bundledChromiumLaunchOptions(9333).args?.some((a) => a.includes("certificate"))).toBe(
+      false,
+    );
+  });
+
   it("keeps Playwright's defaults without a DevTools port, locks WebRTC UDP to the proxy and caps memory (screenshots)", () => {
     // PR #869: a rendered page's RTCPeerConnection sent STUN over UDP to a
     // page-chosen internal address; only this switch stops it. The
