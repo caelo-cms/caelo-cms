@@ -15,6 +15,8 @@
  *   - rows of one key in different lines (main and a chat, two chats, two
  *     branches, however many) leave one row once staged: the Stage lands a
  *     branch's row on the key's main row, the branch's state winning;
+ *   - a Stage locks the keys it lands, or their table when it lands many,
+ *     so a racing upsert waits for it and a big Stage holds few locks;
  *   - typed keys take one spelling, `id` is never written, `keep` never
  *     overwrites, and a key no index can drive is refused.
  *
@@ -27,6 +29,7 @@ import {
   type PluginHostInfra,
   resetPluginHost,
   runPluginOperation,
+  STAGE_KEY_LOCKS_PER_TABLE,
 } from "@caelo-cms/plugin-host";
 import { definePlugin, type PluginAdminQuery, type PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -344,6 +347,69 @@ async function atOnce<T>(
   }
 }
 
+/** Backends of this database waiting on a lock, by what they wait on. */
+async function lockWaits(sql: Bun.SQL): Promise<Record<string, number>> {
+  const rows = (await sql`
+    SELECT wait_event AS event, count(*)::int AS n FROM pg_stat_activity
+    WHERE datname = current_database() AND wait_event_type = 'Lock'
+    GROUP BY wait_event
+  `) as { event: string; n: number }[];
+  return Object.fromEntries(rows.map((r) => [r.event, r.n]));
+}
+
+/** Wait until `n` backends wait on a lock, and say on what; fail loudly if they never do. */
+async function untilLockWaits(sql: Bun.SQL, n: number): Promise<Record<string, number>> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const waits = await lockWaits(sql);
+    if (Object.values(waits).reduce((sum, w) => sum + w, 0) >= n) return waits;
+    if (Date.now() > deadline) {
+      throw new Error(`expected ${n} backends waiting on a lock, saw ${JSON.stringify(waits)}`);
+    }
+    await Bun.sleep(10);
+  }
+}
+
+/** The advisory locks held by the backends waiting to record a plugin row snapshot. */
+async function advisoryLocksOfSnapshotWriters(sql: Bun.SQL): Promise<number> {
+  const [row] = (await sql`
+    SELECT count(*)::int AS n FROM pg_locks l
+    WHERE l.locktype = 'advisory' AND l.granted AND l.pid IN (
+      SELECT w.pid FROM pg_locks w
+      WHERE NOT w.granted AND w.locktype = 'relation'
+        AND w.relation = 'plugin_row_snapshots'::regclass
+    )
+  `) as { n: number }[];
+  return row?.n ?? 0;
+}
+
+/**
+ * Hold plugin_row_snapshots against inserts while `body` starts writers and
+ * checks where they wait ({@link holdRowSnapshots}); they go on once it
+ * returns their promises.
+ */
+async function withRowSnapshotsHeld(
+  body: (sql: Bun.SQL) => Promise<Promise<unknown>[]>,
+): Promise<unknown[]> {
+  const sql = new SQL(ADMIN_URL as string);
+  const held = await sql.reserve();
+  let running: Promise<unknown>[] = [];
+  try {
+    await held.unsafe("BEGIN");
+    await held.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+    await holdRowSnapshots(held as unknown as Bun.SQL);
+    running = await body(sql as unknown as Bun.SQL);
+  } finally {
+    await held.unsafe("COMMIT");
+    held.release();
+  }
+  try {
+    return await Promise.all(running);
+  } finally {
+    await sql.end();
+  }
+}
+
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
@@ -647,6 +713,57 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ value: "translated", branch: null });
   });
+
+  it("a Stage of a few keys of a table locks only those: an upsert of another key does not wait for it", async () => {
+    const [key, other] = [nextKey(), nextKey()];
+    const a = await newChat("few-keys");
+    await landed(await call(a.invocation, "upsert", { address: key, value: "translated" }));
+
+    const [, placeholder] = await withRowSnapshotsHeld(async (sql) => {
+      const staged = mergeDraft([a], false);
+      // The Stage has landed its row and waits to record its snapshot.
+      await untilLockWaits(sql, 1);
+      const upsert = call(MAIN, "upsert", { address: other, value: null, keep: true });
+      // The upsert got its locks and wrote its row: it waits on the held
+      // table too, not on the Stage.
+      expect(await untilLockWaits(sql, 2)).toEqual({ relation: 2 });
+      return [staged, upsert];
+    });
+    expect(await landed(placeholder as Awaited<ReturnType<typeof call>>)).toMatchObject({
+      created: true,
+    });
+    expect(await liveRows(key)).toEqual([{ value: "translated", branch: null }]);
+    expect(await liveRows(other)).toEqual([{ value: null, branch: null }]);
+  });
+
+  it("a Stage of many keys of a table locks the table, not each key, and a racing upsert still leaves one row", async () => {
+    const a = await newChat("many-keys");
+    const keys = Array.from({ length: STAGE_KEY_LOCKS_PER_TABLE + 8 }, () => nextKey());
+    for (const key of keys) {
+      await landed(await call(a.invocation, "upsert", { address: key, value: "translated" }));
+    }
+
+    const [, placeholder] = await withRowSnapshotsHeld(async (sql) => {
+      const staged = mergeDraft([a], false);
+      await untilLockWaits(sql, 1);
+      // The Stage has landed every row and waits to record their snapshots,
+      // holding its locks: one for the table. A lock per key would let a
+      // Stage of a whole site's translations run the server out of lock
+      // slots ("out of shared memory").
+      expect(await advisoryLocksOfSnapshotWriters(sql)).toBe(1);
+      // A main-line upsert of one of its keys waits for the Stage.
+      const upsert = call(MAIN, "upsert", { address: keys[0], value: null, keep: true });
+      expect(await untilLockWaits(sql, 2)).toEqual({ relation: 1, advisory: 1 });
+      return [staged, upsert];
+    });
+    // It then finds the row the Stage graduated and keeps it.
+    expect(await landed(placeholder as Awaited<ReturnType<typeof call>>)).toMatchObject({
+      created: false,
+    });
+    for (const key of keys) {
+      expect(await liveRows(key)).toEqual([{ value: "translated", branch: null }]);
+    }
+  }, 120_000);
 
   it("keep leaves an existing row as it is", async () => {
     const key = nextKey();

@@ -18,18 +18,19 @@
  * An upsert keeps the key at one row in two steps:
  *
  * 1. Within the caller's line (main, or its branch). A transaction lock on
- *    the key serialises every upsert of it; each statement after the lock
- *    sees what committed before it (READ COMMITTED), so the later upsert
- *    finds the earlier one's row. The rows of the key the caller sees (main
- *    rows plus its branch's pending states) fold into one: the first by id
- *    is updated, the others are deleted. These are ordinary writes: on a
- *    chat branch each takes the row's lock, so a change by another chat in
- *    the shared draft that this chat has not seen is the usual conflict (it
- *    names `get_plugin_draft_rows`, #1387).
+ *    the key (upsert-key-locks.ts) serialises every upsert of it; each
+ *    statement after the lock sees what committed before it (READ
+ *    COMMITTED), so the later upsert finds the earlier one's row. The rows
+ *    of the key the caller sees (main rows plus its branch's pending
+ *    states) fold into one: the first by id is updated, the others are
+ *    deleted. These are ordinary writes: on a chat branch each takes the
+ *    row's lock, so a change by another chat in the shared draft that this
+ *    chat has not seen is the usual conflict (it names
+ *    `get_plugin_draft_rows`, #1387).
  * 2. Across lines, at the Stage. The upsert records the table's key, and
- *    the merge lands a branch's state of the key under the same lock and by
- *    the same rule (key-merge.ts): the smallest id among the key's rows is
- *    the key's row, the others are deleted, the branch's state wins.
+ *    the merge lands a branch's state of the key under the same locks and
+ *    by the same rule (key-merge.ts): the smallest id among the key's rows
+ *    is the key's row, the others are deleted, the branch's state wins.
  *
  * Step 2 is why the upsert never reads other branches' rows: a lookup of
  * them could only walk every pending row of the table (no declared index
@@ -42,7 +43,7 @@ import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
 import { loadBranchOverlay } from "./branch-overlay.js";
-import { lockUpsertKey, recordUpsertKey } from "./key-merge.js";
+import { recordUpsertKey } from "./key-merge.js";
 import {
   type ListPlan,
   lockPrivateRow,
@@ -53,6 +54,7 @@ import {
   privateListSql,
   privateUpdate,
 } from "./private-storage.js";
+import { lockUpsertKey } from "./upsert-key-locks.js";
 
 /** Rows of one key one upsert folds at most (the ceiling of one read). */
 export const UPSERT_FOLD_MAX = 1000;
@@ -110,8 +112,8 @@ export async function privateUpsert(
 ): Promise<Outcome<{ id: string; created: boolean }>> {
   const pluginId = ctx.pluginId;
   if (!pluginId) throw new Error("plugin storage: no plugin id on the context");
-  // The same lock the Stage takes for the key (key-merge.ts).
-  await lockUpsertKey(tx, pluginId, t.schema, t.table, u.key);
+  // The locks the Stage takes for the key, or for its table (upsert-key-locks.ts).
+  await lockUpsertKey(tx, { pluginId, schema: t.schema, table: t.table }, u.key);
   await recordUpsertKey(tx, pluginId, t.table, Object.keys(u.key));
 
   const plan = upsertKeyPlan(u.key);

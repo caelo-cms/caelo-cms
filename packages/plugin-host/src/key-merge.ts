@@ -8,10 +8,11 @@
  * pieces here, so the upsert within a line (private-upsert.ts) and the
  * Stage across lines agree:
  *
- * - **The key lock** ({@link lockUpsertKey}): a transaction-scoped
- *   advisory lock named by plugin, table and key. An upsert and a Stage
- *   that touch one key run one after the other, and each sees what the
- *   other committed.
+ * - **The key locks** (upsert-key-locks.ts): transaction-scoped advisory
+ *   locks on the table and on the key. An upsert and a Stage that touch one
+ *   key run one after the other, and each sees what the other committed; a
+ *   Stage that lands many keys of a table locks the table instead of each
+ *   key, so it holds a bounded number of locks.
  * - **The identity rule**: of the live rows a key has, the one with the
  *   smallest id is the key's row; a write lands on it and deletes the
  *   others.
@@ -22,7 +23,7 @@
  * gives the key its `missing` placeholder). Each upsert records the table's
  * key (`plugin_storage_keys`, migration 0779), and the merge
  * ({@link mergePluginRows}) applies a live branch state of such a table by
- * the rule: under the key's lock, the candidates are the key's live main
+ * the rule: under the key's locks, the candidates are the key's live main
  * rows plus the merged row itself; the branch's state lands on the
  * smallest id and the other candidates are deleted.
  *
@@ -44,44 +45,9 @@ import {
   rowToState,
   withPluginScope,
 } from "./row-snapshots.js";
-
-/** Advisory lock class of an upsert key (the `hashtextextended` seed). */
-const UPSERT_KEY_LOCK_SEED = 1659;
+import { type UpsertKeyValue as KeyValue, lockStagedKeys } from "./upsert-key-locks.js";
 
 const IDENT_RE = /^[a-z_][a-z0-9_]{0,62}$/;
-
-/** A key value as an upsert normalises it and `to_jsonb` stores it. */
-type KeyValue = string | number | boolean;
-
-/**
- * Take the key's lock for the rest of the transaction. `key` holds the
- * values in their column's spelling (an upsert normalises them; a stored
- * row's JSON already has it: a lowercase uuid, a number), so a write and
- * the Stage name the same lock for the same key.
- */
-export async function lockUpsertKey(
-  tx: TransactionRunner,
-  pluginId: string,
-  schema: string,
-  table: string,
-  key: Readonly<Record<string, KeyValue>>,
-): Promise<void> {
-  const name = upsertKeyLockName(pluginId, schema, table, key);
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtextextended(${name}, ${UPSERT_KEY_LOCK_SEED}))`,
-  );
-}
-
-/** The key lock's name: plugin, table and the key, its columns in order. */
-function upsertKeyLockName(
-  pluginId: string,
-  schema: string,
-  table: string,
-  key: Readonly<Record<string, KeyValue>>,
-): string {
-  const pairs = Object.entries(key).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return JSON.stringify([pluginId, schema, table, pairs]);
-}
 
 /**
  * Keys this process found recorded, by `<pluginId>|<table>`. Only a key
@@ -127,17 +93,17 @@ export interface MergedPluginRow {
   readonly state: PluginRowState;
 }
 
-/** A merged row of an upserted key: the key's values and its lock. */
+/** A merged row of an upserted key: the key's columns and values. */
 interface KeyedRow extends MergedPluginRow {
   readonly columns: readonly string[];
   readonly key: Readonly<Record<string, KeyValue>>;
-  readonly lockName: string;
 }
 
 /**
- * Apply a merge's plugin rows to main (see the header). The key locks are
- * taken in one order for the whole merge, before any row is written, so
- * two writers over the same keys never wait on each other in a cycle.
+ * Apply a merge's plugin rows to main (see the header). The locks of every
+ * key it lands are taken for the whole merge, in one order, before any row
+ * is written (upsert-key-locks.ts), so two writers over the same keys never
+ * wait on each other in a cycle.
  *
  * @returns every row written on main with its state, for the merge's
  *   main-line snapshots (undo after publish).
@@ -165,19 +131,12 @@ export async function mergePluginRows(
     const columns = keysOf.get(tableKey);
     const key = columns ? keyOf(columns, r.state) : null;
     if (!columns || !key) continue;
-    keyed.set(r.ref.rowId, {
-      ...r,
-      columns,
-      key,
-      lockName: upsertKeyLockName(r.ref.pluginId, r.ref.schema, r.ref.table, key),
-    });
+    keyed.set(r.ref.rowId, { ...r, columns, key });
   }
-  const locks = [...new Map([...keyed.values()].map((k) => [k.lockName, k])).values()].sort(
-    (a, b) => (a.lockName < b.lockName ? -1 : a.lockName > b.lockName ? 1 : 0),
+  await lockStagedKeys(
+    tx,
+    [...keyed.values()].map((k) => ({ table: k.ref, key: k.key })),
   );
-  for (const k of locks) {
-    await lockUpsertKey(tx, k.ref.pluginId, k.ref.schema, k.ref.table, k.key);
-  }
 
   const written: MergedPluginRow[] = [];
   for (const r of ordered) {
@@ -219,7 +178,7 @@ function keyOf(columns: readonly string[], state: PluginRowState): Record<string
  * Land one merged state of an upserted key by the identity rule: the
  * candidates are the key's live main rows (not deleted by this merge) and
  * the merged row; the state goes onto the smallest id, the other
- * candidates are deleted. Runs under the key's lock, in the plugin's scope.
+ * candidates are deleted. Runs under the key's locks, in the plugin's scope.
  */
 async function applyByKey(
   tx: TransactionRunner,

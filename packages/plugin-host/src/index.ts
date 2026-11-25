@@ -403,6 +403,7 @@ export {
   type RegisteredPluginTool,
 } from "./tools-registry.js";
 export type { AICompletion, AIMessage, AIObjectCompletion, AIProvider } from "./types.js";
+export { STAGE_KEY_LOCKS_PER_TABLE } from "./upsert-key-locks.js";
 export {
   collectUrlAnnotations,
   type DecodedPagePath,
