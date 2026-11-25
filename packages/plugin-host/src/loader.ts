@@ -1597,29 +1597,31 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
         ).then((ctx) => Promise.resolve(renderer.render(ctx as PluginContext))),
     });
   }
-  if (def.workers && def.workers.length > 0) {
-    const unscheduled = pluginWorkerScheduler.schedule({
-      pluginSlug: def.slug,
-      workers: def.workers,
-      dispatch: runPluginOperation,
-      pluginActorId,
+  // Always, also without workers: scheduling replaces what an earlier load
+  // of the plugin registered, so a release that drops a worker (or fixes
+  // the cron of one that was off the schedule, #1728) leaves nothing stale.
+  const unscheduledWorkers = pluginWorkerScheduler.schedule({
+    pluginSlug: def.slug,
+    workers: def.workers ?? [],
+    dispatch: runPluginOperation,
+    pluginActorId,
+  });
+  // #1720 — a cron croner refuses (an artifact approved under an older
+  // croner; every review refuses one now) keeps only that worker off the
+  // schedule. The plugin loads; the problem is the plugin's, recorded
+  // here for its history and reported in its health for as long as the
+  // worker is off (#1728, the runtime record), never a failed load (#1008).
+  for (const w of unscheduledWorkers) {
+    await recordPluginError({
+      infra: opts.infra,
+      systemActorId: opts.systemActorId,
+      slug: def.slug,
+      pluginId,
+      phase: "worker",
+      error: new Error(
+        `worker "${w.workerName}" is not scheduled: its cron "${w.cron}" is not a pattern the scheduler accepts (${w.reason}). The plugin's other workers run; this one runs once a release of the plugin fixes its pattern.`,
+      ),
     });
-    // #1720 — a cron croner refuses (an artifact approved under an older
-    // croner; every review refuses one now) keeps only that worker off the
-    // schedule. The plugin loads; the problem is the plugin's, recorded
-    // and shown in its health, never a failed load (#1008).
-    for (const w of unscheduled) {
-      await recordPluginError({
-        infra: opts.infra,
-        systemActorId: opts.systemActorId,
-        slug: def.slug,
-        pluginId,
-        phase: "worker",
-        error: new Error(
-          `worker "${w.workerName}" is not scheduled: its cron "${w.cron}" is not a pattern the scheduler accepts (${w.reason}). The plugin's other workers run; this one runs once a release of the plugin fixes its pattern.`,
-        ),
-      });
-    }
   }
 
   // Plugin skills are live the moment the plugin is. Reaching this line
