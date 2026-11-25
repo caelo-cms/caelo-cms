@@ -34,7 +34,7 @@
 # (#1559). The script needs nothing installed but the catalog file, which
 # the symlink resolves as `@caelo-cms/shared/embedding-models`. Each model
 # gets its NOTICE.txt (source, revision, licence text from licenses/).
-FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS models
+FROM oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS models
 WORKDIR /repo
 COPY packages/shared/package.json packages/shared/
 COPY packages/shared/src/embedding-models.ts packages/shared/src/
@@ -45,7 +45,7 @@ RUN mkdir -p node_modules/@caelo-cms && \
     ln -s ../../packages/shared node_modules/@caelo-cms/shared && \
     bun packages/models/scripts/fetch-models.ts --dir /models --licenses licenses --epoch
 
-FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS builder
+FROM oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS builder
 
 WORKDIR /repo
 

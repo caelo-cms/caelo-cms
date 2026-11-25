@@ -24,7 +24,7 @@ FROM node:26.13.1-bookworm-slim AS node
 # (#1559). The script needs nothing installed but the catalog file, which
 # the symlink resolves as `@caelo-cms/shared/embedding-models`. Each model
 # gets its NOTICE.txt (source, revision, licence text from licenses/).
-FROM oven/bun:1.4.4 AS models
+FROM oven/bun:1.4.5 AS models
 WORKDIR /repo
 COPY packages/shared/package.json packages/shared/
 COPY packages/shared/src/embedding-models.ts packages/shared/src/
@@ -35,7 +35,7 @@ RUN mkdir -p node_modules/@caelo-cms && \
     ln -s ../../packages/shared node_modules/@caelo-cms/shared && \
     bun packages/models/scripts/fetch-models.ts --dir /models --licenses licenses --epoch
 
-FROM oven/bun:1.4.4 AS builder
+FROM oven/bun:1.4.5 AS builder
 
 # Node + npm come from the official image, not Debian's apt package
 # (Node 18 on bookworm). Two consumers:
@@ -242,7 +242,7 @@ RUN cd apps/admin && bun x vite build
 # ---------------------------------------------------------------------------
 # Runtime stage
 # ---------------------------------------------------------------------------
-FROM oven/bun:1.4.4-slim AS runtime
+FROM oven/bun:1.4.5-slim AS runtime
 
 COPY --from=deno /deno /usr/local/bin/deno
 
