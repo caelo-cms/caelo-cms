@@ -389,6 +389,7 @@ export { brokerSandboxCall, runSandbox } from "./sandbox-runtime.js";
 export {
   pluginWorkerScheduler,
   type ScheduledWorker,
+  type UnscheduledWorker,
 } from "./scheduler.js";
 export { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
 export {

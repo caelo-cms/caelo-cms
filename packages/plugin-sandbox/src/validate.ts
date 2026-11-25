@@ -45,6 +45,7 @@
  */
 
 import { type PluginManifest, pluginManifest as pluginManifestSchema } from "@caelo-cms/plugin-sdk";
+import { Cron } from "croner";
 // The bare `"oxc-parser"` import path here is load-bearing for the admin
 // SSR build — `apps/admin/vite.config.ts` registers a `resolveId` hook
 // (`forceOxcParserNativeEntry`) that intercepts this exact id, redirects
@@ -54,6 +55,67 @@ import { type PluginManifest, pluginManifest as pluginManifestSchema } from "@ca
 // from #52, or the externalization regression from #53. See those issues
 // + the comment block above forceOxcParserNativeEntry for the full chain.
 import { parseSync } from "oxc-parser";
+
+// ---------------------------------------------------------------------------
+// Worker schedules (#1720)
+// ---------------------------------------------------------------------------
+
+/** A worker's `cron` parsed as the scheduler registers it, or why it cannot be. */
+export type WorkerCronParse =
+  | { readonly ok: true; readonly pattern: Cron }
+  | { readonly ok: false; readonly problem: string };
+
+/**
+ * Parse a worker's `cron` exactly as the plugin host's scheduler registers
+ * it, so "the validator accepts it" and "the scheduler can register it" are
+ * one decision. Paused and without a callback, the job never runs; it is
+ * only parsed.
+ *
+ * @example parseWorkerCron("61 * * * *") // { ok: false, problem: "CronPattern: Invalid value for minute: 61" }
+ */
+export function parseWorkerCron(cron: string): WorkerCronParse {
+  try {
+    return { ok: true, pattern: new Cron(cron, { paused: true }) };
+  } catch (e) {
+    // croner ends some messages with a period; the callers quote it mid-sentence.
+    return { ok: false, problem: (e instanceof Error ? e.message : String(e)).replace(/\.$/, "") };
+  }
+}
+
+/** Why `cron` is not a pattern the scheduler can register, or null when it is. */
+export function cronPatternProblem(cron: string): string | null {
+  const parsed = parseWorkerCron(cron);
+  if (!parsed.ok) return parsed.problem;
+  parsed.pattern.stop();
+  return null;
+}
+
+/**
+ * #1720 — how a worker cron that croner cannot parse counts.
+ *
+ * - `"refuse"` (the default): a `worker-schedule` failure naming the
+ *   worker. Every review of an artifact that is new to this install —
+ *   submission, revalidation, installation review — refuses it before an
+ *   Owner is asked to approve.
+ * - `"record"`: not a failure. For an artifact that is already approved and
+ *   stored (activation gates, every load path), which an older croner
+ *   accepted: the plugin loads, and the scheduler records that one worker
+ *   as the plugin's problem while its other workers register (#1008).
+ */
+export type WorkerCronCheck = "refuse" | "record";
+
+function workerScheduleFailures(m: PluginManifest): ValidationFailure[] {
+  const failures: ValidationFailure[] = [];
+  for (const w of m.workers ?? []) {
+    const problem = cronPatternProblem(w.cron);
+    if (problem === null) continue;
+    failures.push({
+      kind: "worker-schedule",
+      hint: `worker "${w.name}": cron "${w.cron}" is not a pattern the scheduler accepts (${problem}). Write 5 fields (minute hour day month weekday), 6 with seconds first, or a nickname such as "@hourly"; a month or day name stands alone ("MON", not "MON6").`,
+    });
+  }
+  return failures;
+}
 
 // ---------------------------------------------------------------------------
 // Failure shapes — surfaced to AI for auto-fix.
@@ -75,7 +137,8 @@ export type ValidationFailureKind =
   | "forbidden-eval"
   | "forbidden-globalthis-write"
   | "forbidden-globalthis-alias"
-  | "parse-error";
+  | "parse-error"
+  | "worker-schedule";
 
 export interface ValidationFailure {
   readonly kind: ValidationFailureKind;
@@ -98,7 +161,7 @@ export interface ValidationResult {
 
 export function validateManifest(
   rawManifest: unknown,
-  opts: { allowExternalCapabilities?: boolean } = {},
+  opts: { allowExternalCapabilities?: boolean; workerCron?: WorkerCronCheck } = {},
 ): {
   manifest: PluginManifest | null;
   failures: ValidationFailure[];
@@ -115,6 +178,11 @@ export function validateManifest(
     return { manifest: null, failures };
   }
   const m = parsed.data;
+
+  // #1720 — the manifest schema checks only that `cron` is a string: stored
+  // manifests are parsed with it on every load, so a stricter schema would
+  // stop a plugin an older release approved from loading at all.
+  if ((opts.workerCron ?? "refuse") === "refuse") failures.push(...workerScheduleFailures(m));
 
   // #389 — `ref:` FK columns are an adminSchema-only vocabulary:
   // cms_public tables cannot FK across databases into cms_admin.
@@ -735,9 +803,12 @@ export function validatePlugin(opts: {
   filename?: string;
   /** Host installation review only; this never grants runtime permissions. */
   allowExternalCapabilities?: boolean;
+  /** #1720 — see {@link WorkerCronCheck}; `"refuse"` unless the artifact is already approved. */
+  workerCron?: WorkerCronCheck;
 }): ValidationResult {
   const { failures: manifestFailures, manifest } = validateManifest(opts.manifest, {
     allowExternalCapabilities: opts.allowExternalCapabilities,
+    workerCron: opts.workerCron,
   });
   const sourceFailures = validateSource({
     filename: opts.filename ?? "plugin.ts",

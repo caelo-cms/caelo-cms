@@ -294,6 +294,67 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
     expect(pluginWorkerScheduler.list()).toHaveLength(0);
   });
 
+  it("#1720 — a worker cron croner refuses is recorded; the plugin and its other workers load", async () => {
+    // As an artifact approved under croner 11.0.0 would carry it: "SUN6"
+    // read as 6 there, and 11.0.1 refuses it.
+    const slug = "test-p115-bad-cron";
+    const def = definePlugin({
+      ...helloPluginDef,
+      slug,
+      requestedCapabilities: [
+        ...(helloPluginDef.requestedCapabilities ?? []),
+        "background_workers",
+      ],
+      workers: [
+        { name: "nightly", cron: "0 0 * * *", operationName: "greet" },
+        { name: "weekly_digest", cron: "0 0 * * SUN6", operationName: "greet" },
+      ],
+    });
+    const report = await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: def }],
+    });
+    expect(report.failed).toEqual([]);
+    expect(report.loaded.map((p) => p.slug)).toContain(slug);
+    expect(
+      pluginWorkerScheduler
+        .list()
+        .filter((w) => w.pluginSlug === slug)
+        .map((w) => w.workerName),
+    ).toEqual(["nightly"]);
+
+    // list_plugins reads plugins.list: the problem is in the plugin's health,
+    // the plugin is not failing, and its status stays the Owner's (#1008).
+    const listed = await execute(
+      registry,
+      adapter,
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t-1720-list" },
+      "plugins.list",
+      {},
+    );
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const row = (
+      listed.value as {
+        plugins: {
+          slug: string;
+          status: string;
+          health: {
+            state: string;
+            recentErrors: { phase: string; errorClass: string; message: string }[];
+          };
+        }[];
+      }
+    ).plugins.find((p) => p.slug === slug);
+    expect(row?.status).toBe("active");
+    expect(row?.health.state).not.toBe("failing");
+    const problem = row?.health.recentErrors.find((e) => e.phase === "worker");
+    expect(problem?.errorClass).toBe("plugin");
+    expect(problem?.message).toContain('worker "weekly_digest" is not scheduled');
+    expect(problem?.message).toContain('"0 0 * * SUN6"');
+  });
+
   it("failure isolation: one bad plugin doesn't block the rest", async () => {
     const goodDef = definePlugin({ ...helloPluginDef, slug: "test-p115-good" });
     // Bad: a table without a kind violates the manifest lint (#1332).
