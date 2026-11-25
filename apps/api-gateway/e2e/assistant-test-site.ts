@@ -46,6 +46,7 @@ import {
 import { registerTestLiveOrigin } from "../src/test-support.js";
 import { VISITOR_AI_KEY_FILE_ENV } from "../src/visitor-ai/provider.js";
 import { resetVisitorAiCacheForTests } from "../src/visitor-ai/published.js";
+import { publishTestIndex, removeTestIndexes } from "./test-index.js";
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SYSTEM = { actorId: SYSTEM_ACTOR_ID, actorKind: "system" as const, requestId: "t1655-site" };
@@ -198,15 +199,21 @@ export async function prepareAssistantSite(urls: {
   await registerTestLiveOrigin(urls.admin);
   await drainProjectionOnce(adminAdapter, staging);
 
-  // A release republishes the plugins' section, the index pointer with it:
-  // this site's index has no Stage run, so it is published again after each.
+  // Each release freezes a new run, and the index is a release of that run
+  // (test-index.ts): it is pointed at again after each one.
   let indexKey: string | null = null;
   const publishIndex = async () => {
     if (!indexKey) return;
-    await onDb(urls.publicAdmin, async (tx) => {
-      await tx`DELETE FROM published_collections`;
-      await tx`INSERT INTO published_collections (plugin_id, collection, release_key) VALUES (${idOf("site-search")}::uuid, 'pages', ${indexKey})`;
-    });
+    await publishTestIndex(
+      { admin: urls.admin, publicAdmin: urls.publicAdmin },
+      adminAdapter,
+      staging,
+      {
+        pluginId: idOf("site-search"),
+        collection: "pages",
+        releaseKey: indexKey,
+      },
+    );
   };
   const release = async () => {
     await releaseProjectionForTests(adminAdapter, staging, undefined, "as-loaded");
@@ -326,6 +333,7 @@ export async function prepareAssistantSite(urls: {
         await tx`SELECT set_config('caelo.plugin_id', ${assistantId}, true)`;
         await tx.unsafe(`DELETE FROM ${schema}.feedback`);
       });
+      await removeTestIndexes(urls.admin, ["site-search"]);
       await onDb(urls.publicAdmin, async (tx) => {
         await tx`DELETE FROM published_collections`;
         await tx`TRUNCATE visitor_ai_calls`;

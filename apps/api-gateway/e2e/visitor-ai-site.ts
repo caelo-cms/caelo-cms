@@ -44,6 +44,7 @@ import {
   VISITOR_AI_KEY_FILE_ENV,
 } from "../src/visitor-ai/provider.js";
 import { type Script, scriptedVisitorModel } from "../src/visitor-ai/scripted-model.js";
+import { publishTestIndex } from "./test-index.js";
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const TEST_KEY = "sk-ant-e2e-fixture-not-a-real-key-000";
@@ -158,8 +159,6 @@ export async function startVisitorAiSite(
   });
   await drainProjectionOnce(admin, staging);
   await releaseProjectionForTests(admin, staging, undefined, "as-loaded");
-  resetPluginHost();
-  await admin.close();
 
   const live = scopedStore(directoryStore(join(root, "live")), `${slug}/${collection}`);
   const writes: Promise<void>[] = [];
@@ -188,11 +187,13 @@ export async function startVisitorAiSite(
     },
   );
   await Promise.all(writes);
-  await onDb(PUBLIC_ADMIN_URL, async (tx) => {
-    await tx`DELETE FROM published_collections WHERE plugin_id = ${pluginId}::uuid`;
-    await tx`INSERT INTO published_collections (plugin_id, collection, release_key)
-             VALUES (${pluginId}::uuid, ${collection}, ${built.file})`;
+  await publishTestIndex({ admin: ADMIN_URL, publicAdmin: PUBLIC_ADMIN_URL }, admin, staging, {
+    pluginId,
+    collection,
+    releaseKey: built.file,
   });
+  resetPluginHost();
+  await admin.close();
 
   const urls = gatewayDatabaseUrls({
     PUBLIC_DATABASE_URL: PUBLIC_URL,
