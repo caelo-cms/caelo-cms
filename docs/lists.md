@@ -604,7 +604,11 @@ disagree), or the kind of a value further down. The tag or section stays
 raw; the preview lists it, the audit files `render/page-key-unknown` /
 `render/page-path-unknown` (fix: `update_modules_many`), and Publish live
 refuses the build. Outside a page render (no rendering page) `{{page.*}}`
-keeps `field-not-declared`.
+keeps `field-not-declared`. On a page a list iterates (a query, the
+breadcrumbs, the children) `{{props.<name>…}}` gets the same
+`page-path-unknown:props.<name>:<type>` and repair (#1727); a wrong path
+into such a page's `link` (`{{link.label}}`) stays `field-path-unknown`,
+like any link field's.
 
 Details the table leaves open:
 
