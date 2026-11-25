@@ -212,7 +212,7 @@ async function removeFromPage(
   if (found.length === 0) {
     return {
       ok: false,
-      content: `module ${input.moduleId} is not placed on page ${pageId} — inspect_page_render lists the page's modules (block + position).`,
+      content: `module ${input.moduleId} is not placed on page ${pageId} — inspect_page_render lists the page's modules (block + position). A module nested in another module's field is not a placement: drop it from that field with set_content_instance_values_many.`,
       refusal: true,
     };
   }
