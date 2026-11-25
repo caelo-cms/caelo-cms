@@ -533,17 +533,24 @@ export async function mergeWindowToMain(
     !includeAll && (wantPluginRows?.length ?? 0) === 0
       ? []
       : ((await tx.execute(sql`
-    SELECT entity_id, state, plugin_id, schema_name, table_name FROM (
+    SELECT entity_id, state, plugin_id, schema_name, table_name, written_at FROM (
       SELECT DISTINCT ON (prs.row_id)
              prs.row_id::text AS entity_id, prs.row_id::text AS entity_id_text, prs.state,
-             prs.plugin_id::text AS plugin_id, prs.schema_name, prs.table_name
+             prs.plugin_id::text AS plugin_id, prs.schema_name, prs.table_name,
+             -- #1659: when the state was written, as text that sorts in time order.
+             to_char(ss.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS written_at
       FROM plugin_row_snapshots prs
       JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
       WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
       ORDER BY prs.row_id, ss.created_at DESC, prs.created_at DESC
     ) sub
     WHERE 1=1 ${notYetPublished("pluginRow")} ${stageFilter("pluginRow")} ${inFilter(includeAll ? null : (wantPluginRows ?? []))}
-  `)) as unknown as (Row & { plugin_id: string; schema_name: string; table_name: string })[]);
+  `)) as unknown as (Row & {
+          plugin_id: string;
+          schema_name: string;
+          table_name: string;
+          written_at: string;
+        })[]);
 
   // Plugin rows can shape page URLs, and the post-merge paths are
   // composed from the branch view (refreshLivePathsAfterMerge) — which is
@@ -968,8 +975,9 @@ export async function mergeWindowToMain(
   const preMergePaths =
     pluginRowRows.length > 0 ? await composeLivePathsBeforePluginMerge(tx) : null;
   // #1659 — rows of an upserted key land by the key's identity rule, under
-  // the key's lock (plugin-host key-merge.ts), so a Stage — and a Stage
-  // replayed after a failed build — leaves the key one row.
+  // the key's locks (plugin-host key-merge.ts), so a Stage — and a Stage
+  // replayed after a failed build — leaves the key one row, with the state
+  // written last.
   const written = await mergePluginRows(
     tx,
     pluginRowRows.map((r) => ({
@@ -980,6 +988,7 @@ export async function mergeWindowToMain(
         rowId: r.entity_id,
       },
       state: r.state as PluginRowState,
+      writtenAt: r.written_at,
     })),
   );
   // The main-line copies under the merge's header: undo after publish.

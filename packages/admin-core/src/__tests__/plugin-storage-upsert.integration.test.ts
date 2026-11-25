@@ -110,6 +110,13 @@ const plugin = definePlugin({
       const a = args as EntryArgs;
       return q(ctx).insert("entries", { lang: "de", address: a.address, value: a.value });
     },
+    update: async (ctx, args) => {
+      const a = args as { id: string; value: string };
+      await q(ctx).update("entries", a.id, { value: a.value });
+      return { updated: true };
+    },
+    /** An upsert of the same table by another key (`lang` alone leads its index too). */
+    upsert_lang_only: async (ctx) => q(ctx).upsert("entries", { lang: "zz" }, { value: "x" }),
     list: async (ctx, args) =>
       q(ctx).list("entries", { lang: "de", address: (args as EntryArgs).address, limit: 100 }),
     upsert_typed: async (ctx, args) => {
@@ -286,6 +293,18 @@ async function mergeDraft(chats: readonly Chat[], deferConsume: boolean): Promis
     ...(deferConsume ? { deferConsume } : {}),
   });
   if (!r.ok) throw new Error(`chat.merge_draft_to_main: ${JSON.stringify(r.error)}`);
+}
+
+/** The key the host recorded for one of the plugin's tables, its columns sorted. */
+async function recordedKeyOf(table: string): Promise<string[] | null> {
+  return withSystemSql(async (tx) => {
+    const [row] = (await tx`
+      SELECT k.key_columns AS key FROM plugin_storage_keys k
+      JOIN plugins p ON p.id = k.plugin_id
+      WHERE p.slug = ${SLUG} AND k.table_name = ${table}
+    `) as { key: string[] }[];
+    return row?.key ?? null;
+  });
 }
 
 /** A main-line row of the entries table with a chosen id (ids decide the key's row). */
@@ -587,12 +606,42 @@ describe("ctx.adminQuery.upsert — one row per key (#1659)", () => {
     await landed(await call(MAIN, "upsert", { address: key, value: "main" }));
 
     // A draft Stage takes every pending plugin row of the draft (they can
-    // shape URLs): both land on the key's row, and one row is left.
+    // shape URLs): both land on the key's row, and one row is left, with
+    // the state written last.
     await stage(a);
-    const rows = await liveRows(key);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.branch).toBeNull();
-    expect(["from-a", "from-b"]).toContain(rows[0]?.value as string);
+    expect(await liveRows(key)).toEqual([{ value: "from-b", branch: null }]);
+  });
+
+  it("of several unstaged rows of one key, the Stage lands the one written last, whatever its id", async () => {
+    const key = nextKey();
+    const a = await newChat("latest-a");
+    const b = await newChat("latest-b");
+    // What two chats left before #1659: a row each, from a list then an insert.
+    const ra = await landed<{ id: string }>(
+      await call(a.invocation, "insert", { address: key, value: "from-a" }),
+    );
+    const rb = await landed<{ id: string }>(
+      await call(b.invocation, "insert", { address: key, value: "from-b" }),
+    );
+    // The row with the smaller id is written last, so id order and write
+    // order disagree: the read rule shows the later write, and so must the
+    // Stage.
+    const [smaller, owner] = ra.id < rb.id ? [ra, a] : [rb, b];
+    await landed(await call(owner.invocation, "update", { id: smaller.id, value: "latest" }));
+    await stage(a, b);
+    expect(await liveRows(key)).toEqual([{ value: "latest", branch: null }]);
+  });
+
+  it("records the latest upsert's key, also when a table's key changes and changes back", async () => {
+    await landed(await call(MAIN, "upsert", { address: nextKey(), value: "a" }));
+    await landed(await call(MAIN, "upsert", { address: nextKey(), value: "b" }));
+    expect(await recordedKeyOf("entries")).toEqual(["address", "lang"]);
+    await landed(await call(MAIN, "upsert_lang_only"));
+    expect(await recordedKeyOf("entries")).toEqual(["lang"]);
+    // Back to the first key: the Stage must fold by it again, not by `lang`
+    // (which would fold rows of different addresses into one).
+    await landed(await call(MAIN, "upsert", { address: nextKey(), value: "c" }));
+    expect(await recordedKeyOf("entries")).toEqual(["address", "lang"]);
   });
 
   it("a main-line write of a key with a main row and a chat's unstaged row leaves one row after the Stage", async () => {

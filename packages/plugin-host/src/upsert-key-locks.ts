@@ -73,12 +73,15 @@ function tableLockName(t: UpsertTableRef): string {
 }
 
 /**
- * The key lock's name. `key` holds the values in their column's spelling
- * (an upsert normalises them; a stored row's JSON already has it: a
- * lowercase uuid, a number), so a write and the Stage name one lock for one
- * key, whatever order its columns come in.
+ * The name of a key, and of its lock. `key` holds the values in their
+ * column's spelling (an upsert normalises them; a stored row's JSON already
+ * has it: a lowercase uuid, a number), so a write and the Stage name one
+ * lock for one key, whatever order its columns come in.
  */
-function keyLockName(t: UpsertTableRef, key: Readonly<Record<string, UpsertKeyValue>>): string {
+export function upsertKeyName(
+  t: UpsertTableRef,
+  key: Readonly<Record<string, UpsertKeyValue>>,
+): string {
   const pairs = Object.entries(key).sort(([a], [b]) => byName(a, b));
   return JSON.stringify([t.pluginId, t.schema, t.table, pairs]);
 }
@@ -98,7 +101,7 @@ export async function lockUpsertKey(
 ): Promise<void> {
   // Two statements, so the table lock is held before the key lock is asked for.
   await take(tx, { name: tableLockName(table), mode: "shared" });
-  await take(tx, { name: keyLockName(table, key), mode: "exclusive" });
+  await take(tx, { name: upsertKeyName(table, key), mode: "exclusive" });
 }
 
 /**
@@ -110,7 +113,7 @@ export function planStageLocks(keys: readonly StagedKey[]): UpsertLock[] {
   for (const k of keys) {
     const table = tableLockName(k.table);
     const names = keysByTable.get(table) ?? new Set<string>();
-    names.add(keyLockName(k.table, k.key));
+    names.add(upsertKeyName(k.table, k.key));
     keysByTable.set(table, names);
   }
   const tables = [...keysByTable.keys()].sort(byName);
