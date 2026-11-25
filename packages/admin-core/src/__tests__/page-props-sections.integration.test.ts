@@ -411,5 +411,11 @@ describe("#1561 — a property no page type declares fails loudly", () => {
       repoRoot: testRoot,
     });
     expect(production.ok).toBe(false);
+    if (!production.ok) {
+      // Refused by the render gate, not by some other check.
+      expect((production.error as { message: string }).message).toContain(
+        "2 spots it could not render",
+      );
+    }
   }, 120_000);
 });
