@@ -60,6 +60,10 @@
  * exists and whose rest does not (`{{cta.label}}` on a link field),
  * `field-value-empty:<path>` for a path into a `link` field with no value,
  * `field-value-malformed:<field>` for a `link` value of no link shape.
+ * #1561: `page-prop-unknown:<name>` for `{{page.props.<name>}}` (or
+ * `{{props.<name>}}` on a page entry) when no page type of the site
+ * declares `<name>`; a property only another page type declares reads as
+ * absent instead (`lists/page-props.ts`).
  * Unlike `field-not-declared` these block Publish live: an unknown
  * `{{name}}` can be literal copy, a broken path cannot. A Stage reports
  * them instead of stopping (#1604).
@@ -93,6 +97,7 @@ import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
+import { PAGE_PROP_UNKNOWN } from "./lists/page-props.js";
 import type { ListPaginationSettings } from "./lists/pagination.js";
 import type { ListHolder, ListPageContext } from "./lists/resolve.js";
 import { parseLinkFieldValue } from "./lists/resolve-values.js";
@@ -569,15 +574,18 @@ export function shieldLiteralText(html: string, mkKey: (text: string) => string)
 }
 
 /**
- * A marker of a dotted path its field cannot answer (#1433). The preview
- * surfaces these and the Stage refuses them: unlike an unknown `{{name}}`,
- * they are never literal copy.
+ * A marker of a dotted path its field cannot answer (#1433), or of a page
+ * property no page type of the site declares (`{{page.props.typo}}`,
+ * #1561). The preview surfaces these, a Stage reports them and Publish
+ * live refuses them (#1604): unlike an unknown `{{name}}`, they are never
+ * literal copy.
  */
 export function isFieldPathMarker(marker: string): boolean {
   return (
     marker.startsWith("field-path-unknown:") ||
     marker.startsWith("field-value-empty:") ||
-    marker.startsWith("field-value-malformed:")
+    marker.startsWith("field-value-malformed:") ||
+    marker.startsWith(`${PAGE_PROP_UNKNOWN}:`)
   );
 }
 

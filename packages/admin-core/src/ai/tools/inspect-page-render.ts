@@ -38,7 +38,9 @@ import {
   pluginsNotRunningHere,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
+import { PAGE_PROP_UNKNOWN } from "@caelo-cms/shared";
 import { z } from "zod";
+import { pagePropUnknownHint } from "../../deploy/render-failures.js";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -445,6 +447,15 @@ function pluginRenderFailedNextStep(
   );
 }
 
+/**
+ * #1561 — next step for `page-prop-unknown:<name>`: a page property no page
+ * type of the site declares. Same text as the Stage's report.
+ */
+function pagePropUnknownNextStep(marker: string): string | undefined {
+  if (!marker.startsWith(`${PAGE_PROP_UNKNOWN}:`)) return undefined;
+  return `${pagePropUnknownHint(marker.slice(PAGE_PROP_UNKNOWN.length + 1), "a module on this page")} Publishing is blocked until it is fixed.`;
+}
+
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
 function siteSettingNextSteps(
   missing: readonly string[],
@@ -457,7 +468,8 @@ function siteSettingNextSteps(
         brokenLinkNextStep(m) ??
         missingVariantLinkNextStep(m) ??
         pluginNotRunningNextStep(m) ??
-        pluginRenderFailedNextStep(m, pluginFailures);
+        pluginRenderFailedNextStep(m, pluginFailures) ??
+        pagePropUnknownNextStep(m);
       return step ? [[m, step]] : [];
     }),
   );

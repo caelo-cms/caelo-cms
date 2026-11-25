@@ -31,6 +31,7 @@ import {
   isLinkFailureMarker,
   type MediaFailure,
   mediaUrlForRef,
+  PAGE_PROP_UNKNOWN,
   parseMediaFailureMarker,
   renderFailureKind,
   renderFailureMarker,
@@ -151,6 +152,25 @@ const REFERENCE_REPAIR =
   "get_content_instance on the module's content, then set_content_instance_values_many with a valid { moduleId, contentInstanceId } reference or without the broken item";
 
 /**
+ * #1561 — how the AI repairs `{{page.props.<name>}}` when no page type of
+ * the site declares `<name>`. Exported so the preview's next steps
+ * (`inspect_page_render`) say the same as the Stage's report. The marker
+ * does not say which form the module wrote, so the hint names both: the
+ * rendering page's `page.props`, and `props` on a page a list iterates
+ * (a query, breadcrumbs, children).
+ *
+ * @param mod the place in the AI's terms (`module "hero"`).
+ */
+export function pagePropUnknownHint(name: string, mod: string): string {
+  return (
+    `{{page.props.${name}}} (or {{props.${name}}} in a list of pages) in ${mod}: no page type of the site declares "${name}" (a typo, or a removed property). ` +
+    "list_page_types shows each page type's properties: correct the name in the module HTML (update_modules_many), " +
+    "or declare it on the page types that should show it (upsert_page_types_many). " +
+    "A property another page type declares needs no guard: it is empty where a page's type lacks it."
+  );
+}
+
+/**
  * How the AI repairs one failure. The markers are the engine's (shared
  * template-engine.ts names them); a kind without its own entry gets the
  * content repair, which shows the stored value first.
@@ -189,6 +209,11 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
       return {
         tool: "set_content_instance_values_many",
         hint: `The link field ${path} in ${mod} holds no link: set it to a URL or { href, target? } (get_content_instance shows what is stored).`,
+      };
+    case PAGE_PROP_UNKNOWN:
+      return {
+        tool: "list_page_types",
+        hint: pagePropUnknownHint(path, mod),
       };
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };

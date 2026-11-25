@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import type { FieldDef } from "./lists/fields.js";
 import {
   fixtureData,
   fixtureLinkIndex,
@@ -18,8 +19,14 @@ import {
   PAGE,
   TERM,
 } from "./lists/list-fixtures.test.js";
+import type { LoadedPageType } from "./lists/render-data.js";
 import { createListRenderContext, type ListPageContext } from "./lists/resolve.js";
-import { renderTemplate, type TemplateField, templateFieldsFromJson } from "./template-engine.js";
+import {
+  isFieldPathMarker,
+  renderTemplate,
+  type TemplateField,
+  templateFieldsFromJson,
+} from "./template-engine.js";
 
 function ctx(
   pageId: string | null = PAGE.home,
@@ -371,6 +378,181 @@ describe("lists — {{page.*}}", () => {
     const r = render("{{page.title}}", [], {}, null);
     expect(r.html).toBe("{{page.title}}");
     expect(r.missingSlots).toContain("list-context-unavailable:page");
+  });
+
+  // #1561 — one module on pages of several types (a help-page head also on
+  // the home page) reads a property only some of the types declare.
+  describe("a property the page's own type does not declare (#1561)", () => {
+    const pageTypeOf = (slug: string, properties: FieldDef[]): [string, LoadedPageType] => [
+      slug,
+      {
+        id: `00000000-0000-4000-8000-${String(702 + slug.length).padStart(12, "0")}`,
+        def: {
+          slug,
+          name: slug,
+          purpose: `${slug} pages.`,
+          collection: false,
+          templates: ["00000000-0000-4000-8000-000000000801"],
+          defaultTemplate: "00000000-0000-4000-8000-000000000801",
+          properties,
+          vocabularies: [],
+        },
+      },
+    ];
+    /**
+     * The fixture site plus the `page` type (home, about, …) declaring
+     * `intro`, `cta` and the select `layout`; `extraTypes` adds page types,
+     * `homeProps` the home page's stored properties.
+     */
+    const typedCtx = (
+      pageId: string,
+      opts: {
+        readonly extraTypes?: readonly [string, LoadedPageType][];
+        readonly homeProps?: Record<string, unknown>;
+      } = {},
+    ): ListPageContext => {
+      const data = fixtureData();
+      const pageTypes = new Map(data.pageTypes);
+      for (const [slug, t] of [
+        pageTypeOf("page", [
+          { name: "intro", label: "Intro", type: "text" },
+          { name: "cta", label: "CTA", type: "link" },
+          { name: "layout", label: "Layout", type: "select", options: ["wide", "narrow"] },
+        ]),
+        ...(opts.extraTypes ?? []),
+      ]) {
+        pageTypes.set(slug, t);
+      }
+      const pages = new Map(data.pages);
+      const home = pages.get(PAGE.home);
+      if (home && opts.homeProps) pages.set(PAGE.home, { ...home, properties: opts.homeProps });
+      return createListRenderContext({ ...data, pageTypes, pages }).forPage(pageId, {
+        linkResolver: fixtureLinkIndex().forPage(pageId),
+      });
+    };
+    const LABEL: TemplateField = { name: "label", kind: "text", default: "Rating:" };
+    const HEAD =
+      "{{#page.props.rating}}<ul><li><b>{{label}}</b> {{page.props.rating}}</li></ul>{{/page.props.rating}}" +
+      "{{^page.props.rating}}<p>unrated</p>{{/page.props.rating}}";
+
+    it("is absent when another page type declares it: its section is left out, the inverted one renders", () => {
+      const home = render(HEAD, [LABEL], {}, typedCtx(PAGE.home));
+      expect(home.html).toBe("<p>unrated</p>");
+      expect(home.missingSlots).toEqual([]);
+      const news = render(HEAD, [LABEL], {}, typedCtx(PAGE.newsA));
+      expect(news.html).toBe("<ul><li><b>Rating:</b> 4</li></ul>");
+      expect(news.missingSlots).toEqual([]);
+    });
+
+    it("reads as the other type's empty value, paths included", () => {
+      const home = render(
+        "[{{page.props.rating}}|{{page.props.event_date.formatted}}]",
+        [],
+        {},
+        typedCtx(PAGE.home),
+      );
+      expect(home.html).toBe("[|]");
+      expect(home.missingSlots).toEqual([]);
+      const news = render(
+        "[{{page.props.cta}}|{{page.props.cta.href}}|{{#page.props.cta}}go{{/page.props.cta}}]",
+        [],
+        {},
+        typedCtx(PAGE.newsA),
+      );
+      expect(news.html).toBe("[||]");
+      expect(news.missingSlots).toEqual([]);
+    });
+
+    it("a property no page type declares stays raw and fails, never falsy", () => {
+      const html =
+        "{{#page.props.ratnig}}<b>{{label}}</b> {{page.props.ratnig}}{{/page.props.ratnig}}";
+      for (const pageId of [PAGE.home, PAGE.newsA]) {
+        const r = render(html, [LABEL], {}, typedCtx(pageId));
+        expect(r.html).toBe(html);
+        expect(r.missingSlots).toEqual(["page-prop-unknown:ratnig"]);
+      }
+      const inverted = render(
+        "{{^page.props.ratnig}}unrated{{/page.props.ratnig}}",
+        [],
+        {},
+        typedCtx(PAGE.home),
+      );
+      expect(inverted.html).toBe("{{^page.props.ratnig}}unrated{{/page.props.ratnig}}");
+      expect(inverted.missingSlots).toEqual(["page-prop-unknown:ratnig"]);
+      // A path through it names the property, not the key after it.
+      const path = render("{{page.props.cta_link.href}}", [], {}, typedCtx(PAGE.home));
+      expect(path.html).toBe("{{page.props.cta_link.href}}");
+      expect(path.missingSlots).toEqual(["page-prop-unknown:cta_link"]);
+      // The preview lists it with what blocks Publish live.
+      expect(isFieldPathMarker("page-prop-unknown:ratnig")).toBe(true);
+    });
+
+    it("answers a select property's option flags, on its own type and as absent elsewhere", () => {
+      const html =
+        "{{#page.props.layout_wide}}W{{/page.props.layout_wide}}{{^page.props.layout_wide}}N{{/page.props.layout_wide}}";
+      const wide = render(html, [], {}, typedCtx(PAGE.home, { homeProps: { layout: "wide" } }));
+      expect(wide.html).toBe("W");
+      expect(wide.missingSlots).toEqual([]);
+      const narrow = render(html, [], {}, typedCtx(PAGE.home, { homeProps: { layout: "narrow" } }));
+      expect(narrow.html).toBe("N");
+      expect(narrow.missingSlots).toEqual([]);
+      // A news page's type has no `layout`: absent, so the flag is false.
+      const news = render(html, [], {}, typedCtx(PAGE.newsA));
+      expect(news.html).toBe("N");
+      expect(news.missingSlots).toEqual([]);
+      // An option the select does not have is unknown on every page.
+      for (const pageId of [PAGE.home, PAGE.newsA]) {
+        const r = render(
+          "{{#page.props.layout_huge}}H{{/page.props.layout_huge}}",
+          [],
+          {},
+          typedCtx(pageId),
+        );
+        expect(r.missingSlots).toEqual(["page-prop-unknown:layout_huge"]);
+      }
+    });
+
+    it("answers every path of each type when page types declare the name differently", () => {
+      // `event` sorts before `page`, and declares `cta` as text where `page` has a link.
+      const extraTypes = [pageTypeOf("event", [{ name: "cta", label: "CTA", type: "text" }])];
+      const html =
+        "[{{page.props.cta}}|{{page.props.cta.href}}|{{#page.props.cta}}go{{/page.props.cta}}{{^page.props.cta}}none{{/page.props.cta}}]";
+      const news = render(html, [], {}, typedCtx(PAGE.newsA, { extraTypes }));
+      expect(news.html).toBe("[||none]");
+      expect(news.missingSlots).toEqual([]);
+    });
+
+    it("query entries read another type's property as absent and an unknown one loudly", () => {
+      const fields: TemplateField[] = [
+        {
+          name: "latest",
+          kind: "list",
+          listType: "links",
+          bind: "source",
+          source: {
+            kind: "query",
+            editable: [],
+            defaults: { page_type: "news", order: "prop_asc:rating", limit: 5 },
+          },
+        },
+      ];
+      const ok = render(
+        "{{#latest}}{{props.rating}}[{{props.intro}}];{{/latest}}",
+        fields,
+        {},
+        typedCtx(PAGE.home),
+      );
+      expect(ok.html).toBe("4[];5[];");
+      expect(ok.missingSlots).toEqual([]);
+      const typo = render(
+        "{{#latest}}{{props.ratng}};{{/latest}}",
+        fields,
+        {},
+        typedCtx(PAGE.home),
+      );
+      expect(typo.html).toBe("{{props.ratng}};{{props.ratng}};");
+      expect(typo.missingSlots).toContain("page-prop-unknown:ratng");
+    });
   });
 
   it("query entries expose summary, image (url/alt) and props", () => {

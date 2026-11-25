@@ -204,7 +204,9 @@ class SectionRenderer {
    * Look `name` (possibly dotted) up in the entry chain, innermost
    * first, then `page`. `undefined` = not an entry key (a module-level
    * name, or unknown); `{ missing }` = the head exists but a dotted part
-   * does not.
+   * does not. A part that resolves to a failure ends the path with that
+   * failure, so `{{page.props.typo.href}}` names the unknown property, not
+   * the `href` after it (#1561).
    */
   private lookup(name: string, st: RenderState): ScopeValue | { missing: true } | undefined {
     const parts = name.split(".");
@@ -224,6 +226,7 @@ class SectionRenderer {
       if (v === undefined) return undefined;
     }
     for (const p of parts.slice(1)) {
+      if (v.kind === "failed") return v;
       if (v.kind !== "record") return { missing: true };
       const next: ScopeValue | undefined = v.get(p.toLowerCase());
       if (next === undefined) return { missing: true };
