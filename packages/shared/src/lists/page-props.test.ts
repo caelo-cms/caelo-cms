@@ -75,6 +75,18 @@ describe("pagePropertyIndex", () => {
     }
   });
 
+  it("names the types a property is declared with, sorted (#1717)", () => {
+    const index = pagePropertyIndex(
+      new Map([
+        pageType("product", [{ name: "cta", label: "CTA", type: "text" }]),
+        pageType("news", [{ name: "cta", label: "CTA", type: "link" }]),
+        pageType("event", [{ name: "cta", label: "CTA", type: "link" }]),
+      ]),
+    );
+    expect(index.types("cta")).toEqual(["link", "text"]);
+    expect(index.types("stnad")).toEqual([]);
+  });
+
   it("names the property in its failure marker", () => {
     expect(pagePropUnknownMarker("stnad")).toBe("page-prop-unknown:stnad");
   });

@@ -22,6 +22,7 @@
  * so content that happens to contain `{{…}}` is never parsed again.
  */
 
+import { PAGE_KEY_TYPES, pageKeyUnknownMarker, pagePathUnknownMarker } from "./lists/page-paths.js";
 import type { ListFieldSpec, ListHolder, ListPageContext } from "./lists/resolve.js";
 import { LINK_VALUE_KEYS, linkValue, parseLinkFieldValue } from "./lists/resolve-values.js";
 import type { ScopeEntry, ScopeValue } from "./lists/scope.js";
@@ -130,6 +131,18 @@ interface Frame {
   readonly name: string;
 }
 
+/**
+ * A dotted name whose head exists and whose rest does not. `resolved`
+ * counts the parts that were found (the head included) and `last` is the
+ * value of the last of them; both are unset when the head itself is
+ * unavailable (no page outside a page render, a module `link` field).
+ */
+interface Miss {
+  readonly missing: true;
+  readonly resolved?: number;
+  readonly last?: ScopeValue;
+}
+
 interface RenderState {
   readonly chain: readonly Frame[];
   /** `{{.}}` / `{{item}}` value inside a scalar conditional; null elsewhere. */
@@ -208,7 +221,7 @@ class SectionRenderer {
    * failure, so `{{page.props.typo.href}}` names the unknown property, not
    * the `href` after it (#1561).
    */
-  private lookup(name: string, st: RenderState): ScopeValue | { missing: true } | undefined {
+  private lookup(name: string, st: RenderState): ScopeValue | Miss | undefined {
     const parts = name.split(".");
     const head = (parts[0] as string).toLowerCase();
     let v: ScopeValue | undefined;
@@ -225,12 +238,14 @@ class SectionRenderer {
       }
       if (v === undefined) return undefined;
     }
+    let resolved = 1;
     for (const p of parts.slice(1)) {
       if (v.kind === "failed") return v;
-      if (v.kind !== "record") return { missing: true };
+      if (v.kind !== "record") return { missing: true, resolved, last: v };
       const next: ScopeValue | undefined = v.get(p.toLowerCase());
-      if (next === undefined) return { missing: true };
+      if (next === undefined) return { missing: true, resolved, last: v };
       v = next;
+      resolved += 1;
     }
     return v;
   }
@@ -250,7 +265,7 @@ class SectionRenderer {
   }
 
   /** `name` (`f` or `f.key`) read from a module `link` field; `undefined` when it is none. */
-  private linkPath(name: string): ScopeValue | { missing: true } | undefined {
+  private linkPath(name: string): ScopeValue | Miss | undefined {
     const [head, ...path] = name.toLowerCase().split(".");
     const root = this.moduleLink(head as string);
     if (root === undefined || root.kind !== "record" || path.length === 0) return root;
@@ -279,17 +294,53 @@ class SectionRenderer {
   /**
    * The marker of a dotted path whose head exists and whose rest does not.
    * Unlike an unknown `{{name}}`, which can be literal copy, this is a
-   * broken placeholder, so its marker stops a Stage (#1433). `page.*` and
-   * `site_text.*` keep theirs.
+   * broken placeholder, so its marker stops a Stage (#1433). `page.*` gets
+   * a marker of its own (#1717, `lists/page-paths.ts`); `site_text.*`
+   * keeps `field-not-declared`.
    */
-  private unknownPath(name: string, st: RenderState): string {
+  private unknownPath(name: string, st: RenderState, miss?: Miss): string {
     if (isContextHead(name)) {
-      return this.env.lists === undefined
-        ? `list-context-unavailable:${contextHead(name)}`
-        : this.notDeclared(name, st);
+      if (this.env.lists === undefined) return `list-context-unavailable:${contextHead(name)}`;
+      const page =
+        miss?.resolved !== undefined && miss.last !== undefined
+          ? this.pageMarker(name, miss.resolved, miss.last)
+          : null;
+      return page ?? this.notDeclared(name, st);
     }
     const field = this.listField(st);
     return `field-path-unknown:${field.length > 0 ? `${field}.` : ""}${name}`;
+  }
+
+  /**
+   * #1717 — the marker of a `{{page.*}}` name the page cannot answer, when
+   * its first `resolved` parts were found and `value` is the last of them:
+   * an unknown key of the page, or a path (or a tag) the value at the
+   * found part cannot answer. Null for any other name.
+   */
+  private pageMarker(name: string, resolved: number, value: ScopeValue): string | null {
+    const parts = name.toLowerCase().split(".");
+    if (parts[0] !== "page" || parts.length < 2 || resolved < 1) return null;
+    if (resolved === 1) return pageKeyUnknownMarker(parts[1] as string);
+    const base = parts.slice(1, resolved);
+    return pagePathUnknownMarker(base.join("."), this.pageValueType(base, value));
+  }
+
+  /** What the value at `page.<base>` is, as {@link pageMarker} names it. */
+  private pageValueType(base: readonly string[], value: ScopeValue): string {
+    const [key, name] = base as [string, string | undefined];
+    if (base.length === 1) return PAGE_KEY_TYPES[key] ?? scopeKindName(value);
+    if (base.length === 2 && key === "props") {
+      return this.env.lists?.pagePropertyType(name as string) ?? scopeKindName(value);
+    }
+    if (base.length === 2 && key === "terms") return "term";
+    return scopeKindName(value);
+  }
+
+  /** The marker of a found value that cannot render as a tag (`{{page.props}}`, a list). */
+  private unrenderable(name: string, st: RenderState, v: ScopeValue): string {
+    const page =
+      this.env.lists === undefined ? null : this.pageMarker(name, name.split(".").length, v);
+    return page ?? this.notDeclared(name, st);
   }
 
   // ── Plain tags ──
@@ -316,7 +367,7 @@ class SectionRenderer {
       if (this.isModuleLevel(t.name)) return source;
       return this.raw(source, this.notDeclared(t.name, st));
     }
-    if ("missing" in v) return this.raw(source, this.unknownPath(t.name, st));
+    if ("missing" in v) return this.raw(source, this.unknownPath(t.name, st, v));
     if (entryValue === undefined && this.linkUnset(t.name)) {
       // A bare `{{f}}` with no value stays raw like any declared field; a
       // path into it is a broken link in the page, so it stops a Stage.
@@ -332,12 +383,12 @@ class SectionRenderer {
       case "bool":
         return String(v.value);
       case "record":
-        if (v.text === null) return this.raw(source, this.notDeclared(name, st));
+        if (v.text === null) return this.raw(source, this.unrenderable(name, st, v));
         return v.text.length === 0 ? "" : this.env.mkSentinel(v.text);
       case "failed":
         return this.raw(source, v.marker);
       default:
-        return this.raw(source, this.notDeclared(name, st));
+        return this.raw(source, this.unrenderable(name, st, v));
     }
   }
 
@@ -385,7 +436,7 @@ class SectionRenderer {
     const inverted = t.sigil === "^";
     const v = this.lookup(t.name, st) ?? (t.name.includes(".") ? this.linkPath(t.name) : undefined);
     if (v !== undefined) {
-      if ("missing" in v) return this.raw(source, this.unknownPath(t.name, st));
+      if ("missing" in v) return this.raw(source, this.unknownPath(t.name, st, v));
       return this.scopeSection(v, t.name, inverted, block, source, st);
     }
     if (t.name.includes(".")) return this.raw(source, this.notDeclared(t.name, st));
@@ -503,6 +554,11 @@ class SectionRenderer {
     }
     return out;
   }
+}
+
+/** A scope value's kind as a marker names it (`page-path-unknown:<path>:<kind>`). */
+function scopeKindName(v: ScopeValue): string {
+  return v.kind === "bool" ? "boolean" : v.kind;
 }
 
 /**

@@ -19,6 +19,12 @@
  *   it, the Stage ships the spot as the preview shows it and records it,
  *   the audit names it with the tools that repair it, and Publish live and
  *   a production build refuse it.
+ *
+ * #1717 — the same end to end for a `{{page.*}}` key the page does not
+ * have (`{{page.titel}}`) and a path a property cannot answer
+ * (`{{page.props.stand.formatted}}` on a text property). #1718 — a build
+ * that stops on these names the tool that repairs them, not the link
+ * check.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -69,6 +75,10 @@ const HEAD =
 const TYPO_HEAD =
   '<header class="hk"><h1>{{titel}}</h1>' +
   '{{#page.props.stnad}}<ul class="hx-meta"><li><b>{{fuer_label}}</b> {{page.props.fuer_wen}}</li></ul>{{/page.props.stnad}}</header>';
+
+/** The head with a page key the page does not have and a path its text property cannot answer (#1717). */
+const PATH_HEAD =
+  '<header class="hk"><h1>{{page.titel}}</h1><p>{{page.props.stand.formatted}}</p></header>';
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -149,6 +159,48 @@ async function stagedHtml(runId: string, pageId: string): Promise<string> {
     join(testRoot, row.out_dir, "builds", runId, pageOutputPath(row.current_path)),
     "utf8",
   );
+}
+
+/** The render check's findings on the audit a Stage queued. */
+async function renderFindings(runId: string) {
+  const queued = await sqlSystem(
+    async (tx) =>
+      (await tx`SELECT id::text AS id FROM quality_audit_runs
+                WHERE deploy_run_id = ${runId}::uuid AND status = 'queued'`) as { id: string }[],
+  );
+  const auditRunId = queued[0]?.id;
+  if (!auditRunId) throw new Error("the Stage queued no audit");
+  const claimed = await sysOp<{ state: string; run: ClaimedAuditRun | null }>(
+    "quality_audits.claim",
+    { auditRunId },
+  );
+  expect(claimed.state).toBe("claimed");
+  const run = claimed.run as ClaimedAuditRun;
+  return createRenderCheck(claimedRenderSources(run)).run({
+    pages: run.checkPages.map((p) => ({
+      pageId: p.pageId,
+      path: p.currentPath,
+      url: `https://staging.example.test${p.currentPath}`,
+      html: "",
+    })),
+    build: {
+      baseUrl: "https://staging.example.test",
+      probe: async () => ({ found: true, status: 200 }),
+      text: async () => null,
+    },
+  });
+}
+
+/** #1718 — a dev build stops on any render failure; its error's next step for the AI. */
+async function devBuildNextAction(): Promise<{ tool: string; reason: string }> {
+  const built = await execute(registry, adapter, OWNER, "deploy.trigger", {
+    targetName: "dev",
+    repoRoot: testRoot,
+  });
+  if (built.ok) throw new Error("the dev build rendered a broken placeholder");
+  const next = (built.error as { nextAction?: { tool: string; reason: string } }).nextAction;
+  if (!next) throw new Error(`no next step: ${JSON.stringify(built.error)}`);
+  return next;
 }
 
 beforeAll(async () => {
@@ -348,32 +400,7 @@ describe("#1561 — a property no page type declares fails loudly", () => {
   }, 120_000);
 
   it("its audit reports it once, with the tool that shows the page types' properties", async () => {
-    const queued = await sqlSystem(
-      async (tx) =>
-        (await tx`SELECT id::text AS id FROM quality_audit_runs
-                  WHERE deploy_run_id = ${runId}::uuid AND status = 'queued'`) as { id: string }[],
-    );
-    const auditRunId = queued[0]?.id;
-    if (!auditRunId) throw new Error("the Stage queued no audit");
-    const claimed = await sysOp<{ state: string; run: ClaimedAuditRun | null }>(
-      "quality_audits.claim",
-      { auditRunId },
-    );
-    expect(claimed.state).toBe("claimed");
-    const run = claimed.run as ClaimedAuditRun;
-    const findings = await createRenderCheck(claimedRenderSources(run)).run({
-      pages: run.checkPages.map((p) => ({
-        pageId: p.pageId,
-        path: p.currentPath,
-        url: `https://staging.example.test${p.currentPath}`,
-        html: "",
-      })),
-      build: {
-        baseUrl: "https://staging.example.test",
-        probe: async () => ({ found: true, status: 200 }),
-        text: async () => null,
-      },
-    });
+    const findings = await renderFindings(runId);
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
       ruleId: "render/page-prop-unknown",
@@ -418,4 +445,100 @@ describe("#1561 — a property no page type declares fails loudly", () => {
       );
     }
   }, 120_000);
+
+  it("a build that stops on it sends the AI to the page types, not the link check (#1718)", async () => {
+    const next = await devBuildNextAction();
+    expect(next.tool).toBe("list_page_types");
+    expect(next.reason).toContain("page-prop-unknown:stnad");
+  }, 120_000);
+});
+
+describe("#1717 — a page key or path the page cannot answer fails loudly", () => {
+  let runId = "";
+
+  beforeAll(async () => {
+    await sqlSystem(
+      (tx) => tx`UPDATE modules SET html = ${PATH_HEAD} WHERE id = ${moduleId}::uuid`,
+    );
+  });
+
+  it("the editor preview flags both and the AI's look names the repair", async () => {
+    for (const pageId of [homeId, helpId]) {
+      const r = await preview(pageId);
+      expect(r.html).toContain("{{page.titel}}");
+      expect(r.html).toContain("{{page.props.stand.formatted}}");
+      expect(r.missingSlots).toContain("page-key-unknown:titel");
+      expect(r.missingSlots).toContain("page-path-unknown:props.stand:text");
+    }
+    const tools = new ToolRegistry();
+    tools.register(inspectPageRenderTool);
+    const inspected = await tools.dispatch("inspect_page_render", { pageId: helpId }, AI, {
+      adapter,
+      registry,
+    });
+    expect(inspected.ok).toBe(true);
+    const steps = (
+      JSON.parse(inspected.content) as { slots: { nextSteps?: Record<string, string> } }
+    ).slots.nextSteps;
+    expect(steps?.["page-key-unknown:titel"]).toContain("update_modules_many");
+    expect(steps?.["page-path-unknown:props.stand:text"]).toContain(
+      "page.props.stand (text) has no paths",
+    );
+  }, 60_000);
+
+  it("the Stage records both, the audit files each kind, and Publish live refuses", async () => {
+    const staged = await stage("t1717 page paths");
+    runId = staged.runId;
+    expect(staged.renderReport?.total).toBe(4);
+    expect(new Set(staged.renderReport?.failures.map((f) => f.reason))).toEqual(
+      new Set(["page-key-unknown:titel", "page-path-unknown:props.stand:text"]),
+    );
+    expect(await stagedHtml(runId, homeId)).toContain("{{page.titel}}");
+
+    const findings = await renderFindings(runId);
+    expect(findings.map((f) => f.ruleId).sort()).toEqual([
+      "render/page-key-unknown",
+      "render/page-path-unknown",
+    ]);
+    for (const f of findings) {
+      expect(f.severity).toBe("error");
+      expect(f.fix?.tool).toBe("update_modules_many");
+    }
+
+    await sqlSystem(async (tx) => {
+      await tx`UPDATE quality_audit_runs
+                  SET status = 'passed', gate_rules = 2, finished_at = now()
+                WHERE deploy_run_id = ${runId}::uuid`;
+    });
+    const refused = await execute(registry, adapter, OWNER, "deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect((refused.error as { message: string }).message).toContain(
+        "4 spots it could not render",
+      );
+    }
+  }, 120_000);
+
+  it("a build that stops on them sends the AI to the module HTML (#1718)", async () => {
+    const next = await devBuildNextAction();
+    expect(next.tool).toBe("update_modules_many");
+    expect(next.reason).toContain("page-key-unknown:titel");
+  }, 120_000);
+
+  it("valid keys and paths render unchanged", async () => {
+    await sqlSystem(
+      (tx) =>
+        tx`UPDATE modules SET html = ${'<header class="hk"><h1>{{page.title}}</h1><p>{{page.props.stand}}</p><a href="{{page.link.href}}">x</a></header>'}
+           WHERE id = ${moduleId}::uuid`,
+    );
+    const help = await preview(helpId);
+    expect(help.html).toContain("<h1>Konto</h1>");
+    expect(help.html).toContain("<p>November 2026</p>");
+    expect(help.html).not.toContain("{{");
+    expect(help.missingSlots.filter((m) => m.startsWith("page-"))).toEqual([]);
+  }, 60_000);
 });
