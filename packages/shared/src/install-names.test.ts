@@ -90,6 +90,13 @@ describe("install name map (#1689)", () => {
       parseInstallNames({ ...t1, databases: { ...t1.databases, publicStaging: "public" } }, "map")
         .databases.publicStaging,
     ).toBe("public");
+    // The server's own databases are no install's (bootstrap.sh would close
+    // the maintenance database to every other login and migrate into it).
+    for (const server of ["postgres", "template0", "template1"]) {
+      expect(() =>
+        parseInstallNames({ ...t1, databases: { ...t1.databases, public: server } }, "map"),
+      ).toThrow("must not be one of the server's own databases");
+    }
     expect(() => prefixedInstallNames("T1")).toThrow("must match");
     expect(() => prefixedInstallNames("pg")).toThrow("must not start with");
   });

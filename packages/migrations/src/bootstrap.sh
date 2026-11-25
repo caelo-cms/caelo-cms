@@ -64,6 +64,39 @@ all_different() {
     exit 1
   fi
 }
+# Issue #1689 — what of the map already belongs to someone else on this
+# server, one line each (empty when nothing does). The statements below
+# alter an existing role of the map (connection limit, settings,
+# memberships), open the map's databases to it, and DROP OWNED BY the
+# former gateway login, which also revokes that role's CONNECT on every
+# other database of the server. So a name of the map may exist (a re-run)
+# only as this install's: a role that is no superuser and reaches no
+# private database outside the map (the role audit's notion of another
+# install's, role-audit.ts), a database the map's admin role owns. An
+# install with a name map never had a former gateway login (#635 came
+# first), so that name must be free.
+foreign_names() {
+  printf "%s\n" "WITH r(n) AS (SELECT unnest(string_to_array(:'roles', ' '))),
+d(n) AS (SELECT unnest(string_to_array(:'dbs', ' '))),
+elsewhere AS (
+  SELECT oid, datname FROM pg_database
+   WHERE datallowconn AND datname NOT IN (SELECT n FROM d)
+     AND datname NOT IN ('postgres', 'template0', 'template1', 'cloudsqladmin', 'rdsadmin', 'azure_maintenance', 'azure_sys')
+     AND NOT has_database_privilege('public', oid, 'CONNECT'))
+SELECT 'role ' || g.rolname || ' exists and is a superuser'
+  FROM pg_roles g JOIN r ON r.n = g.rolname WHERE g.rolsuper
+UNION ALL
+SELECT 'role ' || g.rolname || ' exists and may connect to ' || e.datname || ', a database outside this map'
+  FROM pg_roles g JOIN r ON r.n = g.rolname CROSS JOIN elsewhere e
+ WHERE NOT g.rolsuper AND has_database_privilege(g.oid, e.oid, 'CONNECT')
+UNION ALL
+SELECT 'database ' || x.datname || ' exists and belongs to ' || pg_get_userbyid(x.datdba) || ', not ' || :'admin'
+  FROM pg_database x JOIN d ON d.n = x.datname WHERE pg_get_userbyid(x.datdba) <> :'admin'
+UNION ALL
+SELECT 'role ' || rolname || ' (roles.formerGateway) exists; an install with a name map never had a former gateway login'
+  FROM pg_roles WHERE rolname = :'gateway';" \
+    | $PSQL -v roles="$1" -v dbs="$2" -v admin="$3" -v gateway="$4" -At
+}
 name_or_fail() {
   value=$(install_name "$1")
   if [ -z "$value" ]; then
@@ -73,7 +106,18 @@ name_or_fail() {
   printf "%s" "$value"
 }
 
-if [ -n "${CAELO_INSTALL_NAMES}" ]; then
+DEFAULT_NAMES="admin_role public_role public_staging_role operator_access_reader platform_updater gateway_role cms_admin cms_public cms_public_staging"
+if [ -z "${CAELO_INSTALL_NAMES}" ]; then
+  ADMIN_ROLE=admin_role
+  PUBLIC_ROLE=public_role
+  STAGING_ROLE=public_staging_role
+  READER_ROLE=operator_access_reader
+  UPDATER_ROLE=platform_updater
+  GATEWAY_ROLE=gateway_role
+  ADMIN_DB=cms_admin
+  PUBLIC_DB=cms_public
+  STAGING_DB=cms_public_staging
+else
   ADMIN_ROLE=$(name_or_fail roles,admin)
   PUBLIC_ROLE=$(name_or_fail roles,public)
   STAGING_ROLE=$(name_or_fail roles,publicStaging)
@@ -85,16 +129,24 @@ if [ -n "${CAELO_INSTALL_NAMES}" ]; then
   STAGING_DB=$(name_or_fail databases,publicStaging)
   all_different roles "${ADMIN_ROLE}" "${PUBLIC_ROLE}" "${STAGING_ROLE}" "${READER_ROLE}" "${UPDATER_ROLE}" "${GATEWAY_ROLE}"
   all_different databases "${ADMIN_DB}" "${PUBLIC_DB}" "${STAGING_DB}"
+fi
+# A map that spells out today's names is today's install, former gateway
+# login included (install-names.ts installNamesEnv sets none for it).
+if [ "${ADMIN_ROLE} ${PUBLIC_ROLE} ${STAGING_ROLE} ${READER_ROLE} ${UPDATER_ROLE} ${GATEWAY_ROLE} ${ADMIN_DB} ${PUBLIC_DB} ${STAGING_DB}" \
+  = "${DEFAULT_NAMES}" ]; then
+  OWN_NAMES=
 else
-  ADMIN_ROLE=admin_role
-  PUBLIC_ROLE=public_role
-  STAGING_ROLE=public_staging_role
-  READER_ROLE=operator_access_reader
-  UPDATER_ROLE=platform_updater
-  GATEWAY_ROLE=gateway_role
-  ADMIN_DB=cms_admin
-  PUBLIC_DB=cms_public
-  STAGING_DB=cms_public_staging
+  OWN_NAMES=1
+fi
+if [ -n "${OWN_NAMES}" ]; then
+  taken=$(foreign_names \
+    "${ADMIN_ROLE} ${PUBLIC_ROLE} ${STAGING_ROLE} ${READER_ROLE} ${UPDATER_ROLE} ${GATEWAY_ROLE}" \
+    "${ADMIN_DB} ${PUBLIC_DB} ${STAGING_DB}" "${ADMIN_ROLE}" "${GATEWAY_ROLE}")
+  if [ -n "$taken" ]; then
+    echo "bootstrap.sh: CAELO_INSTALL_NAMES names what belongs to someone else on this server (#1689: an install's names are its own); nothing was changed:" >&2
+    printf "%s\n" "$taken" | sed 's/^/  - /' >&2
+    exit 1
+  fi
 fi
 
 # Run each DDL as its own invocation — psql -c / multi-statement stdin can
@@ -197,8 +249,10 @@ fi
 # Issue #635 — the API gateway has no cms_admin login any more. A database
 # from before still holds the former gateway_role; migration 0285 strips its
 # grants but cannot drop a role the superuser created. Drop it here, with
-# whatever it still holds in either database.
-if exists_role "${GATEWAY_ROLE}"; then
+# whatever it still holds in either database. Only with today's names: an
+# install with names of its own never had one (#1689), and DROP OWNED BY
+# revokes the role's privileges on every other database of the server too.
+if [ -z "${OWN_NAMES}" ] && exists_role "${GATEWAY_ROLE}"; then
   $PSQL -d "${ADMIN_DB}" -c "DROP OWNED BY ${GATEWAY_ROLE};"
   $PSQL -d "${PUBLIC_DB}" -c "DROP OWNED BY ${GATEWAY_ROLE};"
   $PSQL -d "${STAGING_DB}" -c "DROP OWNED BY ${GATEWAY_ROLE};"

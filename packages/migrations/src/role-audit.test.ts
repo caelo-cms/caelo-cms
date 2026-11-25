@@ -4,7 +4,10 @@ import { describe, expect, it } from "bun:test";
 import {
   DEFAULT_INSTALL_NAMES,
   GATEWAY_ROLE_CONNECTION_LIMIT,
+  installDatabases,
+  installRoles,
   prefixedInstallNames,
+  SERVER_DATABASES,
 } from "@caelo-cms/shared";
 import { assertNoRlsPolicyDrift, evaluateRlsDrift, RLS_DRIFT_SQL } from "./rls.js";
 import {
@@ -533,5 +536,23 @@ describe("evaluateRlsDrift & assertNoRlsPolicyDrift", () => {
         ],
       }),
     ).rejects.toThrow("users (missing FORCE ROW LEVEL SECURITY)");
+  });
+});
+
+describe("bootstrap.sh's copies of the name map's constants (#1689)", () => {
+  // The shell script cannot import install-names.ts; these pin its copies.
+  const script = () => Bun.file(new URL("../src/bootstrap.sh", import.meta.url)).text();
+
+  it("treats the server's own databases as role-audit.ts does", async () => {
+    const list = SERVER_DATABASES.map((d) => `'${d}'`).join(", ");
+    expect(await script()).toContain(`AND datname NOT IN (${list})`);
+  });
+
+  it("knows today's names in the map's order", async () => {
+    const names = [
+      ...installRoles(DEFAULT_INSTALL_NAMES),
+      ...installDatabases(DEFAULT_INSTALL_NAMES),
+    ];
+    expect(await script()).toContain(`DEFAULT_NAMES="${names.join(" ")}"`);
   });
 });

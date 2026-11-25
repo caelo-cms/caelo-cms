@@ -74,6 +74,35 @@ const roleName = postgresName.refine(
   'must not be "public" (Postgres reserves it for the PUBLIC pseudo-role)',
 );
 
+/**
+ * Databases every Postgres server has for itself: the maintenance and
+ * template databases and the ones a managed service keeps (Cloud SQL, RDS,
+ * Azure). They hold no install's data, and a managed service may restrict
+ * them to, or open them for, the group a single install's admin role
+ * belongs to, so the isolation checks never count them as another
+ * install's (migrations role-audit.ts, the gateway's boot probe).
+ */
+export const SERVER_DATABASES: readonly string[] = Object.freeze([
+  "postgres",
+  "template0",
+  "template1",
+  "cloudsqladmin",
+  "rdsadmin",
+  "azure_maintenance",
+  "azure_sys",
+]);
+
+/**
+ * A database name: a {@link postgresName} that is none of the server's own
+ * ({@link SERVER_DATABASES}). bootstrap.sh would close the maintenance
+ * database to every other login and the migrations would run in it, and
+ * the isolation checks never count those databases as an install's.
+ */
+const databaseName = postgresName.refine(
+  (name) => !SERVER_DATABASES.includes(name),
+  `must not be one of the server's own databases (${SERVER_DATABASES.join(", ")})`,
+);
+
 /** The roles of one install. */
 export const RoleNamesSchema = z
   .object({
@@ -101,11 +130,11 @@ export const RoleNamesSchema = z
 export const DatabaseNamesSchema = z
   .object({
     /** The authoring database (logical `cms_admin`). */
-    admin: postgresName,
+    admin: databaseName,
     /** The live site's public database (logical `cms_public`). */
-    public: postgresName,
+    public: databaseName,
     /** The staging site's public database (logical `cms_public_staging`, #1329). */
-    publicStaging: postgresName,
+    publicStaging: databaseName,
   })
   .strict();
 
@@ -156,24 +185,6 @@ export const DEFAULT_INSTALL_NAMES: InstallNames = Object.freeze({
     publicStaging: "cms_public_staging",
   }),
 });
-
-/**
- * Databases every Postgres server has for itself: the maintenance and
- * template databases and the ones a managed service keeps (Cloud SQL, RDS,
- * Azure). They hold no install's data, and a managed service may restrict
- * them to, or open them for, the group a single install's admin role
- * belongs to, so the isolation checks never count them as another
- * install's (migrations role-audit.ts, the gateway's boot probe).
- */
-export const SERVER_DATABASES: readonly string[] = Object.freeze([
-  "postgres",
-  "template0",
-  "template1",
-  "cloudsqladmin",
-  "rdsadmin",
-  "azure_maintenance",
-  "azure_sys",
-]);
 
 /** The logical database names op definitions and pools use. */
 export type LogicalDatabase = "cms_admin" | "cms_public" | "cms_public_staging";

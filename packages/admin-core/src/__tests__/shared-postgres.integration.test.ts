@@ -674,6 +674,75 @@ describe("bootstrap.sh on a shared server (#1689)", () => {
   }, 120_000);
 });
 
+describe("bootstrap.sh refuses names that belong to someone else (#1689)", () => {
+  // A role of the map that exists would be altered (connection limit,
+  // settings, memberships) and handed the map's databases, and DROP OWNED
+  // BY the former gateway login also revokes that role's CONNECT on every
+  // other database of the server: with install A's live login there, A's
+  // gateway could not reconnect.
+  const E = prefixedInstallNames("ci1689e");
+
+  it("stops before its first statement when a name of the map is install A's", async () => {
+    const aclBefore = (await su`
+      SELECT datacl::text AS acl FROM pg_database WHERE datname = ${A.databases.public}
+    `) as { acl: string }[];
+    const cases: [InstallNames, string][] = [
+      [
+        { ...E, roles: { ...E.roles, formerGateway: A.roles.public } },
+        `role ${A.roles.public} exists and may connect to ${A.databases.public}`,
+      ],
+      [
+        { ...E, roles: { ...E.roles, admin: A.roles.admin } },
+        `role ${A.roles.admin} exists and may connect to ${A.databases.admin}`,
+      ],
+      [
+        { ...E, databases: { ...E.databases, public: A.databases.public } },
+        `database ${A.databases.public} exists and belongs to ${A.roles.admin}, not ${E.roles.admin}`,
+      ],
+      [
+        { ...E, roles: { ...E.roles, platformUpdater: env.POSTGRES_USER as string } },
+        `role ${env.POSTGRES_USER} exists and is a superuser`,
+      ],
+    ];
+    try {
+      for (const [names, why] of cases) {
+        let failure = "";
+        try {
+          await run(["sh", "src/bootstrap.sh"], {
+            ...installNamesEnv(names),
+            ADMIN_ROLE_PASSWORD: PASSWORDS.admin,
+            PUBLIC_ROLE_PASSWORD: PASSWORDS.public,
+            PUBLIC_STAGING_ROLE_PASSWORD: PASSWORDS.publicStaging,
+          });
+        } catch (e) {
+          failure = String(e);
+        }
+        expect(failure).toContain("belongs to someone else on this server");
+        expect(failure).toContain(why);
+      }
+      const prefix = "ci1689e\\_%";
+      expect(await su`SELECT rolname FROM pg_roles WHERE rolname LIKE ${prefix}`).toEqual([]);
+      expect(await su`SELECT datname FROM pg_database WHERE datname LIKE ${prefix}`).toEqual([]);
+      expect(
+        await su`SELECT datacl::text AS acl FROM pg_database WHERE datname = ${A.databases.public}`,
+      ).toEqual(aclBefore);
+    } finally {
+      await dropInstall(su, E);
+    }
+  }, 120_000);
+
+  it("re-runs on its own install as before", async () => {
+    await run(["sh", "src/bootstrap.sh"], {
+      ...installNamesEnv(B),
+      ADMIN_ROLE_PASSWORD: PASSWORDS.admin,
+      PUBLIC_ROLE_PASSWORD: PASSWORDS.public,
+      PUBLIC_STAGING_ROLE_PASSWORD: PASSWORDS.publicStaging,
+      ADMIN_ROLE_CONNECTION_LIMIT: String(ADMIN_CONNECTION_LIMIT),
+    });
+    expect(await canConnect(B.roles.admin, PASSWORDS.admin, B.databases.admin)).toBe(true);
+  }, 120_000);
+});
+
 describe("names Postgres reserves (Codex review)", () => {
   // A keyword would need quoting in the CREATE ROLE, GRANT and renamed
   // migration statements, which splice names unquoted.
