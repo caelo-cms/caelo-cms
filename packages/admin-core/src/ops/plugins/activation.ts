@@ -294,7 +294,13 @@ const executePluginActivationOpDefinition = defineOperation({
 
     if (
       artifact?.tier === 2 &&
-      !validatePlugin({ manifest: artifact.manifest_json, source: artifact.source_code ?? "" }).ok
+      // #1720 — a stored artifact: a worker cron croner now refuses is the
+      // scheduler's to record once the plugin loads, not a changed artifact.
+      !validatePlugin({
+        manifest: artifact.manifest_json,
+        source: artifact.source_code ?? "",
+        workerCron: "record",
+      }).ok
     ) {
       return err({
         kind: "HandlerError",

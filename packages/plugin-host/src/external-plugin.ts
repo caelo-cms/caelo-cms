@@ -22,6 +22,9 @@ export function externalPluginDefinition(opts: {
     manifest: opts.manifest,
     source: opts.source,
     allowExternalCapabilities: true,
+    // #1720 — an approved artifact loads; a worker cron croner refuses is
+    // recorded for that worker by the scheduler, not a reason to refuse it.
+    workerCron: "record",
   });
   if (!validation.ok || !validation.manifest || validation.manifest.tier !== 2) {
     throw new Error(`ExternalPluginRejected: ${validation.failures.map((f) => f.hint).join("; ")}`);

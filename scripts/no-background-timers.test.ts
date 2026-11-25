@@ -64,6 +64,8 @@ const ROOTS = [
   "apps/admin/src",
   "packages/admin-core/src",
   "packages/plugin-host/src",
+  // #1720 — the validator builds the plugin workers' croner patterns.
+  "packages/plugin-sandbox/src",
   "packages/query-api/src",
   "packages/site-importer/src",
   "packages/migrations/src",
@@ -130,10 +132,18 @@ describe("no background timer does the admin's work (#1140)", () => {
   });
 
   it("plugin workers run from the tick, never from a timer per plugin", () => {
-    const scheduler = SCANNED.find((s) => s.path === "packages/plugin-host/src/scheduler.ts")?.text;
+    const text = (path: string) => SCANNED.find((s) => s.path === path)?.text;
+    const scheduler = text("packages/plugin-host/src/scheduler.ts");
     expect(scheduler).toBeDefined();
     expect(TIMER.test(scheduler ?? "")).toBe(false);
-    expect(scheduler).toContain("paused: true");
+    // #1720 — the scheduler builds every worker pattern through the
+    // validator's parse (so both agree on what parses) and never one of its
+    // own; that parse builds a paused job without a callback, which never fires.
+    expect(scheduler).not.toMatch(/\bnew\s+Cron\s*\(/);
+    expect(scheduler).toContain("parseWorkerCron(w.cron)");
+    const validator = text("packages/plugin-sandbox/src/validate.ts");
+    expect(validator).toContain("new Cron(cron, { paused: true })");
+    expect(TIMER.test(validator ?? "")).toBe(false);
   });
 
   it("the plugin host keeps nothing current on an idle timer: request start and the tick do (#1361)", () => {

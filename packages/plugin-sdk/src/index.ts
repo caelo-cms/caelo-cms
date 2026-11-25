@@ -236,7 +236,15 @@ export type PluginToolPermission = (typeof PLUGIN_TOOL_PERMISSIONS)[number];
 /** Tier 1 background worker spec (cron-style). */
 export const pluginWorkerSpec = z.object({
   name: z.string().min(1).max(120),
-  /** Cron expression. Same vocabulary as the existing scheduled-publish work. */
+  /**
+   * Cron expression in croner's syntax: 5 fields (minute hour day month
+   * weekday), 6 with seconds first, or a nickname such as `@hourly`. The
+   * plugin validator parses it with croner in every review and refuses a
+   * pattern croner cannot parse, naming the worker (#1720). This schema
+   * checks only the string: stored manifests are parsed with it on every
+   * load, and an approved artifact must not stop loading because a later
+   * croner reads its pattern more strictly.
+   */
   cron: z.string().min(1).max(120),
   /** Operation name to dispatch on tick. Must exist in `operations`. */
   operationName: z.string().min(1).max(120),

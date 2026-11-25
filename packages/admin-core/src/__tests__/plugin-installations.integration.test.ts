@@ -897,3 +897,35 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
     await gatedTool().execute!({ body: "new version" }, { toolCallId: "fresh-call" }),
   ).toMatchObject({ ok: true });
 });
+
+it("#1720 — refuses a runtime-installed plugin whose worker cron croner cannot parse, naming the worker", async () => {
+  const slug = "installation-bad-cron";
+  const r = await execute(
+    registry,
+    adapter,
+    { ...system, actorKind: "ai" },
+    "plugins.stage_installation",
+    {
+      manifest: {
+        ...manifest,
+        slug,
+        operations: ["save", "sweep"],
+        requestedCapabilities: ["cms_admin_schema", "background_workers"],
+        capabilityReasons: {
+          ...manifest.capabilityReasons,
+          background_workers: "Remove notes older than a year",
+        },
+        workers: [{ name: "yearly_sweep", cron: "61 * * * *", operationName: "sweep" }],
+      },
+      source: source.replace("installation-notes", slug),
+    },
+  );
+  expect(r.ok).toBe(false);
+  if (r.ok) return;
+  expect(r.error.message).toContain('worker "yearly_sweep"');
+  expect(r.error.message).toContain("Invalid value for minute: 61");
+  // Refused before any row exists: nothing for an Owner to approve.
+  const got = await execute(registry, adapter, system, "plugins.get", { slug });
+  if (!got.ok) throw new Error(JSON.stringify(got.error));
+  expect((got.value as { plugin: unknown }).plugin).toBeNull();
+});
