@@ -46,6 +46,7 @@ import {
   publishPublicProjection,
   recordBootPublish,
   releaseMainLineForTests,
+  type TestCollectionRelease,
   type VisitorProjectionDeclarations,
 } from "@caelo-cms/migrations/public-projection";
 import { loadedPlugins } from "@caelo-cms/plugin-host";
@@ -146,17 +147,26 @@ export function publishProjectionOnce(
  * scripts/no-automatic-production-deploy.test.ts): freeze the main line and
  * release it to both public databases at once, as a Stage plus Publish live
  * would, so a test sees plugin data it just wrote on the public side.
+ *
+ * A test site with a collection index passes it as `collections`: recorded
+ * as the frozen run's ready releases, the index is what every later publish
+ * derives, also one by an admin running beside the test.
+ *
+ * @returns the publish report and the frozen run's id (the deploy run that
+ *   holds `collections`, when any).
  */
 export function releaseProjectionForTests(
   adapter: DatabaseAdapter,
   stagingAdapter: DatabaseAdapter,
   declarations: VisitorProjectionDeclarations = loadedVisitorProjections(),
   completeness: FreezeCompleteness = "required",
-): Promise<PublishReport> {
+  collections: readonly TestCollectionRelease[] = [],
+): Promise<PublishReport & { readonly runId: string }> {
   return releaseMainLineForTests(
     projectionDatabases(adapter, stagingAdapter),
     declarations,
     completeness,
+    collections,
   );
 }
 

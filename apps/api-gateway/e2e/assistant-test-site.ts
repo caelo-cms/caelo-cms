@@ -198,26 +198,6 @@ export async function prepareAssistantSite(urls: {
   await registerTestLiveOrigin(urls.admin);
   await drainProjectionOnce(adminAdapter, staging);
 
-  // A release republishes the plugins' section, the index pointer with it:
-  // this site's index has no Stage run, so it is published again after each.
-  let indexKey: string | null = null;
-  const publishIndex = async () => {
-    if (!indexKey) return;
-    await onDb(urls.publicAdmin, async (tx) => {
-      await tx`DELETE FROM published_collections`;
-      await tx`INSERT INTO published_collections (plugin_id, collection, release_key) VALUES (${idOf("site-search")}::uuid, 'pages', ${indexKey})`;
-    });
-  };
-  const release = async () => {
-    await releaseProjectionForTests(adminAdapter, staging, undefined, "as-loaded");
-    await publishIndex();
-    // What the admin's publish notification does to the gateway's caches.
-    dropPublishedState();
-    resetVisitorAiCacheForTests();
-    invalidateGatewaySettings();
-  };
-  await release();
-
   // site-search's index, as a Stage built it and Publish live copied it.
   const live = scopedStore(directoryStore(join(root, "live")), "site-search/pages");
   const writes: Promise<void>[] = [];
@@ -256,8 +236,28 @@ export async function prepareAssistantSite(urls: {
     },
   );
   await Promise.all(writes);
-  indexKey = built.file;
-  await publishIndex();
+
+  // Every release is a Stage plus Publish live whose index job carried the
+  // index over unchanged: its run holds the index as a ready collection
+  // release, and the projection derives published_collections from that,
+  // on this release's publish and every later one (the suite's admin
+  // publishes on its own schedule beside the browser fixture).
+  const releaseRuns: string[] = [];
+  const release = async () => {
+    const released = await releaseProjectionForTests(
+      adminAdapter,
+      staging,
+      undefined,
+      "as-loaded",
+      [{ pluginId: idOf("site-search"), collection: "pages", releaseKey: built.file }],
+    );
+    releaseRuns.push(released.runId);
+    // What the admin's publish notification does to the gateway's caches.
+    dropPublishedState();
+    resetVisitorAiCacheForTests();
+    invalidateGatewaySettings();
+  };
+  await release();
 
   const gw = gatewayDatabaseUrls({
     PUBLIC_DATABASE_URL: urls.publicGateway,
@@ -327,10 +327,12 @@ export async function prepareAssistantSite(urls: {
         await tx.unsafe(`DELETE FROM ${schema}.feedback`);
       });
       await onDb(urls.publicAdmin, async (tx) => {
-        await tx`DELETE FROM published_collections`;
         await tx`TRUNCATE visitor_ai_calls`;
       });
       await onDb(urls.admin, async (tx) => {
+        // The index goes with the release runs (collection_releases cascade);
+        // the drain below takes it off the public side.
+        for (const run of releaseRuns) await tx`DELETE FROM deploy_runs WHERE id = ${run}::uuid`;
         await tx`UPDATE site_settings SET captcha_pow_target_prefix = ${saved.captcha} WHERE id = 1`;
         const s = saved.settings;
         if (s)

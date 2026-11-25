@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defineConfig } from "@playwright/test";
 
 /**
@@ -9,6 +11,8 @@ import { defineConfig } from "@playwright/test";
  */
 const port = process.env.CAELO_E2E_PORT ?? "4173";
 const origin = `http://localhost:${port}`;
+// The admin's plugin collection stores, as self-hosted installs have them.
+const collections = join(tmpdir(), `caelo-e2e-collections-${port}`);
 
 export default defineConfig({
   testDir: "./e2e",
@@ -38,11 +42,11 @@ export default defineConfig({
         "**/site-assistant-visitor.browser.ts",
       ],
     },
-    // Epic #1644 — both visitor sites activate the site search, publish its
-    // index (published_collections, the plugin's row) and the plugin
-    // registry their gateway attaches from. A `main` spec that republishes
-    // the registry (the consent site) detached the site search mid-test, so
-    // they run after `main`, one after the other.
+    // Epic #1644 — both visitor sites activate the site search and release
+    // its index (a collection release of the Stage run they freeze) with the
+    // plugin registry their gateway attaches from. A `main` spec that
+    // republishes the registry (the consent site) detached the site search
+    // mid-test, so they run after `main`, one after the other.
     {
       name: "site-search-visitor",
       testMatch: "**/site-search-visitor.browser.ts",
@@ -144,6 +148,12 @@ export default defineConfig({
       // (lib/server/google-iap.ts). Test-only, ignored when
       // NODE_ENV=production.
       CAELO_E2E_GOOGLE_IAP: "1",
+      // Epic #1644 — while a visitor site's index is released, the admin's
+      // tick cleans up the collection stores (collections/gc.ts), which
+      // fails without them. The sites keep their index files in their own
+      // live store, so the admin's stay empty.
+      CAELO_COLLECTIONS_STAGING_STORE: `file://${join(collections, "staging")}`,
+      CAELO_COLLECTIONS_LIVE_STORE: `file://${join(collections, "live")}`,
     },
   },
 });

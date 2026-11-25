@@ -10,12 +10,21 @@
  * the plugin's skill teaches the AI to write, with the plugin's runtime
  * inline. One origin, like the load balancer's `/api/*` rule. Prints
  * `READY <port>` when it serves.
+ *
+ * The index is a ready collection release of the Stage run the release
+ * froze, as an index job reports it: the projection derives
+ * published_collections from that on every publish. The suite's admin runs
+ * beside this site on the same databases and publishes the projection on
+ * its own schedule; an index row written straight into published_collections
+ * lasted only until its next publish.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  drainProjectionOnce,
+  publishProjectionOnce,
   registerAdminOps,
   releaseProjectionForTests,
   stagingPublicAdapter,
@@ -91,9 +100,18 @@ const before = await onDb(ADMIN_URL, async (tx) => {
   return rows[0] ?? null;
 });
 
+const adminAdapter = new DatabaseAdapter({
+  adminDatabaseUrl: ADMIN_URL,
+  publicDatabaseUrl: PUBLIC_ADMIN_URL,
+});
+/** The Stage run the release froze; it holds the index's collection release. */
+let releaseRun: string | null = null;
+
 async function restore(): Promise<void> {
-  // List types a crashed run left behind belong to no plugin row any more.
   await onDb(ADMIN_URL, async (tx) => {
+    // The index goes with its run (collection_releases cascade).
+    if (releaseRun) await tx`DELETE FROM deploy_runs WHERE id = ${releaseRun}::uuid`;
+    // List types a crashed run left behind belong to no plugin row any more.
     await tx`DELETE FROM list_types WHERE slug LIKE 'site-search-%'
              AND (plugin_id IS NULL OR plugin_id NOT IN (SELECT id FROM plugins))`;
   });
@@ -113,9 +131,8 @@ async function restore(): Promise<void> {
       await tx`DELETE FROM list_types WHERE slug LIKE 'site-search-%'`;
       await tx`DELETE FROM plugins WHERE slug = ${SLUG}`;
     });
-  await onDb(PUBLIC_ADMIN_URL, async (tx) => {
-    await tx`DELETE FROM published_collections`;
-  });
+  // The public side follows the source, as the admin's drain would publish it.
+  await drainProjectionOnce(adminAdapter, STAGING_ADAPTER);
 }
 
 const PAGES = [
@@ -143,10 +160,6 @@ const PAGES = [
 ];
 
 async function prepare(): Promise<DatabaseAdapter> {
-  const adminAdapter = new DatabaseAdapter({
-    adminDatabaseUrl: ADMIN_URL,
-    publicDatabaseUrl: PUBLIC_ADMIN_URL,
-  });
   const adminRegistry = new OperationRegistry();
   registerAdminOps(adminRegistry);
   const report = await bootstrap({
@@ -162,10 +175,6 @@ async function prepare(): Promise<DatabaseAdapter> {
       ((await tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`) as { id: string }[])[0]
         ?.id as string,
   );
-  // Release the main line as a Stage plus Publish live does, as loaded.
-  await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, undefined, "as-loaded");
-  resetPluginHost();
-  await adminAdapter.close();
 
   // The release the index job would have built and Publish live copied.
   const live = scopedStore(directoryStore(join(root, "live")), `${SLUG}/pages`);
@@ -205,10 +214,23 @@ async function prepare(): Promise<DatabaseAdapter> {
     },
   );
   await Promise.all(writes);
-  await onDb(PUBLIC_ADMIN_URL, async (tx) => {
-    await tx`DELETE FROM published_collections`;
-    await tx`INSERT INTO published_collections (plugin_id, collection, release_key) VALUES (${pluginId}::uuid, 'pages', ${built.file})`;
-  });
+
+  // Release the main line as a Stage plus Publish live does, as loaded,
+  // with that index as the Stage's collection release.
+  const released = await releaseProjectionForTests(
+    adminAdapter,
+    STAGING_ADAPTER,
+    undefined,
+    "as-loaded",
+    [{ pluginId, collection: "pages", releaseKey: built.file }],
+  );
+  releaseRun = released.runId;
+  // The suite's admin publishes this section again whenever it likes (its
+  // scheduler tick, its plugin-host reconcile after the activation above):
+  // publish once more the way it will, so the site serves only what
+  // survives that, on every run instead of the runs a tick happens to hit.
+  await publishProjectionOnce(adminAdapter, STAGING_ADAPTER, { comments: false });
+  resetPluginHost();
 
   const urls = gatewayDatabaseUrls({
     PUBLIC_DATABASE_URL: PUBLIC_URL,
@@ -265,17 +287,16 @@ function routes(pathname: string): Response {
 
 let gatewayAdapter: DatabaseAdapter;
 try {
-  // What a crashed run left behind (orphaned list types, a published index).
+  // Orphaned list types a crashed run left behind. Its index needs nothing:
+  // the release below points both environments at a run of its own.
   await onDb(ADMIN_URL, async (tx) => {
     await tx`DELETE FROM list_types WHERE slug LIKE 'site-search-%'
              AND (plugin_id IS NULL OR plugin_id NOT IN (SELECT id FROM plugins))`;
   });
-  await onDb(PUBLIC_ADMIN_URL, async (tx) => {
-    await tx`DELETE FROM published_collections`;
-  });
   gatewayAdapter = await prepare();
 } catch (e) {
   await restore();
+  await adminAdapter.close();
   rmSync(root, { recursive: true, force: true });
   throw e;
 }
@@ -297,6 +318,7 @@ async function stop(): Promise<void> {
   server.stop(true);
   await gatewayAdapter.close();
   await restore();
+  await adminAdapter.close();
   rmSync(root, { recursive: true, force: true });
   process.exit(0);
 }

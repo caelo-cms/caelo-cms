@@ -353,6 +353,66 @@ describe("the plugins section (#635 review)", () => {
       await publishProjectionOnce(adapter, staging, { declarations: new Map(), comments: false });
     }
   });
+
+  // Regression: the browser suite's search sites wrote their index straight
+  // into published_collections, and the suite's admin, publishing beside them
+  // (its scheduler tick, a plugin-host reconcile), took it away mid-test
+  // (CI runs 45574389977, 45600211119: 503 IndexNotReady).
+  it("a test release's collection index is what every later publish derives, until its run goes", async () => {
+    const slug = `${P}-index`;
+    const pluginId = await admin(async (tx) => {
+      await tx`SELECT set_config('caelo.actor_id', ${SYSTEM_ID}, true)`;
+      const [plugin] = (await tx`
+        INSERT INTO plugins (slug, version, tier, status, manifest_json, source_code, submitted_by)
+        VALUES (${slug}, '1.0.0', 2, 'active', '{}'::jsonb, '', ${SYSTEM_ID}::uuid)
+        RETURNING id::text AS id`) as { id: string }[];
+      return plugin?.id ?? "";
+    });
+    const published = async () => {
+      const read = async (url: string) =>
+        (await onDb(
+          url,
+          async (tx) =>
+            await tx`SELECT collection, release_key FROM published_collections
+                     WHERE plugin_id = ${pluginId}::uuid`,
+        )) as { collection: string; release_key: string }[];
+      return { live: await read(PUBLIC_URL as string), staging: await read(STAGING_URL as string) };
+    };
+    const index = [{ collection: "pages", release_key: "pages/r-1.json" }];
+    let runId = "";
+    try {
+      ({ runId } = await releaseProjectionForTests(
+        adapter,
+        staging,
+        new Map([[slug, null]]),
+        "required",
+        [{ pluginId, collection: "pages", releaseKey: "pages/r-1.json" }],
+      ));
+      expect(await published()).toEqual({ live: index, staging: index });
+      // Any plugin write's drain republishes the section from the source...
+      await admin(async (tx) => {
+        await tx`UPDATE plugins SET version = version WHERE id = ${pluginId}::uuid`;
+      });
+      expect(await outboxSections()).toContain("plugins");
+      await drainProjectionOnce(adapter, staging);
+      expect(await published()).toEqual({ live: index, staging: index });
+      // ...and so does a full publish (an admin's boot, the tick's backstop).
+      await publishProjectionOnce(adapter, staging, { declarations: new Map(), comments: false });
+      expect(await published()).toEqual({ live: index, staging: index });
+      // The run is the index's source: without it the next publish has none.
+      await admin(async (tx) => {
+        await tx`DELETE FROM deploy_runs WHERE id = ${runId}::uuid`;
+      });
+      await drainProjectionOnce(adapter, staging);
+      expect(await published()).toEqual({ live: [], staging: [] });
+    } finally {
+      await admin(async (tx) => {
+        if (runId) await tx`DELETE FROM deploy_runs WHERE id = ${runId}::uuid`;
+        await tx`DELETE FROM plugins WHERE id = ${pluginId}::uuid`;
+      });
+      await publishProjectionOnce(adapter, staging, { declarations: new Map(), comments: false });
+    }
+  });
 });
 
 describe("the projection lock never holds a waiting connection (2026-11-02 incident)", () => {

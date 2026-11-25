@@ -1902,15 +1902,23 @@ async function consumeOutbox(tx: ProjectionTx, ids: readonly string[]): Promise<
  * in the transaction of whoever asked for it), so it sees only what row
  * security shows them. Frozen as `system`, every suite missed that a Stage
  * froze each plugin without its actor (#1587).
+ *
+ * `collections` are the collection releases the test site serves, recorded
+ * as the ready releases of the run this call freezes
+ * ({@link recordTestCollectionReleases}).
+ *
+ * @returns the publish report and the run id the release froze, which also
+ *   names the deploy run holding `collections` (delete it to take them away).
  */
 export async function releaseMainLineForTests(
   dbs: ProjectionDatabases,
   declarations: VisitorProjectionDeclarations,
   completeness: FreezeCompleteness = "required",
-): Promise<PublishReport> {
+  collections: readonly TestCollectionRelease[] = [],
+): Promise<PublishReport & { readonly runId: string }> {
+  const runId = crypto.randomUUID();
   const read = await withProjectionLock(dbs, {}, async (tx) => {
     const gen = await readGeneration(tx);
-    const runId = crypto.randomUUID();
     const [session] = await rows(
       tx,
       sql`SELECT current_setting('caelo.actor_kind', true) AS kind,
@@ -1923,12 +1931,64 @@ export async function releaseMainLineForTests(
     await tx.execute(sql`
       SELECT set_config('caelo.actor_kind', ${String(session?.kind ?? "")}, true),
              set_config('caelo.actor_id', ${String(session?.id ?? "")}, true)`);
+    if (collections.length > 0)
+      await recordTestCollectionReleases(tx, runId, String(session?.id ?? ""), collections);
     for (const env of PUBLIC_TARGETS) await pointRelease(tx, env, runId);
     const outbox = await readOutbox(tx);
     const snap = await readSnapshot(tx, new Set(ALL_SECTIONS), true, new Set());
     return { gen, outbox, snap };
   });
-  return writeAndConsume(dbs, read);
+  return { ...(await writeAndConsume(dbs, read)), runId };
+}
+
+/**
+ * A collection release a test site serves: the release file a Stage's index
+ * job would have written, already in the collection store the site's
+ * gateway reads ({@link releaseMainLineForTests}).
+ */
+export interface TestCollectionRelease {
+  readonly pluginId: string;
+  readonly collection: string;
+  readonly releaseKey: string;
+}
+
+/**
+ * Record `releases` as the ready collection releases of `runId`, as a
+ * Stage's index job reports them on the Stage's own run: a succeeded
+ * staging deploy run of that id holds them.
+ *
+ * Why not a row in published_collections: that table is derived. Every
+ * publish of the `plugins` section rebuilds it from the ready releases of
+ * the pointed runs ({@link readSnapshot}) and never reads it back, so a row
+ * written there directly lasts until the next publish. An admin running
+ * beside the test publishes on its own schedule (its scheduler tick, the
+ * plugin-host reconcile after a plugin row changed, the drain after any
+ * plugin write), which took the browser suite's search index away mid-test.
+ * Recorded here, every later publish derives the same row.
+ */
+async function recordTestCollectionReleases(
+  tx: ProjectionTx,
+  runId: string,
+  actorId: string,
+  releases: readonly TestCollectionRelease[],
+): Promise<void> {
+  const [run] = await rows(
+    tx,
+    sql`INSERT INTO deploy_runs (id, target_id, actor_id, status, finished_at)
+        SELECT ${runId}::uuid, id, ${actorId}::uuid, 'succeeded', now()
+          FROM deploy_targets WHERE name = 'staging'
+        RETURNING id`,
+  );
+  if (!run) {
+    throw new Error(
+      "releaseMainLineForTests: no deploy target named 'staging' to hold the collection releases' run (cms_admin migration 0013 seeds it)",
+    );
+  }
+  for (const r of releases) {
+    await tx.execute(sql`
+      INSERT INTO collection_releases (run_id, plugin_id, collection, state, release_key, finished_at)
+      VALUES (${runId}::uuid, ${r.pluginId}::uuid, ${r.collection}, 'ready', ${r.releaseKey}, now())`);
+  }
 }
 
 /**

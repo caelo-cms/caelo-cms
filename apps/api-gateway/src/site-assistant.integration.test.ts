@@ -15,12 +15,15 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { publishProjectionOnce, stagingPublicAdapter } from "@caelo-cms/admin-core";
 import siteAssistant from "@caelo-cms/plugin-site-assistant";
+import { DatabaseAdapter } from "@caelo-cms/query-api";
 import {
   ASSISTANT_SITE_PAGES,
   type AssistantSite,
   prepareAssistantSite,
 } from "../e2e/assistant-test-site.js";
+import { dropPublishedState } from "./published-changes.js";
 import { handleRequest } from "./server.js";
 import { TEST_LIVE_ORIGIN } from "./test-support.js";
 import { setVisitorAiModelFactoryForTests } from "./visitor-ai/provider.js";
@@ -191,5 +194,40 @@ describe("the site assistant's feedback (#1655)", () => {
     expect((await feedback(rating, false)).status).toBe(403);
     expect((await feedback({ ...rating, answer: "the whole answer" })).status).toBe(400);
     expect((await site.feedback()).length).toBe(before);
+  });
+});
+
+// Regression: the browser fixture of this site ran beside the suite's admin,
+// whose publish of the plugins section (its scheduler tick, a plugin-host
+// reconcile) rebuilt published_collections without the index the fixture had
+// written there itself: every search answered 503 IndexNotReady from then on
+// (CI runs 45574389977, 45600211119).
+describe("site-search's index on this site", () => {
+  it("is still served after the admin publishes the projection again", async () => {
+    const search = async () =>
+      handleRequest(
+        new Request("http://localhost/api/plugin/site-search/search?q=Starter&lang=de", {
+          headers: headers(),
+        }),
+      );
+    expect((await search()).status).toBe(200);
+    const adapter = new DatabaseAdapter({
+      adminDatabaseUrl: ADMIN_URL,
+      publicDatabaseUrl: PUBLIC_ADMIN_URL,
+    });
+    const staging = stagingPublicAdapter(STAGING_URL);
+    try {
+      // The admin's full publish (its boot, the tick's backstop), then what
+      // its notification does to this gateway's caches.
+      await publishProjectionOnce(adapter, staging, { declarations: new Map(), comments: false });
+    } finally {
+      await adapter.close();
+      await staging.close();
+    }
+    dropPublishedState();
+    const r = await search();
+    expect(r.status).toBe(200);
+    const hits = ((await r.json()) as { hits: { url: string }[] }).hits;
+    expect(hits[0]?.url).toBe(ASSISTANT_SITE_PAGES[0].path);
   });
 });
