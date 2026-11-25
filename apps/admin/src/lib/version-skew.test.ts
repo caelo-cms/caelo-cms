@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-  fullLoadTarget,
+  fullLoad,
   RELOAD_GUARD_MS,
   type ReloadMemory,
   reloadIfNewerRelease,
@@ -11,28 +11,42 @@ import {
 const ORIGIN = "https://admin.example.test";
 const to = (href: string) => ({ url: new URL(href) });
 
-describe("fullLoadTarget (#1656)", () => {
-  it("loads the target fully once a newer release is deployed", () => {
-    expect(fullLoadTarget(true, { willUnload: false, to: to(`${ORIGIN}/edit?x=1`) }, ORIGIN)).toBe(
-      `${ORIGIN}/edit?x=1`,
-    );
+describe("fullLoad (#1656)", () => {
+  const link = (href: string | null, willUnload = false) => ({
+    type: "link",
+    willUnload,
+    to: href === null ? null : to(href),
+  });
+
+  it("cancels the client-side navigation and loads the target once a newer release is deployed", () => {
+    expect(fullLoad(true, link(`${ORIGIN}/edit?x=1`), ORIGIN)).toEqual({
+      kind: "load",
+      href: `${ORIGIN}/edit?x=1`,
+    });
+    expect(fullLoad(true, { ...link(`${ORIGIN}/`), type: "goto" }, ORIGIN)).toEqual({
+      kind: "load",
+      href: `${ORIGIN}/`,
+    });
+  });
+
+  it("reloads a back/forward step at the address the browser already shows", () => {
+    expect(fullLoad(true, { ...link(`${ORIGIN}/edit#chat`), type: "popstate" }, ORIGIN)).toEqual({
+      kind: "reload",
+    });
   });
 
   it("lets the navigation run while the tab runs the deployed release", () => {
-    expect(
-      fullLoadTarget(false, { willUnload: false, to: to(`${ORIGIN}/edit`) }, ORIGIN),
-    ).toBeNull();
+    expect(fullLoad(false, link(`${ORIGIN}/edit`), ORIGIN)).toBeNull();
+    expect(fullLoad(false, { ...link(`${ORIGIN}/edit`), type: "popstate" }, ORIGIN)).toBeNull();
   });
 
   it("leaves a navigation that unloads the page, or has no target, to the browser", () => {
-    expect(fullLoadTarget(true, { willUnload: true, to: to(`${ORIGIN}/edit`) }, ORIGIN)).toBeNull();
-    expect(fullLoadTarget(true, { willUnload: false, to: null }, ORIGIN)).toBeNull();
+    expect(fullLoad(true, link(`${ORIGIN}/edit`, true), ORIGIN)).toBeNull();
+    expect(fullLoad(true, link(null), ORIGIN)).toBeNull();
   });
 
   it("never sends the tab to another origin", () => {
-    expect(
-      fullLoadTarget(true, { willUnload: false, to: to("https://elsewhere.test/edit") }, ORIGIN),
-    ).toBeNull();
+    expect(fullLoad(true, link("https://elsewhere.test/edit"), ORIGIN)).toBeNull();
   });
 });
 

@@ -10,35 +10,54 @@
  * itself only when a navigation's load fails, never when rendering does.
  *
  * So the root layout turns every navigation into a full page load once a
- * newer release is known ({@link fullLoadTarget}), and the error page
+ * newer release is known ({@link fullLoad}), and the error page
  * reloads once when it shows up in a tab older than the release
  * ({@link reloadIfNewerRelease}). Neither polls: the checks ride on what
  * the tab does anyway (CLAUDE.md §11.B).
  */
 
-/** The parts of SvelteKit's `beforeNavigate` argument {@link fullLoadTarget} reads. */
+/** The parts of SvelteKit's `beforeNavigate` argument {@link fullLoad} reads. */
 export interface PendingNavigation {
+  readonly type: string;
   readonly willUnload: boolean;
   readonly to: { readonly url: URL } | null;
 }
 
 /**
- * The address to load fully instead of navigating client-side, or `null`
- * to let the navigation run: a newer release is deployed, the target is in
- * this app, and the browser does not leave the page anyway.
+ * How {@link fullLoad} replaces a client-side navigation:
+ * - `load`: cancel the client-side navigation, then load `href`. Without
+ *   the cancel the old client would go on fetching the target's data and
+ *   render it with its old components until the browser swaps the
+ *   document — the crash this avoids, and whatever those components send
+ *   on mount.
+ * - `reload`: a back/forward step. The browser already shows the entry's
+ *   address, and cancelling would step the history back, so the page is
+ *   reloaded at that address; the client-side navigation runs on until the
+ *   reload replaces the document. (Assigning `location.href` there would
+ *   only scroll when the address has a `#fragment`.)
+ */
+export type FullLoad =
+  | { readonly kind: "load"; readonly href: string }
+  | { readonly kind: "reload" };
+
+/**
+ * How to load the navigation's target fully instead of client-side, or
+ * `null` to let the navigation run: a newer release is deployed, the target
+ * is in this app, and the browser does not leave the page anyway.
  *
  * @example
- *   fullLoadTarget(true, { willUnload: false, to: { url: new URL("https://a.test/edit") } }, "https://a.test")
- *   // → "https://a.test/edit"
+ *   fullLoad(true, { type: "link", willUnload: false, to: { url: new URL("https://a.test/edit") } }, "https://a.test")
+ *   // → { kind: "load", href: "https://a.test/edit" }
  */
-export function fullLoadTarget(
+export function fullLoad(
   newerReleaseDeployed: boolean,
   navigation: PendingNavigation,
   origin: string,
-): string | null {
+): FullLoad | null {
   if (!newerReleaseDeployed || navigation.willUnload || navigation.to === null) return null;
   const { url } = navigation.to;
-  return url.origin === origin ? url.href : null;
+  if (url.origin !== origin) return null;
+  return navigation.type === "popstate" ? { kind: "reload" } : { kind: "load", href: url.href };
 }
 
 /** How long one address is not reloaded again after {@link reloadIfNewerRelease} reloaded it. */
