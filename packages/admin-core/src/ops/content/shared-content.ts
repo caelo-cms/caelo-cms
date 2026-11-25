@@ -134,10 +134,19 @@ export const listSharedContentOp = defineOperation({
        * instance of the site. Not with `listInstanceIds`.
        */
       listPageIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
+      /**
+       * #1632 — only the shared content these pages show: every layout
+       * placement (layouts are site-wide), and the shared instances placed
+       * on these pages, each with the pages OF THESE it is placed on. A
+       * Stage-audit batch asking what of its pages is shared content
+       * instead of reading every placement of the site once per batch.
+       * `listInstances` then comes back empty.
+       */
+      onPageIds: z.array(z.string().uuid()).min(1).max(1000).optional(),
     })
     .strict()
-    .refine((i) => !(i.listInstanceIds && i.listPageIds), {
-      message: "pass listInstanceIds or listPageIds, not both",
+    .refine((i) => [i.listInstanceIds, i.listPageIds, i.onPageIds].filter(Boolean).length <= 1, {
+      message: "pass at most one of listInstanceIds, listPageIds and onPageIds",
     }),
   output: z.object({
     layoutPlacements: z.array(
@@ -196,6 +205,12 @@ export const listSharedContentOp = defineOperation({
         ),
       });
     }
+    // #1632 — scoped to pages, the instance query starts from their
+    // placements (page_modules_pkey leads with page_id) instead of every
+    // synced placement of the site, and aggregates only theirs.
+    const onPages = input.onPageIds
+      ? sql`AND pm.page_id = ANY(${uuidArray(input.onPageIds)})`
+      : sql``;
     const layoutRows = await withBranchedModules(
       tx,
       branchId,
@@ -246,7 +261,7 @@ export const listSharedContentOp = defineOperation({
       JOIN content_instances ci ON ci.id = pm.content_instance_id
       JOIN modules m ON m.id = ci.module_id
       JOIN pages p ON p.id = pm.page_id
-      WHERE pm.sync_mode = 'synced'
+      WHERE pm.sync_mode = 'synced' ${onPages}
         AND ci.deleted_at IS NULL AND ${visible("ci")}
         AND p.deleted_at IS NULL AND ${visible("p")}
       GROUP BY ci.id, ci.slug, ci."values", m.id, m.slug, m.display_name, m.fields
@@ -291,7 +306,7 @@ export const listSharedContentOp = defineOperation({
         pageIds,
       };
     });
-    const listInstances = await listInstancePages(tx, visible, null);
+    const listInstances = input.onPageIds ? [] : await listInstancePages(tx, visible, null);
     return ok({ layoutPlacements, sharedInstances, listInstances });
   },
 });

@@ -56,10 +56,23 @@ export interface StaleChrome {
   readonly localeCode: string;
 }
 
-/** Everything the rules read besides the page facts. */
-export interface AuditState {
+/** What every rule reads: the language model of the staged build. */
+export interface BuildState {
   readonly locales: ReadonlyMap<string, LocaleRow>;
+  /**
+   * The variant rows the model knows. The first call loads every row; a
+   * fact batch only those of its pages, of the pages their links, hreflang
+   * and canonical name, of the site home, and the rest of those pages'
+   * groups (#1632) — with `knownPages` naming the pages that covers.
+   */
   readonly variants: readonly PageVariantRow[];
+  /**
+   * #1632 — the pages whose language the model can answer for, when it
+   * loaded only some variant rows (a fact batch). Absent: every page (the
+   * first call read the whole table). A rule asking about any other page
+   * fails the check: a variant row that was not read is not "no group".
+   */
+  readonly knownPages?: ReadonlySet<string>;
   readonly stagedPages: readonly StagedPageRef[];
   /** The page core serves at `/` (its group holds every language's home). */
   readonly siteHomePageId: string | null;
@@ -69,15 +82,42 @@ export interface AuditState {
    * is no language version: no hreflang is expected on it or towards it.
    */
   readonly notFoundPageId: string | null;
+}
+
+/** What the site rules read besides the model (the first call). */
+export interface SiteRuleState extends BuildState {
+  readonly staleChrome: readonly StaleChrome[];
+}
+
+/** What the page rules read besides the model and the facts (a fact batch). */
+export interface PageRuleState extends BuildState {
   readonly glossary: readonly GlossaryRow[];
   /** #1449 — terms that read the same in a language, or in every language. */
   readonly neutralTerms: readonly NeutralTermRow[];
   /** Per language, plugin texts a translation deliberately keeps as they are (lower case). */
   readonly sameOnPurpose: ReadonlyMap<string, ReadonlySet<string>>;
-  /** Modules placed in a layout: their text is the site's chrome. */
+  /** Modules placed in a layout: their text is the site's chrome on every page. */
   readonly chromeModuleIds: ReadonlySet<string>;
-  readonly staleChrome: readonly StaleChrome[];
+  /**
+   * #1632 — per page of the batch, the modules of the shared (synced)
+   * instances placed on it: chrome there, the page's own content where
+   * the module is placed unsynced. Before, one synced placement anywhere
+   * made a module chrome on every page.
+   */
+  readonly sharedModulesOn: ReadonlyMap<string, ReadonlySet<string>>;
 }
+
+/** Is `moduleId`'s text on page `pageId` shared content (layout or a synced instance)? */
+function isChrome(state: PageRuleState, pageId: string, moduleId: string | null): boolean {
+  if (moduleId === null) return false;
+  return (
+    state.chromeModuleIds.has(moduleId) ||
+    (state.sharedModulesOn.get(pageId)?.has(moduleId) ?? false)
+  );
+}
+
+/** Everything any rule reads besides the page facts. */
+export type AuditState = SiteRuleState & PageRuleState;
 
 /** Pages per fact batch (whole groups are never split). */
 export const FACT_BATCH_PAGES = 100;
@@ -99,7 +139,7 @@ const WRONG_REGIONS: Readonly<Record<string, string>> = { UK: "GB" };
 // ---------------------------------------------------------------------------
 
 /** The plugin's model of the staged build. */
-export class BuildModel {
+export class BuildModel<S extends BuildState = AuditState> {
   readonly defaultLocale: LocaleRow;
   readonly pathOf = new Map<string, string>();
   readonly pageAt = new Map<string, string>();
@@ -110,7 +150,7 @@ export class BuildModel {
   /** {@link neutralIn} per locale code, computed once per model. */
   readonly neutralCache = new Map<string, RegExp | null>();
 
-  constructor(readonly state: AuditState) {
+  constructor(readonly state: S) {
     const def = [...state.locales.values()].find((l) => l.is_default);
     if (!def) {
       throw new Error(
@@ -133,7 +173,22 @@ export class BuildModel {
 
   /** The language of a page: its variant row's, else the default (ungrouped pages). */
   localeOf(pageId: string): string {
-    return this.variantOf.get(pageId)?.locale_code ?? this.defaultLocale.code;
+    return this.variantRow(pageId)?.locale_code ?? this.defaultLocale.code;
+  }
+
+  /**
+   * The page's variant row (undefined: the page is in no group). Throws
+   * for a page outside {@link BuildState.knownPages}: its row was not
+   * read, so "no row" would silently put it in the default language.
+   */
+  private variantRow(pageId: string): PageVariantRow | undefined {
+    const known = this.state.knownPages;
+    if (known && !known.has(pageId)) {
+      throw new Error(
+        `international-site audit: a rule asked about page ${pageId}, which this fact batch did not load (it reads the variants of its pages and of the pages they name). Report it with bug_report.`,
+      );
+    }
+    return this.variantOf.get(pageId);
   }
 
   /** Is the page published at its own path (the 404 page is not, #1305)? */
@@ -147,7 +202,7 @@ export class BuildModel {
    * language switch entries (#1305).
    */
   versionsOf(pageId: string): Map<string, string> {
-    const v = this.variantOf.get(pageId);
+    const v = this.variantRow(pageId);
     const out = new Map<string, string>();
     if (pageId === this.state.notFoundPageId) return out;
     if (!v) {
@@ -162,7 +217,7 @@ export class BuildModel {
 
   /** The group's source page, when it is published. */
   sourceOf(pageId: string): string | null {
-    const v = this.variantOf.get(pageId);
+    const v = this.variantRow(pageId);
     if (!v) return null;
     const src = (this.membersOf.get(v.group_id) ?? []).find(
       (m) => m.translation_status === "source",
@@ -213,7 +268,7 @@ function sameLanguage(tag: string, locale: string): boolean {
  * registered display name, and the language's name in each registered
  * language (`English`, `Englisch`, `anglais`).
  */
-export function languageNames(code: string, model: BuildModel): ReadonlySet<string> {
+export function languageNames(code: string, model: BuildModel<BuildState>): ReadonlySet<string> {
   const cached = model.languageNameCache.get(code);
   if (cached) return cached;
   const names = new Set<string>([code.toLowerCase(), model.displayName(code).toLowerCase()]);
@@ -244,7 +299,7 @@ function whereOf(moduleId: string | null, pluginSlug: string | null): string {
 // ---------------------------------------------------------------------------
 
 /** Findings from the plugin's data alone. */
-export function siteFindings(model: BuildModel): PluginAuditFinding[] {
+export function siteFindings(model: BuildModel<SiteRuleState>): PluginAuditFinding[] {
   const out: PluginAuditFinding[] = [];
   const { state } = model;
   const nonDefault = [...state.locales.values()].filter((l) => !l.is_default);
@@ -367,7 +422,7 @@ export function siteFindings(model: BuildModel): PluginAuditFinding[] {
  * Fact batches for the page rules: whole variant groups first (a page is
  * checked next to its versions), then every other page.
  */
-export function factBatchesOf(model: BuildModel): string[][] {
+export function factBatchesOf(model: BuildModel<BuildState>): string[][] {
   const batches: string[][] = [];
   let current: string[] = [];
   const flush = () => {
@@ -391,13 +446,40 @@ export function factBatchesOf(model: BuildModel): string[][] {
   return batches;
 }
 
+/**
+ * #1632 — the pages a fact batch's rules ask the model about: the
+ * batch's own, the staged pages their links, hreflang alternates and
+ * canonical name, and the site home (every language's home is in its
+ * group). A batch reads the variant rows of these pages and of the rest
+ * of their groups, nothing of the site beyond.
+ */
+export function pagesNamedBy(
+  facts: readonly PluginAuditPageFacts[],
+  stagedPages: readonly StagedPageRef[],
+  siteHomePageId: string | null,
+): string[] {
+  const pageAt = new Map(stagedPages.map((p) => [p.path, p.pageId]));
+  const out = new Set<string>(siteHomePageId ? [siteHomePageId] : []);
+  const add = (path: string | null | undefined) => {
+    const id = path ? pageAt.get(path) : undefined;
+    if (id) out.add(id);
+  };
+  for (const f of facts) {
+    out.add(f.pageId);
+    add(f.canonical?.path);
+    for (const a of f.alternates) add(a.path);
+    for (const l of f.links) add(l.path);
+  }
+  return [...out];
+}
+
 // ---------------------------------------------------------------------------
 // Page rules (fact batches).
 // ---------------------------------------------------------------------------
 
 /** Findings about the pages of one fact batch. */
 export function pageFindings(
-  model: BuildModel,
+  model: BuildModel<PageRuleState>,
   facts: readonly PluginAuditPageFacts[],
 ): PluginAuditFinding[] {
   const byId = new Map(facts.map((f) => [f.pageId, f]));
@@ -415,7 +497,10 @@ export function pageFindings(
   return out;
 }
 
-function documentLanguage(model: BuildModel, f: PluginAuditPageFacts): PluginAuditFinding[] {
+function documentLanguage(
+  model: BuildModel<BuildState>,
+  f: PluginAuditPageFacts,
+): PluginAuditFinding[] {
   const locale = model.localeOf(f.pageId);
   const out: PluginAuditFinding[] = [];
   if (f.lang === null || !sameLanguage(f.lang, locale)) {
@@ -486,7 +571,7 @@ export function hreflangProblem(tag: string): string | null {
 }
 
 function hreflang(
-  model: BuildModel,
+  model: BuildModel<BuildState>,
   f: PluginAuditPageFacts,
   byId: ReadonlyMap<string, PluginAuditPageFacts>,
 ): PluginAuditFinding[] {
@@ -662,7 +747,10 @@ function hreflang(
   return out;
 }
 
-function languageLinks(model: BuildModel, f: PluginAuditPageFacts): PluginAuditFinding[] {
+function languageLinks(
+  model: BuildModel<BuildState>,
+  f: PluginAuditPageFacts,
+): PluginAuditFinding[] {
   const out: PluginAuditFinding[] = [];
   const locale = model.localeOf(f.pageId);
   const versions = model.versionsOf(f.pageId);
@@ -744,7 +832,7 @@ function languageLinks(model: BuildModel, f: PluginAuditPageFacts): PluginAuditF
  * The matcher of what reads the same in `locale`: its neutral terms, and
  * its glossary entries that translate a term as itself.
  */
-function neutralIn(model: BuildModel, locale: string): RegExp | null {
+function neutralIn(model: BuildModel<PageRuleState>, locale: string): RegExp | null {
   const cached = model.neutralCache.get(locale);
   if (cached !== undefined) return cached;
   const matcher = neutralMatcher([
@@ -765,7 +853,7 @@ function languageTexts(f: PluginAuditPageFacts): PluginAuditPageFacts["texts"] {
 }
 
 function contentLanguage(
-  model: BuildModel,
+  model: BuildModel<PageRuleState>,
   f: PluginAuditPageFacts,
   source: PluginAuditPageFacts,
 ): PluginAuditFinding[] {
@@ -783,7 +871,7 @@ function contentLanguage(
     hasLanguageText(t.text, neutral) && !keptAsIs?.has(t.text.toLowerCase());
 
   const body = texts.filter(
-    (t) => t.source !== "alt" && !(t.moduleId && model.state.chromeModuleIds.has(t.moduleId)),
+    (t) => t.source !== "alt" && !isChrome(model.state, f.pageId, t.moduleId),
   );
   const identical = body.filter((t) => same(t) && sourceTexts.has(t.text));
   const total = body.reduce((n, t) => n + t.text.length, 0);
@@ -825,8 +913,7 @@ function contentLanguage(
   const chrome = texts.filter(
     (t) =>
       t.source !== "alt" &&
-      t.moduleId !== null &&
-      model.state.chromeModuleIds.has(t.moduleId) &&
+      isChrome(model.state, f.pageId, t.moduleId) &&
       same(t) &&
       sourceTexts.has(t.text),
   );
@@ -888,7 +975,7 @@ function contentLanguage(
   return out;
 }
 
-function glossary(model: BuildModel, f: PluginAuditPageFacts): PluginAuditFinding[] {
+function glossary(model: BuildModel<PageRuleState>, f: PluginAuditPageFacts): PluginAuditFinding[] {
   const locale = model.localeOf(f.pageId);
   if (locale === model.defaultLocale.code) return [];
   const text = languageTexts(f)
@@ -941,7 +1028,10 @@ const COMMA_DECIMAL = /(^|[^\d.,])\d{1,3}(?:\.\d{3})+,\d{1,2}(?![\d.,])/;
 /** `1,234.56` (point decimals). */
 const POINT_DECIMAL = /(^|[^\d.,])\d{1,3}(?:,\d{3})+\.\d{1,2}(?![\d.,])/;
 
-function numberFormat(model: BuildModel, f: PluginAuditPageFacts): PluginAuditFinding[] {
+function numberFormat(
+  model: BuildModel<PageRuleState>,
+  f: PluginAuditPageFacts,
+): PluginAuditFinding[] {
   const locale = model.localeOf(f.pageId);
   const sep = decimalSeparator(locale);
   if (sep === null) return [];

@@ -11,13 +11,15 @@ import { describe, expect, it } from "bun:test";
 import type { PluginAuditFinding } from "@caelo-cms/plugin-sdk";
 import type { StagedPage } from "../check.js";
 import {
+  collectPluginFindings,
   createPluginAuditCheck,
   fileOnce,
+  type PluginAuditAnswer,
   type PluginAuditSource,
   withPluginAuditChecks,
 } from "../plugin-findings.js";
 import { CheckRegistry } from "../registry.js";
-import { MAX_FINDINGS_PER_CALL, runFindingChecks } from "../runner.js";
+import { MAX_CHECK_CALL_TIMEOUT_MS, MAX_FINDINGS_PER_CALL, runFindingChecks } from "../runner.js";
 import { NO_PROBE_BUILD } from "./fixtures/test-checks.js";
 
 const PAGE = "00000000-0000-4000-8000-000000000001";
@@ -150,6 +152,51 @@ describe("plugin audit contributions (epic #1107)", () => {
     expect(out.errors).toEqual([]);
     expect(out.findings.map((f) => f.message)).toEqual(["Seen: de /en no-sitemap"]);
     expect(read).toEqual(["/sitemap.xml"]);
+  });
+
+  it("#1632 — each call has its own budget: more batches never time a working check out", async () => {
+    // Four calls of 40 ms each: 160 ms in all, past one 100 ms budget for
+    // the lot, which is how a 299-page site failed every Stage.
+    const slow = (answer: PluginAuditAnswer, ms: number) =>
+      new Promise<PluginAuditAnswer>((resolve) => setTimeout(() => resolve(answer), ms));
+    const labels: string[] = [];
+    const found = await collectPluginFindings(
+      (args, label) => {
+        labels.push(label);
+        return slow(
+          args.facts
+            ? { findings: [{ ...MISSING, message: `${MISSING.message} (${label})` }] }
+            : { findings: [], factBatches: [[PAGE], [PAGE], [PAGE]] },
+          40,
+        );
+      },
+      "international-site",
+      pages,
+      async () => [],
+      100,
+    );
+    expect(labels).toEqual(["pages", "facts batch 1", "facts batch 2", "facts batch 3"]);
+    expect(found).toHaveLength(3);
+
+    // One call past its budget is hung, and the failure names it.
+    const hung = collectPluginFindings(
+      (args, label) =>
+        slow(
+          args.facts ? { findings: [] } : { findings: [], factBatches: [[PAGE], [PAGE]] },
+          label === "facts batch 2" ? 300 : 10,
+        ),
+      "international-site",
+      pages,
+      async () => [],
+      100,
+    );
+    await expect(hung).rejects.toThrow(
+      'plugin "international-site" (facts batch 2) did not finish within 100 ms',
+    );
+    // The check as a whole runs under the runner's ceiling, not one call's budget.
+    expect(createPluginAuditCheck("international-site", source({})).timeoutMs).toBe(
+      MAX_CHECK_CALL_TIMEOUT_MS,
+    );
   });
 
   it("files a finding two fact batches report once, and caps a flood with a note", () => {

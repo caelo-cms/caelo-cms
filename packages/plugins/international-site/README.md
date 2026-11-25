@@ -206,7 +206,20 @@ text in its own section.
 answers the rules from the plugin's data and asks for the page facts in
 batches that keep each language group together; each batch is checked
 against the facts core extracted from the rendered pages
-(`docs/quality-checks.md`, "Page facts"). What core's `links` and
+(`docs/quality-checks.md`, "Page facts").
+
+Each call reads what its own rules need (#1632). The first call is
+site-wide by nature and reads each site-wide source once: every variant
+row, the site's shared content (`pages.list_shared_content`) and, for the
+list findings, only the instances of modules that hold a local list. A
+batch call costs what its pages name: the shared content placed on its
+pages (`onPageIds`), the variant rows of its pages and of the pages their
+links, hreflang and canonical name (the whole table once that is more
+than one read of ids), and the site's term lists. A batch model that read
+only some variant rows refuses to answer for any other page instead of
+calling it "no group". A module is shared content on a page when it sits
+in a layout, or when the page places it synced; placed unsynced, its text
+is the page's own and is judged with the page. What core's `links` and
 `references` checks report is not repeated; these rules name the
 language cause. A finding about shared markup (a module, the page
 template) names no page and is filed once.
@@ -240,7 +253,7 @@ rules expect nothing of it.
 | `og-locale-mismatch` | info | `og:locale` names another language |
 | `content-wrong-language` | error | at least half of a version's text (200+ characters) is identical to its source |
 | `content-mixed-language` | warning | some text of a version is still the source's |
-| `chrome-untranslated` | warning | header, footer or menu show the source language's text |
+| `chrome-untranslated` | warning | shared content shows the source language's text: a layout module (header, footer, menu), or a shared instance where the page places it synced |
 | `alt-untranslated` | warning | image alt texts are the source's |
 | `seo-untranslated` | error | title or meta description identical to the source's |
 | `glossary-violation` | warning | a glossary term used where the glossary says otherwise |

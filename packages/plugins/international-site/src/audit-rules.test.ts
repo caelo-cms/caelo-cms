@@ -82,6 +82,7 @@ function state(overrides: Partial<AuditState> = {}): AuditState {
     sameOnPurpose: new Map(),
     neutralTerms: [],
     chromeModuleIds: new Set([FOOTER]),
+    sharedModulesOn: new Map(),
     staleChrome: [],
     ...overrides,
   };
