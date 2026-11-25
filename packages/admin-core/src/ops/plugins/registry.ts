@@ -34,13 +34,14 @@ import {
 import {
   type EmittedSchema,
   externalArtifactDigest,
+  publicGrantTargets,
   releaseManifestDigest,
   schemaFromSpec,
   validatePlugin,
 } from "@caelo-cms/plugin-sandbox";
 import type { PluginIndexes, PluginTableKinds } from "@caelo-cms/plugin-sdk";
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import { err, installNamesFromEnv, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
@@ -678,6 +679,9 @@ export const preparePluginActivationOp = defineOperation({
         schema: manifest.schema,
         indexes: manifest.indexes?.schema,
         tableKinds: manifest.tableKinds,
+        // #1689 — the install's own live roles: the caller provisions this
+        // DDL through the same process's adapter, which reads the same map.
+        target: publicGrantTargets(installNamesFromEnv().roles).live,
       });
     } catch (e) {
       return err({

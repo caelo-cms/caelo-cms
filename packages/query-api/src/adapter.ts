@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { ExecutionContext, Result } from "@caelo-cms/shared";
-import { DB_POOL_MAX_ENV, DB_PUBLIC_POOL_MAX_ENV, err, MIN_POOL_MAX } from "@caelo-cms/shared";
+import type { ExecutionContext, InstallNames, Result } from "@caelo-cms/shared";
+import {
+  DB_POOL_MAX_ENV,
+  DB_PUBLIC_POOL_MAX_ENV,
+  err,
+  installNamesFromEnv,
+  MIN_POOL_MAX,
+  physicalDatabaseName,
+} from "@caelo-cms/shared";
 // `import type` is erased at compile time — never hits the bundler, so
 // no stub package needed in node_modules/bun. The runtime constructor
 // comes from globalThis.Bun (defined under Bun's runtime). SvelteKit's
@@ -81,7 +88,10 @@ import { transactionTag } from "./statement-tag.js";
  * The adapter verifies role + database identity on first use via
  * `current_user` / `current_database()` — misconfiguration (e.g. a typo that
  * swaps the two URLs) fails loudly rather than allowing the RLS model to
- * silently misbehave.
+ * silently misbehave. The names it expects are the install's (#1689,
+ * {@link AdapterConfig.names}): on a Postgres server several installs
+ * share, a URL that reaches another install's database or logs in as
+ * another install's role fails the same way.
  */
 /**
  * TLS checks a connection makes instead of the URL's `sslrootcert` and the
@@ -118,6 +128,15 @@ export interface AdapterConfig {
    * fails loudly.
    */
   readonly publicDatabase?: PublicDatabaseName;
+  /**
+   * #1689 — the install's role and database names. The pools' URLs must
+   * reach this install's physical databases ({@link publicDatabase} is the
+   * logical name) as this install's roles. Defaults to the process's map
+   * (`CAELO_INSTALL_NAMES`, today's names when unset); only a process that
+   * works on several installs at once (the template copy, the shared-server
+   * tests) passes one.
+   */
+  readonly names?: InstallNames;
   /** Disable the startup self-check. Only for tests that deliberately assert it triggers. */
   readonly skipRoleVerification?: boolean;
   /**
@@ -148,8 +167,8 @@ export interface AdapterConfig {
   readonly poolAcquireTimeoutMs?: number;
   /**
    * The identities {@link DatabaseAdapter.verifyRoles} accepts. Defaults to
-   * the authoring roles (`admin_role` on cms_admin; `admin_role` or
-   * `public_role` on cms_public). Only a process that deliberately runs with
+   * the install's authoring roles (`admin_role` on cms_admin; `admin_role` or
+   * `public_role` on cms_public, by {@link names}). Only a process that deliberately runs with
    * a narrower role sets it — the operator-access sync job, which connects
    * as its own read-only Cloud SQL IAM user — so a misrouted URL still fails
    * loudly instead of silently running as someone else.
@@ -177,9 +196,12 @@ export interface AdapterConfig {
   readonly onStatement?: (statement: string) => void;
 }
 
-const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
+/** The identities an adapter of the install `names` accepts unless told otherwise. */
+function authoringRoles(names: InstallNames) {
+  return { admin: names.roles.admin, public: [names.roles.admin, names.roles.public] } as const;
+}
 
-/** The public databases a public pool may reach (#1329). */
+/** The public databases a public pool may reach (#1329), by their logical names. */
 export type PublicDatabaseName = "cms_public" | "cms_public_staging";
 
 /** Options of {@link DatabaseAdapter.withAdminTransaction} / `withPublicTransaction`. */
@@ -399,6 +421,7 @@ export class DatabaseAdapter {
   readonly #skipVerify: boolean;
   readonly #roles: { readonly admin: string | null; readonly public: readonly string[] };
   readonly #publicDatabase: PublicDatabaseName;
+  readonly #names: InstallNames;
   readonly #acquireTimeoutMs: number;
   /** Issue #1210 — which call chains hold a transaction of which pool. */
   readonly #guard = new PoolGuard();
@@ -413,7 +436,8 @@ export class DatabaseAdapter {
   readonly #drizzleOptions: { logger?: { logQuery: (query: string) => void } };
 
   constructor(config: AdapterConfig) {
-    this.#roles = config.expectedRoles ?? DEFAULT_ROLES;
+    this.#names = config.names ?? installNamesFromEnv();
+    this.#roles = config.expectedRoles ?? authoringRoles(this.#names);
     this.#publicDatabase = config.publicDatabase ?? "cms_public";
     if ((config.adminDatabaseUrl === null) !== (this.#roles.admin === null)) {
       throw new Error(
@@ -700,7 +724,17 @@ export class DatabaseAdapter {
   }
 
   /**
-   * One-shot startup self-check. Asserts that:
+   * #1689 — the install's role and database names this adapter checks its
+   * pools against. Whatever else writes a role name for this install (the
+   * plugin schema DDL its plugins provision) takes it from here, so it can
+   * only grant to the roles of the install the adapter belongs to.
+   */
+  get installNames(): InstallNames {
+    return this.#names;
+  }
+
+  /**
+   * One-shot startup self-check. Asserts that (in the install's names, #1689):
    *   - the admin pool connects as `admin_role` to `cms_admin`
    *   - the public pool connects to `cms_public` as `admin_role` or `public_role`
    *
@@ -733,16 +767,18 @@ export class DatabaseAdapter {
 
   #assertIdentity(pool: "admin" | "public", id: ConnectionIdentity): void {
     if (pool === "admin") {
-      if (id.user !== this.#roles.admin || id.database !== "cms_admin") {
+      const database = this.#names.databases.admin;
+      if (id.user !== this.#roles.admin || id.database !== database) {
         throw new Error(
-          `DatabaseAdapter admin pool expected (${this.#roles.admin}, cms_admin) but connected as (${id.user}, ${id.database}). Check ADMIN_DATABASE_URL.`,
+          `DatabaseAdapter admin pool expected (${this.#roles.admin}, ${database}) but connected as (${id.user}, ${id.database}). Check ADMIN_DATABASE_URL${database === "cms_admin" ? "" : " and CAELO_INSTALL_NAMES"}.`,
         );
       }
       return;
     }
-    if (id.database !== this.#publicDatabase) {
+    const database = physicalDatabaseName(this.#names, this.#publicDatabase);
+    if (id.database !== database) {
       throw new Error(
-        `DatabaseAdapter public pool expected database ${this.#publicDatabase} but connected to ${id.database}. Check ${this.#publicDatabase === "cms_public" ? "PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL" : "PUBLIC_DATABASE_URL / PUBLIC_STAGING_ADMIN_DATABASE_URL"}.`,
+        `DatabaseAdapter public pool expected database ${database} but connected to ${id.database}. Check ${this.#publicDatabase === "cms_public" ? "PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL" : "PUBLIC_DATABASE_URL / PUBLIC_STAGING_ADMIN_DATABASE_URL"}${database === this.#publicDatabase ? "" : " and CAELO_INSTALL_NAMES"}.`,
       );
     }
     if (!this.#roles.public.includes(id.user)) {

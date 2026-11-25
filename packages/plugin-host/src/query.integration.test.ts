@@ -15,11 +15,14 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { publicGrantTargets, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { bootstrap, resetPluginHost, runPluginOperation } from "./index.js";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
 
 // Every plugin dispatch names who acts (#509): these calls are system
 // work on main, and the visitor call comes through the gateway.
@@ -167,6 +170,7 @@ async function provisionPluginSchema(plugin: { slug: string }): Promise<void> {
   );
   if (!r) throw new Error(`provisionPluginSchema: no plugin row for ${plugin.slug}`);
   const emitted = schemaFromSpec({
+    target: LIVE_TARGET,
     tableKinds: Object.fromEntries(
       Object.keys(greetingsSchema).map((t) => [t, "visitor-state" as const]),
     ),

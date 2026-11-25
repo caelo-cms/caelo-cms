@@ -12,10 +12,15 @@
  * their state only. Statement text is stripped of literals before it leaves
  * the op (`sanitizeStatement`), and no parameter is ever part of it: Bun
  * sends every value as a bound parameter.
+ *
+ * Only the install's own databases are listed (#1689): on a Postgres server
+ * several installs share, `pg_stat_activity` shows every install's sessions
+ * (their database, login and state), and none of that belongs in this
+ * install's bug report.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
-import { ok } from "@caelo-cms/shared";
+import { defineOperation, textArray } from "@caelo-cms/query-api";
+import { installDatabases, installNamesFromEnv, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { sanitizeStatement } from "../incident/evidence.js";
@@ -71,6 +76,7 @@ export const databaseActivityOp = defineOperation({
   handler: async (_ctx, _input, tx) => {
     // A snapshot taken during a stall must not become part of it.
     await tx.execute(sql`SELECT set_config('statement_timeout', '5s', true)`);
+    const databases = installDatabases(installNamesFromEnv());
     const rows = (await tx.execute(sql`
       SELECT pid,
              datname AS database,
@@ -85,6 +91,7 @@ export const databaseActivityOp = defineOperation({
              left(query, 2000) AS query
       FROM pg_stat_activity
       WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()
+        AND datname = ANY(${textArray(databases)})
       ORDER BY xact_start NULLS LAST, pid
       LIMIT ${MAX_SESSIONS}
     `)) as unknown as SessionRow[];

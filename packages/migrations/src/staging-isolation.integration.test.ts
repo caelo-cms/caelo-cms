@@ -15,6 +15,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { assertPublicDatabaseOwnsItsLogin, assertRoleIsolation } from "./role-audit.js";
 
@@ -108,7 +109,7 @@ describe("each gateway login reaches its own database only (#1329)", () => {
     ] as const) {
       const sql = new SQL(url, { max: 1 });
       try {
-        await assertPublicDatabaseOwnsItsLogin(sql, db);
+        await assertPublicDatabaseOwnsItsLogin(sql, db, DEFAULT_INSTALL_NAMES);
       } finally {
         await sql.end();
       }
@@ -154,7 +155,7 @@ describe("a Cloud SQL-shaped staging database (#1329)", () => {
     await su.unsafe("GRANT CONNECT ON DATABASE cms_public_staging TO public_role");
     await su.unsafe("GRANT CONNECT ON DATABASE cms_public TO public_staging_role");
     expect(await connectAs(onDatabase(LIVE_LOGIN, "cms_public_staging"))).toBe("ok");
-    const refused = assertRoleIsolation(admin);
+    const refused = assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES);
     await expect(refused).rejects.toThrow("PUBLIC may connect to cms_public_staging");
     await expect(refused).rejects.toThrow("public_role can connect to cms_public_staging");
     await expect(refused).rejects.toThrow("public_staging_role can connect to cms_public");
@@ -164,7 +165,7 @@ describe("a Cloud SQL-shaped staging database (#1329)", () => {
       await admin.begin(async (tx) => {
         await tx.unsafe(body);
       });
-      await assertRoleIsolation(admin);
+      await assertRoleIsolation(admin, DEFAULT_INSTALL_NAMES);
     }
     expect(await connectAs(onDatabase(LIVE_LOGIN, "cms_public_staging"))).toBe("denied");
     expect(await connectAs(onDatabase(STAGING_LOGIN, "cms_public"))).toBe("denied");

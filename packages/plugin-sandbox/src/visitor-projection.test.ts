@@ -8,7 +8,10 @@
 
 import { describe, expect, it } from "bun:test";
 import { manifestFromDefinition, pluginManifest } from "@caelo-cms/plugin-sdk";
-import { adminSchemaFromSpec } from "./schema.js";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
+import { adminGrantTarget, adminSchemaFromSpec } from "./schema.js";
+
+const ADMIN_TARGET = adminGrantTarget(DEFAULT_INSTALL_NAMES.roles);
 
 const PLUGIN_ID = "11111111-2222-4333-8444-555555555555";
 const base = {
@@ -58,6 +61,7 @@ describe("manifest visitorProjection (#635)", () => {
 describe("adminSchemaFromSpec projection triggers (#635)", () => {
   it("wires each projected table to the outbox and unwires the rest", () => {
     const { sql } = adminSchemaFromSpec({
+      target: ADMIN_TARGET,
       pluginId: PLUGIN_ID,
       slug: "probe",
       adminSchema: base.adminSchema,
@@ -75,6 +79,7 @@ describe("adminSchemaFromSpec projection triggers (#635)", () => {
   it("refuses a projected table that is not in the schema", () => {
     expect(() =>
       adminSchemaFromSpec({
+        target: ADMIN_TARGET,
         pluginId: PLUGIN_ID,
         slug: "probe",
         adminSchema: base.adminSchema,

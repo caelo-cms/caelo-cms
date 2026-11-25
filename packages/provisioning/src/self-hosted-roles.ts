@@ -156,8 +156,11 @@ function convergenceSql(password: PasswordSql, agent: boolean): string {
     "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN DROP OWNED BY gateway_role; END IF; END $$;",
     "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role') THEN DROP ROLE gateway_role; END IF; END $$;",
     // Migrations 0267 + 0270 (#696): the upgrader role's grants, applied
-    // now that the role exists.
-    "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'caelo_grant_platform_updater') THEN PERFORM caelo_grant_platform_updater(); END IF; END $$;",
+    // now that the role exists. Since cms_admin 0780 (#1689) the function
+    // takes the install's names; a database the migrations have not moved
+    // there yet (the convergence runs before an upgrade's migrations) still
+    // has 0270's version without arguments.
+    "DO $$ BEGIN IF to_regprocedure('caelo_grant_platform_updater(name,name,name)') IS NOT NULL THEN PERFORM caelo_grant_platform_updater('platform_updater', 'cms_admin', 'cms_public'); ELSIF to_regprocedure('caelo_grant_platform_updater()') IS NOT NULL THEN PERFORM caelo_grant_platform_updater(); END IF; END $$;",
     "",
   ].join("\n");
 }

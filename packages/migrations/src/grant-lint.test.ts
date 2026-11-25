@@ -129,7 +129,7 @@ describe("migration grant lint (#635)", () => {
 
   it("no cms_public migration names the staging login: the staging run retargets public_role (#1329)", () => {
     // One set of files for both public databases (runner.ts
-    // retargetVisitorRole). A file naming public_staging_role would grant
+    // installNameTokens). A file naming public_staging_role would grant
     // the staging gateway privileges in the LIVE database.
     const offenders = migrations("cms_public")
       .filter(({ sql }) => /\bpublic_staging_role\b/.test(sql))

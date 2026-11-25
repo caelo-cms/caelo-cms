@@ -26,6 +26,7 @@ import {
   isIpLiteral,
   verifyFullQuery,
 } from "./database-tls.js";
+import { installNamesFromEnv } from "./install-names.js";
 
 /** The `<NAME>_PASSWORD` var that pairs with a `<NAME>_URL` var. */
 export function databasePasswordVar(urlVar: string): string {
@@ -147,6 +148,10 @@ export function cloudSqlIamIpDatabaseUrls(
   return iamUrls(authority, serviceAccountEmail, accessToken, verifyFullQuery());
 }
 
+/**
+ * The URLs reach the install's own databases (#1689): the process's name
+ * map, the same the job's `DatabaseAdapter` checks them against.
+ */
 function iamUrls(
   host: string,
   serviceAccountEmail: string,
@@ -154,7 +159,8 @@ function iamUrls(
   tlsQuery: string,
 ): { admin: string; public: string; user: string } {
   const user = serviceAccountEmail.replace(/\.gserviceaccount\.com$/, "");
+  const { databases } = installNamesFromEnv();
   const url = (db: string) =>
     `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(accessToken)}@${host}:5432/${db}?${tlsQuery}`;
-  return { admin: url("cms_admin"), public: url("cms_public"), user };
+  return { admin: url(databases.admin), public: url(databases.public), user };
 }

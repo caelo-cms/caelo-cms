@@ -27,17 +27,19 @@ export {
 } from "./manifest.js";
 export {
   ADMIN_REF_ALLOWLIST,
+  type AdminGrantTarget,
+  adminGrantTarget,
   adminSchemaFromSpec,
   type EmittedSchema,
-  LIVE_PUBLIC_GRANT_TARGET,
   PLUGIN_INDEX_PREFIX,
+  type PluginSchemaRoles,
   PRIVATE_LIVE_ROW_PREDICATE,
-  PUBLIC_GRANT_TARGETS,
   type PublicGrantTarget,
   pluginIndexName,
+  pluginSchemaGrantees,
   privateReadColumns,
+  publicGrantTargets,
   publicTableGrants,
-  STAGING_PUBLIC_GRANT_TARGET,
   schemaFromSpec,
   VISITOR_TABLE_PRIVILEGES,
 } from "./schema.js";
