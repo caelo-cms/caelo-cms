@@ -103,6 +103,36 @@ describe("#1323 — plugin texts a translation keeps as they are", () => {
     expect([...(kept.get("en") ?? [])]).toEqual(["marketing"]);
   });
 
+  it("#1659: of two rows of one key, only the one every reader takes counts", async () => {
+    // What two writers left before #1659: an older copy that reads like the
+    // source and the later translation the page shows. The page does not
+    // keep "Marketing", so "Marketing" elsewhere must not pass as kept.
+    const kept = await pluginTextsKeptAsIs(
+      deps([
+        {
+          id: "b",
+          locale_code: "en",
+          address: address("marketing"),
+          value: "Marketing",
+          source_hash: textHash("Marketing"),
+          status: "translated",
+          created_at: "2026-11-01T10:00:00.000Z",
+        },
+        {
+          id: "a",
+          locale_code: "en",
+          address: address("marketing"),
+          value: "Promotion",
+          source_hash: textHash("Marketing"),
+          status: "translated",
+          created_at: "2026-11-02T10:00:00.000Z",
+        },
+      ]),
+      "page",
+    );
+    expect(kept.size).toBe(0);
+  });
+
   it("an outdated translation proves nothing", async () => {
     const kept = await pluginTextsKeptAsIs(
       deps([

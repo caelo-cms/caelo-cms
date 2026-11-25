@@ -53,6 +53,7 @@ import {
 import type { NeutralTermRow } from "./neutral-terms.js";
 import type { GlossaryRow } from "./page-translation.js";
 import { chunked, listAll, listWhereAnyOf, STORE_READ_MAX } from "./store-reads.js";
+import { onePerValueAddress } from "./translation-rows.js";
 
 /** Most findings one answer may carry (the SDK contract). */
 const MAX_FINDINGS_PER_ANSWER = 499;
@@ -133,7 +134,8 @@ export async function pluginTextsKeptAsIs(
   }
   const unitByAddress = new Map(units.map((u) => [u.address, u]));
   const out = new Map<string, Set<string>>();
-  for (const r of rows) {
+  // #1659 — rows that share a key read as the one every reader takes.
+  for (const r of onePerValueAddress(rows).rows) {
     const u = unitByAddress.get(r.address);
     if (!u || r.source_hash !== u.hash || r.value?.trim() !== u.text.trim()) continue;
     const kept = out.get(r.locale_code) ?? new Set<string>();
