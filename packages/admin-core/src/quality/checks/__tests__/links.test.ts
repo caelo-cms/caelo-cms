@@ -21,7 +21,7 @@ import {
   extractLinks,
   followRedirects,
   indexRedirects,
-  isUnpublishedMediaPath,
+  isUnpublishedMediaUrl,
   pathKey,
   type RedirectRow,
   resolveLink,
@@ -340,9 +340,9 @@ describe("what is out of scope", () => {
   it("leaves a media URL the build could not publish to the render check (#1600)", async () => {
     // The build rewrites every media URL it can publish to /_assets/…; one
     // still on the page is a recorded render failure, reported there with
-    // the URL to write instead. A path the media pass does not read, and
-    // baked plugin output (spliced in after the media pass), stay broken
-    // assets here.
+    // the URL to write instead. A path the media pass does not read, a
+    // spelling it does not match (relative, no leading slash) and baked
+    // plugin output (spliced in after the media pass) stay broken assets.
     const about = page(
       2,
       "/about",
@@ -353,22 +353,35 @@ describe("what is out of scope", () => {
           '<img srcset="/_caelo/media/url-history/webp-1200 1200w" alt="">',
           '<a href="https://example.com/_caelo/media/gone-file">x</a>',
           '<img src="/_caelo/media/Not-A-Slug.png" alt="">',
+          '<img src="_caelo/media/relative-photo/webp-800" alt="">',
           '<div data-caelo-plugin="gallery"><img src="/_caelo/media/plugin-photo" alt=""></div>',
         ].join(""),
       ),
+      { head: `<base href="${BASE}/">` },
     );
     const { findings, probed } = await findingsOf([HOME, about, TEAM]);
     const broken = findings.filter((f) => f.pageId === about.pageId);
-    expect(broken.map((f) => f.ruleId)).toEqual(["links/broken-asset", "links/broken-asset"]);
-    expect(broken.map((f) => f.message).join(" ")).toContain('"/_caelo/media/Not-A-Slug.png"');
-    expect(broken.map((f) => f.message).join(" ")).toContain('"/_caelo/media/plugin-photo"');
-    expect(probed.sort()).toEqual(["/_caelo/media/Not-A-Slug.png", "/_caelo/media/plugin-photo"]);
-    expect(isUnpublishedMediaPath("/_caelo/media/url-history/webp-800")).toBe(true);
-    expect(isUnpublishedMediaPath("/_caelo/media/url-history")).toBe(true);
-    expect(isUnpublishedMediaPath("/docs/_caelo/media/url-history")).toBe(false);
-    expect(isUnpublishedMediaPath("/_assets/url-history/webp-400.0123456789abcdef.webp")).toBe(
-      false,
-    );
+    expect(broken.map((f) => f.ruleId)).toEqual([
+      "links/broken-asset",
+      "links/broken-asset",
+      "links/broken-asset",
+    ]);
+    const messages = broken.map((f) => f.message).join(" ");
+    expect(messages).toContain('"/_caelo/media/Not-A-Slug.png"');
+    expect(messages).toContain('"_caelo/media/relative-photo/webp-800"');
+    expect(messages).toContain('"/_caelo/media/plugin-photo"');
+    expect(probed.sort()).toEqual([
+      "/_caelo/media/Not-A-Slug.png",
+      "/_caelo/media/plugin-photo",
+      "/_caelo/media/relative-photo/webp-800",
+    ]);
+    const path = "/_caelo/media/url-history/webp-800";
+    expect(isUnpublishedMediaUrl(path, path)).toBe(true);
+    expect(isUnpublishedMediaUrl(`https://example.com${path}?v=2`, path)).toBe(true);
+    expect(isUnpublishedMediaUrl("_caelo/media/url-history/webp-800", path)).toBe(false);
+    expect(isUnpublishedMediaUrl("/docs/_caelo/media/x", "/docs/_caelo/media/x")).toBe(false);
+    const asset = "/_assets/url-history/webp-400.0123456789abcdef.webp";
+    expect(isUnpublishedMediaUrl(asset, asset)).toBe(false);
   });
 
   it("resolves against <base href>", async () => {
