@@ -27,7 +27,9 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { dirname, resolve } from "node:path";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertNoForeignReferences,
@@ -69,7 +71,11 @@ const A = DEFAULT_INSTALL_NAMES;
 const B = prefixedInstallNames("ci1689b");
 const C1 = prefixedInstallNames("ci1689c1");
 const C2 = prefixedInstallNames("ci1689c2");
-const OURS = [B, C1, C2];
+/** Copied with a probe on every CREATE DATABASE (a login of A tries to get in). */
+const C3 = prefixedInstallNames("ci1689c3");
+/** Bootstrapped with a probe on every CREATE DATABASE, never migrated. */
+const D = prefixedInstallNames("ci1689d");
+const OURS = [B, C1, C2, C3, D];
 const LOGICAL: readonly LogicalDatabase[] = ["cms_admin", "cms_public", "cms_public_staging"];
 
 /** A URL on this server for `user` (password `password`, or the superuser's) on `database`. */
@@ -102,14 +108,19 @@ function loginsOf(names: InstallNames): { user: string; password: string }[] {
   ];
 }
 
-/** Whether a login may open `database` at all (Postgres' CONNECT privilege). */
+/**
+ * Whether a login may open `database` at all: Postgres' CONNECT privilege,
+ * and whether the database accepts connections (ALLOW_CONNECTIONS).
+ */
 async function canConnect(user: string, password: string, database: string): Promise<boolean> {
   const sql = new SQL(url(database, user, password), { max: 1 });
   try {
     await sql`SELECT 1`;
     return true;
   } catch (e) {
-    if (/permission denied for database/i.test(String(e))) return false;
+    if (/permission denied for database|is not currently accepting connections/i.test(String(e))) {
+      return false;
+    }
     throw e;
   } finally {
     await sql.end();
@@ -359,6 +370,46 @@ describe("a template copy (#1689)", () => {
     expect(await fingerprint(C1)).toEqual(before);
   }, 120_000);
 
+  it("a copy admits no other login before it is closed, not even for a moment", async () => {
+    // A new database lets PUBLIC connect until that is revoked, and a REVOKE
+    // ends no session already open: a login of another install that got in
+    // between would stay in this install's database. Probe right after each
+    // CREATE DATABASE, before the copy's next statement.
+    const [, publicOfA] = loginsOfA();
+    if (!publicOfA) throw new Error("PUBLIC_DATABASE_URL names no login");
+    const probes: { db: string; opened: boolean }[] = [];
+    const connect = (database: string): SQL => {
+      const sql = new SQL(url(database), { max: 2 });
+      if (database !== "postgres") return sql;
+      return new Proxy(sql, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop, target);
+          if (prop !== "unsafe") return typeof value === "function" ? value.bind(target) : value;
+          return async (query: string) => {
+            const result = await target.unsafe(query);
+            const created = /^CREATE DATABASE "([a-z0-9_]+)"/.exec(query)?.[1];
+            if (created) {
+              probes.push({
+                db: created,
+                opened: await canConnect(publicOfA.user, publicOfA.password, created),
+              });
+            }
+            return result;
+          };
+        },
+      });
+    };
+    await installFromTemplate({
+      connect,
+      maintenanceDatabase: "postgres",
+      template: B,
+      target: C3,
+      passwords: PASSWORDS,
+    });
+    expect(probes).toEqual(installDatabases(C3).map((db) => ({ db, opened: false })));
+    expect(await canConnect(C3.roles.admin, PASSWORDS.admin, C3.databases.admin)).toBe(true);
+  }, 120_000);
+
   it("the copy migrates and audits clean as its own install", async () => {
     await migrate(C1);
     expect(await canConnect(C1.roles.admin, PASSWORDS.admin, C1.databases.admin)).toBe(true);
@@ -563,6 +614,64 @@ describe("two installs on one server (#1689)", () => {
       await stagingAdapter.close();
     }
   });
+});
+
+describe("bootstrap.sh on a shared server (#1689)", () => {
+  it("admits no other login to a new database before it is closed, not even for a moment", async () => {
+    // The same gap as a template copy's: bootstrap.sh creates each database
+    // in one psql call and closes it in a later one. A psql in front of the
+    // real one tries to get in as A's live gateway login right after each
+    // CREATE DATABASE and logs what happened.
+    const [, publicOfA] = loginsOfA();
+    const realPsql = Bun.which("psql");
+    if (!publicOfA || !realPsql) throw new Error("needs PUBLIC_DATABASE_URL and psql on PATH");
+    const dir = mkdtempSync(join(tmpdir(), "ci1689-psql-"));
+    const log = join(dir, "probes.log");
+    writeFileSync(log, "");
+    writeFileSync(
+      join(dir, "psql"),
+      [
+        "#!/bin/sh",
+        '"$CI1689_REAL_PSQL" "$@"',
+        "code=$?",
+        "db=$(printf '%s\\n' \"$@\" | sed -n 's/^CREATE DATABASE \\([a-z0-9_]*\\).*/\\1/p')",
+        'if [ -n "$db" ]; then',
+        '  if out=$(PGPASSWORD="$CI1689_PROBE_PASSWORD" "$CI1689_REAL_PSQL" -U "$CI1689_PROBE_USER" -d "$db" -Atc "SELECT 1" 2>&1); then',
+        '    echo "$db opened" >> "$CI1689_PROBE_LOG"',
+        "  else",
+        '    echo "$db refused: $(printf "%s" "$out" | tr "\\n" " ")" >> "$CI1689_PROBE_LOG"',
+        "  fi",
+        "fi",
+        'exit "$code"',
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(dir, "psql"), 0o755);
+    try {
+      await run(["sh", "src/bootstrap.sh"], {
+        ...installNamesEnv(D),
+        PATH: `${dir}:${env.PATH ?? ""}`,
+        ADMIN_ROLE_PASSWORD: PASSWORDS.admin,
+        PUBLIC_ROLE_PASSWORD: PASSWORDS.public,
+        PUBLIC_STAGING_ROLE_PASSWORD: PASSWORDS.publicStaging,
+        CI1689_REAL_PSQL: realPsql,
+        CI1689_PROBE_USER: publicOfA.user,
+        CI1689_PROBE_PASSWORD: publicOfA.password,
+        CI1689_PROBE_LOG: log,
+      });
+      const probes = readFileSync(log, "utf8").trim().split("\n").filter(Boolean);
+      expect(probes.map((line) => line.split(" ")[0])).toEqual(installDatabases(D));
+      for (const line of probes) {
+        expect(line).toMatch(
+          / refused: .*(permission denied for database|is not currently accepting connections)/,
+        );
+      }
+      expect(await canConnect(D.roles.admin, PASSWORDS.admin, D.databases.admin)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      await dropInstall(su, D);
+    }
+  }, 120_000);
 });
 
 describe("names Postgres reserves (Codex review)", () => {

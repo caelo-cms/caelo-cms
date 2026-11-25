@@ -18,7 +18,8 @@
  *   2. takes a CHECKPOINT (a copy of a database with dirty buffers is up to
  *      15× slower), then copies each database with `CREATE DATABASE …
  *      TEMPLATE … OWNER <new admin role>` (the default WAL_LOG strategy;
- *      FILE_COPY measured slower) and closes it to PUBLIC at once;
+ *      FILE_COPY measured slower), closed to PUBLIC before it accepts
+ *      a single connection;
  *   3. rebinds each copy to the new roles object by object
  *      (template-rebind.ts — never REASSIGN OWNED or DROP OWNED);
  *   4. grants CONNECT and the other database privileges the template's
@@ -257,9 +258,15 @@ async function createRoles(admin: SQL, opts: InstallFromTemplateOptions): Promis
 }
 
 /**
- * Step 2 — copy one database and close it to every login at once.
- * `created` learns the database only once it exists, so a failed copy
- * never removes a database of the same name that someone else made.
+ * Step 2 — copy one database, closed to every other login before any
+ * login may open it. A new database lets PUBLIC connect until that is
+ * revoked, and a REVOKE ends no session already open, so another install's
+ * login that got in between would stay connected to this install's
+ * database. The copy is therefore created refusing every connection,
+ * closed to PUBLIC, and only then opened (to its owner, the new admin
+ * role, and to superusers). `created` learns the database only once it
+ * exists, so a failed copy never removes a database of the same name that
+ * someone else made.
  */
 async function copyDatabase(
   admin: SQL,
@@ -268,9 +275,12 @@ async function copyDatabase(
   owner: string,
   created: string[],
 ): Promise<void> {
-  await admin.unsafe(`CREATE DATABASE ${ident(to)} TEMPLATE ${ident(from)} OWNER ${ident(owner)}`);
+  await admin.unsafe(
+    `CREATE DATABASE ${ident(to)} TEMPLATE ${ident(from)} OWNER ${ident(owner)} ALLOW_CONNECTIONS false`,
+  );
   created.push(to);
   await admin.unsafe(`REVOKE ALL ON DATABASE ${ident(to)} FROM PUBLIC`);
+  await admin.unsafe(`ALTER DATABASE ${ident(to)} ALLOW_CONNECTIONS true`);
 }
 
 /** Step 3 — rebind one copy; throws listing whatever still names the template. */

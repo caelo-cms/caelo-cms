@@ -130,9 +130,14 @@ exists_role "${UPDATER_ROLE}" \
   || $PSQL -c "CREATE ROLE ${UPDATER_ROLE} NOLOGIN;"
 $PSQL -c "GRANT ${UPDATER_ROLE} TO ${ADMIN_ROLE};"
 
-exists_db "${ADMIN_DB}"  || $PSQL -c "CREATE DATABASE ${ADMIN_DB} OWNER ${ADMIN_ROLE};"
-exists_db "${PUBLIC_DB}" || $PSQL -c "CREATE DATABASE ${PUBLIC_DB} OWNER ${ADMIN_ROLE};"
-exists_db "${STAGING_DB}" || $PSQL -c "CREATE DATABASE ${STAGING_DB} OWNER ${ADMIN_ROLE};"
+# Issue #1689 — a new database lets every login connect until PUBLIC's
+# CONNECT is revoked, and a REVOKE ends no session that got in before it.
+# On a server several installs share, another install's login could slip in
+# between the two statements and stay. So each database is created refusing
+# every connection and opened only once it is closed to PUBLIC (below).
+exists_db "${ADMIN_DB}"  || $PSQL -c "CREATE DATABASE ${ADMIN_DB} OWNER ${ADMIN_ROLE} ALLOW_CONNECTIONS false;"
+exists_db "${PUBLIC_DB}" || $PSQL -c "CREATE DATABASE ${PUBLIC_DB} OWNER ${ADMIN_ROLE} ALLOW_CONNECTIONS false;"
+exists_db "${STAGING_DB}" || $PSQL -c "CREATE DATABASE ${STAGING_DB} OWNER ${ADMIN_ROLE} ALLOW_CONNECTIONS false;"
 
 $PSQL -c "REVOKE ALL ON DATABASE ${ADMIN_DB}  FROM PUBLIC;"
 $PSQL -c "REVOKE ALL ON DATABASE ${PUBLIC_DB} FROM PUBLIC;"
@@ -144,6 +149,11 @@ $PSQL -c "GRANT CONNECT ON DATABASE ${STAGING_DB} TO ${STAGING_ROLE}, ${ADMIN_RO
 # from before carries no such grant, but a hand-made one might.
 $PSQL -c "REVOKE ALL ON DATABASE ${STAGING_DB} FROM ${PUBLIC_ROLE};"
 $PSQL -c "REVOKE ALL ON DATABASE ${PUBLIC_DB} FROM ${STAGING_ROLE};"
+# Closed now: open them (a no-op on a database from before, and it opens one
+# a run that stopped after the CREATE DATABASE left closed).
+$PSQL -c "ALTER DATABASE ${ADMIN_DB} ALLOW_CONNECTIONS true;"
+$PSQL -c "ALTER DATABASE ${PUBLIC_DB} ALLOW_CONNECTIONS true;"
+$PSQL -c "ALTER DATABASE ${STAGING_DB} ALLOW_CONNECTIONS true;"
 
 # Issue #1689 — pg_trgm (cms_admin migration 0024) belongs to the
 # superuser, not to the admin role: ALTER EXTENSION has no OWNER TO, so an
