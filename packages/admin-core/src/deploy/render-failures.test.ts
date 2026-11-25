@@ -265,6 +265,19 @@ describe("reference images and share images the build could not publish (#1719)"
     expect(text).not.toMatch(/og-image|media-reference|brand-guide|set_|find_media|0f1e2d3c/);
     expect(r?.aiText).toContain("og-image-missing: set_theme_asset");
   });
+
+  it("a stopped build's next step picks their tools, a share image's by its level", () => {
+    const next = describeRenderFailures([
+      onPage(`og-image-missing:page/${ID}`, "Team", "/team"),
+      onPage(`og-image-missing:site/${ID}`),
+      onPage(`og-image-missing:site/${ID}`, "Pricing", "/pricing"),
+      onPage("media-reference:brand-guide/orig"),
+    ]).nextAction;
+    expect(next.tool).toBe("set_theme_asset");
+    expect(next.reason).toContain(
+      "Tools these repairs need, most needed first: set_theme_asset, set_page_seo_many, find_media.",
+    );
+  });
 });
 
 describe("renderRepairOf — a page key or path the page cannot answer (#1717)", () => {

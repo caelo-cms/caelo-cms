@@ -507,16 +507,17 @@ function firstTool(tools: readonly string[]): string {
  * of each kind there are (most first; a tie keeps the order the build
  * named them in): each kind's {@link renderRepairOf} tool, `check_links`
  * for a link, and `bug_report` for a render without its context (a Caelo
- * bug no content edit repairs).
+ * bug no content edit repairs). Counted per kind and tool: a share image's
+ * tool follows the level that chose it (#1719), so one kind can need two.
  */
 export function renderRepairTools(failures: readonly RenderFailure[]): string[] {
   const byKind = new Map<string, { tool: string; count: number }>();
   for (const f of failures) {
-    const kind = renderFailureKind(f.reason);
     const tool = isCaeloFaultMarker(f.reason) ? "bug_report" : renderRepairOf(f).tool;
-    const hit = byKind.get(kind) ?? { tool, count: 0 };
+    const key = `${renderFailureKind(f.reason)}|${tool}`;
+    const hit = byKind.get(key) ?? { tool, count: 0 };
     hit.count += 1;
-    byKind.set(kind, hit);
+    byKind.set(key, hit);
   }
   const ranked = [...byKind.values()].sort((a, b) => b.count - a.count);
   return [...new Set(ranked.map((k) => k.tool))];
