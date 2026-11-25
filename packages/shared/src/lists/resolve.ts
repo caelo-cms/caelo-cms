@@ -62,7 +62,6 @@ import {
   dateValue,
   EMPTY_LIST,
   EMPTY_TEXT,
-  emptyValueOf,
   fieldValue,
   linkValue,
   listValue,
@@ -763,25 +762,30 @@ function createPageContext(
   // ── Pages ──
 
   /**
-   * `props.<name>` of a page. A property the page's type does not declare
-   * is absent when another page type declares it (a module shared by
+   * `props.<name>` of a page: a property its type declares, or the option
+   * flag of one of its `select` properties (`props.layout_wide`). Anything
+   * else is absent when another page type declares it (a module shared by
    * several page types) and a loud failure when none does (#1561,
    * `page-props.ts`).
    */
   const propsValue = (p: ListPageRecord): ScopeValue => {
     const defs = data.pageTypes.get(p.pageTypeSlug)?.def.properties ?? [];
     const propOverlay = overlay?.pageProps.get(p.id);
+    const stored = (name: string): unknown =>
+      propOverlay?.has(name) ? propOverlay.get(name) : p.properties[name];
     const memo = new Map<string, ScopeValue>();
     const compute = (key: string): ScopeValue => {
       const def = defs.find((d) => d.name === key);
-      if (def) {
-        const raw = propOverlay?.has(key) ? propOverlay.get(key) : p.properties[key];
-        return fieldValue(def, raw, valueEnv);
-      }
-      const elsewhere = s.pageProps.declaration(key);
-      return elsewhere
-        ? emptyValueOf(elsewhere)
-        : { kind: "failed", marker: pagePropUnknownMarker(key) };
+      if (def) return fieldValue(def, stored(key), valueEnv);
+      const selects = defs.filter((d) => d.type === "select");
+      const flag = selectFlag(
+        selects,
+        Object.fromEntries(selects.map((d) => [d.name, stored(d.name)])),
+        key,
+      );
+      return (
+        flag ?? s.pageProps.absent(key) ?? { kind: "failed", marker: pagePropUnknownMarker(key) }
+      );
     };
     return {
       kind: "record",

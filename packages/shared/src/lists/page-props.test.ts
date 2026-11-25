@@ -39,19 +39,39 @@ describe("pagePropertyIndex", () => {
         pageType("home", []),
       ]),
     );
-    expect(index.declaration("stand")?.type).toBe("date");
-    expect(index.declaration("fuer_wen")?.type).toBe("text");
-    expect(index.declaration("stnad")).toBeUndefined();
+    expect(index.absent("stand")).toMatchObject({ kind: "record", present: false });
+    expect(index.absent("fuer_wen")).toEqual({ kind: "text", text: "" });
+    expect(index.absent("stnad")).toBeUndefined();
   });
 
-  it("takes the first page type by slug when several declare a name, whatever the load order", () => {
+  it("reads a select property's option flags as false, and no other name", () => {
+    const index = pagePropertyIndex(
+      new Map([
+        pageType("product", [
+          { name: "layout", label: "Layout", type: "select", options: ["wide", "narrow"] },
+        ]),
+      ]),
+    );
+    expect(index.absent("layout_wide")).toEqual({ kind: "bool", value: false });
+    expect(index.absent("layout_narrow")).toEqual({ kind: "bool", value: false });
+    expect(index.absent("layout_huge")).toBeUndefined();
+  });
+
+  it("answers the paths of each declaration when page types declare a name differently, whatever the load order", () => {
     const product = pageType("product", [{ name: "cta", label: "CTA", type: "text" }]);
     const news = pageType("news", [{ name: "cta", label: "CTA", type: "link" }]);
+    const event = pageType("event", [{ name: "cta", label: "CTA", type: "date" }]);
     for (const order of [
-      [product, news],
-      [news, product],
+      [product, news, event],
+      [event, news, product],
     ]) {
-      expect(pagePropertyIndex(new Map(order)).declaration("cta")?.type).toBe("link");
+      const cta = pagePropertyIndex(new Map(order)).absent("cta");
+      if (cta?.kind !== "record") throw new Error(`expected a record, got ${cta?.kind}`);
+      expect(cta.text).toBe("");
+      expect(cta.present).toBe(false);
+      expect(cta.get("href")).toEqual({ kind: "text", text: "" });
+      expect(cta.get("formatted")).toEqual({ kind: "text", text: "" });
+      expect(cta.get("nope")).toBeUndefined();
     }
   });
 

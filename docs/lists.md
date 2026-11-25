@@ -565,8 +565,11 @@ site's other page types (maintainer decision 2026-11-24,
   `{{page.props.<name>}}` is empty, and a path into it reads the empty
   value of that declaration (`{{page.props.cta.href}}` is empty for a
   `link`). No marker, no finding: the module needs no guard field. When
-  several types declare the name, the first by slug gives the empty
-  value its shape.
+  several types declare the name with different types (`cta` a link on
+  one, text on another), the absent value is empty on every path any of
+  them has. A `select` property's option flag (`{{#page.props.layout_wide}}`
+  for `layout`, §2) is true on a page of its own type when selected, and
+  false where the page's type lacks the property.
 - **No page type declares `<name>`** (a typo, or a property that was
   removed): never falsy. The tag or the whole section stays raw and
   pushes `page-prop-unknown:<name>`, a path through it names the

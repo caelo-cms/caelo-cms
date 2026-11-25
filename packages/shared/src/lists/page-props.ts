@@ -12,7 +12,8 @@
  *   it, so on every other page the property is absent, exactly like a
  *   declared property without a value: a section over it renders nothing,
  *   an inverted section renders its body, `{{page.props.x}}` is empty. No
- *   finding.
+ *   finding. The option flags of a `select` property (`layout_wide` for
+ *   `layout`, `docs/lists.md` §2) are absent the same way: false.
  * - No page type of the site declares it: a typo, or a property that was
  *   removed. That is a broken placeholder, never copy, so it never turns
  *   falsy: it fails with {@link pagePropUnknownMarker}. The spot stays raw
@@ -28,6 +29,8 @@
 
 import type { FieldDef } from "./fields.js";
 import type { LoadedPageType } from "./render-data.js";
+import { emptyValueOf, FALSE } from "./resolve-values.js";
+import type { ScopeValue } from "./scope.js";
 
 /** Marker kind of a page property no page type of the site declares. */
 export const PAGE_PROP_UNKNOWN = "page-prop-unknown";
@@ -40,25 +43,54 @@ export function pagePropUnknownMarker(name: string): string {
 /** Every page property the site's page types declare, by name. */
 export interface PagePropertyIndex {
   /**
-   * The declaration of `name` in some page type of the site, or undefined
-   * when none declares it. When several page types declare the name, the
-   * first by slug decides the shape of the absent value (a `link` keeps
-   * `{{page.props.x.href}}` answerable), so preview and build agree
-   * whatever order the page types were loaded in.
+   * What `props.<key>` reads as on a page whose own type does not declare
+   * `key`, when some page type of the site does: that declaration's empty
+   * value (a `link` keeps `{{page.props.x.href}}` answerable), false for a
+   * `select` property's option flag. Undefined when no page type declares
+   * `key`.
    */
-  declaration(name: string): FieldDef | undefined;
+  absent(key: string): ScopeValue | undefined;
 }
 
 /** Build the {@link PagePropertyIndex} of a render's page types. */
 export function pagePropertyIndex(
   pageTypes: ReadonlyMap<string, LoadedPageType>,
 ): PagePropertyIndex {
-  const byName = new Map<string, FieldDef>();
-  const bySlug = [...pageTypes.values()].sort((a, b) =>
-    a.def.slug < b.def.slug ? -1 : a.def.slug > b.def.slug ? 1 : 0,
-  );
-  for (const t of bySlug) {
-    for (const p of t.def.properties) if (!byName.has(p.name)) byName.set(p.name, p);
+  const byName = new Map<string, FieldDef[]>();
+  const flags = new Set<string>();
+  for (const t of pageTypes.values()) {
+    for (const p of t.def.properties) {
+      byName.set(p.name, [...(byName.get(p.name) ?? []), p]);
+      if (p.type === "select") for (const o of p.options) flags.add(`${p.name}_${o}`);
+    }
   }
-  return { declaration: (name) => byName.get(name) };
+  const absent = new Map<string, ScopeValue>();
+  for (const [name, defs] of byName) absent.set(name, absentValueOf(defs));
+  return { absent: (key) => absent.get(key) ?? (flags.has(key) ? FALSE : undefined) };
+}
+
+/**
+ * The empty value of a property name some page types declare. When they
+ * declare it with different types (`cta` a link on one, text on another),
+ * no one declaration's empty value answers every path a shared module may
+ * use, so the absent value is an empty record that answers the paths of
+ * each: `{{page.props.cta}}` and `{{page.props.cta.href}}` are both empty,
+ * never a raw tag, whatever order the page types were loaded in.
+ */
+function absentValueOf(defs: readonly FieldDef[]): ScopeValue {
+  const empties = defs.map(emptyValueOf);
+  const first = empties[0] as ScopeValue;
+  if (defs.every((d) => d.type === defs[0]?.type)) return first;
+  return {
+    kind: "record",
+    text: "",
+    present: false,
+    get(key) {
+      for (const v of empties) {
+        const hit = v.kind === "record" ? v.get(key) : undefined;
+        if (hit !== undefined) return hit;
+      }
+      return undefined;
+    },
+  };
 }
