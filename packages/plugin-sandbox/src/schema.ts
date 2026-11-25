@@ -155,12 +155,23 @@ export type PluginSchemaRoles = Pick<
 >;
 
 /**
+ * Only {@link publicGrantTargets} and {@link adminGrantTarget} build a grant
+ * target (type-level brand, no runtime value). {@link grantStatement}
+ * allows the roles its target names, so a target written by hand could
+ * pair the staging database with the live gateway's login, which the fixed
+ * per-database sets before #1689 refused; built from one install's roles,
+ * every target pairs each database with its own login.
+ */
+declare const GRANT_TARGET: unique symbol;
+
+/**
  * #1332 — a public plugin database the visitor GRANTs are generated for:
  * which database (logical name), the role visitors' requests run as there,
  * and the admin's role. One generator for every such database, so the
  * live and the staging database (#1329) cannot drift apart.
  */
 export interface PublicGrantTarget {
+  readonly [GRANT_TARGET]: true;
   readonly database: Exclude<PluginSchemaDatabase, "cms_admin">;
   readonly visitorRole: string;
   readonly adminRole: string;
@@ -168,10 +179,27 @@ export interface PublicGrantTarget {
 
 /** #389 — the plugin's own cms_admin schema: only the admin role holds privileges there. */
 export interface AdminGrantTarget {
+  readonly [GRANT_TARGET]: true;
   readonly database: "cms_admin";
   readonly adminRole: string;
   /** The gateway's former cms_admin login (#635), whose old grants every provisioning revokes. */
   readonly formerGatewayRole: string;
+}
+
+/**
+ * `roles`, each a role name the emitters may splice, all different: one
+ * login holding two slots would put the live gateway's login into the
+ * staging database (or the admin role among the visitors).
+ */
+function checkedRoles(roles: PluginSchemaRoles): PluginSchemaRoles {
+  const names = [roles.admin, roles.public, roles.publicStaging, roles.formerGateway];
+  for (const role of names) roleIdent(role);
+  if (new Set(names).size !== names.length) {
+    throw new Error(
+      `plugin schema: the install's roles must all differ (admin ${roles.admin}, public ${roles.public}, publicStaging ${roles.publicStaging}, formerGateway ${roles.formerGateway}; #1329, #1689)`,
+    );
+  }
+  return roles;
 }
 
 /**
@@ -184,27 +212,29 @@ export function publicGrantTargets(roles: PluginSchemaRoles): {
   readonly live: PublicGrantTarget;
   readonly staging: PublicGrantTarget;
 } {
+  const r = checkedRoles(roles);
   return Object.freeze({
     live: Object.freeze({
       database: "cms_public",
-      visitorRole: roleIdent(roles.public),
-      adminRole: roleIdent(roles.admin),
-    }),
+      visitorRole: r.public,
+      adminRole: r.admin,
+    }) as PublicGrantTarget,
     staging: Object.freeze({
       database: "cms_public_staging",
-      visitorRole: roleIdent(roles.publicStaging),
-      adminRole: roleIdent(roles.admin),
-    }),
+      visitorRole: r.publicStaging,
+      adminRole: r.admin,
+    }) as PublicGrantTarget,
   });
 }
 
 /** The cms_admin target of the install `roles` (#389, #1689). */
 export function adminGrantTarget(roles: PluginSchemaRoles): AdminGrantTarget {
+  const r = checkedRoles(roles);
   return Object.freeze({
     database: "cms_admin",
-    adminRole: roleIdent(roles.admin),
-    formerGatewayRole: roleIdent(roles.formerGateway),
-  });
+    adminRole: r.admin,
+    formerGatewayRole: r.formerGateway,
+  }) as AdminGrantTarget;
 }
 
 /** A role name the emitters may splice into DDL: a plain lower-case identifier. */
@@ -538,8 +568,9 @@ function revokeStatement(target: PublicGrantTarget, object: string, role: string
  * sandbox) and the admin role; and (#1329) cms_public_staging grants go to
  * the staging gateway's login and the admin role — never one gateway's
  * login in the other's database. Since #1689 the roles are the install's
- * own ({@link publicGrantTargets}, {@link adminGrantTarget}): never another
- * install's on the same server.
+ * own ({@link publicGrantTargets}, {@link adminGrantTarget}, the only
+ * builders of a target, from one install's distinct roles): never another
+ * install's on the same server, never the other environment's login.
  */
 export function targetGrantees(target: PublicGrantTarget | AdminGrantTarget): ReadonlySet<string> {
   return target.database === "cms_admin"

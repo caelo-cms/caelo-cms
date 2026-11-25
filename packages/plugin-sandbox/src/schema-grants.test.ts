@@ -78,6 +78,19 @@ describe("grantStatement (#635)", () => {
     const roles: PluginSchemaRoles = { ...DEFAULT_ROLES, public: "x; DROP" };
     expect(() => publicGrantTargets(roles)).toThrow("is not a role name");
   });
+
+  it("refuses roles that share a name, so no database gets the other's login (#1329, #1689)", () => {
+    // The grantees are the target's own roles, so one name in two slots
+    // would let the staging database grant to the live gateway's login.
+    for (const roles of [
+      { ...DEFAULT_ROLES, publicStaging: DEFAULT_ROLES.public },
+      { ...DEFAULT_ROLES, public: DEFAULT_ROLES.admin },
+      { ...DEFAULT_ROLES, formerGateway: DEFAULT_ROLES.admin },
+    ]) {
+      expect(() => publicGrantTargets(roles)).toThrow("must all differ");
+      expect(() => adminGrantTarget(roles)).toThrow("must all differ");
+    }
+  });
 });
 
 describe("plugin schema DDL grants (#635)", () => {
