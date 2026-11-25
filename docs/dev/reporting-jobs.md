@@ -71,7 +71,7 @@ The audit itself is the same code as before (`quality/audit-run.ts`), now fed by
 |---|---|
 | `start` | `quality_audits.claim`: the run to audit (its pages, the staged slot), or "stop" when a newer Stage superseded it |
 | `source` | one read of a findings check: modules, layouts, the page index, redirects, the site's URLs, link issues |
-| `plugin-findings` | one call of an active plugin's `auditFindingsOperation` (the batching runs in the job, `collectPluginFindings`) |
+| `plugin-findings` | one call of an active plugin's `auditFindingsOperation` (the batching runs in the job, `collectPluginFindings`, up to 4 batch calls at once; on a batch call with only its own pages the admin adds the audit run as `auditRunId`, #1721) |
 | `result` | `quality_audits.record_result` |
 
 ## The site import's crawl as a reporting job (#1360)

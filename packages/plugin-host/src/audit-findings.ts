@@ -53,7 +53,9 @@ export function auditFindingContributors(): string[] {
  * sits in the quality audit's job, which asks the admin for each call: the
  * plugin host lives only in the admin.
  *
- * @param args the staged build's pages, and on a batch call the facts.
+ * @param args the staged build's pages, and on a batch call the facts;
+ *   a batch call with `batchPages: "own"` carries only the batch's pages
+ *   and needs the `auditRunId` the plugin reads the others by (#1721).
  * @param label names the call in errors (`pages`, `facts batch 2`).
  * @throws when the plugin does not contribute, the call fails, or the
  *   answer is malformed.
@@ -68,6 +70,11 @@ export async function pluginAuditFindingsCall(
   if (!lp || typeof operationName !== "string") {
     throw new Error(
       `audit findings: plugin "${slug}" is not active or declares no auditFindingsOperation`,
+    );
+  }
+  if (args.batchPages === "own" && !args.auditRunId) {
+    throw new Error(
+      `audit findings: ${slug} (${label}) is a batch call with only its own pages but no auditRunId to read the others by — the caller must pass the audit run (#1721)`,
     );
   }
   const r = await runPluginOperation({

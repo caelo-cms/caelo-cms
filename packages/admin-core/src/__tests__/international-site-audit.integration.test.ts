@@ -16,7 +16,6 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   auditFindingContributors,
   bootstrap,
-  pluginAuditFindingsCall,
   resetPluginHost,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
@@ -30,6 +29,7 @@ import { CheckRegistry } from "../quality/checks/registry.js";
 import { runFindingChecks } from "../quality/checks/runner.js";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
+import { startRunningAudit } from "./fixtures/running-audit.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -180,15 +180,12 @@ describe("international-site Stage audit", () => {
     ];
 
     expect(auditFindingContributors()).toContain("international-site");
+    // The calls the audit's job makes, answered by the admin's handler of
+    // its reports (#1721: batch calls read the other pages by the run).
+    const run = await startRunningAudit(ADMIN_URL as string, { adapter, registry }, PFX);
     const checks = withPluginAuditChecks(new CheckRegistry(), {
       contributors: () => ["international-site"],
-      findings: (slug, pages, facts) =>
-        collectPluginFindings(
-          (args, label) => pluginAuditFindingsCall(slug, args, label),
-          slug,
-          pages,
-          facts,
-        ),
+      findings: (slug, pages, facts) => collectPluginFindings(run.call(slug), slug, pages, facts),
       siteUrls: async () => [BASE],
     });
     const out = await runFindingChecks(checks.findingChecks(), staged, {
@@ -196,6 +193,9 @@ describe("international-site Stage audit", () => {
       probe: async () => ({ found: true, status: 200 }),
       text: async () => null,
     });
+    await run.remove();
+    expect(run.reports.map((r) => r.label)).toEqual(["pages", "facts batch 1"]);
+    expect(run.reports[1]?.args.batchPages).toBe("own");
     expect(out.errors).toEqual([]);
     const hardcoded = out.findings.filter(
       (f) => f.ruleId === "plugin.international-site/hardcoded-language-link",

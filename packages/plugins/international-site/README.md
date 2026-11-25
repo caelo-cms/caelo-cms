@@ -228,7 +228,17 @@ pages (`onPageIds`), the variant rows of its pages and of the pages their
 links, hreflang and canonical name (the whole table once that is more
 than one read of ids), and the site's term lists. A batch model that read
 only some variant rows refuses to answer for any other page instead of
-calling it "no group". A module is shared content on a page when it sits
+calling it "no group".
+
+The page list crosses once per audit, with the first call (#1721): its
+answer says `batchPages: "own"`, so a batch call carries only its own
+pages and the audit run's id. It reads the other pages its rules name by
+that id (`quality_audits.staged_pages`): first the pages at the paths its
+links, hreflang and canonical name (and the site home), then the language
+versions of those pages that no path named. A batch model then knows only
+those pages and paths, and refuses a lookup of any other path or page the
+same way. Core makes up to four batch calls at once; each depends on its
+own facts only. A module is shared content on a page when it sits
 in a layout, or when the page places it synced; placed unsynced, its text
 is the page's own and is judged with the page. What core's `links` and
 `references` checks report is not repeated; these rules name the

@@ -165,10 +165,13 @@ export const qualityAuditJobKind: ReportingJobKindDef = {
           // #1651 — the plugin learns which Stage it audits (a search plugin
           // runs its test queries against that Stage's index).
           const runId = await auditedDeployRun(deps, subjectId);
+          const args = input.args as Parameters<typeof pluginAuditFindingsCall>[1];
           return {
             value: await pluginAuditFindingsCall(
               input.slug,
-              { ...(input.args as Parameters<typeof pluginAuditFindingsCall>[1]), runId },
+              // #1721 — the handle of a batch call that carries only its
+              // own pages: this report's audit run, as its token proved it.
+              { ...args, runId, ...(args.batchPages === "own" ? { auditRunId: subjectId } : {}) },
               input.label,
             ),
           };

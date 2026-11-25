@@ -98,6 +98,10 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     "pages.duplicate": { notBackground: "the create_variant tool duplicates one page" },
     "pages.list": { measured: ["pages.list {pageIds}"], pending: INTL_1255 },
     "pages.list_shared_content": { pending: LIST_RESOLVE_1270 },
+    "quality_audits.staged_pages": {
+      notBackground:
+        "the Stage audit's batch calls read the pages each batch names, by the audit run (#1721)",
+    },
     "pages.list_statuses": { pending: INTL_1255 },
     "pages.refresh_current_path": { measured: ["pages.refresh_current_path"] },
     "pages.resolve_public_urls": { pending: LIST_RESOLVE_1270 },
