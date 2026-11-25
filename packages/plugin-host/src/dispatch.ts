@@ -42,6 +42,7 @@ import { refuseMailUnsubscribeCall } from "./mail-link-token.js";
 import { previewContext } from "./preview-context.js";
 import type { PluginRowLocker } from "./private-storage.js";
 import { refusePublicCall, VISITOR_MESSAGE_MAX, visitorSafeResult } from "./public-contract.js";
+import { runDeclaredPublicOperation } from "./public-run-host.js";
 import {
   emitPublicPluginOpEvent,
   isProjectionNotPublished,
@@ -372,6 +373,14 @@ export function assertInvocationConsistent(
   if (invocation.origin === "chat" && !invocation.chatBranchId) {
     throw new Error("PluginInvocationInvalid: a chat invocation needs the chat's branch");
   }
+  if (invocation.origin === "observer" && !invocation.stageRunId) {
+    throw new Error("PluginInvocationInvalid: an observer invocation needs its Stage's run id");
+  }
+  if (invocation.origin === "batch" && (!invocation.batchRunId || invocation.stageRunId)) {
+    throw new Error(
+      "PluginInvocationInvalid: a batch invocation names its run (batchRunId) and no Stage run: its collection writes go to the next Stage",
+    );
+  }
   // A branch is allowed for a chat, a branch preview render, and an
   // approved action whose approver cannot publish (it stays in the chat).
   if (
@@ -537,6 +546,26 @@ export function renderInvocation(scope: RenderScope): PluginInvocation {
  * taking a second connection (#1254, query-api pool-guard.ts). They see the
  * holder's uncommitted writes, which is what a composition mid-write needs.
  */
+/**
+ * #1646 — the context a plugin's call gets on this host for `invocation`,
+ * outside an operation dispatch: the batch job's remote broker answers each
+ * SDK call the plugin made in the job on it (sandbox-runtime
+ * `brokerSandboxCall`). The same factory and checks as a dispatched call.
+ */
+export async function makeInvocationContext(
+  slug: string,
+  invocation: PluginInvocation,
+): Promise<PluginContext | PluginContextTier1> {
+  const plugin = loadedPlugins.bySlug(slug);
+  if (!plugin) throw new Error(`no loaded plugin with slug "${slug}"`);
+  if (isPluginDisabled(slug)) throw new Error(`plugin "${slug}" is disabled`);
+  if (!cachedInfra || !makeContext) {
+    throw new Error("plugin host not bootstrapped — call bootstrap() before dispatch");
+  }
+  assertInvocationConsistent(invocation, undefined);
+  return makeContext({ plugin, infra: cachedInfra, invocation });
+}
+
 export async function runPluginOperation(
   opts: RunPluginOperationOpts,
 ): Promise<RunPluginOperationResult> {
@@ -602,8 +631,39 @@ async function runPluginOperationNow(
       },
     };
   }
-  const handler = plugin.definition.operations[opts.operationName];
-  if (!handler) {
+  // #1340 — a visitor call runs the operation's declaration (core code),
+  // never a plugin handler: `publicOperations` names no code operation.
+  // A system caller (a seed, a test, a migration) may run a declaration
+  // too: the same core code, on the system's context, its input checked
+  // against the declared schema. No other origin reaches a public
+  // operation except as a visitor.
+  const declared =
+    opts.visitorContext || opts.invocation.origin === "system"
+      ? publicOperationOf(plugin.definition.publicOperations, opts.operationName)
+      : undefined;
+  const handler: ((ctx: PluginContext, args: unknown) => unknown) | undefined = declared
+    ? (ctx, args) => {
+        if (opts.visitorContext)
+          return runDeclaredPublicOperation(
+            declared,
+            ctx as PluginContextTier1,
+            args,
+            plugin.pluginId,
+          );
+        const parsed = declared.input.safeParse(args);
+        if (!parsed.success)
+          throw new Error(`${opts.operationName}: the input does not match its declared schema`);
+        return runDeclaredPublicOperation(
+          declared,
+          ctx as PluginContextTier1,
+          parsed.data,
+          plugin.pluginId,
+        );
+      }
+    : opts.visitorContext
+      ? undefined
+      : plugin.definition.operations[opts.operationName];
+  if (!handler && !opts.visitorContext) {
     return {
       ok: false,
       error: {
@@ -780,6 +840,13 @@ async function runPluginOperationNow(
         kind: "OperationFailed",
         message: `failed to build plugin context: ${(e as Error).message}`,
       },
+    };
+  }
+  if (!handler) {
+    // Unreachable: a visitor call without a declaration was refused above.
+    return {
+      ok: false,
+      error: { kind: "OperationNotPublic", message: `"${opts.operationName}" has no declared run` },
     };
   }
   try {

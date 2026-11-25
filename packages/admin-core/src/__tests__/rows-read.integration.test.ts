@@ -36,6 +36,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { clearBranchOverlayCache, forgetIndexLeadColumns } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { clearSiteFontUsageCache } from "@caelo-cms/static-generator";
@@ -77,6 +78,8 @@ async function measure(
 ): Promise<Cost> {
   clearSiteViewCache();
   clearSiteFontUsageCache();
+  clearBranchOverlayCache();
+  forgetIndexLeadColumns();
   await stats`SELECT pg_stat_statements_reset()`;
   const r = await execute(registry, adapter, ctx, op, input);
   const error = r.ok

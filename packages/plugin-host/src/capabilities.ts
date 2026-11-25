@@ -31,6 +31,8 @@ import type {
 } from "@caelo-cms/plugin-sdk";
 import { type DatabaseAdapter, execute } from "@caelo-cms/query-api";
 import { LIVE_BUILD_REFUSAL, type LiveBuildUrls } from "@caelo-cms/shared";
+import { makePluginChatTools, makePluginCollections } from "./collections-host.js";
+import { hasConfig, makePluginConfigReader } from "./config-handle.js";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
 import {
   hostSystemActorId,
@@ -124,6 +126,40 @@ export async function makePluginContext(
     };
   }
 
+  // #1645 — the plugin's own configuration, on every admin-side origin. The
+  // gateway has no cms_admin login and visitors' calls never read it.
+  const configHandle =
+    hasConfig(plugin) && !isPublicSideHost(infra) && invocation.origin !== "visitor"
+      ? { config: makePluginConfigReader(plugin, infra, invocation) }
+      : {};
+  // #1648 — collections need their grant; the gateway reads them only
+  // through declared collection operations, never through plugin code.
+  const collectionsGranted =
+    plugin.provenance === "runtime-authored"
+      ? (plugin.externalApproval?.capabilities.includes("collections") ?? false)
+      : requested.has("collections");
+  const collectionsHandle =
+    collectionsGranted &&
+    Object.keys(plugin.definition.collections ?? {}).length > 0 &&
+    !isPublicSideHost(infra) &&
+    invocation.origin !== "visitor"
+      ? // A render (and the Stage audit, which calls as one) may query; its
+        // writes are refused by the handle.
+        { collections: makePluginCollections(plugin, infra, invocation) }
+      : {};
+  // #1655 — a conversation's declared tools, run as the gateway runs them
+  // (the Stage audit, previews): on the admin side, with the visitor_ai grant.
+  const visitorAiGranted =
+    plugin.provenance === "runtime-authored"
+      ? (plugin.externalApproval?.capabilities.includes("visitor_ai") ?? false)
+      : requested.has("visitor_ai");
+  const chatToolsHandle =
+    visitorAiGranted &&
+    (plugin.definition.aiChatOperations ?? []).length > 0 &&
+    !isPublicSideHost(infra) &&
+    invocation.origin !== "visitor"
+      ? { chatTools: makePluginChatTools(plugin, infra) }
+      : {};
   const baseCtx: PluginContext = {
     query: makePluginQuery(plugin, infra, invocation, opts.publicOperation),
     api: makePluginApi(plugin, infra),
@@ -131,6 +167,9 @@ export async function makePluginContext(
     visitor: makePluginVisitor(visitorContext),
     captcha: makePluginCaptcha(visitorContext),
     invocation: Object.freeze({ ...invocation }),
+    ...configHandle,
+    ...collectionsHandle,
+    ...chatToolsHandle,
   };
 
   // Runtime-installed plugins run in the sandbox and get only what an
@@ -363,6 +402,14 @@ function makeScopedQuery(
     if (invocation.origin === "render") {
       throw new Error(
         `${scope.label}.${method}: plugin "${plugin.slug}" cannot write from a render call — render hooks only read; write from a chat tool, the Owner panel, a worker or onActivate`,
+      );
+    }
+    if (
+      scope.pool !== "admin" &&
+      (invocation.origin === "observer" || invocation.origin === "batch")
+    ) {
+      throw new Error(
+        `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its public tables from ${invocation.origin === "observer" ? "a page-output observer" : "a batch job"} — that is staged work, and visitors would see it before Publish live; write collections or private storage`,
       );
     }
     if (scope.pool !== "admin") {

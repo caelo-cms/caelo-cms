@@ -3,6 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
+import { connect } from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -14,6 +15,7 @@ import {
   STAGING_PLUGIN_STUB_BODY,
   SVG_DOCUMENT_CSP,
 } from "@caelo-cms/shared";
+import { createLoopbackTls } from "../loopback-tls.js";
 import {
   localBuildSource,
   type StagedOrigin,
@@ -248,5 +250,113 @@ describe("serveStagedBuild: nothing under /api/ leaves the loopback (#1330)", ()
     expect((await fetch(`${origin.baseUrl}/api/captcha/challenge`)).status).toBe(404);
     expect((await fetch(`${origin.baseUrl}/`)).status).toBe(200);
     expect((await fetch(`${origin.baseUrl}/`, { method: "POST" })).status).toBe(405);
+  });
+});
+
+/** One HTTP/2 request, verifying the origin's certificate against `ca`. */
+function h2Request(
+  baseUrl: string,
+  ca: string,
+  path: string,
+  init: {
+    readonly method?: string;
+    readonly headers?: Record<string, string>;
+    readonly body?: string;
+  } = {},
+): Promise<{
+  status: number;
+  headers: Record<string, unknown>;
+  body: Buffer;
+  alpn: string | false;
+}> {
+  return new Promise((resolve, reject) => {
+    const session = connect(baseUrl, { ca });
+    session.on("error", reject);
+    const req = session.request({
+      ":method": init.method ?? "GET",
+      ":path": path,
+      ...(init.headers ?? {}),
+    });
+    const chunks: Buffer[] = [];
+    let headers: Record<string, unknown> = {};
+    req.on("response", (h) => {
+      headers = h as Record<string, unknown>;
+    });
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      const alpn = session.alpnProtocol ?? false;
+      session.close();
+      resolve({ status: Number(headers[":status"]), headers, body: Buffer.concat(chunks), alpn });
+    });
+    req.on("error", reject);
+    req.end(init.body);
+  });
+}
+
+describe("serveStagedBuild for the audit browser: HTTP/2 over TLS", () => {
+  const root = mkdtempSync(join(tmpdir(), "caelo-staged-origin-h2-"));
+  const tls = createLoopbackTls();
+  let origin: StagedOrigin;
+
+  beforeAll(async () => {
+    writeFileSync(join(root, "index.html"), "<h1>home</h1>");
+    origin = await serveStagedBuild(localBuildSource(root), { browserTls: tls });
+  });
+
+  afterAll(async () => {
+    await origin.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("serves the browser on its own https port and the checks on plain http", async () => {
+    expect(origin.browser?.baseUrl).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/);
+    expect(origin.browser?.trustSpki).toBe(tls.spkiSha256);
+    expect(origin.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(await (await fetch(`${origin.baseUrl}/`)).text()).toBe("<h1>home</h1>");
+  });
+
+  it("speaks HTTP/2 with the headers and compression staging sends", async () => {
+    const res = await h2Request(origin.browser?.baseUrl ?? "", tls.cert, "/", {
+      headers: { "accept-encoding": "gzip" },
+    });
+    // Why the listener exists: Lighthouse simulates one shared connection, as the CDN gives.
+    expect(res.alpn).toBe("h2");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/html; charset=utf-8");
+    expect(res.headers["x-robots-tag"]).toBe("noindex");
+    expect(res.headers["content-encoding"]).toBe("gzip");
+    expect(gunzipSync(res.body).toString()).toBe("<h1>home</h1>");
+  });
+
+  it("answers plugin calls with the staging stub there too", async () => {
+    const res = await h2Request(
+      origin.browser?.baseUrl ?? "",
+      tls.cert,
+      "/api/plugin/ratings/summary",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.toString()).toBe(STAGING_PLUGIN_STUB_BODY);
+  });
+
+  it("closes with a browser session still open", async () => {
+    const own = await serveStagedBuild(localBuildSource(root), { browserTls: createLoopbackTls() });
+    const ownTls = own.browser?.baseUrl ?? "";
+    const session = connect(ownTls, { rejectUnauthorized: false });
+    session.on("error", () => {});
+    await new Promise<void>((resolve) => session.once("connect", () => resolve()));
+    await own.close();
+    await expect(fetch(`${own.baseUrl}/`)).rejects.toThrow();
+    session.destroy();
+  });
+
+  it("has no browser listener unless asked", async () => {
+    const plain = await serveStagedBuild(localBuildSource(root));
+    expect(plain.browser).toBeUndefined();
+    await plain.close();
   });
 });

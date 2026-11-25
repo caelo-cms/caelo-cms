@@ -7,8 +7,11 @@
  *    Open Graph, Twitter card, and JSON-LD WebPage. hreflang returns
  *    as a head contribution from the international-site plugin (#398).
  *  - sitemap.xml writer — flat list of every published non-noindex
- *    page, with lastmod/changefreq/priority.
- *  - robots.txt extension — adds `Sitemap:` line in production.
+ *    page, with lastmod/changefreq/priority. `lastmod` is the date what
+ *    the page shows last changed live: every indexable page is recorded
+ *    in the build's {@link ContentStates}, which also feed `/feed.xml`
+ *    (docs/dev/search-engine-feed.md).
+ *  - robots.txt extension — adds the `Sitemap:` lines in production.
  *
  * Environment-independent on purpose: a staging build is byte-for-byte
  * what "Publish live" ships to production (deploy.promote copies it),
@@ -52,8 +55,11 @@ import {
   renderSeoHead,
   resolveDocumentLanguage,
   type SiteSeoSettings,
+  siteFeedUrl,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { pageContentFingerprint, pluginRegionsDigest } from "./content-fingerprint.js";
+import type { ContentStates } from "./content-states.js";
 import type { MediaPass } from "./media-pass.js";
 
 interface PageSeoBundle {
@@ -70,6 +76,7 @@ interface PageSeoBundle {
   canonicalOverride: string | null;
   ogImageAssetId: string | null;
   updatedAt: string;
+  firstPublishedAt: string | null;
 }
 
 export interface SeoPagesContext {
@@ -77,6 +84,12 @@ export interface SeoPagesContext {
   pageSlug: string;
   pageTitle: string;
   html: string;
+  /**
+   * The digest of what the page's own body shows (`bodyContentDigest` of
+   * the composed `contentHtml`); null on a follow-up page, which shares
+   * page 1's state.
+   */
+  bodyDigest: string | null;
   /** #1142 — the trail the page's breadcrumbs rendered (`ListPageContext.breadcrumbTrail`). */
   breadcrumbTrail?: readonly string[] | null;
   /**
@@ -91,8 +104,16 @@ export interface SeoPass {
   /** Inject head meta + `<html lang>` into one batch of pages, in place. */
   apply(pages: SeoPagesContext[]): Promise<void>;
   /**
+   * Record one batch's indexable pages in the live comparison, once their
+   * HTML is final (after the plugin pass): page 1 of every indexable page,
+   * which is what the feed, the sitemap date and IndexNow speak for.
+   */
+  recordStates(pages: readonly SeoPagesContext[]): void;
+  /**
    * Write sitemap.xml (when enabled) from what every batch recorded; call
-   * once after the last batch. Returns whether it was written.
+   * once after the last batch. Returns whether it was written. Each
+   * `<lastmod>` is the date what the page shows last changed live
+   * ({@link ContentStates}).
    */
   writeSitemap(write: (relPath: string, content: string) => Promise<void>): Promise<boolean>;
   /** The public URL this build gave a page: what its canonical carries. */
@@ -130,8 +151,12 @@ export async function prepareSeoPass(args: {
    *  default share image, or null when none is bound. The raw binding, so
    *  an asset deleted after binding stops the build instead of vanishing. */
   siteShareImageAssetId: string | null;
+  /** The live record every indexable page is compared with (docs/dev/search-engine-feed.md). */
+  contentStates: ContentStates;
+  /** The feed every page links, or null when the site has none. */
+  feed: { readonly url: string; readonly title: string } | null;
 }): Promise<SeoPass> {
-  const { tx, plugins, settings, pageUrlStyle, notFoundPageId } = args;
+  const { tx, plugins, settings, pageUrlStyle, notFoundPageId, contentStates } = args;
   const urlArgs = { siteBaseUrl: settings.siteBaseUrl, pageUrlStyle };
 
   // Every page's sidecar SEO row — by id: slugs repeat across parents
@@ -149,7 +174,7 @@ export async function prepareSeoPass(args: {
         coalesce(s.priority, 0.5) AS priority,
         s.canonical_url AS canonical_override,
         s.og_image_asset_id::text AS og_image_asset_id,
-        p.updated_at
+        p.updated_at, p.first_published_at
       FROM pages p
       LEFT JOIN pages_seo s ON s.page_id = p.id
       WHERE p.id IN (SELECT jsonb_array_elements_text(${jsonb(ids)})::uuid)
@@ -167,7 +192,9 @@ export async function prepareSeoPass(args: {
       canonical_override: string | null;
       og_image_asset_id: string | null;
       updated_at: Date | string;
+      first_published_at: Date | string | null;
     }[];
+    const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : String(v));
     for (const r of rows) {
       seoBundles.push({
         pageId: r.page_id,
@@ -181,7 +208,8 @@ export async function prepareSeoPass(args: {
         priority: Number(r.priority),
         canonicalOverride: r.canonical_override,
         ogImageAssetId: r.og_image_asset_id,
-        updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
+        updatedAt: iso(r.updated_at),
+        firstPublishedAt: r.first_published_at === null ? null : iso(r.first_published_at),
       });
     }
   }
@@ -224,6 +252,11 @@ export async function prepareSeoPass(args: {
     seoBundles.map((b) => b.pageId),
     urlArgs,
   );
+  // A page search engines may list: in the sitemap, the feed and the live
+  // record. #391 — a plugin can exclude one (an unpublished language
+  // variant must not appear; clean-404 semantics).
+  const isIndexable = (b: PageSeoBundle): boolean =>
+    isSitemapEntry(b, notFoundPageId) && contributions.sitemap.get(b.pageId)?.exclude !== true;
 
   // #590 — canonical and sitemap `<loc>` come from the ONE public URL
   // builder plugins also use for hreflang, so they agree byte for byte
@@ -266,6 +299,34 @@ export async function prepareSeoPass(args: {
   const followUpsOf = new Map<string, number[]>();
 
   return {
+    recordStates(pages) {
+      for (const p of pages) {
+        const bundle = bundleById.get(p.pageId);
+        if (!bundle || p.followUp || !isIndexable(bundle)) continue;
+        if (p.bodyDigest === null) {
+          throw new Error(`seo-pass: page ${bundle.pageId} was composed without a body digest`);
+        }
+        contentStates.record({
+          pageId: bundle.pageId,
+          // The feed and IndexNow need an absolute address; a canonical
+          // override may be written relative to the site.
+          url: new URL(publicUrlOf(bundle), settings.siteBaseUrl).href,
+          fingerprint: pageContentFingerprint({
+            title: bundle.title,
+            metaDescription: bundle.metaDescription,
+            bodyDigest: p.bodyDigest,
+          }),
+          // What the plugins baked into it (comments): the same digest the
+          // plugin-data build takes from the live file it re-bakes.
+          pluginFingerprint: pluginRegionsDigest(p.html),
+          title: bundle.title,
+          summary: bundle.metaDescription,
+          firstPublishedAt: bundle.firstPublishedAt,
+          updatedAt: bundle.updatedAt,
+        });
+      }
+    },
+
     publicUrl(pageId) {
       const url = publicUrls.get(pageId);
       if (url === undefined) throw new Error(`seo-pass: no public URL resolved for page ${pageId}`);
@@ -329,6 +390,7 @@ export async function prepareSeoPass(args: {
           metaDescription: bundle.metaDescription,
           ogImageUrl,
           organization: settings.organization,
+          feed: args.feed,
           ...(isNotFoundPage
             ? notFoundPageSeo()
             : {
@@ -369,38 +431,36 @@ export async function prepareSeoPass(args: {
       const sitemapEnabled =
         seoBundles.length > 0 && settings.sitemapEnabled && settings.siteBaseUrl.length > 0;
       if (!sitemapEnabled) return false;
-      const entries = seoBundles
-        .filter((b) => isSitemapEntry(b, notFoundPageId))
-        // #391 — plugin-contributed exclusion (e.g. an unpublished
-        // variant URL must not appear; clean-404 semantics).
-        .filter((b) => contributions.sitemap.get(b.pageId)?.exclude !== true)
-        .flatMap((b) => {
-          const urlEntry = (loc: string, alternates: readonly string[]): string =>
-            [
-              "  <url>",
-              `    <loc>${enc(loc)}</loc>`,
-              ...alternates,
-              `    <lastmod>${b.updatedAt.slice(0, 10)}</lastmod>`,
-              `    <changefreq>${b.changefreq}</changefreq>`,
-              `    <priority>${b.priority.toFixed(1)}</priority>`,
-              "  </url>",
-            ].join("\n");
-          // #391 — contributed xhtml alternates (hreflang) inside the
-          // page's <url> entry, sorted for deterministic output. Follow-up
-          // pages carry none: the alternates are page 1's twins.
-          const alternates = [...(contributions.sitemap.get(b.pageId)?.alternates ?? [])]
-            .sort((x, y) => x.hreflang.localeCompare(y.hreflang))
-            .map(
-              (a) =>
-                `    <xhtml:link rel="alternate" hreflang="${enc(a.hreflang)}" href="${enc(a.href)}" />`,
-            );
-          return [
-            urlEntry(publicUrlOf(b), alternates),
-            ...(followUpsOf.get(b.pageId) ?? [])
-              .sort((x, y) => x - y)
-              .map((n) => urlEntry(followUpUrlOf(b, n), [])),
-          ];
-        });
+      const entries = seoBundles.filter(isIndexable).flatMap((b) => {
+        // What the page shows last changed live — not the last draft edit
+        // of its row (docs/dev/search-engine-feed.md).
+        const lastmod = contentStates.changedAt(b.pageId);
+        const urlEntry = (loc: string, alternates: readonly string[]): string =>
+          [
+            "  <url>",
+            `    <loc>${enc(loc)}</loc>`,
+            ...alternates,
+            `    <lastmod>${lastmod}</lastmod>`,
+            `    <changefreq>${b.changefreq}</changefreq>`,
+            `    <priority>${b.priority.toFixed(1)}</priority>`,
+            "  </url>",
+          ].join("\n");
+        // #391 — contributed xhtml alternates (hreflang) inside the
+        // page's <url> entry, sorted for deterministic output. Follow-up
+        // pages carry none: the alternates are page 1's twins.
+        const alternates = [...(contributions.sitemap.get(b.pageId)?.alternates ?? [])]
+          .sort((x, y) => x.hreflang.localeCompare(y.hreflang))
+          .map(
+            (a) =>
+              `    <xhtml:link rel="alternate" hreflang="${enc(a.hreflang)}" href="${enc(a.href)}" />`,
+          );
+        return [
+          urlEntry(publicUrlOf(b), alternates),
+          ...(followUpsOf.get(b.pageId) ?? [])
+            .sort((x, y) => x - y)
+            .map((n) => urlEntry(followUpUrlOf(b, n), [])),
+        ];
+      });
       const xml = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
@@ -471,13 +531,16 @@ function enc(s: string): string {
  */
 export async function readSeoSettings(tx: TransactionRunner): Promise<StoredSeoSettings> {
   const rows = (await tx.execute(sql`
-    SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
-           site_language
+    SELECT site_base_url, sitemap_enabled, feed_enabled, indexnow_enabled, indexnow_key,
+           organization_json::text AS organization_json, site_language
     FROM site_defaults WHERE id = 1
     LIMIT 1
   `)) as unknown as {
     site_base_url: string | null;
     sitemap_enabled: boolean;
+    feed_enabled: boolean;
+    indexnow_enabled: boolean;
+    indexnow_key: string;
     organization_json: string | null;
     site_language: string | null;
   }[];
@@ -513,6 +576,9 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<StoredSeoS
   return {
     siteBaseUrl: r.site_base_url,
     sitemapEnabled: r.sitemap_enabled,
+    feedEnabled: r.feed_enabled,
+    indexNowEnabled: r.indexnow_enabled,
+    indexNowKey: r.indexnow_key,
     siteLanguage: r.site_language,
     organization,
   };
@@ -544,20 +610,26 @@ export function requireSiteLanguage(settings: StoredSeoSettings): SiteSeoSetting
 }
 
 /**
- * Build a robots.txt body that includes the Sitemap: line in
- * production. Staging stays Disallow:/ regardless of sitemap state.
- * Used by the generator AND by every publisher's promote, which
- * rewrites robots.txt for the destination target.
+ * Build a robots.txt body that includes the Sitemap: lines in
+ * production: the sitemap, and the Atom feed, which search engines take
+ * as a sitemap of the latest changes. Staging stays Disallow:/
+ * regardless. Used by the generator AND by every publisher's promote,
+ * which rewrites robots.txt for the destination target from the files
+ * the build carries.
  */
 export function buildRobotsTxtWithSitemap(
   robots: "index" | "noindex",
   siteBaseUrl: string,
-  sitemapEmitted: boolean,
+  emitted: { readonly sitemap: boolean; readonly feed: boolean },
 ): string {
   if (robots === "noindex") return "User-agent: *\nDisallow: /\n";
-  if (!sitemapEmitted) return "User-agent: *\nAllow: /\n";
   const base = siteBaseUrl.replace(/\/$/, "");
-  return `User-agent: *\nAllow: /\n\nSitemap: ${base}/sitemap.xml\n`;
+  const lines = [
+    ...(emitted.sitemap ? [`Sitemap: ${base}/sitemap.xml`] : []),
+    ...(emitted.feed ? [`Sitemap: ${siteFeedUrl(base)}`] : []),
+  ];
+  if (lines.length === 0) return "User-agent: *\nAllow: /\n";
+  return `User-agent: *\nAllow: /\n\n${lines.join("\n")}\n`;
 }
 
 /** What a crumb needs: its label and the inputs of the public URL builder. */

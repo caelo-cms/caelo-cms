@@ -11,7 +11,7 @@
  * Only a digest is stored; no arguments or author content.
  */
 
-import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
+import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox/artifact";
 import type { PluginInvocation } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";

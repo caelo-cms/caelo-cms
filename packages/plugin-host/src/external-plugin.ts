@@ -1,30 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
-import type {
-  PluginContext,
-  PluginDefinition,
-  PublicOperationDef,
-  PublicOperationManifest,
-} from "@caelo-cms/plugin-sdk";
+import type { PluginContext, PluginDefinition } from "@caelo-cms/plugin-sdk";
 /** Load external definitions as RPC proxies; source is never imported by the Bun host. */
 import { z } from "zod";
-
-/** A manifest's public operation as the definition dispatch enforces. */
-function publicOperationFromManifest(op: PublicOperationManifest): PublicOperationDef {
-  return {
-    name: op.name,
-    kind: op.kind,
-    captcha: op.captcha,
-    input: z.fromJSONSchema(op.inputJsonSchema),
-    ...(op.rateLimit ? { rateLimit: op.rateLimit } : {}),
-    reads: op.reads,
-    writes: op.writes,
-  };
-}
-
 import type { PluginHostInfra } from "./dispatch.js";
 import { assertExternalApproval, type ExternalApproval } from "./external-authorization.js";
+import { publicOperationFromManifest } from "./manifest-definition.js";
 import { runSandbox } from "./sandbox-runtime.js";
 
 /** Build a definition containing host-generated handlers for only the reviewed operation names. */
@@ -57,6 +39,13 @@ export function externalPluginDefinition(opts: {
         "image_generation",
         "site_media_read",
         "consent_provider",
+        // Epic #1644 — brokered by the sandbox (collections) or delivered
+        // as arguments (page output); a batch runs in the same sandbox in a job.
+        "collections",
+        "page_output",
+        "batch_jobs",
+        // #1654 — no broker: the gateway runs the declared conversation itself.
+        "visitor_ai",
       ].includes(capability)
     )
       throw new Error(`External capability broker unavailable: ${capability}`);
@@ -121,5 +110,21 @@ export function externalPluginDefinition(opts: {
     ...(manifest.hasStaticRender
       ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
       : {}),
+    // Epic #1644 — reviewed manifest data: an installed plugin keeps
+    // configuration, collections, page output and batch jobs like a shipped
+    // one (one plugin model); its observer and batch code run in the sandbox.
+    ...(manifest.config ? { config: manifest.config } : {}),
+    ...(manifest.entityConfig ? { entityConfig: manifest.entityConfig } : {}),
+    ...(manifest.configPreviewOperation
+      ? { configPreviewOperation: manifest.configPreviewOperation }
+      : {}),
+    ...(manifest.collections ? { collections: manifest.collections } : {}),
+    ...(manifest.collectionOperations
+      ? { collectionOperations: manifest.collectionOperations }
+      : {}),
+    // #1654 — a declaration the gateway runs with core code, like collections.
+    ...(manifest.aiChatOperations ? { aiChatOperations: manifest.aiChatOperations } : {}),
+    ...(manifest.pageOutputObserver ? { pageOutputObserver: manifest.pageOutputObserver } : {}),
+    ...(manifest.batchOperations ? { batchOperations: manifest.batchOperations } : {}),
   });
 }

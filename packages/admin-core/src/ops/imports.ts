@@ -2695,6 +2695,12 @@ export const setCostCeilingOp = defineOperation({
 async function sumRunSpend(
   tx: TransactionRunner,
   chatSessionId: string | null,
+  /**
+   * #1653 — the running turn the live gate checks: its ledger row holds a
+   * worst-case reservation while the gate adds the turn's real usage, so
+   * the row is left out here instead of counted twice.
+   */
+  excludeCallId: string | null = null,
 ): Promise<{ spentMicrocents: number; callCount: number; unpricedCallCount: number }> {
   const spendRows = (await tx.execute(sql`
     WITH sessions AS (
@@ -2713,6 +2719,7 @@ async function sumRunSpend(
            )::int AS unpriced_call_count
     FROM ai_calls a
     WHERE a.chat_session_id IN (SELECT sid FROM sessions)
+      AND a.id IS DISTINCT FROM ${excludeCallId}::uuid
   `)) as unknown as Array<{
     cost_microcents: number | string;
     call_count: number;
@@ -2845,7 +2852,13 @@ export const getSessionBudgetStateOp = defineOperation({
   readScope: "request",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ chatSessionId: z.string().uuid() }).strict(),
+  input: z
+    .object({
+      chatSessionId: z.string().uuid(),
+      /** The running turn's ledger row, counted by the caller with its real usage. */
+      excludeCallId: z.string().uuid().nullable().optional(),
+    })
+    .strict(),
   output: z.object({
     gate: z
       .object({
@@ -2900,7 +2913,7 @@ export const getSessionBudgetStateOp = defineOperation({
     const run = rows[0];
     if (!run) return ok({ gate: null });
 
-    const spend = await sumRunSpend(tx, run.chat_session_id);
+    const spend = await sumRunSpend(tx, run.chat_session_id, input.excludeCallId ?? null);
     const ceilingMicrocents =
       typeof run.cost_ceiling_microcents === "string"
         ? Number.parseInt(run.cost_ceiling_microcents, 10)

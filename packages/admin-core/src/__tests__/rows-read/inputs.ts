@@ -126,6 +126,9 @@ export const ROWS_READ_INPUTS: readonly RowsReadInput[] = [
     ctx: "chat",
     input: () => ({ query: "zebrafinch lan", limit: 50 }),
   },
+  // #1676 — the page search before anything is typed: the pages edited
+  // last, from the newest snapshots (the fixture's staged history on main).
+  { op: "pages.list_recently_edited", ctx: "system", input: () => ({ limit: 8 }) },
   { op: "modules.list", ctx: "chat", input: () => ({}) },
   // #1424 — the module sits on every page and on every pending layout of
   // the fixture: the read stays at the cap on either size.

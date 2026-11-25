@@ -2,14 +2,20 @@
 
 /**
  * #847 — `subscribe` is a public write: it always demands a captcha proof
- * (no "only when a captcha handle happens to exist" branch) and judges
- * the honeypot server-side, so a bot that POSTs directly gets a fake
- * success and nothing is stored or mailed.
+ * (#1340: the host refuses the call without one, from the declaration) and
+ * judges the honeypot server-side, so a bot that POSTs directly gets a
+ * fake success and nothing is stored or mailed. The work is core's
+ * double opt-in block, run from the declaration.
  */
 
 import { describe, expect, it } from "bun:test";
 import { HONEYPOT_FIELD_NAME } from "@caelo-cms/plugin-component-kit";
-import { indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { refusePublicCall, runDeclaredPublicOperation } from "@caelo-cms/plugin-host";
+import {
+  indexCheckedQuery,
+  type PluginContextTier1,
+  publicOperationOf,
+} from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 function harness(proofOk: boolean) {
@@ -38,28 +44,30 @@ function harness(proofOk: boolean) {
   return { ctx, state };
 }
 
-const subscribe = (ctx: PluginContextTier1, args: unknown) => {
-  const op = plugin.operations.subscribe;
+function declared() {
+  const op = publicOperationOf(plugin.publicOperations, "subscribe");
   if (!op) throw new Error("subscribe missing");
-  return op(ctx, args);
-};
+  return op;
+}
+
+const subscribe = (ctx: PluginContextTier1, args: unknown) =>
+  runDeclaredPublicOperation(declared(), ctx, args);
 
 describe("newsletter subscribe", () => {
-  it("rejects a request whose captcha proof fails, storing nothing", async () => {
-    const h = harness(false);
-    await expect(subscribe(h.ctx, { email: "a@example.com" })).rejects.toThrow(
-      /captcha verification failed/,
+  it("is refused by the host without a captcha proof, before anything runs", () => {
+    const r = refusePublicCall(
+      declared(),
+      { enforced: true, proofVerified: false },
+      { email: "a@example.com" },
     );
-    expect(h.state.captchaCalls).toBe(1);
-    expect(h.state.inserts).toBe(0);
-    expect(h.state.mails).toBe(0);
+    expect(r.ok).toBe(false);
+    expect(r.ok ? null : r.error.kind).toBe("CaptchaRequired");
   });
 
-  it("requires the proof on every legitimate subscribe", async () => {
+  it("stores and mails on a legitimate subscribe", async () => {
     const h = harness(true);
     const r = await subscribe(h.ctx, { email: "a@example.com", [HONEYPOT_FIELD_NAME]: "" });
     expect(r).toEqual({ awaitingConfirm: true });
-    expect(h.state.captchaCalls).toBe(1);
     expect(h.state.inserts).toBe(1);
     // #1337 — the double opt-in mail is queued, not sent from the gateway.
     expect(h.state.mails).toBe(1);

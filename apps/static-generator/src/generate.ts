@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
+
 import { fontReader } from "@caelo-cms/font-service";
+import {
+  type ComposedModuleRef,
+  type PageOutputFinish,
+  placementKey,
+} from "@caelo-cms/plugin-host";
+import { PageOutputCollector } from "./page-output.js";
 
 /**
  * Static generator entry point. Takes a transaction handle on `cms_admin`
@@ -43,6 +50,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { type TransactionRunner, textArray } from "@caelo-cms/query-api";
 import {
+  type BuildSearchFeed,
   buildMediaUrl,
   ComposeError,
   type ComposeFonts,
@@ -53,8 +61,11 @@ import {
   composeSiteHeaders,
   createListRenderContext,
   FAVICON_VARIANT,
+  FEED_CONTENT_TYPE,
+  FEED_FILE,
   fontUnresolvableMarker,
   formatStaticFilesManifest,
+  indexNowKeyFile,
   isRasterImageMime,
   LIST_QUERY_MAX_LIMIT,
   type ListRenderContext,
@@ -76,17 +87,23 @@ import {
   STATIC_FILES_MANIFEST_FILE,
   type StaticFileContentType,
   servableRedirectTargetIssue,
+  siteFeedLink,
   siteSecurityPolicySchema,
   staticFileCollisions,
   staticFileContentTypeHeader,
+  stripContentInstances,
   type ThemeDocument,
   themeFaviconRendition,
   trimSlashes,
+  WEBSUB_HUB_URL,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { ASSET_REFERENCES_FILE, serializeAssetReferences } from "./asset-references.js";
+import { renderAtomFeed } from "./atom-feed.js";
 import { type BuildOutput, DiskOutput } from "./build-output.js";
 import { BuildRefusal } from "./build-refusal.js";
+import { bodyContentDigest } from "./content-fingerprint.js";
+import { ContentStates } from "./content-states.js";
 import type { VariantComposeModule } from "./content-variants-pass.js";
 import { publishFontFiles } from "./font-assets.js";
 import { loadSiteFontUsage } from "./font-usage-sources.js";
@@ -256,6 +273,17 @@ export interface GenerateResult {
   readonly renderFailures: readonly RenderFailure[];
   /** How many render failures the build had in all (`renderFailures` lists the first). */
   readonly renderFailureCount: number;
+  /**
+   * #1647 — page output delivered to plugin observers: null when no plugin
+   * observes it or the build is no Stage; else whose observer failed.
+   */
+  readonly pageOutput: PageOutputFinish | null;
+  /**
+   * What the build changes live per page, its feed and its IndexNow key
+   * (docs/dev/search-engine-feed.md). A Stage records it with the run; the
+   * Publish live that ships the build makes it the live record.
+   */
+  readonly searchFeed: BuildSearchFeed;
 }
 
 /** One page linking to a page this build does not ship. */
@@ -633,6 +661,8 @@ async function buildSite(
   // #551 — read first: a missing site base URL or site language fails the
   // run before any file is written, not halfway through the page passes.
   const seoSettings = requireSiteLanguage(await readSeoSettings(tx));
+  // The feed every page links (docs/dev/search-engine-feed.md).
+  const feed = siteFeedLink(seoSettings.feedEnabled, seoSettings.siteBaseUrl);
 
   await mkdir(buildDir, { recursive: true });
 
@@ -747,6 +777,22 @@ async function buildSite(
   if (notFoundError !== null) throw new BuildRefusal(notFoundError);
   // #1604 — the page a staging build's plugin-list failure names, by path.
   const pagePathOf = new Map(pageRows.map((p) => [p.page_id, p.current_path]));
+  // #1647 — a Stage (a full staging build) delivers its page output to the
+  // plugins that observe it; every other build delivers none.
+  const pageOutput = reportsRenderFailures
+    ? await PageOutputCollector.open({
+        plugins: args.plugins,
+        tx,
+        runId,
+        siteBaseUrl: seoSettings.siteBaseUrl,
+        siteOrigins: [
+          ...new Set([new URL(seoSettings.siteBaseUrl).origin, new URL(target.baseUrl).origin]),
+        ],
+        notFoundPageId,
+        statusFilter,
+        pages: pageRows.map((p) => ({ pageId: p.page_id, path: p.current_path })),
+      })
+    : null;
   const outputPathOf = (p: PageRow): string =>
     builtPageOutputPath(
       { pageId: p.page_id, currentPath: p.current_path },
@@ -1043,6 +1089,13 @@ async function buildSite(
   const renderFailures: RenderFailure[] = [];
   const contentTypeOverrides: Record<string, string> = {};
 
+  // What production serves per page, to tell what this build changes
+  // (docs/dev/search-engine-feed.md). Only a full build knows which pages
+  // it no longer ships.
+  const contentStates = await ContentStates.load(tx, {
+    publishAt: args.publishAt,
+    full: pagesToBuild === null,
+  });
   const seo = await prepareSeoPass({
     tx,
     plugins: args.plugins,
@@ -1052,6 +1105,8 @@ async function buildSite(
     pageUrlStyle,
     notFoundPageId,
     siteShareImageAssetId: tr?.social_share_media_id ?? null,
+    contentStates,
+    feed,
   });
   // #449 — plugin client assets: one call per contributing plugin for
   // the whole build, written under `_caelo/plugin/<slug>/` with the
@@ -1134,6 +1189,9 @@ async function buildSite(
           deferredModules,
           nestedModules: loaded.nestedModules,
           linkResolver,
+          // Epic #1644 — observers tell two placements of one design apart by
+          // their content instance; the stamp is stripped before the write.
+          stampContentInstances: pageOutput !== null,
         });
         return { composed, lists, linkResolver };
       } catch (e) {
@@ -1161,6 +1219,10 @@ async function buildSite(
         pageId: page.page_id,
         pageSlug: page.slug,
         pageTitle: page.title,
+        ...(pageOutput && n === 1 ? { composed: composedRefs(blocks, layoutBlocks) } : {}),
+        // What the page itself shows, without the layout's chrome: page 1
+        // stands for the page in the live record (docs/dev/search-engine-feed.md).
+        bodyDigest: n === 1 ? bodyContentDigest(stripContentInstances(composed.contentHtml)) : null,
         relPath:
           n === 1
             ? outputPathOf(page)
@@ -1285,6 +1347,9 @@ async function buildSite(
         bakes,
       }),
     );
+    // docs/dev/search-engine-feed.md — the live comparison reads the final
+    // page, plugin regions included.
+    seo.recordStates(pages);
     await timer.measure(parts, "plugin-assets", () => {
       // Runs AFTER the plugin render pass so a runtime that hydrates baked
       // markup is guaranteed to find it already in the document.
@@ -1335,10 +1400,30 @@ async function buildSite(
       // #1271 — on an uploading publisher each file goes to the provider
       // as it is written (the stream output); WRITE_PARALLELISM files at once.
       await runBatched(pages, WRITE_PARALLELISM, (p) =>
-        writeBuildFile(p.relPath, p.html, contentTypeOverrides[p.relPath]),
+        // The observers' placement stamps never reach a published file.
+        writeBuildFile(
+          p.relPath,
+          pageOutput ? stripContentInstances(p.html) : p.html,
+          contentTypeOverrides[p.relPath],
+        ),
       );
     });
     fileCount += pages.length;
+    if (pageOutput) {
+      await timer.measure(parts, "page-output", () =>
+        pageOutput.chunk(
+          pages.map((p) => ({
+            pageId: p.pageId,
+            html: p.html,
+            path: pagePathOf.get(p.pageId) ?? `/${p.relPath}`,
+            title: p.pageTitle,
+            breadcrumbTrail: p.breadcrumbTrail,
+            composed: p.composed ?? [],
+            followUp: p.followUp !== undefined,
+          })),
+        ),
+      );
+    }
     args.onProgress?.({ pagesDone, pagesTotal: pageRows.length });
     // #1271 — a full collection after each chunk. What the chunk held is
     // garbage now, but the engine grows its heap with the allocation rate,
@@ -1420,6 +1505,7 @@ async function buildSite(
   timer.lapParts(parts, "batches");
   // P13 — every fresh plugin bake of the build, upserted in one order.
   await bakes.flush(tx);
+  const pageOutputFinish = pageOutput ? await pageOutput.finish() : null;
 
   const reportedRenderFailures = reportsRenderFailures
     ? stagedRenderFailures(renderFailures)
@@ -1441,6 +1527,40 @@ async function buildSite(
 
   const sitemapEmitted = await seo.writeSitemap(writeBuildFile);
   if (sitemapEmitted) fileCount += 1;
+  // docs/dev/search-engine-feed.md — what this build changes live, the feed
+  // of the latest changes, and the IndexNow key file. The run that ships the
+  // build to production records the changes and announces them.
+  const states = await contentStates.finish(tx);
+  /** A search file the build writes at the root; refused when a page already ships there. */
+  const writeSearchFile = async (relPath: string, body: string, contentType: string) => {
+    if (servedPaths.has(relPath)) {
+      throw new BuildRefusal(
+        `static-generator: a page is published at /${relPath}, where the site's ${relPath === FEED_FILE ? "feed" : "IndexNow key file"} belongs. Give the page another URL, or turn the ${relPath === FEED_FILE ? "feed" : "IndexNow submissions"} off under Settings → SEO, then Stage again.`,
+      );
+    }
+    contentTypeOverrides[relPath] = contentType;
+    await writeBuildFile(relPath, body, contentType);
+    fileCount += 1;
+  };
+  if (feed !== null) {
+    await writeSearchFile(
+      FEED_FILE,
+      renderAtomFeed({
+        feedUrl: feed.url,
+        siteUrl: `${trimSlashes(seoSettings.siteBaseUrl)}/`,
+        title: feed.title,
+        language: seoSettings.siteLanguage,
+        hubUrl: WEBSUB_HUB_URL,
+        entries: states.feed,
+        emptyUpdated: new Date(args.publishAt).toISOString(),
+      }),
+      FEED_CONTENT_TYPE,
+    );
+  }
+  const indexNowKey = seoSettings.indexNowEnabled ? seoSettings.indexNowKey : null;
+  if (indexNowKey !== null) {
+    await writeSearchFile(indexNowKeyFile(indexNowKey), indexNowKey, "text/plain; charset=utf-8");
+  }
   // cdn_manifest.json is always written.
   await media.finish(writeBuildFile);
   fileCount += 1;
@@ -1448,7 +1568,10 @@ async function buildSite(
 
   await writeBuildFile(
     "robots.txt",
-    buildRobotsTxtWithSitemap(target.robotsDefault, seoSettings.siteBaseUrl, sitemapEmitted),
+    buildRobotsTxtWithSitemap(target.robotsDefault, seoSettings.siteBaseUrl, {
+      sitemap: sitemapEmitted,
+      feed: feed !== null,
+    }),
   );
   fileCount += 1;
 
@@ -1627,7 +1750,14 @@ async function buildSite(
     truncatedLists,
     renderFailures: reportedRenderFailures?.failures ?? [],
     renderFailureCount: reportedRenderFailures?.total ?? 0,
+    pageOutput: pageOutputFinish,
     securityHeaders,
+    searchFeed: {
+      base: states.base,
+      changes: states.changes,
+      feedUrl: feed?.url ?? null,
+      indexNowKey,
+    },
   };
 }
 
@@ -1738,10 +1868,14 @@ interface BuiltPage {
   pageSlug: string;
   pageTitle: string;
   relPath: string;
+  /** The digest of what the page's own body shows (page 1 only; see SeoPagesContext). */
+  bodyDigest: string | null;
   /** #1142 — the trail the page's breadcrumbs showed, for the BreadcrumbList JSON-LD. */
   breadcrumbTrail: readonly string[] | null;
   /** #1257 — page `n` ≥ 2 of a paginated overview, and whether it may be indexed. */
   followUp?: { page: number; indexable: boolean };
+  /** #1647 — the modules the composition placed, with their zone (page 1 only). */
+  composed?: ComposedModuleRef[];
 }
 
 /** Builds a self-hosted target keeps under `builds/` for rollback. */
@@ -1797,4 +1931,29 @@ export function faviconAsset(row: {
     mediaId: row.favicon_media_id,
     ...themeFaviconRendition(row.favicon_slug, row.favicon_mime),
   };
+}
+
+/** #1647 — the modules of one page's composition with their zone, each once. */
+function composedRefs(
+  blocks: readonly {
+    readonly modules: readonly { readonly moduleId: string; readonly contentInstanceId?: string }[];
+  }[],
+  layoutBlocks: readonly {
+    readonly modules: readonly { readonly moduleId: string; readonly contentInstanceId?: string }[];
+  }[],
+): ComposedModuleRef[] {
+  // One entry per placement (module and content instance): one design
+  // placed with two instances is two blocks to an observer.
+  const out = new Map<string, ComposedModuleRef>();
+  const add = (
+    m: { readonly moduleId: string; readonly contentInstanceId?: string },
+    zone: "layout" | "page",
+  ) => {
+    const instance = m.contentInstanceId ?? null;
+    const key = placementKey(m.moduleId, instance);
+    if (!out.has(key)) out.set(key, { moduleId: m.moduleId, zone, contentInstanceId: instance });
+  };
+  for (const b of layoutBlocks) for (const m of b.modules) add(m, "layout");
+  for (const b of blocks) for (const m of b.modules) add(m, "page");
+  return [...out.values()];
 }

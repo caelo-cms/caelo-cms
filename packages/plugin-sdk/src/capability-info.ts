@@ -104,4 +104,24 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
     label: "Visitor consent",
     allows: "Read what every plugin needs consent for and decide how visitors are asked.",
   },
+  page_output: {
+    label: "What your pages show",
+    allows:
+      "Receive the text, links and module structure of your pages at every Stage. It sees staged pages only, never unfinished work in a chat.",
+  },
+  collections: {
+    label: "Search index",
+    allows:
+      "Keep an index of your content in private storage. It goes live with Publish live, and visitors can query it only through the search operations the plugin declares.",
+  },
+  visitor_ai: {
+    label: "Visitor AI",
+    allows:
+      "Answer visitors' questions with AI on your site, from the pages its search finds. It runs on your visitor-AI key and within the budgets you set; it can only search and read, never change anything.",
+  },
+  batch_jobs: {
+    label: "Long-running tasks",
+    allows:
+      "Run its own tasks in a separate cloud job, with the permissions it already has and nothing more, for example to index every page at once.",
+  },
 };

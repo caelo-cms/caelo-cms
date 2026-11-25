@@ -61,8 +61,11 @@ import {
   cloudRunServicePrefix,
   databaseUrls,
   fixedCloudRunServiceName,
+  GATEWAY_MEMORY_DEFAULT,
   type GcpProvider,
+  SERVICE_SECRET_FILES,
   STAGING_GATEWAY_TIMEOUT_SECONDS,
+  secretFilePath,
   serviceSecrets,
   stagingGatewayEnvContract,
 } from "./stack-contract.js";
@@ -144,11 +147,17 @@ export function stagingGatewayDeployArgs(inputs: StagingGatewayServiceInputs): s
     // stacks set the same on the live gateway.
     ...GATEWAY_POOL_ENV.map((e) => `${e.name}=${e.value}`),
   ];
-  const secrets = env.flatMap((e) =>
-    "valueSource" in e
-      ? [`${e.name}=${e.valueSource.secretKeyRef.secret}:${e.valueSource.secretKeyRef.version}`]
-      : [],
-  );
+  const secrets = [
+    ...env.flatMap((e) =>
+      "valueSource" in e
+        ? [`${e.name}=${e.valueSource.secretKeyRef.secret}:${e.valueSource.secretKeyRef.version}`]
+        : [],
+    ),
+    // #1654 — its own visitor-AI key, as a file (read at `latest` on every turn).
+    ...SERVICE_SECRET_FILES["staging-gateway"].map(
+      (f) => `${secretFilePath(f)}=${gcpSecretId(inputs.env, f.secret)}:${f.version}`,
+    ),
+  ];
   return [
     "run",
     "deploy",
@@ -162,7 +171,8 @@ export function stagingGatewayDeployArgs(inputs: StagingGatewayServiceInputs): s
     "--min-instances=0",
     `--max-instances=${DEFAULT_STAGING_GATEWAY_MAX_INSTANCES}`,
     "--cpu=1",
-    "--memory=512Mi",
+    // Epic #1644 — the staging collection index files are cached in memory.
+    `--memory=${GATEWAY_MEMORY_DEFAULT}`,
     "--cpu-throttling",
     `--timeout=${STAGING_GATEWAY_TIMEOUT_SECONDS}`,
     `--network=${inputs.vpc.network}`,

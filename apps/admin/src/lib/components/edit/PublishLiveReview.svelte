@@ -11,6 +11,9 @@
    * The form posts the staged run it showed (`stagedRunId`: deploy.promote
    * refuses a newer build) and the redirect changes it listed as going live
    * (#1550), so exactly what it showed goes live.
+   *
+   * Every new or changed page, and a page that shows each site-wide part,
+   * links to staging, so the operator can look at it again before the click.
    */
   import { LoaderCircle } from "lucide-svelte";
   import { enhance, type SubmitFunction } from "$app/forms";
@@ -31,9 +34,11 @@
     pageTotal,
     type PublishReviewData,
     redirectRule,
+    reviewPageHref,
     reviewPages,
     shipsNothingVisible,
   } from "./publish-review.js";
+  import { stagingPageHref } from "#lib/staging-href.js";
   import type { QualityGate } from "./quality-status.svelte.js";
 
   let {
@@ -146,6 +151,14 @@
   </Button>
 {/snippet}
 
+{#snippet stagingLink(title: string, href: string | null)}
+  {#if href}
+    <a href={href} target="_blank" rel="noopener noreferrer" class="font-medium text-link underline-offset-2 [overflow-wrap:anywhere] hover:underline" data-testid="publish-review-staging-link">{title}</a>
+  {:else}
+    <span class="font-medium [overflow-wrap:anywhere]">{title}</span>
+  {/if}
+{/snippet}
+
 {#snippet pageTag(change: "new" | "changed" | "removed")}
   {#if change === "new"}
     <span class="rounded bg-emerald-500/15 px-1 text-[10px] font-semibold text-emerald-800 dark:text-emerald-300">New</span>
@@ -228,7 +241,7 @@
               {#each shownPages as p (p.pageId)}
                 <li class="flex min-w-0 flex-wrap items-baseline gap-x-2 text-[13px]">
                   {@render pageTag(p.change)}
-                  <span class="font-medium [overflow-wrap:anywhere]">{p.title}</span>
+                  {@render stagingLink(p.title, reviewPageHref(data.staging, p))}
                   {#if p.path}<span class="font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{p.path}</span>{/if}
                 </li>
               {/each}
@@ -251,7 +264,7 @@
               {#each shownSiteWide as s (s.key)}
                 <li class="flex min-w-0 flex-wrap items-baseline gap-x-2 text-[13px]">
                   {@render pageTag(s.change)}
-                  <span class="font-medium [overflow-wrap:anywhere]">{s.title}</span>
+                  {@render stagingLink(s.title, s.samplePath === null ? null : stagingPageHref(data.staging, s.samplePath))}
                   <span class="text-xs text-muted-foreground">{s.what}</span>
                 </li>
               {/each}

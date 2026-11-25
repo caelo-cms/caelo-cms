@@ -58,7 +58,6 @@ import {
   liveMaxInstances,
   liveTimeoutSeconds,
   liveVolumes,
-  planAdminMemory,
   planContractEnv,
   planCpuIdle,
   planMaxInstances,
@@ -66,6 +65,7 @@ import {
   planNoVpc,
   planRequestTimeout,
   planSecretFiles,
+  planServiceMemory,
   rollService,
   serviceRollArgs,
 } from "../stack-converge.js";
@@ -191,6 +191,50 @@ export type PlanResult =
   | { readonly ok: true; readonly plan: AppRollPlan }
   | { readonly ok: false; readonly error: string };
 
+/** One of the install's Cloud Run services as it is deployed. */
+export type LiveService =
+  | {
+      readonly ok: true;
+      readonly serviceName: string;
+      /** `gcloud run services describe --format=json`. */
+      readonly json: string;
+    }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * Find the install's `slug` service and read its configuration. Read-only:
+ * {@link planAppRoll} plans each roll from it, and the upgrade's pre-flight
+ * reads the admin's env from it before the plan exists (#1682).
+ */
+export async function describeLiveService(
+  install: Pick<AppRollInstall, "provider" | "projectId" | "region" | "env" | "credentials">,
+  slug: RollSlug,
+  run: GcloudRunner,
+): Promise<LiveService> {
+  const prefix = cloudRunServicePrefix(install.provider, install.env, slug);
+  const lookup = await resolveGcpResourceName(
+    run,
+    "run-service",
+    prefix,
+    install.projectId,
+    install.region,
+  );
+  if (lookup.status !== "found") {
+    return {
+      ok: false,
+      error: lookupFailure(lookup, `${prefix}* Cloud Run service`, install.credentials),
+    };
+  }
+  const json = await describeServiceJson(run, install.projectId, install.region, lookup.name);
+  if (!json) {
+    return {
+      ok: false,
+      error: `Could not read the ${slug} service's configuration — refusing to roll`,
+    };
+  }
+  return { ok: true, serviceName: lookup.name, json };
+}
+
 /**
  * Read both services and plan their rolls: prior revisions (the rollback
  * targets), env-contract changes, the admin's memory and media volume. Makes
@@ -212,21 +256,9 @@ export async function planAppRoll(
 ): Promise<PlanResult> {
   const services: ServicePlan[] = [];
   for (const slug of ROLL_ORDER) {
-    const prefix = cloudRunServicePrefix(install.provider, install.env, slug);
-    const lookup = await resolveGcpResourceName(
-      run,
-      "run-service",
-      prefix,
-      install.projectId,
-      install.region,
-    );
-    if (lookup.status !== "found") {
-      return {
-        ok: false,
-        error: lookupFailure(lookup, `${prefix}* Cloud Run service`, install.credentials),
-      };
-    }
-    const serviceName = lookup.name;
+    const live = await describeLiveService(install, slug, run);
+    if (!live.ok) return { ok: false, error: live.error };
+    const { serviceName, json } = live;
     const priorRevision = await findCurrentRevision(
       run,
       install.projectId,
@@ -237,13 +269,6 @@ export async function planAppRoll(
       return {
         ok: false,
         error: `Could not capture the current ${slug} revision — refusing to roll`,
-      };
-    }
-    const json = await describeServiceJson(run, install.projectId, install.region, serviceName);
-    if (!json) {
-      return {
-        ok: false,
-        error: `Could not read the ${slug} service's configuration — refusing to roll`,
       };
     }
     services.push({
@@ -309,10 +334,11 @@ export async function planAppRoll(
   }
   const warnings: string[] = [];
   const rolls = services.map((s): RollPlan => {
-    // #553 — the admin runs the Lighthouse quality audit; raise it to the
-    // stack's memory default (never lowered; an unparsable value is kept).
-    const memory = s.slug === "admin" ? planAdminMemory(s.liveMemory) : null;
-    if (memory && !memory.ok) warnings.push(`admin memory left as is: ${memory.error}`);
+    // #553 — the admin runs the Lighthouse quality audit; epic #1644 — both
+    // gateways keep collection index files in memory. Raise each to its
+    // floor (never lowered; an unparsable value is kept).
+    const memory = planServiceMemory(s.slug, s.liveMemory);
+    if (!memory.ok) warnings.push(`${s.slug} memory left as is: ${memory.error}`);
     // #806 — the MCP-Auth-Proxy streams remote-MCP chat turns
     // (stack-contract.ts MCP_AUTH_PROXY_TIMEOUT_SECONDS). The other services'
     // timeouts are the stacks' alone.
@@ -320,7 +346,7 @@ export async function planAppRoll(
       s.slug === "mcp-auth-proxy"
         ? planRequestTimeout(s.liveTimeout, MCP_AUTH_PROXY_TIMEOUT_SECONDS)
         : null;
-    const memoryFlags = memory?.ok ? memory.flags : [];
+    const memoryFlags = memory.ok ? memory.flags : [];
     const timeoutFlags = timeout?.ok ? timeout.flags : [];
     const cpu = planCpuIdle(s.liveCpuIdle, SERVICE_CPU_IDLE[s.slug]);
     const cpuFlags = cpu.ok ? cpu.flags : [];

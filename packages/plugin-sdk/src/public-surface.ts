@@ -60,6 +60,8 @@
  */
 
 import { z } from "zod";
+import type { PluginConfigSchema } from "./config.js";
+import { checkPublicRun, type PublicRun, publicRun } from "./public-run.js";
 
 /** The four kinds a public (`schema`) table can have. */
 export const PLUGIN_TABLE_KINDS = ["published", "inbox", "visitor-state", "private"] as const;
@@ -99,8 +101,11 @@ export const publicOperationRateLimit = z
 /** The per-client-address budget of one operation. */
 export type PublicOperationRateLimit = z.infer<typeof publicOperationRateLimit>;
 
-/** Mail is the only host service a plugin can declare it needs (E12). */
-export const pluginRequirement = z.enum(["email"]);
+/**
+ * The host services a plugin can declare it needs (E12): mail, and (#1654)
+ * the visitor AI — its own key and budgets, set up by the Owner.
+ */
+export const pluginRequirement = z.enum(["email", "visitor-ai"]);
 
 /** A host service a plugin needs before it can be activated. */
 export type PluginRequirement = z.infer<typeof pluginRequirement>;
@@ -112,7 +117,10 @@ export type PluginRequirement = z.infer<typeof pluginRequirement>;
  * plugin's host validates against.
  */
 export interface PublicOperationDef {
-  /** An operation in `operations`. */
+  /**
+   * The operation's name, `<slug>.<name>` on the gateway. #1340 — not one
+   * of `operations`: a public operation runs no plugin code, only `run`.
+   */
   readonly name: string;
   readonly kind: z.infer<typeof publicOperationKind>;
   /**
@@ -131,6 +139,11 @@ export interface PublicOperationDef {
   readonly reads?: ReadonlyArray<string>;
   /** Tables of `schema` the handler writes with `ctx.query`. */
   readonly writes?: ReadonlyArray<string>;
+  /**
+   * #1340 — what the operation does, as data the host executes with core
+   * code (`./public-run.ts`): an insert, a list, or a core building block.
+   */
+  readonly run: PublicRun;
 }
 
 const operationName = z.string().regex(/^[a-z_][a-z0-9_]{0,119}$/);
@@ -146,6 +159,8 @@ export const publicOperationManifest = z
     inputJsonSchema: z.record(z.string(), z.unknown()),
     reads: z.array(identifier).max(32),
     writes: z.array(identifier).max(32),
+    /** #1340 — what the host does for the visitor (no plugin code). */
+    run: publicRun,
   })
   .strict();
 
@@ -166,6 +181,7 @@ export function publicOperationManifestOf(op: PublicOperationDef): PublicOperati
     >,
     reads: [...(op.reads ?? [])],
     writes: [...(op.writes ?? [])],
+    run: structuredClone(op.run),
   };
 }
 
@@ -188,10 +204,15 @@ const VISITOR_WRITABLE: ReadonlySet<PluginTableKind> = new Set(["inbox", "visito
  */
 export function checkPublicSurface(
   m: {
-    readonly schema: Readonly<Record<string, unknown>>;
+    readonly schema: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+    readonly adminSchema?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
     readonly tableKinds?: Readonly<Record<string, PluginTableKind>>;
+    readonly visitorProjection?: Readonly<Record<string, readonly string[]>>;
+    readonly requestedCapabilities?: readonly string[];
+    readonly mailTemplates?: Readonly<Record<string, unknown>>;
     readonly operations: ReadonlyArray<string>;
     readonly publicOperations?: ReadonlyArray<PublicOperationManifest>;
+    readonly config?: PluginConfigSchema;
   },
   addIssue: (path: (string | number)[], message: string) => void,
 ): void {
@@ -215,12 +236,14 @@ export function checkPublicSurface(
       addIssue(["publicOperations", i, "name"], `public operation "${op.name}" is declared twice`);
     }
     seen.add(op.name);
-    if (!m.operations.includes(op.name)) {
+    // #1340 — no plugin code answers a visitor: the run is the operation.
+    if (m.operations.includes(op.name)) {
       addIssue(
         ["publicOperations", i, "name"],
-        `public operation "${op.name}" is not one of the plugin's operations`,
+        `public operation "${op.name}" is also a code operation: a public operation runs only its declared \`run\` (no plugin code reaches the gateway), so remove "${op.name}" from operations or rename the admin-side one`,
       );
     }
+    checkPublicRun(op, m, (path, message) => addIssue(["publicOperations", i, ...path], message));
     for (const [list, allowed, verb] of [
       ["reads", VISITOR_READABLE, "read"],
       ["writes", VISITOR_WRITABLE, "write"],

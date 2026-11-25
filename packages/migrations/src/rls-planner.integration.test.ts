@@ -16,6 +16,20 @@
  *    can never be an index condition on an RLS table. ILIKE is not
  *    leakproof, so a trigram index never serves `ILIKE '%q%'` for
  *    admin_role. Rule: no trigram index on an RLS table.
+ * 3. #1672 — `pg_current_xact_id()` assigns a transaction id, and the
+ *    planner already evaluates it while planning, so a read policy that
+ *    calls it gives every reader of the table an xid (even an EXPLAIN).
+ *    A cache filled by such a reader then looks stale to every reader
+ *    running beside it. Rule: no policy that guards reads calls it;
+ *    `pg_current_xact_id_if_assigned()` answers "my own rows" without
+ *    assigning one.
+ * 4. 0770 — an `SQL` function whose body has a subquery or a CTE cannot be
+ *    inlined, and Postgres 17 plans its body again in every statement that
+ *    calls it; a plpgsql function keeps its plans for the session. A policy
+ *    runs on every read of its table, so such a function there plans on
+ *    every read (the MCP token principal cost every MCP request about
+ *    350 µs of planning). Rule: a policy calls no such function; the same
+ *    holds for the branch check and the chat-owner lookup every op runs.
  *
  * The planner proofs run as admin_role (the role every admin read uses)
  * on a scratch table with FORCEd RLS and realistic row counts.
@@ -47,6 +61,8 @@ interface PolicyRow {
   readonly schema: string;
   readonly table: string;
   readonly policy: string;
+  /** `pg_policy.polcmd`: r = SELECT, a = INSERT, w = UPDATE, d = DELETE, * = ALL. */
+  readonly cmd: string;
   readonly qual: string | null;
   readonly check: string | null;
 }
@@ -56,6 +72,7 @@ async function policies(url: string): Promise<PolicyRow[]> {
   try {
     return (await db`
       SELECT n.nspname AS schema, c.relname AS table, p.polname AS policy,
+             p.polcmd::text AS cmd,
              pg_get_expr(p.polqual, p.polrelid) AS qual,
              pg_get_expr(p.polwithcheck, p.polrelid) AS check
       FROM pg_policy p
@@ -64,6 +81,44 @@ async function policies(url: string): Promise<PolicyRow[]> {
       WHERE n.nspname <> ${LAB}
       ORDER BY 1, 2, 3
     `) as PolicyRow[];
+  } finally {
+    await db.end();
+  }
+}
+
+/**
+ * `LANGUAGE sql` functions Postgres cannot inline because their body reads
+ * a table or has a CTE (`FROM` / `WITH`), by name.
+ */
+async function planPerStatementFunctions(url: string): Promise<Map<string, string>> {
+  const db = new SQL(url);
+  try {
+    const rows = (await db`
+      SELECT p.proname AS name, n.nspname AS schema
+      FROM pg_proc p
+      JOIN pg_language l ON l.oid = p.prolang
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE l.lanname = 'sql' AND p.prosrc ~* '\\m(from|with)\\M'
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema', ${LAB})
+    `) as { name: string; schema: string }[];
+    return new Map(rows.map((r) => [r.name, r.schema]));
+  } finally {
+    await db.end();
+  }
+}
+
+/** The language of each function named `names` in `public`. */
+async function languages(url: string, names: readonly string[]): Promise<Record<string, string>> {
+  const db = new SQL(url);
+  try {
+    const rows = (await db`
+      SELECT p.proname AS name, l.lanname AS lang
+      FROM pg_proc p
+      JOIN pg_language l ON l.oid = p.prolang
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.proname = ANY(${names})
+    `) as { name: string; lang: string }[];
+    return Object.fromEntries(rows.map((r) => [r.name, r.lang]));
   } finally {
     await db.end();
   }
@@ -104,11 +159,46 @@ describe("#1297 — RLS policy rules", () => {
       expect(offenders).toEqual([]);
     });
 
+    it(`${label}: no policy that guards reads assigns a transaction id (#1672)`, async () => {
+      const offenders = (await policies(url))
+        .filter(
+          (p) => (p.cmd === "r" || p.cmd === "*") && /\bpg_current_xact_id\(\)/.test(p.qual ?? ""),
+        )
+        .map((p) => `${p.schema}.${p.table} ${p.policy}`);
+      // Spell "the reader's own rows" as `xid = pg_current_xact_id_if_assigned()` (0750).
+      expect(offenders).toEqual([]);
+    });
+
+    it(`${label}: no policy calls an SQL function Postgres plans in every statement (0770)`, async () => {
+      const planned = await planPerStatementFunctions(url);
+      const offenders = (await policies(url)).flatMap((p) =>
+        [...planned.keys()]
+          .filter((name) =>
+            [p.qual, p.check].some((e) => e !== null && new RegExp(`\\b${name}\\(`).test(e)),
+          )
+          .map((name) => `${p.schema}.${p.table} ${p.policy} → ${name}`),
+      );
+      // Write such a helper in plpgsql, with the same query (0770).
+      expect(offenders).toEqual([]);
+    });
+
     it(`${label}: no trigram index on a table with row-level security`, async () => {
       // An ILIKE under RLS is always a row filter; such an index only costs writes (0476).
       expect(await trigramIndexesOnRlsTables(url)).toEqual([]);
     });
   }
+});
+
+describe("0770 — the helpers every op runs keep their plans", () => {
+  it("the branch check and the chat-owner lookup are plpgsql", async () => {
+    // caelo_branch_visible runs before every op that names a branch, and
+    // caelo_chat_owner in it and in every draft-head maintainer: as SQL
+    // functions they planned their body on every call.
+    expect(await languages(ADMIN_URL, ["caelo_branch_visible", "caelo_chat_owner"])).toEqual({
+      caelo_branch_visible: "plpgsql",
+      caelo_chat_owner: "plpgsql",
+    });
+  });
 });
 
 interface PlanNode {

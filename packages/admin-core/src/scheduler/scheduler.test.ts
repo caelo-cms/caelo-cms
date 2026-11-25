@@ -43,6 +43,7 @@ describe("coreScheduledTasks", () => {
       "core:bug-forwarding-send": 0,
       "core:mail-outbox": 0,
       "core:reporting-jobs": 0,
+      "core:search-notify": 0,
       "core:plugin-data-build": 300,
       "core:update-scheduler": 900,
       "core:release-check": 3600,
@@ -51,6 +52,7 @@ describe("coreScheduledTasks", () => {
       "core:bug-forwarding-status": 21_600,
       "core:proposal-gc": 86_400,
       "core:chat-image-gc": 86_400,
+      "core:collections-gc": 86_400,
       "core:reporting-jobs-gc": 86_400,
     });
     for (const t of tasks) expect(SCHEDULED_TASK_KEY.test(t.key)).toBe(true);

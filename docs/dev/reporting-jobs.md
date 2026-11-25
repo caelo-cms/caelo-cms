@@ -1,8 +1,8 @@
 # Reporting jobs
 
-Issues #1359, #1360 and #1574 (#1140 category A). The admin only does work inside a request (CLAUDE.md §11.B Tier 5). Periodic work runs on the [scheduler tick](./scheduler-tick.md). Long, bounded work that one request cannot hold runs in a **reporting job**: a container job of its own that the admin starts once per piece of work and that reports back to the admin by request. Each report is a request, so it brings the CPU the admin needs to answer and record it. Nothing waits on an idle admin instance.
+Issues #1359, #1360, #1574 and #1646 (#1140 category A). The admin only does work inside a request (CLAUDE.md §11.B Tier 5). Periodic work runs on the [scheduler tick](./scheduler-tick.md). Long, bounded work that one request cannot hold runs in a **reporting job**: a container job of its own that the admin starts once per piece of work and that reports back to the admin by request. Each report is a request, so it brings the CPU the admin needs to answer and record it. Nothing waits on an idle admin instance.
 
-Three kinds run this way: the quality audit after a Stage (#1359), a site import's crawl (#1360), and the build carrier (#1574), whose one report holds the request a build runs in.
+Five kinds run this way: the quality audit after a Stage (#1359), a site import's crawl (#1360), the build carrier (#1574), whose one report holds the request a build runs in, a Stage's plugin collection index (epic #1644, #1648) and a plugin's batch run (#1646).
 
 ## The pieces
 
@@ -16,7 +16,7 @@ Three kinds run this way: the quality audit after a Stage (#1359), a site import
 | Restarting a dead attempt | `reporting-jobs/backstop.ts`, core task `core:reporting-jobs` (every tick) |
 | The job's side | `reporting-jobs/job-entry.ts` (container entry point), `job-reporter.ts`, `http-transport.ts`, `run-job.ts`; per kind a main in `job-mains.ts` |
 | Self-hosted and development | `reporting-jobs/in-process.ts` (registered by `hooks.server.ts`) |
-| Google Cloud setup | `packages/provisioning/src/reporting-job-setup.ts`, run by the wizard and every converge |
+| Google Cloud setup: one entry per kind | `packages/provisioning/src/reporting-job-catalog.ts` (`REPORTING_JOB_CATALOG`), set up by `reporting-job-setup.ts`; the wizard, every converge, the admin's env contract, the app-roll's image move, the upgrader's actAs and its IAM pre-flight all iterate the catalog |
 
 ## One attempt
 
@@ -109,7 +109,7 @@ On request-billed CPU (#1361) a build would freeze the moment the request it run
 | Asking for a carried build, and waiting for it | `packages/admin-core/src/build-carrier/carry.ts` (`carryBuild`, `executeBuild`, `carryStage`) |
 | The kind, its one action `run` | `build-carrier/kind.ts`, `build-carrier/run-order.ts` |
 | The job's side | `build-carrier/job.ts`: one report, `run` |
-| Google Cloud setup | `buildCarrierJobSpec` in `packages/provisioning/src/reporting-job-setup.ts` (job `caelo-<env>-build`) |
+| Google Cloud setup | the `build` entry of `packages/provisioning/src/reporting-job-catalog.ts` (job `caelo-<env>-build`) |
 
 **Who carries their build.** An agent's `stage_changes` and `deploy_staging` (Power-MCP, `caelo_chat`, a subagent: no operator browser on the turn), and every button that builds: the editor's Stage, Publish live, publish anyway and production build, the Changes page's Stage, the pages list's Stage and Publish live, Settings → Deployments' build and promote, and the Approve of a deploy proposal or a publish-anyway proposal, on their pending pages and on their approval cards in a chat (`ai/tools/gated-tools.ts`, #1361). The card's turn waits for the build as before, but a tab closed mid-build stops only the turn: on request-billed CPU a build left without any request would stall. The Live Edit chat's own Stage is not carried: it waits inside its turn, and the operator's Stop or a closed tab stops it with the turn (#1204). The tick's plugin-data build runs inside the tick.
 
@@ -129,6 +129,24 @@ On request-billed CPU (#1361) a build would freeze the moment the request it run
 
 **Its identity.** `caelo-<env>-build@` holds the shared grants and nothing else: token creator on itself, IAP access to the admin, log writing. No bucket, no other job, no secret, no database, no VPC (`reporting-job-setup.test.ts` asserts it). It runs no browser and executes nothing it fetches; it fetches nothing at all. A compromised carrier can call `run` for its own order only (the token), which runs the build its caller ordered, once; it can withhold the call, and the order is then given up. It cannot change what is built or as whom: the order is the admin's own record, and the job never sees it.
 
+## The job catalog (#1646)
+
+Every kind is one entry of `REPORTING_JOB_CATALOG`: its admin-core kind, its name (job and account `caelo-<env>-<name>`), the two admin env vars that point at it, its machine and env, the grants it holds beyond the shared line, what must be set up before it, and the CLI's lines for it. Nothing else names a kind: the wizard and the converge set the entries up in catalog order, `adminEnvContract` sets each entry's pair of env vars, `adminImageJobs` moves each onto the admin's new image, and the upgrader gets actAs on each account and checks it in its IAM pre-flight. `scripts/reporting-job-catalog-parity.test.ts` fails when admin-core's kinds (`reporting-jobs/kinds.ts`) and the catalog disagree on a kind or its env var names.
+
+| Kind | Job | Machine | Beyond the shared grants | Set up after |
+|---|---|---|---|---|
+| `quality_audit` | `caelo-<env>-audit-run` | 1 vCPU / 2 GiB, 60 min | reads the staging bucket and the audit results; starts the Lighthouse job | the Lighthouse audit job |
+| `site_import` | `caelo-<env>-import` | 1 vCPU / 2 GiB, 6 h | nothing | |
+| `build` | `caelo-<env>-build` | 1 vCPU / 512 MiB, 65 min | nothing | |
+| `collection_index` | `caelo-<env>-index` | 2 vCPU / 4 GiB, 60 min | reads and creates files in the staging collection store, nothing of live | the collection stores |
+| `plugin_batch` | `caelo-<env>-plugin-batch` | 1 vCPU / 2 GiB, 65 min | nothing: every storage or collection call of the plugin is a report to the admin | |
+
+`roles/storage.objectCreator` and the `roles/run.` roles are in `REPORTING_JOB_FORBIDDEN_ROLES`: a kind may hold one only on a bucket it names in `writeBuckets` or a job it names in `runJobs`, each with its reason, and the tests pin exactly which kind declares which. The Lighthouse audit job (`audit-job-setup.ts`) and the capture job (`capture-job-setup.ts`) are not reporting jobs and stay outside the catalog: neither passes IAP, and the capture job renders untrusted pages with no read right anywhere.
+
+The plugin batch job is the one that runs plugin code: an Owner-approved artifact, in the Deno sandbox inside the job (no network, no files, no env). The plugin reaches the admin only through the job's host side, report by report, never with the job's credential, so its IAP access is the same line every kind holds.
+
+Self-hosted runs every kind in-process; AWS and Azure record every such run as failed with the gap (#749 / #750), never run it inside the admin.
+
 ## Self-hosted and development
 
 There is no extra machine. The admin registers the in-process launcher at boot (`setInProcessJobLauncher`, `hooks.server.ts`). Each attempt then runs the same job main inside the admin process, without the request waiting for it, and one attempt of a kind at a time for the kinds that are `in-line` (`in-line.ts`): two audits at once would share the CPU their Lighthouse runs measure, and two crawls would only take turns at the one shared browser. A build carrier's attempts start at once. An attempt in line keeps renewing its lease. Its reports reach `handleJobReport` directly as text, so they pass the same caps, token check and schemas. The self-hosted admin keeps its CPU between requests. A process that dies mid-attempt leaves a lease that runs out, and the tick restarts the attempt. In a test or a script nothing registers the launcher: work is left for whoever drives it (`__tests__/fixtures/drain-audits.ts`), except a carried build, which runs in-process.
@@ -138,5 +156,5 @@ There is no extra machine. The admin registers the in-process launcher at boot (
 1. Add its name to `REPORTING_JOB_KINDS` and its timings to `JOB_TIMING` (`protocol.ts`).
 2. Declare its `ReportingJobKindDef`: its actions with their Zod inputs (`long` for one that holds its request while the admin works), `inProcess`, `unstarted`, `listUnstarted`, `giveUp`, its admin env vars. List it in `kinds.ts`.
 3. Write its job main (it talks only through its reporter) and list it in `job-mains.ts`.
-4. Provisioning: a `ReportingJobSpec` with its own service account and only the grants it needs, set up by the wizard and the converge. Add the job to `adminImageJobs`, the upgrader's actAs, the operator-access `iapServiceAccounts`, the cost table, and an infra-contract bump.
-5. Tests: its grants against `REPORTING_JOB_FORBIDDEN_ROLES`, its actions through `handleJobReport`, and a killed attempt restarted by the backstop.
+4. Provisioning: one entry in `REPORTING_JOB_CATALOG` (`packages/provisioning/src/reporting-job-catalog.ts`) with only the grants it needs; the wizard, the converge, the admin's env, the image move, the upgrader's actAs and pre-flight and the operator-access IAP list follow from it. Then a line in the cost table (`wizards/gcp-cost.ts`) and an infra-contract bump (`infra-contract.ts`: the new admin starts a job an older install does not have).
+5. Tests: its grants against `REPORTING_JOB_FORBIDDEN_ROLES` (`reporting-job-setup.test.ts`), the catalog's pins (`reporting-job-catalog.test.ts`), the parity test, its actions through `handleJobReport`, and a killed attempt restarted by the backstop.

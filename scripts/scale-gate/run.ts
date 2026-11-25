@@ -18,6 +18,12 @@
  * parts that follow are not timed, #1268), preview a page
  * (`preview-by-path`) and preview it again unchanged.
  *
+ * Every client thinks before each call, as a real one does (think.ts):
+ * an agent for one of the measured model steps of `think-times.json`, an
+ * editor for a pause between its actions. `--no-think` drops the pauses
+ * (a stress run: how many calls a second the install survives; never the
+ * gate's verdict).
+ *
  * Every call has a timeout, so a run against a slow build still finishes
  * and records numbers: a timed-out call counts as a sample at the timeout
  * and is counted separately.
@@ -51,6 +57,7 @@ import {
 } from "./observe.ts";
 import { groupSlowPlans, parseLoggedPlans, type SlowPlanGroup } from "./plans.ts";
 import { CHANGE_CONSUMER_SLUGS, SHIPPED_PLUGIN_SLUGS } from "./plugins.ts";
+import { loadThinkTimes, meanAgentStepSeconds, thinkSampler } from "./think.ts";
 
 /** The measurement classes and their p95 targets (ms), issue #1267. */
 export const SLO_P95_MS = {
@@ -86,6 +93,17 @@ export interface ScaleGateReport {
   readonly agents: number;
   readonly editors: number;
   readonly callTimeoutMs: number;
+  /**
+   * How long clients thought before their calls (think.ts): the measured
+   * agent steps and the editors' pause, or null for a `--no-think` stress
+   * run, which never passes the gate.
+   */
+  readonly think: {
+    readonly source: string;
+    readonly agentMeanSeconds: number;
+    readonly editorPauseSeconds: { readonly min: number; readonly max: number };
+    readonly seed: number;
+  } | null;
   readonly measurements: Record<Measurement, MeasurementSummary>;
   readonly variantsCreated: number;
   readonly poolAcquireTimeouts: number;
@@ -345,6 +363,9 @@ export function reportTable(r: ScaleGateReport): string {
   ];
   return [
     `Fixture: ${r.pages} pages, ${r.agents} agents, ${r.editors} editors, ${r.durationSeconds} s, call timeout ${r.callTimeoutMs} ms`,
+    r.think
+      ? `Think times: agents ${r.think.agentMeanSeconds} s mean (measured model steps, think-times.json), editors ${r.think.editorPauseSeconds.min}–${r.think.editorPauseSeconds.max} s, seed ${r.think.seed}`
+      : "Think times: none (--no-think stress run, never a pass)",
     "",
     "| measurement | n | p50 ms | p95 ms | max ms | errors | timeouts | refused (429) | target p95 | |",
     "|---|---|---|---|---|---|---|---|---|---|",
@@ -568,6 +589,10 @@ async function main(): Promise<void> {
   const tickEveryS = Number.parseInt(arg("--tick-every") ?? "0", 10);
   const settleConsumers = process.argv.includes("--settle-consumers");
   const settleTimeoutS = Number.parseInt(arg("--settle-timeout") ?? "900", 10);
+  const noThink = process.argv.includes("--no-think");
+  const thinkPath = arg("--think-times") ?? new URL("./think-times.json", import.meta.url).pathname;
+  const thinkSeed = Number.parseInt(arg("--think-seed") ?? "1267", 10);
+  const thinkTimes = noThink ? null : loadThinkTimes(thinkPath);
   const internalSecret = process.env.CAELO_INTERNAL_SECRET ?? "";
   if (tickEveryS > 0 && internalSecret.length < 32) {
     throw new Error(
@@ -677,6 +702,15 @@ async function main(): Promise<void> {
     if (!opened.ok)
       throw new Error(`agent ${index}: open session ${opened.status} ${await opened.text()}`);
     const chatSessionId = ((await opened.json()) as { chatSessionId: string }).chatSessionId;
+    // The model writes each tool call before the agent sends it: one of the
+    // measured steps (think.ts). False when the wait would outlast the run.
+    const thinker = thinkTimes ? thinkSampler(thinkTimes, thinkSeed, index) : null;
+    const think = async (): Promise<boolean> => {
+      const ms = thinker ? thinker.agentMs() : 0;
+      if (Date.now() + ms >= deadline) return false;
+      if (ms > 0) await Bun.sleep(ms);
+      return true;
+    };
     // An agent obeys back-pressure as a real MCP client does (#1375): a 429
     // says how long to wait, and the same call is sent again unchanged. The
     // sample is the whole time until the call ran, waits included; each
@@ -713,8 +747,9 @@ async function main(): Promise<void> {
     while (Date.now() < deadline) {
       const page = queue.shift();
       if (!page) return;
+      if (!(await think())) return;
       if ((await tool("mcp_read", "inspect_page_render", { pageId: page.id })) === NOT_RUN) return;
-      if (Date.now() >= deadline) return;
+      if (!(await think())) return;
       const slug = `${page.path.replace(/^\//, "")}-de`;
       const created = await tool("mcp_write", "create_variant", {
         sourcePageId: page.id,
@@ -731,6 +766,7 @@ async function main(): Promise<void> {
         continue;
       }
       variantsCreated += 1;
+      if (!(await think())) return;
       await tool("mcp_write", "set_page_module_content_many", {
         items: [
           {
@@ -756,21 +792,31 @@ async function main(): Promise<void> {
       if (res.status !== 200) throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
       return text;
     };
+    // An editor looks at the page before the next action (think.ts); the
+    // generators of editors and agents never share a seed.
+    const thinker = thinkTimes ? thinkSampler(thinkTimes, thinkSeed, 1000 + index) : null;
+    const pause = async (): Promise<boolean> => {
+      const ms = thinker ? thinker.editorMs() : 0;
+      if (Date.now() + ms >= deadline) return false;
+      if (ms > 0) await Bun.sleep(ms);
+      return true;
+    };
     let i = index;
     while (Date.now() < deadline) {
       const page = fixture.editorPages[(i * 7) % fixture.editorPages.length];
       i += 1;
       if (!page) return;
+      if (!(await pause())) return;
       await timed(
         "first_paint",
         `${baseUrl}/edit?page=${page.id}&chat=${e.chatSessionId}`,
         { headers },
         readFirstPaint,
       );
-      if (Date.now() >= deadline) return;
+      if (!(await pause())) return;
       const preview = `${baseUrl}/edit/preview-by-path${page.path}?branch=${fixture.draftBranchId}`;
       await timed("preview", preview, { headers }, readAll);
-      if (Date.now() >= deadline) return;
+      if (!(await pause())) return;
       await timed("unchanged_preview", preview, { headers }, readAll);
     }
   }
@@ -779,6 +825,11 @@ async function main(): Promise<void> {
   const editors = fixture.editors.length;
   console.log(
     `[scale-gate] ${agents} agents + ${editors} editors against ${baseUrl} for ${durationS} s (${fixture.pages} pages)`,
+  );
+  console.log(
+    thinkTimes
+      ? `[scale-gate] think times: agents ${meanAgentStepSeconds(thinkTimes).toFixed(1)} s mean over ${thinkTimes.agentStepSeconds.length} measured steps, editors ${thinkTimes.editorPauseSeconds.min}–${thinkTimes.editorPauseSeconds.max} s`
+      : "[scale-gate] --no-think: no pauses between calls (a stress run, never a pass)",
   );
   if (pgContainer) await resetStatementStats(pgContainer);
   const sampler = pgContainer ? await startCpuSampler(pgContainer, cpuIntervalS) : null;
@@ -826,6 +877,17 @@ async function main(): Promise<void> {
     agents,
     editors,
     callTimeoutMs: timeoutMs,
+    think: thinkTimes
+      ? {
+          source: thinkTimes.source,
+          agentMeanSeconds: Math.round(meanAgentStepSeconds(thinkTimes) * 10) / 10,
+          editorPauseSeconds: {
+            min: thinkTimes.editorPauseSeconds.min,
+            max: thinkTimes.editorPauseSeconds.max,
+          },
+          seed: thinkSeed,
+        }
+      : null,
     measurements,
     variantsCreated,
     poolAcquireTimeouts,
@@ -847,7 +909,10 @@ async function main(): Promise<void> {
       sampleFailures: samplePluginFailures(pluginLog, 12),
       ticks: tickSummary ? tickSummary.summary : null,
     },
+    // A stress run without think times measures throughput, not the
+    // latency the SLOs are about: it never passes.
     pass:
+      thinkTimes !== null &&
       Object.values(measurements).every((s) => s.pass) &&
       poolAcquireTimeouts === 0 &&
       lockWaitsOver100ms === 0 &&

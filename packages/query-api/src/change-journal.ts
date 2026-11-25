@@ -39,7 +39,7 @@
  * rebuild-from-source op instead.
  */
 
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import type { TransactionRunner } from "./operation.js";
 
 /** One journal row as consumers see it. */
@@ -249,16 +249,30 @@ function snapshotBounds(snapshot: string): SnapshotBounds {
  * reader whose snapshot is older than the cache (a long build
  * transaction) must read afresh. The same test `checkJournalMark` makes
  * in SQL, on the snapshot texts.
+ *
+ * `earlierOwnXid` is the marked transaction's own xid
+ * ({@link JournalMark.ownXid}). Its snapshot leaves that xid out of the
+ * in-flight list although the cached read saw none of its writes (a mark
+ * that saw some is `dirty` and never kept), so it counts as unseen here:
+ * a later reader for which that transaction is still in flight has not
+ * missed anything the cached read holds. Counting it as seen made every
+ * reader running alongside the one that filled a cache read the whole
+ * site again (#1672).
  */
-export function snapshotFollows(earlier: string, later: string): boolean {
+export function snapshotFollows(
+  earlier: string,
+  later: string,
+  earlierOwnXid: string | null,
+): boolean {
   const e = snapshotBounds(earlier);
   const l = snapshotBounds(later);
   const eMax = BigInt(e.xmax);
   if (eMax > BigInt(l.xmax)) return false;
-  const inFlightEarlier = new Set(e.xip);
+  const unseenByEarlier = new Set(e.xip);
+  if (earlierOwnXid !== null) unseenByEarlier.add(earlierOwnXid);
   // A transaction `earlier` saw committed (below its xmax, not in its
-  // xip) must not still be in flight for `later`.
-  return l.xip.every((x) => BigInt(x) >= eMax || inFlightEarlier.has(x));
+  // xip, not its own) must not still be in flight for `later`.
+  return l.xip.every((x) => BigInt(x) >= eMax || unseenByEarlier.has(x));
 }
 
 /**
@@ -269,14 +283,15 @@ export function snapshotFollows(earlier: string, later: string): boolean {
  * through the primary key as at most three index ranges.
  *
  * The bounds are statement parameters, never values the statement derives
- * from the snapshot (a CTE column, a scalar subquery over it): Postgres
- * plans with a parameter's value, so it sees that hardly any row lies past
- * xmax and takes the index. Derived inside the statement, the bounds were
- * unknown to the planner; it assumed a third of the journal matched, and
- * under the EXISTS of a freshness check (planned for its first match) a
- * sequential scan looked cheapest. A fresh check has no match, so it read
- * the whole journal, three times: the scale gate's 8-second check, 17,600
- * buffers per call over 328,000 rows (#1269).
+ * from the snapshot (a CTE column, a scalar subquery over it): a custom
+ * plan uses a parameter's value, so it sees that hardly any row lies past
+ * xmax and takes the index. Unknown bounds (derived inside the statement,
+ * or a generic plan's `$n`) make the planner assume a third of the journal
+ * matches, and under the EXISTS of a freshness check (planned for its
+ * first match) a sequential scan looks cheapest. A fresh check has no
+ * match, so it read the whole journal, three times: 17,600 buffers per
+ * call over 328,000 rows (#1269). A statement that reads through here must
+ * therefore run with a custom plan ({@link executeWithCustomPlan}).
  *
  * The old `xid >= xmin` scan re-read every row between xmin and xmax on
  * every read, so a long transaction (a plugin's first rebuild, a build)
@@ -302,6 +317,34 @@ function unseenRows(bounds: SnapshotBounds, ownXid: string | null = null) {
 }
 
 /**
+ * Run `statement` with a plan made for its parameter values, never with a
+ * cached generic one (#1667).
+ *
+ * Bun prepares every statement on its connection, and after five runs
+ * Postgres (`plan_cache_mode = auto`) may switch it to a generic plan when
+ * that plan's estimate looks no worse. For a journal read that estimate
+ * is wrong: without the snapshot bounds it assumes a third of the journal
+ * matches (see {@link unseenRows}). The nightly scale gate showed the
+ * result on every freshness check: three sequential scans, 16,947 buffers
+ * per call over 315,000 rows, on a database already at its CPU share.
+ *
+ * `SET LOCAL` keeps the switch inside the caller's transaction. It goes
+ * back to the server's setting after the statement, so the caller's later
+ * statements keep their cached plans. If the statement fails, the
+ * transaction is aborted and the setting ends with it, so it is not
+ * restored then (a restore would fail too and hide the error).
+ */
+async function executeWithCustomPlan(
+  tx: TransactionRunner,
+  statement: SQL,
+): Promise<Awaited<ReturnType<TransactionRunner["execute"]>>> {
+  await tx.execute(sql`SET LOCAL plan_cache_mode = force_custom_plan`);
+  const rows = await tx.execute(statement);
+  await tx.execute(sql`SET LOCAL plan_cache_mode TO DEFAULT`);
+  return rows;
+}
+
+/**
  * Where a cached read stands in the journal: taken in the same statement
  * as (or before) the read it describes.
  */
@@ -312,7 +355,11 @@ export interface JournalMark {
    * The reading transaction's own xid, when it had one. Postgres counts a
    * transaction's own xid as visible in its snapshots, but the read saw
    * only that transaction's writes made BEFORE it; a later write by it
-   * must still invalidate, so freshness treats this xid as unseen.
+   * must still invalidate, so freshness treats this xid as unseen: its
+   * journal rows, and the transaction itself when it is still in flight
+   * for a later reader ({@link snapshotFollows}). A mark that is not
+   * `dirty` saw none of its writes, which holds only while the read the
+   * mark describes follows it with no write of its own in between.
    */
   readonly ownXid: string | null;
   /**
@@ -344,7 +391,8 @@ export interface JournalCheck {
  * `cached` is fresh when, under the reader's single snapshot:
  * - the reader has seen every transaction the marked snapshot saw (so
  *   nothing the cached read included is invisible to this reader — a
- *   build transaction older than the cache must not be served it);
+ *   build transaction older than the cache must not be served it), the
+ *   marked transaction itself aside (see {@link snapshotFollows});
  * - no matching journal row the reader can see (its own included) is
  *   unseen by the mark;
  * - no garbage collection removed a row this comparison needs.
@@ -355,7 +403,9 @@ export async function checkJournalMark(
   filter: JournalFilter,
 ): Promise<JournalCheck> {
   const ownXid = cached?.ownXid ?? null;
-  const rows = (await tx.execute(sql`
+  const rows = (await executeWithCustomPlan(
+    tx,
+    sql`
     WITH c AS (SELECT ${cached?.snapshot ?? null}::pg_snapshot AS s, ${cached?.ownXid ?? null}::xid8 AS own),
          r AS (SELECT pg_current_snapshot() AS s, pg_current_xact_id_if_assigned() AS own)
     SELECT r.s::text AS snapshot, r.own::text AS own_xid,
@@ -367,6 +417,7 @@ export async function checkJournalMark(
             AND NOT EXISTS (
               SELECT 1 FROM pg_snapshot_xip(r.s) AS x(xid)
                WHERE x.xid < pg_snapshot_xmax(c.s) AND pg_visible_in_snapshot(x.xid, c.s)
+                 AND x.xid IS DISTINCT FROM c.own
             )
             AND NOT EXISTS (
               SELECT 1 FROM ${cached ? unseenRows(snapshotBounds(cached.snapshot), ownXid) : sql`(SELECT * FROM entity_changes WHERE false)`} ec
@@ -377,7 +428,8 @@ export async function checkJournalMark(
               SELECT 1 FROM entity_change_horizons h WHERE h.horizon >= pg_snapshot_xmin(c.s)
             )) AS fresh
       FROM c, r
-  `)) as unknown as {
+  `,
+  )) as unknown as {
     snapshot: string;
     own_xid: string | null;
     dirty: boolean;
@@ -668,7 +720,9 @@ export async function readChanges(
     throw new Error("readChanges: limit must be an integer 1..5000");
   }
   const after = input.after;
-  const rows = (await tx.execute(sql`
+  const rows = (await executeWithCustomPlan(
+    tx,
+    sql`
     WITH c AS (SELECT ${input.cursor}::pg_snapshot AS s,
                       COALESCE(${input.target}::pg_snapshot, pg_current_snapshot()) AS t),
     horizon AS (
@@ -698,7 +752,8 @@ export async function readChanges(
     SELECT (SELECT t::text FROM c) AS target, (SELECT lost FROM horizon) AS lost, page.*
       FROM (SELECT 1) one LEFT JOIN page ON true
      ORDER BY page.sort_xid, page.table_name, page.row_id
-  `)) as unknown as ({ target: string; lost: boolean } & (
+  `,
+  )) as unknown as ({ target: string; lost: boolean } & (
     | RawChange
     | Record<keyof RawChange, null>
   ))[];

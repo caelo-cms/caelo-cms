@@ -98,23 +98,35 @@ const guestbook = definePlugin({
   version: "0.1.0",
   tier: 1,
   requestedCapabilities: ["cms_admin"],
-  schema: {},
+  schema: { votes: { id: "uuid", page_id: "string" } },
+  tableKinds: { votes: "visitor-state" },
+  // #1340 — declared inserts; the op events this suite seeds name them.
   publicOperations: [
     {
       name: "vote",
       kind: "write" as const,
       captcha: "none" as const,
       input: z.looseObject({}),
-      reads: [],
-      writes: [],
+      writes: ["votes"],
+      run: {
+        action: "insert" as const,
+        table: "votes",
+        values: { page_id: { from: "input" as const, field: "pageId", orElse: "" } },
+        answer: {},
+      },
     },
     {
       name: "noop",
       kind: "write" as const,
       captcha: "none" as const,
       input: z.looseObject({}),
-      reads: [],
-      writes: [],
+      writes: ["votes"],
+      run: {
+        action: "insert" as const,
+        table: "votes",
+        values: { page_id: { from: "input" as const, field: "pageId", orElse: "" } },
+        answer: {},
+      },
     },
   ],
   operations: {
@@ -123,8 +135,6 @@ const guestbook = definePlugin({
       entries.push(a.text);
       return { pageId: a.pageId };
     },
-    vote: async (_ctx, args) => ({ pageId: (args as { pageId: string }).pageId }),
-    noop: async (_ctx, args) => ({ pageId: (args as { pageId: string }).pageId }),
   },
   staticRender: async (ctx, { pageId, pageUrlStyle }) => {
     const html = entries.map((e) => `<p class="entry">${e}</p>`).join("");
@@ -504,7 +514,8 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
       base_run_id: published.id,
       build_id: firstPluginRun,
       page_count: 1,
-      file_count: 1,
+      // The page, and the sitemap and feed entries of it (search-engine-feed.md).
+      file_count: 3,
     });
 
     const live = await filesUnder(join(productionDir(), "current"));
@@ -521,11 +532,41 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     // — asset references, parity digests — never reach current/): no new page …
     const served = [...base.keys()].filter((p) => !BUILD_INTERNAL_FILES.has(p));
     expect([...live.keys()].sort()).toEqual(served.sort());
+    // docs/dev/search-engine-feed.md — the two files that speak for the
+    // live record move with the page whose baked content changed, and only
+    // its entries do.
+    const searchFiles = new Set(["sitemap.xml", "feed.xml"]);
     for (const [path, body] of base) {
       if (BUILD_INTERNAL_FILES.has(path)) continue;
-      if (path === homePath || redirectFiles.has(path)) continue;
+      if (path === homePath || redirectFiles.has(path) || searchFiles.has(path)) continue;
       expect({ path, same: live.get(path)?.equals(body) }).toEqual({ path, same: true });
     }
+    const [homeVersion] = (await sqlSystem(
+      (tx) => tx`SELECT kind, run_id::text AS run_id, url, changed_at
+                 FROM live_page_versions WHERE page_id = ${homeId}::uuid ORDER BY id DESC LIMIT 1`,
+    )) as { kind: string; run_id: string; url: string; changed_at: Date }[];
+    expect(homeVersion).toMatchObject({ kind: "changed", run_id: firstPluginRun });
+    const changedAt = homeVersion?.changed_at.toISOString() ?? "";
+    const stripLastmod = (xml: string) => xml.replace(/<lastmod>[^<]*<\/lastmod>/g, "");
+    const baseSitemap = base.get("sitemap.xml")?.toString("utf8") ?? "";
+    const liveSitemap = live.get("sitemap.xml")?.toString("utf8") ?? "";
+    expect(stripLastmod(liveSitemap)).toBe(stripLastmod(baseSitemap));
+    expect(liveSitemap).toContain(
+      `<loc>${homeVersion?.url}</loc>\n    <lastmod>${changedAt}</lastmod>`,
+    );
+    const liveFeed = live.get("feed.xml")?.toString("utf8") ?? "";
+    expect(liveFeed).toContain(`<id>urn:uuid:${homeId}</id>`);
+    expect(liveFeed).toContain(`<updated>${changedAt}</updated>`);
+    for (const unpublished of ["UNPUBLISHED SEO", SECRET_SLUG]) {
+      expect(liveFeed).not.toContain(unpublished);
+      expect(liveSitemap).not.toContain(unpublished);
+    }
+    // … announced like a Publish live (sends are off in test runs).
+    const notes = (await sqlSystem(
+      (tx) => tx`SELECT channel, status FROM search_engine_notifications
+                 WHERE run_id = ${firstPluginRun}::uuid ORDER BY channel`,
+    )) as { channel: string; status: string }[];
+    expect(notes.map((n) => n.channel)).toEqual(["indexnow", "websub"]);
     // … and the page differs only inside the plugin's region.
     const liveHome = live.get(homePath)?.toString("utf8") ?? "";
     const strip = (html: string) => replaceBakeRegions(html, () => "");

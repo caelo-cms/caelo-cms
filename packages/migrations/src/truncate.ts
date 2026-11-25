@@ -110,6 +110,18 @@ const ADMIN_TABLES = [
   "redirects",
   // #1461 — static files are site content; their snapshots cascade.
   "static_file_pending_actions",
+  "plugin_config_pending_actions",
+  "collection_changes",
+  "collection_release_changes",
+  "stage_output_commits",
+  "collection_releases",
+  "plugin_page_observations",
+  "plugin_page_observation_pending",
+  "plugin_module_counts",
+  "plugin_module_count_pending",
+  "plugin_page_observers",
+  "plugin_page_observer_pending",
+  "plugin_batch_runs",
   "redirect_pending_actions",
   "static_files",
 
@@ -161,6 +173,8 @@ const PUBLIC_TABLES = [
   "form_submissions",
   "ratings",
   "visitor_sessions",
+  // #1654 — what visitors' AI conversations spent.
+  "visitor_ai_calls",
 ];
 
 const tables = target === "admin" ? ADMIN_TABLES : PUBLIC_TABLES;

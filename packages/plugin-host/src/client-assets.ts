@@ -42,7 +42,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { escapeStyleText, scriptNeedsEncoding } from "@caelo-cms/shared";
+import { escapeStyleText, scriptNeedsEncoding, visitorAiStreamOrigin } from "@caelo-cms/shared";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -110,6 +110,35 @@ function assetPaths(
  */
 export function withAssetContent(asset: PluginClientAsset, content: string): PluginClientAsset {
   return { ...asset, content, ...assetPaths(asset.pluginSlug, asset.fileName, content) };
+}
+
+let streamOrigin: { readonly key: string; readonly origin: Promise<string | null> } | null = null;
+
+/**
+ * The live gateway's stream origin as the admin sees it (`CAELO_GATEWAY_SERVICE`,
+ * `CAELO_GATEWAY_REGION`, the metadata server), learned once per process: a
+ * service's address does not change. A build renders the live site; the
+ * staging gateway adds its own origin when it serves the staged pages.
+ */
+function liveStreamOrigin(): Promise<string | null> {
+  const env = process.env;
+  const key = [
+    env.CAELO_VISITOR_AI_STREAM_ORIGIN ?? "\u0000",
+    env.CAELO_PROVIDER,
+    env.CAELO_GATEWAY_SERVICE,
+    env.CAELO_GATEWAY_REGION,
+  ].join("|");
+  if (streamOrigin?.key !== key) {
+    const origin = visitorAiStreamOrigin(env, {
+      service: env.CAELO_GATEWAY_SERVICE,
+      region: env.CAELO_GATEWAY_REGION,
+    });
+    origin.catch(() => {
+      if (streamOrigin?.origin === origin) streamOrigin = null;
+    });
+    streamOrigin = { key, origin };
+  }
+  return streamOrigin.origin;
 }
 
 /**
@@ -194,6 +223,26 @@ export async function collectBuildAssets(
         publicPath,
       });
     }
+  }
+  // #1654 — a visitor conversation streams from the gateway's own origin
+  // where /api/* is buffered (gcp-firebase): the pages may connect to it.
+  // Core's contribution, attributed to the plugin whose conversation needs it.
+  const chats = loadedPlugins
+    .all()
+    .filter((lp) => !isPluginDisabled(lp.slug) && (lp.definition.aiChatOperations ?? []).length > 0)
+    .sort((a, b) => a.slug.localeCompare(b.slug));
+  if (chats.length > 0) {
+    const origin = await liveStreamOrigin();
+    if (origin)
+      for (const lp of chats)
+        out.push({
+          pluginSlug: lp.slug,
+          fileName: PLUGIN_CSP_SOURCES_FILE,
+          kind: "csp",
+          content: JSON.stringify({ origins: { connect: [origin] } }),
+          relPath: "",
+          publicPath: "",
+        });
   }
   return out;
 }

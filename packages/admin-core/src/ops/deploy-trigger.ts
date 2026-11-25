@@ -63,6 +63,7 @@ import {
   type QueryError,
 } from "@caelo-cms/query-api";
 import {
+  buildSearchFeedSchema,
   CAELO_VERSION,
   type ExecutionContext,
   err,
@@ -76,6 +77,7 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { describeError } from "../ai/tools/_describe-error.js";
+import { afterFailedStage, afterStageBuild } from "../collections/stage.js";
 import {
   buildDirOf,
   mediaDeliveryFor,
@@ -136,6 +138,7 @@ import {
   linksTheCheckMissed,
   withBuiltLinks,
 } from "../links/link-notice.js";
+import { enqueueStageBatches } from "../plugin-batches/triggers.js";
 import { loadedVisitorProjections } from "../public-projection.js";
 import { startQualityAuditJob } from "../quality/start-audit-job.js";
 import { loadStagedChanges } from "../redirects/model.js";
@@ -143,6 +146,9 @@ import {
   releaseRedirectChanges,
   takeOverRedirectsOnFirstPublishedPages,
 } from "../redirects/release.js";
+import { applyLiveChanges, recordStagedChanges } from "../search-feed/live-versions.js";
+import { queueSearchNotifications } from "../search-feed/notifications.js";
+import { sendSearchNotificationsAfterPublish } from "../search-feed/notify.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { clearStagingInbox, loadedInboxTables } from "../stage/staging-inbox.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
@@ -616,6 +622,12 @@ export const finishTriggerOp = defineOperation({
         .default([]),
       /** The live table that plan was made against (redirects.release_plan's `liveFingerprint`). */
       redirectLiveFingerprint: z.string().nullable().default(null),
+      /**
+       * What the build changes live per page, its feed and IndexNow key
+       * (docs/dev/search-engine-feed.md): a Stage keeps it for its Publish
+       * live, a production build makes it the live record.
+       */
+      searchFeed: buildSearchFeedSchema,
     })
     .strict(),
   output: z.object({
@@ -724,6 +736,25 @@ export const finishTriggerOp = defineOperation({
       await tx.execute(sql`
         UPDATE deploy_runs SET projection_run_id = ${input.runId}::uuid WHERE id = ${input.runId}::uuid
       `);
+    }
+    // docs/dev/search-engine-feed.md — a Stage keeps what its build changes
+    // for the Publish live that ships it; a production build makes it the
+    // live record and queues its WebSub ping and IndexNow submission (sent
+    // after this commit, deploy.trigger).
+    if (input.env === "staging") {
+      await recordStagedChanges(tx, {
+        runId: input.runId,
+        targetId: input.targetId,
+        feed: input.searchFeed,
+      });
+    }
+    if (input.env === "production") {
+      const { announced } = await applyLiveChanges(tx, {
+        runId: input.runId,
+        feed: input.searchFeed,
+        shippedAt: await deployRunStartedAt(tx, input.runId),
+      });
+      await queueSearchNotifications(tx, { runId: input.runId, announced });
     }
     await tx.execute(sql`
       UPDATE deploy_runs
@@ -884,6 +915,8 @@ async function runTrigger(
     });
     // Unrecorded, the run's lease lapses and the next run marks it failed.
     if (!r.ok) console.error("[deploy] could not record the failed run", { runId, error: r.error });
+    // #1647 — a failed Stage delivered no page output: its pages go again next time.
+    if (plan.target.env === "staging") await afterFailedStage({ adapter, registry }, sys, runId);
     // A given-up upload serves nothing (no-op once publishStaging finished it).
     await upload?.abort();
     logRunTimings(runKind, runId, timer, { status: "failed" }, { message: stored, refusal });
@@ -1139,6 +1172,22 @@ async function runTrigger(
         console.error("[deploy] production build", { runId, redirectNote });
     }
 
+    // #1647 / #1648 — the observers' deliveries count now, and the run's
+    // collections get their releases (the index job builds the changed ones).
+    // Inside the build lease, before finish_trigger releases it: the next
+    // Stage's build compares against the observations this one commits, so
+    // it must not start before they are recorded. And before the audit: a
+    // plugin's audit rule reads this Stage's index state.
+    if (plan.target.env === "staging") {
+      const note = await afterStageBuild(
+        { adapter, registry },
+        sys,
+        runId,
+        built.pageOutput?.failed ?? [],
+      );
+      if (note !== null) console.error("[deploy] Stage collections", { runId, note });
+    }
+
     timer.lap("finish");
     const finished = await execute(registry, adapter, ctx, "deploy.finish_trigger", {
       runId,
@@ -1159,12 +1208,15 @@ async function runTrigger(
       renderReport,
       redirectChanges,
       redirectLiveFingerprint: redirectFingerprint,
+      searchFeed: built.searchFeed,
     });
     if (!finished.ok) return await fail(describeError(finished.error));
     const heldBack = (finished.value as { redirectsHeldBack: string | null }).redirectsHeldBack;
     if (heldBack !== null) {
       redirectNote ??= `The Staged redirect changes stay Staged: ${heldBack}; the next Publish live plans them again.`;
     }
+    // #1646 — plugins' `stage` batches run on what this Stage published.
+    if (plan.target.env === "staging") await enqueueStageBatches({ adapter, registry }, runId);
     // #1359 — the audit row committed with the run; start its job now,
     // inside this request, instead of waiting for the next tick.
     const queuedAuditRunId = (finished.value as { queuedAuditRunId: string | null })
@@ -1186,6 +1238,9 @@ async function runTrigger(
           error: describeError(synced.error),
         });
       }
+      // The build is live: tell the WebSub hub and IndexNow, inside this
+      // request (docs/dev/search-engine-feed.md); the tick retries.
+      await sendSearchNotificationsAfterPublish({ adapter, registry, runId });
     }
     logRunTimings(runKind, runId, timer, {
       status: "succeeded",

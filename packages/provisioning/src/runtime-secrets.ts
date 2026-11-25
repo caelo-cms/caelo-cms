@@ -434,6 +434,45 @@ export async function ensureGeneratedSecrets(
   return outcomes;
 }
 
+/**
+ * The gateway's run SA and every CLI-generated secret, created when missing,
+ * in the install's secret replication. A secret an admin still runs as a
+ * plain env var keeps that value (`plainGeneratedSecretSeed`).
+ *
+ * Upgrade runs this first, in its pre-flight, before it sets up the services
+ * an older install lacks (#1682): those grant each service the secrets it
+ * reads, and a release that adds a secret (#1654's visitor-AI keys) would
+ * otherwise be granted on a secret that does not exist yet. Additive: a new
+ * secret holds its first value, and nothing reads it until a revision mounts
+ * it.
+ *
+ * @param adminLiveEnv the admin service's env as it is deployed
+ *   (`liveContainerEnv`)
+ * @returns one outcome per account and secret; a failed replication read is
+ *   one failed outcome and creates nothing
+ */
+export async function ensureRuntimeIdentities(
+  install: { readonly projectId: string; readonly env: string; readonly region: string },
+  adminLiveEnv: ReadonlyMap<string, { readonly kind: string; readonly value?: string }>,
+  deps: RuntimeDeps = {},
+): Promise<EnsureOutcome[]> {
+  const replication = await readSecretReplication(install, deps);
+  if (!replication.ok) {
+    return [{ id: "secret replication", status: "failed", error: replication.error }];
+  }
+  return [
+    await ensureGatewayServiceAccount(install, deps),
+    ...(await ensureGeneratedSecrets(
+      {
+        ...install,
+        replication: replication.replication,
+        seed: plainGeneratedSecretSeed(adminLiveEnv),
+      },
+      deps,
+    )),
+  ];
+}
+
 async function addVersion(
   run: GcloudRunner,
   secretId: string,
@@ -482,6 +521,9 @@ export function rotationRefusal(name: string): string | null {
   if (name === SEAL_KEY_SECRET) return null;
   if (name === "operator-oauth-client") {
     return "operator-oauth-client is the install's Google sign-in client (IAP sign-in and remote MCP); the Owner replaces it under Settings → Google sign-in (create a new client secret in the Google console first).";
+  }
+  if (name === "visitor-ai-key" || name === "visitor-ai-staging-key") {
+    return `${name} holds the visitor AI's provider key, which the Owner sets: rotate it under Settings → Visitor AI (create a new key at the provider first, then revoke the old one there).`;
   }
   if (name === "secret-kek") {
     return "secret-kek encrypts the AI provider keys and other at-rest secrets in cms_admin; a new KEK would make them unreadable. Rotating it needs a re-encryption step that does not exist yet.";

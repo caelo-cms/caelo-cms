@@ -6,6 +6,13 @@ import { z } from "zod";
 export const SANDBOX_MESSAGE_BYTES = 1_048_576;
 export const SANDBOX_CALL_LIMIT = 1024;
 
+/**
+ * SDK calls one batch operation may make (#1646): a backfill pages through
+ * thousands of documents, each page a call. Its time is bounded by the
+ * operation's `maxRunSeconds` instead.
+ */
+export const SANDBOX_BATCH_CALL_LIMIT = 200_000;
+
 /** Only these SDK calls may cross the process boundary. */
 export const sandboxMethod = z.enum([
   "fonts.find",
@@ -42,6 +49,20 @@ export const sandboxMethod = z.enum([
   "api.get",
   "captcha.requireProof",
   "consentPurposes.list",
+  // Epic #1644 — configuration (#1645) and collections (#1648).
+  "config.get",
+  "config.entity",
+  "config.entities",
+  "config.configured",
+  "collections.upsert",
+  "collections.delete",
+  "collections.get",
+  "collections.replace",
+  "collections.query",
+  "collections.getMany",
+  "collections.setProfile",
+  // #1655 — the declared tools of the plugin's own conversations.
+  "chatTools.run",
 ]);
 
 export const sandboxMessage = z.discriminatedUnion("kind", [

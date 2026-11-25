@@ -17,8 +17,13 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import commentsPlugin from "@caelo-cms/plugin-comments";
-import { commentArchiveListForPageOp, registerGatewayOperations } from "@caelo-cms/plugin-host";
-import type { PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import {
+  commentArchiveListForPageOp,
+  refusePublicCall,
+  registerGatewayOperations,
+  runDeclaredPublicOperation,
+} from "@caelo-cms/plugin-host";
+import { type PluginContextTier1, publicOperationOf } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { commentArchiveStatsManyOp } from "../ops/plugins/comment_archive.js";
@@ -87,10 +92,11 @@ interface VisitorPage {
   nextCursor: { archivedAt: string; id: string } | null;
 }
 
+/** The visitor read as the gateway runs it: the declared core block (#1340). */
 function listApproved(ctx: PluginContextTier1, args: Record<string, unknown>) {
-  const op = commentsPlugin.operations.list_approved;
+  const op = publicOperationOf(commentsPlugin.publicOperations, "list_approved");
   if (!op) throw new Error("list_approved missing");
-  return op(ctx, { pageId, ...args }) as Promise<VisitorPage>;
+  return runDeclaredPublicOperation(op, ctx, { pageId, ...args }) as Promise<VisitorPage>;
 }
 
 function bake(): Promise<string> {
@@ -220,10 +226,12 @@ describe("a visitor's comment answers nobody (#1529)", () => {
   const LEGACY_REPLY = "aaaaaaaa-0000-4000-8000-000000000007";
   const inserted: Record<string, unknown>[] = [];
 
-  /** `submit` as the gateway runs it, its inbox insert recorded. */
-  function submit(args: Record<string, unknown>) {
-    const op = commentsPlugin.operations.submit;
+  /** `submit` as the gateway runs it (contract, then declaration), its inbox insert recorded. */
+  async function submit(args: Record<string, unknown>) {
+    const op = publicOperationOf(commentsPlugin.publicOperations, "submit");
     if (!op) throw new Error("submit missing");
+    const checked = refusePublicCall(op, { enforced: false, proofVerified: false }, args);
+    if (!checked.ok) throw new Error(`${checked.error.kind}: ${checked.error.message}`);
     const ctx = {
       ...gatewayCtx(),
       query: {
@@ -233,7 +241,7 @@ describe("a visitor's comment answers nobody (#1529)", () => {
         },
       },
     } as unknown as PluginContextTier1;
-    return Promise.resolve(op(ctx, args));
+    return runDeclaredPublicOperation(op, ctx, checked.args);
   }
 
   beforeAll(async () => {

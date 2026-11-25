@@ -83,5 +83,11 @@ export const load: PageServerLoad = async ({ locals }) => {
   // worker. In a single-process self-hosted install this IS the trip
   // surface.
   const capLookupHealth = getCapLookupHealth();
-  return { agg, budgetStatus, capLookupHealth };
+  // #1654 — what visitors' AI conversations spent, from the gateway's ledger
+  // in cms_public (validated row by row; the public side writes it).
+  const visitorR = await execute(registry, adapter, locals.ctx, "visitor_ai.spend", {});
+  const visitorAi = visitorR.ok
+    ? (visitorR.value as { last24hUsd: number; last30dUsd: number; dropped: number })
+    : null;
+  return { agg, budgetStatus, capLookupHealth, visitorAi };
 };

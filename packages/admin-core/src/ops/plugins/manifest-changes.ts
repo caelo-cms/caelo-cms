@@ -61,7 +61,16 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   editorToolbar: "Editor toolbar",
   requiresPlugins: "Required plugins",
   consentPurposes: "Visitor consent purposes",
+  consentProvider: "How it decides which consent covers what",
   bakedData: "Data baked into pages",
+  config: "Its settings",
+  entityConfig: "Its settings per page, module or page type",
+  configPreviewOperation: "Preview of setting changes",
+  collections: "Search indexes it keeps",
+  collectionOperations: "What visitors can search and read",
+  aiChatOperations: "What visitors can ask its AI, and which searches it may use to answer",
+  pageOutputObserver: "What it reads from your pages at each Stage",
+  batchOperations: "Long-running tasks it runs",
 };
 
 /** Stable JSON: two values compare equal whatever their key order in jsonb. */

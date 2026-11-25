@@ -125,7 +125,20 @@ describe("renderSeoHead", () => {
     noindex: false,
     ogImageUrl: null,
     organization: {},
+    feed: null,
   };
+
+  it("links the site's feed when it has one, and nothing when it has none", () => {
+    expect(
+      renderSeoHead({
+        ...base,
+        feed: { url: "https://example.com/feed.xml", title: "example.com" },
+      }),
+    ).toContain(
+      '<link rel="alternate" type="application/atom+xml" title="example.com" href="https://example.com/feed.xml" />',
+    );
+    expect(renderSeoHead(base)).not.toContain("application/atom+xml");
+  });
 
   it("#551: omits canonical, og:url and the JSON-LD url when the base URL is unset", () => {
     const head = renderSeoHead({ ...base, canonical: null });

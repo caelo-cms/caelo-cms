@@ -64,6 +64,17 @@ It writes a JSON file with the editors' session tokens and chats, the MCP tokens
 - **20 agents**, one per MCP token, each with its own work session (`POST /api/mcp/session`, `newSession: true`), translating one page at a time with the full context and no batching (#1253 decisions): `inspect_page_render` (read), `create_variant` (write), `set_page_module_content_many` on the new variant (write), all through `POST /api/mcp/tool`.
 - **5 editors**, each with a session cookie: open Live Mode on a page (`GET /edit?page=…&chat=…`), preview a page on the shared draft (`GET /edit/preview-by-path/<path>?branch=<draft>`), then preview it again unchanged.
 
+### Think times
+
+Every client waits before each call, as a real one does (`scripts/scale-gate/think.ts`):
+
+- **An agent** waits for its model to write the next tool call. Each wait is one of the measured steps in `scripts/scale-gate/think-times.json`, drawn by a generator seeded per agent (`--think-seed`, default 1267), so two runs of the same build wait alike. The three calls per page depend on each other (the variant needs the read, the content needs the variant), so each one is a step of its own.
+- **An editor** pauses before each action, uniformly within `editorPauseSeconds` (5–20 s). That range is an assumption, not a measurement. No install has logged enough Live Edit use to measure it (caelo-cms.com: two previews in 14 days). Replace it once one has.
+
+The agent steps are measured from real model runs: the chat transcripts the real-AI suite uploads (`e2e-livedit-transcripts-*` artifacts of `e2e-livedit.yml`). A step is the gap from its last tool result to the next assistant message of the same chat. Measured on 2026-11-23 over 13 runs and 386 steps, the median is 2.9 s, p75 5.7 s, p90 15.7 s and the mean 5.8 s, with 1.9 tool calls per step. The Power-MCP calls of caelo-cms.com's admin over 60 days (Cloud Run request log, 134 gaps between one client's calls) agree: p75 6.8 s, p90 20 s. Their median of 0.5 s comes from the calls a model sends together in one step. Refresh the file with `scripts/scale-gate/measure-think-times.ts` when the models change.
+
+Why the pauses: without them every client fires its next call the moment the last one answers. 25 such clients need some 40–50 calls a second to stay under the targets, which the smallest install cannot give, and the run then measures how many calls a second it survives rather than the latency twenty agents and five editors see (#1685's measurements). `--no-think` still drops the pauses for a stress run, which never passes the gate (`scripts/scale-gate-workflow.test.ts` keeps it out of the workflow).
+
 Every call has a timeout (`--call-timeout`, default 30 s), so a run against a slow build finishes and records numbers instead of hanging: a timed-out call counts as one sample at the timeout and is counted separately.
 
 Before the load (#1390) the harness refuses to start until `list_plugins` reports every shipped plugin `running`, and (`--settle-consumers`) waits up to `--settle-timeout` (default 900 s) until every plugin change consumer has finished the first rebuild a fresh activation starts with: that rebuild is a one-off over the whole site, and the gate measures the steady state. The wait is reported; not settling in time fails the gate.
@@ -138,3 +149,24 @@ bun scripts/scale-gate/run.ts --fixture /tmp/sg/fixture.json --base-url http://l
 ```
 
 A laptop run cannot pin the admin to one vCPU, so its numbers are better than the gate's; compare runs on the same machine only. A run leaves the variants it created, so re-seeding needs a fresh database (`docker rm -f sg-pg`, then from the top).
+
+## Collections: the search engine at 50,000 pages (#1652)
+
+The collection engine (`packages/collection-index`, `plugin-collections.md`) has its own harness, since it runs without the admin: `bun run packages/collection-index/bench/run.ts` (`BENCH_PAGES`, default 50,000 synthetic pages: Zipf-distributed vocabulary, 70 % English, 30 % German, log-normal page length with a median of 550 words, shared blocks). Measured on one core (M3 Pro, Bun 1.4.4):
+
+| Measure | Value | Target |
+|---|---|---|
+| Full build, streamed to disk | 104 s (480 pages/s), peak heap growth 1.3 GB | inside the index job's 4 GiB |
+| Index on disk | 339 MB in 4,776 files, largest term shard 0.2 MB | — |
+| Warm query, words (1,500 queries) | p50 1.7 ms, p95 7.5 ms, p99 10.5 ms | p95 < 30 ms |
+| Warm query, search as you type | p50 3.6 ms, p95 17 ms | p95 < 30 ms |
+| Cold query, object store (30 ms per file) | p50 125 ms, p95 147 ms; 18–21 files, 2.2–2.4 MB | first query < 300 ms |
+| Answer, 10 hits with snippets | 4.6 KB before compression | < 10 KB |
+| Delta of 1 / 100 / 1,000 changed pages | 0.25 s / 0.48 s / 2.1 s; 0 / 1.7 / 10 MB written | per Stage, seconds |
+| Fully cached index in memory | 240 MB | within the gateway's 1 GiB with `CAELO_COLLECTIONS_CACHE_MB=256` |
+
+Semantic search adds the query embedding in WebAssembly (p50 9.9 ms, p95 16.4 ms with the default model) and, for a first index, about 35 minutes of embedding on 4 vCPUs at 50,000 pages. Details are in `docs/dev/embedding-models.md` and `packages/collection-index/bench/semantic-results.md`.
+
+The PR CI guard `packages/collection-index/src/scale-guard.test.ts` measures what time cannot measure reliably on CI machines: the files and bytes one cold query loads. On 4,000 pages that is 9 files and 0.48 MB at p95, against bounds of 20 files and 1 MB. A change that reads more must say why here.
+
+Not measured yet: the latency on a Cloud Run gateway with one vCPU, and whether Firebase Hosting's CDN keeps the cacheable answers. Both are part of the next fresh-install scratch test (`docs/dev/firebase-hosting-behaviour.md`).

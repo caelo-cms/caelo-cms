@@ -30,13 +30,35 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"]],
   projects: [
-    { name: "main", testIgnore: "**/no-ai-key.browser.ts" },
+    {
+      name: "main",
+      testIgnore: [
+        "**/no-ai-key.browser.ts",
+        "**/site-search-visitor.browser.ts",
+        "**/site-assistant-visitor.browser.ts",
+      ],
+    },
+    // Epic #1644 — both visitor sites activate the site search, publish its
+    // index (published_collections, the plugin's row) and the plugin
+    // registry their gateway attaches from. A `main` spec that republishes
+    // the registry (the consent site) detached the site search mid-test, so
+    // they run after `main`, one after the other.
+    {
+      name: "site-search-visitor",
+      testMatch: "**/site-search-visitor.browser.ts",
+      dependencies: ["main"],
+    },
+    {
+      name: "site-assistant-visitor",
+      testMatch: "**/site-assistant-visitor.browser.ts",
+      dependencies: ["site-search-visitor"],
+    },
     // #1460 — takes the AI providers away from the whole install, so it
     // runs alone, after everything else.
     {
       name: "no-ai-key",
       testMatch: "**/no-ai-key.browser.ts",
-      dependencies: ["main"],
+      dependencies: ["site-assistant-visitor"],
       fullyParallel: false,
     },
   ],
@@ -102,6 +124,9 @@ export default defineConfig({
       // release registry and write update emails into the suite's database;
       // settings-updates.browser.ts drives the policy page itself.
       CAELO_UPDATE_SCHEDULER: "off",
+      // docs/dev/search-engine-feed.md — a suite's Publish live must not
+      // ping the public WebSub hub or IndexNow.
+      CAELO_SEARCH_NOTIFY: "off",
       // #696 — Settings → Updates shows the upgrade command for Google
       // Cloud installs only; the suite runs without a cloud provider.
       // Test-only, ignored when NODE_ENV=production (lib/upgrade-path.ts).

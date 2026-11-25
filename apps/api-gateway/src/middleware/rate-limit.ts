@@ -19,7 +19,7 @@
  * sliding window AND the burst tokens — one round-trip per request.
  */
 
-import type { LoadedPlugin } from "@caelo-cms/plugin-host";
+import type { LoadedPlugin } from "@caelo-cms/plugin-host/gateway";
 import { publicOperationOf } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";

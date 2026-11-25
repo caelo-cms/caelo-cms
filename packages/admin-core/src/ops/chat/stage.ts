@@ -243,8 +243,12 @@ export async function loadPendingChangesFor(
              WHEN 'pageType' THEN COALESCE(
                (SELECT COALESCE(x.definition->>'name', x.slug) FROM page_types x WHERE x.id = h.entity_id),
                h.entity_id::text)
+             -- Every placement's own content is unnamed: its section design names it.
              WHEN 'contentInstance' THEN COALESCE(
                (SELECT COALESCE(x.display_name, x.slug) FROM content_instances x WHERE x.id = h.entity_id),
+               (SELECT m.display_name FROM content_instance_snapshots x
+                  JOIN modules m ON m.id = (x.state->>'moduleId')::uuid
+                 WHERE x.id = h.snapshot_row_id),
                h.entity_id::text)
              WHEN 'theme' THEN COALESCE(
                (SELECT COALESCE(x.display_name, x.slug) FROM themes x WHERE x.id = h.entity_id),

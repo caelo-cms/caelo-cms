@@ -6,14 +6,18 @@ import { describeLoadTiming, timedStep, withLoadTiming } from "./load-timing.js"
 describe("plugin load timing (#1633)", () => {
   it("adds up each step of one load attempt, in the order the steps first ran", async () => {
     const { value, steps } = await withLoadTiming(async () => {
-      await timedStep("register", () => Bun.sleep(5));
-      await timedStep("provision", () => Bun.sleep(5));
-      await timedStep("provision", () => Bun.sleep(5));
+      await timedStep("register", () => Bun.sleep(20));
+      await timedStep("provision", () => Bun.sleep(20));
+      await timedStep("provision", () => Bun.sleep(20));
       return timedStep("skills", () => 42);
     });
     expect(value).toBe(42);
     expect([...steps.keys()]).toEqual(["register", "provision", "skills"]);
-    expect(steps.get("provision") ?? 0).toBeGreaterThanOrEqual(steps.get("register") ?? 0);
+    // Lower bounds only: a busy runner stretches a sleep but never shortens
+    // it (comparing the steps with each other failed when the runner held
+    // up register more than both provisions). 1 ms of timer slack each.
+    expect(steps.get("register") ?? 0).toBeGreaterThanOrEqual(19);
+    expect(steps.get("provision") ?? 0).toBeGreaterThanOrEqual(38);
   });
 
   it("keeps two loads running side by side apart", async () => {

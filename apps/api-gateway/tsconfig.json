@@ -10,7 +10,10 @@
   "references": [
     { "path": "../../packages/shared" },
     { "path": "../../packages/query-api" },
-    { "path": "../../packages/plugin-host" }
+    { "path": "../../packages/plugin-host" },
+    { "path": "../../packages/collection-index" },
+    { "path": "../../packages/plugin-sdk" },
+    { "path": "../../packages/models" }
   ],
   "exclude": ["**/*.test.ts", "**/__tests__/**", "**/dist", "**/node_modules"]
 }

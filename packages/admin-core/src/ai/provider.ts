@@ -239,6 +239,13 @@ export interface ProviderStepSummary {
   readonly clientToolNames: readonly string[];
   /** True when the step paused a gated tool on a tool-approval-request. */
   readonly hasApprovalRequests: boolean;
+  /** #1653 — the step's token usage (zeros when the provider reported none). */
+  readonly usage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly cachedTokens: number;
+    readonly cacheCreationTokens: number;
+  };
 }
 
 /**
@@ -406,6 +413,12 @@ export type ProviderEvent =
        * raw message and files no bug report: nothing in Caelo is broken.
        */
       accountIssue?: ProviderAccountIssue;
+      /**
+       * #1653 — the failure proves the provider billed nothing for the
+       * request it ended (plugin-host `failureProvedUnbilled`), so the
+       * turn's ledger gives that request's reservation back.
+       */
+      unbilled?: true;
     }
   /**
    * v0.2.54 — extended-thinking text increment. Streamed character-by-

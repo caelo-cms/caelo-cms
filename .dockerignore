@@ -20,6 +20,9 @@ build/
 .tsbuildinfo
 **/*.tsbuildinfo
 
+# Embedding models a checkout fetched (#1650): the image fetches its own, verified.
+.caelo-models/
+
 # Local-only state
 .env
 .env.*

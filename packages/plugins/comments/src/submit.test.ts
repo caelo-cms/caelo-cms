@@ -15,7 +15,12 @@
 
 import { describe, expect, it } from "bun:test";
 import { HONEYPOT_FIELD_NAME } from "@caelo-cms/plugin-component-kit";
-import { indexCheckedQuery, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
+import { runDeclaredPublicOperation } from "@caelo-cms/plugin-host";
+import {
+  indexCheckedQuery,
+  type PluginContextTier1,
+  publicOperationOf,
+} from "@caelo-cms/plugin-sdk";
 import plugin from "./index.js";
 
 const PAGE = "11111111-1111-4111-8111-111111111111";
@@ -42,9 +47,10 @@ function harness() {
 }
 
 const submit = (ctx: PluginContextTier1, args: unknown) => {
-  const op = plugin.operations.submit;
+  // #1340 — the declared insert, as the host runs it for a visitor.
+  const op = publicOperationOf(plugin.publicOperations, "submit");
   if (!op) throw new Error("submit missing");
-  return op(ctx, args);
+  return runDeclaredPublicOperation(op, ctx, args);
 };
 
 /** The declared visitor contract the host parses with before `submit` runs. */

@@ -115,6 +115,23 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     },
     "site_defaults.get": { measured: ["site_defaults.get"] },
   },
+  "site-assistant": {
+    "lists.get": {
+      notBackground: "the Stage audit reads the test-question list the settings name, by id",
+    },
+    "pages.list": {
+      notBackground: "the Stage audit reads the one contact page the settings name, by id",
+    },
+    "site_defaults.get": {
+      notBackground: "the Stage audit and the sources preview tool read the site's language",
+    },
+  },
+  "site-search": {
+    "lists.get": {
+      notBackground:
+        "the page-output observer and the Stage audit read the lists the settings name, by id, once per Stage",
+    },
+  },
 };
 
 function sources(dir: string, out: string[] = []): string[] {

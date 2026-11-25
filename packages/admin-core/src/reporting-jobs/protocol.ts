@@ -33,7 +33,13 @@ import { z } from "zod";
  * The kinds of reporting job: a Stage's audit (#1359), a site import's crawl
  * (#1360), and the carrier that holds a build's request open (#1574).
  */
-export const REPORTING_JOB_KINDS = ["quality_audit", "site_import", "build"] as const;
+export const REPORTING_JOB_KINDS = [
+  "quality_audit",
+  "site_import",
+  "build",
+  "collection_index",
+  "plugin_batch",
+] as const;
 
 export type ReportingJobKind = (typeof REPORTING_JOB_KINDS)[number];
 
@@ -96,6 +102,29 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
     maxAttempts: 1,
     maxRunSeconds: ADMIN_REQUEST_LIMIT_SECONDS + 5 * 60,
     reportTimeoutSeconds: ADMIN_REQUEST_LIMIT_SECONDS + 2 * 60,
+  },
+  // A Stage's search index (#1648): seconds for a delta, up to about half an
+  // hour for the first index of 50,000 pages with vectors. A retry starts
+  // over from the run's change files, which stay until a release holds them.
+  collection_index: {
+    firstLeaseSeconds: 15 * 60,
+    leaseSeconds: 10 * 60,
+    renewEverySeconds: 60,
+    maxAttempts: 3,
+    maxRunSeconds: 60 * 60,
+    reportTimeoutSeconds: 10 * 60,
+  },
+  // A plugin's batch operation (#1646): up to its declared maxRunSeconds
+  // (at most an hour) plus start-up. Two attempts: a batch re-derives what
+  // it writes, so a second run after a dead one is safe; more would repeat
+  // a batch that dies for a reason of its own.
+  plugin_batch: {
+    firstLeaseSeconds: 15 * 60,
+    leaseSeconds: 10 * 60,
+    renewEverySeconds: 60,
+    maxAttempts: 2,
+    maxRunSeconds: 60 * 60 + 5 * 60,
+    reportTimeoutSeconds: 10 * 60,
   },
 };
 

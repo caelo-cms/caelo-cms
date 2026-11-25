@@ -12,8 +12,7 @@
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
-import type { LongPromptPricing } from "../long-prompt-pricing.js";
+import type { ExecutionContext, LongPromptPricing } from "@caelo-cms/shared";
 import type { AIProvider } from "../provider.js";
 
 /** ai_pricing stores microcents per 1K tokens; USD per MTok = µ¢/1K ÷ 100_000

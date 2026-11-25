@@ -37,7 +37,7 @@ import {
   idNeedles,
 } from "./content-instance-refs.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
-import { findModulePagePlacements } from "./module-placements.js";
+import { findModulePagePlacements, placementRowsOfModules } from "./module-placements.js";
 
 /** One placement bound to a content_instance, as the caller sees it. */
 export interface PlacementInView {
@@ -65,22 +65,38 @@ type Tx = TransactionRunner;
  * set_values' blast radius, delete's guard) goes through here so they
  * agree with each other and with the preview. Ordered by path so
  * messages name pages deterministically.
+ *
+ * @param bound read at most `perInstance` live placements per instance and
+ *   add every instance that has more to `capped`, for a caller that only
+ *   needs to know whether an instance shows on more pages than that.
  */
 export async function listPlacementsInView(
   tx: Tx,
   contentInstanceIds: readonly string[],
   branchId: string | null,
+  bound?: { readonly perInstance: number; readonly capped: Set<string> },
 ): Promise<PlacementInView[]> {
   if (contentInstanceIds.length === 0) return [];
   const idList = uuidArray(contentInstanceIds);
-  const live = (await tx.execute(sql`
-    SELECT pm.content_instance_id::text AS content_instance_id, pm.page_id::text AS page_id,
+  const columns = sql`pm.content_instance_id::text AS content_instance_id, pm.page_id::text AS page_id,
            p.current_path AS path, p.slug AS page_slug, p.title AS page_title,
-           (p.deleted_at IS NOT NULL) AS page_deleted, pm.block_name, pm.position, pm.sync_mode
+           (p.deleted_at IS NOT NULL) AS page_deleted, pm.block_name, pm.position, pm.sync_mode`;
+  const live = (await tx.execute(
+    bound === undefined
+      ? sql`
+    SELECT ${columns}
     FROM page_modules pm
     JOIN pages p ON p.id = pm.page_id
-    WHERE pm.content_instance_id = ANY(${idList})
-  `)) as unknown as {
+    WHERE pm.content_instance_id = ANY(${idList})`
+      : sql`
+    SELECT x.* FROM unnest(${idList}) AS c(id)
+    CROSS JOIN LATERAL (
+      SELECT ${columns}
+        FROM page_modules pm
+        JOIN pages p ON p.id = pm.page_id
+       WHERE pm.content_instance_id = c.id
+       LIMIT ${bound.perInstance + 1}) x`,
+  )) as unknown as {
     content_instance_id: string;
     page_id: string;
     path: string;
@@ -91,6 +107,13 @@ export async function listPlacementsInView(
     position: number;
     sync_mode: "synced" | "unsynced";
   }[];
+  if (bound !== undefined) {
+    const perInstance = new Map<string, number>();
+    for (const r of live) {
+      perInstance.set(r.content_instance_id, (perInstance.get(r.content_instance_id) ?? 0) + 1);
+    }
+    for (const [id, n] of perInstance) if (n > bound.perInstance) bound.capped.add(id);
+  }
   const placements: PlacementInView[] = live.map((r) => ({
     contentInstanceId: r.content_instance_id,
     pageId: r.page_id,
@@ -165,6 +188,91 @@ export async function listPlacementsInView(
     }
   }
   return sortByPath(inView);
+}
+
+/**
+ * The instances of `contentInstanceIds` that a placement on a page other
+ * than `pageId` binds, as `branchId` sees the site: the instances of
+ * {@link listPlacementsInView} with a placement off `pageId`, which is all
+ * `page_module_content.list_for_page` needs to know (#1674). That op runs
+ * once per translated page, and listing every placement made it read all
+ * pages a shared instance sits on, with their pending layouts. Each of the
+ * two reads here stops at the first page it finds per instance: an
+ * instance shared by 50,000 pages, pending or live, costs one row. Only
+ * proving a "no" reads further: an instance whose every other page has a
+ * pending layout without it is checked page by page.
+ *
+ * Both reads are `CROSS JOIN LATERAL (… LIMIT 1)`, not `EXISTS`: under
+ * RLS the planner estimates the policy terms at a fraction of the rows and
+ * turned an `EXISTS` into a hash semi join over every reference of the
+ * instances (240,000 buffers on the rows-read fixture, 30 this way). A
+ * lateral subquery with a limit is never flattened into a join.
+ */
+export async function placedOutsidePage(
+  tx: Tx,
+  contentInstanceIds: readonly string[],
+  branchId: string | null,
+  pageId: string,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const ids = [...new Set(contentInstanceIds.map((id) => id.toLowerCase()))];
+  if (ids.length === 0) return out;
+  if (branchId !== null) {
+    // A pending layout of another page that places one. The reference
+    // index (0592) names the pages whose pending rows reference it; for
+    // each, the page's head (its newest pending layout row, the order
+    // `headOverlaySql` reads) decides whether a placement binds it. Asking
+    // the head of each referencing row, not whether that row is the head,
+    // answers at the first page: a page several chats changed has older
+    // rows that need not be the head.
+    // The ids go in as text: `r.ref = c.ref` is then a leakproof text
+    // comparison, an index condition under the refs table's RLS policy,
+    // where `r.ref = c.id::text` (a uuid cast, not leakproof) was only a
+    // filter over every id reference of the site (#1297 rule 2).
+    const pending = (await tx.execute(sql`
+      SELECT c.ref AS id FROM unnest(${textArray(ids)}) AS c(ref)
+       CROSS JOIN LATERAL (
+         SELECT 1 FROM page_layout_snapshot_refs r
+           JOIN draft_pending_entities d ON d.snapshot_row_id = r.snapshot_row_id
+          WHERE r.ref_kind = 'id' AND r.ref = c.ref
+            AND d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'pageLayout'
+            AND d.entity_id <> ${pageId}::uuid
+            AND EXISTS (
+              SELECT 1
+                FROM (SELECT h.snapshot_row_id FROM draft_pending_entities h
+                       WHERE h.chat_branch_id = d.chat_branch_id AND h.entity_kind = d.entity_kind
+                         AND h.entity_id = d.entity_id AND h.entity_sub = d.entity_sub
+                       ORDER BY h.header_created_at DESC, h.row_created_at DESC,
+                                h.snapshot_row_id DESC
+                       LIMIT 1) head
+                JOIN page_layout_snapshots es ON es.id = head.snapshot_row_id
+                JOIN pages p ON p.id = d.entity_id
+               WHERE es.state @> jsonb_build_object('blocks', jsonb_build_array(
+                       jsonb_build_object('placements', jsonb_build_array(
+                         jsonb_build_object('contentInstanceId', c.ref))))))
+          LIMIT 1) hit
+    `)) as unknown as { id: string }[];
+    for (const r of pending) out.add(r.id);
+  }
+  const rest = ids.filter((id) => !out.has(id));
+  if (rest.length === 0) return out;
+  // A live placement on another page, unless that page has a pending
+  // layout: the branch shows that layout instead (`listPlacementsInView`).
+  const notOverlaid = branchId
+    ? sql`AND NOT EXISTS (
+        SELECT 1 FROM draft_pending_entities d
+         WHERE d.chat_branch_id = ${branchId}::uuid AND d.entity_kind = 'pageLayout'
+           AND d.entity_id = pm.page_id)`
+    : sql``;
+  const live = (await tx.execute(sql`
+    SELECT c.id::text AS id FROM unnest(${uuidArray(rest)}) AS c(id)
+     CROSS JOIN LATERAL (
+       SELECT 1 FROM page_modules pm JOIN pages p ON p.id = pm.page_id
+        WHERE pm.content_instance_id = c.id AND pm.page_id <> ${pageId}::uuid ${notOverlaid}
+        LIMIT 1) hit
+  `)) as unknown as { id: string }[];
+  for (const r of live) out.add(r.id);
+  return out;
 }
 
 function sortByPath(placements: PlacementInView[]): PlacementInView[] {
@@ -330,6 +438,13 @@ export interface ContentInstanceReach {
   readonly chromeLayouts: readonly { readonly layoutId: string; readonly slug: string }[];
   /** Shared lists that show it or an ancestor — it renders wherever they render. */
   readonly viaLists: readonly ListParent[];
+  /**
+   * A bounded read (`placementsPerSource`) stopped before the end for it,
+   * an ancestor or a module whose default shows it: it renders on more
+   * pages than `pages` lists, and `placements` is a sample. Always false
+   * for an unbounded read.
+   */
+  readonly morePages: boolean;
 }
 
 /** Direct parents of any kind. */
@@ -348,12 +463,21 @@ export function isOrphan(r: ContentInstanceReach): boolean {
  * Walks parent instances upward (bounded by the renderer's depth), then
  * reads module defaults and shared lists once for the whole closure, and
  * the placements of every instance in it in one call.
+ *
+ * @param options.placementsPerSource read at most this many placements per
+ *   instance and per module default parent, and say `morePages` past it:
+ *   for a caller that only needs to know whether an instance shows on one
+ *   page or many (the change lists, part-placement.ts), so an instance
+ *   synced on every page costs that many rows, not the site. The delete
+ *   guard, the blast radius and the incremental Stage read everything.
  */
 export async function loadContentInstanceReach(
   tx: Tx,
   branchId: string | null,
   contentInstanceIds: readonly string[],
+  options: { readonly placementsPerSource?: number } = {},
 ): Promise<Map<string, ContentInstanceReach>> {
+  const bound = options.placementsPerSource;
   const out = new Map<string, ContentInstanceReach>();
   const ids = [...new Set(contentInstanceIds)];
   if (ids.length === 0) return out;
@@ -426,14 +550,24 @@ export async function loadContentInstanceReach(
   }
 
   // 3. Where the closure renders: placements, and the pages / layouts of parent modules.
-  const placements = await listPlacementsInView(tx, closure, branchId);
+  const cappedInstances = new Set<string>();
+  const placements = await listPlacementsInView(
+    tx,
+    closure,
+    branchId,
+    bound === undefined ? undefined : { perInstance: bound, capped: cappedInstances },
+  );
   const parentModuleIds = [
     ...new Set(closure.flatMap((id) => moduleParents.get(id) ?? []).map((m) => m.moduleId)),
   ];
   // A module default renders on a placement whose own content leaves that
   // field empty, so these are the pages it MAY render on — the right side
   // to err on for a blast radius — as the branch's page layouts place it.
-  const modulePages = await findModulePagePlacements(tx, branchId, parentModuleIds);
+  const cappedModules = new Set<string>();
+  const modulePages =
+    bound === undefined
+      ? await findModulePagePlacements(tx, branchId, parentModuleIds)
+      : await boundedModulePages(tx, branchId, parentModuleIds, bound, cappedModules);
   const moduleLayouts = await layoutsPlacingModules(tx, branchId, parentModuleIds);
 
   for (const id of ids) {
@@ -454,8 +588,11 @@ export async function loadContentInstanceReach(
     }
     const layouts = new Map<string, { layoutId: string; slug: string }>();
     const viaLists = new Map<string, ListParent>();
+    let morePages = false;
     for (const a of ancestors) {
+      if (cappedInstances.has(a)) morePages = true;
       for (const m of moduleParents.get(a) ?? []) {
+        if (cappedModules.has(m.moduleId)) morePages = true;
         for (const page of modulePages.get(m.moduleId) ?? []) pages.set(page.pageId, page);
         for (const l of moduleLayouts.get(m.moduleId) ?? []) layouts.set(l.layoutId, l);
       }
@@ -469,9 +606,34 @@ export async function loadContentInstanceReach(
       pages: [...pages.values()].sort((a, b) => a.path.localeCompare(b.path)),
       chromeLayouts: [...layouts.values()].sort((a, b) => a.slug.localeCompare(b.slug)),
       viaLists: [...viaLists.values()].sort((a, b) => a.slug.localeCompare(b.slug)),
+      morePages,
     });
   }
   return out;
+}
+
+/**
+ * {@link findModulePagePlacements} reading at most `bound` placements per
+ * module; every module with more goes into `capped`.
+ */
+async function boundedModulePages(
+  tx: Tx,
+  branchId: string | null,
+  moduleIds: readonly string[],
+  bound: number,
+  capped: Set<string>,
+): Promise<Map<string, ReachPage[]>> {
+  const rows = await placementRowsOfModules(tx, branchId, moduleIds, bound + 1);
+  const rowsOf = new Map<string, number>();
+  const pagesOf = new Map<string, Map<string, ReachPage>>();
+  for (const r of rows) {
+    rowsOf.set(r.moduleId, (rowsOf.get(r.moduleId) ?? 0) + 1);
+    const pages = pagesOf.get(r.moduleId) ?? new Map<string, ReachPage>();
+    pages.set(r.pageId, { pageId: r.pageId, path: r.path, title: r.title });
+    pagesOf.set(r.moduleId, pages);
+  }
+  for (const [moduleId, n] of rowsOf) if (n > bound) capped.add(moduleId);
+  return new Map([...pagesOf].map(([moduleId, pages]) => [moduleId, [...pages.values()]]));
 }
 
 /**
@@ -580,7 +742,7 @@ async function moduleDefaultParents(
  * the branch sees the chrome (its pending `layout_modules.set` snapshots),
  * the same view the preview renders.
  */
-async function layoutsPlacingModules(
+export async function layoutsPlacingModules(
   tx: Tx,
   branchId: string | null,
   moduleIds: readonly string[],

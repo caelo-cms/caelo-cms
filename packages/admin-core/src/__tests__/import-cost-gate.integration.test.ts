@@ -449,6 +449,42 @@ describe("issue #297 — auto-armed ceiling + live gate state", () => {
     expect((otherState.value as GateState).gate).toBeNull();
   });
 
+  it("leaves the running turn's reservation out when the caller counts that turn itself (#1653)", async () => {
+    // A turn's ledger row while it runs: its worst case, which the live gate
+    // must not add on top of the turn's real usage.
+    await execute(registry, adapter, SYSTEM, "chat.record_ai_call", {
+      chatSessionId: sessId,
+      provider: "anthropic",
+      model: "fixture",
+      inputTokens: 1,
+      outputTokens: 1,
+      cachedTokens: 0,
+      costEstimateMicrocents: 900_000,
+      durationMs: 10,
+      succeeded: true,
+    });
+    const [row] = (await sqlc.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx`SELECT id::text AS id FROM ai_calls WHERE chat_session_id = ${sessId}::uuid
+                AND cost_estimate_microcents = 900000 LIMIT 1`;
+    })) as { id: string }[];
+    const spent = async (excludeCallId?: string) => {
+      const r = await execute(registry, adapter, SYSTEM, "imports.get_session_budget_state", {
+        chatSessionId: sessId,
+        ...(excludeCallId ? { excludeCallId } : {}),
+      });
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      return (r.value as GateState).gate?.spentMicrocents;
+    };
+    const all = (await spent()) as number;
+    expect(await spent(row?.id)).toBe(all - 900_000);
+    // The later tests count this session's calls.
+    await sqlc.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`DELETE FROM ai_calls WHERE id = ${row?.id}::uuid`;
+    });
+  });
+
   it("gate events claim exactly once; set_cost_ceiling re-arms both claims", async () => {
     const claim = (kind: "warning" | "tripped") =>
       execute(registry, adapter, SYSTEM, "imports.record_budget_gate_event", {

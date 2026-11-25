@@ -50,7 +50,7 @@ export function describePublishPreview(p: PublishPreview): string {
   }
   if (p.siteWide.length > 0) {
     lines.push(
-      `- site-wide (${p.siteWide.length}): ${p.siteWide.map((s) => `${s.what} "${s.title}"${s.change === "changed" ? "" : ` (${s.change})`}`).join(", ")}`,
+      `- site-wide (${p.siteWide.length}): ${p.siteWide.map((s) => `"${s.title}" (${s.what}${s.change === "changed" ? "" : `, ${s.change}`})`).join(", ")}`,
     );
   }
   if (p.settings.length > 0) {

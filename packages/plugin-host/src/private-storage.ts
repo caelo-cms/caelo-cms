@@ -19,10 +19,11 @@
  * main and on a branch (the overlay comes from JSON snapshots).
  */
 
-import { privateReadColumns } from "@caelo-cms/plugin-sandbox";
+import { privateReadColumns } from "@caelo-cms/plugin-sandbox/schema";
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { loadBranchOverlay } from "./branch-overlay.js";
 import {
   emitPluginRowSnapshot,
   emitPluginRowSnapshots,
@@ -579,9 +580,11 @@ export async function privateList(
   t: Target & { readonly columns: Readonly<Record<string, string>> },
   plan: ListPlan,
 ): Promise<Record<string, unknown>[]> {
-  const overlay =
+  // #1669 — the branch's pending rows of the table, carried by the journal
+  // between reads instead of read in full on every list.
+  const overlay: ReadonlyMap<string, PluginRowState> =
     ctx.chatBranchId && ctx.pluginId
-      ? await loadBranchRowStates(tx, {
+      ? await loadBranchOverlay(tx, {
           pluginId: ctx.pluginId,
           table: t.table,
           chatBranchId: ctx.chatBranchId,
@@ -594,9 +597,11 @@ export async function privateList(
   const main = rows.map((r) => rowToState(r.row).values);
   if (overlay.size === 0) return main;
 
+  // The overlay is remembered across reads (#1669): hand out copies, so a
+  // caller that changes a returned row cannot change what later reads see.
   const branchRows = [...overlay.values()]
     .filter((s) => s.deletedAt === null && matches(s.values, plan))
-    .map((s) => s.values);
+    .map((s) => structuredClone(s.values) as Record<string, unknown>);
   const merged = [...main, ...branchRows];
   if (plan.orderBy) {
     const key = plan.orderBy;

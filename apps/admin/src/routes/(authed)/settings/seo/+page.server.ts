@@ -8,9 +8,27 @@ import { requireApproverPermission, requirePermission } from "#lib/server/guards
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
+/** What `site_defaults.get_seo` answers, as this page reads it. */
+interface SeoSettings {
+  siteBaseUrl: string | null;
+  sitemapEnabled: boolean;
+  feedEnabled: boolean;
+  indexNowEnabled: boolean;
+  organizationJson: Record<string, unknown>;
+  searchNotifications: {
+    id: string;
+    channel: "websub" | "indexnow";
+    status: "pending" | "sent" | "failed" | "skipped";
+    urlCount: number;
+    detail: string | null;
+    createdAt: string;
+  }[];
+}
+
 /**
- * P8 — Owner-only SEO dashboard. Site-level base URL + sitemap toggle
- * + Organization JSON-LD editor + the stale-SEO queue. Owner-proxy via
+ * P8 — Owner-only SEO dashboard. Site-level base URL + sitemap, feed and
+ * IndexNow toggles + Organization JSON-LD editor + the latest search engine
+ * notifications + the stale-SEO queue. Owner-proxy via
  * `roles.manage` until the permission catalogue grows an explicit
  * `seo.settings` entry.
  */
@@ -56,13 +74,19 @@ export const load: PageServerLoad = async ({ locals }) => {
       : `site_defaults.list_pending failed: ${describeError(pending.error)}`,
     siteLanguage,
     siteLanguageError,
+    settingsError: settings.ok
+      ? null
+      : `site_defaults.get_seo failed: ${describeError(settings.error)}`,
     settings: settings.ok
-      ? (settings.value as {
-          siteBaseUrl: string | null;
-          sitemapEnabled: boolean;
-          organizationJson: Record<string, unknown>;
-        })
-      : { siteBaseUrl: null, sitemapEnabled: true, organizationJson: {} },
+      ? (settings.value as SeoSettings)
+      : {
+          siteBaseUrl: null,
+          sitemapEnabled: false,
+          feedEnabled: false,
+          indexNowEnabled: false,
+          organizationJson: {},
+          searchNotifications: [],
+        },
     stale: stale.ok
       ? (
           stale.value as {
@@ -88,6 +112,8 @@ export const actions: Actions = {
     await assertCsrfToken(form, locals);
     const siteBaseUrl = String(form.get("siteBaseUrl") ?? "");
     const sitemapEnabled = form.get("sitemapEnabled") === "on";
+    const feedEnabled = form.get("feedEnabled") === "on";
+    const indexNowEnabled = form.get("indexNowEnabled") === "on";
     const organizationJsonRaw = String(form.get("organizationJson") ?? "{}");
     let organizationJson: Record<string, unknown>;
     try {
@@ -102,6 +128,8 @@ export const actions: Actions = {
     const r = await execute(registry, adapter, locals.ctx, "site_defaults.set_seo", {
       siteBaseUrl,
       sitemapEnabled,
+      feedEnabled,
+      indexNowEnabled,
       organizationJson,
     });
     if (!r.ok) {

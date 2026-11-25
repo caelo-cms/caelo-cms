@@ -19,6 +19,7 @@ const FAKE_INFRA = {
   adapter: {} as never,
   registry: {} as never,
   aiProvider: {
+    resolve: async () => ({ provider: "anthropic", model: "test-model" }),
     complete: async () => ({
       text: "",
       inputTokens: 0,

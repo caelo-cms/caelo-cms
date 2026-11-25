@@ -75,7 +75,7 @@ const offFixture = definePlugin({
   slug: OFF_SLUG,
   version: "1.0.0",
   tier: 1,
-  schema: { pings: { id: "uuid" } },
+  schema: { pings: { id: "uuid", pinged_at: "timestamp" } },
   tableKinds: { pings: "visitor-state" },
   publicOperations: [
     {
@@ -85,11 +85,16 @@ const offFixture = definePlugin({
       input: z.looseObject({}),
       reads: ["pings"],
       writes: ["pings"],
+      // #1340 — declared: one row per ping.
+      run: {
+        action: "insert" as const,
+        table: "pings",
+        values: { pinged_at: { from: "now" as const } },
+        answer: { pong: true },
+      },
     },
   ],
-  operations: {
-    ping: async () => ({ pong: true }),
-  },
+  operations: {},
 });
 
 /**

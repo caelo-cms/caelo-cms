@@ -65,12 +65,11 @@ if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_URL) {
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SLUG = "t1267-gated";
 
-let pinged = 0;
 const gated = definePlugin({
   slug: SLUG,
   version: "1.0.0",
   tier: 1,
-  schema: { pings: { id: "uuid" } },
+  schema: { pings: { id: "uuid", pinged_at: "timestamp" } },
   tableKinds: { pings: "visitor-state" },
   requestedCapabilities: ["snapshots"],
   publicOperations: [
@@ -81,19 +80,52 @@ const gated = definePlugin({
       input: z.looseObject({}),
       reads: ["pings"],
       writes: ["pings"],
+      // #1340 — declared: one row per ping.
+      run: {
+        action: "insert" as const,
+        table: "pings",
+        values: { pinged_at: { from: "now" as const } },
+        answer: { pong: true },
+      },
     },
   ],
-  operations: {
-    ping: async () => {
-      pinged += 1;
-      return { pong: true };
-    },
-  },
+  operations: {},
 });
 
 let adminAdapter: DatabaseAdapter;
 let gatewayAdapter: DatabaseAdapter;
 let savedCaptcha: { provider: string; prefix: string } | null = null;
+
+/** Pings stored so far: each served ping is one row (#1340: the run is the operation). */
+async function pinged(): Promise<number> {
+  const admin = new SQL(ADMIN_URL as string);
+  let pluginId: string | undefined;
+  try {
+    const ids = (await admin.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return tx`SELECT id::text AS id FROM plugins WHERE slug = ${SLUG}`;
+    })) as unknown as { id: string }[];
+    pluginId = ids[0]?.id;
+  } finally {
+    await admin.end();
+  }
+  if (!pluginId) return 0;
+  const pub = new SQL(PUBLIC_ADMIN_URL as string);
+  try {
+    const rows = (await pub.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`SELECT set_config('caelo.plugin_id', ${pluginId}, true)`;
+      return tx.unsafe(`SELECT count(*)::int AS n FROM "plugin_t1267_gated".pings`);
+    })) as unknown as { n: number }[];
+    return rows[0]?.n ?? 0;
+  } catch (e) {
+    // Before the plugin's schema exists nothing was pinged.
+    if (/does not exist/.test(String(e))) return 0;
+    throw e;
+  } finally {
+    await pub.end();
+  }
+}
 
 async function asAdmin<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const conn = new SQL(ADMIN_URL as string);
@@ -238,7 +270,7 @@ describe("#1267 — the gateway honours the capability approval gate", () => {
   it("runs no visitor-facing operation of a plugin waiting for approval", async () => {
     const r = await ping();
     expect(r.status).not.toBe(200);
-    expect(pinged).toBe(0);
+    expect(await pinged()).toBe(0);
   });
 
   it("runs it once the Owner approved and the admin republished, without a Publish live", async () => {
@@ -254,7 +286,7 @@ describe("#1267 — the gateway honours the capability approval gate", () => {
     await syncDispatchPlugins({ force: true });
     const r = await ping();
     if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${await r.text()}`);
-    expect(pinged).toBe(1);
+    expect(await pinged()).toBe(1);
   });
 
   it("detaches it again when the approval is narrowed", async () => {
@@ -266,7 +298,7 @@ describe("#1267 — the gateway honours the capability approval gate", () => {
     await syncDispatchPlugins({ force: true });
     const r = await ping();
     expect(r.status).not.toBe(200);
-    expect(pinged).toBe(1);
+    expect(await pinged()).toBe(1);
   });
 });
 
@@ -294,7 +326,7 @@ describe("#1587 — a release approved after a Caelo update runs on the live gat
     await syncDispatchPlugins({ force: true });
     // The update rolled the gateway: the release in its image is not approved yet.
     expect((await ping()).status).toBe(404);
-    const before = pinged;
+    const before = await pinged();
     const pointer = await livePointer();
 
     // The Owner approves the updated release. Nothing is staged or published.
@@ -306,6 +338,6 @@ describe("#1587 — a release approved after a Caelo update runs on the live gat
     await syncDispatchPlugins({ force: true });
     const r = await ping();
     if (r.status !== 200) throw new Error(`expected 200, got ${r.status}: ${await r.text()}`);
-    expect(pinged).toBe(before + 1);
+    expect(await pinged()).toBe(before + 1);
   });
 });

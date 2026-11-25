@@ -4,7 +4,8 @@
  * What the next Publish live changes, for its review in the editor
  * toolbar (`PublishLiveReview.svelte`):
  *
- *   GET → { preview: deploy.publish_preview, redirects: redirects.release_plan }
+ *   GET → { preview: deploy.publish_preview, redirects: redirects.release_plan,
+ *           staging: how its pages link to staging }
  *
  * Both are read for the same click: the review posts the staged run it
  * showed (`stagedRunId`, deploy.promote refuses another build) and the
@@ -17,6 +18,7 @@ import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
+import { stagingLinksForAdmin } from "#lib/server/staging-link.js";
 import type { RequestHandler } from "./$types";
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -40,5 +42,9 @@ export const GET: RequestHandler = async ({ locals }) => {
       `The redirects of this Publish live could not be read: ${describeError(redirects.error)}`,
     );
   }
-  return json({ preview: preview.value, redirects: redirects.value });
+  return json({
+    preview: preview.value,
+    redirects: redirects.value,
+    staging: stagingLinksForAdmin(),
+  });
 };

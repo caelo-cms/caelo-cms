@@ -3,9 +3,10 @@
 /**
  * The Cloud Run jobs that run the admin image: the quality-audit job (#875,
  * admin-core quality/audit-task.ts), the capture job (#1217, admin-core
- * capture/capture-task.ts), the quality-audit runner (#1359), the
- * site-import crawler (#1360) and the build carrier (#1574, all three
- * admin-core reporting-jobs/job-entry.ts).
+ * capture/capture-task.ts) and every reporting job of the catalog
+ * (reporting-job-catalog.ts: the quality-audit runner, the site-import
+ * crawler, the build carrier, the collection index job, the plugin batch
+ * job; all run admin-core reporting-jobs/job-entry.ts).
  * Each refuses an order from an admin on another version, so every app-roll
  * moves them onto the admin's new image right after the services rolled,
  * and a rollback moves them back.
@@ -16,13 +17,8 @@
  */
 
 import type { GcloudRunner } from "../gcloud-retry.js";
-import {
-  auditJobName,
-  auditRunnerJobName,
-  buildCarrierJobName,
-  captureJobName,
-  importCrawlJobName,
-} from "../gcp-names.js";
+import { auditJobName, captureJobName } from "../gcp-names.js";
+import { REPORTING_JOB_CATALOG, reportingJobName } from "../reporting-job-catalog.js";
 
 /** One job that follows the admin's image. */
 export interface AdminImageJob {
@@ -48,21 +44,13 @@ export function adminImageJobs(env: string): readonly AdminImageJob[] {
       label: "capture job",
       lagging: "server-side screenshots fail",
     },
-    {
-      name: auditRunnerJobName(env),
-      label: "quality-audit runner",
-      lagging: "Stage audits wait for it and fail after their last attempt",
-    },
-    {
-      name: importCrawlJobName(env),
-      label: "site-import crawler",
-      lagging: "site imports wait for it and fail after their last attempt",
-    },
-    {
-      name: buildCarrierJobName(env),
-      label: "build carrier",
-      lagging: "an agent's Stage and the Stage and Publish live buttons fail (Stage again)",
-    },
+    // Every reporting job (#1359, #1360, #1574, epic #1644), in catalog
+    // order: the quality-audit runner first, after the audit job above.
+    ...REPORTING_JOB_CATALOG.map((e) => ({
+      name: reportingJobName(e, env),
+      label: e.label,
+      lagging: e.lagging,
+    })),
   ];
 }
 

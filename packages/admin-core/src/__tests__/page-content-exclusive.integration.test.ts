@@ -21,7 +21,11 @@
  *   - the nested write is refused with the fork as the next step; after
  *     the fork the copies are the page's own and the write leaves the
  *     source page untouched;
- *   - content only one page renders stays exclusive.
+ *   - content only one page renders stays exclusive;
+ *   - on a chat branch, the pending layouts decide: one that drops the
+ *     other page's placement makes the content the page's own, one that
+ *     binds the root on a third page shares it again (#1674: the flag is
+ *     read per instance, no longer from every placement).
  *
  * Integration tier against a throwaway Postgres (never the dev DB).
  */
@@ -47,12 +51,12 @@ let cardId = "";
 let listId = "";
 let pageCount = 0;
 
-async function run(name: string, input: unknown) {
-  return execute(registry, adapter, SYS, name, input);
+async function run(name: string, input: unknown, ctx: ExecutionContext = SYS) {
+  return execute(registry, adapter, ctx, name, input);
 }
 
-async function op<T>(name: string, input: unknown): Promise<T> {
-  const r = await run(name, input);
+async function op<T>(name: string, input: unknown, ctx: ExecutionContext = SYS): Promise<T> {
+  const r = await run(name, input, ctx);
   if (!r.ok) throw new Error(`${name}: ${JSON.stringify(r.error)}`);
   return r.value as T;
 }
@@ -118,11 +122,14 @@ async function pageWith(root: string, syncMode: "synced" | "unsynced"): Promise<
   return pageId;
 }
 
-/** `path → exclusive` of the page's nested content. */
-async function exclusiveByPath(pageId: string): Promise<Record<string, boolean>> {
+/** `path → exclusive` of the page's nested content, as `ctx` sees it. */
+async function exclusiveByPath(
+  pageId: string,
+  ctx: ExecutionContext = SYS,
+): Promise<Record<string, boolean>> {
   const listed = await op<{
     placements: { nested: { path: string; exclusive: boolean }[] }[];
-  }>("page_module_content.list_for_page", { pageId });
+  }>("page_module_content.list_for_page", { pageId }, ctx);
   return Object.fromEntries((listed.placements[0]?.nested ?? []).map((n) => [n.path, n.exclusive]));
 }
 
@@ -233,5 +240,83 @@ describe("#1309 — nested content is exclusive only when nothing above it is sh
     });
     // The source page still renders its own text.
     expect(await valuesOf(source.leaf)).toEqual({ title: "Kachel" });
+  });
+  it("on a chat branch, the pending layouts of other pages decide (#1674)", async () => {
+    const { root } = await threeLevels();
+    const page = await pageWith(root, "unsynced");
+    const other = await pageWith(root, "synced");
+    const shared = { "items[0]": false, "items[0]>items[0]": false };
+    const own = { "items[0]": true, "items[0]>items[0]": true };
+    expect(await exclusiveByPath(page)).toEqual(shared);
+
+    const session = await op<{ chatSessionId: string; chatBranchId: string }>(
+      "chat.create_session",
+      { title: `excl-branch-${TS}` },
+    );
+    const chat: ExecutionContext = {
+      actorId: ACTOR,
+      actorKind: "ai",
+      requestId: "excl-chat",
+      chatBranchId: session.chatBranchId,
+      chatTaskId: session.chatSessionId,
+    };
+    // The chat binds the other page to content of its own: its pending
+    // layout no longer places the root, its live row still does.
+    const elsewhere = await instance(listId, { items: [] });
+    await op(
+      "placement.set_content",
+      {
+        pageId: other,
+        blockName: "content",
+        position: 0,
+        contentInstanceId: elsewhere,
+        syncMode: "unsynced",
+      },
+      chat,
+    );
+    expect(await exclusiveByPath(page, chat)).toEqual(own);
+    expect(await exclusiveByPath(page)).toEqual(shared);
+
+    // A third page the chat binds to the root (only its pending layout does).
+    const third = await pageWith(elsewhere, "unsynced");
+    await op(
+      "placement.set_content",
+      {
+        pageId: third,
+        blockName: "content",
+        position: 0,
+        contentInstanceId: root,
+        syncMode: "synced",
+      },
+      chat,
+    );
+    expect(await exclusiveByPath(page, chat)).toEqual(shared);
+
+    // A second chat on the same draft rebinds that page: its pending layout
+    // is the page's newest, while the first chat's row still references
+    // the root. Only the newest one counts.
+    const second = await op<{ chatSessionId: string; chatBranchId: string }>(
+      "chat.create_session",
+      { title: `excl-branch-2-${TS}` },
+    );
+    expect(second.chatBranchId).toBe(session.chatBranchId);
+    const chat2: ExecutionContext = {
+      ...chat,
+      requestId: "excl-chat-2",
+      chatTaskId: second.chatSessionId,
+    };
+    await exclusiveByPath(third, chat2);
+    await op(
+      "placement.set_content",
+      {
+        pageId: third,
+        blockName: "content",
+        position: 0,
+        contentInstanceId: elsewhere,
+        syncMode: "unsynced",
+      },
+      chat2,
+    );
+    expect(await exclusiveByPath(page, chat)).toEqual(own);
   });
 });

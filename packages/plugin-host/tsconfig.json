@@ -8,11 +8,13 @@
   },
   "include": ["src/**/*"],
   "references": [
+    { "path": "../models" },
     { "path": "../font-service" },
     { "path": "../shared" },
     { "path": "../query-api" },
     { "path": "../plugin-sdk" },
-    { "path": "../plugin-sandbox" }
+    { "path": "../plugin-sandbox" },
+    { "path": "../collection-index" }
   ],
   "exclude": ["**/*.test.ts", "**/dist", "**/node_modules"]
 }

@@ -38,6 +38,34 @@ import {
 import { z } from "zod";
 import { checkAdminPanels, type PluginAdminPanel, pluginAdminPanel } from "./admin-panels.js";
 import {
+  type AiChatOperationInput,
+  aiChatOperationManifest,
+  checkAiChatOperations,
+  MAX_AI_CHAT_OPERATIONS,
+  type PluginChatTools,
+} from "./ai-chat-operations.js";
+import { MAX_BATCH_OPERATIONS, pluginBatchOperation } from "./batch.js";
+import {
+  type CollectionOperationInput,
+  checkCollectionOperations,
+  collectionOperationManifest,
+  MAX_COLLECTION_OPERATIONS,
+} from "./collection-operations.js";
+import {
+  checkCollections,
+  collectionName,
+  type PluginCollectionManifest,
+  type PluginCollections,
+  pluginCollectionManifest,
+} from "./collections.js";
+import {
+  type ConfigEntityKind,
+  type ConfigFieldInput,
+  checkConfig,
+  pluginConfigSchema,
+  pluginEntityConfigSchema,
+} from "./config.js";
+import {
   checkEditorToolbar,
   type PluginEditorToolbarItem,
   pluginEditorToolbarItem,
@@ -50,6 +78,7 @@ import {
   type PluginMailUnsubscribe,
   pluginMailTemplates,
 } from "./mail-templates.js";
+import { type PageOutputObserverManifest, pageOutputObserverManifest } from "./page-output.js";
 import {
   checkPublicSurface,
   type PluginRequirement,
@@ -85,7 +114,9 @@ export * from "./editor-toolbar.js";
 export * from "./index-coverage.js";
 export * from "./indexes.js";
 export * from "./mail-templates.js";
+export * from "./public-run.js";
 export * from "./public-surface.js";
+export * from "./visitor-auth.js";
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
@@ -163,6 +194,10 @@ export const pluginCapability = z.enum([
   "content_variants",
   "link_resolve",
   "consent_provider",
+  "page_output",
+  "collections",
+  "batch_jobs",
+  "visitor_ai",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -920,6 +955,8 @@ export interface PluginAuditPageFacts {
 /** What an `auditFindingsOperation` is called with: the staged build's pages. */
 export interface PluginAuditFindingsArgs {
   readonly pages: readonly { readonly pageId: string; readonly path: string }[];
+  /** #1651 — the Stage's deploy run the audit checks (its collection releases, say). */
+  readonly runId?: string;
   /**
    * Present on the calls that answer a `factBatches` request: the facts
    * of one batch's pages, in the order requested.
@@ -1085,6 +1122,23 @@ export const VISITOR_CONSENT_HEADER = "x-caelo-consent";
 /** The purpose key that makes the gateway set {@link VISITOR_ID_COOKIE}. */
 export const VISITOR_ID_PURPOSE_KEY = "visitor_id";
 
+/** #1340 — see `PluginDefinition.consentProvider`. */
+export const pluginConsentProvider = z
+  .object({
+    policyVersion: z
+      .object({
+        table: z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/),
+        column: z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/),
+      })
+      .strict(),
+    strictness: z
+      .array(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/))
+      .min(1)
+      .max(16),
+  })
+  .strict();
+export type PluginConsentProvider = z.infer<typeof pluginConsentProvider>;
+
 /** One cookie a declared purpose sets, worded for the banner and the privacy policy. */
 export const pluginConsentCookie = z
   .object({
@@ -1214,7 +1268,9 @@ export const pluginManifest = z
       .max(64)
       .optional(),
     /** Operation names. Bodies live in source — the manifest just lists names. */
-    operations: z.array(z.string().min(1).max(120)).min(1),
+    // #1340 — may be empty: a plugin whose visitor surface is all
+    // declarations (`publicOperations[].run`) needs no code operation.
+    operations: z.array(z.string().min(1).max(120)).max(200),
     component: pluginComponent.optional(),
     hasStaticRender: z.boolean().default(false),
     /** See `PluginDefinition.publicOperations` (#1332): each visitor
@@ -1340,11 +1396,81 @@ export const pluginManifest = z
     /** See `PluginDefinition.consentPurposes`. Data only — no capability:
      *  a declaration asks the visitor, it never grants anything. */
     consentPurposes: z.array(pluginConsentPurpose).max(20).optional(),
+    /** See `PluginDefinition.consentProvider` (#1340). */
+    consentProvider: pluginConsentProvider.optional(),
     /** See `PluginDefinition.bakedData` (#1155). */
     bakedData: pluginBakedData.optional(),
+    /** See `PluginDefinition.config` (#1645). */
+    config: pluginConfigSchema.optional(),
+    /** See `PluginDefinition.entityConfig` (#1645). */
+    entityConfig: pluginEntityConfigSchema.optional(),
+    /** See `PluginDefinition.configPreviewOperation` (#1645). */
+    configPreviewOperation: z.string().min(1).max(120).optional(),
+    /** See `PluginDefinition.collections` (#1648). Needs the `collections` capability. */
+    collections: z.record(collectionName, pluginCollectionManifest).optional(),
+    /** See `PluginDefinition.collectionOperations` (#1649). */
+    collectionOperations: z
+      .array(collectionOperationManifest)
+      .max(MAX_COLLECTION_OPERATIONS)
+      .optional(),
+    /** See `PluginDefinition.aiChatOperations` (#1654). Needs the `visitor_ai` capability. */
+    aiChatOperations: z.array(aiChatOperationManifest).max(MAX_AI_CHAT_OPERATIONS).optional(),
+    /** See `PluginDefinition.pageOutputObserver` (#1647). Needs the `page_output` capability. */
+    pageOutputObserver: pageOutputObserverManifest.optional(),
+    /** See `PluginDefinition.batchOperations` (#1646). Needs the `batch_jobs` capability. */
+    batchOperations: z.array(pluginBatchOperation).max(MAX_BATCH_OPERATIONS).optional(),
   })
   .strict()
   .superRefine((m, ctx) => {
+    const issueAt = (path: readonly (string | number)[], message: string) =>
+      ctx.addIssue({ code: "custom", path: [...path], message });
+    for (const [zone, map] of [
+      ["schema", m.schema],
+      ["adminSchema", m.adminSchema ?? {}],
+    ] as const) {
+      for (const table of Object.keys(map)) {
+        if (table.startsWith("caelo_"))
+          issueAt(
+            [zone, table],
+            `table names starting with "caelo_" are the host's (configuration tables): rename "${table}"`,
+          );
+      }
+    }
+    checkConfig(m.config, m.entityConfig, issueAt);
+    checkCollections(m.collections, m.config, issueAt);
+    checkCollectionOperations(
+      m.collectionOperations,
+      m.collections,
+      [...m.operations, ...(m.publicOperations ?? []).map((o) => o.name)],
+      issueAt,
+    );
+    checkAiChatOperations(
+      m,
+      [
+        ...m.operations,
+        ...(m.publicOperations ?? []).map((o) => o.name),
+        ...(m.collectionOperations ?? []).map((o) => o.name),
+      ],
+      issueAt,
+    );
+    const named = (path: readonly (string | number)[], op: string | undefined, what: string) => {
+      if (op !== undefined && !m.operations.includes(op))
+        issueAt(path, `${what} "${op}" is not one of the plugin's operations`);
+    };
+    named(["configPreviewOperation"], m.configPreviewOperation, "configPreviewOperation");
+    if (m.configPreviewOperation !== undefined && !m.config)
+      issueAt(["configPreviewOperation"], "a config preview needs a `config` to preview");
+    named(
+      ["pageOutputObserver", "operation"],
+      m.pageOutputObserver?.operation,
+      "the page-output observer",
+    );
+    for (const [i, b] of (m.batchOperations ?? []).entries()) {
+      named(["batchOperations", i, "operation"], b.operation, "the batch operation");
+    }
+    const batchNames = (m.batchOperations ?? []).map((b) => b.operation);
+    if (new Set(batchNames).size !== batchNames.length)
+      issueAt(["batchOperations"], "a batch operation is declared twice");
     checkPluginIndexes(m, (path, message) =>
       ctx.addIssue({ code: "custom", path: ["indexes", ...path], message }),
     );
@@ -1384,6 +1510,15 @@ export const pluginManifest = z
       required.add(slug);
     }
     const purposeKeys = new Set<string>();
+    if (m.consentProvider) {
+      const { table, column } = m.consentProvider.policyVersion;
+      if (!(m.visitorProjection?.[table] ?? []).includes(column))
+        ctx.addIssue({
+          code: "custom",
+          path: ["consentProvider", "policyVersion"],
+          message: `the consent rule reads "${table}.${column}", which visitorProjection does not publish`,
+        });
+    }
     for (const [i, p] of (m.consentPurposes ?? []).entries()) {
       if (purposeKeys.has(p.key)) {
         ctx.addIssue({
@@ -1460,8 +1595,10 @@ export const pluginManifest = z
           message: "bakedData needs a staticRender: it declares when that output goes stale",
         });
       }
+      // #1340 — a trigger may be a public operation too (a visitor's vote).
+      const triggerable = [...m.operations, ...(m.publicOperations ?? []).map((o) => o.name)];
       for (const [i, t] of m.bakedData.triggers.entries()) {
-        if (!m.operations.includes(t.operation)) {
+        if (!triggerable.includes(t.operation)) {
           ctx.addIssue({
             code: "custom",
             path: ["bakedData", "triggers", i, "operation"],
@@ -1975,7 +2112,13 @@ export type PluginInvocationOrigin =
   | "worker"
   | "render"
   | "visitor"
-  | "system";
+  | "system"
+  /** #1647 — core delivers a Stage's page output to the plugin's observer:
+   *  it may write its collections and private storage (main), never a
+   *  public table, which visitors would see before Publish live. */
+  | "observer"
+  /** #1646 — a batch operation in a job container; the same write rules as `observer`. */
+  | "batch";
 
 /**
  * Who a plugin call acts for and on which chat branch. Every dispatch
@@ -2022,6 +2165,15 @@ export interface PluginInvocation {
    * Set by the host only; a plugin reads it, never chooses it.
    */
   readonly siteBaseUrl?: string;
+  /**
+   * #1647 / #1648 — set for origin `observer`: the Stage's deploy run whose
+   * output the call reads. Collection writes of the call belong to that
+   * run's index. (A batch's writes go to the next Stage's index; a `stage`
+   * batch finds its Stage in `PluginBatchArgs.stageRunId`.)
+   */
+  readonly stageRunId?: string;
+  /** #1646 — set for origin `batch`: the run the call belongs to. */
+  readonly batchRunId?: string;
 }
 
 /** Prefix of the error the host throws when a plugin calls `ctx.ai` or
@@ -2075,6 +2227,36 @@ export interface PluginContext {
   readonly captcha: PluginCaptcha;
   /** Who this call acts for, and on which branch. */
   readonly invocation: PluginInvocation;
+  /**
+   * #1645 — the plugin's configuration as this call sees it: a chat's
+   * branch values in a chat, the staged values at a Stage and in jobs.
+   * Present when the plugin declares `config` or `entityConfig`; absent in
+   * the gateway.
+   */
+  readonly config?: PluginConfigReader;
+  /** #1648 — write handles of the plugin's collections; present in admin and batch calls of a plugin with the grant. */
+  readonly collections?: PluginCollections;
+  /**
+   * #1655 — the declared tools of the plugin's `ai-chat` operations, run as
+   * the gateway runs them (Stage audit, previews). Present on the admin side
+   * for a plugin with the `visitor_ai` grant that declares a conversation.
+   */
+  readonly chatTools?: PluginChatTools;
+}
+
+/** Reads a plugin's configuration (#1645). Missing stored configuration is an error, never a silent default. */
+export interface PluginConfigReader {
+  /** The whole configuration value. */
+  get(): Promise<Readonly<Record<string, unknown>>>;
+  /** One entity's fields, unset ones as their declared defaults. */
+  entity(kind: ConfigEntityKind, id: string): Promise<Readonly<Record<string, unknown>>>;
+  /** Many entities' fields at once; every id gets an entry. */
+  entities(
+    kind: ConfigEntityKind,
+    ids: readonly string[],
+  ): Promise<ReadonlyMap<string, Readonly<Record<string, unknown>>>>;
+  /** The ids of every entity of a kind that has at least one stored field. */
+  configured(kind: ConfigEntityKind): Promise<readonly string[]>;
 }
 
 /** Private immutable files, scoped to this installation and an authenticated author.
@@ -2458,6 +2640,15 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    *   }]
    */
   readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
+  /**
+   * #1340 — the consent provider's rule as data, so core computes it in
+   * the gateway without plugin code: where the current policy version is
+   * (a column of a published admin table, `visitorProjection`), and the
+   * order of its categories from loosest to strictest (a purpose several
+   * plugins declare under different categories takes the strictest). Only
+   * the consent provider (`consent-manager`) declares it.
+   */
+  readonly consentProvider?: PluginConsentProvider;
   /**
    * Runs each time the host brings the plugin up — at boot and when an
    * Owner activates it — on main, with `invocation.origin` `"system"`.
@@ -2870,6 +3061,51 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    *   },
    */
   readonly bakedData?: PluginBakedData;
+  /**
+   * #1645 — what can be configured, as a schema: the host stores it on the
+   * branch-aware plugin storage, seeds the defaults at activation, validates
+   * every write, freezes it with the Stage and generates the settings form
+   * and the AI tools (`get_plugin_config`, `update_plugin_config`). Every
+   * leaf says what a change touches (`effect`), whether it needs the
+   * operator's click (`gate`) and when it applies (`scope`). Read it with
+   * `ctx.config.get()`.
+   */
+  readonly config?: Readonly<Record<string, ConfigFieldInput>>;
+  /** #1645 — fields kept per page, module, content instance or page type; read with `ctx.config.entity(…)`. */
+  readonly entityConfig?: Partial<
+    Record<ConfigEntityKind, Readonly<Record<string, ConfigFieldInput>>>
+  >;
+  /**
+   * #1645 — an operation that previews a config change before it applies
+   * (`{ patch }` → a short report, e.g. how the test queries' results move).
+   * Shown on the approval card and returned by the AI's dry run.
+   */
+  readonly configPreviewOperation?: string;
+  /**
+   * #1648 — collections: documents in private object storage, indexed for
+   * full-text, prefix and vector search, frozen with the Stage and live with
+   * Publish live. Written through `ctx.collections.<name>`; visitors reach
+   * them only through `collectionOperations`. Needs the `collections` grant.
+   */
+  readonly collections?: Readonly<Record<string, PluginCollectionManifest>>;
+  /** #1649 — declarative visitor operations over the collections (`search`, `suggest`, `read`); core runs them in the gateway. */
+  readonly collectionOperations?: ReadonlyArray<CollectionOperationInput>;
+  /**
+   * #1654 — declarative visitor conversations (`ai-chat`): core runs them in
+   * the gateway with the Owner's visitor-AI key and budgets, the prompt from
+   * visitor-visible config, and only the declared search and read operations
+   * as tools. Needs the `visitor_ai` grant and `requires: ["visitor-ai"]`.
+   */
+  readonly aiChatOperations?: ReadonlyArray<AiChatOperationInput>;
+  /**
+   * #1647 — the operation core calls at every Stage with the facts of the
+   * pages whose output changed (`PageOutputObserverArgs`). Needs the
+   * `page_output` grant. In this call the plugin may write only its
+   * collections and its private storage.
+   */
+  readonly pageOutputObserver?: PageOutputObserverManifest;
+  /** #1646 — operations that run in a job container, in the sandbox, with the plugin's grants. Needs the `batch_jobs` grant. */
+  readonly batchOperations?: ReadonlyArray<z.input<typeof pluginBatchOperation>>;
 }
 
 /**
@@ -2934,7 +3170,18 @@ export function manifestFromDefinition(def: {
   readonly editorToolbar?: ReadonlyArray<PluginEditorToolbarItem>;
   readonly requiresPlugins?: ReadonlyArray<string>;
   readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
+  readonly consentProvider?: PluginConsentProvider;
   readonly bakedData?: PluginBakedData;
+  readonly config?: Readonly<Record<string, ConfigFieldInput>>;
+  readonly entityConfig?: Partial<
+    Record<ConfigEntityKind, Readonly<Record<string, ConfigFieldInput>>>
+  >;
+  readonly configPreviewOperation?: string;
+  readonly collections?: Readonly<Record<string, PluginCollectionManifest>>;
+  readonly collectionOperations?: ReadonlyArray<CollectionOperationInput>;
+  readonly aiChatOperations?: ReadonlyArray<AiChatOperationInput>;
+  readonly pageOutputObserver?: PageOutputObserverManifest;
+  readonly batchOperations?: ReadonlyArray<z.input<typeof pluginBatchOperation>>;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -3008,6 +3255,14 @@ export function manifestFromDefinition(def: {
           })),
         }
       : {}),
+    ...(def.consentProvider
+      ? {
+          consentProvider: {
+            policyVersion: { ...def.consentProvider.policyVersion },
+            strictness: [...def.consentProvider.strictness],
+          },
+        }
+      : {}),
     ...(def.bakedData
       ? {
           bakedData: {
@@ -3018,6 +3273,20 @@ export function manifestFromDefinition(def: {
             })),
           },
         }
+      : {}),
+    ...(def.config ? { config: def.config } : {}),
+    ...(def.entityConfig ? { entityConfig: def.entityConfig } : {}),
+    ...(def.configPreviewOperation ? { configPreviewOperation: def.configPreviewOperation } : {}),
+    ...(def.collections ? { collections: def.collections } : {}),
+    ...(def.collectionOperations && def.collectionOperations.length > 0
+      ? { collectionOperations: [...def.collectionOperations] }
+      : {}),
+    ...(def.aiChatOperations && def.aiChatOperations.length > 0
+      ? { aiChatOperations: [...def.aiChatOperations] }
+      : {}),
+    ...(def.pageOutputObserver ? { pageOutputObserver: { ...def.pageOutputObserver } } : {}),
+    ...(def.batchOperations && def.batchOperations.length > 0
+      ? { batchOperations: [...def.batchOperations] }
       : {}),
   });
 }
@@ -3043,3 +3312,9 @@ export type {
   PluginPreviewSelection,
   PluginPreviewTarget,
 } from "@caelo-cms/shared";
+export * from "./ai-chat-operations.js";
+export * from "./batch.js";
+export * from "./collection-operations.js";
+export * from "./collections.js";
+export * from "./config.js";
+export * from "./page-output.js";

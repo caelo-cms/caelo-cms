@@ -19,6 +19,7 @@
  * provider-brand strings cross this boundary (CLAUDE.md §4).
  */
 
+import { failureProvedUnbilled } from "@caelo-cms/plugin-host";
 import {
   generateObject,
   jsonSchema,
@@ -396,9 +397,12 @@ export async function* translateSDKStream(
           // defects — classified here, from the SDK's APICallError, so the
           // chat-runner never has to scrape the message.
           const accountIssue = classifyProviderAccountError(errVal);
-          yield accountIssue
-            ? { kind: "error", message, accountIssue }
-            : { kind: "error", message };
+          yield {
+            kind: "error",
+            message,
+            ...(accountIssue ? { accountIssue } : {}),
+            ...(failureProvedUnbilled(errVal) ? { unbilled: true as const } : {}),
+          };
           yield { kind: "done", stopReason: "error" };
           yieldedDone = true;
           break;
@@ -550,6 +554,12 @@ interface SDKStepLike {
   finishReason?: string;
   content?: readonly unknown[];
   response?: { messages?: readonly unknown[] };
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+    inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
+  };
 }
 
 interface SDKStepContentPartLike {
@@ -570,6 +580,15 @@ function summarizeSteps(steps: readonly SDKStepLike[]): ProviderStepSummary[] {
         .filter((p) => p.type === "tool-call" && p.providerExecuted !== true)
         .map((p) => p.toolName ?? ""),
       hasApprovalRequests: parts.some((p) => p.type === "tool-approval-request"),
+      // #1653 — the step's own usage, as the SDK counted it (the same lanes
+      // the `usage` event carries), for the spend ledger's next reservation.
+      usage: {
+        inputTokens: s.usage?.inputTokens ?? 0,
+        outputTokens: s.usage?.outputTokens ?? 0,
+        cachedTokens:
+          s.usage?.inputTokenDetails?.cacheReadTokens ?? s.usage?.cachedInputTokens ?? 0,
+        cacheCreationTokens: s.usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
+      },
     };
   });
 }

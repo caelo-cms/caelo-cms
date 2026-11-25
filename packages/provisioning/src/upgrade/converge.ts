@@ -3,13 +3,15 @@
 /**
  * The converge half of an upgrade (epic #696): everything that changes IAM,
  * service accounts, secrets or other cloud resources so the install matches
- * what the release's stacks declare — the gateway's run SA and the
- * CLI-generated runtime secrets, the stack's IAM/CDN/firewall invariants,
+ * what the release's stacks declare — the stack's IAM/CDN/firewall invariants,
  * MCP access through IAP, the staging database and its gateway login
  * (#1329), the gateway logins' Cloud SQL role memberships (#633),
  * the gateway's and public_role's database logins, the operator-access sync
- * job, the quality-audit job (#875), the remote-MCP load-balancer rules and
- * identity env (#806), and dropping bindings nothing reads any more.
+ * job, the quality-audit job (#875), the reporting jobs (#1359, #1360,
+ * #1574, epic #1644's collection index job), the collection stores and the
+ * search-query log exclusion (epic #1644), the remote-MCP load-balancer
+ * rules and identity env (#806), and dropping bindings nothing reads any
+ * more.
  *
  * It needs the rights of whoever provisioned the install: `cms-provision
  * upgrade` runs it as the operator's own identity, and the converge job
@@ -27,6 +29,10 @@
  * gets its password after migrations, before the gateway rolls onto it), so
  * a converge is a {@link ConvergeSession}: a part before the app-roll, the
  * {@link AppRollHooks} the app-roll calls in between, and a part after it.
+ *
+ * The gateway's run SA and the CLI-generated runtime secrets come before all
+ * of it, in the upgrade's pre-flight (`ensureRuntimeIdentities`, #1682):
+ * the services that pre-flight sets up are granted those secrets.
  */
 
 import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
@@ -37,50 +43,35 @@ import {
   liveDatabaseUrls,
   moveServicesToDnsHost,
 } from "../cloudsql-tls.js";
+import { COLLECTIONS_LIVE_STORE_ENV, COLLECTIONS_STAGING_STORE_ENV } from "../collection-stores.js";
+import { ensureCollectionStores } from "../collections-setup.js";
 import { ensureConvergeJob } from "../converge-job-setup.js";
 import { ensureGatewayArmorRules } from "../gateway-armor.js";
 import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
-import {
-  auditRunnerServiceAccountEmail,
-  buildCarrierServiceAccountEmail,
-  importCrawlServiceAccountEmail,
-  schedulerServiceAccountEmail,
-  upgraderServiceAccountEmail,
-} from "../gcp-names.js";
+import { schedulerServiceAccountEmail, upgraderServiceAccountEmail } from "../gcp-names.js";
 import type { InstallMetadata } from "../install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import { ensureRemoteMcpEdge, resolveRemoteMcpIdentity } from "../remote-mcp.js";
 import {
-  ensureAuditRunnerJob,
-  ensureBuildCarrierJob,
-  ensureImportCrawlJob,
-} from "../reporting-job-setup.js";
-import {
-  ensureGatewayServiceAccount,
-  ensureGeneratedSecrets,
-  type HttpFetch,
-  plainGeneratedSecretSeed,
-  readSecretReplication,
-} from "../runtime-secrets.js";
+  REPORTING_JOB_CATALOG,
+  type ReportingJobKindEntry,
+  reportingJobServiceAccountEmail,
+} from "../reporting-job-catalog.js";
+import { ensureReportingJobKind } from "../reporting-job-setup.js";
+import type { HttpFetch } from "../runtime-secrets.js";
 import { ensureSchedulerTick } from "../scheduler-setup.js";
 import { selfCommand } from "../self-command.js";
 import {
   AUDIT_JOB_ENV_VAR,
   AUDIT_RESULTS_BUCKET_ENV_VAR,
-  AUDIT_RUNNER_JOB_ENV_VAR,
-  AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR,
-  BUILD_CARRIER_JOB_ENV_VAR,
-  BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR,
   CAPTURE_BUCKET_ENV_VAR,
   CAPTURE_JOB_ENV_VAR,
   type CloudRunEnvVar,
   CONVERGE_JOB_ENV_VAR,
   DATABASE_URL_VARS,
-  IMPORT_CRAWL_JOB_ENV_VAR,
-  IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR,
   MCP_ENV_VAR,
   OPERATOR_ACCESS_JOB_ENV_VAR,
   parseSchedulerIntervalMinutes,
@@ -194,41 +185,6 @@ export function startConverge(
   // thing they point at could not be set up.
   const leaveUntouched: string[] = [];
   let publicRole: ReturnType<typeof planPublicRoleSwitch> | null = null;
-
-  async function runtimeIdentities(): Promise<boolean> {
-    // The gateway's own run SA and the CLI-generated secrets the env
-    // contract references. Created once, never overwritten; must exist
-    // before the invariants bind them and the rolls reference them.
-    const s = r.step("Ensuring the gateway service account + generated runtime secrets...");
-    const secretsTarget = { projectId: install.projectId, env: install.env };
-    const replication = await readSecretReplication(secretsTarget, runDeps);
-    const outcomes = [
-      await ensureGatewayServiceAccount(secretsTarget, runDeps),
-      ...(replication.ok
-        ? await ensureGeneratedSecrets(
-            {
-              ...secretsTarget,
-              region: install.region,
-              replication: replication.replication,
-              seed: plainGeneratedSecretSeed(service("admin").liveEnv),
-            },
-            runDeps,
-          )
-        : [{ id: "secret replication", status: "failed" as const, error: replication.error }]),
-    ];
-    const failed = outcomes.filter((o) => o.status === "failed");
-    if (failed.length > 0) {
-      s.failed("Runtime identities/secrets could not be ensured. Aborting upgrade.");
-      for (const o of failed) r.error(`  FAILED: ${o.id}\n    ${o.error ?? ""}`);
-      r.warn("No traffic was shifted and no migrations ran. Fix the above and re-run.");
-      return false;
-    }
-    s.done("Gateway service account + runtime secrets ok");
-    for (const o of outcomes.filter((o) => o.status === "applied")) {
-      r.info(`  created: ${o.id}${o.detail ? ` (${o.detail})` : ""}`);
-    }
-    return true;
-  }
 
   async function stackInvariants(): Promise<boolean> {
     // IAM bindings + CDN policy added to the stacks after this install was
@@ -402,24 +358,23 @@ export function startConverge(
   }
 
   /**
-   * Reporting jobs (#1359, #1360) set up this run, or whose account exists
-   * from an earlier one: the operator-access sync keeps them on IAP.
+   * Reporting jobs (reporting-job-catalog.ts) set up this run, or whose
+   * account exists from an earlier one: the operator-access sync keeps them
+   * on IAP.
    */
   const reportingJobsOnIap: string[] = [];
 
-  async function reportingJob(job: {
-    readonly step: string;
-    readonly ready: string;
-    readonly label: string;
-    readonly consequence: string;
-    readonly ensure: typeof ensureAuditRunnerJob;
-    readonly serviceAccount: string;
-    readonly envVars: readonly string[];
-  }): Promise<void> {
+  async function reportingJob(entry: ReportingJobKindEntry): Promise<void> {
     // A job that reports back to the admin through IAP
     // (reporting-job-setup.ts), deployed with the admin's CURRENT image like
     // the audit job: the app-roll moves them onto the new one. A failure
     // costs the work it runs, so it warns and the admin keeps its env.
+    const job = {
+      ...entry.converge,
+      label: `${entry.label.charAt(0).toUpperCase()}${entry.label.slice(1)}`,
+      serviceAccount: reportingJobServiceAccountEmail(entry, install.projectId, install.env),
+      envVars: [entry.jobEnvVar, entry.serviceAccountEnvVar],
+    };
     const s = r.step(job.step);
     const image = await resolveAdminImage(
       { projectId: install.projectId, region: install.region, env: install.env },
@@ -430,7 +385,8 @@ export function startConverge(
       ? { ok: false as const, done: [], error: image.error }
       : !resource
         ? { ok: false as const, done: [], error: "the admin's IAP resource was not found" }
-        : await job.ensure(
+        : await ensureReportingJobKind(
+            entry,
             {
               provider: install.provider,
               projectId: install.projectId,
@@ -451,63 +407,87 @@ export function startConverge(
     r.warn(
       `The upgrade continues; ${job.consequence} until this succeeds. Re-run upgrade once the cause is fixed.`,
     );
-    // An account set up by an earlier run keeps its IAP access, or the next
-    // operator-access sync would cut off a job that still works.
-    const exists = await run([
-      "iam",
-      "service-accounts",
-      "describe",
-      job.serviceAccount,
-      `--project=${install.projectId}`,
-      "--format=value(email)",
-    ]);
-    if (exists.ok) reportingJobsOnIap.push(job.serviceAccount);
+    await keepOnIapIfExists(job.serviceAccount);
     incomplete = true;
     leaveUntouched.push(...job.envVars);
   }
 
   /**
-   * #1359 — the job a Stage's whole quality audit runs in. After the audit
-   * job, on whose Lighthouse tasks it gets its run grant.
+   * An account set up by an earlier run keeps its IAP access, or the next
+   * operator-access sync would cut off a job that still works.
    */
-  const auditRunnerJob = () =>
-    reportingJob({
-      step: "Ensuring the quality-audit runner (audits outside the admin)...",
-      ready: "Quality-audit runner ready (Stage audits run in their own job)",
-      label: "Quality-audit runner",
-      consequence: "Stage audits fail after their last attempt",
-      ensure: ensureAuditRunnerJob,
-      serviceAccount: auditRunnerServiceAccountEmail(install.projectId, install.env),
-      envVars: [AUDIT_RUNNER_JOB_ENV_VAR, AUDIT_RUNNER_SERVICE_ACCOUNT_ENV_VAR],
-    });
-
-  /** #1360 — the job a site import's crawl runs in. */
-  const importCrawlJob = () =>
-    reportingJob({
-      step: "Ensuring the site-import crawler (crawls outside the admin)...",
-      ready: "Site-import crawler ready (site imports crawl in their own job)",
-      label: "Site-import crawler",
-      consequence: "site imports fail after their last attempt",
-      ensure: ensureImportCrawlJob,
-      serviceAccount: importCrawlServiceAccountEmail(install.projectId, install.env),
-      envVars: [IMPORT_CRAWL_JOB_ENV_VAR, IMPORT_CRAWL_SERVICE_ACCOUNT_ENV_VAR],
-    });
+  async function keepOnIapIfExists(serviceAccount: string): Promise<void> {
+    const exists = await run([
+      "iam",
+      "service-accounts",
+      "describe",
+      serviceAccount,
+      `--project=${install.projectId}`,
+      "--format=value(email)",
+    ]);
+    if (exists.ok) reportingJobsOnIap.push(serviceAccount);
+  }
 
   /**
-   * #1574 — the job that holds the request a Stage, Publish live or
-   * production build nobody else waits for runs in.
+   * Epic #1644 — the collection stores (collections-setup.ts) and the log
+   * exclusion for visitors' search queries. A failure costs plugin
+   * collections (a site search) only: it warns, and the admin and the
+   * gateways keep their env without the stores.
    */
-  const buildCarrierJob = () =>
-    reportingJob({
-      step: "Ensuring the build carrier (builds that outlast their request)...",
-      ready: "Build carrier ready (a build nobody waits for still ends)",
-      label: "Build carrier",
-      consequence:
-        "an agent's Stage and every Stage or Publish live button fail at once with this reason",
-      ensure: ensureBuildCarrierJob,
-      serviceAccount: buildCarrierServiceAccountEmail(install.projectId, install.env),
-      envVars: [BUILD_CARRIER_JOB_ENV_VAR, BUILD_CARRIER_SERVICE_ACCOUNT_ENV_VAR],
-    });
+  let collectionStoresReady = false;
+  async function collectionStores(): Promise<void> {
+    const s = r.step(
+      "Ensuring the collection stores (plugin indexes such as site search) and the search-query log exclusion...",
+    );
+    const cs = await ensureCollectionStores(
+      {
+        provider: install.provider,
+        projectId: install.projectId,
+        region: install.region,
+        env: install.env,
+      },
+      runDeps,
+    );
+    for (const step of cs.done) r.info(`  ${step}`);
+    if (cs.ok) {
+      collectionStoresReady = true;
+      for (const p of cs.pending) r.warn(`  not yet: ${p}`);
+      if (cs.pending.length > 0) incomplete = true;
+      s.done("Collection stores ready (each gateway reads only its own index)");
+      return;
+    }
+    s.warned(`Collection stores not set up: ${cs.error}`);
+    r.warn(
+      "The upgrade continues; plugin collections (a site search) fail at every Stage until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+    // And the env of every job that works on the stores, which is not set up.
+    leaveUntouched.push(
+      COLLECTIONS_STAGING_STORE_ENV,
+      COLLECTIONS_LIVE_STORE_ENV,
+      ...REPORTING_JOB_CATALOG.filter((e) => e.prerequisite === "collection-stores").flatMap(
+        (e) => [e.jobEnvVar, e.serviceAccountEnvVar],
+      ),
+    );
+  }
+
+  /**
+   * Every reporting job of the catalog, in its order: each after what it
+   * needs (the audit runner after the audit job whose Lighthouse tasks it
+   * starts; the collection index job after the stores it writes, and not
+   * at all without them: its env stays untouched, collectionStores said so).
+   */
+  async function reportingJobs(): Promise<void> {
+    for (const entry of REPORTING_JOB_CATALOG) {
+      if (entry.prerequisite === "collection-stores" && !collectionStoresReady) {
+        await keepOnIapIfExists(
+          reportingJobServiceAccountEmail(entry, install.projectId, install.env),
+        );
+        continue;
+      }
+      await reportingJob(entry);
+    }
+  }
 
   async function captureJob(): Promise<void> {
     // #1217 — the job every server-side browser render runs in, so no
@@ -1016,7 +996,6 @@ export function startConverge(
   return {
     async beforeAppRoll() {
       if (deps.provisionerIdentity && !(await deps.provisionerIdentity())) return false;
-      if (!(await runtimeIdentities())) return false;
       if (!(await stackInvariants())) return false;
       if (!(await stagingDatabase())) return false;
       if (!(await publicRoleIsolation())) return false;
@@ -1024,9 +1003,8 @@ export function startConverge(
       await mcpAccess();
       await urlMapRedirectsAccess();
       await auditJob();
-      await auditRunnerJob();
-      await importCrawlJob();
-      await buildCarrierJob();
+      await collectionStores();
+      await reportingJobs();
       await captureJob();
       await remoteMcpEdge();
       await gatewayArmor();

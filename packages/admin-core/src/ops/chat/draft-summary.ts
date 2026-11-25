@@ -12,9 +12,16 @@
  * plus its page and section refs. A summary counts the page once and says
  * in one phrase what changed on it. Rule-based on purpose: the same draft
  * reads the same everywhere, and it costs no AI call.
+ *
+ * A section design (module) or a section's content (content instance) is
+ * counted where it shows (part-where.ts): on one page it is a change of
+ * that page, on none it is not listed, on more it is a site-wide change
+ * that says where it shows. Every placement holds its own content
+ * instance, so most content changes are changes of one page.
  */
 
 import { z } from "zod";
+import { describeWhere, type PartWhere } from "../content/part-where.js";
 import type { PendingChanges } from "./stage.js";
 
 /** One row behind "Show details": a page, or one part that shows on many pages. */
@@ -74,11 +81,35 @@ export const SITE_WIDE_WHAT: Readonly<Record<string, string>> = {
 /** Site-wide kinds in the order the details list them. */
 const SITE_WIDE_ORDER = Object.keys(SITE_WIDE_WHAT);
 
-/** What changed on a page, in a fixed order: content, sections, then the page's own fields. */
+/** Change kinds counted where they show: one page, many, or none ({@link PartWhere}). */
+const PLACED_KINDS: ReadonlySet<string> = new Set(["module", "contentInstance"]);
+
+/**
+ * The parts of `changes` whose placement the summary needs: every module
+ * and content instance it lists. The caller reads them with
+ * `loadPartPlacements` and passes {@link summarizeDraftChanges} the result.
+ */
+export function placedPartsOf(
+  changes: PendingChanges,
+): { kind: "module" | "contentInstance"; id: string }[] {
+  const parts = new Map<string, { kind: "module" | "contentInstance"; id: string }>();
+  for (const g of [changes.pending, changes.staged]) {
+    for (const ref of [...g.pages, ...g.globals, ...g.lists]) {
+      if (ref.kind !== "module" && ref.kind !== "contentInstance") continue;
+      parts.set(`${ref.kind}:${ref.entityId}`, { kind: ref.kind, id: ref.entityId });
+    }
+  }
+  return [...parts.values()];
+}
+
+/** What changed on a page, in a fixed order: content, sections, design, then the page's own fields. */
 function pageWhat(kinds: ReadonlySet<string>, seo: boolean): string {
   const parts: string[] = [];
-  if (kinds.has("pageModuleContent")) parts.push("Text and images");
+  if (kinds.has("pageModuleContent") || kinds.has("contentInstance")) {
+    parts.push("Text and images");
+  }
   if (kinds.has("pageLayout")) parts.push("Sections");
+  if (kinds.has("module")) parts.push("Section design");
   if (kinds.has("page")) parts.push(seo ? "Search result text" : "Page settings");
   const [first, ...rest] = parts;
   if (first === undefined) return "Changed";
@@ -102,8 +133,14 @@ function siteWideTitle(ref: Ref): string {
 /**
  * Summarize one chat's change refs: pending and (on an isolated branch)
  * marked-staged refs alike, since both are not on staging yet.
+ *
+ * @param where - where each of {@link placedPartsOf} shows, keyed
+ *   `<kind>:<id>`; a part missing from it is a caller bug and throws.
  */
-export function summarizeDraftChanges(changes: PendingChanges): DraftSummary {
+export function summarizeDraftChanges(
+  changes: PendingChanges,
+  where: ReadonlyMap<string, PartWhere>,
+): DraftSummary {
   const refs = [changes.pending, changes.staged].flatMap((g) => [
     ...g.pages,
     ...g.globals,
@@ -148,13 +185,37 @@ export function summarizeDraftChanges(changes: PendingChanges): DraftSummary {
     }
     const key = `${ref.kind}:${ref.entityId}`;
     if (siteWide.has(key)) continue;
+    let shows: string | null = null;
+    if (PLACED_KINDS.has(ref.kind)) {
+      const w = where.get(key);
+      if (w === undefined) {
+        throw new Error(
+          `summarizeDraftChanges: no placement for ${key} (read placedPartsOf first)`,
+        );
+      }
+      // Shown nowhere: nothing a visitor sees changes.
+      if (w.kind === "nowhere") continue;
+      if (w.kind === "page") {
+        const acc = pages.get(w.page.pageId) ?? {
+          title: w.page.title || w.page.path,
+          path: w.page.path,
+          kinds: new Set<string>(),
+          seo: false,
+          change: undefined,
+        };
+        acc.kinds.add(ref.kind);
+        pages.set(w.page.pageId, acc);
+        continue;
+      }
+      shows = describeWhere(w);
+    }
     siteWide.set(key, {
       key,
       area: "siteWide",
       change: "changed",
       title: siteWideTitle(ref),
       path: null,
-      what,
+      what: shows === null ? what : `${what} · ${shows}`,
       pageId: null,
       order: SITE_WIDE_ORDER.indexOf(ref.kind),
     });

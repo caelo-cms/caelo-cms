@@ -51,6 +51,12 @@ describe("draft chats", () => {
     ).toEqual(["1 new page", "4 changed pages", "2 site-wide changes"]);
   });
 
+  it("says so when no page shows any of a conversation's changes", () => {
+    expect(
+      statChips({ newPages: 0, changedPages: 0, removedPages: 0, siteWide: 0, rows: [] }),
+    ).toEqual(["Nothing visitors see"]);
+  });
+
   it("ticks only the conversation on screen when the menu opens", () => {
     const chats = [chat("a", 1), chat("b", 2)];
     expect([...initialSelection(chats, "b")]).toEqual(["b"]);

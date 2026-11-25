@@ -11,10 +11,14 @@
  *      Owner's per-purpose model (#593). A purpose the host has no setting
  *      for runs on the chat model — the purpose is a declaration of use,
  *      not a model choice, so plugins can never pick a model themselves.
- *   2. The per-plugin daily cost cap is checked before dispatch.
- *   3. The finished call is recorded in `ai_calls` with the plugin id and
- *      the provider + model it actually ran on, so the cost dashboard and
- *      the cap both see plugin text spend.
+ *   2. #1653 — the call's worst-case cost is reserved in the AI spend
+ *      ledger before dispatch (`ai_ledger.reserve`): the site and per-person
+ *      text budgets, the session budget of the chat it runs for, and the
+ *      plugin's own cap, all under one lock, so parallel calls (a
+ *      translation fan-out) cannot overshoot any of them.
+ *   3. The finished call settles the reservation at its real cost, on the
+ *      provider + model it actually ran on; a call that threw before the
+ *      provider billed releases it.
  */
 
 import {
@@ -23,12 +27,24 @@ import {
   type PluginInvocation,
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
-import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
+import {
+  promptTokenBound,
+  recordCapLookupFailure,
+  recordCapLookupSuccess,
+} from "@caelo-cms/shared";
 import { z } from "zod";
+import { failureProvedUnbilled } from "./ai-unbilled.js";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
 import type { AICompletion, AIObjectCompletion } from "./types.js";
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
+
+/**
+ * The output ceilings a call without `maxTokens` runs with, passed to the
+ * provider explicitly so the reservation covers exactly what can be billed.
+ */
+export const PLUGIN_COMPLETE_DEFAULT_MAX_TOKENS = 32_768;
+export const PLUGIN_OBJECT_DEFAULT_MAX_TOKENS = 8_192;
 
 /**
  * Shape of the options a plugin passes to `ctx.ai.complete`. `purpose` is
@@ -104,22 +120,68 @@ export function makePluginAi(
     }
     return provider;
   };
-  const record = (result: AIObjectCompletion | AICompletion, startedAt: number) =>
-    recordPluginAiCall(
-      plugin,
-      infra,
-      result,
-      Date.now() - startedAt,
-      invocation.chatTaskId ?? null,
-    );
+  // The person the call is for: their per-person budget counts it. Workers,
+  // observers and renders act for nobody (the system actor).
+  const person =
+    invocation.origin === "chat"
+      ? (invocation.operatorActorId ?? null)
+      : invocation.origin === "owner-panel" || invocation.origin === "approved"
+        ? invocation.actorId
+        : null;
+  const spender = {
+    kind: "plugin" as const,
+    pluginId: plugin.pluginId,
+    actorId: person ?? SYSTEM_ACTOR_ID,
+    chatSessionId: invocation.chatTaskId ?? null,
+  };
+  /** Runs one provider call inside a reservation. */
+  async function reserved<T extends AIObjectCompletion | AICompletion>(
+    method: string,
+    target: { provider: string; model: string },
+    promptTokens: number,
+    maxOutputTokens: number,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    const callId = await reservePluginAiCall(plugin, infra, method, {
+      spender,
+      provider: target.provider,
+      model: target.model,
+      request: { promptTokens, maxOutputTokens },
+    });
+    const startedAt = Date.now();
+    let result: T;
+    try {
+      result = await call();
+    } catch (e) {
+      if (callId) {
+        await settlePluginAiCall(
+          plugin,
+          infra,
+          callId,
+          { failed: e, target, request: { promptTokens, maxOutputTokens } },
+          Date.now() - startedAt,
+        );
+      }
+      throw e;
+    }
+    const durationMs = Date.now() - startedAt;
+    if (callId) await settlePluginAiCall(plugin, infra, callId, result, durationMs);
+    else await recordPluginAiCall(plugin, infra, result, durationMs, invocation.chatTaskId ?? null);
+    return result;
+  }
   return {
     complete: async (rawOpts) => {
       const provider = preflight("complete");
       const opts = parseOptions(pluginAiCompleteInput, rawOpts, "complete");
-      await assertWithinPluginCap(plugin, infra);
-      const startedAt = Date.now();
-      const result = await provider.complete(opts);
-      await record(result, startedAt);
+      const maxTokens = opts.maxTokens ?? PLUGIN_COMPLETE_DEFAULT_MAX_TOKENS;
+      const target = await provider.resolve(opts.purpose);
+      const result = await reserved(
+        "complete",
+        target,
+        promptTokenBound(opts.system, opts.messages),
+        maxTokens,
+        () => provider.complete({ ...opts, maxTokens }),
+      );
       return {
         text: result.text,
         inputTokens: result.inputTokens,
@@ -129,11 +191,16 @@ export function makePluginAi(
     generateObject: async (rawOpts) => {
       const provider = preflight("generateObject");
       const opts = parseOptions(pluginAiGenerateObjectInput, rawOpts, "generateObject");
-      await assertWithinPluginCap(plugin, infra);
-      const startedAt = Date.now();
-      const result = await provider.generateObject(opts);
-      await record(result, startedAt);
-      if (result.failure) throw objectFailureError(result.failure, opts.maxTokens);
+      const maxTokens = opts.maxTokens ?? PLUGIN_OBJECT_DEFAULT_MAX_TOKENS;
+      const target = await provider.resolve(opts.purpose);
+      const result = await reserved(
+        "generateObject",
+        target,
+        promptTokenBound(opts.system, opts.messages, opts.jsonSchema),
+        maxTokens,
+        () => provider.generateObject({ ...opts, maxTokens }),
+      );
+      if (result.failure) throw objectFailureError(result.failure, maxTokens);
       return {
         object: result.object,
         inputTokens: result.inputTokens,
@@ -143,50 +210,109 @@ export function makePluginAi(
   };
 }
 
+const ledgerCtx = (plugin: LoadedPlugin) => ({
+  actorId: SYSTEM_ACTOR_ID,
+  actorKind: "system" as const,
+  requestId: `plugin-${plugin.slug}-ai`.slice(0, 64),
+});
+
 /**
- * P11.6 + P16 — per-plugin AI cost cap pre-flight. Without this a
- * misbehaving Tier-1 plugin could drain the daily AI budget with no
- * per-plugin attribution. The `plugins.ai_cost_cap_microcents` column is
- * NULL by default (uncapped). Lookup failures are swallowed once or twice
- * (a DB hiccup shouldn't break a working plugin) but trip fail-closed
- * after `LOOKUP_FAIL_THRESHOLD` consecutive misses — silent bypass under
- * sustained DB pressure would defeat enforcement entirely.
+ * #1653 — reserve a plugin call's worst-case cost. A refusal (a budget or
+ * the plugin's cap is reached, an unpriced model under a cap) throws with
+ * the ledger's message. A ledger that cannot be reached is let through once
+ * or twice (the call is then recorded after it ran, as before the ledger)
+ * and fails closed after `LOOKUP_FAIL_THRESHOLD` misses in a row
+ * (shared/cap-failures.ts): silent bypass under sustained database
+ * pressure would defeat the caps entirely.
  */
-async function assertWithinPluginCap(plugin: LoadedPlugin, infra: PluginHostInfra): Promise<void> {
+async function reservePluginAiCall(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  method: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
   const capKey = `plugin:${plugin.slug}`;
+  let r: Awaited<ReturnType<typeof execute>>;
   try {
-    const r = await execute(
-      infra.registry,
-      infra.adapter,
-      {
-        actorId: SYSTEM_ACTOR_ID,
-        actorKind: "system",
-        requestId: `plugin-${plugin.slug}-ai-cap`,
-      },
-      "ai_calls.aggregate_per_plugin",
-      { pluginId: plugin.pluginId },
-    );
-    if (r.ok) {
-      recordCapLookupSuccess(capKey);
-      const v = r.value as {
-        capExceeded: boolean;
-        capMicrocents: number | null;
-        last24hMicrocents: number;
-      };
-      if (v.capExceeded) {
-        const capUsd = v.capMicrocents !== null ? (v.capMicrocents / 1e8).toFixed(2) : "0";
-        const spentUsd = (v.last24hMicrocents / 1e8).toFixed(2);
-        throw new Error(
-          `PluginAiCapExceeded: plugin '${plugin.slug}' has spent $${spentUsd} of $${capUsd} cap in the last 24h. Owner can raise the cap at /settings/plugins/${plugin.slug}.`,
-        );
-      }
-    } else if (recordCapLookupFailure(capKey)) {
-      throw capLookupUnavailable(plugin.slug);
-    }
-  } catch (e) {
-    if (e instanceof Error && e.message.startsWith("PluginAiCapExceeded:")) throw e;
-    if (e instanceof Error && e.message.startsWith("PluginAiCapLookupUnavailable:")) throw e;
+    r = await execute(infra.registry, infra.adapter, ledgerCtx(plugin), "ai_ledger.reserve", {
+      ...input,
+      what: `plugin '${plugin.slug}''s ctx.ai.${method} call`,
+    });
+  } catch {
     if (recordCapLookupFailure(capKey)) throw capLookupUnavailable(plugin.slug);
+    return null;
+  }
+  if (r.ok) {
+    recordCapLookupSuccess(capKey);
+    return (r.value as { callId: string }).callId;
+  }
+  if (r.error.kind === "HandlerError" && r.error.refusal) {
+    recordCapLookupSuccess(capKey);
+    throw new Error(`ctx.ai.${method}: ${r.error.message}`);
+  }
+  if (recordCapLookupFailure(capKey)) throw capLookupUnavailable(plugin.slug);
+  return null;
+}
+
+/** How a reserved call ended: its result, or the error it threw on its target. */
+type PluginAiOutcome =
+  | AIObjectCompletion
+  | AICompletion
+  | {
+      readonly failed: unknown;
+      readonly target: { provider: string; model: string };
+      readonly request: { promptTokens: number; maxOutputTokens: number };
+    };
+
+/**
+ * Settle a reservation at the call's real cost. A call that threw gives the
+ * reservation back only when its error proves nothing was billed; any other
+ * failure keeps its worst case (#1653).
+ */
+async function settlePluginAiCall(
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  callId: string,
+  outcome: PluginAiOutcome,
+  durationMs: number,
+): Promise<void> {
+  const ledger = (op: string, input: Record<string, unknown>) =>
+    execute(infra.registry, infra.adapter, ledgerCtx(plugin), op, input);
+  try {
+    const r =
+      "failed" in outcome
+        ? failureProvedUnbilled(outcome.failed)
+          ? await ledger("ai_ledger.release", { callId })
+          : await ledger("ai_ledger.settle", {
+              callId,
+              ...outcome.target,
+              usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheCreationTokens: 0 },
+              durationMs,
+              succeeded: false,
+              unreported: [outcome.request],
+            })
+        : await ledger("ai_ledger.settle", {
+            callId,
+            provider: outcome.provider,
+            model: outcome.model,
+            usage: {
+              inputTokens: outcome.inputTokens,
+              outputTokens: outcome.outputTokens,
+              cachedTokens: outcome.cachedTokens,
+              cacheCreationTokens: outcome.cacheCreationTokens,
+            },
+            durationMs,
+            succeeded: true,
+            unreported: [],
+          });
+    if (!r.ok) throw new Error(r.error.kind);
+  } catch (e) {
+    // The reservation stays at its worst case: spend is overstated, never
+    // under, and it ages out of the 24-hour budgets.
+    console.error("[plugin-ai] the AI spend reservation was not settled", {
+      plugin: plugin.slug,
+      error: e instanceof Error ? e.message : String(e),
+    });
   }
 }
 
