@@ -35,9 +35,15 @@
  * Internal copies (fork, duplicate, chat merge, snapshot revert) copy
  * stored references verbatim and are not re-canonicalised. Undo restores
  * whatever was stored, references included.
+ *
+ * #1600 — a media link that names a variant (`/_caelo/media/hero/webp-800`)
+ * is refused when the asset has no such variant, on every surface above:
+ * after the run, the variants of exactly the assets it named are read and
+ * the shared `reportMissingMediaVariants` adds the issue, with the sizes
+ * the asset has and the URL to write instead.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import {
   collectLinkLiterals,
   describeLinkIssues,
@@ -47,6 +53,7 @@ import {
   type LinkTargetLookup,
   linkCanonicaliseRun,
   normaliseLinkPath,
+  reportMissingMediaVariants,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { PageRows } from "../lists/pages-view.js";
@@ -239,6 +246,18 @@ export async function canonicaliseLinksForWrite<T>(
     grandfathered: opts.previous === undefined ? new Set() : collectLinkLiterals(opts.previous),
   });
   const value = apply(run);
+  // #1600 — a media link naming a variant its asset does not have would
+  // stop every build that publishes it; refused here, with the sizes the
+  // asset has.
+  if (run.mediaVariantRefs.length > 0) {
+    reportMissingMediaVariants(
+      run,
+      await loadMediaVariants(
+        tx,
+        run.mediaVariantRefs.map((r) => r.mediaId),
+      ),
+    );
+  }
   if (run.mode === "strict" && run.issues.length > 0) {
     return { ok: false, message: describeLinkIssues(run.issues), issues: run.issues };
   }
@@ -248,4 +267,22 @@ export async function canonicaliseLinksForWrite<T>(
     issues: run.issues,
     pending: imports && run.pending.length > 0 ? { targets: imports, pending: run.pending } : null,
   };
+}
+
+/**
+ * #1600 — every variant tag of exactly these assets (one indexed read by
+ * primary key prefix); an asset without a row has none. Media variants are
+ * not branch-scoped: an upload is visible to every chat at once.
+ */
+async function loadMediaVariants(
+  tx: TransactionRunner,
+  mediaIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const rows = (await tx.execute(sql`
+    SELECT asset_id::text AS asset_id, variant FROM media_variants
+     WHERE asset_id = ANY(${uuidArray([...new Set(mediaIds)])})
+  `)) as unknown as { asset_id: string; variant: string }[];
+  const out = new Map<string, string[]>();
+  for (const r of rows) out.set(r.asset_id, [...(out.get(r.asset_id) ?? []), r.variant]);
+  return out;
 }

@@ -631,6 +631,24 @@ export const removeModuleFromToolInput = z
     // A page path can run to ~390 chars (6 levels x 64-char slugs).
     targetRef: z.string().min(1).max(500),
     moduleId: z.string().uuid(),
+    /**
+     * #1663 — which placement of `moduleId` to remove when the target holds
+     * it more than once: its block and 0-based position there (the same
+     * address `set_placement_content` and `move_module` take). Needed only
+     * then; the refusal names the placements.
+     */
+    blockName: z.string().min(1).max(80).optional(),
+    position: z.preprocess(
+      (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
+      z.number().int().min(0).max(1000).optional(),
+    ),
+    /**
+     * #1663 — remove EVERY placement of the module on the target (only in
+     * `blockName` when given). Without it a module placed twice is refused,
+     * because removing them all silently took the other placement's content
+     * with it.
+     */
+    allPlacements: z.boolean().optional(),
   })
   .strict();
 export type RemoveModuleFromToolInput = z.infer<typeof removeModuleFromToolInput>;
@@ -786,8 +804,9 @@ export const findMediaToolInput = z
 export type FindMediaToolInput = z.infer<typeof findMediaToolInput>;
 
 /**
- * run #10 D4 — `regenerate_media_variants`. Recovery tool for the
- * staging generator's "media references unresolved" failure: re-runs
+ * run #10 D4 — `regenerate_media_variants`. Recovery tool for a media
+ * variant a page names but the asset lacks (#1600: a Stage records it,
+ * Publish live and production builds refuse it): re-runs
  * the image pipeline for the named assets (or every asset with an
  * incomplete ladder) and reports per-asset what was added or why
  * nothing could be.

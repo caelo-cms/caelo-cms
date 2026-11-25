@@ -21,12 +21,19 @@
  * that names the pages; a failure on one page belongs to that page.
  *
  * Rules: `render/<marker kind>` (`render/field-path-unknown`,
- * `render/module-missing`, `render/link-target-missing`, …), plus
+ * `render/page-prop-unknown`, `render/module-missing`,
+ * `render/link-target-missing`, `render/media-variant-missing`,
+ * `render/media-missing`, …), plus
  * `render/limit-reached` (info) when the run recorded more failures than
  * it lists.
  */
 
-import { renderFailureKind, renderFailureMarker, truncateKeepingIds } from "@caelo-cms/shared";
+import {
+  parseMediaFailureMarker,
+  renderFailureKind,
+  renderFailureMarker,
+  truncateKeepingIds,
+} from "@caelo-cms/shared";
 import { type RenderFailure, renderRepairOf } from "../../deploy/render-failures.js";
 import type { SiteCheck } from "./check.js";
 import type { Finding } from "./findings.js";
@@ -67,6 +74,8 @@ interface FailureGroup {
 
 /** The place in a finding's words: the block, the module and the field. */
 function placeText(f: RenderFailure): string {
+  // #1600 — the media pass finds these in the composed page, not in a block.
+  if (parseMediaFailureMarker(f.reason) !== null) return "an image on the page";
   const block = f.blockName === null ? "the site layout" : `the ${f.blockName}`;
   const mod = f.moduleSlug ? `, module "${f.moduleSlug}"` : "";
   const field = f.field ? `, field "${f.field}"` : "";

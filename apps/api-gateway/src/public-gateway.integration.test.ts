@@ -37,6 +37,7 @@ import {
   DatabaseAdapter,
   OperationRegistry,
 } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { databaseIsolationProblems } from "./database-env.js";
@@ -346,14 +347,16 @@ describe("the gateway's database identity (#613, #635)", () => {
   });
 
   it("the boot-time isolation probe passes on the real login and fails on a bad grant", async () => {
-    expect(await databaseIsolationProblems(gatewayAdapter.rawPublic(), "live")).toEqual([]);
+    expect(
+      await databaseIsolationProblems(gatewayAdapter.rawPublic(), "live", DEFAULT_INSTALL_NAMES),
+    ).toEqual([]);
     await asAdmin(async (tx) => {
       await tx.unsafe("GRANT CONNECT ON DATABASE cms_admin TO public_role");
     });
     try {
-      expect(await databaseIsolationProblems(gatewayAdapter.rawPublic(), "live")).toEqual([
-        "public_role may CONNECT to cms_admin",
-      ]);
+      expect(
+        await databaseIsolationProblems(gatewayAdapter.rawPublic(), "live", DEFAULT_INSTALL_NAMES),
+      ).toEqual(["public_role may CONNECT to cms_admin"]);
     } finally {
       await asAdmin(async (tx) => {
         await tx.unsafe("REVOKE CONNECT ON DATABASE cms_admin FROM public_role");

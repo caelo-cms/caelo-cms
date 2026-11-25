@@ -125,7 +125,7 @@ import {
 } from "./collections.js";
 import {
   databaseIsolationProblems,
-  GATEWAY_ENVIRONMENTS,
+  GATEWAY_ENVIRONMENT_DATABASES,
   gatewayDatabaseRoles,
   gatewayDatabaseUrls,
 } from "./database-env.js";
@@ -1863,14 +1863,19 @@ if (import.meta.main) {
   const adapter = new DatabaseAdapter({
     adminDatabaseUrl: null,
     publicDatabaseUrl: urls.public,
-    publicDatabase: GATEWAY_ENVIRONMENTS[urls.environment].database,
-    expectedRoles: gatewayDatabaseRoles(urls.environment),
+    publicDatabase: GATEWAY_ENVIRONMENT_DATABASES[urls.environment],
+    names: urls.names,
+    expectedRoles: gatewayDatabaseRoles(urls.environment, urls.names),
   });
-  // Ask the database too (#635, #1329): a login that can reach cms_admin or
-  // the other environment's database, or a bridge out of its own, is
-  // refused before the first request.
+  // Ask the database too (#635, #1329, #1689): a login that can reach
+  // cms_admin, the other environment's database or another install's, or
+  // a bridge out of its own, is refused before the first request.
   await adapter.verifyRoles();
-  const isolation = await databaseIsolationProblems(adapter.rawPublic(), urls.environment);
+  const isolation = await databaseIsolationProblems(
+    adapter.rawPublic(),
+    urls.environment,
+    urls.names,
+  );
   if (isolation.length > 0) {
     const lines = isolation.map((p) => `  - ${p}`).join("\n");
     throw new Error(

@@ -144,4 +144,68 @@ describe("renderRepairOf (#1604)", () => {
     });
     expect(r.tool).toBe("set_content_instance_values_many");
   });
+
+  it("sends a page property no page type declares to the page types and the module (#1561)", () => {
+    const r = renderRepairOf({ reason: "page-prop-unknown:stnad", moduleSlug: "hilfe-kopf" });
+    expect(r.tool).toBe("list_page_types");
+    expect(r.hint).toContain(
+      '{{page.props.stnad}} (or {{props.stnad}} in a list of pages) in module "hilfe-kopf"',
+    );
+    expect(r.hint).toContain("update_modules_many");
+    expect(r.hint).toContain("upsert_page_types_many");
+    // The render check truncates a hint at 500 characters.
+    expect(r.hint.length).toBeLessThan(500);
+  });
+});
+
+describe("media the build could not publish (#1600)", () => {
+  const mediaFailure = (reason: string) =>
+    failure({
+      pageTitle: "Getting started",
+      pagePath: "/en/help/getting-started",
+      blockName: null,
+      moduleSlug: null,
+      reason,
+      line: 'page "getting-started": image /_caelo/media/url-history/webp-800 names size "webp-800", which this image does not have (it has: orig, webp-400)',
+    });
+
+  it("names the sizes the image has and the URL to write instead", () => {
+    const r = renderRepairOf({
+      reason: "media-variant-missing:url-history/webp-800:orig,webp-400",
+      moduleSlug: null,
+    });
+    expect(r.tool).toBe("set_content_instance_values_many");
+    expect(r.hint).toContain('/_caelo/media/url-history/webp-800 names size "webp-800"');
+    expect(r.hint).toContain("it has: orig, webp-400");
+    expect(r.hint).toContain(
+      "write /_caelo/media/url-history/webp-400 or /_caelo/media/url-history instead",
+    );
+    expect(r.hint).toContain("update_modules_many");
+    // A size the source is wide enough for (an incomplete ladder) is
+    // repaired by regenerating it, not by pointing the page elsewhere.
+    expect(r.hint).toContain(
+      "regenerate_media_variants makes a size the source is wide enough for",
+    );
+  });
+
+  it("sends an image the library does not have to find_media", () => {
+    const r = renderRepairOf({ reason: "media-missing:old-logo/orig", moduleSlug: null });
+    expect(r.tool).toBe("find_media");
+    expect(r.hint).toContain("/_caelo/media/old-logo names no image in the media library");
+  });
+
+  it("tells the operator which page shows it, without markers or tool names", () => {
+    const r = stagedRenderReport(
+      [mediaFailure("media-variant-missing:url-history/webp-800:orig,webp-400")],
+      1,
+    );
+    expect(r?.operatorText).toContain(
+      "An image points at a size or file the media library does not have — on Getting started (/en/help/getting-started)",
+    );
+    expect(r?.operatorText).not.toMatch(
+      /media-variant-missing|url-history|set_content_instance|site layout/,
+    );
+    expect(r?.aiText).toContain("image /_caelo/media/url-history/webp-800 names size");
+    expect(r?.aiText).toContain("media-variant-missing: set_content_instance_values_many");
+  });
 });

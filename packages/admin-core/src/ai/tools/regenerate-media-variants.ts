@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * run #10 D4 — `regenerate_media_variants`. The staging generator
- * fails a build loudly when module HTML references an (asset, variant)
- * pair with no `media_variants` row; this tool is the recovery step
- * its error message points at. Wraps `media.regenerate_variants`.
+ * run #10 D4 — `regenerate_media_variants`. A page that names an (asset,
+ * variant) pair with no `media_variants` row is a render failure a Stage
+ * records (#1600) and Publish live and production builds refuse; when the
+ * pipeline should have made that variant, this tool is the repair. Wraps
+ * `media.regenerate_variants`.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -18,8 +19,8 @@ export const regenerateMediaVariantsTool: ToolDefinitionWithHandler<
   name: "regenerate_media_variants",
   description:
     "Re-run the image pipeline for assets missing derived WebP variants; additive (existing variants untouched).\n" +
-    "USE FOR: Stage/deploy fails with 'media references unresolved (asset/variant pairs missing)'. NOT for crops or layout resizes.\n" +
-    "Result per asset: 'regenerated' lists new variants; 'skipped' = variant can NEVER exist (source narrower than breakpoint, animated GIF, non-raster) -> point the module HTML at the result's `bestUrl` (modules via `list_media_usages`), don't retry.",
+    "USE FOR: a page names an image size the asset lacks: a Stage records it as a render failure (audit `render/media-variant-missing`), Publish live + production builds refuse it. NOT for crops or layout resizes.\n" +
+    "Result per asset: 'regenerated' lists new variants; 'skipped' = variant can NEVER exist (source narrower than breakpoint, animated GIF, non-raster) -> point the reference at the result's `bestUrl` (modules via `list_media_usages`), don't retry.",
   schema: regenerateMediaVariantsToolInput,
   inputSchema: {
     type: "object",
@@ -30,7 +31,7 @@ export const regenerateMediaVariantsTool: ToolDefinitionWithHandler<
         items: { type: "string", format: "uuid" },
         minItems: 1,
         maxItems: 100,
-        description: "From the deploy error.",
+        description: "Ids from `find_media`.",
       },
       allMissing: {
         type: "boolean",

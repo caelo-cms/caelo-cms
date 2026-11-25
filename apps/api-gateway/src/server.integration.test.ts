@@ -20,13 +20,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { publishProjectionOnce, stagingPublicAdapter } from "@caelo-cms/admin-core";
 import { applyPluginLifecycle, bootstrap, resetPluginHost } from "@caelo-cms/plugin-host";
-import { schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import { publicGrantTargets, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { definePlugin, visitorAuthInputs, z } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { sessionCookieValue } from "@caelo-cms/shared";
+import { DEFAULT_INSTALL_NAMES, sessionCookieValue } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { handleRequest, invalidateGatewaySettings, setGatewayAdapter } from "./server.js";
 import { registerTestLiveOrigin, TEST_LIVE_ORIGIN } from "./test-support.js";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
 
 /** #1329 — the admin's adapter on the staging twin of cms_public. */
 const STAGING_ADAPTER = stagingPublicAdapter(process.env.PUBLIC_STAGING_ADMIN_DATABASE_URL ?? "");
@@ -187,6 +189,7 @@ async function provisionSchema(): Promise<void> {
   );
   if (!id) throw new Error("plugin row missing");
   const emitted = schemaFromSpec({
+    target: LIVE_TARGET,
     tableKinds: fixturePlugin.tableKinds,
     pluginId: id,
     slug: SLUG,

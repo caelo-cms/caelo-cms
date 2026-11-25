@@ -7,9 +7,18 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { adminSchemaFromSpec, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import {
+  adminGrantTarget,
+  adminSchemaFromSpec,
+  publicGrantTargets,
+  schemaFromSpec,
+} from "@caelo-cms/plugin-sandbox";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
+const ADMIN_TARGET = adminGrantTarget(DEFAULT_INSTALL_NAMES.roles);
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -65,6 +74,7 @@ afterAll(async () => {
 describe("#1146 — columns a new plugin version no longer declares", () => {
   it("cms_public: drops the column and audits the drop", async () => {
     const v1 = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: { log: "visitor-state" },
       pluginId: PLUGIN_ID,
       slug: SLUG,
@@ -75,6 +85,7 @@ describe("#1146 — columns a new plugin version no longer declares", () => {
     expect(await columns(PUBLIC_URL, "log")).toContain("visitor_id");
 
     const v2 = schemaFromSpec({
+      target: LIVE_TARGET,
       tableKinds: { log: "visitor-state" },
       pluginId: PLUGIN_ID,
       slug: SLUG,
@@ -95,6 +106,7 @@ describe("#1146 — columns a new plugin version no longer declares", () => {
 
   it("cms_admin: drops the column, keeps id and the host caelo_ columns", async () => {
     const v1 = adminSchemaFromSpec({
+      target: ADMIN_TARGET,
       pluginId: PLUGIN_ID,
       slug: SLUG,
       adminSchema: { notes: { body: "text", ip_hash: "string" } },
@@ -102,6 +114,7 @@ describe("#1146 — columns a new plugin version no longer declares", () => {
     });
     await adapter.provisionPluginAdminSchema({ pluginId: PLUGIN_ID, sql: v1.sql });
     const v2 = adminSchemaFromSpec({
+      target: ADMIN_TARGET,
       pluginId: PLUGIN_ID,
       slug: SLUG,
       adminSchema: { notes: { body: "text" } },

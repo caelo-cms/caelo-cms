@@ -1763,7 +1763,8 @@ export const setPageModulesOp = defineOperation({
     // named as often as the page has placements bound to it — each name
     // claims one of them, with that placement's sync mode. Claimed ones are
     // skipped by the FIFO pass below so no binding is handed out twice.
-    type PriorBinding = { moduleId: string; syncMode: "synced" | "unsynced" };
+    type SyncMode = "synced" | "unsynced";
+    type PriorBinding = { moduleId: string; syncMode: SyncMode };
     const priorById = new Map<string, PriorBinding[]>();
     for (const block of priorLayout.blocks) {
       for (const p of block.placements ?? []) {
@@ -1772,9 +1773,10 @@ export const setPageModulesOp = defineOperation({
         priorById.set(p.contentInstanceId, list);
       }
     }
-    const claimedSyncModes = new Map<string, ("synced" | "unsynced")[]>();
     const claims = new Map<string, number>();
-    for (const block of input.blocks) {
+    /** Each name of an id, as `<block index>:<entry index>`, with the mode the caller stated. */
+    const namesById = new Map<string, { key: string; stated: SyncMode | null }[]>();
+    for (const [b, block] of input.blocks.entries()) {
       for (const [i, ciId] of (block.contentInstanceIds ?? []).entries()) {
         if (ciId === null) continue;
         const moduleId = block.moduleIds[i] as string;
@@ -1796,17 +1798,51 @@ export const setPageModulesOp = defineOperation({
           });
         }
         claims.set(ciId, used + 1);
-        const modes = claimedSyncModes.get(ciId) ?? [];
-        modes.push((prior as PriorBinding[])[used]?.syncMode ?? "unsynced");
-        claimedSyncModes.set(ciId, modes);
+        const names = namesById.get(ciId) ?? [];
+        names.push({ key: `${b}:${i}`, stated: block.syncModes?.[i] ?? null });
+        namesById.set(ciId, names);
       }
+    }
+    // #1663 — hand each name one of its id's bindings. A stated sync mode
+    // takes a binding with that mode: an id shared across blocks can be
+    // synced in one and unsynced in another, and the order the op reads
+    // bindings in (block-name order live, stored order on a branch) need
+    // not be the caller's, so matching by order gave a survivor the removed
+    // placement's mode. An unstated name takes a remaining binding only
+    // when those all have one mode; otherwise the call is refused rather
+    // than guessed (no fallbacks pre-1.0).
+    const namedSyncModes = new Map<string, SyncMode>();
+    for (const [ciId, names] of namesById) {
+      const left = (priorById.get(ciId) as PriorBinding[]).map((p) => p.syncMode);
+      for (const name of names) {
+        if (name.stated === null) continue;
+        const at = left.indexOf(name.stated);
+        if (at === -1) {
+          return err({
+            kind: "HandlerError",
+            operation: "pages.set_modules",
+            message: `content instance ${ciId} is named with sync mode "${name.stated}", but none of its remaining placements on this page has that mode — pass the syncMode pages.get_with_modules reports for the placement (placement.set_content changes a mode).`,
+          });
+        }
+        left.splice(at, 1);
+        namedSyncModes.set(name.key, name.stated);
+      }
+      const unstated = names.filter((n) => n.stated === null);
+      if (unstated.length > 0 && new Set(left).size > 1) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.set_modules",
+          message: `content instance ${ciId} is bound on this page both synced and unsynced, so its id alone does not say which binding an entry keeps — pass syncModes with the syncMode pages.get_with_modules reports for each placement that names it.`,
+        });
+      }
+      for (const name of unstated) namedSyncModes.set(name.key, left.shift() as SyncMode);
     }
     // Remaining claims per id: the FIFO pass skips that many queue entries
     // bound to it, since the named placements took those bindings.
     const toSkip = new Map(claims);
 
     const resolved: ResolvedPlacement[] = [];
-    for (const block of input.blocks) {
+    for (const [b, block] of input.blocks.entries()) {
       let position = 0;
       for (const [index, moduleId] of block.moduleIds.entries()) {
         const named = block.contentInstanceIds?.[index] ?? null;
@@ -1819,9 +1855,7 @@ export const setPageModulesOp = defineOperation({
         if (named !== null) {
           prior = {
             contentInstanceId: named,
-            syncMode: (claimedSyncModes.get(named) as ("synced" | "unsynced")[]).shift() as
-              | "synced"
-              | "unsynced",
+            syncMode: namedSyncModes.get(`${b}:${index}`) as SyncMode,
           };
         } else {
           for (;;) {

@@ -11,6 +11,7 @@ import {
   enrichResponsiveImages,
   type ImageVariantInfo,
   pickAiImageVariant,
+  replacementMediaUrls,
 } from "./responsive-images.js";
 
 const ASSET = "12345678-1234-4123-8123-123456789abc";
@@ -110,6 +111,22 @@ describe("pickAiImageVariant", () => {
 
   it("ignores crop-family variants when picking", () => {
     expect(pickAiImageVariant(["orig", "square-800", "webp-400"])).toBe("webp-400");
+  });
+});
+
+describe("replacementMediaUrls (#1600)", () => {
+  it("offers the size find_media hands out, then the original, in the form the ref was written", () => {
+    expect(replacementMediaUrls("url-history", ["orig", "webp-400"])).toEqual([
+      "/_caelo/media/url-history/webp-400",
+      "/_caelo/media/url-history",
+    ]);
+    expect(replacementMediaUrls(ASSET, ["orig", "webp-400", "webp-800"])).toEqual([
+      `/_caelo/media/${ASSET}/webp-800`,
+      `/_caelo/media/${ASSET}/orig`,
+    ]);
+    // An animated GIF only has its original.
+    expect(replacementMediaUrls("loop", ["orig"])).toEqual(["/_caelo/media/loop"]);
+    expect(replacementMediaUrls("gone", [])).toEqual([]);
   });
 });
 

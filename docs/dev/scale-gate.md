@@ -18,7 +18,7 @@ A release is blocked while the nightly run is red. The JSON report, the markdown
 
 | Part | Setting | Why |
 |---|---|---|
-| Admin | the production build (`apps/admin` `bun run build`) in `oven/bun:1.4.4`, `--cpus=1 --memory=2g` | the Cloud Run admin's size |
+| Admin | the production build (`apps/admin` `bun run build`) in `oven/bun:1.4.5`, `--cpus=1 --memory=2g` | the Cloud Run admin's size |
 | Postgres | `postgres:17-alpine`, `--memory=614m`, `max_connections=100`, `shared_buffers=128MB`, `effective_cache_size=400MB`, `work_mem=4MB` | db-f1-micro (0.6 GB, 100 connections) |
 | Postgres CPU | `docker update --cpus=0.2` after the fixture is seeded, before the admin starts (cgroup `cpu.max` = `20000 100000`, checked) | db-f1-micro's CPU share (#1390), see below |
 | Lock waits | `deadlock_timeout=100ms`, `log_lock_waits=on` | every wait over 100 ms is logged as `still waiting for`, which the gate counts |

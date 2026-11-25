@@ -17,6 +17,7 @@ import {
   describeLinkIssues,
   type LinkTargetLookup,
   linkCanonicaliseRun,
+  reportMissingMediaVariants,
   urlFieldNamesInHtml,
 } from "./link-canonicalise.js";
 
@@ -469,5 +470,107 @@ describe("urlFieldNamesInHtml (#852)", () => {
         '<style>/* <img src="{{photo}}"> */</style><a href="{{target}}">go</a>',
     );
     expect([...names]).toEqual(["target"]);
+  });
+});
+
+describe("media variants (#1600)", () => {
+  // HERO is a 760 px source: the pipeline made webp-400 and kept the
+  // original, and never made a webp-800 (no upscaling).
+  const variants = new Map([[HERO, ["orig", "webp-400"]]]);
+
+  it("lists media links that name a variant, and only those", () => {
+    const r = run();
+    expect(canonicaliseUrl("/_caelo/media/hero/webp-800", r, "values.src")).toBe(
+      `caelo:media/${HERO}/webp-800`,
+    );
+    canonicaliseUrl("/_caelo/media/hero", r, "values.a");
+    canonicaliseUrl("/_caelo/media/hero/orig", r, "values.b");
+    canonicaliseUrl(`caelo:media/${HERO}/webp-1600`, r, "values.c");
+    expect(r.mediaVariantRefs).toEqual([
+      {
+        mediaId: HERO,
+        variant: "webp-800",
+        value: "/_caelo/media/hero/webp-800",
+        where: "values.src",
+        urlRef: "hero",
+      },
+      {
+        mediaId: HERO,
+        variant: "webp-1600",
+        value: `caelo:media/${HERO}/webp-1600`,
+        where: "values.c",
+        urlRef: null,
+      },
+    ]);
+    expect(r.issues).toEqual([]);
+  });
+
+  it("reports a variant the asset does not have, with the sizes it has and the URL to write", () => {
+    const r = run();
+    canonicaliseHtmlLinks(
+      '<img src="/_caelo/media/hero/webp-400" srcset="/_caelo/media/hero/webp-800 800w" alt="">',
+      r,
+      "html",
+    );
+    reportMissingMediaVariants(r, variants);
+    expect(r.issues).toEqual([
+      {
+        kind: "unknown-media-variant",
+        value: "/_caelo/media/hero/webp-800",
+        where: "html",
+        media: {
+          variants: ["orig", "webp-400"],
+          instead: ["/_caelo/media/hero/webp-400", "/_caelo/media/hero"],
+        },
+      },
+    ]);
+    const msg = describeLinkIssues(r.issues);
+    expect(msg).toContain('html: "/_caelo/media/hero/webp-800" names a size (variant)');
+    expect(msg).toContain("it has: orig, webp-400");
+    expect(msg).toContain('write "/_caelo/media/hero/webp-400" or "/_caelo/media/hero" instead');
+    expect(msg).toContain("find_media");
+  });
+
+  it("spells the legacy id form with its variant, and a reference form points at find_media", () => {
+    const r = run();
+    canonicaliseUrl(`/_caelo/media/${HERO}/webp-1200`, r, "values.a");
+    canonicaliseUrl(`caelo:media/${HERO}/webp-1200`, r, "values.b");
+    reportMissingMediaVariants(r, variants);
+    expect(r.issues.map((i) => i.media?.instead)).toEqual([
+      [`/_caelo/media/${HERO}/webp-400`, `/_caelo/media/${HERO}/orig`],
+      [],
+    ]);
+    expect(describeLinkIssues(r.issues)).toContain("write the image's url from find_media instead");
+  });
+
+  it("treats an asset without variant rows as having none", () => {
+    const r = run();
+    canonicaliseUrl("/_caelo/media/hero/webp-400", r, "values.a");
+    reportMissingMediaVariants(r, new Map());
+    expect(r.issues[0]?.media).toEqual({ variants: [], instead: [] });
+    expect(describeLinkIssues(r.issues)).toContain("regenerate_media_variants");
+  });
+
+  it("grandfathers a stored reference, whichever spelling the edit carries it in", () => {
+    const stored = collectLinkLiterals({ html: `<img src="caelo:media/${HERO}/webp-800">` });
+    const r = linkCanonicaliseRun(lookup, { grandfathered: stored });
+    canonicaliseUrl("/_caelo/media/hero/webp-800", r, "html");
+    canonicaliseUrl(`caelo:media/${HERO}/webp-800`, r, "html");
+    reportMissingMediaVariants(r, variants);
+    expect(r.mediaVariantRefs).toEqual([]);
+    expect(r.issues).toEqual([]);
+  });
+
+  it("grandfathers a stored media URL that reaches this run as the reference an earlier pass made", () => {
+    // A module's own list entries are canonicalised twice in one write: the
+    // first pass turns the stored literal into its reference.
+    const stored = collectLinkLiterals({
+      photos: [{ values: { image_src: "/_caelo/media/hero/webp-800" } }],
+    });
+    const r = linkCanonicaliseRun(lookup, { grandfathered: stored });
+    canonicaliseUrl(`caelo:media/${HERO}/webp-800`, r, "values.photos[0].values.image_src");
+    canonicaliseUrl(`caelo:media/${HERO}/webp-1200`, r, "values.photos[1].values.image_src");
+    reportMissingMediaVariants(r, variants);
+    expect(r.issues.map((i) => i.value)).toEqual([`caelo:media/${HERO}/webp-1200`]);
   });
 });

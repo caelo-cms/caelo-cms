@@ -36,7 +36,12 @@ import {
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import newsletterPlugin from "@caelo-cms/plugin-newsletter";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
-import { adminSchemaFromSpec, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
+import {
+  adminGrantTarget,
+  adminSchemaFromSpec,
+  publicGrantTargets,
+  schemaFromSpec,
+} from "@caelo-cms/plugin-sandbox";
 import {
   declaredIndexLeads,
   type PluginQueryFilter,
@@ -44,8 +49,12 @@ import {
   type PluginTableKinds,
 } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, type TransactionRunner } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL as BunSQL } from "bun";
 import { sql } from "drizzle-orm";
+
+const LIVE_TARGET = publicGrantTargets(DEFAULT_INSTALL_NAMES.roles).live;
+const ADMIN_TARGET = adminGrantTarget(DEFAULT_INSTALL_NAMES.roles);
 
 function requiredUrl(name: string): string {
   const url = process.env[name];
@@ -259,6 +268,7 @@ beforeAll(async () => {
     const pluginId = idOf(plugin);
     if (Object.keys(def.schema).length > 0) {
       const emitted = schemaFromSpec({
+        target: LIVE_TARGET,
         tableKinds: def.tableKinds,
         pluginId,
         slug: slugOf(plugin),
@@ -269,6 +279,7 @@ beforeAll(async () => {
     }
     if (def.adminSchema) {
       const emitted = adminSchemaFromSpec({
+        target: ADMIN_TARGET,
         pluginId,
         slug: slugOf(plugin),
         adminSchema: def.adminSchema,

@@ -32,7 +32,7 @@ import type { Finding } from "./findings.js";
 import { siteHostsOf } from "./links-analysis.js";
 import { extractPageFacts, parseSitemapAlternates, type SitemapAlternates } from "./page-facts.js";
 import { CheckRegistry } from "./registry.js";
-import { MAX_FINDINGS_PER_CALL } from "./runner.js";
+import { MAX_CHECK_CALL_TIMEOUT_MS, MAX_FINDINGS_PER_CALL, withTimeout } from "./runner.js";
 
 /** Where plugin findings come from (the plugin host in production; fakes in tests). */
 export interface PluginAuditSource {
@@ -64,24 +64,41 @@ export type PluginAuditCall = (
 ) => Promise<PluginAuditAnswer>;
 
 /**
+ * #1632 — the budget of ONE call of a plugin's audit operation, not of
+ * the plugin's check. The check makes one call plus one per fact batch
+ * (at most 200 pages each; international-site asks for 100), so a single
+ * budget for every call is a limit on the site's size instead of a hang
+ * detector: a bilingual site of 299 pages made four calls and failed at
+ * 60 s on every Stage. A plugin call goes through the broker and reads
+ * the plugin's data: allow more than a pure check's default. A call
+ * past it is hung, and the check fails naming that call.
+ */
+export const PLUGIN_AUDIT_CALL_TIMEOUT_MS = 60_000;
+
+/**
  * Ask a plugin for its findings about the staged pages: the first call
  * carries the pages; when its answer names `factBatches`, every batch is
  * read through `facts` and the operation is called again per batch with
  * those facts. The findings of every call are returned in call order (the
  * check files identical ones once).
  *
- * @throws when a call fails, a batch names a page outside `pages`, or a
- *   batch call asks for batches again — the plugin's check then fails
- *   loudly instead of reading as "no findings".
+ * Each call has its own budget, `callTimeoutMs` ({@link PLUGIN_AUDIT_CALL_TIMEOUT_MS}).
+ *
+ * @throws when a call fails or runs past its budget, a batch names a page
+ *   outside `pages`, or a batch call asks for batches again — the
+ *   plugin's check then fails loudly instead of reading as "no findings".
  */
 export async function collectPluginFindings(
   call: PluginAuditCall,
   slug: string,
   pages: readonly { readonly pageId: string; readonly path: string }[],
   facts: (pageIds: readonly string[]) => Promise<readonly PluginAuditPageFacts[]>,
+  callTimeoutMs: number = PLUGIN_AUDIT_CALL_TIMEOUT_MS,
 ): Promise<PluginAuditFinding[]> {
+  const budgeted = (args: PluginAuditFindingsArgs, label: string) =>
+    withTimeout(call(args, label), callTimeoutMs, `plugin "${slug}" (${label})`);
   const pageArgs = pages.map((p) => ({ pageId: p.pageId, path: p.path }));
-  const first = await call({ pages: pageArgs }, "pages");
+  const first = await budgeted({ pages: pageArgs }, "pages");
   const out = [...first.findings];
   const staged = new Set(pages.map((p) => p.pageId));
   for (const [i, batch] of (first.factBatches ?? []).entries()) {
@@ -91,7 +108,7 @@ export async function collectPluginFindings(
         `audit findings: plugin "${slug}" asked for the facts of page ${outside}, which is not a page of the staged build`,
       );
     }
-    const answer = await call(
+    const answer = await budgeted(
       { pages: pageArgs, facts: await facts(batch) },
       `facts batch ${i + 1}`,
     );
@@ -105,8 +122,13 @@ export async function collectPluginFindings(
   return out;
 }
 
-/** Plugin calls go through the sandbox: allow more than a pure check's default. */
-const PLUGIN_CHECK_TIMEOUT_MS = 60_000;
+/**
+ * The whole check runs under the runner's ceiling, the backstop that
+ * ends every audit: each call is bounded by
+ * {@link PLUGIN_AUDIT_CALL_TIMEOUT_MS}, and a batch call costs what its
+ * pages name, not the site (international-site, #1632).
+ */
+const PLUGIN_CHECK_TIMEOUT_MS = MAX_CHECK_CALL_TIMEOUT_MS;
 
 /** The check id of plugin `slug`'s contributions. */
 export function pluginCheckId(slug: string): string {

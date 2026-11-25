@@ -15,15 +15,16 @@ import { afterAll, beforeAll, describe, expect, it, setDefaultTimeout } from "bu
 import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import { bootstrap, pluginWorkerScheduler, resetPluginHost } from "@caelo-cms/plugin-host";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
-import {
-  LIVE_PUBLIC_GRANT_TARGET,
-  STAGING_PUBLIC_GRANT_TARGET,
-  schemaFromSpec,
-} from "@caelo-cms/plugin-sandbox";
+import { publicGrantTargets, schemaFromSpec } from "@caelo-cms/plugin-sandbox";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { stagingPublicAdapter } from "../public-projection.js";
 import { registerAdminOps } from "../register.js";
+
+const { live: LIVE_TARGET, staging: STAGING_TARGET } = publicGrantTargets(
+  DEFAULT_INSTALL_NAMES.roles,
+);
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_ADMIN_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -140,8 +141,8 @@ beforeAll(async () => {
     )
   )[0]?.id as string;
   for (const [db, target] of [
-    [adapter, LIVE_PUBLIC_GRANT_TARGET],
-    [staging, STAGING_PUBLIC_GRANT_TARGET],
+    [adapter, LIVE_TARGET],
+    [staging, STAGING_TARGET],
   ] as const) {
     const emitted = schemaFromSpec({
       pluginId: ratingsId,

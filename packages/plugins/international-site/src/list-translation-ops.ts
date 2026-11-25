@@ -46,7 +46,7 @@ import {
   targetOfAddress,
   unitStatus,
 } from "./list-translation.js";
-import { listAll } from "./store-reads.js";
+import { chunked, listAll } from "./store-reads.js";
 
 /** A stored list value translation. */
 export interface ValueTranslationRow {
@@ -146,6 +146,62 @@ export interface ModuleInfo {
   fields: unknown[];
 }
 
+/** A module's LOCAL list fields (kind `list`, bound locally): what an instance of it translates. */
+export function localListFieldsOf(
+  fields: readonly unknown[],
+): { name: string; listType: string; default: unknown }[] {
+  return fields.flatMap((f) => {
+    const o = f as {
+      name?: unknown;
+      kind?: unknown;
+      listType?: unknown;
+      bind?: unknown;
+      default?: unknown;
+    };
+    return o.kind === "list" &&
+      typeof o.name === "string" &&
+      typeof o.listType === "string" &&
+      (o.bind === undefined || o.bind === "local")
+      ? [{ name: o.name, listType: o.listType, default: o.default }]
+      : [];
+  });
+}
+
+/**
+ * #1632 — the instances of the modules that hold a local list: the only
+ * instances {@link localListSources} reads. Asking core for every
+ * instance of the site carried every page's copy across the broker
+ * (the audit's heaviest read) to keep a few of them. No read when no
+ * module holds a local list.
+ */
+async function loadLocalListInstances(
+  cms: ChromeDeps["cms"],
+  modules: readonly ModuleInfo[],
+): Promise<InstanceInfo[]> {
+  const moduleIds = modules.filter((m) => localListFieldsOf(m.fields).length > 0).map((m) => m.id);
+  const out: InstanceInfo[] = [];
+  for (const ids of chunked(moduleIds)) {
+    const r = await cms.call<{ instances: InstanceInfo[] }>("content_instances.list", {
+      moduleIds: ids,
+    });
+    out.push(...r.instances);
+  }
+  return out;
+}
+
+/**
+ * Site-wide reads a caller already holds, handed in so a state load does
+ * not read them a second time (the Stage audit reads both for its own
+ * rules, #1632). Each must be what the load would read itself: the same
+ * main line or branch, the whole site.
+ */
+export interface KnownSiteReads {
+  /** Every row of `page_variants` (unfiltered). */
+  readonly variants?: readonly PageVariantRow[];
+  /** `pages.list_shared_content`'s `listInstances` of the whole site. */
+  readonly listInstances?: readonly { contentInstanceId: string; pageIds: string[] }[];
+}
+
 /**
  * Local lists: instances shared between the default language and other
  * languages. An instance that renders only on pages of other languages
@@ -175,21 +231,7 @@ export function localListSources(input: {
       defaultCode !== null && pageLocales.includes(defaultCode)
         ? new Set(pageLocales.filter((l): l is string => l !== null && nonDefault.includes(l)))
         : new Set<string>();
-    const listFields = (moduleById.get(ci.moduleId)?.fields ?? []).flatMap((f) => {
-      const o = f as {
-        name?: unknown;
-        kind?: unknown;
-        listType?: unknown;
-        bind?: unknown;
-        default?: unknown;
-      };
-      return o.kind === "list" &&
-        typeof o.name === "string" &&
-        typeof o.listType === "string" &&
-        (o.bind === undefined || o.bind === "local")
-        ? [{ name: o.name, listType: o.listType, default: o.default }]
-        : [];
-    });
+    const listFields = localListFieldsOf(moduleById.get(ci.moduleId)?.fields ?? []);
     if (listFields.length === 0) continue;
     sourceInstances.push({
       id: ci.id,
@@ -331,30 +373,35 @@ export async function loadPluginSources(
  * translation rows; pages-to-instance placement and page variants are
  * main-line data).
  */
-export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTranslationState> {
+export async function loadListTranslationState(
+  deps: ChromeDeps,
+  known: KnownSiteReads = {},
+): Promise<ListTranslationState> {
   const { cms } = deps;
   const def = [...deps.locales.values()].find((l) => l.is_default) ?? null;
   const nonDefault = [...deps.locales.values()].filter((l) => !l.is_default).map((l) => l.code);
 
-  const [types, lists, modules, instances, shared, pages, pageTypes] = await Promise.all([
+  const [types, lists, modules, listInstances, pages, pageTypes, allVariants] = await Promise.all([
     cms.call<{ listTypes: { slug: string; definition: ListTypeDef }[] }>("list_types.list", {}),
     cms.call<{
       lists: { id: string; slug: string; name: string; type: string; items?: ListItem[] }[];
     }>("lists.list", { includeItems: true }),
     cms.call<{ modules: ModuleInfo[] }>("modules.list", {}),
-    cms.call<{ instances: InstanceInfo[] }>("content_instances.list", {}),
-    cms.call<{ listInstances: { contentInstanceId: string; pageIds: string[] }[] }>(
-      "pages.list_shared_content",
-      {},
-    ),
+    known.listInstances ??
+      cms
+        .call<{ listInstances: { contentInstanceId: string; pageIds: string[] }[] }>(
+          "pages.list_shared_content",
+          {},
+        )
+        .then((r) => r.listInstances),
     cms.call<{ pages: PageInfo[] }>("pages.list", {}),
     // page_types.list returns each definition's fields on the row itself.
     cms.call<{ pageTypes: PageTypeDef[] }>("page_types.list", {}),
+    known.variants ?? readAll<PageVariantRow>(deps, "page_variants"),
   ]);
+  const instances = await loadLocalListInstances(cms, modules.modules);
   const listTypes = new Map(types.listTypes.map((t) => [t.slug, t.definition]));
-  const variants = (await readAll<PageVariantRow>(deps, "page_variants")).filter((v) =>
-    deps.locales.has(v.locale_code),
-  );
+  const variants = allVariants.filter((v) => deps.locales.has(v.locale_code));
   const variantByPage = new Map(variants.map((v) => [v.page_id, v]));
   const localeOfPage = (pageId: string): string | null =>
     variantByPage.get(pageId)?.locale_code ?? def?.code ?? null;
@@ -363,9 +410,9 @@ export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTr
 
   const defaultCode = def?.code ?? null;
   const sourceInstances = localListSources({
-    instances: instances.instances,
+    instances,
     modules: modules.modules,
-    pagesOfInstance: new Map(shared.listInstances.map((r) => [r.contentInstanceId, r.pageIds])),
+    pagesOfInstance: new Map(listInstances.map((r) => [r.contentInstanceId, r.pageIds])),
     localeOfPage,
     defaultCode,
     nonDefault,

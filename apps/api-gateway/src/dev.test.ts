@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import { gatewayDatabaseUrls } from "./database-env.js";
 import { gatewayDevEnv } from "./dev.js";
 
@@ -33,6 +34,7 @@ describe("gateway dev launcher (#613 review, #635)", () => {
     ]);
     expect(gatewayDatabaseUrls(env)).toEqual({
       environment: "live",
+      names: DEFAULT_INSTALL_NAMES,
       public: ROOT_ENV.PUBLIC_DATABASE_URL,
     });
   });

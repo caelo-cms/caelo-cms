@@ -10,7 +10,9 @@
     ".": "./src/index.ts",
     "./schema/cms_admin": "./src/schema/cms_admin/index.ts",
     "./schema/cms_public": "./src/schema/cms_public/index.ts",
-    "./public-projection": "./src/public-projection.ts"
+    "./public-projection": "./src/public-projection.ts",
+    "./role-audit": "./src/role-audit.ts",
+    "./template-install": "./src/template-install.ts"
   },
   "scripts": {
     "typecheck": "tsc -b",
@@ -19,7 +21,8 @@
     "migrate:admin": "bun run src/migrate.ts admin",
     "migrate:public": "bun run src/migrate.ts public",
     "migrate:public-staging": "bun run src/migrate.ts public-staging",
-    "migrate": "bun run migrate:admin && bun run migrate:public && bun run migrate:public-staging"
+    "migrate": "bun run migrate:admin && bun run migrate:public && bun run migrate:public-staging",
+    "install-from-template": "bun run src/install-from-template.ts"
   },
   "dependencies": {
     "@caelo-cms/shared": "workspace:*",

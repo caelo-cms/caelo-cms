@@ -163,32 +163,46 @@ export const placeModuleOp = defineOperation({
     const placements: { pageId: string; position: number; contentInstanceId: string }[] = [];
     for (const pageId of input.target.pageIds) {
       // The caller's branch view, so a chat's own pending placements stay.
-      // Every surviving placement is named by its content instance (#1195),
-      // so no placement trades content with another while the block shifts.
-      // A block without placement metadata (a pre-v0.12 layout snapshot)
-      // names none and leaves the binding to pages.set_modules' own
-      // per-(block, module) carry-over, exactly as a direct call would.
+      // Every surviving placement is named by its content instance (#1195)
+      // and sync mode (#1663: one instance may be synced in one block and
+      // unsynced in another), so no placement trades content or mode with
+      // another while the block shifts. A block without placement metadata
+      // (a pre-v0.12 layout snapshot) names none and leaves the binding to
+      // pages.set_modules' own per-(block, module) carry-over, exactly as a
+      // direct call would.
       const prior = await loadPageLayoutStateWithBranchOverlay(tx, pageId, branchId);
       const blocks: {
         blockName: string;
         moduleIds: string[];
         contentInstanceIds?: (string | null)[];
+        syncModes?: ("synced" | "unsynced" | null)[];
       }[] = prior.blocks.map((b) => ({
         blockName: b.blockName,
         moduleIds: [...b.moduleIds],
         ...(b.placements !== undefined && b.placements.length === b.moduleIds.length
-          ? { contentInstanceIds: b.placements.map((p) => p.contentInstanceId) }
+          ? {
+              contentInstanceIds: b.placements.map((p) => p.contentInstanceId),
+              syncModes: b.placements.map((p) => p.syncMode),
+            }
           : {}),
       }));
       let target = blocks.find((b) => b.blockName === input.blockName);
       if (!target) {
-        target = { blockName: input.blockName, moduleIds: [], contentInstanceIds: [] };
+        target = {
+          blockName: input.blockName,
+          moduleIds: [],
+          contentInstanceIds: [],
+          syncModes: [],
+        };
         blocks.push(target);
       }
       const spliced = spliceAt(target.moduleIds, moduleId, input.position);
       target.moduleIds = spliced.items;
       if (target.contentInstanceIds !== undefined) {
         target.contentInstanceIds = spliceAt(target.contentInstanceIds, null, input.position).items;
+      }
+      if (target.syncModes !== undefined) {
+        target.syncModes = spliceAt(target.syncModes, null, input.position).items;
       }
       orAbort(await setPageModulesOp.handler(ctx, { pageId, blocks }, tx));
 

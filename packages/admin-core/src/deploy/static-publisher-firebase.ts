@@ -99,20 +99,59 @@ export function siteName(): string {
   return site;
 }
 
+/**
+ * An ADC access token for a run of requests, asked for before each one.
+ *
+ * A token taken once and kept for a whole build expired mid-upload: the
+ * metadata server hands out the token it caches, which can be minutes
+ * from its expiry, and a six-minute build then failed in `populateFiles`
+ * with 401 ACCESS_TOKEN_EXPIRED (#1632). One client serves the run, and
+ * google-auth-library returns its cached token until it is within its
+ * eager-refresh threshold of expiring (five minutes by default), then
+ * fetches a new one — so a token handed out is never close to expiry.
+ * Calls while a fetch is in flight share it: when the refresh is due,
+ * fifty parallel uploads ask the metadata server once.
+ *
+ * Every run of requests that can take minutes holds one: the build upload,
+ * Publish live and rollback (a full file listing, `populateFiles`, the
+ * lease fence, the release) and the plugin-data release.
+ */
+export type AccessToken = () => Promise<string>;
+
+/** The {@link AccessToken} of the admin's service identity for `scopes`. */
+export async function googleAccessToken(
+  scopes: readonly string[] = ["https://www.googleapis.com/auth/firebase.hosting"],
+): Promise<AccessToken> {
+  // On Cloud Run ADC picks up the service account identity automatically.
+  // Lazy-import so self-hosted installs don't pull the dep.
+  const { GoogleAuth } = await import("google-auth-library");
+  const client = await new GoogleAuth({ scopes: [...scopes] }).getClient();
+  let inFlight: Promise<string> | null = null;
+  return () => {
+    inFlight ??= client
+      .getAccessToken()
+      .then((t) => {
+        if (!t.token) {
+          throw new Error("static-publisher-firebase: failed to obtain ADC access token");
+        }
+        return t.token;
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+    return inFlight;
+  };
+}
+
+/**
+ * One ADC access token, for a call that ends within seconds (one request,
+ * or a custom-domain change and its one-minute operation poll). A run that
+ * can take minutes holds a {@link googleAccessToken} instead (#1632).
+ */
 export async function googleAuthToken(
   scopes: readonly string[] = ["https://www.googleapis.com/auth/firebase.hosting"],
 ): Promise<string> {
-  // Use google-auth-library to fetch an ADC access token. On Cloud
-  // Run this picks up the service account identity automatically.
-  // Lazy-import so self-hosted installs don't pull the dep.
-  const { GoogleAuth } = await import("google-auth-library");
-  const auth = new GoogleAuth({ scopes: [...scopes] });
-  const client = await auth.getClient();
-  const token = await client.getAccessToken();
-  if (!token.token) {
-    throw new Error("static-publisher-firebase: failed to obtain ADC access token");
-  }
-  return token.token;
+  return (await googleAccessToken(scopes))();
 }
 
 /**
@@ -274,12 +313,12 @@ const RUN_CHANNEL_PREFIX = "runid-";
 async function versionConfig(
   site: string,
   versionName: string,
-  token: string,
+  token: AccessToken,
 ): Promise<FirebaseVersionConfig> {
   const versionId = versionName.split("/").pop() ?? "";
   const version = await firebaseFetch<{ config?: FirebaseVersionConfig }>(
     `sites/${site}/versions/${versionId}`,
-    { token },
+    { token: await token() },
   );
   return version.config ?? {};
 }
@@ -306,14 +345,14 @@ interface VersionFileEntry {
 async function listVersionFiles(
   site: string,
   versionId: string,
-  token: string,
+  token: AccessToken,
 ): Promise<VersionFileEntry[]> {
   type ListFilesResponse = { files?: VersionFileEntry[]; nextPageToken?: string };
   const allFiles: VersionFileEntry[] = [];
   let pageToken: string | undefined;
   do {
     const url = `sites/${site}/versions/${versionId}/files${pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ""}`;
-    const page = await firebaseFetch<ListFilesResponse>(url, { token });
+    const page = await firebaseFetch<ListFilesResponse>(url, { token: await token() });
     for (const f of page.files ?? []) allFiles.push(f);
     pageToken = page.nextPageToken;
   } while (pageToken);
@@ -321,11 +360,11 @@ async function listVersionFiles(
 }
 
 /** The version the live channel's latest release points at, or null. */
-async function liveChannelVersion(site: string, token: string): Promise<string | null> {
+async function liveChannelVersion(site: string, token: AccessToken): Promise<string | null> {
   type Release = { type?: string; version?: { name?: string } };
   const r = await firebaseFetch<{ releases?: Release[] }>(
     `sites/${site}/channels/live/releases?pageSize=1`,
-    { token },
+    { token: await token() },
   );
   const head = r.releases?.[0];
   if (!head || head.type === "SITE_DISABLE") return null;
@@ -342,7 +381,7 @@ async function liveChannelVersion(site: string, token: string): Promise<string |
  */
 export async function liveReleaseConfigIsCurrent(): Promise<boolean | null> {
   const site = siteName();
-  const token = await googleAuthToken();
+  const token = await googleAccessToken();
   const live = await liveChannelVersion(site, token);
   if (live === null) return null;
   const config = await versionConfig(site, live, token);
@@ -359,7 +398,7 @@ export async function liveReleaseConfigIsCurrent(): Promise<boolean | null> {
  */
 async function releasePluginDataVersion(args: {
   site: string;
-  token: string;
+  token: AccessToken;
   liveVersionName: string;
   files: ReadonlyMap<string, Buffer>;
   /** See StaticPublisher.publishPluginData. */
@@ -389,29 +428,29 @@ async function releasePluginDataVersion(args: {
         withCurrentFixedHeaders(await versionConfig(site, args.liveVersionName, token)),
       ),
     }),
-    token,
+    token: await token(),
   });
   const versionName = created.name;
   const versionId = versionName.split("/").pop() ?? "";
   const populate = await firebaseFetch<PopulateFilesResponse>(
     `sites/${site}/versions/${versionId}:populateFiles`,
-    { method: "POST", body: JSON.stringify({ files: filesMap }), token },
+    { method: "POST", body: JSON.stringify({ files: filesMap }), token: await token() },
   );
   const required = new Set(populate.uploadRequiredHashes ?? []);
   const toUpload = [...replaced.entries()].filter(([hash]) => required.has(hash));
   await runBatched(toUpload, PARALLEL_UPLOADS, async ([hash, gzipped]) => {
-    await uploadGzippedFile(populate.uploadUrl, hash, gzipped, token);
+    await uploadGzippedFile(populate.uploadUrl, hash, gzipped, await token());
   });
   await firebaseFetch(`sites/${site}/versions/${versionId}?updateMask=status`, {
     method: "PATCH",
     body: JSON.stringify({ status: "FINALIZED" }),
-    token,
+    token: await token(),
   });
   await args.beforeRelease?.();
   await firebaseFetch(`sites/${site}/releases?versionName=${versionName}`, {
     method: "POST",
     body: JSON.stringify({ message: "Caelo: plugin data (#1155)" }),
-    token,
+    token: await token(),
   });
   return {
     versionName,
@@ -436,7 +475,7 @@ async function releasePluginDataVersion(args: {
  */
 async function releaseAsTarget(args: {
   site: string;
-  token: string;
+  token: AccessToken;
   sourceVersionName: string;
   sourceConfig: FirebaseVersionConfig;
   target: DeployTarget;
@@ -472,7 +511,7 @@ async function releaseAsTarget(args: {
         ),
       ),
     }),
-    token,
+    token: await token(),
   });
   const versionName = created.name;
   const versionId = versionName.split("/").pop() ?? "";
@@ -482,23 +521,23 @@ async function releaseAsTarget(args: {
   // content-addressed in the site's storage from the staging upload.
   const populate = await firebaseFetch<PopulateFilesResponse>(
     `sites/${site}/versions/${versionId}:populateFiles`,
-    { method: "POST", body: JSON.stringify({ files: filesMap }), token },
+    { method: "POST", body: JSON.stringify({ files: filesMap }), token: await token() },
   );
   const required = new Set(populate.uploadRequiredHashes ?? []);
   if (required.has(robotsSha256)) {
-    await uploadGzippedFile(populate.uploadUrl, robotsSha256, robotsGzipped, token);
+    await uploadGzippedFile(populate.uploadUrl, robotsSha256, robotsGzipped, await token());
   }
 
   await firebaseFetch(`sites/${site}/versions/${versionId}?updateMask=status`, {
     method: "PATCH",
     body: JSON.stringify({ status: "FINALIZED" }),
-    token,
+    token: await token(),
   });
   await args.beforeRelease?.();
   await firebaseFetch(`sites/${site}/releases?versionName=${versionName}`, {
     method: "POST",
     body: JSON.stringify({}),
-    token,
+    token: await token(),
   });
   return {
     versionName,
@@ -544,7 +583,8 @@ interface PendingFile {
  */
 class FirebaseBuildUpload implements BuildUpload {
   readonly #site: string;
-  readonly #token: string;
+  /** Asked before every request: a build outlasts one token (#1632). */
+  readonly #token: AccessToken;
   readonly #versionName: string;
   readonly #versionId: string;
   readonly #paths = new Set<string>();
@@ -565,7 +605,12 @@ class FirebaseBuildUpload implements BuildUpload {
   /** #1330 — a Stage's mirror into the staging slot it fills; null for other targets. */
   readonly #slot: GcsSlotSync | null;
 
-  private constructor(site: string, token: string, versionName: string, slot: GcsSlotSync | null) {
+  private constructor(
+    site: string,
+    token: AccessToken,
+    versionName: string,
+    slot: GcsSlotSync | null,
+  ) {
     this.#site = site;
     this.#token = token;
     this.#versionName = versionName;
@@ -582,7 +627,7 @@ class FirebaseBuildUpload implements BuildUpload {
     servedStagingLocation: string | null;
   }): Promise<FirebaseBuildUpload> {
     const site = siteName();
-    const token = await googleAuthToken();
+    const token = await googleAccessToken();
     const slot =
       args.target.env === "staging"
         ? await GcsSlotSync.open(await stagingBucket(), args.servedStagingLocation)
@@ -590,7 +635,7 @@ class FirebaseBuildUpload implements BuildUpload {
     const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
       method: "POST",
       body: JSON.stringify({}),
-      token,
+      token: await token(),
     });
     return new FirebaseBuildUpload(site, token, created.name, slot);
   }
@@ -636,7 +681,7 @@ class FirebaseBuildUpload implements BuildUpload {
         if (required.has(f.sha256) && !toUpload.has(f.sha256)) toUpload.set(f.sha256, f);
       }
       await runBatched([...toUpload.values()], PARALLEL_UPLOADS, async (f) => {
-        await uploadGzippedFile(this.#url(), f.sha256, f.gzipped, this.#token);
+        await uploadGzippedFile(this.#url(), f.sha256, f.gzipped, await this.#token());
       });
       this.#uploaded += toUpload.size;
     });
@@ -650,7 +695,7 @@ class FirebaseBuildUpload implements BuildUpload {
     for (const [path, sha] of files) filesMap[`/${path}`] = sha;
     const populate = await firebaseFetch<PopulateFilesResponse>(
       `sites/${this.#site}/versions/${this.#versionId}:populateFiles`,
-      { method: "POST", body: JSON.stringify({ files: filesMap }), token: this.#token },
+      { method: "POST", body: JSON.stringify({ files: filesMap }), token: await this.#token() },
     );
     this.#uploadUrl = populate.uploadUrl;
     const required = new Set<string>();
@@ -712,7 +757,7 @@ class FirebaseBuildUpload implements BuildUpload {
           toUpload.set(a.gzipSha256, a);
       }
       await runBatched([...toUpload.values()], PARALLEL_UPLOADS, async (a) => {
-        await uploadAsset(this.#url(), a, assetSourcePath(references, a), this.#token);
+        await uploadAsset(this.#url(), a, assetSourcePath(references, a), await this.#token());
       });
       assetUploads += toUpload.size;
     }
@@ -761,7 +806,7 @@ class FirebaseBuildUpload implements BuildUpload {
       {
         method: "PATCH",
         body: JSON.stringify({ status: "FINALIZED", config }),
-        token: this.#token,
+        token: await this.#token(),
       },
     );
     timer.lap("finalize");
@@ -789,7 +834,7 @@ class FirebaseBuildUpload implements BuildUpload {
     try {
       await firebaseFetch(`sites/${this.#site}/versions/${this.#versionId}`, {
         method: "DELETE",
-        token: this.#token,
+        token: await this.#token(),
       });
     } catch (e) {
       // An unfinalized version is never served; one left behind is only clutter.
@@ -798,11 +843,6 @@ class FirebaseBuildUpload implements BuildUpload {
         error: messageOf(e),
       });
     }
-  }
-
-  /** The token the upload authenticated with (for the release calls after it). */
-  get token(): string {
-    return this.#token;
   }
 
   get site(): string {
@@ -965,14 +1005,14 @@ function changedOutsideCaelo(asset: AssetReference): Error {
 }
 
 /** Every `runid-*` preview channel an older release's Stage created on the site. */
-async function listRunPreviewChannels(site: string, token: string): Promise<string[]> {
+async function listRunPreviewChannels(site: string, token: AccessToken): Promise<string[]> {
   type ListChannelsResponse = { channels?: { name: string }[]; nextPageToken?: string };
   const found: string[] = [];
   let pageToken: string | undefined;
   do {
     const page = await firebaseFetch<ListChannelsResponse>(
       `sites/${site}/channels?pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`,
-      { token },
+      { token: await token() },
     );
     for (const c of page.channels ?? []) {
       const id = c.name.split("/").pop() ?? "";
@@ -998,11 +1038,14 @@ export async function retireLegacyPreviewChannels(): Promise<
   readonly { readonly channel: string; readonly error: string }[]
 > {
   const site = siteName();
-  const token = await googleAuthToken();
+  const token = await googleAccessToken();
   const left: { channel: string; error: string }[] = [];
   for (const channel of await listRunPreviewChannels(site, token)) {
     try {
-      await firebaseFetch(`sites/${site}/channels/${channel}`, { method: "DELETE", token });
+      await firebaseFetch(`sites/${site}/channels/${channel}`, {
+        method: "DELETE",
+        token: await token(),
+      });
     } catch (e) {
       if (e instanceof FirebaseHostingHttpError && e.status === 404) continue;
       left.push({ channel, error: messageOf(e) });
@@ -1064,7 +1107,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
     beforeRelease,
   }) {
     const site = siteName();
-    const token = await googleAuthToken();
+    const token = await googleAccessToken();
     // The Hosting version the Stage finalized — a copy of it goes live.
     if (!sourceLocation || !/^sites\/[^/]+\/versions\/[^/]+$/.test(sourceLocation)) {
       throw new Error(
@@ -1111,9 +1154,9 @@ export const firebaseHostingPublisher: StaticPublisher = {
       );
     }
     const site = siteName();
-    const token = await googleAuthToken();
+    const token = await googleAccessToken();
     return servedChannelFiles({
-      call: (path, init) => firebaseFetch(path, { ...init, token }),
+      call: async (path, init) => firebaseFetch(path, { ...init, token: await token() }),
       site,
       channelId: "live",
     });
@@ -1133,9 +1176,9 @@ export const firebaseHostingPublisher: StaticPublisher = {
       };
     }
     const site = siteName();
-    const token = await googleAuthToken();
+    const token = await googleAccessToken();
     return syncFirebaseRedirects({
-      call: (path, init) => firebaseFetch(path, { ...init, token }),
+      call: async (path, init) => firebaseFetch(path, { ...init, token: await token() }),
       site,
       channelId: "live",
       target,
@@ -1145,8 +1188,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
 
   async readLiveFiles({ live, paths }) {
     const site = siteName();
-    const token = await googleAuthToken();
-    await assertLiveIs(site, token, live.location);
+    await assertLiveIs(site, await googleAccessToken(), live.location);
     const origin = await firebaseLiveChannelUrl();
     const out = new Map<string, Buffer | null>();
     await runBatched([...paths], PARALLEL_UPLOADS, async (path) => {
@@ -1167,7 +1209,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
 
   async publishPluginData({ live, runId, files, beforeRelease }) {
     const site = siteName();
-    const token = await googleAuthToken();
+    const token = await googleAccessToken();
     const liveVersionName = await assertLiveIs(site, token, live.location);
     const released = await releasePluginDataVersion({
       site,
@@ -1187,7 +1229,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
 
   async rollback({ targetBuildId, target, siteBaseUrl, sourceLocation }): Promise<PublishSummary> {
     const site = siteName();
-    const token = await googleAuthToken();
+    const token = await googleAccessToken();
     // The Hosting version the run released, as its publish summary recorded
     // it — not the run's preview channel, which #650 deletes once a newer
     // Stage succeeds. A promoted run's version is
@@ -1221,7 +1263,11 @@ export const firebaseHostingPublisher: StaticPublisher = {
  * throw: plugin data is never published on top of a release no deploy run
  * recorded. Returns that version's name.
  */
-async function assertLiveIs(site: string, token: string, recorded: string | null): Promise<string> {
+async function assertLiveIs(
+  site: string,
+  token: AccessToken,
+  recorded: string | null,
+): Promise<string> {
   if (!recorded || !/^sites\/[^/]+\/versions\/[^/]+$/.test(recorded)) {
     throw new Error(
       `firebase publisher: the live production run recorded no Hosting version (${JSON.stringify(recorded)}), so plugin data cannot be published on top of it. Publish live again.`,

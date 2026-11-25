@@ -551,6 +551,42 @@ live refuses the build until they are repaired.
 `modules.create` and `modules.update` refuse the first kind at write, with
 the form that works; inside a list section only the render knows the keys.
 
+**A page property the page's own type does not declare (#1561).** One
+module often sits on pages of several types: a help-page head that shows
+its review date with `{{#page.props.stand}}…{{/page.props.stand}}` is
+placed on the home page too. What `{{page.props.<name>}}` (and
+`{{props.<name>}}` on a page-shaped entry) reads there depends on the
+site's other page types (maintainer decision 2026-11-24,
+`lists/page-props.ts`):
+
+- **Another page type declares `<name>`:** the property is absent, exactly
+  like a declared property without a value: its section renders nothing,
+  an inverted section `{{^page.props.<name>}}` renders its body,
+  `{{page.props.<name>}}` is empty, and a path into it reads the empty
+  value of that declaration (`{{page.props.cta.href}}` is empty for a
+  `link`). No marker, no finding: the module needs no guard field. When
+  several types declare the name with different types (`cta` a link on
+  one, text on another), the absent value is empty on every path any of
+  them has. A `select` property's option flag (`{{#page.props.layout_wide}}`
+  for `layout`, §2) is true on a page of its own type when selected, and
+  false where the page's type lacks the property.
+- **No page type declares `<name>`** (a typo, or a property that was
+  removed): never falsy. The tag or the whole section stays raw and
+  pushes `page-prop-unknown:<name>`, a path through it names the
+  property, not the key after it. Like `field-path-unknown` it shows in
+  the preview's missing list (and `inspect_page_render`'s next steps),
+  a Stage ships the spot as the preview shows it and records it, the
+  audit files `render/page-prop-unknown` (fix: `list_page_types`, then
+  `update_modules_many` or `upsert_page_types_many`), and Publish live
+  and a production build refuse it, so the raw placeholder never reaches
+  visitors. The write tools do not refuse the name: the page type may be
+  created after the module.
+
+The lookup reads only the loaded page types (every page type of the site
+is in the render data, in the preview and in a build), never a page.
+Changing a page type rebuilds the whole site, so no render dependency
+tracks it.
+
 Details the table leaves open:
 
 - `items` is reserved: on a node without a source it is an empty list, so
@@ -686,8 +722,11 @@ provides five neutral hooks:
    (`listInstances`: which pages each local list is placed on — for
    given instances with `listInstanceIds`, or for the instances on given
    pages with `listPageIds`, so a consumer asks about what a change
-   names, #1269). A plugin reads rows of its own tables that a change
-   names by `anyOf: { id: [...] }`.
+   names, #1269; and the shared content some pages show with
+   `onPageIds`: the layout placements and the shared instances placed on
+   those pages, so a Stage-audit batch asks about its own pages, #1632).
+   A plugin reads rows of its own tables that a change names by
+   `anyOf: { id: [...] }`.
 5. **Audit contributions**: a plugin names one of its operations as
    `auditFindingsOperation` (manifest field; shipped and runtime-installed
    plugins alike, no capability). Each Stage audit calls it once through

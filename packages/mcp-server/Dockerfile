@@ -17,7 +17,7 @@
 # the three caelo_chat tools. Override the command with no argument for
 # the caelo_chat server.
 
-FROM oven/bun:1.4.4-alpine
+FROM oven/bun:1.4.5-alpine
 
 WORKDIR /app
 
