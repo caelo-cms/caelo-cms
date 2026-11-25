@@ -21,7 +21,9 @@
  *      FILE_COPY measured slower), closed to PUBLIC before it accepts
  *      a single connection;
  *   3. rebinds each copy to the new roles object by object
- *      (template-rebind.ts — never REASSIGN OWNED or DROP OWNED);
+ *      (template-rebind.ts — never REASSIGN OWNED or DROP OWNED), after
+ *      dropping the older release's shims that name the template
+ *      (`DROP_IN_COPY_SQL`);
  *   4. grants CONNECT and the other database privileges the template's
  *      roles held on the template's databases to the new roles, and
  *      applies the template's per-database settings (`ALTER DATABASE …
@@ -64,6 +66,7 @@ import {
   type PUBLIC_DATABASES,
 } from "./role-audit.js";
 import {
+  DROP_IN_COPY_SQL,
   REBIND_MAP_SETTING,
   REBIND_SQL,
   staleFunctionBodiesSql,
@@ -295,6 +298,7 @@ async function rebindDatabase(
     await db.begin(async (tx) => {
       await tx.unsafe("SET LOCAL statement_timeout = 0");
       await tx.unsafe("SET LOCAL lock_timeout = 0");
+      await tx.unsafe(DROP_IN_COPY_SQL);
       await tx`SELECT set_config(${REBIND_MAP_SETTING}, ${JSON.stringify(Object.fromEntries(map))}, true)`;
       await tx.unsafe(REBIND_SQL);
       const left = (await tx.unsafe(templateReferencesSql([...map.keys()]))) as {

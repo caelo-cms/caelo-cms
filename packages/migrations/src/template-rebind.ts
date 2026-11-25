@@ -29,6 +29,23 @@
  */
 
 /**
+ * Functions a copy drops before the rebind: compatibility shims for an
+ * older release that name the TEMPLATE's roles or databases in their body
+ * (which {@link staleFunctionBodiesSql} refuses), and which no code of the
+ * release that makes a copy, or of a later one, calls.
+ *
+ * - `caelo_grant_platform_updater()` (cms_admin 0780): kept on a migrated
+ *   install for the previous release's self-hosted convergence, which calls
+ *   it without arguments; it passes the install's names to the 3-argument
+ *   version. Copies exist only since 0780's release, so no older release's
+ *   convergence ever runs against one. Goes away with the wrapper (#1722).
+ *
+ * Run as the superuser, connected to the copy; `IF EXISTS`, because only
+ * the admin database has them.
+ */
+export const DROP_IN_COPY_SQL = "DROP FUNCTION IF EXISTS caelo_grant_platform_updater()";
+
+/**
  * The rebind block. Reads the role map `{ "<template role>": "<new role>" }`
  * from the transaction setting {@link REBIND_MAP_SETTING}; every name is a
  * validated install name, quoted with `%I` all the same. Run as the
