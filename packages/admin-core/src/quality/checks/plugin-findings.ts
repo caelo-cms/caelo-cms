@@ -51,6 +51,8 @@ export interface PluginAuditSource {
 export interface PluginAuditAnswer {
   readonly findings: readonly PluginAuditFinding[];
   readonly factBatches?: readonly (readonly string[])[];
+  /** #1721 — what `pages` the batch calls carry (plugin SDK `pluginAuditFindings`). */
+  readonly batchPages?: "all" | "own";
 }
 
 /**
@@ -76,50 +78,127 @@ export type PluginAuditCall = (
 export const PLUGIN_AUDIT_CALL_TIMEOUT_MS = 60_000;
 
 /**
+ * #1721 — how many batch calls of one plugin's check run at once. Each
+ * batch call is a few round trips from the audit's job to the admin
+ * (through IAP on Google Cloud; its facts go in upload parts) and the
+ * plugin's reads in the admin. One at a time, the check's time is the sum
+ * of them: at 50,000 pages (500 batches of 100) that sum is what met the
+ * check's 5-minute ceiling. A few at a time hide the round trips; more
+ * only queue in the admin and on the database (a db-f1-micro has a fifth
+ * of a core), next to the editors and agents a Stage does not stop.
+ * Measured on the scale-gate fixture at 50,000 pages with a 100 ms round
+ * trip per report (`scripts/scale-gate/audit-check.ts`, docs/dev/scale-gate.md):
+ * 1 at a time 224 s, 2 142 s, 4 127 s, 8 172 s — at 8 the admin answers
+ * reports busy (429) and the job sends them again.
+ */
+export const PLUGIN_AUDIT_BATCH_CONCURRENCY = 4;
+
+/** How {@link collectPluginFindings} runs a plugin's calls. */
+export interface PluginAuditCallOptions {
+  /** One call's budget ({@link PLUGIN_AUDIT_CALL_TIMEOUT_MS}). */
+  readonly callTimeoutMs?: number;
+  /** Batch calls at once ({@link PLUGIN_AUDIT_BATCH_CONCURRENCY}). */
+  readonly concurrency?: number;
+}
+
+/**
+ * Run `count` tasks, at most `limit` at a time, in index order. On a
+ * failure no further task starts; the ones running end, and the failure
+ * of the lowest index is thrown. Every task below the highest index
+ * started has started too, so that is the same failure however the tasks
+ * interleaved: the result does not depend on the concurrency.
+ */
+async function inOrderAtMost(
+  count: number,
+  limit: number,
+  task: (index: number) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const failures = new Map<number, unknown>();
+  const worker = async (): Promise<void> => {
+    while (failures.size === 0 && next < count) {
+      const index = next++;
+      try {
+        await task(index);
+      } catch (e) {
+        failures.set(index, e);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, count)) }, () => worker()));
+  if (failures.size > 0) throw failures.get(Math.min(...failures.keys()));
+}
+
+/**
  * Ask a plugin for its findings about the staged pages: the first call
  * carries the pages; when its answer names `factBatches`, every batch is
  * read through `facts` and the operation is called again per batch with
- * those facts. The findings of every call are returned in call order (the
- * check files identical ones once).
+ * those facts, {@link PLUGIN_AUDIT_BATCH_CONCURRENCY} at a time. A batch
+ * call carries every page, or with `batchPages: "own"` in the first answer
+ * only the batch's own (#1721: the admin adds the audit run the plugin
+ * reads the rest with). The findings are returned in call order, the
+ * first call's then each batch's in batch order, however the calls
+ * interleaved (the check files identical ones once).
  *
  * Each call has its own budget, `callTimeoutMs` ({@link PLUGIN_AUDIT_CALL_TIMEOUT_MS}).
  *
  * @throws when a call fails or runs past its budget, a batch names a page
  *   outside `pages`, or a batch call asks for batches again — the
  *   plugin's check then fails loudly instead of reading as "no findings".
+ *   With several failing batches, the lowest one's failure.
  */
 export async function collectPluginFindings(
   call: PluginAuditCall,
   slug: string,
   pages: readonly { readonly pageId: string; readonly path: string }[],
   facts: (pageIds: readonly string[]) => Promise<readonly PluginAuditPageFacts[]>,
-  callTimeoutMs: number = PLUGIN_AUDIT_CALL_TIMEOUT_MS,
+  options: PluginAuditCallOptions = {},
 ): Promise<PluginAuditFinding[]> {
+  const callTimeoutMs = options.callTimeoutMs ?? PLUGIN_AUDIT_CALL_TIMEOUT_MS;
+  const concurrency = options.concurrency ?? PLUGIN_AUDIT_BATCH_CONCURRENCY;
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error(
+      `audit findings: concurrency must be a whole number of at least 1, not ${concurrency}`,
+    );
+  }
   const budgeted = (args: PluginAuditFindingsArgs, label: string) =>
     withTimeout(call(args, label), callTimeoutMs, `plugin "${slug}" (${label})`);
   const pageArgs = pages.map((p) => ({ pageId: p.pageId, path: p.path }));
   const first = await budgeted({ pages: pageArgs }, "pages");
-  const out = [...first.findings];
-  const staged = new Set(pages.map((p) => p.pageId));
-  for (const [i, batch] of (first.factBatches ?? []).entries()) {
-    const outside = batch.find((id) => !staged.has(id));
+  const batches = first.factBatches ?? [];
+  const pathOf = new Map(pages.map((p) => [p.pageId, p.path]));
+  for (const batch of batches) {
+    const outside = batch.find((id) => !pathOf.has(id));
     if (outside) {
       throw new Error(
         `audit findings: plugin "${slug}" asked for the facts of page ${outside}, which is not a page of the staged build`,
       );
     }
+  }
+  const own = first.batchPages === "own";
+  const answers: PluginAuditAnswer[] = [];
+  await inOrderAtMost(batches.length, concurrency, async (i) => {
+    const batch = batches[i] as readonly string[];
+    const label = `facts batch ${i + 1}`;
+    const batchFacts = await facts(batch);
     const answer = await budgeted(
-      { pages: pageArgs, facts: await facts(batch) },
-      `facts batch ${i + 1}`,
+      own
+        ? {
+            pages: batch.map((pageId) => ({ pageId, path: pathOf.get(pageId) as string })),
+            facts: batchFacts,
+            batchPages: "own",
+          }
+        : { pages: pageArgs, facts: batchFacts },
+      label,
     );
-    if (answer.factBatches) {
+    if (answer.factBatches || answer.batchPages) {
       throw new Error(
-        `audit findings: plugin "${slug}" requested factBatches again in facts batch ${i + 1} — batches are requested by the first call only`,
+        `audit findings: plugin "${slug}" answered ${answer.factBatches ? "factBatches" : "batchPages"} again in ${label} — the first call's answer alone names them`,
       );
     }
-    out.push(...answer.findings);
-  }
-  return out;
+    answers[i] = answer;
+  });
+  return [...first.findings, ...answers.flatMap((a) => a.findings)];
 }
 
 /**
@@ -145,20 +224,22 @@ export function createPluginAuditCheck(slug: string, source: PluginAuditSource):
     timeoutMs: PLUGIN_CHECK_TIMEOUT_MS,
     async run({ pages, build }) {
       const byId = new Map(pages.map((p) => [p.pageId, p]));
-      let context: { hosts: Set<string>; sitemap: SitemapAlternates } | null = null;
+      // Read once per check, by the first batch that needs it: batches run
+      // side by side (#1721), so the promise is kept, not its value.
+      let context: Promise<{ hosts: Set<string>; sitemap: SitemapAlternates }> | null = null;
       const facts = async (pageIds: readonly string[]) => {
-        if (context === null) {
+        context ??= (async () => {
           const hosts = siteHostsOf([
             build.baseUrl,
             build.displayBaseUrl,
             ...(await source.siteUrls()),
           ]);
-          context = {
+          return {
             hosts,
             sitemap: parseSitemapAlternates(await build.text("/sitemap.xml"), hosts),
           };
-        }
-        const { hosts, sitemap } = context;
+        })();
+        const { hosts, sitemap } = await context;
         return pageIds.map((pageId) => {
           const page: StagedPage | undefined = byId.get(pageId);
           if (!page) {

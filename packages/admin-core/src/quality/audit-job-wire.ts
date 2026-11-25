@@ -101,7 +101,16 @@ export const auditPluginCallSchema = z
         // PluginAuditPageFacts). The plugin validates what it reads; the
         // admin bounds how much reaches it.
         facts: z.array(z.record(z.string(), z.unknown())).max(200).optional(),
+        // #1721 — a batch call of a plugin that answered batchPages "own":
+        // `pages` are the batch's, and the admin adds the audit run the
+        // plugin reads the other pages of the build by.
+        batchPages: z.literal("own").optional(),
       })
-      .strict(),
+      .strict()
+      .refine(
+        (a) =>
+          a.batchPages === undefined || (a.facts !== undefined && a.pages.length <= a.facts.length),
+        { message: 'batchPages "own" belongs to a batch call, whose pages are its facts\' pages' },
+      ),
   })
   .strict();

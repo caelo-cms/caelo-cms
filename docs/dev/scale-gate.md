@@ -150,6 +150,29 @@ bun scripts/scale-gate/run.ts --fixture /tmp/sg/fixture.json --base-url http://l
 
 A laptop run cannot pin the admin to one vCPU, so its numbers are better than the gate's; compare runs on the same machine only. A run leaves the variants it created, so re-seeding needs a fresh database (`docker rm -f sg-pg`, then from the top).
 
+## The audit's plugin check at 50,000 pages (#1721)
+
+A Stage audit's plugin check (`docs/quality-checks.md`, "Plugin contributions") makes one call plus one per fact batch, each a report from the audit's job to the admin, under the check's 5-minute ceiling. `scripts/scale-gate/audit-check.ts` measures it on the seeded fixture without the admin server: it starts a real job attempt for an audit of its own, sends every call through the reporting-job path (the token, the schemas, upload parts over 1 MB) to the admin's handler in the same process, and can add a round trip per report (`--rtt-ms`, the job → IAP → admin leg on Google Cloud). It renders the staged pages itself (header menu, hreflang of the page's language group, 40 paragraphs with 5 links, footer), since the fixture builds no Stage. Per run it prints the check's time, the calls and reports, the payload per call and, at concurrency 1, the statements per call.
+
+```sh
+CAELO_SCALE_GATE_THROWAWAY_DB=1 PG_SUPERUSER_URL=postgres://caelo:pg@localhost:5563/cms_admin \
+  bun scripts/scale-gate/audit-check.ts --concurrency 1,2,4,8 --rtt-ms 0,100 --out /tmp/sg/audit.json
+```
+
+`--legacy-call` runs a tree from before #1721 (the before half of a comparison; copy the script into it). Measured on 2026-11-25 (M3 Pro, Bun 1.4.4, local Postgres 17 without the CPU cap, the job and the admin in one process), international-site, 50,000 pages in 15,000 language groups, 500 batches of 100:
+
+| | before (main ad4754b5c) | after, 1 at a time | after, 4 at a time |
+|---|---|---|---|
+| check, no added round trip | 302.6 s | 129.6 s | 123.5 s |
+| check, 100 ms per report | 450.8 s | 224.5 s | 127.4 s |
+| calls / reports (upload parts) | 501 / 3,010 (2,509) | 501 / 1,507 (1,006) | 502–505 / 1,513 |
+| first call payload | 3.65 MB | 3.65 MB | 3.65 MB |
+| batch call payload, mean | 4.96 MB | 1.31 MB | 1.31 MB |
+| sent in all | 2.77 GB | 0.75 GB | 0.75 GB |
+| statements per batch call (reports included) | 233 | 193 | — |
+
+The findings were the same in every run (15,004 before filing, one hash). A batch call's payload is now its facts (about 13 KB per page) and its own pages; the page list goes once, with the first call. With 2 at a time the check took 142 s (100 ms) and 173 s (no round trip), with 8 172 s and 179 s: past 4 the admin answered some reports busy and the job sent them again, which is why the check runs at most 4 at once (`PLUGIN_AUDIT_BATCH_CONCURRENCY`). Without a round trip one process does both sides, so concurrency gains little here; on Google Cloud the job and the admin are separate machines. Not measured: the db-f1-micro CPU share and a Cloud Run admin with one vCPU.
+
 ## Collections: the search engine at 50,000 pages (#1652)
 
 The collection engine (`packages/collection-index`, `plugin-collections.md`) has its own harness, since it runs without the admin: `bun run packages/collection-index/bench/run.ts` (`BENCH_PAGES`, default 50,000 synthetic pages: Zipf-distributed vocabulary, 70 % English, 30 % German, log-normal page length with a median of 550 words, shared blocks). Measured on one core (M3 Pro, Bun 1.4.4):

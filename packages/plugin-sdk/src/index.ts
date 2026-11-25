@@ -873,6 +873,14 @@ export const MAX_AUDIT_FACT_BATCH_PAGES = 200;
  * needs them side by side (a page and its language versions in one
  * batch). Core then calls the operation once per batch with `facts`, and
  * files the findings of every call. A plugin that needs no facts omits it.
+ *
+ * `batchPages` (answer to the first call only, #1721): what `pages` the
+ * batch calls carry. `"all"` (the default): every page of the build, on
+ * every batch call, as the first call had them. `"own"`: only the batch's
+ * own pages, plus the `auditRunId` with which the plugin reads any other
+ * page of the build it needs through the core operation
+ * `quality_audits.staged_pages` (by id or by path). With `"own"` a batch
+ * call costs the same on a site of 500 pages and one of 50,000.
  */
 export const pluginAuditFindings = z
   .object({
@@ -881,6 +889,7 @@ export const pluginAuditFindings = z
       .array(z.array(z.string().uuid()).min(1).max(MAX_AUDIT_FACT_BATCH_PAGES))
       .max(5_000)
       .optional(),
+    batchPages: z.enum(["all", "own"]).optional(),
   })
   .strict();
 
@@ -962,6 +971,11 @@ export interface PluginAuditPageFacts {
 
 /** What an `auditFindingsOperation` is called with: the staged build's pages. */
 export interface PluginAuditFindingsArgs {
+  /**
+   * The staged build's pages: every page on the first call, and on each
+   * batch call unless the first answer said `batchPages: "own"`; then the
+   * batch's own pages only (#1721, see {@link pluginAuditFindings}).
+   */
   readonly pages: readonly { readonly pageId: string; readonly path: string }[];
   /** #1651 — the Stage's deploy run the audit checks (its collection releases, say). */
   readonly runId?: string;
@@ -970,6 +984,18 @@ export interface PluginAuditFindingsArgs {
    * of one batch's pages, in the order requested.
    */
   readonly facts?: readonly PluginAuditPageFacts[];
+  /**
+   * #1721 — `"own"` on the batch calls of a plugin whose first answer
+   * said so: `pages` holds only the batch's pages. Absent otherwise.
+   */
+  readonly batchPages?: "own";
+  /**
+   * #1721 — with `batchPages: "own"`: the audit run whose staged pages
+   * `quality_audits.staged_pages` answers (`{auditRunId, pageIds?,
+   * paths?}`). Bound to the run: once the audit has ended, the operation
+   * refuses it.
+   */
+  readonly auditRunId?: string;
 }
 
 /**
@@ -3003,10 +3029,15 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * report; an identical finding from two calls is filed once.
    *
    * Each call has its own time budget (60 s, #1632), and the check as a
-   * whole has the audit's ceiling for one check (5 minutes). So read
-   * site-wide data in the first call, and in a batch call only what its
-   * pages show: a batch then costs the same on a small and a large site,
-   * and the batches add up to the site's size, not batches × site.
+   * whole has the audit's ceiling for one check (5 minutes); core makes
+   * up to 4 batch calls at once (#1721), so a batch call must not depend
+   * on another's. Read site-wide data in the first call, and in a batch
+   * call only what its pages show: a batch then costs the same on a small
+   * and a large site, and the batches add up to the site's size, not
+   * batches × site. A plugin whose batch calls need only some pages of
+   * the build answers `batchPages: "own"` (see {@link pluginAuditFindings})
+   * and reads them through `quality_audits.staged_pages`: the page list
+   * then crosses once per audit, not with every batch.
    *
    * @example
    *   audit_findings: async (_ctx, { pages }) => ({

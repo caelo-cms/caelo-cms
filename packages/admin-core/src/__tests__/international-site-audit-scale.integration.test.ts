@@ -27,6 +27,12 @@
  * - the page-scoped `pages.list_shared_content` answers exactly what the
  *   whole-site answer says about those pages.
  *
+ * #1721 — the calls go the way the audit's job sends them, through the
+ * admin's handler of its reports: the page list crosses once, with the
+ * first call; a batch call carries its own pages, reads the others it
+ * names by the audit run (`quality_audits.staged_pages`), and the
+ * findings are the same when the batch calls run side by side.
+ *
  * Measure another size with `CAELO_AUDIT_SCALE_GROUPS=<language groups>`
  * (the `[audit-scale]` lines print the cost of each call).
  */
@@ -34,7 +40,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
   bootstrap,
-  pluginAuditFindingsCall,
   pluginWorkerScheduler,
   resetPluginHost,
   runPluginOperation,
@@ -45,11 +50,16 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { StagedPage } from "../quality/checks/check.js";
-import { collectPluginFindings, withPluginAuditChecks } from "../quality/checks/plugin-findings.js";
+import {
+  collectPluginFindings,
+  PLUGIN_AUDIT_BATCH_CONCURRENCY,
+  withPluginAuditChecks,
+} from "../quality/checks/plugin-findings.js";
 import { CheckRegistry } from "../quality/checks/registry.js";
 import { runFindingChecks } from "../quality/checks/runner.js";
 import { registerAdminOps } from "../register.js";
 import { adoptTemplateIntoHomePageType } from "./_template-page-type.js";
+import { type AuditReportSent, startRunningAudit } from "./fixtures/running-audit.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -61,10 +71,13 @@ const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SYS: ExecutionContext = { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t1632" };
 const PFX = "t1632";
 const BASE = "https://example.com";
-/** Language groups (two pages each) of the small site: one fact batch. */
-const SMALL_GROUPS = 40;
-/** Groups of the large site: five fact batches. */
-const BIG_GROUPS = Number(process.env.CAELO_AUDIT_SCALE_GROUPS ?? 240);
+/**
+ * Language groups (two pages each) of the small site: two fact batches,
+ * so a batch's links reach pages outside it, as on every large site.
+ */
+const SMALL_GROUPS = 60;
+/** Groups of the large site: six times the small one, eight fact batches. */
+const BIG_GROUPS = Number(process.env.CAELO_AUDIT_SCALE_GROUPS ?? 360);
 /** Own placements per page: a hero, a block with a local list, body copy. */
 const BODY_MODULES = 4;
 /** Text runs of a page's body copy. */
@@ -452,52 +465,76 @@ function staged(): StagedPage[] {
   return out;
 }
 
-/** One Stage audit's plugin check over the staged build, and the calls it made. */
-async function audit(): Promise<{ calls: AuditCall[]; ms: number; pages: number }> {
-  const checks = withPluginAuditChecks(new CheckRegistry(), {
-    contributors: () => ["international-site"],
-    findings: (slug, pages, facts) =>
-      collectPluginFindings(
-        (args, label) => pluginAuditFindingsCall(slug, args, label),
-        slug,
-        pages,
-        facts,
-      ),
-    siteUrls: async () => [BASE],
-  });
-  const pages = staged();
-  calls.length = 0;
-  const t0 = performance.now();
-  const out = await runFindingChecks(checks.findingChecks(), pages, {
-    baseUrl: "http://s.test",
-    probe: async () => ({ found: true, status: 200 }),
-    text: async () => null,
-  });
-  const ms = performance.now() - t0;
-  expect(out.errors).toEqual([]);
-  const result = { calls: [...calls], ms, pages: pages.length };
-  console.log(
-    "[audit-scale]",
-    JSON.stringify({
-      pages: result.pages,
-      ms: Math.round(ms),
-      calls: result.calls.map((c) => ({
-        batch: c.batchPages?.length ?? null,
-        ops: c.ops.length,
-        statements: c.statements,
-        ms: Math.round(c.ms),
-      })),
-    }),
-  );
-  return result;
+/** What one audit of {@link audit} saw. */
+interface AuditRun {
+  /** The plugin's calls, with what each read (counted only one at a time). */
+  readonly calls: AuditCall[];
+  /** The `plugin-findings` reports the audit's job sent, in order. */
+  readonly reports: AuditReportSent[];
+  readonly findings: readonly unknown[];
+  readonly ms: number;
+  readonly pages: number;
+}
+
+/**
+ * One Stage audit's plugin check over the staged build, its calls made the
+ * way the audit's job makes them and answered by the admin's own handler
+ * of its reports (#1721), `concurrency` batch calls at a time.
+ */
+async function audit(concurrency = 1): Promise<AuditRun> {
+  const run = await startRunningAudit(ADMIN_URL as string, { adapter, registry }, PFX);
+  try {
+    const checks = withPluginAuditChecks(new CheckRegistry(), {
+      contributors: () => ["international-site"],
+      findings: (slug, pages, facts) =>
+        collectPluginFindings(run.call(slug), slug, pages, facts, { concurrency }),
+      siteUrls: async () => [BASE],
+    });
+    const pages = staged();
+    calls.length = 0;
+    const t0 = performance.now();
+    const out = await runFindingChecks(checks.findingChecks(), pages, {
+      baseUrl: "http://s.test",
+      probe: async () => ({ found: true, status: 200 }),
+      text: async () => null,
+    });
+    const ms = performance.now() - t0;
+    expect(out.errors).toEqual([]);
+    const result = {
+      calls: [...calls],
+      reports: [...run.reports],
+      findings: out.findings,
+      ms,
+      pages: pages.length,
+    };
+    console.log(
+      "[audit-scale]",
+      JSON.stringify({
+        pages: result.pages,
+        concurrency,
+        ms: Math.round(ms),
+        calls: result.calls.map((c, i) => ({
+          batch: c.batchPages?.length ?? null,
+          ops: c.ops.length,
+          statements: c.statements,
+          ms: Math.round(c.ms),
+          reportChars: result.reports[i]?.chars,
+        })),
+      }),
+    );
+    return result;
+  } finally {
+    await run.remove();
+  }
 }
 
 const sharedReads = (c: AuditCall) => c.ops.filter((o) => o.name === "pages.list_shared_content");
 const storeReads = (c: AuditCall, table: string) =>
   c.ops.filter((o) => o.name === "plugin_storage.list" && o.input.table === table);
-/** What a batch call may ask core: its pages' shared content and a few rows. */
+/** What a batch call may ask core: its pages' shared content, the pages it names and a few rows. */
 const BATCH_CORE_OPS = new Set([
   "pages.list_shared_content",
+  "quality_audits.staged_pages",
   "site_defaults.get",
   "list_types.list",
   "lists.plugin_source_texts",
@@ -506,6 +543,7 @@ const BATCH_CORE_OPS = new Set([
 
 describe("#1632 — the international-site audit check per call", () => {
   let small: AuditCall[] = [];
+  let smallRun: AuditRun | null = null;
 
   it("the first call reads each site-wide source once; a batch asks about its own pages", async () => {
     // Once to warm what the host remembers per process (a table's index
@@ -513,7 +551,8 @@ describe("#1632 — the international-site audit check per call", () => {
     await audit();
     const r = await audit();
     small = r.calls;
-    expect(r.calls.map((c) => c.batchPages === null)).toEqual([true, false]);
+    smallRun = r;
+    expect(r.calls.map((c) => c.batchPages === null)).toEqual([true, false, false]);
     const [first, batch] = r.calls as [AuditCall, AuditCall];
 
     expect(sharedReads(first).map((o) => o.input)).toEqual([{}]);
@@ -530,6 +569,15 @@ describe("#1632 — the international-site audit check per call", () => {
       const filter = o.input.filter as { anyOf?: Record<string, unknown> };
       expect(Object.keys(filter.anyOf ?? {})).toHaveLength(1);
     }
+    // #1721 — the batch call carries its own pages and reads the others it
+    // names by the audit run, never the page list of the build.
+    const [firstReport, batchReport] = r.reports as [AuditReportSent, AuditReportSent];
+    expect(firstReport.args.pages).toHaveLength(r.pages);
+    expect(batchReport.args.batchPages).toBe("own");
+    expect(batchReport.args.pages.map((p) => p.pageId)).toEqual(batch.batchPages ?? []);
+    const named = batch.ops.filter((o) => o.name === "quality_audits.staged_pages");
+    expect(named.length).toBeGreaterThan(0);
+    for (const o of named) expect(o.input.auditRunId).toBeString();
   }, 120_000);
 
   it("a batch call costs the same operations and statements on a six times larger site", async () => {
@@ -546,7 +594,58 @@ describe("#1632 — the international-site audit check per call", () => {
     }
     // One whole-site read of the shared content per audit, however many batches.
     expect(r.calls.flatMap(sharedReads).filter((o) => !("onPageIds" in o.input))).toHaveLength(1);
+    // #1721 — the page list crosses once, with the first report: it grows
+    // with the site. What a batch's report carries besides its facts (its
+    // own pages) does not, per page of the batch (its paths are a digit
+    // longer on the large site).
+    const firstChars = (a: AuditRun) => (a.reports[0] as AuditReportSent).chars;
+    const perBatchPage = (a: AuditRun) =>
+      Math.max(
+        ...a.reports
+          .slice(1)
+          .map((x) => JSON.stringify({ ...x.args, facts: undefined }).length / x.args.pages.length),
+      );
+    expect(firstChars(r)).toBeGreaterThan(5 * firstChars(smallRun as AuditRun));
+    expect(perBatchPage(r)).toBeLessThan(1.1 * perBatchPage(smallRun as AuditRun));
+    for (const x of r.reports.slice(1)) expect(x.args.pages.length).toBeLessThanOrEqual(100);
   }, 300_000);
+
+  it("#1721 — the findings are the same when the batch calls run side by side", async () => {
+    const one = await audit(1);
+    const many = await audit(PLUGIN_AUDIT_BATCH_CONCURRENCY);
+    expect(many.reports.length).toBe(one.reports.length);
+    expect(many.findings).toEqual(one.findings);
+    expect(one.findings.length).toBeGreaterThan(0);
+  }, 300_000);
+
+  it("#1721 — quality_audits.staged_pages answers a running audit's published pages by id or path", async () => {
+    const run = await startRunningAudit(ADMIN_URL as string, { adapter, registry }, `${PFX}-sp`);
+    try {
+      const a = pairs[0] as Pair;
+      const b = pairs[1] as Pair;
+      const answer = await sysOp<{ pages: { pageId: string; path: string }[] }>(
+        "quality_audits.staged_pages",
+        { auditRunId: run.auditRunId, pageIds: [a.en, a.de], paths: [b.dePath, "/no-such-page"] },
+      );
+      expect(answer.pages.sort((x, y) => x.path.localeCompare(y.path))).toEqual(
+        [
+          { pageId: a.en, path: a.enPath },
+          { pageId: a.de, path: a.dePath },
+          { pageId: b.de, path: b.dePath },
+        ].sort((x, y) => x.path.localeCompare(y.path)),
+      );
+      // The handle ends with the run.
+      await run.end();
+      const ended = await execute(registry, adapter, SYS, "quality_audits.staged_pages", {
+        auditRunId: run.auditRunId,
+        pageIds: [a.en],
+      });
+      expect(ended.ok).toBe(false);
+      expect(JSON.stringify(ended)).toContain("is passed, not running");
+    } finally {
+      await run.remove();
+    }
+  });
 
   it("pages.list_shared_content for some pages answers what the whole-site answer says about them", async () => {
     type Shared = {
