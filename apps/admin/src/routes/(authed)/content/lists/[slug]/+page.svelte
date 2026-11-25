@@ -37,6 +37,7 @@
     updateItem,
   } from "#lib/lists/tree.js";
   import { usageSummary } from "#lib/lists/usage.js";
+  import { untrack } from "svelte";
 
   let { data, form } = $props();
 
@@ -45,10 +46,15 @@
 
   // The editor's working copy. It is reset from the server only when the
   // stored version changes (after a save or a reload), never while editing.
-  let tree = $state<EditorItem[]>([]);
-  let name = $state("");
-  let purpose = $state("");
-  let loadedVersion = $state(0);
+  // It starts as the stored list, not empty, so the server renders the
+  // entries and each drag zone mounts with its rows: svelte-dnd-action makes
+  // draggable only the rows its zone has when it mounts or updates, and from
+  // Svelte 5.58.1 the update for rows filled in during hydration runs before
+  // the rows are inserted, so they were never draggable after a page load.
+  let tree = $state<EditorItem[]>(untrack(() => fromStored(data.list.items)));
+  let name = $state(untrack(() => data.list.name));
+  let purpose = $state(untrack(() => data.list.purpose));
+  let loadedVersion = $state(untrack(() => data.list.version));
   let dirty = $state(false);
   let selectedId = $state<string | null>(null);
   let notice = $state<string | null>(null);
