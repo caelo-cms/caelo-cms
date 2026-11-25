@@ -35,6 +35,9 @@ A service that takes untrusted traffic gets a minimal image: the API gateway tod
 
 1. `bun scripts/service-image.ts verify <spec> <image>`: every entry of the layers the image adds to its base must be allowlisted, and none may replace or delete (whiteout) a base file; every required path must exist; every `FROM` of the Dockerfile must be pinned by digest. No shell (`sh`, `bash`, `busybox`, …) may exist anywhere, not even in the base. The image needs a numeric non-root `USER` and an exec-form `ENTRYPOINT`.
 2. Trivy (`aquasec/trivy`, pinned by digest, run as an image rather than through trivy-action). It scans the image and the bundle SBOM for high and critical findings with `--ignore-unfixed`: a finding without a fixed version leaves a PR nothing to do.
+   - A fixed finding blocks, even when it comes from the digest-pinned base and that base has not been rebuilt yet. The fix is a digest bump (Dependabot's `distroless` group).
+   - When the upstream image lags, and the finding cannot be reached in our images, `.trivyignore.yaml` may carry an exception. Each exception names the exact package version as a purl, says why the finding is unreachable, and expires within 14 days.
+   - `scripts/trivy-ignore.test.ts` enforces these rules and fails on an expired entry. The PR that bumps the digest deletes the entry.
 3. A boot smoke, per service. For the gateway:
    - `image-self-check.js` verifies the signature of every shipped plugin manifest against the trust root (`checkShippedManifests`, plugin-host). #1340 — the gateway runs no plugin code, so its image holds no Deno, no plugin dist and no plugin validator: only the bundle, the signed manifests and the trust root. It also embeds a probe query with every catalog model on the bundled WebAssembly runtime (`checkEmbedders`, `@caelo-cms/models`, #1650);
    - the image then boots against a migrated Postgres and answers `/api/_caelo/health?deep=1`;
