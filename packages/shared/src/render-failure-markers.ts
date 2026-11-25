@@ -17,6 +17,7 @@
  */
 
 import { LINK_RESOLVER_UNAVAILABLE } from "./link-refs.js";
+import type { ShareImageSource } from "./seo.js";
 
 /**
  * Markers of a render without its context: a link rendered without a
@@ -103,4 +104,71 @@ export function parseMediaFailureMarker(reason: string): MediaFailure | null {
   const list = m[4];
   if (m[1] === MEDIA_MISSING) return list === undefined ? { ref, variant, variants: null } : null;
   return { ref, variant, variants: (list ?? "").split(",").filter((v) => v.length > 0) };
+}
+
+/**
+ * #1719 — a page shows a reference image (#531): one that guides image
+ * generation and editing and is never published. `media-reference:<ref>/<variant>`,
+ * `<ref>` as the HTML names it (its slug, or the legacy asset id). Content:
+ * a Stage ships the editor's URL as written and reports it.
+ */
+export const MEDIA_REFERENCE = "media-reference";
+
+/** A reference image a page shows ({@link MEDIA_REFERENCE}). */
+export interface MediaReferenceFailure {
+  readonly ref: string;
+  readonly variant: string;
+}
+
+/** The marker of a reference image on a page. */
+export function mediaReferenceMarker(f: MediaReferenceFailure): string {
+  return `${MEDIA_REFERENCE}:${f.ref}/${f.variant}`;
+}
+
+const MEDIA_REFERENCE_RE = /^media-reference:([a-z0-9][a-z0-9-]{0,63})\/([a-z][a-z0-9-]{0,63})$/;
+
+/** The parts of a reference-image marker, or null for any other reason. */
+export function parseMediaReferenceMarker(reason: string): MediaReferenceFailure | null {
+  const m = MEDIA_REFERENCE_RE.exec(renderFailureMarker(reason));
+  return m ? { ref: m[1] as string, variant: m[2] as string } : null;
+}
+
+/**
+ * #1719 — a page's share image (`og:image`) the build cannot publish:
+ * `og-image-missing:<source>/<asset id>` when the asset was deleted or has
+ * no image file, `og-image-reference:<source>/<asset id>` when it is a
+ * reference image. `<source>` says which level chose it (#1452): the page's
+ * own image, its language's default, or the site default. Content: a Stage
+ * ships the page without `og:image`, as the editor preview shows a deleted
+ * one, and reports it.
+ */
+export const OG_IMAGE_MISSING = "og-image-missing";
+/** See {@link OG_IMAGE_MISSING}. */
+export const OG_IMAGE_REFERENCE = "og-image-reference";
+
+/** A share image the build cannot publish ({@link OG_IMAGE_MISSING}). */
+export interface OgImageFailure {
+  readonly problem: "missing" | "reference";
+  readonly source: Exclude<ShareImageSource, "none">;
+  readonly assetId: string;
+}
+
+/** The marker of a share image the build cannot publish. */
+export function ogImageFailureMarker(f: OgImageFailure): string {
+  const kind = f.problem === "missing" ? OG_IMAGE_MISSING : OG_IMAGE_REFERENCE;
+  return `${kind}:${f.source}/${f.assetId}`;
+}
+
+const OG_IMAGE_FAILURE_RE =
+  /^og-image-(missing|reference):(page|language|site)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
+/** The parts of a share-image marker, or null for any other reason. */
+export function parseOgImageFailureMarker(reason: string): OgImageFailure | null {
+  const m = OG_IMAGE_FAILURE_RE.exec(renderFailureMarker(reason));
+  if (!m) return null;
+  return {
+    problem: m[1] as OgImageFailure["problem"],
+    source: m[2] as OgImageFailure["source"],
+    assetId: m[3] as string,
+  };
 }

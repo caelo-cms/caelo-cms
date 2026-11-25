@@ -42,6 +42,14 @@
  * refuses it with a {@link BuildRefusal}: it is the site's content, not a
  * Caelo fault, and the message names what to change.
  *
+ * #1719 — the same holds for the pass's other content refusals: a page that
+ * shows a reference image (#531, never published: its URL stays as the
+ * preview has it) and a share image ({@link MediaPass.publishOgImage}) that
+ * was deleted, has no image file or is a reference image (the page ships
+ * without `og:image`). What no content edit repairs still stops every build
+ * with an error: a stored file missing from the media store, a storage key
+ * outside it, a row the Stage should have digested.
+ *
  * CDN copy: if `site_defaults.media_cdn_copy_enabled` is on, the pass
  * also writes `cdn_manifest.json` listing every (asset, variant) used
  * at least `media_cdn_usage_threshold` times. P7 emits the manifest
@@ -59,6 +67,7 @@ import {
   type ImageVariantInfo,
   type MediaRef,
   mediaFailureMarker,
+  mediaReferenceMarker,
   mediaUrlForRef,
   parseVariantWidth,
   runBatched,
@@ -92,7 +101,7 @@ export type MediaDelivery = "reference" | "link";
  */
 export type UnresolvedMediaPolicy = "refuse" | "report";
 
-/** A media reference of one page the build could not resolve (#1600). */
+/** A media reference of one page the build could not publish (#1600, #1719). */
 export interface UnresolvedMediaRef<P> {
   readonly page: P;
   /** The asset as the HTML names it: its slug, or a legacy id. */
@@ -100,9 +109,24 @@ export interface UnresolvedMediaRef<P> {
   readonly isSlug: boolean;
   /** The variant the HTML names (`orig` for the flat slug form). */
   readonly variant: string;
-  /** Every variant the asset has, sorted; null when no live asset answers `ref`. */
+  /**
+   * `missing`: no live asset answers `ref`; `variant-missing`: the asset
+   * lacks the variant; `reference`: a reference image (#531), never published.
+   */
+  readonly problem: "missing" | "variant-missing" | "reference";
+  /** Every variant the asset has, sorted; null unless `problem` is `variant-missing`. */
   readonly variants: readonly string[] | null;
 }
+
+/**
+ * What {@link MediaPass.publishOgImage} did with a share image: published
+ * it, or (on a Stage, #1719) found the asset `missing` (deleted, or no image
+ * file) or a `reference` image, which is never published.
+ */
+export type OgImageOutcome =
+  | { readonly kind: "published"; readonly path: string }
+  | { readonly kind: "missing" }
+  | { readonly kind: "reference" };
 
 interface VariantRow {
   asset_id: string;
@@ -131,6 +155,8 @@ interface ResolvedRef {
   ref: string;
   isSlug: boolean;
   variants: Map<string, VariantRow>;
+  /** A reference image (#531): resolved, never published. */
+  reference: boolean;
 }
 
 interface MediaSettings {
@@ -234,17 +260,25 @@ export class MediaPass {
     //    no-fallbacks rule this fails the deploy loudly when a module
     //    references a deleted asset or an unemitted variant — except on a
     //    Stage, which ships the reference as written and reports it (#1604).
+    //    A reference image (#1719) is reported the same way: on a Stage
+    //    only, since every other build refused it while resolving.
     const unresolvedKeys = new Set<string>();
     for (const [ref, info] of refs) {
       const res = this.#resolved.get(ref);
       for (const v of info.variants) {
-        if (!res?.variants.has(v)) unresolvedKeys.add(publishedKey(ref, v));
+        if (res?.reference || !res?.variants.has(v)) unresolvedKeys.add(publishedKey(ref, v));
       }
     }
     const variantsOf = (ref: string): readonly string[] | null => {
       const res = this.#resolved.get(ref);
       return res === undefined || res.variants.size === 0 ? null : [...res.variants.keys()].sort();
     };
+    const problemOf = (ref: string): UnresolvedMediaRef<P>["problem"] =>
+      this.#resolved.get(ref)?.reference
+        ? "reference"
+        : variantsOf(ref) === null
+          ? "missing"
+          : "variant-missing";
     if (unresolvedKeys.size > 0 && this.#unresolved === "refuse") {
       const missing = [...refs].flatMap(([ref, info]) =>
         [...info.variants]
@@ -272,7 +306,13 @@ export class MediaPass {
     pages.forEach((page, i) => {
       for (const r of pageRefs[i] ?? []) {
         if (!unresolvedKeys.has(publishedKey(r.ref, r.variant))) continue;
-        unresolved.push({ page, ...r, variants: variantsOf(r.ref) });
+        const problem = problemOf(r.ref);
+        unresolved.push({
+          page,
+          ...r,
+          problem,
+          variants: problem === "variant-missing" ? variantsOf(r.ref) : null,
+        });
       }
     });
 
@@ -317,9 +357,15 @@ export class MediaPass {
   /**
    * Publish the og:image of a page (it need not appear on any page, so the
    * HTML rewrite may not have published it): the best social-size variant
-   * of the asset. Returns its build-relative path.
+   * of the asset, at its build-relative path.
+   *
+   * #1719 — an asset that was deleted, has no image file or is a reference
+   * image is the site's content: a Stage (`unresolved: "report"`) gets the
+   * outcome back to ship the page without `og:image` and report it; every
+   * other build refuses it ({@link BuildRefusal}). A stored file missing
+   * from the media store stops every build.
    */
-  async publishOgImage(assetId: string): Promise<string> {
+  async publishOgImage(assetId: string): Promise<OgImageOutcome> {
     const rows = (await this.#tx.execute(sql`
       SELECT ${VARIANT_COLUMNS}, ma.slug AS ref
       FROM media_variants mv
@@ -338,13 +384,15 @@ export class MediaPass {
     `)) as unknown as VariantRow[];
     const v = rows[0];
     if (!v) {
-      throw new Error(
+      if (this.#unresolved === "report") return { kind: "missing" };
+      throw new BuildRefusal(
         `static-generator: og:image asset ${assetId} has no variants or was deleted — deploy aborted (no-fallbacks). Next step: repair it with regenerate_media_variants, or bind another image (set_page_seo_many for a page's own image, set_theme_asset slot socialShare for the site default), then Stage again.`,
       );
     }
     if (v.visibility === "reference") {
       // #531 — same rule as page images: references are never published.
-      throw new Error(
+      if (this.#unresolved === "report") return { kind: "reference" };
+      throw new BuildRefusal(
         `static-generator: og:image asset ${v.slug} is a reference image and is never published. ` +
           "Next step: pick a library image for the page's og:image, or mark this one as a library " +
           'image (AI tool: set_media_visibility_many with visibility: "library").',
@@ -352,7 +400,7 @@ export class MediaPass {
     }
     const key = publishedKey(v.slug, v.variant);
     const known = this.#published.get(key);
-    if (known !== undefined) return known;
+    if (known !== undefined) return { kind: "published", path: known };
     const { missingFiles } = await this.#publishVariants([{ ref: v.slug, isSlug: true, row: v }]);
     if (missingFiles.length > 0) {
       throw new Error(
@@ -363,7 +411,7 @@ export class MediaPass {
     }
     const path = this.#published.get(key);
     if (path === undefined) throw new Error(`static-generator: og:image ${v.slug} not published`);
-    return path;
+    return { kind: "published", path };
   }
 
   /**
@@ -428,18 +476,22 @@ export class MediaPass {
       ref,
       isSlug: e.isSlug,
       variants: new Map(),
+      reference: false,
     }));
     const byRef = new Map(fresh.map((r) => [r.ref, r]));
     for (const row of rows) byRef.get(row.ref)?.variants.set(row.variant, row);
-    for (const r of fresh) this.#resolved.set(r.ref, r);
+    for (const r of fresh) {
+      r.reference = [...r.variants.values()].some((v) => v.visibility === "reference");
+      this.#resolved.set(r.ref, r);
+    }
 
     // #531 — a reference image guides generation/editing and never ships
-    // on a page. Refuse loudly with the fix, rather than publishing it.
-    const references = fresh
-      .filter((r) => [...r.variants.values()].some((v) => v.visibility === "reference"))
-      .map((r) => r.ref);
-    if (references.length > 0) {
-      throw new Error(
+    // on a page. Every build but a Stage refuses it with the fix; a Stage
+    // (#1719) keeps its URL as written, publishes none of its files and
+    // reports it (rewritePages).
+    const references = fresh.filter((r) => r.reference).map((r) => r.ref);
+    if (references.length > 0 && this.#unresolved === "refuse") {
+      throw new BuildRefusal(
         `static-generator: pages reference media marked as reference images: ${references.join(", ")}. ` +
           "Reference images guide image generation/editing and are never published. Next step: either " +
           "replace them in the page/module HTML with a library image (find_media), or, if the operator " +
@@ -451,15 +503,16 @@ export class MediaPass {
     // Every emitted variant of each referenced asset is published — the
     // srcset enrichment needs the full breakpoint ladder even when the
     // HTML only names orig.
+    const published = fresh.filter((r) => !r.reference);
     const { missingFiles } = await this.#publishVariants(
-      fresh.flatMap((r) =>
+      published.flatMap((r) =>
         [...r.variants.values()].map((row) => ({ ref: r.ref, isSlug: r.isSlug, row })),
       ),
     );
     if (missingFiles.length > 0) {
       throw new Error(missingMediaFilesError(missingFiles, this.#mediaRoot));
     }
-    for (const r of fresh) {
+    for (const r of published) {
       this.#variantsByRef.set(
         r.ref,
         [...r.variants.values()].map((row) => ({
@@ -647,6 +700,22 @@ export function mediaRenderFailure(
   pagePath: string | undefined,
 ): RenderFailure {
   const url = mediaUrlForRef(u.ref, u.variant);
+  const at = `page "${u.page.pageSlug}": image ${url}`;
+  const { reason, line } =
+    u.problem === "reference"
+      ? {
+          reason: mediaReferenceMarker({ ref: u.ref, variant: u.variant }),
+          line: `${at} is a reference image, which is never published`,
+        }
+      : u.problem === "missing"
+        ? {
+            reason: mediaFailureMarker({ ref: u.ref, variant: u.variant, variants: null }),
+            line: `${at} names no image in the media library`,
+          }
+        : {
+            reason: mediaFailureMarker({ ref: u.ref, variant: u.variant, variants: u.variants }),
+            line: `${at} names size "${u.variant}", which this image does not have (it has: ${(u.variants ?? []).join(", ")})`,
+          };
   return {
     pageId: u.page.pageId,
     pageTitle: u.page.pageTitle,
@@ -654,12 +723,9 @@ export function mediaRenderFailure(
     blockName: null,
     moduleSlug: null,
     field: null,
-    reason: mediaFailureMarker({ ref: u.ref, variant: u.variant, variants: u.variants }),
+    reason,
     target: null,
-    line:
-      u.variants === null
-        ? `page "${u.page.pageSlug}": image ${url} names no image in the media library`
-        : `page "${u.page.pageSlug}": image ${url} names size "${u.variant}", which this image does not have (it has: ${u.variants.join(", ")})`,
+    line,
   };
 }
 

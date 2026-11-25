@@ -17,6 +17,7 @@ import {
   MediaPass,
   prepareSeoPass,
 } from "@caelo-cms/static-generator";
+import type { RenderFailure } from "../../deploy/render-failures.js";
 
 export async function runSeoPass(args: {
   tx: TransactionRunner;
@@ -38,14 +39,16 @@ export async function runSeoPass(args: {
   siteShareImageAssetId?: string | null;
   /** The feed every page links; none unless set. */
   feed?: { readonly url: string; readonly title: string } | null;
-}): Promise<{ sitemapEmitted: boolean }> {
+  /** `report` builds as a Stage does (#1719); default `refuse`, as every other build. */
+  unresolved?: "refuse" | "report";
+}): Promise<{ sitemapEmitted: boolean; renderFailures: readonly RenderFailure[] }> {
   const media = new MediaPass({
     tx: args.tx,
     buildDir: args.buildDir,
     mediaRoot: args.mediaRoot,
     settings: { cdnEnabled: false, threshold: 5 },
     delivery: "link",
-    unresolved: "refuse",
+    unresolved: args.unresolved ?? "refuse",
   });
   const seo = await prepareSeoPass({
     tx: args.tx,
@@ -77,5 +80,5 @@ export async function runSeoPass(args: {
   const sitemapEmitted = await seo.writeSitemap((rel, content) =>
     writeFile(join(args.buildDir, rel), content, "utf8"),
   );
-  return { sitemapEmitted };
+  return { sitemapEmitted, renderFailures: seo.renderFailures };
 }

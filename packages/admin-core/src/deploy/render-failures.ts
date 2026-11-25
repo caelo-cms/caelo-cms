@@ -30,9 +30,13 @@ import {
   isCaeloFaultMarker,
   isLinkFailureMarker,
   type MediaFailure,
+  type MediaReferenceFailure,
   mediaUrlForRef,
+  type OgImageFailure,
   PAGE_PROP_UNKNOWN,
   parseMediaFailureMarker,
+  parseMediaReferenceMarker,
+  parseOgImageFailureMarker,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
@@ -111,9 +115,18 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   const others = new Set<string>();
   // #1600 — the media pass sees the composed page, not the module.
   const imagePages = new Set<string>();
+  // #1719 — reference images on a page; share images by what is wrong.
+  const referencePages = new Set<string>();
+  const shareImagePages = { missing: new Set<string>(), reference: new Set<string>() };
   for (const f of failures) {
+    const page = `${f.pageTitle} (${f.pagePath})`;
+    const og = parseOgImageFailureMarker(f.reason);
     if (parseMediaFailureMarker(f.reason) !== null) {
-      imagePages.add(`${f.pageTitle} (${f.pagePath})`);
+      imagePages.add(page);
+    } else if (parseMediaReferenceMarker(f.reason) !== null) {
+      referencePages.add(page);
+    } else if (og !== null) {
+      shareImagePages[og.problem].add(page);
     } else if (isLinkFailureMarker(renderFailureMarker(f.reason))) {
       const problem = linkProblem(f);
       const g = byProblem.get(problem) ?? { places: new Set(), pages: new Set() };
@@ -129,13 +142,25 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
       `${problem} — linked from ${[...g.places].join(", ")} of ${[...g.pages].join(", ")}`,
     );
   }
-  if (imagePages.size > 0) {
-    const pages = [...imagePages];
-    const more = pages.length > PLACES_LISTED ? ` and ${pages.length - PLACES_LISTED} more` : "";
-    lines.push(
-      `An image points at a size or file the media library does not have — on ${pages.slice(0, PLACES_LISTED).join(", ")}${more}`,
-    );
-  }
+  const onPages = (problem: string, pages: ReadonlySet<string>): void => {
+    if (pages.size === 0) return;
+    const listed = [...pages];
+    const more = listed.length > PLACES_LISTED ? ` and ${listed.length - PLACES_LISTED} more` : "";
+    lines.push(`${problem} — on ${listed.slice(0, PLACES_LISTED).join(", ")}${more}`);
+  };
+  onPages("An image points at a size or file the media library does not have", imagePages);
+  onPages(
+    "An image is a reference image (a guide for making images), which is never published",
+    referencePages,
+  );
+  onPages(
+    "The image shown when the page is shared was deleted or has no image file",
+    shareImagePages.missing,
+  );
+  onPages(
+    "The image shown when the page is shared is a reference image, which is never published",
+    shareImagePages.reference,
+  );
   const listed = [...others];
   for (const place of listed.slice(0, PLACES_LISTED)) lines.push(`${place} could not be rendered`);
   if (listed.length > PLACES_LISTED) lines.push(`and ${listed.length - PLACES_LISTED} more`);
@@ -182,6 +207,10 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
   const mod = f.moduleSlug ? `module "${f.moduleSlug}"` : "the module";
   const media = parseMediaFailureMarker(marker);
   if (media !== null) return mediaRepair(media);
+  const reference = parseMediaReferenceMarker(marker);
+  if (reference !== null) return mediaReferenceRepair(reference);
+  const og = parseOgImageFailureMarker(marker);
+  if (og !== null) return shareImageRepair(og);
   if (isLinkFailureMarker(marker)) {
     return {
       tool: "check_links",
@@ -249,6 +278,44 @@ function mediaRepair(media: MediaFailure): RenderRepair {
     tool: "set_content_instance_values_many",
     hint: `${url} names size "${media.variant}", which this image does not have (it has: ${media.variants.join(", ") || "none"}): ${write}, ${MEDIA_WRITTEN_IN}; regenerate_media_variants makes a size the source is wide enough for.`,
   };
+}
+
+/** #1719 — how the AI repairs a reference image a page shows (#531). */
+function mediaReferenceRepair(f: MediaReferenceFailure): RenderRepair {
+  const url = mediaUrlForRef(f.ref, f.variant);
+  return {
+    tool: "find_media",
+    hint: `${url} is a reference image (a guide for image generation and editing), which is never published: replace it with a library image from find_media, ${MEDIA_WRITTEN_IN}; or, if the operator wants this image on the page, mark it a library image with set_media_visibility_many.`,
+  };
+}
+
+/**
+ * #1719 — how the AI repairs a share image the build could not publish, by
+ * the level that chose it (#1452): the page's own (pages SEO), its
+ * language's default (a plugin's setting) or the site default (the theme).
+ */
+function shareImageRepair(f: OgImageFailure): RenderRepair {
+  const what =
+    f.problem === "missing"
+      ? "was deleted or has no image file (regenerate_media_variants re-makes the files of an image that still has its original)"
+      : "is a reference image, which is never published (set_media_visibility_many makes it a library image, if the operator wants it shown)";
+  switch (f.source) {
+    case "page":
+      return {
+        tool: "set_page_seo_many",
+        hint: `The page's own share image (og:image, media ${f.assetId}) ${what}. Set ogImageAssetId to a library image from find_media with set_page_seo_many, or to null so the language or site default applies.`,
+      };
+    case "language":
+      return {
+        tool: "list_plugins",
+        hint: `The page's language default share image (og:image, media ${f.assetId}) ${what}. Set another one with the tool of the plugin that sets language defaults (list_plugins, then get_plugin for its tools), or give the page its own image with set_page_seo_many (ogImageAssetId from find_media).`,
+      };
+    case "site":
+      return {
+        tool: "set_theme_asset",
+        hint: `The site's default share image (og:image, media ${f.assetId}) ${what}. Bind a library image from find_media to the theme slot socialShare with set_theme_asset, or clear the slot; a page with its own image (set_page_seo_many) is not affected.`,
+      };
+  }
 }
 
 /** Each distinct repair once, in the order the failures need them. */

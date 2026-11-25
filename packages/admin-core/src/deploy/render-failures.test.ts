@@ -209,3 +209,60 @@ describe("media the build could not publish (#1600)", () => {
     expect(r?.aiText).toContain("media-variant-missing: set_content_instance_values_many");
   });
 });
+
+describe("reference images and share images the build could not publish (#1719)", () => {
+  const ID = "0f1e2d3c-4b5a-4968-8776-655443322110";
+  const onPage = (reason: string, pageTitle = "Brand guide", pagePath = "/brand") =>
+    failure({ pageTitle, pagePath, blockName: null, moduleSlug: null, reason, line: reason });
+
+  it("sends a reference image on a page to find_media, or to marking it a library image", () => {
+    const r = renderRepairOf({ reason: "media-reference:brand-guide/webp-800", moduleSlug: null });
+    expect(r.tool).toBe("find_media");
+    expect(r.hint).toContain("/_caelo/media/brand-guide/webp-800 is a reference image");
+    expect(r.hint).toContain("update_modules_many");
+    expect(r.hint).toContain("set_media_visibility_many");
+    expect(r.hint.length).toBeLessThanOrEqual(500);
+  });
+
+  it("repairs a share image at the level that chose it", () => {
+    const page = renderRepairOf({ reason: `og-image-missing:page/${ID}`, moduleSlug: null });
+    expect(page.tool).toBe("set_page_seo_many");
+    expect(page.hint).toContain(`media ${ID}`);
+    expect(page.hint).toContain("regenerate_media_variants");
+    const site = renderRepairOf({ reason: `og-image-reference:site/${ID}`, moduleSlug: null });
+    expect(site.tool).toBe("set_theme_asset");
+    expect(site.hint).toContain("socialShare");
+    expect(site.hint).toContain("set_media_visibility_many");
+    const language = renderRepairOf({
+      reason: `og-image-missing:language/${ID}`,
+      moduleSlug: null,
+    });
+    expect(language.tool).toBe("list_plugins");
+    expect(language.hint).toContain("set_page_seo_many");
+    for (const r of [page, site, language]) expect(r.hint.length).toBeLessThanOrEqual(500);
+  });
+
+  it("tells the operator which pages show them, without markers, ids or tool names", () => {
+    const r = stagedRenderReport(
+      [
+        onPage("media-reference:brand-guide/orig"),
+        onPage(`og-image-missing:site/${ID}`),
+        onPage(`og-image-missing:site/${ID}`, "Pricing", "/pricing"),
+        onPage(`og-image-reference:page/${ID}`, "Team", "/team"),
+      ],
+      4,
+    );
+    const text = r?.operatorText ?? "";
+    expect(text).toContain(
+      "An image is a reference image (a guide for making images), which is never published — on Brand guide (/brand)",
+    );
+    expect(text).toContain(
+      "The image shown when the page is shared was deleted or has no image file — on Brand guide (/brand), Pricing (/pricing)",
+    );
+    expect(text).toContain(
+      "The image shown when the page is shared is a reference image, which is never published — on Team (/team)",
+    );
+    expect(text).not.toMatch(/og-image|media-reference|brand-guide|set_|find_media|0f1e2d3c/);
+    expect(r?.aiText).toContain("og-image-missing: set_theme_asset");
+  });
+});

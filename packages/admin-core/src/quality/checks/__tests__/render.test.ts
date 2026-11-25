@@ -118,3 +118,49 @@ describe("renderFindings (#1604)", () => {
     for (const x of f) expect(findingSchema.safeParse(x).success).toBe(true);
   });
 });
+
+describe("renderFindings — reference and share images (#1719)", () => {
+  const ID = "0f1e2d3c-4b5a-4968-8776-655443322110";
+
+  it("files a reference image as an image on the page", () => {
+    const f = renderFindings(
+      [failure({ blockName: null, moduleSlug: null, reason: "media-reference:brand-guide/orig" })],
+      1,
+      new Set([HOME]),
+    );
+    expect(f[0]).toMatchObject({
+      ruleId: "render/media-reference",
+      pageId: HOME,
+      fix: { tool: "find_media" },
+    });
+    expect(f[0]?.message).toStartWith("Could not be rendered: an image on the page (");
+    for (const x of f) expect(findingSchema.safeParse(x).success).toBe(true);
+  });
+
+  it("files a broken site default share image once for every page it shows on", () => {
+    const reason = `og-image-missing:site/${ID}`;
+    const f = renderFindings(
+      [
+        failure({ blockName: null, moduleSlug: null, reason }),
+        failure({
+          pageId: PRICING,
+          pagePath: "/pricing",
+          blockName: null,
+          moduleSlug: null,
+          reason,
+        }),
+      ],
+      2,
+      new Set([HOME, PRICING]),
+    );
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({
+      ruleId: "render/og-image-missing",
+      fix: { tool: "set_theme_asset" },
+    });
+    expect(f[0]?.pageId).toBeUndefined();
+    expect(f[0]?.message).toStartWith("Could not be rendered: the page's share image (og:image) (");
+    expect(f[0]?.message).toContain("on 2 pages /, /pricing");
+    for (const x of f) expect(findingSchema.safeParse(x).success).toBe(true);
+  });
+});
