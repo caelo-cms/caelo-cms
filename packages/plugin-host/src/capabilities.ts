@@ -18,6 +18,7 @@ import type {
   PluginAdminQuery,
   PluginCapability,
   PluginCaptcha,
+  PluginChanges,
   PluginCms,
   PluginContext,
   PluginContextTier1,
@@ -31,6 +32,7 @@ import type {
 } from "@caelo-cms/plugin-sdk";
 import { type DatabaseAdapter, execute } from "@caelo-cms/query-api";
 import { LIVE_BUILD_REFUSAL, type LiveBuildUrls } from "@caelo-cms/shared";
+import { registerPluginChangeOps } from "./change-consumers.js";
 import { makePluginChatTools, makePluginCollections } from "./collections-host.js";
 import { hasConfig, makePluginConfigReader } from "./config-handle.js";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
@@ -160,6 +162,19 @@ export async function makePluginContext(
     invocation.origin !== "visitor"
       ? { chatTools: makePluginChatTools(plugin, infra) }
       : {};
+  // #1729 — the plugin's own change consumer: its cursor state needs only
+  // the change_journal grant, never cms_admin, and no visitor call asks it.
+  const changeJournalGranted =
+    plugin.provenance === "runtime-authored"
+      ? (plugin.externalApproval?.capabilities.includes("change_journal") ?? false)
+      : requested.has("change_journal");
+  const changesHandle =
+    changeJournalGranted &&
+    plugin.definition.changeConsumer &&
+    !isPublicSideHost(infra) &&
+    invocation.origin !== "visitor"
+      ? { changes: makePluginChanges(plugin, infra) }
+      : {};
   const baseCtx: PluginContext = {
     query: makePluginQuery(plugin, infra, invocation, opts.publicOperation),
     api: makePluginApi(plugin, infra),
@@ -170,6 +185,7 @@ export async function makePluginContext(
     ...configHandle,
     ...collectionsHandle,
     ...chatToolsHandle,
+    ...changesHandle,
   };
 
   // Runtime-installed plugins run in the sandbox and get only what an
@@ -801,6 +817,35 @@ function makePluginTheme(): PluginTheme {
 // actor row + plugin id. Sets caelo.actor_id / caelo.actor_kind='plugin' /
 // caelo.plugin_id session vars via the adapter's existing runOperation path.
 // ---------------------------------------------------------------------------
+
+/**
+ * #1729 — `ctx.changes`: the plugin's own change consumer, asked as the
+ * plugin actor (the op answers only about the caller's consumer).
+ */
+function makePluginChanges(plugin: LoadedPlugin, infra: PluginHostInfra): PluginChanges {
+  return Object.freeze({
+    cursorState: async () => {
+      registerPluginChangeOps(infra.registry);
+      const r = await execute(
+        infra.registry,
+        infra.adapter,
+        {
+          actorId: plugin.pluginActorId,
+          actorKind: "plugin",
+          requestId: `plugin-${plugin.slug}`,
+          pluginId: plugin.pluginId,
+        },
+        "plugin_changes.cursor_state",
+        {},
+      );
+      if (!r.ok) {
+        const reason = "message" in r.error ? String(r.error.message) : r.error.kind;
+        throw new Error(`ctx.changes.cursorState() failed: ${reason}`);
+      }
+      return r.value as { readonly continuous: boolean };
+    },
+  });
+}
 
 /**
  * Core operations for a plugin granted `cms_admin`. Calls inherit the

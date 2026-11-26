@@ -346,6 +346,13 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
         throw new Error("SandboxMethodDenied");
     }
   }
+  if (method === "changes.cursorState") {
+    // #1729 — about the plugin's own consumer; it takes nothing.
+    const changes = ctx.changes;
+    if (!changes) throw new Error("SandboxCapabilityDenied: change_journal");
+    if (args.length !== 0) throw new Error("SandboxArgumentsInvalid");
+    return changes.cursorState();
+  }
   if (method === "consentPurposes.list") {
     const purposes = (ctx as PluginContextTier1).consentPurposes;
     if (!purposes) throw new Error("SandboxCapabilityDenied: consent_provider");
@@ -698,6 +705,7 @@ export async function runSandboxWithBundler(
       hasConfig: Boolean(context.config),
       collections: Object.keys(context.collections ?? {}),
       hasChatTools: Boolean(context.chatTools),
+      hasChanges: Boolean(context.changes),
       // No sessionToken: it is the visitor's login bearer credential (the
       // `login` entry of the HttpOnly `__session` cookie). Handing it to
       // runtime-authored code would let a plugin collect tokens in its own

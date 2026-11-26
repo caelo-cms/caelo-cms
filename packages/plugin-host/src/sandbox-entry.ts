@@ -207,6 +207,7 @@ const execute = async (message) => {
     ...(message.hasFonts ? { fonts: handles("fonts", ["find", "inspect", "resolve", "readChunk"]) } : {}),
     ...(message.hasSiteMedia ? { siteMedia: handles("siteMedia", ["find", "inspect", "readChunk"]) } : {}),
     ...(message.hasConsentPurposes ? { consentPurposes: handles("consentPurposes", ["list"]) } : {}),
+    ...(message.hasChanges ? { changes: handles("changes", ["cursorState"]) } : {}),
     ...(message.hasPrivateFiles ? { privateFiles: handles("privateFiles", ["begin", "writeChunk", "commit", "stat", "readChunk", "remove"]) } : {}),
     ...(message.hasConfig ? { config: configHandle() } : {}),
     ...(message.collections && message.collections.length > 0 ? { collections: collectionsOf(message.collections) } : {}),

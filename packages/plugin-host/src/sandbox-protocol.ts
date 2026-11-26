@@ -47,6 +47,8 @@ export const sandboxMethod = z.enum([
   "adminQuery.delete",
   // #1659 — private storage only: `query.upsert` does not exist.
   "adminQuery.upsert",
+  // #1729 — the plugin's own change consumer (change_journal grant).
+  "changes.cursorState",
   "query.insert",
   "query.list",
   "query.update",
