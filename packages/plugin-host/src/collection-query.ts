@@ -108,13 +108,29 @@ export function modelOfFingerprint(fingerprint: string): EmbeddingModel | undefi
   return EMBEDDING_MODELS.find((m) => embeddingModelFingerprint(m) === fingerprint);
 }
 
+/** A query embedder that can also load its model ahead of the first query. */
+export type WarmableQueryEmbedder = QueryEmbedder & {
+  /**
+   * Loads the model behind `fingerprint`, shared with every query that
+   * needs it. Rejects like a query would: an unknown model, files that fail
+   * verification.
+   */
+  ready(fingerprint: string): Promise<void>;
+};
+
 /**
  * The gateway's query embedder: one WebAssembly embedder per model, loaded
- * on first use (about half a second and 570 MB, bench/semantic-results.md)
- * and kept; query vectors in a small LRU. The runtime is imported lazily,
- * so a gateway without semantic search never loads it.
+ * on first use and kept; query vectors in a small LRU. The runtime is
+ * imported lazily, so a gateway without semantic search never loads it.
+ *
+ * A load is the expensive step of a cold instance: on Cloud Run's one vCPU
+ * it takes seconds, blocks the event loop for part of that, and the default
+ * model holds about 700 MiB of the process afterwards
+ * (docs/dev/embedding-models.md). Each load writes one log line with its
+ * duration and the process's memory, so a slow first search can be told
+ * apart from a slow index.
  */
-export function wasmQueryEmbedder(): QueryEmbedder & { warm(fingerprint: string): void } {
+export function wasmQueryEmbedder(): WarmableQueryEmbedder {
   const embedders = new Map<string, Promise<Embedder>>();
   const vectors = new Map<string, Float32Array>();
   const embedderOf = (fingerprint: string): Promise<Embedder> => {
@@ -128,7 +144,24 @@ export function wasmQueryEmbedder(): QueryEmbedder & { warm(fingerprint: string)
           ),
         );
       }
-      e = import("@caelo-cms/models/wasm").then((m) => m.createWasmEmbedder(model));
+      const started = performance.now();
+      const took = () => Math.round(performance.now() - started);
+      e = import("@caelo-cms/models/wasm")
+        .then((m) => m.createWasmEmbedder(model))
+        .then(
+          (loaded) => {
+            console.log(
+              `[collections] model ${model.id} loaded in ${took()} ms (process memory ${Math.round(process.memoryUsage().rss / 1048576)} MiB)`,
+            );
+            return loaded;
+          },
+          (err: unknown) => {
+            console.error(
+              `[collections] model ${model.id} failed to load after ${took()} ms: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            throw err;
+          },
+        );
       e.catch(() => embedders.delete(fingerprint));
       embedders.set(fingerprint, e);
     }
@@ -148,10 +181,8 @@ export function wasmQueryEmbedder(): QueryEmbedder & { warm(fingerprint: string)
     return vector as Float32Array;
   };
   return Object.assign(embed, {
-    warm: (fingerprint: string) => {
-      embedderOf(fingerprint).catch((e: unknown) =>
-        console.error(`[collections] ${e instanceof Error ? e.message : String(e)}`),
-      );
+    ready: async (fingerprint: string): Promise<void> => {
+      await embedderOf(fingerprint);
     },
   });
 }

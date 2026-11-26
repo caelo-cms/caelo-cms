@@ -19,6 +19,7 @@ import {
   layoutOf,
   lookupDocs,
   openRelease,
+  prefetchRelease,
   queryVariants,
   type ReleaseManifest,
   releaseFiles,
@@ -452,6 +453,96 @@ describe("releases", () => {
     const files = await releaseFiles(first.applied.manifest, first.store.cache());
     files.add(first.applied.file);
     expect([...first.store.files.keys()].sort()).toEqual([...files].sort());
+  });
+
+  // The gateway's first search on searchVIU read about 130 files one by
+  // one from object storage (#1745): opening a release now loads them.
+  it("prefetches every file of a release, so a query after it reads nothing from the store", async () => {
+    const store = memoryStore();
+    let state = await build(DOCS, SCHEMA, null, store);
+    state = await build(
+      [page("neu", "de", "Neu", "Eine neue Seite über Logfile Kosten.")],
+      SCHEMA,
+      state.applied.manifest,
+      store,
+    );
+    expect(state.applied.manifest.segments.length).toBe(2);
+    let reads = 0;
+    const cache = new FileCache(
+      {
+        read: async (f) => {
+          reads++;
+          return store.files.get(f) as Uint8Array;
+        },
+      },
+      1 << 26,
+    );
+    const release = await openRelease(state.applied.manifest, cache);
+    const report = await prefetchRelease(release, { parallel: 3 });
+    // Every file but the segment manifests and removed sets (openRelease
+    // read those) and the profile (none here).
+    const all = await releaseFiles(state.applied.manifest, cache);
+    const opened = state.applied.manifest.segments.flatMap((s) =>
+      s.removed ? [s.manifest, s.removed] : [s.manifest],
+    );
+    expect(report).toEqual({
+      files: all.size - opened.length,
+      skipped: 0,
+      failed: 0,
+      firstError: null,
+    });
+    const before = reads;
+    await ids(release, q("Logfile Kosten"));
+    await ids(release, q("Preis", { typos: true }));
+    const [vector] = await fakeEmbed(["Logfile Analyse"]);
+    await searchVectors(release, { vector: vector as Float32Array, limit: 5, minSimilarity: -1 });
+    expect(reads).toBe(before);
+  });
+
+  it("stops prefetching when told to, documents and term shards first", async () => {
+    const store = memoryStore();
+    const { applied } = await build(DOCS, SCHEMA, null, store);
+    const order: string[] = [];
+    const cache = new FileCache(
+      {
+        read: async (f) => {
+          order.push(f);
+          return store.files.get(f) as Uint8Array;
+        },
+      },
+      1 << 26,
+    );
+    const release = await openRelease(applied.manifest, cache);
+    order.length = 0;
+    const seg = release.segments[0]?.reader.manifest;
+    const firstTwo = 1 + (seg?.shards.length ?? 0);
+    const report = await prefetchRelease(release, {
+      parallel: 1,
+      mayLoad: () => order.length < firstTwo,
+    });
+    expect(order).toEqual([seg?.docsFile, ...(seg?.shards ?? []).map((s) => s.file)]);
+    expect(report.files).toBe(firstTwo);
+    expect(report.skipped).toBeGreaterThan(0);
+  });
+
+  it("counts a file that cannot be read and loads the rest", async () => {
+    const store = memoryStore();
+    const { applied } = await build(DOCS, SCHEMA, null, store);
+    const cache = new FileCache(
+      {
+        read: async (f) => {
+          const d = store.files.get(f);
+          if (!d || f.startsWith("s-")) throw new Error("store unavailable");
+          return d;
+        },
+      },
+      1 << 26,
+    );
+    const release = await openRelease(applied.manifest, cache);
+    const report = await prefetchRelease(release);
+    expect(report.failed).toBe(release.segments[0]?.reader.manifest.stores.length);
+    expect(report.firstError).toMatch(/^s-.*: store unavailable$/);
+    expect(report.files).toBeGreaterThan(0);
   });
 
   it("builds the same release from a stream as from a first batch of changes", async () => {

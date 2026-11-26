@@ -118,10 +118,12 @@ import {
 } from "./client-ip.js";
 import {
   declaredCollectionOperation,
+  declaredCollectionOperations,
   defaultQueryEmbedder,
   GatewayCollections,
   parseCollectionPath,
   runCollectionOperation,
+  settlesWithin,
 } from "./collections.js";
 import {
   databaseIsolationProblems,
@@ -489,7 +491,51 @@ async function refreshPingRequest(req: Request, requestId: string): Promise<Resp
       log: `refresh ping: could not read the published state — ${describeFailure(e)}`,
     });
   }
+  await warmPublishedCollections(cachedAdapter, requestId);
   return jsonResponse({ ok: true }, { requestId });
+}
+
+/**
+ * How long the refresh ping spends opening newly published collection
+ * releases. The admin waits for the ping (admin-core gateway-refresh.ts:
+ * 10 s, a cold start included), so the ping loads only the index files,
+ * never the query model: that load is seconds of CPU, and the first
+ * visitor's `/release` does it.
+ */
+export const REFRESH_WARM_WAIT_MS = 4_000;
+
+/**
+ * After a publish: open the releases the active plugins' declared
+ * operations now answer from and load their index files, inside the
+ * admin's ping, so the first visitor search after a Publish live does not
+ * read them one by one. Bounded by {@link REFRESH_WARM_WAIT_MS}; a failure is
+ * logged and never fails the ping (the publish it reports has committed).
+ */
+async function warmPublishedCollections(
+  adapter: DatabaseAdapter,
+  requestId: string,
+): Promise<void> {
+  try {
+    await syncDispatchPlugins();
+    const declared = declaredCollectionOperations();
+    if (declared.length === 0) return;
+    const collections = collectionsOfGateway();
+    const startedAt = publishedCacheGeneration();
+    const keys = await collections.releaseKeys(adapter, SYSTEM_CTX, () => mayCacheRead(startedAt));
+    const warmed = await settlesWithin(
+      Promise.all(declared.map((d) => collections.warmOperation(d, keys))),
+      REFRESH_WARM_WAIT_MS,
+    );
+    if (!warmed) {
+      console.warn(
+        `[api-gateway] refresh ping: opening the published collections took longer than ${REFRESH_WARM_WAIT_MS} ms; the first search loads the rest (request ${requestId})`,
+      );
+    }
+  } catch (e) {
+    console.error(
+      `[api-gateway] refresh ping: the published collections were not opened — ${describeFailure(e)} (request ${requestId})`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1306,15 +1352,24 @@ async function collectionOperation(
         cacheSeconds: null,
       };
     } else if (route.releaseOnly) {
-      // The warm-up: open the release (and load its embedding model) while
-      // the visitor still types, without making this answer wait for it.
-      void collections
-        .release(route.slug, declared.op.collection, key)
-        .then((e) => {
-          const fp = e.release.manifest.vectorModel?.id;
-          if (fp && e.profile?.semantic) defaultQueryEmbedder().warm(fp);
-        })
-        .catch(() => {});
+      // The warm-up, inside this request. The client asks for the key when
+      // the visitor focuses the search field, so the release opens, its
+      // index files load and (for a search) the query model loads while
+      // they type. Not after the answer: on request-billed CPU that work
+      // would wait for the next request, which is the visitor's search
+      // (#1745: 11 s on a cold instance). Past the bound the key goes
+      // out anyway, and the search shares what is still loading.
+      const warmed = await settlesWithin(
+        collections.warmOperation({ slug: route.slug, ...declared }, keys, {
+          ...(declared.op.kind === "search" ? { embedder: defaultQueryEmbedder() } : {}),
+        }),
+        RELEASE_WARM_WAIT_MS,
+      );
+      if (!warmed) {
+        console.warn(
+          `[api-gateway] collection ${route.slug}.${route.operation}: the warm-up took longer than ${RELEASE_WARM_WAIT_MS} ms; the key went out, the search waits for the rest (request ${requestId})`,
+        );
+      }
       answer = { status: 200, body: { release: identity }, cacheSeconds: null };
     } else if (asked !== null && asked !== identity) {
       // A newer Stage went live: the client asks again under the new key.
@@ -1348,15 +1403,32 @@ async function collectionOperation(
   // row, so search-as-you-type, a flood or a store outage (every answer a
   // 503) never becomes write load. The platform's request metrics count the
   // answers and their latency; a server-side failure is one log line, which
-  // never carries the query.
+  // never carries the query. A slow answer is a line too: the platform's
+  // request log leaves these routes out (it would hold the queries), so
+  // without it a slow first search leaves no trace.
+  const took = Math.round(performance.now() - start);
   if (answer.status >= 500) {
     const kind = (answer.body as { error?: { kind?: string } }).error?.kind ?? "Error";
     console.warn(
-      `[api-gateway] collection ${route.slug}.${route.operation}: ${answer.status} ${kind} after ${Math.round(performance.now() - start)} ms (request ${requestId})`,
+      `[api-gateway] collection ${route.slug}.${route.operation}: ${answer.status} ${kind} after ${took} ms (request ${requestId})`,
+    );
+  } else if (!route.releaseOnly && took >= SLOW_COLLECTION_ANSWER_MS) {
+    console.warn(
+      `[api-gateway] collection ${route.slug}.${route.operation}: ${answer.status} after ${took} ms, slower than ${SLOW_COLLECTION_ANSWER_MS} ms (request ${requestId})`,
     );
   }
   return cacheableJsonResponse(answer.body, answer.status, answer.cacheSeconds, requestId);
 }
+
+/**
+ * How long `/release` waits for its warm-up before it answers anyway. A
+ * cold instance on Cloud Run's one vCPU needs seconds for the query model;
+ * the bound keeps a stuck store from holding the visitor's request.
+ */
+export const RELEASE_WARM_WAIT_MS = 20_000;
+
+/** A collection answer at least this slow writes a log line (without the query). */
+export const SLOW_COLLECTION_ANSWER_MS = 2_000;
 
 /** How long a `Busy` (503) answer asks the client to wait (#1334). */
 const BUSY_RETRY_AFTER_SEC = 2;

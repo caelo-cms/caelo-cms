@@ -111,10 +111,30 @@ a second. Large builds therefore run as several tasks
 (`docs/plugin-collections.md`, wide attempts), and a passage whose text did
 not change is never embedded again.
 
-**A gateway that serves a semantic collection needs 1 GiB.** It loads the
-model when it first opens such a release, not at boot. The first semantic
-query of an instance waits about half a second for the load; later queries
-reuse an LRU of query vectors.
+**On Cloud Run the gateway needs more than the M3 numbers, and its load
+is slow.** Measured on 2026-11-26 on searchviu.com's live gateway (1 vCPU,
+then 1 GiB): loading the default model took the instance from 10 % of its
+memory to at least 87 %, and it stayed at 70 % (about 110 MiB is the
+gateway process with its plugins). One instance was lost in the middle of
+that load, inside a visitor's first search, which showed "Suche nicht
+erreichbar"; a first search on a cold instance took 11 s. The M3's 570 MB
+is the model alone. So:
+
+- **The gateway runs with 2 GiB** (`GATEWAY_MEMORY_DEFAULT`), checked
+  against the measured peak plus the index cache
+  (`packages/shared/src/gateway-memory.ts`, `admin-memory.test.ts`).
+- **The model loads ahead of the search, inside a request.** The site
+  search asks for the release key when the visitor focuses the field, and
+  `/release` answers once the release is open, its index files are in
+  memory and the model is loaded (bounded to 20 s), so a cold instance
+  warms while the visitor types. It never loads after an answer: on
+  request-billed CPU that work would wait for the next request, which is
+  the search. The admin's refresh ping after a publish opens the new
+  releases but leaves the model to `/release` (the admin waits for the
+  ping). Each load writes `[collections] model <id> loaded in <ms> ms
+  (process memory <MiB> MiB)`.
+
+Later queries reuse the loaded model and an LRU of query vectors.
 
 ## One text per run
 

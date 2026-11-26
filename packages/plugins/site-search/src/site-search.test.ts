@@ -25,7 +25,12 @@ import { buildProfile, linkedPageId } from "./profile.js";
 import { moduleReportWrites, type StoredModuleRow } from "./report.js";
 import { moduleWeighting, pageExclusion } from "./rules.js";
 import { RUNTIME_JS } from "./runtime.js";
-import { hashSearchUrl, RUNTIME_LOGIC, searchQueryOf } from "./runtime-logic.js";
+import {
+  hashSearchUrl,
+  RUNTIME_LOGIC,
+  searchQueryOf,
+  searchRetryDelayMs,
+} from "./runtime-logic.js";
 
 const COUNTING = { fullMax: 10, reducedMax: 49, chromeLinks: true };
 
@@ -602,6 +607,36 @@ describe("#1707 — the query in the fragment (the code the browser runs)", () =
     expect(RUNTIME_JS).not.toContain("replaceState");
     expect(RUNTIME_JS).not.toContain("pushState");
     expect(RUNTIME_JS).not.toContain("innerHTML");
+  });
+});
+
+// #1745 — a first search on searchVIU lost its gateway instance and the
+// page showed "Suche nicht erreichbar" at once; a failed search is now sent
+// once more first (the browser half: e2e site-search-visitor.browser.ts).
+describe("a failed search is asked for once more (the code the browser runs)", () => {
+  it("retries an answer that never came and a 5xx, after 1 s", () => {
+    expect(searchRetryDelayMs(0, null)).toBe(1000);
+    for (const status of [500, 502, 503, 504]) expect(searchRetryDelayMs(status, null)).toBe(1000);
+  });
+
+  it("waits as long as Retry-After asks, at most 5 s", () => {
+    expect(searchRetryDelayMs(503, "2")).toBe(2000);
+    expect(searchRetryDelayMs(503, "0")).toBe(0);
+    expect(searchRetryDelayMs(503, "60")).toBe(5000);
+    // An HTTP date or junk: the default wait.
+    expect(searchRetryDelayMs(503, "Wed, 26 Nov 2026 14:18:49 GMT")).toBe(1000);
+    expect(searchRetryDelayMs(503, " ")).toBe(1000);
+  });
+
+  it("never repeats a request the gateway refused for its own reasons", () => {
+    for (const status of [400, 401, 403, 404, 409, 429]) {
+      expect(searchRetryDelayMs(status, "1")).toBeNull();
+    }
+  });
+
+  it("ships the decision in the browser script and repeats at most once", () => {
+    expect(RUNTIME_JS).toContain("function searchRetryDelayMs(");
+    expect(RUNTIME_JS).toContain("retried ? null : searchRetryDelayMs(");
   });
 });
 
