@@ -118,7 +118,7 @@ Seeded as stored data (migration 0352), editable like any other type:
 | `tags` | vocabulary | `tag` {name, slug, color: text, landing_page: link} |
 
 `packages/shared/src/lists/default-types.ts` exports them (the migration
-and tests use the same objects). Migration 0885 (#1754) gave every stored
+and tests use the same objects). Migration 0887 (#1754) gave every stored
 vocabulary type, `tags` and the site's own included, a `landing_page` link
 field ("Overview page") on each top-level entry kind that had none, in the
 live rows and every list-type snapshot.

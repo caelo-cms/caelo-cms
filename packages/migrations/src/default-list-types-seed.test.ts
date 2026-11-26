@@ -2,7 +2,7 @@
 
 /**
  * Migration 0352 seeds the shipped list types as stored data. The seed's
- * JSON literal, as later migrations amended the rows (0885), must be
+ * JSON literal, as later migrations amended the rows (0887), must be
  * exactly `DEFAULT_LIST_TYPES` — the tests and the
  * editor's "reset to shipped" reasoning rely on the two being one source
  * (docs/lists.md §3). A drift here means the migration ships a different
@@ -32,7 +32,7 @@ function seedJson(): unknown {
 }
 
 /**
- * What later migrations did to the seeded rows: 0885 (#1754) gave every
+ * What later migrations did to the seeded rows: 0887 (#1754) gave every
  * vocabulary entry kind a `landing_page` link (the term's overview page).
  * The same rule as its SQL, so the stored state after all migrations is
  * what the code documents.
