@@ -11,12 +11,14 @@
 -- consumer runner (system) and a plugin keeps seeing its own row alone.
 -- The rows hold journal cursors, claim holders and a plugin's opaque
 -- rebuild cursor; health shows none of them, only "rebuilding since".
+-- The setting is compared through caelo_setting_in (migration 0475), so the
+-- planner folds it once per statement (#1297).
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
 
 DROP POLICY IF EXISTS change_consumers_operator_read ON change_consumers;
 CREATE POLICY change_consumers_operator_read ON change_consumers FOR SELECT
-  USING (current_setting('caelo.actor_kind', true) IN ('human', 'ai'));
+  USING (caelo_setting_in('caelo.actor_kind', ARRAY['human', 'ai']));
 
 COMMIT;
