@@ -71,6 +71,7 @@ import {
   PhaseTimer,
   phaseTimingSchema,
   type Result,
+  robotsRulesSchema,
   siteHeaderSetSchema,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
@@ -608,6 +609,11 @@ export const finishTriggerOp = defineOperation({
       qualityAudit: stagingAuditRequestSchema.nullable(),
       /** #1454 — the headers of this build's pages (`security_headers.get` reads them). */
       securityHeaders: siteHeaderSetSchema,
+      /**
+       * #1706 — the robots.txt rules this build was made with: the Publish
+       * live and the rollback that ship it write the live robots.txt from them.
+       */
+      robotsRules: robotsRulesSchema,
       /** #1240 — the language links this build rendered; null: none. */
       linkNotice: linkNoticeSchema.nullable(),
       /** #1604 — the content a Stage's build could not render; null: none. */
@@ -766,6 +772,7 @@ export const finishTriggerOp = defineOperation({
           publish_summary = ${jsonbParam(input.publishSummary)},
           site_url = ${input.buildOrigin},
           security_headers = ${jsonbParam(input.securityHeaders)},
+          robots_rules = ${jsonbParam(input.robotsRules)},
           link_notice = ${input.linkNotice === null ? sql`NULL` : jsonbParam(input.linkNotice)},
           render_report = ${input.renderReport === null ? sql`NULL` : jsonbParam(input.renderReport)},
           lease_expires_at = NULL, planned_audit = NULL
@@ -1205,6 +1212,7 @@ async function runTrigger(
       qualityAudit:
         plan.target.env === "staging" ? (input.qualityAudit ?? OUTSIDE_CHAT_AUDIT) : null,
       securityHeaders: built.securityHeaders,
+      robotsRules: built.robotsRules,
       linkNotice,
       renderReport,
       redirectChanges,

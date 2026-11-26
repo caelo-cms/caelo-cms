@@ -59,6 +59,7 @@ import {
   NO_BUILD_HEADERS_NOTE,
   ok,
   type Result,
+  robotsRulesSchema,
 } from "@caelo-cms/shared";
 import { readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
@@ -139,6 +140,12 @@ const rollbackPlan = z.object({
   /** The restored run's `publish_summary.location` (Firebase: its Hosting version). */
   sourceLocation: z.string().nullable(),
   siteBaseUrl: z.string(),
+  /**
+   * #1706 — the robots.txt rules the restored build was made with (its
+   * building run's), so a re-derived robots.txt is that build's. `[]` for
+   * a build from before the rules existed.
+   */
+  robotsRules: robotsRulesSchema,
 });
 type RollbackPlan = z.infer<typeof rollbackPlan>;
 
@@ -172,7 +179,8 @@ export const startRollbackOp = defineOperation({
     const priorRows = (await tx.execute(sql`
       SELECT r.build_id, r.publish_summary->>'location' AS location, r.caelo_version,
              r.projection_run_id::text AS projection_run_id,
-             source.security_headers IS NOT NULL AS has_security_headers
+             source.security_headers IS NOT NULL AS has_security_headers,
+             source.robots_rules
       FROM deploy_runs r
       LEFT JOIN deploy_runs source ON source.id = CASE
         WHEN r.build_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -188,6 +196,7 @@ export const startRollbackOp = defineOperation({
       caelo_version: string | null;
       projection_run_id: string | null;
       has_security_headers: boolean | null;
+      robots_rules: unknown;
     }[];
     const prior = priorRows[0];
     if (!prior) return refuse("no matching succeeded build for that target");
@@ -220,6 +229,7 @@ export const startRollbackOp = defineOperation({
       sourceLocation: prior.location,
       restoredHasSecurityHeaders: prior.has_security_headers === true,
       siteBaseUrl,
+      robotsRules: prior.robots_rules === null ? [] : robotsRulesSchema.parse(prior.robots_rules),
     });
   },
 });
@@ -439,6 +449,7 @@ async function runRollback(
         sourceBuildDir: join(outDir, "builds", plan.buildId),
         target: plan.target,
         siteBaseUrl: plan.siteBaseUrl,
+        robotsRules: plan.robotsRules,
         sourceLocation: plan.sourceLocation,
       });
     } catch (e) {

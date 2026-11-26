@@ -79,6 +79,7 @@ import {
   type PluginCspSources,
   pagedPath,
   pluginCspSourcesSchema,
+  type RobotsRules,
   renderEveryPage,
   runBatched,
   SECURITY_HEADERS_BUILD_FILE,
@@ -159,6 +160,7 @@ import { CspScanner, readPreviousCspScan, writeCspScan } from "./security-header
 import {
   buildRobotsTxtWithSitemap,
   prepareSeoPass,
+  readRobotsRules,
   readSeoSettings,
   requireSiteLanguage,
 } from "./seo-pass.js";
@@ -248,6 +250,12 @@ export interface GenerateResult {
   readonly peakRssMb: number;
   /** #1454 — the headers of this build's pages, also in its `_security-headers.json`. */
   readonly securityHeaders: SiteHeaderSet;
+  /**
+   * #1706 — the Owner's robots.txt rules this build was made with. Its run
+   * records them (`deploy_runs.robots_rules`): the Publish live and the
+   * rollback that ship it write the live robots.txt from them.
+   */
+  readonly robotsRules: RobotsRules;
   /**
    * Epic #724 — internal links whose target page exists but is not
    * published, so this build does not contain it. Per the #724 decision
@@ -666,6 +674,9 @@ async function buildSite(
   // #551 — read first: a missing site base URL or site language fails the
   // run before any file is written, not halfway through the page passes.
   const seoSettings = requireSiteLanguage(await readSeoSettings(tx));
+  // #1706 — the Owner's robots.txt rules: in this build's robots.txt on an
+  // indexable target, and carried with the build (its run) for the promote.
+  const robotsRules = await readRobotsRules(tx);
   // The feed every page links (docs/dev/search-engine-feed.md).
   const feed = siteFeedLink(seoSettings.feedEnabled, seoSettings.siteBaseUrl);
 
@@ -1588,10 +1599,12 @@ async function buildSite(
 
   await writeBuildFile(
     "robots.txt",
-    buildRobotsTxtWithSitemap(target.robotsDefault, seoSettings.siteBaseUrl, {
-      sitemap: sitemapEmitted,
-      feed: feed !== null,
-    }),
+    buildRobotsTxtWithSitemap(
+      target.robotsDefault,
+      seoSettings.siteBaseUrl,
+      { sitemap: sitemapEmitted, feed: feed !== null },
+      robotsRules,
+    ),
   );
   fileCount += 1;
 
@@ -1772,6 +1785,7 @@ async function buildSite(
     renderFailureCount: reportedRenderFailures?.total ?? 0,
     pageOutput: pageOutputFinish,
     securityHeaders,
+    robotsRules,
     searchFeed: {
       base: states.base,
       changes: states.changes,

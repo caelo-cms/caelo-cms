@@ -18,7 +18,9 @@
  * and the robots.txt Sitemap line; the feed toggle drops /feed.xml, the
  * feed link on every page and the WebSub ping; the IndexNow toggle decides
  * whether a Publish live tells the IndexNow engines what changed; the
- * Organization JSON-LD states the site's identity to search engines. A
+ * Organization JSON-LD states the site's identity to search engines; the
+ * robots.txt rules (#1706) can take pages, or with `Disallow: /` the whole
+ * site, out of search, which takes weeks to undo. A
  * single click for a rare site-wide change is cheap; a second, ungated
  * write path for some of the fields would split one setting across two
  * contracts.
@@ -35,6 +37,9 @@ import {
   ok,
   type ProposalStatus,
   proposalStatus,
+  type RobotsRules,
+  robotsRulesWarnings,
+  robotsTxt,
   type SiteDefaultsSetSeoInput,
   type SiteSeoProposalInput,
   siteSeoProposalInputSchema,
@@ -50,7 +55,7 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
-import { siteDefaultsSetSeoOp } from "./seo.js";
+import { parseStoredRobotsRules, siteDefaultsSetSeoOp } from "./seo.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
@@ -60,11 +65,13 @@ interface StoredSeo {
   feedEnabled: boolean;
   indexNowEnabled: boolean;
   organizationJson: SiteDefaultsSetSeoInput["organizationJson"];
+  robotsRules: RobotsRules;
 }
 
 async function readStoredSeo(tx: Tx): Promise<StoredSeo | null> {
   const rows = (await tx.execute(sql`
-    SELECT site_base_url, sitemap_enabled, feed_enabled, indexnow_enabled, organization_json
+    SELECT site_base_url, sitemap_enabled, feed_enabled, indexnow_enabled, organization_json,
+           robots_rules
     FROM site_defaults WHERE id = 1 LIMIT 1
   `)) as unknown as {
     site_base_url: string | null;
@@ -72,6 +79,7 @@ async function readStoredSeo(tx: Tx): Promise<StoredSeo | null> {
     feed_enabled: boolean;
     indexnow_enabled: boolean;
     organization_json: unknown;
+    robots_rules: unknown;
   }[];
   const r = rows[0];
   if (!r) return null;
@@ -81,7 +89,46 @@ async function readStoredSeo(tx: Tx): Promise<StoredSeo | null> {
     feedEnabled: r.feed_enabled,
     indexNowEnabled: r.indexnow_enabled,
     organizationJson: (r.organization_json ?? {}) as SiteDefaultsSetSeoInput["organizationJson"],
+    robotsRules: parseStoredRobotsRules(r.robots_rules),
   };
+}
+
+/** The settings once `payload` is applied to `current`: omitted fields keep their value. */
+function mergedSeo(current: StoredSeo, payload: SiteSeoProposalInput): StoredSeo {
+  return {
+    siteBaseUrl: payload.siteBaseUrl ?? current.siteBaseUrl,
+    sitemapEnabled: payload.sitemapEnabled ?? current.sitemapEnabled,
+    feedEnabled: payload.feedEnabled ?? current.feedEnabled,
+    indexNowEnabled: payload.indexNowEnabled ?? current.indexNowEnabled,
+    organizationJson: payload.organizationJson ?? current.organizationJson,
+    robotsRules: payload.robotsRules ?? current.robotsRules,
+  };
+}
+
+/**
+ * #1706 — what the approval card says about robots.txt: the live file as
+ * the next Stage and Publish live would ship it, and what it takes from
+ * search engines. Empty when the proposal leaves the rules alone.
+ */
+function robotsCard(current: StoredSeo, payload: SiteSeoProposalInput): string {
+  if (payload.robotsRules === undefined) return "";
+  const after = mergedSeo(current, payload);
+  const warnings = robotsRulesWarnings(after.robotsRules);
+  const file = after.siteBaseUrl
+    ? robotsTxt({
+        robots: "index",
+        siteBaseUrl: after.siteBaseUrl,
+        sitemap: after.sitemapEnabled,
+        feed: after.feedEnabled,
+        rules: after.robotsRules,
+      })
+    : "(no site address yet, so nothing is published)";
+  return [
+    ...warnings.map((w) => `WARNING: ${w}`),
+    "The live site's robots.txt after the next Stage and Publish live:",
+    file.trimEnd(),
+    "Staging keeps Disallow: / for every crawler.",
+  ].join("\n");
 }
 
 const MISSING_ROW_MESSAGE =
@@ -153,6 +200,12 @@ export const proposeSiteSeoSetOp = defineOperation({
     ) {
       changes.organizationJson = { from: current.organizationJson, to: payload.organizationJson };
     }
+    if (
+      payload.robotsRules !== undefined &&
+      JSON.stringify(payload.robotsRules) !== JSON.stringify(current.robotsRules)
+    ) {
+      changes.robotsRules = { from: current.robotsRules, to: payload.robotsRules };
+    }
     if (Object.keys(changes).length === 0) {
       return err({
         kind: "HandlerError",
@@ -161,10 +214,12 @@ export const proposeSiteSeoSetOp = defineOperation({
           "nothing to change — the proposed values already match the stored SEO settings (read them with get_site_seo).",
       });
     }
+    const robots = robotsCard(current, payload);
     const preview = {
       changes,
       effect:
-        "applies on approve; the next publish rebuilds canonical URLs, og:url, hreflang, JSON-LD, robots.txt, the sitemap and the feed from these settings, and announces itself to search engines as they say",
+        "saved on approve; the next Stage and the operator's Publish live rebuild canonical URLs, og:url, hreflang, JSON-LD, robots.txt, the sitemap and the feed from these settings, and announce themselves to search engines as they say",
+      ...(robots ? { robotsTxt: robots } : {}),
     };
     const payloadHash = await hashProposalPayload(payload);
     const chatSessionId = await resolveChatSessionId(tx, ctx.chatBranchId, ctx.chatTaskId);
@@ -207,6 +262,48 @@ export const proposeSiteSeoSetOp = defineOperation({
   },
 });
 
+// ─── preview_set_seo ─────────────────────────────────────────────────
+
+/**
+ * What the in-chat approval card shows for `propose_set_site_seo`, from
+ * the server (#1420): each changed field from → to and, for robots.txt
+ * rules, the live file they make and what it takes from search engines.
+ */
+export const previewSiteSeoSetOp = defineOperation({
+  name: "site_defaults.preview_set_seo",
+  readScope: "request",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: siteSeoProposalInputSchema,
+  output: z.object({ preview: z.string() }),
+  handler: async (_ctx, input, tx) => {
+    const current = await readStoredSeo(tx);
+    if (!current) {
+      return err({
+        kind: "HandlerError",
+        operation: "site_defaults.preview_set_seo",
+        message: MISSING_ROW_MESSAGE,
+      });
+    }
+    const after = mergedSeo(current, input);
+    const lines: string[] = [];
+    const field = (name: string, from: unknown, to: unknown) => {
+      if (JSON.stringify(from) !== JSON.stringify(to))
+        lines.push(`${name}: ${JSON.stringify(from)} → ${JSON.stringify(to)}`);
+    };
+    field("Site address", current.siteBaseUrl, after.siteBaseUrl);
+    field("Sitemap", current.sitemapEnabled, after.sitemapEnabled);
+    field("Feed", current.feedEnabled, after.feedEnabled);
+    field("IndexNow", current.indexNowEnabled, after.indexNowEnabled);
+    field("Organization JSON-LD", current.organizationJson, after.organizationJson);
+    const robots = robotsCard(current, input);
+    if (robots) lines.push(robots);
+    if (lines.length === 0) lines.push("Nothing changes: these are the stored values.");
+    lines.push("Saved on approve; live only after a Stage and the operator's Publish live.");
+    return ok({ preview: lines.join("\n") });
+  },
+});
+
 // ─── execute / reject / list_pending ─────────────────────────────────
 
 const executeSiteDefaultsProposalOpDefinition = defineOperation({
@@ -223,6 +320,7 @@ const executeSiteDefaultsProposalOpDefinition = defineOperation({
     feedEnabled: z.boolean(),
     indexNowEnabled: z.boolean(),
     organizationJson: z.record(z.string(), z.unknown()),
+    robotsRules: z.array(z.record(z.string(), z.unknown())),
   }),
   handler: async (ctx, input, tx) => {
     const op = "site_defaults.execute_proposal";
@@ -248,7 +346,8 @@ const executeSiteDefaultsProposalOpDefinition = defineOperation({
     if (!current) {
       return err({ kind: "HandlerError", operation: op, message: MISSING_ROW_MESSAGE });
     }
-    const siteBaseUrl = payload.siteBaseUrl ?? current.siteBaseUrl;
+    const after = mergedSeo(current, payload);
+    const siteBaseUrl = after.siteBaseUrl;
     if (!siteBaseUrl) {
       // The proposal left the base URL out and none is stored: the Owner op
       // needs one, and inventing it is exactly what #551 removed.
@@ -259,12 +358,9 @@ const executeSiteDefaultsProposalOpDefinition = defineOperation({
           "the site base URL is not configured and this proposal does not set it — reject it and propose again with `siteBaseUrl` included",
       });
     }
-    const merged: SiteDefaultsSetSeoInput = {
+    const merged: SiteDefaultsSetSeoInput & { robotsRules: RobotsRules } = {
+      ...after,
       siteBaseUrl,
-      sitemapEnabled: payload.sitemapEnabled ?? current.sitemapEnabled,
-      feedEnabled: payload.feedEnabled ?? current.feedEnabled,
-      indexNowEnabled: payload.indexNowEnabled ?? current.indexNowEnabled,
-      organizationJson: payload.organizationJson ?? current.organizationJson,
     };
     const r = await siteDefaultsSetSeoOp.handler(ctx, merged, tx);
     if (!r.ok) {
@@ -292,7 +388,7 @@ const executeSiteDefaultsProposalOpDefinition = defineOperation({
       input,
       succeeded: true,
       entityId: input.proposalId,
-      resultSummary: `base=${merged.siteBaseUrl},sitemap=${merged.sitemapEnabled},feed=${merged.feedEnabled},indexnow=${merged.indexNowEnabled}`,
+      resultSummary: `base=${merged.siteBaseUrl},sitemap=${merged.sitemapEnabled},feed=${merged.feedEnabled},indexnow=${merged.indexNowEnabled},robots-groups=${merged.robotsRules.length}`,
     });
     return ok(merged);
   },

@@ -466,3 +466,98 @@ describe("site_defaults SEO proposal guards", () => {
     if (!r.ok) expect(JSON.stringify(r.error)).toContain("already rejected");
   });
 });
+
+describe("#1706 — robots.txt rules through propose_set_site_seo", () => {
+  const RESULTS_PAGES = [{ userAgents: ["*"], disallow: ["/de/suche/", "/en/search/"] }];
+
+  beforeEach(async () => {
+    await asSystem(
+      (tx) =>
+        tx`UPDATE site_defaults SET site_base_url = 'https://robots.example', robots_rules = '[]'::jsonb WHERE id = 1`,
+    );
+  });
+  afterAll(async () => {
+    await asSystem((tx) => tx`UPDATE site_defaults SET robots_rules = '[]'::jsonb WHERE id = 1`);
+  });
+
+  it("the card shows the live file; approval stores the rules; a production build writes them", async () => {
+    const card = await execute(registry, adapter, AI, "site_defaults.preview_set_seo", {
+      robotsRules: RESULTS_PAGES,
+    });
+    expect(card.ok).toBe(true);
+    const preview = (card as { ok: true; value: { preview: string } }).value.preview;
+    expect(preview).toContain("Disallow: /de/suche/");
+    expect(preview).toContain("Disallow: /en/search/");
+    expect(preview).toContain("Staging keeps Disallow: / for every crawler.");
+    expect(preview).not.toContain("WARNING");
+
+    const execute_ = gatedTool().execute as (
+      input: unknown,
+    ) => Promise<{ ok: boolean; error?: string }>;
+    const r = await execute_({ robotsRules: RESULTS_PAGES });
+    expect(r.error).toBeUndefined();
+    expect(r.ok).toBe(true);
+    const seo = await execute(registry, adapter, AI, "site_defaults.get_seo", {});
+    expect(seo.ok).toBe(true);
+    const v = (seo as { ok: true; value: { robotsRules: unknown; robotsTxt: string } }).value;
+    expect(v.robotsRules).toEqual([{ ...RESULTS_PAGES[0], allow: [] }]);
+    expect(v.robotsTxt).toContain("User-agent: *\nDisallow: /de/suche/\nDisallow: /en/search/");
+
+    const result = await build(crypto.randomUUID());
+    expect(result.robotsRules).toEqual([{ ...RESULTS_PAGES[0], allow: [] }]);
+    const robots = await readFile(join(result.buildDir, "robots.txt"), "utf8");
+    expect(robots).toContain("Disallow: /en/search/");
+    expect(robots).not.toContain("Allow: /\n");
+  });
+
+  it("warns on the card when a rule takes the whole site out of search", async () => {
+    const card = await execute(registry, adapter, AI, "site_defaults.preview_set_seo", {
+      robotsRules: [{ userAgents: ["*"], disallow: ["/"] }],
+    });
+    const preview = (card as { ok: true; value: { preview: string } }).value.preview;
+    expect(preview).toContain("WARNING: every crawler may crawl nothing of this site");
+  });
+
+  it("refuses a value that would write a line of its own, at propose time", async () => {
+    const r = await execute(registry, adapter, AI, "site_defaults.propose_set_seo", {
+      robotsRules: [{ userAgents: ["*"], disallow: ["/x\nSitemap: https://evil.example/s.xml"] }],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(JSON.stringify(r.error)).toContain("no spaces or line breaks");
+    const rows = await asSystem((tx) => tx`SELECT id FROM site_defaults_pending_actions`);
+    expect(rows).toEqual([]);
+  });
+
+  it("the AI cannot write the rules without the Owner's approval", async () => {
+    const r = await execute(registry, adapter, AI, "site_defaults.set_seo", {
+      siteBaseUrl: "https://robots.example",
+      sitemapEnabled: true,
+      feedEnabled: false,
+      indexNowEnabled: false,
+      robotsRules: RESULTS_PAGES,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe("ActorScopeRejected");
+  });
+
+  it("a settings save that leaves the rules out keeps them", async () => {
+    await execute(registry, adapter, OWNER, "site_defaults.set_seo", {
+      siteBaseUrl: "https://robots.example",
+      sitemapEnabled: true,
+      feedEnabled: false,
+      indexNowEnabled: false,
+      robotsRules: RESULTS_PAGES,
+    });
+    const again = await execute(registry, adapter, OWNER, "site_defaults.set_seo", {
+      siteBaseUrl: "https://robots.example",
+      sitemapEnabled: false,
+      feedEnabled: false,
+      indexNowEnabled: false,
+    });
+    expect(again.ok).toBe(true);
+    const seo = await execute(registry, adapter, OWNER, "site_defaults.get_seo", {});
+    expect((seo as { ok: true; value: { robotsRules: unknown[] } }).value.robotsRules).toHaveLength(
+      1,
+    );
+  });
+});
