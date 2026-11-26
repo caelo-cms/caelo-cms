@@ -198,7 +198,9 @@ describe("language links", () => {
 
   it("a content link into the other language is a warning when this language has the page", () => {
     const model = new BuildModel(state());
+    // A fact batch holds whole language groups (factBatchesOf).
     const found = pageFindings(model, [
+      facts(HOME_DE, "/", "de"),
       facts(HOME_EN, "/en", "en", {
         links: [{ ...FIXED_ENGLISH, href: "/preise", path: "/preise", text: "See our prices" }],
       }),
@@ -215,9 +217,8 @@ describe("hreflang, canonical, sitemap, page language", () => {
       alternates: [{ hreflang: "de", href: `${BASE}/preise`, path: "/preise" }],
       canonical: { href: `${BASE}/preise`, path: "/preise" },
     });
-    // The German page is noindex and does not name the English one.
+    // The German page does not name the English one.
     const deFacts = facts(PRICES_DE, "/preise", "de", {
-      robots: "noindex",
       alternates: [
         { hreflang: "de", href: `${BASE}/preise`, path: "/preise" },
         { hreflang: "x-default", href: `${BASE}/preise`, path: "/preise" },
@@ -230,8 +231,20 @@ describe("hreflang, canonical, sitemap, page language", () => {
     expect(rules).toContainEqual(["x-default-missing", PRICES_EN]);
     expect(rules).toContainEqual(["hreflang-not-reciprocal", PRICES_EN]);
     expect(rules).toContainEqual(["hreflang-missing-version", PRICES_DE]);
-    // The English page names the noindex German one.
-    expect(rules).toContainEqual(["hreflang-target-not-indexable", PRICES_EN]);
+    expect(rules).not.toContainEqual(["hreflang-target-not-indexable", PRICES_EN]);
+  });
+
+  it("an alternate whose target has its canonical elsewhere is the operator's to fix", () => {
+    const model = new BuildModel(state());
+    const found = pageFindings(model, [
+      facts(PRICES_DE, "/preise", "de", { canonical: { href: `${BASE}/team`, path: "/team" } }),
+      facts(PRICES_EN, "/en/pricing", "en"),
+    ]);
+    const notIndexable = found.filter((f) => f.rule === "hreflang-target-not-indexable");
+    // One per alternate naming it (its language and x-default), all on the English page.
+    expect([...new Set(notIndexable.map((f) => f.pageId))]).toEqual([PRICES_EN]);
+    expect(notIndexable[0]?.message).toContain("has its canonical at");
+    expect(notIndexable[0]?.fix?.tool).toBe("set_page_seo_many");
   });
 
   it("#1305 — the 404 page and its group's other versions expect no hreflang", () => {
@@ -290,7 +303,10 @@ describe("hreflang, canonical, sitemap, page language", () => {
       ]),
     );
     // Every other group still expects its full hreflang set.
-    const prices = pageFindings(model, [facts(PRICES_EN, "/en/pricing", "en", { alternates: [] })]);
+    const prices = pageFindings(model, [
+      facts(PRICES_DE, "/preise", "de"),
+      facts(PRICES_EN, "/en/pricing", "en", { alternates: [] }),
+    ]);
     expect(rulesOf(prices)).toContainEqual(["hreflang-self-missing", PRICES_EN]);
   });
 
@@ -299,13 +315,145 @@ describe("hreflang, canonical, sitemap, page language", () => {
     const page = facts(PRICES_EN, "/en/pricing", "de", {
       sitemapAlternates: [{ hreflang: "en", href: `${BASE}/en/pricing`, path: "/en/pricing" }],
     });
-    const rules = rulesOf(pageFindings(model, [page]));
+    const rules = rulesOf(pageFindings(model, [facts(PRICES_DE, "/preise", "de"), page]));
     expect(rules).toContainEqual(["html-lang-mismatch", PRICES_EN]);
     expect(rules).toContainEqual(["sitemap-alternates-mismatch", PRICES_EN]);
     expect(hreflangProblem("en-UK")).toContain('"GB"');
     expect(hreflangProblem("de-AT")).toBeNull();
     expect(hreflangProblem("x-default")).toBeNull();
     expect(hreflangProblem("not a tag")).toContain("not a language tag");
+  });
+});
+
+describe("noindex versions take no part in hreflang", () => {
+  // site-search's results page in two languages: noindex by requirement,
+  // still one language group (searchVIU, v0.12.15).
+  const SEARCH_DE = id(20);
+  const SEARCH_EN = id(21);
+  const SEARCH_FR = id(22);
+  const fr: LocaleRow = { ...en, id: "l-fr", code: "fr", display_name: "Français" };
+  const searchState = (frToo = false) => {
+    const base = state();
+    return state({
+      locales: frToo ? new Map([...base.locales, ["fr", fr]]) : base.locales,
+      variants: [
+        ...base.variants,
+        variant(SEARCH_DE, "g-search", "de", "source"),
+        variant(SEARCH_EN, "g-search", "en", "up_to_date"),
+        ...(frToo ? [variant(SEARCH_FR, "g-search", "fr", "up_to_date")] : []),
+      ],
+      stagedPages: [
+        ...base.stagedPages,
+        { pageId: SEARCH_DE, path: "/suche" },
+        { pageId: SEARCH_EN, path: "/en/search" },
+        ...(frToo ? [{ pageId: SEARCH_FR, path: "/fr/recherche" }] : []),
+      ],
+    });
+  };
+  const alt = (hreflang: string, path: string) => ({ hreflang, href: `${BASE}${path}`, path });
+  const link = (path: string, hreflang: string, text: string) => ({
+    ...FIXED_ENGLISH,
+    moduleId: HERO,
+    href: path,
+    path,
+    hreflang,
+    text,
+  });
+  const hreflangRules = (found: readonly PluginAuditFinding[]) =>
+    found.filter(
+      (f) =>
+        f.rule.startsWith("hreflang") ||
+        f.rule === "x-default-missing" ||
+        f.rule === "sitemap-alternates-mismatch",
+    );
+
+  it("two noindex results pages in one group: no hreflang expected, the language switch stays", () => {
+    const model = new BuildModel(searchState());
+    // What the plugin renders now: no alternates, a switcher between them.
+    const found = pageFindings(model, [
+      facts(SEARCH_DE, "/suche", "de", {
+        robots: "noindex",
+        sitemapAlternates: null,
+        links: [link("/en/search", "en", "English")],
+      }),
+      facts(SEARCH_EN, "/en/search", "en", {
+        robots: "noindex",
+        sitemapAlternates: null,
+        links: [link("/suche", "de", "Deutsch")],
+      }),
+    ]);
+    expect(found).toEqual([]);
+  });
+
+  it("hreflang that still names a noindex page is a Caelo bug, not a reason to index it", () => {
+    const model = new BuildModel(searchState());
+    // The output before the fix: both pages name each other.
+    const both = [alt("de", "/suche"), alt("en", "/en/search"), alt("x-default", "/suche")];
+    const found = pageFindings(model, [
+      facts(SEARCH_DE, "/suche", "de", { robots: "noindex", alternates: both }),
+      facts(SEARCH_EN, "/en/search", "en", { robots: "noindex", alternates: both }),
+    ]);
+    expect(rulesOf(hreflangRules(found))).toEqual([
+      ["hreflang-target-not-indexable", SEARCH_DE],
+      ["hreflang-target-not-indexable", SEARCH_EN],
+    ]);
+    for (const f of hreflangRules(found)) {
+      expect(f.fix?.tool).toBe("bug_report");
+      expect(f.message).toContain("/suche (de)");
+      expect(f.fix?.hint).toContain("Do not make the page indexable");
+    }
+  });
+
+  it("an indexable page with a noindex sibling expects no hreflang and must not name it", () => {
+    const model = new BuildModel(searchState());
+    const clean = pageFindings(model, [
+      facts(SEARCH_DE, "/suche", "de", { alternates: [] }),
+      facts(SEARCH_EN, "/en/search", "en", { robots: "noindex", alternates: [] }),
+    ]);
+    expect(hreflangRules(clean)).toEqual([]);
+    // The indexable page naming its noindex sibling: one finding, on it.
+    const named = pageFindings(model, [
+      facts(SEARCH_DE, "/suche", "de", {
+        alternates: [alt("de", "/suche"), alt("en", "/en/search"), alt("x-default", "/suche")],
+      }),
+      facts(SEARCH_EN, "/en/search", "en", { robots: "noindex", alternates: [] }),
+    ]);
+    expect(rulesOf(hreflangRules(named))).toEqual([["hreflang-target-not-indexable", SEARCH_DE]]);
+    expect(named[0]?.message).toContain("/en/search (en)");
+  });
+
+  it("three languages, one noindex: the other two alternate with each other and x-default", () => {
+    const model = new BuildModel(searchState(true));
+    const pair = [alt("de", "/suche"), alt("en", "/en/search"), alt("x-default", "/suche")];
+    const found = pageFindings(model, [
+      facts(SEARCH_DE, "/suche", "de", { alternates: pair, sitemapAlternates: pair }),
+      facts(SEARCH_EN, "/en/search", "en", { alternates: pair, sitemapAlternates: pair }),
+      facts(SEARCH_FR, "/fr/recherche", "fr", {
+        robots: "noindex",
+        alternates: [],
+        sitemapAlternates: null,
+      }),
+    ]);
+    expect(hreflangRules(found)).toEqual([]);
+    // Leaving the indexable French version out instead is still incomplete.
+    const frIndexable = pageFindings(model, [
+      facts(SEARCH_DE, "/suche", "de", { alternates: pair }),
+      facts(SEARCH_EN, "/en/search", "en", { alternates: pair }),
+      facts(SEARCH_FR, "/fr/recherche", "fr", { alternates: [] }),
+    ]);
+    expect(rulesOf(frIndexable)).toContainEqual(["hreflang-missing-version", SEARCH_DE]);
+    expect(rulesOf(frIndexable)).toContainEqual(["hreflang-self-missing", SEARCH_FR]);
+  });
+
+  it("a noindex default-language version leaves the set without x-default", () => {
+    const model = new BuildModel(searchState(true));
+    const pair = [alt("en", "/en/search"), alt("fr", "/fr/recherche")];
+    const found = pageFindings(model, [
+      facts(SEARCH_DE, "/suche", "de", { robots: "noindex", alternates: [] }),
+      facts(SEARCH_EN, "/en/search", "en", { alternates: pair }),
+      facts(SEARCH_FR, "/fr/recherche", "fr", { alternates: pair }),
+    ]);
+    expect(hreflangRules(found)).toEqual([]);
   });
 });
 
@@ -473,6 +621,7 @@ describe("content in the right language", () => {
       }),
     );
     const found = pageFindings(model, [
+      facts(PRICES_DE, "/preise", "de"),
       facts(PRICES_EN, "/en/pricing", "en", { texts: [t("Checkout", HERO, "literal")] }),
     ]);
     expect(found.filter((f) => f.rule === "glossary-violation")).toEqual([]);
@@ -487,6 +636,7 @@ describe("content in the right language", () => {
       }),
     );
     const found = pageFindings(model, [
+      facts(PRICES_DE, "/preise", "de"),
       facts(PRICES_EN, "/en/pricing", "en", { texts: [t("Go to Checkout"), t("from 1.234,56 €")] }),
     ]);
     const rules = rulesOf(found);
