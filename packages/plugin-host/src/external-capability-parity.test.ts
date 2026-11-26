@@ -294,6 +294,19 @@ describe("#1729 — every capability is brokered for external plugins or tracked
     }
   });
 
+  it("the definition carries the data declarations core reads for any plugin (§10)", () => {
+    const declared = {
+      listExt: { field: { type: "object", additionalProperties: false, properties: {} } },
+      visitorProjection: { notes: ["body"] },
+      component: { tag: "parity-probe-widget", shadowMode: "open" },
+    } as const;
+    const declarations = externalDeclarations({
+      ...probe,
+      ...declared,
+    } as unknown as PluginManifest);
+    expect(declarations).toMatchObject(declared);
+  });
+
   it("the host has no hand-written list of capabilities", () => {
     const names = new Set<string>(pluginCapability.options);
     for (const file of ["external-plugin.ts", "loader.ts"]) {

@@ -173,8 +173,9 @@ export async function makePluginContext(
   };
 
   // Runtime-installed plugins run in the sandbox and get only what an
-  // Owner approved for this exact artifact (§14.5) — never on a render or
-  // visitor call, and only when acting for a human who may author content.
+  // Owner approved for this exact artifact (§14.5): author handles never on
+  // a render or visitor call, for a human only when they may author
+  // content, and private storage on main in the calls that act for nobody.
   if (plugin.provenance === "runtime-authored") {
     const approval = plugin.externalApproval;
     if (!approval) return baseCtx;
@@ -186,6 +187,25 @@ export async function makePluginContext(
     )
       ? { ...baseCtx, consentPurposes: makePluginConsentPurposes() }
       : baseCtx;
+    // #635 — the gateway reads the private columns the manifest publishes
+    // to visitors (`visitorProjection`), read-only, as for a shipped plugin;
+    // a declared public operation is core code running on this handle.
+    if (isPublicSideHost(infra)) {
+      return approval.capabilities.includes("cms_admin_schema") &&
+        Object.keys(plugin.definition.visitorProjection ?? {}).length > 0
+        ? { ...consentCtx, adminQuery: makeProjectedAdminQuery(plugin, infra) }
+        : consentCtx;
+    }
+    // #1729 (decision Q1 A) — a call that acts for nobody (a worker run,
+    // `onActivate`, a journal batch on main, an observer, a batch) is the
+    // Owner's grant working unattended: private storage on main, as the
+    // plugin actor, through the audited and snapshotted `plugin_storage.*`
+    // operations, as a shipped plugin's worker has it.
+    if (!visitorContext && UNATTENDED_ORIGINS.has(invocation.origin) && !invocation.chatBranchId) {
+      return approval.capabilities.includes("cms_admin_schema")
+        ? { ...consentCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+        : consentCtx;
+    }
     if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return consentCtx;
     const wantsStorage = approval.capabilities.includes("cms_admin_schema");
     const wantsFiles = approval.capabilities.includes("private_files");
@@ -286,6 +306,9 @@ async function authorMayWrite(
 
 /** Invocations that author content on someone's behalf. */
 const AUTHORING_ORIGINS: ReadonlySet<string> = new Set(["chat", "owner-panel", "approved"]);
+
+/** Invocations the host starts on nobody's behalf (#1729 Q1). */
+const UNATTENDED_ORIGINS: ReadonlySet<string> = new Set(["worker", "system", "observer", "batch"]);
 
 // ---------------------------------------------------------------------------
 // PluginQuery (P12 PR1.1) — real cms_public dispatch.

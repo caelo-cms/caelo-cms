@@ -223,11 +223,13 @@ const execute = async (message) => {
     for (let i = 0; i < names.length; i++)
       if (typeof plugin.operations?.[names[i]] !== "function") throw new ErrorCtor("SandboxOperationNotDeclared: " + names[i]);
     if (message.args.hasStaticRender && typeof plugin.staticRender !== "function") throw new ErrorCtor("SandboxStaticRenderMissing");
+    if ((message.args.hasOnActivate === true) !== (typeof plugin.onActivate === "function")) throw new ErrorCtor("SandboxOnActivateMismatch: the manifest's hasOnActivate must say whether the definition has an onActivate");
     write({ kind: "result", value: true });
     return;
   }
   let handler;
   if (message.operation === "$staticRender") handler = plugin.staticRender;
+  else if (message.operation === "$onActivate") handler = plugin.onActivate;
   else handler = ObjectHasOwn(plugin.operations, message.operation) && plugin.operations[message.operation];
   if (typeof handler !== "function") throw new ErrorCtor("SandboxOperationNotDeclared");
   const value = await handler(ctx, message.args);

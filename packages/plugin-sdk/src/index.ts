@@ -1317,6 +1317,15 @@ export const pluginManifest = z
     operations: z.array(z.string().min(1).max(120)).max(200),
     component: pluginComponent.optional(),
     hasStaticRender: z.boolean().default(false),
+    /**
+     * #1729 — the plugin's definition has an `onActivate` (create-time
+     * defaults, run on main whenever the host brings the plugin up). Only a
+     * runtime-installed plugin declares it: the host builds that plugin's
+     * definition from the manifest and runs `onActivate` in the sandbox. A
+     * shipped plugin carries the function itself, so no shipped manifest
+     * changes. Optional with no default for the same reason.
+     */
+    hasOnActivate: z.boolean().optional(),
     /** See `PluginDefinition.publicOperations` (#1332): each visitor
      *  operation with its input JSON Schema, captcha, rate limit and the
      *  tables it reads and writes. */

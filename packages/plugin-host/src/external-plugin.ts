@@ -81,6 +81,15 @@ export function externalPluginDefinition(opts: {
     ...(manifest.hasStaticRender
       ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
       : {}),
+    // #1729 (Q1) — create-time defaults, run on main as the plugin actor
+    // each time the host brings the plugin up, like a shipped `onActivate`.
+    ...(manifest.hasOnActivate
+      ? {
+          onActivate: async (context: PluginContext) => {
+            await invoke("$onActivate")(context, {});
+          },
+        }
+      : {}),
   });
 }
 
@@ -171,5 +180,11 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     ...(manifest.aiChatOperations ? { aiChatOperations: manifest.aiChatOperations } : {}),
     ...(manifest.pageOutputObserver ? { pageOutputObserver: manifest.pageOutputObserver } : {}),
     ...(manifest.batchOperations ? { batchOperations: manifest.batchOperations } : {}),
+    // #1729 — data the host consumes for a shipped plugin too: a list-type
+    // extension core validates, the private columns published to visitors
+    // (#635), and the Web Component the plugin's markup mounts.
+    ...(manifest.listExt ? { listExt: manifest.listExt } : {}),
+    ...(manifest.visitorProjection ? { visitorProjection: manifest.visitorProjection } : {}),
+    ...(manifest.component ? { component: manifest.component } : {}),
   };
 }

@@ -31,6 +31,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   operations: "Internal operations",
   component: "Web component",
   hasStaticRender: "Static rendering",
+  hasOnActivate: "Setup it runs when it starts",
   publicOperations: "What visitors can send",
   tableKinds: "Who can reach its tables",
   requires: "Required site setup",

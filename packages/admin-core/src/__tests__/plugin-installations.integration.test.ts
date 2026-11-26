@@ -647,7 +647,8 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
       invocation: { origin: "visitor", actorId: "test-visitor" },
     }),
   ).toEqual({ ok: true, value: { stored: true } });
-  // System work (no author) gets no private storage.
+  // #1729 Q1 A — work the host starts for nobody (system, a worker) reads
+  // and writes private storage on main, as the plugin actor.
   expect(
     (
       await runPluginOperation({
@@ -657,7 +658,7 @@ it("runs approved author tools in Deno with private storage, trusted chat identi
         invocation: { origin: "system", actorId: system.actorId },
       })
     ).ok,
-  ).toBe(false);
+  ).toBe(true);
   const reviewer = await user("reviewer");
   expect(
     (
