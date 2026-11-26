@@ -44,6 +44,7 @@ import {
   type PageUrlStyle,
   type PluginAdminQuery,
   type PluginAi,
+  type PluginChanges,
   type PluginContextTier1,
   type PluginWrite,
   z,
@@ -364,7 +365,7 @@ async function backfillSourceHashesStep(
     limit: 1,
   })) as unknown as SettingRow[];
   if (done[0]) return { status: "done", filled: 0 };
-  const state = await cmsOf(ctx).call<{ continuous: boolean }>("plugin_changes.cursor_state", {});
+  const state = await changesOf(ctx).cursorState();
   if (!state.continuous) return { status: "waiting", filled: 0 };
   const progressRows = (await q.list("settings", {
     key: SOURCE_HASH_BACKFILL_PROGRESS_KEY,
@@ -485,6 +486,17 @@ async function markSiblingsStale(
     }
   }
   return marked;
+}
+
+/** #1729 — the plugin's own change consumer (`change_journal` grant). */
+function changesOf(ctx: unknown): PluginChanges {
+  const changes = (ctx as { changes?: PluginChanges }).changes;
+  if (!changes) {
+    throw new Error(
+      "international-site: ctx.changes missing — the change_journal capability was not granted",
+    );
+  }
+  return changes;
 }
 
 function adminQueryOf(ctx: unknown): PluginAdminQuery {

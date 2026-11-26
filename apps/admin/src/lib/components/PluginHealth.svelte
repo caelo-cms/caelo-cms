@@ -33,6 +33,7 @@
       recentErrors: PluginErrorSummary[];
       /** #1390 — its change consumer waits out a failure backoff. */
       consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
+      consumerRebuild?: { resumable: boolean; since: string } | null;
       /** #1728 — workers a live server keeps off the schedule (their cron does not parse). */
       unscheduledWorkers: { workerName: string; cron: string; reason: string }[];
       callCost: {
@@ -126,6 +127,12 @@
         {/each}
       </ul>
     </div>
+  {/if}
+  {#if health.consumerRebuild}
+    <p class="max-w-md text-xs text-muted-foreground" data-testid="plugin-health-rebuild-{slug}">
+      Rebuilding what it derives from the site (last progress {new Date(health.consumerRebuild.since).toLocaleString()}).
+      Site changes reach it again once the rebuild is done; other plugins keep running.
+    </p>
   {/if}
   {#if health.consumerBackoff}
     <p class="max-w-md text-xs text-amber-700 dark:text-amber-400" data-testid="plugin-health-backoff-{slug}">

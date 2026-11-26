@@ -79,6 +79,21 @@ export interface ReadScope {
  */
 export type OperationReadScope = "request" | "site";
 
+/**
+ * #1729 — what a plugin's `ctx.cms.call` may do with an operation
+ * (docs/dev/external-plugin-brokers.md §7.1, decision Q9). Every operation
+ * that admits actor kind `plugin` declares it, and every package's
+ * registry test fails on one that does not ({@link pluginAccessProblems}):
+ *
+ * - `"read"`: it only reads; callable on every origin, a render included.
+ * - `"write"`: it writes core data; refused on a render, for every plugin
+ *   (a render only reads: the preview runs every render hook on every view).
+ * - `"handle"`: it backs one of the plugin's own handles (private storage,
+ *   files, config, collections, mail, its change consumer), which holds
+ *   that surface's checks; `ctx.cms.call` refuses it for every plugin.
+ */
+export type PluginAccess = "read" | "write" | "handle";
+
 /** Handler of a {@link ReadOperationDefinition}. */
 export type ReadOperationHandler<I, O> = (
   ctx: ExecutionContext,
@@ -104,6 +119,8 @@ export interface ReadOperationDefinition<I = unknown, O = unknown> {
   readonly actorScope: readonly ActorKind[];
   /** How much of the site one call reads (#1267, {@link OperationReadScope}). */
   readonly readScope: OperationReadScope;
+  /** #1729 — required when `actorScope` admits `plugin` ({@link PluginAccess}); a read never writes. */
+  readonly pluginAccess?: Exclude<PluginAccess, "write">;
   /** Read operations read the authoring database. */
   readonly database: "cms_admin";
   readonly input: z.ZodType<I>;
@@ -129,6 +146,8 @@ export interface OperationDefinition<I = unknown, O = unknown> {
   readonly actorScope: readonly ActorKind[];
   /** How much of the site one call reads (#1267, {@link OperationReadScope}). */
   readonly readScope: OperationReadScope;
+  /** #1729 — required when `actorScope` admits `plugin` ({@link PluginAccess}). */
+  readonly pluginAccess?: PluginAccess;
   /** Which database this op touches. */
   readonly database: "cms_admin" | "cms_public";
   readonly input: z.ZodType<I>;

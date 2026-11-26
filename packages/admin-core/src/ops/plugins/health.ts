@@ -141,6 +141,12 @@ export const pluginHealth = z.object({
   recentErrors: z.array(pluginErrorSummary),
   /** Its change consumer's failure backoff, when one is waiting (#1390). */
   consumerBackoff: consumerBackoff.nullable(),
+  /**
+   * #1729 — its change consumer's rebuild, while one is pending: no change
+   * is delivered until it is done. `resumable`: chunks have run and the
+   * next resumes from a stored cursor; `since`: the last chunk or the start.
+   */
+  consumerRebuild: z.object({ resumable: z.boolean(), since: z.string() }).nullable(),
   /** #1728 — workers a live server keeps off the schedule, for as long as they are off. */
   unscheduledWorkers: z.array(unscheduledWorker),
   /** The core operations it called and their time (#1390). */
@@ -355,6 +361,21 @@ export async function readPluginHealth(
     since: string | Date | null;
   }[];
 
+  // #1729 — consumers with a rebuild pending: one row per plugin at most
+  // (plugins.slug unique, change_consumers_plugin_idx).
+  const rebuilding = (await tx.execute(sql`
+    SELECT p.slug AS plugin_slug, (c.rebuild_cursor IS NOT NULL) AS resumable,
+           c.updated_at AS since
+    FROM plugins p
+    JOIN change_consumers c ON c.plugin_id = p.id
+    WHERE p.slug = ANY(${slugArray}) AND c.rebuild_pending
+  `)) as unknown as { plugin_slug: string; resumable: boolean; since: string | Date }[];
+  const rebuildBySlug = new Map(
+    rebuilding.map((r) => [
+      r.plugin_slug,
+      { resumable: r.resumable, since: new Date(r.since).toISOString() },
+    ]),
+  );
   const serversBySlug = new Map(servers.map((s) => [s.plugin_slug, s]));
   const backoffBySlug = new Map(
     backoffs.flatMap((b) => {
@@ -398,6 +419,7 @@ export async function readPluginHealth(
       problem: state === "failing" && problem ? summary(problem) : null,
       recentErrors: recent.filter((r) => r.plugin_slug === p.slug).map(summary),
       consumerBackoff: backoffBySlug.get(p.slug) ?? null,
+      consumerRebuild: rebuildBySlug.get(p.slug) ?? null,
       unscheduledWorkers: unscheduledBySlug.get(p.slug) ?? [],
       callCost: costSummary(costs.filter((c) => c.plugin_slug === p.slug)),
     });

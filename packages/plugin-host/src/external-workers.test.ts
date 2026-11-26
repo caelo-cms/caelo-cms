@@ -48,6 +48,7 @@ describe("external workers", () => {
         grantIds: ["1"],
         capabilities: ["background_workers"],
         systemActorId: "00000000-0000-0000-0000-00000000ffff",
+        cmsOperations: null,
       },
       manifest,
       source,

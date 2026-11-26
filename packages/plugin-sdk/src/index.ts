@@ -1077,7 +1077,11 @@ export const pluginChangeConsumerSpec = z
   .object({
     /** Operation taking {@link PluginChangesArgs}. */
     operationName: z.string().min(1).max(120),
-    /** Operation taking `{}` that recomputes everything the plugin derives. */
+    /**
+     * Operation that recomputes everything the plugin derives: called with
+     * {@link PluginRebuildArgs}, answering {@link PluginRebuildResult}
+     * (resumable chunks, #1729).
+     */
     rebuildOperationName: z.string().min(1).max(120),
     /** Core kinds; each needs the `cms_admin` read grant. */
     kinds: z.array(z.enum(PLUGIN_CHANGE_KINDS)).max(PLUGIN_CHANGE_KINDS.length),
@@ -1113,6 +1117,31 @@ export interface PluginChange {
   readonly siteSnapshotId: string | null;
   readonly prevSnapshotId: string | null;
 }
+
+/**
+ * #1729 (decision Q11) — what a `changeConsumer.rebuildOperationName` is
+ * called with: nothing at the start, then the `cursor` its previous chunk
+ * answered.
+ */
+export interface PluginRebuildArgs {
+  readonly cursor?: string;
+}
+
+/**
+ * #1729 (Q11) — what a rebuild chunk answers. Anything but `done: false`
+ * means the rebuild is done (so a rebuild that recomputes everything in
+ * one call needs no change). With `done: false`, `cursor` says where the
+ * next chunk starts: the host keeps it on the consumer and calls again
+ * with it, at the next tick if not in this one. A chunk that answers the
+ * cursor it was given makes no progress and is recorded as a failure.
+ */
+export interface PluginRebuildResult {
+  readonly done?: boolean;
+  readonly cursor?: string;
+}
+
+/** Longest cursor a rebuild chunk may answer. */
+export const PLUGIN_REBUILD_CURSOR_MAX = 4096;
 
 /** What a `changeConsumer.operationName` is called with. */
 export interface PluginChangesArgs {
@@ -2365,6 +2394,24 @@ export interface PluginContext {
    * for a plugin with the `visitor_ai` grant that declares a conversation.
    */
   readonly chatTools?: PluginChatTools;
+  /**
+   * #1729 — the plugin's own change consumer. Present on the admin side
+   * for a plugin with the `change_journal` grant that declares a
+   * `changeConsumer`; it needs no `cms_admin` grant.
+   */
+  readonly changes?: PluginChanges;
+}
+
+/** #1729 — what a plugin may ask about its own change consumer (`ctx.changes`). */
+export interface PluginChanges {
+  /**
+   * Whether the consumer's cursor is continuous: it exists, no rebuild is
+   * pending, and the journal's retention has not passed it. Only then has
+   * every change since the plugin's derived state was last correct been
+   * (or is about to be) delivered, so only then may a plugin adopt the
+   * current content as its baseline instead of waiting for its rebuild.
+   */
+  cursorState(): Promise<{ readonly continuous: boolean }>;
 }
 
 /** Reads a plugin's configuration (#1645). Missing stored configuration is an error, never a silent default. */

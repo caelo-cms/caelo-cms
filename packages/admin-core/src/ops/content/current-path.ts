@@ -286,6 +286,7 @@ export async function resolveCurrentPathsDryRun(
  */
 export const refreshCurrentPathOp = defineOperation({
   name: "pages.refresh_current_path",
+  pluginAccess: "write",
   readScope: "request",
   // Plugins call this after writing variant rows. For any other caller a
   // published page's move is held for the URL migration (#586); drafts
