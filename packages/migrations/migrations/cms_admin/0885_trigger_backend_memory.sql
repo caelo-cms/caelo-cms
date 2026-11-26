@@ -57,7 +57,7 @@ SET LOCAL caelo.actor_kind = 'system';
  * plugin id). The statement reads the trigger's transition tables, so only
  * the trigger itself can run it.
  */
-CREATE FUNCTION caelo_journal_statement(
+CREATE OR REPLACE FUNCTION caelo_journal_statement(
   p_op text, p_schema text, p_table text,
   a_kind text, a_key text, a_mode text, p_pair text,
   p_parent text, p_branch text, p_plugin_col text, p_plugin_id text
@@ -262,7 +262,7 @@ $fn$;
  * PL/pgSQL, not SQL: a SQL function would be inlined into the calling
  * expression, and so into every trigger copy's cached plan.
  */
-CREATE FUNCTION caelo_draft_head_changed_sql(p_op text, a_kind text, a_key text, a_sub text)
+CREATE OR REPLACE FUNCTION caelo_draft_head_changed_sql(p_op text, a_kind text, a_key text, a_sub text)
 RETURNS text
 LANGUAGE plpgsql
 IMMUTABLE

@@ -259,9 +259,11 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
     // used to open a connection for the read on a sliver of CPU, for
     // nobody; on searchVIU that read ran into the acquire deadline and was
     // logged as an exhausted pool 18 s before the instance shut down.
-    const rowsWanted = entityListeners.size > 0;
-    if (cursor !== null && listeners.size === 0 && !rowsWanted) return;
+    if (cursor !== null && listeners.size === 0 && entityListeners.size === 0) return;
     const changes: JournalChange[] = [];
+    // Whether `changes` holds every row up to the cursor the read moved to:
+    // only then do the entity listeners get them.
+    let complete = true;
     await adapter.withAdminTransaction(
       SYSTEM_CTX,
       async (tx) => {
@@ -275,6 +277,9 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
           // A tab hears only `draft`, which one row is enough for: without
           // a server-side listener for the rows, a backlog (an instance
           // nobody listened on for hours) costs one row, not every page.
+          // Asked per page, not once per read: a listener that subscribed
+          // while the read waited for its connection gets every row.
+          const rowsWanted = entityListeners.size > 0;
           const page = await readChanges(tx, {
             cursor,
             target,
@@ -288,8 +293,16 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
             return;
           }
           changes.push(...page.changes);
-          if (!page.more || !rowsWanted) {
+          if (!page.more) {
             cursor = page.target;
+            return;
+          }
+          // Skipping the rest moves the cursor past rows nobody reads, so
+          // it is done only while no entity listener would need them; one
+          // that subscribed meanwhile gets the read paged to its end.
+          if (entityListeners.size === 0) {
+            cursor = page.target;
+            complete = false;
             return;
           }
           target = page.target;
@@ -301,6 +314,9 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
     );
     if (changes.length === 0) return;
     publishLiveTopics(["draft"]);
+    // A listener that subscribed after the read skipped rows gets nothing
+    // of it: the skipped rows came before it, and a part would read as all.
+    if (!complete) return;
     for (const listener of entityListeners) {
       try {
         listener(changes);
