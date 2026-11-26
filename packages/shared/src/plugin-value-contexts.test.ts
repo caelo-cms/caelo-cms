@@ -200,6 +200,38 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
     expect(at(`<script/>{{title}}</script>`, "alert(1)").html).toBe(`<script/>alert(1)</script>`);
   });
 
+  it("ends a script where a browser does: a double-escaped `</script>` keeps it open", () => {
+    const at = (html: string, title: unknown = owned("alert(1)")) =>
+      renderTemplate({ html, fields: [{ name: "title", kind: "text" }], contentValues: { title } });
+    for (const html of [
+      `<script><!--<script></script>\n{{title}}\n--></script>`,
+      `<SCRIPT><!--<Script>x</SCRIPT >{{title}}--></script>`,
+      `<script/><!--<script/></script>{{title}}--></script>`,
+    ]) {
+      expect(at(html).missingSlots).toEqual([refusal("context-script")]);
+    }
+    // In the escaped state a `</script>` ends it; `<!-->` closes at once; `-->` leaves the escape.
+    for (const [html, out] of [
+      [`<script><!--</script><p>{{title}}</p>`, `<script><!--</script><p>alert(1)</p>`],
+      [
+        `<script><!--><script></script><p>{{title}}</p>`,
+        `<script><!--><script></script><p>alert(1)</p>`,
+      ],
+      [
+        `<script><!-- x ---><script></script><p>{{title}}</p>`,
+        `<script><!-- x ---><script></script><p>alert(1)</p>`,
+      ],
+    ] as const) {
+      const r = at(html);
+      expect(r.missingSlots).toEqual([]);
+      expect(r.html).toBe(out);
+    }
+    // A core value in the same place renders exactly as before.
+    expect(at(`<script><!--<script></script>{{title}}--></script>`, "x").html).toBe(
+      `<script><!--<script></script>x--></script>`,
+    );
+  });
+
   it("refuses a richtext that does not end in element content", () => {
     for (const html of [
       "<p onclick=alert(1)//",

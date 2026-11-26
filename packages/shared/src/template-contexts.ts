@@ -43,7 +43,8 @@
  *
  * Where htmlparser2 and a browser read a template differently, the browser
  * wins: a self-closed text element (`<script/>`, `<textarea/>`) opens all
- * the same, and its content up to the end tag is what the element holds.
+ * the same, and its content up to the end tag is what the element holds;
+ * a script ends where a browser ends it, its escape states included.
  */
 
 import { QuoteType, Tokenizer } from "htmlparser2";
@@ -214,7 +215,9 @@ function computeContexts(html: string): PlaceholderContexts {
   let element = "";
   let elementNamed = false;
   let maskedElement = "";
-  const selfClosed: { readonly element: string; readonly from: number }[] = [];
+  // Text elements whose content a browser reads differently from
+  // htmlparser2: a self-closed one, and every script (its escape states).
+  const browserRead: { readonly element: string; readonly from: number }[] = [];
   let tagStart = -1;
   let special: string | null = null;
   let attr: { name: string; named: boolean; start: number; end: number } | null = null;
@@ -253,16 +256,17 @@ function computeContexts(html: string): PlaceholderContexts {
         elementNamed = n.named;
         region(s, e, "tag-name", refused("context-tag"), tagStart);
       },
-      onopentagend() {
+      onopentagend(endIndex) {
         // htmlparser2 decides on the name it read: the masked one.
         special = TEXT_ELEMENTS.has(maskedElement) ? maskedElement : null;
+        if (maskedElement === "script") browserRead.push({ element: "script", from: endIndex + 1 });
       },
       onselfclosingtag(endIndex) {
         special = null;
         // A browser ignores the `/` of a non-void HTML element: `<script/>`
         // opens a script all the same. htmlparser2 does not; note the span.
         if (TEXT_ELEMENTS.has(maskedElement))
-          selfClosed.push({ element: maskedElement, from: endIndex + 1 });
+          browserRead.push({ element: maskedElement, from: endIndex + 1 });
       },
       onclosetag(s, e) {
         special = null;
@@ -322,10 +326,15 @@ function computeContexts(html: string): PlaceholderContexts {
   );
   tokenizer.write(masked);
   tokenizer.end();
-  // What a browser reads as the content of a self-closed text element
-  // replaces what htmlparser2 read there.
-  for (const { element: el, from } of selfClosed) {
-    const to = el === "plaintext" ? masked.length : endTagAt(masked, el, from);
+  // What a browser reads as such an element's content replaces what
+  // htmlparser2 read there.
+  for (const { element: el, from } of browserRead) {
+    const to =
+      el === "plaintext"
+        ? masked.length
+        : el === "script"
+          ? scriptEndAt(masked, from)
+          : endTagAt(masked, el, from);
     const context = el === "script" || el === "style" ? refused(`context-${el}`) : () => PLAIN_TEXT;
     for (let k = regions.length - 1; k >= 0; k -= 1) {
       const existing = regions[k] as Region;
@@ -371,6 +380,44 @@ function endTagAt(masked: string, element: string, from: number): number {
   const re = new RegExp(`</${element}[\\t\\n\\f\\r />]`, "gi");
   re.lastIndex = from;
   return re.exec(masked)?.index ?? masked.length;
+}
+
+/**
+ * Where a script whose content starts at `from` ends, as a browser finds
+ * it (HTML, "script data" states): `<!--` enters the escaped state, where
+ * a `<script` enters the double-escaped one; there a `</script` only
+ * returns to the escaped state, and `-->` returns to plain script data
+ * from either (a longer run of dashes before `>` ends in `-->` too).
+ * htmlparser2 ends the script at the first `</script`, so
+ * `<script><!--<script></script>{{x}}--></script>` holds `{{x}}` to a
+ * browser while htmlparser2 reads it as text after the element.
+ */
+function scriptEndAt(masked: string, from: number): number {
+  const token = /<\/script(?=[\t\n\f\r />])|<script(?=[\t\n\f\r />])|<!--|-->/gi;
+  let state: "data" | "escaped" | "double" = "data";
+  token.lastIndex = from;
+  for (let m = token.exec(masked); m !== null; m = token.exec(masked)) {
+    const t = m[0].toLowerCase();
+    if (t === "</script") {
+      if (state !== "double") return m.index;
+      state = "escaped";
+    } else if (t === "<script") {
+      if (state === "escaped") state = "double";
+    } else if (t === "<!--") {
+      if (state === "data") {
+        state = "escaped";
+        // `<!-->` and `<!--->` close at once: the `--` of `<!--` counts.
+        const rest = /^-*>/.exec(masked.slice(token.lastIndex, token.lastIndex + 64));
+        if (rest) {
+          state = "data";
+          token.lastIndex += rest[0].length;
+        }
+      }
+    } else {
+      state = "data";
+    }
+  }
+  return masked.length;
 }
 
 /**

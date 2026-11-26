@@ -124,6 +124,66 @@ export async function resolveListOverlays(
   return askListResolve(listResolveContributors(), variants, scope, () => pageScope);
 }
 
+/** One plugin's overlays while its parts arrive, by variant and address. */
+export type OverlayAccumulator = Map<
+  string,
+  { readonly values: Map<string, unknown>; readonly hidden: Set<string> }
+>;
+
+/**
+ * Merge one part of a plugin's answer into `into`. Keyed by Map, not by
+ * object: a variant token or an address is any string the plugin names,
+ * `constructor` and `__proto__` included, and an object would hand back
+ * an inherited property for it.
+ *
+ * @throws on a variant the render did not ask about, or an address two
+ *   parts give different values.
+ */
+export function mergeOverlayPart(
+  into: OverlayAccumulator,
+  part: Readonly<
+    Record<string, { readonly values: Record<string, unknown>; readonly hidden: readonly string[] }>
+  >,
+  asked: ReadonlySet<string>,
+  label: string,
+): void {
+  for (const [variant, overlay] of Object.entries(part)) {
+    if (!asked.has(variant)) {
+      throw new Error(
+        `${label}: answered for variant "${variant}", which this render does not have`,
+      );
+    }
+    let merged = into.get(variant);
+    if (merged === undefined) {
+      merged = { values: new Map(), hidden: new Set() };
+      into.set(variant, merged);
+    }
+    for (const [address, value] of Object.entries(overlay.values)) {
+      // Parts of one scope may each carry an address (an answer may be
+      // wider than its scope); they must agree on its value.
+      if (merged.values.has(address) && !isDeepStrictEqual(merged.values.get(address), value)) {
+        throw new Error(
+          `${label}: "${address}" in variant ${variant} has two different values in one render`,
+        );
+      }
+      merged.values.set(address, value);
+    }
+    for (const address of overlay.hidden) merged.hidden.add(address);
+  }
+}
+
+/** The merged overlays as an answer carries them (own properties only, via `Object.fromEntries`). */
+export function overlaysRecord(
+  from: OverlayAccumulator,
+): Record<string, { values: Record<string, unknown>; hidden: string[] }> {
+  return Object.fromEntries(
+    [...from].map(([variant, o]) => [
+      variant,
+      { values: Object.fromEntries(o.values), hidden: [...o.hidden] },
+    ]),
+  );
+}
+
 /**
  * Ask these plugins for their overlays of `variants`.
  *
@@ -141,7 +201,7 @@ export async function askListResolve(
   for (const lp of plugins) {
     const operationName = lp.definition.listResolveOperation as string;
     const label = `list-resolve: ${lp.slug}.${operationName}`;
-    const overlays: Record<string, { values: Record<string, unknown>; hidden: Set<string> }> = {};
+    const overlays: OverlayAccumulator = new Map();
     let failed = false;
     // #1729 — a scope too big for one wire line is asked in parts
     // (render-points.ts); a preview's scope is one page's and fits in one.
@@ -171,40 +231,10 @@ export async function askListResolve(
           `${label}: expected { overlays: Record<variant, { values, hidden }> }: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
         );
       }
-      for (const [variant, overlay] of Object.entries(parsed.data.overlays)) {
-        if (!asked.has(variant)) {
-          throw new Error(
-            `${label}: answered for variant "${variant}", which this render does not have`,
-          );
-        }
-        const merged = overlays[variant] ?? { values: {}, hidden: new Set<string>() };
-        for (const [address, value] of Object.entries(overlay.values)) {
-          // Parts of one scope may each carry an address (an answer may be
-          // wider than its scope); they must agree on its value.
-          if (
-            Object.hasOwn(merged.values, address) &&
-            !isDeepStrictEqual(merged.values[address], value)
-          ) {
-            throw new Error(
-              `${label}: "${address}" in variant ${variant} has two different values in one render`,
-            );
-          }
-          merged.values[address] = value;
-        }
-        for (const address of overlay.hidden) merged.hidden.add(address);
-        overlays[variant] = merged;
-      }
+      mergeOverlayPart(overlays, parsed.data.overlays, asked, label);
     }
     if (failed) continue;
-    answers.push({
-      slug: lp.slug,
-      overlays: Object.fromEntries(
-        Object.entries(overlays).map(([variant, o]) => [
-          variant,
-          { values: o.values, hidden: [...o.hidden] },
-        ]),
-      ),
-    });
+    answers.push({ slug: lp.slug, overlays: overlaysRecord(overlays) });
   }
   const mediaIds = answers.flatMap((p) =>
     Object.values(p.overlays).flatMap((o) =>
