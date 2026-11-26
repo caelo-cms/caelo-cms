@@ -32,6 +32,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import { sql } from "drizzle-orm";
 import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
+import { rawSystemSql } from "./_raw-system-sql.js";
 
 let adapter: DatabaseAdapter;
 let pluginsRoot: string;
@@ -120,23 +121,18 @@ afterAll(async () => {
 
 /** The plugin's schema and the rows this file creates, which outlive the per-file reset. */
 const dropSchema = () =>
-  adapter.withAdminTransaction(system, async (tx) => {
-    await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`));
-    await tx.execute(sql.raw("SET LOCAL caelo.actor_kind = 'system'"));
-    await tx.execute(
-      sql.raw(
-        `DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE '${PFX}-%')`,
-      ),
+  rawSystemSql(async (tx) => {
+    await tx.unsafe(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    await tx.unsafe(
+      `DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE '${PFX}-%')`,
     );
-    await tx.execute(sql.raw(`DELETE FROM pages WHERE slug LIKE '${PFX}-%'`));
-    await tx.execute(sql.raw(`DELETE FROM modules WHERE slug LIKE '%${PFX}%'`));
-    await tx.execute(
-      sql.raw(
-        `DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE '${PFX}-%')`,
-      ),
+    await tx.unsafe(`DELETE FROM pages WHERE slug LIKE '${PFX}-%'`);
+    await tx.unsafe(`DELETE FROM modules WHERE slug LIKE '%${PFX}%'`);
+    await tx.unsafe(
+      `DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE '${PFX}-%')`,
     );
-    await tx.execute(sql.raw(`DELETE FROM templates WHERE slug LIKE '${PFX}-%'`));
-    await tx.execute(sql.raw(`DELETE FROM layouts WHERE slug LIKE '${PFX}-%'`));
+    await tx.unsafe(`DELETE FROM templates WHERE slug LIKE '${PFX}-%'`);
+    await tx.unsafe(`DELETE FROM layouts WHERE slug LIKE '${PFX}-%'`);
   });
 
 async function call(
