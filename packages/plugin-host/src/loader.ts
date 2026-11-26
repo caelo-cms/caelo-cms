@@ -1790,6 +1790,10 @@ async function registerPluginSurfaces(
   for (const tool of def.tools ?? []) {
     pluginToolsRegistry.register(def.slug, tool);
   }
+  // The same for live list sources: a version that drops one, or all of
+  // them, leaves none of the earlier version's answering through an entry
+  // it no longer has. Their declared names stay, for diagnostics.
+  pluginListSourcesRegistry.unregisterPlugin(def.slug);
   if (def.listSources && def.listSources.length > 0 && def.listSourcesOperation) {
     pluginListSourcesRegistry.register(def.slug, def.listSources, def.listSourcesOperation);
   }

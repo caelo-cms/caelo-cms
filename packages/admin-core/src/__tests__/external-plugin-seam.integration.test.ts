@@ -19,6 +19,7 @@ import {
   bootstrap,
   loadActivatedPlugin,
   loadedPlugins,
+  pluginListSourcesRegistry,
   resetPluginHost,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
@@ -345,6 +346,52 @@ it("an installed plugin's list types are stored as types it owns while it runs (
   expect([...rows]).toEqual([{ plugin_id: pluginId, name: "Glossary terms" }]);
   // A boot re-syncs from the verified manifest and writes nothing new.
   expect(await loadActivatedPlugin(slug)).toEqual({ loaded: true });
+});
+
+it("an update without list sources leaves none of the earlier version's live (list_sources)", async () => {
+  const slug = "seam-sourced";
+  const name = "seam_sourced_items";
+  const v1 = {
+    slug,
+    version: "1.0.0",
+    tier: 2,
+    schema: {},
+    operations: ["entries"],
+    listSources: [
+      {
+        name,
+        label: "Sourced items",
+        description: "Items the plugin offers to modules.",
+        node: { label: "Item", fields: [{ name: "label", label: "Label", type: "text" }] },
+      },
+    ],
+    requestedCapabilities: ["list_sources"],
+    capabilityReasons: { list_sources: "Offer items to modules" },
+  };
+  await installExternal(
+    v1,
+    `export default {slug:"${slug}",version:"1.0.0",tier:2,listSourcesOperation:"entries",operations:{entries:async()=>({sources:{}})}};`,
+  );
+  const live = () =>
+    [...pluginListSourcesRegistry.activeByOperation().values()]
+      .filter((s) => s.pluginSlug === slug)
+      .flatMap((s) => [...s.specs.keys()]);
+  expect(live()).toEqual([name]);
+  // The running admin takes the update: no live source answers through the
+  // entry the new version no longer has; the name stays known as dormant.
+  await installExternal(
+    {
+      slug,
+      version: "1.1.0",
+      tier: 2,
+      schema: {},
+      operations: ["noop"],
+      requestedCapabilities: [],
+    },
+    `export default {slug:"${slug}",version:"1.1.0",tier:2,operations:{noop:async()=>null}};`,
+  );
+  expect(live()).toEqual([]);
+  expect(pluginListSourcesRegistry.dormantNames().get(name)).toBe(slug);
 });
 
 it("refuses an installed plugin's list type without its prefix at staging", async () => {
