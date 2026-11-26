@@ -366,3 +366,18 @@ describe("describeRenderFailures — the next step of a stopped build (#1718)", 
     expect(next.tool).toBe("bug_report");
   });
 });
+
+describe("renderRepairOf — a plugin value the host refused (#1729)", () => {
+  it("sends the AI to the plugin, with the rule and the field, within the finding's cut", () => {
+    const r = renderRepairOf({
+      reason: "plugin-value-refused:comments.recent_comments.body:element-script",
+      moduleSlug: "latest-comments",
+    });
+    expect(r.tool).toBe("get_plugin");
+    expect(r.hint).toContain(
+      'The plugin "comments" handed the page a body value in its list source recent_comments that Caelo refuses (element-script)',
+    );
+    expect(r.hint).toContain("submit_plugin");
+    expect(r.hint.length).toBeLessThan(500);
+  });
+});

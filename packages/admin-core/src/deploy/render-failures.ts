@@ -38,10 +38,12 @@ import {
   PAGE_PATH_UNKNOWN,
   PAGE_PROP_UNKNOWN,
   PAGE_VALUE_PATHS,
+  PLUGIN_VALUE_REFUSED,
   parseMediaFailureMarker,
   parseMediaReferenceMarker,
   parseOgImageFailureMarker,
   parsePagePathUnknown,
+  parsePluginValueRefused,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
@@ -235,6 +237,20 @@ export function pageMarkerHint(marker: string, mod: string): string | undefined 
   }
 }
 
+/**
+ * #1729 — how the AI handles a value a plugin handed a page that the host
+ * refused (`plugin-value-refused:<plugin>.<source>.<field>:<rule>`, shared
+ * `lists/plugin-values.ts`): the plugin's data, not the module's.
+ */
+export function pluginValueRefusedHint(body: string): string {
+  const { plugin, source, field, rule } = parsePluginValueRefused(body);
+  return (
+    `The plugin "${plugin}" handed the page a ${field} value in its list source ${source} that Caelo refuses (${rule}): ` +
+    "richtext may hold only prose (p, a, strong, em, lists, h2-h6, blockquote, code, br, span; no on* or style), links only https, http, mailto, tel or a page, media only library images. " +
+    "It is the plugin's data, not the module's: fix the row it comes from, or submit a corrected plugin version (submit_plugin). Tell the operator."
+  );
+}
+
 /** What the value at `page.<path>` of type `type` answers, for {@link pageMarkerHint}. */
 function pageValueAnswers(path: string, type: string): string {
   const tag = `{{page.${path}}}`;
@@ -308,6 +324,8 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
     case PAGE_KEY_UNKNOWN:
     case PAGE_PATH_UNKNOWN:
       return { tool: "update_modules_many", hint: pageMarkerHint(marker, mod) as string };
+    case PLUGIN_VALUE_REFUSED:
+      return { tool: "get_plugin", hint: pluginValueRefusedHint(path) };
     default:
       return { tool: "set_content_instance_values_many", hint: `${REFERENCE_REPAIR}.` };
   }

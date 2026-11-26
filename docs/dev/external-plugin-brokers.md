@@ -2,7 +2,7 @@
 
 # Brokering every capability to runtime-installed plugins: design
 
-**Status:** decided (maintainer, 2026-11-26: every recommendation of §9 accepted, decisions on #1729) and shipping in one PR, #1732, in phases. **Phase A has landed:** the status record, the refusal at submission and the parity test (§4.1, §4.2), the sandbox pools, budgets and bundle cache (§4.4), the one registration seam (§4.3, with the confirmed §10 gaps), `background_workers` (§5.1), `list_types` (§6.1), and `snapshots` withdrawn (§7.4). **Phase B2 has landed:** `ai_provider` (§7.2) and `email` (§7.3). The rest follows in the order of §8; each phase updates this line, the status table in §4.1 and the CMS_REQUIREMENTS §14.13 list.
+**Status:** decided (maintainer, 2026-11-26: every recommendation of §9 accepted, decisions on #1729) and shipping in one PR, #1732, in phases. **Phase A has landed:** the status record, the refusal at submission and the parity test (§4.1, §4.2), the sandbox pools, budgets and bundle cache (§4.4), the one registration seam (§4.3, with the confirmed §10 gaps), `background_workers` (§5.1), `list_types` (§6.1), and `snapshots` withdrawn (§7.4). **Phase B1 has landed:** `cms_admin` with the `pluginAccess` marker (§7.1) and `change_journal` with resumable rebuilds (§5.2). **Phase B2 has landed:** `ai_provider` (§7.2) and `email` (§7.3). The rest follows in the order of §8; each phase updates this line, the status table in §4.1 and the CMS_REQUIREMENTS §14.13 list.
 
 CLAUDE.md §2 says "A shipped plugin may do nothing a runtime-installed plugin with the same grants could not" (also CMS_REQUIREMENTS §14.2). When this was written a runtime-installed (external) plugin could be granted 12 of the 26 capabilities in `pluginCapability` (`packages/plugin-sdk/src/index.ts:174-201`). File and line references describe the tree at `ad4754b5c`, before the implementation. This document designs a broker for each of the other 14, groups them by mechanism, proposes an order, and lists the decisions the maintainer has to make (§9).
 
@@ -104,8 +104,8 @@ A third status, `withdrawn`, is not needed: the one capability it would have des
 
 | Status | Capabilities |
 |---|---|
-| brokered | `cms_admin_schema`, `chat_runner_tools`, `background_workers`, `list_types`, `companion_skills`, `font_assets`, `private_files`, `image_generation`, `site_media_read`, `consent_provider`, `page_output`, `collections`, `batch_jobs`, `visitor_ai`, `ai_provider`, `email` |
-| planned (#1729) | `cms_admin`, `change_journal`, `head_contributions`, `url_slots`, `client_assets`, `list_sources`, `list_resolve`, `content_variants`, `link_resolve` |
+| brokered | `cms_admin`, `cms_admin_schema`, `change_journal`, `chat_runner_tools`, `background_workers`, `list_types`, `list_sources`, `companion_skills`, `font_assets`, `private_files`, `image_generation`, `site_media_read`, `consent_provider`, `page_output`, `collections`, `batch_jobs`, `visitor_ai`, `ai_provider`, `email` |
+| planned (#1729) | `head_contributions`, `url_slots`, `client_assets`, `list_resolve`, `content_variants`, `link_resolve` |
 
 - The 12 brokered capabilities started as `brokered`, the others as `planned` with issue 1729 until each gets its own issue.
 - `external-plugin.ts:34-55` and `loader.ts:887-904` are replaced by a lookup in the record.
@@ -141,7 +141,7 @@ A new capability without a status fails the type check and the test. A capabilit
 
 ### 4.4 Sandbox runtime changes
 
-**Implemented in Phase A:** the bundle cache, the two pools, the budget per kind (`SANDBOX_BUDGETS`, `SANDBOX_POOLS` in `packages/plugin-host/src/sandbox-runtime.ts`) and the call limit per kind. The kind of a call comes from its origin (`sandboxKindOf` in `external-plugin.ts`: worker, batch, render with a `renderId` is a preview, any other render a build, the rest interactive), or from `RunPluginOperationOpts.sandboxKind` for calls whose origin does not say it (a journal batch, a rebuild chunk); it travels on the context under the host-only symbol `SANDBOX_KIND` (`sandbox-kind.ts`). Chunked messages and the reserved composition-point entries come with the render-point runtime (PR 8).
+**Implemented in Phase A:** the bundle cache, the two pools, the budget per kind (`SANDBOX_BUDGETS`, `SANDBOX_POOLS` in `packages/plugin-host/src/sandbox-runtime.ts`) and the call limit per kind. The kind of a call comes from its origin (`sandboxKindOf` in `external-plugin.ts`: worker, batch, render with a `renderId` is a preview, any other render a build, the rest interactive), or from `RunPluginOperationOpts.sandboxKind` for calls whose origin does not say it (a journal batch, a rebuild chunk); it travels on the context under the host-only symbol `SANDBOX_KIND` (`sandbox-kind.ts`). **Implemented in Phase B3a:** the render-point runtime (`packages/plugin-host/src/render-points.ts`): the reserved entries (`RENDER_POINT_ENTRIES`, resolved by the child, checked by `$inspect` both ways), page ids in chunks (`chunkPageIds`, by bytes and, for a point whose answer grows with its pages, by count), answers over one line as `part` messages capped at the caller's total (`RunPluginOperationOpts.maxAnswerBytes`, `SANDBOX_ANSWER_BYTES`), and `assertAnswerSize` for an in-process answer. A new point adds one row to `RENDER_POINT_ENTRIES`, asks through `runPluginOperation` with its cap and checks its values with `plugin-values.ts` (§4.5).
 
 Needed by the host-initiated runs and composition points:
 
@@ -166,7 +166,7 @@ All composition points that return values go through one host function, `checkPl
 - `richtext`: CLAUDE.md §1A says richtext is prose. The value is parsed with `htmlparser2` (already a dependency of `plugin-host`) and refused if it contains an element outside an inline and block prose allowlist (`p`, `a`, `strong`, `em`, `ul`, `ol`, `li`, `h2`-`h6`, `blockquote`, `code`, `br`, `span`), any `on*` attribute, `style`, or a URL attribute that fails the `link` rule. It is refused, not cleaned: a cleaned value would be a silent fallback (CLAUDE.md §2), and the refusal names the element and the field.
 - `media`: `caelo:media/<id>`, and the asset must exist and be `library` (not `reference`) on the render's branch.
 
-Q2 decides whether this binds shipped plugins in the same PR.
+Q2 decides whether this binds shipped plugins in the same PR. **Implemented in Phase B3a** for every plugin (`packages/plugin-host/src/plugin-values.ts`): a refused value is replaced by a stand-in the render keeps raw and records as `plugin-value-refused:<plugin>.<source>.<field>:<rule>` (shared `lists/plugin-values.ts`), a render failure in the #1604 sense: listed in the preview, recorded by a Stage, filed by the audit (`render/plugin-value-refused`, fix `get_plugin`), refused by Publish live. Media facts come from `media.describe_many`. The shipped list sources (consent-manager, international-site) declare only `text`, `link` and `boolean` fields, so nothing of theirs is refused; their text is now escaped.
 
 ### 4.6 Adding a broker (checklist, from Phase A on)
 
@@ -175,7 +175,8 @@ Q2 decides whether this binds shipped plugins in the same PR.
 3. **Registration:** if the shipped path registers something for it, that code belongs in `registerPluginSurfaces` (`loader.ts`), so both paths run it; gates belong in `preflightRegistration`.
 4. **Handle:** put every check in the host handle built in `capabilities.ts` (principle 1). The sandbox broker in `sandbox-runtime.ts` only Zod-parses the wire arguments, and the method joins `sandboxMethod` (`sandbox-protocol.ts`) and the child's `ctx` (`sandbox-entry.ts`, attached by a `has…` flag in the first message).
 5. **Reserved entries:** a composition point the host asks is a `$name` entry the child resolves from the plugin's definition (like `$staticRender`, `$onActivate`), checked by `$inspect` against the manifest's flag.
-6. **Kind:** a call whose origin does not say what it is passes `RunPluginOperationOpts.sandboxKind` (`journal`, `rebuild`).
+6. **Kind:** a call whose origin does not say what it is passes `RunPluginOperationOpts.sandboxKind` (`journal`, `rebuild`). It also reaches `makePluginContext` (`MakePluginContextOpts.sandboxKind`), for in-process plugins too, so a handle can apply a rule of that kind of work (Phase B1: no public-table writes from journal work, site-wide reads only in background work).
+8. **Operations:** an operation that admits actor kind `plugin` declares `pluginAccess` (`read`, `write`, or `handle` when it backs one of the plugin's own handles); the registry tests in admin-core and plugin-host fail without it (Phase B1, §7.1).
 7. **Parity:** add the capability's smoke to `SMOKES` in `external-capability-parity.test.ts`, plus adversarial sandbox cases for the new surface and an integration test through staging, approval and activation (`external-plugin-seam.integration.test.ts` has the flow).
 
 ---
@@ -237,6 +238,15 @@ Q2 decides whether this binds shipped plugins in the same PR.
 
 **Tests.** Integration: an external consumer of its own table receives a batch for a chat write on the chat's branch and for a main write on main; a rebuild resumes across three ticks; a consumer with core kinds and no `cms_admin` receipt is refused at registration. Adversarial: a batch that throws is delivered again and leaves the write intact; a batch that writes a public table is refused (if Q12 is A); a rebuild that never reports `done` stays "rebuilding" and is visible in plugin health, without blocking other consumers.
 
+**Implemented (Phase B1).**
+- The drain dispatches batches with kind `journal` and rebuild chunks with kind `rebuild` (`change-consumers.ts`), so a sandboxed consumer gets the background pool and budget, and every plugin's handles know it.
+- `ctx.changes.cursorState()` answers the plugin about its own consumer with the `change_journal` grant alone, on every admin-side origin but a visitor's. international-site used `ctx.cms.call("plugin_changes.cursor_state")` and now uses the handle; the operation is `pluginAccess: "handle"`.
+- A journal batch on a chat's branch acts unattended on that branch (Phase A's known gap): an installed plugin gets private storage and `ctx.cms` there, and its writes are staged with the chat.
+- Q12 for every plugin: `ctx.query` refuses public-table writes from journal batches and rebuilds (`capabilities.ts`, next to the observer and batch rule). No shipped consumer wrote public tables.
+- Q11 for every plugin: the rebuild operation gets `{ cursor? }` and answers `{ done: false, cursor }` to continue. The host stores the cursor on the consumer (`change_consumers.rebuild_cursor`, migration 0800, `plugin_changes.save_rebuild_cursor`, fenced on the claim) and runs at most 10 chunks per drain (`DrainLimits.maxRebuildChunks`). With chunks left the consumer reports `rebuilding` and resumes at its next drain, and no batch reaches it until the rebuild is done. Any other answer means done (today's rebuilds are unchanged). An answer of `done: false` without a cursor, or with the cursor the chunk was given, is refused loudly (`rebuildChunkOutcome`).
+- Plugin health carries `consumerRebuild` (since when, resumable), in Settings → Plugins and `get_plugin`. Migration 0801 lets human and ai actors read `change_consumers` for it.
+- A consumer of core kinds without the `cms_admin` grant is refused at staging (the manifest schema) and again at registration.
+
 **Size M.** It depends on §7.1 for core kinds.
 
 ---
@@ -290,6 +300,8 @@ The same rules apply to every point in this group:
 **Risk closed.** Stored XSS. A list source fed from an inbox table (visitor text) would put visitor HTML on every page whose module iterates it, because nothing escapes it today (§2.2).
 
 **Tests.** Adversarial: an entry label `<img src=x onerror=…>` renders escaped; a `richtext` entry with `<script>` is refused with the field named; an answer of 5 MB is refused before it is walked; an entry for a page not asked about. **Size M**, including the shared render-point runtime (chunking, render budget, reserved entries, `checkPluginValue`), which ships in this PR because it is the first point to need it.
+
+**Implemented in Phase B3a.** `externalDeclarations` carries `listSources`; the definition names `$listSources` as its `listSourcesOperation`; the call reads private storage read-only on the render's branch; a build asks once per 1000 pages (`LIST_SOURCE_PAGES_PER_CALL`), each answer capped at 4 MB while its parts arrive. `external-list-sources.integration.test.ts` runs it through staging, approval, activation and the preview (escaped label, refused `<script>` richtext and `javascript:` link, a refused render write); measured on Apple silicon, Deno 2.9.6: a preview of a page with an external source took 150-170 ms in all, a build-style resolve of 30 000 pages 1.8-4.4 s in 30 calls (unchunked it could not run: the page ids alone pass the 1 MB line).
 
 ### 6.4 `link_resolve`
 
@@ -381,6 +393,13 @@ args: [op: z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/).max(120), inpu
 5. `readScope: "site"` operations only from background origins (worker, journal rebuild, batch), never per render or per chat call (CLAUDE.md §2, the O(request) rule). No operation that admits `plugin` is site-scoped today (all 17 read operations shipped plugins call are `request`); the rule keeps it that way.
 6. Executed as today: plugin actor, the invocation's branch and task, `renderSiteBaseUrl` and live URLs on a render (`capabilities.ts:801-830`), stats per op (`timedPluginOpCall`).
 7. Result size: an answer over 1 MB is refused with "page through it (limit, afterId)" rather than truncated.
+
+**Implemented (Phase B1).**
+- `pluginAccess` is declared on every operation that admits `plugin`: 29 core reads, 10 core writes, and the plugin host's handle operations as `handle` (`packages/query-api/src/plugin-access.ts`; registry tests in admin-core and plugin-host).
+- The checks live in `pluginCmsRefusal` (`capabilities.ts`), in this order: registered and open to plugins, not `handle`, in the receipt's operations (installed plugins: `ExternalApproval.cmsOperations`, read from the receipt), no write on a render, and a site-scoped read only from a worker, batch or rebuild. Every plugin is held to all but the allowlist, which a shipped plugin's grant does not carry. None of the 32 shipped-plugin and preview integration suites tripped the new rules.
+- An installed plugin gets `ctx.cms` on a render (reads), in unattended calls, in journal work, and in chat and panel calls for a person who may author. A live build's refusal (#1495) is recorded by the host handle before the error crosses the wire.
+- The sandbox's `cms.call` checks only the wire shape. An answer larger than one message (1 MB) is refused with "page through it" rather than ending the call: that is the wire's limit, which an in-process plugin does not have.
+- Not done here: a staging-time check that the allowlisted operations exist and are open to plugins. The approval page lists such names as "not callable by plugins", and the broker refuses them at call time.
 
 **Approval card.** It shows the allowlist grouped by domain and by read or write, in plain words, which is the per-domain read and write grants of CMS_REQUIREMENTS §14.5.
 

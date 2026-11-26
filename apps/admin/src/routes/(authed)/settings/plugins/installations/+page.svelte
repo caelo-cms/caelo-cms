@@ -126,7 +126,16 @@
             {#each item.manifest.requestedCapabilities ?? [] as capability}
               <label class="flex items-start gap-2"><input type="checkbox" name="capability" value={capability} required />
                 <span><strong>{capability}</strong>: {item.manifest.capabilityReasons?.[capability]}
-                  {#if item.manifest.capabilityConstraints?.[capability]}<span class="block text-xs">Scope: {JSON.stringify(item.manifest.capabilityConstraints[capability])}</span>{/if}
+                  {#if capability === 'cms_admin' && item.cmsOperations}
+                    <span class="block text-xs">Only these site operations. A page preview can never change anything through them.</span>
+                    <ul class="ml-4 list-disc text-xs">
+                      {#each item.cmsOperations as group}
+                        <li><strong>{group.domain}</strong>:
+                          {#if group.reads.length > 0}reads {group.reads.join(', ')}{/if}{#if group.reads.length > 0 && group.writes.length > 0}; {/if}{#if group.writes.length > 0}changes {group.writes.join(', ')}{/if}{#if group.unavailable.length > 0}{#if group.reads.length + group.writes.length > 0}; {/if}not callable by plugins (refused when used): {group.unavailable.join(', ')}{/if}
+                        </li>
+                      {/each}
+                    </ul>
+                  {:else if item.manifest.capabilityConstraints?.[capability]}<span class="block text-xs">Scope: {JSON.stringify(item.manifest.capabilityConstraints[capability])}</span>{/if}
                 </span>
               </label>
             {/each}

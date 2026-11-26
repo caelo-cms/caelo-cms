@@ -48,6 +48,7 @@ import {
   pagedUrl,
   splitPaginationValue,
 } from "./pagination.js";
+import { PLUGIN_VALUE_REFUSED, refusedPluginValueMarker } from "./plugin-values.js";
 import { mergeQuerySource } from "./query-merge.js";
 import { parseListRef } from "./refs.js";
 import type {
@@ -85,6 +86,8 @@ const LIST_MARKER_PREFIXES = [
   // #1257 — a second paginated list on one page; a paginated page without a pager.
   "list-pagination-conflict:",
   "list-pager-missing:",
+  // #1729 — a plugin value the host refused (`lists/plugin-values.ts`).
+  `${PLUGIN_VALUE_REFUSED}:`,
 ] as const;
 
 /** True for a list failure marker — the editor's missing-content surface shows these. */
@@ -1145,9 +1148,14 @@ function createPageContext(
           itemAttr: null,
           childrenKey: null,
           depth: 1,
-          get: (key: string) => {
+          get: (key: string): ScopeValue | undefined => {
             if (key === "id") return text(e.id);
-            if (Object.hasOwn(e.values, key)) return untypedValue(e.values[key]) ?? EMPTY_TEXT;
+            if (Object.hasOwn(e.values, key)) {
+              // #1729 — a value the plugin host refused stays raw and fails.
+              const refused = refusedPluginValueMarker(e.values[key]);
+              if (refused !== null) return { kind: "failed", marker: refused };
+              return untypedValue(e.values[key]) ?? EMPTY_TEXT;
+            }
             return positionValue(key, pos);
           },
         };

@@ -18,7 +18,13 @@ import { z } from "zod";
 import type { PluginHostInfra } from "./dispatch.js";
 import { assertExternalApproval, type ExternalApproval } from "./external-authorization.js";
 import { publicOperationFromManifest } from "./manifest-definition.js";
-import { SANDBOX_KIND, type SandboxKind, type SandboxKindCarrier } from "./sandbox-kind.js";
+import { renderPointDefinition } from "./render-points.js";
+import {
+  SANDBOX_ANSWER_BYTES,
+  SANDBOX_KIND,
+  type SandboxKind,
+  type SandboxKindCarrier,
+} from "./sandbox-kind.js";
 import { runSandbox, SANDBOX_AI_INTERACTIVE_MS } from "./sandbox-runtime.js";
 
 /** Build a definition containing host-generated handlers for only the reviewed operation names. */
@@ -62,6 +68,7 @@ export function externalPluginDefinition(opts: {
   );
   const invoke = (operation: string) => (context: PluginContext, args: unknown) => {
     const kind = sandboxKindOf(context);
+    const maxResultBytes = (context as PluginContext & SandboxKindCarrier)[SANDBOX_ANSWER_BYTES];
     return runSandbox({
       source: opts.source,
       manifest,
@@ -71,13 +78,19 @@ export function externalPluginDefinition(opts: {
       authorize,
       kind,
       ...(kind === "interactive" && spendsAi ? { timeoutMs: SANDBOX_AI_INTERACTIVE_MS } : {}),
+      ...(maxResultBytes ? { maxResultBytes } : {}),
     });
   };
+  // #1729 (Q3 A) — the composition points the manifest announces, each a
+  // reserved entry the child resolves from the plugin's own definition.
+  const points = renderPointDefinition(manifest, invoke);
   return Object.freeze({
     ...externalDeclarations(manifest),
-    operations: Object.freeze(
-      Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
-    ),
+    ...points.keys,
+    operations: Object.freeze({
+      ...Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
+      ...points.operations,
+    }),
     ...(manifest.hasStaticRender
       ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
       : {}),
@@ -147,6 +160,10 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // while it runs (`list_types.sync_plugin_types`), slugs prefixed with
     // the plugin's own.
     ...(manifest.listTypes ? { listTypes: manifest.listTypes } : {}),
+    // #1729 — the names a module iterates; the entries come from the
+    // `$listSources` entry (render-points.ts), checked like a shipped
+    // plugin's (plugin-values.ts).
+    ...(manifest.listSources ? { listSources: manifest.listSources } : {}),
     // #1332 — the reviewed contract, with the input schema compiled from
     // the manifest's JSON Schema: the host validates a visitor's body
     // before the sandbox ever sees it.

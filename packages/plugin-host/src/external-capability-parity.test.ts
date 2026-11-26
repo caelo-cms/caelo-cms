@@ -116,6 +116,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
   const search = await shipped("site-search");
   const assistant = await shipped("site-assistant");
   const newsletter = await shipped("newsletter");
+  const consent = await shipped("consent-manager");
   return {
     ...search,
     ...assistant,
@@ -130,7 +131,9 @@ async function fixtureManifest(): Promise<PluginManifest> {
     adminSchema: search.adminSchema,
     workers: search.workers,
     listTypes: search.listTypes,
+    listSources: consent.listSources,
     aiChatOperations: assistant.aiChatOperations,
+    changeConsumer: consent.changeConsumer,
     tier: 2,
   };
 }
@@ -143,6 +146,40 @@ async function fixtureManifest(): Promise<PluginManifest> {
 const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {};
 
 const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
+  // #1729 — the broker takes the operation name and input; every rule is
+  // the host handle's (capabilities.ts, tested in plugin-cms.test.ts).
+  cms_admin: async () => {
+    const calls: unknown[][] = [];
+    const cms = {
+      call: async (...args: unknown[]) => {
+        calls.push(args);
+        return { pages: [] };
+      },
+    };
+    expect(await sandboxed(`return ctx.cms.call("pages.list", { limit: 1 })`, { cms })).toEqual({
+      pages: [],
+    });
+    expect(calls).toEqual([["pages.list", { limit: 1 }]]);
+  },
+  // #1729 — batches and rebuild chunks are host-initiated runs of the
+  // declared operations; the plugin asks about its consumer through ctx.changes.
+  change_journal: async () => {
+    const changeConsumer = {
+      operationName: "run",
+      rebuildOperationName: "run",
+      kinds: [],
+      ownTables: ["notes"],
+      lines: "all" as const,
+    };
+    expect(externalDeclarations({ ...probe, changeConsumer }).changeConsumer).toEqual(
+      changeConsumer,
+    );
+    const fake = fakeHandle(["cursorState"], { continuous: true });
+    expect(await sandboxed(`return ctx.changes.cursorState()`, { changes: fake.handle })).toEqual({
+      continuous: true,
+    });
+    expect(fake.calls).toEqual(["cursorState"]);
+  },
   cms_admin_schema: async () => {
     const fake = fakeHandle(["list"], [{ id: ID }]);
     expect(
@@ -266,6 +303,30 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
       mailTemplates,
       mailUnsubscribe,
     });
+  },
+  list_sources: async () => {
+    const listSources = (await fixtureManifest()).listSources;
+    expect(listSources?.length).toBeGreaterThan(0);
+    const manifest = { ...probe, listSources } as PluginManifest;
+    expect(externalDeclarations(manifest).listSources).toEqual(listSources);
+    // The reserved entry answers through the operation the definition names,
+    // as a render (preview budget) call.
+    const name = (listSources ?? [])[0]?.name as string;
+    expect(
+      await runSandbox({
+        source: `export default {slug:"parity-probe",version:"1.0.0",tier:2,listSourcesOperation:"entries",
+          operations:{entries:async(ctx,args)=>({sources:{[args.pageIds[0]]:{${name}:[{id:"a",values:{label:ctx.invocation.origin}}]}}})}};`,
+        manifest,
+        operation: "$listSources",
+        args: { pageIds: [ID] },
+        context: {
+          ...baseContext,
+          invocation: { origin: "render", actorId: ID, renderId: "pass" },
+        } as PluginContext,
+        authorize: async () => {},
+        kind: "preview",
+      }),
+    ).toEqual({ sources: { [ID]: { [name]: [{ id: "a", values: { label: "render" } }] } } });
   },
   batch_jobs: async () => {
     expect(

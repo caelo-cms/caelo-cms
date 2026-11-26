@@ -51,7 +51,12 @@ import {
 } from "./published-state.js";
 import type { PluginRenderFailure } from "./render-failures.js";
 import { recordPluginError } from "./runtime-health.js";
-import { SANDBOX_KIND, type SandboxKind, type SandboxKindCarrier } from "./sandbox-kind.js";
+import {
+  SANDBOX_ANSWER_BYTES,
+  SANDBOX_KIND,
+  type SandboxKind,
+  type SandboxKindCarrier,
+} from "./sandbox-kind.js";
 import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
@@ -254,6 +259,8 @@ interface MakeContextOpts {
   readonly publicTarget?: "live" | "staging";
   /** #1495 — see `MakePluginContextOpts.liveUrls`. */
   readonly liveUrls?: LiveBuildUrls;
+  /** #1729 — see `MakePluginContextOpts.sandboxKind`. */
+  readonly sandboxKind?: SandboxKind;
 }
 
 /**
@@ -329,12 +336,21 @@ export interface RunPluginOperationOpts {
    */
   readonly publicTarget?: "live" | "staging";
   /**
-   * #1729 — what a sandboxed (runtime-installed) plugin's call is for, when
-   * the origin alone does not say it: a change-journal batch or a rebuild
-   * chunk. Picks its slot pool and time budget (sandbox-kind.ts). Ignored
-   * for a plugin that runs in-process.
+   * #1729 — what a plugin's call is for, when the origin alone does not
+   * say it: a change-journal batch or a rebuild chunk. For a sandboxed
+   * (runtime-installed) plugin it picks the slot pool and time budget
+   * (sandbox-kind.ts); for every plugin it sets what the context's handles
+   * allow (capabilities.ts: no public-table writes from journal work,
+   * site-wide reads only from background work).
    */
   readonly sandboxKind?: SandboxKind;
+  /**
+   * #1729 — the largest answer this call may return, serialized: a render
+   * point's own cap (render-points.ts). A sandboxed plugin's answer over
+   * one wire line arrives in parts up to it; a shipped plugin's answer is
+   * checked against the same number by the point. Default: one line (1 MB).
+   */
+  readonly maxAnswerBytes?: number;
 }
 
 /**
@@ -810,6 +826,7 @@ async function runPluginOperationNow(
       invocation: opts.invocation,
       ...(publicOperation ? { publicOperation } : {}),
       ...(opts.publicTarget ? { publicTarget: opts.publicTarget } : {}),
+      ...(opts.sandboxKind ? { sandboxKind: opts.sandboxKind } : {}),
     });
   } catch (e) {
     if (isProjectionNotPublished(e)) {
@@ -833,8 +850,11 @@ async function runPluginOperationNow(
       error: { kind: "OperationNotPublic", message: `"${opts.operationName}" has no declared run` },
     };
   }
-  if (opts.sandboxKind) {
-    const marked: SandboxKindCarrier = { [SANDBOX_KIND]: opts.sandboxKind };
+  if (opts.sandboxKind || opts.maxAnswerBytes) {
+    const marked: SandboxKindCarrier = {
+      ...(opts.sandboxKind ? { [SANDBOX_KIND]: opts.sandboxKind } : {}),
+      ...(opts.maxAnswerBytes ? { [SANDBOX_ANSWER_BYTES]: opts.maxAnswerBytes } : {}),
+    };
     ctx = Object.assign({}, ctx, marked);
   }
   try {

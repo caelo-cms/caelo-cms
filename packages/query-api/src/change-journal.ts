@@ -512,7 +512,7 @@ export async function beginConsumerRebuild(tx: TransactionRunner, name: string):
     UPDATE change_consumers
        SET cursor_snapshot = pg_current_snapshot(), page_target = NULL, page_after_xid = NULL,
            page_after_table = NULL, page_after_row = NULL, rebuild_pending = true,
-           updated_at = now()
+           rebuild_cursor = NULL, updated_at = now()
      WHERE name = ${name}
     RETURNING 1
   `)) as unknown as unknown[];
@@ -539,7 +539,7 @@ export async function finishConsumerRebuild(
     return;
   }
   const rows = (await tx.execute(sql`
-    UPDATE change_consumers SET rebuild_pending = false, updated_at = now()
+    UPDATE change_consumers SET rebuild_pending = false, rebuild_cursor = NULL, updated_at = now()
      WHERE name = ${name}
     RETURNING 1
   `)) as unknown as unknown[];
@@ -559,11 +559,45 @@ export async function finishConsumerRebuildIfHeld(
   holder: string,
 ): Promise<boolean> {
   const rows = (await tx.execute(sql`
-    UPDATE change_consumers SET rebuild_pending = false, updated_at = now()
+    UPDATE change_consumers SET rebuild_pending = false, rebuild_cursor = NULL, updated_at = now()
      WHERE name = ${name} AND ${claimHeld(holder)}
     RETURNING 1
   `)) as unknown as unknown[];
   return rows.length > 0;
+}
+
+/**
+ * #1729 (decision Q11) — store where a resumable rebuild continues: the
+ * cursor its last chunk answered. Only for `holder`'s current claim and a
+ * pending rebuild, so a chunk that outlived its claim stores nothing.
+ *
+ * @returns whether the cursor was stored
+ */
+export async function saveConsumerRebuildCursor(
+  tx: TransactionRunner,
+  name: string,
+  holder: string,
+  cursor: string,
+): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    UPDATE change_consumers SET rebuild_cursor = ${cursor}, updated_at = now()
+     WHERE name = ${name} AND rebuild_pending AND ${claimHeld(holder)}
+    RETURNING 1
+  `)) as unknown as unknown[];
+  return rows.length > 0;
+}
+
+/** #1729 — where a pending rebuild resumes; null at its start (or without one). */
+export async function consumerRebuildCursor(
+  tx: TransactionRunner,
+  name: string,
+): Promise<string | null> {
+  const rows = (await tx.execute(sql`
+    SELECT rebuild_cursor FROM change_consumers WHERE name = ${name}
+  `)) as unknown as { rebuild_cursor: string | null }[];
+  const row = rows[0];
+  if (!row) throw unknownConsumer(name);
+  return row.rebuild_cursor;
 }
 
 /** Whether the consumer's derived state still has to be rebuilt ({@link beginConsumerRebuild}). */

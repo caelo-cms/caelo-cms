@@ -646,6 +646,7 @@ function declared(
 export function makeConfigOps(deps: Deps): OperationDefinition<unknown, unknown>[] {
   const get = defineOperation({
     name: CONFIG_OPS.get,
+    pluginAccess: "handle",
     readScope: "request",
     actorScope: ["human", "ai", "system", "plugin"],
     database: "cms_admin",
@@ -717,6 +718,7 @@ export function makeConfigOps(deps: Deps): OperationDefinition<unknown, unknown>
   });
   const getEntities = defineOperation({
     name: CONFIG_OPS.getEntities,
+    pluginAccess: "handle",
     readScope: "request",
     actorScope: ["human", "ai", "system", "plugin"],
     database: "cms_admin",

@@ -437,6 +437,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const insert = defineOperation({
     name: `${family}.insert`,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: the caller's plugin id scopes the RLS policy; any
     // other actor has no storage of its own here.
@@ -488,6 +489,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const list = defineOperation({
     name: `${family}.list`,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
@@ -533,6 +535,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const update = defineOperation({
     name: `${family}.update`,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
@@ -562,6 +565,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const updateMany = defineOperation({
     name: `${family}.update_many`,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
@@ -604,6 +608,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const remove = defineOperation({
     name: `${family}.delete`,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
@@ -630,6 +635,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
 
   const compareAndSwap = defineOperation({
     name: `${family}.compare_and_swap`,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
@@ -681,6 +687,7 @@ function makeUpsertOp(locker: PluginRowLocker | undefined) {
   const op = STORAGE_OPS.private.upsert;
   return defineOperation({
     name: op,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: see insert.
     actorScope: ["plugin"],
