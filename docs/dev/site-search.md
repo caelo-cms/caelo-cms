@@ -57,5 +57,5 @@ Counting is off until the Owner approves `popular_suggestions`.
 
 - **Stage audit.** The `audit` operation runs the test queries against the audited Stage's index. A pinned result that is not first is an error and blocks Publish live. An expected page outside the first results is a warning. While the index is still building, the audit waits up to 45 s, then reports an error with `retry_quality_audit`.
 - **Preview.** `preview_site_search` searches the staged (or live) index and says where each hit comes from.
-- **Index report.** `get_search_index_report` shows per block how it counts and why.
+- **Index report.** `get_search_index_report` shows per block how it counts and why. Every observer call reports the blocks of its pages, so a Stage that delivers the whole site reports the chrome once per call; a block's row is written only when what the report shows of it changed, and rows that change alike go in one `updateMany` (`src/report.ts`). Before, a full delivery on searchVIU rewrote about 2,400 rows per Stage, each a private-storage write with its own snapshot (2026-11-26).
 - **Panel.** Settings → Plugins → Site search shows the same report, the popular queries with approve and reject, and the insights.

@@ -670,6 +670,56 @@ describe("#1268 draft head", () => {
     expect(list.staged.globals.filter((g) => g.entityId === m).length).toBe(0);
   });
 
+  it("runs no upsert for a snapshot written on the main line (0860)", async () => {
+    const moduleId = await seedModule("main-line-skip");
+    const c = await chat("main-line skip");
+    // Counts the statements that write the head, in a transaction that is
+    // rolled back with its trigger. A main-line write ran the generated
+    // upsert (and the head's own maintainers behind it) for nothing.
+    const sql = new SQL(ADMIN_URL as string, { max: 1 });
+    const counted: { mainLine: number; branch: number; headRows: number }[] = [];
+    try {
+      await sql
+        .begin(async (tx) => {
+          await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+          await tx.unsafe("CREATE TEMPORARY TABLE head_writes (n int) ON COMMIT DROP");
+          await tx.unsafe(`
+            CREATE FUNCTION t1268_count_head_writes() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN INSERT INTO head_writes VALUES (1); RETURN NULL; END $$`);
+          await tx.unsafe(`
+            CREATE TRIGGER t1268_count AFTER INSERT ON draft_pending_entities
+              FOR EACH STATEMENT EXECUTE FUNCTION t1268_count_head_writes()`);
+          const write = async (branch: string | null) => {
+            const h = (await tx`
+              INSERT INTO site_snapshots (actor_id, op_kind, description, chat_branch_id)
+              VALUES (${HUMAN}::uuid, 'modules.update', 't1268 main-line', ${branch}::uuid)
+              RETURNING id::text AS id`) as { id: string }[];
+            await tx`INSERT INTO module_snapshots (site_snapshot_id, module_id, state)
+                     VALUES (${h[0]?.id}::uuid, ${moduleId}::uuid, '{}'::jsonb)`;
+            const n = (await tx`SELECT count(*)::int AS n FROM head_writes`) as { n: number }[];
+            await tx`DELETE FROM head_writes`;
+            return n[0]?.n ?? -1;
+          };
+          const mainLine = await write(null);
+          const branch = await write(c.branch);
+          const rows = (await tx`
+            SELECT count(*)::int AS n FROM draft_pending_entities
+             WHERE chat_branch_id = ${c.branch}::uuid AND entity_id = ${moduleId}::uuid`) as {
+            n: number;
+          }[];
+          counted.push({ mainLine, branch, headRows: rows[0]?.n ?? -1 });
+          throw new Error("rollback");
+        })
+        .catch((e: unknown) => {
+          if (!(e instanceof Error && e.message === "rollback")) throw e;
+        });
+    } finally {
+      await sql.end();
+    }
+    expect(counted).toEqual([{ mainLine: 0, branch: 1, headRows: 1 }]);
+    expect(await drift()).toEqual([]);
+  });
+
   it("mirrors the SQL registry of head kinds", async () => {
     const rows = await asSystem(
       (tx) => tx`SELECT kind FROM caelo_draft_head_tables()` as Promise<{ kind: string }[]>,
