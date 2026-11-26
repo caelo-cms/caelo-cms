@@ -8,7 +8,7 @@
  * plugin's identity; they pass the plugin's actor id + plugin id into the
  * adapter's session vars so RLS scopes correctly.
  *
- * Capability gating: `ctx.cms` / `ctx.ai` / `ctx.snapshots` are only attached
+ * Capability gating: `ctx.cms` / `ctx.ai` / `ctx.email` are only attached
  * if the plugin's manifest declares the matching `requestedCapabilities`.
  * External plugins require exact Owner receipts as well as a supported broker.
  * Author storage is never attached to a visitor or render invocation.
@@ -24,7 +24,6 @@ import type {
   PluginInvocation,
   PluginQuery,
   PluginQueryFilter,
-  PluginSnapshots,
   PluginTheme,
   PluginUpsertResult,
   PluginVisitor,
@@ -219,7 +218,7 @@ export async function makePluginContext(
     // #635 — the public gateway has no cms_admin login. Private storage is
     // the read-only published `visitorProjection`; `ctx.cms` reaches only
     // the gateway's own registry (core ops backed by cms_public). Handles
-    // that need the authoring database (events, snapshots, AI, files,
+    // that need the authoring database (events, AI, files,
     // fonts, media) are not attached at all, so a visitor operation that
     // reaches for one fails at the plugin, by name.
     if (requested.has("cms_admin")) tier1.cms = makePluginCms(plugin, infra, invocation);
@@ -237,9 +236,6 @@ export async function makePluginContext(
   }
   if (requested.has("ai_provider") && infra.aiProvider) {
     tier1.ai = makePluginAi(plugin, infra, invocation);
-  }
-  if (requested.has("snapshots")) {
-    tier1.snapshots = makePluginSnapshots(plugin, infra);
   }
   if (requested.has("email")) {
     // #1337 — on the admin side a queued mail goes to the live outbox.
@@ -836,42 +832,5 @@ function makePluginCms(
       }
       return r.value as Output;
     },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// PluginSnapshots — wraps emitSnapshot inside an admin tx with the plugin's
-// actor identity. Snapshot rows tag actor_id = pluginActorId; revert flows
-// already plumbed through P4 work transparently.
-// ---------------------------------------------------------------------------
-
-function makePluginSnapshots(plugin: LoadedPlugin, infra: PluginHostInfra): PluginSnapshots {
-  const emitter = infra.emitSnapshot;
-  if (!emitter) {
-    return {
-      emit: async () => {
-        throw new Error(
-          "ctx.snapshots.emit: no emitter wired on the host. The bootstrap caller must pass `emitSnapshot` in PluginHostInfra.",
-        );
-      },
-    };
-  }
-  return {
-    emit: async (args) =>
-      infra.adapter.withAdminTransaction(
-        {
-          actorId: plugin.pluginActorId,
-          actorKind: "plugin",
-          requestId: `plugin-${plugin.slug}-snapshot`,
-          pluginId: plugin.pluginId,
-        },
-        async (tx) =>
-          emitter(tx, {
-            actorId: plugin.pluginActorId,
-            opKind: args.opKind,
-            description: args.description ?? `${plugin.slug}: ${args.opKind}`,
-            entities: [{ kind: args.entity.kind, id: args.entity.id, payload: args.payload }],
-          }),
-      ),
   };
 }

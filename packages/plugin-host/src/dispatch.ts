@@ -202,11 +202,6 @@ export interface PluginHostInfra {
   readonly registry: OperationRegistry;
   /** Optional — only required if any active plugin requested `ai_provider`. */
   readonly aiProvider?: AIProvider;
-  /** Optional — only required if any active plugin requested `snapshots`.
-   *  The host calls this from inside `adapter.withAdminTransaction(...)`,
-   *  so the supplied function gets the live tx. Mirrors admin-core's
-   *  `emitSnapshot` signature; bootstrap passes that fn here. */
-  readonly emitSnapshot?: SnapshotEmitter;
   /** P12 PR1.3 — optional outbound email transport. When omitted,
    *  ctx.email.send falls back to a no-op stderr stub. */
   readonly emailTransport?: EmailTransport;
@@ -237,25 +232,6 @@ export interface EmailTransport {
     headers?: Readonly<Record<string, string>>;
   }): Promise<{ messageId: string }>;
 }
-
-export interface SnapshotEmitterInput {
-  readonly actorId: string;
-  readonly opKind: string;
-  readonly description: string;
-  readonly entities: ReadonlyArray<{
-    readonly kind: string;
-    readonly id: string;
-    readonly payload: unknown;
-  }>;
-  readonly chatBranchId?: string | null;
-  readonly chatTaskId?: string | null;
-  readonly revertOf?: string | null;
-}
-
-export type SnapshotEmitter = (
-  tx: unknown,
-  input: SnapshotEmitterInput,
-) => Promise<{ siteSnapshotId: string }>;
 
 /** The capability factory is injected to break a circular import between
  *  dispatch + capabilities (capabilities call dispatch.runPluginOperation

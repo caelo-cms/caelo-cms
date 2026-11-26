@@ -28,10 +28,6 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
     label: "AI calls",
     allows: "Call your AI provider. These calls count towards your AI spend.",
   },
-  snapshots: {
-    label: "Snapshots",
-    allows: "Write to the site's history so its changes can be undone.",
-  },
   chat_runner_tools: {
     label: "AI chat tools",
     allows: "Add tools the AI can use in your chats.",

@@ -58,11 +58,11 @@ describe("#1420 — what a plugin release changes", () => {
   it("names a permission a release gives up, which no approval list would show", () => {
     expect(
       describeManifestChanges(
-        { requestedCapabilities: ["email", "snapshots"] },
+        { requestedCapabilities: ["email", "ai_provider"] },
         { requestedCapabilities: ["email"] },
       ),
     ).toEqual([
-      { area: "Permissions it asks for", added: [], removed: ["snapshots"], changed: [] },
+      { area: "Permissions it asks for", added: [], removed: ["ai_provider"], changed: [] },
     ]);
   });
 });

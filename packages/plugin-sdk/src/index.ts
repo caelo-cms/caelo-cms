@@ -9,7 +9,7 @@
  * actually constructed for a given invocation.
  *
  * - Tier 1 (core)  — runs in-process in Bun. Receives `PluginContextTier1`
- *                    with the full set of handles (cms, ai, snapshots,
+ *                    with the full set of handles (cms, ai, email,
  *                    tools, workers).
  * - Tier 2 (user)  — runs in a Deno subprocess with --no-read --no-write
  *                    --no-net. Receives `PluginContext` only — the locked
@@ -175,7 +175,6 @@ export const pluginCapability = z.enum([
   "cms_admin",
   "cms_admin_schema",
   "ai_provider",
-  "snapshots",
   "chat_runner_tools",
   "background_workers",
   "change_journal",
@@ -2197,17 +2196,6 @@ export interface PluginAi {
   }): Promise<{ object: unknown | undefined; inputTokens: number; outputTokens: number }>;
 }
 
-/** Tier 1 only — emit a snapshot when a write affects a tracked entity.
- *  Mirrors the existing `emitSnapshot` helper in admin-core. */
-export interface PluginSnapshots {
-  emit(args: {
-    entity: { kind: string; id: string };
-    opKind: string;
-    payload: unknown;
-    description?: string;
-  }): Promise<{ siteSnapshotId: string }>;
-}
-
 /** Where a plugin call came from (CMS_REQUIREMENTS §14.7). */
 export type PluginInvocationOrigin =
   | "chat"
@@ -2550,7 +2538,6 @@ export interface PluginContextTier1 extends PluginContext {
   readonly siteMedia?: PluginSiteMedia;
   readonly cms?: PluginCms;
   readonly ai?: PluginAi;
-  readonly snapshots?: PluginSnapshots;
   readonly email?: PluginEmail;
   /** Attached when the manifest holds (and the Owner granted) `consent_provider`. */
   readonly consentPurposes?: PluginConsentPurposes;

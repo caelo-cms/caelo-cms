@@ -160,8 +160,6 @@ export {
   runPluginMetaSignatureBatch,
   runPluginOperation,
   runPluginStaticRender,
-  type SnapshotEmitter,
-  type SnapshotEmitterInput,
   setPluginDisabled,
   toolArgsProblem,
   type VisitorDispatchContext,
