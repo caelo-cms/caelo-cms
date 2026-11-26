@@ -541,23 +541,39 @@ describe("#1706 — robots.txt rules through propose_set_site_seo", () => {
   });
 
   it("a settings save that leaves the rules out keeps them", async () => {
+    // The toggles as stored, written back as they are: the files after this
+    // one read them (a leaked feedEnabled: false dropped the feed of the
+    // plugin-data build's test in the query index gate).
+    const stored = (
+      (await execute(registry, adapter, OWNER, "site_defaults.get_seo", {})) as {
+        ok: true;
+        value: { sitemapEnabled: boolean; feedEnabled: boolean; indexNowEnabled: boolean };
+      }
+    ).value;
+    const toggles = {
+      sitemapEnabled: stored.sitemapEnabled,
+      feedEnabled: stored.feedEnabled,
+      indexNowEnabled: stored.indexNowEnabled,
+    };
     await execute(registry, adapter, OWNER, "site_defaults.set_seo", {
       siteBaseUrl: "https://robots.example",
-      sitemapEnabled: true,
-      feedEnabled: false,
-      indexNowEnabled: false,
+      ...toggles,
       robotsRules: RESULTS_PAGES,
     });
     const again = await execute(registry, adapter, OWNER, "site_defaults.set_seo", {
       siteBaseUrl: "https://robots.example",
-      sitemapEnabled: false,
-      feedEnabled: false,
-      indexNowEnabled: false,
+      ...toggles,
     });
     expect(again.ok).toBe(true);
     const seo = await execute(registry, adapter, OWNER, "site_defaults.get_seo", {});
-    expect((seo as { ok: true; value: { robotsRules: unknown[] } }).value.robotsRules).toHaveLength(
-      1,
-    );
+    const after = (
+      seo as {
+        ok: true;
+        value: { robotsRules: unknown[]; feedEnabled: boolean; indexNowEnabled: boolean };
+      }
+    ).value;
+    expect(after.robotsRules).toHaveLength(1);
+    expect(after.feedEnabled).toBe(toggles.feedEnabled);
+    expect(after.indexNowEnabled).toBe(toggles.indexNowEnabled);
   });
 });

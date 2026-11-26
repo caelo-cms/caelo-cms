@@ -543,6 +543,11 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/ops/search-notifications.ts`,
   `${A}/ops/search-feed.ts`,
   `${SHARED}/search-feed.ts`,
+  // #1706 — the robots.txt rules: the AI only proposes them (an approval
+  // card no scenario clicks) and they render into robots.txt alone, which
+  // no scenario reads. The validation and rendering are unit and
+  // integration tested (docs/dev/robots-rules.md).
+  `${SHARED}/robots-rules.ts`,
   `${A}/ops/staging_access.ts`,
   `${A}/ops/owner_settings_*.ts`,
   // #1337 — the Owner's mail caps, an owner-settings proposal like the above.
