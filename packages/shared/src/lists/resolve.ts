@@ -36,8 +36,10 @@ import {
   type PageQuery,
   type SourceDef,
   type SystemSourceName,
+  TERM_OVERVIEW_FIELD,
 } from "./list-type.js";
 import { type PagePropertyIndex, pagePropertyIndex, pagePropUnknownMarker } from "./page-props.js";
+import { pageRefsOfProperties, parsePageRef } from "./page-refs.js";
 import {
   type EffectivePagination,
   effectivePagination,
@@ -52,6 +54,7 @@ import { mergeQuerySource } from "./query-merge.js";
 import { parseListRef } from "./refs.js";
 import type {
   ListPageRecord,
+  ListQueryDep,
   ListRenderData,
   ListRenderDeps,
   LoadedList,
@@ -285,7 +288,7 @@ interface PreparedOverlay {
 }
 
 /** Field types an overlay may not replace: they change structure, not text. */
-const STRUCTURAL_TYPES = new Set(["module", "term"]);
+const STRUCTURAL_TYPES = new Set(["module", "term", "page"]);
 
 function setIn(m: Map<string, Map<string, unknown>>, k: string, f: string, v: unknown): void {
   const inner = m.get(k) ?? new Map<string, unknown>();
@@ -435,6 +438,62 @@ export function createListRenderContext(
     }
     return idx;
   };
+  // #1754 — who names whom, built on the first query that asks: a
+  // `refers_to` query reads the pages naming its page, never every page.
+  let refIndexMemo: Map<string, Map<string, ListPageRecord[]>> | undefined;
+  const referrers = (target: string, property: string): readonly ListPageRecord[] => {
+    if (refIndexMemo === undefined) {
+      refIndexMemo = new Map();
+      for (const p of pageList) {
+        for (const [prop, ids] of pageRefsOfProperties(p.properties)) {
+          for (const id of new Set(ids)) {
+            let byProp = refIndexMemo.get(id);
+            if (!byProp) {
+              byProp = new Map();
+              refIndexMemo.set(id, byProp);
+            }
+            const naming = byProp.get(prop);
+            if (naming) naming.push(p);
+            else byProp.set(prop, [p]);
+          }
+        }
+      }
+    }
+    return refIndexMemo.get(target)?.get(property) ?? [];
+  };
+  // The `link-resolve` groups: a page and its other language versions.
+  let groupsMemo: Map<string, string[]> | undefined;
+  const versionsOf = (pageId: string): readonly string[] => {
+    const group = data.pageVariants?.get(pageId)?.group ?? null;
+    if (group === null) return [pageId];
+    if (groupsMemo === undefined) {
+      groupsMemo = new Map();
+      for (const [id, v] of data.pageVariants ?? []) {
+        if (v.group === null) continue;
+        const members = groupsMemo.get(v.group);
+        if (members) members.push(id);
+        else groupsMemo.set(v.group, [id]);
+      }
+    }
+    return groupsMemo.get(group) ?? [pageId];
+  };
+  const parentIndex = new Map<string, Map<string, string | null>>();
+  const parentsOf = (list: LoadedList): Map<string, string | null> => {
+    let idx = parentIndex.get(list.id);
+    if (!idx) {
+      const out = new Map<string, string | null>();
+      const go = (items: readonly ListItem[], parent: string | null): void => {
+        for (const it of items) {
+          out.set(it.id, parent);
+          if (it.children) go(it.children, it.id);
+        }
+      };
+      go(list.items, null);
+      idx = out;
+      parentIndex.set(list.id, idx);
+    }
+    return idx;
+  };
   const shared: SharedState = {
     data,
     overlays,
@@ -442,6 +501,9 @@ export function createListRenderContext(
     collator,
     pageList,
     itemsOf,
+    parentsOf,
+    referrers,
+    versionsOf,
     dormant: opts.dormantPluginSources ?? {},
     pageProps: pagePropertyIndex(data.pageTypes),
   };
@@ -458,6 +520,12 @@ interface SharedState {
   readonly collator: Intl.Collator;
   readonly pageList: readonly ListPageRecord[];
   readonly itemsOf: (list: LoadedList) => Map<string, { item: ListItem; depth: number }>;
+  /** Entry id → its parent entry's id (null at the top) of a list's tree. */
+  readonly parentsOf: (list: LoadedList) => Map<string, string | null>;
+  /** #1754 — the pages whose `page` property `property` names `target`. */
+  readonly referrers: (target: string, property: string) => readonly ListPageRecord[];
+  /** #1754 — a page and its other language versions (its `link-resolve` group). */
+  readonly versionsOf: (pageId: string) => readonly string[];
   readonly dormant: Readonly<Record<string, string>>;
   /** #1561 — every property the site's page types declare. */
   readonly pageProps: PagePropertyIndex;
@@ -496,7 +564,7 @@ interface TreeCtx {
   readonly hidden: (itemId: string) => boolean;
   /** Validate an overlay value lazily (instance overlays); returns the value to use. */
   readonly checkOverlay?: (item: ListItem, field: FieldDef, value: unknown) => boolean;
-  /** Term entries alias `link` to `landing_page`. */
+  /** Term entries alias `link` to their overview page (`landing_page`, #1754). */
   readonly termLink: boolean;
 }
 
@@ -520,10 +588,7 @@ function createPageContext(
   const pageIssues: ListOverlayIssue[] = [];
   const depLists = new Set<string>();
   const depTypes = new Set<string>();
-  const depQueries = new Map<
-    string,
-    { pageType: string | null; terms: readonly string[]; parent: string | null }
-  >();
+  const depQueries = new Map<string, ListQueryDep>();
   let depTree = false;
   const depPages = new Set<string>();
   let trail: readonly string[] | null = null;
@@ -580,6 +645,7 @@ function createPageContext(
     data,
     formatDate: s.dateFormat,
     termEntries: (refs, field) => termEntries(refs, field),
+    pageRefEntries: (refs, field) => pageRefEntries(refs, field),
   };
 
   // ── Stored trees ──
@@ -703,7 +769,7 @@ function createPageContext(
       const flag = selectFlag(node.fields, item.values, key);
       if (flag) return flag;
       if (tree.termLink && key === "link") {
-        const lp = node.fields.find((f) => f.name === "landing_page" && f.type === "link");
+        const lp = node.fields.find((f) => f.name === TERM_OVERVIEW_FIELD && f.type === "link");
         return lp ? fieldValue(lp, storedValue(lp), valueEnv) : linkValue({ href: "" }, null);
       }
       return undefined;
@@ -925,19 +991,106 @@ function createPageContext(
   const sameVariant = (p: ListPageRecord): boolean =>
     variant === null || data.pageVariants?.get(p.id)?.variant === variant;
 
+  /**
+   * #1754 — page `p` as the rendering page's language shows it: its
+   * version in the rendering page's variant (same `link-resolve` group),
+   * else `p` itself, whose link then fails like every link to a page
+   * without that version (`link-variant-missing`).
+   */
+  const inVariant = (p: ListPageRecord): ListPageRecord => {
+    if (sameVariant(p)) return p;
+    for (const id of s.versionsOf(p.id)) {
+      const version = data.pages.get(id);
+      if (version && sameVariant(version)) return version;
+    }
+    return p;
+  };
+
+  /**
+   * #1754 — a `page` field's pages as page-shaped entries, in stored
+   * order. Like every generated page entry, only pages this build ships
+   * (#1598); a referenced page that is gone is a loud failure.
+   */
+  const pageRefEntries = (refs: readonly string[], field: string): ScopeValue => {
+    const shown: ListPageRecord[] = [];
+    const seen = new Set<string>();
+    for (const ref of refs) {
+      const id = parsePageRef(ref);
+      if (id === null) return { kind: "failed", marker: `list-malformed:${field}[${ref}]` };
+      const page = data.pages.get(id);
+      if (!page) return { kind: "failed", marker: `list-missing:page/${id}` };
+      const version = inVariant(page);
+      // The entry shows the page's title, image and properties: an edit
+      // of any of them must rebuild this page.
+      depPages.add(id);
+      depPages.add(version.id);
+      if (!version.inBuild || seen.has(version.id)) continue;
+      seen.add(version.id);
+      shown.push(version);
+    }
+    return listValue(pageEntries(shown));
+  };
+
+  /**
+   * #1754 — a `refers_to` naming a property no page type declares as a
+   * `page` property matches nothing, ever: refused loudly with the fix.
+   */
+  const refersToProblem = (q: PageQuery, field: string): ScopeValue | null => {
+    const property = q.refers_to?.property;
+    if (property === undefined || s.pageProps.types(property).includes("page")) return null;
+    return {
+      kind: "failed",
+      marker: `list-malformed:${field}[query.refers_to.property]`,
+      detail: `no page type has a page property "${property}" — refers_to.property names a property of type page (list_page_types shows them, e.g. authors).`,
+    };
+  };
+
+  /** The pages whose `page` property `property` names one of `targets`. */
+  const referrersOf = (property: string, targets: readonly string[]): ListPageRecord[] => {
+    const out: ListPageRecord[] = [];
+    const seen = new Set<string>();
+    for (const t of targets) {
+      for (const p of s.referrers(t, property)) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id);
+        out.push(p);
+      }
+    }
+    return out;
+  };
+
   /** Every page a query matches, in its order (deps recorded). */
   const queryHits = (q: PageQuery): ListPageRecord[] => {
     const parent = q.parent
       ? ((parseLinkRef(q.parent) as { pageId: string } | null)?.pageId ?? null)
       : null;
     const terms = q.terms ?? [];
-    const key = JSON.stringify([q.page_type ?? null, [...terms].sort(), parent]);
+    // #1754 — the pages naming the rendering page (or a fixed one), in any
+    // of its language versions: an article names the author page of its
+    // own language or, untranslated, the original's.
+    const ref = q.refers_to;
+    const target = ref === undefined ? null : ref.page === "self" ? pageId : parsePageRef(ref.page);
+    const refersTo =
+      ref === undefined
+        ? null
+        : {
+            property: ref.property,
+            pages: target === null ? [] : [...s.versionsOf(target)].sort(),
+          };
+    const key = JSON.stringify([q.page_type ?? null, [...terms].sort(), parent, refersTo]);
     if (!depQueries.has(key)) {
-      depQueries.set(key, { pageType: q.page_type ?? null, terms: [...terms].sort(), parent });
+      depQueries.set(key, {
+        pageType: q.page_type ?? null,
+        terms: [...terms].sort(),
+        parent,
+        refersTo,
+      });
     }
     const excludeCurrent = q.exclude_current ?? true;
     const mode = q.terms_mode ?? "any";
-    const hits = s.pageList.filter(
+    const candidates =
+      refersTo === null ? s.pageList : referrersOf(refersTo.property, refersTo.pages);
+    const hits = candidates.filter(
       (p) =>
         p.inBuild &&
         sameVariant(p) &&
@@ -963,7 +1116,8 @@ function createPageContext(
     return listValue(pageEntries(hits.slice(0, limit)));
   };
 
-  const runQuery = (q: PageQuery, field: string): ScopeValue => cutAt(queryHits(q), q.limit, field);
+  const runQuery = (q: PageQuery, field: string): ScopeValue =>
+    refersToProblem(q, field) ?? cutAt(queryHits(q), q.limit, field);
 
   /**
    * The slice of a paginated list this render shows. One paginated list
@@ -996,8 +1150,10 @@ function createPageContext(
     depTree = true;
     if (terms.length === 0) return [];
     const sorted = [...terms].sort();
-    const key = JSON.stringify([null, sorted, null]);
-    if (!depQueries.has(key)) depQueries.set(key, { pageType: null, terms: sorted, parent: null });
+    const key = JSON.stringify([null, sorted, null, null]);
+    if (!depQueries.has(key)) {
+      depQueries.set(key, { pageType: null, terms: sorted, parent: null, refersTo: null });
+    }
     return s.pageList
       .filter(
         (p) =>
@@ -1057,6 +1213,47 @@ function createPageContext(
   const byTitle = (a: ListPageRecord, b: ListPageRecord): number =>
     s.collator.compare(a.title, b.title) || compareIds(a.id, b.id);
 
+  /**
+   * #1754 — the overview page a breadcrumb trail leads through: of the
+   * page's first term in `vocabularyIds` that has one in this build, the
+   * term entry's own `landing_page`, else its nearest parent entry's. A
+   * page in another language than the rendering page's never counts (the
+   * home crumb's rule). Null when no term leads anywhere.
+   */
+  const termOverviewPage = (
+    page: ListPageRecord,
+    vocabularyIds: readonly string[],
+  ): ListPageRecord | null => {
+    const vocabularies = new Set(vocabularyIds);
+    for (const id of vocabularyIds) depLists.add(id);
+    for (const term of page.terms) {
+      const m = TERM_REF_RE.exec(term);
+      const list = m?.[1] && vocabularies.has(m[1]) ? data.lists.get(m[1]) : undefined;
+      if (!list || !m?.[2]) continue;
+      const parents = s.parentsOf(list);
+      const items = s.itemsOf(list);
+      for (
+        let itemId: string | null = m[2];
+        itemId !== null;
+        itemId = parents.get(itemId) ?? null
+      ) {
+        const key = `${list.id}/${itemId}`;
+        const item = items.get(itemId)?.item;
+        if (!item || overlay?.listHidden.has(key)) break;
+        const translated = overlay?.listValues.get(key);
+        const raw = translated?.has(TERM_OVERVIEW_FIELD)
+          ? translated.get(TERM_OVERVIEW_FIELD)
+          : item.values[TERM_OVERVIEW_FIELD];
+        const href = (raw as { href?: unknown } | undefined)?.href;
+        const ref = typeof href === "string" ? parseLinkRef(href) : null;
+        const target = ref?.kind === "page" ? data.pages.get(ref.pageId) : undefined;
+        const shown = target ? inVariant(target) : undefined;
+        if (shown?.inBuild && shown.id !== page.id && sameVariant(shown)) return shown;
+      }
+    }
+    return null;
+  };
+
   const systemSource = (
     name: SystemSourceName,
     terms: readonly string[],
@@ -1067,6 +1264,7 @@ function createPageContext(
       case "breadcrumbs": {
         depTree = true;
         if (!current) return EMPTY_LIST;
+        const via = vocabularyIds === null ? null : termOverviewPage(current, vocabularyIds);
         // #1598 — every crumb but the rendering page's own links its page,
         // so a page this build does not ship (a draft ancestor) is left
         // out, the rule of children and siblings. The walk still climbs
@@ -1077,13 +1275,26 @@ function createPageContext(
         // in the last position, and would render `href=""` in every
         // template that links `{{link}}`. The rendering page is always in
         // the build that renders it (the editor preview also renders drafts).
-        const chain: ListPageRecord[] = [];
         const seen = new Set<string>();
-        let p: ListPageRecord | undefined = current;
-        while (p && !seen.has(p.id)) {
-          if (p === current || p.inBuild) chain.unshift(p);
-          seen.add(p.id);
-          p = p.parentId === null ? undefined : data.pages.get(p.parentId);
+        const walk = (start: ListPageRecord, walked: Set<string>): ListPageRecord[] => {
+          const out: ListPageRecord[] = [];
+          let p: ListPageRecord | undefined = start;
+          while (p && !walked.has(p.id)) {
+            if (p === current || p.inBuild) out.unshift(p);
+            walked.add(p.id);
+            p = p.parentId === null ? undefined : data.pages.get(p.parentId);
+          }
+          return out;
+        };
+        let chain = walk(current, seen);
+        // #1754 — given a vocabulary, the trail leads through the overview
+        // page of the page's term (a curated topic page) when the page tree
+        // does not already: Home → … → Topic → Article. The overview page's
+        // own place in the tree gives the crumbs above it.
+        if (via !== null && !seen.has(via.id)) {
+          const walked = new Set<string>([current.id]);
+          chain = [...walk(via, walked), current];
+          for (const id of walked) seen.add(id);
         }
         // The home page is no parent in the tree, yet every trail starts
         // there; its short name is the "Start" crumb, translated with it.
@@ -1216,6 +1427,8 @@ function createPageContext(
         true,
       );
       if ("marker" in q) return { ok: false, marker: q.marker, detail: q.detail };
+      const bad = refersToProblem(q, field.name);
+      if (bad !== null) return fromValue(bad);
       const key = JSON.stringify(["query", { ...q, limit: null }]);
       return fromValue(paginate(field.name, key, queryHits(q), eff));
     }

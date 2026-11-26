@@ -34,6 +34,7 @@ export const QUERY_KNOBS = [
   "terms",
   "terms_mode",
   "parent",
+  "refers_to",
   "exclude_current",
   "order",
   "limit",
@@ -71,6 +72,18 @@ export const pageQuerySchema = z
     parent: z
       .string()
       .regex(/^caelo:page\/[0-9a-f-]{36}$/)
+      .optional(),
+    /**
+     * #1754 — only pages whose `page` property `property` names `page`:
+     * the rendering page itself (`"self"`: the articles of this author) or
+     * a fixed one. Another language's version of `page` counts too.
+     */
+    refers_to: z
+      .object({
+        property: listNameSchema,
+        page: z.union([z.literal("self"), z.string().regex(/^caelo:page\/[0-9a-f-]{36}$/)]),
+      })
+      .strict()
       .optional(),
     exclude_current: z.boolean().optional(),
     order: queryOrderSchema,
@@ -184,6 +197,14 @@ export const nodeDefSchema = z
 export type NodeDef = z.infer<typeof nodeDefSchema>;
 
 export const LIST_TYPE_ROLES = ["navigation", "vocabulary", "content"] as const;
+
+/**
+ * #1754 — the link field of every vocabulary entry that names the term's
+ * overview page (a topic page, a category page). Term entries render it
+ * as `{{link}}`, and a breadcrumbs source given the vocabulary leads
+ * through it. Every vocabulary type declares it (`checkListTypeDef`).
+ */
+export const TERM_OVERVIEW_FIELD = "landing_page";
 export type ListTypeRole = (typeof LIST_TYPE_ROLES)[number];
 
 export const listTypeDefSchema = z
@@ -239,6 +260,13 @@ export function checkListTypeDef(def: ListTypeDef): ListIssue[] {
       const fp = `${at}.fields[${i}]`;
       if (seen.has(f.name)) issues.push({ path: fp, message: `duplicate field name "${f.name}".` });
       seen.add(f.name);
+      if (f.type === "page") {
+        issues.push({
+          path: fp,
+          message:
+            'a "page" field is a page-type property (page_types.upsert_many) — a list entry points at a page with a link field.',
+        });
+      }
       issues.push(...checkFieldDef(f, fp));
     });
     if (node.children) {
@@ -294,12 +322,12 @@ export function checkListTypeDef(def: ListTypeDef): ListIssue[] {
     for (const k of rootKinds) {
       const node = def.nodes[k];
       if (!node) continue;
-      const hasText = (n: string): boolean =>
-        node.fields.some((f: FieldDef) => f.name === n && f.type === "text");
-      if (!hasText("name") || !hasText("slug")) {
+      const has = (n: string, type: FieldDef["type"]): boolean =>
+        node.fields.some((f: FieldDef) => f.name === n && f.type === type);
+      if (!has("name", "text") || !has("slug", "text") || !has(TERM_OVERVIEW_FIELD, "link")) {
         issues.push({
           path: `nodes.${k}`,
-          message: 'vocabulary entries need a text field "name" and a text field "slug".',
+          message: `vocabulary entries need a text field "name", a text field "slug" and a link field "${TERM_OVERVIEW_FIELD}" (the term's overview page) — add the missing ones, e.g. {name:"${TERM_OVERVIEW_FIELD}", label:"Overview page", type:"link"}.`,
         });
       }
       if (node.source) {

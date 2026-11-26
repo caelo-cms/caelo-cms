@@ -30,7 +30,12 @@ import {
   validateListItems,
 } from "@caelo-cms/shared";
 import { canonicaliseLinksForWrite } from "../links/canonicalise.js";
-import { canonicaliseEntryLinks, checkEntryRefs, describeIssues } from "../ops/lists/_shared.js";
+import {
+  canonicaliseEntryLinks,
+  canonicaliseQueryRefs,
+  checkEntryRefs,
+  describeIssues,
+} from "../ops/lists/_shared.js";
 import { bindingOf, type ListFieldDef, listFieldsOf, parseListRef } from "./local.js";
 import { loadListEntities, loadListEntity } from "./store.js";
 
@@ -191,8 +196,17 @@ async function normaliseOne(
     }
     return { ok: true, value: overrides };
   }
-  // query source: knob overrides.
-  const parsed = pageQueryPartialSchema.safeParse(value);
+  // query source: knob overrides. Reads show its page references as paths
+  // (`parent`, `refers_to.page`), so a write of what a read returned
+  // stores them as references again.
+  const canon = await canonicaliseLinksForWrite(
+    tx,
+    ctx,
+    (run) => canonicaliseQueryRefs(value, run, where),
+    { previous },
+  );
+  if (!canon.ok) return { ok: false, message: canon.message };
+  const parsed = pageQueryPartialSchema.safeParse(canon.value);
   if (!parsed.success) {
     return {
       ok: false,

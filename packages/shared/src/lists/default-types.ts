@@ -3,9 +3,9 @@
 /**
  * The list types every install starts with (epic #1107,
  * `docs/lists.md` §3). They are seeded as STORED data by migration 0352
- * and edited like any other type afterwards — these objects are the
- * source the seed and the tests share, not a render-time fallback
- * (CLAUDE.md §2).
+ * (0885 gave `tags` its `landing_page`, #1754) and edited like any other
+ * type afterwards — these objects are the source the seed and the tests
+ * share, not a render-time fallback (CLAUDE.md §2).
  */
 
 import type { ListTypeDef } from "./list-type.js";
@@ -95,6 +95,9 @@ export const DEFAULT_LIST_TYPES: readonly ListTypeDef[] = [
           { name: "name", label: "Name", type: "text", required: true },
           { name: "slug", label: "Slug", type: "text", required: true },
           { name: "color", label: "Color", type: "text", maxLength: 9 },
+          // #1754 — every vocabulary entry can name its overview page
+          // (migration 0885 added it to the stored type).
+          { name: "landing_page", label: "Overview page", type: "link" },
         ],
       },
     },

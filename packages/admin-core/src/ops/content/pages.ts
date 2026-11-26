@@ -39,6 +39,7 @@ import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { headOverlaySql } from "../../draft.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
+import { loadPageRefIndex, type PageRefLookup, type PageRefTarget } from "../../lists/page-refs.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
 import { fitIssueDetails, resolvePageTypeForWrite } from "../../lists/page-type-resolve.js";
 import { loadListEntities } from "../../lists/store.js";
@@ -453,6 +454,36 @@ export const listPagesOp = defineOperation({
     });
   },
 });
+
+/**
+ * #1754 — the pages a `page` property names, read through `pages.list`
+ * in the caller's view (a chat's pending renames and deletes included):
+ * exactly these pages, by id and by path, in batches of the op's limit.
+ */
+export function pageRefLookupOf(tx: TransactionRunner, ctx: ExecutionContext): PageRefLookup {
+  return async ({ ids, paths }) => {
+    const out: PageRefTarget[] = [];
+    const batches = Math.max(Math.ceil(ids.length / 1000), Math.ceil(paths.length / 1000));
+    for (let b = 0; b < batches; b += 1) {
+      const pageIds = ids.slice(b * 1000, (b + 1) * 1000);
+      const atPaths = paths.slice(b * 1000, (b + 1) * 1000);
+      const r = await listPagesOp.handler(
+        ctx,
+        {
+          includeDeleted: false,
+          ...(pageIds.length > 0 ? { pageIds: [...pageIds] } : {}),
+          ...(atPaths.length > 0 ? { paths: [...atPaths] } : {}),
+        },
+        tx,
+      );
+      if (!r.ok) throw new OperationAbortError(r.error);
+      for (const p of r.value.pages) {
+        out.push({ id: p.id, path: p.currentPath, pageType: p.pageType });
+      }
+    }
+    return out;
+  };
+}
 
 /**
  * 0263 — the tree half of pages.list for the returned pages: depth, and —
@@ -912,6 +943,7 @@ export const createPageOp = defineOperation({
       resolved.def,
       { templateId, properties: input.properties ?? {}, terms: input.terms ?? [] },
       await loadVocabularyIndex(tx, ctx.chatBranchId ?? null, [resolved.def]),
+      await loadPageRefIndex(pageRefLookupOf(tx, ctx), resolved.def, [input.properties ?? {}]),
     );
     if (fit.issues.length > 0) {
       await recordAudit(tx, {
@@ -1405,6 +1437,8 @@ async function nextTypeBound(
       terms: input.terms ?? base.terms,
     },
     await loadVocabularyIndex(tx, ctx.chatBranchId ?? null, [resolved.def]),
+    await loadPageRefIndex(pageRefLookupOf(tx, ctx), resolved.def, [properties]),
+    input.pageId,
   );
   if (fit.issues.length > 0) {
     return { ok: false, details: fitIssueDetails(resolved.def.slug, fit.issues) };

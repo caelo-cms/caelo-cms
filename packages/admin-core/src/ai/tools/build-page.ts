@@ -80,7 +80,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           type: "object",
           additionalProperties: true,
           description:
-            "Page type property values (`list_page_types`, `*` = required), e.g. `{author:'Ada Lovelace', event_date:'2026-11-03'}`.",
+            "Page type property values (`list_page_types`, `*` = required), e.g. `{event_date:'2026-11-03', authors:['/team/ada']}` (a `page` property: page paths, in order).",
         },
         terms: {
           type: "array",

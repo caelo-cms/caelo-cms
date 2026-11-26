@@ -57,6 +57,12 @@ export interface ValueEnv {
    * field for markers; the vocabulary lists are recorded as deps.
    */
   termEntries(refs: readonly string[], field: string): ScopeValue;
+  /**
+   * #1754 — resolve a `page` field's references to page-shaped entries,
+   * in stored order. `field` names the field for markers; the pages are
+   * recorded as deps.
+   */
+  pageRefEntries(refs: readonly string[], field: string): ScopeValue;
 }
 
 /** The empty value of a declared field — declared-but-unset never falls through to outer scopes. */
@@ -76,6 +82,7 @@ export function emptyValueOf(field: FieldDef): ScopeValue {
     case "date":
       return record("", false, { formatted: EMPTY_TEXT });
     case "term":
+    case "page":
       return EMPTY_LIST;
     default:
       return EMPTY_TEXT;
@@ -174,6 +181,13 @@ export function fieldValue(field: FieldDef, raw: unknown, env: ValueEnv): ScopeV
     case "term":
       return Array.isArray(raw)
         ? env.termEntries(
+            raw.filter((x): x is string => typeof x === "string"),
+            field.name,
+          )
+        : EMPTY_LIST;
+    case "page":
+      return Array.isArray(raw)
+        ? env.pageRefEntries(
             raw.filter((x): x is string => typeof x === "string"),
             field.name,
           )

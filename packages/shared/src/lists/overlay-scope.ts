@@ -17,8 +17,9 @@
  *   - content instances: the instances the page renders (its placements
  *     and the instances nested in them), whose local lists the overlay
  *     translates.
- *   - pages: the rendered page (`{{page.props.*}}`) and, when a list on
- *     the page generates page entries (a query or a system source:
+ *   - pages: the rendered page (`{{page.props.*}}`), the pages its `page`
+ *     properties name (#1754: an article's authors, in its language) and,
+ *     when a list on the page generates page entries (a query or a system source:
  *     latest news, children, breadcrumbs), every page of the page's
  *     variant that has properties. A props overlay only exists for pages
  *     of the variant the page renders, and only for page types that
@@ -35,6 +36,7 @@
  */
 
 import type { TemplateField } from "../template-engine.js";
+import { pageRefsOfProperties } from "./page-refs.js";
 import type { ListRenderData } from "./render-data.js";
 
 /** The `scope` of a scoped `list-resolve` call (plugin-sdk `listResolveScope`). */
@@ -105,6 +107,21 @@ export function pageListOverlayScope(input: PageListOverlayInput): ListOverlaySc
 
   const pageIds = new Set<string>([pageId]);
   const variant = data.pageVariants?.get(pageId)?.variant;
+  // #1754 — `{{#page.props.authors}}{{props.role}}…` shows the pages the
+  // page names, in its own language: those versions are in the scope.
+  const named = new Set(
+    [...pageRefsOfProperties(data.pages.get(pageId)?.properties).values()].flat(),
+  );
+  if (variant !== undefined && named.size > 0) {
+    const groups = new Set(
+      [...named].map((id) => data.pageVariants?.get(id)?.group).filter((g) => g != null),
+    );
+    for (const [id, v] of data.pageVariants ?? []) {
+      if (v.variant === variant && (named.has(id) || (v.group !== null && groups.has(v.group)))) {
+        pageIds.add(id);
+      }
+    }
+  }
   if (variant !== undefined && modules.some((m) => generatesPages(m.fields, data))) {
     for (const p of data.pages.values()) {
       if (data.pageVariants?.get(p.id)?.variant !== variant) continue;

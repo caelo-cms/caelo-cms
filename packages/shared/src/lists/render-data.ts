@@ -112,16 +112,28 @@ export interface ListRenderData {
   readonly homePageId: string | null;
 }
 
+/**
+ * One page query a render ran, by the filters a page's change can enter or
+ * leave (`render-deps.ts`). Sort order and limit are left out: a page
+ * that matches the filter rebuilds the reader whatever its position.
+ */
+export interface ListQueryDep {
+  readonly pageType: string | null;
+  readonly terms: readonly string[];
+  readonly parent: string | null;
+  /**
+   * #1754 — `refers_to`: the property, and the referenced page with its
+   * other language versions (sorted). Null without one.
+   */
+  readonly refersTo: { readonly property: string; readonly pages: readonly string[] } | null;
+}
+
 /** Render dependencies one page collected (build manifest `render-deps.json`). */
 export interface ListRenderDeps {
   readonly lists: readonly string[];
   readonly listTypes: readonly string[];
-  /** Normalised query filters (page type, terms, parent) the page rendered. */
-  readonly queries: readonly {
-    readonly pageType: string | null;
-    readonly terms: readonly string[];
-    readonly parent: string | null;
-  }[];
+  /** Normalised query filters (page type, terms, parent, reference) the page rendered. */
+  readonly queries: readonly ListQueryDep[];
   /** System sources that depend on the page tree (breadcrumbs, children, siblings, term_pages). */
   readonly pageTree: boolean;
   /**

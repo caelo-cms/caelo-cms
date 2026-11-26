@@ -12,6 +12,7 @@ import {
   checkListTypeDef,
   checkPageTypeDef,
   type FieldDef,
+  LIST_FIELD_TYPES,
   type ListFieldType,
   type ListTypeDef,
   listTypeDefSchema,
@@ -72,10 +73,29 @@ export function withFieldType(field: FieldDef, type: ListFieldType, ctx: FieldCo
         list: field.type === "term" ? field.list : (ctx.vocabularySlugs[0] ?? "tags"),
         ...(field.type === "term" && field.multiple ? { multiple: true } : {}),
       };
+    case "page":
+      return {
+        ...base,
+        type,
+        ...(field.type === "page" && field.pageType !== undefined
+          ? { pageType: field.pageType }
+          : {}),
+        ...(field.type === "page" && field.multiple ? { multiple: true } : {}),
+      };
     default:
       return { ...base, type } as FieldDef;
   }
 }
+
+/** Field types of a list entry: a `page` field is a page property only (#1754). */
+export const ENTRY_FIELD_TYPES: readonly ListFieldType[] = LIST_FIELD_TYPES.filter(
+  (t) => t !== "page",
+);
+
+/** Field types of a page property: a page cannot embed a module (place it instead). */
+export const PROPERTY_FIELD_TYPES: readonly ListFieldType[] = LIST_FIELD_TYPES.filter(
+  (t) => t !== "module",
+);
 
 /** A new text field with a name not yet taken in `fields`. */
 export function newField(fields: readonly FieldDef[], label = "New field"): FieldDef {

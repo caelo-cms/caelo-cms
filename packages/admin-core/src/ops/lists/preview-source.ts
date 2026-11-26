@@ -78,7 +78,7 @@ const inputSchema = z
     source: sourceDefSchema.optional(),
     /** With `source`: the placement's overrides (query knobs, or `{terms}` for term_pages). */
     value: z.record(z.string(), z.unknown()).optional(),
-    /** With a `page_terms` source: the vocabulary (`caelo:list/<id>`). */
+    /** With a `page_terms` or `breadcrumbs` source: the vocabulary (`caelo:list/<id>`). */
     vocabulary: z.string().optional(),
     /**
      * A shared list holding the source node: its slug or its reference

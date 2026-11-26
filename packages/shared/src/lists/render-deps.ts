@@ -7,26 +7,31 @@
  * selection an incremental build runs on it — every page whose deps
  * intersect the change.
  *
- * A query matches by its filter (page type, terms, parent), so a page
- * that ENTERED, LEFT or CHANGED inside a filter reaches every page that
- * rendered that query. That is why the file keeps each page's filter
- * attributes as of the build: "left the filter" can only be seen against
- * what the page was before.
+ * A query matches by its filter (page type, terms, parent, the page a
+ * `page` property references), so a page that ENTERED, LEFT or CHANGED
+ * inside a filter reaches every page that rendered that query. That is
+ * why the file keeps each page's filter attributes as of the build: "left
+ * the filter" can only be seen against what the page was before. An
+ * article that starts naming an author rebuilds the author's page (#1754).
  *
  * Cost: one pass over the recorded deps per change set — O(changes ×
  * deps), never a re-render of the site to find out.
  */
 
-import type { ListPageRecord, ListRenderDeps } from "./render-data.js";
+import { pageRefsOfProperties } from "./page-refs.js";
+import type { ListPageRecord, ListQueryDep, ListRenderDeps } from "./render-data.js";
 
 export const RENDER_DEPS_FILE = "render-deps.json";
-export const RENDER_DEPS_VERSION = 3;
+// 4 (#1754): queries carry `refersTo`, the index a page's `refs`.
+export const RENDER_DEPS_VERSION = 4;
 
 /** A page's filter-relevant attributes as of a build. */
 export interface RenderDepsPageAttrs {
   readonly pageType: string;
   readonly terms: readonly string[];
   readonly parent: string | null;
+  /** #1754 — the pages each `page` property names (property → page ids). */
+  readonly refs: Readonly<Record<string, readonly string[]>>;
   readonly title: string;
   readonly shortTitle: string;
   readonly inBuild: boolean;
@@ -47,6 +52,9 @@ export function renderDepsAttrs(p: ListPageRecord): RenderDepsPageAttrs {
     pageType: p.pageTypeSlug,
     terms: [...p.terms].sort(),
     parent: p.parentId,
+    refs: Object.fromEntries(
+      [...pageRefsOfProperties(p.properties)].map(([k, ids]) => [k, [...ids].sort()]),
+    ),
     title: p.title,
     shortTitle: p.shortTitle,
     inBuild: p.inBuild,
@@ -92,7 +100,7 @@ export interface RenderChange {
  * - every page that read a changed list or list type;
  * - for every changed page: every page whose query filter matches the
  *   page's attributes before OR after the change (entered, left or
- *   changed inside the filter);
+ *   changed inside the filter), a page it references included;
  * - every page with page-tree deps (breadcrumbs, children, siblings,
  *   term pages) when a changed page's title, short title, parent or
  *   build membership changed;
@@ -128,10 +136,12 @@ export function selectDependentPages(
       treeChanged = true;
     }
   }
-  const matches = (q: ListRenderDeps["queries"][number], p: RenderDepsPageAttrs): boolean =>
+  const matches = (q: ListQueryDep, p: RenderDepsPageAttrs): boolean =>
     (q.pageType === null || q.pageType === p.pageType) &&
     (q.parent === null || q.parent === p.parent) &&
-    (q.terms.length === 0 || q.terms.some((t) => p.terms.includes(t)));
+    (q.terms.length === 0 || q.terms.some((t) => p.terms.includes(t))) &&
+    (q.refersTo === null ||
+      (p.refs[q.refersTo.property] ?? []).some((id) => q.refersTo?.pages.includes(id)));
   for (const [pageId, d] of Object.entries(deps.pages)) {
     if (
       d.lists.some((l) => lists.has(l)) ||
