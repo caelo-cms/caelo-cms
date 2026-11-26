@@ -1,7 +1,7 @@
 {
   "name": "caelo",
   "displayName": "Caelo CMS",
-  "version": "0.0.0",
+  "version": "0.12.17",
   "description": "Edit a Caelo CMS site from Claude Code: connect by URL and sign in with Google, plus skills to edit safely (draft, stage, a person publishes) and hand a prototype over to Caelo. For installs without remote MCP use caelo-token.",
   "author": {
     "name": "searchVIU GmbH",
