@@ -15,6 +15,12 @@
  * creates, deleted pages left out, and on a chat branch the chat's
  * pending status changes and deletes applied (its latest pending
  * snapshot per page).
+ *
+ * #1736 — it also names the pages among them that search engines may not
+ * index (their SEO's `noindex`, in the same view: a chat's pending SEO
+ * change counts). hreflang is only true between versions a search engine
+ * may index, so the plugin leaves those out of it; the language switcher
+ * keeps them.
  */
 
 import { defineOperation, uuidArray } from "@caelo-cms/query-api";
@@ -22,6 +28,7 @@ import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { headOverlaySql } from "../../draft.js";
+import { loadPageSeoViews } from "../../seo/page-seo.js";
 
 /** One read's id ceiling, the same as `pages.resolve_public_urls`. */
 const MAX_PAGE_IDS = 1000;
@@ -43,6 +50,8 @@ export const listPageStatusesOp = defineOperation({
     /** pageId → status, for every visible page among the ids. A deleted
      *  or invisible page is absent: it is not part of this scope's site. */
     statuses: z.record(z.string(), z.enum(["draft", "published"])),
+    /** #1736 — the pages of `statuses` whose SEO says noindex in this scope. */
+    noindex: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
     const ids = uuidArray([...new Set(input.pageIds)]);
@@ -77,6 +86,9 @@ export const listPageStatusesOp = defineOperation({
         else if (state.status) statuses[o.page_id] = state.status;
       }
     }
-    return ok({ statuses });
+    const visible = Object.keys(statuses);
+    const seo = await loadPageSeoViews(tx, visible, ctx.chatBranchId);
+    const noindex = visible.filter((id) => seo.get(id)?.state.noindex === true);
+    return ok({ statuses, noindex });
   },
 });

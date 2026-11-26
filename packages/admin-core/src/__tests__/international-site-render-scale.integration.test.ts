@@ -468,13 +468,23 @@ describe("#1213 — international-site render hooks at scale", () => {
       if (!deleted.ok) throw new Error(JSON.stringify(deleted.error));
       expect(await statuses(chatCtx)).toEqual({
         statuses: { [first.en]: "published", [second.de]: "published" },
+        noindex: [],
       });
       expect(await statuses(SYS_CTX)).toEqual({
         statuses: { [first.en]: "published", [second.en]: "published", [second.de]: "published" },
+        noindex: [],
       });
       expect((await preview(second.de, [], session.chatBranchId)).switcher).toEqual([]);
       expect((await preview(first.de, [], session.chatBranchId)).switcher).toEqual(["en", "de"]);
       expect((await preview(second.de, [])).switcher).toEqual(["en", "de"]);
+      // #1736 — a chat's pending noindex counts in its view only.
+      const hidden = await execute(registry, adapter, chatCtx, "pages_seo.set", {
+        pageId: first.en,
+        noindex: true,
+      });
+      if (!hidden.ok) throw new Error(JSON.stringify(hidden.error));
+      expect((await statuses(chatCtx)).noindex).toEqual([first.en]);
+      expect((await statuses(SYS_CTX)).noindex).toEqual([]);
     } finally {
       await sqlSystem(
         (tx) => tx`DELETE FROM chat_sessions WHERE id = ${session.chatSessionId}::uuid`,

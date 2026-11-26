@@ -146,6 +146,14 @@ may decide on such a text, so the rules are stricter than a menu label's:
 - Skill `international-qa` says how to fix each finding.
 - `language_links` is a list source (`listSources`): entries
   `{ href: link, label, locale, is_current: boolean }`, id = locale code.
+- hreflang and sitemap alternates name only the versions search engines
+  may index (#1736): a noindex page (its SEO's `noindex`, which core's
+  `pages.list_statuses` reports with the statuses) carries none, no other
+  version names it, and a group left with fewer than two indexable
+  versions has none. x-default follows the default language's version
+  only while it is indexable. The language switcher keeps every
+  published version: visitors may switch to a page search engines skip
+  (site-search's results page is noindex in every language).
 - Every URL the plugin emits (hreflang, sitemap alternates, switcher
   links) is absolute and comes from core's `pages.resolve_public_urls`.
   Inside a static build that op builds on the build's origin
@@ -255,6 +263,12 @@ own path, so it gets no hreflang, sitemap alternates or switcher entry,
 the other pages of its language group do not name it, and the hreflang
 rules expect nothing of it.
 
+A noindex version is treated the same way by the hreflang rules
+(#1736): it is checked for nothing hreflang-related, and the other
+versions' sets are expected without it. That it is left out is said once
+per indexable version, as information, since a noindex translation can
+be deliberate.
+
 | Rule | Severity | Finds |
 |---|---|---|
 | `hardcoded-language-link` | error | a language link (hreflang attribute, language name as text, or a language's home) that does not lead to the current page's version: fixed markup instead of `language_links` |
@@ -265,7 +279,8 @@ rules expect nothing of it.
 | `hreflang-missing-version` | error | a published version is missing from the set |
 | `hreflang-not-reciprocal` | error | an alternate does not name the page back |
 | `hreflang-target-broken` | error | an alternate is not a page of the build |
-| `hreflang-target-not-indexable` | error | an alternate is noindex or canonical to another URL |
+| `hreflang-target-not-indexable` | error | an alternate is canonical to another URL (or noindex, which the plugin never renders: a bug to report) |
+| `hreflang-version-noindex` | info | a version of this indexable page is noindex, so hreflang leaves it out |
 | `hreflang-invalid-code` | error | not a BCP 47 tag, a wrong region (`en-UK`), or a code listed twice |
 | `x-default-missing` | warning | no `x-default`, or not the default language's version |
 | `canonical-cross-locale` | error | a version's canonical names another language's version |

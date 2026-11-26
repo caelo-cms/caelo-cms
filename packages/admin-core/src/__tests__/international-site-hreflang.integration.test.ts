@@ -306,6 +306,61 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     expect(hostLinks.some((h) => h.startsWith("https://de.example.com/"))).toBe(true);
   }, 60_000);
 
+  // #1736 — site-search's results page is noindex in every language: its
+  // versions must not alternate (the audit errored on /de/suche and
+  // /en/search and blocked Publish live), while visitors still switch.
+  it("#1736 — noindex versions get no hreflang and are named by none; the switcher keeps them", async () => {
+    const sourceId = await seedPage("t398-search");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+        { code: "fr", displayName: "Français", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const de = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t398-suche",
+    });
+    const fr = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "fr",
+      slug: "t398-recherche",
+    });
+    const ids = [sourceId, de.pageId, fr.pageId];
+    for (const pageId of ids) await sysOp("pages.set_status", { pageId, status: "published" });
+    const collect = () =>
+      collectContributions(ids, { ...MAIN_RENDER, siteBaseUrl: BASE, pageUrlStyle: "directory" });
+    const hreflangsOf = (entries: readonly { kind: string; hreflang?: string }[] | undefined) =>
+      (entries ?? []).flatMap((e) => (e.kind === "link" && e.hreflang ? [e.hreflang] : []));
+
+    // The default language's version is noindex: en and x-default leave.
+    await sysOp("pages_seo.set", { pageId: sourceId, noindex: true });
+    const one = await collect();
+    expect(one.head.get(sourceId)).toBeUndefined();
+    expect(hreflangsOf(one.head.get(de.pageId))).toEqual(["de", "fr"]);
+    expect(hreflangsOf(one.head.get(fr.pageId))).toEqual(["de", "fr"]);
+    expect(one.sitemap.get(de.pageId)?.alternates?.map((a) => a.hreflang)).toEqual(["de", "fr"]);
+    expect(one.sitemap.get(sourceId)).toBeUndefined();
+
+    // Every version noindex (the results page): no hreflang anywhere.
+    await sysOp("pages_seo.set", { pageId: de.pageId, noindex: true });
+    await sysOp("pages_seo.set", { pageId: fr.pageId, noindex: true });
+    const none = await collect();
+    expect(none.head.size).toBe(0);
+    expect(none.sitemap.size).toBe(0);
+    // Each version still speaks its own language …
+    expect(none.lang.get(de.pageId)).toBe("de");
+    // … and the language switcher still offers all three.
+    const lists = await resolveListSources([de.pageId], MAIN_RENDER, "directory");
+    expect((lists.get(de.pageId)?.language_links ?? []).map((i) => i.id).sort()).toEqual([
+      "de",
+      "en",
+      "fr",
+    ]);
+  }, 60_000);
+
   // Dropping a locale its pages still carry stranded them: every path
   // composition then failed with "references locale … not registered".
   it("set_locales refuses to drop a locale that pages still use", async () => {

@@ -622,13 +622,18 @@ export function hreflangProblem(tag: string): string | null {
   return null;
 }
 
+/** Does the page's `<meta name="robots">` say noindex? */
+function isNoindex(f: PluginAuditPageFacts): boolean {
+  return f.robots?.includes("noindex") ?? false;
+}
+
 function hreflang(
   model: BuildModel<BuildState>,
   f: PluginAuditPageFacts,
   byId: ReadonlyMap<string, PluginAuditPageFacts>,
 ): PluginAuditFinding[] {
   const out: PluginAuditFinding[] = [];
-  const versions = model.versionsOf(f.pageId);
+  const published = model.versionsOf(f.pageId);
   const locale = model.localeOf(f.pageId);
 
   const problems = [...new Set(f.alternates.flatMap((a) => hreflangProblem(a.hreflang) ?? []))];
@@ -650,12 +655,44 @@ function hreflang(
     });
   }
 
+  // #1736 — hreflang is only true between versions search engines may
+  // index, and the plugin emits it so: a noindex page (site-search's
+  // results page) carries none, and no version names it. A batch holds
+  // whole groups, so every version's facts are here; one that is not
+  // counts as indexable.
+  if (isNoindex(f)) return out;
+  const hidden: [string, string][] = [];
+  const versions = new Map<string, string>();
+  for (const [code, id] of published) {
+    const facts = id === f.pageId ? f : byId.get(id);
+    if (facts && isNoindex(facts)) hidden.push([code, id]);
+    else versions.set(code, id);
+  }
+  if (hidden.length > 0) {
+    out.push({
+      rule: "hreflang-version-noindex",
+      severity: "info",
+      pageId: f.pageId,
+      message: `Language version kept out of search: ${hidden
+        .map(([code, id]) => `the ${model.displayName(code)} version ${model.pathOf.get(id)}`)
+        .join(
+          ", ",
+        )} is noindex, so this page's hreflang leaves it out and search engines show this version to those searchers instead. Right for a page that must not be found (a search results page).`,
+      fix: {
+        tool: "set_page_seo_many",
+        hint: "If the version should be found, turn its noindex off; if it is deliberate, nothing to do.",
+      },
+    });
+  }
   // The 404 page has no versions (#1305), so it expects no hreflang.
-  if (versions.size < 2) return out;
+  if (published.size < 2) return out;
+  // Nor does a page whose group keeps fewer than two indexable versions
+  // (#1736); what it does list is still checked below.
+  const expectsSet = versions.size >= 2;
   const listed = new Map<string, string | null>();
   for (const a of f.alternates) listed.set(a.hreflang.toLowerCase(), a.path);
 
-  if (![...listed.values()].includes(f.path)) {
+  if (expectsSet && ![...listed.values()].includes(f.path)) {
     out.push({
       rule: "hreflang-self-missing",
       severity: "error",
@@ -668,9 +705,11 @@ function hreflang(
     });
   }
   // The page itself is hreflang-self-missing's.
-  const missing = [...versions.entries()].filter(
-    ([code, id]) => id !== f.pageId && listed.get(code.toLowerCase()) !== model.pathOf.get(id),
-  );
+  const missing = expectsSet
+    ? [...versions.entries()].filter(
+        ([code, id]) => id !== f.pageId && listed.get(code.toLowerCase()) !== model.pathOf.get(id),
+      )
+    : [];
   if (missing.length > 0) {
     out.push({
       rule: "hreflang-missing-version",
@@ -706,7 +745,7 @@ function hreflang(
       },
     });
   }
-  const defaultVersion = versions.get(model.defaultLocale.code);
+  const defaultVersion = expectsSet ? versions.get(model.defaultLocale.code) : undefined;
   const xDefault = listed.get("x-default");
   if (defaultVersion && xDefault !== model.pathOf.get(defaultVersion)) {
     out.push({
@@ -739,7 +778,7 @@ function hreflang(
         },
       });
     }
-    const noindex = target.robots?.includes("noindex") ?? false;
+    const noindex = isNoindex(target);
     const canonicalElsewhere = target.canonical !== null && target.canonical.path !== target.path;
     if (noindex || canonicalElsewhere) {
       out.push({
@@ -747,10 +786,17 @@ function hreflang(
         severity: "error",
         pageId: f.pageId,
         message: `hreflang to a page search engines may not index: ${target.path} (${a.hreflang}) ${noindex ? "is noindex" : `has its canonical at ${target.canonical?.href}`}. Search engines then discard the alternates of the whole group.`,
-        fix: {
-          tool: "set_page_seo_many",
-          hint: `Make ${target.path} indexable with a self-referencing canonical, or unlink it from the group if it should not be found.`,
-        },
+        // #1736 — the plugin leaves noindex versions out of hreflang, so one
+        // listed here was not rendered by it.
+        fix: noindex
+          ? {
+              tool: "bug_report",
+              hint: "The plugin never names a noindex version in hreflang; a build that does is a Caelo bug — report it with the page paths.",
+            }
+          : {
+              tool: "set_page_seo_many",
+              hint: `Remove the canonical override of ${target.path} so it is canonical to itself, or unlink it from the group if it should not be found.`,
+            },
       });
     }
   }

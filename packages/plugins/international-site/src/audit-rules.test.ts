@@ -215,9 +215,9 @@ describe("hreflang, canonical, sitemap, page language", () => {
       alternates: [{ hreflang: "de", href: `${BASE}/preise`, path: "/preise" }],
       canonical: { href: `${BASE}/preise`, path: "/preise" },
     });
-    // The German page is noindex and does not name the English one.
+    // The German page has its canonical at the English one and does not name it.
     const deFacts = facts(PRICES_DE, "/preise", "de", {
-      robots: "noindex",
+      canonical: { href: `${BASE}/en/pricing`, path: "/en/pricing" },
       alternates: [
         { hreflang: "de", href: `${BASE}/preise`, path: "/preise" },
         { hreflang: "x-default", href: `${BASE}/preise`, path: "/preise" },
@@ -230,8 +230,116 @@ describe("hreflang, canonical, sitemap, page language", () => {
     expect(rules).toContainEqual(["x-default-missing", PRICES_EN]);
     expect(rules).toContainEqual(["hreflang-not-reciprocal", PRICES_EN]);
     expect(rules).toContainEqual(["hreflang-missing-version", PRICES_DE]);
-    // The English page names the noindex German one.
+    // The English page names the German one, whose canonical is elsewhere.
     expect(rules).toContainEqual(["hreflang-target-not-indexable", PRICES_EN]);
+  });
+
+  describe("#1736 — noindex versions (site-search's results page)", () => {
+    const SEARCH_DE = id(9);
+    const SEARCH_EN = id(10);
+    const SEARCH_FR = id(11);
+    const fr: LocaleRow = { ...en, id: "l-fr", code: "fr", display_name: "Français" };
+    const base = state();
+    const model = new BuildModel(
+      state({
+        locales: new Map([...base.locales, ["fr", fr]]),
+        variants: [
+          ...base.variants,
+          variant(SEARCH_DE, "g-search", "de", "source"),
+          variant(SEARCH_EN, "g-search", "en", "up_to_date"),
+          variant(SEARCH_FR, "g-search", "fr", "up_to_date"),
+        ],
+        stagedPages: [
+          ...base.stagedPages,
+          { pageId: SEARCH_DE, path: "/suche" },
+          { pageId: SEARCH_EN, path: "/en/search" },
+          { pageId: SEARCH_FR, path: "/fr/recherche" },
+        ],
+      }),
+    );
+    const alt = (...pairs: [string, string][]) =>
+      pairs.map(([h, p]) => ({ hreflang: h, href: `${BASE}${p}`, path: p }));
+    const hreflangRules = (found: readonly PluginAuditFinding[]) =>
+      rulesOf(found.filter((f) => f.rule.startsWith("hreflang") || f.rule === "x-default-missing"));
+
+    it("a group whose every version is noindex raises nothing, with or without alternates", () => {
+      // What 0.12.15 rendered: every version names the others (the reported
+      // errors on /de/suche and /en/search) …
+      const all = alt(["de", "/suche"], ["en", "/en/search"], ["fr", "/fr/recherche"]);
+      const before = pageFindings(model, [
+        facts(SEARCH_DE, "/suche", "de", { robots: "noindex", alternates: all }),
+        facts(SEARCH_EN, "/en/search", "en", { robots: "noindex", alternates: all }),
+        facts(SEARCH_FR, "/fr/recherche", "fr", { robots: "noindex", alternates: all }),
+      ]);
+      expect(before.filter((f) => f.severity === "error")).toEqual([]);
+      expect(hreflangRules(before)).toEqual([]);
+      // … and what the plugin renders now: no hreflang on a noindex page.
+      const now = pageFindings(model, [
+        facts(SEARCH_DE, "/suche", "de", { robots: "noindex, follow", alternates: [] }),
+        facts(SEARCH_EN, "/en/search", "en", { robots: "noindex, follow", alternates: [] }),
+        facts(SEARCH_FR, "/fr/recherche", "fr", { robots: "noindex, follow", alternates: [] }),
+      ]);
+      expect(hreflangRules(now)).toEqual([]);
+    });
+
+    it("indexable versions alternate among themselves and leave the noindex one out", () => {
+      const twins = [
+        ...alt(["de", "/suche"], ["en", "/en/search"]),
+        { hreflang: "x-default", href: `${BASE}/suche`, path: "/suche" },
+      ];
+      const found = pageFindings(model, [
+        facts(SEARCH_DE, "/suche", "de", { alternates: twins }),
+        facts(SEARCH_EN, "/en/search", "en", { alternates: twins }),
+        facts(SEARCH_FR, "/fr/recherche", "fr", { robots: "noindex", alternates: [] }),
+      ]);
+      expect(found.filter((f) => f.severity === "error")).toEqual([]);
+      // Said once per indexable version, as information: it can be deliberate.
+      expect(hreflangRules(found)).toEqual([
+        ["hreflang-version-noindex", SEARCH_DE],
+        ["hreflang-version-noindex", SEARCH_EN],
+      ]);
+      expect(found.find((f) => f.rule === "hreflang-version-noindex")?.severity).toBe("info");
+      expect(found.find((f) => f.rule === "hreflang-version-noindex")?.message).toContain(
+        "/fr/recherche",
+      );
+    });
+
+    it("a version left alone by its noindex twins expects no hreflang", () => {
+      const twoOnly = new BuildModel(
+        state({
+          variants: [
+            ...base.variants,
+            variant(SEARCH_DE, "g-search", "de", "source"),
+            variant(SEARCH_EN, "g-search", "en", "up_to_date"),
+          ],
+          stagedPages: [
+            ...base.stagedPages,
+            { pageId: SEARCH_DE, path: "/suche" },
+            { pageId: SEARCH_EN, path: "/en/search" },
+          ],
+        }),
+      );
+      const found = pageFindings(twoOnly, [
+        facts(SEARCH_DE, "/suche", "de", { alternates: [] }),
+        facts(SEARCH_EN, "/en/search", "en", { robots: "noindex", alternates: [] }),
+      ]);
+      expect(hreflangRules(found)).toEqual([["hreflang-version-noindex", SEARCH_DE]]);
+    });
+
+    it("an indexable page that still names a noindex version is a Caelo bug to report", () => {
+      const all = [
+        ...alt(["de", "/suche"], ["en", "/en/search"], ["fr", "/fr/recherche"]),
+        { hreflang: "x-default", href: `${BASE}/suche`, path: "/suche" },
+      ];
+      const found = pageFindings(model, [
+        facts(SEARCH_DE, "/suche", "de", { alternates: all }),
+        facts(SEARCH_EN, "/en/search", "en", { alternates: all }),
+        facts(SEARCH_FR, "/fr/recherche", "fr", { robots: "noindex", alternates: [] }),
+      ]);
+      const bug = found.filter((f) => f.rule === "hreflang-target-not-indexable");
+      expect(bug.map((f) => f.pageId)).toEqual([SEARCH_DE, SEARCH_EN]);
+      expect(bug[0]?.fix?.tool).toBe("bug_report");
+    });
   });
 
   it("#1305 — the 404 page and its group's other versions expect no hreflang", () => {

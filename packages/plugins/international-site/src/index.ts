@@ -964,6 +964,12 @@ interface PublishedVariant {
   href: string;
   /** The locale's operator-facing name ("Deutsch"), for switcher labels. */
   displayName: string;
+  /**
+   * #1736 — the page's SEO says noindex. The language switcher still
+   * lists it (visitors switch to it); hreflang leaves it out, because an
+   * alternate a search engine may not index is no alternate.
+   */
+  noindex: boolean;
 }
 
 /**
@@ -1025,8 +1031,8 @@ async function computeVariantMatrix(
   const groupIds = [...new Set([...variants.values()].map((v) => v.group_id))];
   if (groupIds.length === 0) return out;
   const members = await loadGroupMembers(q, groupIds, ctx);
-  const [statuses, notFound] = await Promise.all([
-    loadPageStatuses(
+  const [facts, notFound] = await Promise.all([
+    loadPageFacts(
       cms,
       [...members.values()].flatMap((group) => group.map((v) => v.page_id)),
       ctx,
@@ -1038,7 +1044,8 @@ async function computeVariantMatrix(
   for (const groupId of groupIds) {
     const published: Omit<PublishedVariant, "href">[] = [];
     for (const v of members.get(groupId) ?? []) {
-      if (statuses.get(v.page_id) !== "published") continue;
+      const page = facts.get(v.page_id);
+      if (page?.status !== "published") continue;
       // #1305 — served as /404.html, never at its own URL: not a version.
       if (v.page_id === notFound) continue;
       const locale = reg.byCode.get(v.locale_code);
@@ -1052,6 +1059,7 @@ async function computeVariantMatrix(
         localeCode: locale.code,
         isDefault: locale.is_default,
         displayName: locale.display_name,
+        noindex: page.noindex,
       });
     }
     if (published.length >= 2) groups.push({ groupId, published });
@@ -1087,26 +1095,41 @@ async function computeVariantMatrix(
   return out;
 }
 
+/** What a render hook needs of a page: its publication status, and whether it is noindex. */
+interface PageFacts {
+  readonly status: "draft" | "published";
+  /** #1736 — its SEO says noindex: hreflang leaves it out. */
+  readonly noindex: boolean;
+}
+
 /**
- * Publication status of each page (null = deleted or not visible in this
- * scope), from core's `pages.list_statuses`: the named pages only, one
- * call per 1000, memoised per render pass (#1213).
+ * Publication status and noindex of each page (null = deleted or not
+ * visible in this scope), from core's `pages.list_statuses`: the named
+ * pages only, one call per 1000, memoised per render pass (#1213).
  */
-async function loadPageStatuses(
+async function loadPageFacts(
   cms: CmsHandle,
   pageIds: readonly string[],
   ctx: unknown,
-): Promise<Map<string, "draft" | "published" | null>> {
-  return batchIn<"draft" | "published" | null>(renderMemoOf(ctx), "pageStatus").getMany(
+): Promise<Map<string, PageFacts | null>> {
+  return batchIn<PageFacts | null>(renderMemoOf(ctx), "pageFacts").getMany(
     pageIds,
     async (missing) => {
-      const out = new Map<string, "draft" | "published">();
+      const out = new Map<string, PageFacts>();
       for (const slice of chunked(missing)) {
-        const { statuses } = await cms.call<{ statuses: Record<string, "draft" | "published"> }>(
-          "pages.list_statuses",
-          { pageIds: slice },
-        );
-        for (const [id, status] of Object.entries(statuses)) out.set(id, status);
+        const r = await cms.call<{
+          statuses: Record<string, "draft" | "published">;
+          noindex?: unknown;
+        }>("pages.list_statuses", { pageIds: slice });
+        if (!Array.isArray(r.noindex)) {
+          throw new Error(
+            "international-site: pages.list_statuses answered without `noindex` — core and the plugin are from different releases; update Caelo so both match",
+          );
+        }
+        const noindex = new Set(r.noindex as string[]);
+        for (const [id, status] of Object.entries(r.statuses)) {
+          out.set(id, { status, noindex: noindex.has(id) });
+        }
       }
       return out;
     },
@@ -1463,6 +1486,8 @@ export default definePlugin<PluginContextTier1>({
      * pages of one render pass, mirroring `head_contributions` — the
      * same published-variant matrix feeds both, so the visible switcher
      * and the hreflang tags can never disagree about what is published.
+     * The one difference is deliberate (#1736): a noindex version stays
+     * in the switcher (visitors switch to it) and out of hreflang.
      * The locale code is the entry id: stable across renders.
      */
     language_links: async (ctx, args) => {
@@ -1783,13 +1808,13 @@ export default definePlugin<PluginContextTier1>({
       const variants = own
         ? ((await loadGroupMembers(q, [own.group_id], ctx)).get(own.group_id) ?? [own])
         : [];
-      const statuses = await loadPageStatuses(
+      const facts = await loadPageFacts(
         cmsOf(ctx),
         [...new Set([pageId, ...variants.map((v) => v.page_id)])],
         ctx,
       );
       const pages = new Map<string, { id: string; status: string }>();
-      for (const [id, status] of statuses) if (status !== null) pages.set(id, { id, status });
+      for (const [id, page] of facts) if (page !== null) pages.set(id, { id, status: page.status });
       return languageToolbarState({ pageId, locales: reg.rows, variants, pages });
     },
 
@@ -2255,6 +2280,12 @@ export default definePlugin<PluginContextTier1>({
      * not — also gets its locale as the document language (`<html
      * lang>`), so a German variant is announced as German even though
      * the site's stored language is the default locale's.
+     *
+     * #1736 — only versions search engines may index alternate: a noindex
+     * page (site-search's results page, whose every version is noindex)
+     * carries no hreflang, no other version names it, and a group left
+     * with fewer than two indexable versions has none. x-default follows
+     * the default language's version only while it is indexable.
      */
     head_contributions: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
@@ -2265,9 +2296,15 @@ export default definePlugin<PluginContextTier1>({
       for (const [pageId, locale] of await localesByPage(q, pageIds, reg.byCode, ctx)) {
         lang[pageId] = locale.code;
       }
+      // The requested pages' own noindex: a draft page previewed in a group
+      // is no member of the published matrix, and its own setting decides too.
+      const own = matrix.size > 0 ? await loadPageFacts(cmsOf(ctx), [...matrix.keys()], ctx) : null;
       const head: Record<string, unknown[]> = {};
       const sitemap: Record<string, unknown> = {};
-      for (const [pageId, variants] of matrix) {
+      for (const [pageId, published] of matrix) {
+        if (own?.get(pageId)?.noindex === true) continue;
+        const variants = published.filter((v) => !v.noindex);
+        if (variants.length < 2) continue;
         const entries: unknown[] = variants.map((v) => ({
           kind: "link",
           rel: "alternate",
@@ -3004,7 +3041,7 @@ export default definePlugin<PluginContextTier1>({
         "2. Call set_locales with the FULL desired list (existing locales + the new one; exactly one isDefault). The turn pauses for the Owner's in-chat Approve. Pick the URL strategy from what the operator wants: subdirectory (/de/...) is the safe default; subdomain/domain need urlHost. The default locale serves bare (/preise) unless the operator wants EVERY language prefixed (/de/preise + /en/pricing): then pass prefixDefaultLocale: true — the default home stays at '/' (no redirect) and '/<default code>' 301s to it.",
         "3. If existing pages' URLs are affected by the change, call propose_url_migration next — it previews the URL fan-out and the 301 redirects, and the Owner approves it SEPARATELY.",
         "4. Seed the language: for each core page the operator cares about, create_variant with a localized slug (omit the slug for the home page — its counterpart is the locale root), then translate_variant. Do not mass-create variants for every page unprompted — ask which pages matter, or start with the pages the operator named.",
-        "5. hreflang links and sitemap alternates appear automatically once variants are PUBLISHED (drafts are invisible to search engines by design — a missing translation is a clean 404, never a fallback).",
+        "5. hreflang links and sitemap alternates appear automatically once variants are PUBLISHED (drafts are invisible to search engines by design — a missing translation is a clean 404, never a fallback). Only versions search engines may index alternate: a noindex version (the site search's results page, for example) carries no hreflang and no other version names it; it stays in the language switcher. Link such pages into one group like any other, so visitors can switch.",
         "5b. Translate the shared chrome too — menus, header, footer and content shared across pages: call translate_chrome({localeCode}) once per new language (translate_all_stale also covers it). Until then the preview flags 'there is no <language> version of …' and publishing refuses: pages never fall back to another language. Menu links need no work — they point at each page's same-language version, and a link whose target has no version in that language is flagged. If the operator wants a language's menu or footer to DIFFER (other items, another footer module), use set_chrome_variants; switching it back to the translated version is reattach_chrome_variant (approval-gated, it overwrites).",
         "5c. Lists follow the language automatically by address: translate_chrome also translates every list (menus, footer links, categories and tags with their slugs, local lists in shared content) and the page properties of the language's pages. A list entry whose required text is not translated yet is HIDDEN on that language's pages — never shown in the source language — and so is an entry whose link points at a page without a version in that language (intl_status.listFindings names them: create the page's variant, or hide the entry on purpose with set_list_item_visibility). For a wording the operator dictates, apply_translations with kind \"addresses\".",
         '5d. Which list fields are translated: text and rich text, unless the list type marks the field `ext: { "international-site": { translate: false } }` (SKUs, codes, brand names). When you create or change a list type with upsert_list_types_many, set that attribute in the same call for every text field whose value is the same in every language; leave it out (= translated) otherwise. Turning it off keeps existing translations but stops applying them; turning it on makes the texts "missing" until translated.',
@@ -3037,7 +3074,8 @@ export default definePlugin<PluginContextTier1>({
         "",
         "hreflang, canonical, sitemap (the plugin writes them from the language groups):",
         "- hreflang-self-missing / hreflang-missing-version / hreflang-not-reciprocal / hreflang-target-broken: the language group is wrong or a version is not published. Check intl_status; relink with link_page_variants, unlink a wrong page with unlink_page_variants, or publish the missing version.",
-        "- hreflang-target-not-indexable / canonical-cross-locale: a version has noindex or a canonical override pointing elsewhere. Every language version is indexable and canonical to itself (set_page_seo_many).",
+        "- hreflang-target-not-indexable / canonical-cross-locale: a version names a page with a canonical override pointing elsewhere (or, a Caelo bug, a noindex one). Every language version that should be found is canonical to itself (set_page_seo_many: clear canonicalUrl).",
+        "- hreflang-version-noindex (info): a version of an indexable page is noindex, so hreflang leaves it out. Deliberate for pages that must stay out of search (results pages); otherwise make it indexable with set_page_seo_many.",
         "- hreflang-invalid-code: fix the language codes with set_locales (approval-gated; en-GB, not en-UK).",
         "- sitemap-alternates-mismatch: a Caelo bug — report it with bug_report.",
         "",
