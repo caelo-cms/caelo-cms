@@ -106,6 +106,54 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
     ]);
   });
 
+  it("reads the template's URL text as the browser does: entities decoded, sections maybe absent", () => {
+    const refused = (html: string, value: string) => render(html, owned(value)).missingSlots;
+    // An encoded colon in the template makes the value the scheme.
+    expect(refused(`<a href="{{title}}&#58;alert(1)">x</a>`, "javascript")).toEqual([
+      refusal("url-composed"),
+    ]);
+    // A path that only a section adds may be absent.
+    expect(
+      refused(`<a href="{{#title}}/safe/{{/title}}{{title}}">x</a>`, "javascript:alert(1)"),
+    ).toEqual([refusal("url-composed")]);
+    // The template's own script scheme makes any value code.
+    for (const html of [
+      `<a href="javascript:{{title}}">x</a>`,
+      `<a href="JavaScript&#58;{{title}}">x</a>`,
+    ]) {
+      expect(refused(html, "alert(1)")).toEqual([refusal("context-url-scheme")]);
+    }
+    // An unconditional path start holds whatever a section adds after it.
+    expect(render(`<a href="/de/{{#title}}x/{{/title}}{{title}}">x</a>`, owned("hilfe")).html).toBe(
+      `<a href="/de/x/hilfe">x</a>`,
+    );
+  });
+
+  it("refuses a value a list section repeats inside one URL", () => {
+    const entry = (id: string, label: string) => ({
+      id,
+      values: {
+        label: pluginValue(
+          { plugin: "probe", point: "probe_items", address: "label", type: "text" },
+          label,
+        ),
+      },
+    });
+    const lists = createListRenderContext(fixtureData()).forPage(PAGE.home, {
+      pluginSources: { probe_items: [entry("a", "javascript"), entry("b", ":alert(1)")] },
+    });
+    const r = renderTemplate({
+      html: `<a href="{{#probe_items}}{{label}}{{/probe_items}}">x</a>`,
+      fields: [],
+      lists,
+    });
+    expect(r.missingSlots).toEqual([
+      "plugin-value-refused:probe.probe_items.label:url-composed",
+      "plugin-value-refused:probe.probe_items.label:url-composed",
+    ]);
+    expect(r.html).not.toContain("javascript");
+  });
+
   it("keeps a plugin's richtext prose in text and escapes it in an attribute", () => {
     const fields: TemplateField[] = [{ name: "title", kind: "richtext" }];
     const prose = owned("<p>Hallo <strong>Welt</strong></p>", "richtext");
@@ -178,7 +226,8 @@ describe("placeholderContexts (#1729)", () => {
     expect(at("{{x}}")).toEqual({ kind: "text" });
     expect(at("{{m}}")).toEqual({ kind: "url", quoted: true, position: "path" });
     expect(at("{{s2}}")).toEqual({ kind: "url", quoted: true, position: "whole" });
-    expect(at("{{w}}")).toEqual({ kind: "url", quoted: true, position: "whole" });
+    // Inside a section: a list section would repeat it, so it never decides alone.
+    expect(at("{{w}}")).toEqual({ kind: "url", quoted: true, position: "composed" });
     expect(placeholderContexts(html)).toBe(placeholderContexts(html));
   });
 });

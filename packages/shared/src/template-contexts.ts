@@ -19,8 +19,8 @@
  * no plugin value never asks.
  */
 
-import { QuoteType, Tokenizer } from "htmlparser2";
-import type { PlaceholderContext } from "./lists/plugin-values.js";
+import { Parser, QuoteType, Tokenizer } from "htmlparser2";
+import { isLinkScheme, type PlaceholderContext } from "./lists/plugin-values.js";
 
 /** Attributes whose value is a URL: a plugin's value there is held to the link rule. */
 const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
@@ -248,64 +248,149 @@ function attributeContext(
     return { kind: "refused", rule: "context-svg-animation" };
   }
   if (!URL_ATTRIBUTES.has(n)) return { kind: "attribute", quoted };
-  return { kind: "url", quoted, position: urlPosition(html, tags, attr, tag) };
+  const position = urlPosition(html, tags, attr, tag);
+  if (position === "template-scheme") return { kind: "refused", rule: "context-url-scheme" };
+  return { kind: "url", quoted, position };
 }
 
-/** A part of an attribute value: literal text, or a tag (a value tag, or a section tag that carries none). */
+/**
+ * A part of an attribute value: literal text (as a browser reads it, at
+ * its section depth), a value tag, or a section tag (`#`/`^` open one,
+ * `/` closes it), which carries no value.
+ */
 type Part =
-  | { readonly kind: "text"; readonly text: string }
-  | { readonly kind: "value"; readonly start: number }
-  | { readonly kind: "section" };
+  | { readonly kind: "text"; readonly text: string; readonly conditional: boolean }
+  | { readonly kind: "value"; readonly start: number; readonly conditional: boolean }
+  | { readonly kind: "open" }
+  | { readonly kind: "close" };
+
+/** What `tag`'s place in its URL attribute is ({@link urlPosition}). */
+type UrlPosition = "whole" | "path" | "composed" | "template-scheme";
 
 /**
- * Whether `tag` decides the scheme of its URL attribute's value (`whole`),
- * comes after template text that already did (`path`: a `:`, `/`, `?` or
- * `#` before it), or shares the scheme with other parts (`composed`):
- * text or another value before it, or a `:` or another value after it
- * before the path begins. A `srcset` holds one URL per comma.
+ * Where `tag` sits in its URL attribute's value, read as the browser reads
+ * the assembled value: the template's literal text decoded as attribute
+ * text (`&#58;` is a colon), and only text outside sections taken as
+ * always there (a section may render nothing).
+ *
+ * - `path`: unconditional template text before it ends the scheme part
+ *   (`/de/{{slug}}`, `mailto:{{x}}`); the value can only be a path, query
+ *   or fragment;
+ * - `template-scheme`: that text names a scheme that is no link scheme
+ *   (`javascript:{{x}}`): the value would be code;
+ * - `composed`: the scheme could be made of the value and other parts:
+ *   text or a value before it without such an end, a `:` or another value
+ *   after it before one, or a section around it (a list section repeats
+ *   it, and its entries could spell a scheme together);
+ * - `whole`: the value decides the URL's scheme.
+ *
+ * A `srcset` holds one URL per comma.
  */
 function urlPosition(
   html: string,
   tags: readonly MustacheSpan[],
   attr: { readonly name: string; readonly start: number; readonly end: number },
   tag: MustacheSpan,
-): "whole" | "path" | "composed" {
+): UrlPosition {
   const parts: Part[] = [];
+  let depth = 0;
   let at = attr.start;
+  const text = (from: number, to: number) => {
+    if (to > from) {
+      parts.push({
+        kind: "text",
+        text: decodeAttributeText(html.slice(from, to)),
+        conditional: depth > 0,
+      });
+    }
+  };
   for (const t of tags) {
     if (t.end <= attr.start || t.start >= attr.end) continue;
-    if (t.start > at) parts.push({ kind: "text", text: html.slice(at, t.start) });
-    parts.push(t.section ? { kind: "section" } : { kind: "value", start: t.start });
+    text(at, t.start);
+    if (!t.section) parts.push({ kind: "value", start: t.start, conditional: depth > 0 });
+    else {
+      const sigil = html.slice(t.start + 2, t.end).trimStart()[0];
+      if (sigil === "/") {
+        parts.push({ kind: "close" });
+        depth = Math.max(0, depth - 1);
+      } else {
+        parts.push({ kind: "open" });
+        depth += 1;
+      }
+    }
     at = t.end;
   }
-  if (at < attr.end) parts.push({ kind: "text", text: html.slice(at, attr.end) });
+  text(at, attr.end);
   const srcset = attr.name === "srcset" || attr.name === "imagesrcset";
   const index = parts.findIndex((p) => p.kind === "value" && p.start === tag.start);
+  const self = parts[index];
+  if (self?.kind === "value" && self.conditional) return "composed";
 
-  // Before: only what follows the last comma of a srcset counts.
-  let literal = "";
-  let valueBefore = false;
-  for (const p of parts.slice(0, index)) {
-    if (p.kind === "text") {
-      const cut = srcset ? p.text.lastIndexOf(",") : -1;
-      if (cut >= 0) {
-        literal = p.text.slice(cut + 1);
-        valueBefore = false;
-      } else literal += p.text;
-    } else if (p.kind === "value") valueBefore = true;
+  // Before the value: from the last unconditional comma of a srcset on.
+  let from = 0;
+  if (srcset) {
+    for (let k = index - 1; k >= 0; k -= 1) {
+      const p = parts[k] as Part;
+      if (p.kind === "text" && p.text.includes(",")) {
+        if (p.conditional) return "composed";
+        from = k;
+        break;
+      }
+    }
   }
-  if (/[:/?#]/.test(literal)) return "path";
-  if (valueBefore || literal.trim() !== "") return "composed";
+  let prefix = "";
+  for (const [k, p] of parts.slice(from, index).entries()) {
+    if (p.kind === "value") return "composed";
+    // A section tag renders only its own block, whose text counts below.
+    if (p.kind !== "text") continue;
+    const t = srcset && k === 0 ? p.text.slice(p.text.lastIndexOf(",") + 1) : p.text;
+    if (p.conditional && !/[:/?#]/.test(prefix)) {
+      if (t.trim() !== "") return "composed";
+      continue;
+    }
+    prefix += t;
+  }
+  const end = prefix.search(/[:/?#]/);
+  if (end !== -1) {
+    if (prefix[end] !== ":") return "path";
+    const scheme = prefix
+      .slice(0, end)
+      .replace(/[\t\n\r]/g, "")
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: the URL parser strips them.
+      .replace(/^[\u0000-\u0020]+/, "");
+    return isLinkScheme(scheme) ? "path" : "template-scheme";
+  }
+  if (prefix.trim() !== "") return "composed";
 
-  // After: up to where the path (or, in a srcset, the candidate) begins.
+  // After the value: up to the first unconditional end of the scheme part.
   const ends = srcset ? /[/?#,\s]/ : /[/?#]/;
   for (const p of parts.slice(index + 1)) {
-    if (p.kind === "section") continue;
+    if (p.kind === "open" || p.kind === "close") continue;
     if (p.kind === "value") return "composed";
-    const stop = p.text.search(ends);
+    const stop = p.conditional ? -1 : p.text.search(ends);
     const head = stop === -1 ? p.text : p.text.slice(0, stop);
     if (head.includes(":")) return "composed";
     if (stop !== -1) return "whole";
   }
   return "whole";
+}
+
+/**
+ * `text`, a piece of an attribute value, as a browser reads it there:
+ * character references decoded by the HTML rules for attributes.
+ */
+function decodeAttributeText(text: string): string {
+  if (!text.includes("&")) return text;
+  const quote = text.includes('"') ? (text.includes("'") ? null : "'") : '"';
+  if (quote === null) return text;
+  let read = text;
+  new Parser(
+    {
+      onattribute(_name, value) {
+        read = value;
+      },
+    },
+    { decodeEntities: true },
+  ).end(`<a x=${quote}${text}${quote}>`);
+  return read;
 }

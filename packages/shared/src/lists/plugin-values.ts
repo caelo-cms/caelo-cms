@@ -86,6 +86,12 @@ const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
 
 const ALLOWED_SCHEMES: ReadonlySet<string> = new Set(["https:", "http:", "mailto:", "tel:"]);
 
+/** Whether `scheme` (without its colon, any case) is one a page may link with, or an internal `caelo:` reference. */
+export function isLinkScheme(scheme: string): boolean {
+  const s = scheme.toLowerCase();
+  return s === "caelo" || ALLOWED_SCHEMES.has(`${s}:`);
+}
+
 /** Escape text for HTML content and quoted attribute values alike. */
 export function escapePluginText(text: string): string {
   return text
