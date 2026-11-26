@@ -79,10 +79,13 @@ const source = `export default {slug:"${SLUG}",version:"1.0.0",tier:2,
         const first = scope.pageIds[0] ?? scope.contentInstanceIds[0];
         return { overlays: { parts: { values: { ["page/" + first + "/props/part"]: "x" }, hidden: [] } } };
       }
-      const list = scope?.listIds?.[0];
-      if (!list) return { overlays: {} };
+      // The probe cannot tell its list from the others the page can show
+      // (site texts, …): it answers for each, and the render refuses the
+      // addresses that name nothing.
+      const values = {};
+      for (const list of scope?.listIds ?? []) {
       const at = (item, field) => "list/" + list + "/item/" + item + "/" + field;
-      return { overlays: { de: { hidden: [], values: {
+      Object.assign(values, {
         [at("${FIRST}", "name")]: "<img src=x onerror=alert(1)>",
         [at("${FIRST}", "description")]: "<p>x</p><script>alert(1)</script>",
         [at("${FIRST}", "landing_page")]: { href: "javascript:alert(1)" },
@@ -90,7 +93,9 @@ const source = `export default {slug:"${SLUG}",version:"1.0.0",tier:2,
         [at("${SECOND}", "description")]: "<p>Gut <em>so</em></p>",
         [at("${SECOND}", "landing_page")]: { href: "https://example.com/de" },
         [at("${GHOST}", "name")]: "Erfunden",
-      } } } };
+      });
+      }
+      return { overlays: { de: { hidden: [], values } } };
     },
   }};`;
 
