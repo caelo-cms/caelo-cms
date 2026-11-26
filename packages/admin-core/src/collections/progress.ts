@@ -26,6 +26,22 @@ export const PROGRESS_EVERY_MS = 20_000;
 const uuid = z.string().uuid();
 const count = z.number().int().min(0).max(50_000_000);
 
+/**
+ * The project's Cloud Run CPU quota keeps a build on fewer tasks than it
+ * would run (reporting-jobs run-capacity.ts): how many it wants, the quota,
+ * and the quota that would give it them. Shown as text, never acted on.
+ */
+export const indexLimitSchema = z
+  .object({
+    wantedTasks: z.number().int().min(1).max(64),
+    quotaVcpu: z.number().int().min(0).max(1_000_000),
+    quotaNeededVcpu: z.number().int().min(1).max(1_000_000),
+    projectId: z.string().regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/),
+    region: z.string().regex(/^[a-z]+-[a-z]+\d+$/),
+  })
+  .strict();
+export type IndexLimit = z.infer<typeof indexLimitSchema>;
+
 /** The stored progress of a pending release (`collection_releases.progress`). */
 export const indexProgressSchema = z.object({
   startedAt: z.string(),
@@ -34,6 +50,8 @@ export const indexProgressSchema = z.object({
   planned: count.optional(),
   taskCount: z.number().int().min(1).max(64).optional(),
   tasks: z.record(z.string(), z.object({ embedded: count, toEmbed: count })),
+  /** The last report's quota limit; absent while the quota does not narrow the build. */
+  limit: indexLimitSchema.optional(),
 });
 
 /** A pending index's progress for people: passages so far, tasks, time left. */
@@ -43,6 +61,8 @@ export interface IndexProgressSummary {
   readonly tasks: number;
   /** From the pace so far; null before it can be measured. */
   readonly remainingMs: number | null;
+  /** When the CPU quota keeps it on fewer tasks than it would run. */
+  readonly limit?: IndexLimit;
 }
 
 /**
@@ -68,7 +88,13 @@ export function summarizeIndexProgress(raw: unknown, nowMs: number): IndexProgre
   const sinceLast = Math.max(0, nowMs - Date.parse(p.at));
   const remainingMs =
     rate === null ? null : Math.max(0, Math.round((toEmbed - embedded) / rate - sinceLast));
-  return { embedded, toEmbed, tasks: p.taskCount ?? parts.length, remainingMs };
+  return {
+    embedded,
+    toEmbed,
+    tasks: p.taskCount ?? parts.length,
+    remainingMs,
+    ...(p.limit ? { limit: p.limit } : {}),
+  };
 }
 
 export const collectionIndexProgressOp = defineOperation({
@@ -91,11 +117,13 @@ export const collectionIndexProgressOp = defineOperation({
       toEmbed: count,
       /** What the whole attempt embeds for the collection. */
       planned: count,
+      limit: indexLimitSchema.optional(),
     })
     .strict(),
   output: z.object({ recorded: z.boolean() }),
   handler: async (_ctx, input, tx) => {
     const part = jsonbParam({ embedded: input.embedded, toEmbed: input.toEmbed });
+    const limit = jsonbParam(input.limit ?? null);
     const rows = (await tx.execute(sql`
       UPDATE collection_releases
          SET progress = jsonb_build_object(
@@ -105,6 +133,8 @@ export const collectionIndexProgressOp = defineOperation({
                'taskCount', ${input.tasks}::int,
                'tasks', COALESCE(progress->'tasks', '{}'::jsonb)
                           || jsonb_build_object(${String(input.task)}::text, ${part}))
+             -- No key while the quota does not narrow the build.
+             || jsonb_strip_nulls(jsonb_build_object('limit', ${limit}))
        WHERE run_id = ${input.runId}::uuid AND plugin_id = ${input.pluginId}::uuid
          AND collection = ${input.collection} AND state = 'pending'
       RETURNING run_id

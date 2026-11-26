@@ -28,6 +28,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
+import { MAX_JOB_TASKS, runCapacitySchema } from "./run-capacity.js";
 
 /**
  * The kinds of reporting job: a Stage's audit (#1359), a site import's crawl
@@ -105,16 +106,20 @@ export const JOB_TIMING: Readonly<Record<ReportingJobKind, JobTiming>> = {
   },
   // A Stage's search index (#1648): about a minute for a delta, 20 to 40
   // minutes on 32 tasks for the first index of 50,000 pages with vectors
-  // (about 800,000 passages). A retry starts over from the run's change
-  // files, which stay until a release holds them, and keeps the vector
-  // shards a wide attempt wrote. Four attempts: asking for more tasks ends
-  // one, and two deaths after it are still retried.
+  // (about 800,000 passages), many hours on the one task a new project's
+  // CPU quota leaves (run-capacity.ts). A retry starts over from the run's
+  // change files, which stay until a release holds them, and keeps every
+  // finished shard (index-shards.ts), so an attempt that runs out of time
+  // is followed by one that goes on. Six hours an attempt, like an import:
+  // a task stops starting shards in its last ten minutes. Five attempts:
+  // asking for more tasks ends one; the four after it carry one task
+  // through 800,000 passages at its slowest measured pace.
   collection_index: {
     firstLeaseSeconds: 15 * 60,
     leaseSeconds: 10 * 60,
     renewEverySeconds: 60,
-    maxAttempts: 4,
-    maxRunSeconds: 60 * 60,
+    maxAttempts: 5,
+    maxRunSeconds: 6 * 60 * 60,
     reportTimeoutSeconds: 10 * 60,
   },
   // A plugin's batch operation (#1646): up to its declared maxRunSeconds
@@ -179,13 +184,8 @@ export function reportOrigin(raw: string): string {
   return u.origin;
 }
 
-/**
- * The most tasks one attempt runs (Cloud Run `taskCount`). The index job
- * asks for more than one when a build has more passages to embed than one
- * task embeds in a few minutes; 32 tasks of 2 vCPU embed the about 800,000
- * passages of a 50,000-page site's first index in about 25 minutes.
- */
-export const MAX_JOB_TASKS = 32;
+/** The most tasks one attempt runs (run-capacity.ts, where the quota narrows it). */
+export { MAX_JOB_TASKS };
 
 /** What one job execution is told to do (its env, {@link JOB_ORDER_ENV_VAR}). */
 export const jobOrderSchema = z
@@ -206,8 +206,19 @@ export const jobOrderSchema = z
      * (`CLOUD_RUN_TASK_INDEX`); absent: one. All of them share the token.
      */
     tasks: z.number().int().min(1).max(MAX_JOB_TASKS).optional(),
-    /** The most tasks the launcher could run an attempt with; absent: one (inside the admin). */
+    /**
+     * The most tasks the launcher could run an attempt with: what the
+     * project's CPU quota leaves for a search index (run-capacity.ts);
+     * absent: one (inside the admin).
+     */
     maxTasks: z.number().int().min(1).max(MAX_JOB_TASKS).optional(),
+    /**
+     * What the project's Cloud Run CPU quota allows, read when the attempt
+     * started: the quality check runs `lighthouseTasks` Lighthouse runs at
+     * once, and both jobs say when the quota keeps them narrow. Absent
+     * inside the admin (self-hosted), which has no such quota.
+     */
+    capacity: runCapacitySchema.optional(),
     /** The admin's origin behind IAP; absent when the job runs inside the admin. */
     adminUrl: z
       .string()

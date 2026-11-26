@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,6 +25,7 @@ import type { Embedder } from "@caelo-cms/models";
 import { encodeChangeFile } from "@caelo-cms/plugin-host";
 import type { SearchProfile } from "@caelo-cms/plugin-sdk";
 import { DEFAULT_EMBEDDING_MODEL_ID, type EmbeddingModel } from "@caelo-cms/shared";
+import { planRunCapacity } from "../reporting-jobs/run-capacity.js";
 import {
   type EmbedderSource,
   type IndexOptions,
@@ -422,6 +423,9 @@ describe("the index job at scale", () => {
     const t = await bigBuild();
     const alone = fakeEmbedders("granite@aaaaaaaaaaaa");
     const single = await build(t, alone.source, { slot: { index: 0, count: 1, max: 1 } });
+    // The single build left its shards; the wide one must embed on its own.
+    const shards = join(root, "t1650/pages/vectors");
+    for (const f of await readdir(shards)) if (f.startsWith("v-")) await rm(join(shards, f));
 
     const wide = fakeEmbedders("granite@aaaaaaaaaaaa");
     for (const index of [1, 2]) {
@@ -459,13 +463,63 @@ describe("the index job at scale", () => {
       indexCollection(store, t, {
         embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
         slot: { index: 0, count: 3, max: 32 },
-        shardDeadline: 30_000,
+        // Time for its own shards (none starts in the last ten minutes), then a wait.
+        shardDeadline: 20 * 60_000,
         now: () => clock,
         sleep: async (ms) => {
           clock += ms;
         },
       }),
-    ).rejects.toThrow(/the vectors of task\(s\) 1, 2 of 3 did not arrive in time/);
+    ).rejects.toThrow(/2 of 4 pieces of the search index, of task\(s\) 1, 2 of 3, did not arrive/);
+  });
+
+  it("on one task a build too large for one attempt goes on where the last attempt stopped", async () => {
+    // The quota leaves one task (max 1): every attempt embeds shards until
+    // its time is up, and the next one only the rest, so a narrow width
+    // takes longer but finishes.
+    const t = await bigBuild();
+    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
+    let clock = 0;
+    const timed = async (texts: readonly string[]) => {
+      // Each model call takes a minute of the attempt's clock.
+      clock += 60_000;
+      return texts;
+    };
+    const slow: EmbedderSource = async (model) => {
+      const inner = await e.source(model);
+      return { ...inner, embed: async (texts, kind) => inner.embed(await timed(texts), kind) };
+    };
+    const attempt = () => {
+      const start = clock;
+      return indexCollection(store, t, {
+        embedders: slow,
+        slot: { index: 0, count: 1, max: 1 },
+        // 2,000 texts are 63 calls of 32: a shard takes 63 minutes here, and
+        // none starts after minute 60.
+        shardDeadline: start + 70 * 60_000,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      });
+    };
+    await expect(attempt()).rejects.toThrow(
+      /pieces of the search index were not embedded within this attempt's time/,
+    );
+    const first = e.embedded.length;
+    expect(first).toBe(2_000);
+    let out: Awaited<ReturnType<typeof attempt>> | null = null;
+    for (let i = 0; i < 5 && out === null; i++) {
+      try {
+        out = await attempt();
+      } catch (err) {
+        expect(String(err)).toContain("next attempt embeds only those");
+      }
+    }
+    // Every text embedded exactly once over all attempts, and the release built.
+    expect(e.embedded.length).toBe(6_010);
+    expect(new Set(e.embedded).size).toBe(6_010);
+    expect(out?.kind).toBe("built");
   });
 });
 
@@ -532,16 +586,40 @@ describe("what the index job reports", () => {
     const actions = calls.map((c) => c.action);
     expect(actions).not.toContain("done");
     expect(actions).not.toContain("failed");
-    // At least the final count of its share (3,005 of 6,010).
-    // It reports at once, so its share counts before its first batch, and with the plan's total.
+    // Its share is shards 1 and 3 of 4 (2,000 + 10 of 6,010). It reports at
+    // once, so its share counts before its first batch, and with the plan's total.
     expect(calls[0]).toMatchObject({
       action: "progress",
-      payload: { task: 1, tasks: 2, embedded: 0, toEmbed: 3_005, planned: 6_010 },
+      payload: { task: 1, tasks: 2, embedded: 0, toEmbed: 2_010, planned: 6_010 },
     });
     expect(calls.at(-1)).toMatchObject({
       action: "progress",
-      payload: { task: 1, embedded: 3_005, toEmbed: 3_005 },
+      payload: { task: 1, embedded: 2_010, toEmbed: 2_010 },
     });
+    // Without a quota limit (no capacity: inside the admin) no limit is reported.
+    expect(calls.some((c) => (c.payload as { limit?: unknown }).limit)).toBe(false);
+  });
+
+  it("names the CPU quota when it keeps the build narrower than it would run", async () => {
+    const { reporter, calls } = recordingReporter({ index: 0, count: 1, max: 1 });
+    await indexTasks(
+      { ...reporter, capacity: planRunCapacity("acme-site", "europe-west1", 20) },
+      store,
+      [await big()],
+      { embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source, slot: reporter.slot },
+    );
+    const progress = calls.find((c) => c.action === "progress");
+    expect(progress?.payload).toMatchObject({
+      tasks: 1,
+      limit: {
+        wantedTasks: 2,
+        quotaVcpu: 20,
+        quotaNeededVcpu: 8 + 30 + 4,
+        projectId: "acme-site",
+        region: "europe-west1",
+      },
+    });
+    expect(calls.map((c) => c.action)).toContain("done");
   });
 
   it("sizes the run's other collections before widening, so it widens once", async () => {

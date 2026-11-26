@@ -64,12 +64,14 @@ import {
   SINGLE_TASK,
   type TaskSlot,
 } from "../reporting-jobs/job-reporter.js";
-import { JOB_TIMING } from "../reporting-jobs/protocol.js";
+import { JOB_TIMING, MAX_JOB_TASKS } from "../reporting-jobs/protocol.js";
+import { quotaForIndexTasks } from "../reporting-jobs/run-capacity.js";
 import {
   collectShards,
-  embedShard,
+  embedShards,
   missingTexts,
   planShards,
+  SHARD_PASSAGES,
   ShardsMissingError,
 } from "./index-shards.js";
 import type { IndexTask } from "./ops.js";
@@ -285,8 +287,14 @@ export interface IndexOptions {
     readonly embedded: number;
     readonly toEmbed: number;
     readonly planned: number;
+    /** The tasks the build would run on without the CPU quota's limit. */
+    readonly wantedTasks: number;
   }) => Promise<void>;
-  /** When the first task of a wide attempt stops waiting for the others (epoch ms). */
+  /**
+   * The end of this attempt's time for shards (epoch ms): no task starts a
+   * shard in its last ten minutes, and the first stops waiting for the
+   * others at it.
+   */
   readonly shardDeadline?: number;
   /** Between looks for the other tasks' vectors (tests shorten it). */
   readonly pollMs?: number;
@@ -305,6 +313,7 @@ function throttled(
   report: IndexOptions["onProgress"],
   toEmbed: number,
   planned: number,
+  wantedTasks: number,
   now: () => number,
 ): (embedded: number) => Promise<void> {
   let last = Number.NEGATIVE_INFINITY;
@@ -312,7 +321,7 @@ function throttled(
     if (!report) return;
     if (embedded < toEmbed && now() - last < PROGRESS_EVERY_MS) return;
     last = now();
-    await report({ embedded, toEmbed, planned });
+    await report({ embedded, toEmbed, planned, wantedTasks });
   };
 }
 
@@ -391,45 +400,42 @@ export async function indexCollection(
     embedder && field ? await missingTexts(docs(), field, pool) : new Map<string, string>();
   const toEmbed = missing.size;
 
-  const needed = Math.min(slot.max, Math.ceil(toEmbed / PASSAGES_PER_TASK));
+  // More than one shard: embedded in shard files, which survive a retry.
+  const plan =
+    embedder && toEmbed > SHARD_PASSAGES ? planShards(embedder.fingerprint, missing) : null;
+  // The width the build would use, and what the quota leaves of it.
+  const wanted = Math.min(
+    MAX_JOB_TASKS,
+    Math.ceil(toEmbed / PASSAGES_PER_TASK),
+    plan?.names.length ?? 1,
+  );
+  const needed = Math.min(slot.max, wanted);
+  const reason = `${toEmbed.toLocaleString("en-US")} passages of ${task.slug}/${task.collection} to embed`;
   if (opts.planOnly) {
     return embedder && needed > slot.count
-      ? {
-          kind: "scale",
-          tasks: needed,
-          reason: `${toEmbed.toLocaleString("en-US")} passages of ${task.slug}/${task.collection} to embed`,
-        }
+      ? { kind: "scale", tasks: needed, reason }
       : { kind: "fits" };
   }
-  if (embedder && toEmbed > 0) {
-    // Too much for this attempt's tasks, alone or already wide (a later
-    // collection of the run can need more than the one that widened it).
-    const tasks = needed;
-    if (tasks > slot.count) {
-      return {
-        kind: "scale",
-        tasks,
-        reason: `${toEmbed.toLocaleString("en-US")} passages of ${task.slug}/${task.collection} to embed`,
-      };
-    }
-    if (slot.count > 1) {
-      const plan = planShards(embedder.fingerprint, missing, slot.count);
-      const share = plan.share(slot.index);
-      await embedShard(
-        scoped,
-        plan.names[slot.index] as string,
-        share,
-        embedder,
-        throttled(opts.onProgress, share.length, toEmbed, now),
-      );
-      if (slot.index > 0) return { kind: "shared" };
-      await collectShards(scoped, plan, embedder.model.dims, pool, {
-        deadline: opts.shardDeadline ?? now() + 50 * 60_000,
-        pollMs: opts.pollMs ?? 10_000,
-        now,
-        sleep: opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
-      });
-    }
+  // Too much for this attempt's tasks, alone or already wide (a later
+  // collection of the run can need more than the one that widened it).
+  if (embedder && needed > slot.count) return { kind: "scale", tasks: needed, reason };
+  if (plan && embedder) {
+    const own = plan.shardsOf(slot.index, slot.count);
+    const ownTexts = own.reduce((n, i) => n + plan.texts(i).length, 0);
+    const progress = throttled(opts.onProgress, ownTexts, toEmbed, wanted, now);
+    const deadline = opts.shardDeadline ?? now() + 50 * 60_000;
+    await embedShards(scoped, plan, own, embedder, {
+      onEmbedded: progress,
+      // A shard takes a few minutes: none starts in the attempt's last ten.
+      timeUp: () => now() >= deadline - 10 * 60_000,
+    });
+    if (slot.index > 0) return { kind: "shared" };
+    await collectShards(scoped, plan, embedder.model.dims, pool, slot.count, {
+      deadline,
+      pollMs: opts.pollMs ?? 10_000,
+      now,
+      sleep: opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+    });
   }
 
   // Only the first task builds and reports, also when nothing was left to embed.
@@ -437,9 +443,9 @@ export async function indexCollection(
 
   const uploader = new Uploader(scoped);
   const sink = (name: string, data: Uint8Array): void => uploader.put(name, data);
-  // Alone, the build embeds what is missing; in a wide attempt the shards held it all.
-  const inline = slot.count === 1 ? toEmbed : 0;
-  const progress = throttled(opts.onProgress, inline, inline, now);
+  // A small build embeds what is missing as it goes; a sharded one has it all in the pool.
+  const inline = plan ? 0 : toEmbed;
+  const progress = throttled(opts.onProgress, inline, inline, wanted, now);
   if (inline > 0) await progress(0);
   let embedded = 0;
   let embedMs = 0;
@@ -504,8 +510,9 @@ export async function indexCollection(
     merged: applied.merged,
     changes: task.changeKeys.length,
     vectorModel: embedder?.fingerprint ?? null,
-    passagesEmbedded: slot.count > 1 ? toEmbed : embedded,
-    passagesReused: applied.passages.reused - (slot.count > 1 ? toEmbed : 0),
+    // A sharded build's texts came into the pool from the shards.
+    passagesEmbedded: plan ? toEmbed : embedded,
+    passagesReused: applied.passages.reused - (plan ? toEmbed : 0),
     embedSeconds: Math.round(embedMs / 100) / 10,
     tasks: slot.count,
   };
@@ -576,7 +583,8 @@ export async function indexTasks(
       outcome = await indexCollection(store, task, {
         ...opts,
         // A count the admin missed is no reason to stop indexing.
-        onProgress: async ({ embedded, toEmbed, planned }) => {
+        onProgress: async ({ embedded, toEmbed, planned, wantedTasks }) => {
+          const c = reporter.capacity;
           try {
             await reporter.call("progress", {
               ...target,
@@ -585,6 +593,18 @@ export async function indexTasks(
               embedded,
               toEmbed,
               planned,
+              // The quota keeps the build narrower than it would run.
+              ...(c && c.quotaVcpu !== null && wantedTasks > slot.count
+                ? {
+                    limit: {
+                      wantedTasks,
+                      quotaVcpu: c.quotaVcpu,
+                      quotaNeededVcpu: quotaForIndexTasks(wantedTasks),
+                      projectId: c.projectId,
+                      region: c.region,
+                    },
+                  }
+                : {}),
             });
           } catch (e) {
             if (e instanceof JobStoppedError) throw e;

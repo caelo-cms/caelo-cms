@@ -40,11 +40,11 @@ import {
   JOB_ORDER_ENV_VAR,
   JOB_TIMING,
   type JobOrder,
-  MAX_JOB_TASKS,
   mintJobToken,
   type ReportingJobKind,
   reportOrigin,
 } from "./protocol.js";
+import { type RunCapacity, readRunCapacity } from "./run-capacity.js";
 
 /** Starts one attempt's execution. */
 export interface JobLauncher {
@@ -52,6 +52,12 @@ export interface JobLauncher {
   readonly label: string;
   /** The most tasks it runs one attempt with (`JobOrder.tasks`); absent: one. */
   readonly maxTasks?: number;
+  /**
+   * What the project's CPU quota allows now (run-capacity.ts), read at
+   * every start so a raised quota counts from the next one; its
+   * `indexTasks` replaces `maxTasks`. Absent where there is no such quota.
+   */
+  capacity?(): Promise<RunCapacity>;
   /** Start the attempt; resolves with where it runs (an execution name). */
   launch(order: JobOrder): Promise<string>;
 }
@@ -74,7 +80,7 @@ export function gcpReportingJobLauncher(
   const origin = reportOrigin(adminUrl);
   return {
     label: `Cloud Run job ${job.split("/").pop()}`,
-    maxTasks: MAX_JOB_TASKS,
+    capacity: () => readRunCapacity(job, deps),
     async launch(order) {
       const op = (await googleCall(deps, `https://run.googleapis.com/v2/${job}:run`, "POST", {
         overrides: {
@@ -274,19 +280,28 @@ export async function startReportingJob(
     await giveUpReportingJob(deps, def, subjectId, message);
     return { outcome: "given-up", message };
   }
-  const maxTasks = choice.launcher.maxTasks ?? 1;
-  const tasks = Math.min(begun.tasks, maxTasks);
-  const order: JobOrder = {
-    version: CAELO_VERSION,
-    kind,
-    subjectId,
-    attempt: begun.attempt,
-    token,
-    ...(tasks > 1 ? { tasks } : {}),
-    ...(maxTasks > 1 ? { maxTasks } : {}),
-  };
+  const { launcher } = choice;
   try {
-    const execution = await withinLaunchTimeout(choice.launcher.launch(order));
+    // Inside the try: a quota Google does not answer for is a failed
+    // launch the backstop retries, not a lost start.
+    const execution = await withinLaunchTimeout(
+      (async () => {
+        const capacity = await launcher.capacity?.();
+        const maxTasks = capacity ? capacity.indexTasks : (launcher.maxTasks ?? 1);
+        const tasks = Math.min(begun.tasks, maxTasks);
+        const order: JobOrder = {
+          version: CAELO_VERSION,
+          kind,
+          subjectId,
+          attempt: begun.attempt,
+          token,
+          ...(tasks > 1 ? { tasks } : {}),
+          ...(maxTasks > 1 ? { maxTasks } : {}),
+          ...(capacity ? { capacity } : {}),
+        };
+        return launcher.launch(order);
+      })(),
+    );
     await op(deps, "reporting_jobs.record_launch", {
       kind,
       subjectId,
@@ -295,7 +310,7 @@ export async function startReportingJob(
     });
     return { outcome: "started", attempt: begun.attempt, execution };
   } catch (e) {
-    const message = `could not be started on ${choice.launcher.label}: ${e instanceof Error ? e.message : String(e)}`;
+    const message = `could not be started on ${launcher.label}: ${e instanceof Error ? e.message : String(e)}`;
     await op(deps, "reporting_jobs.release", {
       kind,
       subjectId,

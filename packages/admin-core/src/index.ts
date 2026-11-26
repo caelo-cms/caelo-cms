@@ -319,6 +319,15 @@ export {
   MAX_REPORT_BODY_BYTES,
   type ReportingJobKind,
 } from "./reporting-jobs/protocol.js";
+// #1764 — what the project's Cloud Run CPU quota lets the jobs run at once.
+export {
+  capacityLimited,
+  MAX_JOB_TASKS,
+  MAX_LIGHTHOUSE_TASKS,
+  quotaConsoleUrl,
+  type RunCapacity,
+  readInstallRunCapacity,
+} from "./reporting-jobs/run-capacity.js";
 // #1140 — the scheduler tick: the core maintenance tasks, the plugin
 // workers, and the tick that runs what is due.
 export { mintTickToken } from "./scheduler/clock.js";

@@ -746,6 +746,17 @@ new gcp.projects.IAMMember(
   },
   opts,
 );
+// #1764 — the admin reads the project's Cloud Run CPU quota (read-only) to
+// size the quality check's Lighthouse runs and a search index's tasks.
+new gcp.projects.IAMMember(
+  `${namePrefix}-run-quota-viewer`,
+  {
+    project,
+    role: "roles/serviceusage.serviceUsageViewer",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
 new gcp.projects.IAMMember(
   `${namePrefix}-gateway-log-writer`,
   {
