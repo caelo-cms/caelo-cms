@@ -759,6 +759,69 @@ export async function draftUndoSelection(
 }
 
 /**
+ * Per lock kind, the draft head kinds whose pending rows keep the lock: a
+ * page lock covers the page's own snapshots and its layout (keyed by the
+ * page), a layout lock its blocks. A page's section content
+ * (`pageModuleContent`) keeps the page's lock too; its head row names the
+ * page in `page_id`, see {@link idleDraftLocksSql}. A kind not listed
+ * (redirect, site settings and defaults: live-write kinds) never has a
+ * pending snapshot, so its lock is always idle.
+ */
+const LOCK_HEAD_KINDS: Readonly<Partial<Record<LockedEntityKind, readonly DraftHeadKind[]>>> = {
+  module: ["module"],
+  template: ["template"],
+  page: ["page", "pageLayout"],
+  pageLayout: ["pageLayout"],
+  listType: ["listType"],
+  list: ["list"],
+  pageType: ["pageType"],
+  contentInstance: ["contentInstance"],
+  theme: ["theme"],
+  pluginRow: ["pluginRow"],
+  layout: ["layoutBlock"],
+};
+
+/**
+ * The statement {@link releaseIdleDraftLocks} runs, exported so a test can
+ * EXPLAIN exactly what runs.
+ *
+ * It asks the draft head (`draft_pending_entities`, #1268) whether the
+ * branch still has a pending change of each locked entity, through the
+ * head's key index (branch, kind, entity): the cost follows the branch's
+ * locks and pending entities, never its history. Walking the snapshot
+ * tables instead (one EXISTS per kind, each joining every snapshot of the
+ * entity to its header) read the draft's staged history: 0.6-1.3 s for 84 locks
+ * on a quiet database, and past the 60 s statement timeout when a Stage was
+ * finalised beside a busy audit on searchVIU (2026-11-26).
+ */
+export function idleDraftLocksSql(branchId: string): SQL {
+  const headKinds = sql.join(
+    Object.entries(LOCK_HEAD_KINDS).map(
+      ([lock, heads]) => sql`WHEN ${lock} THEN ${textArray(heads ?? [])}`,
+    ),
+    sql` `,
+  );
+  return sql`
+    DELETE FROM chat_entity_locks l
+    WHERE l.chat_branch_id = ${branchId}::uuid
+      AND NOT EXISTS (
+        SELECT 1 FROM draft_pending_entities d
+         WHERE d.chat_branch_id = ${branchId}::uuid
+           AND d.entity_kind = ANY (CASE l.entity_kind ${headKinds} ELSE '{}'::text[] END)
+           AND d.entity_id = l.entity_id
+      )
+      AND NOT (
+        l.entity_kind = 'page' AND EXISTS (
+          SELECT 1 FROM draft_pending_entities d
+           WHERE d.chat_branch_id = ${branchId}::uuid
+             AND d.entity_kind = 'pageModuleContent'
+             AND d.page_id = l.entity_id
+        )
+      )
+  `;
+}
+
+/**
  * Release draft locks over entities the draft no longer has pending
  * changes on. Draft locks exist only to keep isolated branches (experiments,
  * migrations, legacy chats) from diverging with the draft; once a Stage or
@@ -766,41 +829,14 @@ export async function draftUndoSelection(
  * Live-write kinds (redirect, site settings/defaults) never have pending
  * snapshots and are released here too; a layout lock stays while the
  * draft has a pending chrome placement change on it.
+ *
+ * Reads the draft head, which the snapshot writes of this transaction (a
+ * Stage's `staged_at`, an undo's `undone_at`) already brought up to date:
+ * the head's maintainers run in the writing statement.
  */
 export async function releaseIdleDraftLocks(
   tx: TransactionRunner,
   branchId: string,
 ): Promise<void> {
-  const touched = (kinds: readonly string[], idColumn: string): SQL =>
-    sql.join(
-      kinds.map((key) => {
-        const t = ENTITY_TABLES.find((e) => e.key === key);
-        if (!t) throw new Error(`releaseIdleDraftLocks: unknown entity key ${key}`);
-        const col = key === "pageModuleContent" ? "page_id" : t.column;
-        return sql`EXISTS (
-          SELECT 1 FROM ${sql.raw(t.table)} es JOIN site_snapshots ss ON ss.id = es.site_snapshot_id
-          WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-            AND es.${sql.raw(col)} = ${sql.raw(idColumn)}
-        )`;
-      }),
-      sql` OR `,
-    );
-  await tx.execute(sql`
-    DELETE FROM chat_entity_locks l
-    WHERE l.chat_branch_id = ${branchId}::uuid
-      AND NOT CASE l.entity_kind
-        WHEN 'module' THEN ${touched(["module"], "l.entity_id")}
-        WHEN 'template' THEN ${touched(["template"], "l.entity_id")}
-        WHEN 'page' THEN ${touched(["page", "pageLayout", "pageModuleContent"], "l.entity_id")}
-        WHEN 'pageLayout' THEN ${touched(["pageLayout"], "l.entity_id")}
-        WHEN 'listType' THEN ${touched(["listType"], "l.entity_id")}
-        WHEN 'list' THEN ${touched(["list"], "l.entity_id")}
-        WHEN 'pageType' THEN ${touched(["pageType"], "l.entity_id")}
-        WHEN 'contentInstance' THEN ${touched(["contentInstance"], "l.entity_id")}
-        WHEN 'theme' THEN ${touched(["theme"], "l.entity_id")}
-        WHEN 'pluginRow' THEN ${touched(["pluginRow"], "l.entity_id")}
-        WHEN 'layout' THEN ${touched(["layoutBlock"], "l.entity_id")}
-        ELSE false
-      END
-  `);
+  await tx.execute(idleDraftLocksSql(branchId));
 }
