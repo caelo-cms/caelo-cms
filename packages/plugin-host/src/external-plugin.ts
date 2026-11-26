@@ -164,6 +164,11 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // `$listSources` entry (render-points.ts), checked like a shipped
     // plugin's (plugin-values.ts).
     ...(manifest.listSources ? { listSources: manifest.listSources } : {}),
+    // #1729 — the kinds a plugin adds to the head and sitemap; the entries
+    // come from the `$contributions` entry (and a default share image from
+    // `$shareImages`), held to the vocabulary every plugin is
+    // (head-vocabulary.ts, share-images.ts).
+    ...(manifest.contributes ? { contributes: manifest.contributes } : {}),
     // #1332 — the reviewed contract, with the input schema compiled from
     // the manifest's JSON Schema: the host validates a visitor's body
     // before the sandbox ever sees it.

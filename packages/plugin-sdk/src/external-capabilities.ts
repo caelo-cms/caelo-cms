@@ -35,7 +35,7 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
   background_workers: BROKERED,
   change_journal: PLANNED,
   email: PLANNED,
-  head_contributions: PLANNED,
+  head_contributions: BROKERED,
   url_slots: PLANNED,
   client_assets: PLANNED,
   list_sources: BROKERED,

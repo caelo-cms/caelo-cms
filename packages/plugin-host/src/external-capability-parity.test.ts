@@ -33,6 +33,7 @@ import {
   pluginCapability,
 } from "@caelo-cms/plugin-sdk";
 import { externalDeclarations } from "./external-plugin.js";
+import { renderPointDefinition } from "./render-points.js";
 import { runSandbox } from "./sandbox-runtime.js";
 
 const PLUGINS_ROOT = resolve(import.meta.dir, "../../plugins");
@@ -116,6 +117,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
   const search = await shipped("site-search");
   const assistant = await shipped("site-assistant");
   const consent = await shipped("consent-manager");
+  const intl = await shipped("international-site");
   return {
     ...search,
     ...assistant,
@@ -130,6 +132,8 @@ async function fixtureManifest(): Promise<PluginManifest> {
     listTypes: search.listTypes,
     listSources: consent.listSources,
     aiChatOperations: assistant.aiChatOperations,
+    contributes: intl.contributes,
+    hasShareImages: intl.hasShareImages,
     tier: 2,
   };
 }
@@ -139,7 +143,25 @@ async function fixtureManifest(): Promise<PluginManifest> {
  * reserved sandbox entry (`$contentVariants`, …) answers the point (Q3).
  * A brokered capability's `has…` field without an entry here fails.
  */
-const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {};
+const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
+  hasShareImages: "shareImagesOperation",
+};
+
+/** Run a reserved entry as a render (preview budget) call of `source`. */
+function renderEntry(source: string, manifest: PluginManifest, entry: string, args: unknown) {
+  return runSandbox({
+    source,
+    manifest,
+    operation: entry,
+    args,
+    context: {
+      ...baseContext,
+      invocation: { origin: "render", actorId: ID, renderId: "pass" },
+    } as PluginContext,
+    authorize: async () => {},
+    kind: "preview",
+  });
+}
 
 const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
   cms_admin_schema: async () => {
@@ -261,6 +283,25 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
       }),
     ).toEqual({ sources: { [ID]: { [name]: [{ id: "a", values: { label: "render" } }] } } });
   },
+  head_contributions: async () => {
+    const { contributes, hasShareImages } = await fixtureManifest();
+    const manifest = { ...probe, contributes, hasShareImages } as PluginManifest;
+    expect(externalDeclarations(manifest).contributes).toEqual(contributes);
+    // Both reserved entries answer through the operations the definition names.
+    const source = `export default {slug:"parity-probe",version:"1.0.0",tier:2,
+      contributionsOperation:"head", shareImagesOperation:"images",
+      operations:{
+        head:async(ctx,args)=>({head:{[args.pageIds[0]]:[{kind:"link",rel:"alternate",hreflang:"de",pageId:args.pageIds[0]}]},lang:{[args.pageIds[0]]:ctx.invocation.origin === "render" ? "de" : "?"}}),
+        images:async(ctx,args)=>({images:{[args.pageIds[0]]:"${ID}"}}),
+      }};`;
+    expect(await renderEntry(source, manifest, "$contributions", { pageIds: [ID] })).toEqual({
+      head: { [ID]: [{ kind: "link", rel: "alternate", hreflang: "de", pageId: ID }] },
+      lang: { [ID]: "de" },
+    });
+    expect(await renderEntry(source, manifest, "$shareImages", { pageIds: [ID] })).toEqual({
+      images: { [ID]: ID },
+    });
+  },
   batch_jobs: async () => {
     expect(
       await sandboxed(
@@ -310,7 +351,12 @@ describe("#1729 — every capability is brokered for external plugins or tracked
 
   it("the definition carries every manifest field of a brokered capability", async () => {
     const fixture = await fixtureManifest();
-    const declarations = externalDeclarations(fixture) as Record<string, unknown>;
+    // What `externalPluginDefinition` builds: the data, and each announced
+    // composition point's definition key set to its reserved entry.
+    const declarations = {
+      ...externalDeclarations(fixture),
+      ...renderPointDefinition(fixture, () => null).keys,
+    } as Record<string, unknown>;
     for (const capability of pluginCapability.options.filter(isExternallyBrokered)) {
       for (const field of CAPABILITY_MANIFEST_FIELDS[capability]) {
         if (field.startsWith("has") && !DEFINITION_KEY[field])
