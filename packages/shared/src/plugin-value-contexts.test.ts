@@ -232,6 +232,14 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
     );
   });
 
+  it("refuses a richtext whose document-level tag the page's own <html> or <body> would take", () => {
+    // A fragment parse drops these tags; in the page they add their attributes.
+    expect(richtextProblem("<body onload=alert(1)>")).toBe("element-body");
+    expect(richtextProblem("<p>x</p><html onclick=alert(1)>")).toBe("element-html");
+    expect(richtextProblem("<p>x</p><table><body onload=alert(1)>")).toBe("element-body");
+    expect(richtextProblem("<p>x</p>")).toBeNull();
+  });
+
   it("refuses a richtext that does not end in element content", () => {
     for (const html of [
       "<p onclick=alert(1)//",

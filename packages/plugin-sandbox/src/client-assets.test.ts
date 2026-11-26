@@ -68,6 +68,11 @@ describe("#1732 review — a placeholder is read as the visitor's browser reads 
     }
   });
 
+  it("refuses a document-level tag the page's own <html> or <body> would take", () => {
+    expect(placeholderMarkupProblem("<body onload=alert(1)>")).toBe("element <body>");
+    expect(placeholderMarkupProblem("<p>x</p><html onclick=alert(1)>")).toBe("element <html>");
+  });
+
   it("refuses markup that does not end in element content", () => {
     for (const html of ['<p title="x', "<p>x</p><!-- open", "<p>a<"]) {
       expect(placeholderMarkupProblem(html)).toStartWith(

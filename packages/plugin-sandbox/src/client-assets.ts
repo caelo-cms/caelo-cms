@@ -18,7 +18,7 @@
  *   `url(`.
  */
 
-import { escapePluginText } from "@caelo-cms/shared";
+import { escapePluginText, parseInPageBody } from "@caelo-cms/shared";
 import { type DefaultTreeAdapterTypes, defaultTreeAdapter, html as H, parseFragment } from "parse5";
 import { cssTokens } from "./css-tokens.js";
 
@@ -164,14 +164,17 @@ export function placeholderMarkupProblem(html: string): string | null {
   let mark = "qzxend";
   while (html.toLowerCase().includes(mark)) mark += "q";
   let ended = false;
-  for (const node of nodesOf(parseBody(`${html}${mark}`))) {
+  // In a whole page: a `<body onload=…>` gives the page's own body its attributes.
+  const page = parseInPageBody(`${html}${mark}`);
+  if (page.documentTag !== null) return `element <${page.documentTag}>`;
+  for (const node of nodesOf(page.body)) {
     if (node.nodeName === "#text") {
       if ((node as DefaultTreeAdapterTypes.TextNode).value.endsWith(mark)) ended = true;
       continue;
     }
     if (node.nodeName === "#comment") {
-      const start = node.sourceCodeLocation?.startOffset ?? -1;
-      if (html.startsWith("<?", start)) return "processing instruction";
+      const start = (node.sourceCodeLocation?.startOffset ?? 0) - page.offset;
+      if (start >= 0 && html.startsWith("<?", start)) return "processing instruction";
       continue;
     }
     if (!("tagName" in node)) continue;

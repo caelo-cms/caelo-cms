@@ -13,7 +13,13 @@
  * cleaned value (CLAUDE.md §2, no fallbacks).
  */
 
-import { type DefaultTreeAdapterTypes, defaultTreeAdapter, html as H, parseFragment } from "parse5";
+import {
+  type DefaultTreeAdapterTypes,
+  defaultTreeAdapter,
+  html as H,
+  parse,
+  parseFragment,
+} from "parse5";
 import { type FieldDef, validateFieldValue } from "./fields.js";
 import type { ListItem } from "./items.js";
 import type { ListTypeDef, NodeDef } from "./list-type.js";
@@ -165,6 +171,38 @@ function asAttributeValue(value: string): string {
   return href?.value ?? value;
 }
 
+/** What a page holds before a value in its body: the document the browser reads it in. */
+const PAGE_BEFORE_BODY = "<!DOCTYPE html><html><head></head><body>";
+
+/**
+ * `html` as a page's body content, in a whole document: what the browser
+ * does with document-level tags in it shows. A `<body onload=…>` or an
+ * `<html …>` there adds its attributes to the page's own `<body>` or
+ * `<html>` (a fragment parse drops the tag, and a check of the fragment
+ * would see nothing).
+ */
+export function parseInPageBody(html: string): {
+  readonly body: DefaultTreeAdapterTypes.Element;
+  /** The page's own `<html>` or `<body>` took attributes from `html`. */
+  readonly documentTag: "html" | "body" | null;
+  /** Where `html` starts in the parsed text (for source offsets). */
+  readonly offset: number;
+} {
+  const doc = parse(`${PAGE_BEFORE_BODY}${html}`, {
+    scriptingEnabled: true,
+    sourceCodeLocationInfo: true,
+  });
+  const root = doc.childNodes.find((n) => "tagName" in n && n.tagName === "html") as
+    | DefaultTreeAdapterTypes.Element
+    | undefined;
+  const body = root?.childNodes.find((n) => "tagName" in n && n.tagName === "body") as
+    | DefaultTreeAdapterTypes.Element
+    | undefined;
+  if (!root || !body) throw new Error("parseInPageBody: the document has no <html> or <body>");
+  const documentTag = root.attrs.length > 0 ? "html" : body.attrs.length > 0 ? "body" : null;
+  return { body, documentTag, offset: PAGE_BEFORE_BODY.length };
+}
+
 /** Letters `html` does not hold, so they mark where it ends. */
 function endMarker(html: string): string {
   const lower = html.toLowerCase();
@@ -186,7 +224,8 @@ function endMarker(html: string): string {
  */
 export function richtextProblem(html: string): string | null {
   const mark = endMarker(html);
-  const fragment = parseBody(`${html}${mark}`, true);
+  const page = parseInPageBody(`${html}${mark}`);
+  if (page.documentTag !== null) return `element-${page.documentTag}`;
   let problem: string | null = null;
   let ended = false;
   const walk = (node: DefaultTreeAdapterTypes.ParentNode) => {
@@ -194,8 +233,8 @@ export function richtextProblem(html: string): string | null {
       if (child.nodeName === "#text") {
         if ((child as DefaultTreeAdapterTypes.TextNode).value.endsWith(mark)) ended = true;
       } else if (child.nodeName === "#comment") {
-        const start = child.sourceCodeLocation?.startOffset ?? -1;
-        if (html.startsWith("<?", start)) problem ??= "processing-instruction";
+        const start = (child.sourceCodeLocation?.startOffset ?? 0) - page.offset;
+        if (start >= 0 && html.startsWith("<?", start)) problem ??= "processing-instruction";
       } else if ("tagName" in child) {
         const name = child.tagName.toLowerCase();
         if (child.namespaceURI !== H.NS.HTML || !PROSE_ELEMENTS.has(name)) {
@@ -211,7 +250,7 @@ export function richtextProblem(html: string): string | null {
       }
     }
   };
-  walk(fragment);
+  walk(page.body);
   if (!ended) return "richtext-unfinished";
   return problem;
 }
