@@ -54,6 +54,13 @@ export const RENDER_POINT_ENTRIES = Object.freeze({
   $shareImages: { definitionKey: "shareImagesOperation", announcedBy: "hasShareImages" },
   /** §6.4 — `linkResolveOperation`, announced by `hasLinkResolve`. */
   $linkResolve: { definitionKey: "linkResolveOperation", announcedBy: "hasLinkResolve" },
+  /** §6.5 — `listResolveOperation`, announced by `hasListResolve`. */
+  $listResolve: { definitionKey: "listResolveOperation", announcedBy: "hasListResolve" },
+  /** §6.6 — `contentVariantsOperation`, announced by `hasContentVariants`. */
+  $contentVariants: {
+    definitionKey: "contentVariantsOperation",
+    announcedBy: "hasContentVariants",
+  },
   /** §6.7 — `deferralsOperation`, announced by `hasDeferrals`. */
   $deferrals: { definitionKey: "deferralsOperation", announcedBy: "hasDeferrals" },
 } satisfies Record<string, RenderPointEntry>);
@@ -126,6 +133,31 @@ export function chunkPageIds(
       bytes = 2;
     }
     chunk.push(id);
+    bytes += size;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
+
+/**
+ * Split `items` into chunks whose JSON stays within `maxBytes`, in order,
+ * for a point asked about records rather than ids (content variants: each
+ * page with its placements and their values). An item bigger than the
+ * budget is a chunk of its own; one bigger than the wire line fails at the
+ * sandbox, loudly (`SandboxMessageTooLarge`).
+ */
+export function chunkItems<T>(items: ReadonlyArray<T>, maxBytes = RENDER_POINT_CHUNK_BYTES): T[][] {
+  const chunks: T[][] = [];
+  let chunk: T[] = [];
+  let bytes = 2;
+  for (const item of items) {
+    const size = Buffer.byteLength(JSON.stringify(item)) + 1;
+    if (chunk.length > 0 && bytes + size > maxBytes) {
+      chunks.push(chunk);
+      chunk = [];
+      bytes = 2;
+    }
+    chunk.push(item);
     bytes += size;
   }
   if (chunk.length > 0) chunks.push(chunk);

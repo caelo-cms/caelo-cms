@@ -40,7 +40,7 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
   client_assets: PLANNED,
   list_sources: BROKERED,
   list_types: BROKERED,
-  list_resolve: PLANNED,
+  list_resolve: BROKERED,
   companion_skills: BROKERED,
   font_assets: BROKERED,
   private_files: BROKERED,

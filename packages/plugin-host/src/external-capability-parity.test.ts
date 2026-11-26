@@ -132,6 +132,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
     listTypes: search.listTypes,
     listSources: consent.listSources,
     hasLinkResolve: international.hasLinkResolve,
+    hasListResolve: international.hasListResolve,
     linkResolveReads: international.linkResolveReads,
     aiChatOperations: assistant.aiChatOperations,
     changeConsumer: consent.changeConsumer,
@@ -146,6 +147,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
  */
 const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
   hasLinkResolve: "linkResolveOperation",
+  hasListResolve: "listResolveOperation",
 };
 
 /** A render-point call as core makes it in an editor preview. */
@@ -333,6 +335,18 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
         { pageIds: [ID] },
       ),
     ).toEqual({ pages: { [ID]: { variant: "de", group: "render" } } });
+  },
+  list_resolve: async () => {
+    const manifest = { ...probe, hasListResolve: true } as PluginManifest;
+    expect(
+      await renderPoint(
+        `export default {slug:"parity-probe",version:"1.0.0",tier:2,listResolveOperation:"overlays",
+          operations:{overlays:async(ctx,args)=>({overlays:{[args.variants[0]]:{values:{"list/l1/item/i1/label":ctx.invocation.origin},hidden:[]}}})}};`,
+        manifest,
+        "$listResolve",
+        { variants: ["de"] },
+      ),
+    ).toEqual({ overlays: { de: { values: { "list/l1/item/i1/label": "render" }, hidden: [] } } });
   },
   batch_jobs: async () => {
     expect(
