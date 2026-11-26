@@ -31,6 +31,8 @@ describe("formatStageDuration", () => {
     expect(formatStageDuration(100_000)).toBe("1 min 40 s");
     expect(formatStageDuration(120_000)).toBe("2 min");
     expect(formatStageDuration(725_000)).toBe("12 min");
+    expect(formatStageDuration(3_600_000)).toBe("1 h");
+    expect(formatStageDuration(7_530_000)).toBe("2 h 5 min");
   });
 });
 
@@ -114,6 +116,26 @@ describe("a succeeded Stage whose search index still embeds", () => {
     expect(searchIndexPending(run)).toBe(true);
     expect(describeStageRun(run)).toBe(
       "Succeeded in 5 min (320 pages); search index still building (site-search/pages: semantic search 2,400 of 5,152 passages on 4 tasks, about 3 min 10 s left) — Publish live waits for it",
+    );
+  });
+
+  it("#1764 — names the CPU quota that keeps an index narrow, and what to raise it to", () => {
+    expect(
+      describeSearchIndexProgress({
+        embedded: 120_000,
+        toEmbed: 800_000,
+        tasks: 1,
+        remainingMs: 68_000_000,
+        limit: {
+          wantedTasks: 32,
+          quotaVcpu: 20,
+          quotaNeededVcpu: 102,
+          projectId: "acme-site",
+          region: "europe-west1",
+        },
+      }),
+    ).toBe(
+      'semantic search 120,000 of 800,000 passages on 1 task (the Cloud Run CPU quota of project acme-site, 20 vCPU in europe-west1, allows no more; raised to 102 vCPU in the Google Cloud console\'s Quotas page, "run.googleapis.com/cpu_allocation", it runs on 32 from the next Stage on; Settings → Deployments → Cloud capacity has the steps), about 18 h 53 min left',
     );
   });
 

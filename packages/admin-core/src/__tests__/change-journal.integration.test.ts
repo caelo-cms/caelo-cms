@@ -25,6 +25,7 @@ import {
   DatabaseAdapter,
   execute,
   finishConsumerRebuild,
+  type JournalChange,
   type JournalMark,
   OperationRegistry,
   pollChanges,
@@ -37,7 +38,12 @@ import type { ExecutionContext, LiveTopic } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { type LiveFanOut, startLiveFanOut, subscribeLiveTopics } from "../live-events.js";
+import {
+  type LiveFanOut,
+  startLiveFanOut,
+  subscribeEntityChanges,
+  subscribeLiveTopics,
+} from "../live-events.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -1135,6 +1141,117 @@ describe("#1267 — live topics cross admin instances", () => {
       expect([...heard].sort()).toEqual(["agents", "draft"]);
     } finally {
       stop();
+      await fanOut.stop();
+    }
+  });
+
+  // #1749 — every write wakes every instance; an idle one (no request open,
+  // so no stream and no wait) opened a connection for a read nobody heard,
+  // on a sliver of CPU, and logged the acquire deadline as an exhausted pool.
+  it("an instance nobody listens on reads nothing, and its first listener hears what it missed", async () => {
+    let reads = 0;
+    const counting = new Proxy(adapter, {
+      get(target, prop) {
+        if (prop === "withAdminTransaction") {
+          return (...args: Parameters<DatabaseAdapter["withAdminTransaction"]>) => {
+            if (args[2]?.holder === "live-fan-out") reads++;
+            return target.withAdminTransaction(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const fanOut = await startLiveFanOut({ adapter: counting, instanceId: "instance-idle" });
+    const write = (name: string) =>
+      op(SYS, "modules.create", {
+        slug: `${PFX}idle-${name}-${crypto.randomUUID().slice(0, 8)}`,
+        displayName: `Idle ${name}`,
+        html: "<p>idle</p>",
+      });
+    try {
+      await fanOut.settled();
+      // The start takes the cursor.
+      expect(reads).toBe(1);
+      await write("unheard");
+      await Bun.sleep(300);
+      await fanOut.settled();
+      expect(reads).toBe(1);
+
+      const heard: LiveTopic[] = [];
+      const stop = subscribeLiveTopics((topics) => heard.push(...topics));
+      try {
+        // A bare wake-up, no new write: what is read is the change nobody heard.
+        await adapter.rawAdmin()`SELECT pg_notify('caelo_entity_changes', '')`;
+        const deadline = Date.now() + 10_000;
+        while (!heard.includes("draft") && Date.now() < deadline) await Bun.sleep(25);
+        await fanOut.settled();
+        expect(heard).toContain("draft");
+        expect(reads).toBeGreaterThan(1);
+      } finally {
+        stop();
+      }
+    } finally {
+      await fanOut.stop();
+    }
+  });
+
+  // #1749 review — with only a topic listener a read takes one row and
+  // moves the cursor past the rest. An entity listener that subscribed
+  // while that read waited for its connection, followed by a write, must
+  // still get the write's rows: the cursor may not jump past rows it needs.
+  it("an entity listener that subscribes while a one-row read waits gets every row after it", async () => {
+    const write = (name: string) =>
+      op<{ moduleId: string }>(SYS, "modules.create", {
+        slug: `${PFX}late-${name}-${crypto.randomUUID().slice(0, 8)}`,
+        displayName: `Late ${name}`,
+        html: "<p>late</p>",
+      });
+    const batches: JournalChange[][] = [];
+    let stopEntities: (() => void) | null = null;
+    let lateWrite: Promise<{ moduleId: string }> | null = null;
+    let armed = false;
+    const hooked = new Proxy(adapter, {
+      get(target, prop) {
+        if (prop === "withAdminTransaction") {
+          return async (...args: Parameters<DatabaseAdapter["withAdminTransaction"]>) => {
+            if (args[2]?.holder === "live-fan-out" && armed) {
+              armed = false;
+              // While this read waits for its connection: the listener
+              // subscribes, then a write commits.
+              stopEntities = subscribeEntityChanges((changes) => batches.push([...changes]));
+              lateWrite = write("after-subscribe");
+              await lateWrite;
+            }
+            return target.withAdminTransaction(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const fanOut = await startLiveFanOut({ adapter: hooked, instanceId: "instance-late" });
+    const stopTopics = subscribeLiveTopics(() => undefined);
+    try {
+      await fanOut.settled();
+      armed = true;
+      // A write of several rows wakes the read the hook holds up.
+      await write("before-subscribe");
+      const deadline = Date.now() + 10_000;
+      const late = async () => (lateWrite ? (await lateWrite).moduleId : null);
+      for (;;) {
+        await fanOut.settled();
+        const id = await late();
+        if (id && batches.flat().some((c) => c.table === "modules" && c.rowId === id)) break;
+        if (Date.now() > deadline) break;
+        await Bun.sleep(25);
+      }
+      const id = await late();
+      expect(id).not.toBeNull();
+      expect(batches.flat().some((c) => c.table === "modules" && c.rowId === id)).toBe(true);
+    } finally {
+      stopTopics();
+      (stopEntities as (() => void) | null)?.();
       await fanOut.stop();
     }
   });

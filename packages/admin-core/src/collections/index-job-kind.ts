@@ -16,6 +16,7 @@ import {
   type ReportingJobKindDef,
 } from "../reporting-jobs/kind.js";
 import { MAX_JOB_TASKS } from "../reporting-jobs/protocol.js";
+import { indexLimitSchema } from "./progress.js";
 
 /** The admin env var naming the index job's Cloud Run job (Google Cloud). */
 export const COLLECTION_INDEX_JOB_ENV_VAR = "CAELO_COLLECTION_INDEX_JOB";
@@ -97,6 +98,7 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
           embedded: z.number().int().min(0),
           toEmbed: z.number().int().min(0),
           planned: z.number().int().min(0),
+          limit: indexLimitSchema.optional(),
         })
         .strict(),
       async handle(deps, runId, input) {

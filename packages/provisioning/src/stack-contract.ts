@@ -1790,6 +1790,19 @@ const GCP_COMMON: readonly IamInvariant[] = [
     onFailure: "warn",
     why: "staging's visitor-AI key is stored for the staging gateway; without it only storing the key fails",
   },
+  {
+    // #1764 — read-only: the services the project enables and their quotas.
+    // The admin reads the Cloud Run CPU quota at every job start and sizes
+    // the quality check's Lighthouse runs and a search index's tasks from it
+    // (admin-core reporting-jobs/run-capacity.ts); a fixed width stopped
+    // fresh installs on a new project's 20 vCPU.
+    stackResource: "run-quota-viewer",
+    role: "roles/serviceusage.serviceUsageViewer",
+    member: "run-sa",
+    target: { kind: "project" },
+    onFailure: "abort",
+    why: "the admin sizes the quality check and search index jobs from the project's Cloud Run CPU quota; without it every Stage audit and large index fails to start",
+  },
 ];
 
 /** v0.6.6 — a custom runtime SA gets no telemetry roles implicitly. */

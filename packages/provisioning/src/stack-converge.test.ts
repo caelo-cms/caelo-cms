@@ -72,6 +72,8 @@ const GW_TELEMETRY = [
   { role: "roles/monitoring.metricWriter", members: [GW_SA, STG_SA] },
 ];
 const IAP_AGENT = "serviceAccount:service-42@gcp-sa-iap.iam.gserviceaccount.com";
+/** #1764 — the admin reads the project's Cloud Run CPU quota. */
+const RUN_QUOTA = { role: "roles/serviceusage.serviceUsageViewer", members: [RUN_SA] };
 
 const firebase: InstallTarget = {
   provider: "gcp-firebase",
@@ -573,6 +575,7 @@ describe("ensureStackInvariants", () => {
         { role: "roles/firebasehosting.admin", members: [RUN_SA] },
         { role: "roles/logging.logWriter", members: [RUN_SA] },
         { role: "roles/monitoring.metricWriter", members: [RUN_SA] },
+        RUN_QUOTA,
         ...GW_TELEMETRY,
       ]),
     ],
@@ -725,7 +728,11 @@ describe("ensureStackInvariants", () => {
   it("regression A5: adds the gateway run.viewer + telemetry roles an older install lacks", async () => {
     const answers = fullFirebase();
     answers["projects get-iam-policy"] = [
-      policy([{ role: "roles/firebasehosting.admin", members: [RUN_SA] }, ...GW_TELEMETRY]),
+      policy([
+        { role: "roles/firebasehosting.admin", members: [RUN_SA] },
+        RUN_QUOTA,
+        ...GW_TELEMETRY,
+      ]),
     ];
     answers["run services get-iam-policy caelo-production-data-gateway"] = [
       policy([{ role: "roles/run.invoker", members: ["allUsers"] }]),
@@ -779,10 +786,42 @@ describe("ensureStackInvariants", () => {
     expect(failed?.error).toContain("Re-run the installer");
   });
 
+  it("#1764 — gives an older install's admin the quota read, and aborts when it cannot", async () => {
+    const without = () => {
+      const answers = fullFirebase();
+      answers["projects get-iam-policy"] = [
+        policy([
+          { role: "roles/firebasehosting.admin", members: [RUN_SA] },
+          { role: "roles/logging.logWriter", members: [RUN_SA] },
+          { role: "roles/monitoring.metricWriter", members: [RUN_SA] },
+          ...GW_TELEMETRY,
+        ]),
+      ];
+      return answers;
+    };
+    const added = fakeGcloud(without());
+    const report = await ensureStackInvariants(firebase, { run: added.run, sleep: async () => {} });
+    expect(report.mustAbort).toBe(false);
+    expect(added.calls).toContain(
+      `projects add-iam-policy-binding acme --member=${RUN_SA} --role=roles/serviceusage.serviceUsageViewer --condition=None --quiet --format=none`,
+    );
+
+    const refused = without();
+    refused["projects add-iam-policy-binding"] = [fail("PERMISSION_DENIED: setIamPolicy")];
+    const r = fakeGcloud(refused);
+    const aborted = await ensureStackInvariants(firebase, { run: r.run, sleep: async () => {} });
+    // Without it every Stage audit and large index build fails to start.
+    expect(aborted.mustAbort).toBe(true);
+  });
+
   it("only warns when a telemetry role can't be added", async () => {
     const answers = fullFirebase();
     answers["projects get-iam-policy"] = [
-      policy([{ role: "roles/firebasehosting.admin", members: [RUN_SA] }, ...GW_TELEMETRY]),
+      policy([
+        { role: "roles/firebasehosting.admin", members: [RUN_SA] },
+        RUN_QUOTA,
+        ...GW_TELEMETRY,
+      ]),
     ];
     answers["projects add-iam-policy-binding"] = [fail("PERMISSION_DENIED: setIamPolicy")];
     const { run } = fakeGcloud(answers);
@@ -797,6 +836,7 @@ describe("ensureStackInvariants", () => {
       policy([
         { role: "roles/firebasehosting.admin", members: [RUN_SA] },
         { role: "roles/monitoring.metricWriter", members: [RUN_SA] },
+        RUN_QUOTA,
         ...GW_TELEMETRY,
       ]),
     ];
@@ -833,6 +873,7 @@ describe("ensureStackInvariants", () => {
         policy([
           { role: "roles/logging.logWriter", members: [RUN_SA] },
           { role: "roles/monitoring.metricWriter", members: [RUN_SA] },
+          RUN_QUOTA,
           ...GW_TELEMETRY,
         ]),
       ],

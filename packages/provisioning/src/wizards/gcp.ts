@@ -1529,7 +1529,6 @@ async function stepAuditJob(
         region,
         env: GCP_STACK_ENV,
         adminImageRef: image.imageRef,
-        parallelism: GCP_STACK_KNOB_DEFAULTS.auditParallelism,
       })
     : { ok: false as const, done: [], error: image.error };
   if (!r.ok) {

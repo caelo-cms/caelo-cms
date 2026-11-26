@@ -153,8 +153,13 @@
   const action = $derived(pageState.action);
 
   // #1420 — a finished update is when plugins start waiting for approval.
+  // #1749 — the effect tracks the kind alone, a string: `pageState` is a new
+  // object every 30 s (the clock above), and an effect that read it re-read
+  // the approvals on that clock, once a minute from a background tab, which
+  // kept an admin instance up for as long as the page stayed open.
+  const pageKind = $derived(pageState.kind);
   $effect(() => {
-    void pageState.kind;
+    void pageKind;
     void pluginApprovals.refresh();
   });
   /**

@@ -36,7 +36,7 @@ Lighthouse simulates the CPU slowdown from observed task durations, so a run tha
 
 | Provider | Runner | Notes |
 |---|---|---|
-| `gcp`, `gcp-firebase` | Cloud Run job `caelo-<env>-audit`, one task per run, all in parallel (`parallel-runner.ts`, `gcp-audit-launcher.ts`) | CLI-owned (`packages/provisioning/src/audit-job-setup.ts`): created by the wizard and by `cms-provision upgrade`; the app-roll moves its image with the admin's. Its identity reads the staged build, creates results in `<project>-caelo-<env>-audit-results` and writes logs, nothing else. |
+| `gcp`, `gcp-firebase` | Cloud Run job `caelo-<env>-audit`, each run in a task of its own, as many at once as the project's Cloud Run CPU quota allows; a task runs the rest of its share one after another (`parallel-runner.ts`, `gcp-audit-launcher.ts`, `reporting-jobs/run-capacity.ts`, #1764) | CLI-owned (`packages/provisioning/src/audit-job-setup.ts`): created by the wizard and by `cms-provision upgrade`; the app-roll moves its image with the admin's. Its identity reads the staged build, creates results in `<project>-caelo-<env>-audit-results` and writes logs, nothing else. |
 | `self-hosted`, dev | the in-process child (`lighthouse-runner.ts`), runs one after another | no extra machines |
 | `aws`, `azure` | none yet: every Lighthouse audit fails with the gap | issues #749 / #750 (nothing is staged there before them either) |
 

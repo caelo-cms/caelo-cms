@@ -423,10 +423,23 @@ export const collectionIndexDoneOp = defineOperation({
       RETURNING run_id
     `)) as unknown as unknown[];
     if (updated.length === 0) {
+      // #1749 — the job sends a report again when it did not get the answer
+      // (a 5xx, a lost connection). The first one can have committed and
+      // still failed: a post-commit publish that found the pool busy
+      // answers "saved, not published yet". Its replay is that same
+      // release, recorded already, not an error: refusing it kept the job
+      // resending for its whole retry budget and failed the attempt.
+      const [held] = (await tx.execute(sql`
+        SELECT state, release_key FROM collection_releases
+        WHERE run_id = ${input.runId}::uuid AND plugin_id = ${input.pluginId}::uuid AND collection = ${input.collection}
+      `)) as unknown as { state: string; release_key: string | null }[];
+      if (held?.state === "ready" && held.release_key === input.releaseKey) return ok({});
       return err({
         kind: "HandlerError",
         operation: "collections.index_done",
-        message: "no pending release of this run and collection",
+        message: held
+          ? `no pending release of this run and collection: it is ${held.state}${held.release_key ? ` with ${held.release_key}` : ""}`
+          : "no pending release of this run and collection",
       });
     }
     // Its members are in a ready release now; one an earlier ready release

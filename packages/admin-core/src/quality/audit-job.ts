@@ -149,7 +149,7 @@ function auditChecks(
 ): CheckRegistry {
   const sources = reportedCheckSources(reporter);
   const core = createCoreCheckRegistry({
-    lighthouse: lighthouseRunnerFromEnv(process.env),
+    lighthouse: lighthouseRunnerFromEnv(process.env, reporter.capacity),
     structure: sources.structure,
     links: sources.links,
     references: sources.references,
