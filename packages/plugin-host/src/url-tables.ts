@@ -146,7 +146,11 @@ export function declaredUrlContributions(
   };
   const out: UrlContributionDef[] = [];
   if (tables.values.hostColumn !== undefined) {
-    out.push({ slot: "host", encode: (page) => pageValue(page)?.host ?? null, decode: needsValues });
+    out.push({
+      slot: "host",
+      encode: (page) => pageValue(page)?.host ?? null,
+      decode: needsValues,
+    });
   }
   if (tables.values.segmentColumn !== undefined) {
     out.push({
