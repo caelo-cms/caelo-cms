@@ -274,4 +274,17 @@ describe("markNosnippet", () => {
     expect(markNosnippet(once)).toBe(once);
     expect(markNosnippet("plain text")).toBe("plain text");
   });
+
+  it("wraps a placement of several top-level elements whole (review #1771)", () => {
+    expect(markNosnippet("<section>First</section><p>Sensitive</p>")).toBe(
+      '<div data-nosnippet=""><section>First</section><p>Sensitive</p></div>',
+    );
+    expect(markNosnippet("<div>a</div> loose text")).toBe(
+      '<div data-nosnippet=""><div>a</div> loose text</div>',
+    );
+    // A comment and whitespace around one root still leave it the root.
+    expect(markNosnippet("<!-- note -->\n<div><p>a</p><p>b</p></div>\n")).toBe(
+      '<!-- note -->\n<div data-nosnippet=""><p>a</p><p>b</p></div>\n',
+    );
+  });
 });

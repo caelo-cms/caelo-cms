@@ -12,6 +12,8 @@
  * it, and the composer already imports the nested renderer.
  */
 
+import { Parser } from "htmlparser2";
+
 /** The attribute every module root carries. */
 export const MODULE_ID_ATTRIBUTE = "data-caelo-module-id";
 
@@ -59,10 +61,42 @@ export function stripContentInstances(html: string): string {
 const NOSNIPPET_ROOTS = new Set(["div", "section", "span"]);
 
 /**
+ * The tag of the one element that encloses the whole fragment, or null when
+ * the fragment has several top-level elements or text outside its element
+ * (comments and whitespace aside).
+ */
+function soleRootTag(html: string): string | null {
+  let depth = 0;
+  let roots = 0;
+  let tag: string | null = null;
+  let looseText = false;
+  const parser = new Parser({
+    onopentag(name) {
+      if (depth === 0) {
+        roots += 1;
+        tag = name;
+      }
+      depth += 1;
+    },
+    onclosetag() {
+      depth = Math.max(0, depth - 1);
+    },
+    ontext(text) {
+      if (depth === 0 && text.trim().length > 0) looseText = true;
+    },
+  });
+  parser.write(html);
+  parser.end();
+  return roots === 1 && !looseText ? tag : null;
+}
+
+/**
  * #1752 — keep a placement's content out of search snippets (and the AI
- * answers built from them): `data-nosnippet` on its root when the root is a
- * `div`, `section` or `span`, the only elements search engines read it on;
- * any other root is wrapped in a `<div data-nosnippet>`. Idempotent.
+ * answers built from them): `data-nosnippet` on its root when one `div`,
+ * `section` or `span` encloses the whole placement, the only elements search
+ * engines read it on; anything else (another root element, several
+ * top-level elements) is wrapped in a `<div data-nosnippet>`, so the whole
+ * placement is covered. Idempotent.
  *
  * @example markNosnippet("<section>x</section>") // '<section data-nosnippet="">x</section>'
  * @example markNosnippet("<article>x</article>") // '<div data-nosnippet=""><article>x</article></div>'
@@ -70,8 +104,11 @@ const NOSNIPPET_ROOTS = new Set(["div", "section", "span"]);
 export function markNosnippet(html: string): string {
   const m = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>/.exec(html);
   if (!m) return html;
-  if (/\sdata-nosnippet\b/.test(m[0])) return html;
-  if (NOSNIPPET_ROOTS.has((m[1] ?? "").toLowerCase())) return tagRoot(html, "data-nosnippet", "");
+  const root = soleRootTag(html);
+  if (root !== null && /\sdata-nosnippet\b/.test(m[0])) return html;
+  if (root !== null && NOSNIPPET_ROOTS.has(root.toLowerCase())) {
+    return tagRoot(html, "data-nosnippet", "");
+  }
   return `<div data-nosnippet="">${html}</div>`;
 }
 
