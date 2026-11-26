@@ -544,6 +544,55 @@ describe("what the index job reports", () => {
     });
   });
 
+  it("sizes the run's other collections before widening, so it widens once", async () => {
+    const pagesOf = (prefix: string, n: number) =>
+      Array.from({ length: n }, (_, d) => ({
+        id: `${prefix}${d}`,
+        lang: "de",
+        values: {
+          title: `${prefix}${d}`,
+          sections: Array.from({ length: 10 }, (_, s) => ({
+            anchor: `a${s}`,
+            heading: "",
+            text: `${prefix} Seite ${d} Abschnitt ${s}`,
+          })),
+        },
+      }));
+    const semantic = profile({ weight: 1, minSimilarity: 0.2 });
+    // 6,010 texts want 2 tasks; the next collection's 18,010 want 4.
+    const small = task({
+      maxDocuments: 3_000,
+      changeKeys: [
+        await change({
+          upserts: pagesOf("k", 601),
+          deletes: [],
+          replaceAll: false,
+          profile: semantic,
+        }),
+      ],
+    });
+    const large = task({
+      collection: "pages2",
+      maxDocuments: 3_000,
+      changeKeys: [
+        await change({
+          upserts: pagesOf("g", 1_801),
+          deletes: [],
+          replaceAll: false,
+          profile: semantic,
+        }),
+      ],
+    });
+    const { reporter, calls } = recordingReporter({ index: 0, count: 1, max: 32 });
+    await indexTasks(reporter, store, [small, large], {
+      embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
+      slot: reporter.slot,
+    });
+    expect(calls.map((c) => c.action)).toEqual(["scale"]);
+    expect(calls[0]?.payload).toMatchObject({ tasks: 4 });
+    expect((calls[0]?.payload as { reason: string }).reason).toContain("t1650/pages2");
+  });
+
   it("in a wide attempt that has to widen, only the first task asks", async () => {
     const docs = Array.from({ length: 1_201 }, (_, d) => ({
       id: `w${d}`,

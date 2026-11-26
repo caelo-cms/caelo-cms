@@ -266,6 +266,8 @@ export type CollectionOutcome =
     }
   /** A task other than the first embedded its share; the first builds. */
   | { readonly kind: "shared" }
+  /** Its embedding fits this attempt's tasks (`planOnly`). */
+  | { readonly kind: "fits" }
   /** Too much to embed for one task: the next attempt should run this many. */
   | { readonly kind: "scale"; readonly tasks: number; readonly reason: string };
 
@@ -290,6 +292,12 @@ export interface IndexOptions {
   readonly pollMs?: number;
   readonly now?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * Only decide whether the collection fits this attempt's tasks, building
+   * nothing: once one collection widens the attempt, the rest of the run
+   * are sized too, so the run widens once.
+   */
+  readonly planOnly?: boolean;
 }
 
 /** Calls `report` for the first count, then at most every {@link PROGRESS_EVERY_MS}, and always for the last. */
@@ -383,15 +391,25 @@ export async function indexCollection(
     embedder && field ? await missingTexts(docs(), field, pool) : new Map<string, string>();
   const toEmbed = missing.size;
 
+  const needed = Math.min(slot.max, Math.ceil(toEmbed / PASSAGES_PER_TASK));
+  if (opts.planOnly) {
+    return embedder && needed > slot.count
+      ? {
+          kind: "scale",
+          tasks: needed,
+          reason: `${toEmbed.toLocaleString("en-US")} passages of ${task.slug}/${task.collection} to embed`,
+        }
+      : { kind: "fits" };
+  }
   if (embedder && toEmbed > 0) {
     // Too much for this attempt's tasks, alone or already wide (a later
     // collection of the run can need more than the one that widened it).
-    const tasks = Math.min(slot.max, Math.ceil(toEmbed / PASSAGES_PER_TASK));
+    const tasks = needed;
     if (tasks > slot.count) {
       return {
         kind: "scale",
         tasks,
-        reason: `${toEmbed.toLocaleString("en-US")} passages of ${task.slug}/${task.collection} to embed: ${tasks} tasks`,
+        reason: `${toEmbed.toLocaleString("en-US")} passages of ${task.slug}/${task.collection} to embed`,
       };
     }
     if (slot.count > 1) {
@@ -514,6 +532,35 @@ export async function runCollectionIndexJob(reporter: JobReporter): Promise<void
   }
 }
 
+/**
+ * The widest of `first` and what the collections in `rest` need: planned,
+ * never built. A collection that cannot be planned now is left to the next
+ * attempt, which sizes it again.
+ */
+async function widestOf(
+  store: CollectionStore,
+  rest: readonly IndexTask[],
+  opts: IndexOptions,
+  first: { readonly tasks: number; readonly reason: string },
+): Promise<{ tasks: number; reason: string }> {
+  let widest = { tasks: first.tasks, reason: first.reason };
+  const reasons = [first.reason];
+  for (const task of rest) {
+    try {
+      const plan = await indexCollection(store, task, { ...opts, planOnly: true });
+      if (plan.kind !== "scale") continue;
+      reasons.push(plan.reason);
+      if (plan.tasks > widest.tasks) widest = { tasks: plan.tasks, reason: plan.reason };
+    } catch {
+      // Its own attempt reports why.
+    }
+  }
+  return {
+    tasks: widest.tasks,
+    reason: `${reasons.join("; ")}: ${widest.tasks} tasks`.slice(0, 500),
+  };
+}
+
 /** Every pending collection, reported as the slot's part: the first task reports, the others embed. */
 export async function indexTasks(
   reporter: JobReporter,
@@ -561,8 +608,11 @@ export async function indexTasks(
     if (outcome.kind === "scale") {
       // The admin ends this attempt and starts one that runs this many
       // tasks. Every task of a wide attempt planned the same; the first asks.
+      // The collections after this one are sized now too, so the run widens
+      // once and every attempt after it is left for retries.
       if (slot.index === 0) {
-        await reporter.call("scale", { tasks: outcome.tasks, reason: outcome.reason });
+        const widest = await widestOf(store, tasks.slice(tasks.indexOf(task) + 1), opts, outcome);
+        await reporter.call("scale", { tasks: widest.tasks, reason: widest.reason });
       }
       return;
     }
