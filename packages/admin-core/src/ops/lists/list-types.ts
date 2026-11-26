@@ -130,6 +130,7 @@ function summarizeNodes(def: ListTypeDef): string[] {
 
 export const listListTypesOp = defineOperation({
   name: "list_types.list",
+  pluginAccess: "read",
   readScope: "request",
   // Why plugin: the `lists` read grant (docs/lists.md §9) — a translation
   // plugin reads the definitions (and its `ext` attributes) through named
@@ -173,6 +174,7 @@ export const listListTypesOp = defineOperation({
 
 export const getListTypeOp = defineOperation({
   name: "list_types.get",
+  pluginAccess: "read",
   readScope: "request",
   // Why plugin: the `lists` read grant (see list_types.list).
   actorScope: ["human", "ai", "plugin", "system"],

@@ -109,6 +109,7 @@ export {
   type OperationHandler,
   type OperationReadScope,
   type OperationSteps,
+  type PluginAccess,
   type ReadOperationDefinition,
   type ReadOperationHandler,
   type ReadScope,
@@ -121,6 +122,14 @@ export {
   type PgFailureFields,
   rlsDenialMessage,
 } from "./pg-failure.js";
+// #1729 — the pluginAccess marker and the allowlist an approval card shows.
+export {
+  admitsPlugins,
+  describePluginOperations,
+  type PluginOperationGroup,
+  pluginAccessOf,
+  pluginAccessProblems,
+} from "./plugin-access.js";
 export {
   joinHeldTransaction,
   LONG_TRANSACTION_ALLOWLIST,

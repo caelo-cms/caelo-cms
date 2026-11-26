@@ -281,6 +281,7 @@ export const PAGE_LIST_MAX_LIMIT = 1000;
 
 export const listPagesOp = defineOperation({
   name: "pages.list",
+  pluginAccess: "read",
   readScope: "request",
   // P6.7.3 — AI lists pages from add_module_to_template to fan a new
   // module out to every page sharing a template. Read-only.
@@ -1145,6 +1146,7 @@ export const createPageOp = defineOperation({
 
 export const updatePageOp = defineOperation({
   name: "pages.update",
+  pluginAccess: "write",
   readScope: "request",
   // #397 — plugin actors update too (the translator writes the
   // variant's translated title).
@@ -2283,6 +2285,7 @@ async function loadDuplicablePlacements(
  */
 export const duplicatePageOp = defineOperation({
   name: "pages.duplicate",
+  pluginAccess: "write",
   readScope: "request",
   // #396 — plugin actors duplicate too: international-site's
   // create_variant mints the counterpart page through this op (epic

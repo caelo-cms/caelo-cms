@@ -49,6 +49,7 @@ export async function loadPublishPageUrlStyle(tx: TransactionRunner): Promise<Pa
 
 export const resolvePublicUrlsOp = defineOperation({
   name: "pages.resolve_public_urls",
+  pluginAccess: "read",
   readScope: "request",
   // Why system-only: a render-time building block, not an editing action.
   // Plugins call it from their head/sitemap/data-list operations, where

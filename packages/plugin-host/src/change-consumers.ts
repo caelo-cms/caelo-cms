@@ -375,6 +375,7 @@ const finishRebuildOp = defineOperation({
  */
 const cursorStateOp = defineOperation({
   name: "plugin_changes.cursor_state",
+  pluginAccess: "handle",
   // Why system-only: no person or AI has a change consumer; it answers
   // the calling plugin about its own (actorScope plugin).
   actorScope: ["plugin"],
