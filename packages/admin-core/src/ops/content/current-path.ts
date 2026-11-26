@@ -308,15 +308,36 @@ export const refreshCurrentPathOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const before = (await tx.execute(sql`
-      SELECT current_path, slug, chat_branch_id::text AS chat_branch_id
+      SELECT current_path, slug, chat_branch_id::text AS chat_branch_id, status
       FROM pages WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL
-    `)) as unknown as { current_path: string; slug: string; chat_branch_id: string | null }[];
+    `)) as unknown as {
+      current_path: string;
+      slug: string;
+      chat_branch_id: string | null;
+      status: string;
+    }[];
     const oldPath = before[0]?.current_path;
     if (oldPath === undefined) {
       return err({
         kind: "HandlerError",
         operation: "pages.refresh_current_path",
         message: "page not found or deleted",
+        refusal: true,
+      });
+    }
+    // #1729 — only the operator may let a published page's old address
+    // 404: a plugin moving one without its 301 strands every inbound link.
+    // A plugin skips the redirect only for a page never published (a
+    // provisional copy whose old URL was never public).
+    if (
+      ctx.actorKind === "plugin" &&
+      input.redirectFromOld === "skip" &&
+      before[0]?.status === "published"
+    ) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.refresh_current_path",
+        message: `page ${oldPath} is published, so its old address keeps a 301 when it moves: a plugin cannot pass redirectFromOld "skip" for it. Call refresh_current_path without redirectFromOld.`,
         refusal: true,
       });
     }

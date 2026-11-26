@@ -14,10 +14,20 @@
 
 import { PLUGIN_CAPABILITY_INFO } from "./capability-info.js";
 import type { PluginCapability, PluginManifest } from "./index.js";
+import { EXTERNAL_URL_SLOTS } from "./url-tables.js";
 
 /** Whether the sandbox broker serves a capability, or the issue that will make it. */
 export type ExternalCapabilityStatus =
-  | { readonly status: "brokered" }
+  | {
+      readonly status: "brokered";
+      /**
+       * What of the capability a runtime-installed plugin gets, when that is
+       * less than a shipped plugin's in-process code can do (`url_slots`:
+       * the slots data can describe). Shown with the capability wherever
+       * the record lists what can be requested.
+       */
+      readonly only?: string;
+    }
   | { readonly status: "planned"; readonly issue: number };
 
 const BROKERED: ExternalCapabilityStatus = Object.freeze({ status: "brokered" });
@@ -30,13 +40,17 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
 > = Object.freeze({
   cms_admin: BROKERED,
   cms_admin_schema: BROKERED,
-  ai_provider: PLANNED,
+  ai_provider: BROKERED,
   chat_runner_tools: BROKERED,
   background_workers: BROKERED,
   change_journal: BROKERED,
-  email: PLANNED,
+  email: BROKERED,
   head_contributions: PLANNED,
-  url_slots: PLANNED,
+  // #1729 (decision Q7 A) — the slots data can describe, read by the host.
+  url_slots: Object.freeze({
+    status: "brokered",
+    only: `slots ${EXTERNAL_URL_SLOTS.join(" and ")} only, declared as urlTables`,
+  }),
   client_assets: PLANNED,
   list_sources: BROKERED,
   list_types: BROKERED,
@@ -72,7 +86,7 @@ export const CAPABILITY_MANIFEST_FIELDS: Readonly<
   change_journal: ["changeConsumer"],
   email: ["mailTemplates", "mailUnsubscribe"],
   head_contributions: ["contributes", "hasShareImages"],
-  url_slots: ["urlContributions"],
+  url_slots: ["urlContributions", "urlTables"],
   client_assets: ["hasBuildAssets", "hasDeferrals"],
   list_sources: ["listSources"],
   list_types: ["listTypes"],
@@ -103,13 +117,35 @@ export function externallyBrokeredCapabilities(): PluginCapability[] {
   );
 }
 
+/** A capability's name with what of it a runtime-installed plugin gets, when that is limited. */
+function withLimit(capability: PluginCapability): string {
+  const status = EXTERNAL_CAPABILITY_STATUS[capability];
+  return status.status === "brokered" && status.only
+    ? `${capability} (${status.only})`
+    : capability;
+}
+
+/**
+ * The capabilities a runtime-installed plugin can request, each with its
+ * limit (`url_slots (slots host and path-prefix only, declared as
+ * urlTables)`), as one line for a refusal or a tool description.
+ */
+export function externallyRequestable(): string {
+  return externallyBrokeredCapabilities().map(withLimit).join(", ");
+}
+
 /**
  * Why a runtime-installed plugin cannot request `capability`, worded for
  * the AI that submitted it: the capability, its issue, what to remove and
  * what it can request instead. Null when the capability is brokered.
  */
-export function externalCapabilityRefusal(capability: PluginCapability): string | null {
-  const status = EXTERNAL_CAPABILITY_STATUS[capability];
+export function externalCapabilityRefusal(
+  capability: PluginCapability,
+  /** The record to read; a test injects one to exercise the refusal once
+   *  no capability is planned any more. */
+  record: Readonly<Record<PluginCapability, ExternalCapabilityStatus>> = EXTERNAL_CAPABILITY_STATUS,
+): string | null {
+  const status = record[capability];
   if (status.status === "brokered") return null;
   const fields = CAPABILITY_MANIFEST_FIELDS[capability];
   const remove =
@@ -119,7 +155,7 @@ export function externalCapabilityRefusal(capability: PluginCapability): string 
   return (
     `\`${capability}\` (${PLUGIN_CAPABILITY_INFO[capability].label}) is not available to runtime-installed plugins yet (#${status.issue}). ` +
     `Remove it from \`requestedCapabilities\`${remove}. ` +
-    `Runtime-installed plugins can request: ${externallyBrokeredCapabilities().join(", ")}.`
+    `Runtime-installed plugins can request: ${externallyRequestable()}.`
   );
 }
 

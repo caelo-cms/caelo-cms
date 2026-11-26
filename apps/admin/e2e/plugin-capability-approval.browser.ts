@@ -71,6 +71,7 @@ test("a new permission waits for the Owner, shows on every screen, and is approv
     "link_resolve",
     "list_sources",
     "list_resolve",
+    "url_slots",
   ]);
   try {
     await page.goto("/settings/updates");

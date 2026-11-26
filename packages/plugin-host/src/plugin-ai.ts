@@ -67,16 +67,62 @@ export const pluginAiCompleteInput = z
   })
   .strict();
 
+/** How deep a `generateObject` schema may nest, and how large it may be. */
+export const PLUGIN_AI_SCHEMA_MAX_DEPTH = 32;
+export const PLUGIN_AI_SCHEMA_MAX_BYTES = 256 * 1024;
+
+/**
+ * Whether a JSON value nests at most `max` levels. Iterative, so a schema
+ * nested thousands deep is measured without exhausting the host's stack.
+ */
+function nestsAtMost(value: unknown, max: number): boolean {
+  const pending: Array<{ readonly node: unknown; readonly depth: number }> = [
+    { node: value, depth: 0 },
+  ];
+  for (let next = pending.pop(); next; next = pending.pop()) {
+    if (next.node === null || typeof next.node !== "object") continue;
+    if (next.depth > max) return false;
+    for (const child of Object.values(next.node))
+      pending.push({ node: child, depth: next.depth + 1 });
+  }
+  return true;
+}
+
 /**
  * `ctx.ai.generateObject` options: the text options plus the JSON Schema
  * the answer is constrained to. The schema must describe an object — the
  * structured-output contract returns ONE object.
+ *
+ * #1729 — bounded for every plugin: the host never compiles the schema (the
+ * AI SDK hands `jsonSchema()` to the provider, which constrains and checks
+ * the answer), so the tool-schema keyword subset does not apply, but some
+ * provider adapters walk it recursively in the host before sending it, and
+ * its size counts towards the reserved prompt tokens. The shipped schemas
+ * (translation, chrome, moderation) are far inside both bounds.
  */
 export const pluginAiGenerateObjectInput = pluginAiCompleteInput
   .extend({
-    jsonSchema: z
-      .record(z.string(), z.unknown())
-      .refine((s) => s.type === "object", "jsonSchema must describe an object (type: 'object')"),
+    jsonSchema: z.record(z.string(), z.unknown()).superRefine((s, check) => {
+      if (s.type !== "object") {
+        check.addIssue({
+          code: "custom",
+          message: "jsonSchema must describe an object (type: 'object')",
+        });
+      }
+      // Depth first: serialising a schema nested thousands deep would
+      // itself exhaust the stack.
+      if (!nestsAtMost(s, PLUGIN_AI_SCHEMA_MAX_DEPTH)) {
+        check.addIssue({
+          code: "custom",
+          message: `jsonSchema nests deeper than ${PLUGIN_AI_SCHEMA_MAX_DEPTH} levels`,
+        });
+      } else if (JSON.stringify(s).length > PLUGIN_AI_SCHEMA_MAX_BYTES) {
+        check.addIssue({
+          code: "custom",
+          message: `jsonSchema is larger than ${PLUGIN_AI_SCHEMA_MAX_BYTES / 1024} KB`,
+        });
+      }
+    }),
   })
   .strict();
 
@@ -109,6 +155,14 @@ export function makePluginAi(
 ): PluginAi {
   /** The checks every call runs before it may reach the provider. */
   const preflight = (method: string): NonNullable<PluginHostInfra["aiProvider"]> => {
+    // #1729 — a render runs on every preview and build of every page, and a
+    // visitor call is the public's: neither may spend the site's AI. Binds
+    // shipped and installed plugins alike (no shipped plugin calls it there).
+    if (invocation.origin === "render" || invocation.origin === "visitor") {
+      throw new Error(
+        `ctx.ai.${method}: plugin '${plugin.slug}' cannot call the AI from a ${invocation.origin} call — call it from a chat tool, the Owner panel, a worker or onActivate and store the answer for the render to read`,
+      );
+    }
     if (invocation.aiDelegated) {
       throw new Error(
         `${AI_DELEGATED_ERROR_PREFIX} plugin '${plugin.slug}' called ctx.ai.${method} on a call whose AI work belongs to the calling agent (Power-MCP, issue #741). The operation must return an AiWorkItem instead; this is a bug in the plugin.`,

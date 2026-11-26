@@ -32,7 +32,12 @@
  * fresh resolution and routes the change through a §11.A proposal.
  */
 
-import type { UrlComposePage, UrlContributionDef, UrlSlot } from "@caelo-cms/plugin-sdk";
+import type {
+  PluginUrlTables,
+  UrlComposePage,
+  UrlContributionDef,
+  UrlSlot,
+} from "@caelo-cms/plugin-sdk";
 import { trimSlashes } from "@caelo-cms/shared";
 import {
   isPluginDisabled,
@@ -40,6 +45,12 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import {
+  type DeclaredUrlValue,
+  declaredUrlContributions,
+  decodeDeclaredPrefix,
+  readDeclaredUrlAnnotations,
+} from "./url-tables.js";
 
 /**
  * Which plugins' URL contributions take part in a composition. `without`
@@ -60,6 +71,8 @@ export interface RegisteredUrlContribution {
 class UrlContributionsRegistry {
   readonly #bySlot = new Map<UrlSlot, RegisteredUrlContribution>();
   readonly #annotationOps = new Map<string, string>();
+  /** #1729 — plugins whose slots are tables the host reads (urlTables). */
+  readonly #declared = new Map<string, PluginUrlTables>();
 
   /**
    * Claim slots for a plugin. Throws on conflict (exclusive slots; the
@@ -76,6 +89,24 @@ class UrlContributionsRegistry {
     if (annotationsOperation) {
       this.#annotationOps.set(pluginSlug, annotationsOperation);
     }
+  }
+
+  /**
+   * #1729 — claim the slots a plugin declares as tables (`urlTables`): the
+   * host builds their encode/decode and reads the tables itself while core
+   * composes, so no plugin code runs on the URL path. Same exclusivity as
+   * {@link register}.
+   */
+  registerDeclared(pluginSlug: string, tables: PluginUrlTables): void {
+    const contributions = declaredUrlContributions(pluginSlug, tables);
+    this.assertClaimable(pluginSlug, contributions);
+    for (const c of contributions) this.#bySlot.set(c.slot, { pluginSlug, contribution: c });
+    this.#declared.set(pluginSlug, tables);
+  }
+
+  /** The declared URL tables of every registered plugin that has them. */
+  declared(): ReadonlyMap<string, PluginUrlTables> {
+    return this.#declared;
   }
 
   /**
@@ -117,6 +148,7 @@ class UrlContributionsRegistry {
       if (entry.pluginSlug === pluginSlug) this.#bySlot.delete(slot);
     }
     this.#annotationOps.delete(pluginSlug);
+    this.#declared.delete(pluginSlug);
   }
 
   /** Active (non-disabled) contribution for a slot, within `view`. */
@@ -139,6 +171,7 @@ class UrlContributionsRegistry {
   reset(): void {
     this.#bySlot.clear();
     this.#annotationOps.clear();
+    this.#declared.clear();
   }
 }
 
@@ -296,7 +329,14 @@ export interface DecodedPagePath {
  * index. Loud (no-fallbacks): a path no active contribution can invert
  * throws instead of guessing.
  */
-export function decodePagePath(path: string): DecodedPagePath {
+export function decodePagePath(
+  path: string,
+  opts: {
+    /** #1729 — the values of plugins that declare their slots as tables
+     *  (readDeclaredUrlValues), by plugin slug: their decode is data. */
+    readonly declaredValues?: ReadonlyMap<string, ReadonlyArray<DeclaredUrlValue>>;
+  } = {},
+): DecodedPagePath {
   const trimmed = trimSlashes(path);
 
   const full = urlContributionsRegistry.bySlot("full-path");
@@ -315,7 +355,12 @@ export function decodePagePath(path: string): DecodedPagePath {
 
   const prefixEntry = urlContributionsRegistry.bySlot("path-prefix");
   if (prefixEntry && prefixEntry.contribution.slot === "path-prefix") {
-    const r = prefixEntry.contribution.decode(segments);
+    const declaredValues = urlContributionsRegistry.declared().has(prefixEntry.pluginSlug)
+      ? opts.declaredValues?.get(prefixEntry.pluginSlug)
+      : undefined;
+    const r = declaredValues
+      ? decodeDeclaredPrefix(segments, declaredValues)
+      : prefixEntry.contribution.decode(segments);
     if (r !== null) {
       if (r.consumed < 0 || r.consumed > segments.length) {
         throw new Error(
@@ -351,9 +396,10 @@ export function decodePagePath(path: string): DecodedPagePath {
  * are the only plugin data that can change a page's URL.
  */
 export function urlAnnotationPluginSlugs(): string[] {
-  return [...urlContributionsRegistry.annotationOps().keys()].filter(
-    (slug) => !isPluginDisabled(slug),
-  );
+  return [
+    ...urlContributionsRegistry.annotationOps().keys(),
+    ...urlContributionsRegistry.declared().keys(),
+  ].filter((slug) => !isPluginDisabled(slug));
 }
 
 /**
@@ -391,6 +437,16 @@ export async function collectUrlAnnotations(
       );
     }
     for (const [pageId, ann] of Object.entries(annotations)) {
+      out.set(pageId, { ...(out.get(pageId) ?? {}), ...ann });
+    }
+  }
+  // #1729 — declared tables are read by the host, not asked of the plugin:
+  // they work inside the composing transaction for a sandboxed plugin too.
+  for (const [pluginSlug, tables] of urlContributionsRegistry.declared()) {
+    if (isPluginDisabled(pluginSlug)) continue;
+    if (view?.without === pluginSlug) continue;
+    const declared = await readDeclaredUrlAnnotations(pluginSlug, tables, pageIds, scope);
+    for (const [pageId, ann] of declared) {
       out.set(pageId, { ...(out.get(pageId) ?? {}), ...ann });
     }
   }

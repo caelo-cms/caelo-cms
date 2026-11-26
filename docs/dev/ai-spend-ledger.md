@@ -23,9 +23,20 @@ Reservations and extensions take one advisory lock (`AI_LEDGER_LOCK`), shared wi
 | Spender | Caps |
 |---|---|
 | `actor`: a person's work (chat turns, subagents, moduleize, `query_page_html`, the completeness judge) | day-global, day-per-actor, session. A subagent counts toward its parent chat's session. |
-| `plugin`: a plugin's `ctx.ai` and images | The same for the person it acts for (the operator of a chat call, the author of a panel call, else the system actor), plus `plugins.ai_cost_cap_microcents`. |
+| `plugin`: a plugin's `ctx.ai` and images | The same for the person it acts for (the operator of a chat call, the author of a panel call, else the system actor), plus the plugin's own cap (below). |
 
 A text call without a chat session skips the session budget (a plugin worker has no chat). An image call refuses instead (`requireSession`), as before.
+
+### A plugin's own cap (#1729)
+
+A plugin's cap is the lower of two (`readPluginAiCap`, `bindingPluginCap` in `ai-ledger.ts`):
+
+- the Owner's, `plugins.ai_cost_cap_microcents` (none by default; `plugins.set_ai_cost_cap`, `propose_set_plugin_ai_cost_cap`);
+- for a runtime-installed plugin, the one approved with the version it runs: `capabilityConstraints.ai_provider.maxDailyCostMicrocents` in the `ai_provider` receipt of its active installation version (decision Q8 A). Staging refuses an installed plugin that requests `ai_provider` without one, the approval card shows it in dollars, and the receipt is immutable, so a higher cap needs a new version and a new approval. The Owner can only lower it.
+
+A runtime-installed plugin's text call without such a receipt is refused (`plugin-grant-cap`), whoever asks the ledger. Its images keep the Owner's cap and are also bounded by the receipt's cap when it holds one. Both caps count the plugin's whole AI spend in the last 24 hours, and a refusal says which one bound. `ai_calls.aggregate_per_plugin` (and `get_plugin`) reports the binding cap with both sources.
+
+No plugin calls the AI from a render or a visitor call (`plugin-ai.ts`): a render runs on every preview and build of every page. A `generateObject` schema is bounded (32 levels, 256 KB) before it is reserved; the host never compiles it (the AI SDK hands it to the provider), so the tool-schema keyword subset does not apply.
 
 ## The worst case
 
