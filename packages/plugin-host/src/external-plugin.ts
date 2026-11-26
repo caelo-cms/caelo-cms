@@ -143,6 +143,10 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // #1729 — scheduled on the tick like a shipped plugin's; each run is a
     // sandboxed call of the background pool (`worker` budget).
     ...(manifest.workers ? { workers: manifest.workers } : {}),
+    // #1729 — pure data: core stores them as types the plugin owns, available
+    // while it runs (`list_types.sync_plugin_types`), slugs prefixed with
+    // the plugin's own.
+    ...(manifest.listTypes ? { listTypes: manifest.listTypes } : {}),
     // #1332 — the reviewed contract, with the input schema compiled from
     // the manifest's JSON Schema: the host validates a visitor's body
     // before the sandbox ever sees it.

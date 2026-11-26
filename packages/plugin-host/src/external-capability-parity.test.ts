@@ -230,6 +230,11 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
       await sandboxed(`return ctx.invocation.origin`, {}, { origin: "worker", actorId: ID }),
     ).toBe("worker");
   },
+  list_types: async () => {
+    const listTypes = (await fixtureManifest()).listTypes;
+    expect(listTypes?.length).toBeGreaterThan(0);
+    expect(externalDeclarations({ ...probe, listTypes }).listTypes).toEqual(listTypes);
+  },
   batch_jobs: async () => {
     expect(
       await sandboxed(

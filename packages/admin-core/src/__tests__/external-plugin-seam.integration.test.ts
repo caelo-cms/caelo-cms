@@ -38,7 +38,15 @@ const system = {
   requestId: "external-seam-test",
 };
 const SLUG = "seam-notes";
-const SCHEMA = "plugin_seam_notes";
+/** Every plugin this file installs: their schemas outlive the per-file reset. */
+const SCHEMAS = ["seam-notes", "seam-liar", "seam-worker", "seam-glossary"].map(
+  (slug) => `plugin_${slug.replaceAll("-", "_")}`,
+);
+const dropSchemas = () =>
+  adapter.withAdminTransaction(system, async (tx) => {
+    for (const schema of SCHEMAS)
+      await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS ${schema} CASCADE`));
+  });
 
 const manifest = {
   slug: SLUG,
@@ -77,9 +85,7 @@ beforeAll(async () => {
     publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL,
   });
   registerAdminOps(registry);
-  await adapter.withAdminTransaction(system, (tx) =>
-    tx.execute(sql.raw(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`)),
-  );
+  await dropSchemas();
   pluginsRoot = await mkdtemp(join(tmpdir(), "caelo-seam-test-"));
   await bootstrap({
     infra: { adapter, registry, lockPluginRow },
@@ -89,9 +95,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   resetPluginHost();
-  await adapter.withAdminTransaction(system, (tx) =>
-    tx.execute(sql.raw(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`)),
-  );
+  await dropSchemas();
   await rm(pluginsRoot, { recursive: true, force: true });
   await adapter.close();
 });
@@ -213,9 +217,6 @@ it("refuses an artifact whose hasOnActivate does not match its definition", asyn
   const loaded = await activateApprovedExternalPlugin(staged.installationId);
   expect(loaded.loaded).toBe(false);
   expect(loaded.reason).toContain("SandboxOnActivateMismatch");
-  await adapter.withAdminTransaction(system, (tx) =>
-    tx.execute(sql.raw("DROP SCHEMA IF EXISTS plugin_seam_liar CASCADE")),
-  );
 });
 
 it("an installed plugin's worker runs on the scheduler tick, sandboxed, with private storage on main (background_workers)", async () => {
@@ -305,4 +306,78 @@ it("an installed plugin's worker runs on the scheduler tick, sandboxed, with pri
     (e: Error) => e.message,
   );
   expect(after).toMatch(/ExternalPlugin(ApprovalChanged|GrantChanged)|disabled/);
+});
+
+it("an installed plugin's list types are stored as types it owns while it runs (list_types)", async () => {
+  const slug = "seam-glossary";
+  const listType = {
+    slug: `${slug}-terms`,
+    name: "Glossary terms",
+    purpose: "Words the plugin explains on the site.",
+    role: "content" as const,
+    root: { allow: ["term"] },
+    nodes: {
+      term: {
+        label: "Term",
+        fields: [{ name: "word", label: "Word", type: "text" as const, required: true }],
+      },
+    },
+  };
+  const { pluginId } = await installExternal(
+    {
+      slug,
+      version: "1.0.0",
+      tier: 2,
+      schema: {},
+      operations: ["noop"],
+      listTypes: [listType],
+      requestedCapabilities: ["list_types"],
+      capabilityReasons: { list_types: "Let editors keep the glossary as a list" },
+    },
+    `export default {slug:"${slug}",version:"1.0.0",tier:2,operations:{noop:async()=>null}};`,
+  );
+  const rows = (await adapter.withAdminTransaction(system, (tx) =>
+    tx.execute(sql`
+      SELECT plugin_id::text AS plugin_id, definition->>'name' AS name
+      FROM list_types WHERE slug = ${listType.slug} AND chat_branch_id IS NULL AND deleted_at IS NULL
+    `),
+  )) as unknown as { plugin_id: string; name: string }[];
+  expect([...rows]).toEqual([{ plugin_id: pluginId, name: "Glossary terms" }]);
+  // A boot re-syncs from the verified manifest and writes nothing new.
+  expect(await loadActivatedPlugin(slug)).toEqual({ loaded: true });
+});
+
+it("refuses an installed plugin's list type without its prefix at staging", async () => {
+  const r = await execute(
+    registry,
+    adapter,
+    { ...system, actorKind: "ai" },
+    "plugins.stage_installation",
+    {
+      manifest: {
+        slug: "seam-noprefix",
+        version: "1.0.0",
+        tier: 2,
+        schema: {},
+        operations: ["noop"],
+        listTypes: [
+          {
+            slug: "glossary",
+            name: "Glossary",
+            purpose: "Words.",
+            role: "content",
+            root: { allow: ["term"] },
+            nodes: {
+              term: { label: "Term", fields: [{ name: "word", label: "Word", type: "text" }] },
+            },
+          },
+        ],
+        requestedCapabilities: ["list_types"],
+        capabilityReasons: { list_types: "Glossary" },
+      },
+      source: `export default {slug:"seam-noprefix",version:"1.0.0",tier:2,operations:{noop:async()=>null}};`,
+    },
+  );
+  expect(r.ok).toBe(false);
+  if (!r.ok) expect(JSON.stringify(r.error)).toContain('must start with \\"seam-noprefix-\\"');
 });
