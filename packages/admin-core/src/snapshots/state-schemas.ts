@@ -19,10 +19,13 @@
 
 import {
   CHANGEFREQ_VALUES,
+  completeSeoOrigins,
   listItemInputSchema,
   listTypeDefSchema,
+  MAX_IMAGE_PREVIEW_VALUES,
   pageTypeDefSchema,
   STATIC_FILE_CONTENT_TYPES,
+  seoOriginsSchema,
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import type {
@@ -30,6 +33,7 @@ import type {
   ListTypeState,
   ModuleState,
   PageLayoutState,
+  PageSeoState,
   PageState,
   PageTypeState,
   StaticFileState,
@@ -76,18 +80,62 @@ const templateStateV1 = z
   })
   .strict();
 
+/**
+ * #1752 — the head fields a page SEO state written before migration 0880
+ * does not carry, at the values a row without them holds (the column
+ * defaults). Such a state is exactly the SEO its page had then: no own SEO
+ * title or Open Graph texts, no robots directive but `noindex`. The parse
+ * below adds them (input normalisation of an older encoding, like the
+ * `locale` key of #384), so a merge or revert of it writes a complete row.
+ */
+export const PAGE_SEO_HEAD_COLUMN_DEFAULTS = Object.freeze({
+  seoTitle: "",
+  ogTitle: "",
+  ogDescription: "",
+  nofollow: false,
+  noarchive: false,
+  nosnippet: false,
+  noimageindex: false,
+  maxSnippet: null,
+  maxImagePreview: "large",
+  maxVideoPreview: null,
+  nosnippetContent: [] as readonly string[],
+  origins: {},
+} as const);
+
 const pageSeoStateV1 = z
-  .object({
-    metaDescription: z.string(),
-    ogImageAssetId: z.string().uuid().nullable(),
-    canonicalUrl: z.string().nullable(),
-    noindex: z.boolean(),
-    changefreq: z.enum(CHANGEFREQ_VALUES),
-    priority: z.number().min(0).max(1),
-    autofilledAt: z.string().nullable(),
-    optimizedAt: z.string().nullable(),
-  })
-  .strict();
+  .preprocess(
+    (raw) =>
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? { ...PAGE_SEO_HEAD_COLUMN_DEFAULTS, ...(raw as Record<string, unknown>) }
+        : raw,
+    z
+      .object({
+        seoTitle: z.string(),
+        metaDescription: z.string(),
+        ogTitle: z.string(),
+        ogDescription: z.string(),
+        ogImageAssetId: z.string().uuid().nullable(),
+        canonicalUrl: z.string().nullable(),
+        noindex: z.boolean(),
+        nofollow: z.boolean(),
+        noarchive: z.boolean(),
+        nosnippet: z.boolean(),
+        noimageindex: z.boolean(),
+        maxSnippet: z.number().int().min(-1).nullable(),
+        maxImagePreview: z.enum(MAX_IMAGE_PREVIEW_VALUES),
+        maxVideoPreview: z.number().int().min(-1).nullable(),
+        nosnippetContent: z.array(z.string().uuid()),
+        origins: seoOriginsSchema,
+        changefreq: z.enum(CHANGEFREQ_VALUES),
+        priority: z.number().min(0).max(1),
+        autofilledAt: z.string().nullable(),
+        optimizedAt: z.string().nullable(),
+      })
+      .strict(),
+  )
+  // A text without a recorded origin gets 0880's backfill rule (seo-head.ts).
+  .transform((s) => ({ ...s, origins: completeSeoOrigins(s) }));
 
 const pageStateV1 = z.preprocess(
   // #384 — pre-cut snapshot rows carry a `locale` key; strip it at the
@@ -242,6 +290,18 @@ export function parseAndUpgradeTemplateState(raw: unknown): TemplateState {
     return r.data;
   }
   throw new SnapshotSchemaError("template", v, "no upgrade path from this version");
+}
+
+/**
+ * #1752 — a page snapshot's `seo` as the current shape: a reader that takes
+ * a pending page state without parsing the whole of it (the SEO write path
+ * builds on `loadPageStateWithBranchOverlay`'s raw state) parses its SEO
+ * here, so an older state never reaches a write without the head fields.
+ */
+export function parsePageSeoState(raw: unknown): PageSeoState {
+  const r = pageSeoStateV1.safeParse(raw);
+  if (!r.success) throw new SnapshotSchemaError("page", 1, r.error.issues);
+  return r.data;
 }
 
 export function parseAndUpgradePageState(raw: unknown): PageState {

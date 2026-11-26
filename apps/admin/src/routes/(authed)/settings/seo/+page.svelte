@@ -249,6 +249,44 @@
 
   <Card>
     <CardHeader>
+      <CardTitle class="text-base">Page titles</CardTitle>
+      <CardDescription>
+        The title search results show for a page without its own SEO title, unless its page type
+        has a template of its own. Use <code class="font-mono">{"{page_title}"}</code>,
+        <code class="font-mono">{"{short_title}"}</code> and
+        <code class="font-mono">{"{site_name}"}</code>, for example
+        <code class="font-mono">{"{page_title} | {site_name}"}</code>.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <form method="post" action="?/saveTitleTemplate" class="flex items-end gap-2">
+        <input type="hidden" name="_csrf" value={data.csrfToken} />
+        <div class="flex-1 space-y-2">
+          <Label for="titleTemplate">Title template</Label>
+          <Input
+            id="titleTemplate"
+            name="titleTemplate"
+            required
+            maxlength={200}
+            value={data.settings.titleTemplate}
+            data-testid="site-title-template"
+          />
+        </div>
+        <Button type="submit">Save template</Button>
+      </form>
+      {#if data.settings.siteName === null && data.settings.titleTemplate.includes("{site_name}")}
+        <Alert variant="destructive" class="mt-4">
+          <AlertDescription>
+            The site has no name yet, so titles show {"{site_name}"} as it is. Tell the AI the
+            site's name in the editor chat.
+          </AlertDescription>
+        </Alert>
+      {/if}
+    </CardContent>
+  </Card>
+
+  <Card>
+    <CardHeader>
       <CardTitle class="text-base">Site language</CardTitle>
       <CardDescription>
         The language your content is written in, as a BCP 47 tag (<code class="font-mono">en</code>,

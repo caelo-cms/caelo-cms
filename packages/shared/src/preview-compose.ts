@@ -30,7 +30,12 @@ import type { ModuleFieldKind } from "./content.js";
 import { findInteractionIds, interactionAssets } from "./interactions.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import type { ListPageContext } from "./lists/resolve.js";
-import { MODULE_ID_ATTRIBUTE, tagContentInstance, tagModuleId } from "./module-id-tag.js";
+import {
+  MODULE_ID_ATTRIBUTE,
+  markNosnippet,
+  tagContentInstance,
+  tagModuleId,
+} from "./module-id-tag.js";
 import {
   type NestedModuleResource,
   type NestedRenderFailure,
@@ -95,6 +100,12 @@ export interface ComposeModule {
    * variants, which are no stored instance.
    */
   readonly contentInstanceId?: string;
+  /**
+   * #1752 — the page keeps this placement's content out of search snippets
+   * (`pages_seo.nosnippet_content`): its root carries `data-nosnippet`
+   * ({@link markNosnippet}). The build and the preview set it the same way.
+   */
+  readonly nosnippet?: boolean;
 }
 
 /** A module field as the composer passes it to the engine; `kind` absent = primitive. */
@@ -137,15 +148,20 @@ export interface ComposeTheme {
   };
 }
 
-/** The placement's content instance on its root, when an observer reads the page. */
+/**
+ * The placement's stamps on its root: `data-nosnippet` when the page keeps
+ * its content out of snippets (#1752), and its content instance when an
+ * observer reads the page.
+ */
 function stampPlacement(
   html: string,
-  m: { readonly contentInstanceId?: string },
+  m: { readonly contentInstanceId?: string; readonly nosnippet?: boolean },
   input: { readonly stampContentInstances?: boolean },
 ): string {
+  const marked = m.nosnippet === true ? markNosnippet(html) : html;
   return input.stampContentInstances && m.contentInstanceId
-    ? tagContentInstance(html, m.contentInstanceId)
-    : html;
+    ? tagContentInstance(marked, m.contentInstanceId)
+    : marked;
 }
 
 /**

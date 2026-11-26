@@ -55,6 +55,26 @@ export function stripContentInstances(html: string): string {
   return html.includes(CONTENT_INSTANCE_ATTRIBUTE) ? html.replace(STAMP, "") : html;
 }
 
+/** Elements Google reads `data-nosnippet` on. */
+const NOSNIPPET_ROOTS = new Set(["div", "section", "span"]);
+
+/**
+ * #1752 — keep a placement's content out of search snippets (and the AI
+ * answers built from them): `data-nosnippet` on its root when the root is a
+ * `div`, `section` or `span`, the only elements search engines read it on;
+ * any other root is wrapped in a `<div data-nosnippet>`. Idempotent.
+ *
+ * @example markNosnippet("<section>x</section>") // '<section data-nosnippet="">x</section>'
+ * @example markNosnippet("<article>x</article>") // '<div data-nosnippet=""><article>x</article></div>'
+ */
+export function markNosnippet(html: string): string {
+  const m = /<([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>/.exec(html);
+  if (!m) return html;
+  if (/\sdata-nosnippet\b/.test(m[0])) return html;
+  if (NOSNIPPET_ROOTS.has((m[1] ?? "").toLowerCase())) return tagRoot(html, "data-nosnippet", "");
+  return `<div data-nosnippet="">${html}</div>`;
+}
+
 /** `name="value"` on the first opening tag of `html`, unless that tag has `name` already. */
 function tagRoot(html: string, name: string, value: string): string {
   if (!html) return html;

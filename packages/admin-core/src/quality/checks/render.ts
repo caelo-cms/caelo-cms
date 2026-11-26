@@ -34,6 +34,7 @@ import {
   parseMediaFailureMarker,
   parseMediaReferenceMarker,
   parseOgImageFailureMarker,
+  parseSeoTitleVariableMarker,
   renderFailureKind,
   renderFailureMarker,
   truncateKeepingIds,
@@ -83,6 +84,8 @@ function placeText(f: RenderFailure): string {
   // #1719 — a reference image on the page; the page's share image (its head).
   if (parseMediaReferenceMarker(f.reason) !== null) return "an image on the page";
   if (parseOgImageFailureMarker(f.reason) !== null) return "the page's share image (og:image)";
+  // #1752 — the title template, in the page's head.
+  if (parseSeoTitleVariableMarker(f.reason) !== null) return "the page's title (<title>)";
   const block = f.blockName === null ? "the site layout" : `the ${f.blockName}`;
   const mod = f.moduleSlug ? `, module "${f.moduleSlug}"` : "";
   const field = f.field ? `, field "${f.field}"` : "";

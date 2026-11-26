@@ -27,6 +27,7 @@ const OP_TO_TOOL: Readonly<Record<string, string>> = {
   "lists.get": "get_list",
   "page_types.upsert_many": "upsert_page_types_many",
   "page_types.delete_many": "delete_page_types_many",
+  "page_types.set_seo_many": "set_page_type_seo_many",
   "page_types.list": "list_page_types",
   "page_types.get": "list_page_types (with slug)",
   "pages.build_page": "build_page",

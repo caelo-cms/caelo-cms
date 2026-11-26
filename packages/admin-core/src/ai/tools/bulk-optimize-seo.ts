@@ -18,10 +18,10 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
 > = {
   name: "bulk_optimize_seo",
   description: [
-    "Re-optimize meta descriptions (+ og:image) of 1..N pages, all-or-nothing, regardless of fill state.",
+    "Re-optimize the SEO texts (meta description, SEO title, og:title/og:description, og:image) of 1..N pages, all-or-nothing, regardless of fill state.",
     "USE FOR: ONLY an explicit user request to optimize/rewrite SEO with context (keywords, intent, branding).",
-    "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; exact dictated value -> `set_page_seo_many`.",
-    "First read current descriptions + core text with ONE `get_page_seo({pageIds})`.",
+    "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; exact dictated value -> `set_page_seo_many`; one title pattern for all pages of a type -> `set_page_type_seo_many`.",
+    "First read current texts, their origins + core text with ONE `get_page_seo({pageIds})`. Each item names only the texts it rewrites.",
     "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
   ].join("\n"),
   schema: bulkOptimizeSeoToolInput,
@@ -37,10 +37,25 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
         items: {
           type: "object",
           additionalProperties: false,
-          required: ["pageId", "metaDescription"],
+          required: ["pageId"],
           properties: {
             pageId: { type: "string", format: "uuid" },
             metaDescription: { type: "string", minLength: 1, maxLength: 320 },
+            seoTitle: {
+              type: "string",
+              maxLength: 200,
+              description: 'Own `<title>`; "" = back to the title template.',
+            },
+            ogTitle: {
+              type: "string",
+              maxLength: 200,
+              description: 'Own og:title; "" = shares the SEO title.',
+            },
+            ogDescription: {
+              type: "string",
+              maxLength: 320,
+              description: 'Own og:description; "" = shares the meta description.',
+            },
             ogImageAssetId: { type: ["string", "null"], format: "uuid" },
           },
         },

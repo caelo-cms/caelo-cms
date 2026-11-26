@@ -36,11 +36,14 @@ import {
   slotKeyOf,
   stripJsonFence,
   type TranslationResultPayload,
+  validateHeadTexts,
   validateMetaDescription,
   validateStructuralLock,
   variantSlotsBySource,
 } from "./translation.js";
 import {
+  HEAD_TEXT_KEYS,
+  type HeadTexts,
   type TranslationContract,
   toTranslationPayload,
   translationAnswerSchema,
@@ -103,6 +106,9 @@ export interface PreparedPageTranslation {
   readonly variantShortTitle: string;
   readonly sourceMetaDescription: string;
   readonly variantMetaDescription: string;
+  /** #1752 — the pages' own SEO title, og:title and og:description ("" = none). */
+  readonly sourceHeadTexts: HeadTexts;
+  readonly variantHeadTexts: HeadTexts;
   readonly sourceSlots: readonly ContentSlot[];
   readonly variantSlots: readonly ContentSlot[];
   /** Per slot key: what the write merges into (see {@link SlotBase}). */
@@ -336,10 +342,44 @@ async function loadMetaDescription(
   deps: Pick<TranslationDeps, "cms">,
   pageId: string,
 ): Promise<string> {
-  const r = await deps.cms.call<{ seo: { metaDescription: string } | null }>("pages_seo.get", {
-    pageId,
-  });
-  return r.seo?.metaDescription ?? "";
+  return (await loadSeoTexts(deps, pageId)).metaDescription;
+}
+
+/**
+ * #1752 — a page's own SEO texts: the meta description and the head texts
+ * (SEO title, og:title, og:description); "" for each the page has none of.
+ */
+async function loadSeoTexts(
+  deps: Pick<TranslationDeps, "cms">,
+  pageId: string,
+): Promise<{ readonly metaDescription: string; readonly head: HeadTexts }> {
+  const r = await deps.cms.call<{
+    seo: {
+      metaDescription: string;
+      seoTitle?: string;
+      ogTitle?: string;
+      ogDescription?: string;
+    } | null;
+  }>("pages_seo.get", { pageId });
+  return {
+    metaDescription: r.seo?.metaDescription ?? "",
+    head: {
+      seoTitle: r.seo?.seoTitle ?? "",
+      ogTitle: r.seo?.ogTitle ?? "",
+      ogDescription: r.seo?.ogDescription ?? "",
+    },
+  };
+}
+
+/**
+ * The head texts a fingerprint names: only those the page has, so a page
+ * without any fingerprints exactly as before #1752 (no variant turns stale
+ * by the upgrade alone).
+ */
+function headTextsBasis(head: HeadTexts | undefined): Partial<HeadTexts> {
+  const out: Partial<Record<keyof HeadTexts, string>> = {};
+  for (const k of HEAD_TEXT_KEYS) if (head && head[k].length > 0) out[k] = head[k];
+  return out;
 }
 
 /**
@@ -354,6 +394,8 @@ export interface PageSource {
   readonly title: string;
   readonly shortTitle: string;
   readonly metaDescription: string;
+  /** #1752 — its own SEO title, og:title, og:description; none when omitted. */
+  readonly headTexts?: HeadTexts;
   readonly slots: readonly ContentSlot[];
 }
 
@@ -364,6 +406,7 @@ export function pageSourceFingerprint(src: PageSource): Promise<string> {
     title: src.title,
     shortTitle: src.shortTitle,
     metaDescription: src.metaDescription,
+    ...headTextsBasis(src.headTexts),
     slots: src.slots,
   });
 }
@@ -413,9 +456,15 @@ export async function loadPageSource(
   }>("pages.list", { pageIds: [pageId] });
   const page = listed.pages.find((p) => p.id === pageId);
   if (!page) return null;
-  const metaDescription = await loadMetaDescription(deps, pageId);
+  const seo = await loadSeoTexts(deps, pageId);
   const { slots } = await loadPageSlots(deps, pageId, listTypes);
-  return { title: page.title, shortTitle: page.shortTitle, metaDescription, slots };
+  return {
+    title: page.title,
+    shortTitle: page.shortTitle,
+    metaDescription: seo.metaDescription,
+    headTexts: seo.head,
+    slots,
+  };
 }
 
 /**
@@ -490,8 +539,12 @@ export async function preparePageTranslation(
   const sourceShortTitle = sourcePage?.shortTitle ?? "";
   const variantShortTitle = variantPage?.shortTitle ?? "";
 
-  const sourceMetaDescription = await loadMetaDescription(deps, sourceRow.page_id);
-  const variantMetaDescription = await loadMetaDescription(deps, args.variantPageId);
+  const sourceSeo = await loadSeoTexts(deps, sourceRow.page_id);
+  const variantSeo = await loadSeoTexts(deps, args.variantPageId);
+  const sourceMetaDescription = sourceSeo.metaDescription;
+  const variantMetaDescription = variantSeo.metaDescription;
+  const sourceHeadTexts = sourceSeo.head;
+  const variantHeadTexts = variantSeo.head;
   const listTypes = await loadListTypes(deps);
   const source = await loadPageSlots(deps, sourceRow.page_id, listTypes);
   const variant = await loadPageSlots(deps, args.variantPageId, listTypes);
@@ -504,6 +557,7 @@ export async function preparePageTranslation(
     sourceTitle,
     sourceShortTitle,
     sourceMetaDescription,
+    ...HEAD_TEXT_KEYS.map((k) => sourceHeadTexts[k]),
     ...sourceSlots.flatMap((s) =>
       Object.values(s.values).filter((v): v is string => typeof v === "string"),
     ),
@@ -540,6 +594,7 @@ export async function preparePageTranslation(
           sourceTitle,
           sourceShortTitle,
           sourceMetaDescription,
+          sourceHeadTexts,
           sourceSlots,
           glossary,
           styleGuide,
@@ -555,6 +610,8 @@ export async function preparePageTranslation(
           variantTitle,
           variantShortTitle,
           variantMetaDescription,
+          sourceHeadTexts,
+          variantHeadTexts,
           variantSlots,
           alignment,
           glossary,
@@ -574,6 +631,8 @@ export async function preparePageTranslation(
     variantShortTitle,
     sourceMetaDescription,
     variantMetaDescription,
+    sourceHeadTexts,
+    variantHeadTexts,
     sourceSlots,
     variantSlots,
     sourceBases: source.bases,
@@ -603,6 +662,13 @@ export function pageTranslationBasis(p: PreparedPageTranslation): Promise<string
     variantShortTitle: p.variantShortTitle,
     sourceMetaDescription: p.sourceMetaDescription,
     variantMetaDescription: p.variantMetaDescription,
+    // #1752 — only the head texts the pages have (older bases stay equal).
+    ...(Object.keys(headTextsBasis(p.sourceHeadTexts)).length > 0
+      ? { sourceHeadTexts: headTextsBasis(p.sourceHeadTexts) }
+      : {}),
+    ...(Object.keys(headTextsBasis(p.variantHeadTexts)).length > 0
+      ? { variantHeadTexts: headTextsBasis(p.variantHeadTexts) }
+      : {}),
     sourceSlots: p.sourceSlots,
     variantSlots: p.variantSlots,
     glossary: p.glossary,
@@ -641,6 +707,7 @@ export function parsePageTranslationAnswer(
   // from.
   validateStructuralLock(payload, p.alignment, p.mode, buildSlotIndex(p.sourceSlots));
   validateMetaDescription(payload, p.mode, p.sourceMetaDescription, p.variantMetaDescription);
+  validateHeadTexts(payload, p.mode, p.sourceHeadTexts, p.variantHeadTexts);
   return payload;
 }
 
@@ -653,6 +720,8 @@ export function pageTranslationContract(p: PreparedPageTranslation): Translation
     alignment: p.alignment,
     sourceMetaDescription: p.sourceMetaDescription,
     variantMetaDescription: p.variantMetaDescription,
+    sourceHeadTexts: p.sourceHeadTexts,
+    variantHeadTexts: p.variantHeadTexts,
   });
 }
 
@@ -878,10 +947,18 @@ export async function writePageTranslation(
     titleApplied = true;
   }
   let seo: TranslatedSeoOutcome = "untranslated";
-  if (payload.metaDescription !== undefined) {
+  // #1752 — every own SEO text the answer carries, in one call: core
+  // decides fill-once per text (pages_seo.apply_translation).
+  const seoTexts = {
+    ...(payload.metaDescription !== undefined ? { metaDescription: payload.metaDescription } : {}),
+    ...(payload.seoTitle !== undefined ? { seoTitle: payload.seoTitle } : {}),
+    ...(payload.ogTitle !== undefined ? { ogTitle: payload.ogTitle } : {}),
+    ...(payload.ogDescription !== undefined ? { ogDescription: payload.ogDescription } : {}),
+  };
+  if (Object.keys(seoTexts).length > 0) {
     const applied = await cms.call<{ outcome: "filled" | "unchanged" | "marked_stale" }>(
       "pages_seo.apply_translation",
-      { pageId: p.variantPageId, metaDescription: payload.metaDescription },
+      { pageId: p.variantPageId, ...seoTexts },
     );
     seo = applied.outcome;
   }
@@ -891,6 +968,7 @@ export async function writePageTranslation(
     title: p.sourceTitle,
     shortTitle: p.sourceShortTitle,
     metaDescription: p.sourceMetaDescription,
+    headTexts: p.sourceHeadTexts,
     slots: p.sourceSlots,
   });
   await q.update("page_variants", p.variantRowId, {

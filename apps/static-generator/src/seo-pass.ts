@@ -49,23 +49,37 @@
 import { type BuildPluginServices, composeHeadBlock } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
+  ARTICLE_MODIFIED_TIME_PENDING,
   applyDocumentLanguage,
   type BreadcrumbJsonLdItem,
   breadcrumbJsonLdItems,
+  completeSeoOrigins,
   injectSeoIntoHead,
+  MAX_IMAGE_PREVIEW_VALUES,
   type OgImageFailure,
   ogImageFailureMarker,
+  type PageSeoHeadFields,
+  type PageTypeSeo,
   type PageUrlStyle,
   pagedUrl,
+  pageTypeSeoSchema,
   pickShareImage,
+  type ResolvedPageSeoHead,
   type RobotsRules,
   renderSeoHead,
   resolveDocumentLanguage,
+  resolvePageSeoHead,
   robotsRulesSchema,
   robotsTxt,
   type SiteSeoSettings,
+  seoOriginsSchema,
+  seoTitleVariableMarker,
+  setArticleModifiedTime,
+  type TitleTemplateVariable,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { BuildRefusal } from "./build-refusal.js";
 import { pageContentFingerprint, pluginRegionsDigest } from "./content-fingerprint.js";
 import type { ContentStates } from "./content-states.js";
 import type { MediaPass, OgImageOutcome } from "./media-pass.js";
@@ -80,6 +94,10 @@ interface PageSeoBundle {
   shortTitle: string;
   metaDescription: string;
   noindex: boolean;
+  /** #1752 — the page's own head fields, as the resolver reads them. */
+  seo: PageSeoHeadFields;
+  /** #1752 — its page type's SEO (absent = the type adds nothing). */
+  pageTypeSeo: PageTypeSeo | undefined;
   changefreq: string;
   priority: number;
   canonicalOverride: string | null;
@@ -140,6 +158,76 @@ function jsonb(value: unknown): ReturnType<typeof sql> {
   return sql`(${JSON.stringify(value)}::text)::jsonb`;
 }
 
+/** The `pages_seo` head columns of a bundle row (#1752). */
+interface HeadFieldRow {
+  seo_title: string;
+  meta_description: string;
+  og_title: string;
+  og_description: string;
+  noindex: boolean;
+  nofollow: boolean;
+  noarchive: boolean;
+  nosnippet: boolean;
+  noimageindex: boolean;
+  max_snippet: number | string | null;
+  max_image_preview: string;
+  max_video_preview: number | string | null;
+  value_origins: unknown;
+  autofilled_at: Date | string | null;
+  optimized_at: Date | string | null;
+}
+
+/**
+ * A row's head fields. Every write checks them, so a value that fails here
+ * was written past the ops: the build refuses it instead of guessing.
+ */
+function headFieldsOf(r: HeadFieldRow & { page_id: string }): PageSeoHeadFields {
+  const preview = z.enum(MAX_IMAGE_PREVIEW_VALUES).safeParse(r.max_image_preview);
+  const origins = seoOriginsSchema.safeParse(r.value_origins);
+  if (!preview.success || !origins.success) {
+    throw new BuildRefusal(
+      `pages_seo of page ${r.page_id} holds values no op could have written (max_image_preview or value_origins). Next step: set the page's SEO again (set_page_seo_many), then Stage again.`,
+    );
+  }
+  const texts = {
+    seoTitle: r.seo_title,
+    metaDescription: r.meta_description,
+    ogTitle: r.og_title,
+    ogDescription: r.og_description,
+  };
+  const at = (v: Date | string | null): string | null =>
+    v === null ? null : v instanceof Date ? v.toISOString() : String(v);
+  return {
+    ...texts,
+    origins: completeSeoOrigins({
+      ...texts,
+      origins: origins.data,
+      autofilledAt: at(r.autofilled_at),
+      optimizedAt: at(r.optimized_at),
+    }),
+    noindex: r.noindex,
+    nofollow: r.nofollow,
+    noarchive: r.noarchive,
+    nosnippet: r.nosnippet,
+    noimageindex: r.noimageindex,
+    maxSnippet: r.max_snippet === null ? null : Number(r.max_snippet),
+    maxImagePreview: preview.data,
+    maxVideoPreview: r.max_video_preview === null ? null : Number(r.max_video_preview),
+  };
+}
+
+/** A page type's stored SEO (`definition.seo`), checked like every page type write checks it. */
+function pageTypeSeoOf(pageId: string, raw: unknown): PageTypeSeo | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  const parsed = pageTypeSeoSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new BuildRefusal(
+      `the page type of page ${pageId} holds SEO no op could have written (${parsed.error.issues.map((i) => i.message).join("; ")}). Next step: set it again with set_page_type_seo_many, then Stage again.`,
+    );
+  }
+  return parsed.data;
+}
+
 /**
  * Prepare the SEO pass of a build (#1271: so pages can be written batch by
  * batch instead of all held for one pass). Loads every page's SEO row in
@@ -181,35 +269,49 @@ export async function prepareSeoPass(args: {
   const BUNDLE_BATCH = 1000;
   for (let at = 0; at < args.pageIds.length; at += BUNDLE_BATCH) {
     const ids = args.pageIds.slice(at, at + BUNDLE_BATCH);
+    // A page without a row reads as the column defaults (migrations 0027,
+    // 0880): the coalesces below spell those defaults where the LEFT JOIN
+    // finds no row.
     const rows = (await tx.execute(sql`
       SELECT
         p.id::text AS page_id, p.slug, p.current_path, p.title, p.short_title,
+        coalesce(s.seo_title, '') AS seo_title,
         coalesce(s.meta_description, '') AS meta_description,
+        coalesce(s.og_title, '') AS og_title,
+        coalesce(s.og_description, '') AS og_description,
         coalesce(s.noindex, false) AS noindex,
+        coalesce(s.nofollow, false) AS nofollow,
+        coalesce(s.noarchive, false) AS noarchive,
+        coalesce(s.nosnippet, false) AS nosnippet,
+        coalesce(s.noimageindex, false) AS noimageindex,
+        s.max_snippet, coalesce(s.max_image_preview, 'large') AS max_image_preview,
+        s.max_video_preview, coalesce(s.value_origins, '{}'::jsonb) AS value_origins,
+        s.autofilled_at, s.optimized_at,
         coalesce(s.changefreq, 'weekly') AS changefreq,
         coalesce(s.priority, 0.5) AS priority,
         s.canonical_url AS canonical_override,
         s.og_image_asset_id::text AS og_image_asset_id,
+        pt.definition->'seo' AS type_seo,
         p.updated_at, p.first_published_at
       FROM pages p
+      JOIN page_types pt ON pt.id = p.page_type_id
       LEFT JOIN pages_seo s ON s.page_id = p.id
       WHERE p.id IN (SELECT jsonb_array_elements_text(${jsonb(ids)})::uuid)
         AND p.deleted_at IS NULL
-    `)) as unknown as {
+    `)) as unknown as (HeadFieldRow & {
       page_id: string;
       slug: string;
       current_path: string;
       title: string;
       short_title: string;
-      meta_description: string;
-      noindex: boolean;
+      type_seo: unknown;
       changefreq: string;
       priority: number | string;
       canonical_override: string | null;
       og_image_asset_id: string | null;
       updated_at: Date | string;
       first_published_at: Date | string | null;
-    }[];
+    })[];
     const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : String(v));
     for (const r of rows) {
       seoBundles.push({
@@ -220,6 +322,8 @@ export async function prepareSeoPass(args: {
         shortTitle: r.short_title,
         metaDescription: r.meta_description,
         noindex: r.noindex,
+        seo: headFieldsOf(r),
+        pageTypeSeo: pageTypeSeoOf(r.page_id, r.type_seo),
         changefreq: r.changefreq,
         priority: Number(r.priority),
         canonicalOverride: r.canonical_override,
@@ -272,6 +376,26 @@ export async function prepareSeoPass(args: {
       shareImageRenderFailure(b, { problem, source: picked.source, assetId: picked.assetId }),
     ];
   });
+
+  // #1752 — every page's head, resolved like the editor preview and
+  // get_page_seo resolve it (seo-head.ts).
+  const headOf = (b: PageSeoBundle, forceNoindex: boolean): ResolvedPageSeoHead =>
+    resolvePageSeoHead({
+      pageTitle: b.title,
+      shortTitle: b.shortTitle,
+      seo: b.seo,
+      pageTypeSeo: b.pageTypeSeo,
+      site: { titleTemplate: settings.titleTemplate, siteName: settings.siteName },
+      forceNoindex,
+    });
+  // A title template variable without a value (`{site_name}` before the
+  // site has a name) ships raw on a Stage and is reported; every other
+  // build refuses it with the render failures.
+  for (const b of seoBundles) {
+    for (const v of headOf(b, false).unsetVariables) {
+      renderFailures.push(titleVariableRenderFailure(b, v));
+    }
+  }
 
   // #391 — collect every plugin's head/sitemap contributions in ONE
   // batch call. Zod-validated + contradiction-checked by the host;
@@ -333,7 +457,14 @@ export async function prepareSeoPass(args: {
     recordStates(pages) {
       for (const p of pages) {
         const bundle = bundleById.get(p.pageId);
-        if (!bundle || p.followUp || !isIndexable(bundle)) continue;
+        if (!bundle || p.followUp || !isIndexable(bundle)) {
+          if (p.html.includes(ARTICLE_MODIFIED_TIME_PENDING)) {
+            throw new Error(
+              `seo-pass: page ${p.pageId} carries an undated article:modified_time but is not recorded`,
+            );
+          }
+          continue;
+        }
         if (p.bodyDigest === null) {
           throw new Error(`seo-pass: page ${bundle.pageId} was composed without a body digest`);
         }
@@ -342,8 +473,10 @@ export async function prepareSeoPass(args: {
           // The feed and IndexNow need an absolute address; a canonical
           // override may be written relative to the site.
           url: new URL(publicUrlOf(bundle), settings.siteBaseUrl).href,
+          // #1752 — the `<title>` search results show is what the page
+          // shows; with the stored `{page_title}` template it is the title.
           fingerprint: pageContentFingerprint({
-            title: bundle.title,
+            title: headOf(bundle, false).title.value,
             metaDescription: bundle.metaDescription,
             bodyDigest: p.bodyDigest,
           }),
@@ -355,6 +488,8 @@ export async function prepareSeoPass(args: {
           firstPublishedAt: bundle.firstPublishedAt,
           updatedAt: bundle.updatedAt,
         });
+        // #1752 — the article's modified time is the date the record gives.
+        p.html = setArticleModifiedTime(p.html, contentStates.changedAt(bundle.pageId));
       }
     },
 
@@ -416,30 +551,50 @@ export async function prepareSeoPass(args: {
         const isNotFoundPage = bundle.pageId === notFoundPageId;
         const shareImage = shareImageOf.get(bundle.pageId) ?? null;
         const ogImageUrl = shareImage === null ? null : (ogImageUrlByAsset.get(shareImage) ?? null);
+        const notFound = isNotFoundPage ? notFoundPageSeo() : null;
+        const head = headOf(
+          bundle,
+          notFound !== null || (p.followUp !== undefined && !p.followUp.indexable),
+        );
+        // #1752 — an article recorded in the live comparison (indexable page
+        // 1) carries its dates; the modified one is set once
+        // `recordStates` dated the page.
+        const article =
+          head.ogType.value === "article" && !p.followUp && isIndexable(bundle)
+            ? {
+                publishedTime: bundle.firstPublishedAt ?? contentStates.publishAt,
+                modifiedTime: ARTICLE_MODIFIED_TIME_PENDING,
+              }
+            : null;
         const headBlock = renderSeoHead({
-          title: bundle.title,
-          metaDescription: bundle.metaDescription,
+          head,
+          pageTitle: bundle.title,
+          siteName: settings.siteName,
+          article,
           ogImageUrl,
           organization: settings.organization,
           feed: args.feed,
-          ...(isNotFoundPage
-            ? notFoundPageSeo()
+          ...(notFound !== null
+            ? { canonical: notFound.canonical }
             : {
                 canonical: p.followUp
                   ? followUpUrlOf(bundle, p.followUp.page)
                   : publicUrlOf(bundle),
-                noindex: bundle.noindex || (p.followUp !== undefined && !p.followUp.indexable),
                 breadcrumbs: breadcrumbJsonLdItems(p.breadcrumbTrail ?? null, crumbOf),
               }),
         });
-        const head = contributions.head.get(bundle.pageId);
+        const contributed = contributions.head.get(bundle.pageId);
         p.html = injectSeoIntoHead(
           p.html,
           // #802 — no plugin head contributions on the 404 page: it answers
           // every unknown URL, so hreflang alternates would be false claims.
           composeHeadBlock(
             headBlock,
-            isNotFoundPage ? undefined : p.followUp ? followUpHeadEntries(head) : head,
+            isNotFoundPage
+              ? undefined
+              : p.followUp
+                ? followUpHeadEntries(contributed)
+                : contributed,
           ),
         );
         // `<html lang>` — same resolution as the admin preview.
@@ -550,6 +705,27 @@ function shareImageRenderFailure(
 }
 
 /**
+ * #1752 — the render failure of a title template variable without a value
+ * on a page: the page ships it raw in its `<title>` on a Stage.
+ */
+function titleVariableRenderFailure(
+  b: Pick<PageSeoBundle, "pageId" | "slug" | "title" | "currentPath">,
+  variable: TitleTemplateVariable,
+): RenderFailure {
+  return {
+    pageId: b.pageId,
+    pageTitle: b.title,
+    pagePath: b.currentPath,
+    blockName: null,
+    moduleSlug: null,
+    field: null,
+    reason: seoTitleVariableMarker(variable),
+    target: null,
+    line: `page "${b.slug}": its title template uses {${variable}}, which has no value (the <title> shows it raw)`,
+  };
+}
+
+/**
  * #802 — head fields of the 404 page. It is served for every unknown URL,
  * so it has no canonical URL of its own (no canonical, og:url or JSON-LD
  * url) and must never be indexed, whatever its page SEO says.
@@ -595,7 +771,8 @@ function enc(s: string): string {
 export async function readSeoSettings(tx: TransactionRunner): Promise<StoredSeoSettings> {
   const rows = (await tx.execute(sql`
     SELECT site_base_url, sitemap_enabled, feed_enabled, indexnow_enabled, indexnow_key,
-           organization_json::text AS organization_json, site_language
+           organization_json::text AS organization_json, site_language, site_name,
+           seo_title_template
     FROM site_defaults WHERE id = 1
     LIMIT 1
   `)) as unknown as {
@@ -606,6 +783,8 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<StoredSeoS
     indexnow_key: string;
     organization_json: string | null;
     site_language: string | null;
+    site_name: string | null;
+    seo_title_template: string;
   }[];
   const r = rows[0];
   if (!r) {
@@ -643,6 +822,8 @@ export async function readSeoSettings(tx: TransactionRunner): Promise<StoredSeoS
     indexNowEnabled: r.indexnow_enabled,
     indexNowKey: r.indexnow_key,
     siteLanguage: r.site_language,
+    siteName: r.site_name,
+    titleTemplate: r.seo_title_template,
     organization,
   };
 }

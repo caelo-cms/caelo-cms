@@ -421,10 +421,13 @@ export const upsertPageTypesManyOp = defineOperation({
         );
       }
 
+      // #1752 — the type's SEO is set by page_types.set_seo_many; a
+      // replacement that does not name it keeps the stored one.
+      const seo = def.seo ?? existing?.state.definition.seo;
       const state: PageTypeState = {
         schemaVersion: 1,
         slug: def.slug,
-        definition: def,
+        definition: seo === undefined ? def : { ...def, seo },
         version: (found?.state.version ?? 0) + 1,
         deletedAt: null,
       };

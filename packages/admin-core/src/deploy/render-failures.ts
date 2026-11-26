@@ -42,6 +42,7 @@ import {
   parseMediaReferenceMarker,
   parseOgImageFailureMarker,
   parsePagePathUnknown,
+  parseSeoTitleVariableMarker,
   renderFailureKind,
   renderFailureMarker,
   replacementMediaUrls,
@@ -123,10 +124,14 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   // #1719 — reference images on a page; share images by what is wrong.
   const referencePages = new Set<string>();
   const shareImagePages = { missing: new Set<string>(), reference: new Set<string>() };
+  // #1752 — a title template variable without a value.
+  const titlePages = new Set<string>();
   for (const f of failures) {
     const page = `${f.pageTitle} (${f.pagePath})`;
     const og = parseOgImageFailureMarker(f.reason);
-    if (parseMediaFailureMarker(f.reason) !== null) {
+    if (parseSeoTitleVariableMarker(f.reason) !== null) {
+      titlePages.add(page);
+    } else if (parseMediaFailureMarker(f.reason) !== null) {
       imagePages.add(page);
     } else if (parseMediaReferenceMarker(f.reason) !== null) {
       referencePages.add(page);
@@ -165,6 +170,10 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   onPages(
     "The image shown when the page is shared is a reference image, which is never published",
     shareImagePages.reference,
+  );
+  onPages(
+    "The page title template uses a value the site does not have yet (the site's name)",
+    titlePages,
   );
   const listed = [...others];
   for (const place of listed.slice(0, PLACES_LISTED)) lines.push(`${place} could not be rendered`);
@@ -272,6 +281,16 @@ export function renderRepairOf(f: Pick<RenderFailure, "reason" | "moduleSlug">):
   if (reference !== null) return mediaReferenceRepair(reference);
   const og = parseOgImageFailureMarker(marker);
   if (og !== null) return shareImageRepair(og);
+  const variable = parseSeoTitleVariableMarker(marker);
+  if (variable !== null) {
+    return {
+      tool: variable === "site_name" ? "set_site_identity" : "set_page_type_seo_many",
+      hint:
+        variable === "site_name"
+          ? "The title template uses {site_name}, and the site has no name: set it with set_site_identity({siteName}), or drop {site_name} from the template (set_page_type_seo_many; get_page_seo names the template)."
+          : `The title template uses {${variable}}, which has no value on this page: fix the template with set_page_type_seo_many (get_page_seo names it).`,
+    };
+  }
   if (isLinkFailureMarker(marker)) {
     return {
       tool: "check_links",
