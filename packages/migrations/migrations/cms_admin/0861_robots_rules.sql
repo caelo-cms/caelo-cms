@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0785 — issue #1706: the Owner's own robots.txt rules.
+-- 0861 (written as 0785; renumbered above v0.12.16's 0860 so upgraded and fresh installs apply it in the same order) — issue #1706: the Owner's own robots.txt rules.
 --
 -- robots.txt is built (CLAUDE.md §2: static files are data, robots.txt and
 -- sitemap.xml are the generator's), and until now it held only
