@@ -224,8 +224,9 @@ export async function askListResolve(
 /**
  * #1729 — a `list-resolve` scope in parts whose JSON stays within the
  * render-point chunk (512 KB): its lists, content instances and pages
- * split in order, the plugin sources with the first part. No scope (a
- * build asks about the whole site) is one call without one.
+ * split in order, then the entries of its plugin sources, each part
+ * carrying the name, label and fields of the sources it holds entries of.
+ * No scope (a build asks about the whole site) is one call without one.
  */
 export function chunkListResolveScope(
   scope: ListResolveScope | undefined,
@@ -233,22 +234,49 @@ export function chunkListResolveScope(
 ): (ListResolveScope | undefined)[] {
   if (scope === undefined) return [undefined];
   if (Buffer.byteLength(JSON.stringify(scope)) <= maxBytes) return [scope];
-  const parts: ListResolveScope[] = [];
+  const json = (v: unknown) => Buffer.byteLength(JSON.stringify(v));
   const empty = (): ListResolveScope => ({ listIds: [], contentInstanceIds: [], pageIds: [] });
-  let part: ListResolveScope = {
-    ...empty(),
-    ...(scope.sources ? { sources: scope.sources } : {}),
+  const EMPTY_BYTES = json(empty());
+  const parts: ListResolveScope[] = [];
+  let part = empty();
+  let bytes = EMPTY_BYTES;
+  /** Start a new part when `size` more bytes would not fit a part that holds something. */
+  const room = (size: number) => {
+    if (bytes + size > maxBytes && bytes > EMPTY_BYTES) {
+      parts.push(part);
+      part = empty();
+      bytes = EMPTY_BYTES;
+    }
   };
-  let bytes = Buffer.byteLength(JSON.stringify(part));
   for (const key of ["listIds", "contentInstanceIds", "pageIds"] as const) {
     for (const id of scope[key]) {
-      const size = Buffer.byteLength(JSON.stringify(id)) + 1;
-      if (bytes + size > maxBytes && bytes > Buffer.byteLength(JSON.stringify(empty()))) {
-        parts.push(part);
-        part = empty();
-        bytes = Buffer.byteLength(JSON.stringify(part));
-      }
+      const size = json(id) + 1;
+      room(size);
       (part[key] as string[]).push(id);
+      bytes += size;
+    }
+  }
+  // `,"sources":[]` in a part, written once per part.
+  const SOURCES_KEY_BYTES = json({ sources: [] }) - 1;
+  for (const source of scope.sources ?? []) {
+    const header = { name: source.name, label: source.label, fields: source.fields };
+    const headerBytes = json({ ...header, entries: [] }) + 1;
+    let holder: NonNullable<ListResolveScope["sources"]>[number] | undefined;
+    for (const entry of source.entries) {
+      const size = json(entry) + 1;
+      room(size + (holder ? 0 : headerBytes + (part.sources ? 0 : SOURCES_KEY_BYTES)));
+      // A new part holds none of this source yet: its metadata opens it there.
+      if (holder && !part.sources?.includes(holder)) holder = undefined;
+      if (!holder) {
+        if (!part.sources) {
+          part.sources = [];
+          bytes += SOURCES_KEY_BYTES;
+        }
+        holder = { ...header, entries: [] };
+        part.sources.push(holder);
+        bytes += headerBytes;
+      }
+      holder.entries.push(entry);
       bytes += size;
     }
   }
