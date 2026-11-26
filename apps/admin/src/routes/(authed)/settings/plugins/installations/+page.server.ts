@@ -52,6 +52,19 @@ export const load: PageServerLoad = async ({ locals }) => {
           permission: panel.permission,
           operations: [...new Set(adminPanelOperations(panel).map((o) => o.operation))],
         })),
+        // #1729 (Q8 A) — the daily AI spending the Owner approves with this
+        // exact package, in dollars; the ledger holds the plugin to it.
+        aiDailyCapUsd:
+          manifest.capabilityConstraints?.ai_provider?.maxDailyCostMicrocents === undefined
+            ? null
+            : (manifest.capabilityConstraints.ai_provider.maxDailyCostMicrocents / 1e8).toFixed(2),
+        // #1729 — every mail the plugin can send, as its recipient reads it.
+        mails: Object.entries(manifest.mailTemplates ?? {}).map(([name, t]) => ({
+          name,
+          subject: t.subject,
+          body: t.body,
+          linkLabel: t.link?.label ?? null,
+        })),
         // The editor toolbar items, with the text their "ask the AI"
         // buttons put into the chat composer.
         toolbarItems: (manifest.editorToolbar ?? []).map((item) => ({

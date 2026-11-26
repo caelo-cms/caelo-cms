@@ -115,9 +115,12 @@ async function shipped(slug: string): Promise<PluginManifest> {
 async function fixtureManifest(): Promise<PluginManifest> {
   const search = await shipped("site-search");
   const assistant = await shipped("site-assistant");
+  const newsletter = await shipped("newsletter");
   return {
     ...search,
     ...assistant,
+    mailTemplates: newsletter.mailTemplates,
+    mailUnsubscribe: newsletter.mailUnsubscribe,
     collections: search.collections,
     collectionOperations: search.collectionOperations,
     pageOutputObserver: search.pageOutputObserver,
@@ -234,6 +237,35 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
     const listTypes = (await fixtureManifest()).listTypes;
     expect(listTypes?.length).toBeGreaterThan(0);
     expect(externalDeclarations({ ...probe, listTypes }).listTypes).toEqual(listTypes);
+  },
+  // #1729 — the install's AI through the host handle (which reserves under
+  // the plugin's caps), and its mail templates (queue and link, no send).
+  ai_provider: async () => {
+    const fake = fakeHandle(["complete", "generateObject"], { text: "hi" });
+    expect(
+      await sandboxed(
+        `return ctx.ai.complete({ system: "s", messages: [{ role: "user", content: "x" }] })`,
+        { ai: fake.handle },
+      ),
+    ).toEqual({ text: "hi" });
+    expect(fake.calls).toEqual(["complete"]);
+  },
+  email: async () => {
+    const fake = fakeHandle(["queue", "unsubscribeLink"], null);
+    expect(
+      await sandboxed(
+        `await ctx.email.queue({ template: "confirm_subscription", to: "a@example.com" });
+         return typeof ctx.email.send;`,
+        { email: { ...fake.handle, send: async () => ({ messageId: "never" }) } },
+        { origin: "worker", actorId: ID },
+      ),
+    ).toBe("undefined");
+    expect(fake.calls).toEqual(["queue"]);
+    const { mailTemplates, mailUnsubscribe } = await fixtureManifest();
+    expect(externalDeclarations({ ...probe, mailTemplates, mailUnsubscribe })).toMatchObject({
+      mailTemplates,
+      mailUnsubscribe,
+    });
   },
   batch_jobs: async () => {
     expect(

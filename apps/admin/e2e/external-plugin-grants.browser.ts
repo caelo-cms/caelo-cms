@@ -122,8 +122,8 @@ test("an upload that asks for access no runtime-installed plugin can have is ref
     tier: 2,
     schema: {},
     operations: ["noop"],
-    requestedCapabilities: ["ai_provider"],
-    capabilityReasons: { ai_provider: "Summarise notes" },
+    requestedCapabilities: ["url_slots"],
+    capabilityReasons: { url_slots: "Prefix the language" },
   };
   const source = `export default {slug:"${slug}",version:"1.0.0",tier:2,operations:{noop:async()=>null}};`;
   await page.goto("/login");
@@ -139,7 +139,7 @@ test("an upload that asks for access no runtime-installed plugin can have is ref
   });
   await page.getByRole("button", { name: "Submit package for review" }).click();
   await expect(page.getByRole("alert")).toContainText(
-    "`ai_provider` (AI calls) is not available to runtime-installed plugins yet (#1729)",
+    "`url_slots` (Page addresses) is not available to runtime-installed plugins yet (#1729)",
   );
   // Nothing was staged, so there is nothing to approve.
   await expect(page.getByTestId(`installation-${slug}`)).toHaveCount(0);

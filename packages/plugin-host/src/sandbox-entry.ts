@@ -211,6 +211,9 @@ const execute = async (message) => {
     ...(message.hasConfig ? { config: configHandle() } : {}),
     ...(message.collections && message.collections.length > 0 ? { collections: collectionsOf(message.collections) } : {}),
     ...(message.hasChatTools ? { chatTools: ObjectFreeze({ run: (conversation, tool, input, opts) => rpc("chatTools.run", conversation, tool, input, opts || {}) }) } : {}),
+    // #1729 — no send: a runtime-installed plugin mails only its templates.
+    ...(message.hasAi ? { ai: handles("ai", ["complete", "generateObject"]) } : {}),
+    ...(message.hasEmail ? { email: handles("email", ["queue", "unsubscribeLink"]) } : {}),
     api: handles("api", ["list", "get"]),
     captcha: handles("captcha", ["requireProof"]),
     theme: ObjectFreeze(message.theme), visitor: ObjectFreeze(message.visitor),

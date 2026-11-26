@@ -30,11 +30,11 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
 > = Object.freeze({
   cms_admin: PLANNED,
   cms_admin_schema: BROKERED,
-  ai_provider: PLANNED,
+  ai_provider: BROKERED,
   chat_runner_tools: BROKERED,
   background_workers: BROKERED,
   change_journal: PLANNED,
-  email: PLANNED,
+  email: BROKERED,
   head_contributions: PLANNED,
   url_slots: PLANNED,
   client_assets: PLANNED,

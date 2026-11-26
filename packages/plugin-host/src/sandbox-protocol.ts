@@ -71,6 +71,12 @@ export const sandboxMethod = z.enum([
   "collections.setProfile",
   // #1655 — the declared tools of the plugin's own conversations.
   "chatTools.run",
+  // #1729 — the install's AI under the plugin's caps (`ai_provider`), and
+  // its reviewed mail templates (`email`). No `email.send` (decision Q5 A).
+  "ai.complete",
+  "ai.generateObject",
+  "email.queue",
+  "email.unsubscribeLink",
 ]);
 
 export const sandboxMessage = z.discriminatedUnion("kind", [

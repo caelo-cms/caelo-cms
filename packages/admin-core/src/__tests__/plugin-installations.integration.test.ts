@@ -942,8 +942,8 @@ it("refuses to stage a capability no runtime-installed plugin can be granted, be
       manifest: {
         ...manifest,
         slug,
-        requestedCapabilities: ["cms_admin_schema", "ai_provider"],
-        capabilityReasons: { ...manifest.capabilityReasons, ai_provider: "Summarise notes" },
+        requestedCapabilities: ["cms_admin_schema", "url_slots"],
+        capabilityReasons: { ...manifest.capabilityReasons, url_slots: "Prefix the language" },
       },
       source: source.replace("installation-notes", slug),
     },
@@ -951,7 +951,7 @@ it("refuses to stage a capability no runtime-installed plugin can be granted, be
   expect(r.ok).toBe(false);
   if (r.ok) return;
   expect(r.error.message).toContain(
-    "`ai_provider` (AI calls) is not available to runtime-installed plugins yet (#1729)",
+    "`url_slots` (Page addresses) is not available to runtime-installed plugins yet (#1729)",
   );
   expect(r.error.message).toContain("Runtime-installed plugins can request: ");
   const got = await execute(registry, adapter, system, "plugins.get", { slug });

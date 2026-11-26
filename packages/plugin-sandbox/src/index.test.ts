@@ -99,8 +99,8 @@ describe("validateManifest", () => {
     expect(hints({ contributes: ["head"] }).join(" ")).toContain(
       "`head_contributions` (Page head and sitemap) is not available to runtime-installed plugins yet (#1729)",
     );
-    expect(hints({ requestedCapabilities: ["email"] }).join(" ")).toContain(
-      "`email` (Sending email) is not available",
+    expect(hints({ requestedCapabilities: ["url_slots"] }).join(" ")).toContain(
+      "`url_slots` (Page addresses) is not available",
     );
     expect(hints({ requestedCapabilities: ["cms_admin_schema"] }).join(" ")).toContain(
       "submit it with submit_plugin",
