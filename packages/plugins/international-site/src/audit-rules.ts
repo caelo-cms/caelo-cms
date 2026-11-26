@@ -73,7 +73,20 @@ export interface BuildState {
    * fails the check: a variant row that was not read is not "no group".
    */
   readonly knownPages?: ReadonlySet<string>;
+  /**
+   * The pages of the build the model knows: every page, or on a batch
+   * call with only its own pages (#1721) those and the pages its rules
+   * name, read by `knownPaths`.
+   */
   readonly stagedPages: readonly StagedPageRef[];
+  /**
+   * #1721 — the paths the model can answer for when it knows only some
+   * pages of the build (a batch call with `batchPages: "own"`): every path
+   * its facts name, found or not. Absent: `stagedPages` is the whole
+   * build. A rule asking about any other path fails the check: a path
+   * that was not looked up is not "not a page of the build".
+   */
+  readonly knownPaths?: ReadonlySet<string>;
   /** The page core serves at `/` (its group holds every language's home). */
   readonly siteHomePageId: string | null;
   /**
@@ -138,11 +151,48 @@ const WRONG_REGIONS: Readonly<Record<string, string>> = { UK: "GB" };
 // The derived view: locale, group and language versions of every page.
 // ---------------------------------------------------------------------------
 
+/**
+ * A map that refuses to answer for a key outside `known` (#1632, #1721):
+ * the model of a batch call reads only the pages its rules name, and a
+ * lookup of any other would read "absent" for "not read".
+ */
+class KnownOnlyMap<K, V> extends Map<K, V> {
+  private known: ReadonlySet<K> | undefined;
+
+  constructor(
+    known: ReadonlySet<K> | undefined,
+    private readonly what: string,
+  ) {
+    super();
+    this.known = known;
+  }
+
+  override get(key: K): V | undefined {
+    this.check(key);
+    return super.get(key);
+  }
+
+  override has(key: K): boolean {
+    this.check(key);
+    return super.has(key);
+  }
+
+  private check(key: K): void {
+    if (this.known && !this.known.has(key)) {
+      throw new Error(
+        `international-site audit: a rule asked about the ${this.what} ${String(key)}, which this fact batch did not load (it reads the pages its facts name and their language versions). Report it with bug_report.`,
+      );
+    }
+  }
+}
+
 /** The plugin's model of the staged build. */
 export class BuildModel<S extends BuildState = AuditState> {
   readonly defaultLocale: LocaleRow;
-  readonly pathOf = new Map<string, string>();
-  readonly pageAt = new Map<string, string>();
+  /** Path by page id: the staged pages the model knows. */
+  readonly pathOf: Map<string, string>;
+  /** Page id by path. */
+  readonly pageAt: Map<string, string>;
   readonly variantOf = new Map<string, PageVariantRow>();
   readonly membersOf = new Map<string, PageVariantRow[]>();
   /** {@link languageNames} per locale code, computed once per model. */
@@ -151,6 +201,8 @@ export class BuildModel<S extends BuildState = AuditState> {
   readonly neutralCache = new Map<string, RegExp | null>();
 
   constructor(readonly state: S) {
+    this.pathOf = new KnownOnlyMap(state.knownPaths ? state.knownPages : undefined, "page");
+    this.pageAt = new KnownOnlyMap(state.knownPaths, "path");
     const def = [...state.locales.values()].find((l) => l.is_default);
     if (!def) {
       throw new Error(

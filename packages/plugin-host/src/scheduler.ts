@@ -19,7 +19,11 @@
  * The validator refuses such a pattern in every review, so only an artifact
  * approved under an older croner can carry one; `schedule()` returns those
  * workers for the loader to record as the plugin's problem (#1008), and the
- * plugin's other workers register as usual.
+ * plugin's other workers register as usual. #1728 — the scheduler also keeps
+ * them (`unscheduled()`) for as long as they are off: the runtime record
+ * carries them into plugin health, which would otherwise show them only for
+ * the 7 days its error log covers. The next `schedule()` of the plugin (a
+ * reload, a release with a fixed pattern) replaces them.
  *
  * Nothing here runs on a timer (#1140). The admin's scheduler tick asks
  * which workers exist, keeps each one's next occurrence in its due-table
@@ -39,14 +43,14 @@ import { parseWorkerCron } from "@caelo-cms/plugin-sandbox";
 import type { PluginWorkerSpec } from "@caelo-cms/plugin-sdk";
 import type { Cron } from "croner";
 import type { runPluginOperation } from "./dispatch.js";
+import {
+  clearUnscheduledWorkers,
+  setUnscheduledWorkers,
+  type UnscheduledWorker,
+  unscheduledWorkersOf,
+} from "./unscheduled-workers.js";
 
-/** A worker `schedule()` could not register because croner refused its cron (#1720). */
-export interface UnscheduledWorker {
-  readonly workerName: string;
-  readonly cron: string;
-  /** croner's reason, e.g. "CronPattern: Invalid value for minute: 61". */
-  readonly reason: string;
-}
+export type { UnscheduledWorker } from "./unscheduled-workers.js";
 
 interface ScheduleOpts {
   pluginSlug: string;
@@ -138,12 +142,23 @@ class WorkerScheduler {
       });
     }
     if (list.length > 0) this.#byPlugin.set(opts.pluginSlug, list);
+    // #1728 — kept (unscheduled-workers.ts) for the runtime record.
+    setUnscheduledWorkers(opts.pluginSlug, unscheduled);
     return unscheduled;
+  }
+
+  /**
+   * #1728 — the workers of `pluginSlug` that are off the schedule because
+   * croner refused their cron; empty when every worker is registered.
+   */
+  unscheduled(pluginSlug: string): ReadonlyArray<UnscheduledWorker> {
+    return unscheduledWorkersOf(pluginSlug);
   }
 
   unschedulePlugin(pluginSlug: string): void {
     this.#byPlugin.delete(pluginSlug);
     this.#paused.delete(pluginSlug);
+    setUnscheduledWorkers(pluginSlug, []);
   }
 
   /**
@@ -176,6 +191,7 @@ class WorkerScheduler {
   shutdown(): void {
     this.#byPlugin.clear();
     this.#paused.clear();
+    clearUnscheduledWorkers();
   }
 }
 

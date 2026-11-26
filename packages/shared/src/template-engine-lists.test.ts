@@ -641,6 +641,40 @@ describe("lists — {{page.*}}", () => {
       expect(r.html).toBe("{{page.titel}}");
       expect(r.missingSlots).toEqual(["field-not-declared:page.titel"]);
     });
+
+    // #1727 — the same for `{{props.<name>…}}` on a page a list iterates.
+    it("a page in a list of pages: a property path names the type, a link path stays", () => {
+      const fields: TemplateField[] = [
+        {
+          name: "latest",
+          kind: "list",
+          listType: "links",
+          bind: "source",
+          source: {
+            kind: "query",
+            editable: [],
+            defaults: { page_type: "news", order: "prop_asc:rating", limit: 5 },
+          },
+        },
+      ];
+      const listed = (inner: string) =>
+        render(`{{#latest}}${inner};{{/latest}}`, fields, {}, ctx(PAGE.home));
+      const ok = listed("{{props.rating}}|{{props.event_date.formatted}}|{{link.href}}");
+      expect(ok.missingSlots).toEqual([]);
+      expect(ok.html).not.toContain("{{");
+      for (const [inner, marker] of [
+        ["{{props.rating.formatted}}", "page-path-unknown:props.rating:number"],
+        ["{{props.event_date.nope}}", "page-path-unknown:props.event_date:date"],
+        ["{{props}}", "page-path-unknown:props:props"],
+      ] as const) {
+        const r = listed(inner);
+        expect(r.html).toBe(`${inner};${inner};`);
+        expect(new Set(r.missingSlots)).toEqual(new Set([marker]));
+      }
+      // A page entry's link is a link: its wrong path keeps the link-field marker.
+      const link = listed("{{link.label}}");
+      expect(new Set(link.missingSlots)).toEqual(new Set(["field-path-unknown:latest.link.label"]));
+    });
   });
 
   it("query entries expose summary, image (url/alt) and props", () => {

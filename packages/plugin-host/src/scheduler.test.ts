@@ -72,3 +72,48 @@ describe("pluginWorkerScheduler.schedule (#1720)", () => {
     expect(names()).toEqual(["c"]);
   });
 });
+
+describe("pluginWorkerScheduler.unscheduled (#1728)", () => {
+  const off = () => pluginWorkerScheduler.unscheduled(SLUG).map((w) => w.workerName);
+
+  it("keeps the workers off the schedule until the plugin is scheduled again", () => {
+    schedule([
+      { name: "hourly", cron: "0 * * * *" },
+      { name: "weekly_digest", cron: "0 0 * * SUN6" },
+    ]);
+    expect(off()).toEqual(["weekly_digest"]);
+    expect(pluginWorkerScheduler.unscheduled(SLUG)[0]).toMatchObject({
+      cron: "0 0 * * SUN6",
+      reason: expect.stringContaining("CronPattern"),
+    });
+    // Asking again does not consume it: health reads it on every heartbeat.
+    expect(off()).toEqual(["weekly_digest"]);
+  });
+
+  it("a reload with the cron fixed clears it", () => {
+    schedule([{ name: "weekly_digest", cron: "0 0 * * SUN6" }]);
+    schedule([{ name: "weekly_digest", cron: "0 0 * * SUN" }]);
+    expect(off()).toEqual([]);
+    expect(names()).toEqual(["weekly_digest"]);
+  });
+
+  it("a reload without workers, an uninstall and a host shutdown clear it", () => {
+    schedule([{ name: "a", cron: "61 * * * *" }]);
+    schedule([]);
+    expect(off()).toEqual([]);
+    schedule([{ name: "a", cron: "61 * * * *" }]);
+    pluginWorkerScheduler.unschedulePlugin(SLUG);
+    expect(off()).toEqual([]);
+    schedule([{ name: "a", cron: "61 * * * *" }]);
+    pluginWorkerScheduler.shutdown();
+    expect(off()).toEqual([]);
+  });
+
+  it("is per plugin, and a copy the caller cannot change", () => {
+    schedule([{ name: "a", cron: "61 * * * *" }]);
+    expect(pluginWorkerScheduler.unscheduled("test-1728-other")).toEqual([]);
+    const list = pluginWorkerScheduler.unscheduled(SLUG) as unknown as unknown[];
+    list.length = 0;
+    expect(off()).toEqual(["a"]);
+  });
+});

@@ -70,6 +70,8 @@ export interface FixtureRefs {
   readonly chatSessionId: string;
   readonly chatBranchId: string;
   readonly chat: ExecutionContext;
+  /** #1721 — a running Stage audit (a plugin's batch calls read pages by it). */
+  readonly auditRunId: string;
 }
 
 const ACTOR = "00000000-0000-0000-0000-00000000ffff";
@@ -488,7 +490,35 @@ export async function growFixture(
         FROM child
        WHERE ci.id = '${r.instance_id}'`),
   );
+  // #1721 — one running audit of a staging build, added once: both sizes
+  // ask the same run about the same pages.
+  const audit = await asSystem(
+    url,
+    (tx) =>
+      tx.unsafe(`
+        WITH target AS (
+          INSERT INTO deploy_targets (name, env, out_dir)
+          SELECT '${RR_PREFIX}audit-staging', 'staging', '/tmp/rr-audit'
+           WHERE NOT EXISTS (SELECT 1 FROM deploy_targets WHERE name = '${RR_PREFIX}audit-staging')
+          RETURNING id),
+        run AS (
+          INSERT INTO deploy_runs (target_id, actor_id, status)
+          SELECT id, '${ACTOR}', 'succeeded' FROM target RETURNING id),
+        audit AS (
+          INSERT INTO quality_audit_runs (deploy_run_id, requested_by, status, classification, started_at)
+          SELECT id, '${ACTOR}', 'running', '{"auditNeeded":true,"reasons":[],"skipped":[]}'::jsonb, now()
+            FROM run RETURNING id)
+        SELECT id::text AS id FROM audit
+        UNION ALL
+        SELECT q.id::text FROM quality_audit_runs q
+          JOIN deploy_runs d ON d.id = q.deploy_run_id
+          JOIN deploy_targets t ON t.id = d.target_id
+         WHERE t.name = '${RR_PREFIX}audit-staging'`) as Promise<{ id: string }[]>,
+  );
+  const auditRunId = audit[0]?.id;
+  if (!auditRunId) throw new Error("rows-read fixture: audit run missing");
   return {
+    auditRunId,
     moduleId,
     pageId: r.page_id,
     instanceId: r.instance_id,

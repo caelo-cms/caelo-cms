@@ -136,11 +136,13 @@ interface Frame {
  * counts the parts that were found (the head included) and `last` is the
  * value of the last of them; both are unset when the head itself is
  * unavailable (no page outside a page render, a module `link` field).
+ * `entry` is the list entry that answered the head, if one did.
  */
 interface Miss {
   readonly missing: true;
   readonly resolved?: number;
   readonly last?: ScopeValue;
+  readonly entry?: ScopeEntry;
 }
 
 interface RenderState {
@@ -225,6 +227,7 @@ class SectionRenderer {
     const parts = name.split(".");
     const head = (parts[0] as string).toLowerCase();
     let v: ScopeValue | undefined;
+    let entry: ScopeEntry | undefined;
     if (head === "page") {
       v = this.env.lists?.pageScope() ?? undefined;
       if (v === undefined)
@@ -233,17 +236,16 @@ class SectionRenderer {
       v = this.env.lists?.siteTextScope();
       if (v === undefined) return { missing: true };
     } else {
-      for (let k = st.chain.length - 1; k >= 0 && v === undefined; k -= 1) {
-        v = st.chain[k]?.entry.get(head);
-      }
+      entry = this.entryOf(head, st);
+      v = entry?.get(head);
       if (v === undefined) return undefined;
     }
     let resolved = 1;
     for (const p of parts.slice(1)) {
       if (v.kind === "failed") return v;
-      if (v.kind !== "record") return { missing: true, resolved, last: v };
+      if (v.kind !== "record") return { missing: true, resolved, last: v, entry };
       const next: ScopeValue | undefined = v.get(p.toLowerCase());
-      if (next === undefined) return { missing: true, resolved, last: v };
+      if (next === undefined) return { missing: true, resolved, last: v, entry };
       v = next;
       resolved += 1;
     }
@@ -307,8 +309,42 @@ class SectionRenderer {
           : null;
       return page ?? this.notDeclared(name, st);
     }
+    const props =
+      miss?.entry !== undefined && miss.resolved !== undefined && miss.last !== undefined
+        ? this.entryPropsMarker(name, miss.entry, miss.resolved, miss.last)
+        : null;
+    if (props !== null) return props;
     const field = this.listField(st);
     return `field-path-unknown:${field.length > 0 ? `${field}.` : ""}${name}`;
+  }
+
+  /** The innermost list entry of the chain that answers `head`, if any. */
+  private entryOf(head: string, st: RenderState): ScopeEntry | undefined {
+    for (let k = st.chain.length - 1; k >= 0; k -= 1) {
+      const entry = st.chain[k]?.entry;
+      if (entry?.get(head) !== undefined) return entry;
+    }
+    return undefined;
+  }
+
+  /**
+   * #1727 — `{{props.<name>…}}` on a page-shaped list entry (a query, the
+   * breadcrumbs, the children) that its value cannot answer: the same
+   * `page-path-unknown` marker, and so the same type-aware repair, as
+   * `{{page.props.<name>…}}` on the rendering page. Null for any other
+   * name or entry, which keeps `field-path-unknown` (a list entry's link
+   * field, `{{link.label}}`).
+   */
+  private entryPropsMarker(
+    name: string,
+    entry: ScopeEntry,
+    resolved: number,
+    value: ScopeValue,
+  ): string | null {
+    const parts = name.toLowerCase().split(".");
+    if (parts[0] !== "props" || entry.propertyType === undefined || resolved < 1) return null;
+    const base = parts.slice(0, resolved);
+    return pagePathUnknownMarker(base.join("."), propsValueType(base, value, entry.propertyType));
   }
 
   /**
@@ -327,20 +363,28 @@ class SectionRenderer {
 
   /** What the value at `page.<base>` is, as {@link pageMarker} names it. */
   private pageValueType(base: readonly string[], value: ScopeValue): string {
-    const [key, name] = base as [string, string | undefined];
-    if (base.length === 1) return PAGE_KEY_TYPES[key] ?? scopeKindName(value);
-    if (base.length === 2 && key === "props") {
-      return this.env.lists?.pagePropertyType(name as string) ?? scopeKindName(value);
+    const key = base[0] as string;
+    const lists = this.env.lists;
+    if (key === "props" && lists !== undefined) {
+      return propsValueType(base, value, (n) => lists.pagePropertyType(n));
     }
+    if (base.length === 1) return PAGE_KEY_TYPES[key] ?? scopeKindName(value);
     if (base.length === 2 && key === "terms") return "term";
     return scopeKindName(value);
   }
 
-  /** The marker of a found value that cannot render as a tag (`{{page.props}}`, a list). */
+  /**
+   * The marker of a found value that cannot render as a tag (`{{page.props}}`,
+   * a list), and of `{{props}}` / a term property on a page-shaped entry.
+   */
   private unrenderable(name: string, st: RenderState, v: ScopeValue): string {
-    const page =
-      this.env.lists === undefined ? null : this.pageMarker(name, name.split(".").length, v);
-    return page ?? this.notDeclared(name, st);
+    const parts = name.split(".").length;
+    const page = this.env.lists === undefined ? null : this.pageMarker(name, parts, v);
+    if (page !== null) return page;
+    const head = (name.split(".")[0] as string).toLowerCase();
+    const entry = head === "props" ? this.entryOf(head, st) : undefined;
+    const props = entry === undefined ? null : this.entryPropsMarker(name, entry, parts, v);
+    return props ?? this.notDeclared(name, st);
   }
 
   // ── Plain tags ──
@@ -554,6 +598,21 @@ class SectionRenderer {
     }
     return out;
   }
+}
+
+/**
+ * What the value at `props[.<name>[.…]]` (`base`) is: `props` itself, the
+ * property's declared type (`propertyType`), or the kind of a value
+ * further down.
+ */
+function propsValueType(
+  base: readonly string[],
+  value: ScopeValue,
+  propertyType: (name: string) => string | null,
+): string {
+  if (base.length === 1) return "props";
+  if (base.length === 2) return propertyType(base[1] as string) ?? scopeKindName(value);
+  return scopeKindName(value);
 }
 
 /** A scope value's kind as a marker names it (`page-path-unknown:<path>:<kind>`). */

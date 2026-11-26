@@ -68,4 +68,11 @@ export interface ScopeEntry {
   readonly childrenKey: string | null;
   /** 1-based depth in its tree. */
   readonly depth: number;
+  /**
+   * #1727 — set on a page-shaped entry only (query results, breadcrumbs,
+   * children, siblings): the type of its `props.<name>`, as
+   * `ListPageContext.pagePropertyType` names it for the rendering page.
+   * Names the type when a path into the property cannot be answered.
+   */
+  readonly propertyType?: (name: string) => string | null;
 }

@@ -51,6 +51,7 @@ interface PluginRow {
     problem: PluginErrorSummary | null;
     recentErrors: PluginErrorSummary[];
     consumerBackoff: { consecutiveFailures: number; nextRetryAt: string; lastError: string } | null;
+    unscheduledWorkers: { workerName: string; cron: string; reason: string }[];
     callCost: {
       since: string | null;
       calls: number;
