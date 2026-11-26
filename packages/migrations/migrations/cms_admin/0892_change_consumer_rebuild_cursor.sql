@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0800 — issue #1729 (decision Q11): a change consumer's rebuild runs in
+-- 0892 (written as 0800; renumbered above v0.12.17's 0885 so upgraded and fresh installs apply it in the same order) — issue #1729 (decision Q11): a change consumer's rebuild runs in
 -- resumable chunks. A rebuild operation answers `{ done: false, cursor }`
 -- for "more to do, start the next chunk here"; the host keeps that cursor
 -- on the consumer, so the rebuild resumes at the next drain (another tick,

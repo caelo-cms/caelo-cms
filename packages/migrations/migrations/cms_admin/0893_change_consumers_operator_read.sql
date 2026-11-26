@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0801 — issue #1729: plugin health shows a change consumer's pending
+-- 0893 (written as 0801; renumbered above v0.12.17's 0885 so upgraded and fresh installs apply it in the same order) — issue #1729: plugin health shows a change consumer's pending
 -- rebuild (docs/dev/external-plugin-brokers.md §5.2: "a rebuild that never
 -- reports done stays rebuilding and is visible in plugin health"). Health
 -- is read by the Owner (Settings → Plugins) and the AI (list_plugins,
