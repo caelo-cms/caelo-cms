@@ -756,7 +756,7 @@ async function renderPreview(
   // #449 — plugin client assets. The deploy LINKS these files; the preview
   // iframe inlines the identical bytes (same resolver), so the editor can
   // never show behaviour the deployed site won't have.
-  html = injectPluginAssets(html, await collectBuildAssets([pageId], renderScope), "inline");
+  html = injectPluginAssets(html, await collectBuildAssets(renderScope), "inline");
 
   // issue #156 — unknown `var(--…)` references in the page's CSS bundle
   // (layout + template + placed modules), scanned as one bundle so custom

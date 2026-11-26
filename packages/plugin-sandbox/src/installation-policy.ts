@@ -50,7 +50,12 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
     const refusal = externalUrlSlotRefusal(claim.slot, manifest.urlTables !== undefined);
     if (refusal) throw new Error(refusal);
   }
-  requireCapability(manifest.hasBuildAssets || manifest.hasDeferrals, "client_assets");
+  requireCapability(
+    Boolean(Object.keys(manifest.clientFiles ?? {}).length) ||
+      manifest.hasBuildData ||
+      manifest.hasDeferrals,
+    "client_assets",
+  );
   requireCapability(Boolean(manifest.listSources?.length), "list_sources");
   requireCapability(Boolean(manifest.listTypes?.length), "list_types");
   requireCapability(manifest.hasListResolve, "list_resolve");

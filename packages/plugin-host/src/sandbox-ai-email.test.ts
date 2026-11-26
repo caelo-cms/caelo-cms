@@ -23,7 +23,7 @@ const manifest: PluginManifest = {
   schema: {},
   operations: ["run"],
   hasStaticRender: false,
-  hasBuildAssets: false,
+  hasBuildData: false,
   hasDeferrals: false,
   hasContentVariants: false,
   hasLinkResolve: false,

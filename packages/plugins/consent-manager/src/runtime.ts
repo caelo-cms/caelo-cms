@@ -29,12 +29,22 @@
  *                                   on a withheld embed's placeholder;
  *                                   works without a banner on the page
  *
- * ## Why it is baked at build time
+ * ## Why its data comes with the page
  *
  * The runtime has to decide whether a tag may fire before anything
- * loads. A static site cannot afford a blocking fetch to learn that,
- * so the categories and (from #452) the tags are baked into this file
- * by `buildAssets` (#449).
+ * loads. A static site cannot afford a blocking fetch to learn that, so
+ * the categories and (from #452) the tags come with every page: the file
+ * itself is reviewed with the plugin (#1729, `clientFiles`), and each
+ * build hands core its data (`consent_build_data`), which core embeds as
+ * a JSON data block this file reads. The data never becomes code; the
+ * tags it names are Owner approvals (`add_tracking_tag`), and the CSP
+ * allows exactly their sources.
+ *
+ * ## Other plugins' scripts
+ *
+ * A plugin that declares consent purposes has its scripts parked by core
+ * (`type="text/plain"`, `data-caelo-consent`, `data-caelo-src`); this
+ * runtime starts each once the visitor granted every category it names.
  *
  * ## No silent no-ops
  *
@@ -45,7 +55,7 @@
  */
 
 import type { ConsentCategory } from "./categories.js";
-import { jsonForInlineScript } from "./tags.js";
+import { type BakedTag, TAG_INJECTOR } from "./tags.js";
 
 /**
  * The first-party cookie holding the visitor's decision, as URI-encoded
@@ -60,7 +70,7 @@ import { jsonForInlineScript } from "./tags.js";
  */
 export const CONSENT_COOKIE = "caelo_consent";
 
-/** What gets baked into the emitted runtime. */
+/** What each build hands the runtime: the data block core embeds in every page. */
 export interface RuntimeConfig {
   readonly categories: ReadonlyArray<Pick<ConsentCategory, "key" | "displayName" | "required">>;
   /** Bumping it re-asks every visitor. */
@@ -69,7 +79,15 @@ export interface RuntimeConfig {
   readonly recordEndpoint: string;
   /** The request header the gateway reads the decision from (plugin SDK `VISITOR_CONSENT_HEADER`). */
   readonly consentHeader: string;
+  /** This plugin's slug, which names its withheld modules. */
+  readonly slug: string;
+  /** The site's approved tags, injected once their category is granted. */
+  readonly tags: ReadonlyArray<BakedTag>;
 }
+
+/** The data block core embeds for this plugin (plugin-host client-assets.ts). */
+export const DATA_SELECTOR =
+  'script[type="application/json"][data-caelo-plugin-data="consent-manager"]';
 
 /**
  * Hides the dialog before first paint and reveals it only when the
@@ -217,6 +235,9 @@ function somethingLoaded() {
       if (Object.prototype.hasOwnProperty.call(loadedTags, name)) return true;
     }
   }
+  for (var src in startedScripts) {
+    if (Object.prototype.hasOwnProperty.call(startedScripts, src)) return true;
+  }
   return doc.querySelector('[data-caelo-hydrated="1"]') !== null;
 }
 
@@ -322,6 +343,37 @@ function tickedKeys(banner) {
 function apply() {
   hydrateDeferred();
   loadTags();
+  startConsentedScripts();
+}
+
+/**
+ * Start other plugins' scripts core parked until the visitor consents
+ * (#1729): each names the categories it needs in data-caelo-consent and
+ * its file in data-caelo-src, which no browser fetches. Once every
+ * category is granted the script is created with that src, once per file;
+ * the site's CSP still decides whether it may load.
+ */
+var startedScripts = {};
+function startConsentedScripts() {
+  var parked = doc.querySelectorAll("script[data-caelo-consent]");
+  for (var i = 0; i < parked.length; i++) {
+    var el = parked[i];
+    var src = el.getAttribute("data-caelo-src");
+    if (!src || startedScripts[src]) continue;
+    var needs = String(el.getAttribute("data-caelo-consent") || "").split(" ");
+    var allowed = true;
+    for (var c = 0; c < needs.length; c++) {
+      if (needs[c] && !isGranted(needs[c])) allowed = false;
+    }
+    if (!allowed) continue;
+    startedScripts[src] = true;
+    var live = doc.createElement("script");
+    live.async = false;
+    live.src = src;
+    var plugin = el.getAttribute("data-caelo-plugin");
+    if (plugin) live.setAttribute("data-caelo-plugin", plugin);
+    doc.body.appendChild(live);
+  }
 }
 
 /**
@@ -577,26 +629,31 @@ if (doc.readyState === "loading") {
 `;
 
 /**
- * Emit the runtime with this site's configuration baked in.
- *
- * @param config categories, policy version and endpoint as they stand
- *   at build time.
- * @param tagInjector the tag loader for this site's registered tags. No
- *   tag reaches the document at build time — a tag written into the
- *   page has already run by the time any script could decide whether it
- *   should, so the runtime holds them all and injects only the ones
- *   whose category is granted.
+ * The runtime file (#1729: `clientFiles`, reviewed with the plugin). It
+ * reads the build's data block first; without one it warns and does
+ * nothing, because a banner without its categories cannot ask anything.
  */
-export function buildRuntimeJs(
-  config: RuntimeConfig & { slug: string },
-  tagInjector: string,
-): string {
-  return [
-    "(function () {",
-    '"use strict";',
-    `var CONFIG = ${jsonForInlineScript(config)};`,
-    tagInjector,
-    RUNTIME_BODY,
-    "})();",
-  ].join("\n");
-}
+const READ_CONFIG = `
+var CONFIG = (function () {
+  var el = document.querySelector(${JSON.stringify(DATA_SELECTOR)});
+  var raw = el ? el.textContent : null;
+  try {
+    var parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.categories)) return parsed;
+  } catch (e) {}
+  if (typeof console !== "undefined" && console.warn)
+    console.warn("[caelo-consent] this page carries no consent data (data-caelo-plugin-data=\\"consent-manager\\"), so the banner cannot ask and no tag loads. Stage the site again.");
+  return null;
+})();
+if (!CONFIG) return;
+`;
+
+/** Sent as `runtime.js` (`clientFiles`): the same bytes on every build. */
+export const RUNTIME_JS: string = [
+  "(function () {",
+  '"use strict";',
+  READ_CONFIG,
+  TAG_INJECTOR,
+  RUNTIME_BODY,
+  "})();",
+].join("\n");

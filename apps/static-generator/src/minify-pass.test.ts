@@ -147,7 +147,7 @@ describe("minifyPluginAsset (#449 asset files)", () => {
 
   it("fails the build naming the plugin when its JS does not parse", async () => {
     await expect(minifyPluginAsset(asset("js", "function ( {"))).rejects.toThrow(
-      /plugin "consent-manager" returned a runtime\.js .* does not parse/,
+      /plugin "consent-manager" ships a client file runtime\.js that does not parse/,
     );
   });
 });

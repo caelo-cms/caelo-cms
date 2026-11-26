@@ -45,6 +45,7 @@
  */
 
 import {
+  CONSENT_PROVIDER_SLUG,
   externalCapabilityHint,
   externalCapabilityRefusal,
   externalUrlSlotRefusal,
@@ -62,7 +63,7 @@ import { Cron } from "croner";
 // from #52, or the externalization regression from #53. See those issues
 // + the comment block above forceOxcParserNativeEntry for the full chain.
 import { parseSync } from "oxc-parser";
-import { deferralPlaceholderProblems } from "./client-assets.js";
+import { cssLoadProblem, deferralPlaceholderProblems } from "./client-assets.js";
 
 // ---------------------------------------------------------------------------
 // Worker schedules (#1720)
@@ -331,12 +332,15 @@ export function validateManifest(
       });
     }
     if (
-      (m.hasDeferrals || Object.keys(m.deferralPlaceholders ?? {}).length > 0) &&
+      (m.hasDeferrals ||
+        m.hasBuildData ||
+        Object.keys(m.deferralPlaceholders ?? {}).length > 0 ||
+        Object.keys(m.clientFiles ?? {}).length > 0) &&
       !caps.has("client_assets")
     ) {
       failures.push({
         kind: "manifest-cap-missing",
-        hint: "the plugin withholds modules (`deferralsOperation`) but does not request the `client_assets` capability. Add it to `requestedCapabilities` (or drop the deferrals).",
+        hint: "the plugin puts files on visitors' pages or withholds modules (`clientFiles`, `buildDataOperation`, `deferralsOperation`) but does not request the `client_assets` capability. Add it to `requestedCapabilities` (or drop them).",
       });
     }
     if (m.hasListResolve && !caps.has("list_resolve")) {
@@ -392,10 +396,20 @@ export function validateManifest(
   return { manifest: failures.length === 0 ? m : null, failures };
 }
 
+/** Whether `origin` is in `allowed`, a `https://*.host` entry covering its subdomains. */
+function originAllowed(allowed: ReadonlySet<string>, origin: string): boolean {
+  if (allowed.has(origin)) return true;
+  for (const entry of allowed) {
+    const m = /^(https|wss):\/\/\*\.(.+)$/.exec(entry);
+    if (m && origin.startsWith(`${m[1]}://`) && origin.endsWith(`.${m[2]}`)) return true;
+  }
+  return false;
+}
+
 /**
  * #1729 — what a plugin puts in a visitor's browser, for every plugin
- * (client-assets.ts): placeholders a deferral verdict names are reviewed
- * markup in which nothing loads or runs.
+ * (client-assets.ts): reviewed placeholders and client files in which
+ * nothing loads, runs or builds markup beyond what the grant allows.
  */
 function clientAssetFailures(m: PluginManifest): ValidationFailure[] {
   const failures: ValidationFailure[] = [];
@@ -406,11 +420,238 @@ function clientAssetFailures(m: PluginManifest): ValidationFailure[] {
       "manifest declares `deferralPlaceholders` but no `deferralsOperation` names them: declare the deferrals operation, or drop the placeholders.",
     );
   }
+  const files = m.clientFiles ?? {};
+  const origins = m.capabilityConstraints?.client_assets?.origins ?? {};
+  const anyOrigin = new Set(Object.values(origins).flat());
+  const cssOrigin = new Set([
+    ...(origins.style ?? []),
+    ...(origins.img ?? []),
+    ...(origins.font ?? []),
+  ]);
+  if (m.hasBuildData && Object.keys(files).length === 0) {
+    fail(
+      "manifest declares `buildDataOperation` but no `clientFiles` read the data: ship the client file that reads it, or drop the build data.",
+    );
+  }
+  if (Object.keys(origins).length > 0 && Object.keys(files).length === 0) {
+    fail(
+      "`capabilityConstraints.client_assets.origins` names origins, but the plugin has no `clientFiles` that could reach them: drop the origins.",
+    );
+  }
+  for (const [name, text] of Object.entries(files)) {
+    if (name.endsWith(".js")) {
+      failures.push(
+        ...validateClientScript({
+          filename: name,
+          source: text,
+          allowedOrigin: (o) => originAllowed(anyOrigin, o),
+        }),
+      );
+      continue;
+    }
+    const problem = cssLoadProblem(text, (o) => originAllowed(cssOrigin, o));
+    if (problem) {
+      fail(
+        `clientFiles["${name}"]: ${problem} loads from another site. A client stylesheet loads nothing from elsewhere unless the grant names the origin (capabilityConstraints.client_assets.origins: style, img or font); no @import.`,
+      );
+    }
+  }
+  // A declared purpose is never `necessary` (the SDK refuses it), so any
+  // declaration means the visitor's say-so comes first.
+  const gated = (m.consentPurposes ?? []).length > 0;
+  if (
+    gated &&
+    Object.keys(files).some((f) => f.endsWith(".js")) &&
+    m.slug !== CONSENT_PROVIDER_SLUG &&
+    !(m.requiresPlugins ?? []).includes(CONSENT_PROVIDER_SLUG)
+  ) {
+    fail(
+      `the plugin's client scripts need the visitor's consent (it declares consentPurposes), and only the consent provider starts them once it is given: add requiresPlugins: ["${CONSENT_PROVIDER_SLUG}"].`,
+    );
+  }
   for (const { where, problem } of deferralPlaceholderProblems(placeholders)) {
     fail(
       `${where}: ${problem} is not allowed. A placeholder stands in for content withheld until the visitor agrees, so nothing in it may load or run: plain elements (div, p, span, a, strong, button, …), class/id/role/title/type/href and data-*/aria-* attributes, {{name}} slots for text, CSS without url() to another site or @import.`,
     );
   }
+  return failures;
+}
+
+// ---------------------------------------------------------------------------
+// Client files — the browser rule set (#1729, docs/dev/external-plugin-brokers.md §6.7).
+// ---------------------------------------------------------------------------
+
+/** Callees that turn text into code or load code from elsewhere. */
+const CLIENT_CODE_CALLEES: ReadonlySet<string> = new Set([
+  "eval",
+  "Function",
+  "importScripts",
+  "Worker",
+  "SharedWorker",
+]);
+
+/**
+ * Properties that turn text into markup. A client file shows, hides and
+ * toggles what the page already has (CLAUDE.md §1A); data a build hands it
+ * stays text (`textContent`), so it can never become a script or a link.
+ */
+const CLIENT_MARKUP_SINKS: ReadonlySet<string> = new Set([
+  "innerHTML",
+  "outerHTML",
+  "insertAdjacentHTML",
+  "createContextualFragment",
+  "setHTMLUnsafe",
+  "parseHTMLUnsafe",
+  "srcdoc",
+]);
+
+/** Timers that evaluate a string argument as code. */
+const STRING_TIMERS: ReadonlySet<string> = new Set(["setTimeout", "setInterval"]);
+
+/** URLs in strings that name no network target: XML namespaces. */
+const NAMESPACE_URI_RE = /^http:\/\/www\.w3\.org\//;
+
+const URL_IN_TEXT_RE = /(?:\b(?:https?|wss?):)?\/\/[a-z0-9.-]+\.[a-z]{2,}(?::\d+)?/gi;
+
+const LITERAL_TYPES: ReadonlySet<string> = new Set([
+  "Literal",
+  "StringLiteral",
+  "TemplateLiteral",
+  "BinaryExpression",
+]);
+
+/**
+ * Check one client JS file against the browser rule set: a classic script
+ * (no `import`/`export`), no `eval`, `Function`, `.constructor(…)` calls or
+ * string timers, no dynamic `import()`, no `document.write`, no markup
+ * sinks, no workers, and no URL of another site unless the grant names its
+ * origin. The site CSP is the runtime half of the same rule.
+ *
+ * @param allowedOrigin whether a URL with this origin may appear (the
+ *   grant's `capabilityConstraints.client_assets.origins`, any kind).
+ */
+export function validateClientScript(opts: {
+  readonly filename: string;
+  readonly source: string;
+  readonly allowedOrigin: (origin: string) => boolean;
+}): ValidationFailure[] {
+  const failures: ValidationFailure[] = [];
+  const fail = (what: string, node?: unknown) => {
+    const location = node ? locOf(node) : undefined;
+    failures.push({
+      kind: "client-assets",
+      hint: `clientFiles["${opts.filename}"]: ${what}`,
+      ...(location ? { location } : {}),
+    });
+  };
+  let ast: unknown;
+  try {
+    const parsed = parseSync(opts.filename, opts.source, { sourceType: "script" });
+    if (parsed.errors.length > 0) {
+      fail(
+        `does not parse as a classic browser script (${parsed.errors[0]?.message ?? "syntax error"}). A client file runs as <script defer>: no import or export.`,
+      );
+      return failures;
+    }
+    ast = parsed.program;
+  } catch (e) {
+    fail(`could not be parsed: ${(e as Error).message}`);
+    return failures;
+  }
+  const checkText = (text: string, node: unknown) => {
+    for (const m of text.matchAll(URL_IN_TEXT_RE)) {
+      if (NAMESPACE_URI_RE.test(text.slice(m.index ?? 0))) continue;
+      const raw = m[0];
+      let origin: string;
+      try {
+        origin = new URL(raw.startsWith("//") ? `https:${raw}` : raw).origin;
+      } catch {
+        continue;
+      }
+      if (!opts.allowedOrigin(origin)) {
+        fail(
+          `names ${raw}, an address of another site. A client file talks to the site's own gateway (relative /api/… paths); a third-party origin needs the Owner's approval in the grant: capabilityConstraints.client_assets.origins.`,
+          node,
+        );
+      }
+    }
+  };
+  let tooDeep = false;
+  walk(
+    ast,
+    (node, parents) => {
+      const n = node as {
+        type?: string;
+        callee?: unknown;
+        arguments?: unknown[];
+        value?: unknown;
+        quasis?: Array<{ value?: { cooked?: string | null } }>;
+        computed?: boolean;
+        property?: unknown;
+        object?: unknown;
+      };
+      switch (n.type) {
+        case "ImportExpression":
+          fail("uses dynamic import(): a client file loads no code at runtime.", node);
+          return;
+        case "Literal":
+        case "StringLiteral":
+          if (typeof n.value === "string") checkText(n.value, node);
+          return;
+        case "TemplateLiteral":
+          for (const q of n.quasis ?? []) {
+            if (typeof q.value?.cooked === "string") checkText(q.value.cooked, node);
+          }
+          return;
+        case "Identifier": {
+          const name = identifierName(node);
+          if (name && CLIENT_CODE_CALLEES.has(name) && isCalleePosition(node, parents)) {
+            fail(`calls ${name}: a client file turns no text into code and loads none.`, node);
+          }
+          return;
+        }
+        case "MemberExpression":
+        case "StaticMemberExpression":
+        case "ComputedMemberExpression": {
+          const prop = memberPropertyName(n);
+          if (prop === null) return;
+          if (CLIENT_MARKUP_SINKS.has(prop)) {
+            fail(
+              `uses ${prop}: a client file writes text (textContent) and toggles what the page already has; it never builds markup (CLAUDE.md §1A).`,
+              node,
+            );
+          } else if (
+            (CLIENT_CODE_CALLEES.has(prop) || prop === "constructor") &&
+            isCalleePosition(node, parents)
+          ) {
+            fail(`calls .${prop}(…): a client file turns no text into code.`, node);
+          } else if (
+            (prop === "write" || prop === "writeln") &&
+            identifierName(n.object) === "document" &&
+            isCalleePosition(node, parents)
+          ) {
+            fail(`calls document.${prop}: it rewrites the page as it loads.`, node);
+          }
+          return;
+        }
+        case "CallExpression":
+        case "NewExpression": {
+          const callee = identifierName(n.callee);
+          const first = unwrapExpr(n.arguments?.[0]) as { type?: string } | undefined;
+          if (callee && STRING_TIMERS.has(callee) && first?.type && LITERAL_TYPES.has(first.type)) {
+            fail(`passes a string to ${callee}, which runs it as code: pass a function.`, node);
+          }
+          return;
+        }
+        default:
+          return;
+      }
+    },
+    () => {
+      tooDeep = true;
+    },
+  );
+  if (tooDeep) fail("nests too deeply to review.");
   return failures;
 }
 

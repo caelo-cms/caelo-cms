@@ -46,9 +46,12 @@ import {
 } from "./ai-chat-operations.js";
 import { MAX_BATCH_OPERATIONS, pluginBatchOperation } from "./batch.js";
 import {
+  clientOrigins,
   type DeferralPlaceholders,
   deferralPlaceholderRef,
   deferralPlaceholders,
+  type PluginClientFiles,
+  pluginClientFiles,
 } from "./client-assets.js";
 import {
   type CollectionOperationInput,
@@ -1412,10 +1415,13 @@ export const pluginManifest = z
           .max(64),
       )
       .optional(),
-    /** See `PluginDefinition.buildAssets`. Release-signed only — the
-     *  files land on every page of the public site, so authorship has
-     *  to be auditable. */
-    hasBuildAssets: z.boolean().default(false),
+    /** See `PluginDefinition.clientFiles` (#1729): the JS and CSS the
+     *  plugin puts on every page, reviewed byte for byte with the artifact.
+     *  Requires the `client_assets` capability. */
+    clientFiles: pluginClientFiles.optional(),
+    /** See `PluginDefinition.buildDataOperation` (#1729). Requires the
+     *  `client_assets` capability and `clientFiles` that read the data. */
+    hasBuildData: z.boolean().default(false),
     /** See `PluginDefinition.deferralsOperation`. Requires the
      *  `client_assets` capability: withholding a module changes what
      *  visitors see. */
@@ -1471,6 +1477,10 @@ export const pluginManifest = z
               .max(100)
               .optional(),
             maxDailyCostMicrocents: z.number().int().positive().optional(),
+            /** #1729 — `client_assets`: the third-party origins the client
+             *  files may reach, per CSP kind. Shown on the approval card;
+             *  the site's CSP allows nothing else of the plugin. */
+            origins: clientOrigins.optional(),
           })
           .strict(),
       )
@@ -2762,40 +2772,45 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
     args: { pageId: string; pageUrlStyle: PageUrlStyle; lang: string },
   ) => Promise<string> | string;
   /**
-   * The plugin's channel to the browser: files emitted ONCE per build
-   * and referenced from every page of the site.
+   * #1729 — the plugin's channel to the browser: JS and CSS files on every
+   * page, reviewed with the artifact (decision Q4 B, one plugin model).
    *
-   * Returns `{ "runtime.js": "…", "runtime.css": "…" }`. `.js` files
+   * `{ "runtime.js": "…", "runtime.css": "…" }`. The bytes are part of the
+   * manifest, so the Owner approves them and the artifact's digest binds
+   * them: a changed file is a new version and a new approval. `.js` files
    * are linked (deferred) before `</body>`, `.css` files go before
-   * `</head>`: a stylesheet up to 2 KB is inlined as `<style>` so it does
-   * not block first paint (#1124), a larger one is linked. Files run in
-   * plugin-slug order, so a runtime that reads what another plugin's runtime
-   * sets on `window` (the consent decision) starts at DOMContentLoaded,
-   * when every deferred file has run. The host
-   * hashes each file's content into its name so a CDN can cache it
-   * forever and a changed file still lands.
+   * `</head>` (a stylesheet up to 2 KB is inlined as `<style>` so it does
+   * not block first paint, #1124). Files run in plugin-slug order, so a
+   * runtime that reads what another plugin's runtime sets on `window` (the
+   * consent decision) starts at DOMContentLoaded. The host hashes each
+   * file's content into its name so a CDN can cache it forever.
    *
-   * Why once per build rather than per page: the point of this channel
-   * is behaviour a plugin must guarantee itself — a consent dialog that
-   * has to work regardless of how the site's markup was authored, an
-   * embed that must not load before the visitor opts in. Such a runtime
-   * usually needs configuration BEFORE it can decide anything, and a
-   * static site cannot afford a blocking fetch to obtain it. Emitting
-   * once per build lets the plugin bake that configuration into the
-   * file it ships.
+   * Reviewed for every plugin (plugin-sandbox `client-assets.ts`): no
+   * `eval`, `Function`, string timers, `import`, `document.write`, no URL
+   * of another site except an origin the grant names
+   * (`capabilityConstraints.client_assets.origins`), CSS without `@import`
+   * or `url()` to another site. A file shows, hides and toggles markup the
+   * page already has; it never builds content (CLAUDE.md §1A).
    *
-   * The reserved name `csp-sources.json` is no file: it is JSON saying what
-   * the plugin's client code reaches at runtime (`origins` per kind,
-   * `inlineScripts` as exact text), so the site's CSP allows it. The build
-   * validates it, and the Owner sees it by plugin (`get_security_headers`).
-   *
-   * @param args.pageIds every page in this build, so a plugin can bake
-   *   per-page data into a lookup rather than fetching it at runtime.
+   * A plugin whose `consentPurposes` name a category other than
+   * `necessary` has its scripts started by the consent provider only once
+   * the visitor granted every such category.
    */
-  readonly buildAssets?: (
-    ctx: C,
-    args: { pageIds: ReadonlyArray<string> },
-  ) => Promise<Record<string, string>> | Record<string, string>;
+  readonly clientFiles?: PluginClientFiles;
+  /**
+   * #1729 — the one part of the client side a build may change: an
+   * operation in `operations` taking `{}` and returning `{ data }`, a JSON
+   * object of at most 64 KB (BUILD_DATA_MAX_BYTES). Core embeds it in every
+   * page as `<script type="application/json" data-caelo-plugin-data="<slug>">`
+   * with `<` escaped, where the client files read it
+   * (`JSON.parse(el.textContent)`); it never becomes code. Keys
+   * `__proto__`, `constructor` and `prototype` are refused anywhere in it.
+   *
+   * The site's consent provider may add `csp` (`pluginCspSourcesSchema`):
+   * what its tags reach, each tag an Owner approval of its own
+   * (`add_tracking_tag`). Any other plugin names its origins in its grant.
+   */
+  readonly buildDataOperation?: string;
   /**
    * P13 audit fix #4 — optional cheap signature of the plugin's data
    * for this page. Folded into the static_bakes
@@ -3401,7 +3416,8 @@ export function manifestFromDefinition(def: {
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
   readonly staticRender?: unknown;
-  readonly buildAssets?: unknown;
+  readonly clientFiles?: PluginClientFiles;
+  readonly buildDataOperation?: string;
   readonly deferralsOperation?: string;
   readonly deferralPlaceholders?: DeferralPlaceholders;
   readonly contentVariantsOperation?: string;
@@ -3478,7 +3494,10 @@ export function manifestFromDefinition(def: {
           ),
         }
       : {}),
-    hasBuildAssets: Boolean(def.buildAssets),
+    ...(def.clientFiles && Object.keys(def.clientFiles).length > 0
+      ? { clientFiles: { ...def.clientFiles } }
+      : {}),
+    hasBuildData: Boolean(def.buildDataOperation),
     hasDeferrals: Boolean(def.deferralsOperation),
     ...(def.deferralPlaceholders && Object.keys(def.deferralPlaceholders).length > 0
       ? { deferralPlaceholders: structuredClone(def.deferralPlaceholders) }

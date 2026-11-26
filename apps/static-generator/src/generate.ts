@@ -1124,17 +1124,21 @@ async function buildSite(
   });
   // #1719 — on a Stage, the pages whose share image could not be published.
   renderFailures.push(...seo.renderFailures);
-  // #449 — plugin client assets: one call per contributing plugin for
-  // the whole build, written under `_caelo/plugin/<slug>/` with the
-  // content hash in the name, then referenced from every page. Minified
-  // like the page's own CSS and JS (minify-pass.ts) before anything uses
-  // them, so inlined CSS ships minified too and each name hashes the
-  // bytes served.
-  const builtAssets = await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id));
+  // #449 / #1729 — plugin client assets: each plugin's reviewed files,
+  // written under `_caelo/plugin/<slug>/` with the content hash in the
+  // name and referenced from every page, and its build data (one call per
+  // plugin for the whole build), embedded in every page as a data block.
+  // The files are minified like the page's own CSS and JS (minify-pass.ts)
+  // before anything uses them, so inlined CSS ships minified too and each
+  // name hashes the bytes served.
+  const builtAssets = await args.plugins.collectBuildAssets();
   const clientAssets = await Promise.all(
-    builtAssets
-      .flatMap((asset) => (asset.kind === "csp" ? [] : [{ ...asset, kind: asset.kind }]))
-      .map(async (asset) => withAssetContent(asset, await minifyPluginAsset(asset))),
+    builtAssets.flatMap((asset) => {
+      if (asset.kind === "csp") return [];
+      if (asset.kind === "data") return [Promise.resolve(asset)];
+      const file = { ...asset, kind: asset.kind };
+      return [minifyPluginAsset(file).then((content) => withAssetContent(file, content))];
+    }),
   );
   // #1454 — what the build ships, for the CSP of its pages.
   const csp = new CspScanner(seoSettings.siteBaseUrl);
@@ -1144,6 +1148,7 @@ async function buildSite(
   if (pagesToBuild !== null && previousCsp !== null) csp.addPrevious(previousCsp);
   const pageScripts = new PageScripts(writeBuildFile);
   for (const asset of clientAssets) {
+    if (asset.kind === "data") continue;
     await writeBuildFile(asset.relPath, asset.content);
     fileCount += 1;
   }
@@ -1795,7 +1800,7 @@ function parsePluginCspSources(asset: {
   const parsed = pluginCspSourcesSchema.safeParse(json);
   if (!parsed.success) {
     throw new Error(
-      `static-generator: plugin "${asset.pluginSlug}" returned a csp-sources.json from buildAssets that is not valid, so the site's CSP cannot name what it loads. The plugin's code has to be fixed (a plugin release): ${parsed.error.message}`,
+      `static-generator: plugin "${asset.pluginSlug}" declares CSP sources that are not valid, so the site's CSP cannot name what its client files reach. The plugin's code has to be fixed (a plugin release): ${parsed.error.message}`,
     );
   }
   return parsed.data;

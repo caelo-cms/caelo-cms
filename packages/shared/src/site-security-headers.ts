@@ -164,9 +164,10 @@ export const DEFAULT_SITE_SECURITY_POLICY: SiteSecurityPolicy = {
 };
 
 /**
- * What a plugin's client code reaches, returned as the reserved
- * `csp-sources.json` of `buildAssets`: the build cannot see what a runtime
- * injects after consent.
+ * What a plugin's client code reaches (#1729): the origins its grant names
+ * (`capabilityConstraints.client_assets.origins`) and, from the consent
+ * provider, its approved tags. The build cannot see what a runtime injects
+ * after consent.
  */
 export const pluginCspSourcesSchema = z
   .object({

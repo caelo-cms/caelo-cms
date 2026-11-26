@@ -14,9 +14,11 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  dataBlockJson,
   INLINE_CSS_MAX_BYTES,
   injectPluginAssets,
   type PluginClientAsset,
+  plainJsonProblem,
   withAssetContent,
 } from "./client-assets.js";
 
@@ -189,5 +191,56 @@ describe("withAssetContent", () => {
     const html = injectPluginAssets(DOC, [css], "linked");
     expect(html).toContain(".a{color:red}");
     expect(html).not.toContain("color: red");
+  });
+});
+
+describe("#1729 — consent-gated scripts and build data", () => {
+  it("parks a script that needs consent, so nothing of it loads before", () => {
+    for (const mode of ["linked", "inline"] as const) {
+      const html = injectPluginAssets(
+        DOC,
+        [asset({ pluginSlug: "probe", consent: ["analytics", "marketing"] })],
+        mode,
+      );
+      expect(html).toContain('<script type="text/plain" data-caelo-consent="analytics marketing"');
+      expect(html).not.toContain("<script defer");
+      expect(html).not.toMatch(/<script[^>]* src=/);
+      const src = /data-caelo-src="([^"]+)"/.exec(html)?.[1] ?? "";
+      if (mode === "linked") expect(src).toBe("/_caelo/plugin/consent-manager/runtime.abc123.js");
+      // The preview parks the same bytes, so the provider starts it the same way.
+      else expect(Buffer.from(src.split(",")[1] ?? "", "base64").toString()).toBe("console.log(1)");
+    }
+  });
+
+  it("puts each data block before the scripts, in both modes alike", () => {
+    const data = asset({ kind: "data", fileName: "data.json", content: '{"a":1}' });
+    const linked = injectPluginAssets(DOC, [asset(), data], "linked");
+    const inline = injectPluginAssets(DOC, [asset(), data], "inline");
+    const block =
+      '<script type="application/json" data-caelo-plugin-data="consent-manager">{"a":1}</script>';
+    for (const html of [linked, inline]) {
+      expect(html).toContain(block);
+      expect(html.indexOf(block)).toBeLessThan(html.indexOf("<script defer"));
+    }
+  });
+
+  it("escapes what could end or change a data block", () => {
+    const json = dataBlockJson({ a: "</script><!--<script>", b: "\u2028\u2029" });
+    expect(json).not.toContain("<");
+    expect(json).not.toContain("\u2028");
+    expect(JSON.parse(json)).toEqual({ a: "</script><!--<script>", b: "\u2028\u2029" });
+  });
+
+  it.each([
+    [{ __proto__: null, ok: 1 }, null],
+    [JSON.parse('{"__proto__":{"x":1}}'), 'data: the key "__proto__"'],
+    [{ a: [{ constructor: 1 }] }, 'data.a[0]: the key "constructor"'],
+    [{ a: () => 1 }, "data.a: a function is not JSON"],
+    [{ a: Number.NaN }, "data.a: not a finite number"],
+    [{ a: new Map() }, "data.a: not a plain object"],
+  ])("plain JSON only: %p", (value, problem) => {
+    const found = plainJsonProblem(value);
+    if (problem === null) expect(found).toBeNull();
+    else expect(found).toStartWith(problem);
   });
 });
