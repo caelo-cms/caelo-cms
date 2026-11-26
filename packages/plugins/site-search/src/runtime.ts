@@ -300,6 +300,8 @@ const MAIN = String.raw`
     }
 
     function suggest() {
+      // Asked now (focus, ArrowDown), it replaces the one the debounce has pending.
+      clearTimeout(timer);
       var q = input.value.trim();
       var mine = ++seq;
       var popular = q === "" ? popularQueries(form) : Promise.resolve([]);
@@ -331,9 +333,13 @@ const MAIN = String.raw`
       else if (e.key === "Escape") { close(); }
       else if (e.key === "Enter" && active >= 0) { e.preventDefault(); choose(options[active]); }
     });
-    // Leaving the field closes the list a moment later, unless the visitor
-    // came back to it (close would drop the suggestions that focus asked for).
-    input.addEventListener("blur", function () { leaving = setTimeout(close, 150); });
+    // Leaving the field drops the suggestion the last keystroke has pending at
+    // once and closes the list a moment later, unless the visitor came back
+    // to it (close would drop the suggestions that focus asked for).
+    input.addEventListener("blur", function () {
+      clearTimeout(timer);
+      leaving = setTimeout(close, 150);
+    });
     return close;
   }
 
@@ -476,17 +482,17 @@ const MAIN = String.raw`
       var found = searchQueryOf(location.search, location.hash);
       if (isChange && found.anchor) return;
       if (found.query === q) return;
-      if (found.query === "") { clear(); return; }
-      // Every field shows the query searched, the focused one too: after
-      // Back it would otherwise keep the later query the results no longer show.
-      // The page wrote it, the visitor did not type it: the suggestions
-      // close, and the one the last keystroke left pending, which would ask
-      // for this query and open over the results, is dropped.
+      // Every field shows the query searched (none: an empty field), the
+      // focused one too: after Back it would otherwise keep the later query
+      // the results no longer show. The page wrote it, the visitor did not
+      // type it: the suggestions close, and the one the last keystroke left
+      // pending, which would open over the results, is dropped.
       Array.prototype.forEach.call(document.querySelectorAll("[data-caelo-search-input]"), function (i) {
         i.value = found.query;
       });
       closers.forEach(function (close) { close(); });
-      search(found.query);
+      if (found.query === "") clear();
+      else search(found.query);
     }
     follow(false);
     window.addEventListener("hashchange", function () { follow(true); });

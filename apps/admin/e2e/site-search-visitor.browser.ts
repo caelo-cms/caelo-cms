@@ -14,7 +14,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const FIXTURE = resolve(REPO_ROOT, "apps/api-gateway/e2e/search-site.ts");
@@ -141,19 +141,21 @@ test("a hash-mode search keeps the query out of every page request and follows #
   expect(hashPages.filter((r) => r.includes("?"))).toEqual([]);
 });
 
-// The suggestions open only on the visitor's own input. A search that goes
-// out drops the suggestion the last keystroke still had pending and an
-// answer on its way, and so does the results page putting its query into
-// the field on Back: the pending one would ask for that query and open the
-// list over the results (it covered the skip link in the test above). The
-// page's clock is paused, so the debounce runs only when the test lets the
-// time run; each suggestion is recorded as the page sends it.
-test("a search and Back drop the suggestion still to come; only typing opens the list", async ({
-  page,
-}) => {
+/** What a page asked for: each suggestion as it went out, each answer once handled. */
+interface SuggestionLog {
+  readonly suggested: string[];
+  readonly answered: string[];
+}
+
+/**
+ * Opens `url` with the page's clock paused once it loaded, so a debounce
+ * runs only on `page.clock.runFor`, and records in the page every
+ * suggestion it asks for as the request goes out, and each answer once the
+ * page handled it (a task after its body was read; rendering it takes only
+ * microtasks). Returns the reader of that record.
+ */
+async function openPaused(page: Page, url: string): Promise<() => Promise<SuggestionLog>> {
   await page.addInitScript(() => {
-    // Every suggestion asked, as it goes out, and each answer once the page
-    // handled it: a task after its body was read (rendering takes microtasks).
     const w = window as unknown as { __suggested: string[]; __answered: string[] };
     w.__suggested = [];
     w.__answered = [];
@@ -161,9 +163,9 @@ test("a search and Back drop the suggestion still to come; only typing opens the
       apply(target, self, args: Parameters<typeof fetch>) {
         const pending: Promise<Response> = Reflect.apply(target, self, args);
         const input = args[0];
-        const url = new URL(input instanceof Request ? input.url : String(input), location.href);
-        if (!url.pathname.endsWith("/site-search/suggest")) return pending;
-        const q = url.searchParams.get("q") ?? "";
+        const asked = new URL(input instanceof Request ? input.url : String(input), location.href);
+        if (!asked.pathname.endsWith("/site-search/suggest")) return pending;
+        const q = asked.searchParams.get("q") ?? "";
         w.__suggested.push(q);
         return pending.then((res) => {
           const read = res.json.bind(res);
@@ -179,11 +181,25 @@ test("a search and Back drop the suggestion still to come; only typing opens the
       },
     });
   });
-  const seen = () =>
+  const start = new Date("2026-01-05T09:00:00Z").getTime();
+  await page.clock.install({ time: start });
+  await page.goto(url);
+  await page.clock.pauseAt(start + 60_000);
+  return () =>
     page.evaluate(() => {
       const w = window as unknown as { __suggested: string[]; __answered: string[] };
       return { suggested: [...w.__suggested], answered: [...w.__answered] };
     });
+}
+
+// The suggestions open only on the visitor's own input. A search that goes
+// out drops the suggestion the last keystroke still had pending and an
+// answer on its way, and so does the results page putting its query into
+// the field on Back: the pending one would ask for that query and open the
+// list over the results (it covered the skip link in the test above).
+test("a search and Back drop the suggestion still to come; only typing opens the list", async ({
+  page,
+}) => {
   // The first suggestion's answer waits until the test lets it through.
   let letThrough: () => void = () => {};
   const held = new Promise<void>((done) => {
@@ -197,10 +213,7 @@ test("a search and Back drop the suggestion still to come; only typing opens the
     }
     await route.continue();
   });
-  const start = new Date("2026-01-05T09:00:00Z").getTime();
-  await page.clock.install({ time: start });
-  await page.goto(`${origin}/suche-hash/#q=Rabatte`);
-  await page.clock.pauseAt(start + 60_000);
+  const seen = await openPaused(page, `${origin}/suche-hash/#q=Rabatte`);
   const input = page.getByRole("combobox", { name: "Suche" });
   const suggestions = page.locator("[data-caelo-search-suggestions]");
   const first = page.locator("[data-caelo-search-results] [data-caelo-search-list] li").first();
@@ -245,6 +258,31 @@ test("a search and Back drop the suggestion still to come; only typing opens the
   expect((await seen()).suggested).toEqual(["Rabatte", "Pre"]);
   await expect(page.getByRole("option", { name: "Preise" })).toBeVisible();
   await expect(input).toHaveAttribute("aria-expanded", "true");
+});
+
+// Back to the results page without a query: the query searched is none, so
+// the field empties, and the suggestion the visitor's typing left pending
+// is dropped there too.
+test("Back to the results page without a query empties the field and opens nothing", async ({
+  page,
+}) => {
+  const seen = await openPaused(page, `${origin}/suche-hash/`);
+  const input = page.getByRole("combobox", { name: "Suche" });
+  const hits = page.locator("[data-caelo-search-results] [data-caelo-search-list] li");
+  // Focus asks for the empty field's start questions; the search drops them.
+  await input.fill("Rabatte");
+  await input.press("Enter");
+  await expect(page).toHaveURL(`${origin}/suche-hash/#q=Rabatte`);
+  await expect(hits.first()).toContainText("Preise");
+  await input.fill("Pre");
+  await page.goBack();
+  await expect(page).toHaveURL(`${origin}/suche-hash/`);
+  await expect(hits).toHaveCount(0);
+  await expect(input).toHaveValue("");
+  await page.clock.runFor(1000);
+  expect((await seen()).suggested).toEqual([""]);
+  await expect(page.locator("[data-caelo-search-suggestions]")).toBeHidden();
+  await expect(input).toHaveAttribute("aria-expanded", "false");
 });
 
 test("behind a gate that admits only the operator's cookie, the search sends the page's own", async ({
