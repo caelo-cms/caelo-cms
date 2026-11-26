@@ -287,7 +287,9 @@ describe("actual Deno plugin execution", () => {
     ]);
   });
   it("rejects oversized plugin output", async () => {
-    await expect(invoke('return "x".repeat(1100000);')).rejects.toThrow("SandboxMessageTooLarge");
+    // #1729 — an answer over one line arrives in parts, capped at the
+    // call's total (one line unless the caller accepts more).
+    await expect(invoke('return "x".repeat(1100000);')).rejects.toThrow("SandboxAnswerTooLarge");
   });
 });
 

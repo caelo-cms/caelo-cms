@@ -206,6 +206,15 @@ export async function makePluginContext(
         ? { ...consentCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
         : consentCtx;
     }
+    // #1729 — a render point (list sources, head entries, …) reads the
+    // plugin's private storage on the render's branch, as a shipped
+    // plugin's render does; the handle refuses every write from a render
+    // (`assertAuthoring`), so a page view never changes plugin data.
+    if (!visitorContext && invocation.origin === "render") {
+      return approval.capabilities.includes("cms_admin_schema")
+        ? { ...consentCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+        : consentCtx;
+    }
     if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return consentCtx;
     const wantsStorage = approval.capabilities.includes("cms_admin_schema");
     const wantsFiles = approval.capabilities.includes("private_files");

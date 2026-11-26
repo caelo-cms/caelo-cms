@@ -51,7 +51,12 @@ import {
 } from "./published-state.js";
 import type { PluginRenderFailure } from "./render-failures.js";
 import { recordPluginError } from "./runtime-health.js";
-import { SANDBOX_KIND, type SandboxKind, type SandboxKindCarrier } from "./sandbox-kind.js";
+import {
+  SANDBOX_ANSWER_BYTES,
+  SANDBOX_KIND,
+  type SandboxKind,
+  type SandboxKindCarrier,
+} from "./sandbox-kind.js";
 import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
@@ -335,6 +340,13 @@ export interface RunPluginOperationOpts {
    * for a plugin that runs in-process.
    */
   readonly sandboxKind?: SandboxKind;
+  /**
+   * #1729 — the largest answer this call may return, serialized: a render
+   * point's own cap (render-points.ts). A sandboxed plugin's answer over
+   * one wire line arrives in parts up to it; a shipped plugin's answer is
+   * checked against the same number by the point. Default: one line (1 MB).
+   */
+  readonly maxAnswerBytes?: number;
 }
 
 /**
@@ -833,8 +845,11 @@ async function runPluginOperationNow(
       error: { kind: "OperationNotPublic", message: `"${opts.operationName}" has no declared run` },
     };
   }
-  if (opts.sandboxKind) {
-    const marked: SandboxKindCarrier = { [SANDBOX_KIND]: opts.sandboxKind };
+  if (opts.sandboxKind || opts.maxAnswerBytes) {
+    const marked: SandboxKindCarrier = {
+      ...(opts.sandboxKind ? { [SANDBOX_KIND]: opts.sandboxKind } : {}),
+      ...(opts.maxAnswerBytes ? { [SANDBOX_ANSWER_BYTES]: opts.maxAnswerBytes } : {}),
+    };
     ctx = Object.assign({}, ctx, marked);
   }
   try {

@@ -28,7 +28,16 @@ export type SandboxKind =
  */
 export const SANDBOX_KIND: unique symbol = Symbol("caelo.sandboxKind");
 
-/** A context that may carry the caller's {@link SANDBOX_KIND}. */
+/**
+ * Host-only marker on a plugin context: the largest answer the caller
+ * accepts from this call, serialized (`RunPluginOperationOpts.maxAnswerBytes`).
+ * A render point sets its own cap (render-points.ts); a sandboxed answer
+ * bigger than one wire line comes back in parts up to this total.
+ */
+export const SANDBOX_ANSWER_BYTES: unique symbol = Symbol("caelo.sandboxAnswerBytes");
+
+/** A context that may carry the caller's {@link SANDBOX_KIND} and {@link SANDBOX_ANSWER_BYTES}. */
 export interface SandboxKindCarrier {
   readonly [SANDBOX_KIND]?: SandboxKind;
+  readonly [SANDBOX_ANSWER_BYTES]?: number;
 }
