@@ -173,9 +173,13 @@ export function renderSections(html: string, env: SectionEnv): string {
   const tokens = tokenize(html);
   if (tokens.length === 0) return html;
   const pairs = matchSections(tokens);
+  // Without a section or a dotted name (`{{&…}}` tags aside, which only a
+  // plugin's value makes this pass's) the template is Mustache's, as it
+  // always was: a plugin's value is then the only thing placed here.
+  const corePass = pairs.size > 0 || tokens.some((t) => t.sigil !== "&" && t.name.includes("."));
   const pluginOwned = Object.values(env.values).some((v) => pluginValueOf(v) !== null);
-  if (pairs.size === 0 && !pluginOwned && !tokens.some((t) => t.name.includes("."))) return html;
-  const r = new SectionRenderer(html, tokens, pairs, env);
+  if (!corePass && !pluginOwned) return html;
+  const r = new SectionRenderer(html, tokens, pairs, env, !corePass);
   return r.range(0, tokens.length, 0, html.length, { chain: [], dot: null });
 }
 
@@ -185,6 +189,8 @@ class SectionRenderer {
     private readonly tokens: readonly Token[],
     private readonly pairs: ReadonlyMap<number, number>,
     private readonly env: SectionEnv,
+    /** Place only plugins' values: every core tag stays for Mustache, as without this pass. */
+    private readonly pluginOnly = false,
   ) {}
 
   /** Render tokens [from, to) covering text [textFrom, textTo). */
@@ -348,6 +354,11 @@ class SectionRenderer {
     return this.pluginText(t.start, owned.origin, scalarSectionString(owned.value), source);
   }
 
+  /** Whether the module field `name` (or the head of `name.path`) holds a plugin's value. */
+  private pluginOwnedHead(name: string): boolean {
+    return this.modulePluginValue(name.split(".")[0] as string) !== null;
+  }
+
   /** The plugin's value of module field `name`, if a plugin filled it. */
   private modulePluginValue(name: string): ReturnType<typeof pluginValueOf> {
     const key = Object.hasOwn(this.env.values, name) ? name : name.toLowerCase();
@@ -468,6 +479,7 @@ class SectionRenderer {
 
   private tag(t: Token, st: RenderState): string {
     const source = this.html.slice(t.start, t.end);
+    if (this.pluginOnly && (t.sigil === ">" || !this.pluginOwnedHead(t.name))) return source;
     if (t.sigil === ">") return this.partial(t, source, st);
     // `{{&f}}` never reads a list entry: a module field, Mustache's unless a
     // plugin filled it.
@@ -765,7 +777,8 @@ export function fieldPathProblems(
   fields: readonly { readonly name: string; readonly kind?: string }[],
 ): FieldPathProblem[] {
   const byName = new Map(fields.map((f) => [f.name, f.kind ?? "text"]));
-  const tokens = tokenize(html);
+  // `{{&…}}` reads a module field as Mustache does, never a list entry: no path to check.
+  const tokens = tokenize(html).filter((t) => t.sigil !== "&");
   const pairs = matchSections(tokens);
   const out: FieldPathProblem[] = [];
   for (let i = 0; i < tokens.length; i += 1) {
