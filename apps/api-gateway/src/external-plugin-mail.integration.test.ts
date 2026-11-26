@@ -8,7 +8,10 @@
  * cms_admin pool), attaches it from what the admin published and serves a
  * visitor's sign-up through `handleRequest`. The declared block queues the
  * plugin's reviewed template into the live outbox; no plugin code runs on
- * the gateway, and the handle it gets has no free-form send.
+ * the gateway, and the handle it gets has no free-form send. The plugin
+ * also holds a `cms_admin` grant: the gateway reads grants without their
+ * constraints, and attaches it all the same (no installed plugin's code
+ * calls core there).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -73,8 +76,9 @@ const manifest = {
   tableKinds: { subscribers: "visitor-state" },
   indexes: { schema: { subscribers: [["email_hash"], ["confirm_token"]] } },
   requires: ["email"],
-  requestedCapabilities: ["email"],
-  capabilityReasons: { email: "Confirm sign-ups" },
+  requestedCapabilities: ["email", "cms_admin"],
+  capabilityReasons: { email: "Confirm sign-ups", cms_admin: "Read the pages it lists" },
+  capabilityConstraints: { cms_admin: { operations: ["pages.list"] } },
   mailTemplates: {
     confirm_it: {
       subject: "Confirm your sign-up",
@@ -203,7 +207,7 @@ beforeAll(async () => {
       installationId: staged.installationId,
       artifactDigest: staged.artifactDigest,
       expectedStateDigest: item?.currentStateDigest,
-      capabilities: ["email"],
+      capabilities: ["email", "cms_admin"],
     },
     { ...system, actorId: ownerId, actorKind: "human" },
   );

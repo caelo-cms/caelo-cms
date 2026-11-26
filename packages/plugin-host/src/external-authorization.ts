@@ -113,7 +113,11 @@ export async function readExternalApproval(opts: {
     grantIds: manifest.requestedCapabilities?.length ? state.grants.map((g) => g.id) : [],
     capabilities: manifest.requestedCapabilities ?? [],
     systemActorId: opts.systemActorId,
-    cmsOperations: receiptOperations(state.grants.find((g) => g.capability === "cms_admin")),
+    // The gateway runs no installed plugin's code against core, and the
+    // grants it reads (published_plugin_grants) carry no constraints.
+    cmsOperations: isPublicSideHost(opts.infra)
+      ? null
+      : receiptOperations(state.grants.find((g) => g.capability === "cms_admin")),
   });
 }
 
