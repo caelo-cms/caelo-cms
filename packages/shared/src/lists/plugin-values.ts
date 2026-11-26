@@ -95,8 +95,20 @@ export function escapePluginText(text: string): string {
  * Relative URLs (`/path`, `#anchor`, `?q`) and internal `caelo:` references
  * pass; whitespace, control characters and attribute-ending characters
  * never do, so `java\tscript:` or `"onmouseover=` cannot slip through.
+ *
+ * A link value reaches its attribute as written, and a browser decodes
+ * character references there: `javascript&#58;alert(1)` is
+ * `javascript:alert(1)` to it. So the rule holds for the value as written
+ * and as the browser reads it.
  */
 export function urlProblem(url: string): string | null {
+  const written = decodedUrlProblem(url);
+  if (written !== null || !url.includes("&")) return written;
+  return decodedUrlProblem(asAttributeValue(url));
+}
+
+/** {@link urlProblem} for a URL whose character references are already decoded. */
+function decodedUrlProblem(url: string): string | null {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this refuses.
   if (/[\u0000- \u007f"'<>`\\]/.test(url)) return "url-characters";
   if (url.startsWith("//")) return "url-protocol-relative";
@@ -104,6 +116,27 @@ export function urlProblem(url: string): string | null {
   if (scheme === undefined) return null;
   if (scheme.toLowerCase() === "caelo") return null;
   return ALLOWED_SCHEMES.has(`${scheme.toLowerCase()}:`) ? null : "url-scheme";
+}
+
+/**
+ * `value` as a browser reads it in a double-quoted attribute: character
+ * references decoded by the HTML rules for attributes (`&#58` without a
+ * semicolon is decoded, `&copy=` is not). Called only with a value that
+ * holds no quote or `<`, so it cannot end the attribute it is parsed in.
+ */
+function asAttributeValue(value: string): string {
+  let read: string | null = null;
+  const parser = new Parser(
+    {
+      onattribute(name, decoded) {
+        if (name === "href" && read === null) read = decoded;
+      },
+    },
+    { decodeEntities: true },
+  );
+  parser.write(`<a href="${value}">`);
+  parser.end();
+  return read ?? value;
 }
 
 /**
@@ -124,7 +157,7 @@ export function richtextProblem(html: string): string | null {
         for (const [attr, value] of Object.entries(attributes)) {
           if (attr.startsWith("on")) problem = `attribute-${attr}`;
           else if (attr === "style") problem = "attribute-style";
-          else if (URL_ATTRIBUTES.has(attr)) problem = urlProblem(value);
+          else if (URL_ATTRIBUTES.has(attr)) problem = decodedUrlProblem(value);
           if (problem !== null) return;
         }
       },

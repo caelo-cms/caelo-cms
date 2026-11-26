@@ -61,6 +61,26 @@ describe("links keep to the allowed schemes", () => {
       rule: "url-scheme",
     });
   });
+
+  it("refuses a script URL spelled with character references, as the browser decodes them in the attribute", () => {
+    for (const spelled of [
+      "javascript&#58;alert(1)",
+      "javascript&#58alert(1)",
+      "javascript&#x3A;alert(1)",
+      "javascript&#0000058;alert(1)",
+      "javascript&colon;alert(1)",
+      "&#106;avascript:alert(1)",
+    ]) {
+      expect(urlProblem(spelled)).toBe("url-scheme");
+      expect(checkPluginValue(field("link"), spelled)).toEqual({ ok: false, rule: "url-scheme" });
+    }
+    expect(urlProblem("java&#9;script:alert(1)")).toBe("url-characters");
+    expect(urlProblem("java&Tab;script:alert(1)")).toBe("url-characters");
+    expect(urlProblem("&#47;/evil.example/x")).toBe("url-protocol-relative");
+    // A query keeps its ampersands; `&copy=` is no reference inside an attribute.
+    expect(urlProblem("/a?x=1&amp;y=2")).toBeNull();
+    expect(urlProblem("/a?x=1&copy=2")).toBeNull();
+  });
 });
 
 describe("richtext is prose, refused (never cleaned) otherwise", () => {
