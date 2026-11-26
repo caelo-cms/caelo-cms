@@ -63,10 +63,7 @@ export const load: PageServerLoad = async ({ locals }) => {
         })),
         // #1729 (Q8 A) — the daily AI spending the Owner approves with this
         // exact package, in dollars; the ledger holds the plugin to it.
-        aiDailyCapUsd:
-          manifest.capabilityConstraints?.ai_provider?.maxDailyCostMicrocents === undefined
-            ? null
-            : (manifest.capabilityConstraints.ai_provider.maxDailyCostMicrocents / 1e8).toFixed(2),
+        aiDailyCapUsd: dollars(manifest.capabilityConstraints?.ai_provider?.maxDailyCostMicrocents),
         // #1729 — every mail the plugin can send, as its recipient reads it.
         mails: Object.entries(manifest.mailTemplates ?? {}).map(([name, t]) => ({
           name,
@@ -87,6 +84,11 @@ export const load: PageServerLoad = async ({ locals }) => {
     }),
   };
 };
+/** Microcents as dollars; below a cent with four decimals, so a small cap does not read "$0.00". */
+function dollars(microcents: number | undefined): string | null {
+  if (microcents === undefined) return null;
+  return (microcents / 1e8).toFixed(microcents < 1_000_000 ? 4 : 2);
+}
 function message(error: unknown): string {
   return typeof error === "object" && error && "message" in error
     ? String(error.message)

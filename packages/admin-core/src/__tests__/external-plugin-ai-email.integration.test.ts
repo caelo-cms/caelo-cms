@@ -401,6 +401,28 @@ describe("#1729 ai_provider — an installed plugin spends under the cap approve
     expect(r.ok ? "" : r.error.kind === "HandlerError" ? r.error.message : "").toContain(
       "has no daily AI cap",
     );
+    // An ai_provider receipt without a cap (written past the staging check,
+    // or before it existed) grants no spend either.
+    await onDb(ADMIN_URL as string, async (tx) => {
+      await tx`INSERT INTO plugin_capability_grants (plugin_id, artifact_digest, capability, constraints, approved_by)
+               SELECT plugin_id, artifact_digest, 'ai_provider', '{}'::jsonb, ${system.actorId}::uuid
+               FROM plugin_installation_versions WHERE id = ${none.installationId}::uuid`;
+    });
+    const uncapped = await execute(registry, adapter, system, "ai_ledger.reserve", {
+      spender: {
+        kind: "plugin",
+        pluginId: none.pluginId,
+        actorId: system.actorId,
+        chatSessionId: null,
+      },
+      provider: PROVIDER,
+      model: MODEL,
+      request: { promptTokens: 10, maxOutputTokens: 10 },
+      what: "a probe",
+    });
+    expect(
+      uncapped.ok ? "" : uncapped.error.kind === "HandlerError" ? uncapped.error.message : "",
+    ).toContain("has no daily AI cap");
     // Revoking the grant disables the plugin; the ledger then refuses it too.
     await call(
       "plugins.revoke_capability",
