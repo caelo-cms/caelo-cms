@@ -1,15 +1,206 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #1729 — a plugin value the host refused before it reached a page
- * (docs/dev/external-plugin-brokers.md §4.5; the checks live in the
- * plugin host, `plugin-values.ts`). The refused value is replaced by
+ * #1729 — the values a plugin hands a page, checked before they reach it
+ * (docs/dev/external-plugin-brokers.md §4.5), and what a refused one
+ * becomes. The refused value is replaced by
  * {@link refusedPluginValue}, so the render keeps the spot raw and records
  * `plugin-value-refused:<plugin>.<source>.<field>:<rule>`, a render failure
  * in the #1604 sense: the preview lists it, a Stage ships the spot raw and
  * records it, and Publish live refuses the build. A refusal is never a
  * cleaned value (CLAUDE.md §2, no fallbacks).
  */
+
+import { Parser } from "htmlparser2";
+import type { FieldDef } from "./fields.js";
+
+// ─── The checks (docs/dev/external-plugin-brokers.md §4.5) ──────────────
+//
+// Every composition point that hands a page values (list sources, list
+// overlays, content variants) runs them through {@link checkPluginValue},
+// for every plugin, shipped or installed (decision Q2 A):
+//
+// - `text`, `select`, `icon`: HTML-escaped. A plugin value is data, never
+//   markup.
+// - `link`: a scheme of `https:`, `http:`, `mailto:` or `tel:` (or an
+//   internal `caelo:` reference, which the link resolver checks), never
+//   protocol-relative (`//host`), and none of the characters that end an
+//   attribute.
+// - `richtext`: prose only. Parsed with htmlparser2 and refused (never
+//   cleaned: a cleaned value would be a silent fallback, CLAUDE.md §2) on
+//   an element outside {@link PROSE_ELEMENTS}, an `on*` or `style`
+//   attribute, or a URL attribute the link rule refuses.
+// - `media`: `caelo:media/<id>` of an image in the library (not a
+//   reference image); {@link checkPluginMedia} takes what the media table
+//   says of the ids (the plugin host reads it, `describePluginMedia`).
+//
+// A refusal names the rule (`element-script`, `attribute-onerror`,
+// `url-scheme`, …), which becomes the `plugin-value-refused` render
+// failure with the field it was in.
+
+/** A checked value: what the page may show, or the rule it broke. */
+export type PluginValueCheck =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly rule: string };
+
+/** Elements a plugin's richtext may contain: inline and block prose, nothing that loads or runs. */
+export const PROSE_ELEMENTS: ReadonlySet<string> = new Set([
+  "p",
+  "a",
+  "strong",
+  "em",
+  "ul",
+  "ol",
+  "li",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "blockquote",
+  "code",
+  "br",
+  "span",
+]);
+
+/** Attributes whose value is a URL, held to the link rule wherever they appear. */
+const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
+  "href",
+  "src",
+  "srcset",
+  "cite",
+  "action",
+  "formaction",
+  "poster",
+  "background",
+  "xlink:href",
+]);
+
+const ALLOWED_SCHEMES: ReadonlySet<string> = new Set(["https:", "http:", "mailto:", "tel:"]);
+
+/** Escape text for HTML content and attribute values alike. */
+export function escapePluginText(text: string): string {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+/**
+ * The link rule: the rule a URL breaks, or null when it may reach a page.
+ * Relative URLs (`/path`, `#anchor`, `?q`) and internal `caelo:` references
+ * pass; whitespace, control characters and attribute-ending characters
+ * never do, so `java\tscript:` or `"onmouseover=` cannot slip through.
+ */
+export function urlProblem(url: string): string | null {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this refuses.
+  if (/[\u0000- \u007f"'<>`\\]/.test(url)) return "url-characters";
+  if (url.startsWith("//")) return "url-protocol-relative";
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url)?.[1];
+  if (scheme === undefined) return null;
+  if (scheme.toLowerCase() === "caelo") return null;
+  return ALLOWED_SCHEMES.has(`${scheme.toLowerCase()}:`) ? null : "url-scheme";
+}
+
+/**
+ * The rule a richtext value breaks, or null when it is prose. The parser
+ * decodes entities in attributes, so `jav&#97;script:` is seen as what a
+ * browser would run.
+ */
+export function richtextProblem(html: string): string | null {
+  let problem: string | null = null;
+  const parser = new Parser(
+    {
+      onopentag(name, attributes) {
+        if (problem !== null) return;
+        if (!PROSE_ELEMENTS.has(name)) {
+          problem = `element-${name}`;
+          return;
+        }
+        for (const [attr, value] of Object.entries(attributes)) {
+          if (attr.startsWith("on")) problem = `attribute-${attr}`;
+          else if (attr === "style") problem = "attribute-style";
+          else if (URL_ATTRIBUTES.has(attr)) problem = urlProblem(value);
+          if (problem !== null) return;
+        }
+      },
+      onprocessinginstruction() {
+        problem ??= "processing-instruction";
+      },
+    },
+    { decodeEntities: true, lowerCaseTags: true, lowerCaseAttributeNames: true },
+  );
+  parser.write(html);
+  parser.end();
+  return problem;
+}
+
+/**
+ * Check one value a plugin returned for `field`. The value has already
+ * passed the field's shape check (`validateFieldValue`); this decides
+ * whether it may reach a page, and in which form.
+ */
+export function checkPluginValue(field: FieldDef, value: unknown): PluginValueCheck {
+  if (value === undefined || value === null) return { ok: true, value };
+  switch (field.type) {
+    case "text":
+    case "select":
+    case "icon":
+      return typeof value === "string"
+        ? { ok: true, value: escapePluginText(value) }
+        : { ok: true, value };
+    case "richtext": {
+      if (typeof value !== "string") return { ok: true, value };
+      const problem = richtextProblem(value);
+      return problem === null ? { ok: true, value } : { ok: false, rule: problem };
+    }
+    case "link": {
+      const href =
+        typeof value === "string"
+          ? value
+          : typeof value === "object" && typeof (value as { href?: unknown }).href === "string"
+            ? (value as { href: string }).href
+            : null;
+      if (href === null) return { ok: true, value };
+      const problem = urlProblem(href);
+      return problem === null ? { ok: true, value } : { ok: false, rule: problem };
+    }
+    default:
+      return { ok: true, value };
+  }
+}
+
+/** The media id of a `caelo:media/<id>` value, or null for any other value. */
+export function pluginMediaId(value: unknown): string | null {
+  return typeof value === "string"
+    ? (/^caelo:media\/([0-9a-f-]{36})(?:\/[a-z0-9-]+)?$/.exec(value)?.[1] ?? null)
+    : null;
+}
+
+/** What the host knows of a media asset a plugin value names. */
+export interface PluginMediaFacts {
+  readonly visibility: "library" | "reference";
+  readonly mime: string;
+}
+
+/**
+ * The rule a media value breaks, given what the media table says of the
+ * ids the answer names (`facts`, from {@link describePluginMedia}), or
+ * null when it is an image of the library.
+ */
+export function checkPluginMedia(
+  value: unknown,
+  facts: ReadonlyMap<string, PluginMediaFacts>,
+): string | null {
+  const id = pluginMediaId(value);
+  if (id === null) return null;
+  const asset = facts.get(id);
+  if (!asset) return "media-missing";
+  if (asset.visibility !== "library") return "media-reference";
+  return asset.mime.startsWith("image/") ? null : "media-not-image";
+}
 
 /** Marker kind of a plugin value the host refused. */
 export const PLUGIN_VALUE_REFUSED = "plugin-value-refused";

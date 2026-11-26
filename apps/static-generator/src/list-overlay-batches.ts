@@ -37,6 +37,7 @@ import {
   type ListOverlayIssue,
   type ListOverlayScope,
   type ListRenderData,
+  type PluginMediaFacts,
   pageListOverlayScope,
   type ScopedModule,
 } from "@caelo-cms/shared";
@@ -87,6 +88,8 @@ export class BuildListOverlays {
   readonly #keptPages = new Map<string, Set<string>>();
   /** Per plugin, per variant: the kept part of its answers. */
   readonly #kept = new Map<string, Map<string, VariantOverlay>>();
+  /** #1729 — what the media table says of the media the answers name (§4.5). */
+  readonly #media = new Map<string, PluginMediaFacts>();
   /** The answers of the batch being rendered (issue attribution). */
   #current: ResolvedListOverlays | undefined;
   readonly #issues: ListOverlayIssue[] = [];
@@ -234,6 +237,7 @@ export class BuildListOverlays {
     keepPages: ReadonlySet<string>,
     batch: Map<string, Map<string, VariantOverlay>>,
   ): void {
+    for (const [id, facts] of Object.entries(answer.media ?? {})) this.#media.set(id, facts);
     for (const plugin of answer.plugins) {
       const overlay = plugin.overlays[variant];
       if (!overlay) continue;
@@ -266,7 +270,10 @@ export class BuildListOverlays {
         }
       }
     }
-    return { plugins: toPlugins(merged) };
+    return {
+      plugins: toPlugins(merged),
+      ...(this.#media.size > 0 ? { media: Object.fromEntries(this.#media) } : {}),
+    };
   }
 }
 

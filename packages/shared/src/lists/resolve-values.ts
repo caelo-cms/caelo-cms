@@ -15,6 +15,7 @@
 
 import { parseLinkRef } from "../link-refs.js";
 import type { FieldDef } from "./fields.js";
+import { refusedPluginValueMarker } from "./plugin-values.js";
 import type { ListRenderData } from "./render-data.js";
 import type { ScopeEntry, ScopeValue } from "./scope.js";
 
@@ -141,6 +142,9 @@ export function dateValue(iso: string, env: Pick<ValueEnv, "formatDate">): Scope
  */
 export function fieldValue(field: FieldDef, raw: unknown, env: ValueEnv): ScopeValue {
   if (raw === undefined || raw === null) return emptyValueOf(field);
+  // #1729 — a plugin value the host refused (§4.5) stays raw and fails.
+  const refused = refusedPluginValueMarker(raw);
+  if (refused !== null) return { kind: "failed", marker: refused };
   switch (field.type) {
     case "text":
     case "richtext":

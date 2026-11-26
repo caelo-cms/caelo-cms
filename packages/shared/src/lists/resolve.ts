@@ -48,13 +48,22 @@ import {
   pagedUrl,
   splitPaginationValue,
 } from "./pagination.js";
-import { PLUGIN_VALUE_REFUSED, refusedPluginValueMarker } from "./plugin-values.js";
+import {
+  checkPluginMedia,
+  checkPluginValue,
+  PLUGIN_VALUE_REFUSED,
+  type PluginMediaFacts,
+  pluginValueRefusedMarker,
+  refusedPluginValue,
+  refusedPluginValueMarker,
+} from "./plugin-values.js";
 import { mergeQuerySource } from "./query-merge.js";
 import { parseListRef } from "./refs.js";
 import type {
   ListPageRecord,
   ListRenderData,
   ListRenderDeps,
+  ListVariantOverlay,
   LoadedList,
   PluginSourceEntry,
 } from "./render-data.js";
@@ -285,6 +294,9 @@ interface PreparedOverlay {
   readonly instanceHidden: Set<string>;
   /** pageId → property → value. */
   readonly pageProps: Map<string, Map<string, unknown>>;
+  /** #1729 — who set each value, and the media facts, for the lazy checks. */
+  readonly owners?: ReadonlyMap<string, string>;
+  readonly media?: ReadonlyMap<string, PluginMediaFacts>;
 }
 
 /** Field types an overlay may not replace: they change structure, not text. */
@@ -319,6 +331,8 @@ function prepareOverlays(
       instanceValues: new Map(),
       instanceHidden: new Set(),
       pageProps: new Map(),
+      ...(overlay.owners ? { owners: overlay.owners } : {}),
+      ...(overlay.media ? { media: overlay.media } : {}),
     };
     const refuse = (address: string, reason: string): void => {
       issues.push({ variant, address, reason });
@@ -335,7 +349,13 @@ function prepareOverlays(
         const field = fieldOf(data, hit.list.typeSlug, hit.item.node, fieldName);
         const problem = overlayValueProblem(field, value, address);
         if (problem) refuse(address, problem);
-        else setIn(prepared.listValues, `${listId}/${itemId}`, fieldName, value);
+        else
+          setIn(
+            prepared.listValues,
+            `${listId}/${itemId}`,
+            fieldName,
+            pluginOverlayValue(overlay, field as FieldDef, value, address),
+          );
         continue;
       }
       const im = INSTANCE_VALUE_RE.exec(address);
@@ -361,7 +381,13 @@ function prepareOverlays(
         else {
           const problem = overlayValueProblem(def, value, address);
           if (problem) refuse(address, problem);
-          else setIn(prepared.pageProps, pageId, prop, value);
+          else
+            setIn(
+              prepared.pageProps,
+              pageId,
+              prop,
+              pluginOverlayValue(overlay, def as FieldDef, value, address),
+            );
         }
         continue;
       }
@@ -395,6 +421,34 @@ function fieldOf(
 ): FieldDef | undefined {
   return data.listTypes.get(typeSlug)?.def.nodes[node]?.fields.find((f) => f.name === fieldName);
 }
+
+/**
+ * #1729 — an overlay value a plugin set, held to the rule for its field
+ * (§4.5, `plugin-values.ts`): text escaped, richtext prose, links to the
+ * allowed schemes, media to library images. A refused value becomes its
+ * stand-in, which renders raw and records `plugin-value-refused` (a render
+ * failure that blocks Publish live), never a cleaned or source-language
+ * value. An overlay without owners carries core's own values: unchanged.
+ */
+function pluginOverlayValue(
+  overlay: Pick<ListVariantOverlay, "owners" | "media">,
+  field: FieldDef,
+  value: unknown,
+  address: string,
+): unknown {
+  const owner = overlay.owners?.get(address);
+  if (owner === undefined) return value;
+  const mediaRule =
+    field.type === "media" ? checkPluginMedia(value, overlay.media ?? NO_MEDIA) : null;
+  const checked = mediaRule
+    ? ({ ok: false, rule: mediaRule } as const)
+    : checkPluginValue(field, value);
+  return checked.ok
+    ? checked.value
+    : refusedPluginValue(pluginValueRefusedMarker(owner, "list-resolve", address, checked.rule));
+}
+
+const NO_MEDIA: ReadonlyMap<string, PluginMediaFacts> = new Map();
 
 /** Why an overlay value cannot replace a stored one; null when it can. */
 function overlayValueProblem(
@@ -497,8 +551,16 @@ interface TreeCtx {
   /** Overlay values for an entry id. */
   readonly overlayValues: (itemId: string) => ReadonlyMap<string, unknown> | undefined;
   readonly hidden: (itemId: string) => boolean;
-  /** Validate an overlay value lazily (instance overlays); returns the value to use. */
-  readonly checkOverlay?: (item: ListItem, field: FieldDef, value: unknown) => boolean;
+  /**
+   * Validate an overlay value lazily (instance overlays): the value to use
+   * (#1729: checked for its field, §4.5), or `undefined` to render the
+   * stored one.
+   */
+  readonly checkOverlay?: (
+    item: ListItem,
+    field: FieldDef,
+    value: unknown,
+  ) => { readonly value: unknown } | undefined;
   /** Term entries alias `link` to `landing_page`. */
   readonly termLink: boolean;
 }
@@ -639,7 +701,9 @@ function createPageContext(
     const storedValue = (f: FieldDef): unknown => {
       if (overlayValues?.has(f.name)) {
         const v = overlayValues.get(f.name);
-        if (!tree.checkOverlay || tree.checkOverlay(item, f, v)) return v;
+        if (!tree.checkOverlay) return v;
+        const checked = tree.checkOverlay(item, f, v);
+        if (checked) return checked.value;
       }
       return item.values[f.name];
     };
@@ -1314,7 +1378,8 @@ function createPageContext(
         if (problem && variant !== null && !pageIssues.some((i) => i.address === address)) {
           pageIssues.push({ variant, address, reason: problem });
         }
-        return problem === null;
+        if (problem !== null) return undefined;
+        return { value: overlay ? pluginOverlayValue(overlay, f, v, address) : v };
       },
       termLink: false,
     };
@@ -1386,10 +1451,13 @@ function createPageContext(
           const { list, item } = found[0] as { list: LoadedList; item: ListItem };
           const translated = overlay?.listValues.get(`${list.id}/${item.id}`)?.get("text");
           const raw = translated ?? item.values.text;
+          const refused = refusedPluginValueMarker(raw);
           v =
-            typeof raw === "string"
-              ? text(raw)
-              : { kind: "failed", marker: `site-text-missing:${key}` };
+            refused !== null
+              ? { kind: "failed", marker: refused }
+              : typeof raw === "string"
+                ? text(raw)
+                : { kind: "failed", marker: `site-text-missing:${key}` };
         }
         memo.set(key, v);
         return v;

@@ -104,8 +104,8 @@ A third status, `withdrawn`, is not needed: the one capability it would have des
 
 | Status | Capabilities |
 |---|---|
-| brokered | `cms_admin`, `cms_admin_schema`, `change_journal`, `chat_runner_tools`, `background_workers`, `list_types`, `list_sources`, `link_resolve`, `companion_skills`, `font_assets`, `private_files`, `image_generation`, `site_media_read`, `consent_provider`, `page_output`, `collections`, `batch_jobs`, `visitor_ai`, `ai_provider`, `email` |
-| planned (#1729) | `head_contributions`, `url_slots`, `client_assets`, `list_resolve`, `content_variants` |
+| brokered | `cms_admin`, `cms_admin_schema`, `change_journal`, `chat_runner_tools`, `background_workers`, `list_types`, `list_sources`, `link_resolve`, `list_resolve`, `companion_skills`, `font_assets`, `private_files`, `image_generation`, `site_media_read`, `consent_provider`, `page_output`, `collections`, `batch_jobs`, `visitor_ai`, `ai_provider`, `email` |
+| planned (#1729) | `head_contributions`, `url_slots`, `client_assets`, `content_variants` |
 
 - The 12 brokered capabilities started as `brokered`, the others as `planned` with issue 1729 until each gets its own issue.
 - `external-plugin.ts:34-55` and `loader.ts:887-904` are replaced by a lookup in the record.
@@ -324,6 +324,8 @@ The same rules apply to every point in this group:
 **Mechanism (B)**, entry `$listResolve`. The arguments' `scope` lists (up to 50 000 ids each, `index.ts:569-582`) and the answer are chunked. Values go through §4.5 against the field their address names.
 
 **Depends on** `link_resolve` (the variants come from its partition). **Tests** as for list sources, plus an overlay that tries to add an entry or set a structural `module` value (refused and reported to the plugin's error channel, as today). **Size M.**
+
+**Implemented in Phase B3b.** `$listResolve` names `listResolveOperation`. A scope too big for one wire line is asked in parts (`chunkListResolveScope`: lists, content instances and pages in order, the plugin sources with the first part), and the parts' overlays merge per variant (two parts setting one address to different values throw); each answer is capped at 16 MB while its parts arrive. The value checks run where an overlay value meets its field, in the shared list resolver (`pluginOverlayValue`, `shared/src/lists/resolve.ts`): the pure checks of §4.5 moved to `shared/src/lists/plugin-values.ts` (the plugin host re-exports them), `mergeListOverlays` names the plugin that set each address (`ListVariantOverlay.owners`), and the plugin host attaches what the media table says of every `caelo:media/<id>` the answers carry (`ResolvedListOverlays.media`, carried through the build's overlay batches). A refused value fails with `plugin-value-refused:<plugin>.list-resolve.<address>:<rule>`, so its spot stays raw and Publish live refuses it; it never falls back to the stored, untranslated value. An overlay that does not address a stored value (an invented entry, a structural field, a value failing its field's shape) is still refused and reported to the plugin's error channel, as before. Shipped international-site translates only `text` and `richtext` fields; its text is now escaped (identical on the page for plain text) and its richtext held to prose. `external-list-resolve.integration.test.ts` runs a resolver through staging, approval and activation and the preview (an escaped name, a refused `<script>` description and `javascript:` landing page, a translated entry, an invented entry reported), plus an answer for a variant not asked about, a 17 MB answer, a plugin past its preview budget and a 50 000-id scope asked in four parts; `plugin-overlay-values.test.ts` covers the field rules (text, link schemes, richtext, media), and that values without an owner stay core's.
 
 ### 6.6 `content_variants`
 

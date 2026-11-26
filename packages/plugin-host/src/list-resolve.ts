@@ -35,8 +35,9 @@
  * the same address throw everywhere.
  */
 
+import { isDeepStrictEqual } from "node:util";
 import { type ListResolveScope, listResolveVariantOverlay } from "@caelo-cms/plugin-sdk";
-import type { ListOverlayIssue, ListVariantOverlay } from "@caelo-cms/shared";
+import type { ListOverlayIssue, ListVariantOverlay, PluginMediaFacts } from "@caelo-cms/shared";
 import { z } from "zod";
 import {
   hostInfra,
@@ -47,26 +48,45 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import { describePluginMedia, pluginMediaId } from "./plugin-values.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
+import {
+  assertAnswerSize,
+  RENDER_POINT_CHUNK_BYTES,
+  type RenderPointCall,
+} from "./render-points.js";
 import { recordPluginError } from "./runtime-health.js";
 
-/** Upper bound of one plugin's serialized answer. */
+/** Upper bound of one call's serialized answer. */
 export const LIST_RESOLVE_ANSWER_MAX_BYTES = 16 * 1024 * 1024;
+
+const LIST_RESOLVE_CALL: RenderPointCall = {
+  point: "list-resolve",
+  maxAnswerBytes: LIST_RESOLVE_ANSWER_MAX_BYTES,
+};
+
+/** One variant's overlay of one plugin, as plain JSON. */
+interface PluginVariantOverlay {
+  readonly values: Readonly<Record<string, unknown>>;
+  readonly hidden: readonly string[];
+}
 
 /** One plugin's overlays, as plain JSON (they cross the build RPC). */
 export interface PluginListOverlays {
   readonly slug: string;
-  readonly overlays: Readonly<
-    Record<
-      string,
-      { readonly values: Readonly<Record<string, unknown>>; readonly hidden: readonly string[] }
-    >
-  >;
+  readonly overlays: Readonly<Record<string, PluginVariantOverlay>>;
 }
 
 /** Every contributing plugin's answer for one render. */
 export interface ResolvedListOverlays {
   readonly plugins: readonly PluginListOverlays[];
+  /**
+   * #1729 — what the media table says of every `caelo:media/<id>` the
+   * answers carry (`describePluginMedia`), so the list resolver can hold a
+   * `media` field's overlay to library images (§4.5) without a read of its
+   * own. JSON, like the overlays.
+   */
+  readonly media?: Readonly<Record<string, PluginMediaFacts>>;
 }
 
 const answerSchema = z
@@ -120,44 +140,120 @@ export async function askListResolve(
   const asked = new Set(variants);
   for (const lp of plugins) {
     const operationName = lp.definition.listResolveOperation as string;
-    const pageScope = scopeFor(lp.slug);
     const label = `list-resolve: ${lp.slug}.${operationName}`;
-    const r = await runPluginOperation({
-      invocation: renderInvocation(scope),
-      pluginSlug: lp.slug,
-      operationName,
-      args: { variants: [...variants], ...(pageScope ? { scope: pageScope } : {}) },
-    });
-    if (!r.ok) {
-      const reason = `${label} failed: ${r.error.kind}: ${r.error.message}`;
-      // #1087 — a preview renders the stored values and flags the plugin.
-      if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "list-resolve", reason })) {
-        continue;
+    const overlays: Record<string, { values: Record<string, unknown>; hidden: Set<string> }> = {};
+    let failed = false;
+    // #1729 — a scope too big for one wire line is asked in parts
+    // (render-points.ts); a preview's scope is one page's and fits in one.
+    for (const pageScope of chunkListResolveScope(scopeFor(lp.slug))) {
+      const r = await runPluginOperation({
+        invocation: renderInvocation(scope),
+        pluginSlug: lp.slug,
+        operationName,
+        args: { variants: [...variants], ...(pageScope ? { scope: pageScope } : {}) },
+        maxAnswerBytes: LIST_RESOLVE_ANSWER_MAX_BYTES,
+      });
+      if (!r.ok) {
+        const reason = `${label} failed: ${r.error.kind}: ${r.error.message}`;
+        // #1087 — a preview renders the stored values and flags the plugin.
+        if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "list-resolve", reason })) {
+          failed = true;
+          break;
+        }
+        throw new Error(reason);
       }
-      throw new Error(reason);
-    }
-    const size = JSON.stringify(r.value ?? null).length;
-    if (size > LIST_RESOLVE_ANSWER_MAX_BYTES) {
-      throw new Error(
-        `${label}: the answer is ${size} bytes, more than the ${LIST_RESOLVE_ANSWER_MAX_BYTES} a render accepts`,
-      );
-    }
-    const parsed = answerSchema.safeParse(r.value);
-    if (!parsed.success) {
-      throw new Error(
-        `${label}: expected { overlays: Record<variant, { values, hidden }> }: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
-      );
-    }
-    for (const variant of Object.keys(parsed.data.overlays)) {
-      if (!asked.has(variant)) {
+      // A shipped plugin answers in-process: held to the cap a sandboxed
+      // answer meets while its parts arrive.
+      assertAnswerSize(LIST_RESOLVE_CALL, label, r.value);
+      const parsed = answerSchema.safeParse(r.value);
+      if (!parsed.success) {
         throw new Error(
-          `${label}: answered for variant "${variant}", which this render does not have`,
+          `${label}: expected { overlays: Record<variant, { values, hidden }> }: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
         );
       }
+      for (const [variant, overlay] of Object.entries(parsed.data.overlays)) {
+        if (!asked.has(variant)) {
+          throw new Error(
+            `${label}: answered for variant "${variant}", which this render does not have`,
+          );
+        }
+        const merged = overlays[variant] ?? { values: {}, hidden: new Set<string>() };
+        for (const [address, value] of Object.entries(overlay.values)) {
+          // Parts of one scope may each carry an address (an answer may be
+          // wider than its scope); they must agree on its value.
+          if (
+            Object.hasOwn(merged.values, address) &&
+            !isDeepStrictEqual(merged.values[address], value)
+          ) {
+            throw new Error(
+              `${label}: "${address}" in variant ${variant} has two different values in one render`,
+            );
+          }
+          merged.values[address] = value;
+        }
+        for (const address of overlay.hidden) merged.hidden.add(address);
+        overlays[variant] = merged;
+      }
     }
-    answers.push({ slug: lp.slug, overlays: parsed.data.overlays });
+    if (failed) continue;
+    answers.push({
+      slug: lp.slug,
+      overlays: Object.fromEntries(
+        Object.entries(overlays).map(([variant, o]) => [
+          variant,
+          { values: o.values, hidden: [...o.hidden] },
+        ]),
+      ),
+    });
   }
-  return { plugins: answers };
+  const mediaIds = answers.flatMap((p) =>
+    Object.values(p.overlays).flatMap((o) =>
+      Object.values(o.values).flatMap((v) => {
+        const id = pluginMediaId(v);
+        return id === null ? [] : [id];
+      }),
+    ),
+  );
+  if (mediaIds.length === 0) return { plugins: answers };
+  return {
+    plugins: answers,
+    media: Object.fromEntries(await describePluginMedia(mediaIds)),
+  };
+}
+
+/**
+ * #1729 — a `list-resolve` scope in parts whose JSON stays within the
+ * render-point chunk (512 KB): its lists, content instances and pages
+ * split in order, the plugin sources with the first part. No scope (a
+ * build asks about the whole site) is one call without one.
+ */
+export function chunkListResolveScope(
+  scope: ListResolveScope | undefined,
+  maxBytes = RENDER_POINT_CHUNK_BYTES,
+): (ListResolveScope | undefined)[] {
+  if (scope === undefined) return [undefined];
+  if (Buffer.byteLength(JSON.stringify(scope)) <= maxBytes) return [scope];
+  const parts: ListResolveScope[] = [];
+  const empty = (): ListResolveScope => ({ listIds: [], contentInstanceIds: [], pageIds: [] });
+  let part: ListResolveScope = {
+    ...empty(),
+    ...(scope.sources ? { sources: scope.sources } : {}),
+  };
+  let bytes = Buffer.byteLength(JSON.stringify(part));
+  for (const key of ["listIds", "contentInstanceIds", "pageIds"] as const) {
+    for (const id of scope[key]) {
+      const size = Buffer.byteLength(JSON.stringify(id)) + 1;
+      if (bytes + size > maxBytes && bytes > Buffer.byteLength(JSON.stringify(empty()))) {
+        parts.push(part);
+        part = empty();
+        bytes = Buffer.byteLength(JSON.stringify(part));
+      }
+      (part[key] as string[]).push(id);
+      bytes += size;
+    }
+  }
+  parts.push(part);
+  return parts;
 }
 
 /**
@@ -170,6 +266,10 @@ export function mergeListOverlays(resolved: ResolvedListOverlays): Map<string, L
   const values = new Map<string, Map<string, unknown>>();
   const hidden = new Map<string, Set<string>>();
   const owner = new Map<string, string>();
+  const owners = new Map<string, Map<string, string>>();
+  const media: ReadonlyMap<string, PluginMediaFacts> = new Map(
+    Object.entries(resolved.media ?? {}),
+  );
   for (const p of resolved.plugins) {
     for (const [variant, o] of Object.entries(p.overlays)) {
       const v = values.get(variant) ?? new Map<string, unknown>();
@@ -183,6 +283,9 @@ export function mergeListOverlays(resolved: ResolvedListOverlays): Map<string, L
         }
         owner.set(key, p.slug);
         v.set(address, value);
+        const o = owners.get(variant) ?? new Map<string, string>();
+        o.set(address, p.slug);
+        owners.set(variant, o);
       }
       values.set(variant, v);
       const h = hidden.get(variant) ?? new Set<string>();
@@ -195,6 +298,10 @@ export function mergeListOverlays(resolved: ResolvedListOverlays): Map<string, L
     out.set(variant, {
       values: values.get(variant) ?? new Map(),
       hidden: hidden.get(variant) ?? new Set(),
+      // #1729 — who set each value and what the media table says of the
+      // media they name: the resolver checks each value for its field (§4.5).
+      owners: owners.get(variant) ?? new Map(),
+      media,
     });
   }
   return out;
