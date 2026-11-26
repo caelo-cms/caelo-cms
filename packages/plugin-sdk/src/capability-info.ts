@@ -46,7 +46,8 @@ export const PLUGIN_CAPABILITY_INFO: Readonly<Record<PluginCapability, PluginCap
   },
   head_contributions: {
     label: "Page head and sitemap",
-    allows: "Add metadata to the head of your pages and entries to the sitemap.",
+    allows:
+      "Name the language versions of your pages in their head and the sitemap, set their og:locale, and choose a default share image from your library.",
   },
   url_slots: {
     label: "Page addresses",
