@@ -38,6 +38,12 @@ export interface SandboxInvocation {
   readonly denySdkCalls?: boolean;
   /** Overrides the kind's SDK call limit. */
   readonly callLimit?: number;
+  /**
+   * #1729 — the largest answer accepted, serialized. An answer over one
+   * wire line arrives in parts, capped at this total while they arrive
+   * (render-points.ts). Default: one line.
+   */
+  readonly maxResultBytes?: number;
 }
 
 type SandboxPoolName = "interactive" | "background";
@@ -747,13 +753,31 @@ export async function runSandboxWithBundler(
       },
     });
     let nextCall = 0;
+    const maxResultBytes = invocation.maxResultBytes ?? SANDBOX_MESSAGE_BYTES;
+    const parts: string[] = [];
+    let partBytes = 0;
     for await (const line of sandboxLines(proc.stdout)) {
       if (timedOut) throw new Error("SandboxTimeout");
       const message = sandboxMessage.parse(JSON.parse(line));
       if (message.kind === "error") throw new Error(`SandboxOperationFailed: ${message.message}`);
+      if (message.kind === "part") {
+        // Capped while it arrives: an oversized answer is never assembled.
+        partBytes += Buffer.byteLength(message.text);
+        if (partBytes > maxResultBytes)
+          throw new Error(
+            `SandboxAnswerTooLarge: the answer is more than the ${maxResultBytes} bytes this call accepts`,
+          );
+        parts.push(message.text);
+        continue;
+      }
       if (message.kind === "result") {
         await bounded(invocation.authorize());
-        return message.value;
+        if (message.parts === undefined) {
+          if (parts.length > 0) throw new Error("SandboxPartsUnclaimed");
+          return message.value;
+        }
+        if (message.parts !== parts.length) throw new Error("SandboxPartsIncomplete");
+        return JSON.parse(parts.join(""));
       }
       if (message.id !== nextCall++ || nextCall > callLimit)
         throw new Error("SandboxCallLimitOrSequence");

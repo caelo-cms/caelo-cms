@@ -104,8 +104,8 @@ A third status, `withdrawn`, is not needed: the one capability it would have des
 
 | Status | Capabilities |
 |---|---|
-| brokered | `cms_admin_schema`, `chat_runner_tools`, `background_workers`, `list_types`, `companion_skills`, `font_assets`, `private_files`, `image_generation`, `site_media_read`, `consent_provider`, `page_output`, `collections`, `batch_jobs`, `visitor_ai` |
-| planned (#1729) | `cms_admin`, `ai_provider`, `change_journal`, `email`, `head_contributions`, `url_slots`, `client_assets`, `list_sources`, `list_resolve`, `content_variants`, `link_resolve` |
+| brokered | `cms_admin_schema`, `chat_runner_tools`, `background_workers`, `list_types`, `list_sources`, `companion_skills`, `font_assets`, `private_files`, `image_generation`, `site_media_read`, `consent_provider`, `page_output`, `collections`, `batch_jobs`, `visitor_ai` |
+| planned (#1729) | `cms_admin`, `ai_provider`, `change_journal`, `email`, `head_contributions`, `url_slots`, `client_assets`, `list_resolve`, `content_variants`, `link_resolve` |
 
 - The 12 brokered capabilities started as `brokered`, the others as `planned` with issue 1729 until each gets its own issue.
 - `external-plugin.ts:34-55` and `loader.ts:887-904` are replaced by a lookup in the record.
@@ -141,7 +141,7 @@ A new capability without a status fails the type check and the test. A capabilit
 
 ### 4.4 Sandbox runtime changes
 
-**Implemented in Phase A:** the bundle cache, the two pools, the budget per kind (`SANDBOX_BUDGETS`, `SANDBOX_POOLS` in `packages/plugin-host/src/sandbox-runtime.ts`) and the call limit per kind. The kind of a call comes from its origin (`sandboxKindOf` in `external-plugin.ts`: worker, batch, render with a `renderId` is a preview, any other render a build, the rest interactive), or from `RunPluginOperationOpts.sandboxKind` for calls whose origin does not say it (a journal batch, a rebuild chunk); it travels on the context under the host-only symbol `SANDBOX_KIND` (`sandbox-kind.ts`). Chunked messages and the reserved composition-point entries come with the render-point runtime (PR 8).
+**Implemented in Phase A:** the bundle cache, the two pools, the budget per kind (`SANDBOX_BUDGETS`, `SANDBOX_POOLS` in `packages/plugin-host/src/sandbox-runtime.ts`) and the call limit per kind. The kind of a call comes from its origin (`sandboxKindOf` in `external-plugin.ts`: worker, batch, render with a `renderId` is a preview, any other render a build, the rest interactive), or from `RunPluginOperationOpts.sandboxKind` for calls whose origin does not say it (a journal batch, a rebuild chunk); it travels on the context under the host-only symbol `SANDBOX_KIND` (`sandbox-kind.ts`). **Implemented in Phase B3a:** the render-point runtime (`packages/plugin-host/src/render-points.ts`): the reserved entries (`RENDER_POINT_ENTRIES`, resolved by the child, checked by `$inspect` both ways), page ids in chunks (`chunkPageIds`, by bytes and, for a point whose answer grows with its pages, by count), answers over one line as `part` messages capped at the caller's total (`RunPluginOperationOpts.maxAnswerBytes`, `SANDBOX_ANSWER_BYTES`), and `assertAnswerSize` for an in-process answer. A new point adds one row to `RENDER_POINT_ENTRIES`, asks through `runPluginOperation` with its cap and checks its values with `plugin-values.ts` (§4.5).
 
 Needed by the host-initiated runs and composition points:
 
@@ -166,7 +166,7 @@ All composition points that return values go through one host function, `checkPl
 - `richtext`: CLAUDE.md §1A says richtext is prose. The value is parsed with `htmlparser2` (already a dependency of `plugin-host`) and refused if it contains an element outside an inline and block prose allowlist (`p`, `a`, `strong`, `em`, `ul`, `ol`, `li`, `h2`-`h6`, `blockquote`, `code`, `br`, `span`), any `on*` attribute, `style`, or a URL attribute that fails the `link` rule. It is refused, not cleaned: a cleaned value would be a silent fallback (CLAUDE.md §2), and the refusal names the element and the field.
 - `media`: `caelo:media/<id>`, and the asset must exist and be `library` (not `reference`) on the render's branch.
 
-Q2 decides whether this binds shipped plugins in the same PR.
+Q2 decides whether this binds shipped plugins in the same PR. **Implemented in Phase B3a** for every plugin (`packages/plugin-host/src/plugin-values.ts`): a refused value is replaced by a stand-in the render keeps raw and records as `plugin-value-refused:<plugin>.<source>.<field>:<rule>` (shared `lists/plugin-values.ts`), a render failure in the #1604 sense: listed in the preview, recorded by a Stage, filed by the audit (`render/plugin-value-refused`, fix `get_plugin`), refused by Publish live. Media facts come from `media.describe_many`. The shipped list sources (consent-manager, international-site) declare only `text`, `link` and `boolean` fields, so nothing of theirs is refused; their text is now escaped.
 
 ### 4.6 Adding a broker (checklist, from Phase A on)
 
@@ -290,6 +290,8 @@ The same rules apply to every point in this group:
 **Risk closed.** Stored XSS. A list source fed from an inbox table (visitor text) would put visitor HTML on every page whose module iterates it, because nothing escapes it today (§2.2).
 
 **Tests.** Adversarial: an entry label `<img src=x onerror=…>` renders escaped; a `richtext` entry with `<script>` is refused with the field named; an answer of 5 MB is refused before it is walked; an entry for a page not asked about. **Size M**, including the shared render-point runtime (chunking, render budget, reserved entries, `checkPluginValue`), which ships in this PR because it is the first point to need it.
+
+**Implemented in Phase B3a.** `externalDeclarations` carries `listSources`; the definition names `$listSources` as its `listSourcesOperation`; the call reads private storage read-only on the render's branch; a build asks once per 1000 pages (`LIST_SOURCE_PAGES_PER_CALL`), each answer capped at 4 MB while its parts arrive. `external-list-sources.integration.test.ts` runs it through staging, approval, activation and the preview (escaped label, refused `<script>` richtext and `javascript:` link, a refused render write); measured on Apple silicon, Deno 2.9.6: a preview of a page with an external source took 150-170 ms in all, a build-style resolve of 30 000 pages 1.8-4.4 s in 30 calls (unchunked it could not run: the page ids alone pass the 1 MB line).
 
 ### 6.4 `link_resolve`
 

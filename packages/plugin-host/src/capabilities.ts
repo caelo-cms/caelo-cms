@@ -258,9 +258,16 @@ export async function makePluginContext(
         ? { ...cmsCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
         : cmsCtx;
     }
-    // A render reads core data (the broker refuses its writes) and nothing
-    // of the author handles.
-    if (!visitorContext && invocation.origin === "render") return cmsCtx;
+    // #1729 — a render point (list sources, head entries, …) reads the
+    // plugin's private storage on the render's branch, as a shipped
+    // plugin's render does, and core data through ctx.cms. Both handles
+    // refuse every write from a render (`assertAuthoring`, the cms
+    // broker's pluginAccess rule), so a page view never changes data.
+    if (!visitorContext && invocation.origin === "render") {
+      return approval.capabilities.includes("cms_admin_schema")
+        ? { ...cmsCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+        : cmsCtx;
+    }
     if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return consentCtx;
     const wantsStorage = approval.capabilities.includes("cms_admin_schema");
     const wantsFiles = approval.capabilities.includes("private_files");

@@ -88,11 +88,17 @@ describe("#1729 Q1 A — unattended calls of a runtime-installed plugin", () => 
     }
   });
 
-  it("without the receipt there is no storage, and a render never gets it", async () => {
+  it("without the receipt there is no storage, on any origin", async () => {
     expect((await ctxFor(external([]), { origin: "worker", actorId })).adminQuery).toBeUndefined();
-    expect(
-      (await ctxFor(external(["cms_admin_schema"]), { origin: "render", actorId })).adminQuery,
-    ).toBeUndefined();
+    expect((await ctxFor(external([]), { origin: "render", actorId })).adminQuery).toBeUndefined();
+  });
+
+  it("a render point reads private storage and cannot write it (#1729)", async () => {
+    const render = await ctxFor(external(["cms_admin_schema"]), { origin: "render", actorId });
+    expect(render.adminQuery).toBeDefined();
+    await expect(
+      render.adminQuery?.insert("notes", { body: "x" }) as Promise<unknown>,
+    ).rejects.toThrow("cannot write from a render call");
   });
 
   it("the gateway gets the read-only visitor projection, only when one is declared", async () => {
@@ -137,12 +143,13 @@ describe("#1729 — the cms_admin and change_journal brokers in a runtime-instal
     expect(plain.cms).toBeUndefined();
   });
 
-  it("a render gets core reads through ctx.cms and refuses its writes, and no author handle", async () => {
-    const ctx = await ctxFor(external(["cms_admin_schema", "cms_admin"]), {
+  it("a render gets core reads through ctx.cms and refuses its writes, and no other author handle", async () => {
+    const ctx = await ctxFor(external(["cms_admin_schema", "cms_admin", "private_files"]), {
       origin: "render",
       actorId,
     });
-    expect(ctx.adminQuery).toBeUndefined();
+    // Private storage reads on a render come with the render-point runtime (above).
+    expect(ctx.privateFiles).toBeUndefined();
     expect(ctx.cms).toBeDefined();
     // The registry of this fixture holds nothing: the handle refuses before any database call.
     await expect(ctx.cms?.call("pages.update", {}) as Promise<unknown>).rejects.toThrow(

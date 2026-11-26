@@ -14,6 +14,7 @@ export * from "./page-props.js";
 export * from "./page-type.js";
 export * from "./paginated-render.js";
 export * from "./pagination.js";
+export * from "./plugin-values.js";
 export * from "./refs.js";
 export * from "./render-data.js";
 export * from "./render-deps.js";

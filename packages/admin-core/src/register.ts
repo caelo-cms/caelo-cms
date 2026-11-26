@@ -397,6 +397,7 @@ import {
   listCropsOp,
   mediaDeleteManyOp,
   mediaDeleteOp,
+  mediaDescribeManyOp,
   mediaGetOp,
   mediaGetSettingsOp,
   mediaListOp,
@@ -1601,6 +1602,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(mediaUploadOp);
   registry.register(mediaListOp);
   registry.register(mediaGetOp);
+  registry.register(mediaDescribeManyOp);
   registry.register(mediaUpdateAltOp);
   registry.register(mediaSetSourceOp);
   registry.register(mediaSetVisibilityOp);

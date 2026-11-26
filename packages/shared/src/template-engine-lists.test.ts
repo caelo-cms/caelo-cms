@@ -20,8 +20,13 @@ import {
   TERM,
 } from "./lists/list-fixtures.test.js";
 import { PAGE_KEY_TYPES } from "./lists/page-paths.js";
+import { refusedPluginValue } from "./lists/plugin-values.js";
 import type { LoadedPageType } from "./lists/render-data.js";
-import { createListRenderContext, type ListPageContext } from "./lists/resolve.js";
+import {
+  createListRenderContext,
+  isListFailureMarker,
+  type ListPageContext,
+} from "./lists/resolve.js";
 import {
   isFieldPathMarker,
   renderTemplate,
@@ -792,6 +797,22 @@ describe("lists — plugin sources", () => {
     const r = render(SWITCHER, [], {}, lists);
     expect(r.html).toBe('<nav><a href="/">English</a><a href="/de">Deutsch</a></nav>');
     expect(r.missingSlots).toEqual([]);
+  });
+
+  it("a value the plugin host refused stays raw and fails, the rest renders (#1729)", () => {
+    const marker = "plugin-value-refused:international-site.language_links.label:element-script";
+    const lists = ctx(PAGE.home, {
+      pluginSources: {
+        language_links: [
+          { id: "en", values: { href: "/", label: "English" } },
+          { id: "de", values: { href: "/de", label: refusedPluginValue(marker) } },
+        ],
+      },
+    });
+    const r = render(SWITCHER, [], {}, lists);
+    expect(r.html).toBe('<nav><a href="/">English</a><a href="/de">{{label}}</a></nav>');
+    expect(r.missingSlots).toEqual([marker]);
+    expect(isListFailureMarker(marker)).toBe(true);
   });
 
   it("an empty plugin source renders nothing — that is data", () => {

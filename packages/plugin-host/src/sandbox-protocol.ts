@@ -4,6 +4,13 @@
 import { z } from "zod";
 
 export const SANDBOX_MESSAGE_BYTES = 1_048_576;
+
+/**
+ * UTF-16 code units of an answer's JSON text per `part` message (#1729).
+ * JSON escaping grows a unit to at most 6 bytes (`\u0000`), so a part
+ * stays below {@link SANDBOX_MESSAGE_BYTES} whatever the text holds.
+ */
+export const SANDBOX_PART_UNITS = 128 * 1024;
 export const SANDBOX_CALL_LIMIT = 1024;
 
 /**
@@ -86,7 +93,16 @@ export const sandboxMessage = z.discriminatedUnion("kind", [
       args: z.array(z.unknown()).max(4),
     })
     .strict(),
-  z.object({ kind: z.literal("result"), value: z.unknown() }).strict(),
+  // #1729 — an answer over one line arrives as `part`s of its JSON text,
+  // then a `result` that says how many there were (render-points.ts).
+  z.object({ kind: z.literal("part"), text: z.string() }).strict(),
+  z
+    .object({
+      kind: z.literal("result"),
+      value: z.unknown(),
+      parts: z.number().int().positive().optional(),
+    })
+    .strict(),
   z.object({ kind: z.literal("error"), message: z.string().max(4000) }).strict(),
 ]);
 
