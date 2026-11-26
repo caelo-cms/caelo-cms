@@ -567,6 +567,40 @@ describe("language versions", () => {
     });
     expect(scope?.pageIds).toEqual([P.annaDe, P.post1De].sort());
   });
+
+  it("…and the pages those pages name, transitively, a cycle included", () => {
+    // Anna names her employer (the German team page has a version), the
+    // employer names Anna back.
+    const team = id(20);
+    const teamDe = id(21);
+    const linked = [
+      ...pages.map((p) =>
+        p.id === P.anna || p.id === P.annaDe
+          ? { ...p, properties: { ...p.properties, employer: [ref(team)] } }
+          : p,
+      ),
+      page(team, "Team", { properties: { members: [ref(P.anna)] } }),
+      page(teamDe, "Team (de)"),
+    ];
+    const variants = new Map([
+      ...pageVariants,
+      [team, { variant: "en", group: "team" }],
+      [teamDe, { variant: "de", group: "team" }],
+    ]);
+    const scope = pageListOverlayScope({
+      pageId: P.post1De,
+      data: data({ pages: linked, pageVariants: variants }),
+      modules: [
+        {
+          fields: [],
+          html: "{{#page.props.authors}}{{#props.employer}}{{title}}{{/props.employer}}{{/page.props.authors}}",
+        },
+      ],
+      markup: [],
+      contentInstanceIds: [],
+    });
+    expect(scope?.pageIds).toEqual([P.annaDe, P.post1De, teamDe].sort());
+  });
 });
 
 describe("a template reading page references", () => {

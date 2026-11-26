@@ -18,7 +18,8 @@
  *     and the instances nested in them), whose local lists the overlay
  *     translates.
  *   - pages: the rendered page (`{{page.props.*}}`), the pages its `page`
- *     properties name (#1754: an article's authors, in its language) and,
+ *     properties name and those pages' own, transitively (#1754: an
+ *     article's authors and their organisation, in its language) and,
  *     when a list on the page generates page entries (a query or a system source:
  *     latest news, children, breadcrumbs), every page of the page's
  *     variant that has properties. A props overlay only exists for pages
@@ -95,6 +96,43 @@ function generatesPages(fields: readonly ScopedField[], data: ListRenderData): b
 }
 
 /**
+ * #1754 — every page of `variant` whose properties a render of `pageId` can
+ * show through `page` properties: `{{#page.props.authors}}{{props.role}}…`,
+ * and further down (article → author → organisation), each named page
+ * as the resolver shows it — its version in the variant, else itself.
+ * Walked with a visited set, so a cycle of references ends.
+ */
+function namedPagesOf(data: ListRenderData, pageId: string, variant: string): Set<string> {
+  const members = new Map<string, string[]>();
+  for (const [id, v] of data.pageVariants ?? []) {
+    if (v.group === null) continue;
+    const list = members.get(v.group);
+    if (list) list.push(id);
+    else members.set(v.group, [id]);
+  }
+  const versionsOf = (id: string): readonly string[] => {
+    const group = data.pageVariants?.get(id)?.group ?? null;
+    return group === null ? [id] : (members.get(group) ?? [id]);
+  };
+  const out = new Set<string>();
+  const visited = new Set<string>([pageId]);
+  const queue = [pageId];
+  for (let next = queue.pop(); next !== undefined; next = queue.pop()) {
+    for (const ids of pageRefsOfProperties(data.pages.get(next)?.properties).values()) {
+      for (const id of ids) {
+        for (const version of [id, ...versionsOf(id)]) {
+          if (visited.has(version)) continue;
+          visited.add(version);
+          queue.push(version);
+          if (data.pageVariants?.get(version)?.variant === variant) out.add(version);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * The scope of one page's `list-resolve` call, or null when the page
  * shows nothing an overlay can change (see the file header).
  */
@@ -107,20 +145,8 @@ export function pageListOverlayScope(input: PageListOverlayInput): ListOverlaySc
 
   const pageIds = new Set<string>([pageId]);
   const variant = data.pageVariants?.get(pageId)?.variant;
-  // #1754 — `{{#page.props.authors}}{{props.role}}…` shows the pages the
-  // page names, in its own language: those versions are in the scope.
-  const named = new Set(
-    [...pageRefsOfProperties(data.pages.get(pageId)?.properties).values()].flat(),
-  );
-  if (variant !== undefined && named.size > 0) {
-    const groups = new Set(
-      [...named].map((id) => data.pageVariants?.get(id)?.group).filter((g) => g != null),
-    );
-    for (const [id, v] of data.pageVariants ?? []) {
-      if (v.variant === variant && (named.has(id) || (v.group !== null && groups.has(v.group)))) {
-        pageIds.add(id);
-      }
-    }
+  if (variant !== undefined) {
+    for (const id of namedPagesOf(data, pageId, variant)) pageIds.add(id);
   }
   if (variant !== undefined && modules.some((m) => generatesPages(m.fields, data))) {
     for (const p of data.pages.values()) {

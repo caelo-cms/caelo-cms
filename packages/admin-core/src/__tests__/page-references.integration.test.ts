@@ -216,6 +216,37 @@ describe("writing a page property", () => {
     expect((await storedProperties(P.post1)).authors).toEqual([ref(P.ben), ref(P.anna)]);
   });
 
+  it("a page property's default names its pages like a written value", async () => {
+    await op(SYS, "page_types.upsert_many", {
+      pageTypes: [
+        {
+          slug: `${PFX}note`,
+          name: "Note",
+          purpose: "Short notes, owned by an author",
+          collection: true,
+          templates: [templateId],
+          defaultTemplate: templateId,
+          properties: [
+            {
+              name: "owner",
+              label: "Owner",
+              type: "page",
+              pageType: AUTHOR,
+              default: [ref(P.ben)],
+            },
+          ],
+        },
+      ],
+    });
+    const { pageId } = await op<{ pageId: string }>(SYS, "pages.create", {
+      slug: `${PFX}note-1`,
+      title: "Note one",
+      pageType: `${PFX}note`,
+      templateId,
+    });
+    expect((await storedProperties(pageId)).owner).toEqual([ref(P.ben)]);
+  });
+
   it("a renamed author keeps the reference; the read shows the new path", async () => {
     await op(SYS, "pages.update", { pageId: P.anna, slug: `${PFX}anna-k` });
     expect((await storedProperties(P.post1)).authors).toEqual([ref(P.ben), ref(P.anna)]);
@@ -283,6 +314,12 @@ describe("pages naming a page", () => {
       value: { refers_to: { property: "authors", page: ref(P.ben) } },
     });
     expect(r.items.map((i) => i.title)).toEqual(["Post one"]);
+    // As the list editor shows and sends it before saving: the page's path.
+    const byPath = await op<Preview>(SYS, "lists.preview_source", {
+      source: { ...ARTICLES_OF_SELF, editable: ["refers_to"] },
+      value: { refers_to: { property: "authors", page: `/${PFX}ben` } },
+    });
+    expect(byPath.items.map((i) => i.title)).toEqual(["Post one"]);
   });
 
   it("names a property no page type declares as a page property", async () => {

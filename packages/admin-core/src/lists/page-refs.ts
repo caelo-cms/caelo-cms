@@ -70,7 +70,8 @@ export async function loadPageRefIndex(
   if (fields.length === 0) return NO_PAGE_REFS;
   for (const props of propertySets) {
     for (const f of fields) {
-      const v = props[f.name];
+      // An omitted property takes its default (`fitPageToType`), which is checked too.
+      const v = Object.hasOwn(props, f.name) ? props[f.name] : f.default;
       if (!Array.isArray(v)) continue;
       for (const item of v) {
         const named = typeof item === "string" ? namedBy(item) : null;
