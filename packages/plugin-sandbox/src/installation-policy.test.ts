@@ -43,14 +43,31 @@ describe("explicit external installation grants", () => {
     const refused = () =>
       validateInstallationPolicy({
         ...manifest(),
-        requestedCapabilities: ["cms_admin_schema", "email"],
-        capabilityReasons: { cms_admin_schema: "Notes", email: "Mail" },
-        mailTemplates: undefined,
+        requestedCapabilities: ["cms_admin_schema", "url_slots"],
+        capabilityReasons: { cms_admin_schema: "Notes", url_slots: "Prefix the language" },
       });
     expect(refused).toThrow(
-      "`email` (Sending email) is not available to runtime-installed plugins yet (#1729). Remove it from `requestedCapabilities` and remove `mailTemplates`, `mailUnsubscribe`, which need it.",
+      "`url_slots` (Page addresses) is not available to runtime-installed plugins yet (#1729). Remove it from `requestedCapabilities` and remove `urlContributions`, which needs it.",
     );
     expect(refused).toThrow(/can request: .*cms_admin_schema/);
+  });
+  it("ai_provider needs the daily cap the Owner approves, and only ai_provider takes one (#1729 Q8 A)", () => {
+    const ai = (capabilityConstraints?: Record<string, unknown>) =>
+      validateInstallationPolicy({
+        ...manifest(),
+        requestedCapabilities: ["cms_admin_schema", "ai_provider"],
+        capabilityReasons: { cms_admin_schema: "Notes", ai_provider: "Summaries" },
+        ...(capabilityConstraints ? { capabilityConstraints } : {}),
+      });
+    expect(() => ai()).toThrow("`ai_provider` needs a daily AI spending cap");
+    expect(() => ai({ ai_provider: {} })).toThrow("needs a daily AI spending cap");
+    expect(() => ai({ ai_provider: { maxDailyCostMicrocents: 500_000_000 } })).not.toThrow();
+    expect(() =>
+      ai({
+        ai_provider: { maxDailyCostMicrocents: 1 },
+        cms_admin_schema: { maxDailyCostMicrocents: 1 },
+      }),
+    ).toThrow("limits `ai_provider` only");
   });
   it("requires reviewed capabilities for browser assets", () => {
     expect(() => validateInstallationPolicy({ ...manifest(), hasBuildAssets: true })).toThrow(

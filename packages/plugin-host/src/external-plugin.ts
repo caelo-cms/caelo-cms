@@ -181,6 +181,11 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
       : {}),
     ...(manifest.tableKinds ? { tableKinds: manifest.tableKinds } : {}),
     ...(manifest.requires ? { requires: manifest.requires } : {}),
+    // #1729 — reviewed manifest data: the only mail an installed plugin can
+    // queue (the outbox drain renders it from here), and the unsubscribe
+    // link its tokens are signed for.
+    ...(manifest.mailTemplates ? { mailTemplates: manifest.mailTemplates } : {}),
+    ...(manifest.mailUnsubscribe ? { mailUnsubscribe: manifest.mailUnsubscribe } : {}),
     // Admin panels are reviewed manifest data: an installed plugin gets
     // the same admin pages a shipped one declares (one plugin model).
     ...(manifest.adminPanels ? { adminPanels: manifest.adminPanels } : {}),

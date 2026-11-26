@@ -117,11 +117,14 @@ async function shipped(slug: string): Promise<PluginManifest> {
 async function fixtureManifest(): Promise<PluginManifest> {
   const search = await shipped("site-search");
   const assistant = await shipped("site-assistant");
+  const newsletter = await shipped("newsletter");
   const consent = await shipped("consent-manager");
   const international = await shipped("international-site");
   return {
     ...search,
     ...assistant,
+    mailTemplates: newsletter.mailTemplates,
+    mailUnsubscribe: newsletter.mailUnsubscribe,
     collections: search.collections,
     collectionOperations: search.collectionOperations,
     pageOutputObserver: search.pageOutputObserver,
@@ -133,6 +136,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
     listTypes: search.listTypes,
     listSources: consent.listSources,
     hasLinkResolve: international.hasLinkResolve,
+    hasListResolve: international.hasListResolve,
     linkResolveReads: international.linkResolveReads,
     aiChatOperations: assistant.aiChatOperations,
     changeConsumer: consent.changeConsumer,
@@ -149,6 +153,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
  */
 const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
   hasLinkResolve: "linkResolveOperation",
+  hasListResolve: "listResolveOperation",
   // #1729 (Q7 A) — the slot claims of an installed plugin are its tables:
   // the host builds the encoders from them (url-tables.ts).
   urlContributions: "urlTables",
@@ -306,6 +311,35 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
     expect(listTypes?.length).toBeGreaterThan(0);
     expect(externalDeclarations({ ...probe, listTypes }).listTypes).toEqual(listTypes);
   },
+  // #1729 — the install's AI through the host handle (which reserves under
+  // the plugin's caps), and its mail templates (queue and link, no send).
+  ai_provider: async () => {
+    const fake = fakeHandle(["complete", "generateObject"], { text: "hi" });
+    expect(
+      await sandboxed(
+        `return ctx.ai.complete({ system: "s", messages: [{ role: "user", content: "x" }] })`,
+        { ai: fake.handle },
+      ),
+    ).toEqual({ text: "hi" });
+    expect(fake.calls).toEqual(["complete"]);
+  },
+  email: async () => {
+    const fake = fakeHandle(["queue", "unsubscribeLink"], null);
+    expect(
+      await sandboxed(
+        `await ctx.email.queue({ template: "confirm_subscription", to: "a@example.com" });
+         return typeof ctx.email.send;`,
+        { email: { ...fake.handle, send: async () => ({ messageId: "never" }) } },
+        { origin: "worker", actorId: ID },
+      ),
+    ).toBe("undefined");
+    expect(fake.calls).toEqual(["queue"]);
+    const { mailTemplates, mailUnsubscribe } = await fixtureManifest();
+    expect(externalDeclarations({ ...probe, mailTemplates, mailUnsubscribe })).toMatchObject({
+      mailTemplates,
+      mailUnsubscribe,
+    });
+  },
   list_sources: async () => {
     const listSources = (await fixtureManifest()).listSources;
     expect(listSources?.length).toBeGreaterThan(0);
@@ -381,6 +415,18 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
     expect(
       bySlot["path-prefix"]?.slot === "path-prefix" && bySlot["path-prefix"].encode(bare),
     ).toEqual([]);
+  },
+  list_resolve: async () => {
+    const manifest = { ...probe, hasListResolve: true } as PluginManifest;
+    expect(
+      await renderPoint(
+        `export default {slug:"parity-probe",version:"1.0.0",tier:2,listResolveOperation:"overlays",
+          operations:{overlays:async(ctx,args)=>({overlays:{[args.variants[0]]:{values:{"list/l1/item/i1/label":ctx.invocation.origin},hidden:[]}}})}};`,
+        manifest,
+        "$listResolve",
+        { variants: ["de"] },
+      ),
+    ).toEqual({ overlays: { de: { values: { "list/l1/item/i1/label": "render" }, hidden: [] } } });
   },
   batch_jobs: async () => {
     expect(

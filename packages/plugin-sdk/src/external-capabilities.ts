@@ -40,11 +40,11 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
 > = Object.freeze({
   cms_admin: BROKERED,
   cms_admin_schema: BROKERED,
-  ai_provider: PLANNED,
+  ai_provider: BROKERED,
   chat_runner_tools: BROKERED,
   background_workers: BROKERED,
   change_journal: BROKERED,
-  email: PLANNED,
+  email: BROKERED,
   head_contributions: PLANNED,
   // #1729 (decision Q7 A) — the slots data can describe, read by the host.
   url_slots: Object.freeze({
@@ -54,7 +54,7 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
   client_assets: PLANNED,
   list_sources: BROKERED,
   list_types: BROKERED,
-  list_resolve: PLANNED,
+  list_resolve: BROKERED,
   companion_skills: BROKERED,
   font_assets: BROKERED,
   private_files: BROKERED,

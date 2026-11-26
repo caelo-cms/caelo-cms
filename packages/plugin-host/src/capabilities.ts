@@ -222,10 +222,23 @@ export async function makePluginContext(
     // to visitors (`visitorProjection`), read-only, as for a shipped plugin;
     // a declared public operation is core code running on this handle.
     if (isPublicSideHost(infra)) {
-      return approval.capabilities.includes("cms_admin_schema") &&
+      const gatewayCtx: Mutable<PluginContextTier1> = { ...consentCtx };
+      if (
+        approval.capabilities.includes("cms_admin_schema") &&
         Object.keys(plugin.definition.visitorProjection ?? {}).length > 0
-        ? { ...consentCtx, adminQuery: makeProjectedAdminQuery(plugin, infra) }
-        : consentCtx;
+      ) {
+        gatewayCtx.adminQuery = makeProjectedAdminQuery(plugin, infra);
+      }
+      // #1729 — the declared mail blocks (double opt-in, visitor accounts)
+      // queue the plugin's reviewed templates; no plugin code runs here.
+      if (approval.capabilities.includes("email")) {
+        gatewayCtx.email = makePluginEmail(plugin, infra, {
+          publicAdapter: infra.adapter,
+          publicSide: true,
+          invocation,
+        });
+      }
+      return gatewayCtx;
     }
     // #1729 (§7.1) — core operations through the cms_admin broker: only
     // the operations the receipt names, read-only on a render, on the
@@ -243,6 +256,12 @@ export async function makePluginContext(
             }),
           }
         : consentCtx;
+    // #1729 (§7.2, §7.3) — the AI and mail handles from the receipts, with
+    // the checks a shipped plugin's hold (caps, origins, own templates).
+    // Unlike ctx.cms they are not author data: a call for someone who may
+    // not author keeps them, as a shipped plugin's does.
+    const callCtx = withExternalCallHandles(cmsCtx, plugin, infra, invocation);
+    const nonAuthorCtx = withExternalCallHandles(consentCtx, plugin, infra, invocation);
     // #1729 (decision Q1 A) — a call that acts for nobody (a worker run,
     // `onActivate`, a journal batch or rebuild, an observer, a batch) is
     // the Owner's grant working unattended: private storage as the plugin
@@ -256,8 +275,8 @@ export async function makePluginContext(
       ((UNATTENDED_ORIGINS.has(invocation.origin) && !invocation.chatBranchId) || journalWork)
     ) {
       return approval.capabilities.includes("cms_admin_schema")
-        ? { ...cmsCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
-        : cmsCtx;
+        ? { ...callCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+        : callCtx;
     }
     // #1729 — a render point (list sources, head entries, …) reads the
     // plugin's private storage on the render's branch, as a shipped
@@ -266,10 +285,10 @@ export async function makePluginContext(
     // broker's pluginAccess rule), so a page view never changes data.
     if (!visitorContext && invocation.origin === "render") {
       return approval.capabilities.includes("cms_admin_schema")
-        ? { ...cmsCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
-        : cmsCtx;
+        ? { ...callCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+        : callCtx;
     }
-    if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return consentCtx;
+    if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return nonAuthorCtx;
     const wantsStorage = approval.capabilities.includes("cms_admin_schema");
     const wantsFiles = approval.capabilities.includes("private_files");
     // Image generation stores its results as private files, so it needs both.
@@ -278,15 +297,15 @@ export async function makePluginContext(
     const wantsSiteMedia = approval.capabilities.includes("site_media_read");
     const wantsCms = approval.capabilities.includes("cms_admin");
     if (!wantsStorage && !wantsFiles && !wantsFonts && !wantsSiteMedia && !wantsCms) {
-      return consentCtx;
+      return nonAuthorCtx;
     }
     // Private storage and files are author data: only for someone who may
     // author. Without it the plugin still runs, with the base handles — an
     // operation that needs them then fails at the sandbox broker
     // (SandboxCapabilityDenied), not silently.
-    if (!(await authorMayWrite(infra, approval.systemActorId, invocation))) return consentCtx;
+    if (!(await authorMayWrite(infra, approval.systemActorId, invocation))) return nonAuthorCtx;
     return {
-      ...cmsCtx,
+      ...callCtx,
       ...(wantsStorage ? { adminQuery: makePluginAdminQuery(plugin, infra, invocation) } : {}),
       ...(wantsFiles ? { privateFiles: makePluginPrivateFiles(plugin, infra, invocation) } : {}),
       ...(wantsImages ? { images: makePluginImages(plugin, infra, invocation) } : {}),
@@ -311,7 +330,13 @@ export async function makePluginContext(
     if (requested.has("cms_admin_schema")) {
       tier1.adminQuery = makeProjectedAdminQuery(plugin, infra);
     }
-    if (requested.has("email")) tier1.email = makePluginEmail(plugin, infra, infra.adapter, true);
+    if (requested.has("email")) {
+      tier1.email = makePluginEmail(plugin, infra, {
+        publicAdapter: infra.adapter,
+        publicSide: true,
+        invocation,
+      });
+    }
     return tier1;
   }
   if (requested.has("cms_admin")) {
@@ -328,7 +353,11 @@ export async function makePluginContext(
   }
   if (requested.has("email")) {
     // #1337 — on the admin side a queued mail goes to the live outbox.
-    tier1.email = makePluginEmail(plugin, infra, infra.adapter, false);
+    tier1.email = makePluginEmail(plugin, infra, {
+      publicAdapter: infra.adapter,
+      publicSide: false,
+      invocation,
+    });
   }
   // Shipped plugins get private files on the same author terms as installed ones.
   if (
@@ -362,6 +391,35 @@ export async function makePluginContext(
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+/**
+ * #1729 — the brokered call handles of a runtime-installed plugin on the
+ * admin side, from its receipts: `ctx.ai` (`ai_provider`) and `ctx.email`
+ * (`email`, queue and unsubscribe link only, decision Q5 A). They hold the
+ * same checks as a shipped plugin's (principle 1): the AI one refuses a
+ * render and spends under the plugin's caps, the email one refuses the
+ * origins no mail may come from.
+ */
+function withExternalCallHandles(
+  ctx: PluginContext,
+  plugin: LoadedPlugin,
+  infra: PluginHostInfra,
+  invocation: PluginInvocation,
+): PluginContext | PluginContextTier1 {
+  const capabilities = plugin.externalApproval?.capabilities ?? [];
+  const handles: Mutable<Pick<PluginContextTier1, "ai" | "email">> = {};
+  if (capabilities.includes("ai_provider") && infra.aiProvider) {
+    handles.ai = makePluginAi(plugin, infra, invocation);
+  }
+  if (capabilities.includes("email")) {
+    handles.email = makePluginEmail(plugin, infra, {
+      publicAdapter: infra.adapter,
+      publicSide: false,
+      invocation,
+    });
+  }
+  return { ...ctx, ...handles };
+}
 
 /** Whether the human an authoring invocation acts for may author content. */
 async function authorMayWrite(

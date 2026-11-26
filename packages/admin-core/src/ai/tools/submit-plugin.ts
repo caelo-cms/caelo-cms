@@ -23,6 +23,7 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
     // #1729 — generated from the status record, so it never offers a grant
     // a runtime-installed plugin cannot get.
     `- Requestable capabilities: ${externallyRequestable()}. Any other is refused.\n` +
+    "- `ai_provider` needs a daily cap: `capabilityConstraints.ai_provider.maxDailyCostMicrocents` (100000000 = $1). `email` gives `ctx.email.queue` of the plugin's `mailTemplates` (from a worker, the Owner panel or an approved tool call) and `unsubscribeLink`; no `send`.\n" +
     "- Result has validationErrors[]; on failure read each `hint`, fix the source, resubmit in the same turn.",
   schema: submitPluginToolInput,
   inputSchema: {
