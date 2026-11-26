@@ -92,6 +92,12 @@ export interface ListVariantOverlay {
 export interface PluginSourceEntry {
   readonly id: string;
   readonly values: Readonly<Record<string, unknown>>;
+  /**
+   * #1729 — the plugin that answered it. Its `id` is that plugin's value
+   * too (`{{id}}` is checked where it lands); unset, the plugin is unknown
+   * and the id is still a plugin's.
+   */
+  readonly plugin?: string;
 }
 
 export interface ListRenderData {

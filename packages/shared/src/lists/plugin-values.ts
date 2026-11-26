@@ -13,7 +13,7 @@
  * cleaned value (CLAUDE.md §2, no fallbacks).
  */
 
-import { Parser, Tokenizer } from "htmlparser2";
+import { type DefaultTreeAdapterTypes, defaultTreeAdapter, html as H, parseFragment } from "parse5";
 import { type FieldDef, validateFieldValue } from "./fields.js";
 import type { ListItem } from "./items.js";
 import type { ListTypeDef, NodeDef } from "./list-type.js";
@@ -34,7 +34,7 @@ import type { ListTypeDef, NodeDef } from "./list-type.js";
 //   internal `caelo:` reference, which the link resolver checks), never
 //   protocol-relative (`//host`), and none of the characters that end an
 //   attribute.
-// - `richtext`: prose only. Parsed with htmlparser2 and refused (never
+// - `richtext`: prose only. Parsed as a browser parses it (parse5) and refused (never
 //   cleaned: a cleaned value would be a silent fallback, CLAUDE.md §2) on
 //   an element outside {@link PROSE_ELEMENTS}, an `on*` or `style`
 //   attribute, a URL attribute the link rule refuses, or an end that is
@@ -147,6 +147,12 @@ function decodedUrlProblem(url: string): string | null {
   return ALLOWED_SCHEMES.has(`${scheme.toLowerCase()}:`) ? null : "url-scheme";
 }
 
+/** `html` as a `<body>`'s content, read the way a browser with scripting on reads it. */
+function parseBody(html: string, locations = false): DefaultTreeAdapterTypes.DocumentFragment {
+  const body = defaultTreeAdapter.createElement("body", H.NS.HTML, []);
+  return parseFragment(body, html, { scriptingEnabled: true, sourceCodeLocationInfo: locations });
+}
+
 /**
  * `value` as a browser reads it in a double-quoted attribute: character
  * references decoded by the HTML rules for attributes (`&#58` without a
@@ -154,99 +160,60 @@ function decodedUrlProblem(url: string): string | null {
  * holds no quote or `<`, so it cannot end the attribute it is parsed in.
  */
 function asAttributeValue(value: string): string {
-  let read: string | null = null;
-  const parser = new Parser(
-    {
-      onattribute(name, decoded) {
-        if (name === "href" && read === null) read = decoded;
-      },
-    },
-    { decodeEntities: true },
-  );
-  parser.write(`<a href="${value}">`);
-  parser.end();
-  return read ?? value;
+  const a = parseBody(`<a href="${value}">`).childNodes[0];
+  const href = a && "attrs" in a ? a.attrs.find((x) => x.name === "href") : undefined;
+  return href?.value ?? value;
+}
+
+/** Letters `html` does not hold, so they mark where it ends. */
+function endMarker(html: string): string {
+  const lower = html.toLowerCase();
+  for (let n = 0; ; n += 1) {
+    const mark = `qzxend${n.toString(36)}zq`;
+    if (!lower.includes(mark)) return mark;
+  }
 }
 
 /**
- * The rule a richtext value breaks, or null when it is prose. The parser
- * decodes entities in attributes, so `jav&#97;script:` is seen as what a
- * browser would run.
+ * The rule a richtext value breaks, or null when it is prose. Read the way
+ * a browser reads it (parse5): attribute values are decoded, so
+ * `jav&#97;script:` is seen as what a browser would run, and an element is
+ * whatever the browser makes of the markup. The richtext must also end in
+ * element content: a marker of letters after it must read as text. After
+ * an unfinished tag (`<p onclick=…`, a trailing `<` or `<di`) the browser
+ * drops the marker with the tag, and in an unclosed comment it is the
+ * comment's; the module's own markup after the value would land there.
  */
 export function richtextProblem(html: string): string | null {
-  if (!endsInContent(html)) return "richtext-unfinished";
+  const mark = endMarker(html);
+  const fragment = parseBody(`${html}${mark}`, true);
   let problem: string | null = null;
-  const parser = new Parser(
-    {
-      onopentag(name, attributes) {
-        if (problem !== null) return;
-        if (!PROSE_ELEMENTS.has(name)) {
-          problem = `element-${name}`;
-          return;
+  let ended = false;
+  const walk = (node: DefaultTreeAdapterTypes.ParentNode) => {
+    for (const child of node.childNodes) {
+      if (child.nodeName === "#text") {
+        if ((child as DefaultTreeAdapterTypes.TextNode).value.endsWith(mark)) ended = true;
+      } else if (child.nodeName === "#comment") {
+        const start = child.sourceCodeLocation?.startOffset ?? -1;
+        if (html.startsWith("<?", start)) problem ??= "processing-instruction";
+      } else if ("tagName" in child) {
+        const name = child.tagName.toLowerCase();
+        if (child.namespaceURI !== H.NS.HTML || !PROSE_ELEMENTS.has(name)) {
+          problem ??= `element-${name}`;
         }
-        for (const [attr, value] of Object.entries(attributes)) {
-          if (attr.startsWith("on")) problem = `attribute-${attr}`;
-          else if (attr === "style") problem = "attribute-style";
-          else if (URL_ATTRIBUTES.has(attr)) problem = decodedUrlProblem(value);
-          if (problem !== null) return;
+        for (const a of child.attrs) {
+          const attr = (a.prefix ? `${a.prefix}:${a.name}` : a.name).toLowerCase();
+          if (attr.startsWith("on")) problem ??= `attribute-${attr}`;
+          else if (attr === "style") problem ??= "attribute-style";
+          else if (URL_ATTRIBUTES.has(attr)) problem ??= decodedUrlProblem(a.value);
         }
-      },
-      onprocessinginstruction() {
-        problem ??= "processing-instruction";
-      },
-    },
-    { decodeEntities: true, lowerCaseTags: true, lowerCaseAttributeNames: true },
-  );
-  parser.write(html);
-  parser.end();
-  return problem;
-}
-
-/**
- * Whether `html` ends in element content, so the markup after it is read
- * as the template has it. `x>` is appended: after an unfinished tag (a
- * trailing `<`, `<di`, `</`, an open attribute), an unclosed comment or a
- * trailing `<!`, it completes or continues markup and is no text. (A
- * letter alone would not do: htmlparser2 reports an unfinished tag name
- * at the end as text.)
- */
-function endsInContent(html: string): boolean {
-  const text = `${html}x>`;
-  let last: { kind: "text" | "other"; end: number } = { kind: "other", end: -1 };
-  const other = (_s: number, e: number) => {
-    last = { kind: "other", end: e };
+        walk(child);
+      }
+    }
   };
-  const tokenizer = new Tokenizer(
-    { decodeEntities: false },
-    {
-      onattribdata: other,
-      onattribentity() {},
-      onattribend() {
-        last = { kind: "other", end: -1 };
-      },
-      onattribname: other,
-      oncdata: other,
-      onclosetag: other,
-      oncomment: other,
-      ondeclaration: other,
-      onend() {},
-      onopentagend() {
-        last = { kind: "other", end: -1 };
-      },
-      onopentagname: other,
-      onprocessinginstruction: other,
-      onselfclosingtag() {
-        last = { kind: "other", end: -1 };
-      },
-      ontext(_s, e) {
-        last = { kind: "text", end: e };
-      },
-      ontextentity() {},
-    },
-  );
-  tokenizer.write(text);
-  tokenizer.end();
-  return last.kind === "text" && last.end === text.length;
+  walk(fragment);
+  if (!ended) return "richtext-unfinished";
+  return problem;
 }
 
 /**
@@ -514,6 +481,8 @@ export type PlaceholderContext =
       readonly kind: "url";
       readonly quoted: boolean;
       readonly position: "whole" | "path" | "composed";
+      /** The template's text right before the value ends in `/`: a value starting with `/` or `\` would make `//host`. */
+      readonly afterSlash: boolean;
     }
   | { readonly kind: "refused"; readonly rule: string };
 
@@ -568,6 +537,9 @@ export function contextualPluginValue(
       };
     case "url": {
       if (context.position === "composed") return { ok: false, rule: "url-composed" };
+      if (context.afterSlash && /^[/\\]/.test(value)) {
+        return { ok: false, rule: "url-protocol-relative" };
+      }
       const problem =
         context.position === "whole" ? urlProblem(value) : urlCharactersProblem(value);
       if (problem !== null) return { ok: false, rule: problem };

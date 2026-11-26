@@ -11,44 +11,61 @@
  * decides what a plugin's value becomes there. Core values substitute as
  * they always have.
  *
- * Worked out once per template text: the tags are masked (each `{{…}}`
- * becomes as many `x`, so it reads as one opaque word and every offset
- * stays put), the masked HTML runs through htmlparser2's tokenizer, and
- * each tag takes the context of the span that holds it. The result is kept
- * for the most recent templates ({@link CONTEXT_CACHE_SIZE}); a render with
- * no plugin value never asks.
+ * **The browser's reading decides.** The template is parsed by parse5, an
+ * implementation of the HTML standard's tokenizer and tree construction
+ * (foreign content and its integration points, the scripting flag on as in
+ * a browser), as the content of a `<body>`. A parser that reads HTML
+ * differently from a browser puts a value somewhere other than where the
+ * browser puts it: htmlparser2 read `<script/>`, `<noscript>`, an SVG
+ * `<title>`, `<!-->` and a double-escaped `</script>` differently, and each
+ * difference ran a plugin's value as code (#1732 review).
  *
- * The analysis reads the template with every section rendered once. That
- * holds for every render only when no section can change the HTML state
- * around it: removing a section's block, or repeating it, must leave every
- * other tag where it was. So each section's open and close tag must stand
- * at the same kind of boundary, where joining the text on either side
- * tokenizes as before:
+ * Worked out once per template text and kept for the most recent templates
+ * ({@link CONTEXT_CACHE_SIZE}); a render with no plugin value never asks.
+ * Two readings:
  *
- * - both in element content (not a comment, not `<script>`, `<style>`,
- *   `<title>`, `<textarea>` or another element whose content is text);
- * - both in the value of the same attribute, and not at the start of an
- *   unquoted one (`title={{#a}}x{{/a}} class="…"` would lose its value
- *   and take the next attribute as it);
- * - both between the attributes of the same tag, each right after
- *   whitespace or a closing quote (`<a {{#ext}}target="_blank"{{/ext}}>`);
- *   the open tag may also end the tag name (`<li{{#on}} class="on"{{/on}}>`)
- *   when what follows the close tag cannot continue that name.
+ * - **Values.** Every section rendered once: section, comment and partial
+ *   tags are left out, and each value tag becomes a marker of letters, so it
+ *   reads where a value would (inside a name, a value or text). Where parse5
+ *   puts a marker is where the browser puts the value; a marker it drops (an
+ *   `<img>` inside `<select>`, a repeated attribute) refuses the value.
+ * - **Sections.** Reading with every section rendered once holds for every
+ *   render only when no section can change the HTML state around it:
+ *   removing a block, or repeating it, must leave every other tag where it
+ *   was. Every tag becomes a marker, and a section's open and close tag must
+ *   stand at the same kind of boundary, where joining the text on either
+ *   side reads as before:
+ *   - both in element content of the same HTML or foreign (SVG, MathML)
+ *     context, not in a comment and not in the text of `<script>`,
+ *     `<style>`, `<title>`, `<textarea>`, `<noscript>` or another element
+ *     whose content is text;
+ *   - both in the value of the same attribute, and not at the start of an
+ *     unquoted one (`title={{#a}}x{{/a}} class="…"` would lose its value and
+ *     take the next attribute as it);
+ *   - both between the attributes of the same tag, each right after
+ *     whitespace or a closing quote (`<a {{#ext}}target="_blank"{{/ext}}>`);
+ *     the open tag may also end the tag name (`<li{{#on}} class="on"{{/on}}>`)
+ *     when what follows the close tag cannot continue that name.
  *
- * A section anywhere else (`{{#f}}<!--{{/f}}`, `<{{#f}}x{{/f}}script>`, a
- * name it splits) refuses every plugin value from its open tag on, as
- * `context-conditional-markup`; so does a nested module's partial outside
- * element content. An attribute or element whose name holds a value tag is
- * unknown until the render, so its values are refused too.
+ *   A section anywhere else, a `{{! comment }}` where a section could not
+ *   stand, a nested module's partial outside HTML element content, a
+ *   delimiter change, and a value tag that is all an unquoted attribute
+ *   value holds (it may render empty, and the next attribute becomes the
+ *   value) refuse every plugin value after them, as
+ *   `context-conditional-markup`.
  *
- * Where htmlparser2 and a browser read a template differently, the browser
- * wins: a self-closed text element (`<script/>`, `<textarea/>`) opens all
- * the same, and its content up to the end tag is what the element holds;
- * a script ends where a browser ends it, its escape states included.
+ * An attribute or element a value names is unknown until the render: its
+ * attribute values are refused (`context-tag`), and when the element could
+ * be one that changes how its content is read (`<{{tag}}>` could be
+ * `script` or `svg`), so is every plugin value after it.
  */
 
-import { QuoteType, Tokenizer } from "htmlparser2";
+import { type DefaultTreeAdapterTypes, defaultTreeAdapter, html as H, parseFragment } from "parse5";
 import { isLinkScheme, type PlaceholderContext } from "./lists/plugin-values.js";
+
+type Element = DefaultTreeAdapterTypes.Element;
+type Node = DefaultTreeAdapterTypes.Node;
+type Attribute = Element["attrs"][number];
 
 /** Attributes whose value is a URL: a plugin's value there is held to the link rule. */
 const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
@@ -80,19 +97,32 @@ const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
 const SVG_ANIMATION = new Set(["set", "animate", "animatetransform", "animatemotion"]);
 const SVG_ANIMATION_ATTRIBUTES = new Set(["to", "from", "values", "by", "attributename"]);
 
+/** HTML elements whose content a browser reads as text (RCDATA, RAWTEXT with scripting on, PLAINTEXT). */
+const TEXT_ONLY_ELEMENTS = new Set([
+  "title",
+  "textarea",
+  "xmp",
+  "iframe",
+  "noembed",
+  "noframes",
+  "noscript",
+  "plaintext",
+]);
+
+/** Elements that change how what follows them is read: an element a value names could be one. */
+const READING_ELEMENTS = [...TEXT_ONLY_ELEMENTS, "script", "style", "svg", "math"];
+
 /** How many templates' contexts are kept: enough for every module a build renders over and over. */
 export const CONTEXT_CACHE_SIZE = 512;
 
-/**
- * One `{{…}}` tag: `[start, end)`; `section` for a section tag (`#`, `^`
- * open one, `/` closes it), which carries no value; `partial` for `{{>…}}`,
- * a nested module's markup.
- */
+/** What a `{{…}}` tag is: a value, a section's open or close tag, a comment, a partial, a delimiter change. */
+type TagKind = "value" | "open" | "close" | "comment" | "partial" | "delimiters";
+
+/** One `{{…}}` / `{{{…}}}` tag of a template: `[start, end)` and its kind. */
 interface MustacheSpan {
   readonly start: number;
   readonly end: number;
-  readonly section: "open" | "close" | null;
-  readonly partial: boolean;
+  readonly kind: TagKind;
 }
 
 /** The contexts of one template, by the offset of a tag's `{{`. */
@@ -142,228 +172,41 @@ function mustacheSpans(html: string): MustacheSpan[] {
     let end = close + 2;
     if (html[start + 2] === "{" && html[end] === "}") end += 1;
     const sigil = html.slice(start + 2, close).trimStart()[0];
-    out.push({
-      start,
-      end,
-      section: sigil === "#" || sigil === "^" ? "open" : sigil === "/" ? "close" : null,
-      partial: sigil === ">",
-    });
+    const kind: TagKind =
+      sigil === "#" || sigil === "^"
+        ? "open"
+        : sigil === "/"
+          ? "close"
+          : sigil === "!"
+            ? "comment"
+            : sigil === ">"
+              ? "partial"
+              : sigil === "="
+                ? "delimiters"
+                : "value";
+    out.push({ start, end, kind });
     from = end;
   }
   return out;
 }
 
-/**
- * A span of the masked template and what a tag inside it is. `kind` and
- * `owner` (the offset of the `<` of the tag it belongs to) tell what
- * boundary a section tag inside it stands at.
- */
-interface Region {
-  readonly start: number;
-  readonly end: number;
-  readonly kind:
-    | "text"
-    | "special"
-    | "comment"
-    | "tag-name"
-    | "tag"
-    | "attr-name"
-    | "attr-value"
-    | "markup";
-  readonly owner: number;
-  /** For an attribute value: whether it is quoted. */
-  readonly quoted?: boolean;
-  readonly context: (tag: MustacheSpan) => PlaceholderContext;
-}
-
-/** Elements whose content htmlparser2 and a browser read as text, never as markup. */
-const TEXT_ELEMENTS = new Set([
-  "script",
-  "style",
-  "title",
-  "textarea",
-  "xmp",
-  "iframe",
-  "noembed",
-  "noframes",
-  "plaintext",
-]);
-
-function refused(rule: string): () => PlaceholderContext {
-  const context: PlaceholderContext = { kind: "refused", rule };
-  return () => context;
-}
-
-/** Element content: a plugin's richtext stays markup there. */
 const CONTENT: PlaceholderContext = { kind: "text", markup: true };
-/** A comment or a text-only element: everything is escaped text. */
 const PLAIN_TEXT: PlaceholderContext = { kind: "text", markup: false };
+const refusal = (rule: string): PlaceholderContext => ({ kind: "refused", rule });
 
 function computeContexts(html: string): PlaceholderContexts {
   const tags = mustacheSpans(html);
   const byStart = new Map<number, PlaceholderContext>();
   if (tags.length === 0) return { byStart };
-  let masked = "";
-  let at = 0;
-  for (const t of tags) {
-    masked += html.slice(at, t.start) + "x".repeat(t.end - t.start);
-    at = t.end;
-  }
-  masked += html.slice(at);
+  const markers = markerSet(html);
 
-  const regions: Region[] = [];
-  let element = "";
-  let elementNamed = false;
-  let maskedElement = "";
-  // Text elements whose content a browser reads differently from
-  // htmlparser2: a self-closed one, and every script (its escape states).
-  const browserRead: { readonly element: string; readonly from: number }[] = [];
-  let tagStart = -1;
-  let special: string | null = null;
-  let attr: { name: string; named: boolean; start: number; end: number } | null = null;
-  const name = (s: number, e: number) => masked.slice(s, e).toLowerCase();
-  // A name as it renders: section tags add nothing to it; a value tag makes it unknown.
-  const realName = (s: number, e: number): { name: string; named: boolean } => {
-    let out = "";
-    let at = s;
-    let named = true;
-    for (const t of tags) {
-      if (t.end <= s || t.start >= e) continue;
-      out += html.slice(at, Math.max(at, t.start));
-      if (t.section === null) named = false;
-      at = Math.min(e, t.end);
-    }
-    out += html.slice(at, e);
-    return { name: out.toLowerCase(), named };
-  };
-  const region = (
-    start: number,
-    end: number,
-    kind: Region["kind"],
-    context: Region["context"],
-    owner = -1,
-    quoted?: boolean,
-  ) =>
-    regions.push({ start, end, kind, owner, context, ...(quoted === undefined ? {} : { quoted }) });
-  const tokenizer = new Tokenizer(
-    { decodeEntities: false },
-    {
-      onopentagname(s, e) {
-        tagStart = s - 1;
-        maskedElement = name(s, e);
-        const n = realName(s, e);
-        element = n.name;
-        elementNamed = n.named;
-        region(s, e, "tag-name", refused("context-tag"), tagStart);
-      },
-      onopentagend(endIndex) {
-        // htmlparser2 decides on the name it read: the masked one.
-        special = TEXT_ELEMENTS.has(maskedElement) ? maskedElement : null;
-        if (maskedElement === "script") browserRead.push({ element: "script", from: endIndex + 1 });
-      },
-      onselfclosingtag(endIndex) {
-        special = null;
-        // A browser ignores the `/` of a non-void HTML element: `<script/>`
-        // opens a script all the same. htmlparser2 does not; note the span.
-        if (TEXT_ELEMENTS.has(maskedElement))
-          browserRead.push({ element: maskedElement, from: endIndex + 1 });
-      },
-      onclosetag(s, e) {
-        special = null;
-        region(s, e, "tag", refused("context-tag"), s - 2);
-      },
-      onattribname(s, e) {
-        const n = realName(s, e);
-        attr = { name: n.name, named: n.named, start: -1, end: -1 };
-        region(s, e, "attr-name", refused("context-tag"), tagStart);
-      },
-      onattribdata(s, e) {
-        if (!attr) return;
-        if (attr.start === -1) attr.start = s;
-        attr.end = e;
-      },
-      onattribentity() {},
-      onattribend(quote) {
-        const a = attr;
-        attr = null;
-        if (!a || a.start === -1) return;
-        const quoted = quote === QuoteType.Double || quote === QuoteType.Single;
-        const owner = element;
-        const known = elementNamed && a.named;
-        region(
-          a.start,
-          a.end,
-          "attr-value",
-          known
-            ? (tag) => attributeContext(html, tags, owner, a, quoted, tag)
-            : refused("context-tag"),
-          tagStart,
-          quoted,
-        );
-      },
-      ontext(s, e) {
-        const kind = special;
-        if (kind === "script" || kind === "style")
-          region(s, e, "special", refused(`context-${kind}`));
-        else if (kind === null) region(s, e, "text", () => CONTENT);
-        else region(s, e, "special", () => PLAIN_TEXT);
-      },
-      ontextentity() {},
-      oncomment(s, e) {
-        region(s, e, "comment", () => PLAIN_TEXT);
-      },
-      oncdata(s, e) {
-        region(s, e, "markup", refused("context-markup"));
-      },
-      ondeclaration(s, e) {
-        region(s, e, "markup", refused("context-markup"));
-      },
-      onprocessinginstruction(s, e) {
-        region(s, e, "markup", refused("context-markup"));
-      },
-      onend() {},
-    },
-  );
-  tokenizer.write(masked);
-  tokenizer.end();
-  // What a browser reads as such an element's content replaces what
-  // htmlparser2 read there.
-  for (const { element: el, from } of browserRead) {
-    const to =
-      el === "plaintext"
-        ? masked.length
-        : el === "script"
-          ? scriptEndAt(masked, from)
-          : endTagAt(masked, el, from);
-    const context = el === "script" || el === "style" ? refused(`context-${el}`) : () => PLAIN_TEXT;
-    for (let k = regions.length - 1; k >= 0; k -= 1) {
-      const existing = regions[k] as Region;
-      if (existing.end > from && existing.start < to) regions.splice(k, 1);
-    }
-    region(from, to, "special", context);
-  }
-
-  regions.sort((a, b) => a.start - b.start);
-  let r = 0;
-  const regionOf = (tag: MustacheSpan): Region | null => {
-    while (r < regions.length && (regions[r] as Region).end <= tag.start) r += 1;
-    const found = regions[r];
-    return found && found.start <= tag.start && tag.start < found.end ? found : null;
-  };
-  const regionByTag = new Map<MustacheSpan, Region | null>();
-  for (const tag of tags) regionByTag.set(tag, regionOf(tag));
-
-  const unsafeFrom = conditionalMarkupFrom(html, tags, regionByTag);
-  const conditional: PlaceholderContext = { kind: "refused", rule: "context-conditional-markup" };
-  for (const tag of tags) {
-    if (tag.section !== null) continue;
-    const found = regionByTag.get(tag) ?? null;
+  const values = readValues(html, tags, markers);
+  const unsafeFrom = Math.min(values.unsafeFrom, sectionsUnsafeFrom(html, tags, markers));
+  const conditional = refusal("context-conditional-markup");
+  for (const [i, tag] of tags.entries()) {
+    if (tag.kind !== "value") continue;
     const context =
-      tag.start > unsafeFrom
-        ? conditional
-        : found
-          ? found.context(tag)
-          : ({ kind: "refused", rule: "context-markup" } as const);
+      tag.start > unsafeFrom ? conditional : (values.contexts.get(i) ?? refusal("context-markup"));
     byStart.set(tag.start, context);
     // A triple-stache's inner `{{` is where the section pass sees the tag.
     if (html[tag.start + 2] === "{") byStart.set(tag.start + 1, context);
@@ -371,152 +214,609 @@ function computeContexts(html: string): PlaceholderContexts {
   return { byStart };
 }
 
-/**
- * Where the text content of `element` opened before `from` ends, as a
- * browser finds it: the next `</element` (any case) followed by whitespace,
- * `/` or `>`; the end of the template when none follows.
- */
-function endTagAt(masked: string, element: string, from: number): number {
-  const re = new RegExp(`</${element}[\\t\\n\\f\\r />]`, "gi");
-  re.lastIndex = from;
-  return re.exec(masked)?.index ?? masked.length;
+// ── Markers ────────────────────────────────────────────────────────────
+
+/** Letters a marker's number is written in; the fence around it uses others. */
+const DIGITS = "abcdefghijklmnop";
+
+interface MarkerSet {
+  /** The marker of tag `i`. */
+  mark(i: number): string;
+  /** The tag numbers of the markers in `text`, in order. */
+  find(text: string): number[];
 }
 
 /**
- * Where a script whose content starts at `from` ends, as a browser finds
- * it (HTML, "script data" states): `<!--` enters the escaped state, where
- * a `<script` enters the double-escaped one; there a `</script` only
- * returns to the escaped state, and `-->` returns to plain script data
- * from either (a longer run of dashes before `>` ends in `-->` too).
- * htmlparser2 ends the script at the first `</script`, so
- * `<script><!--<script></script>{{x}}--></script>` holds `{{x}}` to a
- * browser while htmlparser2 reads it as text after the element.
+ * Markers for `html`'s tags: a fence of three different letters from `q`–`z`
+ * that the template does not hold (so no concatenation forms it by
+ * accident), around the tag's number written in `a`–`p`. Letters only:
+ * parse5 lowercases names, and a marker must read where a value would.
  */
-function scriptEndAt(masked: string, from: number): number {
-  const token = /<\/script(?=[\t\n\f\r />])|<script(?=[\t\n\f\r />])|<!--|-->/gi;
-  let state: "data" | "escaped" | "double" = "data";
-  token.lastIndex = from;
-  for (let m = token.exec(masked); m !== null; m = token.exec(masked)) {
-    const t = m[0].toLowerCase();
-    if (t === "</script") {
-      if (state !== "double") return m.index;
-      state = "escaped";
-    } else if (t === "<script") {
-      if (state === "escaped") state = "double";
-    } else if (t === "<!--") {
-      if (state === "data") {
-        state = "escaped";
-        // `<!-->` and `<!--->` close at once: the `--` of `<!--` counts.
-        const rest = /^-*>/.exec(masked.slice(token.lastIndex, token.lastIndex + 64));
-        if (rest) {
-          state = "data";
-          token.lastIndex += rest[0].length;
+function markerSet(html: string): MarkerSet {
+  const lower = html.toLowerCase();
+  const letters = "qrstuvwxyz";
+  let fence: string | null = null;
+  for (const a of letters) {
+    for (const b of letters) {
+      for (const c of letters) {
+        if (a === b || b === c || a === c) continue;
+        if (!lower.includes(`${a}${b}${c}`)) {
+          fence = `${a}${b}${c}`;
+          break;
         }
       }
-    } else {
-      state = "data";
+      if (fence) break;
     }
+    if (fence) break;
   }
-  return masked.length;
+  if (fence === null) {
+    // 720 fences of three letters: a template holding every one is no module.
+    throw new Error("template-contexts: no marker fence is free in this template");
+  }
+  const f = fence;
+  const re = new RegExp(`${f}([${DIGITS}]+)${f}`, "g");
+  return {
+    mark: (i) =>
+      f +
+      i
+        .toString(16)
+        .split("")
+        .map((d) => DIGITS[Number.parseInt(d, 16)])
+        .join("") +
+      f,
+    find: (text) =>
+      text.includes(f)
+        ? [...text.matchAll(re)].map((m) =>
+            Number.parseInt(
+              [...(m[1] as string)].map((d) => DIGITS.indexOf(d).toString(16)).join(""),
+              16,
+            ),
+          )
+        : [],
+  };
+}
+
+// ── Reading a marked template ──────────────────────────────────────────
+
+/** Where parse5 put a marker. */
+type Place =
+  | {
+      readonly at: "text";
+      readonly parent: Element | null;
+      /** The nearest SVG or MathML ancestor (the element itself included), or null. */
+      readonly foreign: Element | null;
+    }
+  | { readonly at: "comment" }
+  | { readonly at: "doctype" }
+  | { readonly at: "tag-name"; readonly element: Element }
+  | {
+      readonly at: "attr-name" | "attr-value";
+      readonly element: Element;
+      readonly attribute: Attribute;
+    };
+
+/** Parse `text` as a `<body>`'s content, the way a browser with scripting on reads it. */
+function parseBody(text: string): DefaultTreeAdapterTypes.DocumentFragment {
+  const body = defaultTreeAdapter.createElement("body", H.NS.HTML, []);
+  return parseFragment(body, text, { sourceCodeLocationInfo: true, scriptingEnabled: true });
+}
+
+/** Every marker of `text`'s parse, by tag number (a marker parse5 copied, as a cloned formatting element's attribute, more than once). */
+function placesOf(text: string, markers: MarkerSet): Map<number, Place[]> {
+  const out = new Map<number, Place[]>();
+  const add = (s: string, place: Place) => {
+    for (const i of markers.find(s)) {
+      const list = out.get(i);
+      if (list) list.push(place);
+      else out.set(i, [place]);
+    }
+  };
+  const walk = (node: Node, parent: Element | null, foreign: Element | null) => {
+    const children: readonly Node[] =
+      "content" in node && node.content
+        ? (node.content as DefaultTreeAdapterTypes.DocumentFragment).childNodes
+        : "childNodes" in node
+          ? node.childNodes
+          : [];
+    for (const child of children) {
+      if (child.nodeName === "#text") {
+        add((child as DefaultTreeAdapterTypes.TextNode).value, { at: "text", parent, foreign });
+      } else if (child.nodeName === "#comment") {
+        add((child as DefaultTreeAdapterTypes.CommentNode).data, { at: "comment" });
+      } else if (child.nodeName === "#documentType") {
+        const d = child as DefaultTreeAdapterTypes.DocumentType;
+        add(`${d.name} ${d.publicId} ${d.systemId}`, { at: "doctype" });
+      } else if ("tagName" in child) {
+        const element = child as Element;
+        add(element.tagName, { at: "tag-name", element });
+        for (const attribute of element.attrs) {
+          add(attributeName(attribute), { at: "attr-name", element, attribute });
+          add(attribute.value, { at: "attr-value", element, attribute });
+        }
+        const inForeign = element.namespaceURI !== H.NS.HTML ? element : foreign;
+        walk(element, element, inForeign);
+      }
+    }
+  };
+  walk(parseBody(text), null, null);
+  return out;
+}
+
+/** An attribute's name as written (`xlink:href` for an adjusted foreign one), lowercased. */
+function attributeName(a: Attribute): string {
+  return (a.prefix ? `${a.prefix}:${a.name}` : a.name).toLowerCase();
+}
+
+/** Where an attribute's source location is, by the name it was written with. */
+function attributeLocation(element: Element, a: Attribute) {
+  const attrs = element.sourceCodeLocation?.attrs;
+  if (!attrs) return undefined;
+  return attrs[attributeName(a)] ?? attrs[a.name] ?? attrs[a.name.toLowerCase()];
 }
 
 /**
- * The boundary a section tag (or a partial) stands at, as a key that a
- * matching close tag must share, or null where it is no safe boundary
- * (see the file note).
+ * The value part of an attribute written at `[start, end)` of `text`:
+ * `[valueStart, valueEnd)` without the quotes, and whether it is quoted.
  */
-function boundaryKey(tag: MustacheSpan, region: Region | null): string | null {
-  if (region === null) return null;
-  switch (region.kind) {
-    case "text":
-      return "text";
-    case "attr-value":
-      return region.quoted === false && region.start === tag.start ? null : `value:${region.start}`;
-    case "attr-name":
-      // Only where it starts a name: right after whitespace or a closing quote.
-      return region.start === tag.start ? `tag:${region.owner}` : null;
+function attributeValueSpan(
+  text: string,
+  start: number,
+  end: number,
+): {
+  readonly valueStart: number;
+  readonly valueEnd: number;
+  readonly quoted: boolean;
+  /** For a quoted value: whether its closing quote is there (`valueEnd` is then its offset). */
+  readonly closed: boolean;
+} | null {
+  const eq = text.indexOf("=", start);
+  if (eq === -1 || eq >= end) return null;
+  let v = eq + 1;
+  while (v < end && /[\t\n\f\r ]/.test(text[v] as string)) v += 1;
+  const q = text[v];
+  if (q === '"' || q === "'") {
+    const closed = text[end - 1] === q && end - 1 > v;
+    return { valueStart: v + 1, valueEnd: closed ? end - 1 : end, quoted: true, closed };
+  }
+  return { valueStart: v, valueEnd: end, quoted: false, closed: false };
+}
+
+// ── Values ─────────────────────────────────────────────────────────────
+
+/** One literal run of the values reading: `len` characters at `a` there, `t` in the template. */
+interface Segment {
+  readonly a: number;
+  readonly t: number;
+  readonly len: number;
+}
+
+/**
+ * The context of every value tag, read with every section rendered once,
+ * and the offset from which an element a value names could change how the
+ * rest is read (Infinity when none).
+ */
+function readValues(
+  html: string,
+  tags: readonly MustacheSpan[],
+  markers: MarkerSet,
+): { readonly contexts: Map<number, PlaceholderContext>; readonly unsafeFrom: number } {
+  let text = "";
+  const segments: Segment[] = [];
+  const markerSpans: { readonly a: number; readonly end: number; readonly tag: number }[] = [];
+  let at = 0;
+  for (const [i, tag] of tags.entries()) {
+    if (tag.start > at) {
+      segments.push({ a: text.length, t: at, len: tag.start - at });
+      text += html.slice(at, tag.start);
+    }
+    if (tag.kind === "value") {
+      const m = markers.mark(i);
+      markerSpans.push({ a: text.length, end: text.length + m.length, tag: i });
+      text += m;
+    }
+    at = tag.end;
+  }
+  if (at < html.length) {
+    segments.push({ a: text.length, t: at, len: html.length - at });
+    text += html.slice(at);
+  }
+
+  // The template offset of the character at `a` of the reading (a marker's: its tag's start).
+  const toTemplate = (a: number): number => {
+    let lo = 0;
+    let hi = segments.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const s = segments[mid] as Segment;
+      if (a < s.a) hi = mid - 1;
+      else if (a >= s.a + s.len) lo = mid + 1;
+      else return s.t + (a - s.a);
+    }
+    const m = markerAt(a);
+    return m ? (tags[m.tag] as MustacheSpan).start : html.length;
+  };
+  // The marker holding the character at `a`, if one does.
+  const markerAt = (a: number) => {
+    let lo = 0;
+    let hi = markerSpans.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const m = markerSpans[mid] as (typeof markerSpans)[number];
+      if (a < m.a) hi = mid - 1;
+      else if (a >= m.end) lo = mid + 1;
+      else return m;
+    }
+    return undefined;
+  };
+  // The template offset just after the character at `a - 1`.
+  const endToTemplate = (a: number): number => {
+    if (a <= 0) return 0;
+    const m = markerAt(a - 1);
+    return m ? (tags[m.tag] as MustacheSpan).end : toTemplate(a - 1) + 1;
+  };
+
+  const places = placesOf(text, markers);
+  const contexts = new Map<number, PlaceholderContext>();
+  let unsafeFrom = Number.POSITIVE_INFINITY;
+  for (const [i, tag] of tags.entries()) {
+    if (tag.kind !== "value") continue;
+    const found = places.get(i) ?? [];
+    const read: PlaceholderContext[] = [];
+    for (const place of found) {
+      if (place.at === "tag-name" && couldChangeReading(place.element.tagName, markers)) {
+        unsafeFrom = Math.min(unsafeFrom, tag.start);
+      }
+      if (place.at === "attr-value" && valueIsOnlyTags(place.attribute, markers, text, place)) {
+        // It may render empty: the browser then takes the next attribute as this value.
+        unsafeFrom = Math.min(unsafeFrom, tag.start);
+      }
+      read.push(valueContext(place, tag, { html, tags, text, toTemplate, endToTemplate, markers }));
+    }
+    const first = read[0];
+    contexts.set(
+      i,
+      first && read.every((c) => JSON.stringify(c) === JSON.stringify(first))
+        ? first
+        : refusal("context-markup"),
+    );
+  }
+  return { contexts, unsafeFrom };
+}
+
+/** Whether an element whose name holds a value (`<{{tag}}>`, `<h{{n}}>`) could be one of {@link READING_ELEMENTS}. */
+function couldChangeReading(tagName: string, markers: MarkerSet): boolean {
+  const name = tagName.toLowerCase();
+  const pieces: string[] = [];
+  let at = 0;
+  for (const i of markers.find(name)) {
+    const m = markers.mark(i);
+    const k = name.indexOf(m, at);
+    pieces.push(name.slice(at, k));
+    at = k + m.length;
+  }
+  pieces.push(name.slice(at));
+  const pattern = new RegExp(
+    `^${pieces.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`,
+  );
+  return READING_ELEMENTS.some((e) => pattern.test(e));
+}
+
+/** Whether an unquoted attribute value holds nothing but tags. */
+function valueIsOnlyTags(
+  attribute: Attribute,
+  markers: MarkerSet,
+  text: string,
+  place: { readonly element: Element },
+): boolean {
+  const loc = attributeLocation(place.element, attribute);
+  if (!loc) return false;
+  const span = attributeValueSpan(text, loc.startOffset, loc.endOffset);
+  if (!span || span.quoted) return false;
+  let rest = attribute.value;
+  for (const i of markers.find(rest)) rest = rest.replace(markers.mark(i), "");
+  return rest === "";
+}
+
+interface ReadingEnv {
+  readonly html: string;
+  readonly tags: readonly MustacheSpan[];
+  readonly text: string;
+  readonly toTemplate: (a: number) => number;
+  readonly endToTemplate: (a: number) => number;
+  readonly markers: MarkerSet;
+}
+
+/** The context of a value tag at `place`. */
+function valueContext(place: Place, tag: MustacheSpan, env: ReadingEnv): PlaceholderContext {
+  switch (place.at) {
+    case "comment":
+      return PLAIN_TEXT;
+    case "doctype":
+      return refusal("context-markup");
     case "tag-name":
-      return region.end === tag.end ? `name-end:${region.owner}` : null;
-    default:
-      return null;
+    case "attr-name":
+      return refusal("context-tag");
+    case "text": {
+      const parent = place.parent;
+      const name = parent?.tagName.toLowerCase() ?? "";
+      if (name === "script") return refusal("context-script");
+      if (name === "style") return refusal("context-style");
+      if (parent?.namespaceURI === H.NS.HTML && TEXT_ONLY_ELEMENTS.has(name)) return PLAIN_TEXT;
+      // Markup inside SVG or MathML leaves it (`<p>` breaks out), so a
+      // richtext there is escaped like every other value.
+      return place.foreign ? PLAIN_TEXT : CONTENT;
+    }
+    case "attr-value": {
+      const element = place.element;
+      const name = attributeName(place.attribute);
+      if (env.markers.find(element.tagName).length > 0 || env.markers.find(name).length > 0) {
+        return refusal("context-tag");
+      }
+      const loc = attributeLocation(element, place.attribute);
+      const span = loc ? attributeValueSpan(env.text, loc.startOffset, loc.endOffset) : null;
+      if (!loc || !span) return refusal("context-markup");
+      return attributeContext(element, name, span.quoted, tag, {
+        html: env.html,
+        tags: env.tags,
+        // After the opening quote, or the `=` (or space) before an unquoted value.
+        start: env.toTemplate(span.valueStart - 1) + 1,
+        end: span.closed ? env.toTemplate(span.valueEnd) : env.endToTemplate(span.valueEnd),
+      });
+    }
   }
 }
 
-/** What may follow a section that opened at the end of a tag name: no name character. */
-const ENDS_TAG_NAME = /[\t\n\f\r />]/;
-
-/** Whether a section from a boundary `open` to `close` (at `tag`) leaves the HTML around it as it is. */
-function sectionKeeps(
-  html: string,
-  open: string | null,
-  close: string | null,
+/** The context of `tag` inside the value of attribute `n` of `element`. */
+function attributeContext(
+  element: Element,
+  n: string,
+  quoted: boolean,
   tag: MustacheSpan,
-): boolean {
-  if (open === null || close === null) return false;
-  if (!open.startsWith("name-end:")) return open === close;
-  // Without the block, what follows the close tag joins the tag name.
-  return (
-    close === `tag:${open.slice("name-end:".length)}` && ENDS_TAG_NAME.test(html[tag.end] ?? "")
-  );
+  value: {
+    readonly html: string;
+    readonly tags: readonly MustacheSpan[];
+    readonly start: number;
+    readonly end: number;
+  },
+): PlaceholderContext {
+  const el = element.tagName.toLowerCase();
+  const ns = element.namespaceURI;
+  if (n.startsWith("on")) return refusal("context-event-handler");
+  if (n === "style") return refusal("context-style-attribute");
+  if (n === "srcdoc") return refusal("context-srcdoc");
+  if (ns === H.NS.HTML && el === "meta") return refusal("context-meta");
+  if (ns === H.NS.HTML && el === "base") return refusal("context-base");
+  if (ns === H.NS.SVG && SVG_ANIMATION.has(el) && SVG_ANIMATION_ATTRIBUTES.has(n)) {
+    return refusal("context-svg-animation");
+  }
+  const target = loadsOrSends(ns, el, n);
+  if (target) return refusal(target);
+  if (!URL_ATTRIBUTES.has(n)) return { kind: "attribute", quoted };
+  const { position, afterSlash } = urlPosition(value.html, value.tags, n, value, tag);
+  if (position === "template-scheme") return refusal("context-url-scheme");
+  return { kind: "url", quoted, position, afterSlash };
 }
+
+/**
+ * The rule for a URL attribute whose target the page runs as code or
+ * hands a form to, or null: a plugin's value never becomes code, and a
+ * link rule that admits any https address would load a script from it.
+ */
+function loadsOrSends(ns: string, el: string, n: string): string | null {
+  if (n === "formaction" || (el === "form" && n === "action")) return "context-form-target";
+  if (ns === H.NS.SVG)
+    return el === "script" && (n === "href" || n === "xlink:href") ? "context-code-url" : null;
+  if (ns !== H.NS.HTML) return null;
+  const code =
+    (el === "script" && n === "src") ||
+    (el === "link" && (n === "href" || n === "imagesrcset")) ||
+    ((el === "iframe" || el === "frame" || el === "embed" || el === "portal") && n === "src") ||
+    (el === "object" && (n === "data" || n === "codebase" || n === "classid" || n === "archive")) ||
+    (el === "applet" && (n === "code" || n === "codebase" || n === "archive")) ||
+    (el === "html" && n === "manifest");
+  return code ? "context-code-url" : null;
+}
+
+// ── Sections ───────────────────────────────────────────────────────────
 
 /**
  * The offset from which the section structure can change the HTML state
- * around a tag (a section whose open and close tag stand at different or
- * unsafe boundaries, an unbalanced section, a partial outside element
- * content), or Infinity when it cannot.
+ * around a tag (see the file note), or Infinity when it cannot.
  */
-function conditionalMarkupFrom(
+function sectionsUnsafeFrom(
   html: string,
   tags: readonly MustacheSpan[],
-  regionByTag: ReadonlyMap<MustacheSpan, Region | null>,
+  markers: MarkerSet,
 ): number {
+  const boundary = (k: TagKind) => k !== "value";
+  if (!tags.some((t) => boundary(t.kind))) return Number.POSITIVE_INFINITY;
+
+  // First reading: which boundary markers end a name (`<li{{#a}}`, the
+  // valueless `disabled{{/a}}`, an unquoted `x=1{{/a}}`).
+  const first = markedTemplate(html, tags, markers, new Set());
+  const firstPlaces = placesOf(first.text, markers);
+  const glued = new Set<number>();
+  const tagNameEnd = new Set<number>();
+  for (const [i, tag] of tags.entries()) {
+    if (!boundary(tag.kind)) continue;
+    const p = firstPlaces.get(i);
+    const place = p?.length === 1 ? p[0] : undefined;
+    const ends = place ? endsName(place, markers.mark(i)) : false;
+    if (ends) glued.add(i);
+    if (ends && place?.at === "tag-name") tagNameEnd.add(i);
+  }
+  // Second reading: a marker that ended a tag name stands apart, so the
+  // element is the one a render has (`<script{{#a}} x{{/a}}>` is a script
+  // either way). An attribute's name or value does not change how what
+  // follows is read.
+  const second = tagNameEnd.size > 0 ? markedTemplate(html, tags, markers, tagNameEnd) : first;
+  const places = tagNameEnd.size > 0 ? placesOf(second.text, markers) : firstPlaces;
+
+  const ids = new Map<Element, number>();
+  const id = (e: Element) => {
+    let n = ids.get(e);
+    if (n === undefined) {
+      n = ids.size;
+      ids.set(e, n);
+    }
+    return n;
+  };
+  const cdata = html.includes("<![CDATA[");
+  const key = (i: number): Boundary | null => {
+    const found = places.get(i);
+    if (found?.length !== 1) return null;
+    const place = found[0] as Place;
+    const at = second.at[i] as number;
+    switch (place.at) {
+      case "text": {
+        const parent = place.parent;
+        const name = parent?.tagName.toLowerCase() ?? "";
+        if (name === "script" || name === "style") return null;
+        if (parent?.namespaceURI === H.NS.HTML && TEXT_ONLY_ELEMENTS.has(name)) return null;
+        // In foreign content a CDATA section is text too; a block could end it.
+        if (place.foreign && cdata) return null;
+        return { key: `text:${place.foreign ? id(place.foreign) : "html"}`, glued: false };
+      }
+      case "attr-value": {
+        const loc = attributeLocation(place.element, place.attribute);
+        const span = loc ? attributeValueSpan(second.text, loc.startOffset, loc.endOffset) : null;
+        if (!span || (!span.quoted && span.valueStart === at)) return null;
+        return {
+          key: `value:${id(place.element)}:${attributeName(place.attribute)}`,
+          glued: false,
+        };
+      }
+      case "attr-name": {
+        const loc = attributeLocation(place.element, place.attribute);
+        // It starts a name (after whitespace or a closing quote), or ends
+        // one that has no value (`disabled{{/a}}`).
+        if (loc?.startOffset !== at && !glued.has(i)) return null;
+        return { key: `tag:${id(place.element)}`, glued: glued.has(i) };
+      }
+      default:
+        return null;
+    }
+  };
+
   let from = Number.POSITIVE_INFINITY;
-  const open: { readonly tag: MustacheSpan; readonly key: string | null }[] = [];
-  for (const tag of tags) {
-    const key = boundaryKey(tag, regionByTag.get(tag) ?? null);
-    if (tag.partial) {
-      if (key !== "text") from = Math.min(from, tag.start);
-    } else if (tag.section === "open") {
-      open.push({ tag, key });
-    } else if (tag.section === "close") {
-      const o = open.pop();
-      if (o === undefined) return 0;
-      if (!sectionKeeps(html, o.key, key, tag)) from = Math.min(from, o.tag.start);
+  const open: { readonly tag: MustacheSpan; readonly key: Boundary | null }[] = [];
+  for (const [i, tag] of tags.entries()) {
+    switch (tag.kind) {
+      case "value":
+        break;
+      case "open":
+        open.push({ tag, key: key(i) });
+        break;
+      case "close": {
+        const o = open.pop();
+        if (o === undefined) return 0;
+        if (!sectionKeeps(html, o.key, key(i), o.tag, tag)) from = Math.min(from, o.tag.start);
+        break;
+      }
+      case "comment": {
+        // A comment is a section with no block.
+        const k = key(i);
+        if (!sectionKeeps(html, k, k, tag, tag)) from = Math.min(from, tag.start);
+        break;
+      }
+      case "partial":
+        if (key(i)?.key !== "text:html") from = Math.min(from, tag.start);
+        break;
+      case "delimiters":
+        from = Math.min(from, tag.start);
+        break;
     }
   }
   for (const o of open) from = Math.min(from, o.tag.start);
   return from;
 }
 
-/** The context of `tag` inside the value of `attr` on `element`. */
-function attributeContext(
+/**
+ * `html` with every tag as its marker, a space before those in `apart`;
+ * `at[i]` is where tag `i`'s marker starts.
+ */
+function markedTemplate(
   html: string,
   tags: readonly MustacheSpan[],
-  element: string,
-  attr: { readonly name: string; readonly start: number; readonly end: number },
-  quoted: boolean,
-  tag: MustacheSpan,
-): PlaceholderContext {
-  const n = attr.name;
-  if (n.startsWith("on")) return { kind: "refused", rule: "context-event-handler" };
-  if (n === "style") return { kind: "refused", rule: "context-style-attribute" };
-  if (n === "srcdoc") return { kind: "refused", rule: "context-srcdoc" };
-  if (element === "meta") return { kind: "refused", rule: "context-meta" };
-  if (element === "base") return { kind: "refused", rule: "context-base" };
-  if (SVG_ANIMATION.has(element) && SVG_ANIMATION_ATTRIBUTES.has(n)) {
-    return { kind: "refused", rule: "context-svg-animation" };
+  markers: MarkerSet,
+  apart: ReadonlySet<number>,
+): { readonly text: string; readonly at: number[] } {
+  let text = "";
+  const at: number[] = [];
+  let from = 0;
+  for (const [i, tag] of tags.entries()) {
+    text += html.slice(from, tag.start);
+    if (apart.has(i)) text += " ";
+    at[i] = text.length;
+    text += markers.mark(i);
+    from = tag.end;
   }
-  if (!URL_ATTRIBUTES.has(n)) return { kind: "attribute", quoted };
-  const position = urlPosition(html, tags, attr, tag);
-  if (position === "template-scheme") return { kind: "refused", rule: "context-url-scheme" };
-  return { kind: "url", quoted, position };
+  return { text: text + html.slice(from), at };
 }
 
 /**
- * A part of an attribute value: literal text (as a browser reads it, at
- * its section depth), a value tag, or a section tag (`#`/`^` open one,
- * `/` closes it), which carries no value.
+ * A boundary a section tag stands at: `key` names it (a matching tag must
+ * share it), `glued` when the tag ends a name, so a name character after
+ * the block would continue that name.
+ */
+interface Boundary {
+  readonly key: string;
+  readonly glued: boolean;
+}
+
+/**
+ * Whether a boundary marker at `place` (first reading) ends a tag name or
+ * a valueless attribute name, written right after its last character.
+ */
+function endsName(place: Place, mark: string): boolean {
+  const name =
+    place.at === "tag-name"
+      ? place.element.tagName.toLowerCase()
+      : place.at === "attr-name" && place.attribute.value === ""
+        ? attributeName(place.attribute)
+        : "";
+  return name.length > mark.length && name.endsWith(mark);
+}
+
+/** What ends a name or an unquoted value: whitespace, `/` or `>`. */
+const ENDS_NAME = /[\t\n\f\r />]/;
+
+/**
+ * Whether a section from boundary `open` (the open tag `from`) to `close`
+ * (the close tag `to`) leaves the HTML around it as it is: both at the same
+ * boundary, and no name continued across the block. A comment is a section
+ * with no block (`from` is `to`).
+ */
+function sectionKeeps(
+  html: string,
+  open: Boundary | null,
+  close: Boundary | null,
+  from: MustacheSpan,
+  to: MustacheSpan,
+): boolean {
+  if (open === null || close === null || open.key !== close.key) return false;
+  // Inside one attribute value a block only adds characters to that value.
+  if (!open.key.startsWith("tag:")) return true;
+  // Without the block, what follows the close tag joins the name the open tag ended.
+  if (open.glued && !ENDS_NAME.test(html[to.end] ?? "")) return false;
+  // Repeated, the block's start joins the name its end ends.
+  if (
+    close.glued &&
+    from !== to &&
+    from.end !== to.start &&
+    !ENDS_NAME.test(html[from.end] ?? "")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+// ── URL attributes ─────────────────────────────────────────────────────
+
+/**
+ * A part of an attribute value: literal text (as written, at its section
+ * depth), a value tag, or a section tag (`#`/`^` open one, `/` closes it),
+ * which carries no value. Comments and partials carry none either.
  */
 type Part =
   | { readonly kind: "text"; readonly text: string; readonly conditional: boolean }
@@ -527,19 +827,33 @@ type Part =
 /** What `tag`'s place in its URL attribute is ({@link urlPosition}). */
 type UrlPosition = "whole" | "path" | "composed" | "template-scheme";
 
+/** The index of the first tag ending after `offset` (tags are in order and do not overlap). */
+function firstTagAfter(tags: readonly MustacheSpan[], offset: number): number {
+  let lo = 0;
+  let hi = tags.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((tags[mid] as MustacheSpan).end <= offset) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 /**
- * Where `tag` sits in its URL attribute's value, judged on the template's
- * text as written, with only text outside sections taken as always there
- * (a section may render nothing). A `&` in that text before the scheme
- * part ends could start a character reference the browser completes with
- * the value or with text a section adds (`{{x}}&#58;…`, `jav&#{{x}};…`),
- * so it makes the URL composed: no analysis of pieces can say what such a
- * reference decodes to. (A plugin's own `&` reaches a URL as `&amp;`, see
- * `contextualPluginValue`, so the value starts none.)
+ * Where `tag` sits in its URL attribute's value `[value.start, value.end)`,
+ * judged on the template's text as written, with only text outside sections
+ * taken as always there (a section may render nothing). A `&` in that text
+ * before the scheme part ends could start a character reference the
+ * browser completes with the value or with text a section adds
+ * (`{{x}}&#58;…`, `jav&#{{x}};…`), so it makes the URL composed: no
+ * analysis of pieces can say what such a reference decodes to. (A plugin's
+ * own `&` reaches a URL as `&amp;`, see `contextualPluginValue`, so the
+ * value starts none.)
  *
  * - `path`: unconditional template text before it ends the scheme part
  *   (`/de/{{slug}}`, `mailto:{{x}}`); the value can only be a path, query
- *   or fragment;
+ *   or fragment. `afterSlash` when that text ends in `/`: a value starting
+ *   with `/` would make `//host`;
  * - `template-scheme`: that text names a scheme that is no link scheme
  *   (`javascript:{{x}}`): the value would be code;
  * - `composed`: the scheme could be made of the value and other parts:
@@ -555,42 +869,36 @@ type UrlPosition = "whole" | "path" | "composed" | "template-scheme";
 function urlPosition(
   html: string,
   tags: readonly MustacheSpan[],
-  attr: { readonly name: string; readonly start: number; readonly end: number },
+  name: string,
+  value: { readonly start: number; readonly end: number },
   tag: MustacheSpan,
-): UrlPosition {
+): { readonly position: UrlPosition; readonly afterSlash: boolean } {
   const parts: Part[] = [];
   let depth = 0;
-  let at = attr.start;
+  let at = value.start;
   const text = (from: number, to: number) => {
-    if (to > from) {
-      parts.push({
-        kind: "text",
-        text: html.slice(from, to),
-        conditional: depth > 0,
-      });
-    }
+    if (to > from) parts.push({ kind: "text", text: html.slice(from, to), conditional: depth > 0 });
   };
-  for (const t of tags) {
-    if (t.end <= attr.start || t.start >= attr.end) continue;
+  for (let k = firstTagAfter(tags, value.start); k < tags.length; k += 1) {
+    const t = tags[k] as MustacheSpan;
+    if (t.start >= value.end) break;
     text(at, t.start);
-    if (!t.section) parts.push({ kind: "value", start: t.start, conditional: depth > 0 });
-    else {
-      const sigil = html.slice(t.start + 2, t.end).trimStart()[0];
-      if (sigil === "/") {
-        parts.push({ kind: "close" });
-        depth = Math.max(0, depth - 1);
-      } else {
-        parts.push({ kind: "open" });
-        depth += 1;
-      }
+    if (t.kind === "value") parts.push({ kind: "value", start: t.start, conditional: depth > 0 });
+    else if (t.kind === "close") {
+      parts.push({ kind: "close" });
+      depth = Math.max(0, depth - 1);
+    } else if (t.kind === "open") {
+      parts.push({ kind: "open" });
+      depth += 1;
     }
     at = t.end;
   }
-  text(at, attr.end);
-  const srcset = attr.name === "srcset" || attr.name === "imagesrcset";
+  text(at, value.end);
+  const composed = { position: "composed", afterSlash: false } as const;
+  const srcset = name === "srcset" || name === "imagesrcset";
   const index = parts.findIndex((p) => p.kind === "value" && p.start === tag.start);
   const self = parts[index];
-  if (self?.kind === "value" && self.conditional) return "composed";
+  if (self === undefined || (self.kind === "value" && self.conditional)) return composed;
 
   // Before the value: from the last unconditional comma of a srcset on.
   let from = 0;
@@ -598,7 +906,7 @@ function urlPosition(
     for (let k = index - 1; k >= 0; k -= 1) {
       const p = parts[k] as Part;
       if (p.kind === "text" && p.text.includes(",")) {
-        if (p.conditional) return "composed";
+        if (p.conditional) return composed;
         from = k;
         break;
       }
@@ -606,38 +914,41 @@ function urlPosition(
   }
   let prefix = "";
   for (const [k, p] of parts.slice(from, index).entries()) {
-    if (p.kind === "value") return "composed";
+    if (p.kind === "value") return composed;
     // A section tag renders only its own block, whose text counts below.
     if (p.kind !== "text") continue;
     const t = srcset && k === 0 ? p.text.slice(p.text.lastIndexOf(",") + 1) : p.text;
     if (p.conditional && !/[:/?#]/.test(prefix)) {
-      if (t.trim() !== "") return "composed";
+      if (t.trim() !== "") return composed;
       continue;
     }
     prefix += t;
   }
   const end = prefix.search(/[:/?#]/);
-  if (prefix.slice(0, srcset || end === -1 ? prefix.length : end).includes("&")) return "composed";
+  if (prefix.slice(0, srcset || end === -1 ? prefix.length : end).includes("&")) return composed;
   if (end !== -1) {
-    if (prefix[end] !== ":") return "path";
+    const afterSlash = prefix.endsWith("/") || prefix.endsWith("\\");
+    if (prefix[end] !== ":") return { position: "path", afterSlash };
     const scheme = prefix
       .slice(0, end)
       .replace(/[\t\n\r]/g, "")
       // biome-ignore lint/suspicious/noControlCharactersInRegex: the URL parser strips them.
-      .replace(/^[\u0000-\u0020]+/, "");
-    return isLinkScheme(scheme) ? "path" : "template-scheme";
+      .replace(/^[\u0000- ]+/, "");
+    return isLinkScheme(scheme)
+      ? { position: "path", afterSlash }
+      : { position: "template-scheme", afterSlash: false };
   }
-  if (prefix.trim() !== "") return "composed";
+  if (prefix.trim() !== "") return composed;
 
   // After the value: up to the first unconditional end of the scheme part.
   const ends = srcset ? /[/?#,\s]/ : /[/?#]/;
   for (const p of parts.slice(index + 1)) {
     if (p.kind === "open" || p.kind === "close") continue;
-    if (p.kind === "value") return "composed";
+    if (p.kind === "value") return composed;
     const stop = p.conditional ? -1 : p.text.search(ends);
     const head = stop === -1 ? p.text : p.text.slice(0, stop);
-    if (/[:&]/.test(head)) return "composed";
-    if (stop !== -1) return "whole";
+    if (/[:&]/.test(head)) return composed;
+    if (stop !== -1) return { position: "whole", afterSlash: false };
   }
-  return "whole";
+  return { position: "whole", afterSlash: false };
 }

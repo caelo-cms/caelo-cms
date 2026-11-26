@@ -184,7 +184,16 @@ async function checkSourceValues(resolved: ResolvedListSources): Promise<Resolve
     for (const [name, entries] of Object.entries(byName)) {
       const owner = owners.get(name);
       if (!owner) {
-        bucket[name] = [...entries];
+        // A source no running plugin declares: nothing of it reaches a page unchecked.
+        bucket[name] = entries.map((entry) => ({
+          id: entry.id,
+          values: Object.fromEntries(
+            Object.keys(entry.values).map((key) => [
+              key,
+              refusedPluginValue(pluginValueRefusedMarker("unknown", name, key, "source-unowned")),
+            ]),
+          ),
+        }));
         continue;
       }
       const fields = new Map(owner.spec.node.fields.map((f) => [f.name, f]));
@@ -209,7 +218,7 @@ async function checkSourceValues(resolved: ResolvedListSources): Promise<Resolve
                 pluginValueRefusedMarker(owner.pluginSlug, name, key, checked.rule),
               );
         }
-        return { id: entry.id, values };
+        return { id: entry.id, plugin: owner.pluginSlug, values };
       });
     }
     out.set(pageId, bucket);

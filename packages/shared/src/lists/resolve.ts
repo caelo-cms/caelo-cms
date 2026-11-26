@@ -1224,7 +1224,15 @@ function createPageContext(
           childrenKey: null,
           depth: 1,
           get: (key: string): ScopeValue | undefined => {
-            if (key === "id") return text(e.id);
+            // #1729 — the entry's id is the plugin's too: `href="{{id}}"` holds it to the link rule.
+            if (key === "id") {
+              return text(e.id, {
+                plugin: e.plugin ?? "unknown",
+                point: name,
+                address: "id",
+                type: "text",
+              });
+            }
             if (Object.hasOwn(e.values, key)) {
               // #1729 — a value the plugin host refused stays raw and fails.
               const refused = refusedPluginValueMarker(e.values[key]);

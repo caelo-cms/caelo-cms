@@ -349,17 +349,50 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
       { name: "title", kind: "text" },
       { name: "attr", kind: "text" },
     ];
-    for (const html of [
-      `<a {{attr}}="{{title}}">x</a>`,
-      `<{{attr}} href="/" title="{{title}}">x</{{attr}}>`,
-    ]) {
+    for (const [html, rule] of [
+      [`<a {{attr}}="{{title}}">x</a>`, "context-tag"],
+      // `{{attr}}` could be `script` or `svg`: what follows it is unknown too.
+      [`<{{attr}} href="/" title="{{title}}">x</{{attr}}>`, "context-conditional-markup"],
+      [`<{{attr}}>{{title}}</{{attr}}>`, "context-conditional-markup"],
+      // `h` + a value is no element that changes how its content is read.
+      [`<h{{attr}} title="{{title}}">x</h{{attr}}>`, "context-tag"],
+    ] as const) {
       const r = renderTemplate({
         html,
         fields,
         contentValues: { title: owned("alert(1)"), attr: "onclick" },
       });
-      expect(r.missingSlots).toEqual([refusal("context-tag")]);
+      expect(r.missingSlots).toEqual([refusal(rule)]);
     }
+    expect(
+      renderTemplate({
+        html: `<h{{attr}}>{{title}}</h{{attr}}>`,
+        fields,
+        contentValues: { title: owned("Hallo"), attr: "2" },
+      }).html,
+    ).toBe("<h2>Hallo</h2>");
+  });
+
+  it("holds a plugin source entry's id to where it lands, like its values", () => {
+    const lists = createListRenderContext(fixtureData()).forPage(PAGE.home, {
+      pluginSources: {
+        probe_items: [
+          { id: "javascript:name", plugin: "probe", values: {} },
+          { id: "a<b", plugin: "probe", values: {} },
+        ],
+      },
+    });
+    const r = renderTemplate({
+      html: `<ul>{{#probe_items}}<li><a href="{{id}}">{{id}}</a></li>{{/probe_items}}</ul>`,
+      fields: [],
+      lists,
+    });
+    expect(r.missingSlots).toEqual([
+      "plugin-value-refused:probe.probe_items.id:url-scheme",
+      "plugin-value-refused:probe.probe_items.id:url-characters",
+    ]);
+    expect(r.html).not.toContain('href="javascript:');
+    expect(r.html).toContain(">a&lt;b</a>");
   });
 
   it("refuses a value a list section repeats inside one URL", () => {
@@ -453,14 +486,173 @@ describe("placeholderContexts (#1729)", () => {
   it("names the place of every value tag, once per template", () => {
     const html = `<a href="{{u}}" title="{{t}}" onclick="{{h}}">{{x}}</a><a href="mailto:{{m}}">m</a><img srcset="{{s1}} 1x, {{s2}} 2x"><a href="{{#c}}{{w}}{{/c}}">w</a>`;
     const at = (tag: string) => placeholderContexts(html).byStart.get(html.indexOf(tag));
-    expect(at("{{u}}")).toEqual({ kind: "url", quoted: true, position: "whole" });
+    expect(at("{{u}}")).toEqual({
+      kind: "url",
+      quoted: true,
+      position: "whole",
+      afterSlash: false,
+    });
     expect(at("{{t}}")).toEqual({ kind: "attribute", quoted: true });
     expect(at("{{h}}")).toEqual({ kind: "refused", rule: "context-event-handler" });
     expect(at("{{x}}")).toEqual({ kind: "text", markup: true });
-    expect(at("{{m}}")).toEqual({ kind: "url", quoted: true, position: "path" });
-    expect(at("{{s2}}")).toEqual({ kind: "url", quoted: true, position: "whole" });
+    expect(at("{{m}}")).toEqual({ kind: "url", quoted: true, position: "path", afterSlash: false });
+    expect(at("{{s2}}")).toEqual({
+      kind: "url",
+      quoted: true,
+      position: "whole",
+      afterSlash: false,
+    });
     // Inside a section: a list section would repeat it, so it never decides alone.
-    expect(at("{{w}}")).toEqual({ kind: "url", quoted: true, position: "composed" });
+    expect(at("{{w}}")).toEqual({
+      kind: "url",
+      quoted: true,
+      position: "composed",
+      afterSlash: false,
+    });
     expect(placeholderContexts(html)).toBe(placeholderContexts(html));
+  });
+});
+
+/**
+ * #1732 review — each case below ran `alert()` in Chromium before the
+ * browser's reading (parse5) decided; the reviewer's probes, kept.
+ */
+describe("a plugin's value where the browser puts it (#1732 review)", () => {
+  const fields: TemplateField[] = [
+    { name: "x", kind: "text" },
+    { name: "body", kind: "richtext" },
+    { name: "a", kind: "boolean" },
+    { name: "h", kind: "text" },
+  ];
+  const at = (html: string, values: Record<string, unknown>) =>
+    renderTemplate({ html, fields, contentValues: values });
+  const x = (value: string) => pluginValue({ ...ORIGIN, address: "a/x", type: "text" }, value);
+  const body = (value: string) =>
+    pluginValue({ ...ORIGIN, address: "a/body", type: "richtext" }, value);
+  const rule = (r: string, field = "x") =>
+    `plugin-value-refused:international-site.content-variants.a/${field}:${r}`;
+
+  it("1: a section or a comment at a raw-text element's name leaves it raw text", () => {
+    for (const a of [true, false]) {
+      expect(
+        at(`<script{{#a}} type="module"{{/a}}>window.n = {{x}};</script>`, { x: x("alert(1)"), a })
+          .missingSlots,
+      ).toEqual([rule("context-script")]);
+      expect(
+        at(`<style{{#a}} media="all"{{/a}}>.a{color:{{x}}}</style>`, { x: x("red"), a })
+          .missingSlots,
+      ).toEqual([rule("context-style")]);
+      expect(
+        at(`<script{{#a}} async{{/a}}>var n = {{x}};</script>`, { x: x("alert(1)"), a })
+          .missingSlots,
+      ).toEqual([rule("context-script")]);
+    }
+    expect(
+      at(`<script{{! cfg }}>window.n = {{x}};</script>`, { x: x("alert(1)") }).missingSlots,
+    ).toEqual([rule("context-script")]);
+    // A richtext in a raw-text element is never markup.
+    for (const html of [
+      `<style{{#a}} media="screen"{{/a}}>{{body}}</style>`,
+      `<textarea{{#a}} name="m"{{/a}}>{{body}}</textarea>`,
+    ]) {
+      const r = at(html, {
+        body: body(`<p title="</style><img src=x onerror=alert(1)>">x</p>`),
+        a: true,
+      });
+      expect(r.html).not.toContain("<img");
+    }
+  });
+
+  it("2: <noscript> is text to a browser with scripting on", () => {
+    expect(
+      at(`<noscript><p title="</noscript><img src=x onerror={{x}}>"></p></noscript>`, {
+        x: x("alert(1)"),
+      }).missingSlots,
+    ).toEqual([rule("context-event-handler")]);
+    const r = at(`<noscript>{{body}}</noscript>`, {
+      body: body(
+        `<p title="</noscript><img src=x onerror=alert(1)>">Bitte JavaScript aktivieren</p>`,
+      ),
+    });
+    expect(r.missingSlots).toEqual([]);
+    expect(r.html).not.toContain("<img");
+  });
+
+  it("3: SVG and MathML are read as foreign content, with their integration points", () => {
+    for (const html of [
+      `<svg><title><img src=x onerror="{{x}}"></title></svg>`,
+      `<svg><textarea><img src=x onerror="{{x}}"></textarea></svg>`,
+      `<math><title><img src=x onerror="{{x}}"></title></math>`,
+      `<svg><xmp><img src=x onerror="{{x}}"></xmp></svg>`,
+    ]) {
+      expect(at(html, { x: x("alert(1)") }).missingSlots).toEqual([rule("context-event-handler")]);
+    }
+    // Text inside SVG is escaped; a richtext there is no markup (its `<p>` would leave the SVG).
+    expect(at(`<svg><title>{{body}}</title></svg>`, { body: body("<p>x</p>") }).html).toBe(
+      "<svg><title>&lt;p&gt;x&lt;/p&gt;</title></svg>",
+    );
+  });
+
+  it("4: a URL a page loads as code or sends a form to never takes a plugin's value", () => {
+    for (const [html, r] of [
+      [`<script src="{{x}}"></script>`, "context-code-url"],
+      [`<link rel="stylesheet" href="{{x}}">`, "context-code-url"],
+      [`<iframe src="{{x}}"></iframe>`, "context-code-url"],
+      [`<embed src="{{x}}">`, "context-code-url"],
+      [`<object data="{{x}}"></object>`, "context-code-url"],
+      [`<svg><script href="{{x}}"></script></svg>`, "context-code-url"],
+      [`<form action="{{x}}"><input name=p></form>`, "context-form-target"],
+      [`<button formaction="{{x}}">x</button>`, "context-form-target"],
+    ] as const) {
+      expect(at(html, { x: x("https://evil.example/x.js") }).missingSlots).toEqual([rule(r)]);
+    }
+    // After a `/` a value starting with `/` would make a protocol-relative URL.
+    expect(at(`<a href="/{{x}}">x</a>`, { x: x("/evil.example/x") }).missingSlots).toEqual([
+      rule("url-protocol-relative"),
+    ]);
+    expect(at(`<a href="/{{x}}">x</a>`, { x: x("de/hilfe") }).html).toBe(
+      `<a href="/de/hilfe">x</a>`,
+    );
+  });
+
+  it("5: what follows a place browsers and htmlparser2 read apart is read as the browser does", () => {
+    for (const html of [
+      `<script><!--<script></script><a title="--></script><img src=x onerror='" data-x="{{x}}" z='>'>`,
+      `<textarea/><a title="</textarea><img src=x onerror={{x}}>">x</a></textarea>`,
+      `<!--><img src=x onerror="{{x}}">-->`,
+      `<!-- c --!><img src=x onerror="{{x}}"> -->`,
+      `<!x title="> <img src=x onerror={{x}}> ">`,
+      `</3 title="> <img src=x onerror={{x}}> ">`,
+    ]) {
+      expect(at(html, { x: x("+alert(1)//") }).missingSlots).toEqual([
+        rule("context-event-handler"),
+      ]);
+    }
+    // A tag the browser drops leaves the value nowhere: refused, never guessed.
+    expect(at(`<select><img src=x onerror="{{x}}"></select>`, { x: x("1") }).missingSlots).toEqual([
+      rule("context-markup"),
+    ]);
+  });
+
+  it("6: a tag that may render empty at the start of an unquoted value refuses what follows", () => {
+    for (const [html, values] of [
+      [`<button onclick={{! none }} title="{{x}}">b</button>`, {}],
+      [`<button onclick={{h}} title="{{x}}">b</button>`, { h: "" }],
+    ] as const) {
+      expect(at(html, { ...values, x: x(`";alert(1)//`) }).missingSlots).toEqual([
+        rule("context-conditional-markup"),
+      ]);
+    }
+  });
+
+  it("keeps the shapes modules use around boolean attributes and comments", () => {
+    for (const html of [
+      `<button{{#a}} disabled{{/a}}>{{x}}</button>`,
+      `<input{{#a}} required{{/a}} placeholder="{{x}}">`,
+      `<p>{{! note }}{{x}}</p>`,
+      `<a href="/" {{#a}}target="_blank" rel="noopener"{{/a}}>{{x}}</a>`,
+    ]) {
+      expect(at(html, { x: x("Hallo"), a: true }).missingSlots).toEqual([]);
+    }
   });
 });

@@ -53,6 +53,31 @@ describe("#1729 — deferral placeholder markup", () => {
   });
 });
 
+describe("#1732 review — a placeholder is read as the visitor's browser reads it", () => {
+  it("sees the elements a browser makes of the markup, not what htmlparser2 made", () => {
+    // Outside SVG `<![CDATA[` is a comment to a browser, ending at the first `>`.
+    expect(placeholderMarkupProblem("<p>a</p><![CDATA[ x > <img src=x onerror=alert(1)> ]]>")).toBe(
+      "element <img>",
+    );
+    for (const html of [
+      "<!--><img src=x onerror=alert(1)>-->",
+      "<!-- c --!><img src=x onerror=alert(1)> -->",
+      '</3 title="> <img src=x onerror=alert(1)> ">',
+    ]) {
+      expect(placeholderMarkupProblem(html)).toBe("element <img>");
+    }
+  });
+
+  it("refuses markup that does not end in element content", () => {
+    for (const html of ['<p title="x', "<p>x</p><!-- open", "<p>a<"]) {
+      expect(placeholderMarkupProblem(html)).toStartWith(
+        "the markup does not end in element content",
+      );
+    }
+    expect(placeholderMarkupProblem("<p>a &lt; b</p>")).toBeNull();
+  });
+});
+
 describe("#1729 — CSS that loads nothing from another site", () => {
   it("allows local and data: URLs", () => {
     expect(cssLoadProblem(".a{background:url(/img/a.png)}")).toBeNull();
