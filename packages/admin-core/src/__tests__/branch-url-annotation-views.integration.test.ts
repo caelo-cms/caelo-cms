@@ -65,7 +65,7 @@ const plugin = definePlugin({
   tier: 1,
   schema: {},
   adminSchema: { tags: { page_id: "uuid", prefix: "string", note: "text" } },
-  requestedCapabilities: ["cms_admin_schema", "cms_admin"],
+  requestedCapabilities: ["cms_admin_schema", "cms_admin", "url_slots"],
   urlAnnotationsOperation: "annotations",
   urlContributions: [
     {

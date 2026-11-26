@@ -51,6 +51,7 @@ const intlPlugin = definePlugin({
       return { annotations };
     },
   },
+  requestedCapabilities: ["url_slots"],
   urlAnnotationsOperation: "url_annotations",
   urlContributions: [
     {
