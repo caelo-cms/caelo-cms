@@ -23,7 +23,7 @@
  *   fetched (packages/models testing.ts; CI requires it).
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,15 +39,28 @@ import {
 } from "@caelo-cms/plugin-host";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
-import { DEFAULT_EMBEDDING_MODEL_ID, type EmbeddingModel, embeddingModel } from "@caelo-cms/shared";
+import {
+  DEFAULT_EMBEDDING_MODEL_ID,
+  type EmbeddingModel,
+  embeddingModel,
+  GATEWAY_REFRESH_PATH,
+  GATEWAY_REFRESH_TOKEN_HEADER,
+  gatewayRefreshAudience,
+} from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { GatewayCollections } from "./collections.js";
+import { GatewayCollections, settlesWithin } from "./collections.js";
+import {
+  idTokenTestKey,
+  signIdTokenForTests,
+  testRefreshPingVerifier,
+} from "./refresh-ping.test-helpers.js";
 import {
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
   handleRequest,
   invalidateGatewaySettings,
   setGatewayAdapter,
+  setRefreshPingVerifier,
 } from "./server.js";
 import { registerTestLiveOrigin } from "./test-support.js";
 
@@ -630,6 +643,79 @@ describe("declarative collection operations in the gateway", () => {
       await r.arrayBuffer();
     }
     expect(await logged()).toBe(before);
+  });
+
+  // #1745 — searchVIU's first search on a cold gateway took 11 s, and
+  // one lost its instance: the warm-up `/release` started ran after its
+  // answer, on request-billed CPU, so the search paid for all of it. The
+  // route now holds its request until the warm-up is done
+  // (collections-warm.test.ts covers what the warm-up does).
+  it("/release answers once the release, its index and (for a search) the query model are loaded", async () => {
+    let finish = () => {};
+    const done = new Promise<void>((ok) => {
+      finish = ok;
+    });
+    const warm = spyOn(GatewayCollections.prototype, "warm").mockImplementation(() => done);
+    try {
+      const answer = handleRequest(get(`/api/plugin/${SLUG}/linked/release`));
+      expect(await settlesWithin(answer, 300)).toBe(false);
+      // The search's collection with the model, its link texts' as well.
+      const calls = warm.mock.calls.map(([slug, collection, key, options]) => ({
+        slug,
+        collection,
+        key,
+        model: options?.embedder !== undefined,
+      }));
+      expect(calls).toEqual([
+        { slug: SLUG, collection: "pages", key: releaseKey, model: true },
+        { slug: SLUG, collection: "anchors", key: anchorsKey, model: true },
+      ]);
+      finish();
+      const r = await answer;
+      expect(r.status).toBe(200);
+      expect(((await r.json()) as { release: string }).release).toBe(`${releaseKey}+${anchorsKey}`);
+      // A read needs no query model.
+      warm.mockClear();
+      expect((await handleRequest(get(`/api/plugin/${SLUG}/read/release`))).status).toBe(200);
+      expect(warm.mock.calls.map(([, c, , o]) => [c, o?.embedder !== undefined])).toEqual([
+        ["pages", false],
+      ]);
+    } finally {
+      warm.mockRestore();
+    }
+  });
+
+  it("the admin's refresh ping opens the published releases, without the query model", async () => {
+    const key = idTokenTestKey("google-key-warm");
+    const audience = gatewayRefreshAudience("test", "live");
+    setRefreshPingVerifier(testRefreshPingVerifier(key, audience));
+    const warm = spyOn(GatewayCollections.prototype, "warm").mockImplementation(async () => {});
+    try {
+      const r = await handleRequest(
+        new Request(`http://localhost${GATEWAY_REFRESH_PATH}`, {
+          method: "POST",
+          headers: { [GATEWAY_REFRESH_TOKEN_HEADER]: signIdTokenForTests(key, { aud: audience }) },
+        }),
+      );
+      expect(r.status).toBe(200);
+      const warmed = new Set(warm.mock.calls.map(([, collection, k]) => `${collection}:${k}`));
+      // Every published release an operation answers from (the semantic one
+      // only where the model is fetched, see above).
+      expect(warmed).toEqual(
+        new Set([
+          `pages:${releaseKey}`,
+          `anchors:${anchorsKey}`,
+          ...(semanticKey ? [`semantic:${semanticKey}`] : []),
+          `unknown_model:${unknownKey}`,
+        ]),
+      );
+      expect(warm.mock.calls.every(([, , , options]) => options?.embedder === undefined)).toBe(
+        true,
+      );
+    } finally {
+      warm.mockRestore();
+      setRefreshPingVerifier(null);
+    }
   });
 
   it("refuses too many words, an unknown operation, and serves 503 without a release", async () => {

@@ -162,3 +162,37 @@ test("behind a gate that admits only the operator's cookie, the search sends the
   expect(refused.length).toBeGreaterThanOrEqual(1);
   expect(refused.length).toBeLessThanOrEqual(2);
 });
+
+// #1745 — a first search on searchVIU lost its gateway instance, and
+// the page showed "Suche nicht erreichbar" at once. A search that fails
+// without an answer or with a 5xx is now sent once more first.
+test("a search whose first answer is a 503 shows the results of the repeat", async ({ page }) => {
+  let searches = 0;
+  await page.route(/\/api\/plugin\/site-search\/search\?/, async (route) => {
+    searches++;
+    if (searches === 1) {
+      return route.fulfill({ status: 503, contentType: "application/json", body: '{"ok":false}' });
+    }
+    return route.continue();
+  });
+  await page.goto(`${origin}/suche/?q=Rabatte`);
+  const results = page.locator("[data-caelo-search-results]");
+  await expect(results.locator("[data-caelo-search-list] li").first()).toContainText("Preise");
+  await expect(results).toHaveAttribute("data-caelo-search-state", "done");
+  expect(searches).toBe(2);
+});
+
+test("a search that fails twice shows the error state, after exactly one repeat", async ({
+  page,
+}) => {
+  let searches = 0;
+  await page.route(/\/api\/plugin\/site-search\/search\?/, async (route) => {
+    searches++;
+    return route.abort("connectionreset");
+  });
+  await page.goto(`${origin}/suche/?q=Rabatte`);
+  const results = page.locator("[data-caelo-search-results]");
+  await expect(results).toHaveAttribute("data-caelo-search-state", "error");
+  await expect(results).toHaveAttribute("data-caelo-search-error", "true");
+  expect(searches).toBe(2);
+});

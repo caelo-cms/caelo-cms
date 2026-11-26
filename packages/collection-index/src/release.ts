@@ -26,7 +26,7 @@
  */
 
 import { ByteReader, ByteWriter } from "./bytes.js";
-import { type FileCacheLike, SegmentReader } from "./reader.js";
+import { type FileCacheLike, type FileLoad, SegmentReader } from "./reader.js";
 import {
   type CollectionDoc,
   type CollectionSchema,
@@ -140,6 +140,84 @@ export async function openRelease(
     }),
   );
   return { manifest, segments };
+}
+
+/** What {@link prefetchRelease} may do. */
+export interface PrefetchOptions {
+  /** Files loading at once (default {@link PREFETCH_PARALLEL}). */
+  readonly parallel?: number;
+  /**
+   * Asked before each file: false ends the prefetch. The gateway passes
+   * "the cache holds less than its share of the budget", so a release that
+   * does not fit keeps the files every query needs and the rest loads on
+   * demand.
+   */
+  readonly mayLoad?: () => boolean;
+}
+
+/** What one prefetch loaded. */
+export interface PrefetchReport {
+  /** Files now in the cache (loaded by this prefetch or already there). */
+  readonly files: number;
+  /** Files of the release it did not reach, because `mayLoad` said no. */
+  readonly skipped: number;
+  /** Files whose load failed, and the first failure (a query needing one reads it again, and fails loudly). */
+  readonly failed: number;
+  readonly firstError: string | null;
+}
+
+/** Object-store reads one prefetch keeps in flight. */
+export const PREFETCH_PARALLEL = 16;
+
+/**
+ * Loads the files of an opened release into its cache, in parallel, the
+ * files every query needs first (SegmentReader.fileLoads: documents and
+ * term shards of every segment, then vocabulary, vector codes, stored
+ * documents and vector blocks). A query after it reads nothing from the
+ * store for the files it loaded. Never rejects: a failed file is counted
+ * and left to the query that needs it.
+ */
+export async function prefetchRelease(
+  opened: OpenRelease,
+  options: PrefetchOptions = {},
+): Promise<PrefetchReport> {
+  const loads: FileLoad[] = [];
+  const seen = new Set<string>();
+  const tiers = opened.segments.map((s) => s.reader.fileLoads());
+  const depth = Math.max(0, ...tiers.map((t) => t.length));
+  for (let tier = 0; tier < depth; tier++) {
+    for (const segment of tiers) {
+      for (const load of segment[tier] ?? []) {
+        if (seen.has(load.file)) continue;
+        seen.add(load.file);
+        loads.push(load);
+      }
+    }
+  }
+  let next = 0;
+  let files = 0;
+  let failed = 0;
+  let firstError: string | null = null;
+  let stopped = false;
+  const worker = async (): Promise<void> => {
+    while (!stopped && next < loads.length) {
+      if (options.mayLoad && !options.mayLoad()) {
+        stopped = true;
+        return;
+      }
+      const load = loads[next++] as FileLoad;
+      try {
+        await load.load();
+        files++;
+      } catch (e) {
+        failed++;
+        firstError ??= `${load.file}: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+  };
+  const parallel = Math.max(1, Math.min(options.parallel ?? PREFETCH_PARALLEL, loads.length));
+  await Promise.all(Array.from({ length: parallel }, worker));
+  return { files, skipped: loads.length - files - failed, failed, firstError };
 }
 
 /** Reads a release file. */
