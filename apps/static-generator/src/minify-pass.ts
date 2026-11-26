@@ -180,7 +180,7 @@ export async function minifyPluginAsset(asset: PluginAssetFile): Promise<string>
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     throw new Error(
-      `static-generator: plugin "${asset.pluginSlug}" returned a ${asset.fileName} from buildAssets that does not parse, so it would not run on any page. The plugin's code has to be fixed (a plugin release):\n${detail}`,
+      `static-generator: plugin "${asset.pluginSlug}" ships a client file ${asset.fileName} that does not parse, so it would not run on any page. The plugin's code has to be fixed (a plugin release):\n${detail}`,
     );
   }
 }

@@ -950,7 +950,7 @@ export async function activateApprovedExternalPlugin(
       // The child compares declarations with the definition; reviewed
       // markup and files are host data it never needs (and they would
       // crowd the 1 MB message line).
-      args: { ...manifest, deferralPlaceholders: undefined },
+      args: { ...manifest, deferralPlaceholders: undefined, clientFiles: undefined },
       context,
       authorize: async () => {},
       denySdkCalls: true,
@@ -1524,15 +1524,6 @@ function preflightRegistration(
       }
     }
   }
-  // Client assets run in every visitor's browser on every page. That is
-  // the widest blast radius any contribution has, so it is release-signed
-  // only — a runtime-authored plugin's frontend stays inside its Shadow
-  // DOM component, where the sandbox can still reason about it.
-  if (typeof def.buildAssets === "function" && def.tier !== 1) {
-    throw new Error(
-      `plugin "${def.slug}" declares buildAssets but is not release-signed — refused`,
-    );
-  }
 
   // Epic #1107 — list sources, list types and list-resolve overlays each
   // change what pages render, so each needs its own grant; refused here,
@@ -1586,8 +1577,22 @@ function preflightRegistration(
       `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,
     );
   }
-  // #1729 — withholding a module changes what visitors see: the
-  // client_assets grant, and an operation that exists, for every plugin.
+  // #1729 — client files run in every visitor's browser and withholding a
+  // module changes what visitors see: the client_assets grant, and
+  // operations that exist, for every plugin (one plugin model).
+  if (
+    (Object.keys(def.clientFiles ?? {}).length > 0 || def.buildDataOperation !== undefined) &&
+    !grantedCaps.has("client_assets")
+  ) {
+    throw new Error(
+      `plugin "${def.slug}" puts files on visitors' pages (clientFiles) without the client_assets capability — registration refused`,
+    );
+  }
+  if (def.buildDataOperation !== undefined && !def.operations[def.buildDataOperation]) {
+    throw new Error(
+      `plugin "${def.slug}" names buildDataOperation "${def.buildDataOperation}", which is not one of its operations`,
+    );
+  }
   if (def.deferralsOperation !== undefined) {
     if (!grantedCaps.has("client_assets")) {
       throw new Error(

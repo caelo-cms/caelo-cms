@@ -42,7 +42,7 @@ const manifest: PluginManifest = {
   requestedCapabilities: ["cms_admin_schema", "url_slots"],
   capabilityReasons: { cms_admin_schema: "markets", url_slots: "market prefixes" },
   hasStaticRender: false,
-  hasBuildAssets: false,
+  hasBuildData: false,
   hasDeferrals: false,
   hasContentVariants: false,
   hasLinkResolve: false,

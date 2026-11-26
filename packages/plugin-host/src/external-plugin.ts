@@ -169,6 +169,14 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // `$shareImages`), held to the vocabulary every plugin is
     // (head-vocabulary.ts, share-images.ts).
     ...(manifest.contributes ? { contributes: manifest.contributes } : {}),
+    // #1729 — the reviewed client files (bytes bound to the artifact
+    // digest) and the grant's limits, from which the build reads the
+    // origins the files may reach; the manifest carries the same
+    // constraints the receipt records.
+    ...(manifest.clientFiles ? { clientFiles: manifest.clientFiles } : {}),
+    ...(manifest.capabilityConstraints
+      ? { capabilityConstraints: manifest.capabilityConstraints }
+      : {}),
     // #1729 — what the `$linkResolve` answer is computed from: core keeps
     // the answer per render scope and asks again only after a change to
     // these tables, so a preview does not spawn a sandbox per page chunk.

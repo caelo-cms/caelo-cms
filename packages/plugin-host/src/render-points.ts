@@ -63,6 +63,8 @@ export const RENDER_POINT_ENTRIES = Object.freeze({
   },
   /** §6.7 — `deferralsOperation`, announced by `hasDeferrals`. */
   $deferrals: { definitionKey: "deferralsOperation", announcedBy: "hasDeferrals" },
+  /** §6.7 — `buildDataOperation`, announced by `hasBuildData`. */
+  $buildData: { definitionKey: "buildDataOperation", announcedBy: "hasBuildData" },
 } satisfies Record<string, RenderPointEntry>);
 
 /** The name of a reserved entry. */

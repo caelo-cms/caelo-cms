@@ -2,7 +2,7 @@
 
 Issue #1155, CMS_REQUIREMENTS §6.1 / §6.2.
 
-A plugin that shows visitor data on pages (comments, ratings, a guestbook) bakes that data into the static HTML with `staticRender`, and its browser runtime (`buildAssets`) fetches what came after the bake (the delta feed, `since` = the bake's `data-baked-at`). Nothing reaches production except a human Publish live (#1154), with one exception: **a plugin-data build**, which puts newly approved items into the HTML and publishes nothing else.
+A plugin that shows visitor data on pages (comments, ratings, a guestbook) bakes that data into the static HTML with `staticRender`, and its browser runtime (`clientFiles`) fetches what came after the bake (the delta feed, `since` = the bake's `data-baked-at`). Nothing reaches production except a human Publish live (#1154), with one exception: **a plugin-data build**, which puts newly approved items into the HTML and publishes nothing else.
 
 ## The flow
 
@@ -60,7 +60,7 @@ A region is page weight, so a plugin with long lists bakes a bounded window and 
 - **One axis.** `comment_archive.list_for_page` orders by `archived_at`, newest first, with `id` as the tie-break. The bake is the top of that order, `since` reads above it and `before` (a keyset cursor) reads below it, so nothing can fall between the feeds. A bake that overlaps the delta is harmless: the client dedupes by comment id. Both the admin's table and the published projection index `archived_at` per page.
 - **The window.** The bake holds the newest 50 comments. A longer thread carries the next page's cursor and the total on the thread element (`<div data-comment-thread data-cursor="…" data-total="1234">`).
 - **What crawlers get.** They read no JS output, so they get those 50 comments, each with its author and its date in the page's language (`<time datetime>`, below). Older comments are not in the HTML. The same goes for visitors without JavaScript.
-- **The client.** `packages/plugins/comments/src/runtime.ts`, shipped through `buildAssets`: on load it reads what came after the bake, and the section's older-comments button reads one more page per click (`list_approved`, a declared public operation, 60 calls a minute). The file loads on every page and stops at once where no comments region exists. The plugin declares no Web Component: nothing mounts those on a built page (#455).
+- **The client.** `packages/plugins/comments/src/runtime.ts`, shipped as a reviewed client file (`clientFiles`, #1729): on load it reads what came after the bake, and the section's older-comments button reads one more page per click (`list_approved`, a declared public operation, 60 calls a minute). The file loads on every page and stops at once where no comments region exists. The plugin declares no Web Component: nothing mounts those on a built page (#455).
 - **When it starts.** Assets run in plugin-slug order, so `comments` runs before `consent-manager`. The client starts at DOMContentLoaded, when every deferred file has run, so its first read carries the visitor's consent decision and works the same with no consent provider at all. A call without that header makes the gateway drop the visitor id.
 - **A bake far behind.** More new comments than one page (a new plugin version waits for the next Publish live) means the client reads the thread from the top instead of merging.
 - **Cursor precision.** The cursor carries Postgres' microseconds, so both sides must hold the same value: the projection publishes the comment timestamps as text, not through a `Date`.

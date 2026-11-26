@@ -105,8 +105,9 @@ beforeAll(async () => {
     version: "0.1.0",
     tier: 1,
     schema: {},
+    requestedCapabilities: ["client_assets"],
     operations: { noop: async () => ({}) },
-    buildAssets: () => ({ "runtime.js": RUNTIME_JS, "runtime.css": RUNTIME_CSS }),
+    clientFiles: { "runtime.js": RUNTIME_JS, "runtime.css": RUNTIME_CSS },
   });
   const report = await bootstrap({
     infra: { adapter, registry },
@@ -139,7 +140,7 @@ describe("#449 — plugin client assets reach both render surfaces", () => {
   });
 
   it("the deploy links the identical bytes from a content-hashed file", async () => {
-    const assets = await collectBuildAssets([pageId], MAIN_RENDER);
+    const assets = await collectBuildAssets(MAIN_RENDER);
     expect(assets.map((a) => a.content).sort()).toEqual([RUNTIME_CSS, RUNTIME_JS].sort());
 
     const linked = injectPluginAssets(

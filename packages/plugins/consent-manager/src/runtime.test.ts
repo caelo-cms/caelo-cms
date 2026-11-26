@@ -8,11 +8,29 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { buildRuntimeJs, RUNTIME_CSS } from "./runtime.js";
-import { buildTagInjector } from "./tags.js";
+import { DATA_SELECTOR, RUNTIME_CSS, RUNTIME_JS, type RuntimeConfig } from "./runtime.js";
+import type { BakedTag } from "./tags.js";
 
 const RECORD = "/api/plugin/consent-manager/record_consent";
 const CONSENT_HEADER = "x-caelo-consent";
+
+/** The build data core embeds for the runtime (plugin-host client-assets.ts). */
+function runtimeData(over: Partial<RuntimeConfig> = {}): RuntimeConfig {
+  return {
+    slug: "consent-manager",
+    categories: [{ key: "marketing", displayName: "Marketing", required: false }],
+    policyVersion: 1,
+    recordEndpoint: RECORD,
+    consentHeader: CONSENT_HEADER,
+    tags: [],
+    ...over,
+  };
+}
+
+/** The data block as `querySelector` returns it. */
+function dataBlock(config: RuntimeConfig): { textContent: string } {
+  return { textContent: JSON.stringify(config) };
+}
 
 /** One `record_consent` call the runtime made: where, and the consent header it carried. */
 interface Recorded {
@@ -38,19 +56,30 @@ function fakeFetch(): {
 }
 
 describe("consent runtime source", () => {
-  it("contains nothing that could end its inline <script>", () => {
-    const js = buildRuntimeJs(
-      {
-        slug: "consent-manager",
-        categories: [{ key: "marketing", displayName: "Marketing", required: false }],
-        policyVersion: 1,
-        recordEndpoint: RECORD,
-        consentHeader: CONSENT_HEADER,
-      },
-      buildTagInjector([]),
-    );
-    expect(js).toContain("/api/plugin/consent-manager/record_consent");
-    expect(/<\/script|<!--/i.test(js)).toBe(false);
+  it("contains nothing that could end its inline <script>, and no site data", () => {
+    // #1729 — the file is reviewed with the plugin and the same on every
+    // build: the site's categories and tags come as build data.
+    expect(RUNTIME_JS).not.toContain(RECORD);
+    expect(/<\/script|<!--/i.test(RUNTIME_JS)).toBe(false);
+  });
+
+  it("asks nothing and warns when the page has no data block", () => {
+    const warnings: string[] = [];
+    const classes = new Set<string>();
+    const doc = {
+      readyState: "complete",
+      documentElement: { classList: { add: (c: string) => classes.add(c) } },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener: () => undefined,
+    };
+    const win: { caeloConsent?: unknown } = {};
+    new Function("document", "window", "console", RUNTIME_JS)(doc, win, {
+      warn: (m: string) => warnings.push(m),
+    });
+    expect(win.caeloConsent).toBeUndefined();
+    expect(classes.size).toBe(0);
+    expect(warnings.join(" ")).toContain("carries no consent data");
   });
 });
 
@@ -59,16 +88,7 @@ describe("consent runtime in an opaque-origin sandbox (#946)", () => {
     // The editor previews pages sandboxed WITHOUT allow-same-origin, where
     // reading or writing document.cookie throws a SecurityError. The banner
     // must still ask, and a decision must still reach the server.
-    const js = buildRuntimeJs(
-      {
-        slug: "consent-manager",
-        categories: [{ key: "marketing", displayName: "Marketing", required: false }],
-        policyVersion: 1,
-        recordEndpoint: RECORD,
-        consentHeader: CONSENT_HEADER,
-      },
-      buildTagInjector([]),
-    );
+    const js = RUNTIME_JS;
     const classes = new Set<string>();
     const doc = {
       readyState: "complete",
@@ -81,7 +101,7 @@ describe("consent runtime in an opaque-origin sandbox (#946)", () => {
       set cookie(_v: string) {
         throw new Error("SecurityError: sandboxed");
       },
-      querySelector: () => null,
+      querySelector: (sel: string) => (sel === DATA_SELECTOR ? dataBlock(runtimeData()) : null),
       querySelectorAll: () => [],
       addEventListener: () => undefined,
     };
@@ -238,7 +258,7 @@ function consentCookie(granted: string[], offered = CATEGORIES.map((c) => c.key)
 function boot(opts: {
   body: FakeEl[];
   cookies?: Record<string, string>;
-  tags?: Parameters<typeof buildTagInjector>[0];
+  tags?: ReadonlyArray<BakedTag>;
   pathname?: string;
   lang?: string;
 }): Harness {
@@ -269,7 +289,10 @@ function boot(opts: {
         jar.set(name, value ?? "");
       }
     },
-    querySelector: (s: string) => html.querySelector(s),
+    querySelector: (s: string) =>
+      s === DATA_SELECTOR
+        ? dataBlock(runtimeData({ categories: CATEGORIES, tags: opts.tags ?? [] }))
+        : html.querySelector(s),
     querySelectorAll: (s: string) => html.querySelectorAll(s),
     addEventListener: (t: string, fn: Listener) =>
       docListeners.set(t, [...(docListeners.get(t) ?? []), fn]),
@@ -279,16 +302,7 @@ function boot(opts: {
   const posted = fakeFetch();
   const reloads = { count: 0 };
   const win: Harness["win"] = {};
-  const js = buildRuntimeJs(
-    {
-      slug: "consent-manager",
-      categories: CATEGORIES,
-      policyVersion: 1,
-      recordEndpoint: RECORD,
-      consentHeader: CONSENT_HEADER,
-    },
-    buildTagInjector(opts.tags ?? []),
-  );
+  const js = RUNTIME_JS;
   new Function("document", "window", "fetch", "console", "location", "Blob", js)(
     doc,
     win,
@@ -679,5 +693,48 @@ describe("the decision for the API gateway (#1343)", () => {
       { url: RECORD, consent: "v=1; granted=necessary", keepalive: true },
     ]);
     expect(h.win.caeloConsent?.decisionHeader()).toBe("v=1; granted=necessary");
+  });
+});
+
+describe("other plugins' consent-gated scripts (#1729)", () => {
+  const SRC = "/_caelo/plugin/probe/runtime.0123456789ab.js";
+  function parkedScript(): FakeEl {
+    return new FakeEl("script", {
+      type: "text/plain",
+      "data-caelo-consent": "analytics marketing",
+      "data-caelo-src": SRC,
+      "data-caelo-plugin": "probe",
+    });
+  }
+  function started(h: Harness): FakeEl[] {
+    return h.html
+      .querySelectorAll("script")
+      .filter((el) => (el as unknown as { src?: string }).src === SRC);
+  }
+
+  it("leaves a parked script alone until every category it names is granted", () => {
+    const h = boot({
+      body: [parkedScript()],
+      cookies: { caelo_consent: consentCookie(["necessary", "analytics"]) },
+    });
+    expect(started(h)).toHaveLength(0);
+  });
+
+  it("starts it once when the visitor grants them, and keeps its plugin name", () => {
+    const h = boot({ body: [parkedScript()] });
+    expect(started(h)).toHaveLength(0);
+    const consent = (h.win as { caeloConsent?: { grantAll: () => void } }).caeloConsent;
+    consent?.grantAll();
+    consent?.grantAll();
+    expect(started(h)).toHaveLength(1);
+    expect(started(h)[0]?.getAttribute("data-caelo-plugin")).toBe("probe");
+  });
+
+  it("starts it on load when the stored decision already grants them", () => {
+    const h = boot({
+      body: [parkedScript()],
+      cookies: { caelo_consent: consentCookie(["necessary", "analytics", "marketing"]) },
+    });
+    expect(started(h)).toHaveLength(1);
   });
 });
