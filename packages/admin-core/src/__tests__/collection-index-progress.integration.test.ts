@@ -187,4 +187,34 @@ describe("a Stage's search index progress", () => {
     // A late report of a finished index is not recorded.
     expect(await progress(0, 1, 400, 400, 1)).toEqual({ recorded: false });
   });
+
+  // #1749 — the first `done` committed, its post-commit publish failed on a
+  // busy pool, and the job sent the report again: each replay was refused
+  // with "no pending release" until the job's retry budget ran out.
+  it("a resent done for the release it recorded is answered as done", async () => {
+    const done = {
+      runId,
+      pluginId,
+      collection: "pages",
+      releaseKey: "release-0123456789abcdef01234567.json",
+      stats: {},
+    };
+    expect(await op("collections.index_done", done)).toEqual({});
+    const r = await execute(registry, adapter, SYS, "collections.index_done", {
+      ...done,
+      releaseKey: "release-fedcba9876543210fedcba98.json",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.message).toBe(
+        "no pending release of this run and collection: it is ready with release-0123456789abcdef01234567.json",
+      );
+    }
+    const { collections } = await op<{ collections: unknown[] }>("collections.run_state", {
+      runId,
+    });
+    expect(collections).toMatchObject([
+      { state: "ready", releaseKey: "release-0123456789abcdef01234567.json" },
+    ]);
+  });
 });
