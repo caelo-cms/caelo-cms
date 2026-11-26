@@ -148,6 +148,20 @@ describe("answers over one wire line", () => {
   });
 });
 
+describe("the render budget", () => {
+  it("a preview point that does not answer within 5 s is killed", async () => {
+    const started = performance.now();
+    await expect(
+      run(sources, source('listSourcesOperation:"sources",', "for (;;) {}"), "$listSources", {
+        pageIds: ["a"],
+      }),
+    ).rejects.toThrow("SandboxTimeout");
+    const ms = performance.now() - started;
+    expect(ms).toBeGreaterThanOrEqual(4_900);
+    expect(ms).toBeLessThan(15_000);
+  }, 20_000);
+});
+
 describe("chunks and caps", () => {
   it("splits page ids under the chunk budget, in order, and asks nothing for none", () => {
     const ids = Array.from(
