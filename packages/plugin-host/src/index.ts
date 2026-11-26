@@ -73,8 +73,10 @@ export {
 } from "./change-consumers.js";
 export {
   collectBuildAssets,
+  dataBlockJson,
   injectPluginAssets,
   PLUGIN_ASSET_DIR,
+  PLUGIN_DATA_FILE,
   type PluginClientAsset,
   withAssetContent,
 } from "./client-assets.js";

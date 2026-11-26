@@ -182,6 +182,16 @@ describe("collectBuildAssets", () => {
     expect(collectBuildAssets(MAIN_RENDER)).rejects.toThrow(new RegExp(`the key "${key}"`));
   });
 
+  it("refuses a file the build hands over: only reviewed files reach a page", async () => {
+    await load(
+      fixture(
+        { "runtime.js": "x" },
+        { data: () => ({ data: {}, files: { "evil.js": "steal()" } }) },
+      ),
+    );
+    expect(collectBuildAssets(MAIN_RENDER)).rejects.toThrow(/expected \{ data: object, csp\? \}/);
+  });
+
   it("refuses data that is not plain JSON", async () => {
     await load(fixture({ "runtime.js": "x" }, { data: () => ({ data: { at: new Date(0) } }) }));
     expect(collectBuildAssets(MAIN_RENDER)).rejects.toThrow(/data\.at: not a plain object/);

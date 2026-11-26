@@ -114,6 +114,19 @@
                         </li>
                       {/each}
                     </ul>
+                  {:else if capability === 'client_assets'}
+                    <span class="block text-xs">Files that run on every page of the public site ({Object.keys(item.manifest.clientFiles ?? {}).join(', ') || 'none'}). They show, hide and toggle what the page has; they never build its content.</span>
+                    {#if Object.keys(item.manifest.capabilityConstraints?.client_assets?.origins ?? {}).length > 0}
+                      <span class="block text-xs">They may also reach these other sites, and the site's security headers will allow them:</span>
+                      <ul class="ml-4 list-disc text-xs">
+                        {#each Object.entries(item.manifest.capabilityConstraints?.client_assets?.origins ?? {}) as [kind, origins]}
+                          <li><strong>{kind}</strong>: {(origins ?? []).join(', ')}</li>
+                        {/each}
+                      </ul>
+                    {:else}
+                      <span class="block text-xs">They reach only this site.</span>
+                    {/if}
+                    {#if (item.manifest.consentPurposes ?? []).length > 0}<span class="block text-xs">Their scripts start only after the visitor consents.</span>{/if}
                   {:else if item.manifest.capabilityConstraints?.[capability]}<span class="block text-xs">Scope: {JSON.stringify(item.manifest.capabilityConstraints[capability])}</span>{/if}
                 </span>
               </label>

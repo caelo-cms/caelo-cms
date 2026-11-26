@@ -132,6 +132,11 @@ async function fixtureManifest(): Promise<PluginManifest> {
     listTypes: search.listTypes,
     listSources: consent.listSources,
     hasLinkResolve: international.hasLinkResolve,
+    // #1729 — client assets: the shipped files, data and placeholders.
+    clientFiles: consent.clientFiles,
+    hasBuildData: consent.hasBuildData,
+    hasDeferrals: consent.hasDeferrals,
+    deferralPlaceholders: consent.deferralPlaceholders,
     linkResolveReads: international.linkResolveReads,
     aiChatOperations: assistant.aiChatOperations,
     changeConsumer: consent.changeConsumer,
@@ -146,6 +151,8 @@ async function fixtureManifest(): Promise<PluginManifest> {
  */
 const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
   hasLinkResolve: "linkResolveOperation",
+  hasDeferrals: "deferralsOperation",
+  hasBuildData: "buildDataOperation",
 };
 
 /** A render-point call as core makes it in an editor preview. */
@@ -333,6 +340,45 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
         { pageIds: [ID] },
       ),
     ).toEqual({ pages: { [ID]: { variant: "de", group: "render" } } });
+  },
+  // #1729 — the files and placeholders are reviewed data the definition
+  // carries; the build data and the deferral verdicts are reserved entries
+  // the sandbox answers as render calls.
+  client_assets: async () => {
+    const fixture = await fixtureManifest();
+    const manifest = {
+      ...probe,
+      clientFiles: fixture.clientFiles,
+      hasBuildData: true,
+      hasDeferrals: true,
+      deferralPlaceholders: fixture.deferralPlaceholders,
+    } as PluginManifest;
+    const declarations = externalDeclarations(manifest);
+    expect(declarations.clientFiles).toEqual(fixture.clientFiles);
+    expect(declarations.deferralPlaceholders).toEqual(fixture.deferralPlaceholders);
+    const source = `export default {slug:"parity-probe",version:"1.0.0",tier:2,
+      buildDataOperation:"data",deferralsOperation:"gate",
+      operations:{
+        data:async(ctx)=>({data:{origin:ctx.invocation.origin}}),
+        gate:async(ctx,args)=>({deferrals:{[args.moduleIds[0]]:{reason:"marketing",placeholderModuleSlug:"ph",placeholder:{name:"consent",values:{category:"marketing",category_label:"Marketing"}}}}}),
+      }};`;
+    expect(await renderPoint(source, manifest, "$buildData", {})).toEqual({
+      data: { origin: "render" },
+    });
+    expect(
+      await renderPoint(source, manifest, "$deferrals", { moduleIds: [ID], modules: [] }),
+    ).toEqual({
+      deferrals: {
+        [ID]: {
+          reason: "marketing",
+          placeholderModuleSlug: "ph",
+          placeholder: {
+            name: "consent",
+            values: { category: "marketing", category_label: "Marketing" },
+          },
+        },
+      },
+    });
   },
   batch_jobs: async () => {
     expect(

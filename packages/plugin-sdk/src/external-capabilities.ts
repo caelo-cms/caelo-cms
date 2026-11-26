@@ -37,7 +37,7 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
   email: PLANNED,
   head_contributions: PLANNED,
   url_slots: PLANNED,
-  client_assets: PLANNED,
+  client_assets: BROKERED,
   list_sources: BROKERED,
   list_types: BROKERED,
   list_resolve: PLANNED,
