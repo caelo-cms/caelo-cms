@@ -1138,4 +1138,55 @@ describe("#1267 — live topics cross admin instances", () => {
       await fanOut.stop();
     }
   });
+
+  // #1749 — every write wakes every instance; an idle one (no request open,
+  // so no stream and no wait) opened a connection for a read nobody heard,
+  // on a sliver of CPU, and logged the acquire deadline as an exhausted pool.
+  it("an instance nobody listens on reads nothing, and its first listener hears what it missed", async () => {
+    let reads = 0;
+    const counting = new Proxy(adapter, {
+      get(target, prop) {
+        if (prop === "withAdminTransaction") {
+          return (...args: Parameters<DatabaseAdapter["withAdminTransaction"]>) => {
+            if (args[2]?.holder === "live-fan-out") reads++;
+            return target.withAdminTransaction(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const fanOut = await startLiveFanOut({ adapter: counting, instanceId: "instance-idle" });
+    const write = (name: string) =>
+      op(SYS, "modules.create", {
+        slug: `${PFX}idle-${name}-${crypto.randomUUID().slice(0, 8)}`,
+        displayName: `Idle ${name}`,
+        html: "<p>idle</p>",
+      });
+    try {
+      await fanOut.settled();
+      // The start takes the cursor.
+      expect(reads).toBe(1);
+      await write("unheard");
+      await Bun.sleep(300);
+      await fanOut.settled();
+      expect(reads).toBe(1);
+
+      const heard: LiveTopic[] = [];
+      const stop = subscribeLiveTopics((topics) => heard.push(...topics));
+      try {
+        // A bare wake-up, no new write: what is read is the change nobody heard.
+        await adapter.rawAdmin()`SELECT pg_notify('caelo_entity_changes', '')`;
+        const deadline = Date.now() + 10_000;
+        while (!heard.includes("draft") && Date.now() < deadline) await Bun.sleep(25);
+        await fanOut.settled();
+        expect(heard).toContain("draft");
+        expect(reads).toBeGreaterThan(1);
+      } finally {
+        stop();
+      }
+    } finally {
+      await fanOut.stop();
+    }
+  });
 });
