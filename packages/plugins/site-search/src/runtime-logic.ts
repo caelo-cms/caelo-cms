@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The search runtime's address logic without the DOM (issues #1651,
- * #1707): where a results page reads its query, and where a form in hash
- * mode sends the visitor.
+ * The search runtime's logic without the DOM (issues #1651, #1707): where
+ * a results page reads its query, where a form in hash mode sends the
+ * visitor, and when a failed answer is asked for once more.
  *
  * A query in the fragment (`/suche/#q=kosten`) never leaves the browser:
  * the fragment is not part of the request, so it reaches no server or CDN
@@ -64,5 +64,24 @@ export function hashSearchUrl(action: string, base: string, query: string): stri
   return url.pathname + url.search + url.hash;
 }
 
+/**
+ * How long to wait before a failed search or suggestion is sent once more,
+ * or null when it should not be. A request that got no answer (0) or a
+ * 5xx is worth one more try: the gateway's instance can go away under a
+ * request (a deploy, a scale-down, a crash: #1745, a first search on
+ * searchVIU lost its instance and showed "Suche nicht erreichbar"), and a
+ * search changes nothing, so repeating it is safe. A 4xx is the request's
+ * own fault. A `Retry-After` in seconds (a busy gateway) is honoured up to
+ * 5 s; without one the runtime waits 1 s.
+ *
+ * @param status - the answer's status, 0 when the request failed without one.
+ * @param retryAfter - the answer's `Retry-After` header, or null.
+ */
+export function searchRetryDelayMs(status: number, retryAfter: string | null): number | null {
+  if (status !== 0 && (status < 500 || status > 599)) return null;
+  const seconds = retryAfter === null || retryAfter.trim() === "" ? Number.NaN : Number(retryAfter);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.min(seconds, 5) * 1000 : 1000;
+}
+
 /** The functions runtime.ts ships, in dependency order. */
-export const RUNTIME_LOGIC = [searchQueryOf, hashSearchUrl] as const;
+export const RUNTIME_LOGIC = [searchQueryOf, hashSearchUrl, searchRetryDelayMs] as const;

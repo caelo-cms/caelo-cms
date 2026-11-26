@@ -186,10 +186,10 @@ The collection engine (`packages/collection-index`, `plugin-collections.md`) has
 | Cold query, object store (30 ms per file) | p50 125 ms, p95 147 ms; 18–21 files, 2.2–2.4 MB | first query < 300 ms |
 | Answer, 10 hits with snippets | 4.6 KB before compression | < 10 KB |
 | Delta of 1 / 100 / 1,000 changed pages | 0.25 s / 0.48 s / 2.1 s; 0 / 1.7 / 10 MB written | per Stage, seconds |
-| Fully cached index in memory | 240 MB | within the gateway's 1 GiB with `CAELO_COLLECTIONS_CACHE_MB=256` |
+| Fully cached index in memory | 240 MB | within the gateway's 2 GiB with `CAELO_COLLECTIONS_CACHE_MB=256`, next to the query model |
 
 Semantic search adds the query embedding in WebAssembly (p50 9.9 ms, p95 16.4 ms with the default model) and, for a first index, about 35 minutes of embedding on 4 vCPUs at 50,000 pages. Details are in `docs/dev/embedding-models.md` and `packages/collection-index/bench/semantic-results.md`.
 
 The PR CI guard `packages/collection-index/src/scale-guard.test.ts` measures what time cannot measure reliably on CI machines: the files and bytes one cold query loads. On 4,000 pages that is 9 files and 0.48 MB at p95, against bounds of 20 files and 1 MB. A change that reads more must say why here.
 
-Not measured yet: the latency on a Cloud Run gateway with one vCPU, and whether Firebase Hosting's CDN keeps the cacheable answers. Both are part of the next fresh-install scratch test (`docs/dev/firebase-hosting-behaviour.md`).
+On a Cloud Run gateway with one vCPU (searchviu.com, 322 pages with link texts and semantic search, 2026-11-26, before the warm-up): the first search of a cold instance took 11 s (the query model's load and about 130 files read one by one from the store), each later new query 0.6–0.7 s (11–27 files it had not read yet), one fully cached 29 ms on an M3. The warm-up (`/release` loads the release's files and the model before the search, [gateway-hardening.md](./gateway-hardening.md)) is to be measured there once it ships, and so is whether Firebase Hosting's CDN keeps the cacheable answers (`docs/dev/firebase-hosting-behaviour.md`).

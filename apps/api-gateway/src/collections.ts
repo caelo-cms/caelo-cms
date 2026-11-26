@@ -29,6 +29,16 @@
  * profile's `weight`). Boosts and best bets apply to the fused order;
  * facets count the word matches. A release whose model this gateway's
  * catalog lacks answers 503 instead of a search without its meaning half.
+ *
+ * Warm-up (#1745): a cold instance's first search on searchVIU took
+ * 11 s, and one lost its instance after 9 s, because it opened the release,
+ * read about 130 index files one by one from object storage and loaded
+ * the query model, all inside the visitor's search. {@link
+ * GatewayCollections.warm} does that work ahead of the search, inside a
+ * request: `/release` (asked when the visitor focuses the search field)
+ * waits for it, and the admin's refresh ping after a publish opens the new
+ * releases. Never after an answer: the gateway runs on request-billed CPU,
+ * so work left running after the response waits for the next request.
  */
 
 import {
@@ -36,6 +46,7 @@ import {
   FileCache,
   openRelease,
   parseRelease,
+  prefetchRelease,
   prefixedCache,
   readProfile,
   scopedStore,
@@ -44,7 +55,9 @@ import {
 import {
   isPluginDisabled,
   loadedPlugins,
+  ModelUnavailableError,
   type OpenEntry,
+  type WarmableQueryEmbedder,
   wasmQueryEmbedder,
 } from "@caelo-cms/plugin-host/gateway";
 import {
@@ -53,6 +66,7 @@ import {
   searchProfile,
 } from "@caelo-cms/plugin-sdk";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import { COLLECTIONS_CACHE_MB_DEFAULT } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 export { runCollectionOperation } from "@caelo-cms/plugin-host/gateway";
@@ -63,11 +77,23 @@ const STORE_ENV = {
   staging: "CAELO_COLLECTIONS_STAGING_STORE",
 } as const;
 
-/** Bytes of index files one gateway keeps parsed in memory (LRU). */
-const CACHE_BYTES = Number(process.env.CAELO_COLLECTIONS_CACHE_MB ?? 256) * 1024 * 1024;
+/** Bytes of index files one gateway keeps parsed in memory (LRU), from `CAELO_COLLECTIONS_CACHE_MB`. */
+function cacheBytes(env: Readonly<Record<string, string | undefined>>): number {
+  return Number(env.CAELO_COLLECTIONS_CACHE_MB ?? COLLECTIONS_CACHE_MB_DEFAULT) * 1024 * 1024;
+}
 
 /** Releases one gateway keeps open (the newest few; a Publish live replaces one). */
 const OPEN_RELEASES = 8;
+
+/**
+ * The share of the cache's budget one release's prefetch may load from the
+ * store. Files the cache already holds (most of them, after a Publish live:
+ * a new release shares its older segments) cost nothing. The rest stays for
+ * what queries load on demand, so a release larger than the cache keeps
+ * its documents and term shards (prefetched first) without pushing out
+ * everything the last queries read.
+ */
+const PREFETCH_BUDGET_SHARE = 0.5;
 
 const PATH = /^\/api\/plugin\/([a-z][a-z0-9-]{0,54})\/([a-z_][a-z0-9_]{0,119})(\/release)?$/;
 
@@ -84,14 +110,18 @@ export function parseCollectionPath(
 export class GatewayCollections {
   private store: CollectionStore | null = null;
   private readonly cache: FileCache;
+  private readonly cacheBytes: number;
   private published: Map<string, string> | null = null;
   private readonly open = new Map<string, Promise<OpenEntry>>();
+  /** The prefetch of each open release, run once (keyed like {@link open}). */
+  private readonly prefetched = new Map<string, Promise<void>>();
 
   constructor(
     private readonly environment: "live" | "staging",
     private readonly env: Readonly<Record<string, string | undefined>> = process.env,
   ) {
-    this.cache = new FileCache({ read: (f) => this.storeOrThrow().read(f) }, CACHE_BYTES);
+    this.cacheBytes = cacheBytes(env);
+    this.cache = new FileCache({ read: (f) => this.storeOrThrow().read(f) }, this.cacheBytes);
   }
 
   private storeOrThrow(): CollectionStore {
@@ -140,7 +170,7 @@ export class GatewayCollections {
 
   /** The open release (and its profile) of a plugin's collection under `releaseKey`. */
   release(slug: string, collection: string, releaseKey: string): Promise<OpenEntry> {
-    const id = `${slug}/${collection}/${releaseKey}`;
+    const id = releaseId(slug, collection, releaseKey);
     let entry = this.open.get(id);
     if (!entry) {
       const prefix = `${slug}/${collection}`;
@@ -154,25 +184,134 @@ export class GatewayCollections {
         const raw = await readProfile(manifest, cache);
         const parsed = raw === null ? null : searchProfile.safeParse(raw);
         const profile = parsed?.success ? parsed.data : null;
-        // The first semantic query should not also pay the model's load.
-        if (profile?.semantic && manifest.vectorModel) {
-          defaultQueryEmbedder().warm(manifest.vectorModel.id);
-        }
         return { release, profile };
       })();
-      entry.catch(() => this.open.delete(id));
+      entry.catch(() => {
+        this.open.delete(id);
+        this.prefetched.delete(id);
+      });
       this.open.set(id, entry);
-      while (this.open.size > OPEN_RELEASES)
-        this.open.delete(this.open.keys().next().value as string);
+      while (this.open.size > OPEN_RELEASES) {
+        const oldest = this.open.keys().next().value as string;
+        this.open.delete(oldest);
+        this.prefetched.delete(oldest);
+      }
     }
     return entry;
   }
+
+  /**
+   * Readies one release for queries: opens it, loads its index files into
+   * the cache (up to {@link PREFETCH_BUDGET_SHARE} of it, the files every
+   * query needs first) and, given an `embedder`, loads the query model the
+   * release's profile searches by meaning with. The index comes first: the
+   * model's load is CPU-bound and holds the event loop for part of it, and
+   * a suggestion needs only the index.
+   *
+   * Concurrent callers share one open and one prefetch; the model's load is
+   * shared by the embedder. Never rejects: a failure is logged, and the
+   * query that needs the file or the model fails loudly itself.
+   */
+  async warm(
+    slug: string,
+    collection: string,
+    releaseKey: string,
+    options: { readonly embedder?: WarmableQueryEmbedder } = {},
+  ): Promise<void> {
+    const id = releaseId(slug, collection, releaseKey);
+    let entry: OpenEntry;
+    try {
+      entry = await this.release(slug, collection, releaseKey);
+    } catch (e) {
+      console.error(`[api-gateway] collection ${id}: could not be opened: ${messageOf(e)}`);
+      return;
+    }
+    let prefetch = this.prefetched.get(id);
+    if (!prefetch) {
+      const started = performance.now();
+      // What this prefetch loads, measured on the cache's counter (a query
+      // loading beside it counts too, which errs on the side of less).
+      const loadedBefore = this.cache.stats.bytesLoaded;
+      prefetch = prefetchRelease(entry.release, {
+        mayLoad: () =>
+          this.cache.stats.bytesLoaded - loadedBefore < this.cacheBytes * PREFETCH_BUDGET_SHARE,
+      }).then((r) => {
+        const line = `[api-gateway] collection ${id}: ${r.files} index files in memory after ${Math.round(performance.now() - started)} ms (cache ${Math.round(this.cache.bytesHeld / 1048576)} MiB)${r.skipped > 0 ? `, ${r.skipped} left to load on demand (the cache's prefetch share is full)` : ""}`;
+        if (r.failed > 0) console.error(`${line}, ${r.failed} unreadable (first: ${r.firstError})`);
+        else console.log(line);
+      });
+      // Only an open release keeps its prefetch (release() evicts both).
+      if (this.open.has(id)) this.prefetched.set(id, prefetch);
+    }
+    await prefetch;
+    const model = entry.release.manifest.vectorModel?.id;
+    if (options.embedder && model && entry.profile?.semantic) {
+      // The embedder logs a load and its failure; a model the catalog lacks
+      // never starts loading, so that one is said here.
+      await options.embedder.ready(model).catch((e: unknown) => {
+        if (e instanceof ModelUnavailableError) {
+          console.error(`[api-gateway] collection ${id}: ${e.message}`);
+        }
+      });
+    }
+  }
+
+  /**
+   * Readies the releases one declared operation answers from: its
+   * collection's and, for a search over link texts, the anchor
+   * collection's. A collection with no published release is skipped (its
+   * query answers IndexNotReady).
+   */
+  async warmOperation(
+    declared: {
+      readonly slug: string;
+      readonly pluginId: string;
+      readonly op: CollectionOperationManifest;
+    },
+    keys: ReadonlyMap<string, string>,
+    options: { readonly embedder?: WarmableQueryEmbedder } = {},
+  ): Promise<void> {
+    const { slug, pluginId, op } = declared;
+    const collections = [op.collection];
+    if (op.kind === "search" && op.anchors) collections.push(op.anchors.collection);
+    await Promise.all(
+      collections.map((c) => {
+        const key = keys.get(`${pluginId}:${c}`);
+        return key ? this.warm(slug, c, key, options) : undefined;
+      }),
+    );
+  }
 }
 
-let gatewayEmbedder: ReturnType<typeof wasmQueryEmbedder> | null = null;
+function releaseId(slug: string, collection: string, releaseKey: string): string {
+  return `${slug}/${collection}/${releaseKey}`;
+}
+
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Whether `work` settles within `ms`. Bounds a warm-up inside a request: past
+ * the bound the request answers anyway, and what is still loading is shared
+ * with the query that needs it.
+ */
+export async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<false>((done) => {
+    timer = setTimeout(() => done(false), ms);
+  });
+  try {
+    return await Promise.race([work.then(() => true as const), bound]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let gatewayEmbedder: WarmableQueryEmbedder | null = null;
 
 /** The process's query embedder (one per gateway process). */
-export function defaultQueryEmbedder(): ReturnType<typeof wasmQueryEmbedder> {
+export function defaultQueryEmbedder(): WarmableQueryEmbedder {
   gatewayEmbedder ??= wasmQueryEmbedder();
   return gatewayEmbedder;
 }
@@ -189,4 +328,20 @@ export function declaredCollectionOperation(
   const parsed = collectionOperationManifest.safeParse(raw);
   if (!parsed.success || !plugin.definition.collections?.[parsed.data.collection]) return null;
   return { pluginId: plugin.pluginId, op: parsed.data };
+}
+
+/** Every declared operation of every active plugin, re-validated like {@link declaredCollectionOperation}. */
+export function declaredCollectionOperations(): {
+  slug: string;
+  pluginId: string;
+  op: CollectionOperationManifest;
+}[] {
+  const out: { slug: string; pluginId: string; op: CollectionOperationManifest }[] = [];
+  for (const plugin of loadedPlugins.all()) {
+    for (const raw of plugin.definition.collectionOperations ?? []) {
+      const declared = declaredCollectionOperation(plugin.slug, raw.name);
+      if (declared) out.push({ slug: plugin.slug, ...declared });
+    }
+  }
+  return out;
 }

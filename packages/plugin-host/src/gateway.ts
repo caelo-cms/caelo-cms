@@ -22,6 +22,7 @@ export {
   ModelUnavailableError,
   type OpenEntry,
   runCollectionOperation,
+  type WarmableQueryEmbedder,
   wasmQueryEmbedder,
 } from "./collection-query.js";
 export {

@@ -42,7 +42,7 @@ An entry the profile cannot use (a pinned link that names no page, a synonym wit
 
 ## The browser side
 
-`src/runtime.ts`, a client asset. It binds to markup the AI writes into the site's own modules: `form[data-caelo-search]` with `[data-caelo-search-input]` and `[data-caelo-search-suggestions]`, and on the results page `[data-caelo-search-results]` with a `template[data-caelo-search-hit]`. The field is an ARIA 1.2 combobox. Focus warms the index up (`/release`); later calls name the release, so the CDN answers them. Requests send no cookie. Highlights are ranges turned into `<mark>`, never HTML from the index.
+`src/runtime.ts`, a client asset. It binds to markup the AI writes into the site's own modules: `form[data-caelo-search]` with `[data-caelo-search-input]` and `[data-caelo-search-suggestions]`, and on the results page `[data-caelo-search-results]` with a `template[data-caelo-search-hit]`. The field is an ARIA 1.2 combobox. Focus warms the gateway up (`/release`, answered once the release, its index and its query model are loaded) and asks for suggestions at once; later searches name the release, so the CDN answers them. A search or suggestion that fails without an answer or with a 5xx is sent once more (`searchRetryDelayMs`, 1 s or `Retry-After` up to 5 s) before the page shows its error state. Requests send no cookie. Highlights are ranges turned into `<mark>`, never HTML from the index.
 
 ### The query in the address (#1707)
 

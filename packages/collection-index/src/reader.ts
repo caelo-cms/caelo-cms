@@ -3,10 +3,15 @@
 /**
  * Reading segments from a file source (epic #1644, R3).
  *
- * The gateway loads only the files a query needs and keeps them in a
- * bounded cache, so a cold instance pays for the shards of its first query,
- * never for the whole index. Jobs read the same way from local disk or the
- * private store.
+ * Files load on demand through a bounded cache, so a query never needs
+ * more than its own files and a large index never has to fit in memory.
+ * The gateway also prefetches a release when it opens one
+ * (`prefetchRelease`, release.ts), up to a share of the cache budget: a
+ * query that found its files missing would otherwise pay one object-store
+ * round trip per file (a first search on searchVIU: about 130), so a small
+ * index answers from memory from its first query on, and a large one keeps
+ * the files every query reaches for first. Jobs read the same way from
+ * local disk or the private store.
  */
 
 import type { KeyedDoc } from "./schema.js";
@@ -106,6 +111,12 @@ export class FileCache implements FileCacheLike {
   }
 }
 
+/** One file of a segment, loaded (and parsed) into the cache by `load`. */
+export interface FileLoad {
+  readonly file: string;
+  load(): Promise<unknown>;
+}
+
 /** One open segment. Cheap to create; files load on demand through the cache. */
 export class SegmentReader {
   constructor(
@@ -202,5 +213,32 @@ export class SegmentReader {
     const file = this.manifest.vectors?.blocks[index];
     if (!file) return Promise.reject(new RangeError(`vector block ${index} does not exist`));
     return this.cache.get(file, (d) => d);
+  }
+
+  /**
+   * Every file of the segment as a load through the cache (each parsed the
+   * way its reader above parses it), grouped in the order queries reach
+   * for them: [0] the documents file and [1] the term shards (every query),
+   * [2] the vocabulary (typos, prefixes), [3] the vector codes (a search by
+   * meaning), [4] the stored documents (the hits), [5] the int8 vector
+   * blocks (re-scoring the closest passages).
+   */
+  fileLoads(): readonly (readonly FileLoad[])[] {
+    const m = this.manifest;
+    const v = m.vectors;
+    const vocabulary = [...new Set(Object.values(m.vocabulary))];
+    return [
+      [{ file: m.docsFile, load: () => this.docs() }],
+      m.shards.map((s, i) => ({ file: s.file, load: () => this.shard(i) })),
+      vocabulary.map((file) => ({ file, load: () => this.cache.get(file, decodeVocabulary) })),
+      v
+        ? v.codes.map((file) => ({
+            file,
+            load: () => this.cache.get(file, (d) => parseCodeFile(d, v.dims)),
+          }))
+        : [],
+      m.stores.map((s) => ({ file: s.file, load: () => this.cache.get(s.file, parseStore) })),
+      v ? v.blocks.map((file, i) => ({ file, load: () => this.vectorBlock(i) })) : [],
+    ];
   }
 }
