@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { isExternallyBrokered, pluginManifest } from "@caelo-cms/plugin-sdk";
+import { isExternallyBrokered, pluginCapability, pluginManifest } from "@caelo-cms/plugin-sdk";
 import { validateInstallationPolicy, validateSelectedGrants } from "./installation-policy.js";
 
 function manifest() {
@@ -39,17 +39,39 @@ describe("explicit external installation grants", () => {
       }),
     ).toThrow(isExternallyBrokered("cms_admin") ? "allowlist" : "not available");
   });
-  it("refuses a capability no runtime-installed plugin can have, naming what to remove (#1729)", () => {
-    const refused = () =>
-      validateInstallationPolicy({
-        ...manifest(),
-        requestedCapabilities: ["cms_admin_schema", "url_slots"],
-        capabilityReasons: { cms_admin_schema: "Notes", url_slots: "Prefix the language" },
-      });
-    expect(refused).toThrow(
-      "`url_slots` (Page addresses) is not available to runtime-installed plugins yet (#1729). Remove it from `requestedCapabilities` and remove `urlContributions`, which needs it.",
-    );
-    expect(refused).toThrow(/can request: .*cms_admin_schema/);
+  it("refuses the part of url_slots no runtime-installed plugin can have, naming what it may claim (#1729 Q7 A)", () => {
+    // Independent of which capabilities are still planned: the slots that
+    // map every slug through code are never offered to an installed plugin.
+    for (const slot of ["slug-format", "full-path"] as const) {
+      const refused = () =>
+        validateInstallationPolicy({
+          ...manifest(),
+          requestedCapabilities: ["cms_admin_schema", "url_slots"],
+          capabilityReasons: { cms_admin_schema: "Notes", url_slots: "Shape slugs" },
+          urlContributions: [{ slot }],
+        });
+      expect(refused).toThrow(
+        `URL slot "${slot}" is not available to runtime-installed plugins: it maps every page's slug through code`,
+      );
+      expect(refused).toThrow(/may claim host and path-prefix, declared as tables \(`urlTables`\)/);
+      expect(refused).toThrow(`Remove "${slot}" from \`urlContributions\``);
+    }
+  });
+  it("refuses a capability still planned, naming its issue and what can be requested (#1729)", () => {
+    // Vacuous once every capability is brokered; the parity test then still
+    // checks that each one is brokered or planned with an issue.
+    for (const capability of pluginCapability.options.filter((c) => !isExternallyBrokered(c))) {
+      const refused = () =>
+        validateInstallationPolicy({
+          ...manifest(),
+          requestedCapabilities: ["cms_admin_schema", capability],
+          capabilityReasons: { cms_admin_schema: "Notes", [capability]: "Probe" },
+        });
+      expect(refused).toThrow(
+        new RegExp(`\`${capability}\`.*not available to runtime-installed plugins yet \\(#\\d+\\)`),
+      );
+      expect(refused).toThrow(/can request: .*cms_admin_schema/);
+    }
   });
   it("ai_provider needs the daily cap the Owner approves, and only ai_provider takes one (#1729 Q8 A)", () => {
     const ai = (capabilityConstraints?: Record<string, unknown>) =>

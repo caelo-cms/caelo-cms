@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { activateApprovedExternalPlugin, pluginManifest } from "@caelo-cms/plugin-host";
-import { adminPanelOperations, externalCapabilityRefusal } from "@caelo-cms/plugin-sdk";
+import {
+  adminPanelOperations,
+  externalCapabilityRefusal,
+  externalUrlSlotRefusal,
+} from "@caelo-cms/plugin-sdk";
 import {
   describePluginOperations,
   execute,
@@ -47,6 +51,10 @@ export const load: PageServerLoad = async ({ locals }) => {
         unavailable: [
           ...(manifest.requestedCapabilities ?? []).map((capability) =>
             externalCapabilityRefusal(capability),
+          ),
+          // A URL slot no runtime-installed plugin can claim (Q7 A).
+          ...(manifest.urlContributions ?? []).map((claim) =>
+            externalUrlSlotRefusal(claim.slot, manifest.urlTables !== undefined),
           ),
           // An allowlist naming an operation no plugin can call is refused
           // at approval too; a package staged before that check says so here.

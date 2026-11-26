@@ -24,6 +24,7 @@ import { validateInstallationPolicy } from "@caelo-cms/plugin-sandbox";
 import {
   CAPABILITY_MANIFEST_FIELDS,
   EXTERNAL_CAPABILITY_STATUS,
+  externalCapabilityRefusal,
   isExternallyBrokered,
   manifestFromDefinition,
   type PluginCapability,
@@ -460,6 +461,20 @@ describe("#1729 — every capability is brokered for external plugins or tracked
         }),
       ).toThrow(new RegExp(`\`${capability}\`.*\\(#${status.issue}\\)`));
     }
+  });
+
+  it("the refusal of a planned capability names it, its issue and what to remove (injected record)", () => {
+    // Independent of the real record, which may have no planned entry left.
+    const record = {
+      ...EXTERNAL_CAPABILITY_STATUS,
+      url_slots: { status: "planned", issue: 4242 },
+    } as const;
+    const refusal = externalCapabilityRefusal("url_slots", record);
+    expect(refusal).toContain(
+      "`url_slots` (Page addresses) is not available to runtime-installed plugins yet (#4242)",
+    );
+    expect(refusal).toContain("remove `urlContributions`, `urlTables`, which need it");
+    expect(externalCapabilityRefusal("cms_admin", record)).toBeNull();
   });
 
   it("every brokered capability has a sandbox smoke", () => {

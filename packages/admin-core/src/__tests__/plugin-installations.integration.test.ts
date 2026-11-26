@@ -931,7 +931,9 @@ it("#1720 — refuses a runtime-installed plugin whose worker cron croner cannot
   expect((got.value as { plugin: unknown }).plugin).toBeNull();
 });
 
-it("refuses to stage a capability no runtime-installed plugin can be granted, before any row exists (#1729)", async () => {
+it("refuses to stage access no runtime-installed plugin can be granted, before any row exists (#1729)", async () => {
+  // The slots that map every slug through code are never offered to an
+  // installed plugin (Q7 A), whatever is still planned.
   const slug = "installation-unbrokered";
   const r = await execute(
     registry,
@@ -943,7 +945,8 @@ it("refuses to stage a capability no runtime-installed plugin can be granted, be
         ...manifest,
         slug,
         requestedCapabilities: ["cms_admin_schema", "url_slots"],
-        capabilityReasons: { ...manifest.capabilityReasons, url_slots: "Prefix the language" },
+        capabilityReasons: { ...manifest.capabilityReasons, url_slots: "Shape slugs" },
+        urlContributions: [{ slot: "slug-format" }],
       },
       source: source.replace("installation-notes", slug),
     },
@@ -951,9 +954,9 @@ it("refuses to stage a capability no runtime-installed plugin can be granted, be
   expect(r.ok).toBe(false);
   if (r.ok) return;
   expect(r.error.message).toContain(
-    "`url_slots` (Page addresses) is not available to runtime-installed plugins yet (#1729)",
+    'URL slot "slug-format" is not available to runtime-installed plugins',
   );
-  expect(r.error.message).toContain("Runtime-installed plugins can request: ");
+  expect(r.error.message).toContain("may claim host and path-prefix");
   const got = await execute(registry, adapter, system, "plugins.get", { slug });
   if (!got.ok) throw new Error(JSON.stringify(got.error));
   expect((got.value as { plugin: unknown }).plugin).toBeNull();

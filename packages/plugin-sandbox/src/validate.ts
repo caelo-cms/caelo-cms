@@ -47,6 +47,7 @@
 import {
   externalCapabilityHint,
   externalCapabilityRefusal,
+  externalUrlSlotRefusal,
   type PluginManifest,
   pluginManifest as pluginManifestSchema,
   urlTablesProblems,
@@ -355,9 +356,17 @@ export function validateManifest(
     const leak = (hint: string) => failures.push({ kind: "manifest-tier2-cap-leak", hint });
     if (m.contributes && m.contributes.length > 0)
       leak(externalCapabilityHint("head_contributions", "contributes"));
-    if (m.urlContributions && m.urlContributions.length > 0)
-      leak(externalCapabilityHint("url_slots", "urlContributions"));
-    if (m.urlTables) leak(externalCapabilityHint("url_slots", "urlTables"));
+    if (m.urlContributions && m.urlContributions.length > 0) {
+      // A slot no runtime-installed plugin can claim says so, with what it may.
+      const refused = m.urlContributions
+        .map((c) => externalUrlSlotRefusal(c.slot, m.urlTables !== undefined))
+        .filter((r): r is string => r !== null);
+      leak(
+        refused.length > 0
+          ? refused.join(" ")
+          : externalCapabilityHint("url_slots", "urlContributions"),
+      );
+    } else if (m.urlTables) leak(externalCapabilityHint("url_slots", "urlTables"));
     if (m.adminSchema && Object.keys(m.adminSchema).length > 0)
       leak(externalCapabilityHint("cms_admin_schema", "adminSchema"));
     if (m.workers && m.workers.length > 0)

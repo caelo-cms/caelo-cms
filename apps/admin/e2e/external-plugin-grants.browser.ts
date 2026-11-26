@@ -122,8 +122,11 @@ test("an upload that asks for access no runtime-installed plugin can have is ref
     tier: 2,
     schema: {},
     operations: ["noop"],
+    // Never offered to a runtime-installed plugin (#1729 Q7 A), whatever
+    // capabilities are still planned.
     requestedCapabilities: ["url_slots"],
-    capabilityReasons: { url_slots: "Prefix the language" },
+    capabilityReasons: { url_slots: "Shape every slug" },
+    urlContributions: [{ slot: "slug-format" }],
   };
   const source = `export default {slug:"${slug}",version:"1.0.0",tier:2,operations:{noop:async()=>null}};`;
   await page.goto("/login");
@@ -139,7 +142,7 @@ test("an upload that asks for access no runtime-installed plugin can have is ref
   });
   await page.getByRole("button", { name: "Submit package for review" }).click();
   await expect(page.getByRole("alert")).toContainText(
-    "`url_slots` (Page addresses) is not available to runtime-installed plugins yet (#1729)",
+    'URL slot "slug-format" is not available to runtime-installed plugins',
   );
   // Nothing was staged, so there is nothing to approve.
   await expect(page.getByTestId(`installation-${slug}`)).toHaveCount(0);

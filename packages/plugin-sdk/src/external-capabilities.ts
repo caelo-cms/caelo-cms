@@ -139,8 +139,13 @@ export function externallyRequestable(): string {
  * the AI that submitted it: the capability, its issue, what to remove and
  * what it can request instead. Null when the capability is brokered.
  */
-export function externalCapabilityRefusal(capability: PluginCapability): string | null {
-  const status = EXTERNAL_CAPABILITY_STATUS[capability];
+export function externalCapabilityRefusal(
+  capability: PluginCapability,
+  /** The record to read; a test injects one to exercise the refusal once
+   *  no capability is planned any more. */
+  record: Readonly<Record<PluginCapability, ExternalCapabilityStatus>> = EXTERNAL_CAPABILITY_STATUS,
+): string | null {
+  const status = record[capability];
   if (status.status === "brokered") return null;
   const fields = CAPABILITY_MANIFEST_FIELDS[capability];
   const remove =

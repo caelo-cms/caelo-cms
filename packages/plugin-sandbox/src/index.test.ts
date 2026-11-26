@@ -6,6 +6,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import {
+  isExternallyBrokered,
+  PLUGIN_CAPABILITY_INFO,
+  pluginCapability,
+} from "@caelo-cms/plugin-sdk";
 import { DEFAULT_INSTALL_NAMES } from "@caelo-cms/shared";
 import {
   adminGrantTarget,
@@ -95,13 +100,19 @@ describe("validateManifest", () => {
     expect(hints({ adminSchema: { notes: { body: "text" } } }).join(" ")).toContain(
       "`adminSchema` needs the `cms_admin_schema` grant: add it to `requestedCapabilities`",
     );
-    // Not available to runtime-installed plugins: says so, with the issue.
-    expect(hints({ contributes: ["head"] }).join(" ")).toContain(
-      "`head_contributions` (Page head and sitemap) is not available to runtime-installed plugins yet (#1729)",
+    // A part no runtime-installed plugin can have: says so, with what it may.
+    expect(hints({ urlContributions: [{ slot: "full-path" }] }).join(" ")).toContain(
+      'URL slot "full-path" is not available to runtime-installed plugins',
     );
-    expect(hints({ requestedCapabilities: ["url_slots"] }).join(" ")).toContain(
-      "`url_slots` (Page addresses) is not available",
+    expect(hints({ urlContributions: [{ slot: "path-prefix" }] }).join(" ")).toContain(
+      "declare `urlTables`",
     );
+    // A capability still planned (none once all are brokered): says so, with the issue.
+    for (const capability of pluginCapability.options.filter((c) => !isExternallyBrokered(c))) {
+      expect(hints({ requestedCapabilities: [capability] }).join(" ")).toContain(
+        `\`${capability}\` (${PLUGIN_CAPABILITY_INFO[capability].label}) is not available to runtime-installed plugins yet`,
+      );
+    }
     expect(hints({ requestedCapabilities: ["cms_admin_schema"] }).join(" ")).toContain(
       "submit it with submit_plugin",
     );
