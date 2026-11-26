@@ -38,10 +38,10 @@ import { type JobMain, runJobAttempt } from "./run-job.js";
 export async function runOrder(
   order: JobOrder,
   transport: ReportTransport,
-  opts: { readonly version?: string; readonly main?: JobMain } = {},
+  opts: { readonly version?: string; readonly main?: JobMain; readonly taskIndex?: number } = {},
 ): Promise<"completed" | "stopped" | "deferred"> {
   const version = opts.version ?? CAELO_VERSION;
-  const reporter = createJobReporter(order, transport);
+  const reporter = createJobReporter(order, transport, { taskIndex: opts.taskIndex ?? 0 });
   if (order.version !== version) {
     // The image did not follow the admin's last upgrade (or rollback) yet;
     // the next attempt starts on the job's image as it is then.
@@ -80,9 +80,13 @@ export async function main(env: Record<string, string | undefined> = process.env
       credential: serviceAccountIapCredential(order.adminUrl),
       timeoutMs: JOB_TIMING[order.kind].reportTimeoutSeconds * 1000,
     }),
+    // Cloud Run numbers an execution's tasks from 0 (`order.tasks` of them).
+    { taskIndex: Number(env.CLOUD_RUN_TASK_INDEX ?? "0") },
   );
+  const task =
+    (order.tasks ?? 1) > 1 ? ` task ${env.CLOUD_RUN_TASK_INDEX ?? "0"}/${order.tasks}` : "";
   console.log(
-    `[reporting-job] ${order.kind} ${order.subjectId} attempt ${order.attempt}: ${outcome}`,
+    `[reporting-job] ${order.kind} ${order.subjectId} attempt ${order.attempt}${task}: ${outcome}`,
   );
   return 0;
 }

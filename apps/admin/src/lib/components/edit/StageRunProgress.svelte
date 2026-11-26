@@ -2,12 +2,14 @@
   // SPDX-License-Identifier: MPL-2.0
   /**
    * #1288 — the running Stage's step, page progress and estimated time
-   * left, inside the Staging menu. Mounted only while the menu is open, so
+   * left, inside the Staging menu; after the build, while its search index
+   * is still being built, how far that is: Publish live waits for it, and
+   * a first index with semantic search can take minutes. Mounted only while the menu is open, so
    * a closed menu reads nothing. Re-read on the `deploys` live topic (a
    * progress write, the run's end) and on focus; while the Stage runs the
    * live hub holds its wait — no timer (CLAUDE.md §11.B, #1215).
    */
-  import { describeStageRun, type StageStatusRun } from "@caelo-cms/shared";
+  import { describeStageRun, searchIndexPending, type StageStatusRun } from "@caelo-cms/shared";
   import { LoaderCircle } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
   import { Progress } from "#lib/components/ui/progress/index.js";
@@ -17,6 +19,15 @@
   let run = $state<StageStatusRun | null>(null);
   let error = $state<string | null>(null);
   const inFlight = $derived(run?.status === "queued" || run?.status === "running");
+  // Built, but Publish live waits for the search index.
+  const indexing = $derived(run !== null && run.status === "succeeded" && searchIndexPending(run));
+  const embedding = $derived.by(() => {
+    const parts = (run?.searchIndexes ?? []).flatMap((i) =>
+      i.state === "pending" && i.progress ? [i.progress] : [],
+    );
+    const toEmbed = parts.reduce((n, p) => n + p.toEmbed, 0);
+    return toEmbed > 0 ? { done: parts.reduce((n, p) => n + p.embedded, 0), toEmbed } : null;
+  });
 
   const refetch = coalescedRefresh(async () => {
     if (document.visibilityState !== "visible") return;
@@ -43,7 +54,7 @@
     unregister = liveHub.register({
       topics: ["deploys"],
       refresh: () => void refetch(),
-      waiting: () => inFlight,
+      waiting: () => inFlight || indexing,
     });
   });
   onDestroy(() => unregister?.());
@@ -51,14 +62,16 @@
 
 {#if error}
   <p class="text-xs text-destructive" role="alert" data-testid="stage-run-progress-error">{error}</p>
-{:else if run && inFlight}
+{:else if run && (inFlight || indexing)}
   <div class="space-y-1.5 rounded-md border p-2" aria-live="polite" data-testid="stage-run-progress">
     <p class="flex items-center gap-1.5 text-xs font-medium">
       <LoaderCircle class="size-3.5 animate-spin motion-reduce:animate-none" />
-      Stage running
+      {inFlight ? "Stage running" : "Building the search index — Publish live waits for it"}
     </p>
     {#if run.phase === "building" && run.pagesTotal}
       <Progress value={run.pagesDone ?? 0} max={Math.max(1, run.pagesTotal)} />
+    {:else if indexing && embedding}
+      <Progress value={embedding.done} max={Math.max(1, embedding.toEmbed)} />
     {/if}
     <p class="text-xs text-muted-foreground" data-testid="stage-run-progress-text">
       {describeStageRun(run)}

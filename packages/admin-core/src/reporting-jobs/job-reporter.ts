@@ -67,10 +67,26 @@ export function isPassingReportFault(e: unknown): boolean {
 }
 
 /** Sends a job's reports. */
+/**
+ * Which task of its attempt a job is: `index` of `count` (Cloud Run's
+ * `CLOUD_RUN_TASK_INDEX` of the order's `tasks`), and the most tasks the
+ * admin could start an attempt with (`max`, one inside the admin).
+ */
+export interface TaskSlot {
+  readonly index: number;
+  readonly count: number;
+  readonly max: number;
+}
+
+/** One task of one attempt, the default where a job runs alone. */
+export const SINGLE_TASK: TaskSlot = { index: 0, count: 1, max: 1 };
+
 export interface JobReporter {
   readonly kind: JobOrder["kind"];
   readonly subjectId: string;
   readonly attempt: number;
+  /** This task's place in its attempt; absent: the attempt's only task. */
+  readonly slot?: TaskSlot;
   /**
    * Ask the admin to run `action` with `payload`; resolves with its answer.
    *
@@ -151,6 +167,8 @@ export interface ReporterOptions {
   readonly retryBudgetMs?: number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
+  /** This task's index in its attempt (Cloud Run's `CLOUD_RUN_TASK_INDEX`); default 0. */
+  readonly taskIndex?: number;
 }
 
 /** Statuses worth sending again: the admin was busy, starting or briefly broken. */
@@ -179,6 +197,16 @@ export function createJobReporter(
   const now = options.now ?? Date.now;
   const budget = options.retryBudgetMs ?? 3 * 60_000;
   let stopped: JobStoppedError | null = null;
+  const slot: TaskSlot = {
+    index: options.taskIndex ?? 0,
+    count: order.tasks ?? 1,
+    max: order.maxTasks ?? 1,
+  };
+  if (!Number.isInteger(slot.index) || slot.index < 0 || slot.index >= slot.count) {
+    throw new Error(
+      `task ${slot.index} of an attempt that runs ${slot.count}: the order and the task index disagree`,
+    );
+  }
 
   async function sendOnce(envelope: ReportEnvelope): Promise<SendOutcome> {
     if (stopped) throw stopped;
@@ -241,6 +269,7 @@ export function createJobReporter(
     kind: order.kind,
     subjectId: order.subjectId,
     attempt: order.attempt,
+    slot,
     get stopped() {
       return stopped !== null;
     },

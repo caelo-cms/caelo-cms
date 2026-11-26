@@ -40,6 +40,7 @@ import {
   JOB_ORDER_ENV_VAR,
   JOB_TIMING,
   type JobOrder,
+  MAX_JOB_TASKS,
   mintJobToken,
   type ReportingJobKind,
   reportOrigin,
@@ -49,6 +50,8 @@ import {
 export interface JobLauncher {
   /** Names where it runs in messages (`Cloud Run job caelo-production-audit-run`). */
   readonly label: string;
+  /** The most tasks it runs one attempt with (`JobOrder.tasks`); absent: one. */
+  readonly maxTasks?: number;
   /** Start the attempt; resolves with where it runs (an execution name). */
   launch(order: JobOrder): Promise<string>;
 }
@@ -71,10 +74,11 @@ export function gcpReportingJobLauncher(
   const origin = reportOrigin(adminUrl);
   return {
     label: `Cloud Run job ${job.split("/").pop()}`,
+    maxTasks: MAX_JOB_TASKS,
     async launch(order) {
       const op = (await googleCall(deps, `https://run.googleapis.com/v2/${job}:run`, "POST", {
         overrides: {
-          taskCount: 1,
+          taskCount: order.tasks ?? 1,
           timeout: `${JOB_TIMING[kind].maxRunSeconds}s`,
           containerOverrides: [
             {
@@ -246,7 +250,7 @@ export async function startReportingJob(
   const timing = JOB_TIMING[kind];
   const token = mintJobToken();
   const begun = await op<
-    | { started: true; attempt: number }
+    | { started: true; attempt: number; tasks: number }
     | {
         started: false;
         reason: "running" | "finished" | "exhausted";
@@ -270,12 +274,16 @@ export async function startReportingJob(
     await giveUpReportingJob(deps, def, subjectId, message);
     return { outcome: "given-up", message };
   }
+  const maxTasks = choice.launcher.maxTasks ?? 1;
+  const tasks = Math.min(begun.tasks, maxTasks);
   const order: JobOrder = {
     version: CAELO_VERSION,
     kind,
     subjectId,
     attempt: begun.attempt,
     token,
+    ...(tasks > 1 ? { tasks } : {}),
+    ...(maxTasks > 1 ? { maxTasks } : {}),
   };
   try {
     const execution = await withinLaunchTimeout(choice.launcher.launch(order));

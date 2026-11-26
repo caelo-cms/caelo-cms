@@ -11,6 +11,9 @@
  *   reporting_jobs.release         end an attempt's lease now, with the
  *                                  reason (a launch that failed, a job
  *                                  that deferred)
+ *   reporting_jobs.scale_out       run the next attempts with more tasks,
+ *                                  and end this one now (the index job
+ *                                  asked for them)
  *   reporting_jobs.finish          the work is over; no report is admitted
  *   reporting_jobs.list_expired    running jobs whose lease ran out
  *   reporting_jobs.put_upload_part one part of an input too large for one
@@ -67,7 +70,8 @@ export const beginReportingJobAttemptOp = defineOperation({
     })
     .strict(),
   output: z.union([
-    z.object({ started: z.literal(true), attempt }),
+    /** `tasks`: how many tasks the attempt runs (scale_out raised it, or 1). */
+    z.object({ started: z.literal(true), attempt, tasks: z.number().int().min(1).max(64) }),
     z.object({
       started: z.literal(false),
       /**
@@ -88,9 +92,10 @@ export const beginReportingJobAttemptOp = defineOperation({
       INSERT INTO reporting_jobs (kind, subject_id, attempt, token_hash, state, lease_until)
       VALUES (${input.kind}, ${input.subjectId}::uuid, 1, ${input.tokenHash}, 'running', ${lease})
       ON CONFLICT (kind, subject_id) DO NOTHING
-      RETURNING attempt
-    `)) as unknown as { attempt: number }[];
+      RETURNING attempt, tasks
+    `)) as unknown as { attempt: number; tasks: number }[];
     let started: number | null = fresh[0]?.attempt ?? null;
+    let tasks = fresh[0]?.tasks ?? 1;
     if (started === null) {
       const rows = (await tx.execute(sql`
         SELECT attempt, state, lease_until <= now() AS expired, last_error, execution
@@ -139,9 +144,10 @@ export const beginReportingJobAttemptOp = defineOperation({
                lease_until = ${lease}, execution = NULL, last_report_at = NULL,
                last_error = NULL, window_started_at = now(), window_requests = 0
          WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
-        RETURNING attempt
-      `)) as unknown as { attempt: number }[];
+        RETURNING attempt, tasks
+      `)) as unknown as { attempt: number; tasks: number }[];
       started = next[0]?.attempt ?? null;
+      tasks = next[0]?.tasks ?? 1;
       if (started === null) {
         return err({
           kind: "HandlerError",
@@ -158,9 +164,9 @@ export const beginReportingJobAttemptOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.subjectId,
-      resultSummary: `${input.kind}: attempt ${started} of ${input.maxAttempts}`,
+      resultSummary: `${input.kind}: attempt ${started} of ${input.maxAttempts}${tasks > 1 ? `, ${tasks} tasks` : ""}`,
     });
-    return ok({ started: true as const, attempt: started });
+    return ok({ started: true as const, attempt: started, tasks });
   },
 });
 
@@ -303,6 +309,53 @@ export const releaseReportingJobOp = defineOperation({
       });
     }
     return ok({ released: rows.length > 0 });
+  },
+});
+
+export const scaleOutReportingJobOp = defineOperation({
+  name: "reporting_jobs.scale_out",
+  readScope: "request",
+  // Why system-only: see reporting_jobs.begin_attempt. The job asks, the
+  // admin's report endpoint runs it as the system actor.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      kind,
+      subjectId,
+      attempt,
+      /** Tasks the next attempts run; never fewer than the work has now. */
+      tasks: z.number().int().min(2).max(64),
+      /** Why, in operator words: what the attempt found to do. */
+      reason: z.string().min(1).max(2000),
+    })
+    .strict(),
+  output: z.object({ scaled: z.boolean(), tasks: z.number().int() }),
+  handler: async (ctx, input, tx) => {
+    const rows = (await tx.execute(sql`
+      UPDATE reporting_jobs
+         SET tasks = GREATEST(tasks, ${input.tasks}), lease_until = now(), last_error = ${input.reason}
+       WHERE kind = ${input.kind} AND subject_id = ${input.subjectId}::uuid
+         AND attempt = ${input.attempt} AND state = 'running'
+      RETURNING tasks
+    `)) as unknown as { tasks: number }[];
+    const row = rows[0];
+    if (!row) return ok({ scaled: false, tasks: 1 });
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "reporting_jobs.scale_out",
+      input: {
+        kind: input.kind,
+        subjectId: input.subjectId,
+        attempt: input.attempt,
+        tasks: input.tasks,
+      },
+      succeeded: true,
+      entityId: input.subjectId,
+      resultSummary: `${input.kind} attempt ${input.attempt}: next attempts run ${row.tasks} tasks (${input.reason.slice(0, 160)})`,
+    });
+    return ok({ scaled: true, tasks: row.tasks });
   },
 });
 

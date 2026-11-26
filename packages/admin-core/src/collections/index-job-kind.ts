@@ -15,6 +15,7 @@ import {
   REPORTING_JOB_CTX,
   type ReportingJobKindDef,
 } from "../reporting-jobs/kind.js";
+import { MAX_JOB_TASKS } from "../reporting-jobs/protocol.js";
 
 /** The admin env var naming the index job's Cloud Run job (Google Cloud). */
 export const COLLECTION_INDEX_JOB_ENV_VAR = "CAELO_COLLECTION_INDEX_JOB";
@@ -80,6 +81,41 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
           value: {},
           done: { outcome: "completed", note: "every collection of the run is indexed" },
         };
+      },
+    },
+    // A task's embedding progress, for the Stage status and the Publish live gate (progress.ts).
+    progress: {
+      input: z
+        .object({
+          ...reportTarget,
+          task: z
+            .number()
+            .int()
+            .min(0)
+            .max(MAX_JOB_TASKS - 1),
+          tasks: z.number().int().min(1).max(MAX_JOB_TASKS),
+          embedded: z.number().int().min(0),
+          toEmbed: z.number().int().min(0),
+          planned: z.number().int().min(0),
+        })
+        .strict(),
+      async handle(deps, runId, input) {
+        await op(deps, "collections.index_progress", { runId, ...input });
+        return { value: {} };
+      },
+    },
+    // The build has more passages to embed than one task embeds in a few
+    // minutes: the next attempt runs this many tasks (index-shards.ts).
+    scale: {
+      input: z
+        .object({
+          tasks: z.number().int().min(2).max(MAX_JOB_TASKS),
+          reason: z.string().min(1).max(500),
+        })
+        .strict(),
+      async handle(deps, runId, input) {
+        await op(deps, "collections.index_reset_progress", { runId });
+        return { value: {}, scaleOut: { tasks: input.tasks, reason: input.reason } };
       },
     },
     failed: {

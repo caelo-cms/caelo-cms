@@ -587,7 +587,7 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   // index and batch jobs, collection clean-up, the embedding catalog. No
   // CI scenario activates such a plugin; their integration tests and the
   // site-search browser test drive them.
-  `${A}/collections/{gc,index-job,index-job-kind,ops}.ts`,
+  `${A}/collections/{gc,index-job,index-job-kind,index-shards,ops,progress}.ts`,
   `${A}/plugin-batches/{job,job-kind,ops,declared}.ts`,
   `${A}/ops/plugin_config_pending.ts`,
   `${SHARED}/embedding-models.ts`,

@@ -18,6 +18,11 @@
  * policy says the release has too many segments or too many removed
  * documents, in which case every live document is rewritten into one
  * segment (vectors carried over, never re-embedded).
+ *
+ * Both steps embed only passage text the collection does not hold yet
+ * (vector-pool.ts): a changed document keeps the vectors of its unchanged
+ * passages, and a rebuild under the same model keeps every vector whose
+ * text it still has.
  */
 
 import { ByteReader, ByteWriter } from "./bytes.js";
@@ -28,12 +33,23 @@ import {
   idTerm,
   type KeyedDoc,
   layoutOf,
-  type Passage,
 } from "./schema.js";
 import type { SegmentManifest } from "./segment.js";
-import { VECTORS_PER_BLOCK } from "./segment.js";
-import { type EncodedVector, storedVector } from "./vectors.js";
+import {
+  addReleaseVectors,
+  type EmbedTexts,
+  type PassageCounts,
+  type PassageVector,
+  passageCounts,
+  passagesOf,
+  segmentVectors,
+  VectorPool,
+  vectorsFor,
+} from "./vector-pool.js";
+import type { EncodedVector } from "./vectors.js";
 import { contentName, type FileSink, SegmentWriter } from "./writer.js";
+
+export { passageEmbeddingText } from "./vector-pool.js";
 
 /** One segment of a release. */
 export interface ReleaseSegment {
@@ -132,7 +148,7 @@ export function parseRelease(data: Uint8Array): ReleaseManifest {
 }
 
 /** Where each id lives in a release: segment index and key, for ids that are live. */
-async function locate(
+export async function locateDocs(
   opened: OpenRelease,
   ids: readonly string[],
 ): Promise<Map<string, { segment: number; key: number }>> {
@@ -172,7 +188,14 @@ export interface ApplyOptions {
   /** Reads the previous release's files. */
   readonly cache: FileCacheLike;
   /** Embeds passage texts; required when the schema has a vector field. */
-  readonly embed?: (texts: readonly string[]) => Promise<readonly Float32Array[]>;
+  readonly embed?: EmbedTexts;
+  /**
+   * Vectors already known by passage text, of this release's model. The
+   * build takes from it before embedding and adds what it embeds;
+   * `applyChanges` also adds the previous vectors of the documents it
+   * changes. Omitted: a pool of its own.
+   */
+  readonly reuse?: VectorPool;
   readonly vectorModel?: { readonly id: string; readonly dims: number };
   readonly mergePolicy?: MergePolicy;
   /** Rewrite into one segment regardless of the policy (a rebuild). */
@@ -188,16 +211,8 @@ export interface AppliedRelease {
   readonly file: string;
   readonly merged: boolean;
   readonly bytesWritten: number;
-}
-
-function passagesOf(doc: CollectionDoc, field: string): readonly Passage[] {
-  const v = doc.values[field];
-  return Array.isArray(v) ? (v as readonly Passage[]) : [];
-}
-
-/** The text a passage is embedded from: its heading and text. */
-export function passageEmbeddingText(p: Passage): string {
-  return p.heading ? `${p.heading}\n${p.text}` : p.text;
+  /** Passages embedded and passages that kept a known vector. */
+  readonly passages: PassageCounts;
 }
 
 /**
@@ -242,7 +257,7 @@ export async function applyChanges(
   for (const id of changes.deletes) upserts.delete(id);
   const touched = [...new Set([...changes.deletes, ...upserts.keys()])];
   const located = opened
-    ? await locate(opened, touched)
+    ? await locateDocs(opened, touched)
     : new Map<string, { segment: number; key: number }>();
   for (const id of touched) {
     const at = located.get(id);
@@ -255,6 +270,21 @@ export async function applyChanges(
   }
   keyed.sort((a, b) => a.key - b.key);
 
+  // A changed document's unchanged passages keep their vectors.
+  const pool = o.reuse ?? new VectorPool();
+  if (vectorField && o.vectorModel && opened) {
+    const previousKeys = new Map<number, Set<number>>();
+    for (const id of upserts.keys()) {
+      const at = located.get(id);
+      if (at)
+        (
+          previousKeys.get(at.segment) ?? previousKeys.set(at.segment, new Set()).get(at.segment)
+        )?.add(at.key);
+    }
+    await addReleaseVectors(pool, opened, vectorField, previousKeys);
+  }
+  const counts = passageCounts();
+
   const storedTotal =
     (opened?.segments ?? []).reduce((n, s) => n + s.reader.manifest.docCount, 0) + keyed.length;
   const removedTotal = removed.reduce((n, s) => n + s.size, 0);
@@ -264,27 +294,9 @@ export async function applyChanges(
     (opened !== null && opened.segments.length + 1 > policy.maxSegments) ||
     (storedTotal > 0 && removedTotal / storedTotal > policy.maxRemovedShare);
 
-  const embedDocs = async (
-    docs: readonly KeyedDoc[],
-  ): Promise<Map<number, (Float32Array | null)[]>> => {
-    const out = new Map<number, (Float32Array | null)[]>();
-    if (!vectorField || !o.embed || !o.vectorModel) return out;
-    const texts: string[] = [];
-    const owners: [number, number][] = [];
-    for (const d of docs) {
-      passagesOf(d, vectorField).forEach((p, i) => {
-        texts.push(passageEmbeddingText(p));
-        owners.push([d.key, i]);
-      });
-    }
-    const vectors = texts.length > 0 ? await o.embed(texts) : [];
-    if (vectors.length !== texts.length)
-      throw new RangeError(`embed returned ${vectors.length} vectors for ${texts.length} passages`);
-    owners.forEach(([key, i], at) => {
-      const list = out.get(key) ?? out.set(key, []).get(key);
-      if (list) list[i] = vectors[at] as Float32Array;
-    });
-    return out;
+  const embedDocs = async (docs: readonly KeyedDoc[]): Promise<Map<number, PassageVector[]>> => {
+    if (!vectorField || !o.embed || !o.vectorModel) return new Map();
+    return vectorsFor(docs, vectorField, o.embed, pool, counts);
   };
 
   const writerFor = async (vocabularyFrom: OpenRelease | null): Promise<SegmentWriter> => {
@@ -374,7 +386,7 @@ export async function applyChanges(
   const data = utf8.encode(JSON.stringify(manifest));
   const file = contentName("release", data, "json");
   sink(file, data);
-  return { manifest, file, merged: merge, bytesWritten };
+  return { manifest, file, merged: merge, bytesWritten, passages: counts };
 }
 
 /** Options of {@link buildRelease}. */
@@ -411,25 +423,14 @@ export async function buildRelease(
   let key = 0;
   let batch: KeyedDoc[] = [];
   let passages = 0;
+  const pool = o.reuse ?? new VectorPool();
+  const counts = passageCounts();
   const flush = async (): Promise<void> => {
     if (batch.length === 0) return;
-    const vectors = new Map<number, Float32Array[]>();
-    if (vectorField && o.embed && o.vectorModel) {
-      const texts: string[] = [];
-      const owners: [number, number][] = [];
-      for (const d of batch)
-        passagesOf(d, vectorField).forEach((p, i) => {
-          texts.push(passageEmbeddingText(p));
-          owners.push([d.key, i]);
-        });
-      const out = texts.length > 0 ? await o.embed(texts) : [];
-      if (out.length !== texts.length)
-        throw new RangeError(`embed returned ${out.length} vectors for ${texts.length} passages`);
-      owners.forEach(([k, i], at) => {
-        const list = vectors.get(k) ?? vectors.set(k, []).get(k);
-        if (list) list[i] = out[at] as Float32Array;
-      });
-    }
+    const vectors =
+      vectorField && o.embed && o.vectorModel
+        ? await vectorsFor(batch, vectorField, o.embed, pool, counts)
+        : new Map<number, PassageVector[]>();
     for (const d of batch) writer.add(d, vectors.get(d.key));
     batch = [];
     passages = 0;
@@ -464,7 +465,7 @@ export async function buildRelease(
   const data = utf8.encode(JSON.stringify(manifest));
   const file = contentName("release", data, "json");
   sink(file, data);
-  return { manifest, file, merged: true, bytesWritten };
+  return { manifest, file, merged: true, bytesWritten, passages: counts };
 }
 
 /** Every live document of a release with its stored vectors, ascending by key. */
@@ -476,34 +477,13 @@ async function liveDocsInKeyOrder(
   for (let si = 0; si < opened.segments.length; si++) {
     const seg = opened.segments[si] as OpenRelease["segments"][number];
     const gone = removed[si] as ReadonlySet<number>;
-    const vectors = await segmentVectors(seg.reader);
+    const vectors = await segmentVectors(seg.reader, null);
     for await (const doc of seg.reader.allStored()) {
       if (gone.has(doc.key)) continue;
       out.push({ doc, vectors: vectors.get(doc.key) });
     }
   }
   return out.sort((a, b) => a.doc.key - b.doc.key);
-}
-
-/** The encoded vectors of a segment by key and passage, read back for a merge. */
-async function segmentVectors(
-  reader: SegmentReader,
-): Promise<Map<number, (EncodedVector | null)[]>> {
-  const out = new Map<number, (EncodedVector | null)[]>();
-  const v = reader.manifest.vectors;
-  if (!v) return out;
-  const files = await reader.codeFiles();
-  let ordinal = 0;
-  for (const f of files) {
-    for (let i = 0; i < f.count; i++, ordinal++) {
-      const block = await reader.vectorBlock(Math.floor(ordinal / VECTORS_PER_BLOCK));
-      const encoded = storedVector(f, i, block, ordinal % VECTORS_PER_BLOCK, v.dims);
-      const key = f.keys[i] as number;
-      const list = out.get(key) ?? out.set(key, []).get(key);
-      if (list) list[f.passages[i] as number] = encoded;
-    }
-  }
-  return out;
 }
 
 /** Writes a profile as a content-addressed JSON file and returns its name. */

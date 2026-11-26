@@ -100,6 +100,17 @@ Memory and speed of the default model (M3 Pro, one thread):
 | Gateway (WebAssembly) | 9.9 / 16.4 ms | about 570 MB |
 | Index job (native) | about 140 passages/s on 4 threads | about 320 MB |
 
+**On Cloud Run the index job is slower than the M3 numbers.** Measured on
+2026-11-26 with searchviu.com's passages (648 characters on average, about
+1.8 times the bench's cost), a 2-vCPU job task embedded 10 to 19 passages a
+second on two threads, depending on the host (Intel Xeon 2.0/2.8 GHz, AMD
+EPYC). Two threads need `cpuBudget()` (`packages/models/src/cpu-budget.ts`):
+Cloud Run's quota is just under two CPUs (1.61 or 1.97), and
+`os.availableParallelism()` rounds that down to one, which embedded at 6 to 8
+a second. Large builds therefore run as several tasks
+(`docs/plugin-collections.md`, wide attempts), and a passage whose text did
+not change is never embedded again.
+
 **A gateway that serves a semantic collection needs 1 GiB.** It loads the
 model when it first opens such a release, not at boot. The first semantic
 query of an instance waits about half a second for the load; later queries
@@ -117,6 +128,8 @@ average.
 of its text. The gateway's query (always alone) meets the index under the same
 conditions, native and WebAssembly agree to 0.996 on average, and a rebuild
 reproduces the old vectors. With intra-op threads this costs no throughput.
+It is also what lets the index job keep a passage's vector while its text
+stays the same (`packages/collection-index/src/vector-pool.ts`).
 
 ## Through a Stage
 

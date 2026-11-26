@@ -31,6 +31,7 @@ import {
   type ReportingJobKindDef,
 } from "./kind.js";
 import { reportingJobKind } from "./kinds.js";
+import { startReportingJob } from "./launcher.js";
 import {
   deferSchema,
   hashJobToken,
@@ -305,6 +306,17 @@ async function prepareAction(
               outcome: result.done.outcome,
               note: result.done.note ?? null,
             });
+          } else if (result.scaleOut) {
+            const scaled = (await op(deps, "reporting_jobs.scale_out", {
+              kind: def.kind,
+              subjectId,
+              attempt,
+              tasks: result.scaleOut.tasks,
+              reason: result.scaleOut.reason.slice(0, 2000),
+            })) as { scaled: boolean };
+            // The released lease lets the next attempt begin now; a start
+            // that fails is the backstop's to retry, as after any launch.
+            if (scaled.scaled) await startReportingJob(deps, def.kind, subjectId);
           }
           return answered(result.value);
         } catch (e) {
