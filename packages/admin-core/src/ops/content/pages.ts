@@ -39,7 +39,12 @@ import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { headOverlaySql } from "../../draft.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
-import { loadPageRefIndex, type PageRefLookup, type PageRefTarget } from "../../lists/page-refs.js";
+import {
+  incomingPageRefIssue,
+  loadPageRefIndex,
+  type PageRefLookup,
+  type PageRefTarget,
+} from "../../lists/page-refs.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
 import { fitIssueDetails, resolvePageTypeForWrite } from "../../lists/page-type-resolve.js";
 import { loadListEntities } from "../../lists/store.js";
@@ -1445,6 +1450,27 @@ async function nextTypeBound(
   );
   if (fit.issues.length > 0) {
     return { ok: false, details: fitIssueDetails(resolved.def.slug, fit.issues) };
+  }
+  // #1754 — a page another page's `page` property names as a page of its
+  // current type keeps that type while it is named so.
+  if (resolved.typeId !== base.pageTypeId) {
+    const from = (
+      await loadListEntities(tx, "pageType", ctx.chatBranchId ?? null, {
+        ids: [base.pageTypeId],
+        includeDeleted: true,
+      })
+    )[0]?.state.slug;
+    const named =
+      from === undefined
+        ? null
+        : await incomingPageRefIssue(
+            tx,
+            ctx.chatBranchId ?? null,
+            { id: input.pageId, label: `page "${base.title}" (${input.pageId})` },
+            from,
+            resolved.def.slug,
+          );
+    if (named !== null) return { ok: false, details: [{ path: ["pageType"], message: named }] };
   }
   return {
     ok: true,

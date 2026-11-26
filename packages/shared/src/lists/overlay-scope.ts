@@ -96,6 +96,30 @@ function generatesPages(fields: readonly ScopedField[], data: ListRenderData): b
 }
 
 /**
+ * The `link-resolve` groups of a partition (group → its pages), built once
+ * per partition: a build asks for one scope per page over the same render
+ * data, and a per-call index would make that quadratic.
+ */
+const groupMembers = new WeakMap<object, ReadonlyMap<string, readonly string[]>>();
+function groupMembersOf(data: ListRenderData): ReadonlyMap<string, readonly string[]> | null {
+  const partition = data.pageVariants;
+  if (partition === undefined) return null;
+  let members = groupMembers.get(partition);
+  if (members === undefined) {
+    const out = new Map<string, string[]>();
+    for (const [id, v] of partition) {
+      if (v.group === null) continue;
+      const list = out.get(v.group);
+      if (list) list.push(id);
+      else out.set(v.group, [id]);
+    }
+    members = out;
+    groupMembers.set(partition, members);
+  }
+  return members;
+}
+
+/**
  * #1754 — every page of `variant` whose properties a render of `pageId` can
  * show through `page` properties: `{{#page.props.authors}}{{props.role}}…`,
  * and further down (article → author → organisation), each named page
@@ -103,18 +127,13 @@ function generatesPages(fields: readonly ScopedField[], data: ListRenderData): b
  * Walked with a visited set, so a cycle of references ends.
  */
 function namedPagesOf(data: ListRenderData, pageId: string, variant: string): Set<string> {
-  const members = new Map<string, string[]>();
-  for (const [id, v] of data.pageVariants ?? []) {
-    if (v.group === null) continue;
-    const list = members.get(v.group);
-    if (list) list.push(id);
-    else members.set(v.group, [id]);
-  }
+  const out = new Set<string>();
+  // Most pages name no page: no walk, and no look at the partition.
+  if (pageRefsOfProperties(data.pages.get(pageId)?.properties).size === 0) return out;
   const versionsOf = (id: string): readonly string[] => {
     const group = data.pageVariants?.get(id)?.group ?? null;
-    return group === null ? [id] : (members.get(group) ?? [id]);
+    return group === null ? [id] : (groupMembersOf(data)?.get(group) ?? [id]);
   };
-  const out = new Set<string>();
   const visited = new Set<string>([pageId]);
   const queue = [pageId];
   for (let next = queue.pop(); next !== undefined; next = queue.pop()) {

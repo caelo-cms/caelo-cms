@@ -15,10 +15,18 @@
  *
  * The lookup reads exactly the named pages (by id and by path, in the
  * caller's branch view, through `pages.list`), never the site.
+ *
+ * The other direction holds too: a page cannot leave the page type a
+ * property naming it asks for ({@link incomingPageRefIssue}).
  */
 
+import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
 import { formatPageRef, type PageTypeDef, parsePageRef } from "@caelo-cms/shared";
+import { sql } from "drizzle-orm";
+import { headOverlaySql } from "../draft.js";
 import { normalisedPath } from "../ops/content/path-candidates.js";
+import { loadPageRows, pagesInViewOf } from "./pages-view.js";
+import { loadListEntities } from "./store.js";
 
 /** A page a `page` property may name, as the caller sees it. */
 export interface PageRefTarget {
@@ -141,4 +149,66 @@ export function pageRefIssues(
     }
   }
   return issues;
+}
+
+/**
+ * Why page `pageId` cannot change from page type `fromSlug` to `toSlug`:
+ * pages name it in a `page` property that takes only pages of `fromSlug`
+ * (an article's `authors` asking for `author`), so the change would leave
+ * them naming a page their property refuses — and refuse their next edit.
+ * Null when nothing names it so.
+ *
+ * Runs only on a type change, and reads only candidates: the live pages of
+ * the types with such a property (by page type, indexed) whose properties
+ * mention the page, and, on a branch, the branch's pending pages that do;
+ * each is confirmed on its state in the caller's view.
+ */
+export async function incomingPageRefIssue(
+  tx: TransactionRunner,
+  branchId: string | null,
+  page: { readonly id: string; readonly label: string },
+  fromSlug: string,
+  toSlug: string,
+): Promise<string | null> {
+  if (fromSlug === toSlug) return null;
+  const types = await loadListEntities(tx, "pageType", branchId);
+  const asking = new Map<string, string[]>();
+  for (const t of types) {
+    const props = t.state.definition.properties
+      .filter((f) => f.type === "page" && f.pageType === fromSlug)
+      .map((f) => f.name);
+    if (props.length > 0) asking.set(t.id, props);
+  }
+  if (asking.size === 0) return null;
+  const visible = branchId
+    ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
+    : sql`p.chat_branch_id IS NULL`;
+  const live = (await tx.execute(sql`
+    SELECT p.id::text AS id FROM pages p
+     WHERE p.page_type_id = ANY(${uuidArray([...asking.keys()])}) AND p.deleted_at IS NULL
+       AND ${visible} AND strpos(p.properties::text, ${page.id}) > 0
+  `)) as unknown as { id: string }[];
+  const pending = branchId
+    ? ((await tx.execute(
+        headOverlaySql({
+          kind: "page",
+          table: "page_snapshots",
+          branchId,
+          columns: sql`NULL AS state`,
+          where: sql`strpos((es.state->'properties')::text, ${page.id}) > 0`,
+        }),
+      )) as unknown as { entity_id: string }[])
+    : [];
+  const ids = [...new Set([...live.map((r) => r.id), ...pending.map((r) => r.entity_id)])];
+  if (ids.length === 0) return null;
+  const ref = formatPageRef(page.id);
+  const naming: string[] = [];
+  for (const p of pagesInViewOf(await loadPageRows(tx, branchId, { ids }))) {
+    for (const prop of asking.get(p.pageTypeId) ?? []) {
+      const v = p.properties[prop];
+      if (Array.isArray(v) && v.includes(ref)) naming.push(`${prop} of ${p.currentPath}`);
+    }
+  }
+  if (naming.length === 0) return null;
+  return `${page.label} is named as a "${fromSlug}" page by ${naming.length} page propert${naming.length === 1 ? "y" : "ies"} (${naming.slice(0, 5).join(", ")}${naming.length > 5 ? ", …" : ""}) that take only that type — remove it there first (update_pages_many properties), or drop pageType from the property (upsert_page_types_many), then change the type to "${toSlug}".`;
 }

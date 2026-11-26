@@ -402,6 +402,13 @@ describe("a term's overview page", () => {
 });
 
 describe("page types guard their relations", () => {
+  it("refuses to change the type of a page a typed property names", async () => {
+    // Post one names Ben as an author; `authors` takes only author pages.
+    const msg = await fail(SYS, "pages.update", { pageId: P.ben, pageType: "home" });
+    expect(msg).toContain(`is named as a \\"${AUTHOR}\\" page`);
+    expect(msg).toContain(`authors of /${PFX}post-1`);
+  });
+
   it("refuses to delete a page type a page property asks for", async () => {
     const msg = await fail(SYS, "page_types.delete_many", { slugs: [AUTHOR] });
     expect(msg).toContain(`${ARTICLE}.authors, ${ARTICLE}.reviewed_by`);
