@@ -168,6 +168,16 @@ All composition points that return values go through one host function, `checkPl
 
 Q2 decides whether this binds shipped plugins in the same PR.
 
+### 4.6 Adding a broker (checklist, from Phase A on)
+
+1. **Status:** flip the capability to `brokered` in `EXTERNAL_CAPABILITY_STATUS` (`packages/plugin-sdk/src/external-capabilities.ts`) and keep `CAPABILITY_MANIFEST_FIELDS` exact. Update the table in §4.1 and the CMS_REQUIREMENTS §14.13 bullet.
+2. **Declarations:** carry the capability's manifest fields in `externalDeclarations` (`packages/plugin-host/src/external-plugin.ts`). A `has…` flag whose point a reserved entry answers also needs its `DEFINITION_KEY` entry in the parity test.
+3. **Registration:** if the shipped path registers something for it, that code belongs in `registerPluginSurfaces` (`loader.ts`), so both paths run it; gates belong in `preflightRegistration`.
+4. **Handle:** put every check in the host handle built in `capabilities.ts` (principle 1). The sandbox broker in `sandbox-runtime.ts` only Zod-parses the wire arguments, and the method joins `sandboxMethod` (`sandbox-protocol.ts`) and the child's `ctx` (`sandbox-entry.ts`, attached by a `has…` flag in the first message).
+5. **Reserved entries:** a composition point the host asks is a `$name` entry the child resolves from the plugin's definition (like `$staticRender`, `$onActivate`), checked by `$inspect` against the manifest's flag.
+6. **Kind:** a call whose origin does not say what it is passes `RunPluginOperationOpts.sandboxKind` (`journal`, `rebuild`).
+7. **Parity:** add the capability's smoke to `SMOKES` in `external-capability-parity.test.ts`, plus adversarial sandbox cases for the new surface and an integration test through staging, approval and activation (`external-plugin-seam.integration.test.ts` has the flow).
+
 ---
 
 ## 5. Group A: host-initiated runs
