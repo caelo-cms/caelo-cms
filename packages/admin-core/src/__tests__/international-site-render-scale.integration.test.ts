@@ -45,7 +45,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, pluginValueOf } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
@@ -245,7 +245,9 @@ async function preview(
         hreflang: (contributed.head.get(pageId) ?? []).map((e) =>
           e.kind === "link" ? `${e.hreflang} ${e.href}` : JSON.stringify(e),
         ),
-        switcher: (sources.get(pageId)?.language_links ?? []).map((i) => String(i.values.locale)),
+        switcher: (sources.get(pageId)?.language_links ?? []).map((i) =>
+          String(pluginValueOf(i.values.locale)?.value ?? i.values.locale),
+        ),
       };
     })
     .finally(() => {
@@ -435,10 +437,11 @@ describe("#1213 — international-site render hooks at scale", () => {
 
     const sources = await resolveListSources(ids, MAIN_RENDER, "directory");
     for (const id of ids) {
-      expect((sources.get(id)?.language_links ?? []).map((i) => i.values.locale)).toEqual([
-        "en",
-        "de",
-      ]);
+      expect(
+        (sources.get(id)?.language_links ?? []).map(
+          (i) => pluginValueOf(i.values.locale)?.value ?? i.values.locale,
+        ),
+      ).toEqual(["en", "de"]);
     }
 
     const partition = await resolveLinkVariants(ids, MAIN_RENDER);

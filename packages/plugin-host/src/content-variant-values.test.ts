@@ -10,7 +10,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { pluginLocalListOf, refusedPluginValueMarker, renderTemplate } from "@caelo-cms/shared";
+import {
+  pluginLocalListOf,
+  pluginValueOf,
+  refusedPluginValueMarker,
+  renderTemplate,
+} from "@caelo-cms/shared";
 import { checkContentVariantValues } from "./content-variants.js";
 
 const IMAGE = "00000000-0000-4000-8000-0000000000a1";
@@ -66,7 +71,8 @@ describe("content-variant values (#1729, §4.5)", () => {
     expect(rule(out.body)).toBeNull();
     expect(rule(out.cta)).toBeNull();
     expect(rule(out.links)).toBeNull();
-    expect(out.count).toBe(3);
+    // A checked translation stays the plugin's, for the engine to place.
+    expect(pluginValueOf(out.count)?.value).toBe(3);
   });
 
   it("escapes a translated text and refuses what may not reach a page", () => {
@@ -83,7 +89,23 @@ describe("content-variant values (#1729, §4.5)", () => {
       teaser: { moduleId: REFERENCE, contentInstanceId: REFERENCE },
       ghost: "not a field of the module",
     });
-    expect(out.title).toBe("&lt;img src&#61;x onerror&#61;alert(1)&gt;");
+    // Raw and the plugin's: escaped where the module places it.
+    expect(pluginValueOf(out.title)).toEqual({
+      origin: {
+        plugin: "probe",
+        point: "content-variants",
+        address: "layout:footer:0/title",
+        type: "text",
+      },
+      value: "<img src=x onerror=alert(1)>",
+    });
+    expect(
+      renderTemplate({
+        html: "<h1>{{title}}</h1>",
+        fields: [{ name: "title", kind: "text" }],
+        contentValues: { title: out.title },
+      }).html,
+    ).toBe("<h1>&lt;img src=x onerror=alert(1)&gt;</h1>");
     expect(Object.fromEntries(Object.entries(out).map(([k, v]) => [k, rule(v)]))).toEqual({
       title: null,
       body: "element-script",
@@ -139,9 +161,15 @@ describe("content-variant values (#1729, §4.5)", () => {
     });
   });
 
-  it("escapes a link's target", () => {
+  it("escapes a link's target where it lands", () => {
     const out = check({ cta: { href: "/docs", target: '_blank" onclick="x' } });
-    expect(out.cta).toEqual({ href: "/docs", target: "_blank&quot; onclick&#61;&quot;x" });
+    expect(
+      renderTemplate({
+        html: '<a href="{{cta.href}}" target="{{cta.target}}">x</a>',
+        fields: [{ name: "cta", kind: "link" }],
+        contentValues: { cta: out.cta },
+      }).html,
+    ).toBe('<a href="/docs" target="_blank&quot; onclick=&quot;x">x</a>');
   });
 
   it("renders a refused value raw and records it, never the field's default", () => {

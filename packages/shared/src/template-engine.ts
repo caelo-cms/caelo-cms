@@ -103,7 +103,11 @@ import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
 import { PAGE_KEY_UNKNOWN, PAGE_PATH_UNKNOWN } from "./lists/page-paths.js";
 import { PAGE_PROP_UNKNOWN } from "./lists/page-props.js";
 import type { ListPaginationSettings } from "./lists/pagination.js";
-import { refusedPluginValueMarker } from "./lists/plugin-values.js";
+import {
+  pluginValueOf,
+  pluginValueRefusedMarker,
+  refusedPluginValueMarker,
+} from "./lists/plugin-values.js";
 import type { ListHolder, ListPageContext } from "./lists/resolve.js";
 import { parseLinkFieldValue } from "./lists/resolve-values.js";
 import { stripCdataGuards } from "./strip-cdata.js";
@@ -464,6 +468,20 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     // An object with no href is no value: it stays raw like any empty field.
     if (link.href.length > 0) view[lower] = link.href;
     else delete view[lower];
+  }
+  // #1729 — the section pass substitutes every tag of a plugin's value by
+  // its context (template-contexts.ts). One it did not reach must never
+  // render as an object or unchecked: it fails loudly where Mustache would
+  // have used it.
+  for (const [key, value] of Object.entries(view)) {
+    const owned = pluginValueOf(value);
+    if (owned === null) continue;
+    const { plugin, point, address } = owned.origin;
+    const marker = pluginValueRefusedMarker(plugin, point, address, "context-unknown");
+    view[key] = () => {
+      missing.push(marker);
+      return mkSentinel(`{{${key}}}`);
+    };
   }
 
   // v0.11.1 (issue #76) — pre-populate four theme-asset substitutions

@@ -99,14 +99,16 @@ function galleryEntry(data: ListRenderData, values: Record<string, unknown>): Sc
 const failed = (v: ScopeValue | undefined) => (v?.kind === "failed" ? v.marker : null);
 
 describe("list-resolve values (#1729, §4.5)", () => {
-  it("escapes a text value a plugin set; core's own values stay as stored", () => {
+  it("keeps a text value a plugin set as the plugin's, for the engine to escape where it lands; core's own values stay as stored", () => {
     const markup = "<img src=x onerror=alert(1)>";
     const owned = headerEntry(
       fixtureData({ pageVariants: variants, overlays: overlay([[LABEL, markup]]) }),
     );
+    // Escaped or refused where the module places it (plugin-value-contexts.test.ts).
     expect(owned.get("label")).toEqual({
       kind: "text",
-      text: "&lt;img src&#61;x onerror&#61;alert(1)&gt;",
+      text: markup,
+      plugin: { plugin: "probe", point: "list-resolve", address: LABEL, type: "text" },
     });
     const core = headerEntry(
       fixtureData({ pageVariants: variants, overlays: overlay([[LABEL, markup]], false) }),

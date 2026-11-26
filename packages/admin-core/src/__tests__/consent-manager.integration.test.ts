@@ -24,9 +24,21 @@ import {
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, pluginValueOf } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+
+/** Entries with their plugin values unwrapped (#1729: checked values stay the plugin's until they land). */
+function plainEntries<T extends { id: string; values: Readonly<Record<string, unknown>> }>(
+  entries: readonly T[] | undefined,
+): { id: string; values: Record<string, unknown> }[] | undefined {
+  return entries?.map((e) => ({
+    id: e.id,
+    values: Object.fromEntries(
+      Object.entries(e.values).map(([k, v]) => [k, pluginValueOf(v)?.value ?? v]),
+    ),
+  }));
+}
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -334,7 +346,7 @@ describe("#451 — consent-manager", () => {
 
   it("offers the categories to a module as a list source, not as markup", async () => {
     const sources = await resolveListSources([pageId], MAIN_RENDER, "directory");
-    const items = sources.get(pageId)?.consent_categories;
+    const items = plainEntries(sources.get(pageId)?.consent_categories);
     expect(items).toBeDefined();
     // The category key is the stable entry id. Only real choices (#1129):
     // the page's YouTube embed waits for marketing; no tag or embed uses
@@ -356,7 +368,7 @@ describe("#451 — consent-manager", () => {
     expect(JSON.stringify(items)).not.toContain("<");
 
     // The cookie declaration rides the same call (#1133).
-    const vendors = sources.get(pageId)?.consent_vendors;
+    const vendors = plainEntries(sources.get(pageId)?.consent_vendors);
     expect(vendors?.[0]?.values.cookies).toContain("caelo_consent");
   });
 

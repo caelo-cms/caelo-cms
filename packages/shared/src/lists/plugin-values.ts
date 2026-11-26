@@ -24,8 +24,12 @@ import type { ListTypeDef, NodeDef } from "./list-type.js";
 // overlays, content variants) runs them through {@link checkPluginValue},
 // for every plugin, shipped or installed (decision Q2 A):
 //
-// - `text`, `select`, `icon`: HTML-escaped. A plugin value is data, never
-//   markup.
+// - `text`, `select`, `icon`: data, never markup. They keep their raw
+//   text here and are escaped where they are substituted, by the context of
+//   their placeholder in the module HTML ({@link contextualPluginValue},
+//   `template-contexts.ts`): HTML-escaped in text and attributes, held to
+//   the link rule in a URL attribute, refused in an event handler, a
+//   `style` attribute, `srcdoc` or a `<script>` / `<style>` body.
 // - `link`: a scheme of `https:`, `http:`, `mailto:` or `tel:` (or an
 //   internal `caelo:` reference, which the link resolver checks), never
 //   protocol-relative (`//host`), and none of the characters that end an
@@ -82,40 +86,29 @@ const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
 
 const ALLOWED_SCHEMES: ReadonlySet<string> = new Set(["https:", "http:", "mailto:", "tel:"]);
 
-/**
- * Escape text for HTML content and attribute values alike, quoted or not.
- * Module HTML substitutes raw, so a template may place a field in an
- * unquoted attribute (`title={{label}}`), where whitespace ends the value:
- * with `=` escaped, the words after it can only be valueless attributes,
- * which run no code (an `onmouseover` without a value is empty). The
- * backtick is escaped for the same context. Each renders as itself in text
- * and in a quoted attribute.
- */
+/** Escape text for HTML content and quoted attribute values alike. */
 export function escapePluginText(text: string): string {
   return text
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;")
-    .replaceAll("=", "&#61;")
-    .replaceAll("`", "&#96;");
+    .replaceAll("'", "&#39;");
 }
 
 /**
- * Whether `text` is a script URL as a browser reads one in a URL attribute
- * (WHATWG URL parsing: tabs and newlines removed, leading spaces and
- * control characters stripped). A module may substitute a text field into
- * `href="{{label}}"`, where escaping does not help, so a plugin's text is
- * never one. Its `&` is escaped, so a character reference cannot spell one.
+ * Escape text for an unquoted attribute value (`title={{label}}`), where
+ * whitespace would end the value and `=` or a backtick would start another
+ * one. Character references are decoded in an unquoted value, so the text
+ * arrives whole; an empty one is written `""`, which keeps the next
+ * attribute from becoming the value.
  */
-function isScriptUrl(text: string): boolean {
-  const url = text
-    .replace(/[\t\n\r]/g, "")
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: the URL parser strips them.
-    .replace(/^[\u0000-\u0020]+/, "")
-    .toLowerCase();
-  return url.startsWith("javascript:") || url.startsWith("vbscript:");
+export function escapeUnquotedPluginText(text: string): string {
+  if (text.length === 0) return '""';
+  return escapePluginText(text)
+    .replaceAll("=", "&#61;")
+    .replaceAll("`", "&#96;")
+    .replace(/[\t\n\f\r ]/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
 /**
@@ -211,10 +204,8 @@ export function checkPluginValue(field: FieldDef, value: unknown): PluginValueCh
     case "text":
     case "select":
     case "icon":
-      if (typeof value !== "string") return { ok: true, value };
-      return isScriptUrl(value)
-        ? { ok: false, rule: "text-script-url" }
-        : { ok: true, value: escapePluginText(value) };
+      // Escaped where it is substituted, by its placeholder's context.
+      return { ok: true, value };
     case "richtext": {
       if (typeof value !== "string") return { ok: true, value };
       const problem = richtextProblem(value);
@@ -229,12 +220,7 @@ export function checkPluginValue(field: FieldDef, value: unknown): PluginValueCh
             : null;
       if (href === null) return { ok: true, value };
       const problem = urlProblem(href);
-      if (problem !== null) return { ok: false, rule: problem };
-      // `target` reaches its attribute as written too (`{{field.target}}`).
-      const target = typeof value === "object" ? (value as { target?: unknown }).target : undefined;
-      return typeof target === "string"
-        ? { ok: true, value: { ...(value as object), target: escapePluginText(target) } }
-        : { ok: true, value };
+      return problem === null ? { ok: true, value } : { ok: false, rule: problem };
     }
     default:
       return { ok: true, value };
@@ -392,7 +378,17 @@ export function checkPluginListEntries(
       const checked = mediaRule
         ? ({ ok: false, rule: mediaRule } as const)
         : checkPluginValue(field, value);
-      values[name] = checked.ok ? checked.value : refuse(checked.rule);
+      values[name] = checked.ok
+        ? pluginValue(
+            {
+              plugin: owner.plugin,
+              point: "content-variants",
+              address: `${owner.address}/item/${item.id}/${name}`,
+              type: field.type,
+            },
+            checked.value,
+          )
+        : refuse(checked.rule);
     }
     return {
       ...item,
@@ -401,4 +397,117 @@ export function checkPluginListEntries(
     };
   };
   return items.map(visit);
+}
+
+// ─── Plugin values in a module's HTML ──────────────────────────────────
+
+/** The key of a plugin-owned value (see {@link pluginValue}). */
+const PLUGIN_VALUE_KEY = "$caeloPluginValue";
+
+/** Whose value it is and where it came from, as a refusal names it. */
+export interface PluginValueOrigin {
+  readonly plugin: string;
+  /** The composition point or list source (`content-variants`, `list-resolve`, a source name). */
+  readonly point: string;
+  /** The field it fills (`layout:footer:0/title`, an overlay address, `<entry>/<field>`). */
+  readonly address: string;
+  /** The field type it was checked as (`text`, `richtext`, `link`, `media`, …). */
+  readonly type: string;
+}
+
+/**
+ * #1729 (§4.5) — a value a plugin handed a page, checked for its field and
+ * still raw: the template engine escapes or refuses it where it is
+ * substituted, by the context of its placeholder (`template-contexts.ts`,
+ * {@link contextualPluginValue}). JSON, so it crosses a build's process
+ * boundary.
+ */
+export function pluginValue(origin: PluginValueOrigin, value: unknown): unknown {
+  return { [PLUGIN_VALUE_KEY]: origin, value };
+}
+
+/** The origin and raw value of a {@link pluginValue}, or null for any other value. */
+export function pluginValueOf(
+  value: unknown,
+): { readonly origin: PluginValueOrigin; readonly value: unknown } | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const origin = (value as Record<string, unknown>)[PLUGIN_VALUE_KEY];
+  if (typeof origin !== "object" || origin === null) return null;
+  return { origin: origin as PluginValueOrigin, value: (value as { value?: unknown }).value };
+}
+
+/**
+ * Where a placeholder sits in a module's HTML, as far as a plugin's value
+ * is concerned (`template-contexts.ts` works it out once per template).
+ *
+ * - `text`: element content, a comment, `<title>` or `<textarea>`;
+ * - `attribute`: a value of an attribute that is neither a URL nor code;
+ * - `url`: a URL attribute's value. `whole`: the placeholder decides the
+ *   URL's scheme; `path`: the template's text before it already did;
+ *   `composed`: the scheme would be made of the placeholder and other
+ *   parts, which no single value can be held to;
+ * - `refused`: an event handler, a `style` attribute, `srcdoc`, a
+ *   `<script>` or `<style>` body, a tag's name or an attribute's name:
+ *   places where any value is code or markup.
+ */
+export type PlaceholderContext =
+  | { readonly kind: "text" }
+  | { readonly kind: "attribute"; readonly quoted: boolean }
+  | {
+      readonly kind: "url";
+      readonly quoted: boolean;
+      readonly position: "whole" | "path" | "composed";
+    }
+  | { readonly kind: "refused"; readonly rule: string };
+
+/**
+ * The characters a URL a plugin fills part of may not hold, as written or
+ * as decoded in its attribute: whitespace and control characters (a URL
+ * parser strips some, and they end an unquoted value), and the characters
+ * that end an attribute.
+ */
+function urlCharactersProblem(url: string): string | null {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this refuses.
+  const bad = /[\u0000- \u007f"'<>`\\]/;
+  if (bad.test(url)) return "url-characters";
+  return url.includes("&") && bad.test(asAttributeValue(url)) ? "url-characters" : null;
+}
+
+/**
+ * A plugin's value as it may stand at a placeholder of `context`: the
+ * HTML to substitute, or the rule it breaks there (which the engine records
+ * as `plugin-value-refused:<plugin>.<point>.<address>:<rule>` and keeps the
+ * placeholder raw).
+ *
+ * - text: richtext is prose (checked already) and stays markup; every other
+ *   value is escaped;
+ * - attribute: escaped (richtext too: an attribute holds no markup),
+ *   unquoted with {@link escapeUnquotedPluginText};
+ * - URL: held to the link rule when it decides the URL, to the URL
+ *   characters when the template's text before it did; never composed;
+ * - refused: every plugin value, whatever it says.
+ */
+export function contextualPluginValue(
+  context: PlaceholderContext,
+  origin: PluginValueOrigin,
+  value: string,
+): { readonly ok: true; readonly html: string } | { readonly ok: false; readonly rule: string } {
+  switch (context.kind) {
+    case "refused":
+      return { ok: false, rule: context.rule };
+    case "text":
+      return { ok: true, html: origin.type === "richtext" ? value : escapePluginText(value) };
+    case "attribute":
+      return {
+        ok: true,
+        html: context.quoted ? escapePluginText(value) : escapeUnquotedPluginText(value),
+      };
+    case "url": {
+      if (context.position === "composed") return { ok: false, rule: "url-composed" };
+      const problem =
+        context.position === "whole" ? urlProblem(value) : urlCharactersProblem(value);
+      if (problem !== null) return { ok: false, rule: problem };
+      return { ok: true, html: !context.quoted && value.length === 0 ? '""' : value };
+    }
+  }
 }

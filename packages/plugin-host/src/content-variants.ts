@@ -44,6 +44,7 @@ import {
   type PluginMediaFacts,
   parseLinkFieldValue,
   pluginLocalList,
+  pluginValue,
   pluginValueRefusedMarker,
   refusedPluginValue,
 } from "@caelo-cms/shared";
@@ -305,8 +306,21 @@ export function checkContentVariantValues(input: {
             address: `${input.key}/${name}`,
             ...(input.media ? { media: input.media } : {}),
           }));
+    // A checked value stays the plugin's: the template engine escapes or
+    // refuses it by where the module places it. A list is checked where it
+    // renders (pluginLocalList) or names a shared list.
     out[name] = checked.ok
-      ? checked.value
+      ? kind === "list" || checked.value === undefined || checked.value === null
+        ? checked.value
+        : pluginValue(
+            {
+              plugin: input.pluginSlug,
+              point: "content-variants",
+              address: `${input.key}/${name}`,
+              type: kind ?? "text",
+            },
+            checked.value,
+          )
       : refusedPluginValue(
           pluginValueRefusedMarker(
             input.pluginSlug,

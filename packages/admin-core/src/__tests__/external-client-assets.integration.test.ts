@@ -261,7 +261,7 @@ it("the preview carries the reviewed files, the escaped data and the declared pl
   // The withheld embed: the declared placeholder with escaped text, the
   // iframe only inside the inert template.
   expect(preview.html).toContain(
-    '<p>Withheld until you allow &lt;img src&#61;x onerror&#61;alert(1)&gt;.</p><button type="button" data-probe-allow="marketing">Allow</button>',
+    '<p>Withheld until you allow &lt;img src=x onerror=alert(1)&gt;.</p><button type="button" data-probe-allow="marketing">Allow</button>',
   );
   expect(preview.html).not.toContain("<img src=x");
   expect(preview.html.indexOf("youtube.com/embed")).toBeGreaterThan(

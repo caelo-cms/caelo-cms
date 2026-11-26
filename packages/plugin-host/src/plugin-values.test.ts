@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { FieldDef } from "@caelo-cms/shared";
+import { escapeUnquotedPluginText, type FieldDef } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
 import {
   checkPluginMedia,
@@ -19,58 +19,33 @@ import {
 const field = (type: string, extra: object = {}): FieldDef =>
   ({ name: "f", label: "F", type, ...extra }) as FieldDef;
 
-describe("text, select and icon are escaped, never markup", () => {
-  it("escapes every character that starts markup or ends an attribute", () => {
+describe("text, select and icon stay data, escaped where they land", () => {
+  it("keeps the raw text: the engine escapes it by its placeholder's context", () => {
     for (const type of ["text", "select", "icon"]) {
-      expect(
-        checkPluginValue(field(type, { options: ["a"] }), '<img src=x onerror="alert(1)">'),
-      ).toEqual({
-        ok: true,
-        value: "&lt;img src&#61;x onerror&#61;&quot;alert(1)&quot;&gt;",
-      });
+      // "JavaScript: Grundlagen" is a title, not a link: only a URL attribute refuses it.
+      for (const value of ['<img src=x onerror="alert(1)">', "JavaScript: Grundlagen"]) {
+        expect(checkPluginValue(field(type, { options: ["a"] }), value)).toEqual({
+          ok: true,
+          value,
+        });
+      }
     }
-    expect(escapePluginText(`Tom & 'Jerry'`)).toBe("Tom &amp; &#39;Jerry&#39;");
+    expect(escapePluginText(`Tom & 'Jerry' "x" <y>`)).toBe(
+      "Tom &amp; &#39;Jerry&#39; &quot;x&quot; &lt;y&gt;",
+    );
   });
 
-  it("refuses text a URL attribute would run as a script, however it is spelled", () => {
-    for (const script of [
-      "javascript:alert(1)",
-      "  JaVaScRiPt:alert(1)",
-      "java\tscript:alert(1)",
-      "\u0001javascript:alert(1)",
-      "vbscript:msgbox(1)",
-    ]) {
-      expect(checkPluginValue(field("text"), script)).toEqual({
-        ok: false,
-        rule: "text-script-url",
-      });
-    }
-    expect(checkPluginValue(field("text"), "JavaScript is fun")).toEqual({
-      ok: true,
-      value: "JavaScript is fun",
-    });
-    // Its `&` is escaped, so a character reference spells no scheme.
-    expect(checkPluginValue(field("text"), "javascript&#58;alert(1)")).toEqual({
-      ok: true,
-      value: "javascript&amp;#58;alert(1)",
-    });
-  });
-
-  it("gives an unquoted attribute no attribute with a value, so no handler code", () => {
-    // `<div title={{label}}>`: whitespace ends an unquoted value, so the
-    // words after it become attributes, but none of them gets a value.
-    const html = `<div title=${escapePluginText("x onmouseover=alert(1) y=`z`")}>`;
+  it("escapes an unquoted attribute value into one value with no attribute after it", () => {
+    // `<div title={{label}}>`: whitespace would end the value, `=` start another.
+    const html = `<div title=${escapeUnquotedPluginText("x onmouseover=alert(1) y=`z`")}>`;
     const attributes: Record<string, string> = {};
     new Parser({
       onattribute: (name, value) => {
         attributes[name] = value;
       },
     }).end(html);
-    expect(attributes).toEqual({
-      title: "x",
-      "onmouseover&#61;alert(1)": "",
-      "y&#61;&#96;z&#96;": "",
-    });
+    expect(attributes).toEqual({ title: "x onmouseover=alert(1) y=`z`" });
+    expect(escapeUnquotedPluginText("")).toBe('""');
   });
 });
 

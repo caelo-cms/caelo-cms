@@ -23,9 +23,21 @@
  */
 
 import { PAGE_KEY_TYPES, pageKeyUnknownMarker, pagePathUnknownMarker } from "./lists/page-paths.js";
+import {
+  contextualPluginValue,
+  type PluginValueOrigin,
+  pluginValueOf,
+  pluginValueRefusedMarker,
+} from "./lists/plugin-values.js";
 import type { ListFieldSpec, ListHolder, ListPageContext } from "./lists/resolve.js";
-import { LINK_VALUE_KEYS, linkValue, parseLinkFieldValue } from "./lists/resolve-values.js";
+import {
+  LINK_VALUE_KEYS,
+  linkValue,
+  parseLinkFieldValue,
+  plainValue,
+} from "./lists/resolve-values.js";
 import type { ScopeEntry, ScopeValue } from "./lists/scope.js";
+import { placeholderContextAt } from "./template-contexts.js";
 
 /** A field as the section pass needs it (subset of `TemplateField`). */
 export interface SectionField extends Partial<Omit<ListFieldSpec, "name" | "default">> {
@@ -67,7 +79,7 @@ interface Token {
 // `\s*` around the sigil is split by the mandatory sigil character, and
 // the name ends on a word character, so no two quantifiers compete for
 // the same input (linear matching).
-const TAG_RE = /\{\{\s*([#^/>]\s*)?([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*)\s*\}\}/g;
+const TAG_RE = /\{\{\s*([#^/>&]\s*)?([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)*)\s*\}\}/g;
 const SECTION_NAME_RE = /^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*$/;
 const DOT_RE = /\{\{\s*\.\s*\}\}/g;
 
@@ -149,6 +161,8 @@ interface RenderState {
   readonly chain: readonly Frame[];
   /** `{{.}}` / `{{item}}` value inside a scalar conditional; null elsewhere. */
   readonly dot: string | null;
+  /** Set when a plugin supplied {@link dot} (#1729): it is checked where it lands. */
+  readonly dotPlugin?: PluginValueOrigin;
 }
 
 /**
@@ -159,7 +173,8 @@ export function renderSections(html: string, env: SectionEnv): string {
   const tokens = tokenize(html);
   if (tokens.length === 0) return html;
   const pairs = matchSections(tokens);
-  if (pairs.size === 0 && !tokens.some((t) => t.name.includes("."))) return html;
+  const pluginOwned = Object.values(env.values).some((v) => pluginValueOf(v) !== null);
+  if (pairs.size === 0 && !pluginOwned && !tokens.some((t) => t.name.includes("."))) return html;
   const r = new SectionRenderer(html, tokens, pairs, env);
   return r.range(0, tokens.length, 0, html.length, { chain: [], dot: null });
 }
@@ -189,18 +204,57 @@ class SectionRenderer {
         i = close + 1;
         continue;
       }
-      out += this.tag(t, st);
-      cursor = t.end;
+      this.pluginTag = false;
+      const rendered = this.tag(t, st);
+      // A plugin's value in a `{{{f}}}` replaces the whole tag, braces
+      // included; a core value keeps the output it always had.
+      const triple = this.html[t.start - 1] === "{" && this.html[t.end] === "}";
+      if (this.pluginTag && triple && out.endsWith("{")) {
+        out = out.slice(0, -1) + rendered;
+        cursor = t.end + 1;
+      } else {
+        out += rendered;
+        cursor = t.end;
+      }
       i += 1;
     }
     return out + this.text(cursor, textTo, st);
+  }
+
+  /** Set by {@link pluginText}: the tag just rendered was a plugin's value. */
+  private pluginTag = false;
+
+  /**
+   * #1729 (§4.5) — a plugin's value at the tag starting at `start`,
+   * escaped or refused by where the module places it
+   * (`template-contexts.ts`, `contextualPluginValue`). A refused value
+   * keeps the tag raw and records `plugin-value-refused:…:<rule>`.
+   */
+  private pluginText(
+    start: number,
+    origin: PluginValueOrigin,
+    value: string,
+    source: string,
+  ): string {
+    this.pluginTag = true;
+    const result = contextualPluginValue(placeholderContextAt(this.html, start), origin, value);
+    if (!result.ok) {
+      return this.raw(
+        source,
+        pluginValueRefusedMarker(origin.plugin, origin.point, origin.address, result.rule),
+      );
+    }
+    return result.html.length === 0 ? "" : this.env.mkSentinel(result.html);
   }
 
   private text(from: number, to: number, st: RenderState): string {
     const s = this.html.slice(from, to);
     if (st.dot === null || s.length === 0) return s;
     const dot = st.dot;
-    return s.replace(DOT_RE, () => this.env.mkSentinel(dot));
+    const plugin = st.dotPlugin;
+    return s.replace(DOT_RE, (match: string, offset: number) =>
+      plugin ? this.pluginText(from + offset, plugin, dot, match) : this.env.mkSentinel(dot),
+    );
   }
 
   private raw(source: string, marker: string | null): string {
@@ -260,10 +314,11 @@ class SectionRenderer {
   private moduleLink(head: string): ScopeValue | undefined {
     const field = this.env.fields.get(head);
     if (field?.kind !== "link") return undefined;
-    const raw = Object.hasOwn(this.env.values, head) ? this.env.values[head] : field.default;
-    const link = parseLinkFieldValue(raw);
+    const stored = Object.hasOwn(this.env.values, head) ? this.env.values[head] : field.default;
+    const owned = pluginValueOf(stored);
+    const link = parseLinkFieldValue(owned ? owned.value : stored);
     if (link === null) return { kind: "failed", marker: `field-value-malformed:${head}` };
-    return this.env.lists?.linkScope(link) ?? linkValue(link, null);
+    return this.env.lists?.linkScope(link, owned?.origin) ?? linkValue(link, null, owned?.origin);
   }
 
   /** `name` (`f` or `f.key`) read from a module `link` field; `undefined` when it is none. */
@@ -279,6 +334,28 @@ class SectionRenderer {
   private linkUnset(name: string): boolean {
     const v = this.moduleLink((name.split(".")[0] as string).toLowerCase());
     return v?.kind === "record" && !v.present;
+  }
+
+  /**
+   * #1729 — a module field a plugin filled (a content variant), placed by
+   * its tag's context; null for a core value or a link field (a link reads
+   * through {@link moduleLink}), which keep their path.
+   */
+  private moduleValue(t: Token, source: string): string | null {
+    if (t.name.includes(".") || this.fieldKind(t.name) === "link") return null;
+    const owned = this.modulePluginValue(t.name);
+    if (owned === null) return null;
+    return this.pluginText(t.start, owned.origin, scalarSectionString(owned.value), source);
+  }
+
+  /** The plugin's value of module field `name`, if a plugin filled it. */
+  private modulePluginValue(name: string): ReturnType<typeof pluginValueOf> {
+    const key = Object.hasOwn(this.env.values, name) ? name : name.toLowerCase();
+    return Object.hasOwn(this.env.values, key) ? pluginValueOf(this.env.values[key]) : null;
+  }
+
+  private fieldKind(name: string): string | undefined {
+    return (this.env.fields.get(name) ?? this.env.fields.get(name.toLowerCase()))?.kind;
   }
 
   private isModuleLevel(name: string): boolean {
@@ -392,13 +469,19 @@ class SectionRenderer {
   private tag(t: Token, st: RenderState): string {
     const source = this.html.slice(t.start, t.end);
     if (t.sigil === ">") return this.partial(t, source, st);
+    // `{{&f}}` never reads a list entry: a module field, Mustache's unless a
+    // plugin filled it.
+    if (t.sigil === "&") return this.moduleValue(t, source) ?? source;
     if (t.sigil !== "") return source;
     if (st.dot !== null && t.name === "item" && st.chain.length === 0) {
-      return this.env.mkSentinel(st.dot);
+      return st.dotPlugin
+        ? this.pluginText(t.start, st.dotPlugin, st.dot, source)
+        : this.env.mkSentinel(st.dot);
     }
     const dotted = t.name.includes(".");
     const linkField = this.env.fields.get(t.name.toLowerCase())?.kind === "link";
-    if (st.chain.length === 0 && !dotted && !linkField) return source;
+    if (st.chain.length === 0 && !dotted && !linkField)
+      return this.moduleValue(t, source) ?? source;
     const entryValue = this.lookup(t.name, st);
     const v = entryValue ?? this.linkPath(t.name);
     if (v === undefined) {
@@ -408,7 +491,8 @@ class SectionRenderer {
         if (st.chain.length === 0) return source;
         return this.raw(source, this.notDeclared(t.name, st));
       }
-      if (this.isModuleLevel(t.name)) return source;
+      // No entry answers it: the module field's value, as Mustache would read it.
+      if (this.isModuleLevel(t.name)) return this.moduleValue(t, source) ?? source;
       return this.raw(source, this.notDeclared(t.name, st));
     }
     if ("missing" in v) return this.raw(source, this.unknownPath(t.name, st, v));
@@ -417,17 +501,21 @@ class SectionRenderer {
       // path into it is a broken link in the page, so it stops a Stage.
       return dotted ? this.raw(source, `field-value-empty:${t.name}`) : source;
     }
-    return this.valueText(v, source, t.name, st);
+    return this.valueText(v, source, t, st);
   }
 
-  private valueText(v: ScopeValue, source: string, name: string, st: RenderState): string {
+  private valueText(v: ScopeValue, source: string, t: Token, st: RenderState): string {
+    const name = t.name;
     switch (v.kind) {
       case "text":
+        if (v.plugin) return this.pluginText(t.start, v.plugin, v.text, source);
         return v.text.length === 0 ? "" : this.env.mkSentinel(v.text);
       case "bool":
+        if (v.plugin) return this.pluginText(t.start, v.plugin, String(v.value), source);
         return String(v.value);
       case "record":
         if (v.text === null) return this.raw(source, this.unrenderable(name, st, v));
+        if (v.plugin) return this.pluginText(t.start, v.plugin, v.text, source);
         return v.text.length === 0 ? "" : this.env.mkSentinel(v.text);
       case "failed":
         return this.raw(source, v.marker);
@@ -509,7 +597,7 @@ class SectionRenderer {
           : v.kind === "record"
             ? v.present
             : true;
-    return present !== inverted ? this.body(block, st, st.dot) : "";
+    return present !== inverted ? this.body(block, st, st.dot, st.dotPlugin) : "";
   }
 
   /** A section over a module field (or an undeclared plugin source name). */
@@ -563,18 +651,32 @@ class SectionRenderer {
     // read the scalar. An empty conditional is intentional, not missing.
     const link = field.kind === "link" ? this.moduleLink(name) : undefined;
     if (link?.kind === "failed") return this.raw(source, link.marker);
-    const present = link?.kind === "record" ? link.present : isPresentSectionValue(raw);
+    const plain = plainValue(raw);
+    const present = link?.kind === "record" ? link.present : isPresentSectionValue(plain);
     if (present === inverted) return "";
     const dot = !present
       ? ""
       : link?.kind === "record"
         ? (link.text ?? "")
-        : scalarSectionString(raw);
-    return this.body(block, st, dot.length > 0 ? dot : st.dot);
+        : scalarSectionString(plain);
+    // `{{.}}` of a plugin's value is checked where it lands, like the field.
+    const dotPlugin =
+      link?.kind === "record" ? link.plugin : (pluginValueOf(raw)?.origin ?? undefined);
+    if (dot.length === 0) return this.body(block, st, st.dot, st.dotPlugin);
+    return this.body(block, st, dot, dotPlugin);
   }
 
-  private body(block: Frame["block"], st: RenderState, dot: string | null): string {
-    return this.range(block.from, block.to, block.textFrom, block.textTo, { chain: st.chain, dot });
+  private body(
+    block: Frame["block"],
+    st: RenderState,
+    dot: string | null,
+    dotPlugin?: PluginValueOrigin,
+  ): string {
+    return this.range(block.from, block.to, block.textFrom, block.textTo, {
+      chain: st.chain,
+      dot,
+      ...(dot !== null && dotPlugin ? { dotPlugin } : {}),
+    });
   }
 
   private iterate(

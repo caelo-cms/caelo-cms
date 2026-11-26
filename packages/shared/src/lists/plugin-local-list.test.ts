@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { renderTemplate } from "../template-engine.js";
 import { fixtureData, PAGE } from "./list-fixtures.test.js";
 import { pluginLocalList } from "./plugin-values.js";
 import { createListRenderContext, type ListFieldSpec } from "./resolve.js";
@@ -35,13 +36,30 @@ function entry(values: Record<string, unknown>): ScopeEntry {
 const failed = (v: ScopeValue | undefined) => (v?.kind === "failed" ? v.marker : null);
 
 describe("a plugin's local list entries (#1729, §4.5)", () => {
-  it("escapes a text field, so its value cannot leave a quoted attribute", () => {
+  it("keeps a text field the plugin's, so the engine escapes it where it lands", () => {
     const e = entry({ label: '" onmouseover="alert(1)', link: { href: "/de/docs" } });
     expect(e.get("label")).toEqual({
       kind: "text",
-      text: "&quot; onmouseover&#61;&quot;alert(1)",
+      text: '" onmouseover="alert(1)',
+      plugin: {
+        plugin: "probe",
+        point: "content-variants",
+        address: `${OWNER.address}/item/${ITEM}/label`,
+        type: "text",
+      },
     });
     expect(failed(e.get("link"))).toBeNull();
+    const html = renderTemplate({
+      html: `{{#links}}<a title="{{label}}" href="{{link}}">{{label}}</a>{{/links}}`,
+      fields: [{ name: "links", kind: "list", listType: "links" }],
+      contentValues: {
+        links: pluginLocalList(OWNER, [
+          { id: ITEM, node: "link", values: { label: '" onmouseover="x', link: "/de" } },
+        ]),
+      },
+      lists: createListRenderContext(fixtureData()).forPage(PAGE.home, {}),
+    }).html;
+    expect(html).toContain('title="&quot; onmouseover=&quot;x"');
   });
 
   it("refuses a script link and a value of another type", () => {

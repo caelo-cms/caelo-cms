@@ -15,7 +15,11 @@
 
 import { parseLinkRef } from "../link-refs.js";
 import type { FieldDef } from "./fields.js";
-import { refusedPluginValueMarker } from "./plugin-values.js";
+import {
+  type PluginValueOrigin,
+  pluginValueOf,
+  refusedPluginValueMarker,
+} from "./plugin-values.js";
 import type { ListRenderData } from "./render-data.js";
 import type { ScopeEntry, ScopeValue } from "./scope.js";
 
@@ -24,9 +28,9 @@ export const FALSE: ScopeValue = { kind: "bool", value: false };
 export const TRUE: ScopeValue = { kind: "bool", value: true };
 export const EMPTY_LIST: ScopeValue = { kind: "list", entries: [] };
 
-/** A text scope value. */
-export function text(s: string): ScopeValue {
-  return { kind: "text", text: s };
+/** A text scope value; `plugin` when a plugin supplied it. */
+export function text(s: string, plugin?: PluginValueOrigin): ScopeValue {
+  return plugin ? { kind: "text", text: s, plugin } : { kind: "text", text: s };
 }
 
 /** A boolean scope value. */
@@ -34,18 +38,26 @@ export function bool(v: boolean): ScopeValue {
   return v ? TRUE : FALSE;
 }
 
-/** A record scope value over a fixed key map. */
+/** A record scope value over a fixed key map; `plugin` when a plugin supplied the bare value. */
 export function record(
   bare: string | null,
   present: boolean,
   parts: Readonly<Record<string, ScopeValue>>,
+  plugin?: PluginValueOrigin,
 ): ScopeValue {
   return {
     kind: "record",
     text: bare,
     present,
+    ...(plugin ? { plugin } : {}),
     get: (key) => (Object.hasOwn(parts, key) ? parts[key] : undefined),
   };
+}
+
+/** `raw` without its plugin wrapper (`pluginValue`), for code that reads a value rather than renders it. */
+export function plainValue(raw: unknown): unknown {
+  const owned = pluginValueOf(raw);
+  return owned ? owned.value : raw;
 }
 
 /** What value scopes need from the render: data plus lazy hooks into the page context. */
@@ -102,36 +114,63 @@ export function parseLinkFieldValue(
   return typeof target === "string" ? { href, target } : { href };
 }
 
-/** Scope value of a link: bare = href, plus `href`, `target`, `title` (internal page title). */
+/**
+ * Scope value of a link: bare = href, plus `href`, `target`, `title`
+ * (internal page title). With `plugin`, the parts the plugin supplied
+ * (href, target) carry it; the title is the site's own.
+ */
 export function linkValue(
   v: { readonly href: string; readonly target?: string },
   data: ListRenderData | null,
+  plugin?: PluginValueOrigin,
 ): ScopeValue {
   const ref = v.href.length > 0 ? parseLinkRef(v.href) : null;
   const title =
     ref?.kind === "page" && data !== null ? (data.pages.get(ref.pageId)?.title ?? "") : "";
-  return record(v.href, v.href.length > 0, {
-    href: text(v.href),
-    target: text(v.target ?? ""),
-    title: text(title),
-  });
+  return record(
+    v.href,
+    v.href.length > 0,
+    {
+      href: text(v.href, plugin),
+      target: text(v.target ?? "", plugin),
+      title: text(title),
+    },
+    plugin,
+  );
 }
 
-/** Scope value of a media reference: bare = url (the reference, resolved later), alt/width/height. */
-export function mediaValue(ref: string, data: ListRenderData): ScopeValue {
+/**
+ * Scope value of a media reference: bare = url (the reference, resolved
+ * later), alt/width/height. With `plugin`, the reference carries it; the
+ * library's alt and size are the site's own.
+ */
+export function mediaValue(
+  ref: string,
+  data: ListRenderData,
+  plugin?: PluginValueOrigin,
+): ScopeValue {
   const parsed = parseLinkRef(ref);
   const meta = parsed?.kind === "media" ? data.media.get(parsed.mediaId) : undefined;
-  return record(ref, ref.length > 0, {
-    url: text(ref),
-    alt: text(meta?.alt ?? ""),
-    width: text(meta?.width === null || meta?.width === undefined ? "" : String(meta.width)),
-    height: text(meta?.height === null || meta?.height === undefined ? "" : String(meta.height)),
-  });
+  return record(
+    ref,
+    ref.length > 0,
+    {
+      url: text(ref, plugin),
+      alt: text(meta?.alt ?? ""),
+      width: text(meta?.width === null || meta?.width === undefined ? "" : String(meta.width)),
+      height: text(meta?.height === null || meta?.height === undefined ? "" : String(meta.height)),
+    },
+    plugin,
+  );
 }
 
 /** Scope value of a date or timestamp: bare = the stored ISO string, `formatted` in the site language. */
-export function dateValue(iso: string, env: Pick<ValueEnv, "formatDate">): ScopeValue {
-  return record(iso, iso.length > 0, { formatted: text(env.formatDate(iso)) });
+export function dateValue(
+  iso: string,
+  env: Pick<ValueEnv, "formatDate">,
+  plugin?: PluginValueOrigin,
+): ScopeValue {
+  return record(iso, iso.length > 0, { formatted: text(env.formatDate(iso), plugin) }, plugin);
 }
 
 /**
@@ -140,31 +179,38 @@ export function dateValue(iso: string, env: Pick<ValueEnv, "formatDate">): Scope
  * type change that skipped validation) reads as the raw string form when
  * it has one — validation happens on write, rendering never invents data.
  */
-export function fieldValue(field: FieldDef, raw: unknown, env: ValueEnv): ScopeValue {
-  if (raw === undefined || raw === null) return emptyValueOf(field);
+export function fieldValue(field: FieldDef, stored: unknown, env: ValueEnv): ScopeValue {
+  if (stored === undefined || stored === null) return emptyValueOf(field);
   // #1729 — a plugin value the host refused (§4.5) stays raw and fails.
-  const refused = refusedPluginValueMarker(raw);
+  const refused = refusedPluginValueMarker(stored);
   if (refused !== null) return { kind: "failed", marker: refused };
+  // A plugin's value keeps its origin, so the engine checks it where it lands.
+  const owned = pluginValueOf(stored);
+  const raw = owned ? owned.value : stored;
+  const plugin = owned?.origin;
+  if (raw === undefined || raw === null) return emptyValueOf(field);
   switch (field.type) {
     case "text":
     case "richtext":
     case "icon":
     case "select":
-      return typeof raw === "string" ? text(raw) : text(String(raw));
+      return typeof raw === "string" ? text(raw, plugin) : text(String(raw), plugin);
     case "number":
-      return typeof raw === "number" ? text(String(raw)) : text(String(raw));
+      return text(String(raw), plugin);
     case "boolean":
-      return bool(raw === true);
+      return plugin ? { kind: "bool", value: raw === true, plugin } : bool(raw === true);
     case "link": {
       if (typeof raw === "object" && typeof (raw as { href?: unknown }).href === "string") {
-        return linkValue(raw as { href: string; target?: string }, env.data);
+        return linkValue(raw as { href: string; target?: string }, env.data, plugin);
       }
-      return typeof raw === "string" ? linkValue({ href: raw }, env.data) : emptyValueOf(field);
+      return typeof raw === "string"
+        ? linkValue({ href: raw }, env.data, plugin)
+        : emptyValueOf(field);
     }
     case "media":
-      return typeof raw === "string" ? mediaValue(raw, env.data) : emptyValueOf(field);
+      return typeof raw === "string" ? mediaValue(raw, env.data, plugin) : emptyValueOf(field);
     case "date":
-      return typeof raw === "string" ? dateValue(raw, env) : emptyValueOf(field);
+      return typeof raw === "string" ? dateValue(raw, env, plugin) : emptyValueOf(field);
     case "module": {
       const r = raw as { moduleId?: unknown; contentInstanceId?: unknown };
       if (typeof r.moduleId === "string" && typeof r.contentInstanceId === "string") {
@@ -198,7 +244,7 @@ export function selectFlag(
   for (const f of fields) {
     if (f.type !== "select" || !key.startsWith(`${f.name}_`)) continue;
     const option = key.slice(f.name.length + 1);
-    if (f.options.includes(option)) return bool(values[f.name] === option);
+    if (f.options.includes(option)) return bool(plainValue(values[f.name]) === option);
   }
   return undefined;
 }
@@ -208,16 +254,19 @@ export function selectFlag(
  * node definition the host does not hand over yet): strings and numbers
  * as text, booleans as flags, `{ href }` objects as links.
  */
-export function untypedValue(raw: unknown): ScopeValue | undefined {
-  if (typeof raw === "string") return text(raw);
-  if (typeof raw === "number" && Number.isFinite(raw)) return text(String(raw));
-  if (typeof raw === "boolean") return bool(raw);
+export function untypedValue(stored: unknown): ScopeValue | undefined {
+  const owned = pluginValueOf(stored);
+  const raw = owned ? owned.value : stored;
+  const plugin = owned?.origin;
+  if (typeof raw === "string") return text(raw, plugin);
+  if (typeof raw === "number" && Number.isFinite(raw)) return text(String(raw), plugin);
+  if (typeof raw === "boolean") return plugin ? { kind: "bool", value: raw, plugin } : bool(raw);
   if (
     typeof raw === "object" &&
     raw !== null &&
     typeof (raw as { href?: unknown }).href === "string"
   ) {
-    return linkValue(raw as { href: string; target?: string }, null);
+    return linkValue(raw as { href: string; target?: string }, null, plugin);
   }
   return undefined;
 }

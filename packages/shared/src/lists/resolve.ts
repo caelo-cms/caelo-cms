@@ -54,7 +54,9 @@ import {
   checkPluginValue,
   PLUGIN_VALUE_REFUSED,
   type PluginMediaFacts,
+  type PluginValueOrigin,
   pluginLocalListOf,
+  pluginValue,
   pluginValueRefusedMarker,
   refusedPluginValue,
   refusedPluginValueMarker,
@@ -78,6 +80,7 @@ import {
   linkValue,
   listValue,
   mediaValue,
+  plainValue,
   positionValue,
   selectFlag,
   text,
@@ -224,7 +227,10 @@ export interface ListPageContext {
    */
   pagePropertyType(name: string): string | null;
   /** A module `link` field's value as a scope (`{{f.href}}`, `{{f.title}}`, #1433). */
-  linkScope(link: { readonly href: string; readonly target?: string }): ScopeValue;
+  linkScope(
+    link: { readonly href: string; readonly target?: string },
+    plugin?: PluginValueOrigin,
+  ): ScopeValue;
   /**
    * `{{site_text.<key>}}`: the site texts (entries of every list of type
    * {@link SITE_TEXTS_LIST_TYPE}) in the rendering page's variant. An
@@ -446,7 +452,10 @@ function pluginOverlayValue(
     ? ({ ok: false, rule: mediaRule } as const)
     : checkPluginValue(field, value);
   return checked.ok
-    ? checked.value
+    ? pluginValue(
+        { plugin: owner, point: "list-resolve", address, type: field.type },
+        checked.value,
+      )
     : refusedPluginValue(pluginValueRefusedMarker(owner, "list-resolve", address, checked.rule));
 }
 
@@ -715,7 +724,7 @@ function createPageContext(
     const isCurrent = (): boolean => {
       if (isCurrentMemo === undefined) {
         const f = node.current_from ? node.fields.find((x) => x.name === node.current_from) : null;
-        const v = f ? storedValue(f) : undefined;
+        const v = f ? plainValue(storedValue(f)) : undefined;
         const href =
           typeof (v as { href?: unknown })?.href === "string" ? (v as { href: string }).href : "";
         isCurrentMemo = isCurrentHref(href);
@@ -724,7 +733,7 @@ function createPageContext(
     };
     const isAncestor = (): boolean => {
       const f = node.current_from ? node.fields.find((x) => x.name === node.current_from) : null;
-      const v = f ? storedValue(f) : undefined;
+      const v = f ? plainValue(storedValue(f)) : undefined;
       const href =
         typeof (v as { href?: unknown })?.href === "string" ? (v as { href: string }).href : "";
       const ref = href ? parseLinkRef(href) : null;
@@ -1246,7 +1255,7 @@ function createPageContext(
       case "system": {
         const termFields = node.fields.filter((f) => f.type === "term");
         const terms = termFields.flatMap((f) => {
-          const v = item.values[f.name];
+          const v = plainValue(item.values[f.name]);
           return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
         });
         const vocabSlugs = termFields.map((f) => (f.type === "term" ? f.list : ""));
@@ -1487,11 +1496,11 @@ function createPageContext(
     pageId,
     resolveField,
     siteTextScope,
-    linkScope: (link) => {
+    linkScope: (link, plugin) => {
       // `{{f.title}}` shows the target's title: its edit must rebuild this page.
       const ref = link.href.length > 0 ? parseLinkRef(link.href) : null;
       if (ref?.kind === "page") depPages.add(ref.pageId);
-      return linkValue(link, data);
+      return linkValue(link, data, plugin);
     },
     breadcrumbTrail: () => trail,
     pagePropertyType: (name) => (current === null ? null : propertyTypeOf(current, name)),

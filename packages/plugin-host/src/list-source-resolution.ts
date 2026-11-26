@@ -29,6 +29,7 @@ import {
   LIST_MAX_ITEMS,
   type PageUrlStyle,
   type PluginSourceEntry,
+  pluginValue,
   pluginValueRefusedMarker,
   refusedPluginValue,
   validateFieldValue,
@@ -200,7 +201,10 @@ async function checkSourceValues(resolved: ResolvedListSources): Promise<Resolve
             ? ({ ok: false, rule: mediaRule } as const)
             : checkPluginValue(field, value);
           values[key] = checked.ok
-            ? checked.value
+            ? pluginValue(
+                { plugin: owner.pluginSlug, point: name, address: key, type: field.type },
+                checked.value,
+              )
             : refusedPluginValue(
                 pluginValueRefusedMarker(owner.pluginSlug, name, key, checked.rule),
               );

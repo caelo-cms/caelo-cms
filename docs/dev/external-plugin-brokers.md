@@ -159,14 +159,25 @@ A **render session**, meaning one child per plugin and render pass that answers 
 
 ### 4.5 Values that reach a page
 
-All composition points that return values go through one host function, `checkPluginValue(field, value)`. Today the template engine does no escaping (`template-engine.ts:117-121`):
+All composition points that return values go through one host function, `checkPluginValue(field, value)`, for what does not depend on where the value goes. The template engine itself does no escaping (`template-engine.ts`: module HTML substitutes raw):
 
-- `text`, `select`, `icon`: HTML-escaped by the host before rendering. A plugin value is data, never markup.
-- `link`: `linkValueSchema` (`fields.ts:225-230`), plus a refusal of any scheme but `https:`, `http:`, `mailto:`, `tel:` and of protocol-relative `//host`.
-- `richtext`: CLAUDE.md §1A says richtext is prose. The value is parsed with `htmlparser2` (already a dependency of `plugin-host`) and refused if it contains an element outside an inline and block prose allowlist (`p`, `a`, `strong`, `em`, `ul`, `ol`, `li`, `h2`-`h6`, `blockquote`, `code`, `br`, `span`), any `on*` attribute, `style`, or a URL attribute that fails the `link` rule. It is refused, not cleaned: a cleaned value would be a silent fallback (CLAUDE.md §2), and the refusal names the element and the field.
+- `text`, `select`, `icon`: data, never markup. Kept raw here and escaped where they land (below).
+- `link`: `linkValueSchema` (`fields.ts`), plus a refusal of any scheme but `https:`, `http:`, `mailto:`, `tel:` and of protocol-relative `//host`, as written and as a browser decodes it in an attribute (`javascript&#58;`).
+- `richtext`: CLAUDE.md §1A says richtext is prose. The value is parsed with `htmlparser2` and refused if it contains an element outside an inline and block prose allowlist (`p`, `a`, `strong`, `em`, `ul`, `ol`, `li`, `h2`-`h6`, `blockquote`, `code`, `br`, `span`), any `on*` attribute, `style`, or a URL attribute that fails the `link` rule. It is refused, not cleaned: a cleaned value would be a silent fallback (CLAUDE.md §2), and the refusal names the element and the field.
 - `media`: `caelo:media/<id>`, and the asset must exist and be `library` (not `reference`) on the render's branch.
 
-Q2 decides whether this binds shipped plugins in the same PR. **Implemented in Phase B3a** for every plugin (`packages/plugin-host/src/plugin-values.ts`): a refused value is replaced by a stand-in the render keeps raw and records as `plugin-value-refused:<plugin>.<source>.<field>:<rule>` (shared `lists/plugin-values.ts`), a render failure in the #1604 sense: listed in the preview, recorded by a Stage, filed by the audit (`render/plugin-value-refused`, fix `get_plugin`), refused by Publish live. Media facts come from `media.describe_many`. The shipped list sources (consent-manager, international-site) declare only `text`, `link` and `boolean` fields, so nothing of theirs is refused; their text is now escaped.
+**Where the value lands decides the rest** (maintainer decision on #1732, 2026-11-26). A checked value stays the plugin's (`pluginValue`, shared `lists/plugin-values.ts`, with its origin: plugin, point, field, type) until the template engine substitutes it. The engine knows the place of every `{{…}}` tag of a module template from `template-contexts.ts`, which works it out once per template text (the tags are masked to opaque words, the HTML runs through htmlparser2's tokenizer, and the result is kept for the most recent 512 templates; a render without a plugin value never asks). `contextualPluginValue` then decides:
+
+| Where the module puts it | A plugin's value |
+|---|---|
+| Element content, a comment, `<title>`, `<textarea>`; a quoted attribute that is no URL | HTML-escaped (`& < > " '`); a `richtext` stays prose in content and is escaped in an attribute. Never refused for its words: "JavaScript: Grundlagen" renders as text. |
+| An unquoted attribute (`title={{label}}`) | Escaped for that context too: `=`, the backtick and whitespace as character references, so the value stays one value and starts no other attribute; an empty one is written `""`. |
+| A URL attribute (`href`, `src`, `srcset`, `action`, `formaction`, `poster`, `cite`, `xlink:href`, `data`, `ping`, …) | The link rule when the placeholder decides the URL's scheme; the URL characters only when the template's text before it already did (`mailto:{{x}}`, `/de/{{slug}}`); refused (`url-composed`) when the scheme would be made of several parts (`{{a}}{{b}}`, `{{x}}:…`). Text fields included. |
+| An event handler (`on*`), a `style` attribute, `srcdoc`, a `<script>` or `<style>` body, a tag or attribute name, `<meta>`, `<base>`, an SVG animation's `to`/`from`/`values`/`by` | Refused, whatever it says (`context-event-handler`, `context-style-attribute`, `context-srcdoc`, `context-script`, `context-style`, `context-tag`, `context-meta`, `context-base`, `context-svg-animation`). |
+
+A refused value keeps its placeholder raw and records `plugin-value-refused:<plugin>.<point>.<field>:<rule>`, a render failure in the #1604 sense: listed in the preview, recorded by a Stage, filed by the audit (`render/plugin-value-refused`, fix `get_plugin`), refused by Publish live. A core value is never asked: it substitutes as it always has, in every place, so no existing module is flagged by this. A plugin value that reaches Mustache unhandled (a tag form the section pass does not own) fails loudly as `context-unknown`, never as an object or unchecked.
+
+Q2 decided that this binds shipped plugins in the same PR. **Implemented in Phase B3a** for every plugin (`packages/plugin-host/src/plugin-values.ts`), and made context-dependent after the review of #1732. Media facts come from `media.describe_many`. The shipped list sources (consent-manager, international-site) declare only `text`, `link` and `boolean` fields, so nothing of theirs is refused.
 
 ### 4.6 Adding a broker (checklist, from Phase A on)
 
