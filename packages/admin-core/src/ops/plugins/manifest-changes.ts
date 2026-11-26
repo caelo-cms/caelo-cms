@@ -40,6 +40,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   visitorProjection: "Private data shown to visitors",
   hasBuildAssets: "Files added to every page",
   hasDeferrals: "Withheld page modules",
+  deferralPlaceholders: "What stands in for a withheld module",
   hasContentVariants: "Content variants",
   hasLinkResolve: "Internal link handling",
   hasShareImages: "Default social-share images",
