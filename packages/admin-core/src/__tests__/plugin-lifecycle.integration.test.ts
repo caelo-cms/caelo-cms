@@ -59,7 +59,7 @@ const lifecyclePlugin = definePlugin({
   tier: 1,
   schema: {},
   adminSchema: { notes: { body: "text" } },
-  requestedCapabilities: ["cms_admin_schema", "chat_runner_tools"],
+  requestedCapabilities: ["cms_admin_schema", "chat_runner_tools", "url_slots"],
   operations: {
     noop: async () => ({}),
     url_annotations: async (_ctx, args) => {
