@@ -504,6 +504,9 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   `${A}/healthcheck.ts`,
   // Install-time connection budget, read by provisioning (#1254).
   `${SHARED}/pool-budget.ts`,
+  // The gateway's measured memory, read by provisioning and the gateway's
+  // index cache (#1745): no AI path.
+  `${SHARED}/gateway-memory.ts`,
   // Database TLS rules every process applies at boot (#1338) and the
   // gateway's staging stub for plugin calls (#1326): no AI path.
   `${SHARED}/database-tls.ts`,
