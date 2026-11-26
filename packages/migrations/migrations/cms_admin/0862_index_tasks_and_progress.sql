@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0795 — the search index at scale: a reporting job's attempt may run
+-- 0862 (written as 0795; renumbered above v0.12.16's 0860 so upgraded and fresh installs apply it in the same order) — the search index at scale: a reporting job's attempt may run
 -- several tasks, and a running index build reports how far it is.
 --
 -- reporting_jobs.tasks: how many tasks the job's attempts run (Cloud Run
