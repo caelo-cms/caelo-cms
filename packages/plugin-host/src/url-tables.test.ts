@@ -365,6 +365,42 @@ describe("#1729 — a URL table changes only in an Owner-approved call", () => {
     });
   });
 
+  it("refuses a value row without its value, and lets a broken row be deleted", async () => {
+    const rows: Record<string, Record<string, unknown>[]> = {
+      markets: [
+        { id: ID, code: "de", segment: null, host: null },
+        { id: "broken", code: null, segment: null, host: null },
+      ],
+      page_markets: [],
+    };
+    for (const code of [null, ""]) {
+      await expect(
+        approvedGate(rows, { method: "update", table: "markets", id: ID, data: { code } }),
+      ).rejects.toThrow(/code takes the value's text/);
+    }
+    await approvedGate(rows, { method: "delete", table: "markets", id: "broken" });
+  });
+
+  it("checks the pages of every value an upsert folds away", async () => {
+    const PAGE = "22222222-2222-4222-8222-222222222222";
+    const rows: Record<string, Record<string, unknown>[]> = {
+      markets: [
+        { id: "m1", code: "de", region: "eu", segment: null, host: null },
+        { id: "m2", code: "at", region: "eu", segment: null, host: null },
+      ],
+      page_markets: [{ id: "p1", page_id: PAGE, market: "at" }],
+    };
+    // Keyed by region, the upsert keeps m1 and deletes m2, which a page names.
+    await expect(
+      approvedGate(rows, {
+        method: "upsert",
+        table: "markets",
+        key: { region: "eu" },
+        data: { region: "eu", code: "de" },
+      }),
+    ).rejects.toThrow(/value "at" still shapes the address of page 22222222/);
+  });
+
   it("refuses a segment that is no path segment before looking anything up", async () => {
     await expect(
       checkUrlTableWrite({
