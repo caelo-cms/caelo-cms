@@ -275,6 +275,10 @@ describe("markNosnippet", () => {
     // A text-only placement is wrapped too (review #1771); an empty one stays empty.
     expect(markNosnippet("plain text")).toBe('<div data-nosnippet="">plain text</div>');
     expect(markNosnippet("  ")).toBe("  ");
+    // An unsupported root that carries the attribute is still wrapped (review #1771).
+    expect(markNosnippet('<article data-nosnippet="">x</article>')).toBe(
+      '<div data-nosnippet=""><article data-nosnippet="">x</article></div>',
+    );
   });
 
   it("wraps a placement of several top-level elements whole (review #1771)", () => {

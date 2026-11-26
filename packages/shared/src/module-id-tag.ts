@@ -106,9 +106,9 @@ export function markNosnippet(html: string): string {
   // A placement of text only is wrapped too; an empty one has nothing to hide.
   if (!m) return html.trim().length === 0 ? html : `<div data-nosnippet="">${html}</div>`;
   const root = soleRootTag(html);
-  if (root !== null && /\sdata-nosnippet\b/.test(m[0])) return html;
   if (root !== null && NOSNIPPET_ROOTS.has(root.toLowerCase())) {
-    return tagRoot(html, "data-nosnippet", "");
+    // A supported root that already carries it (this wrapper, say) is done.
+    return /\sdata-nosnippet\b/.test(m[0]) ? html : tagRoot(html, "data-nosnippet", "");
   }
   return `<div data-nosnippet="">${html}</div>`;
 }
