@@ -135,6 +135,12 @@ const EXACT: Readonly<Record<string, readonly LiveTopic[]>> = {
   // #1319 — a staging build's audit row is queued in this step.
   "deploy.finish_trigger": ["deploys", "quality"],
   "deploy.update_progress": ["deploys"],
+  // A Stage's search index: how far its embedding is, and when it is ready
+  // or failed (the Stage status and Publish live wait for it).
+  "collections.index_progress": ["deploys"],
+  "collections.index_reset_progress": ["deploys"],
+  "collections.index_done": ["deploys"],
+  "collections.index_failed": ["deploys"],
   "deploy.promote": ["deploys"],
   // #1225 — Publish live's steps, and an approved card's claim and record.
   "deploy.start_promote": ["deploys"],

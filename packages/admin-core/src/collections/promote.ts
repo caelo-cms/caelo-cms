@@ -25,11 +25,12 @@ import {
   STAGING_COLLECTION_STORE_ENV,
 } from "@caelo-cms/plugin-host";
 import { execute, type TransactionRunner } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { describeSearchIndexProgress, type ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { describeError } from "../ai/tools/_describe-error.js";
 import type { AdminJobDeps } from "../reporting-jobs/kind.js";
 import { activeCollections } from "./ops.js";
+import { summarizeIndexProgress } from "./progress.js";
 
 /** Why the run cannot go live with its collections, or null when it can. */
 export async function collectionGateProblem(
@@ -39,12 +40,15 @@ export async function collectionGateProblem(
   const active = activeCollections();
   if (active.length === 0) return null;
   const rows = (await tx.execute(sql`
-    SELECT plugin_id::text AS plugin_id, collection, state, error FROM collection_releases WHERE run_id = ${runId}::uuid
+    SELECT plugin_id::text AS plugin_id, collection, state, error, progress, now() AS now
+      FROM collection_releases WHERE run_id = ${runId}::uuid
   `)) as unknown as {
     plugin_id: string;
     collection: string;
     state: string;
     error: string | null;
+    progress: unknown;
+    now: string | Date;
   }[];
   const byKey = new Map(rows.map((r) => [`${r.plugin_id}:${r.collection}`, r] as const));
   const problems: string[] = [];
@@ -55,11 +59,15 @@ export async function collectionGateProblem(
       problems.push(
         `${name} is not part of this Stage (the plugin started after it): Stage again, then Publish live`,
       );
-    else if (r.state === "pending")
+    else if (r.state === "pending") {
+      const now = r.now instanceof Date ? r.now.getTime() : Date.parse(String(r.now));
+      const progress = summarizeIndexProgress(r.progress, now);
+      const said = describeSearchIndexProgress(progress ?? undefined);
+      const detail = said ? ` (${said})` : "";
       problems.push(
-        `${name} is still being built for this Stage: Publish live when it is ready (get_stage_status shows it)`,
+        `${name} is still being built for this Stage${detail}: Publish live opens when it is ready (get_stage_status shows how far it is)`,
       );
-    else if (r.state === "failed")
+    } else if (r.state === "failed")
       problems.push(
         `${name} failed in this Stage: ${r.error ?? "no reason recorded"}. Fix the cause and Stage again`,
       );

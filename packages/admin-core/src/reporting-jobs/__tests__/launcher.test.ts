@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import type { GoogleDeps } from "../../security/operator-access/google-iam.js";
 import { reportingJobKind } from "../kinds.js";
 import { gcpReportingJobLauncher, launcherFor, setInProcessJobLauncher } from "../launcher.js";
-import { JOB_ORDER_ENV_VAR, type JobOrder, jobOrderSchema } from "../protocol.js";
+import { JOB_ORDER_ENV_VAR, type JobOrder, jobOrderSchema, MAX_JOB_TASKS } from "../protocol.js";
 
 const def = reportingJobKind("quality_audit");
 const JOB = "projects/acme/locations/europe-west1/jobs/caelo-production-audit-run";
@@ -105,6 +105,21 @@ describe("gcpReportingJobLauncher", () => {
     expect(env?.map((e) => e.name)).toEqual([JOB_ORDER_ENV_VAR]);
     const sent = jobOrderSchema.parse(JSON.parse(env?.[0]?.value ?? "{}"));
     expect(sent).toEqual({ ...ORDER, adminUrl: "https://admin.acme.com" });
+  });
+
+  it("runs an attempt of several tasks as one execution of that many, all with the same order", async () => {
+    const g = google({ metadata: { name: `${JOB}/executions/caelo-production-index-x1` } });
+    const launcher = gcpReportingJobLauncher("collection_index", JOB, "https://admin.acme.com", g);
+    expect(launcher.maxTasks).toBe(MAX_JOB_TASKS);
+    await launcher.launch({ ...ORDER, kind: "collection_index", tasks: 8, maxTasks: 32 });
+    const overrides = (g.calls[0] as { body: { overrides: Record<string, unknown> } }).body
+      .overrides;
+    expect(overrides.taskCount).toBe(8);
+    const env = (overrides.containerOverrides as { env: { value: string }[] }[])[0]?.env;
+    expect(jobOrderSchema.parse(JSON.parse(env?.[0]?.value ?? "{}"))).toMatchObject({
+      tasks: 8,
+      maxTasks: 32,
+    });
   });
 
   it("fails loudly when Cloud Run names no execution, or the job name is not one", async () => {

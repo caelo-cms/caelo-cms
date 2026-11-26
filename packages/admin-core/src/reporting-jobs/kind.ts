@@ -38,6 +38,13 @@ export interface ActionResult {
    * `stopped` — there is nothing (left) to do (superseded, deleted).
    */
   readonly done?: { readonly outcome: "completed" | "stopped"; readonly note?: string };
+  /**
+   * Set when the attempt asks to run wider: the work's next attempts run
+   * this many tasks, this one ends now, and the next starts at once (the
+   * index job, for a build with more passages to embed than one task
+   * embeds in a few minutes). Ignored together with `done`.
+   */
+  readonly scaleOut?: { readonly tasks: number; readonly reason: string };
 }
 
 /**

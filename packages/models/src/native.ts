@@ -8,13 +8,13 @@
  * only files the image carries.
  */
 
-import { availableParallelism } from "node:os";
 import type { EmbeddingModel } from "@caelo-cms/shared";
 import * as ort from "onnxruntime-node";
+import { cpuBudget } from "./cpu-budget.js";
 import { createEmbedder, type Embedder, type OrtApi } from "./embedder.js";
 import { modelsDirFromEnv } from "./files.js";
 
-/** An embedder on native ONNX Runtime, using `threads` (default: every CPU). */
+/** An embedder on native ONNX Runtime, using `threads` (default: the container's CPU quota, rounded up). */
 export function createNativeEmbedder(
   model: EmbeddingModel,
   options: { readonly dir?: string; readonly threads?: number } = {},
@@ -23,7 +23,7 @@ export function createNativeEmbedder(
     dir: options.dir ?? modelsDirFromEnv(),
     session: {
       executionProviders: ["cpu"],
-      intraOpNumThreads: options.threads ?? availableParallelism(),
+      intraOpNumThreads: options.threads ?? cpuBudget(),
       interOpNumThreads: 1,
       graphOptimizationLevel: "all",
     },

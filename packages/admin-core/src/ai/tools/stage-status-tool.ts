@@ -12,7 +12,12 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { describeStageRun, type ExecutionContext, type StageStatusRun } from "@caelo-cms/shared";
+import {
+  describeStageRun,
+  type ExecutionContext,
+  type StageStatusRun,
+  searchIndexPending,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import { makeReadTool } from "./_make-read-tool.js";
@@ -41,6 +46,9 @@ export function stageNextStep(run: StageStatusRun): string {
         ? `Next: call get_stage_status with deployRunId "${id}" once that time has passed — once, not in a loop. Do NOT call stage_changes again; do not tell the operator it is staged yet.`
         : `Next: call get_stage_status with deployRunId "${id}" again in a minute or two — once, not in a loop. Do NOT call stage_changes again; do not tell the operator it is staged yet.`;
     case "succeeded":
+      if (searchIndexPending(run)) {
+        return `Next: call get_quality_audit with deployRunId "${id}" for its quality check. Publish live waits until the search index above is built: tell the operator how far it is and about how long it still takes, and call get_stage_status once that time has passed — once, not in a loop.`;
+      }
       return `Next: call get_quality_audit with deployRunId "${id}" for its quality check.`;
     case "failed":
       return "Nothing was staged. Fix the cause above, then call stage_changes again.";
