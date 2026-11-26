@@ -61,11 +61,11 @@ const PLUGIN_CORE_CALLS: Readonly<Record<string, Readonly<Record<string, Classif
     },
     "pages.list": {
       notBackground:
-        "tag-ops: the add/list/remove tag tools and buildAssets (the Stage build, readScope site by design)",
+        "tag-ops: the add/list/remove tag tools and consent_build_data (the Stage build, readScope site by design)",
     },
     "templates.list": {
       notBackground:
-        "tag-ops: the add/list/remove tag tools and buildAssets (the Stage build, readScope site by design)",
+        "tag-ops: the add/list/remove tag tools and consent_build_data (the Stage build, readScope site by design)",
     },
   },
   comments: {

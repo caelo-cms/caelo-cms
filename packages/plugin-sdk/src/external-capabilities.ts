@@ -73,7 +73,7 @@ export const CAPABILITY_MANIFEST_FIELDS: Readonly<
   email: ["mailTemplates", "mailUnsubscribe"],
   head_contributions: ["contributes", "hasShareImages"],
   url_slots: ["urlContributions"],
-  client_assets: ["hasBuildAssets", "hasDeferrals"],
+  client_assets: ["clientFiles", "hasBuildData", "hasDeferrals", "deferralPlaceholders"],
   list_sources: ["listSources"],
   list_types: ["listTypes"],
   list_resolve: ["hasListResolve"],

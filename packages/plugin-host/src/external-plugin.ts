@@ -164,6 +164,14 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // `$listSources` entry (render-points.ts), checked like a shipped
     // plugin's (plugin-values.ts).
     ...(manifest.listSources ? { listSources: manifest.listSources } : {}),
+    // #1729 — the reviewed client files (bytes bound to the artifact
+    // digest) and the grant's limits, from which the build reads the
+    // origins the files may reach; the manifest carries the same
+    // constraints the receipt records.
+    ...(manifest.clientFiles ? { clientFiles: manifest.clientFiles } : {}),
+    ...(manifest.capabilityConstraints
+      ? { capabilityConstraints: manifest.capabilityConstraints }
+      : {}),
     // #1729 — reviewed markup a `$deferrals` verdict names (deferrals.ts):
     // the verdict carries a name and text, never markup of its own.
     ...(manifest.deferralPlaceholders

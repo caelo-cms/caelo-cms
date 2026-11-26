@@ -39,7 +39,12 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   requireCapability(Boolean(manifest.workers?.length), "background_workers");
   requireCapability(Boolean(manifest.contributes?.length), "head_contributions");
   requireCapability(Boolean(manifest.urlContributions?.length), "url_slots");
-  requireCapability(manifest.hasBuildAssets || manifest.hasDeferrals, "client_assets");
+  requireCapability(
+    Boolean(Object.keys(manifest.clientFiles ?? {}).length) ||
+      manifest.hasBuildData ||
+      manifest.hasDeferrals,
+    "client_assets",
+  );
   requireCapability(Boolean(manifest.listSources?.length), "list_sources");
   requireCapability(Boolean(manifest.listTypes?.length), "list_types");
   requireCapability(manifest.hasListResolve, "list_resolve");

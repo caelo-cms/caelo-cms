@@ -155,7 +155,6 @@ export {
   type RunPluginOperationResult,
   renderInvocation,
   resetDisabledSet,
-  runPluginBuildAssets,
   runPluginMetaSignature,
   runPluginMetaSignatureBatch,
   runPluginOperation,

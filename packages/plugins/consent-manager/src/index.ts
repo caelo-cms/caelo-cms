@@ -63,7 +63,7 @@ import {
   verdictFor,
 } from "./guards.js";
 import { DEFERRAL_PLACEHOLDERS, defaultPlaceholder, editorNotice } from "./placeholder.js";
-import { buildRuntimeJs, CONSENT_COOKIE, RUNTIME_CSS } from "./runtime.js";
+import { CONSENT_COOKIE, RUNTIME_CSS, RUNTIME_JS, type RuntimeConfig } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
 import {
@@ -74,7 +74,7 @@ import {
   settingsOf,
 } from "./storage.js";
 import { addTag, bakeTags, listTags, removeTag, updateTagsMany } from "./tag-ops.js";
-import { buildTagInjector, describeIssues, type TagRow } from "./tags.js";
+import { describeIssues, type TagRow } from "./tags.js";
 import { CONSENT_TOOLS } from "./tools.js";
 
 const SLUG = "consent-manager";
@@ -539,12 +539,6 @@ export default definePlugin<PluginContextTier1>({
     { name: "consent-log-retention", cron: "17 3 * * *", operationName: "prune_log" },
   ],
 
-  /**
-   * The runtime + its stylesheet, with this site's categories baked in
-   * (#449). Baked rather than fetched because the runtime has to decide
-   * whether a tag may fire before anything else loads, and a static
-   * site cannot afford a blocking request to find out.
-   */
   onActivate: async (ctx) => {
     const { firstActivation } = await seedDefaults(adminQueryOf(ctx));
     // The modules a site already has were written before anyone could
@@ -555,36 +549,45 @@ export default definePlugin<PluginContextTier1>({
     if (firstActivation) await rejudgeAll(ctx);
   },
 
-  buildAssets: async (ctx) => {
-    const q = adminQueryOf(ctx);
-    const settings = await settingsOf(q);
-    // Only what the banner offers can be granted: "accept all" must not
-    // record consent to a category the visitor was never shown, or a
-    // plugin activated later would run under a consent nobody gave.
-    const { categories: all, used } = await offeredCategories(ctx);
-    const categories = all.filter((c) => c.required || used.has(c.key));
-    const baked = await bakeTags(ctx);
-    return {
-      "runtime.js": buildRuntimeJs(
-        {
-          slug: SLUG,
-          policyVersion: settings.policy_version,
-          recordEndpoint: RECORD_ENDPOINT,
-          consentHeader: VISITOR_CONSENT_HEADER,
-          categories: categories.map((c) => ({
-            key: c.key,
-            displayName: c.display_name,
-            required: c.required,
-          })),
-        },
-        buildTagInjector(baked),
-      ),
-      "runtime.css": RUNTIME_CSS,
-      "csp-sources.json": JSON.stringify(tagCspSources(baked)),
-    };
-  },
+  /**
+   * The runtime and its stylesheet (#449), reviewed with the plugin
+   * (#1729): the same bytes on every build. The site's categories and tags
+   * reach it as build data (`consent_build_data`).
+   */
+  clientFiles: { "runtime.js": RUNTIME_JS, "runtime.css": RUNTIME_CSS },
+  buildDataOperation: "consent_build_data",
 
   operations: {
+    /**
+     * The runtime's data for one build (#1729): this site's categories and
+     * tags, baked rather than fetched because the runtime has to decide
+     * whether a tag may fire before anything else loads. `csp` is what the
+     * tags reach, each tag an Owner approval (`add_tracking_tag`).
+     */
+    consent_build_data: async (ctx) => {
+      const q = adminQueryOf(ctx);
+      const settings = await settingsOf(q);
+      // Only what the banner offers can be granted: "accept all" must not
+      // record consent to a category the visitor was never shown, or a
+      // plugin activated later would run under a consent nobody gave.
+      const { categories: all, used } = await offeredCategories(ctx);
+      const categories = all.filter((c) => c.required || used.has(c.key));
+      const tags = await bakeTags(ctx);
+      const data: RuntimeConfig = {
+        slug: SLUG,
+        policyVersion: settings.policy_version,
+        recordEndpoint: RECORD_ENDPOINT,
+        consentHeader: VISITOR_CONSENT_HEADER,
+        categories: categories.map((c) => ({
+          key: c.key,
+          displayName: c.display_name,
+          required: c.required,
+        })),
+        tags,
+      };
+      return { data, csp: tagCspSources(tags) };
+    },
+
     /**
      * The visitor's decision. The ONLY operation reachable from the
      * gateway; it takes no identity from the caller beyond what the

@@ -148,9 +148,12 @@ function makeCtx(): PluginContextTier1 {
 
 type Op = (ctx: PluginContextTier1, args?: unknown) => Promise<unknown>;
 const ops = consentPlugin.operations as unknown as Record<string, Op>;
-const buildAssets = consentPlugin.buildAssets as unknown as (
-  ctx: PluginContextTier1,
-) => Promise<Record<string, string>>;
+/** #1729 — the runtime's data for one build, as the host asks for it (`$buildData`). */
+async function buildData(ctx: unknown): Promise<string> {
+  const op = ops.consent_build_data;
+  if (!op) throw new Error("consent_build_data is missing");
+  return JSON.stringify(((await op(ctx as never, {})) as { data: unknown }).data);
+}
 
 function seedPluginRows(): void {
   store.seed("settings", {
@@ -204,7 +207,7 @@ describe("render hooks read verdicts only (#1214)", () => {
   it("never list modules or content instances", async () => {
     guard(1, "gated", "marketing", ["www.youtube.com"]);
     const ctx = makeCtx();
-    await buildAssets(ctx);
+    await buildData(ctx);
     await ops.consent_data_lists?.(ctx, { pageIds: ["p1"] });
     await ops.consent_deferrals?.(ctx, { modules: [candidate(1, YOUTUBE)] });
     expect(cmsCalls).not.toContain("modules.list");
@@ -221,7 +224,7 @@ describe("render hooks read verdicts only (#1214)", () => {
       "necessary",
       "marketing",
     ]);
-    const js = (await buildAssets(ctx))["runtime.js"] ?? "";
+    const js = await buildData(ctx);
     expect(js).toContain('"key":"marketing"');
     expect(js).not.toContain('"key":"analytics"');
   });
@@ -296,7 +299,7 @@ describe("more than 1,000 guards (#1214, CLAUDE.md §2)", () => {
   });
 
   it("offers the category of the gated verdict however many guards precede it", async () => {
-    const js = (await buildAssets(makeCtx()))["runtime.js"] ?? "";
+    const js = await buildData(makeCtx());
     expect(js).toContain('"key":"analytics"');
     expect(js).not.toContain('"key":"marketing"');
   });

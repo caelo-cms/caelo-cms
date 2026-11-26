@@ -53,9 +53,9 @@ describe("explicit external installation grants", () => {
     expect(refused).toThrow(/can request: .*cms_admin_schema/);
   });
   it("requires reviewed capabilities for browser assets", () => {
-    expect(() => validateInstallationPolicy({ ...manifest(), hasBuildAssets: true })).toThrow(
-      "client_assets",
-    );
+    expect(() =>
+      validateInstallationPolicy({ ...manifest(), clientFiles: { "runtime.js": "x" } }),
+    ).toThrow("client_assets");
   });
 });
 
