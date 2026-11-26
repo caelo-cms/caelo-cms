@@ -394,6 +394,13 @@ export async function checkUrlTableWrite(opts: {
   const data = write.data ?? {};
   if (role === "pages") {
     const named = data[tables.pages.valueColumn];
+    // A row written whole names its value: composition refuses a page row
+    // without one. An update may leave it as it is.
+    if ((write.method === "insert" || write.method === "upsert") && named === undefined) {
+      throw new Error(
+        `${where}: a row of ${tables.pages.table} names its value (${tables.pages.valueColumn}); write the page and its value together`,
+      );
+    }
     if (named !== undefined && !values.some((v) => v.value === named)) {
       throw new Error(
         `${where}: value ${JSON.stringify(named)} is not in ${tables.values.table}; add the value first`,

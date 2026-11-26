@@ -311,6 +311,19 @@ describe("#1729 — a URL table changes only in an Owner-approved call", () => {
       key: { page_id: PAGE },
       data: { page_id: PAGE, market: "at" },
     });
+    // A row written whole names its value.
+    const NEW_PAGE = "55555555-5555-4555-8555-555555555555";
+    await expect(
+      approvedGate(rows, { method: "insert", table: "page_markets", data: { page_id: NEW_PAGE } }),
+    ).rejects.toThrow(/names its value \(market\)/);
+    await expect(
+      approvedGate(rows, {
+        method: "upsert",
+        table: "page_markets",
+        key: { page_id: NEW_PAGE },
+        data: { page_id: NEW_PAGE },
+      }),
+    ).rejects.toThrow(/names its value/);
   });
 
   it(`refuses a value past ${URL_TABLE_MAX_VALUES}, and lets a table past it be cut back`, async () => {
