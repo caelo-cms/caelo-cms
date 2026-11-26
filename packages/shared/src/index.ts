@@ -37,6 +37,7 @@ export * from "./genesis.js";
 export * from "./genesis-inventory.js";
 export * from "./google-models.js";
 export * from "./google-oauth.js";
+export * from "./html-tokens.js";
 export * from "./id-safe-truncate.js";
 export * from "./image-capabilities.js";
 export * from "./install-ai-mode.js";

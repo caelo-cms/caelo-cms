@@ -64,7 +64,13 @@
 import { isLinkFailureMarker, type LinkResolver } from "./link-refs.js";
 import type { ListPageContext } from "./lists/resolve.js";
 import { tagModuleId } from "./module-id-tag.js";
-import { caeloMissingComment, renderTemplate, type TemplateField } from "./template-engine.js";
+import {
+  caeloMissingComment,
+  NESTED_PLACEMENT_RULE,
+  type NestedPlacement,
+  renderTemplate,
+  type TemplateField,
+} from "./template-engine.js";
 
 const MAX_RECURSION_DEPTH = 8;
 
@@ -171,6 +177,11 @@ interface RenderContext {
   readonly listHolder: string | null;
   /** Epic #724 — resolves internal references in every nested module. */
   readonly linkResolver: LinkResolver | undefined;
+  /**
+   * #1729 — set when an ancestor puts this module anywhere but plain HTML
+   * element content: every plugin value here and below is refused with it.
+   */
+  readonly refusePluginValues?: string;
 }
 
 function isNestedRef(v: unknown): v is NestedRefValue {
@@ -272,6 +283,7 @@ function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderCon
     // local list entries carry no instance address.
     listHolder: ci.listHolderId ?? (UUID_RE.test(ci.id) ? ci.id : null),
     linkResolver: ctx.linkResolver,
+    ...(ctx.refusePluginValues !== undefined ? { refusePluginValues: ctx.refusePluginValues } : {}),
   };
 
   return substituteWithRecursion(mod.html, mod.fields, ci.values, childCtx);
@@ -317,9 +329,18 @@ function substituteWithRecursion(
   // stays off the page. Memoised: `{{>name}}` twice renders it once.
   const fieldByName = new Map(fields.map((f) => [f.name, f]));
   const rendered = new Map<string, string | undefined>();
-  const partials = (key: string, ref?: NestedRefValue): string | undefined => {
-    if (!rendered.has(key)) rendered.set(key, renderPartial(key, ref, fieldByName, values, ctx));
-    return rendered.get(key);
+  const partials = (
+    key: string,
+    ref?: NestedRefValue,
+    placement?: NestedPlacement,
+  ): string | undefined => {
+    // A nested module its parent puts outside plain element content
+    // refuses its plugins' values: its own reading does not hold there.
+    const at: RenderContext =
+      placement === "outside" ? { ...ctx, refusePluginValues: NESTED_PLACEMENT_RULE } : ctx;
+    const memo = `${placement ?? "content"}|${key}`;
+    if (!rendered.has(memo)) rendered.set(memo, renderPartial(key, ref, fieldByName, values, at));
+    return rendered.get(memo);
   };
 
   const result = renderTemplate({
@@ -331,6 +352,7 @@ function substituteWithRecursion(
     lists: ctx.lists,
     listHolder: { contentInstanceId: ctx.listHolder },
     linkResolver: ctx.linkResolver,
+    ...(ctx.refusePluginValues !== undefined ? { refusePluginValues: ctx.refusePluginValues } : {}),
   });
   for (const m of result.missingSlots) {
     // A broken reference inside a nested module stays raw in the partial

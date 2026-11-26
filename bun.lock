@@ -299,7 +299,6 @@
         "@caelo-cms/shared": "workspace:*",
         "croner": "11.0.1",
         "oxc-parser": "0.159.0",
-        "parse5": "8.1.1",
       },
     },
     "packages/plugin-sdk": {

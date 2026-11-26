@@ -68,6 +68,13 @@ describe("#1732 review — a placeholder is read as the visitor's browser reads 
     }
   });
 
+  it("holds every tag to the rules, those a body parse drops included (#1732 review, round 2)", () => {
+    expect(placeholderMarkupProblem('<p>x</p><td tabindex="1" onfocus="alert(1)">y</td>')).toBe(
+      "element <td>",
+    );
+    expect(placeholderMarkupProblem("<p>x</p></select>")).toBe("element </select>");
+  });
+
   it("refuses a document-level tag the page's own <html> or <body> would take", () => {
     expect(placeholderMarkupProblem("<body onload=alert(1)>")).toBe("element <body>");
     expect(placeholderMarkupProblem("<p>x</p><html onclick=alert(1)>")).toBe("element <html>");

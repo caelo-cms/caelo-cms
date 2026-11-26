@@ -18,8 +18,7 @@
  *   `url(`.
  */
 
-import { escapePluginText, parseInPageBody } from "@caelo-cms/shared";
-import { type DefaultTreeAdapterTypes, defaultTreeAdapter, html as H, parseFragment } from "parse5";
+import { escapePluginText, htmlTokens } from "@caelo-cms/shared";
 import { cssTokens } from "./css-tokens.js";
 
 /** Elements a placeholder may hold: prose, containers and a button. Nothing that loads or runs. */
@@ -77,50 +76,18 @@ const SLOT_RE = /\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g;
 const SLOT_PROBE = `x y=z onmouseover=alert(1) <b>"'</b>`;
 
 /**
- * `html` as a `<body>`'s content, read the way a browser with scripting on
- * reads it (parse5, the HTML standard's parser). A parser that reads it
- * otherwise sees other elements than the visitor's browser: htmlparser2
- * read `<![CDATA[ … > <img onerror=…> ]]>` as text, a browser as a comment
- * that ends at the first `>`, so the `<img>` ran.
+ * The tags and attribute names `html` holds, in order: its structure, not
+ * its text. Read by its tokens, as the HTML standard's tokenizer reads them
+ * (`htmlTokens`): every tag counts, whatever a tree builder would do with
+ * it where the placeholder lands.
  */
-function parseBody(html: string): DefaultTreeAdapterTypes.DocumentFragment {
-  const body = defaultTreeAdapter.createElement("body", H.NS.HTML, []);
-  return parseFragment(body, html, { scriptingEnabled: true, sourceCodeLocationInfo: true });
-}
-
-type Element = DefaultTreeAdapterTypes.Element;
-
-/** Every element and comment of `node`, depth first, in document order. */
-function* nodesOf(
-  node: DefaultTreeAdapterTypes.ParentNode,
-): Generator<Element | DefaultTreeAdapterTypes.CommentNode | DefaultTreeAdapterTypes.TextNode> {
-  const children =
-    "content" in node && node.content
-      ? (node.content as DefaultTreeAdapterTypes.DocumentFragment).childNodes
-      : node.childNodes;
-  for (const child of children) {
-    if (child.nodeName === "#comment" || child.nodeName === "#text") {
-      yield child as DefaultTreeAdapterTypes.CommentNode | DefaultTreeAdapterTypes.TextNode;
-    } else if ("tagName" in child) {
-      yield child;
-      yield* nodesOf(child);
-    }
-  }
-}
-
-/** An attribute's name as written (`xlink:href` for an adjusted foreign one), lowercased. */
-function attrName(a: Element["attrs"][number]): string {
-  return (a.prefix ? `${a.prefix}:${a.name}` : a.name).toLowerCase();
-}
-
-/** The elements and attribute names `html` parses to, in order: its structure, not its text. */
 function markupShape(html: string): string {
   const parts: string[] = [];
-  for (const node of nodesOf(parseBody(html))) {
-    if (node.nodeName === "#comment") parts.push("<!---->");
-    else if ("tagName" in node) {
-      parts.push(`<${node.namespaceURI} ${node.tagName} ${node.attrs.map(attrName).join(" ")}>`);
-    }
+  for (const t of htmlTokens(html)) {
+    if (t.kind === "start") parts.push(`<${t.name} ${t.attrs.map((a) => a.name).join(" ")}>`);
+    else if (t.kind === "end") parts.push(`</${t.name}>`);
+    else if (t.kind === "comment") parts.push("<!---->");
+    else if (t.kind === "doctype") parts.push("<!doctype>");
   }
   return parts.join("");
 }
@@ -158,34 +125,32 @@ export function placeholderMarkupProblem(html: string): string | null {
   if (slotChangesMarkup(html)) {
     return "a {{slot}} outside text and quoted attribute values: a verdict's text could add attributes or elements there — put each slot in text or in a quoted attribute value";
   }
-  // A marker of letters after the markup must read as text: after an
+  // Read by its tokens, as the HTML standard's tokenizer reads them: every
+  // start and end tag is held to the rules, whatever a tree builder would
+  // do with it (a `<td onfocus=…>` is a cell where the placeholder sits in
+  // a table; a `<body onload=…>` gives the page's body its handler). A
+  // marker of letters after the markup must be the last text: after an
   // unfinished tag or an unclosed comment, the page's own markup that
   // follows the placeholder would land inside it.
   let mark = "qzxend";
   while (html.toLowerCase().includes(mark)) mark += "q";
-  let ended = false;
-  // In a whole page: a `<body onload=…>` gives the page's own body its attributes.
-  const page = parseInPageBody(`${html}${mark}`);
-  if (page.documentTag !== null) return `element <${page.documentTag}>`;
-  for (const node of nodesOf(page.body)) {
-    if (node.nodeName === "#text") {
-      if ((node as DefaultTreeAdapterTypes.TextNode).value.endsWith(mark)) ended = true;
+  const tokens = htmlTokens(`${html}${mark}`);
+  for (const t of tokens) {
+    if (t.kind === "comment") {
+      if (html.startsWith("<?", t.start)) return "processing instruction";
       continue;
     }
-    if (node.nodeName === "#comment") {
-      const start = (node.sourceCodeLocation?.startOffset ?? 0) - page.offset;
-      if (start >= 0 && html.startsWith("<?", start)) return "processing instruction";
+    if (t.kind === "doctype") return "doctype";
+    if (t.kind === "end") {
+      if (!PLACEHOLDER_ELEMENTS.has(t.name)) return `element </${t.name}>`;
       continue;
     }
-    if (!("tagName" in node)) continue;
-    const name = node.tagName.toLowerCase();
-    if (node.namespaceURI !== H.NS.HTML || !PLACEHOLDER_ELEMENTS.has(name)) {
-      return `element <${name}>`;
-    }
-    for (const a of node.attrs) {
-      const attr = attrName(a);
+    if (t.kind !== "start") continue;
+    if (!PLACEHOLDER_ELEMENTS.has(t.name)) return `element <${t.name}>`;
+    for (const a of t.attrs) {
+      const attr = a.name.toLowerCase();
       const allowed = PLACEHOLDER_ATTRIBUTES.has(attr) || /^(data|aria)-[a-z0-9-]+$/.test(attr);
-      if (!allowed) return `attribute ${attr} on <${name}>`;
+      if (!allowed) return `attribute ${attr} on <${t.name}>`;
       if (attr === "href" && a.value.includes("{{"))
         return "a {{slot}} inside href: a verdict's text never chooses where a link goes";
       if (attr === "href") {
@@ -194,7 +159,8 @@ export function placeholderMarkupProblem(html: string): string | null {
       }
     }
   }
-  if (!ended) {
+  const last = tokens[tokens.length - 1];
+  if (last?.kind !== "text" || !last.value.endsWith(mark)) {
     return "the markup does not end in element content (an unfinished tag or an unclosed comment): close it";
   }
   return null;

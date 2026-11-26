@@ -63,6 +63,8 @@ export interface SectionEnv {
   readonly holder: ListHolder;
   /** Theme-asset placeholder names, which are module-level keys too. */
   readonly moduleLevelKeys: ReadonlySet<string>;
+  /** #1729 — refuse every plugin value with this rule (a nested module placed outside element content). */
+  readonly refusePluginValues?: string;
   /** Renders a `module-list` field (inner block ignored), shared with the old engine path. */
   readonly renderModuleList: (name: string, field: SectionField) => string;
 }
@@ -243,7 +245,10 @@ class SectionRenderer {
     source: string,
   ): string {
     this.pluginTag = true;
-    const result = contextualPluginValue(placeholderContextAt(this.html, start), origin, value);
+    const context = this.env.refusePluginValues
+      ? ({ kind: "refused", rule: this.env.refusePluginValues } as const)
+      : placeholderContextAt(this.html, start);
+    const result = contextualPluginValue(context, origin, value);
     if (!result.ok) {
       return this.raw(
         source,

@@ -236,7 +236,7 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
     // A fragment parse drops these tags; in the page they add their attributes.
     expect(richtextProblem("<body onload=alert(1)>")).toBe("element-body");
     expect(richtextProblem("<p>x</p><html onclick=alert(1)>")).toBe("element-html");
-    expect(richtextProblem("<p>x</p><table><body onload=alert(1)>")).toBe("element-body");
+    expect(richtextProblem("<p>x</p><table><body onload=alert(1)>")).toBe("element-table");
     expect(richtextProblem("<p>x</p>")).toBeNull();
   });
 
@@ -636,9 +636,9 @@ describe("a plugin's value where the browser puts it (#1732 review)", () => {
         rule("context-event-handler"),
       ]);
     }
-    // A tag the browser drops leaves the value nowhere: refused, never guessed.
+    // Markup inside a <select> other than its options: browsers keep it, parse5 drops it.
     expect(at(`<select><img src=x onerror="{{x}}"></select>`, { x: x("1") }).missingSlots).toEqual([
-      rule("context-markup"),
+      rule("context-conditional-markup"),
     ]);
   });
 
@@ -662,5 +662,113 @@ describe("a plugin's value where the browser puts it (#1732 review)", () => {
     ]) {
       expect(at(html, { x: x("Hallo"), a: true }).missingSlots).toEqual([]);
     }
+  });
+});
+
+/** #1732 review, round 2 — the reviewer's probes on the parse5 reading, kept. */
+describe("a plugin's value where the browser puts it, round 2 (#1732 review)", () => {
+  const fields: TemplateField[] = [
+    { name: "x", kind: "text" },
+    { name: "cell", kind: "richtext" },
+    { name: "a", kind: "boolean" },
+    { name: "end", kind: "text" },
+  ];
+  const x = (value: string) => pluginValue({ ...ORIGIN, address: "a/x", type: "text" }, value);
+  const rich = (value: string) =>
+    pluginValue({ ...ORIGIN, address: "a/cell", type: "richtext" }, value);
+  const rule = (r: string, field = "x") =>
+    `plugin-value-refused:international-site.content-variants.a/${field}:${r}`;
+  const at = (html: string, values: Record<string, unknown>) =>
+    renderTemplate({ html, fields, contentValues: values });
+
+  it("1: a richtext is held to the prose rules by every tag, table parts included", () => {
+    for (const [value, expected] of [
+      ['<p>Basis</p><td tabindex="1" autofocus onfocus="alert(1)">Pro</td>', "element-td"],
+      ['<strong>19 €</strong><th tabindex="1" autofocus onfocus="alert(1)">x</th>', "element-th"],
+      ['<tr><td onmouseover="alert(1)">Preis</td></tr>', "element-tr"],
+      ['<caption onclick="alert(1)">x</caption>', "element-caption"],
+      ['<col onclick="alert(1)">', "element-col"],
+      ['<frameset onload="alert(1)">', "element-frameset"],
+      ["<p>x</p></select><img src=x onerror=alert(1)>", "end-tag-select"],
+    ] as const) {
+      expect(richtextProblem(value)).toBe(expected);
+    }
+    // Where it lands as markup, the engine holds it to the same rules.
+    const r = at(`<table class="pricing"><tr><th>Plan</th><td>{{cell}}</td></tr></table>`, {
+      cell: rich('<p>Basis</p><td tabindex="1" autofocus onfocus="alert(1)">Pro</td>'),
+    });
+    expect(r.missingSlots).toEqual([rule("element-td", "cell")]);
+    expect(r.html).not.toContain("onfocus");
+  });
+
+  it("2: inside a <select> only options read alike; other markup refuses what follows", () => {
+    for (const html of [
+      "<select><noscript>{{cell}}</noscript></select>",
+      "<select><option><noscript>{{cell}}</noscript></option></select>",
+      "<select><button><xmp>{{cell}}</xmp></button></select>",
+      "{{#a}}<select>{{/a}}<noscript>{{cell}}</noscript>",
+      '{{#a}}<select name="s">{{/a}}<noscript>{{cell}}</noscript>{{#a}}</select>{{/a}}',
+    ]) {
+      for (const a of [true, false]) {
+        expect(
+          at(html, {
+            cell: rich('<p title="</noscript><img src=x onerror=alert(1)>">Hinweis</p>'),
+            a,
+          }).missingSlots,
+        ).toEqual([rule("context-conditional-markup", "cell")]);
+      }
+    }
+    // An option's text is escaped: a richtext there is no markup.
+    expect(at("<select><option>{{cell}}</option></select>", { cell: rich("<b>x</b>") }).html).toBe(
+      "<select><option>&lt;b&gt;x&lt;/b&gt;</option></select>",
+    );
+  });
+
+  it("4: a deeply nested richtext is refused by name, never a stack overflow", () => {
+    const deep = "<span><strong><em>x".repeat(10_000);
+    expect(richtextProblem(deep)).toBe("richtext-too-deep");
+    expect(at("<div>{{cell}}</div>", { cell: rich(deep) }).missingSlots).toEqual([
+      rule("richtext-too-deep", "cell"),
+    ]);
+    // A template nested as deep is read, not overflowed.
+    expect(() => placeholderContexts(`${"<span><strong><em>".repeat(10_000)}{{x}}`)).not.toThrow();
+  });
+
+  it("5: a module of inline base64 always finds a marker fence", () => {
+    // 240 KB of image-like bytes (xorshift32, seeded): its base64 holds every short fence.
+    const bytes = new Uint8Array(240 * 768);
+    let state = 0x9e3779b9;
+    for (let i = 0; i < bytes.length; i += 1) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      bytes[i] = state & 0xff;
+    }
+    const b64 = Buffer.from(bytes).toString("base64");
+    const html = `<img alt="" src="data:image/png;base64,${b64}"><h1>{{x}}</h1>`;
+    expect(at(html, { x: x("Hallo") }).html.endsWith("<h1>Hallo</h1>")).toBe(true);
+  });
+
+  it("6: path text a section adds may be absent: a value after `/` cannot start with `/`", () => {
+    for (const html of [
+      `<a href="/{{#a}}de{{/a}}{{x}}">x</a>`,
+      `<a href="/{{#a}}de/{{/a}}{{x}}">x</a>`,
+      `<img src="/{{^a}}{{/a}}{{x}}">`,
+    ]) {
+      expect(at(html, { x: x("/evil.example/p"), a: false }).missingSlots).toEqual([
+        rule("url-protocol-relative"),
+      ]);
+    }
+  });
+
+  it("7: a value in an end tag's name could close raw text: what follows is refused", () => {
+    expect(
+      at(`<textarea></{{end}}><img src=x onerror="{{x}}">`, { end: "textarea", x: x("alert(1)") })
+        .missingSlots,
+    ).toEqual([rule("context-conditional-markup")]);
+    // `</h{{n}}>` closes no element that changes how content is read.
+    expect(at(`<h2>x</h{{end}}><p>{{x}}</p>`, { end: "2", x: x("Hallo") }).missingSlots).toEqual(
+      [],
+    );
   });
 });

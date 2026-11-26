@@ -111,6 +111,7 @@ import {
 import type { ListHolder, ListPageContext } from "./lists/resolve.js";
 import { parseLinkFieldValue } from "./lists/resolve-values.js";
 import { stripCdataGuards } from "./strip-cdata.js";
+import { placeholderContexts } from "./template-contexts.js";
 import { renderSections } from "./template-sections.js";
 
 export {
@@ -200,7 +201,18 @@ export function templateFieldsFromJson(raw: unknown): TemplateField[] {
 export type PartialResolver = (
   key: string,
   ref?: { readonly moduleId: string; readonly contentInstanceId: string },
+  placement?: NestedPlacement,
 ) => string | undefined;
+
+/**
+ * #1729 — where a nested module renders in its parent: `content` (plain
+ * HTML element content, where its own template's reading holds) or
+ * `outside` (anywhere else: render it with `refusePluginValues`).
+ */
+export type NestedPlacement = "content" | "outside";
+
+/** The rule a nested module placed outside plain element content refuses its plugins' values with. */
+export const NESTED_PLACEMENT_RULE = "context-nested-placement";
 
 export interface RenderTemplateInput {
   readonly html: string;
@@ -258,6 +270,12 @@ export interface RenderTemplateInput {
    * pushes `link-resolver-unavailable:<kind>/<id>` (loud, never empty).
    */
   readonly linkResolver?: LinkResolver;
+  /**
+   * #1729 — refuse every plugin value in this render with this rule: the
+   * module renders where its own template's reading does not hold (a
+   * nested module its parent puts in an attribute, raw text, SVG, …).
+   */
+  readonly refusePluginValues?: string;
 }
 
 export interface RenderTemplateOutput {
@@ -382,7 +400,7 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     if (SECTION_KINDS.has(fieldByName.get(k)?.kind ?? "text")) cvs[k] = [];
   }
   const partialSource = input.partials ?? {};
-  const partials: PartialResolver =
+  const resolve: PartialResolver =
     typeof partialSource === "function"
       ? partialSource
       : (key: string) => (Object.hasOwn(partialSource, key) ? partialSource[key] : undefined);
@@ -418,6 +436,19 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   //    modules; this covers any already-stored HTML + the deploy render.
   const sourceHtml = stripCdataGuards(input.html);
 
+  // #1729 — a nested module learns where its parent puts it.
+  let outside: ReadonlySet<string> | null = null;
+  const partials: PartialResolver = (key, ref) => {
+    outside ??= new Set(
+      [...placeholderContexts(sourceHtml).nestedOutsideContent].map((n) => n.toLowerCase()),
+    );
+    const placement: NestedPlacement =
+      input.refusePluginValues !== undefined || outside.has(partialName(key))
+        ? "outside"
+        : "content";
+    return resolve(key, ref, placement);
+  };
+
   // 1. {{#name}}…{{/name}} and {{^name}}…{{/name}} sections, list
   //    entries and dot access (template-sections.ts).
   let html = renderSections(sourceHtml, {
@@ -429,6 +460,9 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     lists: input.lists,
     holder: input.listHolder ?? { contentInstanceId: null },
     moduleLevelKeys: new Set(THEME_ASSET_KEYS),
+    ...(input.refusePluginValues !== undefined
+      ? { refusePluginValues: input.refusePluginValues }
+      : {}),
     renderModuleList: (name, field) =>
       renderModuleList(name, field as TemplateField, cvs, partials, missing, mkSentinel),
   });
@@ -629,6 +663,13 @@ export function isFieldPathMarker(marker: string): boolean {
     marker.startsWith(`${PAGE_KEY_UNKNOWN}:`) ||
     marker.startsWith(`${PAGE_PATH_UNKNOWN}:`)
   );
+}
+
+/** The tag name behind a partial key: `name`, `name__<i>` (a module list), `list:<field>/<item>/<name>`. */
+function partialName(key: string): string {
+  if (key.startsWith("list:")) return (key.split("/").at(-1) ?? key).toLowerCase();
+  const sep = key.lastIndexOf("__");
+  return (sep > 0 && /^\d+$/.test(key.slice(sep + 2)) ? key.slice(0, sep) : key).toLowerCase();
 }
 
 function renderModuleList(

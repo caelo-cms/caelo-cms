@@ -13,13 +13,8 @@
  * cleaned value (CLAUDE.md §2, no fallbacks).
  */
 
-import {
-  type DefaultTreeAdapterTypes,
-  defaultTreeAdapter,
-  html as H,
-  parse,
-  parseFragment,
-} from "parse5";
+import { type DefaultTreeAdapterTypes, defaultTreeAdapter, html as H, parseFragment } from "parse5";
+import { htmlTokens } from "../html-tokens.js";
 import { type FieldDef, validateFieldValue } from "./fields.js";
 import type { ListItem } from "./items.js";
 import type { ListTypeDef, NodeDef } from "./list-type.js";
@@ -171,38 +166,6 @@ function asAttributeValue(value: string): string {
   return href?.value ?? value;
 }
 
-/** What a page holds before a value in its body: the document the browser reads it in. */
-const PAGE_BEFORE_BODY = "<!DOCTYPE html><html><head></head><body>";
-
-/**
- * `html` as a page's body content, in a whole document: what the browser
- * does with document-level tags in it shows. A `<body onload=…>` or an
- * `<html …>` there adds its attributes to the page's own `<body>` or
- * `<html>` (a fragment parse drops the tag, and a check of the fragment
- * would see nothing).
- */
-export function parseInPageBody(html: string): {
-  readonly body: DefaultTreeAdapterTypes.Element;
-  /** The page's own `<html>` or `<body>` took attributes from `html`. */
-  readonly documentTag: "html" | "body" | null;
-  /** Where `html` starts in the parsed text (for source offsets). */
-  readonly offset: number;
-} {
-  const doc = parse(`${PAGE_BEFORE_BODY}${html}`, {
-    scriptingEnabled: true,
-    sourceCodeLocationInfo: true,
-  });
-  const root = doc.childNodes.find((n) => "tagName" in n && n.tagName === "html") as
-    | DefaultTreeAdapterTypes.Element
-    | undefined;
-  const body = root?.childNodes.find((n) => "tagName" in n && n.tagName === "body") as
-    | DefaultTreeAdapterTypes.Element
-    | undefined;
-  if (!root || !body) throw new Error("parseInPageBody: the document has no <html> or <body>");
-  const documentTag = root.attrs.length > 0 ? "html" : body.attrs.length > 0 ? "body" : null;
-  return { body, documentTag, offset: PAGE_BEFORE_BODY.length };
-}
-
 /** Letters `html` does not hold, so they mark where it ends. */
 function endMarker(html: string): string {
   const lower = html.toLowerCase();
@@ -212,55 +175,81 @@ function endMarker(html: string): string {
   }
 }
 
+/** How deep a richtext's elements may nest: prose never needs more, and a check must never run out of stack. */
+export const MAX_RICHTEXT_DEPTH = 256;
+
+/** Prose elements without content: they open nothing. */
+const VOID_PROSE = new Set(["br"]);
+
 /**
- * The rule a richtext value breaks, or null when it is prose. Read the way
- * a browser reads it (parse5): attribute values are decoded, so
- * `jav&#97;script:` is seen as what a browser would run, and an element is
- * whatever the browser makes of the markup. The richtext must also end in
- * element content: a marker of letters after it must read as text. After
- * an unfinished tag (`<p onclick=…`, a trailing `<` or `<di`) the browser
- * drops the marker with the tag, and in an unclosed comment it is the
- * comment's; the module's own markup after the value would land there.
+ * The rule a richtext value breaks, or null when it is prose. Read by its
+ * tokens, as the HTML standard's tokenizer reads them (`htmlTokens`), so
+ * every start and end tag is held to {@link PROSE_ELEMENTS} and every
+ * attribute to the attribute rules, whatever a tree builder would do with
+ * it: a `<td onfocus=…>` is dropped by a body-content parse but is a cell
+ * of the table the module puts the value in, and a `<body onload=…>` gives
+ * the page's own body its handler. Attribute values are decoded, so
+ * `jav&#97;script:` is seen as what a browser would run.
+ *
+ * The richtext must end in element content: a marker of letters after it
+ * must be the last text. After an unfinished tag (`<p onclick=…`, a
+ * trailing `<` or `<di`) the tokenizer drops the marker with the tag, and
+ * in an unclosed comment it is the comment's; the module's own markup after
+ * the value would land there. Nesting past {@link MAX_RICHTEXT_DEPTH} is
+ * refused: no check walks a tree it builds from a plugin's value.
  */
 export function richtextProblem(html: string): string | null {
   const mark = endMarker(html);
-  const page = parseInPageBody(`${html}${mark}`);
-  if (page.documentTag !== null) return `element-${page.documentTag}`;
-  let problem: string | null = null;
-  let ended = false;
-  const walk = (node: DefaultTreeAdapterTypes.ParentNode) => {
-    for (const child of node.childNodes) {
-      if (child.nodeName === "#text") {
-        if ((child as DefaultTreeAdapterTypes.TextNode).value.endsWith(mark)) ended = true;
-      } else if (child.nodeName === "#comment") {
-        const start = (child.sourceCodeLocation?.startOffset ?? 0) - page.offset;
-        if (start >= 0 && html.startsWith("<?", start)) problem ??= "processing-instruction";
-      } else if ("tagName" in child) {
-        const name = child.tagName.toLowerCase();
-        if (child.namespaceURI !== H.NS.HTML || !PROSE_ELEMENTS.has(name)) {
-          problem ??= `element-${name}`;
+  const tokens = htmlTokens(`${html}${mark}`);
+  const open: string[] = [];
+  for (const t of tokens) {
+    if (t.kind === "start") {
+      if (!PROSE_ELEMENTS.has(t.name)) return `element-${t.name}`;
+      for (const a of t.attrs) {
+        const attr = a.name.toLowerCase();
+        if (attr.startsWith("on")) return `attribute-${attr}`;
+        if (attr === "style") return "attribute-style";
+        if (URL_ATTRIBUTES.has(attr)) {
+          const problem = decodedUrlProblem(a.value);
+          if (problem !== null) return problem;
         }
-        for (const a of child.attrs) {
-          const attr = (a.prefix ? `${a.prefix}:${a.name}` : a.name).toLowerCase();
-          if (attr.startsWith("on")) problem ??= `attribute-${attr}`;
-          else if (attr === "style") problem ??= "attribute-style";
-          else if (URL_ATTRIBUTES.has(attr)) problem ??= decodedUrlProblem(a.value);
-        }
-        walk(child);
       }
+      if (!VOID_PROSE.has(t.name)) {
+        open.push(t.name);
+        if (open.length > MAX_RICHTEXT_DEPTH) return "richtext-too-deep";
+      }
+    } else if (t.kind === "end") {
+      // An end tag of anything else closes an element of the module (a `</select>`, a `</svg>`).
+      if (!PROSE_ELEMENTS.has(t.name)) return `end-tag-${t.name}`;
+      const at = open.lastIndexOf(t.name);
+      if (at !== -1) open.length = at;
+    } else if (t.kind === "comment") {
+      if (html.startsWith("<?", t.start)) return "processing-instruction";
+    } else if (t.kind === "doctype") {
+      return "doctype";
     }
-  };
-  walk(page.body);
-  if (!ended) return "richtext-unfinished";
-  return problem;
+  }
+  const last = tokens[tokens.length - 1];
+  if (last?.kind !== "text" || !last.value.endsWith(mark)) return "richtext-unfinished";
+  return null;
 }
 
 /**
  * Check one value a plugin returned for `field`. The value has already
  * passed the field's shape check (`validateFieldValue`); this decides
- * whether it may reach a page, and in which form.
+ * whether it may reach a page, and in which form. It never throws: a value
+ * a check cannot read is refused (`value-unreadable`), a render failure
+ * that blocks Publish live, never an error that stops a Stage.
  */
 export function checkPluginValue(field: FieldDef, value: unknown): PluginValueCheck {
+  try {
+    return checkValue(field, value);
+  } catch {
+    return { ok: false, rule: "value-unreadable" };
+  }
+}
+
+function checkValue(field: FieldDef, value: unknown): PluginValueCheck {
   if (value === undefined || value === null) return { ok: true, value };
   switch (field.type) {
     case "text":
@@ -564,11 +553,16 @@ export function contextualPluginValue(
   switch (context.kind) {
     case "refused":
       return { ok: false, rule: context.rule };
-    case "text":
-      return {
-        ok: true,
-        html: origin.type === "richtext" && context.markup ? value : escapePluginText(value),
-      };
+    case "text": {
+      if (origin.type !== "richtext" || !context.markup) {
+        return { ok: true, html: escapePluginText(value) };
+      }
+      // Markup where it lands: held to the prose rules here too, whichever
+      // path brought it (the plugin host checked it already; this check
+      // must not depend on that).
+      const problem = richtextProblem(value);
+      return problem === null ? { ok: true, html: value } : { ok: false, rule: problem };
+    }
     case "attribute":
       return {
         ok: true,
