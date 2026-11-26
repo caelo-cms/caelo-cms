@@ -6,8 +6,8 @@
  * An `author` page type and an `article` page type whose `authors`
  * property names authors in order. The writes take paths (what reads
  * show) and store references, refuse a page that does not exist, one of
- * the wrong type and the page itself; a rename of the author leaves the
- * reference as stored and the read shows the new path; the author page
+ * the wrong type and the page itself; a rename or move of the author leaves
+ * the reference as stored and the read shows the new path; the author page
  * lists the articles naming it (`refers_to: self`); a term's overview
  * page leads the breadcrumbs; the page types guard their relations.
  */
@@ -228,6 +228,17 @@ describe("writing a page property", () => {
     );
     expect(read.page.properties.authors).toEqual([`/${PFX}ben`, `/${PFX}anna-k`]);
   });
+
+  it("a moved author keeps the reference too", async () => {
+    await op(SYS, "pages.move_many", { moves: [{ pageId: P.anna, parentPageId: P.ben }] });
+    expect((await storedProperties(P.post1)).authors).toEqual([ref(P.ben), ref(P.anna)]);
+    const read = await op<{ page: { properties: Record<string, unknown> } }>(
+      SYS,
+      "pages.get_with_modules",
+      { pageId: P.post1 },
+    );
+    expect(read.page.properties.authors).toEqual([`/${PFX}ben`, `/${PFX}ben/${PFX}anna-k`]);
+  });
 });
 
 describe("pages naming a page", () => {
@@ -251,7 +262,7 @@ describe("pages naming a page", () => {
         pageType: ARTICLE,
         templateId,
         status: "published",
-        properties: { authors: [`/${PFX}anna-k`] },
+        properties: { authors: [`/${PFX}ben/${PFX}anna-k`] },
       })
     ).pageId;
     const anna = await op<Preview>(SYS, "lists.preview_source", {

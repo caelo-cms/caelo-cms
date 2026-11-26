@@ -346,11 +346,14 @@ export const listPagesOp = defineOperation({
     const only = pageSelectionOf(input);
     if (only) {
       const byId = only.ids.length > 0 ? sql`pages.id = ANY(${uuidArray(only.ids)})` : null;
+      // The stored path with or without its trailing slash, as an equality
+      // on the column (#1754): `current_path`'s index answers it, where the
+      // normalising expression it replaced read every page of the site.
       const byPath =
         only.paths.size > 0
-          ? sql`(CASE WHEN length(pages.current_path) > 1
-                      THEN rtrim(pages.current_path, '/') ELSE pages.current_path END)
-                = ANY(${textArray([...only.paths])})`
+          ? sql`pages.current_path = ANY(${textArray(
+              [...only.paths].flatMap((p) => (p === "/" ? [p] : [p, `${p}/`])),
+            )})`
           : null;
       // A chat's pending rename moves the paths of a page and everything
       // below it without touching the rows: on a branch those pages are
