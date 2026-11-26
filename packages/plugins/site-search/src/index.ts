@@ -43,6 +43,7 @@ import {
 } from "./learn.js";
 import { type ModuleReportRow, observe } from "./observe.js";
 import { linkedPageId } from "./profile.js";
+import { moduleReportWrites, type StoredModuleRow } from "./report.js";
 import { RUNTIME_CSS, RUNTIME_JS } from "./runtime.js";
 import { SITE_SEARCH_SKILLS } from "./skills.js";
 
@@ -104,28 +105,20 @@ async function writeReport(
   const q = adminQueryOf(ctx);
   if (modules.length > 0) {
     const ids = modules.map((m) => m.moduleId);
-    const existing = new Map<string, string>();
+    const stored = new Map<string, StoredModuleRow>();
     for (let i = 0; i < ids.length; i += 1000) {
-      for (const r of await q.list<"module_counting", { id: string; module_id: string }>(
-        "module_counting",
-        { anyOf: { module_id: ids.slice(i, i + 1000) }, limit: 1000 },
-      ))
-        existing.set(r.module_id, r.id);
+      for (const r of await q.list<"module_counting", StoredModuleRow>("module_counting", {
+        anyOf: { module_id: ids.slice(i, i + 1000) },
+        limit: 1000,
+      }))
+        stored.set(r.module_id, r);
     }
-    for (const m of modules) {
-      const row = {
-        module_id: m.moduleId,
-        name: m.name,
-        zone: m.zone,
-        placement: m.placement,
-        weighting: m.weighting,
-        reason: m.reason,
-        run_id: runId,
-      };
-      const id = existing.get(m.moduleId);
-      if (id) await q.update("module_counting", id, row);
-      else await q.insert("module_counting", row);
-    }
+    // Only what changed, rows that change the same way in one call (report.ts).
+    const writes = moduleReportWrites(stored, modules, runId);
+    for (const row of writes.inserts) await q.insert("module_counting", row);
+    for (const { ids: changed, patch } of writes.updates)
+      for (let i = 0; i < changed.length; i += 1000)
+        await q.updateMany("module_counting", changed.slice(i, i + 1000), patch);
   }
   if (notes !== null) {
     const [report] = await q.list<"index_report", { id: string }>("index_report", { limit: 1 });
@@ -282,6 +275,7 @@ export default definePlugin({
       placement: "int",
       weighting: "string",
       reason: "string",
+      /** The Stage whose observer last changed the row (report.ts). */
       run_id: "string",
     },
     index_report: { notes: "text", run_id: "string" },
