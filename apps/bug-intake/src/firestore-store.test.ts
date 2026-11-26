@@ -164,6 +164,8 @@ const cluster = (id: string, over: Partial<ClusterRecord> = {}): ClusterRecord =
   mergedInto: null,
   lastIssueSyncAt: null,
   milestonesCommented: [],
+  awaitingMatch: false,
+  countedDeferredReports: [],
   ...over,
 });
 
@@ -482,6 +484,41 @@ describe("FirestoreStore against the emulator (#980)", () => {
     await s().clearIssuePending("defect", "c_missing");
     expect(await s().pendingIssueClusters("defect", 10)).toEqual(["c_late"]);
     await s().clearIssuePending("defect", "c_late");
+  });
+
+  live("queues deferred reports oldest first and keeps the original place", async () => {
+    await s().deferReport("r_late", "2026-11-23T12:00:00.000Z");
+    await s().deferReport("r_early", "2026-11-23T09:00:00.000Z");
+    await s().deferReport("r_late", "2026-11-23T01:00:00.000Z");
+    expect(await s().deferredReports(10)).toEqual(["r_early", "r_late"]);
+    expect(await s().deferredReports(1)).toEqual(["r_early"]);
+    await s().clearDeferredReport("r_early");
+    await s().clearDeferredReport("r_missing");
+    expect(await s().deferredReports(10)).toEqual(["r_late"]);
+    await s().clearDeferredReport("r_late");
+  });
+
+  live("reads a cluster stored before stand-ins as none, and pools no stand-in", async () => {
+    const db = freshDb();
+    const st = new FirestoreStore(db);
+    const { awaitingMatch: _a, ...older } = cluster("c_before", {
+      lastSeen: "2026-11-20T10:00:00.000Z",
+    });
+    await db.collection("clusters").doc("c_before").set(older);
+    await db
+      .collection("clusters")
+      .doc("c_stand_in")
+      .set(
+        cluster("c_stand_in", {
+          awaitingMatch: true,
+          fingerprints: [],
+          lastSeen: "2026-11-23T10:00:00.000Z",
+        }),
+      );
+    expect((await st.getCluster("c_before"))!.value.awaitingMatch).toBe(false);
+    expect((await st.getCluster("c_stand_in"))!.value.awaitingMatch).toBe(true);
+    // The pool is built from the clusters on first use: the stand-in is left out.
+    expect((await st.candidates("defect")).map((c) => c.id)).toEqual(["c_before"]);
   });
 
   live("carries the intake service end to end, including the daily cap", async () => {

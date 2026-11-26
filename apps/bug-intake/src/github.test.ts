@@ -116,4 +116,13 @@ describe("GitHub client", () => {
       { version: "0.11.0", publishedAt: "2026-10-25T00:00:00Z" },
     ]);
   });
+  it("gives up on a call GitHub does not answer", async () => {
+    // Answers only by failing once the request's signal aborts.
+    const fetchImpl = ((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      })) as unknown as typeof fetch;
+    const gh = new GitHubClient(auth, { fetchImpl, requestTimeoutMs: 20 });
+    await expect(gh.getIssue("o/pub", 7)).rejects.toThrow();
+  });
 });

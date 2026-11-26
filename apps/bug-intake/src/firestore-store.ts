@@ -125,7 +125,15 @@ const POOL_BUILD_PAGE = 100;
 function readCluster(data: Record<string, unknown>): ClusterRecord {
   // A record stored before #1416 has no CI runs: none were told apart yet.
   const ciRuns = (data.ciRuns ?? []) as ClusterRecord["ciRuns"];
-  return { ...(data as unknown as ClusterRecord), kind: storedKind(data.kind), ciRuns };
+  return {
+    ...(data as unknown as ClusterRecord),
+    kind: storedKind(data.kind),
+    ciRuns,
+    // A record stored before the matcher-outage path is never a stand-in
+    // and has counted no deferred report.
+    awaitingMatch: data.awaitingMatch === true,
+    countedDeferredReports: (data.countedDeferredReports ?? []) as string[],
+  };
 }
 
 /** A pool's entries as stored; entries written before #1192 are defects. */
@@ -323,7 +331,7 @@ export class FirestoreStore implements IntakeStore {
       const page = await query.get();
       for (const d of page.docs) {
         const c = readCluster(d.data());
-        if (c.mergedInto === null && c.kind === kind) out.push(c);
+        if (c.mergedInto === null && !c.awaitingMatch && c.kind === kind) out.push(c);
       }
       const last = page.docs.at(-1);
       if (out.length >= MAX_CANDIDATES || page.size < POOL_BUILD_PAGE || !last) return out;
@@ -372,6 +380,24 @@ export class FirestoreStore implements IntakeStore {
       .orderBy("since")
       .limit(limit)
       .get();
+    return snap.docs.map((d) => d.id);
+  }
+
+  async deferReport(reportId: string, since: string) {
+    try {
+      await this.#doc("deferredReports", reportId).create({ since });
+    } catch (e) {
+      // Already deferred: keep its place.
+      if (!isAlreadyExists(e)) throw e;
+    }
+  }
+
+  async clearDeferredReport(reportId: string) {
+    await this.#doc("deferredReports", reportId).delete();
+  }
+
+  async deferredReports(limit: number) {
+    const snap = await this.db.collection("deferredReports").orderBy("since").limit(limit).get();
     return snap.docs.map((d) => d.id);
   }
 }
