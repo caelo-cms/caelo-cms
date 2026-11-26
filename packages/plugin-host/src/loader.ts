@@ -943,7 +943,10 @@ export async function activateApprovedExternalPlugin(
       source: artifact.source,
       manifest,
       operation: "$inspect",
-      args: manifest,
+      // The child compares declarations with the definition; reviewed
+      // markup and files are host data it never needs (and they would
+      // crowd the 1 MB message line).
+      args: { ...manifest, deferralPlaceholders: undefined },
       context,
       authorize: async () => {},
       denySdkCalls: true,
@@ -1534,6 +1537,20 @@ function preflightRegistration(
     throw new Error(
       `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,
     );
+  }
+  // #1729 — withholding a module changes what visitors see: the
+  // client_assets grant, and an operation that exists, for every plugin.
+  if (def.deferralsOperation !== undefined) {
+    if (!grantedCaps.has("client_assets")) {
+      throw new Error(
+        `plugin "${def.slug}" withholds modules (deferralsOperation) without the client_assets capability — registration refused`,
+      );
+    }
+    if (!def.operations[def.deferralsOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names deferralsOperation "${def.deferralsOperation}", which is not one of its operations`,
+      );
+    }
   }
   if (def.listResolveOperation !== undefined) {
     if (!grantedCaps.has("list_resolve")) {

@@ -46,6 +46,11 @@ import {
 } from "./ai-chat-operations.js";
 import { MAX_BATCH_OPERATIONS, pluginBatchOperation } from "./batch.js";
 import {
+  type DeferralPlaceholders,
+  deferralPlaceholderRef,
+  deferralPlaceholders,
+} from "./client-assets.js";
+import {
   type CollectionOperationInput,
   checkCollectionOperations,
   collectionOperationManifest,
@@ -110,6 +115,7 @@ export {
   validateFieldValue,
 } from "@caelo-cms/shared/lists-model";
 export * from "./admin-panels.js";
+export * from "./client-assets.js";
 export * from "./editor-toolbar.js";
 export * from "./index-coverage.js";
 export * from "./indexes.js";
@@ -613,10 +619,6 @@ const deferralReasonKey = z
   .max(64)
   .regex(/^[a-z][a-z0-9_-]*$/, "reason is a lowercase key");
 
-const deferralMarkup = z
-  .object({ html: z.string().min(1).max(20_000), css: z.string().max(20_000) })
-  .strict();
-
 /**
  * A module withheld from the page until the withholding plugin says
  * otherwise.
@@ -645,10 +647,11 @@ export const moduleDeferralSpec = z.union([
       /** Slug of the module rendered in the withheld one's place. An
        *  ordinary module, so the AI authors and styles it. */
       placeholderModuleSlug: z.string().min(1).max(200),
-      /** The plugin's own built-in placeholder, rendered while no module
-       *  with `placeholderModuleSlug` exists yet. Without it a site whose
+      /** #1729 — one of the plugin's declared `deferralPlaceholders`,
+       *  rendered while no module with `placeholderModuleSlug` exists yet,
+       *  with text for its slots (core escapes it). Without it a site whose
        *  placeholder was never designed cannot render the page at all. */
-      defaultPlaceholder: deferralMarkup.optional(),
+      placeholder: deferralPlaceholderRef.optional(),
     })
     .strict(),
   z
@@ -657,10 +660,12 @@ export const moduleDeferralSpec = z.union([
       omit: z.literal(true),
       /**
        * Shown in the editor preview only, in the module's place: what is
-       * held back and why. A `<button data-caelo-ask-ai>` inside it adds
-       * the module to the current chat as a reference chip.
+       * held back and why. One of the plugin's declared
+       * `deferralPlaceholders` (#1729) with text for its slots. A
+       * `<button data-caelo-ask-ai>` inside it adds the module to the
+       * current chat as a reference chip.
        */
-      editorNotice: deferralMarkup,
+      editorNotice: deferralPlaceholderRef,
     })
     .strict(),
 ]);
@@ -1358,9 +1363,13 @@ export const pluginManifest = z
      *  files land on every page of the public site, so authorship has
      *  to be auditable. */
     hasBuildAssets: z.boolean().default(false),
-    /** See `PluginDefinition.deferralsOperation`. Release-signed only:
-     *  withholding a module changes what visitors see. */
+    /** See `PluginDefinition.deferralsOperation`. Requires the
+     *  `client_assets` capability: withholding a module changes what
+     *  visitors see. */
     hasDeferrals: z.boolean().default(false),
+    /** See `PluginDefinition.deferralPlaceholders` (#1729): reviewed
+     *  markup a deferral verdict names instead of returning its own. */
+    deferralPlaceholders: deferralPlaceholders.optional(),
     /** See `PluginDefinition.contentVariantsOperation` (#592). Requires
      *  the `content_variants` capability: it changes what every page
      *  renders. */
@@ -2922,9 +2931,25 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * Withholding is per MODULE, not per placement: a video module
    * classified once is withheld everywhere it appears, including from
    * a layout. Return only the modules actually withheld — an absent id
-   * renders normally.
+   * renders normally. Called once per render pass for the whole site; the
+   * host splits the modules into calls of about 512 KB.
    */
   readonly deferralsOperation?: string;
+  /**
+   * #1729 — the markup a verdict of `deferralsOperation` may name, by name:
+   * a withheld module's built-in placeholder and an omitted one's editor
+   * notice. Part of the reviewed artifact (the manifest), checked at review
+   * like module HTML: no script, no element or attribute that loads
+   * anything, no CSS `url()` or `@import`. `{{name}}` slots take the text a
+   * verdict hands over, which core escapes, so a verdict carries data and
+   * never markup.
+   *
+   * @example
+   *   deferralPlaceholders: {
+   *     consent: { html: '<div><p>Loads with your consent to {{label}}.</p><button data-consent-grant="{{key}}">Allow</button></div>', css: "" },
+   *   }
+   */
+  readonly deferralPlaceholders?: DeferralPlaceholders;
   /**
    * #592 — the content-variants composition point: which content a
    * placement shows on THIS page. An operation in `operations` taking
@@ -3273,6 +3298,7 @@ export function manifestFromDefinition(def: {
   readonly staticRender?: unknown;
   readonly buildAssets?: unknown;
   readonly deferralsOperation?: string;
+  readonly deferralPlaceholders?: DeferralPlaceholders;
   readonly contentVariantsOperation?: string;
   readonly linkResolveOperation?: string;
   readonly shareImagesOperation?: string;
@@ -3344,6 +3370,9 @@ export function manifestFromDefinition(def: {
       : {}),
     hasBuildAssets: Boolean(def.buildAssets),
     hasDeferrals: Boolean(def.deferralsOperation),
+    ...(def.deferralPlaceholders && Object.keys(def.deferralPlaceholders).length > 0
+      ? { deferralPlaceholders: structuredClone(def.deferralPlaceholders) }
+      : {}),
     hasContentVariants: Boolean(def.contentVariantsOperation),
     hasLinkResolve: Boolean(def.linkResolveOperation),
     hasShareImages: Boolean(def.shareImagesOperation),
