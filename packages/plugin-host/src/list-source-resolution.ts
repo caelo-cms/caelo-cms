@@ -64,6 +64,14 @@ export type ResolvedListSources = ReadonlyMap<
  */
 export const LIST_SOURCE_ANSWER_MAX_BYTES = 4 * 1024 * 1024;
 
+/**
+ * #1729 — pages one list-source call is asked about. An answer grows with
+ * its pages (a language switcher: a few hundred bytes per page), so a
+ * build asks in chunks that keep each answer far below its 4 MB cap; a
+ * preview asks about one page in one call.
+ */
+export const LIST_SOURCE_PAGES_PER_CALL = 1000;
+
 const entryIdSchema = z
   .string()
   .regex(
@@ -227,7 +235,7 @@ export async function sourceEntriesOf(
     if (isPluginDisabled(source.pluginSlug)) continue;
     // #1729 — one call per chunk of pages (render-points.ts): a preview asks
     // once, a 50 000-page build in a few calls below the wire line.
-    for (const chunk of chunkPageIds(pageIds)) {
+    for (const chunk of chunkPageIds(pageIds, { maxIds: LIST_SOURCE_PAGES_PER_CALL })) {
       if (!(await askChunk(source, chunk))) break;
     }
   }

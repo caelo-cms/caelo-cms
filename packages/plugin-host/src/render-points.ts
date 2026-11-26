@@ -97,20 +97,26 @@ export function renderPointDefinition<Op>(
 export const RENDER_POINT_CHUNK_BYTES = 512 * 1024;
 
 /**
- * Split `ids` into chunks whose JSON stays within `maxBytes`, in order.
- * An empty list gives no chunk (a point with nothing to ask makes no call).
+ * Split `ids` into chunks whose JSON stays within `maxBytes` and that hold
+ * at most `maxIds` ids, in order. A point whose answer grows with the
+ * pages it is asked about sets `maxIds`, so each call's answer stays under
+ * its cap however large the site (a list source: about a kilobyte per
+ * page, 4 MB per call). An empty list gives no chunk (a point with nothing
+ * to ask makes no call).
  */
 export function chunkPageIds(
   ids: ReadonlyArray<string>,
-  maxBytes: number = RENDER_POINT_CHUNK_BYTES,
+  opts: { readonly maxBytes?: number; readonly maxIds?: number } = {},
 ): string[][] {
+  const maxBytes = opts.maxBytes ?? RENDER_POINT_CHUNK_BYTES;
+  const maxIds = opts.maxIds ?? Number.POSITIVE_INFINITY;
   const chunks: string[][] = [];
   let chunk: string[] = [];
   let bytes = 2;
   for (const id of ids) {
     // A quoted id and its comma; ids are uuids, so one byte per character.
     const size = Buffer.byteLength(JSON.stringify(id)) + 1;
-    if (chunk.length > 0 && bytes + size > maxBytes) {
+    if (chunk.length > 0 && (bytes + size > maxBytes || chunk.length >= maxIds)) {
       chunks.push(chunk);
       chunk = [];
       bytes = 2;

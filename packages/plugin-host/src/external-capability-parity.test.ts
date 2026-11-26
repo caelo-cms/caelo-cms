@@ -115,6 +115,7 @@ async function shipped(slug: string): Promise<PluginManifest> {
 async function fixtureManifest(): Promise<PluginManifest> {
   const search = await shipped("site-search");
   const assistant = await shipped("site-assistant");
+  const consent = await shipped("consent-manager");
   return {
     ...search,
     ...assistant,
@@ -127,6 +128,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
     adminSchema: search.adminSchema,
     workers: search.workers,
     listTypes: search.listTypes,
+    listSources: consent.listSources,
     aiChatOperations: assistant.aiChatOperations,
     tier: 2,
   };
@@ -234,6 +236,30 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
     const listTypes = (await fixtureManifest()).listTypes;
     expect(listTypes?.length).toBeGreaterThan(0);
     expect(externalDeclarations({ ...probe, listTypes }).listTypes).toEqual(listTypes);
+  },
+  list_sources: async () => {
+    const listSources = (await fixtureManifest()).listSources;
+    expect(listSources?.length).toBeGreaterThan(0);
+    const manifest = { ...probe, listSources } as PluginManifest;
+    expect(externalDeclarations(manifest).listSources).toEqual(listSources);
+    // The reserved entry answers through the operation the definition names,
+    // as a render (preview budget) call.
+    const name = (listSources ?? [])[0]?.name as string;
+    expect(
+      await runSandbox({
+        source: `export default {slug:"parity-probe",version:"1.0.0",tier:2,listSourcesOperation:"entries",
+          operations:{entries:async(ctx,args)=>({sources:{[args.pageIds[0]]:{${name}:[{id:"a",values:{label:ctx.invocation.origin}}]}}})}};`,
+        manifest,
+        operation: "$listSources",
+        args: { pageIds: [ID] },
+        context: {
+          ...baseContext,
+          invocation: { origin: "render", actorId: ID, renderId: "pass" },
+        } as PluginContext,
+        authorize: async () => {},
+        kind: "preview",
+      }),
+    ).toEqual({ sources: { [ID]: { [name]: [{ id: "a", values: { label: "render" } }] } } });
   },
   batch_jobs: async () => {
     expect(

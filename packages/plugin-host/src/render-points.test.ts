@@ -160,6 +160,7 @@ describe("chunks and caps", () => {
     for (const c of chunks)
       expect(Buffer.byteLength(JSON.stringify(c))).toBeLessThanOrEqual(RENDER_POINT_CHUNK_BYTES);
     expect(chunkPageIds([])).toEqual([]);
+    expect(chunkPageIds(ids, { maxIds: 1000 }).length).toBe(50);
   });
 
   it("refuses an in-process answer over the point's cap with the same words", () => {

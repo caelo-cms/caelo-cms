@@ -160,6 +160,10 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // while it runs (`list_types.sync_plugin_types`), slugs prefixed with
     // the plugin's own.
     ...(manifest.listTypes ? { listTypes: manifest.listTypes } : {}),
+    // #1729 — the names a module iterates; the entries come from the
+    // `$listSources` entry (render-points.ts), checked like a shipped
+    // plugin's (plugin-values.ts).
+    ...(manifest.listSources ? { listSources: manifest.listSources } : {}),
     // #1332 — the reviewed contract, with the input schema compiled from
     // the manifest's JSON Schema: the host validates a visitor's body
     // before the sandbox ever sees it.
