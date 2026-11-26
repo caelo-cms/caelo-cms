@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { runOrder } from "../job-entry.js";
+import { parseJobOrder, runOrder } from "../job-entry.js";
 import {
   createJobReporter,
   deferAttempt,
@@ -175,5 +175,23 @@ describe("runOrder", () => {
     });
     expect(outcome).toBe("completed");
     expect(t.sent.map((e) => e.action)).toEqual(["start"]);
+  });
+});
+
+describe("parseJobOrder", () => {
+  it("#1764 — reads an order from an admin on another version without the fields it does not know, so it can defer", async () => {
+    // A newer admin's order: a field this job's schema has not heard of.
+    const newer = { ...ORDER, version: "0.13.0", futureField: { width: 5 } };
+    const order = parseJobOrder(newer, "0.12.0");
+    expect(order).toEqual({ ...ORDER, version: "0.13.0" });
+    const t = recording();
+    expect(await runOrder(order, t, { version: "0.12.0", main: async () => {} })).toBe("deferred");
+    const deferral = t.sent[0] as ReportEnvelope;
+    expect((deferral.payload as { reason: string }).reason).toContain("0.13.0");
+  });
+
+  it("refuses an unknown field from an admin on its own version: that is a malformed order", () => {
+    expect(() => parseJobOrder({ ...ORDER, futureField: 1 }, ORDER.version)).toThrow();
+    expect(parseJobOrder(ORDER, ORDER.version)).toEqual(ORDER);
   });
 });

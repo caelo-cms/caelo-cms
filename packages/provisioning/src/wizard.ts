@@ -45,6 +45,7 @@ import {
   scrubInstallProgress,
   writeMetadata,
 } from "./install-state.js";
+import { ownerEmailProblem, settleResumedOwnerEmail } from "./owner-email.js";
 import type { RunMode } from "./run-mode.js";
 import { selfCommand } from "./self-command.js";
 import { runGcpWizard } from "./wizards/gcp.js";
@@ -104,8 +105,9 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
 
   // 1. Resume-existing-install fast path. Before prompting for anything,
   //    scan ~/.caelo-* for installs and offer them as "resume X" options.
-  //    Picking an existing install carries domain + owner + projectId
-  //    over and skips re-prompting; "new install" falls through to the
+  //    Picking an existing install carries domain + projectId over and
+  //    asks only for the Owner email, prefilled (a typo there locks the
+  //    Owner out, owner-email.ts); "new install" falls through to the
   //    fresh-flow below.
   //
   //    v0.3.18 — previously the wizard re-asked for provider + domain +
@@ -136,6 +138,10 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
       ...(opts.projectId ? { projectId: opts.projectId } : {}),
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.billingAccountId ? { billingAccountId: opts.billingAccountId } : {}),
+      // An existing install's Owner email is settled there: a change decides
+      // whether its job runs again.
+      ...(opts.ownerEmail ? { ownerEmail: opts.ownerEmail } : {}),
+      nonInteractive: opts.nonInteractive ?? false,
     });
     if (prep.kind === "handled") {
       outro(bold("Done."));
@@ -164,10 +170,15 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
   if (resumeChoice) {
     provider = resumeChoice.provider;
     domain = resumeChoice.domain;
-    ownerEmail = resumeChoice.ownerEmail;
     projectIdHint = resumeChoice.projectId;
     installId = resumeChoice.installId;
     ensureInstallDir(installId);
+    // A resumed install may correct its Owner email (owner-email.ts). Job
+    // mode settled it in prepareJobModeInstall already; the picker is only
+    // offered without --owner-email, so here it is asked for, prefilled.
+    ownerEmail = jobModeExisting
+      ? resumeChoice.ownerEmail
+      : await settleResumedOwnerEmail(resumeChoice, { nonInteractive: false });
   } else {
     provider = jobModeProvider ?? opts.provider ?? (await pickProvider());
     domain = opts.domain ?? (await promptDomain());
@@ -193,13 +204,26 @@ export async function runWizard(opts: WizardOptions = {}): Promise<void> {
         cancel(`Aborted. Run with a different domain or remove ~/.caelo-${installId}/ first.`);
         process.exit(0);
       }
+      // The address typed (or passed) above is the one to continue with.
+      ownerEmail = await settleResumedOwnerEmail(existingForId, {
+        requested: ownerEmail,
+        nonInteractive: false,
+      });
     } else if (existingForId) {
       // Non-interactive re-run of an existing install: resume it. Keep its
       // metadata (createdAt, region, the recorded release in imageDigests)
       // so the re-run converges infrastructure instead of looking like a
       // new install that deploys `:latest`.
+      ownerEmail = await settleResumedOwnerEmail(existingForId, {
+        requested: ownerEmail,
+        nonInteractive: true,
+      });
       writeMetadata(installId, {
-        ...resumedMetadata(existingForId, { domain, ownerEmail, projectId: projectIdHint }),
+        ...resumedMetadata(readMetadata(installId) ?? existingForId, {
+          domain,
+          ownerEmail,
+          projectId: projectIdHint,
+        }),
         ...(opts.stagingDomain ? { stagingDomain } : {}),
       });
     } else {
@@ -463,17 +487,13 @@ async function promptOwnerEmail(): Promise<string> {
   const value = await text({
     message: "Owner email (you'll be the IAP allowlisted Owner; can add more later)",
     placeholder: "you@example.com",
-    validate: (v) => {
-      if (!v || v.length === 0) return "Email is required";
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return "Looks like an invalid email";
-      return undefined;
-    },
+    validate: (v) => ownerEmailProblem(v ?? ""),
   });
   if (isCancel(value)) {
     cancel("Cancelled.");
     process.exit(0);
   }
-  return value as string;
+  return (value as string).trim();
 }
 
 // Re-export the spinner factory so per-provider wizards use a consistent UX.

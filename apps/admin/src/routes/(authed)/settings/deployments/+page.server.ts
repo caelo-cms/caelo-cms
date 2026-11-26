@@ -3,6 +3,7 @@
 import { describeError, executeBuild } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail, redirect } from "@sveltejs/kit";
+import { loadCloudCapacity } from "#lib/server/cloud-capacity-view.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { publishLiveFailure } from "#lib/server/publish-live-failure.js";
@@ -21,6 +22,8 @@ export const load: PageServerLoad = async ({ locals }) => {
     execute(registry, adapter, locals.ctx, "deploy.stage_status", { limit: 20 }),
   ]);
   return {
+    // #1764 — streamed: the quota read is a call to Google, the rest is not.
+    cloudCapacity: loadCloudCapacity(),
     ...stageStatusOf(stage),
     // #553 — a production build publishes what is staged, so it shows (and
     // obeys) the staged build's quality gate.

@@ -242,8 +242,9 @@ function collectionIndexJob(place: ReportingJobPlace): ReportingKindJob {
     ],
     cpu: "2",
     memory: "4Gi",
-    // admin-core JOB_TIMING.collection_index.maxRunSeconds.
-    taskTimeoutSeconds: 3600,
+    // admin-core JOB_TIMING.collection_index.maxRunSeconds: a large index
+    // on the few tasks a small CPU quota leaves runs for hours.
+    taskTimeoutSeconds: 6 * 3600,
     readBuckets: [
       { bucket: store, why: "it reads the Stage's change files and the previous releases" },
     ],

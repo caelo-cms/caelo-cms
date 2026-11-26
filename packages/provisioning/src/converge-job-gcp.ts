@@ -42,7 +42,7 @@ import {
 } from "./install-state.js";
 import { jobExecutionNameError, selfHandoverDeps } from "./job-handover-gcp.js";
 import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
-import { installIapAllowlist } from "./operator-access.js";
+import { deployedOwnerMismatch } from "./operator-access.js";
 import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
 import { fetchVerifiedReleaseManifest, manifestServiceImages } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
@@ -56,53 +56,8 @@ import { upgradeGcpInstallOutcome } from "./upgrade/upgrade.js";
 import { gcloudIamTester, healthProbeFor, type UpgraderPlacement } from "./upgrader-gcp.js";
 import type { JobLog } from "./upgrader-reporter.js";
 
-/** The operator-access job's env var listing the install's fixed IAP members. */
-const STATIC_MEMBERS_ENV = "CAELO_OPERATOR_ACCESS_STATIC_MEMBERS";
-
 /** The admin env var naming the public site (stack-contract.ts adminEnvContract). */
 const SITE_URL_ENV = "CAELO_SITE_URL";
-
-/**
- * Why install.json's Owner email does not match the IAP members the
- * deployed operator-access job admits (operator-access.ts deploys them as
- * `installIapAllowlist(ownerEmail)`), or null when it does. Read from
- * `gcloud run jobs describe --format=json` (v1 or v2 shape).
- */
-export function deployedOwnerMismatch(describeJson: string, ownerEmail: string): string | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(describeJson);
-  } catch {
-    return "the operator-access job's description is not JSON";
-  }
-  const p = parsed as {
-    spec?: {
-      template?: {
-        spec?: {
-          template?: { spec?: { containers?: { env?: { name?: string; value?: string }[] }[] } };
-        };
-      };
-    };
-    template?: { template?: { containers?: { env?: { name?: string; value?: string }[] }[] } };
-  };
-  const env =
-    p.spec?.template?.spec?.template?.spec?.containers?.[0]?.env ??
-    p.template?.template?.containers?.[0]?.env ??
-    [];
-  const deployed = env.find((e) => e.name === STATIC_MEMBERS_ENV)?.value;
-  if (deployed === undefined) return `the operator-access job sets no ${STATIC_MEMBERS_ENV}`;
-  const want = installIapAllowlist(ownerEmail).join(",");
-  const have = deployed
-    .split(",")
-    .map((m) => m.trim().toLowerCase())
-    .filter(Boolean)
-    .sort()
-    .join(",");
-  if (have !== [...installIapAllowlist(ownerEmail)].sort().join(",")) {
-    return `the admin admits ${deployed || "nobody"}, the records would make it ${want}`;
-  }
-  return null;
-}
 
 /**
  * Why install.json's site does not match what the admin serves today, or

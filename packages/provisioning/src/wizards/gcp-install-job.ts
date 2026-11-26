@@ -17,6 +17,7 @@ import { formatDnsRecordGroups, groupDnsRecords } from "../dns/groups.js";
 import { activeAccount, gcloud } from "../gcloud.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { realSleep } from "../gcloud-retry.js";
+import { GCP_STACK_ENV } from "../gcp-names.js";
 import {
   acquireLaunchLock,
   claimInstallJobStatus,
@@ -38,6 +39,7 @@ import {
 } from "../install-job.js";
 import {
   currentMetadata,
+  forgetCachedState,
   type InstallMetadata,
   installRoot,
   readLocalMetadata,
@@ -48,6 +50,8 @@ import {
   installRecordFromManifest,
   recordLaunchRelease,
 } from "../install-version.js";
+import { readDeployedOwnerMismatch } from "../operator-access.js";
+import { recordOwnerEmail, resolveResumedOwnerEmail, sameOwnerEmail } from "../owner-email.js";
 import { issueOwnerSetup } from "../owner-setup-token.js";
 import { fetchVerifiedReleaseManifest } from "../release-manifest.js";
 import { selfCommand } from "../self-command.js";
@@ -75,25 +79,47 @@ const realTailDeps: TailDeps = {
   intervalMs: 5_000,
 };
 
-/** Read the bucket's status and the execution's live state, then decide. */
-async function decide(
+/**
+ * Read the bucket's status and the execution's live state, then decide
+ * whether the install job runs (again), is followed, or is done.
+ *
+ * A finished install is done only while it still is what install.json
+ * records: its setup link in Secret Manager, and the Owner email install.json
+ * names admitted by the deployed operator-access job. A corrected Owner email
+ * (owner-email.ts) is applied by the job, so it runs again until the address
+ * is deployed — also after a run that recorded the change and stopped before
+ * starting the job.
+ *
+ * @param target.ownerEmail - install.json's Owner email
+ */
+export async function decideInstallRun(
   run: GcloudRunner,
   syncRun: SyncGcloud,
-  target: { projectId: string; region: string },
+  target: { projectId: string; region: string; ownerEmail: string },
 ): Promise<InstallJobDecision> {
-  const status = readInstallJobStatus(opsBucketName(target.projectId), syncRun);
+  const { projectId, region } = target;
+  const status = readInstallJobStatus(opsBucketName(projectId), syncRun);
   const live =
     status && status.state === "running"
-      ? await describeExecution(run, { ...target, execution: status.execution })
+      ? await describeExecution(run, { projectId, region, execution: status.execution })
       : null;
   const decision = decideInstallJob(status, live);
+  if (decision.kind !== "done") return decision;
   // A finished install whose setup link is gone from Secret Manager (deleted
   // or disabled since) runs again: the job's last step stores it anew.
-  if (decision.kind === "done" && (await readSetupLink(run, target.projectId)) === null) {
+  if ((await readSetupLink(run, projectId)) === null) {
     return {
       kind: "start",
       previous: decision.status,
       why: `the install finished, but its Owner setup link is no longer in Secret Manager (${INSTALL_SETUP_LINK_SECRET}); a new run stores it again`,
+    };
+  }
+  const owner = await readDeployedOwnerMismatch(run, { ...target, env: GCP_STACK_ENV });
+  if (owner !== null) {
+    return {
+      kind: "start",
+      previous: decision.status,
+      why: `the Owner email ${target.ownerEmail} is not applied yet (${owner}); a new run applies it`,
     };
   }
   return decision;
@@ -313,7 +339,8 @@ export async function launchInstallJob(opts: {
   const { installId, projectId, region } = opts;
   const meta = readMetadata(installId);
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
-  const decision = await decide(gcloud, realSyncGcloud, { projectId, region });
+  const target = { projectId, region, ownerEmail: meta.ownerEmail };
+  const decision = await decideInstallRun(gcloud, realSyncGcloud, target);
   if (decision.kind === "attach") {
     announceHandoff(projectId);
     await followToTheEnd(meta, decision.status.execution);
@@ -324,7 +351,7 @@ export async function launchInstallJob(opts: {
     return;
   }
   if (decision.previous) {
-    log.warn(yellow(`An earlier install run did not finish: ${decision.why}.`));
+    log.warn(yellow(`The install needs another run: ${decision.why}.`));
     if (!opts.nonInteractive) {
       const again = await confirm({
         message: "Start the install job again? It resumes where the last run stopped.",
@@ -368,7 +395,7 @@ export async function launchInstallJob(opts: {
   }
   let execution: string;
   try {
-    const now = await decide(gcloud, realSyncGcloud, { projectId, region });
+    const now = await decideInstallRun(gcloud, realSyncGcloud, target);
     if (now.kind !== "start") {
       release();
       if (now.kind === "attach") {
@@ -466,11 +493,17 @@ export type JobModePreparation =
  *   the wizard's own check.
  * @param opts.billingAccountId - `--billing-account` (#1580): refused the
  *   same way when the project is linked to another billing account.
+ * @param opts.ownerEmail - `--owner-email`: corrects an existing install's
+ *   Owner email (owner-email.ts); without it the operator is asked, with the
+ *   recorded address prefilled. A change runs the job again, which applies
+ *   it; while a run is in progress it is refused.
  */
 export async function prepareJobModeInstall(opts: {
   projectId?: string;
   version?: string;
   billingAccountId?: string;
+  ownerEmail?: string;
+  nonInteractive?: boolean;
 }): Promise<JobModePreparation> {
   const account = await activeAccount();
   if (!account) {
@@ -502,10 +535,20 @@ export async function prepareJobModeInstall(opts: {
   }
   const local = readLocalMetadata(attached.installId);
   if (!local) throw new Error(`attach wrote no install.json for ${attached.installId}`);
-  const meta = currentMetadata(local);
+  let meta = currentMetadata(local);
   log.success(`Found install ${bold(meta.installId)} (${meta.domain}) in ${projectId}.`);
-  if (!meta.region) return { kind: "existing", meta };
-  const decision = await decide(gcloud, realSyncGcloud, { projectId, region: meta.region });
+  const owner = { requested: opts.ownerEmail, nonInteractive: opts.nonInteractive ?? false };
+  // No region recorded: the bootstrap stopped before it, so no job ever ran.
+  if (!meta.region) {
+    const changed = await resolveResumedOwnerEmail(meta, owner);
+    return { kind: "existing", meta: changed ? recordOwnerEmail(meta.installId, changed) : meta };
+  }
+  const region = meta.region;
+  let decision = await decideInstallRun(gcloud, realSyncGcloud, {
+    projectId,
+    region,
+    ownerEmail: meta.ownerEmail,
+  });
   if (decision.kind === "attach" || decision.kind === "done") {
     const problem =
       attachedInstallVersionProblem(opts.version, meta.releaseVersion) ??
@@ -516,15 +559,90 @@ export async function prepareJobModeInstall(opts: {
     }
   }
   if (decision.kind === "attach") {
+    // Followed without asking: a running job applies the address it read.
+    if (opts.ownerEmail !== undefined && !sameOwnerEmail(opts.ownerEmail, meta.ownerEmail)) {
+      refuseOwnerChangeDuringRun(meta, opts.ownerEmail, decision.status.execution);
+    }
     announceHandoff(projectId);
     await followToTheEnd(meta, decision.status.execution);
     return { kind: "handled" };
   }
+  // A finished install too: a wrong address only shows once the install is
+  // done and nobody gets through its sign-in.
+  const changed = await resolveResumedOwnerEmail(meta, owner);
+  if (changed) ({ meta, decision } = await recordOwnerEmailForJob(meta, changed, region));
   if (decision.kind === "done") {
     await showResult(meta);
     return { kind: "handled" };
   }
   return { kind: "existing", meta };
+}
+
+/**
+ * Stop a change of Owner email while an install run is in progress: the job
+ * read install.json when it started, applies the address it read and writes
+ * install.json back when it records its release, which would undo the
+ * change.
+ */
+function refuseOwnerChangeDuringRun(
+  meta: InstallMetadata,
+  requested: string,
+  execution: string,
+): never {
+  cancel(
+    `An install run is in progress (execution ${execution}); it applies the Owner email it started with, ${meta.ownerEmail}. Nothing was changed. Wait until it has finished (${selfCommand("status", "--project", meta.projectId ?? "<gcp-project-id>")} shows where it stands), then run the installer again with --owner-email ${requested}.`,
+  );
+  process.exit(1);
+}
+
+/**
+ * Record a corrected Owner email of an install the job may be running for,
+ * under the job's launch lock so that no run starts in between (see
+ * {@link refuseOwnerChangeDuringRun}), and decide again: the finished
+ * install now needs a run that applies the address.
+ *
+ * @returns the metadata as now recorded and the decision after the change
+ */
+async function recordOwnerEmailForJob(
+  meta: InstallMetadata,
+  ownerEmail: string,
+  region: string,
+): Promise<{ meta: InstallMetadata; decision: InstallJobDecision }> {
+  const projectId = meta.projectId ?? "";
+  let release: () => void;
+  try {
+    release = acquireLaunchLock(opsBucketName(projectId), realSyncGcloud);
+  } catch (e) {
+    cancel(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  }
+  let outcome:
+    | { kind: "running"; execution: string }
+    | { kind: "recorded"; meta: InstallMetadata; decision: InstallJobDecision };
+  try {
+    const now = await decideInstallRun(gcloud, realSyncGcloud, {
+      projectId,
+      region,
+      ownerEmail: meta.ownerEmail,
+    });
+    if (now.kind === "attach") {
+      outcome = { kind: "running", execution: now.status.execution };
+    } else {
+      // Over install.json as the bucket holds it now: a run may have
+      // finished and recorded its release since this process read it.
+      forgetCachedState(meta.installId);
+      const recorded = recordOwnerEmail(meta.installId, ownerEmail);
+      outcome = {
+        kind: "recorded",
+        meta: recorded,
+        decision: await decideInstallRun(gcloud, realSyncGcloud, { projectId, region, ownerEmail }),
+      };
+    }
+  } finally {
+    release();
+  }
+  if (outcome.kind === "running") refuseOwnerChangeDuringRun(meta, ownerEmail, outcome.execution);
+  return outcome;
 }
 
 /** The command that follows or resumes the install in `meta`'s project, on any machine. */

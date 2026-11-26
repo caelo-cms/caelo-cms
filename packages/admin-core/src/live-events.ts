@@ -29,9 +29,10 @@
  * What it deliberately is not: there is no timer here. A waiter costs one
  * pending promise and one deadline. The fan-out holds one LISTEN connection
  * per instance (`LISTEN_CONNECTIONS_PER_INSTANCE`) and reads the journal only
- * when woken. On a request-billed instance (`cpuIdle`) a wake-up is handled
- * while the instance serves requests, which is when an editor's stream or
- * wait is open.
+ * when woken AND someone in the process listens (#1749): a stream, a wait or
+ * a server-side entity listener. Those are open requests, so on a
+ * request-billed instance (`cpuIdle`) the read runs while the instance has
+ * its CPU; a wake-up with nobody listening leaves the changes to the cursor.
  */
 
 import {
@@ -251,7 +252,18 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
   let again = false;
 
   async function readOnce(): Promise<void> {
+    // #1749 — every write on any instance wakes every instance. With nobody
+    // in this process to hear what the read finds, it reads nothing: the
+    // cursor keeps the changes, and the first wake-up after someone listens
+    // reads them. An idle instance (request-billed CPU, no request open)
+    // used to open a connection for the read on a sliver of CPU, for
+    // nobody; on searchVIU that read ran into the acquire deadline and was
+    // logged as an exhausted pool 18 s before the instance shut down.
+    if (cursor !== null && listeners.size === 0 && entityListeners.size === 0) return;
     const changes: JournalChange[] = [];
+    // Whether `changes` holds every row up to the cursor the read moved to:
+    // only then do the entity listeners get them.
+    let complete = true;
     await adapter.withAdminTransaction(
       SYSTEM_CTX,
       async (tx) => {
@@ -262,12 +274,18 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
         let target: string | null = null;
         let after: [string, string, string] | null = null;
         for (;;) {
+          // A tab hears only `draft`, which one row is enough for: without
+          // a server-side listener for the rows, a backlog (an instance
+          // nobody listened on for hours) costs one row, not every page.
+          // Asked per page, not once per read: a listener that subscribed
+          // while the read waited for its connection gets every row.
+          const rowsWanted = entityListeners.size > 0;
           const page = await readChanges(tx, {
             cursor,
             target,
             after,
             filter: DRAFT_FILTER,
-            limit: DRAFT_PAGE,
+            limit: rowsWanted ? DRAFT_PAGE : 1,
           });
           if (page.needsRebuild) {
             cursor = await currentJournalCursor(tx);
@@ -279,6 +297,14 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
             cursor = page.target;
             return;
           }
+          // Skipping the rest moves the cursor past rows nobody reads, so
+          // it is done only while no entity listener would need them; one
+          // that subscribed meanwhile gets the read paged to its end.
+          if (entityListeners.size === 0) {
+            cursor = page.target;
+            complete = false;
+            return;
+          }
           target = page.target;
           const last = page.changes.at(-1);
           after = last ? [last.xid, last.table, last.rowId] : after;
@@ -288,6 +314,9 @@ export async function startLiveFanOut(opts: LiveFanOutOptions): Promise<LiveFanO
     );
     if (changes.length === 0) return;
     publishLiveTopics(["draft"]);
+    // A listener that subscribed after the read skipped rows gets nothing
+    // of it: the skipped rows came before it, and a part would read as all.
+    if (!complete) return;
     for (const listener of entityListeners) {
       try {
         listener(changes);

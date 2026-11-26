@@ -507,3 +507,193 @@ describe("existingCandidates — every gcloud wording for a missing resource", (
     expect(existing).toEqual([]);
   });
 });
+
+/**
+ * A resumed install whose first run stopped before its Cloud SQL instance
+ * existed. The stack below is what the gcp and gcp-firebase stacks declare
+ * around the database, in dependency order. `pulumiUpGcp` previews and
+ * adopts only when the stack's state holds resources: the first run `up`s an
+ * empty stack and stops at the instance (a failed peering or instance
+ * create, a killed run); the second previews what is left, adopts, and `up`s.
+ */
+describe("a resumed install whose first run stopped before the Cloud SQL instance existed", () => {
+  const INSTANCE = "caelo-production-pg-5e1f0a2";
+  const INSTANCE_TYPE = "gcp:sql/databaseInstance:DatabaseInstance";
+  const DATABASE = "gcp:sql/database:Database";
+  const USER = "gcp:sql/user:User";
+  const declared: readonly PlannedStep[] = [
+    step({ type: SA, name: "caelo-production-gateway-sa", inputs: { accountId: "caelo-gw" } }),
+    step({ type: "gcp:compute/network:Network", name: "caelo-production-vpc", inputs: {} }),
+    // Auto-named: the preview carries the name the create will use.
+    step({ type: INSTANCE_TYPE, name: "caelo-production-pg", inputs: { name: INSTANCE } }),
+    step({
+      type: DATABASE,
+      name: "caelo-production-cms-admin",
+      inputs: { instance: INSTANCE, name: "cms_admin" },
+    }),
+    step({
+      type: DATABASE,
+      name: "caelo-production-cms-public-staging",
+      inputs: { instance: INSTANCE, name: "cms_public_staging" },
+    }),
+    step({
+      type: USER,
+      name: "caelo-production-public-staging-user",
+      inputs: { instance: INSTANCE, name: "public_staging_role", password: "[secret]" },
+    }),
+  ];
+  const input = (s: PlannedStep, key: string) => String(s.inputs?.[key]);
+
+  /** The project as Google Cloud answers about it; every call recorded. */
+  function fakeProject() {
+    const accounts = new Set<string>();
+    /** Instance name → its `databases:<name>` and `users:<name>`. */
+    const instances = new Map<string, Set<string>>();
+    const calls: string[][] = [];
+    const run: GcloudRunner = async (args) => {
+      calls.push(args);
+      const verb = args.slice(0, 3).join(" ");
+      if (verb === "iam service-accounts describe") {
+        return accounts.has(args[3] ?? "")
+          ? ok(args[3])
+          : fail(
+              "ERROR: (gcloud.iam.service-accounts.describe) NOT_FOUND: Unknown service account.",
+            );
+      }
+      if (verb === "sql instances list") return ok([...instances.keys()].join("\n"));
+      if (verb === "sql databases describe" || verb === "sql users describe") {
+        const on = instances.get(args.find((a) => a.startsWith("--instance="))?.slice(11) ?? "");
+        // What the Cloud SQL Admin API answers for anything on an instance
+        // that does not exist: 403, not 404.
+        if (!on) {
+          return fail(
+            `ERROR: (gcloud.sql.${args[1]}.describe) HTTPError 403: The client is not authorized to make this request.`,
+          );
+        }
+        return on.has(`${args[1]}:${args[3]}`)
+          ? ok(args[3])
+          : fail(`ERROR: (gcloud.sql.${args[1]}.describe) HTTPError 404: Not Found`);
+      }
+      return fail(`unexpected gcloud ${args.join(" ")}`);
+    };
+    return { run, calls, accounts, instances };
+  }
+
+  /** The stack: its state, a preview of what is left, and an `up` that can stop at a resource. */
+  function fakeStack(project: ReturnType<typeof fakeProject>) {
+    const state = new Set<string>();
+    const created: string[] = [];
+    const preview = async (): Promise<readonly PlannedStep[]> =>
+      declared.filter((s) => !state.has(s.urn));
+    const up = (stopAt?: string) => {
+      for (const s of declared) {
+        if (state.has(s.urn)) continue;
+        if (s.name === stopAt) throw new Error(`creating ${s.name} failed`);
+        if (s.type === SA) {
+          project.accounts.add(`${input(s, "accountId")}@${PROJECT}.iam.gserviceaccount.com`);
+        } else if (s.type === INSTANCE_TYPE) {
+          project.instances.set(input(s, "name"), new Set());
+        } else if (s.type === DATABASE || s.type === USER) {
+          const on = project.instances.get(input(s, "instance"));
+          if (!on) throw new Error(`${s.name}: its instance does not exist`);
+          on.add(`${s.type === DATABASE ? "databases" : "users"}:${input(s, "name")}`);
+        }
+        state.add(s.urn);
+        created.push(s.name);
+      }
+    };
+    const importResources = async (cs: readonly AdoptionCandidate[]) => {
+      for (const c of cs) state.add(c.step.urn);
+    };
+    return { state, created, preview, up, importResources };
+  }
+
+  /** One installer pass in pulumiUpGcp's order. */
+  async function installerPass(
+    project: ReturnType<typeof fakeProject>,
+    stack: ReturnType<typeof fakeStack>,
+    stopAt?: string,
+  ) {
+    const adopted =
+      stack.state.size > 0
+        ? (
+            await adoptExistingResources(await stack.preview(), {
+              projectId: PROJECT,
+              gcloud: project.run,
+              preview: stack.preview,
+              importResources: stack.importResources,
+            })
+          ).adopted
+        : [];
+    stack.up(stopAt);
+    return adopted;
+  }
+
+  it("the second run creates the instance and everything on it instead of stopping at Cloud SQL's 403", async () => {
+    const project = fakeProject();
+    const stack = fakeStack(project);
+    await expect(installerPass(project, stack, "caelo-production-pg")).rejects.toThrow(
+      "creating caelo-production-pg failed",
+    );
+    expect(project.instances.size).toBe(0);
+    expect(stack.created).toEqual(["caelo-production-gateway-sa", "caelo-production-vpc"]);
+
+    const adopted = await installerPass(project, stack);
+    expect(adopted).toEqual([]);
+    expect([...(project.instances.get(INSTANCE) ?? [])].sort()).toEqual([
+      "databases:cms_admin",
+      "databases:cms_public_staging",
+      "users:public_staging_role",
+    ]);
+    // Nothing on the missing instance was asked about: the instances were
+    // listed once, and none of them was it.
+    const sql = project.calls.filter((a) => a[0] === "sql").map((a) => a.slice(0, 3).join(" "));
+    expect(sql).toEqual(["sql instances list"]);
+  });
+
+  it("the staging database and login a converge made on an existing instance are still adopted (#1329)", async () => {
+    const project = fakeProject();
+    const stack = fakeStack(project);
+    await expect(
+      installerPass(project, stack, "caelo-production-cms-public-staging"),
+    ).rejects.toThrow("failed");
+    // Made since by `upgrade` through gcloud (staging-database.ts).
+    project.instances.get(INSTANCE)?.add("databases:cms_public_staging");
+    project.instances.get(INSTANCE)?.add("users:public_staging_role");
+
+    const adopted = await installerPass(project, stack);
+    expect(adopted.map((c) => c.display)).toEqual([
+      `cms_public_staging (${INSTANCE})`,
+      `public_staging_role (${INSTANCE})`,
+    ]);
+    expect(stack.created).not.toContain("caelo-production-cms-public-staging");
+  });
+
+  it("a permission 403 on listing the instances stays loud, with the next step", async () => {
+    const candidates = adoptionCandidates(declared, PROJECT);
+    const run: GcloudRunner = async (args) =>
+      args.slice(0, 3).join(" ") === "sql instances list"
+        ? fail(
+            "ERROR: (gcloud.sql.instances.list) HTTPError 403: The client is not authorized to make this request.",
+          )
+        : fail("ERROR: NOT_FOUND");
+    const probe = existingCandidates(candidates, run);
+    await expect(probe).rejects.toBeInstanceOf(AdoptionError);
+    await expect(probe).rejects.toThrow(
+      `could not list the Cloud SQL instances of ${PROJECT} (gcloud: ERROR: (gcloud.sql.instances.list) HTTPError 403`,
+    );
+    await expect(probe).rejects.toThrow("needs cloudsql.instances.list on the project");
+  });
+
+  it("a 403 about a database on an instance that exists stays loud", async () => {
+    const project = fakeProject();
+    project.instances.set(INSTANCE, new Set());
+    const run: GcloudRunner = async (args) =>
+      args[0] === "sql" && args[2] === "describe"
+        ? fail("ERROR: (gcloud.sql.databases.describe) HTTPError 403: PERMISSION_DENIED")
+        : project.run(args);
+    await expect(existingCandidates(adoptionCandidates(declared, PROJECT), run)).rejects.toThrow(
+      `could not tell whether the Cloud SQL database cms_public_staging (${INSTANCE}) exists`,
+    );
+  });
+});

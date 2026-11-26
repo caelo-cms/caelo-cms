@@ -3,6 +3,7 @@
   import { describeStageRun, type StageStatusRun } from "@caelo-cms/shared";
   import { Rocket } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
+  import CloudCapacityCard from "#lib/components/CloudCapacityCard.svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
   import { coalescedRefresh } from "#lib/components/edit/coalesced-refresh.js";
   import { Badge, type BadgeVariant } from "#lib/components/ui/badge/index.js";
@@ -281,4 +282,6 @@
       {/if}
     </CardContent>
   </Card>
+
+  <CloudCapacityCard capacity={data.cloudCapacity} />
 </div>
