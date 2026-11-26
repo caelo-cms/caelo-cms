@@ -350,6 +350,41 @@ describe("#1752 title templates and origins", () => {
     expect(seen.pageType.seo?.ogType).toBe("profile");
   });
 
+  it("a replacement that takes over another chat's pending SEO keeps it (review #1771)", async () => {
+    const experiment = async (title: string): Promise<ExecutionContext> => {
+      const v = await op<{ chatSessionId: string; chatBranchId: string }>(
+        SYS,
+        "chat.create_session",
+        { title: `${PFX}${title}`, isolation: "experiment" },
+      );
+      return { ...AI, chatBranchId: v.chatBranchId, chatTaskId: v.chatSessionId };
+    };
+    const a = await experiment("seo-a");
+    const b = await experiment("seo-b");
+    await op(a, "page_types.set_seo_many", {
+      pageTypes: [{ pageType: `${PFX}news`, titleTemplate: "{page_title} – from chat A" }],
+    });
+    await op(b, "page_types.upsert_many", {
+      pageTypes: [
+        {
+          slug: `${PFX}news`,
+          name: "News",
+          purpose: "Purpose written in chat B.",
+          collection: true,
+          templates: [templateId],
+          defaultTemplate: templateId,
+        },
+      ],
+    });
+    const seen = await op<{ pageType: { purpose: string; seo?: { titleTemplate?: string } } }>(
+      b,
+      "page_types.get",
+      { slug: `${PFX}news` },
+    );
+    expect(seen.pageType.purpose).toBe("Purpose written in chat B.");
+    expect(seen.pageType.seo?.titleTemplate).toBe("{page_title} – from chat A");
+  });
+
   it("a chat's SEO title is draft state, live with the merge", async () => {
     const p = await page("drafted");
     const v = await op<{ chatSessionId: string; chatBranchId: string }>(
