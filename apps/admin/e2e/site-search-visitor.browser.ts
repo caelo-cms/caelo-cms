@@ -81,6 +81,63 @@ test("a typo is corrected", async ({ page }) => {
   );
 });
 
+// #1707 — the operator keeps search terms out of addresses: the form in hash
+// mode opens `#q=…`, which no request carries, and the results page follows
+// the fragment without a reload.
+test("a hash-mode search keeps the query out of every page request and follows #q= without a reload", async ({
+  page,
+}) => {
+  await page.goto(`${origin}/start-hash/`);
+  const input = page.getByRole("combobox", { name: "Suche" });
+  await input.fill("Rabatte");
+  await input.press("Enter");
+  await expect(page).toHaveURL(`${origin}/suche-hash/#q=Rabatte`);
+  const results = page.locator("[data-caelo-search-results]");
+  await expect(results.locator("[data-caelo-search-list] li").first()).toContainText("Preise");
+  await expect(results).toHaveAttribute("data-caelo-search-state", "done");
+  await expect(results).not.toHaveAttribute("aria-busy", "true");
+  // The field shows the query it searched.
+  await expect(input).toHaveValue("Rabatte");
+
+  // A new search on the results page: only the fragment changes. The page
+  // stays the same document, announces the start, and shows the new hits.
+  await page.evaluate(() => {
+    const w = window as unknown as { __sameDocument: boolean; __started: string[] };
+    w.__sameDocument = true;
+    w.__started = [];
+    document.addEventListener("caelo-search-start", (e) => {
+      w.__started.push((e as CustomEvent<{ query: string }>).detail.query);
+    });
+  });
+  await input.fill("Kontkt");
+  await input.press("Enter");
+  await expect(page).toHaveURL(`${origin}/suche-hash/#q=Kontkt`);
+  await expect(results.locator("[data-caelo-search-list] li").first()).toContainText("Kontakt");
+  expect(
+    await page.evaluate(() => {
+      const w = window as unknown as { __sameDocument?: boolean; __started?: string[] };
+      return { same: w.__sameDocument === true, started: w.__started };
+    }),
+  ).toEqual({ same: true, started: ["Kontkt"] });
+
+  // Back to the first query: the fragment changes again, the results follow.
+  await page.goBack();
+  await expect(page).toHaveURL(`${origin}/suche-hash/#q=Rabatte`);
+  await expect(results.locator("[data-caelo-search-list] li").first()).toContainText("Preise");
+  // A skip link is no search: the results stay.
+  await page.getByRole("link", { name: "Zum Inhalt" }).click();
+  await expect(page).toHaveURL(`${origin}/suche-hash/#main`);
+  await expect(results.locator("[data-caelo-search-list] li").first()).toContainText("Preise");
+
+  // The server saw the pages, never a query (the ?q= tests above use /suche/).
+  const seen = (await (await page.request.get(`${origin}/__test/requests`)).json()) as string[];
+  const hashPages = seen.filter(
+    (r) => r.startsWith("/suche-hash/") || r.startsWith("/start-hash/"),
+  );
+  expect(hashPages).toContain("/suche-hash/");
+  expect(hashPages.filter((r) => r.includes("?"))).toEqual([]);
+});
+
 test("behind a gate that admits only the operator's cookie, the search sends the page's own", async ({
   page,
   context,
