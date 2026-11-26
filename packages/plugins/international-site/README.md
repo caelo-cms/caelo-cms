@@ -146,8 +146,11 @@ may decide on such a text, so the rules are stricter than a menu label's:
 - Skill `international-qa` says how to fix each finding.
 - `language_links` is a list source (`listSources`): entries
   `{ href: link, label, locale, is_current: boolean }`, id = locale code.
-- Every URL the plugin emits (hreflang, sitemap alternates, switcher
-  links) is absolute and comes from core's `pages.resolve_public_urls`.
+- hreflang and sitemap alternates name each version by its page id;
+  core builds their URLs with the builder that makes the page's
+  canonical (#1729), so the plugin writes no URL into a head. Every
+  switcher link it emits is absolute and comes from core's
+  `pages.resolve_public_urls`.
   Inside a static build that op builds on the build's origin
   (`PluginInvocation.siteBaseUrl`), so a Stage on its own staging host
   links staging, exactly like its canonical (#650). A host-strategy
