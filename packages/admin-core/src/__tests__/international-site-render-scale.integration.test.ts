@@ -332,9 +332,14 @@ describe("#1213 — international-site render hooks at scale", () => {
     // and the variant rows re-read by every hook, two whole-site
     // pages.list), 14 since. #1269 adds the host's one journal check of the
     // kept link-resolve answers, and a cold refill reads in a pass of its
-    // own (so it is read after the mark it is kept with): 17. A warm pass
-    // asks the plugin nothing. A new read in a render hook shows up here.
-    expect(smallPreview.calls.length).toBeLessThanOrEqual(17);
+    // own (so it is read after the mark it is kept with): 17. #1729 — core
+    // builds the URLs of the pages hreflang names: its lookup of them
+    // (`pages.public_url_pages`) and their URL annotations in the pass (the
+    // switcher's URLs are read inside the plugin's own core call, under an
+    // id of their own): 19. A warm pass asks the plugin nothing. A new read
+    // in a render hook shows up here.
+    expect(smallPreview.calls.length).toBeLessThanOrEqual(19);
+    expect(smallPreview.calls).toContain("system:pages.public_url_pages");
     expect(smallPreview.calls).toContain("system:plugin_changes.check_mark");
     expect(smallPreview.calls).not.toContain("plugin:pages.list");
   });

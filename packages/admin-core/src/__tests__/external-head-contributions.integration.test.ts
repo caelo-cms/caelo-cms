@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   activateApprovedExternalPlugin,
+  type BuildPluginServices,
   bootstrap,
   localBuildPluginServices,
   resetPluginHost,
@@ -292,6 +293,27 @@ function contributedBlock(html: string): string {
   ).join("\n");
 }
 
+/**
+ * The build's plugin services as the static generator reaches them. The
+ * generator is a subprocess: it holds its own transaction and asks the
+ * admin's plugin host over its stdio, where no transaction is held, so a
+ * sandboxed plugin may answer (#1254). In process, the SEO pass's
+ * transaction would hold the chain, so the two answers it asks for are taken
+ * first, by the same calls.
+ */
+async function buildServices(pageIds: string[]): Promise<BuildPluginServices> {
+  const contributions = await localBuildPluginServices.collectContributions(pageIds, {
+    siteBaseUrl: BASE,
+    pageUrlStyle: "directory",
+  });
+  const shareImages = await localBuildPluginServices.resolveShareImages(pageIds);
+  return {
+    ...localBuildPluginServices,
+    collectContributions: async () => contributions,
+    resolveShareImages: async () => shareImages,
+  };
+}
+
 const refused = (point: string, field: string, rule: string) =>
   `plugin-value-refused:${SLUG}.${point}.${field}:${rule}`;
 
@@ -331,10 +353,11 @@ it("preview and build emit the same checked head, URLs built by core, refusals r
     pageSlug: `${PFX}-${i === 0 ? "en" : "de"}`,
     html: "<html><head><title>x</title></head><body>b</body></html>",
   }));
+  const plugins = await buildServices(built.map((b) => b.pageId));
   const { renderFailures } = await adapter.withAdminTransaction(system, (tx) =>
     runSeoPass({
       tx,
-      plugins: localBuildPluginServices,
+      plugins,
       buildDir,
       mediaRoot,
       pages: built,
@@ -397,10 +420,11 @@ it("a share image must be an existing library image; any other shows none and is
     pageSlug: pageId,
     html: "<html><head><title>x</title></head><body>b</body></html>",
   }));
+  const plugins = await buildServices(built.map((b) => b.pageId));
   const { renderFailures } = await adapter.withAdminTransaction(system, (tx) =>
     runSeoPass({
       tx,
-      plugins: localBuildPluginServices,
+      plugins,
       buildDir,
       mediaRoot,
       pages: built,

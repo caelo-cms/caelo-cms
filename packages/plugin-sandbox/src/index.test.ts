@@ -96,8 +96,11 @@ describe("validateManifest", () => {
       "`adminSchema` needs the `cms_admin_schema` grant: add it to `requestedCapabilities`",
     );
     // Not available to runtime-installed plugins: says so, with the issue.
+    expect(hints({ urlContributions: [{ slot: "host" }] }).join(" ")).toContain(
+      "`url_slots` (Page addresses) is not available to runtime-installed plugins yet (#1729)",
+    );
     expect(hints({ contributes: ["head"] }).join(" ")).toContain(
-      "`head_contributions` (Page head and sitemap) is not available to runtime-installed plugins yet (#1729)",
+      "`contributes` needs the `head_contributions` grant",
     );
     expect(hints({ requestedCapabilities: ["email"] }).join(" ")).toContain(
       "`email` (Sending email) is not available",

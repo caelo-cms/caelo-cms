@@ -270,14 +270,14 @@ export function pluginValueRefusedHint(body: string): string {
   // #1729 (§6.2) — the head and sitemap vocabulary, and share images.
   if (source === PLUGIN_HEAD_POINT) {
     return (
-      `The plugin "${plugin}" added a ${field} to the page's head or sitemap that Caelo refuses (${rule}): a plugin may add only <link rel="alternate" hreflang> naming the other version by its pageId (core builds the URL; the page must exist in this view), <meta property="og:locale"> and og:locale:alternate, a document language, and sitemap exclude/alternates by pageId, at most 20 per page and 1 MB per answer. ` +
-      "The page renders without it. It is the plugin's code, not the page's: submit a corrected plugin version (submit_plugin), or for a plugin shipped with Caelo file it with bug_report. Tell the operator."
+      `The plugin "${plugin}" added a ${field} to the page's head or sitemap that Caelo refuses (${rule}). Allowed: link rel="alternate" hreflang naming a page of this view by pageId (core builds the URL), meta og:locale/og:locale:alternate, a language, sitemap exclude/alternates by pageId; 20 per page, 1 MB per answer. ` +
+      "Fix the plugin (submit_plugin), or bug_report for one shipped with Caelo. Tell the operator."
     );
   }
   if (source === PLUGIN_SHARE_IMAGES_POINT) {
     return (
-      `The plugin "${plugin}" names a default share image for the page that Caelo refuses (${rule}): it must be an existing library image, not a reference image or another kind of file. ` +
-      "The page shows no share image until it is fixed. Set another one with the plugin's own tool (get_plugin lists its tools), or give the page its own image with set_page_seo_many (ogImageAssetId from find_media). Tell the operator."
+      `The plugin "${plugin}" names a default share image Caelo refuses (${rule}): it must be an existing library image. The page shows none until fixed. ` +
+      "Set another with the plugin's tool (get_plugin lists them), or give the page its own image with set_page_seo_many (ogImageAssetId from find_media). Tell the operator."
     );
   }
   return (
