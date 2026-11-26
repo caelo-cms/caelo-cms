@@ -10,13 +10,15 @@
  *   would contact a third party. Nothing in them may load or run: an
  *   element allowlist, an attribute allowlist (no `src`, no `style`, no
  *   `on*`), links held to the page link rule, and CSS that loads nothing.
- *   `{{name}}` slots take escaped text, never inside an `href`.
+ *   `{{name}}` slots take escaped text, in text or a quoted attribute value
+ *   only, never inside an `href`.
  * - **CSS** of a placeholder or a client file loads nothing from another
  *   origin: no `@import`, and a `url()` is relative, `data:` or an origin
  *   the grant names. CSS escapes are decoded first, so `\75 rl(` is seen as
  *   `url(`.
  */
 
+import { escapePluginText } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
 
 /** Elements a placeholder may hold: prose, containers and a button. Nothing that loads or runs. */
@@ -62,6 +64,52 @@ const PLACEHOLDER_ATTRIBUTES: ReadonlySet<string> = new Set([
 /** A `{{` that is not a plain `{{name}}` slot: sections, partials, raw output. */
 const FOREIGN_TEMPLATE_RE = /\{\{\s*(?![a-z][a-z0-9_]*\s*\}\})/;
 
+/** A `{{name}}` slot, as the host fills it with a verdict's escaped text (plugin-host deferrals.ts). */
+const SLOT_RE = /\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g;
+
+/**
+ * Text a verdict could hand a slot. Escaped as the host escapes it, it can
+ * change the markup only where escaping is not enough: an unquoted
+ * attribute value takes `onmouseover=…` as an attribute of its own, and a
+ * slot right after a literal `<` makes the text a tag.
+ */
+const SLOT_PROBE = `x y=z onmouseover=alert(1) <b>"'</b>`;
+
+/** The elements and attribute names `html` parses to, in order: its structure, not its text. */
+function markupShape(html: string): string {
+  const parts: string[] = [];
+  const parser = new Parser(
+    {
+      onopentag(name, attributes) {
+        parts.push(`<${name} ${Object.keys(attributes).join(" ")}>`);
+      },
+      onclosetag(name) {
+        parts.push(`</${name}>`);
+      },
+      oncomment() {
+        parts.push("<!---->");
+      },
+      onprocessinginstruction(name) {
+        parts.push(`<?${name}>`);
+      },
+    },
+    { lowerCaseTags: true, lowerCaseAttributeNames: true },
+  );
+  parser.write(html);
+  parser.end();
+  return parts.join("");
+}
+
+/**
+ * Whether a slot sits where a verdict's escaped text can change the
+ * markup: filled with plain text and with {@link SLOT_PROBE}, the
+ * placeholder must parse to the same elements and attributes.
+ */
+function slotChangesMarkup(html: string): boolean {
+  const fill = (value: string) => html.replace(SLOT_RE, () => value);
+  return markupShape(fill("x")) !== markupShape(fill(escapePluginText(SLOT_PROBE)));
+}
+
 const ALLOWED_LINK_SCHEMES: ReadonlySet<string> = new Set(["https", "http", "mailto", "tel"]);
 
 /** The rule a placeholder `href` breaks, or null. Relative, fragment and the page link schemes pass. */
@@ -81,6 +129,9 @@ function hrefProblem(href: string): string | null {
 export function placeholderMarkupProblem(html: string): string | null {
   if (FOREIGN_TEMPLATE_RE.test(html)) {
     return "template-syntax: only {{name}} slots are allowed";
+  }
+  if (slotChangesMarkup(html)) {
+    return "a {{slot}} outside text and quoted attribute values: a verdict's text could add attributes or elements there — put each slot in text or in a quoted attribute value";
   }
   let problem: string | null = null;
   const parser = new Parser(

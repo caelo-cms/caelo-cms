@@ -11,6 +11,11 @@ describe("#1729 — deferral placeholder markup", () => {
   it("allows plain markup with text slots", () => {
     expect(placeholderMarkupProblem(PLACEHOLDER)).toBeNull();
     expect(placeholderMarkupProblem('<p><a href="/privacy/">Privacy</a></p>')).toBeNull();
+    expect(
+      placeholderMarkupProblem(
+        "<p title='{{label}}' data-k=\"{{key}}\">{{label}} &amp; {{key}}</p>",
+      ),
+    ).toBeNull();
   });
 
   it.each([
@@ -30,6 +35,18 @@ describe("#1729 — deferral placeholder markup", () => {
       "a {{slot}} inside href: a verdict's text never chooses where a link goes",
     ],
     ["<p>{{{raw}}}</p>", "template-syntax: only {{name}} slots are allowed"],
+    [
+      "<div title={{label}}>x</div>",
+      "a {{slot}} outside text and quoted attribute values: a verdict's text could add attributes or elements there — put each slot in text or in a quoted attribute value",
+    ],
+    [
+      '<div title="x" data-k={{key}}>x</div>',
+      "a {{slot}} outside text and quoted attribute values: a verdict's text could add attributes or elements there — put each slot in text or in a quoted attribute value",
+    ],
+    [
+      "<p>Before <{{tag}}> after</p>",
+      "a {{slot}} outside text and quoted attribute values: a verdict's text could add attributes or elements there — put each slot in text or in a quoted attribute value",
+    ],
     ["<p>{{#items}}x{{/items}}</p>", "template-syntax: only {{name}} slots are allowed"],
   ])("refuses %s", (html, problem) => {
     expect(placeholderMarkupProblem(html)).toBe(problem);
