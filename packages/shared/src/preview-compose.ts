@@ -149,19 +149,21 @@ export interface ComposeTheme {
 }
 
 /**
- * The placement's stamps on its root: `data-nosnippet` when the page keeps
- * its content out of snippets (#1752), and its content instance when an
- * observer reads the page.
+ * The placement's stamps: its content instance on its root when an
+ * observer reads the page (the same element as its module id), then
+ * `data-nosnippet` when the page keeps its content out of snippets (#1752),
+ * which may wrap the root and so comes last.
  */
 function stampPlacement(
   html: string,
   m: { readonly contentInstanceId?: string; readonly nosnippet?: boolean },
   input: { readonly stampContentInstances?: boolean },
 ): string {
-  const marked = m.nosnippet === true ? markNosnippet(html) : html;
-  return input.stampContentInstances && m.contentInstanceId
-    ? tagContentInstance(marked, m.contentInstanceId)
-    : marked;
+  const stamped =
+    input.stampContentInstances && m.contentInstanceId
+      ? tagContentInstance(html, m.contentInstanceId)
+      : html;
+  return m.nosnippet === true ? markNosnippet(stamped) : stamped;
 }
 
 /**

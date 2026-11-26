@@ -136,7 +136,11 @@ CLAUDE.md §2 extends to the new texts:
 | `site_defaults.get_seo` | `get_site_seo` | shows the site template and name |
 
 `page_types.set_seo_many` is a structure write (`content.structure`) and
-routine (§11.A: one call sets the old template back). The page type part
+routine (§11.A: one call sets the old template back). A write that takes
+another chat's pending edit of the type over builds on it (re-read after
+the lock). The site name, the site template and every page type's `seo`
+are in the render fingerprint (`ops/quality/render-fingerprint.ts`): a
+direct production build after one changed is refused until a Stage. The page type part
 is draft state like every page type write; the site template is a site
 setting that renders into page HTML, live with the next Stage and Publish
 live, like the site name and language. `page_types.upsert_many` keeps a

@@ -317,6 +317,39 @@ describe("#1752 title templates and origins", () => {
     });
   });
 
+  it("builds on another chat's pending page type edit it takes over (review #1771)", async () => {
+    const experiment = async (title: string): Promise<ExecutionContext> => {
+      const v = await op<{ chatSessionId: string; chatBranchId: string }>(
+        SYS,
+        "chat.create_session",
+        { title: `${PFX}${title}`, isolation: "experiment" },
+      );
+      return { ...AI, chatBranchId: v.chatBranchId, chatTaskId: v.chatSessionId };
+    };
+    const a = await experiment("type-a");
+    const b = await experiment("type-b");
+    const def = {
+      slug: `${PFX}news`,
+      name: "News",
+      collection: true,
+      templates: [templateId],
+      defaultTemplate: templateId,
+    };
+    await op(a, "page_types.upsert_many", {
+      pageTypes: [{ ...def, purpose: "Purpose written in chat A." }],
+    });
+    await op(b, "page_types.set_seo_many", {
+      pageTypes: [{ pageType: `${PFX}news`, ogType: "profile" }],
+    });
+    const seen = await op<{ pageType: { purpose: string; seo?: { ogType?: string } } }>(
+      b,
+      "page_types.get",
+      { slug: `${PFX}news` },
+    );
+    expect(seen.pageType.purpose).toBe("Purpose written in chat A.");
+    expect(seen.pageType.seo?.ogType).toBe("profile");
+  });
+
   it("a chat's SEO title is draft state, live with the merge", async () => {
     const p = await page("drafted");
     const v = await op<{ chatSessionId: string; chatBranchId: string }>(
@@ -412,6 +445,16 @@ describe("#1752 fill-once for the new texts", () => {
       outcome: "filled",
       fields: { seoTitle: "filled", ogDescription: "filled" },
     });
+    // A translated title alone leaves the first description to autofill.
+    const titled = await page("tr-title", "home", "draft");
+    await op(SYS, "pages_seo.apply_translation", { pageId: titled, seoTitle: "Nur der Titel" });
+    expect(
+      await op<{ alreadyFilled: boolean }>(AI, "pages_seo.autofill", {
+        pageId: titled,
+        metaDescription: "Die erste Beschreibung.",
+      }),
+    ).toEqual({ alreadyFilled: false });
+
     const live = await page("tr-live");
     await op(HUMAN, "pages_seo.set", { pageId: live, seoTitle: "Kept title" });
     const kept = await op<{ outcome: string; fields: Record<string, string> }>(

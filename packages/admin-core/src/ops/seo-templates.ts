@@ -19,7 +19,7 @@
  * a structure write like every page type write (`content.structure`).
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
 import {
   OG_TYPES,
   ok,
@@ -161,9 +161,9 @@ export const setPageTypeSeoManyOp = defineOperation({
           ),
         );
       }
-      const current = found.state.definition;
-      const seo = nextSeo(current.seo, item);
-      const changed = !sameSeo(current.seo, seo);
+      let current = found.state.definition;
+      let seo = nextSeo(current.seo, item);
+      let changed = !sameSeo(current.seo, seo);
       let version = found.state.version;
       if (changed) {
         const lock = await checkAndAcquireEntityLock(tx, {
@@ -178,6 +178,34 @@ export const setPageTypeSeoManyOp = defineOperation({
             await entityWriteBlockedError(tx, op, "pageType", found.id, lock),
           );
         }
+        // The lock may have taken another chat's pending edit of this type
+        // over: the patch builds on the type as the caller sees it now, so
+        // that edit survives. A refusal from here on throws, which rolls the
+        // takeover back with it.
+        const locked = await loadListEntityForUpsert(tx, "pageType", branchId, item.pageType);
+        if (!locked || locked.state.deletedAt !== null) {
+          throw new OperationAbortError(
+            handlerError(
+              op,
+              `${at}: the page type was deleted by the change this write just took over. Nothing was written.`,
+              true,
+            ),
+          );
+        }
+        if (item.expectedVersion !== undefined && locked.state.version !== item.expectedVersion) {
+          throw new OperationAbortError(
+            conflictError(
+              op,
+              `Conflict: ${at} is at version ${locked.state.version}, not ${item.expectedVersion} — another chat's change of it was just taken over. Read it again (list_page_types) and redo your change on top of it.`,
+            ),
+          );
+        }
+        current = locked.state.definition;
+        seo = nextSeo(current.seo, item);
+        changed = !sameSeo(current.seo, seo);
+        version = locked.state.version;
+      }
+      if (changed) {
         const { seo: _old, ...rest } = current;
         const definition: PageTypeDef = seo === undefined ? rest : { ...rest, seo };
         version += 1;

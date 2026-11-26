@@ -101,10 +101,14 @@ export const pagesSeoApplyTranslationOp = defineOperation({
           next = { ...next, optimizedAt: null };
         } else {
           fields[f] = "filled";
+          // `autofilledAt` is the meta description's fill-once marker: a
+          // translated title alone must not block the first description.
           next = {
             ...next,
             [f]: wanted,
-            autofilledAt: current.autofilledAt ?? new Date().toISOString(),
+            ...(f === "metaDescription"
+              ? { autofilledAt: current.autofilledAt ?? new Date().toISOString() }
+              : {}),
           };
         }
       }
