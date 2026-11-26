@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { fixtureData, PAGE } from "./lists/list-fixtures.test.js";
-import { type PluginValueOrigin, pluginValue } from "./lists/plugin-values.js";
+import { type PluginValueOrigin, pluginValue, richtextProblem } from "./lists/plugin-values.js";
 import { createListRenderContext } from "./lists/resolve.js";
 import { placeholderContexts } from "./template-contexts.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
@@ -146,6 +146,50 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
     expect(render(`<a href="/de/{{#title}}x/{{/title}}{{title}}">x</a>`, owned("hilfe")).html).toBe(
       `<a href="/de/x/hilfe">x</a>`,
     );
+  });
+
+  it("keeps a richtext markup only in element content, never in a comment or a text-only element", () => {
+    const fields: TemplateField[] = [
+      { name: "body", kind: "richtext" },
+      { name: "title", kind: "text" },
+    ];
+    const at = (html: string, body: string, title = "alert(1)") =>
+      renderTemplate({
+        html,
+        fields,
+        contentValues: { body: owned(body, "richtext"), title: owned(title) },
+      });
+    // The finding's case: the richtext's `-->` closes nothing.
+    const inComment = at(`<!--{{body}}<button onclick="{{title}}">x</button>-->`, "-->");
+    expect(inComment.missingSlots).toEqual([]);
+    expect(inComment.html).toBe(`<!----&gt;<button onclick="alert(1)">x</button>-->`);
+    for (const el of ["title", "textarea", "xmp"]) {
+      expect(at(`<${el}>{{body}}</${el}>`, "<strong>x</strong>").html).toBe(
+        `<${el}>&lt;strong&gt;x&lt;/strong&gt;</${el}>`,
+      );
+    }
+    expect(at(`<div>{{body}}</div>`, "<p><strong>x</strong></p>").html).toBe(
+      `<div><p><strong>x</strong></p></div>`,
+    );
+  });
+
+  it("refuses a richtext that does not end in element content", () => {
+    for (const html of [
+      "<p onclick=alert(1)//",
+      '<p title="x',
+      "<!-- a",
+      "a<",
+      "a</",
+      "a<!",
+      "a<di",
+      "<!-",
+      "<br",
+    ]) {
+      expect(richtextProblem(html)).toBe("richtext-unfinished");
+    }
+    for (const html of ["", "a", "<p>a &amp; b</p>", "<p>x</p><!-- c -->", "a < b", "<br>"]) {
+      expect(richtextProblem(html)).toBeNull();
+    }
   });
 
   it("refuses every value after a section that can change the HTML around it", () => {
@@ -353,7 +397,7 @@ describe("placeholderContexts (#1729)", () => {
     expect(at("{{u}}")).toEqual({ kind: "url", quoted: true, position: "whole" });
     expect(at("{{t}}")).toEqual({ kind: "attribute", quoted: true });
     expect(at("{{h}}")).toEqual({ kind: "refused", rule: "context-event-handler" });
-    expect(at("{{x}}")).toEqual({ kind: "text" });
+    expect(at("{{x}}")).toEqual({ kind: "text", markup: true });
     expect(at("{{m}}")).toEqual({ kind: "url", quoted: true, position: "path" });
     expect(at("{{s2}}")).toEqual({ kind: "url", quoted: true, position: "whole" });
     // Inside a section: a list section would repeat it, so it never decides alone.

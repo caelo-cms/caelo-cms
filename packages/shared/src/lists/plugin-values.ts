@@ -13,7 +13,7 @@
  * cleaned value (CLAUDE.md §2, no fallbacks).
  */
 
-import { Parser } from "htmlparser2";
+import { Parser, Tokenizer } from "htmlparser2";
 import { type FieldDef, validateFieldValue } from "./fields.js";
 import type { ListItem } from "./items.js";
 import type { ListTypeDef, NodeDef } from "./list-type.js";
@@ -37,7 +37,9 @@ import type { ListTypeDef, NodeDef } from "./list-type.js";
 // - `richtext`: prose only. Parsed with htmlparser2 and refused (never
 //   cleaned: a cleaned value would be a silent fallback, CLAUDE.md §2) on
 //   an element outside {@link PROSE_ELEMENTS}, an `on*` or `style`
-//   attribute, or a URL attribute the link rule refuses.
+//   attribute, a URL attribute the link rule refuses, or an end that is
+//   not element content (an unfinished tag, an unclosed comment): the
+//   module's own markup after it would land inside.
 // - `media`: `caelo:media/<id>` of an image in the library (not a
 //   reference image); {@link checkPluginMedia} takes what the media table
 //   says of the ids (the plugin host reads it, `describePluginMedia`).
@@ -172,6 +174,7 @@ function asAttributeValue(value: string): string {
  * browser would run.
  */
 export function richtextProblem(html: string): string | null {
+  if (!endsInContent(html)) return "richtext-unfinished";
   let problem: string | null = null;
   const parser = new Parser(
     {
@@ -197,6 +200,53 @@ export function richtextProblem(html: string): string | null {
   parser.write(html);
   parser.end();
   return problem;
+}
+
+/**
+ * Whether `html` ends in element content, so the markup after it is read
+ * as the template has it. `x>` is appended: after an unfinished tag (a
+ * trailing `<`, `<di`, `</`, an open attribute), an unclosed comment or a
+ * trailing `<!`, it completes or continues markup and is no text. (A
+ * letter alone would not do: htmlparser2 reports an unfinished tag name
+ * at the end as text.)
+ */
+function endsInContent(html: string): boolean {
+  const text = `${html}x>`;
+  let last: { kind: "text" | "other"; end: number } = { kind: "other", end: -1 };
+  const other = (_s: number, e: number) => {
+    last = { kind: "other", end: e };
+  };
+  const tokenizer = new Tokenizer(
+    { decodeEntities: false },
+    {
+      onattribdata: other,
+      onattribentity() {},
+      onattribend() {
+        last = { kind: "other", end: -1 };
+      },
+      onattribname: other,
+      oncdata: other,
+      onclosetag: other,
+      oncomment: other,
+      ondeclaration: other,
+      onend() {},
+      onopentagend() {
+        last = { kind: "other", end: -1 };
+      },
+      onopentagname: other,
+      onprocessinginstruction: other,
+      onselfclosingtag() {
+        last = { kind: "other", end: -1 };
+      },
+      ontext(_s, e) {
+        last = { kind: "text", end: e };
+      },
+      ontextentity() {},
+    },
+  );
+  tokenizer.write(text);
+  tokenizer.end();
+  return last.kind === "text" && last.end === text.length;
 }
 
 /**
@@ -457,7 +507,8 @@ export function pluginValueOf(
  *   places where any value is code or markup.
  */
 export type PlaceholderContext =
-  | { readonly kind: "text" }
+  /** `markup`: element content, where markup is parsed; false in a comment or a text-only element. */
+  | { readonly kind: "text"; readonly markup: boolean }
   | { readonly kind: "attribute"; readonly quoted: boolean }
   | {
       readonly kind: "url";
@@ -485,8 +536,9 @@ function urlCharactersProblem(url: string): string | null {
  * as `plugin-value-refused:<plugin>.<point>.<address>:<rule>` and keeps the
  * placeholder raw).
  *
- * - text: richtext is prose (checked already) and stays markup; every other
- *   value is escaped;
+ * - text: richtext is prose (checked already) and stays markup in element
+ *   content; in a comment or a text-only element (`<title>`, `<textarea>`)
+ *   it is escaped like every other value, so `-->` closes nothing;
  * - attribute: escaped (richtext too: an attribute holds no markup),
  *   unquoted with {@link escapeUnquotedPluginText};
  * - URL: held to the link rule when it decides the URL, to the URL
@@ -505,7 +557,10 @@ export function contextualPluginValue(
     case "refused":
       return { ok: false, rule: context.rule };
     case "text":
-      return { ok: true, html: origin.type === "richtext" ? value : escapePluginText(value) };
+      return {
+        ok: true,
+        html: origin.type === "richtext" && context.markup ? value : escapePluginText(value),
+      };
     case "attribute":
       return {
         ok: true,

@@ -189,7 +189,10 @@ function refused(rule: string): () => PlaceholderContext {
   return () => context;
 }
 
-const TEXT: PlaceholderContext = { kind: "text" };
+/** Element content: a plugin's richtext stays markup there. */
+const CONTENT: PlaceholderContext = { kind: "text", markup: true };
+/** A comment or a text-only element: everything is escaped text. */
+const PLAIN_TEXT: PlaceholderContext = { kind: "text", markup: false };
 
 function computeContexts(html: string): PlaceholderContexts {
   const tags = mustacheSpans(html);
@@ -289,11 +292,12 @@ function computeContexts(html: string): PlaceholderContexts {
         const kind = special;
         if (kind === "script" || kind === "style")
           region(s, e, "special", refused(`context-${kind}`));
-        else region(s, e, kind === null ? "text" : "special", () => TEXT);
+        else if (kind === null) region(s, e, "text", () => CONTENT);
+        else region(s, e, "special", () => PLAIN_TEXT);
       },
       ontextentity() {},
       oncomment(s, e) {
-        region(s, e, "comment", () => TEXT);
+        region(s, e, "comment", () => PLAIN_TEXT);
       },
       oncdata(s, e) {
         region(s, e, "markup", refused("context-markup"));
