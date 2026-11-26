@@ -8,7 +8,13 @@ import {
   visitorVisibleLeaves,
 } from "@caelo-cms/plugin-sdk";
 import { clusterGaps, type FeedbackEvent, MIN_GAP_COUNT, questionWords } from "./gaps.js";
-import plugin, { linkedPageId, SITE_TEXT_KEYS, testQuestionsOf, WIDGET_MARKUP } from "./index.js";
+import plugin, {
+  ANSWER_MARKUP,
+  linkedPageId,
+  SITE_TEXT_KEYS,
+  testQuestionsOf,
+  WIDGET_MARKUP,
+} from "./index.js";
 import { RUNTIME_JS } from "./runtime.js";
 import {
   answered,
@@ -17,6 +23,7 @@ import {
   checkQuestion,
   conversationFull,
   parseSse,
+  searchQueryOf,
   sourceHref,
   type WidgetSource,
 } from "./widget-logic.js";
@@ -86,10 +93,44 @@ describe("the site assistant's declaration", () => {
     expect(manifest.tableKinds).toEqual({ feedback: "inbox" });
   });
 
-  it("gives the AI the widget markup with every text as a site text", () => {
+  it("gives the AI the widget and answer-card markup with every text as a site text", () => {
     for (const key of Object.keys(SITE_TEXT_KEYS))
-      expect(WIDGET_MARKUP).toContain(`{{site_text.${key}}}`);
+      expect(`${WIDGET_MARKUP}\n${ANSWER_MARKUP}`).toContain(`{{site_text.${key}}}`);
+    // Every key either markup names is a documented site text.
+    for (const m of `${WIDGET_MARKUP}\n${ANSWER_MARKUP}`.matchAll(/\{\{site_text\.([a-z_]+)\}\}/g))
+      expect(Object.keys(SITE_TEXT_KEYS)).toContain(m[1] as string);
     expect(WIDGET_MARKUP).toContain('data-caelo-plugin="site-assistant"');
+  });
+
+  it("#1701 — the answer card is the site's own markup, hidden until it answers, with the disclosure", () => {
+    expect(ANSWER_MARKUP).toMatch(/^<section data-caelo-assistant-answer hidden /);
+    for (const contract of [
+      "data-caelo-assistant-disclosure",
+      "{{site_text.assistant_disclosure}}",
+      "data-caelo-assistant-thread",
+      "<template data-caelo-assistant-turn>",
+      'data-field="question"',
+      'data-field="answer"',
+      'data-field="sources"',
+      'data-rate="helpful"',
+      "<template data-caelo-assistant-source>",
+      "data-caelo-assistant-followup hidden",
+      "data-caelo-assistant-input",
+      'data-text="handoff"',
+      'data-caelo-plugin="site-assistant"',
+    ])
+      expect(ANSWER_MARKUP).toContain(contract);
+    // No floating panel, no Web Component: it is not the widget.
+    expect(ANSWER_MARKUP).not.toContain("data-caelo-assistant-open");
+    expect(ANSWER_MARKUP).not.toContain("<script");
+  });
+
+  it("#1701 — get_site_assistant_setup hands out both markups", async () => {
+    const setup = (await (
+      plugin.operations.setup as (c: unknown, a: unknown) => Promise<Record<string, unknown>>
+    )({ config: { get: async () => ({}) } }, {})) as { widgetMarkup: string; answerMarkup: string };
+    expect(setup.widgetMarkup).toBe(WIDGET_MARKUP);
+    expect(setup.answerMarkup).toBe(ANSWER_MARKUP);
   });
 });
 
@@ -168,11 +209,36 @@ describe("the widget's logic (the code the browser runs)", () => {
   });
 });
 
+describe("#1701 — the query the answer card asks", () => {
+  it("reads the query as site-search does: #q= first, then ?q=", () => {
+    expect(searchQueryOf("", "#q=Was+kostet+es%3F")).toEqual({
+      query: "Was kostet es?",
+      anchor: false,
+    });
+    expect(searchQueryOf("?q=Rabatte", "")).toEqual({ query: "Rabatte", anchor: false });
+    expect(searchQueryOf("?q=alt", "#q=neu")).toEqual({ query: "neu", anchor: false });
+    expect(searchQueryOf("", "#main")).toEqual({ query: "", anchor: true });
+    expect(searchQueryOf("", "")).toEqual({ query: "", anchor: false });
+  });
+});
+
 describe("the browser script", () => {
   it("is valid JavaScript, ships the tested logic, and builds no markup from text", () => {
     expect(() => new Function(RUNTIME_JS)).not.toThrow();
-    for (const name of ["parseSse", "answerParts", "sourceHref", "appendTurn", "checkQuestion"])
+    for (const name of [
+      "parseSse",
+      "answerParts",
+      "sourceHref",
+      "appendTurn",
+      "checkQuestion",
+      "searchQueryOf",
+    ])
       expect(RUNTIME_JS).toContain(`function ${name}(`);
+    // #1701 — the answer card binds to the site's card, follows the query
+    // and refuses to ask without the disclosure.
+    expect(RUNTIME_JS).toContain('"[data-caelo-assistant-answer]"');
+    expect(RUNTIME_JS).toContain('"hashchange"');
+    expect(RUNTIME_JS).toContain('"disclosure-missing"');
     expect(RUNTIME_JS).not.toContain("innerHTML");
     expect(RUNTIME_JS).not.toContain("eval(");
     // The page's own credentials (the staging gate's cookie), never another origin's.

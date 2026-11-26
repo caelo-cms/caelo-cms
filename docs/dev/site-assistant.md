@@ -23,6 +23,22 @@ A client asset (`runtime.ts`, `buildAssets`), bound to markup the AI writes into
 - The signed history and the shown messages stay in the tab (`sessionStorage`), never on a server; a conversation that used its questions offers a new one.
 - The decision logic is `widget-logic.ts`: self-contained functions whose source text runtime.ts ships, so the unit tests run the code the browser runs. Every check on visitor text is a single linear pass.
 
+## The answer card (#1701)
+
+The same conversation, on the search results page, without a launcher or a panel: the visitor's search query is the question. The AI writes `ANSWER_MARKUP` (`src/index.ts`, returned by `get_site_assistant_setup` as `answerMarkup`) into the results page's module, beside site-search's results, and styles it like the site's cards. It follows site-search's precedent, where the runtime fills the site's hit template: the runtime fills the site's templates in the page, so the card is the site's markup, CSS and site texts. It is no Web Component; the widget keeps its Shadow DOM.
+
+| Part | Role |
+|---|---|
+| `[data-caelo-assistant-answer]` (`hidden`) | The card. Shown when the page has a query and the visitor AI is available; stays hidden otherwise, so the results stand alone. `data-caelo-assistant-state`: `loading`, `done`, `error`, `unavailable`, `idle`, `disclosure-missing`, `markup-missing`. |
+| `[data-caelo-assistant-disclosure]` | The AI disclosure. Without text in it nothing is asked: the card cannot run without telling visitors an AI wrote the answer. |
+| `[data-caelo-assistant-thread]` + `template[data-caelo-assistant-turn]` | One turn per question, with `data-field` `question`, `answer` (streamed as text; `[n]` becomes a link only to a source the gateway sent), `sources` (the cited pages), `rating` (the site's `data-rate="helpful"` / `"not_helpful"` buttons, shown only while feedback is kept) and `note` (an optional form after "not helpful"). `aria-busy` on the thread while an answer streams. |
+| `template[data-caelo-assistant-source]` | One cited page: `data-field` `link` (href), `title`, optionally `n` and `url`. |
+| `[data-caelo-assistant-status]` | Status texts (`thinking`, `limit`, `toolong`). |
+| `form[data-caelo-assistant-followup]` (`hidden`) | Optional follow-up question, shown after the first answer, within the conversation's turns. |
+| `template[data-caelo-assistant-texts]` | The status and error texts and the handoff link, as in the widget. |
+
+The query comes from the address as site-search reads it: `#q=` first, then `?q=`, again on `hashchange` (`searchQueryOf` in `widget-logic.ts`). A query is asked once per tab: the answer and its signed history stay in `sessionStorage` under the query, so a reload or a return shows it without asking again; a new query starts a new conversation and stops the stream of the old one. Limits, proof of work, budgets and the feedback inbox are the widget's, since it is the same `ask` operation.
+
 ## Feedback and the gap report
 
 The declared insert `feedback` (an inbox, `kind`: helpful, not helpful, unanswered; the question; an optional note; language and day) stores only while the released `feedback.enabled` is on (`onlyIf: { config }`, [plugin-public-surface.md](../plugin-public-surface.md)), which is approval-gated and off by default. `drop` covers the question and the note; a filled honeypot stores nothing; every outcome answers the same. The widget sends `unanswered` for an answer without a cited source and offers the rating buttons only while feedback is on (the plugin's placeholder renders `data-feedback`). No transcript is stored anywhere (D10).
@@ -42,7 +58,7 @@ A plugin with the `visitor_ai` grant and an `ai-chat` operation gets `ctx.chatTo
 - `packages/plugins/site-assistant/src/site-assistant.test.ts`: the declaration, the widget logic, the browser script, the gap clustering, test-question parsing.
 - `apps/api-gateway/src/site-assistant.integration.test.ts`: the conversation through the real gateway (the prompt from the released settings after the core's rules, only site-search's tools, the sources) and feedback (off, on after a release, personal data, honeypot, proof, undeclared fields).
 - `packages/admin-core/src/__tests__/site-assistant.integration.test.ts`: activation, `ctx.chatTools` on a Stage's release, the audit, the gap batch.
-- `apps/admin/e2e/site-assistant-visitor.browser.ts` on `apps/api-gateway/e2e/assistant-site.ts` (both built by `apps/api-gateway/e2e/assistant-test-site.ts`): a visitor asks, reads the streamed answer with its source, rates it, keeps the conversation across pages.
+- `apps/admin/e2e/site-assistant-visitor.browser.ts` on `apps/api-gateway/e2e/assistant-site.ts` (both built by `apps/api-gateway/e2e/assistant-test-site.ts`): a visitor asks, reads the streamed answer with its source, rates it, keeps the conversation across pages. On the results page (#1701) the card answers the search query once with its source, shows it again after a reload without asking, takes a follow-up and a rating, answers a new hash-mode search without a reload, and asks nothing without its disclosure.
 
 ## Not yet
 

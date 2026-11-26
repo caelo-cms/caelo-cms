@@ -159,6 +159,25 @@ export function answered(sources: readonly WidgetSource[]): boolean {
   return false;
 }
 
+/**
+ * #1701 — the search query the inline answer asks: the fragment's `q`
+ * (`#q=…`, site-search's hash mode, #1707) when the fragment has one,
+ * else the query string's `q`. `anchor` says the fragment is something
+ * else (a skip link): a `hashchange` to it asks nothing. The same reading
+ * as site-search's runtime, so the answer and the results always show the
+ * same query.
+ */
+export function searchQueryOf(search: string, hash: string): { query: string; anchor: boolean } {
+  const fragment =
+    String(hash || "").charAt(0) === "#" ? String(hash).slice(1) : String(hash || "");
+  if (fragment !== "") {
+    const fromHash = new URLSearchParams(fragment);
+    if (fromHash.has("q")) return { query: String(fromHash.get("q") || "").trim(), anchor: false };
+  }
+  const fromSearch = new URLSearchParams(String(search || ""));
+  return { query: String(fromSearch.get("q") || "").trim(), anchor: fragment !== "" };
+}
+
 /** The functions runtime.ts ships, in dependency order. */
 export const WIDGET_LOGIC = [
   parseSse,
@@ -168,4 +187,5 @@ export const WIDGET_LOGIC = [
   sourceHref,
   answerParts,
   answered,
+  searchQueryOf,
 ] as const;

@@ -11,9 +11,20 @@
  * Serves pages at `/` and `/preise/`, the gateway at `/api/*` (the page's
  * origin stands in for the site's live origin), and `/__test/feedback`
  * (what the inbox holds). Prints `READY <port>`.
+ *
+ * #1701 — `/suche/` is site-search's results page with the assistant's
+ * answer card (the plugin's own `ANSWER_MARKUP`, its texts filled in) and
+ * the search field in hash mode; `/suche-ohne-hinweis/` the same card with
+ * an empty disclosure. `/__test/model-calls` counts the model's calls and
+ * `/__test/requests` lists the page requests the server saw.
  */
 
+import { ANSWER_MARKUP } from "@caelo-cms/plugin-site-assistant";
 import { RUNTIME_JS } from "@caelo-cms/plugin-site-assistant/runtime";
+import {
+  RUNTIME_CSS as SEARCH_CSS,
+  RUNTIME_JS as SEARCH_JS,
+} from "@caelo-cms/plugin-site-search/runtime";
 import { handleRequest } from "../src/server.js";
 import { TEST_LIVE_ORIGIN } from "../src/test-support.js";
 import { setVisitorAiModelFactoryForTests } from "../src/visitor-ai/provider.js";
@@ -62,6 +73,52 @@ const TEXTS: Record<string, string> = {
   new: "Neue Unterhaltung",
 };
 
+/** The texts only the answer card and the links use. */
+const CARD_TEXTS: Record<string, string> = {
+  ...TEXTS,
+  answer_title: "Antwort",
+  thinking: "Die Antwort wird geschrieben …",
+  privacy: "Datenschutz",
+  handoff: "Kontakt",
+};
+
+/** #1701 — the answer card as the AI writes it: the plugin's markup with the site's texts. */
+function answerCard(disclosure: string): string {
+  return ANSWER_MARKUP.replace(/\{\{site_text\.assistant_([a-z_]+)\}\}/g, (_, key: string) => {
+    if (key === "disclosure") return disclosure;
+    const text = CARD_TEXTS[key];
+    if (text === undefined) throw new Error(`the fixture has no text for assistant_${key}`);
+    return text;
+  })
+    .replace("<privacy page link>", "/datenschutz/")
+    .replace("<contact page link: the same page as assistant.handoff_page>", "/kontakt/")
+    .replace("{{page.id}}", "results")
+    .replace(
+      '<div data-caelo-plugin="site-assistant" data-page-id="results"></div>',
+      '<div data-caelo-plugin="site-assistant" data-page-id="results"><div data-caelo-assistant-settings data-feedback="on" hidden></div></div>',
+    );
+}
+
+const SEARCH_FORM = `<form data-caelo-search data-caelo-search-mode="hash" action="/suche/" role="search">
+  <input type="search" data-caelo-search-input aria-label="Suche">
+  <ul data-caelo-search-suggestions hidden></ul>
+  <button type="submit">Suchen</button>
+</form>`;
+
+const SEARCH_RESULTS = `<section data-caelo-search-results>
+  <p data-caelo-search-summary></p>
+  <ol data-caelo-search-list></ol>
+  <template data-caelo-search-hit><li><a data-field="link"><span data-field="title"></span></a><p data-field="snippet"></p></li></template>
+</section>`;
+
+function resultsPage(disclosure: string): Response {
+  const html = `<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Suche</title><style>${SEARCH_CSS}</style></head><body><header>${SEARCH_FORM}</header><main>${answerCard(disclosure)}${SEARCH_RESULTS}</main><script>${SEARCH_JS}</script><script>${RUNTIME_JS}</script></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+/** Every page request the server answered, as path and query (#1701). */
+const pageRequests: string[] = [];
+
 const WIDGET = `<div data-caelo-assistant>
   <button type="button" data-caelo-assistant-open aria-haspopup="dialog">Fragen?</button>
   <template data-caelo-assistant-texts>
@@ -81,6 +138,10 @@ function page(title: string, body: string): Response {
 
 async function routes(pathname: string): Promise<Response> {
   if (pathname === "/__test/feedback") return Response.json(await site.feedback());
+  if (pathname === "/__test/model-calls") return Response.json(scripted.calls.length);
+  if (pathname === "/__test/requests") return Response.json(pageRequests);
+  if (pathname === "/suche/") return resultsPage(TEXTS.disclosure as string);
+  if (pathname === "/suche-ohne-hinweis/") return resultsPage("");
   if (pathname === "/") return page("Start", "<h1>Start</h1>");
   const p = ASSISTANT_SITE_PAGES.find((x) => x.path === pathname);
   if (p)
@@ -96,7 +157,10 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   fetch: (req, srv) => {
     const url = new URL(req.url);
-    if (!url.pathname.startsWith("/api/")) return routes(url.pathname);
+    if (!url.pathname.startsWith("/api/")) {
+      if (!url.pathname.startsWith("/__test/")) pageRequests.push(url.pathname + url.search);
+      return routes(url.pathname);
+    }
     // The page's origin stands for the site's live origin, which the
     // gateway admits (registerTestLiveOrigin).
     const headers = new Headers(req.headers);

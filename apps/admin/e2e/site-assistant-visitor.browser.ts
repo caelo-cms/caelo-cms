@@ -129,3 +129,83 @@ test("behind a gate that admits only the operator's cookie, the conversation sti
   await expect(dialog.getByRole("log")).toContainText("49 Euro");
   expect(refused).toEqual([]);
 });
+
+// #1701 — the answer card on the search results page: the visitor's search
+// query is answered in the page, in the site's own markup, with the pages
+// it used; no launcher, no panel.
+test("the results page answers the search query in the site's card, once, with its sources", async ({
+  page,
+}) => {
+  const calls = async () =>
+    (await (await page.request.get(`${origin}/__test/model-calls`)).json()) as number;
+  const before = await calls();
+  await page.goto(`${origin}/suche/#q=Starter-Paket kosten`);
+  const card = page.locator("[data-caelo-assistant-answer]");
+  await expect(card).toBeVisible();
+  // The site's own disclosure stays in the card.
+  await expect(card).toContainText("Antworten schreibt eine KI");
+  const turn = card.locator("[data-caelo-assistant-thread] article").first();
+  await expect(turn.locator('[data-field="question"]')).toHaveText("Starter-Paket kosten");
+  await expect(turn.locator('[data-field="answer"]')).toContainText("49 Euro");
+  await expect(card).toHaveAttribute("data-caelo-assistant-state", "done");
+  // The cited page, from the site's source template.
+  const source = turn.locator('[data-field="sources"] a').first();
+  await expect(source).toHaveText("Preise");
+  await expect(source).toHaveAttribute("href", "/preise/#pakete");
+  // No Web Component, no floating panel: the card is the page's own markup.
+  await expect(page.locator("caelo-assistant")).toHaveCount(0);
+  // The search results beside it read the same query.
+  await expect(page.locator("[data-caelo-search-list] li").first()).toContainText("Preise");
+  const asked = (await calls()) - before;
+  expect(asked).toBeGreaterThan(0);
+
+  // A reload shows the answer again from this tab: nothing is asked twice.
+  await page.reload();
+  await expect(card.locator('[data-field="answer"]').first()).toContainText("49 Euro");
+  expect((await calls()) - before).toBe(asked);
+
+  // The follow-up continues the conversation in the card.
+  const follow = card.getByRole("textbox", { name: "Ihre Frage" });
+  await expect(follow).toBeVisible();
+  await follow.fill("Liefern Sie in die Schweiz?");
+  await follow.press("Enter");
+  const second = card.locator("[data-caelo-assistant-thread] article").nth(1);
+  await expect(second.locator('[data-field="answer"]')).toContainText("Schweiz");
+  await expect(card).toHaveAttribute("data-caelo-assistant-state", "done");
+
+  // A rating reaches the feedback inbox.
+  await second.getByRole("button", { name: "Hilfreich", exact: true }).click();
+  await expect(second).toContainText("Danke für Ihre Rückmeldung!");
+  await expect
+    .poll(
+      async () =>
+        (await (await page.request.get(`${origin}/__test/feedback`)).json()) as { kind: string }[],
+    )
+    .toContainEqual(expect.objectContaining({ kind: "helpful" }));
+
+  // A new search in hash mode: a new answer for the new query, no reload.
+  const search = page.getByRole("combobox", { name: "Suche" });
+  await search.fill("Kontakt");
+  await search.press("Enter");
+  await expect(page).toHaveURL(`${origin}/suche/#q=Kontakt`);
+  await expect(card.locator("[data-caelo-assistant-thread] article")).toHaveCount(1);
+  await expect(card.locator('[data-field="question"]')).toHaveText("Kontakt");
+  await expect(card.locator('[data-field="answer"]')).toContainText("selben Tag");
+
+  // The query never reached the server in a page request.
+  const seen = (await (await page.request.get(`${origin}/__test/requests`)).json()) as string[];
+  expect(seen.filter((r) => r.startsWith("/suche/"))).toEqual(["/suche/", "/suche/"]);
+});
+
+test("without the AI disclosure the card asks nothing and stays hidden", async ({ page }) => {
+  const calls = async () =>
+    (await (await page.request.get(`${origin}/__test/model-calls`)).json()) as number;
+  const before = await calls();
+  await page.goto(`${origin}/suche-ohne-hinweis/#q=Starter-Paket`);
+  const card = page.locator("[data-caelo-assistant-answer]");
+  await expect(card).toHaveAttribute("data-caelo-assistant-state", "disclosure-missing");
+  await expect(card).toBeHidden();
+  // The results still answer.
+  await expect(page.locator("[data-caelo-search-list] li").first()).toContainText("Preise");
+  expect(await calls()).toBe(before);
+});
