@@ -44,6 +44,16 @@ An entry the profile cannot use (a pinned link that names no page, a synonym wit
 
 `src/runtime.ts`, a client asset. It binds to markup the AI writes into the site's own modules: `form[data-caelo-search]` with `[data-caelo-search-input]` and `[data-caelo-search-suggestions]`, and on the results page `[data-caelo-search-results]` with a `template[data-caelo-search-hit]`. The field is an ARIA 1.2 combobox. Focus warms the index up (`/release`); later calls name the release, so the CDN answers them. Requests send no cookie. Highlights are ranges turned into `<mark>`, never HTML from the index.
 
+### The query in the address (#1707)
+
+The results page reads its query from the fragment's `q` (`/suche/#q=kosten`) and, when the fragment has none, from the query string's (`?q=kosten`). `src/runtime-logic.ts` holds both readings as self-contained functions whose source text the runtime ships, so the unit tests run the code browsers run.
+
+- **Hash mode.** A form with `data-caelo-search-mode="hash"` opens `<action>#q=…` on submit (a query suggestion too). The fragment is not part of any request, so the query reaches no server or CDN log, no analytics hit and no Referer; the AI leaves `name` off the field, so a submit before the script runs sends no query either. The only request that carries the query is the search call to the gateway, which is the API. `?q=` keeps working, for links from elsewhere and sites that want it.
+- **No reload.** A search on the results page itself changes only the fragment; the page searches again on `hashchange`, back and forward included. A fragment without `q` (a skip link, `#main`) leaves the results alone; an empty `#q=` clears them. A newer query discards an older answer still on its way.
+- **Loading state.** While a search runs the results root carries `aria-busy="true"` and `data-caelo-search-state="loading"`, then `done` or `error` (`data-caelo-search-error="true"` too, as before). It fires `caelo-search-start` (detail `{ query, page }`) when a search starts, the next page of results included, and `caelo-search-results` (detail: the answer) when it ends, from the summary when there is one, else from the root. Both bubble.
+
+The site assistant's answer card (`site-assistant.md`) reads the same query the same way.
+
 ## Visitors' queries
 
 Counting is off until the Owner approves `popular_suggestions`.
@@ -57,5 +67,5 @@ Counting is off until the Owner approves `popular_suggestions`.
 
 - **Stage audit.** The `audit` operation runs the test queries against the audited Stage's index. A pinned result that is not first is an error and blocks Publish live. An expected page outside the first results is a warning. While the index is still building, the audit waits up to 45 s, then reports an error with `retry_quality_audit`.
 - **Preview.** `preview_site_search` searches the staged (or live) index and says where each hit comes from.
-- **Index report.** `get_search_index_report` shows per block how it counts and why.
+- **Index report.** `get_search_index_report` shows per block how it counts and why. Every observer call reports the blocks of its pages, so a Stage that delivers the whole site reports the chrome once per call; a block's row is written only when what the report shows of it changed, and rows that change alike go in one `updateMany` (`src/report.ts`). Before, a full delivery on searchVIU rewrote about 2,400 rows per Stage, each a private-storage write with its own snapshot (2026-11-26).
 - **Panel.** Settings → Plugins → Site search shows the same report, the popular queries with approve and reject, and the insights.

@@ -78,6 +78,7 @@ import {
   PhaseTimer,
   phaseTimingSchema,
   type Result,
+  robotsRulesSchema,
 } from "@caelo-cms/shared";
 import { readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
@@ -217,6 +218,13 @@ const promotePlan = z.object({
   stagedFileCount: z.number().int().nullable(),
   /** The live host (site_defaults.site_base_url). */
   siteBaseUrl: z.string(),
+  /**
+   * #1706 — the robots.txt rules the staged build was made with: the live
+   * robots.txt carries them, never the settings as they are by now (a rule
+   * saved after the Stage waits for the next one). `[]` for a build staged
+   * before the rules existed, which had none.
+   */
+  robotsRules: robotsRulesSchema,
   override: z.object({ auditRunId: z.string(), reason: z.string() }).nullable(),
 });
 type PromotePlan = z.infer<typeof promotePlan>;
@@ -263,7 +271,7 @@ export const startPromoteOp = defineOperation({
     if (!from || !to) return refused("fromTarget or toTarget not found");
     const fromRunRows = (await tx.execute(sql`
       SELECT id::text AS id, build_id, site_url, plugin_problems,
-             security_headers IS NOT NULL AS has_security_headers,
+             security_headers IS NOT NULL AS has_security_headers, robots_rules,
              publish_summary->>'location' AS location, caelo_version, page_count, file_count
       FROM deploy_runs
       WHERE target_id = ${from.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
@@ -275,6 +283,7 @@ export const startPromoteOp = defineOperation({
       plugin_problems: unknown;
       location: string | null;
       has_security_headers: boolean;
+      robots_rules: unknown;
       caelo_version: string | null;
       page_count: number | string | null;
       file_count: number | string | null;
@@ -387,6 +396,8 @@ export const startPromoteOp = defineOperation({
       stagedPageCount: num(fromRow.page_count),
       stagedFileCount: num(fromRow.file_count),
       siteBaseUrl,
+      robotsRules:
+        fromRow.robots_rules === null ? [] : robotsRulesSchema.parse(fromRow.robots_rules),
       override,
     });
   },
@@ -556,6 +567,9 @@ export const finishPromoteOp = defineOperation({
     // #553 — the publish-anyway decision is recorded only now that the
     // build it allowed is live; a failed Publish live leaves the gate closed.
     if (input.override) await recordProductionOverride(tx, ctx, input.override, "deploy.promote");
+    // #1706 — robots_rules: the rules the live robots.txt was written with
+    // (the staged build's), carried on so a plugin-data build or a rollback
+    // based on this run finds them on the run itself.
     await tx.execute(sql`
       UPDATE deploy_runs
       SET status = 'succeeded', finished_at = clock_timestamp(), error_message = NULL,
@@ -565,7 +579,8 @@ export const finishPromoteOp = defineOperation({
           build_id = ${input.buildId},
           publish_summary = ${jsonbParam(input.publishSummary)},
           caelo_version = ${input.caeloVersion},
-          lease_expires_at = NULL
+          lease_expires_at = NULL,
+          robots_rules = (SELECT robots_rules FROM deploy_runs WHERE id = ${input.fromRunId}::uuid)
       WHERE id = ${input.runId}::uuid
     `);
     // #1157 — the build carries the live redirects as they were at its
@@ -766,6 +781,7 @@ async function runPromote(
         fromTarget: plan.from,
         toTarget: plan.to,
         siteBaseUrl: plan.siteBaseUrl,
+        robotsRules: plan.robotsRules,
         beforeRelease,
       });
     } catch (e) {

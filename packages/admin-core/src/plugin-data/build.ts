@@ -903,6 +903,17 @@ export const finishPluginDataRunOp = defineOperation({
              lease_expires_at = NULL
        WHERE id = ${input.runId}::uuid
     `);
+    // #1706 — the release keeps the live build's robots.txt, so the run
+    // carries the robots rules of the run it built on (a Publish live, a
+    // rollback and a plugin-data run carry them; a direct build has its
+    // own). A rollback to this run re-derives robots.txt from them on
+    // gcp-firebase.
+    await tx.execute(sql`
+      UPDATE deploy_runs r
+         SET robots_rules = base.robots_rules
+        FROM deploy_runs base
+       WHERE r.id = ${input.runId}::uuid AND base.id = r.base_run_id
+    `);
     // docs/dev/search-engine-feed.md — the pages whose baked content changed
     // get their row in the live record (dated when it went live), and their
     // WebSub / IndexNow announcement is queued (sent after this commit).

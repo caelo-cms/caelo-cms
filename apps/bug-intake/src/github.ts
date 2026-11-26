@@ -16,6 +16,12 @@
 import { createPrivateKey, sign } from "node:crypto";
 
 const API = "https://api.github.com";
+/**
+ * A GitHub call gives up after this long. The intake answers an install that
+ * waits 10 s, and a call that never returns would hold a cluster's lock, and
+ * with it every later request about that cluster.
+ */
+const REQUEST_TIMEOUT_MS = 5_000;
 
 /** A GitHub answer the intake cannot act on (rate limit, outage, missing permission). */
 export class GitHubError extends Error {
@@ -66,12 +72,17 @@ export class GitHubClient {
   readonly #auth: GitHubAppAuth;
   readonly #fetch: typeof fetch;
   readonly #now: () => number;
+  readonly #timeoutMs: number;
   #token: { value: string; refreshAt: number } | null = null;
 
-  constructor(auth: GitHubAppAuth, opts: { fetchImpl?: typeof fetch; now?: () => number } = {}) {
+  constructor(
+    auth: GitHubAppAuth,
+    opts: { fetchImpl?: typeof fetch; now?: () => number; requestTimeoutMs?: number } = {},
+  ) {
     this.#auth = auth;
     this.#fetch = opts.fetchImpl ?? fetch;
     this.#now = opts.now ?? Date.now;
+    this.#timeoutMs = opts.requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
   }
 
   async #installationToken(): Promise<string> {
@@ -85,6 +96,7 @@ export class GitHubClient {
           accept: "application/vnd.github+json",
           "x-github-api-version": "2022-11-28",
         },
+        signal: AbortSignal.timeout(this.#timeoutMs),
       },
     );
     if (!res.ok) {
@@ -112,6 +124,7 @@ export class GitHubClient {
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(this.#timeoutMs),
     });
     const text = await res.text();
     return { status: res.status, json: text === "" ? null : JSON.parse(text) };

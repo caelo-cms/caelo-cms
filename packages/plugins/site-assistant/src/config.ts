@@ -33,7 +33,7 @@ export const SITE_ASSISTANT_CONFIG: Readonly<Record<string, ConfigFieldInput>> =
     type: "group",
     label: "Assistant",
     description:
-      "How the assistant answers. Each text goes to the AI that answers visitors, after the rules Caelo sets (answer only from the site's pages, cite them, never act).",
+      "How the assistant answers. Each text goes to the AI that answers visitors, after the rules Caelo sets (answer only from the site's pages, cite them, never act). Where visitors ask is markup, not a setting: a floating widget on every page, an answer card on the search results page, or an ask card in any page (get_site_assistant_setup).",
     fields: {
       persona: {
         type: "string",
@@ -75,7 +75,7 @@ export const SITE_ASSISTANT_CONFIG: Readonly<Record<string, ConfigFieldInput>> =
         type: "pageRef",
         label: "Contact page",
         description:
-          "The page visitors are sent to when the assistant cannot help. The Stage audit checks the assistant can find it; the widget's contact link points to it.",
+          "The page visitors are sent to when the assistant cannot help. The Stage audit checks the assistant can find it; the contact link of the widget and of every card points to it.",
         effect: "none",
         default: null,
       },

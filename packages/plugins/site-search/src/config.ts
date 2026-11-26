@@ -40,7 +40,7 @@ export const SITE_SEARCH_CONFIG: Readonly<Record<string, ConfigFieldInput>> = {
     type: "pageRef",
     label: "Results page",
     description:
-      "The page that shows the results (its form posts to it). It is never itself in the search; set it noindex and out of the sitemap.",
+      'The page that shows the results (its form posts to it). It is never itself in the search; set it noindex and out of the sitemap. It reads the query from ?q= and from #q= (forms with data-caelo-search-mode="hash" keep the query out of every request). To keep crawlers off it as well, add its path to the robots.txt rules (propose_set_site_seo robotsRules).',
     effect: "pages",
     default: null,
   },

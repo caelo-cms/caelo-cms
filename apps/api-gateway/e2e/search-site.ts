@@ -10,6 +10,11 @@
  * the plugin's skill teaches the AI to write, with the plugin's runtime
  * inline. One origin, like the load balancer's `/api/*` rule. Prints
  * `READY <port>` when it serves.
+ *
+ * #1707 — `/start-hash/` and `/suche-hash/` carry the form in hash mode
+ * (`data-caelo-search-mode="hash"`, no `name` on the field), and
+ * `/__test/requests` lists every page request the server saw, so a test
+ * proves the query never reached it.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -39,6 +44,7 @@ import {
   invalidateGatewaySettings,
   setGatewayAdapter,
 } from "../src/server.js";
+import { publishTestIndex, removeTestIndexes } from "./test-index.js";
 
 function required(name: string): string {
   const v = process.env[name];
@@ -97,6 +103,7 @@ async function restore(): Promise<void> {
     await tx`DELETE FROM list_types WHERE slug LIKE 'site-search-%'
              AND (plugin_id IS NULL OR plugin_id NOT IN (SELECT id FROM plugins))`;
   });
+  await removeTestIndexes(ADMIN_URL, [SLUG]);
   if (before)
     await onDb(ADMIN_URL, async (tx) => {
       const approved = JSON.stringify(before.approved_capabilities);
@@ -164,8 +171,6 @@ async function prepare(): Promise<DatabaseAdapter> {
   );
   // Release the main line as a Stage plus Publish live does, as loaded.
   await releaseProjectionForTests(adminAdapter, STAGING_ADAPTER, undefined, "as-loaded");
-  resetPluginHost();
-  await adminAdapter.close();
 
   // The release the index job would have built and Publish live copied.
   const live = scopedStore(directoryStore(join(root, "live")), `${SLUG}/pages`);
@@ -205,10 +210,18 @@ async function prepare(): Promise<DatabaseAdapter> {
     },
   );
   await Promise.all(writes);
-  await onDb(PUBLIC_ADMIN_URL, async (tx) => {
-    await tx`DELETE FROM published_collections`;
-    await tx`INSERT INTO published_collections (plugin_id, collection, release_key) VALUES (${pluginId}::uuid, 'pages', ${built.file})`;
-  });
+  await publishTestIndex(
+    { admin: ADMIN_URL, publicAdmin: PUBLIC_ADMIN_URL },
+    adminAdapter,
+    STAGING_ADAPTER,
+    {
+      pluginId,
+      collection: "pages",
+      releaseKey: built.file,
+    },
+  );
+  resetPluginHost();
+  await adminAdapter.close();
 
   const urls = gatewayDatabaseUrls({
     PUBLIC_DATABASE_URL: PUBLIC_URL,
@@ -239,10 +252,20 @@ const FORM = `<form data-caelo-search action="/suche/" role="search">
   <button type="submit">Suchen</button>
 </form>`;
 
-function page(body: string): Response {
-  const html = `<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Fixture</title><style>${RUNTIME_CSS}</style></head><body>${FORM}${body}<script>${RUNTIME_JS}</script></body></html>`;
+/** #1707 — the same form in hash mode: the query travels in the fragment only. */
+const HASH_FORM = `<form data-caelo-search data-caelo-search-mode="hash" action="/suche-hash/" role="search">
+  <input type="search" data-caelo-search-input aria-label="Suche">
+  <ul data-caelo-search-suggestions hidden></ul>
+  <button type="submit">Suchen</button>
+</form>`;
+
+function page(body: string, form = FORM): Response {
+  const html = `<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Fixture</title><style>${RUNTIME_CSS}</style></head><body>${form}${body}<script>${RUNTIME_JS}</script></body></html>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
 }
+
+/** Every page request the server answered, as path and query (#1707). */
+const pageRequests: string[] = [];
 
 const RESULTS = `<main><section data-caelo-search-results>
   <p data-caelo-search-summary></p>
@@ -253,7 +276,11 @@ const RESULTS = `<main><section data-caelo-search-results>
 <div data-caelo-plugin="site-search" data-page-id="x"><div data-caelo-search-popular data-counting="off" data-queries="{}" hidden></div></div></main>`;
 
 function routes(pathname: string): Response {
+  if (pathname === "/__test/requests") return Response.json(pageRequests);
   if (pathname === "/suche/") return page(RESULTS);
+  if (pathname === "/suche-hash/")
+    return page(`<a href="#main">Zum Inhalt</a>${RESULTS}`, HASH_FORM);
+  if (pathname === "/start-hash/") return page("<main><h1>Start</h1></main>", HASH_FORM);
   const p = PAGES.find((x) => x.path === pathname);
   if (p)
     return page(
@@ -266,6 +293,7 @@ function routes(pathname: string): Response {
 let gatewayAdapter: DatabaseAdapter;
 try {
   // What a crashed run left behind (orphaned list types, a published index).
+  await removeTestIndexes(ADMIN_URL, [SLUG]);
   await onDb(ADMIN_URL, async (tx) => {
     await tx`DELETE FROM list_types WHERE slug LIKE 'site-search-%'
              AND (plugin_id IS NULL OR plugin_id NOT IN (SELECT id FROM plugins))`;
@@ -284,8 +312,11 @@ const server = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
   fetch: (req, srv) => {
-    const { pathname } = new URL(req.url);
-    if (!pathname.startsWith("/api/")) return routes(pathname);
+    const { pathname, search } = new URL(req.url);
+    if (!pathname.startsWith("/api/")) {
+      if (!pathname.startsWith("/__test/")) pageRequests.push(pathname + search);
+      return routes(pathname);
+    }
     return handleRequest(req, { peerAddress: srv.requestIP(req)?.address ?? null });
   },
 });

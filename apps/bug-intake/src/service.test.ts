@@ -20,6 +20,7 @@ class FakeTracker implements IssueTracker {
   releasesList: ReleaseInfo[] = [];
   calls = { create: 0, update: 0, comment: 0 };
   failNextCreate = false;
+  failNextUpdate = false;
   #next = 100;
 
   /** Every call that changes something on GitHub. */
@@ -47,12 +48,19 @@ class FakeTracker implements IssueTracker {
   }
   async updateIssue(n: number, patch: { body?: string; state?: "open" | "closed" }) {
     this.calls.update++;
+    if (this.failNextUpdate) {
+      this.failNextUpdate = false;
+      throw new Error("GitHub said no");
+    }
     const i = this.issues.get(n)!;
     if (patch.body !== undefined) i.body = patch.body;
     if (patch.state === "open")
       Object.assign(i, { state: "open", stateReason: "reopened", closedAt: null });
   }
+  /** Set: every issue read runs it first, as a slow or failing GitHub does. */
+  beforeGetIssue: ((n: number) => Promise<void>) | null = null;
   async getIssue(n: number) {
+    if (this.beforeGetIssue) await this.beforeGetIssue(n);
     return structuredClone(this.issues.get(n)!);
   }
   async addComment(n: number, body: string) {
@@ -72,9 +80,12 @@ class FakeTracker implements IssueTracker {
 
 class FakeMatcher implements ClusterMatcher {
   answer: string | null = null;
+  /** Set: every call throws it, as a revoked key or an outage does. */
+  fail: Error | null = null;
   seen: number[] = [];
   async match(_r: BugIntakeReport, candidates: { id: string }[]) {
     this.seen.push(candidates.length);
+    if (this.fail) throw this.fail;
     return this.answer;
   }
 }
@@ -832,5 +843,295 @@ describe("IntakeService suggestions (#1192)", () => {
     );
     expect(exact.clusterId).not.toBe(exactDefect.clusterId);
     expect(exact.clusterId.startsWith("c_s")).toBe(true);
+  });
+});
+
+describe("IntakeService while the matcher is down (2026-11-23: a revoked key)", () => {
+  const outage = new Error("invalid x-api-key");
+  const later = (ms: number) => {
+    clock = new Date(clock.getTime() + ms);
+  };
+  const ai = (fp: string, title: string) =>
+    report({ source: "ai", fingerprint: fp.repeat(64), title, whatHappened: title });
+
+  it("accepts the report, files nothing and asks the matcher again only after a minute", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const first = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    // Accepted (no refusal, so the install stops retrying) on a stand-in.
+    expect(first).toMatchObject({ status: "open", issueUrl: null });
+    expect(first.clusterId.startsWith("c_m")).toBe(true);
+    const standIn = (await store.getCluster(first.clusterId))!.value;
+    expect(standIn).toMatchObject({ awaitingMatch: true, occurrences: 0, fingerprints: [] });
+    expect(await store.candidates("defect")).toEqual([]);
+    expect(await store.clusterIdForFingerprint("defect", "b".repeat(64))).toBeNull();
+    expect(tracker.calls.create).toBe(0);
+
+    const asked = matcher.seen.length;
+    await s.ingest(INSTALL_B, ai("c", "Crop selector has no effect"));
+    expect(matcher.seen.length).toBe(asked);
+    expect([...store.deferred.keys()].length).toBe(2);
+
+    // A minute later it is asked once more; still failing, nothing moves.
+    later(61_000);
+    await s.ingest(INSTALL_B, ai("d", "Another report"));
+    expect(matcher.seen.length).toBe(asked + 1);
+    expect([...store.deferred.keys()].length).toBe(3);
+    expect(tracker.calls.create).toBe(0);
+  });
+
+  it("counts an exact repeat of a known defect at once: it needs no matcher", async () => {
+    const s = service();
+    const known = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = outage;
+    const repeat = await s.ingest(INSTALL_B, ai("b", "Selector crop ignored"));
+    expect(repeat.clusterId).toBe(known.clusterId);
+    expect((await store.getCluster(known.clusterId))!.value.installHashes.length).toBe(2);
+    expect([...store.deferred.keys()]).toEqual([]);
+  });
+
+  it("matches the deferred reports oldest first once it answers; each stand-in follows its cluster", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const a = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    const b = await s.ingest(INSTALL_B, ai("c", "Stage fails on a missing site text"));
+    matcher.fail = null;
+    later(61_000);
+
+    // A status refresh is enough: it matches the queue before it answers.
+    const [sa, sb] = await s.status([a.clusterId, b.clusterId]);
+    expect(sa).toMatchObject({ clusterId: a.clusterId, status: "open" });
+    expect(sa!.issueUrl).toContain("/issues/100");
+    expect(sb!.issueUrl).toContain("/issues/101");
+    expect([...store.deferred.keys()]).toEqual([]);
+
+    const real = await store.clusterIdForFingerprint("defect", "b".repeat(64));
+    expect((await store.getCluster(a.clusterId))!.value).toMatchObject({
+      mergedInto: real,
+      awaitingMatch: false,
+    });
+    expect((await store.getCluster(real!))!.value).toMatchObject({
+      occurrences: 1,
+      title: "Selector crop ignored",
+    });
+    // The real clusters are candidates; the stand-ins never were.
+    expect((await store.candidates("defect")).map((c) => c.id).sort()).toEqual(
+      [real, await store.clusterIdForFingerprint("defect", "c".repeat(64))].sort(),
+    );
+  });
+
+  it("puts a deferred report the matcher places into that cluster, without a second issue", async () => {
+    const s = service();
+    const known = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = outage;
+    const d = await s.ingest(INSTALL_B, ai("c", "screenshot ignores selector"));
+    matcher.fail = null;
+    matcher.answer = known.clusterId;
+    later(61_000);
+
+    const [after] = await s.status([d.clusterId]);
+    expect(after).toMatchObject({ clusterId: d.clusterId, issueUrl: known.issueUrl });
+    expect(tracker.calls.create).toBe(1);
+    const c = (await store.getCluster(known.clusterId))!.value;
+    expect(c.installHashes.length).toBe(2);
+    expect(c.occurrences).toBe(2);
+    expect(await store.clusterIdForFingerprint("defect", "c".repeat(64))).toBe(known.clusterId);
+  });
+
+  it("matches the queue before a new report, so the new one can join a deferred defect", async () => {
+    const s = service();
+    matcher.fail = outage;
+    await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = null;
+    later(61_000);
+    await s.ingest(INSTALL_B, ai("c", "screenshot ignores selector"));
+    // The deferred report was matched first (empty pool), then the new one
+    // saw the cluster it made.
+    expect(matcher.seen.slice(-2)).toEqual([0, 1]);
+  });
+
+  it("keeps a report retried during the outage to one stand-in and one count", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const r = ai("b", "Selector crop ignored");
+    const first = await s.ingest(INSTALL_A, r);
+    const retry = await s.ingest(INSTALL_A, r);
+    expect(retry.clusterId).toBe(first.clusterId);
+    expect([...store.deferred.keys()]).toEqual([r.reportId]);
+    matcher.fail = null;
+    later(61_000);
+    await s.status([first.clusterId]);
+    const real = await store.clusterIdForFingerprint("defect", "b".repeat(64));
+    expect((await store.getCluster(real!))!.value.occurrences).toBe(1);
+    // A retry after the match answers with the real cluster's state.
+    expect((await s.ingest(INSTALL_A, r)).issueUrl).toContain("/issues/100");
+  });
+
+  it("gives a retried report its lost queue entry back (Codex on #1714)", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const r = ai("b", "Selector crop ignored");
+    // The report is stored, then the queue write fails: the install gets an
+    // error and retries.
+    const deferReport = store.deferReport.bind(store);
+    store.deferReport = async () => {
+      throw new Error("Firestore unavailable");
+    };
+    await expect(s.ingest(INSTALL_A, r)).rejects.toThrow("Firestore unavailable");
+    expect([...store.deferred.keys()]).toEqual([]);
+    store.deferReport = deferReport;
+    await s.ingest(INSTALL_A, r);
+    expect([...store.deferred.keys()]).toEqual([r.reportId]);
+
+    matcher.fail = null;
+    later(61_000);
+    const [after] = await s.status([(await store.getReport(r.reportId))!.clusterId]);
+    expect(after!.issueUrl).toContain("/issues/100");
+  });
+
+  it("counts a deferred report once when a later step of its matching fails (Codex on #1714)", async () => {
+    const s = service();
+    matcher.fail = outage;
+    const d = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = null;
+    later(61_000);
+    // Counted, then GitHub refuses the issue: the report stays queued.
+    tracker.failNextCreate = true;
+    await s.status([d.clusterId]);
+    expect([...store.deferred.keys()].length).toBe(1);
+    const real = (await store.clusterIdForFingerprint("defect", "b".repeat(64)))!;
+    expect((await store.getCluster(real))!.value.occurrences).toBe(1);
+
+    const [after] = await s.status([d.clusterId]);
+    expect(after!.issueUrl).toContain("/issues/");
+    expect([...store.deferred.keys()]).toEqual([]);
+    expect((await store.getCluster(real))!.value.occurrences).toBe(1);
+    expect(tracker.issues.size).toBe(1);
+  });
+
+  it("starts no deferred report past its time budget, so the install's answer comes in time (Codex on #1714)", async () => {
+    const slow = new FakeMatcher();
+    const s = service(1, { matcher: slow });
+    slow.fail = outage;
+    for (const fp of ["b", "c", "d", "e", "f"]) await s.ingest(INSTALL_A, ai(fp, `Defect ${fp}`));
+    expect([...store.deferred.keys()].length).toBe(5);
+    slow.fail = null;
+    later(61_000);
+    // Each model call takes 1.5 s: two fit the 2.5 s budget, the rest wait.
+    const match = slow.match.bind(slow);
+    slow.match = async (r, c) => {
+      later(1_500);
+      return match(r, c);
+    };
+    await s.status([]);
+    expect([...store.deferred.keys()].length).toBe(3);
+    await s.status([]);
+    await s.status([]);
+    expect([...store.deferred.keys()].length).toBe(0);
+  });
+
+  it("refreshes the issue again when that edit failed for a counted deferred report (Codex on #1714)", async () => {
+    const s = service();
+    const known = await s.ingest(INSTALL_A, ai("b", "Selector crop ignored"));
+    matcher.fail = outage;
+    const d = await s.ingest(INSTALL_B, ai("c", "screenshot ignores selector"));
+    matcher.fail = null;
+    matcher.answer = known.clusterId;
+    later(61_000);
+    // Counted (a second install), then the body refresh fails.
+    tracker.failNextUpdate = true;
+    await s.status([d.clusterId]);
+    expect([...store.deferred.keys()].length).toBe(1);
+    expect(tracker.issues.get(100)?.body).toContain("| Installs reporting it | 1 |");
+
+    await s.status([d.clusterId]);
+    expect([...store.deferred.keys()]).toEqual([]);
+    expect(tracker.issues.get(100)?.body).toContain("| Installs reporting it | 2 |");
+    expect((await store.getCluster(known.clusterId))!.value.occurrences).toBe(2);
+  });
+});
+
+describe("IntakeService status of many clusters (2026-11-26: every refresh timed out)", () => {
+  // An install asks about up to 100 clusters at once and waits 10 s. One
+  // after another, the issue syncs took up to 53 s in production.
+  const CLUSTERS = 100;
+
+  /** `CLUSTERS` clusters with an issue each, the first created the stalest. */
+  async function manyClusters(s: IntakeService): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < CLUSTERS; i++) {
+      clock = new Date(clock.getTime() + 1_000);
+      const info = await s.ingest(
+        INSTALL_A,
+        report({
+          fingerprint: i.toString(16).padStart(2, "0").padEnd(64, "0"),
+          title: `Defect ${i}`,
+        }),
+      );
+      ids.push(info.clusterId);
+    }
+    // Every issue is due for a re-read, and every one was closed as fixed.
+    clock = new Date(clock.getTime() + 10 * 60_000);
+    for (const n of tracker.issues.keys()) tracker.close(n, "completed", clock.toISOString());
+    return ids;
+  }
+
+  /**
+   * Each issue read takes one simulated second, and reads in flight together
+   * end together, as parallel requests to GitHub do. Counts the reads.
+   */
+  function slowGitHub() {
+    const reads = { inFlight: 0, most: 0, total: 0 };
+    tracker.beforeGetIssue = async () => {
+      const start = clock.getTime();
+      reads.inFlight++;
+      reads.total++;
+      reads.most = Math.max(reads.most, reads.inFlight);
+      await Bun.sleep(1);
+      clock = new Date(Math.max(clock.getTime(), start + 1_000));
+      reads.inFlight--;
+    };
+    return reads;
+  }
+
+  it("syncs in parallel, the stalest first, and answers every cluster within the install's wait", async () => {
+    const s = service();
+    const ids = await manyClusters(s);
+    const reads = slowGitHub();
+    const started = clock.getTime();
+
+    const answer = await s.status(ids);
+
+    expect(clock.getTime() - started).toBeLessThan(10_000);
+    expect(reads.most).toBeGreaterThan(1);
+    expect(reads.most).toBeLessThanOrEqual(8);
+    expect(answer.map((c) => c.clusterId)).toEqual(ids);
+    const fixed = answer.filter((c) => c.status === "fixed").map((c) => c.clusterId);
+    expect(fixed.length).toBe(reads.total);
+    // The deadline left some for the next request, and those are the newest.
+    expect(fixed.length).toBeLessThan(CLUSTERS);
+    expect(fixed).toEqual(ids.slice(0, fixed.length));
+    expect(answer.slice(fixed.length).every((c) => c.status === "open")).toBe(true);
+
+    // The next request starts with the clusters this one had no time for.
+    const next = await s.status(ids);
+    const fixedNext = next.filter((c) => c.status === "fixed").map((c) => c.clusterId);
+    expect(fixedNext).toEqual(ids.slice(0, fixedNext.length));
+    expect(fixedNext.length).toBeGreaterThan(fixed.length);
+  });
+
+  it("answers with the state on record for an issue it cannot read", async () => {
+    const s = service();
+    const ids = await manyClusters(s);
+    const unreadable = (await store.getCluster(ids[3]!))!.value.issueNumber;
+    tracker.beforeGetIssue = async (n) => {
+      if (n === unreadable) throw new Error("GitHub: 404 Not Found");
+    };
+
+    const answer = await s.status(ids);
+
+    expect(answer.map((c) => c.clusterId)).toEqual(ids);
+    expect(answer[3]?.status).toBe("open");
+    expect(answer.filter((c) => c.status === "fixed").length).toBe(CLUSTERS - 1);
   });
 });

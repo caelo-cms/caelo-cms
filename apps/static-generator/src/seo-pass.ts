@@ -11,7 +11,8 @@
  *    the page shows last changed live: every indexable page is recorded
  *    in the build's {@link ContentStates}, which also feed `/feed.xml`
  *    (docs/dev/search-engine-feed.md).
- *  - robots.txt extension — adds the `Sitemap:` lines in production.
+ *  - robots.txt extension — adds the Owner's rules (#1706) and the
+ *    `Sitemap:` lines in production.
  *
  * Environment-independent on purpose: a staging build is byte-for-byte
  * what "Publish live" ships to production (deploy.promote copies it),
@@ -57,10 +58,12 @@ import {
   type PageUrlStyle,
   pagedUrl,
   pickShareImage,
+  type RobotsRules,
   renderSeoHead,
   resolveDocumentLanguage,
+  robotsRulesSchema,
+  robotsTxt,
   type SiteSeoSettings,
-  siteFeedUrl,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pageContentFingerprint, pluginRegionsDigest } from "./content-fingerprint.js";
@@ -670,26 +673,40 @@ export function requireSiteLanguage(settings: StoredSeoSettings): SiteSeoSetting
 }
 
 /**
- * Build a robots.txt body that includes the Sitemap: lines in
- * production: the sitemap, and the Atom feed, which search engines take
- * as a sitemap of the latest changes. Staging stays Disallow:/
- * regardless. Used by the generator AND by every publisher's promote,
- * which rewrites robots.txt for the destination target from the files
- * the build carries.
+ * Build a robots.txt body: in production the Owner's rules (#1706, the
+ * ones the build carries) and the Sitemap: lines (the sitemap, and the
+ * Atom feed, which search engines take as a sitemap of the latest
+ * changes). Staging stays Disallow:/ regardless. Used by the generator
+ * AND by every publisher's promote, which rewrites robots.txt for the
+ * destination target from the files and the rules the build carries
+ * (`deploy_runs.robots_rules`), never from the settings as they are by
+ * then.
  */
 export function buildRobotsTxtWithSitemap(
   robots: "index" | "noindex",
   siteBaseUrl: string,
   emitted: { readonly sitemap: boolean; readonly feed: boolean },
+  rules: RobotsRules,
 ): string {
-  if (robots === "noindex") return "User-agent: *\nDisallow: /\n";
-  const base = siteBaseUrl.replace(/\/$/, "");
-  const lines = [
-    ...(emitted.sitemap ? [`Sitemap: ${base}/sitemap.xml`] : []),
-    ...(emitted.feed ? [`Sitemap: ${siteFeedUrl(base)}`] : []),
-  ];
-  if (lines.length === 0) return "User-agent: *\nAllow: /\n";
-  return `User-agent: *\nAllow: /\n\n${lines.join("\n")}\n`;
+  return robotsTxt({ robots, siteBaseUrl, sitemap: emitted.sitemap, feed: emitted.feed, rules });
+}
+
+/**
+ * #1706 — the Owner's robots.txt rules (`site_defaults.robots_rules`),
+ * checked: every write validates them, so a row that fails here was
+ * written past the ops and the build refuses instead of shipping it.
+ */
+export async function readRobotsRules(tx: TransactionRunner): Promise<RobotsRules> {
+  const rows = (await tx.execute(sql`
+    SELECT robots_rules FROM site_defaults WHERE id = 1 LIMIT 1
+  `)) as unknown as { robots_rules: unknown }[];
+  const parsed = robotsRulesSchema.safeParse(rows[0]?.robots_rules);
+  if (!parsed.success) {
+    throw new Error(
+      `site_defaults.robots_rules holds rules no op could have written (${parsed.error.issues.map((i) => i.message).join("; ")}). Next step: set the robots.txt rules again in Settings → SEO (or propose_set_site_seo robotsRules), then Stage again.`,
+    );
+  }
+  return parsed.data;
 }
 
 /** What a crumb needs: its label and the inputs of the public URL builder. */

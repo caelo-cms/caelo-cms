@@ -142,4 +142,14 @@ describe("LlmClusterMatcher", () => {
     // About 13k tokens at most: one cheap model call per new fingerprint.
     expect(matchPrompt(worst, pool).length).toBeLessThan(55_000);
   });
+  it("gives up on a model that does not answer", async () => {
+    // Answers only by failing once the call's signal aborts.
+    const silent = new MockLanguageModelV3({
+      doGenerate: ({ abortSignal }) =>
+        new Promise((_resolve, reject) => {
+          abortSignal?.addEventListener("abort", () => reject(abortSignal.reason));
+        }),
+    });
+    await expect(new LlmClusterMatcher(silent, 20).match(report, candidates)).rejects.toThrow();
+  });
 });

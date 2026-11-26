@@ -53,6 +53,8 @@ const RENDERED_SITE_SETTINGS = {
     value: sql`CASE WHEN sd.indexnow_enabled THEN sd.indexnow_key END`,
   },
   organization_json: { label: "Organization JSON-LD", value: sql`sd.organization_json::text` },
+  // #1706 — the live robots.txt of a production build.
+  robots_rules: { label: "robots.txt rules", value: sql`sd.robots_rules::text` },
   site_language: { label: "site language", value: sql`sd.site_language` },
   media_cdn_copy_enabled: {
     label: "media CDN copy",

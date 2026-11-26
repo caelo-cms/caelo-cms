@@ -678,6 +678,7 @@ import { getSiteDefaultsOp, setSiteDefaultsOp, setSiteIdentityOp } from "./ops/s
 import {
   executeSiteDefaultsProposalOp,
   listPendingSiteDefaultsProposalsOp,
+  previewSiteSeoSetOp,
   proposeSiteSeoSetOp,
   rejectSiteDefaultsProposalOp,
 } from "./ops/site_defaults_pending.js";
@@ -1656,6 +1657,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // §11.A gate in front of set_seo: the AI proposes (propose_set_site_seo),
   // the Owner approves in the chat or on Settings → SEO.
   registry.register(proposeSiteSeoSetOp);
+  registry.register(previewSiteSeoSetOp);
   registry.register(executeSiteDefaultsProposalOp);
   registry.register(rejectSiteDefaultsProposalOp);
   registry.register(listPendingSiteDefaultsProposalsOp);

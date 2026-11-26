@@ -44,6 +44,7 @@ import {
   PhaseTimer,
   parseSiteHeaderSet,
   parseStaticFilesManifest,
+  type RobotsRules,
   runBatched,
   SECURITY_HEADERS_BUILD_FILE,
   SITE_DOCUMENT_PATH_PATTERN,
@@ -480,6 +481,8 @@ async function releaseAsTarget(args: {
   sourceConfig: FirebaseVersionConfig;
   target: DeployTarget;
   siteBaseUrl: string;
+  /** #1706 — the robots.txt rules of the build being released. */
+  robotsRules: RobotsRules;
   /** See StaticPublisher.promoteToProduction. */
   beforeRelease?: () => Promise<void>;
 }): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
@@ -491,10 +494,15 @@ async function releaseAsTarget(args: {
   const allFiles = await listVersionFiles(site, sourceVersionId, token);
 
   const { buildRobotsTxtWithSitemap } = await import("@caelo-cms/static-generator");
-  const robotsBody = buildRobotsTxtWithSitemap(args.target.robotsDefault, args.siteBaseUrl, {
-    sitemap: allFiles.some((f) => f.path === "/sitemap.xml"),
-    feed: allFiles.some((f) => f.path === `/${FEED_FILE}`),
-  });
+  const robotsBody = buildRobotsTxtWithSitemap(
+    args.target.robotsDefault,
+    args.siteBaseUrl,
+    {
+      sitemap: allFiles.some((f) => f.path === "/sitemap.xml"),
+      feed: allFiles.some((f) => f.path === `/${FEED_FILE}`),
+    },
+    args.robotsRules,
+  );
   const { body: robotsGzipped, sha256: robotsSha256 } = await gzipAndHashBytes(
     Buffer.from(robotsBody, "utf-8"),
   );
@@ -1104,6 +1112,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
     fromTarget,
     toTarget,
     siteBaseUrl,
+    robotsRules,
     beforeRelease,
   }) {
     const site = siteName();
@@ -1130,6 +1139,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
       sourceConfig,
       target: toTarget,
       siteBaseUrl,
+      robotsRules,
       ...(beforeRelease ? { beforeRelease } : {}),
     });
     const summary: PromoteSummary = {
@@ -1227,7 +1237,13 @@ export const firebaseHostingPublisher: StaticPublisher = {
     };
   },
 
-  async rollback({ targetBuildId, target, siteBaseUrl, sourceLocation }): Promise<PublishSummary> {
+  async rollback({
+    targetBuildId,
+    target,
+    siteBaseUrl,
+    robotsRules,
+    sourceLocation,
+  }): Promise<PublishSummary> {
     const site = siteName();
     const token = await googleAccessToken();
     // The Hosting version the run released, as its publish summary recorded
@@ -1248,6 +1264,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
       sourceConfig: await versionConfig(site, sourceLocation, token),
       target,
       siteBaseUrl,
+      robotsRules,
     });
     return {
       provider: "gcp-firebase",

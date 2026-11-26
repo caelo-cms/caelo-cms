@@ -218,6 +218,7 @@ describe("Firebase build upload — #1632 token lifetime", () => {
       fromTarget: PRODUCTION,
       toTarget: PRODUCTION,
       siteBaseUrl: "https://example.test",
+      robotsRules: [],
       // The fence waits for its leases; meanwhile the first token expires.
       beforeRelease: async () => {
         hosting.expired.add("token-1");

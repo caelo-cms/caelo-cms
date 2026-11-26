@@ -159,6 +159,97 @@ export function answered(sources: readonly WidgetSource[]): boolean {
   return false;
 }
 
+/**
+ * #1701 — the search query the inline answer asks: the fragment's `q`
+ * (`#q=…`, site-search's hash mode, #1707) when the fragment has one,
+ * else the query string's `q`. `anchor` says the fragment is something
+ * else (a skip link): a `hashchange` to it asks nothing. The same reading
+ * as site-search's runtime, so the answer and the results always show the
+ * same query.
+ */
+export function searchQueryOf(search: string, hash: string): { query: string; anchor: boolean } {
+  const fragment =
+    String(hash || "").charAt(0) === "#" ? String(hash).slice(1) : String(hash || "");
+  if (fragment !== "") {
+    const fromHash = new URLSearchParams(fragment);
+    if (fromHash.has("q")) return { query: String(fromHash.get("q") || "").trim(), anchor: false };
+  }
+  const fromSearch = new URLSearchParams(String(search || ""));
+  return { query: String(fromSearch.get("q") || "").trim(), anchor: fragment !== "" };
+}
+
+/**
+ * #1701 — how an answer card asks, from its `data-caelo-assistant-answer`
+ * value: `query` answers the page's search query (site-search's results
+ * page), `ask` takes the visitor's own question in the card's form (any
+ * page). Anything else is null: the card asks nothing, rather than guess.
+ */
+export function answerCardMode(value: string | null): "query" | "ask" | null {
+  const v = String(value == null ? "" : value)
+    .trim()
+    .toLowerCase();
+  return v === "query" || v === "ask" ? v : null;
+}
+
+/**
+ * #1701 — where one card keeps its conversation in the tab: its page and
+ * its place on it (its `id` when it has one, else its position), so two
+ * cards on one page, or one card on two pages, never show each other's
+ * conversation, and a reload finds the card's own.
+ */
+export function answerStoreKey(pathname: string, cardId: string, index: number): string {
+  const where = cardId ? `id:${cardId}` : `n:${index}`;
+  return `caelo-assistant-answer:${String(pathname || "/")}#${where}`;
+}
+
+/** One conversation a card keeps: the language and query it was asked in. */
+export interface KeptAnswer {
+  readonly lang: string;
+  /** The search query a query card answered; "" for an ask card. */
+  readonly query: string;
+  readonly history: readonly string[];
+  readonly messages: readonly unknown[];
+}
+
+/**
+ * #1701 — the kept conversation to show again: the one asked in this
+ * language and, for a query card, for this query, with an answer. A
+ * visitor who goes back to an earlier search, or opens the page in another
+ * language, gets that one's conversation, never another's.
+ */
+export function keptConversation(
+  kept: readonly KeptAnswer[] | null,
+  lang: string,
+  query: string,
+): KeptAnswer | null {
+  for (const k of kept || []) {
+    if (
+      k &&
+      k.lang === lang &&
+      k.query === query &&
+      Array.isArray(k.messages) &&
+      k.messages.length > 0
+    )
+      return k;
+  }
+  return null;
+}
+
+/**
+ * #1701 — a card's kept conversations once `state` is saved: it first, the
+ * others of other queries or languages after, at most ten (the number is
+ * written here: the browser gets this function's text, nothing around it).
+ */
+export function keepConversation(
+  kept: readonly KeptAnswer[] | null,
+  state: KeptAnswer,
+): KeptAnswer[] {
+  const others = (kept || []).filter(
+    (k) => k && !(k.lang === state.lang && k.query === state.query),
+  );
+  return [state].concat(others).slice(0, 10);
+}
+
 /** The functions runtime.ts ships, in dependency order. */
 export const WIDGET_LOGIC = [
   parseSse,
@@ -168,4 +259,9 @@ export const WIDGET_LOGIC = [
   sourceHref,
   answerParts,
   answered,
+  searchQueryOf,
+  answerCardMode,
+  answerStoreKey,
+  keptConversation,
+  keepConversation,
 ] as const;

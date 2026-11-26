@@ -92,9 +92,20 @@ export function matchPrompt(report: BugIntakeReport, candidates: ClusterSummary[
   ].join("\n");
 }
 
+/**
+ * A match gives up after this long, retries included, and the report takes
+ * the outage path (service.ts, "Matcher outage"). A call that never returns
+ * would hold the intake's find-or-create lock, and with it every later
+ * report of a new fingerprint.
+ */
+const MATCH_TIMEOUT_MS = 6_000;
+
 /** The model-backed matcher; accepts only a high-confidence answer naming an offered candidate. */
 export class LlmClusterMatcher implements ClusterMatcher {
-  constructor(readonly model: LanguageModel) {}
+  constructor(
+    readonly model: LanguageModel,
+    readonly timeoutMs = MATCH_TIMEOUT_MS,
+  ) {}
 
   /** The production matcher: an Anthropic model through the AI SDK. */
   static anthropic(apiKey: string, modelId: string): LlmClusterMatcher {
@@ -108,6 +119,7 @@ export class LlmClusterMatcher implements ClusterMatcher {
       model: this.model,
       schema: matchAnswer,
       prompt: matchPrompt(report, candidates),
+      abortSignal: AbortSignal.timeout(this.timeoutMs),
     });
     if (object.confidence !== "high" || object.clusterId === null) return null;
     return candidates.some((c) => c.id === object.clusterId) ? object.clusterId : null;

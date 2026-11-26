@@ -9,6 +9,7 @@
 
 import { z } from "zod";
 import { blankNonMarkup } from "./html-blank.js";
+import { robotsRulesSchema } from "./robots-rules.js";
 import { trimSlashes } from "./url.js";
 
 export const CHANGEFREQ_VALUES = [
@@ -88,6 +89,11 @@ export const siteDefaultsSetSeoInputSchema = z
     /** IndexNow submissions of the URLs a Publish live changed. */
     indexNowEnabled: z.boolean(),
     organizationJson: organizationJsonSchema.default({}),
+    /**
+     * #1706 — the Owner's robots.txt rules (robots-rules.ts), REPLACING the
+     * stored list. Omitted: the stored rules stay as they are.
+     */
+    robotsRules: robotsRulesSchema.optional(),
   })
   .strict();
 export type SiteDefaultsSetSeoInput = z.infer<typeof siteDefaultsSetSeoInputSchema>;
@@ -105,6 +111,8 @@ export const siteSeoProposalInputSchema = z
     feedEnabled: z.boolean().optional(),
     indexNowEnabled: z.boolean().optional(),
     organizationJson: organizationJsonSchema.optional(),
+    /** #1706 — REPLACES the whole list of robots.txt rules. */
+    robotsRules: robotsRulesSchema.optional(),
   })
   .strict()
   .refine(
@@ -113,8 +121,9 @@ export const siteSeoProposalInputSchema = z
       v.sitemapEnabled !== undefined ||
       v.feedEnabled !== undefined ||
       v.indexNowEnabled !== undefined ||
-      v.organizationJson !== undefined,
-    "pass at least one of `siteBaseUrl`, `sitemapEnabled`, `feedEnabled`, `indexNowEnabled`, `organizationJson`",
+      v.organizationJson !== undefined ||
+      v.robotsRules !== undefined,
+    "pass at least one of `siteBaseUrl`, `sitemapEnabled`, `feedEnabled`, `indexNowEnabled`, `organizationJson`, `robotsRules`",
   );
 export type SiteSeoProposalInput = z.infer<typeof siteSeoProposalInputSchema>;
 

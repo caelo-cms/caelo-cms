@@ -18,6 +18,8 @@ describe("propose_set_site_seo", () => {
       proposeOp: "site_defaults.propose_set_seo",
       executeOp: "site_defaults.execute_proposal",
       pendingQueuePath: "/settings/seo",
+      // #1706 — the card shows the server's text (the live robots.txt).
+      approvalPreviewOp: "site_defaults.preview_set_seo",
     });
   });
 
@@ -32,6 +34,17 @@ describe("propose_set_site_seo", () => {
       false,
     );
     expect(s.safeParse({ sitemapEnabled: "yes" }).success).toBe(false);
+    // #1706 — robots.txt rules, checked strictly at the tool boundary.
+    expect(
+      s.safeParse({ robotsRules: [{ userAgents: ["*"], disallow: ["/de/suche/"] }] }).success,
+    ).toBe(true);
+    expect(s.safeParse({ robotsRules: [] }).success).toBe(true);
+    expect(
+      s.safeParse({ robotsRules: [{ userAgents: ["*"], disallow: ["/x\nAllow: /"] }] }).success,
+    ).toBe(false);
+    expect(s.safeParse({ robotsRules: [{ userAgents: ["*"], crawlDelay: 5 }] }).success).toBe(
+      false,
+    );
   });
 
   it("advertises exactly the fields the schema accepts", () => {
@@ -42,6 +55,7 @@ describe("propose_set_site_seo", () => {
       "feedEnabled",
       "indexNowEnabled",
       "organizationJson",
+      "robotsRules",
       "siteBaseUrl",
       "sitemapEnabled",
     ]);
@@ -50,6 +64,8 @@ describe("propose_set_site_seo", () => {
   it("routes the site language and per-page SEO to their own tools", () => {
     expect(proposeSetSiteSeoTool.description).toContain("set_site_identity");
     expect(proposeSetSiteSeoTool.description).toContain("set_page_seo_many");
+    // #1706 — and a robots.txt file to these rules, not to static files.
+    expect(proposeSetSiteSeoTool.description).toContain("propose_set_static_files");
   });
 
   it("is registered in the chat catalogue and offered on the Power-MCP surface", () => {
