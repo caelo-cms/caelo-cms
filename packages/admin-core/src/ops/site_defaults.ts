@@ -71,6 +71,7 @@ function parseDesignBrief(raw: unknown): DesignBrief | null {
 
 export const getSiteDefaultsOp = defineOperation({
   name: "site_defaults.get",
+  pluginAccess: "read",
   readScope: "request",
   // Plugin actors read it to find the designated home page: a URL
   // plugin needs to know which page core treats as the root before it

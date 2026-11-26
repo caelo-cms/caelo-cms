@@ -259,6 +259,8 @@ interface MakeContextOpts {
   readonly publicTarget?: "live" | "staging";
   /** #1495 — see `MakePluginContextOpts.liveUrls`. */
   readonly liveUrls?: LiveBuildUrls;
+  /** #1729 — see `MakePluginContextOpts.sandboxKind`. */
+  readonly sandboxKind?: SandboxKind;
 }
 
 /**
@@ -334,10 +336,12 @@ export interface RunPluginOperationOpts {
    */
   readonly publicTarget?: "live" | "staging";
   /**
-   * #1729 — what a sandboxed (runtime-installed) plugin's call is for, when
-   * the origin alone does not say it: a change-journal batch or a rebuild
-   * chunk. Picks its slot pool and time budget (sandbox-kind.ts). Ignored
-   * for a plugin that runs in-process.
+   * #1729 — what a plugin's call is for, when the origin alone does not
+   * say it: a change-journal batch or a rebuild chunk. For a sandboxed
+   * (runtime-installed) plugin it picks the slot pool and time budget
+   * (sandbox-kind.ts); for every plugin it sets what the context's handles
+   * allow (capabilities.ts: no public-table writes from journal work,
+   * site-wide reads only from background work).
    */
   readonly sandboxKind?: SandboxKind;
   /**
@@ -822,6 +826,7 @@ async function runPluginOperationNow(
       invocation: opts.invocation,
       ...(publicOperation ? { publicOperation } : {}),
       ...(opts.publicTarget ? { publicTarget: opts.publicTarget } : {}),
+      ...(opts.sandboxKind ? { sandboxKind: opts.sandboxKind } : {}),
     });
   } catch (e) {
     if (isProjectionNotPublished(e)) {

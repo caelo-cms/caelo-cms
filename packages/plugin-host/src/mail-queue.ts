@@ -54,6 +54,7 @@ const queueInput = z
 
 const queueOp = defineOperation({
   name: MAIL_QUEUE_OP,
+  pluginAccess: "handle",
   readScope: "request",
   // Why plugin-only: the row is queued under the calling plugin's id (the
   // outbox policy checks it is an active published plugin); no other actor

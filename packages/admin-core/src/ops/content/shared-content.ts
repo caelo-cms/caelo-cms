@@ -111,6 +111,7 @@ async function withBranchedModules<
 
 export const listSharedContentOp = defineOperation({
   name: "pages.list_shared_content",
+  pluginAccess: "read",
   readScope: "request",
   // Why system-only: the planning read behind plugin chrome variants
   // (international-site's translate_chrome / intl_status). The AI sees the

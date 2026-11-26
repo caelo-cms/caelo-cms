@@ -160,6 +160,7 @@ async function matching(
 
 export const searchPagesOp = defineOperation({
   name: "pages.search",
+  pluginAccess: "read",
   readScope: "request",
   // §11: list and search ops are open reads; plugins search like the AI.
   actorScope: ["human", "ai", "plugin", "system"],

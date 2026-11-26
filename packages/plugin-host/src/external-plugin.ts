@@ -168,6 +168,11 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // the answer per render scope and asks again only after a change to
     // these tables, so a preview does not spawn a sandbox per page chunk.
     ...(manifest.linkResolveReads ? { linkResolveReads: manifest.linkResolveReads } : {}),
+    // #1729 — reviewed markup a `$deferrals` verdict names (deferrals.ts):
+    // the verdict carries a name and text, never markup of its own.
+    ...(manifest.deferralPlaceholders
+      ? { deferralPlaceholders: manifest.deferralPlaceholders }
+      : {}),
     // #1332 — the reviewed contract, with the input schema compiled from
     // the manifest's JSON Schema: the host validates a visitor's body
     // before the sandbox ever sees it.

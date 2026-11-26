@@ -46,7 +46,7 @@ const approvalOp = defineOperation({
     active: z.boolean(),
     artifactDigest: z.string().nullable(),
     manifest: z.unknown(),
-    grants: z.array(z.object({ id: z.string(), capability: z.string() })),
+    grants: z.array(z.object({ id: z.string(), capability: z.string(), constraints: z.unknown() })),
   }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
@@ -58,14 +58,14 @@ const approvalOp = defineOperation({
     }
     const artifactDigest = externalArtifactDigest(row.manifest_json, row.source_code);
     const grants = (await tx.execute(sql`
-      SELECT g.id::text AS id, g.capability
+      SELECT g.id::text AS id, g.capability, g.constraints
       FROM plugin_capability_grants g
       JOIN plugin_installation_versions v
         ON v.plugin_id = g.plugin_id AND v.artifact_digest = g.artifact_digest
       WHERE g.plugin_id = ${input.pluginId}::uuid AND g.artifact_digest = ${artifactDigest}
         AND g.revoked_at IS NULL AND v.status = 'active'
       ORDER BY g.id
-    `)) as unknown as { id: string; capability: string }[];
+    `)) as unknown as { id: string; capability: string; constraints: unknown }[];
     return ok({
       active: row.status === "active",
       artifactDigest,

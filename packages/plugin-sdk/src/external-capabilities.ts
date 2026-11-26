@@ -28,12 +28,12 @@ const PLANNED: ExternalCapabilityStatus = Object.freeze({ status: "planned", iss
 export const EXTERNAL_CAPABILITY_STATUS: Readonly<
   Record<PluginCapability, ExternalCapabilityStatus>
 > = Object.freeze({
-  cms_admin: PLANNED,
+  cms_admin: BROKERED,
   cms_admin_schema: BROKERED,
   ai_provider: PLANNED,
   chat_runner_tools: BROKERED,
   background_workers: BROKERED,
-  change_journal: PLANNED,
+  change_journal: BROKERED,
   email: PLANNED,
   head_contributions: PLANNED,
   url_slots: PLANNED,

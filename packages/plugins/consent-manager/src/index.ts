@@ -62,7 +62,7 @@ import {
   scanEmbeds,
   verdictFor,
 } from "./guards.js";
-import { defaultPlaceholder, editorNotice } from "./placeholder.js";
+import { DEFERRAL_PLACEHOLDERS, defaultPlaceholder, editorNotice } from "./placeholder.js";
 import { buildRuntimeJs, CONSENT_COOKIE, RUNTIME_CSS } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
@@ -294,6 +294,9 @@ export default definePlugin<PluginContextTier1>({
     "background_workers",
     "list_sources",
     "consent_provider",
+    // #1729 — the runtime on every page and the withheld modules: the
+    // grant every plugin needs for them (one plugin model).
+    "client_assets",
   ],
 
   /** Proof of consent. Written by the gateway on a visitor request. */
@@ -511,6 +514,8 @@ export default definePlugin<PluginContextTier1>({
    * host has no verdict yet is withheld too — see `scan_modules`.
    */
   deferralsOperation: "consent_deferrals",
+  /** What a verdict names (#1729): reviewed markup, filled with escaped text. */
+  deferralPlaceholders: DEFERRAL_PLACEHOLDERS,
 
   /** A pending module blocks Publish live — see `audit_findings`. */
   auditFindingsOperation: "audit_findings",
@@ -773,7 +778,7 @@ export default definePlugin<PluginContextTier1>({
         deferrals[moduleId] = {
           reason,
           placeholderModuleSlug: settings.placeholder_module_slug,
-          defaultPlaceholder: defaultPlaceholder(reason, label),
+          placeholder: defaultPlaceholder(reason, label),
         };
       }
       return { deferrals };

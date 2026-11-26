@@ -11,12 +11,7 @@
  * shows `editorNotice` in its place, saying what is held back and why.
  */
 
-const escapeHtml = (v: string): string =>
-  v
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+import type { DeferralPlaceholderRef, DeferralPlaceholders } from "@caelo-cms/plugin-sdk";
 
 const CSS = `.caelo-consent-placeholder{border:1px dashed currentColor;border-radius:.5rem;padding:1rem;text-align:center;opacity:.85}
 .caelo-consent-placeholder button{margin-top:.5rem;cursor:pointer}`;
@@ -30,21 +25,34 @@ const NOTICE_CSS = `.caelo-consent-notice{box-sizing:border-box;margin:.5rem 0;p
 .caelo-consent-notice button{cursor:pointer;padding:.35rem .75rem;border:0;border-radius:.375rem;background:#2a64b8;color:#fff;font:inherit}`;
 
 /**
+ * The plugin's reviewed placeholders (#1729): markup in the manifest, so a
+ * verdict names one and hands it text, which core escapes. A verdict can
+ * never put markup of its own where a withheld embed was.
+ */
+export const DEFERRAL_PLACEHOLDERS: DeferralPlaceholders = {
+  consent: {
+    html: `<div class="caelo-consent-placeholder" data-consent-placeholder><p>This content is provided by a third party and loads only with your consent to &ldquo;{{category_label}}&rdquo;.</p><button type="button" data-consent-grant="{{category}}">Allow and load</button></div>`,
+    css: CSS,
+  },
+  unreviewed: {
+    html:
+      `<div class="caelo-consent-notice" data-consent-notice>` +
+      `<strong>Hidden from visitors: external content not reviewed yet</strong>` +
+      `<p>This module loads content from <code>{{hosts}}</code>. External content stays off the page until you decide whether visitors have to consent to it first (and under which category) or whether it may load freely. Visitors see nothing here until then; this note shows only in the editor.</p>` +
+      `<button type="button" data-caelo-ask-ai>Resolve in chat</button>` +
+      `</div>`,
+    css: NOTICE_CSS,
+  },
+};
+
+/**
  * The visitor's placeholder for content gated behind a consent category.
  *
  * @param reason the consent category key
  * @param categoryLabel the operator's display name for that category
  */
-export function defaultPlaceholder(
-  reason: string,
-  categoryLabel: string,
-): { html: string; css: string } {
-  const label = escapeHtml(categoryLabel);
-  const key = escapeHtml(reason);
-  return {
-    html: `<div class="caelo-consent-placeholder" data-consent-placeholder><p>This content is provided by a third party and loads only with your consent to &ldquo;${label}&rdquo;.</p><button type="button" data-consent-grant="${key}">Allow and load</button></div>`,
-    css: CSS,
-  };
+export function defaultPlaceholder(reason: string, categoryLabel: string): DeferralPlaceholderRef {
+  return { name: "consent", values: { category: reason, category_label: categoryLabel } };
 }
 
 /**
@@ -55,15 +63,6 @@ export function defaultPlaceholder(
  *
  * @param hosts the third-party hosts the module loads from
  */
-export function editorNotice(hosts: ReadonlyArray<string>): { html: string; css: string } {
-  const list = hosts.map((h) => `<code>${escapeHtml(h)}</code>`).join(", ");
-  return {
-    html:
-      `<div class="caelo-consent-notice" data-consent-notice>` +
-      `<strong>Hidden from visitors: external content not reviewed yet</strong>` +
-      `<p>This module loads content from ${list}. External content stays off the page until you decide whether visitors have to consent to it first (and under which category) or whether it may load freely. Visitors see nothing here until then; this note shows only in the editor.</p>` +
-      `<button type="button" data-caelo-ask-ai>Resolve in chat</button>` +
-      `</div>`,
-    css: NOTICE_CSS,
-  };
+export function editorNotice(hosts: ReadonlyArray<string>): DeferralPlaceholderRef {
+  return { name: "unreviewed", values: { hosts: hosts.join(", ") } };
 }

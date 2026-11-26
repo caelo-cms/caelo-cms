@@ -42,6 +42,8 @@ let videoModuleId = "";
 
 /** What the fixture plugin currently withholds. Mutated per test. */
 let verdicts: Record<string, Record<string, unknown>> = {};
+/** #1729 — answer for every verdict, asked or not (the "not asked about" case). */
+let answerAll = false;
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -129,9 +131,21 @@ beforeAll(async () => {
     version: "0.1.0",
     tier: 1,
     schema: {},
+    requestedCapabilities: ["client_assets"],
     deferralsOperation: "deferrals",
+    deferralPlaceholders: {
+      allow: {
+        html: '<div data-t450-default><p>Loads with consent to {{label}}.</p><button data-consent-grant="{{key}}">Allow</button></div>',
+        css: ".t450d{}",
+      },
+      notice: {
+        html: "<div data-t450-notice>Hidden from visitors: {{hosts}}</div>",
+        css: ".t450n{}",
+      },
+    },
     operations: {
       deferrals: async (_ctx, args) => {
+        if (answerAll) return { deferrals: verdicts };
         const { moduleIds } = args as { moduleIds: string[] };
         const out: Record<string, unknown> = {};
         for (const id of moduleIds) {
@@ -210,14 +224,13 @@ describe("#450 — module deferrals through the preview op", () => {
       [videoModuleId]: {
         reason: "marketing",
         placeholderModuleSlug: "t450-nope",
-        defaultPlaceholder: {
-          html: '<div data-t450-default><button data-consent-grant="marketing">Allow</button></div>',
-          css: ".t450d{}",
-        },
+        placeholder: { name: "allow", values: { label: "Marketing", key: "marketing" } },
       },
     };
     const html = await renderPage();
     expect(html).toContain("data-t450-default");
+    expect(html).toContain('data-consent-grant="marketing"');
+    expect(html).toContain("Loads with consent to Marketing.");
     expect(html).toContain(".t450d{}");
     expect(html.indexOf("youtube.com")).toBeGreaterThan(
       html.indexOf("<template data-caelo-deferred-content>"),
@@ -229,13 +242,14 @@ describe("#450 — module deferrals through the preview op", () => {
       [videoModuleId]: {
         reason: "unclassified",
         omit: true,
-        editorNotice: { html: "<div data-t450-notice>Hidden from visitors</div>", css: ".t450n{}" },
+        editorNotice: { name: "notice", values: { hosts: "youtube.com" } },
       },
     };
     const html = await renderPage();
-    expect(html).toContain("data-t450-notice");
+    expect(html).toContain("<div data-t450-notice>Hidden from visitors: youtube.com</div>");
     expect(html).toContain(".t450n{}");
-    expect(html).not.toContain("youtube.com");
+    // The host's name is the notice's text; the embed itself is gone.
+    expect(html).not.toContain("youtube.com/embed");
   });
 
   it("gives a build nothing for an omitted module", async () => {
@@ -245,7 +259,7 @@ describe("#450 — module deferrals through the preview op", () => {
       [videoModuleId]: {
         reason: "unclassified",
         omit: true,
-        editorNotice: { html: "<div data-t450-notice>Hidden</div>", css: "" },
+        editorNotice: { name: "notice", values: { hosts: "youtube.com" } },
       },
     };
     const resolved = await resolveModuleDeferrals([videoCandidate()], MAIN_RENDER);
@@ -271,6 +285,81 @@ describe("#450 — module deferrals through the preview op", () => {
     expect(resolveModuleDeferrals([videoCandidate()], MAIN_RENDER)).rejects.toThrow(
       /invalid verdict/,
     );
+  });
+
+  // #1729 — a verdict carries data, never markup (§6.7), for every plugin.
+  it("escapes a verdict's text: a value cannot become markup on the page", async () => {
+    verdicts = {
+      [videoModuleId]: {
+        reason: "marketing",
+        placeholderModuleSlug: "t450-nope",
+        placeholder: {
+          name: "allow",
+          values: { label: "<script>steal()</script>", key: '"><img src=x onerror=a()>' },
+        },
+      },
+    };
+    const resolved = await resolveModuleDeferrals([videoCandidate()], MAIN_RENDER);
+    const html = (resolved.get(videoModuleId) as { placeholderHtml: string }).placeholderHtml;
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;script&gt;steal()&lt;/script&gt;");
+    expect(html).toContain('data-consent-grant="&quot;&gt;&lt;img src=x onerror=a()&gt;"');
+  });
+
+  it("refuses markup in a verdict (the shape before #1729)", async () => {
+    verdicts = {
+      [videoModuleId]: {
+        reason: "marketing",
+        placeholderModuleSlug: "t450-nope",
+        defaultPlaceholder: { html: "<script>steal()</script>", css: "" },
+      },
+    };
+    expect(resolveModuleDeferrals([videoCandidate()], MAIN_RENDER)).rejects.toThrow(
+      /invalid verdict/,
+    );
+  });
+
+  it("refuses a placeholder the manifest does not declare", async () => {
+    verdicts = {
+      [videoModuleId]: {
+        reason: "marketing",
+        placeholderModuleSlug: "t450-nope",
+        placeholder: { name: "elsewhere", values: {} },
+      },
+    };
+    expect(resolveModuleDeferrals([videoCandidate()], MAIN_RENDER)).rejects.toThrow(
+      /names placeholder "elsewhere".*does not declare/,
+    );
+  });
+
+  it("refuses values that do not fill the placeholder's slots", async () => {
+    verdicts = {
+      [videoModuleId]: {
+        reason: "marketing",
+        placeholderModuleSlug: "t450-nope",
+        placeholder: { name: "allow", values: { label: "Marketing", extra: "x" } },
+      },
+    };
+    expect(resolveModuleDeferrals([videoCandidate()], MAIN_RENDER)).rejects.toThrow(
+      /missing: key; not a slot of it: extra/,
+    );
+  });
+
+  it("refuses a verdict for a module the render did not ask about", async () => {
+    const other = "00000000-0000-4000-8000-0000000000ff";
+    verdicts = {
+      [videoModuleId]: { reason: "marketing", placeholderModuleSlug: "t450-placeholder" },
+      [other]: { reason: "marketing", placeholderModuleSlug: "t450-placeholder" },
+    };
+    answerAll = true;
+    try {
+      expect(resolveModuleDeferrals([videoCandidate()], MAIN_RENDER)).rejects.toThrow(
+        new RegExp(`answered for module ${other}, which was not asked about`),
+      );
+    } finally {
+      answerAll = false;
+    }
   });
 
   it("costs nothing when no plugin declares deferrals", async () => {

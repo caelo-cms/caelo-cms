@@ -60,6 +60,7 @@ import { Cron } from "croner";
 // from #52, or the externalization regression from #53. See those issues
 // + the comment block above forceOxcParserNativeEntry for the full chain.
 import { parseSync } from "oxc-parser";
+import { deferralPlaceholderProblems } from "./client-assets.js";
 
 // ---------------------------------------------------------------------------
 // Worker schedules (#1720)
@@ -205,7 +206,8 @@ export type ValidationFailureKind =
   | "forbidden-globalthis-alias"
   | "parse-error"
   | "worker-schedule"
-  | "link-resolve-reads";
+  | "link-resolve-reads"
+  | "client-assets";
 
 export interface ValidationFailure {
   readonly kind: ValidationFailureKind;
@@ -314,6 +316,15 @@ export function validateManifest(
         hint: "manifest declares `listTypes` but does not request the `list_types` capability. Add it to `requestedCapabilities` (or drop the list types).",
       });
     }
+    if (
+      (m.hasDeferrals || Object.keys(m.deferralPlaceholders ?? {}).length > 0) &&
+      !caps.has("client_assets")
+    ) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "the plugin withholds modules (`deferralsOperation`) but does not request the `client_assets` capability. Add it to `requestedCapabilities` (or drop the deferrals).",
+      });
+    }
     if (m.hasListResolve && !caps.has("list_resolve")) {
       failures.push({
         kind: "manifest-cap-missing",
@@ -350,10 +361,34 @@ export function validateManifest(
     }
   }
 
+  failures.push(...clientAssetFailures(m));
+
   // Static-render flag must reflect intent — caught at registration when
   // the source is parsed, not here. Tracked via the source walker below.
 
   return { manifest: failures.length === 0 ? m : null, failures };
+}
+
+/**
+ * #1729 — what a plugin puts in a visitor's browser, for every plugin
+ * (client-assets.ts): placeholders a deferral verdict names are reviewed
+ * markup in which nothing loads or runs.
+ */
+function clientAssetFailures(m: PluginManifest): ValidationFailure[] {
+  const failures: ValidationFailure[] = [];
+  const fail = (hint: string) => failures.push({ kind: "client-assets", hint });
+  const placeholders = m.deferralPlaceholders ?? {};
+  if (Object.keys(placeholders).length > 0 && !m.hasDeferrals) {
+    fail(
+      "manifest declares `deferralPlaceholders` but no `deferralsOperation` names them: declare the deferrals operation, or drop the placeholders.",
+    );
+  }
+  for (const { where, problem } of deferralPlaceholderProblems(placeholders)) {
+    fail(
+      `${where}: ${problem} is not allowed. A placeholder stands in for content withheld until the visitor agrees, so nothing in it may load or run: plain elements (div, p, span, a, strong, button, …), class/id/role/title/type/href and data-*/aria-* attributes, {{name}} slots for text, CSS without url() to another site or @import.`,
+    );
+  }
+  return failures;
 }
 
 // ---------------------------------------------------------------------------

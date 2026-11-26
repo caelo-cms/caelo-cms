@@ -119,6 +119,7 @@ async function pageTypesByTemplate(
 
 export const listTemplatesOp = defineOperation({
   name: "templates.list",
+  pluginAccess: "read",
   readScope: "request",
   // CLAUDE.md §11: AI plans cross-template moves and needs broad read.
   // Plugin actors read too, like pages.list (#396): consent-manager checks
