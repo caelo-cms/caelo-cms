@@ -115,6 +115,7 @@ async function shipped(slug: string): Promise<PluginManifest> {
 async function fixtureManifest(): Promise<PluginManifest> {
   const search = await shipped("site-search");
   const assistant = await shipped("site-assistant");
+  const consent = await shipped("consent-manager");
   return {
     ...search,
     ...assistant,
@@ -128,6 +129,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
     workers: search.workers,
     listTypes: search.listTypes,
     aiChatOperations: assistant.aiChatOperations,
+    changeConsumer: consent.changeConsumer,
     tier: 2,
   };
 }
@@ -154,6 +156,25 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
       pages: [],
     });
     expect(calls).toEqual([["pages.list", { limit: 1 }]]);
+  },
+  // #1729 — batches and rebuild chunks are host-initiated runs of the
+  // declared operations; the plugin asks about its consumer through ctx.changes.
+  change_journal: async () => {
+    const changeConsumer = {
+      operationName: "run",
+      rebuildOperationName: "run",
+      kinds: [],
+      ownTables: ["notes"],
+      lines: "all" as const,
+    };
+    expect(externalDeclarations({ ...probe, changeConsumer }).changeConsumer).toEqual(
+      changeConsumer,
+    );
+    const fake = fakeHandle(["cursorState"], { continuous: true });
+    expect(await sandboxed(`return ctx.changes.cursorState()`, { changes: fake.handle })).toEqual({
+      continuous: true,
+    });
+    expect(fake.calls).toEqual(["cursorState"]);
   },
   cms_admin_schema: async () => {
     const fake = fakeHandle(["list"], [{ id: ID }]);

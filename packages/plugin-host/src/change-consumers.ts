@@ -37,7 +37,12 @@
  * the named `plugin_changes.*` operations below — the host brokers no SQL.
  */
 
-import type { PluginChange, PluginChangeKind, PluginInvocation } from "@caelo-cms/plugin-sdk";
+import {
+  PLUGIN_REBUILD_CURSOR_MAX,
+  type PluginChange,
+  type PluginChangeKind,
+  type PluginInvocation,
+} from "@caelo-cms/plugin-sdk";
 import {
   beginConsumerRebuild,
   type ChangeBatch,
@@ -46,6 +51,7 @@ import {
   commitChangesIfCurrent,
   consumerClaimExpiresInMs,
   consumerCursorContinuous,
+  consumerRebuildCursor,
   consumerRebuildPending,
   type DatabaseAdapter,
   defineOperation,
@@ -60,6 +66,7 @@ import {
   pollChanges,
   registerConsumer,
   releaseConsumer,
+  saveConsumerRebuildCursor,
   type TransactionRunner,
 } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, JOURNAL_CHANNEL, ok } from "@caelo-cms/shared";
@@ -89,6 +96,13 @@ const BATCH = 500;
  */
 const MAX_BATCHES = 40;
 /**
+ * #1729 (decision Q11) — rebuild chunks one drain runs at most. A rebuild
+ * with more to do keeps its cursor on the consumer and resumes at the
+ * consumer's next drain, so a long (or never-ending) rebuild holds the
+ * background pool for at most this many chunks per turn.
+ */
+const MAX_REBUILD_CHUNKS = 10;
+/**
  * The single-instance claim. Renewed every third of it while a dispatch or a
  * rebuild runs, so a long one keeps it; every state update (batch commit,
  * finished rebuild) is fenced on it, so one that outlived it changes nothing.
@@ -106,6 +120,11 @@ export interface DrainLimits {
    * stopped between requests (#1361).
    */
   readonly claimRenewMs?: number;
+  /**
+   * #1729 — chunks of a resumable rebuild one drain runs before the next
+   * consumer's turn; the rest resumes at the consumer's next drain.
+   */
+  readonly maxRebuildChunks?: number;
   /** First retry delay of a failed consumer ({@link startChangeConsumers}). */
   readonly failureRetryMinMs?: number;
   /** Longest retry delay of a failed consumer ({@link startChangeConsumers}). */
@@ -211,6 +230,8 @@ const claimOp = defineOperation({
   output: z.object({
     claimed: z.boolean(),
     rebuildPending: z.boolean(),
+    /** #1729 — where a pending resumable rebuild continues; null at its start. */
+    rebuildCursor: z.string().nullable(),
     /** When not claimed: ms until the other holder's claim lapses. */
     retryInMs: z.number().int().nonnegative().nullable(),
     /** The plugin is not active in the database: nothing was claimed or created. */
@@ -218,13 +239,20 @@ const claimOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     if (!(await pluginActive(tx, input.pluginId))) {
-      return ok({ claimed: false, rebuildPending: false, retryInMs: null, inactive: true });
+      return ok({
+        claimed: false,
+        rebuildPending: false,
+        rebuildCursor: null,
+        retryInMs: null,
+        inactive: true,
+      });
     }
     await registerConsumer(tx, input.name, input.pluginId);
     const claimed = await claimConsumer(tx, input.name, input.holder, input.leaseMs ?? CLAIM_MS);
     return ok({
       claimed,
       rebuildPending: await consumerRebuildPending(tx, input.name),
+      rebuildCursor: await consumerRebuildCursor(tx, input.name),
       retryInMs: claimed ? null : await consumerClaimExpiresInMs(tx, input.name),
       inactive: false,
     });
@@ -368,6 +396,34 @@ const finishRebuildOp = defineOperation({
 });
 
 /**
+ * `plugin_changes.save_rebuild_cursor` — #1729 (decision Q11): a resumable
+ * rebuild's chunk answered "more, start here". Stored only while this
+ * holder's claim is current, so a chunk that outlived it stores nothing.
+ */
+const saveRebuildCursorOp = defineOperation({
+  name: "plugin_changes.save_rebuild_cursor",
+  // Why human-only: only the host's consumer runner stores a rebuild's progress.
+  actorScope: SYSTEM_ONLY,
+  readScope: "request",
+  database: "cms_admin",
+  input: z
+    .object({
+      name: consumerName,
+      holder: z.string().min(1).max(200),
+      cursor: z.string().min(1).max(PLUGIN_REBUILD_CURSOR_MAX),
+      leaseMs: z.number().int().min(1000).max(CLAIM_MS).optional(),
+    })
+    .strict(),
+  output: z.object({ saved: z.boolean() }),
+  handler: async (_ctx, input, tx) => {
+    if (!(await retakeClaim(tx, input))) return ok({ saved: false });
+    return ok({
+      saved: await saveConsumerRebuildCursor(tx, input.name, input.holder, input.cursor),
+    });
+  },
+});
+
+/**
  * `plugin_changes.cursor_state` — the calling plugin's own consumer: whether
  * its cursor is continuous (exists, no rebuild pending, not passed by GC).
  * A plugin that adopts current content as a baseline (international-site's
@@ -460,6 +516,7 @@ const OPS = [
   commitOp,
   beginRebuildOp,
   finishRebuildOp,
+  saveRebuildCursorOp,
   cursorStateOp,
   checkMarkOp,
 ];
@@ -515,8 +572,14 @@ export interface DrainReport {
   readonly slug: string;
   /** Changes dispatched. */
   readonly changes: number;
-  /** Whether the rebuild operation ran. */
+  /** Whether the rebuild operation ran to its end. */
   readonly rebuilt: boolean;
+  /**
+   * #1729 — a resumable rebuild ran its chunks for this drain and is not
+   * done: its cursor is stored and it resumes at the next drain. No batch
+   * is delivered until it is done.
+   */
+  readonly rebuilding?: boolean;
   /**
    * This drain stopped without storing what it was working on: another
    * instance holds the claim (or took it over while this one ran, #1361),
@@ -535,14 +598,65 @@ export interface DrainReport {
   readonly retryInMs?: number;
 }
 
+/**
+ * Run one of the consumer's operations. `kind` says what the call is for
+ * (#1729): a batch or a rebuild chunk, so a sandboxed plugin gets the
+ * background pool and budget, and every plugin's handles know it
+ * (no public-table writes from journal work, capabilities.ts).
+ *
+ * @returns the operation's answer
+ */
 async function dispatch(
   plugin: LoadedPlugin,
   operationName: string,
   args: unknown,
   invocation: PluginInvocation,
-): Promise<void> {
-  const r = await runPluginOperation({ pluginSlug: plugin.slug, operationName, args, invocation });
+  kind: "journal" | "rebuild",
+): Promise<unknown> {
+  const r = await runPluginOperation({
+    pluginSlug: plugin.slug,
+    operationName,
+    args,
+    invocation,
+    sandboxKind: kind,
+  });
   if (!r.ok) throw new ConsumerDispatchError(`${r.error.kind}: ${r.error.message}`);
+  return r.value;
+}
+
+/**
+ * #1729 (Q11) — what a rebuild chunk's answer means: done unless it says
+ * `done: false`, which needs a new cursor. A missing cursor, or the one
+ * the chunk was given, would loop forever and is refused loudly.
+ */
+export function rebuildChunkOutcome(
+  slug: string,
+  answer: unknown,
+  given: string | null,
+): { readonly done: true } | { readonly done: false; readonly cursor: string } {
+  if (
+    typeof answer !== "object" ||
+    answer === null ||
+    (answer as { done?: unknown }).done !== false
+  ) {
+    return { done: true };
+  }
+  const cursor = (answer as { cursor?: unknown }).cursor;
+  if (
+    typeof cursor !== "string" ||
+    cursor.length === 0 ||
+    cursor.length > PLUGIN_REBUILD_CURSOR_MAX
+  ) {
+    throw new Error(
+      `plugin "${slug}": its rebuild answered done: false without a cursor (1–${PLUGIN_REBUILD_CURSOR_MAX} characters) to resume from — return { done: false, cursor } with where the next chunk starts`,
+    );
+  }
+  if (cursor === given) {
+    throw new Error(
+      `plugin "${slug}": its rebuild answered the cursor it was called with, so it makes no progress — return the cursor of the next chunk, or done`,
+    );
+  }
+  return { done: false, cursor };
 }
 
 /** Record a failure of the host's own consumer step (claim, poll, commit) under the plugin. */
@@ -596,6 +710,7 @@ async function drainOne(
   const maxBatches = limits.maxBatches ?? MAX_BATCHES;
   const claimMs = limits.claimMs ?? CLAIM_MS;
   const claimRenewMs = limits.claimRenewMs ?? Math.max(250, Math.floor(claimMs / 3));
+  const maxRebuildChunks = limits.maxRebuildChunks ?? MAX_REBUILD_CHUNKS;
   const name = changeConsumerName(plugin.pluginId);
   const holder = hostInstanceId();
   let changes = 0;
@@ -606,6 +721,7 @@ async function drainOne(
   interface ClaimResult {
     claimed: boolean;
     rebuildPending: boolean;
+    rebuildCursor: string | null;
     retryInMs: number | null;
     inactive: boolean;
   }
@@ -619,7 +735,7 @@ async function drainOne(
     await recordHostStepError(adapter, registry, plugin, message, thrown);
     return { slug: plugin.slug, changes, rebuilt, skipped: false, error: message, more: false };
   }
-  const { claimed, rebuildPending, retryInMs, inactive } = claimResult;
+  const { claimed, rebuildPending, rebuildCursor, retryInMs, inactive } = claimResult;
   if (inactive) return notStoredHere(plugin.slug, "inactive", changes, rebuilt);
   if (!claimed) {
     return {
@@ -652,26 +768,58 @@ async function drainOne(
     }
   };
   // The rebuild-from-source: derive everything, then read the journal from
-  // where the rebuild began (its cursor was taken before it ran). False when
-  // another instance holds the consumer now; the rebuild stays pending.
-  const rebuild = async (): Promise<boolean> => {
-    await keepingClaim(() =>
-      dispatch(plugin, spec.rebuildOperationName, {}, batchInvocation(null)),
-    );
-    const { finished } = await run<{ finished: boolean }>(
-      adapter,
-      registry,
-      "plugin_changes.finish_rebuild",
-      { name, holder, leaseMs: claimMs },
-    );
-    if (finished) rebuilt = true;
-    return finished;
+  // where the rebuild began (its cursor was taken before it ran). #1729
+  // (Q11): in resumable chunks, at most `maxRebuildChunks` per drain, each
+  // chunk's cursor stored on the consumer. "taken-over" when another
+  // instance holds the consumer now; "resume" when chunks are left for the
+  // next drain. Either way the rebuild stays pending.
+  const rebuild = async (from: string | null): Promise<"finished" | "taken-over" | "resume"> => {
+    let cursor = from;
+    for (let chunk = 0; chunk < maxRebuildChunks; chunk++) {
+      const args = cursor === null ? {} : { cursor };
+      const answer = await keepingClaim(() =>
+        dispatch(plugin, spec.rebuildOperationName, args, batchInvocation(null), "rebuild"),
+      );
+      const outcome = rebuildChunkOutcome(plugin.slug, answer, cursor);
+      if (outcome.done) {
+        const { finished } = await run<{ finished: boolean }>(
+          adapter,
+          registry,
+          "plugin_changes.finish_rebuild",
+          { name, holder, leaseMs: claimMs },
+        );
+        if (!finished) return "taken-over";
+        rebuilt = true;
+        return "finished";
+      }
+      const { saved } = await run<{ saved: boolean }>(
+        adapter,
+        registry,
+        "plugin_changes.save_rebuild_cursor",
+        { name, holder, cursor: outcome.cursor, leaseMs: claimMs },
+      );
+      if (!saved) return "taken-over";
+      cursor = outcome.cursor;
+    }
+    return "resume";
   };
+  const stillRebuilding = (): DrainReport => ({
+    slug: plugin.slug,
+    changes,
+    rebuilt,
+    rebuilding: true,
+    skipped: false,
+    more: false,
+  });
   try {
     // First sight of this consumer (a first activation, or a re-activation
     // after its cursor was dropped), or a rebuild that did not finish.
-    if (rebuildPending && !(await rebuild())) {
-      return notStoredHere(plugin.slug, "taken-over", changes, rebuilt);
+    if (rebuildPending) {
+      const outcome = await rebuild(rebuildCursor);
+      if (outcome === "taken-over") {
+        return notStoredHere(plugin.slug, "taken-over", changes, rebuilt);
+      }
+      if (outcome === "resume") return stillRebuilding();
     }
     const filter = pluginChangeFilter(plugin);
     for (let i = 0; i < maxBatches; i++) {
@@ -682,7 +830,11 @@ async function drainOne(
       });
       if (batch.needsRebuild) {
         await run(adapter, registry, "plugin_changes.begin_rebuild", { name });
-        if (!(await rebuild())) return notStoredHere(plugin.slug, "taken-over", changes, rebuilt);
+        const outcome = await rebuild(null);
+        if (outcome === "taken-over") {
+          return notStoredHere(plugin.slug, "taken-over", changes, rebuilt);
+        }
+        if (outcome === "resume") return stillRebuilding();
         continue;
       }
       const byBranch = new Map<string | null, PluginChange[]>();
@@ -698,6 +850,7 @@ async function drainOne(
             spec.operationName,
             { chatBranchId, changes: list },
             batchInvocation(chatBranchId),
+            "journal",
           ),
         );
         changes += list.length;
