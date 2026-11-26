@@ -586,6 +586,53 @@ describe("#1752 robots, data-nosnippet and preview == build", () => {
     expect(preview.html).toContain('<div data-nosnippet=""><article');
   });
 
+  it("resolves data-nosnippet placements again against a layout it takes over (review #1771)", async () => {
+    const p = await page("nosnippet-takeover");
+    const mod = async (slug: string, html: string) =>
+      (
+        await op<{ moduleId: string }>(SYS, "modules.create", {
+          slug: `${PFX}${slug}`,
+          displayName: slug,
+          html,
+          css: "",
+          js: "",
+        })
+      ).moduleId;
+    const before = await mod("before", "<div><p>Old block</p></div>");
+    const after = await mod("after", "<div><p>Replaced block</p></div>");
+    await op(SYS, "pages.set_modules", {
+      pageId: p,
+      blocks: [{ blockName: "content", moduleIds: [before] }],
+    });
+    const experiment = async (title: string): Promise<ExecutionContext> => {
+      const v = await op<{ chatSessionId: string; chatBranchId: string }>(
+        SYS,
+        "chat.create_session",
+        { title: `${PFX}${title}`, isolation: "experiment" },
+      );
+      return { ...AI, chatBranchId: v.chatBranchId, chatTaskId: v.chatSessionId };
+    };
+    const a = await experiment("layout-a");
+    const b = await experiment("layout-b");
+    // Chat A replaces the placement; chat B then marks content#0.
+    await op(a, "pages.set_modules", {
+      pageId: p,
+      blocks: [{ blockName: "content", moduleIds: [after] }],
+    });
+    await op(HUMAN, "pages_seo.set", { pageId: p, metaDescription: "Live description." });
+    await op(b, "pages_seo.set", {
+      pageId: p,
+      nosnippetPlacements: [{ blockName: "content", position: 0 }],
+    });
+    expect((await read(b, p)).seo?.nosnippetPlacements).toEqual([
+      { blockName: "content", position: 0 },
+    ]);
+    const preview = (await op<{ html: string }>(b, "pages.render_preview", { pageId: p })).html;
+    expect(preview).toMatch(
+      /<div data-caelo-module-id="[^"]+" data-nosnippet=""><p>Replaced block/,
+    );
+  });
+
   it("the preview renders the build's head, an article dated from the live record", async () => {
     await op(HUMAN, "page_types.set_seo_many", {
       pageTypes: [
@@ -613,7 +660,8 @@ describe("#1752 robots, data-nosnippet and preview == build", () => {
         INSERT INTO live_page_versions (run_id, page_id, kind, url, fingerprint, title, summary, changed_at)
         VALUES (${run[0]?.id}::uuid, ${p}::uuid, 'added', ${`${BASE}/${PFX}article/`},
                 ${pageContentFingerprint({
-                  title: "Title article · News",
+                  title: "Title article",
+                  headTitle: "Title article · News",
                   metaDescription: "What happened.",
                   bodyDigest: bodyContentDigest(body),
                 })},

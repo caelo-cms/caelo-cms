@@ -46,6 +46,34 @@ describe("pageContentFingerprint", () => {
     ).not.toBe(base);
   });
 
+  it("moves with the <title> and the page title both, and is unchanged while they agree (#1752)", () => {
+    const base = pageContentFingerprint({ title: "T", metaDescription: "D", bodyDigest: body });
+    expect(
+      pageContentFingerprint({
+        title: "T",
+        metaDescription: "D",
+        bodyDigest: body,
+        headTitle: "T",
+      }),
+    ).toBe(base);
+    const own = pageContentFingerprint({
+      title: "T",
+      metaDescription: "D",
+      bodyDigest: body,
+      headTitle: "Own title",
+    });
+    expect(own).not.toBe(base);
+    // A fixed own <title>: a new page title still moves the date.
+    expect(
+      pageContentFingerprint({
+        title: "T2",
+        metaDescription: "D",
+        bodyDigest: body,
+        headTitle: "Own title",
+      }),
+    ).not.toBe(own);
+  });
+
   it("stays when only the markup around the same content changes", () => {
     const restyled = bodyContentDigest(
       '<main class="new"><p class="lead">Prices from 10 EUR</p></main>',

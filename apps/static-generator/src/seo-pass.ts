@@ -473,10 +473,11 @@ export async function prepareSeoPass(args: {
           // The feed and IndexNow need an absolute address; a canonical
           // override may be written relative to the site.
           url: new URL(publicUrlOf(bundle), settings.siteBaseUrl).href,
-          // #1752 — the `<title>` search results show is what the page
-          // shows; with the stored `{page_title}` template it is the title.
+          // #1752 — the `<title>` search results show is part of what the
+          // page shows, next to its title (the feed and JSON-LD name).
           fingerprint: pageContentFingerprint({
-            title: headOf(bundle, false).title.value,
+            title: bundle.title,
+            headTitle: headOf(bundle, false).title.value,
             metaDescription: bundle.metaDescription,
             bodyDigest: p.bodyDigest,
           }),

@@ -501,6 +501,25 @@ export const pagesSeoSetOp = defineOperation({
       ? peek
       : await openPageSeoWrite(ctx, tx, op, input.pageId);
     if (!opened.ok) return opened;
+    if (opened !== peek && input.nosnippetPlacements !== undefined) {
+      // The lock may have taken another chat's pending layout of the page
+      // over (a replaced or forked placement): the placements resolve again
+      // against it. A refusal now throws, rolling the takeover back.
+      const content = await nosnippetContentOf(
+        tx,
+        pageKey(input.pageId),
+        input.nosnippetPlacements,
+        ctx.chatBranchId,
+      );
+      if (!content.ok) {
+        throw new OperationAbortError({
+          kind: "HandlerError",
+          operation: op,
+          message: content.message,
+        });
+      }
+      fixed.nosnippetContent = [...new Set(content.ids)].sort();
+    }
     const planned = nextOf(opened.value.current);
     if (!planned.ok) throw new OperationAbortError(planned.error);
     const next = planned.value;
