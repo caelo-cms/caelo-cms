@@ -335,7 +335,7 @@ export default definePlugin<PluginContextTier1>({
   /** #1292 — the moderation queue reads by status, newest first. */
   indexes: { schema: { comments: [["status", "submitted_at"]] } },
   /**
-   * `client_assets`: `buildAssets` puts `runtime.js` and `runtime.css` on
+   * `client_assets`: `clientFiles` puts `runtime.js` and `runtime.css` on
    * every page of the site. `companion_skills`: the setup skill. Both are
    * declared so the Owner sees them at approval (CMS_REQUIREMENTS §14.5).
    */
@@ -723,7 +723,7 @@ export default definePlugin<PluginContextTier1>({
    * after the bake (#1169). It loads on every page and stops at once where
    * no comments region exists.
    */
-  buildAssets: () => ({ "runtime.js": THREAD_RUNTIME_JS, "runtime.css": RUNTIME_CSS }),
+  clientFiles: { "runtime.js": THREAD_RUNTIME_JS, "runtime.css": RUNTIME_CSS },
   writeHintsOperation: "write_hints",
   skills: COMMENTS_SKILLS,
 

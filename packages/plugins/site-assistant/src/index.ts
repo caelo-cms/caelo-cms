@@ -412,7 +412,7 @@ export default definePlugin({
   workers: [{ name: "prune", cron: "23 4 * * *", operationName: "prune_feedback" }],
   auditFindingsOperation: "audit",
   skills: SITE_ASSISTANT_SKILLS,
-  buildAssets: () => ({ "runtime.js": RUNTIME_JS }),
+  clientFiles: { "runtime.js": RUNTIME_JS },
   operations: {
     gaps: async (ctx, args) => {
       const b = args as PluginBatchArgs;

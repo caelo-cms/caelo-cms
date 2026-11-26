@@ -92,9 +92,9 @@ describe("explicit external installation grants", () => {
     ).toThrow("limits `ai_provider` only");
   });
   it("requires reviewed capabilities for browser assets", () => {
-    expect(() => validateInstallationPolicy({ ...manifest(), hasBuildAssets: true })).toThrow(
-      "client_assets",
-    );
+    expect(() =>
+      validateInstallationPolicy({ ...manifest(), clientFiles: { "runtime.js": "x" } }),
+    ).toThrow("client_assets");
   });
 });
 

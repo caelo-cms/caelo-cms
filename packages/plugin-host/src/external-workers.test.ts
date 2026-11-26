@@ -22,7 +22,7 @@ const manifest: PluginManifest = {
   schema: {},
   operations: ["tick"],
   hasStaticRender: false,
-  hasBuildAssets: false,
+  hasBuildData: false,
   hasDeferrals: false,
   hasContentVariants: false,
   hasLinkResolve: false,

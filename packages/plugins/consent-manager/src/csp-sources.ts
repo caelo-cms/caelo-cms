@@ -5,7 +5,7 @@
  *
  * No tag is in a page's markup: the runtime injects it after consent, so the
  * build cannot read it there. This file tells the build instead, as the
- * reserved `csp-sources.json` of `buildAssets`: the exact text of every
+ * `csp` of its build data (`consent_build_data`, #1729): the exact text of every
  * inline snippet (the build hashes it), the origin of every tag's script and
  * the hosts a known vendor's script goes on to contact. An Owner's tag is an
  * approved decision (`add_tracking_tag`), which is why it may widen the CSP.

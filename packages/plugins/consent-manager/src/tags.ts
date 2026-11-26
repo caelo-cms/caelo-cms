@@ -403,19 +403,9 @@ export function assertInlineSnippetIsJs(tool: string, inline: string): void {
 }
 
 /**
- * JSON safe to place inside an inline `<script>`: `<` is escaped so a
- * `</script>` in the data cannot end the element early, and the two
- * line separators JavaScript treats as line breaks are escaped too.
- */
-export function jsonForInlineScript(value: unknown): string {
-  return JSON.stringify(value)
-    .replaceAll("<", "\\u003c")
-    .replaceAll(" ", "\\u2028")
-    .replaceAll(" ", "\\u2029");
-}
-
-/**
- * The injector, appended to the runtime with the site's tags baked in.
+ * The injector, part of the runtime file (#1729: reviewed with the plugin).
+ * It reads the site's tags from the build data (`CONFIG.tags`, see
+ * runtime.ts), which core embeds as a data block.
  *
  * Paths compare normalised (`/a/`, `/a/index.html` and `/a.html` are the
  * page `/a`) because the deploy target decides which of those the
@@ -423,101 +413,99 @@ export function jsonForInlineScript(value: unknown): string {
  * matches the `<html lang>` itself and its regional variants (`de`
  * covers `de-AT`).
  */
-export function buildTagInjector(tags: ReadonlyArray<BakedTag>): string {
-  return [
-    `var TAGS = ${jsonForInlineScript(tags)};`,
-    `var loadedTags = {};`,
-    `function normPath(p) {`,
-    `  p = String(p || "/").replace(/\\/index\\.html?$/, "/").replace(/\\.html?$/, "");`,
-    `  if (p.length > 1 && p.charAt(p.length - 1) === "/") p = p.slice(0, -1);`,
-    `  return p || "/";`,
-    `}`,
-    `function pathMatches(glob, path) {`,
-    `  var parts = normPath(glob).split("*");`,
-    `  for (var i = 0; i < parts.length; i++) parts[i] = parts[i].replace(/[.+?^\${}()|[\\]\\\\]/g, "\\\\$&");`,
-    `  return new RegExp("^" + parts.join(".*") + "$").test(path);`,
-    `}`,
-    `function anyPath(globs, path) {`,
-    `  for (var i = 0; i < globs.length; i++) if (pathMatches(globs[i], path)) return true;`,
-    `  return false;`,
-    `}`,
-    `function inScope(scope) {`,
-    `  var path = normPath(location.pathname);`,
-    `  if (scope.locales) {`,
-    `    var lang = String(document.documentElement.lang || "").toLowerCase();`,
-    `    var ok = false;`,
-    `    for (var i = 0; i < scope.locales.length; i++) {`,
-    `      var l = scope.locales[i].toLowerCase();`,
-    `      if (lang === l || lang.indexOf(l + "-") === 0) ok = true;`,
-    `    }`,
-    `    if (!ok) return false;`,
-    `  }`,
-    `  if (scope.include && !anyPath(scope.include, path)) return false;`,
-    `  return !anyPath(scope.exclude, path);`,
-    `}`,
-    `function loadTags() {`,
-    `  for (var i = 0; i < TAGS.length; i++) {`,
-    `    var tag = TAGS[i];`,
-    `    if (loadedTags[tag.name]) continue;`,
-    `    if (!isGranted(tag.category)) continue;`,
-    `    if (!inScope(tag.scope)) continue;`,
-    `    loadedTags[tag.name] = true;`,
-    `    var target = tag.position === "head" ? document.head : document.body;`,
-    `    if (tag.src) {`,
-    `      var el = document.createElement("script");`,
-    `      el.async = true;`,
-    `      el.src = tag.src;`,
-    `      el.setAttribute("data-caelo-tag", tag.name);`,
-    `      target.appendChild(el);`,
-    `    }`,
-    `    if (tag.inline) {`,
-    `      var inline = document.createElement("script");`,
-    `      inline.text = tag.inline;`,
-    `      inline.setAttribute("data-caelo-tag", tag.name);`,
-    `      target.appendChild(inline);`,
-    `    }`,
-    `  }`,
-    `}`,
-    // Withdrawal must be as effective as consent (Art. 7(3) GDPR): the
-    // cookies a withdrawn category's tags set go too. A script cannot
-    // know which domain a vendor set its cookie on, nor where the
-    // registrable domain starts (no public suffix list in the browser),
-    // so it expires the name on the host and on every parent with at
-    // least two labels; the browser ignores the attempt on a public
-    // suffix.
-    `function cookieDomains() {`,
-    `  var labels = String(location.hostname || "").split(".");`,
-    `  var out = [""];`,
-    `  for (var i = 0; i <= labels.length - 2; i++) out.push(labels.slice(i).join("."));`,
-    `  return out;`,
-    `}`,
-    `function expireCookie(name) {`,
-    `  var domains = cookieDomains();`,
-    `  for (var i = 0; i < domains.length; i++) {`,
-    `    try {`,
-    `      document.cookie = name + "=;path=/;max-age=0;expires=Thu, 01 Jan 1970 00:00:00 GMT" + (domains[i] ? ";domain=" + domains[i] : "");`,
-    `    } catch (e) {`,
-    `      return;`,
-    `    }`,
-    `  }`,
-    `}`,
-    `function expireWithdrawnCookies(keptKeys) {`,
-    `  var jar = cookieJar();`,
-    `  if (!jar) return;`,
-    `  var names = [];`,
-    `  var parts = jar.split("; ");`,
-    `  for (var p = 0; p < parts.length; p++) names.push(parts[p].split("=")[0]);`,
-    `  for (var i = 0; i < TAGS.length; i++) {`,
-    `    var tag = TAGS[i];`,
-    `    if (keptKeys.indexOf(tag.category) !== -1) continue;`,
-    `    for (var c = 0; c < tag.cookies.length; c++) {`,
-    `      var decl = tag.cookies[c];`,
-    `      for (var n = 0; n < names.length; n++) {`,
-    `        var hit = decl.prefix ? names[n].indexOf(decl.name) === 0 : names[n] === decl.name;`,
-    `        if (hit) expireCookie(names[n]);`,
-    `      }`,
-    `    }`,
-    `  }`,
-    `}`,
-  ].join("\n");
-}
+export const TAG_INJECTOR: string = [
+  `var TAGS = CONFIG.tags || [];`,
+  `var loadedTags = {};`,
+  `function normPath(p) {`,
+  `  p = String(p || "/").replace(/\\/index\\.html?$/, "/").replace(/\\.html?$/, "");`,
+  `  if (p.length > 1 && p.charAt(p.length - 1) === "/") p = p.slice(0, -1);`,
+  `  return p || "/";`,
+  `}`,
+  `function pathMatches(glob, path) {`,
+  `  var parts = normPath(glob).split("*");`,
+  `  for (var i = 0; i < parts.length; i++) parts[i] = parts[i].replace(/[.+?^\${}()|[\\]\\\\]/g, "\\\\$&");`,
+  `  return new RegExp("^" + parts.join(".*") + "$").test(path);`,
+  `}`,
+  `function anyPath(globs, path) {`,
+  `  for (var i = 0; i < globs.length; i++) if (pathMatches(globs[i], path)) return true;`,
+  `  return false;`,
+  `}`,
+  `function inScope(scope) {`,
+  `  var path = normPath(location.pathname);`,
+  `  if (scope.locales) {`,
+  `    var lang = String(document.documentElement.lang || "").toLowerCase();`,
+  `    var ok = false;`,
+  `    for (var i = 0; i < scope.locales.length; i++) {`,
+  `      var l = scope.locales[i].toLowerCase();`,
+  `      if (lang === l || lang.indexOf(l + "-") === 0) ok = true;`,
+  `    }`,
+  `    if (!ok) return false;`,
+  `  }`,
+  `  if (scope.include && !anyPath(scope.include, path)) return false;`,
+  `  return !anyPath(scope.exclude, path);`,
+  `}`,
+  `function loadTags() {`,
+  `  for (var i = 0; i < TAGS.length; i++) {`,
+  `    var tag = TAGS[i];`,
+  `    if (loadedTags[tag.name]) continue;`,
+  `    if (!isGranted(tag.category)) continue;`,
+  `    if (!inScope(tag.scope)) continue;`,
+  `    loadedTags[tag.name] = true;`,
+  `    var target = tag.position === "head" ? document.head : document.body;`,
+  `    if (tag.src) {`,
+  `      var el = document.createElement("script");`,
+  `      el.async = true;`,
+  `      el.src = tag.src;`,
+  `      el.setAttribute("data-caelo-tag", tag.name);`,
+  `      target.appendChild(el);`,
+  `    }`,
+  `    if (tag.inline) {`,
+  `      var inline = document.createElement("script");`,
+  `      inline.text = tag.inline;`,
+  `      inline.setAttribute("data-caelo-tag", tag.name);`,
+  `      target.appendChild(inline);`,
+  `    }`,
+  `  }`,
+  `}`,
+  // Withdrawal must be as effective as consent (Art. 7(3) GDPR): the
+  // cookies a withdrawn category's tags set go too. A script cannot
+  // know which domain a vendor set its cookie on, nor where the
+  // registrable domain starts (no public suffix list in the browser),
+  // so it expires the name on the host and on every parent with at
+  // least two labels; the browser ignores the attempt on a public
+  // suffix.
+  `function cookieDomains() {`,
+  `  var labels = String(location.hostname || "").split(".");`,
+  `  var out = [""];`,
+  `  for (var i = 0; i <= labels.length - 2; i++) out.push(labels.slice(i).join("."));`,
+  `  return out;`,
+  `}`,
+  `function expireCookie(name) {`,
+  `  var domains = cookieDomains();`,
+  `  for (var i = 0; i < domains.length; i++) {`,
+  `    try {`,
+  `      document.cookie = name + "=;path=/;max-age=0;expires=Thu, 01 Jan 1970 00:00:00 GMT" + (domains[i] ? ";domain=" + domains[i] : "");`,
+  `    } catch (e) {`,
+  `      return;`,
+  `    }`,
+  `  }`,
+  `}`,
+  `function expireWithdrawnCookies(keptKeys) {`,
+  `  var jar = cookieJar();`,
+  `  if (!jar) return;`,
+  `  var names = [];`,
+  `  var parts = jar.split("; ");`,
+  `  for (var p = 0; p < parts.length; p++) names.push(parts[p].split("=")[0]);`,
+  `  for (var i = 0; i < TAGS.length; i++) {`,
+  `    var tag = TAGS[i];`,
+  `    if (keptKeys.indexOf(tag.category) !== -1) continue;`,
+  `    for (var c = 0; c < tag.cookies.length; c++) {`,
+  `      var decl = tag.cookies[c];`,
+  `      for (var n = 0; n < names.length; n++) {`,
+  `        var hit = decl.prefix ? names[n].indexOf(decl.name) === 0 : names[n] === decl.name;`,
+  `        if (hit) expireCookie(names[n]);`,
+  `      }`,
+  `    }`,
+  `  }`,
+  `}`,
+].join("\n");

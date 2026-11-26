@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Collecting client assets from real, loaded plugins.
+ * Collecting client assets from real, loaded plugins: reviewed files, build
+ * data and CSP sources (#449, #1729).
  *
  * The channel exists so a plugin can guarantee browser behaviour the
  * site's markup cannot be trusted to provide (#449). That guarantee is
@@ -32,7 +33,6 @@ if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SLUG = "test-assets-runtime";
-const PAGE_IDS = ["11111111-1111-1111-1111-111111111111"];
 
 let adapter: DatabaseAdapter;
 let infra: PluginHostInfra;
@@ -56,24 +56,32 @@ async function wipe(): Promise<void> {
   }
 }
 
-/** @param files what the fixture's buildAssets returns. */
-function fixture(files: Record<string, string> | (() => never)) {
+/**
+ * A fixture plugin with reviewed client files and, when `data` is given,
+ * a build-data operation answering it (#1729).
+ */
+function fixture(
+  files: Record<string, string>,
+  opts: {
+    readonly data?: () => unknown;
+    readonly origins?: Record<string, string[]>;
+    readonly capabilities?: ReadonlyArray<"client_assets">;
+  } = {},
+) {
   return definePlugin({
     slug: SLUG,
     version: "0.1.0",
     tier: 1,
     schema: {},
-    operations: { noop: async () => ({}) },
-    buildAssets: (_ctx, args) => {
-      if (typeof files === "function") return files();
-      // Prove the page list actually reaches the plugin — baking
-      // per-page data is the whole reason it is passed.
-      return Object.fromEntries(
-        Object.entries(files).map(([k, v]) => [
-          k,
-          v.replace("__PAGES__", String(args.pageIds.length)),
-        ]),
-      );
+    requestedCapabilities: [...(opts.capabilities ?? ["client_assets"])],
+    ...(opts.origins
+      ? { capabilityConstraints: { client_assets: { origins: opts.origins } } }
+      : {}),
+    clientFiles: files,
+    ...(opts.data ? { buildDataOperation: "build_data" } : {}),
+    operations: {
+      noop: async () => ({}),
+      ...(opts.data ? { build_data: async () => opts.data?.() } : {}),
     },
   });
 }
@@ -95,37 +103,129 @@ afterAll(async () => {
 });
 
 async function load(definition: ReturnType<typeof definePlugin>): Promise<void> {
+  const reason = await refusal(definition);
+  if (reason !== null) throw new Error(`fixture failed to load: ${reason}`);
+}
+
+/** The reason a fixture is refused at load, or null when it loads. */
+async function refusal(definition: ReturnType<typeof definePlugin>): Promise<string | null> {
   const report = await bootstrap({
     infra,
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [{ definition }],
   });
-  if (report.failed.length > 0) {
-    throw new Error(`fixture failed to load: ${report.failed[0]?.reason}`);
-  }
+  return report.failed[0]?.reason ?? null;
 }
 
 describe("collectBuildAssets", () => {
-  it("emits the plugin's files with the content hash in the name", async () => {
-    await load(fixture({ "runtime.js": "/* pages: __PAGES__ */", "runtime.css": ".c{}" }));
-    const assets = await collectBuildAssets(PAGE_IDS, MAIN_RENDER);
+  it("emits the plugin's reviewed files with the content hash in the name", async () => {
+    await load(fixture({ "runtime.js": "/* reviewed */", "runtime.css": ".c{}" }));
+    const assets = await collectBuildAssets(MAIN_RENDER);
 
     expect(assets).toHaveLength(2);
     const js = assets.find((a) => a.kind === "js");
-    expect(js?.content).toBe("/* pages: 1 */");
+    expect(js?.content).toBe("/* reviewed */");
     expect(js?.relPath).toMatch(new RegExp(`^_caelo/plugin/${SLUG}/runtime\\.[0-9a-f]{12}\\.js$`));
     expect(js?.publicPath).toBe(`/${js?.relPath}`);
   });
 
-  it("hands csp-sources.json to the build as data, and no page links it (#1454)", async () => {
-    await load(fixture({ "runtime.js": "x", "csp-sources.json": '{"inlineScripts":["a()"]}' }));
-    const assets = await collectBuildAssets(PAGE_IDS, MAIN_RENDER);
+  it("hands the grant's origins to the build as CSP data, and no page links it (#1454)", async () => {
+    await load(
+      fixture({ "runtime.js": "x" }, { origins: { connect: ["https://api.example.com"] } }),
+    );
+    const assets = await collectBuildAssets(MAIN_RENDER);
     const csp = assets.find((a) => a.kind === "csp");
-    expect(csp?.content).toBe('{"inlineScripts":["a()"]}');
+    expect(JSON.parse(csp?.content ?? "{}")).toEqual({
+      origins: { connect: ["https://api.example.com"] },
+    });
     expect(csp?.relPath).toBe("");
     const html = injectPluginAssets("<head></head><body></body>", assets, "linked");
-    expect(html).not.toContain("csp-sources");
-    expect(html).not.toContain("inlineScripts");
+    expect(html).not.toContain("api.example.com");
+  });
+
+  it("embeds the build data as a data block before the scripts that read it", async () => {
+    await load(fixture({ "runtime.js": "x" }, { data: () => ({ data: { greeting: "hi" } }) }));
+    const assets = await collectBuildAssets(MAIN_RENDER);
+    expect(assets.map((a) => a.kind)).toEqual(["js", "data"]);
+    const html = injectPluginAssets("<head></head><body></body>", assets, "linked");
+    const block = `<script type="application/json" data-caelo-plugin-data="${SLUG}">{"greeting":"hi"}</script>`;
+    expect(html).toContain(block);
+    expect(html.indexOf(block)).toBeLessThan(html.indexOf("<script defer src="));
+  });
+
+  // #1729 adversarial — data that tries to become code or markup.
+  it("keeps a </script> in the data from ending its block", async () => {
+    await load(
+      fixture(
+        { "runtime.js": "x" },
+        { data: () => ({ data: { note: "</script><script>steal()</script><!--" } }) },
+      ),
+    );
+    const html = injectPluginAssets(
+      "<head></head><body></body>",
+      await collectBuildAssets(MAIN_RENDER),
+      "linked",
+    );
+    expect(html).not.toContain("</script><script>steal()");
+    expect(html).not.toContain("<!--");
+    const block = /data-caelo-plugin-data="[^"]+">([^<]*)<\/script>/.exec(html)?.[1] ?? "";
+    expect(JSON.parse(block)).toEqual({ note: "</script><script>steal()</script><!--" });
+  });
+
+  it.each([
+    ["__proto__", '{"data":{"__proto__":{"isAdmin":true}}}'],
+    ["constructor", '{"data":{"a":{"constructor":{"prototype":{"x":1}}}}}'],
+    ["prototype", '{"data":{"list":[{"prototype":1}]}}'],
+  ])("refuses a %s key anywhere in the data", async (key, answer) => {
+    // Parsed the way the sandbox wire parses it: `__proto__` becomes an own key.
+    await load(fixture({ "runtime.js": "x" }, { data: () => JSON.parse(answer) }));
+    expect(collectBuildAssets(MAIN_RENDER)).rejects.toThrow(new RegExp(`the key "${key}"`));
+  });
+
+  it("refuses a file the build hands over: only reviewed files reach a page", async () => {
+    await load(
+      fixture(
+        { "runtime.js": "x" },
+        { data: () => ({ data: {}, files: { "evil.js": "steal()" } }) },
+      ),
+    );
+    expect(collectBuildAssets(MAIN_RENDER)).rejects.toThrow(/expected \{ data: object, csp\? \}/);
+  });
+
+  it("refuses data that is not plain JSON", async () => {
+    await load(fixture({ "runtime.js": "x" }, { data: () => ({ data: { at: new Date(0) } }) }));
+    expect(collectBuildAssets(MAIN_RENDER)).rejects.toThrow(/data\.at: not a plain object/);
+  });
+
+  it("refuses data over the 64 KB every page carries", async () => {
+    await load(
+      fixture({ "runtime.js": "x" }, { data: () => ({ data: { blob: "x".repeat(70 * 1024) } }) }),
+    );
+    expect(collectBuildAssets(MAIN_RENDER)).rejects.toThrow(/over the 65536 every page can carry/);
+  });
+
+  it("refuses CSP sources per build from a plugin that is not the consent provider", async () => {
+    await load(
+      fixture(
+        { "runtime.js": "x" },
+        { data: () => ({ data: {}, csp: { origins: { connect: ["https://evil.example"] } } }) },
+      ),
+    );
+    expect(collectBuildAssets(MAIN_RENDER)).rejects.toThrow(/only the site's consent provider/);
+  });
+
+  it("fails the build when the plugin's build data throws", async () => {
+    await load(
+      fixture(
+        { "runtime.js": "x" },
+        {
+          data: () => {
+            throw new Error("config table missing");
+          },
+        },
+      ),
+    );
+    expect(collectBuildAssets(MAIN_RENDER)).rejects.toThrow(/config table missing/);
   });
 
   it("lets the pages connect to the stream origin of a visitor conversation (#1654)", async () => {
@@ -180,10 +280,10 @@ describe("collectBuildAssets", () => {
     try {
       // The site's own origin streams (gcp, self-hosted): nothing to add.
       process.env.CAELO_VISITOR_AI_STREAM_ORIGIN = "";
-      expect(await collectBuildAssets(PAGE_IDS, MAIN_RENDER)).toEqual([]);
+      expect(await collectBuildAssets(MAIN_RENDER)).toEqual([]);
       // Buffered there (gcp-firebase): the gateway's own origin, for the CSP only.
       process.env.CAELO_VISITOR_AI_STREAM_ORIGIN = "https://gw-123.europe-west1.run.app";
-      const assets = await collectBuildAssets(PAGE_IDS, MAIN_RENDER);
+      const assets = await collectBuildAssets(MAIN_RENDER);
       expect(assets).toEqual([
         {
           pluginSlug: `${SLUG}-chat`,
@@ -204,21 +304,21 @@ describe("collectBuildAssets", () => {
     // The name is what a CDN caches against; if it did not move when the
     // behaviour moved, a deploy would leave stale plugin code live.
     await load(fixture({ "runtime.js": "v1" }));
-    const first = (await collectBuildAssets(PAGE_IDS, MAIN_RENDER))[0]?.relPath;
-    const again = (await collectBuildAssets(PAGE_IDS, MAIN_RENDER))[0]?.relPath;
+    const first = (await collectBuildAssets(MAIN_RENDER))[0]?.relPath;
+    const again = (await collectBuildAssets(MAIN_RENDER))[0]?.relPath;
     expect(again).toBe(first);
 
     await wipe();
     await load(fixture({ "runtime.js": "v2" }));
-    expect((await collectBuildAssets(PAGE_IDS, MAIN_RENDER))[0]?.relPath).not.toBe(first);
+    expect((await collectBuildAssets(MAIN_RENDER))[0]?.relPath).not.toBe(first);
   });
 
   it("emits nothing for a plugin that is switched off", async () => {
     await load(fixture({ "runtime.js": "x" }));
     setPluginDisabled(SLUG, true);
-    expect(await collectBuildAssets(PAGE_IDS, MAIN_RENDER)).toEqual([]);
+    expect(await collectBuildAssets(MAIN_RENDER)).toEqual([]);
     setPluginDisabled(SLUG, false);
-    expect(await collectBuildAssets(PAGE_IDS, MAIN_RENDER)).toHaveLength(1);
+    expect(await collectBuildAssets(MAIN_RENDER)).toHaveLength(1);
   });
 
   it("costs nothing when no plugin contributes", async () => {
@@ -231,25 +331,55 @@ describe("collectBuildAssets", () => {
         operations: { noop: async () => ({}) },
       }),
     );
-    expect(await collectBuildAssets(PAGE_IDS, MAIN_RENDER)).toEqual([]);
+    expect(await collectBuildAssets(MAIN_RENDER)).toEqual([]);
+  });
+});
+
+// #1729 — the review rules bind a shipped plugin at every load (one plugin model).
+describe("client files are reviewed at load, for every plugin", () => {
+  it("refuses a file name that is not a plain .js or .css", async () => {
+    expect(await refusal(fixture({ "../escape.js": "x" }))).toMatch(/manifest/);
   });
 
-  it("rejects a file name that is not a plain .js or .css", async () => {
-    await load(fixture({ "../escape.js": "x" }));
-    expect(collectBuildAssets(PAGE_IDS, MAIN_RENDER)).rejects.toThrow(/invalid asset name/);
-  });
-
-  it("rejects a payload over the per-plugin budget", async () => {
-    await load(fixture({ "runtime.js": "x".repeat(600 * 1024) }));
-    expect(collectBuildAssets(PAGE_IDS, MAIN_RENDER)).rejects.toThrow(/budget/);
-  });
-
-  it("fails the build when the plugin's own asset build throws", async () => {
-    await load(
-      fixture(() => {
-        throw new Error("config table missing");
-      }),
+  it("refuses files over the per-plugin budget", async () => {
+    expect(await refusal(fixture({ "runtime.js": `// ${"x".repeat(600 * 1024)}` }))).toMatch(
+      /manifest/,
     );
-    expect(collectBuildAssets(PAGE_IDS, MAIN_RENDER)).rejects.toThrow(/config table missing/);
+  });
+
+  it("refuses client files without the client_assets grant", async () => {
+    expect(await refusal(fixture({ "runtime.js": "x" }, { capabilities: [] }))).toMatch(
+      /manifest-cap-missing/,
+    );
+  });
+
+  it.each([
+    ["a fetch to another site", 'fetch("https://collector.example/x")'],
+    ["eval", "eval(location.hash.slice(1))"],
+    ["a markup sink", 'document.body.innerHTML = "<b>x</b>"'],
+    ["a dynamic import", 'import("/x.js")'],
+  ])("refuses a client script with %s", async (_what, code) => {
+    expect(await refusal(fixture({ "runtime.js": code }))).toMatch(/client-assets/);
+  });
+
+  it("allows a third-party origin the grant names", async () => {
+    expect(
+      await refusal(
+        fixture(
+          { "runtime.js": 'fetch("https://api.example.com/x")' },
+          { origins: { connect: ["https://api.example.com"] } },
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it("refuses CSS that loads a third-party URL", async () => {
+    expect(
+      await refusal(fixture({ "runtime.css": "@import url(https://fonts.example/a.css);" })),
+    ).toMatch(/client-assets/);
+    await wipe();
+    expect(
+      await refusal(fixture({ "runtime.css": ".a{background:url(https://t.example/p.gif)}" })),
+    ).toMatch(/client-assets/);
   });
 });

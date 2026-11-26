@@ -22,6 +22,14 @@
 import { cspOriginSchema } from "@caelo-cms/shared";
 import { z } from "zod";
 
+/**
+ * The site's visitor consent provider (plugin-host visitor-consent.ts). Its
+ * runtime starts every other plugin's consent-gated scripts, and its
+ * approved tags may widen the CSP at build time (`$buildData` `csp`).
+ * FIXME(issue #676): a declared composition point replaces the fixed slug.
+ */
+export const CONSENT_PROVIDER_SLUG = "consent-manager";
+
 /** Name of a client file: lowercase with dashes, `.js` or `.css`. */
 export const CLIENT_FILE_NAME_RE = /^[a-z][a-z0-9-]*\.(js|css)$/;
 

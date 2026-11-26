@@ -164,6 +164,14 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // `$listSources` entry (render-points.ts), checked like a shipped
     // plugin's (plugin-values.ts).
     ...(manifest.listSources ? { listSources: manifest.listSources } : {}),
+    // #1729 — the reviewed client files (bytes bound to the artifact
+    // digest) and the grant's limits, from which the build reads the
+    // origins the files may reach; the manifest carries the same
+    // constraints the receipt records.
+    ...(manifest.clientFiles ? { clientFiles: manifest.clientFiles } : {}),
+    ...(manifest.capabilityConstraints
+      ? { capabilityConstraints: manifest.capabilityConstraints }
+      : {}),
     // #1729 — what the `$linkResolve` answer is computed from: core keeps
     // the answer per render scope and asks again only after a change to
     // these tables, so a preview does not spawn a sandbox per page chunk.

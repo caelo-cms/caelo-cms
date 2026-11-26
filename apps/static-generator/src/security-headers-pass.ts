@@ -13,7 +13,7 @@
  * from, which is another one on the audit's loopback origin.
  *
  * What a page's script loads at runtime cannot be read from markup. Plugins
- * say it themselves (`csp-sources.json` of `buildAssets`), the Owner adds the
+ * say it themselves (their grant's origins, #1729), the Owner adds the
  * rest to the policy's `extraSources`, and report-only shows what is missing.
  */
 
