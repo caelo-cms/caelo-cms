@@ -17,7 +17,9 @@
 import {
   type BuildPluginServices,
   type ContentVariantPlacement,
+  checkContentVariantValues,
   contentVariantProblemMarker,
+  type ResolvedContentVariant,
   type ResolvedContentVariants,
 } from "@caelo-cms/plugin-host";
 import { type TransactionRunner, uuidArray } from "@caelo-cms/query-api";
@@ -176,7 +178,60 @@ export async function resolveBuildContentVariants(
       );
     }
   }
-  return { resolutions, overrideModules };
+  return { resolutions: checkedResolutions(pages, resolutions, overrideModules), overrideModules };
+}
+
+/**
+ * #1729 (§4.5) — every value a variant hands a placement, checked for the
+ * fields of the module that renders it (the swapped one, whose defaults are
+ * then what core would render, or the placement's own), as the editor
+ * preview checks it. A refused value renders raw and is recorded by the
+ * page's render: the Stage ships it, Publish live refuses it (#1604).
+ */
+function checkedResolutions(
+  pages: ReadonlyArray<VariantPassPage>,
+  resolutions: ResolvedContentVariants,
+  overrideModules: ReadonlyMap<string, VariantComposeModule>,
+): ResolvedContentVariants {
+  const out = new Map<string, Map<string, ResolvedContentVariant>>();
+  for (const page of pages) {
+    const perPage = resolutions.get(page.pageId);
+    if (!perPage) continue;
+    const checked = new Map<string, ResolvedContentVariant>();
+    for (const [key, res] of perPage) {
+      const own = placementModule(page, key);
+      const module = res.moduleId !== undefined ? overrideModules.get(res.moduleId) : own;
+      if (res.values === undefined || !module) {
+        checked.set(key, res);
+        continue;
+      }
+      const stored =
+        res.moduleId !== undefined
+          ? defaultsOf(module)
+          : { ...defaultsOf(module), ...(module.contentValues ?? {}) };
+      checked.set(key, {
+        ...res,
+        values: checkContentVariantValues({
+          pluginSlug: res.pluginSlug,
+          key,
+          fields: fieldsOf(module),
+          stored,
+          values: res.values,
+          ...(res.media ? { media: res.media } : {}),
+        }),
+      });
+    }
+    out.set(page.pageId, checked);
+  }
+  return out;
+}
+
+/** The module a placement key (`layout:<block>:<i>` / `page:<block>:<position>`) names on `page`. */
+function placementModule(page: VariantPassPage, key: string): VariantComposeModule | undefined {
+  const [scope, blockName, at] = key.split(":");
+  const position = Number(at);
+  if (scope === "layout") return page.layoutBlocks.get(blockName ?? "")?.[position];
+  return page.pageBlocks.find((b) => b.blockName === blockName && b.position === position)?.module;
 }
 
 /**

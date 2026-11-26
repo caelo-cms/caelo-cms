@@ -250,10 +250,15 @@ export function pluginValueRefusedHint(body: string): string {
       : source === "content-variants"
         ? `the ${field} value of its content variant`
         : `a ${field} value in its list source ${source}`;
+  // A translation keeps the stored content's markup: the source is what to rewrite.
+  const fix =
+    source === "content-variants" && /^(element|attribute)-/.test(rule)
+      ? "A translation keeps the stored markup: rewrite the stored richtext as prose and translate it again, or fix the plugin's row. Tell the operator."
+      : "It is the plugin's data, not the module's: fix the row it comes from, or submit a corrected plugin version (submit_plugin). Tell the operator.";
   return (
     `The plugin "${plugin}" handed the page ${where} that Caelo refuses (${rule}): ` +
     "richtext may hold only prose (p, a, strong, em, lists, h2-h6, blockquote, code, br, span; no on* or style), links only https, http, mailto, tel or a page, media only library images. " +
-    "It is the plugin's data, not the module's: fix the row it comes from, or submit a corrected plugin version (submit_plugin). Tell the operator."
+    fix
   );
 }
 

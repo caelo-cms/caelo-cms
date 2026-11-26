@@ -120,6 +120,8 @@ export {
   pluginDeclaresConsentPurpose,
 } from "./consent-purposes.js";
 export {
+  type ContentVariantField,
+  checkContentVariantValues,
   contentVariantProblemMarker,
   hasContentVariantContributors,
   type ResolvedContentVariant,

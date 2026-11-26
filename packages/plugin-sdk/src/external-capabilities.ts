@@ -46,7 +46,7 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
   private_files: BROKERED,
   image_generation: BROKERED,
   site_media_read: BROKERED,
-  content_variants: PLANNED,
+  content_variants: BROKERED,
   link_resolve: BROKERED,
   consent_provider: BROKERED,
   page_output: BROKERED,
