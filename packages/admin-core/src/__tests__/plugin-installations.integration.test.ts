@@ -958,3 +958,33 @@ it("refuses to stage a capability no runtime-installed plugin can be granted, be
   if (!got.ok) throw new Error(JSON.stringify(got.error));
   expect((got.value as { plugin: unknown }).plugin).toBeNull();
 });
+
+it("refuses to stage a cms_admin allowlist naming operations no plugin can call (#1729)", async () => {
+  const slug = "installation-closed-ops";
+  const r = await execute(
+    registry,
+    adapter,
+    { ...system, actorKind: "ai" },
+    "plugins.stage_installation",
+    {
+      manifest: {
+        ...manifest,
+        slug,
+        requestedCapabilities: ["cms_admin_schema", "cms_admin"],
+        capabilityReasons: { ...manifest.capabilityReasons, cms_admin: "Read page titles" },
+        capabilityConstraints: {
+          cms_admin: { operations: ["pages.list", "pages.does_not_exist", "deploy.trigger"] },
+        },
+      },
+      source: source.replace("installation-notes", slug),
+    },
+  );
+  expect(r.ok).toBe(false);
+  if (r.ok) return;
+  expect(r.error.message).toContain("pages.does_not_exist is not an operation of this site");
+  expect(r.error.message).toContain("deploy.trigger is not open to plugins");
+  expect(r.error.message).toContain("Remove them from the allowlist");
+  const got = await execute(registry, adapter, system, "plugins.get", { slug });
+  if (!got.ok) throw new Error(JSON.stringify(got.error));
+  expect((got.value as { plugin: unknown }).plugin).toBeNull();
+});

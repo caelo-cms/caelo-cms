@@ -151,6 +151,7 @@ async function loadShareImages(
 
 export const pagesSeoGetOp = defineOperation({
   name: "pages_seo.get",
+  pluginAccess: "read",
   readScope: "request",
   // #591 — plugin actors read too: a translation flow carries the source
   // page's description into the variant (§11: reads are open).
@@ -206,6 +207,7 @@ export const pagesSeoShareImagesOp = defineReadOperation({
 
 export const pagesSeoCheckShareImageOp = defineOperation({
   name: "pages_seo.check_share_image",
+  pluginAccess: "read",
   readScope: "request",
   // Why human-only: no AI tool needs it — set_theme_asset and the plugin's
   // set_locale_share_image run this check themselves. #1452: it exists so a
@@ -530,6 +532,7 @@ function optimizedSeo(
  */
 export const pagesSeoApplyTranslationOp = defineOperation({
   name: "pages_seo.apply_translation",
+  pluginAccess: "write",
   readScope: "request",
   // Why system-only: the write half of a translation flow (plugins run
   // it from translate_variant). The AI fills SEO through
@@ -710,6 +713,7 @@ export const siteDefaultsSetSeoOp = defineOperation({
 
 export const siteDefaultsGetSeoOp = defineOperation({
   name: "site_defaults.get_seo",
+  pluginAccess: "read",
   readScope: "request",
   // #398 — plugin actors read the base URL to build absolute hreflang
   // targets for host-strategy locales (§11: read surfaces are open).

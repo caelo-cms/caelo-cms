@@ -238,6 +238,7 @@ export function makeCollectionOps(
 ): OperationDefinition<unknown, unknown>[] {
   const write = defineOperation({
     name: COLLECTION_OPS.write,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: a plugin writes only its own collections (RLS on
     // collection_changes admits a plugin actor's own plugin_id only).
@@ -332,6 +333,7 @@ export function makeCollectionOps(
   });
   const get = defineOperation({
     name: COLLECTION_OPS.get,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: see write.
     actorScope: ["plugin"],
@@ -366,6 +368,7 @@ export function makeCollectionOps(
   });
   const releaseOf = defineOperation({
     name: COLLECTION_OPS.releaseOf,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: a plugin reads which release of its own collections to query.
     actorScope: ["plugin"],
@@ -438,6 +441,7 @@ export function makeCollectionOps(
   });
   const getMany = defineOperation({
     name: COLLECTION_OPS.getMany,
+    pluginAccess: "handle",
     readScope: "request",
     // Why plugin-only: see write.
     actorScope: ["plugin"],

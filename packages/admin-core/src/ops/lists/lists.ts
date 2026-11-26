@@ -102,6 +102,7 @@ function textOf(items: readonly ListItem[]): string {
 export const listListsOp = withHumanisedLinks(
   defineOperation({
     name: "lists.list",
+    pluginAccess: "read",
     readScope: "request",
     // Why plugin: the `lists` read grant (docs/lists.md §9) — a plugin
     // reaches list data only through named ops of the domain.
@@ -183,6 +184,7 @@ export const listListsOp = withHumanisedLinks(
 export const getListOp = withHumanisedLinks(
   defineOperation({
     name: "lists.get",
+    pluginAccess: "read",
     readScope: "request",
     // Why plugin: the `lists` read grant (see lists.list).
     actorScope: ["human", "ai", "plugin", "system"],

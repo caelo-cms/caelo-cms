@@ -60,6 +60,7 @@ import { Cron } from "croner";
 // from #52, or the externalization regression from #53. See those issues
 // + the comment block above forceOxcParserNativeEntry for the full chain.
 import { parseSync } from "oxc-parser";
+import { deferralPlaceholderProblems } from "./client-assets.js";
 
 // ---------------------------------------------------------------------------
 // Worker schedules (#1720)
@@ -122,6 +123,67 @@ function workerScheduleFailures(m: PluginManifest): ValidationFailure[] {
   return failures;
 }
 
+/**
+ * #1729 — a link resolver declares what its answer is computed from
+ * (`linkResolveReads`), for every plugin: core keeps the answer per render
+ * scope and asks only about what changed, so a preview stays O(request)
+ * (CLAUDE.md §2). Every table must be one of the plugin's `adminSchema`
+ * tables and every column one of theirs, or core would watch the journal
+ * for changes that can never happen and serve the answer stale.
+ */
+function linkResolveReadsFailures(m: PluginManifest): ValidationFailure[] {
+  const fail = (hint: string): ValidationFailure => ({ kind: "link-resolve-reads", hint });
+  const reads = m.linkResolveReads;
+  if (!m.hasLinkResolve) {
+    return reads
+      ? [
+          fail(
+            "manifest declares `linkResolveReads` but no link resolver (`linkResolveOperation`). Remove `linkResolveReads`, or add the operation.",
+          ),
+        ]
+      : [];
+  }
+  if (!reads) {
+    return [
+      fail(
+        'the plugin answers the `link-resolve` point but does not declare `linkResolveReads`: name the `adminSchema` tables (and the columns of them) its answer is computed from, e.g. `linkResolveReads: { tables: ["page_variants"], columns: ["page_id", "group_id"], pageColumns: { page_variants: "page_id" } }` (`tables: []` when the answer depends on the page ids alone). Core keeps the answer and asks again only after a change to them.',
+      ),
+    ];
+  }
+  const out: ValidationFailure[] = [];
+  const admin = m.adminSchema ?? {};
+  const declared = new Set<string>();
+  for (const table of reads.tables) {
+    const columns = admin[table];
+    if (!columns) {
+      out.push(
+        fail(
+          `linkResolveReads.tables: "${table}" is not one of the plugin's adminSchema tables (${Object.keys(admin).join(", ") || "none"}). The answer can be kept only for tables core sees change.`,
+        ),
+      );
+      continue;
+    }
+    for (const column of Object.keys(columns)) declared.add(column);
+  }
+  for (const column of reads.columns ?? []) {
+    if (!declared.has(column))
+      out.push(
+        fail(
+          `linkResolveReads.columns: "${column}" is not a column of ${reads.tables.join(", ") || "any listed table"}. List only columns of the tables in \`linkResolveReads.tables\`.`,
+        ),
+      );
+  }
+  for (const [table, column] of Object.entries(reads.pageColumns ?? {})) {
+    if (!reads.tables.includes(table) || !admin[table]?.[column])
+      out.push(
+        fail(
+          `linkResolveReads.pageColumns: "${table}.${column}" must be a column of a table listed in \`linkResolveReads.tables\` that holds the page id a row answers for.`,
+        ),
+      );
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Failure shapes — surfaced to AI for auto-fix.
 // ---------------------------------------------------------------------------
@@ -143,7 +205,9 @@ export type ValidationFailureKind =
   | "forbidden-globalthis-write"
   | "forbidden-globalthis-alias"
   | "parse-error"
-  | "worker-schedule";
+  | "worker-schedule"
+  | "link-resolve-reads"
+  | "client-assets";
 
 export interface ValidationFailure {
   readonly kind: ValidationFailureKind;
@@ -188,6 +252,7 @@ export function validateManifest(
   // manifests are parsed with it on every load, so a stricter schema would
   // stop a plugin an older release approved from loading at all.
   if ((opts.workerCron ?? "refuse") === "refuse") failures.push(...workerScheduleFailures(m));
+  failures.push(...linkResolveReadsFailures(m));
 
   // #389 — `ref:` FK columns are an adminSchema-only vocabulary:
   // cms_public tables cannot FK across databases into cms_admin.
@@ -251,6 +316,15 @@ export function validateManifest(
         hint: "manifest declares `listTypes` but does not request the `list_types` capability. Add it to `requestedCapabilities` (or drop the list types).",
       });
     }
+    if (
+      (m.hasDeferrals || Object.keys(m.deferralPlaceholders ?? {}).length > 0) &&
+      !caps.has("client_assets")
+    ) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "the plugin withholds modules (`deferralsOperation`) but does not request the `client_assets` capability. Add it to `requestedCapabilities` (or drop the deferrals).",
+      });
+    }
     if (m.hasListResolve && !caps.has("list_resolve")) {
       failures.push({
         kind: "manifest-cap-missing",
@@ -287,10 +361,34 @@ export function validateManifest(
     }
   }
 
+  failures.push(...clientAssetFailures(m));
+
   // Static-render flag must reflect intent — caught at registration when
   // the source is parsed, not here. Tracked via the source walker below.
 
   return { manifest: failures.length === 0 ? m : null, failures };
+}
+
+/**
+ * #1729 — what a plugin puts in a visitor's browser, for every plugin
+ * (client-assets.ts): placeholders a deferral verdict names are reviewed
+ * markup in which nothing loads or runs.
+ */
+function clientAssetFailures(m: PluginManifest): ValidationFailure[] {
+  const failures: ValidationFailure[] = [];
+  const fail = (hint: string) => failures.push({ kind: "client-assets", hint });
+  const placeholders = m.deferralPlaceholders ?? {};
+  if (Object.keys(placeholders).length > 0 && !m.hasDeferrals) {
+    fail(
+      "manifest declares `deferralPlaceholders` but no `deferralsOperation` names them: declare the deferrals operation, or drop the placeholders.",
+    );
+  }
+  for (const { where, problem } of deferralPlaceholderProblems(placeholders)) {
+    fail(
+      `${where}: ${problem} is not allowed. A placeholder stands in for content withheld until the visitor agrees, so nothing in it may load or run: plain elements (div, p, span, a, strong, button, …), class/id/role/title/type/href and data-*/aria-* attributes, {{name}} slots for text, CSS without url() to another site or @import.`,
+    );
+  }
+  return failures;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,11 @@
 
 import { activateApprovedExternalPlugin, pluginManifest } from "@caelo-cms/plugin-host";
 import { adminPanelOperations, externalCapabilityRefusal } from "@caelo-cms/plugin-sdk";
-import { execute } from "@caelo-cms/query-api";
+import {
+  describePluginOperations,
+  execute,
+  pluginOperationAllowlistRefusal,
+} from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
@@ -40,9 +44,28 @@ export const load: PageServerLoad = async ({ locals }) => {
         // #1729 — requested access no runtime-installed plugin can be granted
         // yet: approval would be refused, so the page says why instead of
         // offering it.
-        unavailable: (manifest.requestedCapabilities ?? [])
-          .map((capability) => externalCapabilityRefusal(capability))
-          .filter((refusal): refusal is string => refusal !== null),
+        unavailable: [
+          ...(manifest.requestedCapabilities ?? []).map((capability) =>
+            externalCapabilityRefusal(capability),
+          ),
+          // An allowlist naming an operation no plugin can call is refused
+          // at approval too; a package staged before that check says so here.
+          (manifest.requestedCapabilities ?? []).includes("cms_admin")
+            ? pluginOperationAllowlistRefusal(
+                registry,
+                manifest.capabilityConstraints?.cms_admin?.operations ?? [],
+              )
+            : null,
+        ].filter((refusal): refusal is string => refusal !== null),
+        // #1729 — the core operations a cms_admin grant lets the plugin
+        // call, by domain and by read or write (decision Q9), from the
+        // markers of the operations this admin runs.
+        cmsOperations: (manifest.requestedCapabilities ?? []).includes("cms_admin")
+          ? describePluginOperations(
+              registry,
+              manifest.capabilityConstraints?.cms_admin?.operations ?? [],
+            )
+          : null,
         // The admin pages the Owner approves with this package: who may
         // open each one and which of the plugin's operations it can run.
         panels: (manifest.adminPanels ?? []).map((panel) => ({

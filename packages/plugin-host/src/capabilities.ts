@@ -18,6 +18,7 @@ import type {
   PluginAdminQuery,
   PluginCapability,
   PluginCaptcha,
+  PluginChanges,
   PluginCms,
   PluginContext,
   PluginContextTier1,
@@ -29,8 +30,9 @@ import type {
   PluginVisitor,
   PublicOperationDef,
 } from "@caelo-cms/plugin-sdk";
-import { type DatabaseAdapter, execute } from "@caelo-cms/query-api";
+import { admitsPlugins, type DatabaseAdapter, execute, pluginAccessOf } from "@caelo-cms/query-api";
 import { LIVE_BUILD_REFUSAL, type LiveBuildUrls } from "@caelo-cms/shared";
+import { registerPluginChangeOps } from "./change-consumers.js";
 import { makePluginChatTools, makePluginCollections } from "./collections-host.js";
 import { hasConfig, makePluginConfigReader } from "./config-handle.js";
 import { makePluginConsentPurposes } from "./consent-purposes.js";
@@ -49,6 +51,7 @@ import { timedPluginOpCall } from "./plugin-runtime-stats.js";
 import { makePluginPrivateFiles } from "./private-files.js";
 import { validatePublicRows } from "./public-row-schema.js";
 import { isPublicSideHost, makeProjectedAdminQuery } from "./published-state.js";
+import type { SandboxKind } from "./sandbox-kind.js";
 import { makePluginSiteMedia } from "./site-media.js";
 import { registerPluginStorageOps, STORAGE_OPS, UPDATE_MANY_MAX } from "./storage-ops.js";
 
@@ -72,6 +75,12 @@ export interface MakePluginContextOpts {
    * build. Kept off `invocation`, which is handed to plugin code.
    */
   readonly liveUrls?: LiveBuildUrls;
+  /**
+   * #1729 — what the call is for when its origin does not say it (a
+   * change-journal batch or a rebuild chunk, dispatch.ts). Host-only, like
+   * `liveUrls`: it decides what the handles allow.
+   */
+  readonly sandboxKind?: SandboxKind;
 }
 
 /**
@@ -160,8 +169,28 @@ export async function makePluginContext(
     invocation.origin !== "visitor"
       ? { chatTools: makePluginChatTools(plugin, infra) }
       : {};
+  // #1729 — the plugin's own change consumer: its cursor state needs only
+  // the change_journal grant, never cms_admin, and no visitor call asks it.
+  const changeJournalGranted =
+    plugin.provenance === "runtime-authored"
+      ? (plugin.externalApproval?.capabilities.includes("change_journal") ?? false)
+      : requested.has("change_journal");
+  const changesHandle =
+    changeJournalGranted &&
+    plugin.definition.changeConsumer &&
+    !isPublicSideHost(infra) &&
+    invocation.origin !== "visitor"
+      ? { changes: makePluginChanges(plugin, infra) }
+      : {};
   const baseCtx: PluginContext = {
-    query: makePluginQuery(plugin, infra, invocation, opts.publicOperation),
+    query: makePluginQuery(
+      plugin,
+      infra,
+      invocation,
+      opts.publicOperation,
+      undefined,
+      opts.sandboxKind,
+    ),
     api: makePluginApi(plugin, infra),
     theme: makePluginTheme(),
     visitor: makePluginVisitor(visitorContext),
@@ -170,6 +199,7 @@ export async function makePluginContext(
     ...configHandle,
     ...collectionsHandle,
     ...chatToolsHandle,
+    ...changesHandle,
   };
 
   // Runtime-installed plugins run in the sandbox and get only what an
@@ -196,24 +226,47 @@ export async function makePluginContext(
         ? { ...consentCtx, adminQuery: makeProjectedAdminQuery(plugin, infra) }
         : consentCtx;
     }
-    // #1729 (decision Q1 A) — a call that acts for nobody (a worker run,
-    // `onActivate`, a journal batch on main, an observer, a batch) is the
-    // Owner's grant working unattended: private storage on main, as the
-    // plugin actor, through the audited and snapshotted `plugin_storage.*`
-    // operations, as a shipped plugin's worker has it.
-    if (!visitorContext && UNATTENDED_ORIGINS.has(invocation.origin) && !invocation.chatBranchId) {
-      return approval.capabilities.includes("cms_admin_schema")
-        ? { ...consentCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+    // #1729 (§7.1) — core operations through the cms_admin broker: only
+    // the operations the receipt names, read-only on a render, on the
+    // invocation's branch. The same rules hold every plugin's ctx.cms.
+    const cmsCtx: PluginContext | PluginContextTier1 =
+      approval.capabilities.includes("cms_admin") && !visitorContext
+        ? {
+            ...consentCtx,
+            cms: makePluginCms(plugin, infra, invocation, {
+              allowed: new Set(approval.cmsOperations ?? []),
+              ...(opts.sandboxKind ? { kind: opts.sandboxKind } : {}),
+              // #1495 — a live build's refusal is recorded host-side, so a
+              // plugin that catches the error cannot hide it from the build.
+              ...(opts.liveUrls ? { liveUrls: opts.liveUrls } : {}),
+            }),
+          }
         : consentCtx;
+    // #1729 (decision Q1 A) — a call that acts for nobody (a worker run,
+    // `onActivate`, a journal batch or rebuild, an observer, a batch) is
+    // the Owner's grant working unattended: private storage as the plugin
+    // actor, through the audited and snapshotted `plugin_storage.*`
+    // operations, as a shipped plugin's worker has it. On main, except a
+    // journal batch on a chat's branch, whose writes land on that branch
+    // and are staged with it (§5.2).
+    const journalWork = opts.sandboxKind === "journal" || opts.sandboxKind === "rebuild";
+    if (
+      !visitorContext &&
+      ((UNATTENDED_ORIGINS.has(invocation.origin) && !invocation.chatBranchId) || journalWork)
+    ) {
+      return approval.capabilities.includes("cms_admin_schema")
+        ? { ...cmsCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+        : cmsCtx;
     }
     // #1729 — a render point (list sources, head entries, …) reads the
     // plugin's private storage on the render's branch, as a shipped
-    // plugin's render does; the handle refuses every write from a render
-    // (`assertAuthoring`), so a page view never changes plugin data.
+    // plugin's render does, and core data through ctx.cms. Both handles
+    // refuse every write from a render (`assertAuthoring`, the cms
+    // broker's pluginAccess rule), so a page view never changes data.
     if (!visitorContext && invocation.origin === "render") {
       return approval.capabilities.includes("cms_admin_schema")
-        ? { ...consentCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
-        : consentCtx;
+        ? { ...cmsCtx, adminQuery: makePluginAdminQuery(plugin, infra, invocation) }
+        : cmsCtx;
     }
     if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return consentCtx;
     const wantsStorage = approval.capabilities.includes("cms_admin_schema");
@@ -222,14 +275,17 @@ export async function makePluginContext(
     const wantsImages = wantsFiles && approval.capabilities.includes("image_generation");
     const wantsFonts = approval.capabilities.includes("font_assets");
     const wantsSiteMedia = approval.capabilities.includes("site_media_read");
-    if (!wantsStorage && !wantsFiles && !wantsFonts && !wantsSiteMedia) return consentCtx;
+    const wantsCms = approval.capabilities.includes("cms_admin");
+    if (!wantsStorage && !wantsFiles && !wantsFonts && !wantsSiteMedia && !wantsCms) {
+      return consentCtx;
+    }
     // Private storage and files are author data: only for someone who may
     // author. Without it the plugin still runs, with the base handles — an
     // operation that needs them then fails at the sandbox broker
     // (SandboxCapabilityDenied), not silently.
     if (!(await authorMayWrite(infra, approval.systemActorId, invocation))) return consentCtx;
     return {
-      ...consentCtx,
+      ...cmsCtx,
       ...(wantsStorage ? { adminQuery: makePluginAdminQuery(plugin, infra, invocation) } : {}),
       ...(wantsFiles ? { privateFiles: makePluginPrivateFiles(plugin, infra, invocation) } : {}),
       ...(wantsImages ? { images: makePluginImages(plugin, infra, invocation) } : {}),
@@ -250,7 +306,7 @@ export async function makePluginContext(
     // that need the authoring database (events, AI, files,
     // fonts, media) are not attached at all, so a visitor operation that
     // reaches for one fails at the plugin, by name.
-    if (requested.has("cms_admin")) tier1.cms = makePluginCms(plugin, infra, invocation);
+    if (requested.has("cms_admin")) tier1.cms = makePluginCms(plugin, infra, invocation, {});
     if (requested.has("cms_admin_schema")) {
       tier1.adminQuery = makeProjectedAdminQuery(plugin, infra);
     }
@@ -258,7 +314,10 @@ export async function makePluginContext(
     return tier1;
   }
   if (requested.has("cms_admin")) {
-    tier1.cms = makePluginCms(plugin, infra, invocation, opts.liveUrls);
+    tier1.cms = makePluginCms(plugin, infra, invocation, {
+      ...(opts.liveUrls ? { liveUrls: opts.liveUrls } : {}),
+      ...(opts.sandboxKind ? { kind: opts.sandboxKind } : {}),
+    });
   }
   if (requested.has("cms_admin_schema")) {
     tier1.adminQuery = makePluginAdminQuery(plugin, infra, invocation);
@@ -367,6 +426,8 @@ function assertUuid(value: string, label: string): void {
 interface QueryScope {
   /** Error-message prefix — "ctx.query" | "ctx.adminQuery". */
   readonly label: string;
+  /** #1729 — the call's kind when its origin does not say it (MakePluginContextOpts.sandboxKind). */
+  readonly kind?: SandboxKind;
   /** Which manifest map declares the reachable tables. */
   readonly schemaLabel: "schema" | "adminSchema";
   readonly schemaMap: Readonly<Record<string, Readonly<Record<string, string>>>>;
@@ -431,6 +492,15 @@ function makeScopedQuery(
     if (invocation.origin === "render") {
       throw new Error(
         `${scope.label}.${method}: plugin "${plugin.slug}" cannot write from a render call — render hooks only read; write from a chat tool, the Owner panel, a worker or onActivate`,
+      );
+    }
+    // #1729 (decision Q12) — a change-journal batch on main sees staged
+    // content, and a rebuild reads the whole source: copying either into a
+    // public table would show visitors what is not published. For every
+    // plugin, as for observers and batches below.
+    if (scope.pool !== "admin" && (scope.kind === "journal" || scope.kind === "rebuild")) {
+      throw new Error(
+        `${scope.label}.${method}: plugin "${plugin.slug}" cannot write its public tables from ${scope.kind === "journal" ? "a change-journal batch" : "a change-journal rebuild"} — it can see staged work, and visitors would see it before Publish live; keep derived state in private storage, or write public rows from a worker`,
       );
     }
     if (
@@ -692,6 +762,7 @@ function makePluginQuery(
   invocation: PluginInvocation,
   publicOperation: PublicOperationDef | undefined,
   adapter?: DatabaseAdapter,
+  kind?: SandboxKind,
 ): PluginQuery {
   return makeScopedQuery(plugin, infra, invocation, {
     label: "ctx.query",
@@ -700,6 +771,7 @@ function makePluginQuery(
     pool: "public",
     ...(publicOperation ? { publicOperation } : {}),
     ...(adapter ? { adapter } : {}),
+    ...(kind ? { kind } : {}),
   });
 }
 
@@ -812,20 +884,113 @@ function makePluginTheme(): PluginTheme {
 // ---------------------------------------------------------------------------
 
 /**
+ * #1729 — `ctx.changes`: the plugin's own change consumer, asked as the
+ * plugin actor (the op answers only about the caller's consumer).
+ */
+function makePluginChanges(plugin: LoadedPlugin, infra: PluginHostInfra): PluginChanges {
+  return Object.freeze({
+    cursorState: async () => {
+      registerPluginChangeOps(infra.registry);
+      const r = await execute(
+        infra.registry,
+        infra.adapter,
+        {
+          actorId: plugin.pluginActorId,
+          actorKind: "plugin",
+          requestId: `plugin-${plugin.slug}`,
+          pluginId: plugin.pluginId,
+        },
+        "plugin_changes.cursor_state",
+        {},
+      );
+      if (!r.ok) {
+        const reason = "message" in r.error ? String(r.error.message) : r.error.kind;
+        throw new Error(`ctx.changes.cursorState() failed: ${reason}`);
+      }
+      return r.value as { readonly continuous: boolean };
+    },
+  });
+}
+
+/** How a plugin's `ctx.cms` is bound beyond its invocation. */
+export interface PluginCmsOptions {
+  readonly liveUrls?: LiveBuildUrls;
+  /** The call's kind when its origin does not say it (MakePluginContextOpts.sandboxKind). */
+  readonly kind?: SandboxKind;
+  /**
+   * The operations the Owner approved for this artifact's `cms_admin`
+   * receipt (its `constraints.operations`). Absent for a plugin whose
+   * receipt carries no allowlist (a shipped plugin).
+   */
+  readonly allowed?: ReadonlySet<string>;
+}
+
+/**
+ * The background work that may run a site-wide read (CLAUDE.md §2, the
+ * O(request) rule): a worker, a batch job, a rebuild chunk. A render, a
+ * chat call or a journal batch is a request.
+ */
+function mayReadSiteWide(invocation: PluginInvocation, kind: SandboxKind | undefined): boolean {
+  return invocation.origin === "worker" || invocation.origin === "batch" || kind === "rebuild";
+}
+
+/**
+ * Why `ctx.cms.call(opName)` is refused, or null when it may run. One
+ * rule set for every plugin (docs/dev/external-plugin-brokers.md §7.1,
+ * decisions Q2 and Q9): the operation must be open to plugins and not
+ * back one of the plugin's own handles; a render only reads; a site-wide
+ * read runs only in background work; and an artifact whose receipt names
+ * its operations calls only those. Exported for its unit test.
+ */
+export function pluginCmsRefusal(
+  registry: PluginHostInfra["registry"],
+  slug: string,
+  opName: string,
+  invocation: PluginInvocation,
+  options: PluginCmsOptions,
+): string | null {
+  const call = `ctx.cms.call("${opName}")`;
+  const found = registry.lookup(opName);
+  if (!found.ok) return `${call}: no operation of that name is registered here`;
+  const op = found.value;
+  if (!admitsPlugins(op)) {
+    return `${call}: plugins cannot call this operation (its actorScope does not admit them)`;
+  }
+  const access = pluginAccessOf(op);
+  if (access === null) {
+    return `${call}: the operation declares no pluginAccess, so no plugin may call it — this is a fault in Caelo; report it with bug_report`;
+  }
+  if (access === "handle") {
+    return `${call}: this operation backs one of the plugin's own handles (ctx.adminQuery, ctx.privateFiles, ctx.config, ctx.changes, ctx.email, …); call it through that handle`;
+  }
+  if (options.allowed && !options.allowed.has(opName)) {
+    return `${call}: not among the operations the Owner approved for plugin "${slug}" (capabilityConstraints.cms_admin.operations) — add it there and ship a new version for the Owner to approve`;
+  }
+  if (access === "write" && invocation.origin === "render") {
+    return `${call}: a render only reads, and this operation writes core data — make the write from a chat tool, the Owner panel, a worker or a change-journal batch`;
+  }
+  if (op.readScope === "site" && !mayReadSiteWide(invocation, options.kind)) {
+    return `${call}: this operation reads the whole site, which only background work may do (a worker, a batch job or a rebuild) — a ${invocation.origin} call reads what its request names`;
+  }
+  return null;
+}
+
+/**
  * Core operations for a plugin granted `cms_admin`. Calls inherit the
  * invocation's branch and task, so core writes a plugin makes from a chat
  * are branched, locked and snapshotted like the AI's own, and its core
  * reads see the branch (docs/branch-aware-plugin-storage.md §3). This
  * must switch together with private storage: a page created on the
  * branch while the plugin's own row linking it went live would expose an
- * unpublished page.
+ * unpublished page. Every call is first held to {@link pluginCmsRefusal}.
  */
 function makePluginCms(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
   invocation: PluginInvocation,
-  liveUrls?: LiveBuildUrls,
+  options: PluginCmsOptions,
 ): PluginCms {
+  const { liveUrls } = options;
   const branch = invocation.chatBranchId
     ? {
         chatBranchId: invocation.chatBranchId,
@@ -834,6 +999,13 @@ function makePluginCms(
     : {};
   return {
     call: async <Input, Output>(opName: string, input: Input): Promise<Output> => {
+      // The operations behind the storage and consumer handles register on
+      // first use; registered here too, so a call of one is refused as a
+      // handle's operation rather than as an unknown name.
+      registerPluginStorageOps(infra.registry, { lockPluginRow: infra.lockPluginRow });
+      registerPluginChangeOps(infra.registry);
+      const refused = pluginCmsRefusal(infra.registry, plugin.slug, opName, invocation, options);
+      if (refused) throw new Error(refused);
       // #1390 — counted per plugin and operation for plugin health; never acted on.
       const r = await timedPluginOpCall(plugin.slug, opName, () =>
         execute(

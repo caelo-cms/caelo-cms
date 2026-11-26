@@ -820,10 +820,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(inspectFontOp);
   registry.register(resolveFontOp);
   registry.register(readFontOp);
-  registry.register(stagePluginInstallationOp);
-  registry.register(approvePluginInstallationOp);
+  registry.register(stagePluginInstallationOp(registry));
+  registry.register(approvePluginInstallationOp(registry));
   registry.register(getApprovedPluginInstallationOp);
-  registry.register(finalizePluginInstallationOp);
+  registry.register(finalizePluginInstallationOp(registry));
   registry.register(revokePluginCapabilityOp);
   registry.register(listPluginInstallationsOp);
   registry.register(createFirstOwnerOp);

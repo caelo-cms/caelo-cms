@@ -117,7 +117,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
   const search = await shipped("site-search");
   const assistant = await shipped("site-assistant");
   const consent = await shipped("consent-manager");
-  const intl = await shipped("international-site");
+  const international = await shipped("international-site");
   return {
     ...search,
     ...assistant,
@@ -131,9 +131,12 @@ async function fixtureManifest(): Promise<PluginManifest> {
     workers: search.workers,
     listTypes: search.listTypes,
     listSources: consent.listSources,
+    hasLinkResolve: international.hasLinkResolve,
+    linkResolveReads: international.linkResolveReads,
     aiChatOperations: assistant.aiChatOperations,
-    contributes: intl.contributes,
-    hasShareImages: intl.hasShareImages,
+    changeConsumer: consent.changeConsumer,
+    contributes: international.contributes,
+    hasShareImages: international.hasShareImages,
     tier: 2,
   };
 }
@@ -144,11 +147,12 @@ async function fixtureManifest(): Promise<PluginManifest> {
  * A brokered capability's `has…` field without an entry here fails.
  */
 const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
+  hasLinkResolve: "linkResolveOperation",
   hasShareImages: "shareImagesOperation",
 };
 
-/** Run a reserved entry as a render (preview budget) call of `source`. */
-function renderEntry(source: string, manifest: PluginManifest, entry: string, args: unknown) {
+/** A render-point call as core makes it in an editor preview. */
+function renderPoint(source: string, manifest: PluginManifest, entry: string, args: unknown) {
   return runSandbox({
     source,
     manifest,
@@ -164,6 +168,40 @@ function renderEntry(source: string, manifest: PluginManifest, entry: string, ar
 }
 
 const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
+  // #1729 — the broker takes the operation name and input; every rule is
+  // the host handle's (capabilities.ts, tested in plugin-cms.test.ts).
+  cms_admin: async () => {
+    const calls: unknown[][] = [];
+    const cms = {
+      call: async (...args: unknown[]) => {
+        calls.push(args);
+        return { pages: [] };
+      },
+    };
+    expect(await sandboxed(`return ctx.cms.call("pages.list", { limit: 1 })`, { cms })).toEqual({
+      pages: [],
+    });
+    expect(calls).toEqual([["pages.list", { limit: 1 }]]);
+  },
+  // #1729 — batches and rebuild chunks are host-initiated runs of the
+  // declared operations; the plugin asks about its consumer through ctx.changes.
+  change_journal: async () => {
+    const changeConsumer = {
+      operationName: "run",
+      rebuildOperationName: "run",
+      kinds: [],
+      ownTables: ["notes"],
+      lines: "all" as const,
+    };
+    expect(externalDeclarations({ ...probe, changeConsumer }).changeConsumer).toEqual(
+      changeConsumer,
+    );
+    const fake = fakeHandle(["cursorState"], { continuous: true });
+    expect(await sandboxed(`return ctx.changes.cursorState()`, { changes: fake.handle })).toEqual({
+      continuous: true,
+    });
+    expect(fake.calls).toEqual(["cursorState"]);
+  },
   cms_admin_schema: async () => {
     const fake = fakeHandle(["list"], [{ id: ID }]);
     expect(
@@ -294,13 +332,29 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
         head:async(ctx,args)=>({head:{[args.pageIds[0]]:[{kind:"link",rel:"alternate",hreflang:"de",pageId:args.pageIds[0]}]},lang:{[args.pageIds[0]]:ctx.invocation.origin === "render" ? "de" : "?"}}),
         images:async(ctx,args)=>({images:{[args.pageIds[0]]:"${ID}"}}),
       }};`;
-    expect(await renderEntry(source, manifest, "$contributions", { pageIds: [ID] })).toEqual({
+    expect(await renderPoint(source, manifest, "$contributions", { pageIds: [ID] })).toEqual({
       head: { [ID]: [{ kind: "link", rel: "alternate", hreflang: "de", pageId: ID }] },
       lang: { [ID]: "de" },
     });
-    expect(await renderEntry(source, manifest, "$shareImages", { pageIds: [ID] })).toEqual({
+    expect(await renderPoint(source, manifest, "$shareImages", { pageIds: [ID] })).toEqual({
       images: { [ID]: ID },
     });
+  },
+  link_resolve: async () => {
+    const linkResolveReads = (await fixtureManifest()).linkResolveReads;
+    expect(linkResolveReads?.tables.length).toBeGreaterThan(0);
+    const manifest = { ...probe, hasLinkResolve: true, linkResolveReads } as PluginManifest;
+    expect(externalDeclarations(manifest).linkResolveReads).toEqual(linkResolveReads);
+    // The reserved entry answers through the operation the definition names.
+    expect(
+      await renderPoint(
+        `export default {slug:"parity-probe",version:"1.0.0",tier:2,linkResolveOperation:"variants",
+          operations:{variants:async(ctx,args)=>({pages:{[args.pageIds[0]]:{variant:"de",group:ctx.invocation.origin}}})}};`,
+        manifest,
+        "$linkResolve",
+        { pageIds: [ID] },
+      ),
+    ).toEqual({ pages: { [ID]: { variant: "de", group: "render" } } });
   },
   batch_jobs: async () => {
     expect(
@@ -351,8 +405,8 @@ describe("#1729 — every capability is brokered for external plugins or tracked
 
   it("the definition carries every manifest field of a brokered capability", async () => {
     const fixture = await fixtureManifest();
-    // What `externalPluginDefinition` builds: the data, and each announced
-    // composition point's definition key set to its reserved entry.
+    // As externalPluginDefinition builds it: the data, and each announced
+    // point's definition key set to its reserved entry.
     const declarations = {
       ...externalDeclarations(fixture),
       ...renderPointDefinition(fixture, () => null).keys,

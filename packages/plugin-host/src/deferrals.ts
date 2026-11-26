@@ -33,8 +33,10 @@
 
 import {
   type DeferralCandidate,
+  type DeferralPlaceholderRef,
   type ModuleDeferralSpec,
   moduleDeferralSpec,
+  placeholderSlots,
 } from "@caelo-cms/plugin-sdk";
 import { execute, type OperationRegistry } from "@caelo-cms/query-api";
 import { type ComposeDeferral, type ModuleFieldKind, renderTemplate } from "@caelo-cms/shared";
@@ -47,7 +49,9 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import { escapePluginText } from "./plugin-values.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
+import { assertAnswerSize, type RenderPointCall } from "./render-points.js";
 
 /**
  * What the composer needs to emit one withheld module: a gate's
@@ -101,7 +105,6 @@ export async function resolveModuleDeferrals(
 ): Promise<ResolvedDeferrals> {
   const out = new Map<string, ResolvedDeferral>();
   if (modules.length === 0) return out;
-  const moduleIds = modules.map((m) => m.moduleId);
 
   const contributors = loadedPlugins
     .all()
@@ -111,42 +114,57 @@ export async function resolveModuleDeferrals(
   if (contributors.length === 0) return out;
 
   const raw = new Map<string, { pluginSlug: string; spec: ModuleDeferralSpec }>();
+  const chunks = chunkModules(modules);
   for (const lp of contributors) {
     const operationName = lp.definition.deferralsOperation as string;
-    const r = await runPluginOperation({
-      invocation: renderInvocation(scope),
-      pluginSlug: lp.slug,
-      operationName,
-      args: { moduleIds, modules: [...modules] },
-    });
-    if (!r.ok) {
-      const reason = `deferrals: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`;
-      // #1087 — a preview shows the modules ungated and flags it; a build
-      // throws (it must never ship a gated module ungated).
-      if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "deferrals", reason })) {
-        continue;
+    const label = `deferrals: ${lp.slug}.${operationName}`;
+    let skipped = false;
+    for (const chunk of chunks) {
+      const r = await runPluginOperation({
+        invocation: renderInvocation(scope),
+        pluginSlug: lp.slug,
+        operationName,
+        args: { moduleIds: chunk.map((m) => m.moduleId), modules: chunk },
+        maxAnswerBytes: DEFERRALS_CALL.maxAnswerBytes,
+      });
+      if (!r.ok) {
+        const reason = `${label} failed: ${r.error.kind}: ${r.error.message}`;
+        // #1087 — a preview shows the modules ungated and flags it; a build
+        // throws (it must never ship a gated module ungated).
+        if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "deferrals", reason })) {
+          skipped = true;
+          break;
+        }
+        throw new Error(reason);
       }
-      throw new Error(reason);
+      assertAnswerSize(DEFERRALS_CALL, label, r.value);
+      const asked = new Set(chunk.map((m) => m.moduleId));
+      const value = (r.value as { deferrals?: Record<string, unknown> } | null)?.deferrals ?? {};
+      for (const [moduleId, entry] of Object.entries(value)) {
+        if (!asked.has(moduleId)) {
+          throw new Error(`${label}: answered for module ${moduleId}, which was not asked about`);
+        }
+        const parsed = moduleDeferralSpec.safeParse(entry);
+        if (!parsed.success) {
+          throw new Error(
+            `deferrals: plugin "${lp.slug}" returned an invalid verdict for module ${moduleId}: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+          );
+        }
+        const existing = raw.get(moduleId);
+        if (existing && existing.pluginSlug !== lp.slug) {
+          // Two plugins withholding one module cannot both be honoured —
+          // whichever placeholder won would silently discard the other's
+          // condition, and the visitor would satisfy one gate and pass
+          // both.
+          throw new Error(
+            `deferrals: module ${moduleId} is withheld by both "${existing.pluginSlug}" and "${lp.slug}". A module can have at most one gate.`,
+          );
+        }
+        raw.set(moduleId, { pluginSlug: lp.slug, spec: parsed.data });
+      }
     }
-    const value = (r.value as { deferrals?: Record<string, unknown> }).deferrals ?? {};
-    for (const [moduleId, entry] of Object.entries(value)) {
-      const parsed = moduleDeferralSpec.safeParse(entry);
-      if (!parsed.success) {
-        throw new Error(
-          `deferrals: plugin "${lp.slug}" returned an invalid verdict for module ${moduleId}: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
-        );
-      }
-      const existing = raw.get(moduleId);
-      if (existing && existing.pluginSlug !== lp.slug) {
-        // Two plugins withholding one module cannot both be honoured —
-        // whichever placeholder won would silently discard the other's
-        // condition, and the visitor would satisfy one gate and pass
-        // both.
-        throw new Error(
-          `deferrals: module ${moduleId} is withheld by both "${existing.pluginSlug}" and "${lp.slug}". A module can have at most one gate.`,
-        );
-      }
-      raw.set(moduleId, { pluginSlug: lp.slug, spec: parsed.data });
+    if (skipped) {
+      for (const [moduleId, v] of raw) if (v.pluginSlug === lp.slug) raw.delete(moduleId);
     }
   }
   if (raw.size === 0) return out;
@@ -163,7 +181,9 @@ export async function resolveModuleDeferrals(
       pluginSlug,
       reason: spec.reason,
       omit: true,
-      editorNotice: scope.editorPreview ? spec.editorNotice : null,
+      editorNotice: scope.editorPreview
+        ? declaredPlaceholder(pluginSlug, spec.editorNotice, moduleId)
+        : null,
     });
   }
   if (gates.size === 0) return out;
@@ -173,15 +193,16 @@ export async function resolveModuleDeferrals(
   );
   for (const [moduleId, { pluginSlug, spec }] of gates) {
     const mod = placeholders.get(spec.placeholderModuleSlug);
-    if (!mod && spec.defaultPlaceholder) {
+    if (!mod && spec.placeholder) {
       // The plugin ships a placeholder of its own; the page keeps
       // rendering until someone designs the site's module for it.
+      const placeholder = declaredPlaceholder(pluginSlug, spec.placeholder, moduleId);
       out.set(moduleId, {
         pluginSlug,
         reason: spec.reason,
         placeholderModuleSlug: spec.placeholderModuleSlug,
-        placeholderHtml: spec.defaultPlaceholder.html,
-        placeholderCss: spec.defaultPlaceholder.css,
+        placeholderHtml: placeholder.html,
+        placeholderCss: placeholder.css,
       });
       continue;
     }
@@ -211,6 +232,77 @@ export async function resolveModuleDeferrals(
 }
 
 type ModuleGateSpec = Exclude<ModuleDeferralSpec, { omit: true }>;
+
+/**
+ * Bytes of modules one deferrals call carries. Every module of the pass
+ * ships with its content, so a build of a large site asks in several
+ * calls, each well under the 1 MB message line.
+ */
+const DEFERRAL_CHUNK_BYTES = 512 * 1024;
+
+/** A verdict is a reason, a placeholder name and short text: 1 MB per call is far beyond any real answer. */
+const DEFERRALS_CALL: RenderPointCall = { point: "deferrals", maxAnswerBytes: 1024 * 1024 };
+
+/** Split the pass's modules into calls of about {@link DEFERRAL_CHUNK_BYTES}, in order. */
+export function chunkModules(
+  modules: ReadonlyArray<DeferralCandidate>,
+  maxBytes = DEFERRAL_CHUNK_BYTES,
+): DeferralCandidate[][] {
+  const chunks: DeferralCandidate[][] = [];
+  let chunk: DeferralCandidate[] = [];
+  let bytes = 0;
+  for (const m of modules) {
+    const size = Buffer.byteLength(JSON.stringify(m)) + 1;
+    if (chunk.length > 0 && bytes + size > maxBytes) {
+      chunks.push(chunk);
+      chunk = [];
+      bytes = 0;
+    }
+    chunk.push(m);
+    bytes += size;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
+}
+
+const SLOT_RE = /\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g;
+
+/**
+ * #1729 — the markup a verdict names: one of the plugin's reviewed
+ * `deferralPlaceholders`, its `{{name}}` slots filled with the verdict's
+ * text, escaped. A verdict carries data, never markup, so a plugin cannot
+ * put a script or a third-party request where a withheld embed was.
+ *
+ * Loud: a name the manifest does not declare, a slot without a value and
+ * a value for no slot all throw. A placeholder rendered with a raw
+ * `{{slot}}` would read as broken, and a guessed one would be a fallback.
+ */
+export function declaredPlaceholder(
+  pluginSlug: string,
+  ref: DeferralPlaceholderRef,
+  moduleId: string,
+): { html: string; css: string } {
+  const declared = loadedPlugins.bySlug(pluginSlug)?.definition.deferralPlaceholders ?? {};
+  const decl = Object.hasOwn(declared, ref.name) ? declared[ref.name] : undefined;
+  if (!decl) {
+    throw new Error(
+      `deferrals: plugin "${pluginSlug}" names placeholder "${ref.name}" for module ${moduleId}, which its manifest does not declare (declared: ${Object.keys(declared).join(", ") || "none"}). A placeholder is reviewed markup: the plugin has to declare it in deferralPlaceholders (a new version).`,
+    );
+  }
+  const values = ref.values ?? {};
+  const slots = placeholderSlots(decl.html);
+  const missing = slots.filter((s) => !Object.hasOwn(values, s));
+  const extra = Object.keys(values).filter((k) => !slots.includes(k));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new Error(
+      `deferrals: plugin "${pluginSlug}" fills placeholder "${ref.name}" for module ${moduleId} with the wrong values${missing.length > 0 ? `; missing: ${missing.join(", ")}` : ""}${extra.length > 0 ? `; not a slot of it: ${extra.join(", ")}` : ""}`,
+    );
+  }
+  return {
+    html: decl.html.replace(SLOT_RE, (_m, name: string) => escapePluginText(values[name] ?? "")),
+    css: decl.css,
+  };
+}
 
 /** One `modules.list` read for every placeholder in the pass. */
 async function loadPlaceholders(slugs: ReadonlySet<string>): Promise<Map<string, ModuleRow>> {
