@@ -55,6 +55,7 @@ import {
   ADMIN_MEMORY_DEFAULT,
   azureContainerAppResources,
   GATEWAY_ENVIRONMENT_ENV,
+  GATEWAY_MEMORY_DEFAULT,
   GATEWAY_TRUSTED_PROXY_HOPS,
   MCP_AUTH_PROXY_TRUSTED_PROXY_HOPS,
   REMOTE_MCP_MODE,
@@ -659,6 +660,9 @@ const _gatewayApp = containerApp({
   serviceName: "gateway",
   secrets: gatewaySecretReader,
   minReplicas: gatewayMinInstances,
+  // Epic #1644 — the gateway keeps search indexes and the query model in
+  // memory: the same size as every adapter (stack-contract.ts).
+  resources: azureContainerAppResources(GATEWAY_MEMORY_DEFAULT),
   databaseEnv: [
     { name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl },
     ...poolBudget.env.gateway,

@@ -24,9 +24,13 @@
  * The field is a combobox (ARIA 1.2): arrow keys move through the
  * suggestions, Enter opens one, Escape closes. An empty field offers the
  * start questions and, when the operator turned them on, the approved
- * popular queries the results page carries. Focus warms the index up
- * (one uncached call naming the current release); every later call names
- * that release, so the CDN can answer it. Requests send no cookie
+ * popular queries the results page carries. Focus warms the gateway up
+ * (one uncached call for the current release key, answered once the
+ * release, its index and its query model are loaded, so a cold instance
+ * warms while the visitor types); every later search names that release,
+ * so the CDN can answer it. A search or suggestion that fails without an
+ * answer or with a 5xx is sent once more before the page shows its error
+ * state. Requests send no cookie
  * (`credentials: "omit"`), so visitors share one cache entry per query;
  * behind the staging gate, which admits only the operator's cookie, the
  * first refusal (401/403) switches the page to its own credentials
@@ -80,22 +84,36 @@ const MAIN = String.raw`
     });
   }
 
-  function get(op, params) {
+  function pause(ms) {
+    return new Promise(function (done) { setTimeout(done, ms); });
+  }
+
+  // A failed answer is asked for once more before the page shows an error
+  // (searchRetryDelayMs): an instance can go away under a request, and a
+  // search is safe to repeat.
+  function get(op, params, retried) {
     var qs = new URLSearchParams(params);
     if (releases[op]) qs.set("release", releases[op]);
+    function again(status, retryAfter, err) {
+      var wait = retried ? null : searchRetryDelayMs(status, retryAfter);
+      if (wait === null) throw err;
+      return pause(wait).then(function () { return get(op, params, true); });
+    }
     return send(API + op + "?" + qs.toString()).then(function (res) {
       if (res.status === 409) {
         return res.json().then(function (body) {
           if (!(body && body.release) || body.release === releases[op]) throw new Error(op + " 409");
           releases[op] = body.release;
-          return get(op, params);
+          return get(op, params, retried);
         });
       }
-      if (!res.ok) throw new Error(op + " " + res.status);
+      if (!res.ok) return again(res.status, res.headers.get("Retry-After"), new Error(op + " " + res.status));
       return res.json().then(function (body) {
         if (body && body.release) releases[op] = body.release;
         return body;
       });
+    }, function (err) {
+      return again(0, null, err);
     });
   }
 
@@ -276,7 +294,10 @@ const MAIN = String.raw`
         .catch(function () { if (mine === seq) close(); });
     }
 
-    input.addEventListener("focus", function () { warm().then(suggest); });
+    // The key request warms the gateway (the release opens, the index and
+    // the query model load) and answers when that is done; suggestions need
+    // no key and go out at once.
+    input.addEventListener("focus", function () { warm(); suggest(); });
     input.addEventListener("input", function () {
       clearTimeout(timer);
       timer = setTimeout(suggest, 120);

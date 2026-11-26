@@ -31,6 +31,7 @@ export * from "./font-assets.js";
 export * from "./font-axis-policy.js";
 export * from "./font-usage.js";
 export * from "./fonts.js";
+export * from "./gateway-memory.js";
 export * from "./gateway-refresh.js";
 export * from "./genesis.js";
 export * from "./genesis-inventory.js";
