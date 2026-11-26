@@ -26,6 +26,8 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import { sql } from "drizzle-orm";
 import { lockPluginRow } from "../locks.js";
 import { registerAdminOps } from "../register.js";
+import { pluginWorkerTasks } from "../scheduler/plugin-workers.js";
+import { runSchedulerTick } from "../scheduler/tick.js";
 
 let adapter: DatabaseAdapter;
 let pluginsRoot: string;
@@ -214,4 +216,93 @@ it("refuses an artifact whose hasOnActivate does not match its definition", asyn
   await adapter.withAdminTransaction(system, (tx) =>
     tx.execute(sql.raw("DROP SCHEMA IF EXISTS plugin_seam_liar CASCADE")),
   );
+});
+
+it("an installed plugin's worker runs on the scheduler tick, sandboxed, with private storage on main (background_workers)", async () => {
+  const slug = "seam-worker";
+  const workerManifest = {
+    slug,
+    version: "1.0.0",
+    tier: 2,
+    schema: { tallies: { label: "text" } },
+    tableKinds: { tallies: "published" },
+    adminSchema: { runs: { note: "text" } },
+    operations: ["tick", "read"],
+    workers: [{ name: "count_runs", cron: "* * * * *", operationName: "tick" }],
+    requestedCapabilities: ["cms_admin_schema", "background_workers"],
+    capabilityReasons: {
+      cms_admin_schema: "Remember each run",
+      background_workers: "Count runs every minute",
+    },
+  };
+  const workerSource = `export default {slug:"${slug}",version:"1.0.0",tier:2,operations:{
+    tick: async (ctx, args) => {
+      await ctx.adminQuery.insert("runs", { note: args.workerName + ":" + ctx.invocation.origin });
+      await ctx.query.insert("tallies", { label: "ran" });
+      return null;
+    },
+    read: async (ctx) => ctx.adminQuery.list("runs"),
+  }};`;
+  const staged = (await call("plugins.stage_installation", {
+    manifest: workerManifest,
+    source: workerSource,
+  })) as { installationId: string; pluginId: string; artifactDigest: string };
+  const review = (await call("plugins.list_installations", {})) as {
+    installations: { id: string; currentStateDigest: string }[];
+  };
+  await call(
+    "plugins.approve_installation",
+    {
+      installationId: staged.installationId,
+      artifactDigest: staged.artifactDigest,
+      expectedStateDigest: review.installations.find((r) => r.id === staged.installationId)
+        ?.currentStateDigest,
+      capabilities: workerManifest.requestedCapabilities,
+    },
+    await owner(),
+  );
+  expect(await activateApprovedExternalPlugin(staged.installationId)).toEqual({ loaded: true });
+  const lp = loadedPlugins.bySlug(slug);
+  expect(lp?.definition.workers?.map((w) => w.name)).toEqual(["count_runs"]);
+
+  const tasks = pluginWorkerTasks().filter((t) => t.key.startsWith(`plugin:${slug}/`));
+  expect(tasks.map((t) => t.key)).toEqual([`plugin:${slug}/count_runs`]);
+  const report = await runSchedulerTick({
+    adapter,
+    registry,
+    tasks,
+    holder: "external-worker-test",
+  });
+  expect(report.ran).toMatchObject([{ key: `plugin:${slug}/count_runs`, outcome: "ok" }]);
+
+  const read = await runPluginOperation({
+    pluginSlug: slug,
+    operationName: "read",
+    args: {},
+    invocation: { origin: "owner-panel", actorId: (await owner()).actorId },
+  });
+  if (!read.ok) throw new Error(JSON.stringify(read.error));
+  const runs = read.value as { id: string; note: string }[];
+  expect(runs.map((r) => r.note)).toEqual(["count_runs:worker"]);
+  // Main line, as the plugin actor, snapshotted (Q1 A).
+  const snapshots = (await adapter.withAdminTransaction(system, (tx) =>
+    tx.execute(sql`
+      SELECT s.actor_id::text AS actor_id, s.chat_branch_id
+      FROM plugin_row_snapshots r JOIN site_snapshots s ON s.id = r.site_snapshot_id
+      WHERE r.plugin_id = ${staged.pluginId}::uuid AND r.row_id = ${runs[0]?.id}::uuid
+    `),
+  )) as unknown as { actor_id: string; chat_branch_id: string | null }[];
+  expect(snapshots[0]).toEqual({ actor_id: lp?.pluginActorId ?? "", chat_branch_id: null });
+
+  // A revoked grant stops the next run before its first SDK call.
+  await call(
+    "plugins.revoke_capability",
+    { installationId: staged.installationId, capability: "background_workers" },
+    await owner(),
+  );
+  const after = await tasks[0]?.run().then(
+    () => "ran",
+    (e: Error) => e.message,
+  );
+  expect(after).toMatch(/ExternalPlugin(ApprovalChanged|GrantChanged)|disabled/);
 });

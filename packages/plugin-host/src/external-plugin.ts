@@ -140,6 +140,9 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     requestedCapabilities: manifest.requestedCapabilities,
     tools: manifest.tools,
     skills: manifest.skills,
+    // #1729 — scheduled on the tick like a shipped plugin's; each run is a
+    // sandboxed call of the background pool (`worker` budget).
+    ...(manifest.workers ? { workers: manifest.workers } : {}),
     // #1332 — the reviewed contract, with the input schema compiled from
     // the manifest's JSON Schema: the host validates a visitor's body
     // before the sandbox ever sees it.

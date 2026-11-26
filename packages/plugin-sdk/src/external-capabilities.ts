@@ -32,7 +32,7 @@ export const EXTERNAL_CAPABILITY_STATUS: Readonly<
   cms_admin_schema: BROKERED,
   ai_provider: PLANNED,
   chat_runner_tools: BROKERED,
-  background_workers: PLANNED,
+  background_workers: BROKERED,
   change_journal: PLANNED,
   email: PLANNED,
   head_contributions: PLANNED,

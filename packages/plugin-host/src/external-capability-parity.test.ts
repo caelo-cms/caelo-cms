@@ -222,6 +222,14 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
       ),
     ).toBe("observer");
   },
+  background_workers: async () => {
+    const workers = (await fixtureManifest()).workers;
+    expect(externalDeclarations({ ...probe, workers }).workers).toEqual(workers);
+    // A worker run is a sandboxed call of the background pool.
+    expect(
+      await sandboxed(`return ctx.invocation.origin`, {}, { origin: "worker", actorId: ID }),
+    ).toBe("worker");
+  },
   batch_jobs: async () => {
     expect(
       await sandboxed(
