@@ -1,8 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
+/**
+ * Load external (runtime-installed) definitions as RPC proxies: the source
+ * is never imported by the Bun host. The definition is built from the
+ * reviewed manifest alone — its declarations are carried as data
+ * ({@link externalDeclarations}) and every operation is a sandboxed call.
+ */
+
 import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
-import type { PluginContext, PluginDefinition } from "@caelo-cms/plugin-sdk";
-/** Load external definitions as RPC proxies; source is never imported by the Bun host. */
+import {
+  externalCapabilityRefusal,
+  type PluginContext,
+  type PluginDefinition,
+  type PluginManifest,
+} from "@caelo-cms/plugin-sdk";
 import { z } from "zod";
 import type { PluginHostInfra } from "./dispatch.js";
 import { assertExternalApproval, type ExternalApproval } from "./external-authorization.js";
@@ -31,27 +42,11 @@ export function externalPluginDefinition(opts: {
   }
   const manifest = validation.manifest;
   for (const tool of manifest.tools ?? []) z.fromJSONSchema(tool.inputJsonSchema);
+  // #1729 — the status record is the one list of what a runtime-installed
+  // plugin can be granted; staging and approval refuse the rest first.
   for (const capability of manifest.requestedCapabilities ?? []) {
-    if (
-      ![
-        "cms_admin_schema",
-        "chat_runner_tools",
-        "companion_skills",
-        "font_assets",
-        "private_files",
-        "image_generation",
-        "site_media_read",
-        "consent_provider",
-        // Epic #1644 — brokered by the sandbox (collections) or delivered
-        // as arguments (page output); a batch runs in the same sandbox in a job.
-        "collections",
-        "page_output",
-        "batch_jobs",
-        // #1654 — no broker: the gateway runs the declared conversation itself.
-        "visitor_ai",
-      ].includes(capability)
-    )
-      throw new Error(`External capability broker unavailable: ${capability}`);
+    const refusal = externalCapabilityRefusal(capability);
+    if (refusal) throw new Error(`External capability broker unavailable: ${refusal}`);
   }
   if (externalArtifactDigest(opts.manifest, opts.source) !== opts.approval.artifactDigest)
     throw new Error("ExternalPluginArtifactMismatch");
@@ -71,6 +66,30 @@ export function externalPluginDefinition(opts: {
       timeoutMs: manifest.requestedCapabilities?.includes("image_generation") ? 240_000 : 30_000,
     });
   return Object.freeze({
+    ...externalDeclarations(manifest),
+    operations: Object.freeze(
+      Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
+    ),
+    ...(manifest.hasStaticRender
+      ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
+      : {}),
+  });
+}
+
+/** The manifest's declarations, as a definition carries them: data only, no operation. */
+export type ExternalDeclarations = Omit<
+  PluginDefinition<PluginContext>,
+  "operations" | "staticRender"
+>;
+
+/**
+ * Everything of a reviewed external manifest the host consumes as data,
+ * mapped onto the definition shape a shipped plugin has (one plugin model).
+ * Pure, so the parity test (`external-capability-parity.test.ts`) can check
+ * that each brokered capability's manifest fields reach the definition.
+ */
+export function externalDeclarations(manifest: PluginManifest): ExternalDeclarations {
+  return {
     slug: manifest.slug,
     version: manifest.version,
     tier: 2,
@@ -83,9 +102,6 @@ export function externalPluginDefinition(opts: {
     requestedCapabilities: manifest.requestedCapabilities,
     tools: manifest.tools,
     skills: manifest.skills,
-    operations: Object.freeze(
-      Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
-    ),
     // #1332 — the reviewed contract, with the input schema compiled from
     // the manifest's JSON Schema: the host validates a visitor's body
     // before the sandbox ever sees it.
@@ -110,9 +126,6 @@ export function externalPluginDefinition(opts: {
     ...(manifest.bakedData ? { bakedData: manifest.bakedData } : {}),
     ...(manifest.writeHintsOperation ? { writeHintsOperation: manifest.writeHintsOperation } : {}),
     ...(manifest.changeConsumer ? { changeConsumer: manifest.changeConsumer } : {}),
-    ...(manifest.hasStaticRender
-      ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
-      : {}),
     // Epic #1644 — reviewed manifest data: an installed plugin keeps
     // configuration, collections, page output and batch jobs like a shipped
     // one (one plugin model); its observer and batch code run in the sandbox.
@@ -129,5 +142,5 @@ export function externalPluginDefinition(opts: {
     ...(manifest.aiChatOperations ? { aiChatOperations: manifest.aiChatOperations } : {}),
     ...(manifest.pageOutputObserver ? { pageOutputObserver: manifest.pageOutputObserver } : {}),
     ...(manifest.batchOperations ? { batchOperations: manifest.batchOperations } : {}),
-  });
+  };
 }

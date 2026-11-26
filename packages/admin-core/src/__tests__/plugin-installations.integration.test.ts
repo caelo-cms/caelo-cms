@@ -929,3 +929,31 @@ it("#1720 — refuses a runtime-installed plugin whose worker cron croner cannot
   if (!got.ok) throw new Error(JSON.stringify(got.error));
   expect((got.value as { plugin: unknown }).plugin).toBeNull();
 });
+
+it("refuses to stage a capability no runtime-installed plugin can be granted, before any row exists (#1729)", async () => {
+  const slug = "installation-unbrokered";
+  const r = await execute(
+    registry,
+    adapter,
+    { ...system, actorKind: "ai" },
+    "plugins.stage_installation",
+    {
+      manifest: {
+        ...manifest,
+        slug,
+        requestedCapabilities: ["cms_admin_schema", "ai_provider"],
+        capabilityReasons: { ...manifest.capabilityReasons, ai_provider: "Summarise notes" },
+      },
+      source: source.replace("installation-notes", slug),
+    },
+  );
+  expect(r.ok).toBe(false);
+  if (r.ok) return;
+  expect(r.error.message).toContain(
+    "`ai_provider` (AI calls) is not available to runtime-installed plugins yet (#1729)",
+  );
+  expect(r.error.message).toContain("Runtime-installed plugins can request: ");
+  const got = await execute(registry, adapter, system, "plugins.get", { slug });
+  if (!got.ok) throw new Error(JSON.stringify(got.error));
+  expect((got.value as { plugin: unknown }).plugin).toBeNull();
+});

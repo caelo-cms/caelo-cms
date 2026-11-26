@@ -88,6 +88,25 @@ describe("validateManifest", () => {
     expect(r.failures.some((f) => f.kind === "manifest-tier2-cap-leak")).toBe(true);
   });
 
+  it("a submission without grants is told which grant a field needs, and whether it exists (#1729)", () => {
+    const hints = (extra: Record<string, unknown>) =>
+      validateManifest({ ...helloWorldManifest, ...extra }).failures.map((f) => f.hint);
+    // Brokered: request it and go through the installation review.
+    expect(hints({ adminSchema: { notes: { body: "text" } } }).join(" ")).toContain(
+      "`adminSchema` needs the `cms_admin_schema` grant: add it to `requestedCapabilities`",
+    );
+    // Not available to runtime-installed plugins: says so, with the issue.
+    expect(hints({ contributes: ["head"] }).join(" ")).toContain(
+      "`head_contributions` (Page head and sitemap) is not available to runtime-installed plugins yet (#1729)",
+    );
+    expect(hints({ requestedCapabilities: ["email"] }).join(" ")).toContain(
+      "`email` (Sending email) is not available",
+    );
+    expect(hints({ requestedCapabilities: ["cms_admin_schema"] }).join(" ")).toContain(
+      "submit it with submit_plugin",
+    );
+  });
+
   it("rejects manifests missing required fields", () => {
     const r = validateManifest({ slug: "x" });
     expect(r.failures.some((f) => f.kind === "manifest-shape")).toBe(true);

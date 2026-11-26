@@ -167,10 +167,12 @@ export const pluginSchemaMap = z.record(z.string(), pluginTableSchema);
 
 export type PluginSchemaMap = z.infer<typeof pluginSchemaMap>;
 
-/** Capability requests. Every capability is runtime-enforced; what is
- *  release signature determines origin and execution path. External access
- *  requires individual installation receipts and an implemented host broker.
- *  Unsupported external requests fail activation; declarations never grant access. */
+/** Capability requests. Every capability is runtime-enforced; the release
+ *  signature determines origin and execution path. External access requires
+ *  individual installation receipts and a host broker: which capabilities
+ *  have one is `EXTERNAL_CAPABILITY_STATUS` (#1729), and a runtime-installed
+ *  plugin requesting any other is refused at staging and approval.
+ *  Declarations never grant access. */
 export const pluginCapability = z.enum([
   "cms_admin",
   "cms_admin_schema",
@@ -202,6 +204,15 @@ export const pluginCapability = z.enum([
 export type PluginCapability = z.infer<typeof pluginCapability>;
 
 export { PLUGIN_CAPABILITY_INFO, type PluginCapabilityInfo } from "./capability-info.js";
+export {
+  CAPABILITY_MANIFEST_FIELDS,
+  EXTERNAL_CAPABILITY_STATUS,
+  type ExternalCapabilityStatus,
+  externalCapabilityHint,
+  externalCapabilityRefusal,
+  externallyBrokeredCapabilities,
+  isExternallyBrokered,
+} from "./external-capabilities.js";
 
 /**
  * Provenance is the trust axis (epic #380): who authored the plugin and

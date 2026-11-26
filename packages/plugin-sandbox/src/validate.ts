@@ -44,7 +44,12 @@
  * Returns structured failures the AI can read + auto-fix from.
  */
 
-import { type PluginManifest, pluginManifest as pluginManifestSchema } from "@caelo-cms/plugin-sdk";
+import {
+  externalCapabilityHint,
+  externalCapabilityRefusal,
+  type PluginManifest,
+  pluginManifest as pluginManifestSchema,
+} from "@caelo-cms/plugin-sdk";
 import { Cron } from "croner";
 // The bare `"oxc-parser"` import path here is load-bearing for the admin
 // SSR build — `apps/admin/vite.config.ts` registers a `resolveId` hook
@@ -254,45 +259,31 @@ export function validateManifest(
     }
   }
 
-  // Tier 2 (runtime-authored) cannot reach over the grantability
-  // ceiling: no capabilities, no workers, no chat tools, no cms_admin
-  // schema.
+  // A runtime-authored plugin submitted without capabilities
+  // (`plugins.submit`, `plugins.revalidate`) has no grants: anything that
+  // needs one goes through the installation review instead. Each hint names
+  // the grant and, while no runtime-installed plugin can have it, says so
+  // (#1729, the status record in plugin-sdk external-capabilities.ts).
   if (m.tier === 2 && !opts.allowExternalCapabilities) {
-    if (m.contributes && m.contributes.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Runtime-authored plugins cannot declare `contributes` — head/sitemap contributions are release-signed only (#391).",
-      });
-    }
-    if (m.urlContributions && m.urlContributions.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Runtime-authored plugins cannot declare `urlContributions` — URL-slot claims are release-signed only (#390).",
-      });
-    }
-    if (m.adminSchema && Object.keys(m.adminSchema).length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Runtime-authored plugins cannot declare `adminSchema` — a plugin-owned cms_admin schema is release-signed only (#389).",
-      });
-    }
+    const leak = (hint: string) => failures.push({ kind: "manifest-tier2-cap-leak", hint });
+    if (m.contributes && m.contributes.length > 0)
+      leak(externalCapabilityHint("head_contributions", "contributes"));
+    if (m.urlContributions && m.urlContributions.length > 0)
+      leak(externalCapabilityHint("url_slots", "urlContributions"));
+    if (m.adminSchema && Object.keys(m.adminSchema).length > 0)
+      leak(externalCapabilityHint("cms_admin_schema", "adminSchema"));
+    if (m.workers && m.workers.length > 0)
+      leak(externalCapabilityHint("background_workers", "workers"));
+    if (m.tools && m.tools.length > 0) leak(externalCapabilityHint("chat_runner_tools", "tools"));
     if (m.requestedCapabilities && m.requestedCapabilities.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Tier 2 plugins cannot declare `requestedCapabilities`. Submit as Tier 1 (requires human PR + signed manifest) or drop the field.",
-      });
-    }
-    if (m.workers && m.workers.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Tier 2 plugins cannot declare `workers` (background workers are Tier 1 only).",
-      });
-    }
-    if (m.tools && m.tools.length > 0) {
-      failures.push({
-        kind: "manifest-tier2-cap-leak",
-        hint: "Tier 2 plugins cannot declare `tools` (chat-runner tool registration is Tier 1 only).",
-      });
+      const unavailable = m.requestedCapabilities
+        .map((c) => externalCapabilityRefusal(c))
+        .filter((r): r is string => r !== null);
+      leak(
+        unavailable.length > 0
+          ? unavailable.join(" ")
+          : "A plugin that requests capabilities is installed through the Owner's installation review, which grants each one for this exact artifact: submit it with submit_plugin (plugins.stage_installation), not plugins.submit.",
+      );
     }
   }
 

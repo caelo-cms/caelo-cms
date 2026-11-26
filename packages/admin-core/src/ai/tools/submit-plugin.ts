@@ -6,6 +6,7 @@
  * Owner activates and grants. It never edits plugins shipped with Caelo.
  */
 
+import { externallyBrokeredCapabilities } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { type SubmitPluginToolInput, submitPluginToolInput } from "@caelo-cms/shared";
 import { describeError, toolError } from "./_describe-error.js";
@@ -19,6 +20,9 @@ export const submitPluginTool: ToolDefinitionWithHandler<SubmitPluginToolInput> 
     "- TWO-STEP: validates and queues only. The Owner approves the exact source at /settings/plugins (/settings/plugins/installations if it requests access) — say it is submitted for approval; never claim it is active.\n" +
     "- `slug` and `version` must equal the manifest's.\n" +
     "- Extra access must be requested + explained: `cms_admin_schema` for private author storage (declare `adminSchema`), `chat_runner_tools` for chat-callable tools (declare `tools`, each named `<slug_with_underscores>__<name>`); a reason per capability in `capabilityReasons`. The Owner sees every tool name + description verbatim — describe honestly what each does. Private-storage writes from a chat stay in the chat until it is published.\n" +
+    // #1729 — generated from the status record, so it never offers a grant
+    // a runtime-installed plugin cannot get.
+    `- Requestable capabilities: ${externallyBrokeredCapabilities().join(", ")}. Any other is refused.\n` +
     "- Result has validationErrors[]; on failure read each `hint`, fix the source, resubmit in the same turn.",
   schema: submitPluginToolInput,
   inputSchema: {

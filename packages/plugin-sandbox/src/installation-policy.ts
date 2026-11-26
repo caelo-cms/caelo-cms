@@ -1,12 +1,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { PluginCapability, PluginManifest } from "@caelo-cms/plugin-sdk";
+import {
+  externalCapabilityRefusal,
+  type PluginCapability,
+  type PluginManifest,
+} from "@caelo-cms/plugin-sdk";
 
 /** Declaration checks are independent of origin verification and never confer a grant. */
 export function validateInstallationPolicy(manifest: PluginManifest): void {
   const requested = new Set(manifest.requestedCapabilities ?? []);
   if (requested.size !== (manifest.requestedCapabilities ?? []).length)
     throw new Error("Duplicate capability request");
+  // #1729 — a grant with no broker for runtime-installed plugins would be
+  // approved and then never load. Refused here, which staging, approval,
+  // finalization and every load run, so no Owner approves such an artifact.
+  for (const capability of requested) {
+    const refusal = externalCapabilityRefusal(capability);
+    if (refusal) throw new Error(refusal);
+  }
   const requireCapability = (present: boolean, capability: PluginCapability) => {
     if (present && !requested.has(capability))
       throw new Error(`Missing required capability request: ${capability}`);

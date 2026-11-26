@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { pluginManifest } from "@caelo-cms/plugin-sdk";
+import { isExternallyBrokered, pluginManifest } from "@caelo-cms/plugin-sdk";
 import { validateInstallationPolicy, validateSelectedGrants } from "./installation-policy.js";
 
 function manifest() {
@@ -28,6 +28,8 @@ describe("explicit external installation grants", () => {
     expect(() => validateInstallationPolicy({ ...manifest(), capabilityReasons: {} })).toThrow(
       "Explain",
     );
+    // The allowlist rule applies once cms_admin is brokered (#1729); until
+    // then the refusal of an unbrokered capability comes first.
     expect(() =>
       validateInstallationPolicy({
         ...manifest(),
@@ -35,7 +37,20 @@ describe("explicit external installation grants", () => {
         adminSchema: {},
         capabilityReasons: { cms_admin: "Edit pages" },
       }),
-    ).toThrow("allowlist");
+    ).toThrow(isExternallyBrokered("cms_admin") ? "allowlist" : "not available");
+  });
+  it("refuses a capability no runtime-installed plugin can have, naming what to remove (#1729)", () => {
+    const refused = () =>
+      validateInstallationPolicy({
+        ...manifest(),
+        requestedCapabilities: ["cms_admin_schema", "email"],
+        capabilityReasons: { cms_admin_schema: "Notes", email: "Mail" },
+        mailTemplates: undefined,
+      });
+    expect(refused).toThrow(
+      "`email` (Sending email) is not available to runtime-installed plugins yet (#1729). Remove it from `requestedCapabilities` and remove `mailTemplates`, `mailUnsubscribe`, which need it.",
+    );
+    expect(refused).toThrow(/can request: .*cms_admin_schema/);
   });
   it("requires reviewed capabilities for browser assets", () => {
     expect(() => validateInstallationPolicy({ ...manifest(), hasBuildAssets: true })).toThrow(

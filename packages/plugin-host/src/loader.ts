@@ -44,6 +44,7 @@ import {
   verifyManifestSignature,
 } from "@caelo-cms/plugin-sandbox";
 import {
+  externalCapabilityRefusal,
   manifestFromDefinition,
   type PluginContext,
   type PluginContextTier1,
@@ -884,24 +885,12 @@ export async function activateApprovedExternalPlugin(
       grantIds: string[];
     };
     const manifest = pluginManifest.parse(artifact.manifest);
-    // Each capability is enabled here only once its isolated host broker is implemented.
-    const supported = new Set([
-      "cms_admin_schema",
-      "chat_runner_tools",
-      "companion_skills",
-      "font_assets",
-      "private_files",
-      "image_generation",
-      "site_media_read",
-      "consent_provider",
-      "collections",
-      "page_output",
-      "batch_jobs",
-      "visitor_ai",
-    ]);
-    for (const capability of manifest.requestedCapabilities ?? [])
-      if (!supported.has(capability))
-        throw new Error(`External capability broker unavailable: ${capability}`);
+    // #1729 — only capabilities the status record marks brokered; the
+    // installation policy refused the rest at staging and approval already.
+    for (const capability of manifest.requestedCapabilities ?? []) {
+      const refusal = externalCapabilityRefusal(capability);
+      if (refusal) throw new Error(`External capability broker unavailable: ${refusal}`);
+    }
     if (artifact.status === "active") {
       // Finalization may have committed before a transient host load failure.
       // The Query API and loader both verify this is still the exact active artifact.
