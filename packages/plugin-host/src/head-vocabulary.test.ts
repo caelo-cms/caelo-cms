@@ -42,6 +42,14 @@ describe("#1729 — the head vocabulary", () => {
     expect(r.lang.get(P)).toBe("en-GB");
   });
 
+  it("names a refused rel by its letters and digits, however it is spelled", () => {
+    const rule = (rel: string) =>
+      check({ head: { [P]: [{ kind: "link", rel, pageId: Q }] } }).refusals[0]?.rule;
+    expect(rule("--Style Sheet--")).toBe("rel-style-sheet");
+    expect(rule("!!!")).toBe("rel-other");
+    expect(rule(`a${"-!".repeat(100_000)}b`)).toBe("rel-a-b");
+  });
+
   it("names the rule of every refused link and meta", () => {
     const cases: [unknown, string, string][] = [
       [

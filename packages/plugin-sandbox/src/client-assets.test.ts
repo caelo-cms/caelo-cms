@@ -58,6 +58,18 @@ describe("#1729 — CSS that loads nothing from another site", () => {
     expect(cssLoadProblem(css)).toBe(problem);
   });
 
+  it("reads past closed comments and keeps an unclosed one, in linear time (CodeQL js/polynomial-redos)", () => {
+    expect(cssLoadProblem(".a{color:red}/* @import 'x.css'; */")).toBeNull();
+    expect(cssLoadProblem("/*/ @import 'x.css'; */.a{}")).toBeNull();
+    expect(cssLoadProblem(".a{}/* @import 'x.css';")).toBe("@import");
+    // Every `/*` opens a comment that never closes: a lazy comment regex
+    // rescanned to the end from each one.
+    const css = `/*${"a/*".repeat(200_000)}`;
+    const started = performance.now();
+    expect(cssLoadProblem(css)).toBeNull();
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   it("allows an origin the grant names", () => {
     const allowed = (o: string) => o === "https://fonts.example";
     expect(

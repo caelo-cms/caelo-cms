@@ -59,11 +59,13 @@ interface RawAnswer {
 function token(value: unknown): string {
   if (value === undefined) return "missing";
   if (typeof value !== "string") return "not-text";
-  const t = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
+  // Each run of other characters is one dash, so at most one dash leads or
+  // trails; trimmed by hand, since `/-+$/` rescans every dash run of
+  // plugin-supplied text and is quadratic.
+  let t = value.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  if (t.startsWith("-")) t = t.slice(1);
+  if (t.endsWith("-")) t = t.slice(0, -1);
+  t = t.slice(0, 40);
   return t === "" ? "other" : t;
 }
 

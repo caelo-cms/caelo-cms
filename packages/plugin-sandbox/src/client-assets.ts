@@ -111,10 +111,27 @@ export function placeholderMarkupProblem(html: string): string | null {
   return problem;
 }
 
+/**
+ * `css` without its closed comments, in one pass. A regex `/\/\*[\s\S]*?\*\//g`
+ * rescans to the end from every `/*` when none closes: quadratic on a
+ * stylesheet a plugin author controls. An unclosed comment is kept, so the
+ * rules below still read it.
+ */
+function withoutCssComments(css: string): string {
+  let out = "";
+  let at = 0;
+  for (;;) {
+    const open = css.indexOf("/*", at);
+    const close = open === -1 ? -1 : css.indexOf("*/", open + 2);
+    if (close === -1) return out + css.slice(at);
+    out += css.slice(at, open);
+    at = close + 2;
+  }
+}
+
 /** CSS with comments removed and escapes decoded, lowercased: what a browser's tokenizer sees. */
 function normalisedCss(css: string): string {
-  return css
-    .replace(/\/\*[\s\S]*?\*\//g, "")
+  return withoutCssComments(css)
     .replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_m, hex: string) =>
       String.fromCodePoint(Number.parseInt(hex, 16)),
     )
