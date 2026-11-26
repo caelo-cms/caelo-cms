@@ -2,9 +2,9 @@
 
 # Brokering every capability to runtime-installed plugins: design
 
-**Status:** proposal for review (issue #1729). Nothing here is implemented yet. Once it is approved, each section ships as its own PR in the order of §8, and each PR updates this document and the CMS_REQUIREMENTS §14.13 list.
+**Status:** decided (maintainer, 2026-11-26: every recommendation of §9 accepted, decisions on #1729) and shipping in one PR, #1732, in phases. **Phase A has landed:** the status record, the refusal at submission and the parity test (§4.1, §4.2), the sandbox pools, budgets and bundle cache (§4.4), the one registration seam (§4.3, with the confirmed §10 gaps), `background_workers` (§5.1), `list_types` (§6.1), and `snapshots` withdrawn (§7.4). The rest follows in the order of §8; each phase updates this line, the status table in §4.1 and the CMS_REQUIREMENTS §14.13 list.
 
-CLAUDE.md §2 says "A shipped plugin may do nothing a runtime-installed plugin with the same grants could not" (also CMS_REQUIREMENTS §14.2). Today a runtime-installed (external) plugin can be granted 12 of the 26 capabilities in `pluginCapability` (`packages/plugin-sdk/src/index.ts:174-201`). This document designs a broker for each of the other 14, groups them by mechanism, proposes an order, and lists the decisions the maintainer has to make (§9).
+CLAUDE.md §2 says "A shipped plugin may do nothing a runtime-installed plugin with the same grants could not" (also CMS_REQUIREMENTS §14.2). When this was written a runtime-installed (external) plugin could be granted 12 of the 26 capabilities in `pluginCapability` (`packages/plugin-sdk/src/index.ts:174-201`). File and line references describe the tree at `ad4754b5c`, before the implementation. This document designs a broker for each of the other 14, groups them by mechanism, proposes an order, and lists the decisions the maintainer has to make (§9).
 
 Terms used here:
 
@@ -44,7 +44,7 @@ Read from the plugin definitions (`packages/plugins/*/src/index.ts`, `requestedC
 |---|---|---|---|---|
 | `cms_admin` | comments, consent-manager, forms, international-site, site-assistant, site-search | `ctx.cms.call(op, input)` (`index.ts:2116-2121`) | `makePluginCms` runs the op as actor kind `plugin`, inheriting the chat branch (`packages/plugin-host/src/capabilities.ts:795-841`) | Attached when requested (`capabilities.ts:225`, `:232-234`); op must admit `plugin` (`packages/query-api/src/execute.ts:69`). About 60 operations admit it (37 in admin-core, 26 in the plugin host, counting single-line `actorScope` arrays). No op allowlist is checked for shipped plugins. |
 | `ai_provider` | comments, forms, international-site, newsletter, site-search | `ctx.ai.complete`, `ctx.ai.generateObject` (`index.ts:2129-2174`) | `makePluginAi`: input Zod, ledger reservation, settle (`packages/plugin-host/src/plugin-ai.ts:55-80`, `:112-130`) | Attached when requested and a provider exists (`capabilities.ts:238-240`); per-plugin cap `plugins.ai_cost_cap_microcents`, default none (`packages/plugin-host/src/ai-ledger.ts:155-170`) |
-| `snapshots` | none | `ctx.snapshots.emit` (`index.ts:2176-2184`) | `makePluginSnapshots` calls the snapshot emitter with any entity kind, id and payload, on main (`capabilities.ts:848-877`) | Attached when requested (`capabilities.ts:241-243`) |
+| `snapshots` (withdrawn in Phase A, §7.4) | none | `ctx.snapshots.emit` (`index.ts:2176-2184` before its removal) | `makePluginSnapshots` calls the snapshot emitter with any entity kind, id and payload, on main (`capabilities.ts:848-877`) | Attached when requested (`capabilities.ts:241-243`) |
 | `background_workers` | auth, consent-manager, international-site, newsletter, ratings, site-assistant, site-search | `workers[]` (`index.ts:237-263`) | `pluginWorkerScheduler.schedule` (`loader.ts:1600-1622`); the tick runs `plugin:<slug>/<worker>` tasks (`packages/admin-core/src/scheduler/plugin-workers.ts:64-89`) with origin `worker` (`packages/plugin-host/src/scheduler.ts:82-107`) | Registration refused without the grant (`loader.ts:1102-1106`) |
 | `change_journal` | consent-manager (module, content_instance; all lines), international-site (10 kinds + own tables; main) | `changeConsumer` (`index.ts:1035-1057`) | `change-consumers.ts`: batches of up to 500 changes (`:84`), origin `chat` on a branch or `system` on main (`:505-509`) | `loader.ts:1110-1135`; core kinds also need `cms_admin` |
 | `email` | auth, forms, newsletter | `ctx.email.send / unsubscribeLink / queue` (`index.ts:2062-2107`), `mailTemplates`, `mailUnsubscribe`, `requires: ["email"]` | `makePluginEmail` (`packages/plugin-host/src/mail-queue.ts:137-221`); the outbox drain with per-recipient and site-wide caps (`packages/admin-core/src/email/outbox.ts:1-31`) | Attached when requested, on the admin and the gateway (`capabilities.ts:229`, `:244-247`). `send` takes any HTML to any address and is not capped (`mail-queue.ts:145-163`). |
@@ -64,7 +64,7 @@ Two facts from this table shape the whole design:
 
 ### 2.3 Calls that act for nobody
 
-An external plugin gets private storage, private files, images, fonts and site media only for an authoring origin (`chat`, `owner-panel`, `approved`) and only when the human it acts for holds `content.write` (`capabilities.ts:179-211`, `:282-292`). A worker (`worker`), a change-consumer batch (`system`, or `chat` without a human), an observer and a batch get none of them. A shipped plugin's worker gets every handle it requested (`capabilities.ts:213-279`). Q1 decides this.
+An external plugin gets private storage, private files, images, fonts and site media only for an authoring origin (`chat`, `owner-panel`, `approved`) and only when the human it acts for holds `content.write` (`capabilities.ts:179-211`, `:282-292`). A worker (`worker`), a change-consumer batch (`system`, or `chat` without a human), an observer and a batch get none of them. A shipped plugin's worker gets every handle it requested (`capabilities.ts:213-279`). Q1 decides this. **Decided (Q1 A) and implemented:** a call of origin `worker`, `system`, `observer` or `batch` without a chat branch gets the plugin's private storage on main as the plugin actor (`UNATTENDED_ORIGINS`, `capabilities.ts`), and nothing else of the author handles.
 
 ---
 
@@ -88,18 +88,26 @@ An external plugin gets private storage, private files, images, fonts and site m
 
 ### 4.1 Capability status record and refusal at submission (cross-cutting item 1)
 
-A new `packages/plugin-sdk/src/external-capabilities.ts`, typed as a `Record` over the enum, so a new capability does not compile without an entry (the pattern of `PLUGIN_CAPABILITY_INFO`, `packages/plugin-sdk/src/capability-info.ts:17`):
+`packages/plugin-sdk/src/external-capabilities.ts` (implemented), typed as a `Record` over the enum, so a new capability does not compile without an entry (the pattern of `PLUGIN_CAPABILITY_INFO`, `packages/plugin-sdk/src/capability-info.ts:17`):
 
 ```ts
 export type ExternalCapabilityStatus =
   | { readonly status: "brokered" }
-  | { readonly status: "planned"; readonly issue: number }
-  | { readonly status: "withdrawn"; readonly reason: string };
+  | { readonly status: "planned"; readonly issue: number };
 
 export const EXTERNAL_CAPABILITY_STATUS: Readonly<Record<PluginCapability, ExternalCapabilityStatus>> = { … };
 ```
 
-- The 12 brokered capabilities start as `brokered`; the 14 as `planned` with issue 1729 until each gets its own issue.
+A third status, `withdrawn`, is not needed: the one capability it would have described, `snapshots`, was removed from the enum (§7.4). The helpers next to the record are `isExternallyBrokered`, `externallyBrokeredCapabilities`, `externalCapabilityRefusal` (the message below) and `externalCapabilityHint` (the hint for a submission without grants).
+
+**Current status** (keep in step with the record):
+
+| Status | Capabilities |
+|---|---|
+| brokered | `cms_admin_schema`, `chat_runner_tools`, `background_workers`, `list_types`, `companion_skills`, `font_assets`, `private_files`, `image_generation`, `site_media_read`, `consent_provider`, `page_output`, `collections`, `batch_jobs`, `visitor_ai` |
+| planned (#1729) | `cms_admin`, `ai_provider`, `change_journal`, `email`, `head_contributions`, `url_slots`, `client_assets`, `list_sources`, `list_resolve`, `content_variants`, `link_resolve` |
+
+- The 12 brokered capabilities started as `brokered`, the others as `planned` with issue 1729 until each gets its own issue.
 - `external-plugin.ts:34-55` and `loader.ts:887-904` are replaced by a lookup in the record.
 - `validateInstallationPolicy` (`packages/plugin-sandbox/src/installation-policy.ts:6`) refuses a requested capability that is not `brokered`. It runs in `stage_installation`, `approve_installation`, `finalize_installation` and `readExternalApproval` (`external-authorization.ts:97-102`), so an artifact staged before this change cannot be approved either, and the load error stays as a last line.
 - The refusal, written for the AI that submitted:
@@ -127,9 +135,13 @@ A new capability without a status fails the type check and the test. A capabilit
 
 ### 4.3 One registration seam
 
+**Implemented in Phase A** as `preflightRegistration(def)` (the gates, before any side effect) and `registerPluginSurfaces(lp, host)` (`packages/plugin-host/src/loader.ts`), called by both load paths. The external path also runs an installed plugin's `onActivate` (decision Q1 A): the manifest declares `hasOnActivate` (optional, so no shipped manifest changes), the definition runs it in the sandbox as `$onActivate`, and `$inspect` refuses an artifact whose flag does not match its definition. Each later broker adds its manifest fields to `externalDeclarations` (`packages/plugin-host/src/external-plugin.ts`, a pure function the parity test checks) and gets the registration from the seam.
+
 `registerLoadedPlugin` and `loadTier2Row` share one function, `registerPluginSurfaces(lp, def, infra)`, extracted from `loader.ts:1484-1622`: URL slots, config seed, `onActivate`, list types, tools, list sources, prompt context, workers and skills. Each surface registers only when the definition carries it; the capability gates in `loader.ts:1096-1231` stay in front of it. Each broker PR then adds the manifest-to-definition mapping in `externalPluginDefinition` and the broker, and gets the registration for free. The external path's own steps (approval, `$inspect`, schema provisioning) stay where they are. Size **M**; it ships inside the `background_workers` PR, which needs it first.
 
 ### 4.4 Sandbox runtime changes
+
+**Implemented in Phase A:** the bundle cache, the two pools, the budget per kind (`SANDBOX_BUDGETS`, `SANDBOX_POOLS` in `packages/plugin-host/src/sandbox-runtime.ts`) and the call limit per kind. The kind of a call comes from its origin (`sandboxKindOf` in `external-plugin.ts`: worker, batch, render with a `renderId` is a preview, any other render a build, the rest interactive), or from `RunPluginOperationOpts.sandboxKind` for calls whose origin does not say it (a journal batch, a rebuild chunk); it travels on the context under the host-only symbol `SANDBOX_KIND` (`sandbox-kind.ts`). Chunked messages and the reserved composition-point entries come with the render-point runtime (PR 8).
 
 Needed by the host-initiated runs and composition points:
 
@@ -409,7 +421,7 @@ args: [op: z.string().regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/).max(120), inpu
 
 **What is impossible.** A safe general broker. A plugin that may emit a snapshot of `page/<id>` with a payload it chose could plant a state that `revert_page` or `revert_site` later writes into core data, past every validator. It would also put a chat's change on main.
 
-**Design.** The capability is withdrawn (Q6): every write a plugin makes is already snapshotted by the operation that makes it (`plugin_storage.*` writes `plugin_row_snapshots`; core ops snapshot themselves). `snapshots` is removed from `pluginCapability`, `PLUGIN_CAPABILITY_INFO`, `PluginContextTier1.snapshots` and `PluginHostInfra.emitSnapshot`. Pre-1.0 the repo deletes rather than migrates (CLAUDE.md §2, no fallbacks). The parity test then has nothing to check for it. **Size S.**
+**Design (implemented in Phase A).** The capability is withdrawn (Q6): every write a plugin makes is already snapshotted by the operation that makes it (`plugin_storage.*` writes `plugin_row_snapshots`; core ops snapshot themselves). `snapshots` is removed from `pluginCapability`, `PLUGIN_CAPABILITY_INFO`, `PluginContextTier1.snapshots` and `PluginHostInfra.emitSnapshot`. Pre-1.0 the repo deletes rather than migrates (CLAUDE.md §2, no fallbacks). The parity test then has nothing to check for it. **Size S.**
 
 ---
 
@@ -444,57 +456,67 @@ Each PR also opens the capability's own issue (replacing #1729 in the status rec
 Each question lists options and a recommendation. The PR that needs a decision is listed in §8.
 
 **Q1. What may an external plugin do in a call that acts for nobody** (worker, journal batch, rebuild, observer, batch)? Today it gets no private storage, files or media there (§2.3); a shipped plugin gets everything it requested.
+- **Decided: A**, with an `$onActivate` entry (implemented in Phase A).
 - A: Private storage (and the other author handles it was granted) on main, as the plugin actor, through `plugin_storage.*`, audited and snapshotted. This is the shipped behaviour and the branch-storage decision "worker writes go to main". A journal batch on a branch writes on that branch.
 - B: The same, but acting for the Owner who approved the artifact, re-checking that person's `content.write` on each run. If they lose it, the plugin's background work stops loudly.
 - C: No private storage outside human calls (status quo). Workers touch only public tables, collections and config.
 - **Recommendation: A.** The Owner's grant of `background_workers` or `change_journal` is the decision that the plugin works unattended. C makes workers nearly useless (newsletter-style sending needs private storage), and B ties a plugin's operation to one person's account. The same PR should add an `$onActivate` entry, so an external plugin can seed its defaults the way shipped plugins do in `onActivate` (`loader.ts:1524-1550`).
 
 **Q2. Do the rules this design adds for external plugins bind shipped plugins in the same PR?** These are the head-entry vocabulary, the value checks (§4.5), read-only `ctx.cms` on render, and the email caps.
+- **Decided: A.** The new rules bind shipped plugins in the same PR; shipped plugins they break are fixed there.
 - A: Yes. The check lives in the shared handle (principle 1), and each PR fixes the shipped plugins it trips.
 - B: External plugins only. The parity test records each difference with an issue.
 - **Recommendation: A.** B lets a shipped plugin do what an external one cannot, which is the gap this issue is about, and some of the holes (visitor text in a list source, raw values in chrome) exist for shipped plugins too. Where a shipped plugin would break (international-site's richtext translations under §4.5), the PR says so and the fix lands in the same PR.
 
 **Q3. How does a composition point name its operation for an external plugin?**
+- **Decided: A**, reserved entry names; no shipped manifest changes.
 - A: Reserved entry names (`$contributions`, `$listSources`, `$linkResolve`, …) that the sandbox child resolves from the plugin's own definition, like `$staticRender`. The manifest keeps its `has…` booleans, and `$inspect` checks each one.
 - B: New manifest string fields naming the operation. The shipped manifests change too, so international-site, comments and the others wait for the Owner's approval of a changed manifest after the upgrade (#1332).
 - **Recommendation: A.** The name adds nothing to what the Owner reviews, and A changes no shipped manifest. Data the host itself needs (`linkResolveReads`, URL tables, placeholders, client files) becomes manifest fields under either option.
 
 **Q4. What does `client_assets` mean for an external plugin?**
+- **Decided: B**, and the shipped users move to this model.
 - A: Not offered (`withdrawn`, or `planned` with an issue).
 - B: Static files inside the reviewed artifact plus a JSON data object per build, own-origin network only, third-party origins by approval, consent-gated start (§6.7).
 - C: Parity with shipped plugins: any JS and CSS generated at build time.
 - **Recommendation: B**, and move the four shipped users to B afterwards (one plugin model). C lets data become code on every visitor's page. A blocks the common plugin that needs a small client script.
 
 **Q5. Does an external plugin get `email.send` (any HTML to any address)?**
+- **Decided: A.** A capped `send` for every plugin follows as its own issue.
 - A: No. Only `queue` (templates) and `unsubscribeLink`.
 - B: Yes, through a send ledger (per recipient, site-wide, and a per-plugin daily cap from the receipt), only from worker and approved origins, and with the HTML held to the mail rules.
 - C: Only for content and a recipient list bound to an approval (an approved campaign digest).
 - **Recommendation: A in PR 6. Then B as its own issue, applied to every plugin**, because shipped `send` is uncapped today (`mail-queue.ts:145-163`). A newsletter-style external plugin needs B or C.
 
 **Q6. What happens to `snapshots`?**
+- **Decided: A** (implemented in Phase A).
 - A: Remove the capability (§7.4).
 - B: Keep it for shipped plugins only, marked `withdrawn` for external plugins, with an issue.
 - C: Broker it, restricted to the plugin's own row kind.
 - **Recommendation: A.** Nobody uses it, C duplicates what `plugin_storage.*` already does, and B is the kind of difference the issue exists to remove.
 
 **Q7. How far does `url_slots` go for external plugins?**
+- **Decided: A.**
 - A: `host` and `path-prefix` as declared tables the host reads (§6.8); `slug-format` and `full-path` not offered.
 - B: Not offered at all until someone needs it (`planned` with an issue).
 - C: Full parity through sandboxed `encode` calls, batched before every composing transaction.
 - **Recommendation: A, scheduled last.** B is acceptable if the maintainer prefers to wait for a real need. C means restructuring every URL-composing write around a sandbox call.
 
 **Q8. AI spend cap for external plugins.**
+- **Decided: A**, shown on the approval card.
 - A: The receipt's `maxDailyCostMicrocents` is required for an external plugin requesting `ai_provider`, is shown on the approval card and is enforced as the lower of it and the Owner's `ai_cost_cap`.
 - B: The Owner must set `plugins.ai_cost_cap` before activation.
 - C: No plugin cap; the site and per-person budgets only (the shipped default).
 - **Recommendation: A.** The cap is part of the artifact the Owner approves, and the Owner can still lower it.
 
 **Q9. How fine is the `cms_admin` grant?**
+- **Decided: A.**
 - A: The named-operation allowlist the installation policy already requires, shown grouped by domain and by read or write, plus the new `pluginAccess` marker so that a render is read-only for every plugin.
 - B: Per-domain read and write grants as written in CMS_REQUIREMENTS §14.5, with no operation list.
 - **Recommendation: A.** It is stricter than B, already enforced at staging and already stored in the receipt. B can be derived from it for display.
 
 **Q10. Time budgets and sandbox pools.** Proposed values:
+- **Decided:** the table below, revisited with scale-gate numbers (implemented in Phase A).
 
 | Kind | Budget per invocation | Pool |
 |---|---|---|
@@ -508,11 +530,13 @@ Each question lists options and a recommendation. The PR that needs a decision i
 Interactive pool: 4 children, waiting at most 2 s for a slot. Background pool: 2 children, waiting at most 30 s. **Recommendation:** adopt these values and revisit them with numbers from the scale gate ([scale-gate.md](./scale-gate.md)) after PR 8.
 
 **Q11. How does a change-consumer rebuild fit the sandbox?**
+- **Decided: A.**
 - A: Resumable chunks, `rebuild({ cursor? }) → { done?, cursor? }`, for every plugin. Today's answers count as done.
 - B: An external rebuild runs as a batch in a job container (#1646), which requires the `batch_jobs` grant as well.
 - **Recommendation: A.** It needs no second grant, and it also helps shipped rebuilds on large sites.
 
 **Q12. May journal-driven calls write public tables?** A main-line batch sees staged content; copying it into a `published` table shows it to visitors before Publish live.
+- **Decided: A.**
 - A: Refuse public-table writes from journal batches and rebuilds, for every plugin, as observers and batches already are (`capabilities.ts:407-415`).
 - B: Also refuse them from workers of plugins holding `cms_admin`.
 - C: Leave it to the grant.
@@ -522,12 +546,12 @@ Interactive pool: 4 children, waiting at most 2 s for a slot. Background pool: 2
 
 ## 10. Related gaps found while writing this
 
-These are not capabilities and are outside #1729. Each needs a check and, if confirmed, its own issue:
+These are not capabilities. The maintainer included them in #1729 where confirmed:
 
-- `externalPluginDefinition` drops `listExt`, `visitorProjection`, `consentProvider` and `component` from the manifest (`external-plugin.ts:73-132`). `consent_provider` is brokered, but without the `consentProvider` declaration the gateway cannot compute the consent rule for an external provider.
-- `loadTier2Row` does not seed a declared `config` (`loader.ts:568-664`; the seed runs only at `loader.ts:1499-1522`), although the SDK says missing stored configuration is an error, never a silent default (`index.ts:2327`). The registration seam (§4.3) fixes it, if confirmed.
-- External plugins have no `onActivate` (see Q1).
-- `metaSignature` / `metaSignatureBatch` are not available to external plugins, so their baked output misses the data-change cache bust (`index.ts:2680-2690`).
+- `externalPluginDefinition` dropped `listExt`, `visitorProjection`, `consentProvider` and `component` from the manifest. **Phase A:** `listExt`, `visitorProjection` (provisioned with its republish triggers, read-only on the gateway for declared public operations) and `component` now reach the definition (`externalDeclarations`). `consentProvider` was checked and is not a gap: the consent provider is consent-manager by slug (`VISITOR_CONSENT_PROVIDER_SLUG`, `packages/plugin-host/src/visitor-consent.ts`), which no installed plugin can replace.
+- `loadTier2Row` did not seed a declared `config`. **Confirmed and fixed in Phase A** by the registration seam; `external-plugin-seam.integration.test.ts` reads the seeded value.
+- External plugins had no `onActivate`. **Added in Phase A** (`hasOnActivate`, `$onActivate`, Q1).
+- `metaSignature` / `metaSignatureBatch` are not available to external plugins, so their baked output misses the data-change cache bust (`index.ts:2680-2690`). Open: it belongs with the render-point runtime (PR 8).
 
 ---
 
