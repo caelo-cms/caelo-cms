@@ -20,6 +20,7 @@
 
 import { escapePluginText } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
+import { cssTokens } from "./css-tokens.js";
 
 /** Elements a placeholder may hold: prose, containers and a button. Nothing that loads or runs. */
 export const PLACEHOLDER_ELEMENTS: ReadonlySet<string> = new Set([
@@ -162,36 +163,22 @@ export function placeholderMarkupProblem(html: string): string | null {
   return problem;
 }
 
-/**
- * `css` without its closed comments, in one pass. A regex `/\/\*[\s\S]*?\*\//g`
- * rescans to the end from every `/*` when none closes: quadratic on a
- * stylesheet a plugin author controls. An unclosed comment is kept, so the
- * rules below still read it.
- */
-function withoutCssComments(css: string): string {
-  let out = "";
-  let at = 0;
-  for (;;) {
-    const open = css.indexOf("/*", at);
-    const close = open === -1 ? -1 : css.indexOf("*/", open + 2);
-    if (close === -1) return out + css.slice(at);
-    out += css.slice(at, open);
-    at = close + 2;
-  }
-}
-
-/** CSS with comments removed and escapes decoded, lowercased: what a browser's tokenizer sees. */
-function normalisedCss(css: string): string {
-  return withoutCssComments(css)
-    .replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_m, hex: string) =>
-      String.fromCodePoint(Number.parseInt(hex, 16)),
-    )
-    .replace(/\\(.)/g, "$1")
-    .toLowerCase();
-}
+/** The functions whose string arguments a browser takes as URLs. */
+const URL_FUNCTIONS: ReadonlySet<string> = new Set([
+  "url",
+  "src",
+  "image",
+  "-webkit-image",
+  "image-set",
+  "-webkit-image-set",
+  "cross-fade",
+  "-webkit-cross-fade",
+]);
 
 /**
- * The rule a stylesheet breaks by loading something, or null.
+ * The rule a stylesheet breaks by loading something, or null. Read token
+ * by token as the browser reads it (`css-tokens.ts`): a comment inside a
+ * string hides nothing, and every escape is decoded once.
  *
  * @param allowedOrigin whether a `url()` may name this origin (`https://host`),
  *   for a client file the grant's `img`, `font` and `style` origins; a
@@ -201,38 +188,95 @@ export function cssLoadProblem(
   css: string,
   allowedOrigin: (origin: string) => boolean = () => false,
 ): string | null {
-  const text = normalisedCss(css);
-  if (/@import\b/.test(text)) return "@import";
-  if (/expression\s*\(/.test(text)) return "expression()";
-  if (/-moz-binding|behavior\s*:/.test(text)) return "binding";
-  if (/<\/style/.test(text)) return "</style";
-  for (const m of text.matchAll(/(?:url|image-set|image|src)\s*\(\s*(['"]?)([^'")]*)\1/g)) {
-    const target = (m[2] as string).trim();
-    if (target === "" || target.startsWith("data:") || target.startsWith("#")) continue;
-    if (target.startsWith("//")) return `url(${target})`;
-    const scheme = /^([a-z][a-z0-9+.-]*):/.exec(target)?.[1];
-    if (scheme === undefined) continue;
-    if (scheme !== "https") return `url(${target})`;
-    let origin: string;
-    try {
-      origin = new URL(target).origin;
-    } catch {
-      return `url(${target})`;
+  // The HTML parser ends a <style> element before any CSS is read.
+  if (/<\/style/i.test(css)) return "</style";
+  const tokens = cssTokens(css);
+  // The innermost open function (or "" for a plain parenthesis).
+  const open: string[] = [];
+  for (const [k, t] of tokens.entries()) {
+    const next = tokens[k + 1]?.kind === "ws" ? tokens[k + 2] : tokens[k + 1];
+    let target: string | null = null;
+    switch (t.kind) {
+      case "at":
+        if (t.name.toLowerCase() === "import") return "@import";
+        break;
+      case "function": {
+        const name = t.name.toLowerCase();
+        if (name === "expression") return "expression()";
+        open.push(name);
+        break;
+      }
+      case "ident": {
+        const name = t.value.toLowerCase();
+        if (name === "-moz-binding") return "binding";
+        if (name === "behavior" && next?.kind === "delim" && next.value === ":") return "binding";
+        if (name === "expression" && next?.kind === "delim" && next.value === "(") {
+          return "expression()";
+        }
+        break;
+      }
+      case "delim":
+        if (t.value === "(") open.push("");
+        else if (t.value === ")") open.pop();
+        break;
+      case "url":
+        if (t.bad) return `url(${t.value})`;
+        target = t.value;
+        break;
+      case "string": {
+        const value = asUrlInput(t.value);
+        // A string a browser takes as a URL: an argument of url(), image-set(), …;
+        // anywhere else, one that names a host (`\` counts as `/` in an http(s) URL).
+        if (
+          URL_FUNCTIONS.has(open.at(-1) ?? "") ||
+          /^(?:[a-z][a-z0-9+.-]*:)?[/\\]{2}/i.test(value)
+        ) {
+          target = t.value;
+        }
+        break;
+      }
     }
-    if (!allowedOrigin(origin)) return `url(${target})`;
-  }
-  // A string a browser takes as a URL without url(): `image-set("…" 1x)`.
-  for (const m of text.matchAll(/(['"])((?:[a-z][a-z0-9+.-]*:)?\/\/[^'"]*)\1/g)) {
-    const target = m[2] as string;
-    let origin: string | null = null;
-    try {
-      origin = target.startsWith("https://") ? new URL(target).origin : null;
-    } catch {
-      origin = null;
-    }
-    if (origin === null || !allowedOrigin(origin)) return `url(${target})`;
+    if (target === null) continue;
+    const url = asUrlInput(target);
+    if (url === "" || /^data:/i.test(url) || url.startsWith("#")) continue;
+    if (cssUrlLoads(url, allowedOrigin)) return `url(${url})`;
   }
   return null;
+}
+
+/** A stylesheet's URLs resolve against this stand-in for the page's own origin. */
+const CSS_BASE = new URL("https://plugin-stylesheet.invalid/assets/");
+
+/**
+ * `target` as the URL parser reads it: ASCII tabs and newlines removed,
+ * leading and trailing C0 controls and spaces trimmed.
+ */
+function asUrlInput(target: string): string {
+  return (
+    target
+      .replace(/[\t\n\r]/g, "")
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: the URL parser trims them.
+      .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "")
+  );
+}
+
+/**
+ * Whether a stylesheet URL `target` makes a request `allowedOrigin` does not
+ * admit. Resolved the way the browser resolves it, so `/\\host/x`,
+ * `\\\\host` and `https:\\\\host` name the host they reach: a target is
+ * relative only when it stays on the stylesheet's own origin and names no
+ * scheme; anything else must be an allowed `https` origin.
+ */
+function cssUrlLoads(target: string, allowedOrigin: (origin: string) => boolean): boolean {
+  let url: URL;
+  try {
+    url = new URL(target, CSS_BASE);
+  } catch {
+    return true;
+  }
+  const scheme = /^[a-z][a-z0-9+.-]*:/i.test(target);
+  if (!scheme && url.origin === CSS_BASE.origin) return false;
+  return url.protocol !== "https:" || !allowedOrigin(url.origin);
 }
 
 /** One problem with a plugin's deferral placeholders, as validateManifest reports it. */

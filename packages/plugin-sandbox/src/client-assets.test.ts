@@ -67,7 +67,6 @@ describe("#1729 — CSS that loads nothing from another site", () => {
     [".a{background:url(https://tracker.example/p.gif)}", "url(https://tracker.example/p.gif)"],
     [".a{background:url(//tracker.example/p.gif)}", "url(//tracker.example/p.gif)"],
     [".a{background:\\75 rl(https://t.example/p)}", "url(https://t.example/p)"],
-    [".a{background:u/**/rl(https://t.example/p)}", "url(https://t.example/p)"],
     ['.a{background:image-set("https://t.example/p.png" 1x)}', "url(https://t.example/p.png)"],
     ["@font-face{src:url(http://t.example/f.woff2)}", "url(http://t.example/f.woff2)"],
     [".a{width:expression(alert(1))}", "expression()"],
@@ -85,6 +84,50 @@ describe("#1729 — CSS that loads nothing from another site", () => {
     const started = performance.now();
     expect(cssLoadProblem(css)).toBeNull();
     expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("reads the stylesheet token by token, as a browser does", () => {
+    // A comment inside a string opens none: the url() between them loads.
+    expect(
+      cssLoadProblem('.a{content:"/*"}.b{background:url(//t.example/p)}.c{content:"*/"}'),
+    ).toBe("url(//t.example/p)");
+    // An escaped backslash is one character; the `e` after it is no hex escape.
+    expect(cssLoadProblem(String.raw`.a{background:url('/\\evil.example/a')}`)).toBe(
+      String.raw`url(/\evil.example/a)`,
+    );
+    // A comment ends a token: `u/**/rl(` is no url() to a browser, and loads nothing.
+    expect(cssLoadProblem(".a{background:u/**/rl(https://t.example/p)}")).toBeNull();
+    // A quoted target may hold a `)`; a bad url is refused as written.
+    expect(cssLoadProblem(".a{background:url('https://t.example/a(1)')}")).toBe(
+      "url(https://t.example/a(1))",
+    );
+    expect(cssLoadProblem(".a{background:url(https://t.example/a b)}")).toBe(
+      "url(https://t.example/a)",
+    );
+    // An escape past U+10FFFF reads as U+FFFD, it does not throw.
+    expect(cssLoadProblem(String.raw`.a{content:"\110000"}`)).toBeNull();
+    expect(cssLoadProblem(".a{background:url( /img/a.png )}")).toBeNull();
+    expect(cssLoadProblem(".a{background:url(img/a.png)}")).toBeNull();
+  });
+
+  it("resolves a URL as the browser does: a backslash or a stripped tab can name a host", () => {
+    for (const target of [
+      String.raw`/\\tracking.example/pixel`,
+      String.raw`\\\\tracking.example/pixel`,
+      String.raw`https:\\\\tracking.example/pixel`,
+      "/\\9 /tracking.example/pixel",
+    ]) {
+      for (const css of [
+        `.a{background:url('${target}')}`,
+        `.a{background:image-set('/a.png' 1x, '${target}' 2x)}`,
+      ]) {
+        expect(cssLoadProblem(css)).toStartWith("url(");
+      }
+    }
+    // The finding's own case, escapes as a stylesheet writes them.
+    expect(cssLoadProblem(String.raw`.a{background-image:url('/\\tracking.example/pixel')}`)).toBe(
+      String.raw`url(/\tracking.example/pixel)`,
+    );
   });
 
   it("allows an origin the grant names", () => {

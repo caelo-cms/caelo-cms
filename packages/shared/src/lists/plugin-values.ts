@@ -490,7 +490,10 @@ function urlCharactersProblem(url: string): string | null {
  * - attribute: escaped (richtext too: an attribute holds no markup),
  *   unquoted with {@link escapeUnquotedPluginText};
  * - URL: held to the link rule when it decides the URL, to the URL
- *   characters when the template's text before it did; never composed;
+ *   characters when the template's text before it did; never composed.
+ *   Its `&` is written `&amp;`, so the value can start no character
+ *   reference with the template's text after it (`javascript&` before
+ *   `#58;…`): the browser reads the URL exactly as checked;
  * - refused: every plugin value, whatever it says.
  */
 export function contextualPluginValue(
@@ -513,7 +516,8 @@ export function contextualPluginValue(
       const problem =
         context.position === "whole" ? urlProblem(value) : urlCharactersProblem(value);
       if (problem !== null) return { ok: false, rule: problem };
-      return { ok: true, html: !context.quoted && value.length === 0 ? '""' : value };
+      const html = value.replaceAll("&", "&amp;");
+      return { ok: true, html: !context.quoted && html.length === 0 ? '""' : html };
     }
   }
 }

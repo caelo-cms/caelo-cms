@@ -19,7 +19,7 @@
  * no plugin value never asks.
  */
 
-import { Parser, QuoteType, Tokenizer } from "htmlparser2";
+import { QuoteType, Tokenizer } from "htmlparser2";
 import { isLinkScheme, type PlaceholderContext } from "./lists/plugin-values.js";
 
 /** Attributes whose value is a URL: a plugin's value there is held to the link rule. */
@@ -268,10 +268,14 @@ type Part =
 type UrlPosition = "whole" | "path" | "composed" | "template-scheme";
 
 /**
- * Where `tag` sits in its URL attribute's value, read as the browser reads
- * the assembled value: the template's literal text decoded as attribute
- * text (`&#58;` is a colon), and only text outside sections taken as
- * always there (a section may render nothing).
+ * Where `tag` sits in its URL attribute's value, judged on the template's
+ * text as written, with only text outside sections taken as always there
+ * (a section may render nothing). A `&` in that text before the scheme
+ * part ends could start a character reference the browser completes with
+ * the value or with text a section adds (`{{x}}&#58;…`, `jav&#{{x}};…`),
+ * so it makes the URL composed: no analysis of pieces can say what such a
+ * reference decodes to. (A plugin's own `&` reaches a URL as `&amp;`, see
+ * `contextualPluginValue`, so the value starts none.)
  *
  * - `path`: unconditional template text before it ends the scheme part
  *   (`/de/{{slug}}`, `mailto:{{x}}`); the value can only be a path, query
@@ -279,12 +283,14 @@ type UrlPosition = "whole" | "path" | "composed" | "template-scheme";
  * - `template-scheme`: that text names a scheme that is no link scheme
  *   (`javascript:{{x}}`): the value would be code;
  * - `composed`: the scheme could be made of the value and other parts:
- *   text or a value before it without such an end, a `:` or another value
- *   after it before one, or a section around it (a list section repeats
- *   it, and its entries could spell a scheme together);
+ *   text or a value before it without such an end, a `:`, a `&` or another
+ *   value after it before one, a `&` before the end, or a section around
+ *   it (a list section repeats it, and its entries could spell a scheme
+ *   together);
  * - `whole`: the value decides the URL's scheme.
  *
- * A `srcset` holds one URL per comma.
+ * A `srcset` holds one URL per comma; a `&` anywhere before the value in
+ * its candidate could be a comma (`&#44;`) and makes it composed.
  */
 function urlPosition(
   html: string,
@@ -299,7 +305,7 @@ function urlPosition(
     if (to > from) {
       parts.push({
         kind: "text",
-        text: decodeAttributeText(html.slice(from, to)),
+        text: html.slice(from, to),
         conditional: depth > 0,
       });
     }
@@ -351,6 +357,7 @@ function urlPosition(
     prefix += t;
   }
   const end = prefix.search(/[:/?#]/);
+  if (prefix.slice(0, srcset || end === -1 ? prefix.length : end).includes("&")) return "composed";
   if (end !== -1) {
     if (prefix[end] !== ":") return "path";
     const scheme = prefix
@@ -369,28 +376,8 @@ function urlPosition(
     if (p.kind === "value") return "composed";
     const stop = p.conditional ? -1 : p.text.search(ends);
     const head = stop === -1 ? p.text : p.text.slice(0, stop);
-    if (head.includes(":")) return "composed";
+    if (/[:&]/.test(head)) return "composed";
     if (stop !== -1) return "whole";
   }
   return "whole";
-}
-
-/**
- * `text`, a piece of an attribute value, as a browser reads it there:
- * character references decoded by the HTML rules for attributes.
- */
-function decodeAttributeText(text: string): string {
-  if (!text.includes("&")) return text;
-  const quote = text.includes('"') ? (text.includes("'") ? null : "'") : '"';
-  if (quote === null) return text;
-  let read = text;
-  new Parser(
-    {
-      onattribute(_name, value) {
-        read = value;
-      },
-    },
-    { decodeEntities: true },
-  ).end(`<a x=${quote}${text}${quote}>`);
-  return read;
 }

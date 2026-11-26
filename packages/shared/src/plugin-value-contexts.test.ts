@@ -106,7 +106,7 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
     ]);
   });
 
-  it("reads the template's URL text as the browser does: entities decoded, sections maybe absent", () => {
+  it("reads the template's URL text as written: a `&` before the scheme ends, or a section, may change it", () => {
     const refused = (html: string, value: string) => render(html, owned(value)).missingSlots;
     // An encoded colon in the template makes the value the scheme.
     expect(refused(`<a href="{{title}}&#58;alert(1)">x</a>`, "javascript")).toEqual([
@@ -119,10 +119,29 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
     // The template's own script scheme makes any value code.
     for (const html of [
       `<a href="javascript:{{title}}">x</a>`,
-      `<a href="JavaScript&#58;{{title}}">x</a>`,
+      `<a href="java\tscript:{{title}}">x</a>`,
     ]) {
       expect(refused(html, "alert(1)")).toEqual([refusal("context-url-scheme")]);
     }
+    // A character reference the browser completes across the value or a
+    // section: no analysis of the pieces can say what it decodes to.
+    for (const [html, value] of [
+      [`<a href="JavaScript&#58;{{title}}">x</a>`, "alert(1)"],
+      [`<a href="jav&#{{title}};script:alert(1)">x</a>`, "97"],
+      [`<a href="{{title}}&#{{#title}}{{/title}}58;alert(1)">x</a>`, "javascript"],
+      [`<a href="java&{{#title}}{{/title}}#115;cript&#58;{{title}}">x</a>`, "alert(1)"],
+      [`<img srcset="/a.png 1x&#44;{{title}}">`, "javascript:alert(1)"],
+    ] as const) {
+      expect(refused(html, value)).toEqual([refusal("url-composed")]);
+    }
+    // The value's own `&` starts no reference with the text after it.
+    expect(render(`<a href="{{title}}#58;alert(1)">x</a>`, owned("javascript&")).html).toBe(
+      `<a href="javascript&amp;#58;alert(1)">x</a>`,
+    );
+    // A query's `&` after the scheme ends is just text, and the value's is written `&amp;`.
+    expect(render(`<a href="/s?a=1&b={{title}}">x</a>`, owned("x&y=2")).html).toBe(
+      `<a href="/s?a=1&b=x&amp;y=2">x</a>`,
+    );
     // An unconditional path start holds whatever a section adds after it.
     expect(render(`<a href="/de/{{#title}}x/{{/title}}{{title}}">x</a>`, owned("hilfe")).html).toBe(
       `<a href="/de/x/hilfe">x</a>`,
