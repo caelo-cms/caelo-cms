@@ -32,6 +32,30 @@ describe("text, select and icon are escaped, never markup", () => {
     expect(escapePluginText(`Tom & 'Jerry'`)).toBe("Tom &amp; &#39;Jerry&#39;");
   });
 
+  it("refuses text a URL attribute would run as a script, however it is spelled", () => {
+    for (const script of [
+      "javascript:alert(1)",
+      "  JaVaScRiPt:alert(1)",
+      "java\tscript:alert(1)",
+      "\u0001javascript:alert(1)",
+      "vbscript:msgbox(1)",
+    ]) {
+      expect(checkPluginValue(field("text"), script)).toEqual({
+        ok: false,
+        rule: "text-script-url",
+      });
+    }
+    expect(checkPluginValue(field("text"), "JavaScript is fun")).toEqual({
+      ok: true,
+      value: "JavaScript is fun",
+    });
+    // Its `&` is escaped, so a character reference spells no scheme.
+    expect(checkPluginValue(field("text"), "javascript&#58;alert(1)")).toEqual({
+      ok: true,
+      value: "javascript&amp;#58;alert(1)",
+    });
+  });
+
   it("gives an unquoted attribute no attribute with a value, so no handler code", () => {
     // `<div title={{label}}>`: whitespace ends an unquoted value, so the
     // words after it become attributes, but none of them gets a value.

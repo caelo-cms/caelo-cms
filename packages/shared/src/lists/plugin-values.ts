@@ -103,6 +103,22 @@ export function escapePluginText(text: string): string {
 }
 
 /**
+ * Whether `text` is a script URL as a browser reads one in a URL attribute
+ * (WHATWG URL parsing: tabs and newlines removed, leading spaces and
+ * control characters stripped). A module may substitute a text field into
+ * `href="{{label}}"`, where escaping does not help, so a plugin's text is
+ * never one. Its `&` is escaped, so a character reference cannot spell one.
+ */
+function isScriptUrl(text: string): boolean {
+  const url = text
+    .replace(/[\t\n\r]/g, "")
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the URL parser strips them.
+    .replace(/^[\u0000-\u0020]+/, "")
+    .toLowerCase();
+  return url.startsWith("javascript:") || url.startsWith("vbscript:");
+}
+
+/**
  * The link rule: the rule a URL breaks, or null when it may reach a page.
  * Relative URLs (`/path`, `#anchor`, `?q`) and internal `caelo:` references
  * pass; whitespace, control characters and attribute-ending characters
@@ -195,9 +211,10 @@ export function checkPluginValue(field: FieldDef, value: unknown): PluginValueCh
     case "text":
     case "select":
     case "icon":
-      return typeof value === "string"
-        ? { ok: true, value: escapePluginText(value) }
-        : { ok: true, value };
+      if (typeof value !== "string") return { ok: true, value };
+      return isScriptUrl(value)
+        ? { ok: false, rule: "text-script-url" }
+        : { ok: true, value: escapePluginText(value) };
     case "richtext": {
       if (typeof value !== "string") return { ok: true, value };
       const problem = richtextProblem(value);
