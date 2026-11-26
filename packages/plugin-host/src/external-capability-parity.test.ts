@@ -20,10 +20,11 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { validateInstallationPolicy } from "@caelo-cms/plugin-sandbox";
+import { validateInstallationPolicy, validateManifest } from "@caelo-cms/plugin-sandbox";
 import {
   CAPABILITY_MANIFEST_FIELDS,
   EXTERNAL_CAPABILITY_STATUS,
+  EXTERNAL_UNAVAILABLE_DECLARATIONS,
   externalCapabilityRefusal,
   isExternallyBrokered,
   manifestFromDefinition,
@@ -557,6 +558,20 @@ describe("#1729 — every capability is brokered for external plugins or tracked
     );
     expect(refusal).toContain("remove `urlContributions`, `urlTables`, which need it");
     expect(externalCapabilityRefusal("cms_admin", record)).toBeNull();
+  });
+
+  it("a declaration no installed plugin can make is refused at submission and review, with its issue (#1737)", () => {
+    for (const [field, declaration] of Object.entries(EXTERNAL_UNAVAILABLE_DECLARATIONS)) {
+      const manifest = { ...probe, [field]: true } as PluginManifest;
+      expect(() => validateInstallationPolicy(manifest)).toThrow(`(#${declaration?.issue})`);
+      // `plugins.submit` / `plugins.revalidate`: a tier-2 submission without grants.
+      const hints = validateManifest(manifest).failures.map((f) => f.hint);
+      expect(hints.some((h) => h.includes(`(#${declaration?.issue})`))).toBe(true);
+      // A shipped plugin declares it as before.
+      expect(
+        validateManifest({ ...manifest, tier: 1 }).failures.map((f) => f.hint),
+      ).not.toContainEqual(expect.stringContaining(`#${declaration?.issue}`));
+    }
   });
 
   it("every brokered capability has a sandbox smoke", () => {

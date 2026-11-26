@@ -2,6 +2,7 @@
 
 import {
   externalCapabilityRefusal,
+  externalDeclarationRefusals,
   externalUrlSlotRefusal,
   type PluginCapability,
   type PluginManifest,
@@ -19,6 +20,9 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
     const refusal = externalCapabilityRefusal(capability);
     if (refusal) throw new Error(refusal);
   }
+  // #1737 — a declaration nothing would run for an installed plugin.
+  const [declaration] = externalDeclarationRefusals(manifest);
+  if (declaration) throw new Error(declaration);
   const requireCapability = (present: boolean, capability: PluginCapability) => {
     if (present && !requested.has(capability))
       throw new Error(`Missing required capability request: ${capability}`);

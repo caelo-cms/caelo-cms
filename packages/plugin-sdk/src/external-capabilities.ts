@@ -106,6 +106,54 @@ export const CAPABILITY_MANIFEST_FIELDS: Readonly<
   visitor_ai: ["aiChatOperations"],
 });
 
+/**
+ * #1737 — what a runtime-installed plugin cannot declare yet although it
+ * needs no grant: the host would carry it and nothing would ever run it.
+ * The same refusal path as a capability without a broker: staging,
+ * approval, finalization and every load refuse it with the issue, and
+ * `plugins.submit` names it (installation-policy.ts, validate.ts,
+ * external-plugin.ts). An installed plugin already running with one stops
+ * at its next load, loudly: the load error is recorded for the Owner
+ * (#1008), never skipped.
+ */
+export const EXTERNAL_UNAVAILABLE_DECLARATIONS: Readonly<
+  Partial<Record<keyof PluginManifest, { readonly issue: number; readonly refusal: string }>>
+> = Object.freeze({
+  // The static build bakes only release-signed plugins' static renders
+  // (`staticRenderPlugins`, plugin-host build-services.ts): an installed
+  // plugin's would never reach a published page. Baking it needs a batched
+  // entry and a rule for the HTML it may put on a public page.
+  hasStaticRender: Object.freeze({
+    issue: 1737,
+    refusal:
+      "a static render (`hasStaticRender`) is not available to runtime-installed plugins yet (#1737): the static build bakes only release-signed plugins' static renders, so this one would never reach a published page. Remove `hasStaticRender` and the definition's `staticRender`, and render the widget in the browser from the plugin's Web Component (`component`) and its public operations.",
+  }),
+});
+
+/** The declarations of `manifest` a runtime-installed plugin cannot make yet, as refusals. */
+export function externalDeclarationRefusals(manifest: PluginManifest): string[] {
+  return (
+    Object.entries(EXTERNAL_UNAVAILABLE_DECLARATIONS) as [
+      keyof PluginManifest,
+      { readonly refusal: string },
+    ][]
+  )
+    .filter(([field]) => {
+      const value = manifest[field];
+      return (
+        value !== undefined && value !== false && !(Array.isArray(value) && value.length === 0)
+      );
+    })
+    .map(([, { refusal }]) => refusal);
+}
+
+/** The declarations no runtime-installed plugin can make yet, each with its issue (`hasStaticRender (#1737)`). */
+export function externallyUnavailableDeclarations(): string {
+  return Object.entries(EXTERNAL_UNAVAILABLE_DECLARATIONS)
+    .map(([field, d]) => `${field} (#${d?.issue})`)
+    .join(", ");
+}
+
 /** Whether a runtime-installed plugin can be granted `capability` today. */
 export function isExternallyBrokered(capability: PluginCapability): boolean {
   return EXTERNAL_CAPABILITY_STATUS[capability].status === "brokered";

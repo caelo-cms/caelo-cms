@@ -44,7 +44,7 @@ const helloWorldManifest = {
   },
   tableKinds: { greetings: "visitor-state" },
   operations: ["submit", "list"],
-  hasStaticRender: true,
+  hasStaticRender: false,
 };
 
 const helloWorldSource = `

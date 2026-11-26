@@ -48,6 +48,7 @@ import {
   CONSENT_PROVIDER_SLUG,
   externalCapabilityHint,
   externalCapabilityRefusal,
+  externalDeclarationRefusals,
   externalUrlSlotRefusal,
   type PluginManifest,
   pluginManifest as pluginManifestSchema,
@@ -376,6 +377,8 @@ export function validateManifest(
     if (m.workers && m.workers.length > 0)
       leak(externalCapabilityHint("background_workers", "workers"));
     if (m.tools && m.tools.length > 0) leak(externalCapabilityHint("chat_runner_tools", "tools"));
+    // #1737 — declared for a runtime-installed plugin, nothing would run it.
+    for (const refusal of externalDeclarationRefusals(m)) leak(refusal);
     if (m.requestedCapabilities && m.requestedCapabilities.length > 0) {
       const unavailable = m.requestedCapabilities
         .map((c) => externalCapabilityRefusal(c))

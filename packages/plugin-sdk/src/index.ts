@@ -221,11 +221,14 @@ export { PLUGIN_CAPABILITY_INFO, type PluginCapabilityInfo } from "./capability-
 export {
   CAPABILITY_MANIFEST_FIELDS,
   EXTERNAL_CAPABILITY_STATUS,
+  EXTERNAL_UNAVAILABLE_DECLARATIONS,
   type ExternalCapabilityStatus,
   externalCapabilityHint,
   externalCapabilityRefusal,
+  externalDeclarationRefusals,
   externallyBrokeredCapabilities,
   externallyRequestable,
+  externallyUnavailableDeclarations,
   isExternallyBrokered,
 } from "./external-capabilities.js";
 

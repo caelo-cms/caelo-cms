@@ -4,6 +4,7 @@ import { activateApprovedExternalPlugin, pluginManifest } from "@caelo-cms/plugi
 import {
   adminPanelOperations,
   externalCapabilityRefusal,
+  externalDeclarationRefusals,
   externalUrlSlotRefusal,
 } from "@caelo-cms/plugin-sdk";
 import {
@@ -52,6 +53,8 @@ export const load: PageServerLoad = async ({ locals }) => {
           ...(manifest.requestedCapabilities ?? []).map((capability) =>
             externalCapabilityRefusal(capability),
           ),
+          // #1737 — a declaration no runtime-installed plugin can make yet.
+          ...externalDeclarationRefusals(manifest),
           // A URL slot no runtime-installed plugin can claim (Q7 A).
           ...(manifest.urlContributions ?? []).map((claim) =>
             externalUrlSlotRefusal(claim.slot, manifest.urlTables !== undefined),

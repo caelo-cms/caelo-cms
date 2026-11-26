@@ -10,6 +10,7 @@
 import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
 import {
   externalCapabilityRefusal,
+  externalDeclarationRefusals,
   type PluginContext,
   type PluginDefinition,
   type PluginManifest,
@@ -19,6 +20,7 @@ import type { PluginHostInfra } from "./dispatch.js";
 import { assertExternalApproval, type ExternalApproval } from "./external-authorization.js";
 import { publicOperationFromManifest } from "./manifest-definition.js";
 import { renderPointDefinition } from "./render-points.js";
+import { ExternalDeclarationUnavailableError } from "./runtime-health.js";
 import {
   SANDBOX_ANSWER_BYTES,
   SANDBOX_KIND,
@@ -54,6 +56,13 @@ export function externalPluginDefinition(opts: {
   for (const capability of manifest.requestedCapabilities ?? []) {
     const refusal = externalCapabilityRefusal(capability);
     if (refusal) throw new Error(`External capability broker unavailable: ${refusal}`);
+  }
+  // #1737 — an artifact an older release approved with a declaration no
+  // installed plugin can make now stops here, at every load: the error is
+  // recorded for the Owner (#1008, Settings → Plugins, get_plugin), and
+  // nothing of the plugin runs, instead of running without it unnoticed.
+  for (const refusal of externalDeclarationRefusals(manifest)) {
+    throw new ExternalDeclarationUnavailableError(refusal);
   }
   if (externalArtifactDigest(opts.manifest, opts.source) !== opts.approval.artifactDigest)
     throw new Error("ExternalPluginArtifactMismatch");
@@ -91,9 +100,8 @@ export function externalPluginDefinition(opts: {
       ...Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
       ...points.operations,
     }),
-    ...(manifest.hasStaticRender
-      ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
-      : {}),
+    // No `staticRender`: refused above until the build can bake it (#1737);
+    // the child still answers `$staticRender` for that follow-up.
     // #1729 (Q1) — create-time defaults, run on main as the plugin actor
     // each time the host brings the plugin up, like a shipped `onActivate`.
     ...(manifest.hasOnActivate
