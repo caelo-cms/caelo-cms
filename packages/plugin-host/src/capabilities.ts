@@ -827,6 +827,7 @@ function makeScopedQuery(
             await guardUrlTable({
               method: "upsert",
               table: tableStr,
+              key,
               data: { ...key, ...values },
             });
             return run<PluginUpsertResult>(STORAGE_OPS.private.upsert, {

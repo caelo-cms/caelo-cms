@@ -346,6 +346,8 @@ export interface UrlTableWrite {
   readonly table: string;
   /** The row's id, for a write that names one (update, delete, compareAndSwap). */
   readonly id?: string;
+  /** An upsert's key: the row it replaces is the one these columns match. */
+  readonly key?: Readonly<Record<string, unknown>>;
   /** The columns written (insert data, update patch, upsert key + values). */
   readonly data?: Readonly<Record<string, unknown>>;
 }
@@ -396,7 +398,9 @@ export async function checkUrlTableWrite(opts: {
     return;
   }
   const t = tables.values;
-  const current = write.id !== undefined ? values.find((v) => v.id === write.id) : undefined;
+  const current = await replacedValue(write, values, () =>
+    list(t.table, { orderBy: "id", orderDir: "asc", limit: URL_TABLE_MAX_VALUES + 1 }),
+  );
   const removes =
     write.method === "delete" ||
     (current !== undefined && t.valueColumn in data && data[t.valueColumn] !== current.value);
@@ -413,12 +417,14 @@ export async function checkUrlTableWrite(opts: {
   }
   if (write.method === "delete") return;
   const next: DeclaredUrlValue = {
-    id: write.id ?? "",
+    id: current?.id ?? write.id ?? "",
     value: String(data[t.valueColumn] ?? current?.value ?? ""),
     segment: nextText(data, t.segmentColumn, current?.segment ?? null),
     host: nextText(data, t.hostColumn, current?.host ?? null),
   };
-  const rest = values.filter((v) => v.id !== write.id && v.value !== next.value);
+  // Every other row stays: a second row with a value, segment or host
+  // already taken is refused here, not found by the next composition.
+  const rest = values.filter((v) => v.id !== next.id);
   const problems = declaredValuesProblems([...rest, next]);
   if (next.segment !== null) {
     const issue = urlSegmentIssue(next.segment);
@@ -437,6 +443,28 @@ export async function checkUrlTableWrite(opts: {
     if (issue) problems.push(issue);
   }
   if (problems.length > 0) throw new Error(`${where}: ${problems.join("; ")}`);
+}
+
+/**
+ * The values row `write` replaces: the one its id names, or the first by
+ * id whose columns match its upsert key, which is the row the upsert
+ * updates (private-upsert.ts); none for an insert, or an upsert that
+ * inserts. The key is matched over the table's rows in memory: a values
+ * table holds at most {@link URL_TABLE_MAX_VALUES} rows, and its key
+ * columns need not be indexed.
+ */
+async function replacedValue(
+  write: UrlTableWrite,
+  values: ReadonlyArray<DeclaredUrlValue>,
+  rowsById: () => Promise<ReadonlyArray<Record<string, unknown>>>,
+): Promise<DeclaredUrlValue | undefined> {
+  if (write.id !== undefined) return values.find((v) => v.id === write.id);
+  const key = write.key;
+  if (write.method !== "upsert" || key === undefined) return undefined;
+  const row = (await rowsById()).find((r) =>
+    Object.entries(key).every(([column, v]) => r[column] === v),
+  );
+  return row === undefined ? undefined : values.find((v) => v.id === String(row.id));
 }
 
 function nextText(

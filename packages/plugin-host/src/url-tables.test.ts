@@ -213,6 +213,37 @@ describe("#1729 — a URL table changes only in an Owner-approved call", () => {
     ).rejects.toThrow(/still shapes the address of page 22222222/);
   });
 
+  it("refuses a second row for a value, by insert or by rename, and lets an upsert replace its own row", async () => {
+    const OTHER = "33333333-3333-4333-8333-333333333333";
+    const rows: Record<string, Record<string, unknown>[]> = {
+      markets: [
+        { id: ID, code: "de", segment: null, host: null },
+        { id: OTHER, code: "at", segment: null, host: null },
+      ],
+      page_markets: [],
+    };
+    const gate = (write: Parameters<typeof checkUrlTableWrite>[0]["write"]) =>
+      checkUrlTableWrite({
+        pluginSlug: "markets",
+        tables: TABLES,
+        invocation: { origin: "approved", actorId: ID } as PluginInvocation,
+        write,
+        list: (async (table: string) => rows[table] ?? []) as never,
+      });
+    await expect(
+      gate({ method: "insert", table: "markets", data: { code: "de" } }),
+    ).rejects.toThrow(/value "de" has two rows/);
+    await expect(
+      gate({ method: "update", table: "markets", id: OTHER, data: { code: "de" } }),
+    ).rejects.toThrow(/value "de" has two rows/);
+    await gate({
+      method: "upsert",
+      table: "markets",
+      key: { code: "de" },
+      data: { code: "de", host: null },
+    });
+  });
+
   it("refuses a segment that is no path segment before looking anything up", async () => {
     await expect(
       checkUrlTableWrite({
