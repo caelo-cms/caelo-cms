@@ -148,6 +148,117 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
     );
   });
 
+  it("refuses every value after a section that can change the HTML around it", () => {
+    const fields: TemplateField[] = [
+      { name: "title", kind: "text" },
+      { name: "flag", kind: "text" },
+    ];
+    const at = (html: string, flag: string, value: unknown = owned("alert(1)")) =>
+      renderTemplate({ html, fields, contentValues: { title: value, flag } });
+    // The finding's case: without the flag the comment never opens.
+    const comment = `{{#flag}}<!--{{/flag}}<button onclick="{{title}}">x</button>{{#flag}}-->{{/flag}}`;
+    for (const flag of ["", "1"]) {
+      expect(at(comment, flag).missingSlots).toEqual([refusal("context-conditional-markup")]);
+      expect(at(comment, flag).html).toContain(`onclick="{{title}}"`);
+    }
+    for (const html of [
+      // A section that cuts into a tag name, an attribute name, or a comment's end.
+      `a<{{#flag}}x{{/flag}}script>{{title}}`,
+      `<a {{#flag}}x{{/flag}}href="{{title}}">x</a>`,
+      `<!--{{#flag}}x{{/flag}}><p title="{{title}}">`,
+      // Without the block, the next attribute joins the tag name or becomes the value.
+      `<li{{#flag}} class="x"{{/flag}}title="{{title}}">x</li>`,
+      `<p title={{#flag}}x{{/flag}} class="{{title}}">x</p>`,
+      // Open and close in different attributes, or in a <textarea>.
+      `<p title="{{#flag}}" data-x="{{/flag}}">{{title}}</p>`,
+      `{{#flag}}<textarea>{{/flag}}<p>{{title}}</p>`,
+    ]) {
+      expect(at(html, "1", owned("hello")).missingSlots).toEqual([
+        refusal("context-conditional-markup"),
+      ]);
+    }
+    // A core value in the same template renders exactly as before.
+    expect(at(comment, "", "alert(1)").html).toBe(`<button onclick="alert(1)">x</button>`);
+  });
+
+  it("keeps the sections modules use: in content, in one attribute, between attributes", () => {
+    const fields: TemplateField[] = [
+      { name: "title", kind: "text" },
+      { name: "on", kind: "text" },
+    ];
+    for (const [html, out] of [
+      [
+        `<li class="item {{#on}}active{{/on}}">{{title}}</li>`,
+        `<li class="item active">hilfe</li>`,
+      ],
+      [
+        `<a href="/" {{#on}}target="_blank" rel="noopener"{{/on}}>{{title}}</a>`,
+        `<a href="/" target="_blank" rel="noopener">hilfe</a>`,
+      ],
+      [`<li{{#on}} class="active"{{/on}}>{{title}}</li>`, `<li class="active">hilfe</li>`],
+      [`<p title=a{{#on}}b{{/on}} class="{{title}}">x</p>`, `<p title=ab class="hilfe">x</p>`],
+      [
+        `{{#on}}<p>{{title}}</p>{{/on}}{{^on}}<p>-</p>{{/on}}<i title="{{title}}"></i>`,
+        `<p>hilfe</p><i title="hilfe"></i>`,
+      ],
+    ] as const) {
+      const r = renderTemplate({ html, fields, contentValues: { title: owned("hilfe"), on: "1" } });
+      expect(r.missingSlots).toEqual([]);
+      expect(r.html).toBe(out);
+    }
+    // An attribute a section adds is read by its own name: `onclick`, not the masked one.
+    const handler = renderTemplate({
+      html: `<button {{#on}}onclick="{{title}}"{{/on}}>x</button>`,
+      fields,
+      contentValues: { title: owned("alert(1)"), on: "1" },
+    });
+    expect(handler.missingSlots).toEqual([refusal("context-event-handler")]);
+    const link = renderTemplate({
+      html: `<a {{#on}}href="{{title}}"{{/on}}>x</a>`,
+      fields,
+      contentValues: { title: owned("javascript:alert(1)"), on: "1" },
+    });
+    expect(link.missingSlots).toEqual([refusal("url-scheme")]);
+  });
+
+  it("reads a nested module's partial in content as complete markup, and refuses values after one anywhere else", () => {
+    const fields: TemplateField[] = [
+      { name: "title", kind: "text" },
+      { name: "inner", kind: "module" },
+    ];
+    const at = (html: string) =>
+      renderTemplate({
+        html,
+        fields,
+        contentValues: { title: owned("hilfe"), inner: { moduleId: "m", contentInstanceId: "c" } },
+        partials: { inner: "<b>n</b>" },
+      });
+    expect(at(`<div>{{>inner}}</div><p>{{title}}</p>`).html).toBe(
+      `<div><b>n</b></div><p>hilfe</p>`,
+    );
+    expect(at(`<p title="{{>inner}}">{{title}}</p>`).missingSlots).toEqual([
+      refusal("context-conditional-markup"),
+    ]);
+  });
+
+  it("refuses a value in an attribute or element a value names", () => {
+    const fields: TemplateField[] = [
+      { name: "title", kind: "text" },
+      { name: "attr", kind: "text" },
+    ];
+    for (const html of [
+      `<a {{attr}}="{{title}}">x</a>`,
+      `<{{attr}} href="/" title="{{title}}">x</{{attr}}>`,
+    ]) {
+      const r = renderTemplate({
+        html,
+        fields,
+        contentValues: { title: owned("alert(1)"), attr: "onclick" },
+      });
+      expect(r.missingSlots).toEqual([refusal("context-tag")]);
+    }
+  });
+
   it("refuses a value a list section repeats inside one URL", () => {
     const entry = (id: string, label: string) => ({
       id,
