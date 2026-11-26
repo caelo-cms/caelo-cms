@@ -16,12 +16,13 @@ import { SITE_SEARCH_CONFIG } from "./config.js";
 import { anchorDocuments, normalizeAnchorText, pageDocument, sectionsOf } from "./documents.js";
 import plugin from "./index.js";
 import { aggregate, isPopularCandidate } from "./learn.js";
-import { verdictsOf } from "./observe.js";
+import { type ModuleReportRow, verdictsOf } from "./observe.js";
 
 const observeOp = (ctx: unknown, a: PageOutputObserverArgs) =>
   (plugin.operations.observe as (c: unknown, x: unknown) => Promise<{ indexed: number }>)(ctx, a);
 
 import { buildProfile, linkedPageId } from "./profile.js";
+import { moduleReportWrites, type StoredModuleRow } from "./report.js";
 import { moduleWeighting, pageExclusion } from "./rules.js";
 
 const COUNTING = { fullMax: 10, reducedMax: 49, chromeLinks: true };
@@ -420,6 +421,8 @@ function fakeCtx() {
     query: async () => ({ state: "none" as const, error: null, status: 503, body: null }),
   });
   const tables = new Map<string, Record<string, unknown>[]>();
+  /** Every private-storage write, one entry per call (a call is one operation). */
+  const writes: { op: string; table: string; rows: number }[] = [];
   // The host's read rule in front of list() (#1536): a read no declared
   // index can drive fails here as it would in storage.
   const adminQuery = indexCheckedQuery(plugin, "adminSchema", {
@@ -431,15 +434,25 @@ function fakeCtx() {
         .filter((r) => Object.entries(filter.anyOf ?? {}).every(([k, vs]) => vs.includes(r[k])))
         .slice(0, filter.limit ?? 1000),
     insert: async (table: string, row: Record<string, unknown>) => {
+      writes.push({ op: "insert", table, rows: 1 });
       const id = crypto.randomUUID();
       tables.set(table, [...(tables.get(table) ?? []), { ...row, id }]);
       return { id };
     },
     update: async (table: string, id: string, patch: Record<string, unknown>) => {
+      writes.push({ op: "update", table, rows: 1 });
       tables.set(
         table,
         (tables.get(table) ?? []).map((r) => (r.id === id ? { ...r, ...patch } : r)),
       );
+    },
+    updateMany: async (table: string, ids: readonly string[], patch: Record<string, unknown>) => {
+      writes.push({ op: "updateMany", table, rows: ids.length });
+      tables.set(
+        table,
+        (tables.get(table) ?? []).map((r) => (ids.includes(String(r.id)) ? { ...r, ...patch } : r)),
+      );
+      return { updated: ids.length };
     },
   });
   const values = configDefaults(parseConfigSchema(SITE_SEARCH_CONFIG));
@@ -454,7 +467,7 @@ function fakeCtx() {
     adminQuery,
     invocation: { origin: "observer", actorId: "system", stageRunId: "r" },
   };
-  return { ctx, collections, calls, coll };
+  return { ctx, collections, calls, coll, tables, writes };
 }
 
 /** The link texts of an anchors collection, without the blocks' state documents. */
@@ -545,5 +558,130 @@ describe("the observer", () => {
     await observeOp(ctx, args([facts({ noindex: true })]));
     expect(coll("pages").size).toBe(0);
     expect(linkTexts(coll("anchors"))).toHaveLength(2);
+  });
+});
+
+describe("the module counting report (searchVIU, 2026-11-26)", () => {
+  /** A site of `n` pages: shared chrome, a teaser on every page, each page's own body. */
+  const site = (n: number, published = n): PageOutputFacts[] =>
+    Array.from({ length: n }, (_, i) =>
+      facts({
+        pageId: `p-${i}`,
+        url: `https://example.com/p-${i}/`,
+        path: `/p-${i}/`,
+        modules: [
+          mod({ moduleId: "m-header", zone: "layout", kind: "chrome", placementCount: published }),
+          mod({ moduleId: "m-footer", zone: "layout", kind: "chrome", placementCount: published }),
+          mod({ moduleId: "m-teaser", placementCount: published }),
+          mod({ moduleId: `m-body-${i}`, placementCount: 1 }),
+        ],
+        texts: [text(`Seite ${i}`, { moduleId: `m-body-${i}` })],
+        links: [],
+      }),
+    );
+
+  /** One Stage delivering `pages` in observer calls of `per` pages, as the host batches them. */
+  async function stage(
+    ctx: unknown,
+    runId: string,
+    pages: readonly PageOutputFacts[],
+    per = 20,
+  ): Promise<void> {
+    for (let i = 0; i < pages.length; i += per)
+      await observeOp(ctx, {
+        runId,
+        pages: pages.slice(i, i + per),
+        removed: [],
+        placementChanges: [],
+        final: false,
+        publishedPageCount: pages.length,
+      });
+  }
+
+  const reportWrites = (writes: readonly { table: string }[]) =>
+    writes.filter((w) => w.table === "module_counting");
+
+  it("writes each module once per Stage, however many calls report it", async () => {
+    const { ctx, writes, tables } = fakeCtx();
+    await stage(ctx, "r1", site(60));
+    // 3 shared modules and 60 bodies; before, every call rewrote the chrome
+    // and the teaser: 63 inserts and 6 updates on 60 pages, and on searchVIU
+    // about 2,400 writes per Stage.
+    expect(reportWrites(writes)).toHaveLength(63);
+    expect(reportWrites(writes).every((w) => w.op === "insert")).toBe(true);
+    expect(tables.get("module_counting")).toHaveLength(63);
+  });
+
+  it("writes nothing when a Stage delivers the whole site again unchanged", async () => {
+    const { ctx, writes } = fakeCtx();
+    await stage(ctx, "r1", site(60));
+    writes.length = 0;
+    // A configuration change re-delivers every page (the observer digest).
+    await stage(ctx, "r2", site(60));
+    expect(reportWrites(writes)).toEqual([]);
+  });
+
+  it("writes rows that change the same way in one call", async () => {
+    const { ctx, writes, tables } = fakeCtx();
+    await stage(ctx, "r1", site(60));
+    writes.length = 0;
+    // One page more: the chrome and the teaser sit on 61 pages now.
+    await stage(ctx, "r2", site(61));
+    const changed = reportWrites(writes);
+    expect(changed.filter((w) => w.op === "insert")).toHaveLength(1);
+    // The header, the footer and the teaser change alike: one call.
+    expect(changed.filter((w) => w.op === "updateMany").map((w) => w.rows)).toEqual([3]);
+    const rows = tables.get("module_counting") ?? [];
+    expect(rows.find((r) => r.module_id === "m-footer")).toMatchObject({
+      placement: 61,
+      run_id: "r2",
+    });
+    // A row nothing changed keeps the Stage that last changed it.
+    expect(rows.find((r) => r.module_id === "m-body-0")?.run_id).toBe("r1");
+  });
+});
+
+describe("moduleReportWrites", () => {
+  const row = (over: Partial<StoredModuleRow> = {}): StoredModuleRow => ({
+    id: "row-1",
+    module_id: "m-footer",
+    name: "Footer",
+    zone: "layout",
+    placement: 300,
+    weighting: "none",
+    reason: "chrome",
+    run_id: "r1",
+    ...over,
+  });
+  const reported = (over: Partial<ModuleReportRow> = {}): ModuleReportRow => ({
+    moduleId: "m-footer",
+    name: "Footer",
+    zone: "layout",
+    placement: 300,
+    weighting: "none",
+    reason: "chrome",
+    ...over,
+  });
+
+  it("leaves a row alone whose shown columns say the same in another Stage", () => {
+    const writes = moduleReportWrites(new Map([["m-footer", row()]]), [reported()], "r2");
+    expect(writes).toEqual({ inserts: [], updates: [] });
+  });
+
+  it("never lets a home-page verdict replace one this Stage already wrote", () => {
+    const home = reported({ weighting: "full", reason: "home-page" });
+    // The other pages' batch came first in this Stage: it stays.
+    expect(
+      moduleReportWrites(new Map([["m-footer", row({ run_id: "r2" })]]), [home], "r2"),
+    ).toEqual({ inserts: [], updates: [] });
+    // From an earlier Stage, the home page's verdict is the news.
+    expect(moduleReportWrites(new Map([["m-footer", row()]]), [home], "r2").updates).toEqual([
+      { ids: ["row-1"], patch: { weighting: "full", reason: "home-page", run_id: "r2" } },
+    ]);
+    // And the other pages' verdict replaces this Stage's home-page one.
+    const homeRow = row({ weighting: "full", reason: "home-page", run_id: "r2" });
+    expect(
+      moduleReportWrites(new Map([["m-footer", homeRow]]), [reported()], "r2").updates,
+    ).toEqual([{ ids: ["row-1"], patch: { weighting: "none", reason: "chrome", run_id: "r2" } }]);
   });
 });
