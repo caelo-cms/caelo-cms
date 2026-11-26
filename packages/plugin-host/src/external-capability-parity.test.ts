@@ -24,6 +24,7 @@ import { validateInstallationPolicy } from "@caelo-cms/plugin-sandbox";
 import {
   CAPABILITY_MANIFEST_FIELDS,
   EXTERNAL_CAPABILITY_STATUS,
+  externalCapabilityRefusal,
   isExternallyBrokered,
   manifestFromDefinition,
   type PluginCapability,
@@ -35,6 +36,7 @@ import {
 import { externalDeclarations } from "./external-plugin.js";
 import { renderPointDefinition } from "./render-points.js";
 import { runSandbox } from "./sandbox-runtime.js";
+import { declaredUrlAnnotationKey, declaredUrlContributions } from "./url-tables.js";
 
 const PLUGINS_ROOT = resolve(import.meta.dir, "../../plugins");
 const ID = "11111111-1111-4111-8111-111111111111";
@@ -116,11 +118,14 @@ async function shipped(slug: string): Promise<PluginManifest> {
 async function fixtureManifest(): Promise<PluginManifest> {
   const search = await shipped("site-search");
   const assistant = await shipped("site-assistant");
+  const newsletter = await shipped("newsletter");
   const consent = await shipped("consent-manager");
   const international = await shipped("international-site");
   return {
     ...search,
     ...assistant,
+    mailTemplates: newsletter.mailTemplates,
+    mailUnsubscribe: newsletter.mailUnsubscribe,
     collections: search.collections,
     collectionOperations: search.collectionOperations,
     pageOutputObserver: search.pageOutputObserver,
@@ -132,6 +137,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
     listTypes: search.listTypes,
     listSources: consent.listSources,
     hasLinkResolve: international.hasLinkResolve,
+    hasListResolve: international.hasListResolve,
     // #1729 — client assets: the shipped files, data and placeholders.
     clientFiles: consent.clientFiles,
     hasBuildData: consent.hasBuildData,
@@ -140,6 +146,8 @@ async function fixtureManifest(): Promise<PluginManifest> {
     linkResolveReads: international.linkResolveReads,
     aiChatOperations: assistant.aiChatOperations,
     changeConsumer: consent.changeConsumer,
+    urlTables: URL_TABLES,
+    urlContributions: [{ slot: "host" }, { slot: "path-prefix" }],
     tier: 2,
   };
 }
@@ -153,6 +161,16 @@ const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
   hasLinkResolve: "linkResolveOperation",
   hasDeferrals: "deferralsOperation",
   hasBuildData: "buildDataOperation",
+  hasListResolve: "listResolveOperation",
+  // #1729 (Q7 A) — the slot claims of an installed plugin are its tables:
+  // the host builds the encoders from them (url-tables.ts).
+  urlContributions: "urlTables",
+};
+
+/** Declared URL tables in the shape a runtime-installed plugin submits them. */
+const URL_TABLES = {
+  pages: { table: "page_markets", valueColumn: "market" },
+  values: { table: "markets", valueColumn: "code", segmentColumn: "segment", hostColumn: "host" },
 };
 
 /** A render-point call as core makes it in an editor preview. */
@@ -301,6 +319,35 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
     expect(listTypes?.length).toBeGreaterThan(0);
     expect(externalDeclarations({ ...probe, listTypes }).listTypes).toEqual(listTypes);
   },
+  // #1729 — the install's AI through the host handle (which reserves under
+  // the plugin's caps), and its mail templates (queue and link, no send).
+  ai_provider: async () => {
+    const fake = fakeHandle(["complete", "generateObject"], { text: "hi" });
+    expect(
+      await sandboxed(
+        `return ctx.ai.complete({ system: "s", messages: [{ role: "user", content: "x" }] })`,
+        { ai: fake.handle },
+      ),
+    ).toEqual({ text: "hi" });
+    expect(fake.calls).toEqual(["complete"]);
+  },
+  email: async () => {
+    const fake = fakeHandle(["queue", "unsubscribeLink"], null);
+    expect(
+      await sandboxed(
+        `await ctx.email.queue({ template: "confirm_subscription", to: "a@example.com" });
+         return typeof ctx.email.send;`,
+        { email: { ...fake.handle, send: async () => ({ messageId: "never" }) } },
+        { origin: "worker", actorId: ID },
+      ),
+    ).toBe("undefined");
+    expect(fake.calls).toEqual(["queue"]);
+    const { mailTemplates, mailUnsubscribe } = await fixtureManifest();
+    expect(externalDeclarations({ ...probe, mailTemplates, mailUnsubscribe })).toMatchObject({
+      mailTemplates,
+      mailUnsubscribe,
+    });
+  },
   list_sources: async () => {
     const listSources = (await fixtureManifest()).listSources;
     expect(listSources?.length).toBeGreaterThan(0);
@@ -380,6 +427,54 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
       },
     });
   },
+  // #1729 (Q7 A) — no plugin code runs on the URL path: the definition
+  // carries the tables, and the encoders are the host's, reading the value
+  // the host attached to the page.
+  url_slots: async () => {
+    const manifest = {
+      ...probe,
+      urlTables: URL_TABLES,
+      urlContributions: [{ slot: "host" as const }, { slot: "path-prefix" as const }],
+    };
+    expect(externalDeclarations(manifest).urlTables).toEqual(URL_TABLES);
+    const encoders = declaredUrlContributions("parity-probe", URL_TABLES);
+    const page = {
+      pageId: ID,
+      slug: "pricing",
+      ancestorSlugs: [],
+      isHomePage: false,
+      annotations: {
+        [declaredUrlAnnotationKey("parity-probe")]: {
+          id: ID,
+          value: "de",
+          segment: "de",
+          host: "de.example.com",
+        },
+      },
+    };
+    const bySlot = Object.fromEntries(encoders.map((c) => [c.slot, c]));
+    expect(
+      bySlot["path-prefix"]?.slot === "path-prefix" && bySlot["path-prefix"].encode(page),
+    ).toEqual(["de"]);
+    expect(bySlot.host?.slot === "host" && bySlot.host.encode(page)).toBe("de.example.com");
+    // A page without a row keeps the site's own shape.
+    const bare = { ...page, annotations: {} };
+    expect(
+      bySlot["path-prefix"]?.slot === "path-prefix" && bySlot["path-prefix"].encode(bare),
+    ).toEqual([]);
+  },
+  list_resolve: async () => {
+    const manifest = { ...probe, hasListResolve: true } as PluginManifest;
+    expect(
+      await renderPoint(
+        `export default {slug:"parity-probe",version:"1.0.0",tier:2,listResolveOperation:"overlays",
+          operations:{overlays:async(ctx,args)=>({overlays:{[args.variants[0]]:{values:{"list/l1/item/i1/label":ctx.invocation.origin},hidden:[]}}})}};`,
+        manifest,
+        "$listResolve",
+        { variants: ["de"] },
+      ),
+    ).toEqual({ overlays: { de: { values: { "list/l1/item/i1/label": "render" }, hidden: [] } } });
+  },
   batch_jobs: async () => {
     expect(
       await sandboxed(
@@ -412,6 +507,20 @@ describe("#1729 — every capability is brokered for external plugins or tracked
         }),
       ).toThrow(new RegExp(`\`${capability}\`.*\\(#${status.issue}\\)`));
     }
+  });
+
+  it("the refusal of a planned capability names it, its issue and what to remove (injected record)", () => {
+    // Independent of the real record, which may have no planned entry left.
+    const record = {
+      ...EXTERNAL_CAPABILITY_STATUS,
+      url_slots: { status: "planned", issue: 4242 },
+    } as const;
+    const refusal = externalCapabilityRefusal("url_slots", record);
+    expect(refusal).toContain(
+      "`url_slots` (Page addresses) is not available to runtime-installed plugins yet (#4242)",
+    );
+    expect(refusal).toContain("remove `urlContributions`, `urlTables`, which need it");
+    expect(externalCapabilityRefusal("cms_admin", record)).toBeNull();
   });
 
   it("every brokered capability has a sandbox smoke", () => {

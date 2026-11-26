@@ -48,8 +48,10 @@ import {
   CONSENT_PROVIDER_SLUG,
   externalCapabilityHint,
   externalCapabilityRefusal,
+  externalUrlSlotRefusal,
   type PluginManifest,
   pluginManifest as pluginManifestSchema,
+  urlTablesProblems,
 } from "@caelo-cms/plugin-sdk";
 import { Cron } from "croner";
 // The bare `"oxc-parser"` import path here is load-bearing for the admin
@@ -208,7 +210,8 @@ export type ValidationFailureKind =
   | "parse-error"
   | "worker-schedule"
   | "link-resolve-reads"
-  | "client-assets";
+  | "client-assets"
+  | "url-tables";
 
 export interface ValidationFailure {
   readonly kind: ValidationFailureKind;
@@ -254,6 +257,9 @@ export function validateManifest(
   // stop a plugin an older release approved from loading at all.
   if ((opts.workerCron ?? "refuse") === "refuse") failures.push(...workerScheduleFailures(m));
   failures.push(...linkResolveReadsFailures(m));
+  // #1729 — declared URL tables must name real tables and columns, claim
+  // exactly the slots they fill and have the indexes the host reads by.
+  for (const hint of urlTablesProblems(m)) failures.push({ kind: "url-tables", hint });
 
   // #389 — `ref:` FK columns are an adminSchema-only vocabulary:
   // cms_public tables cannot FK across databases into cms_admin.
@@ -305,6 +311,14 @@ export function validateManifest(
     }
     // Epic #1107 — list sources, list types and list-resolve overlays
     // change what pages render; each is its own Owner grant.
+    // #1729 — a URL slot changes every affected page's address: its own
+    // grant, for every plugin (one plugin model).
+    if (((m.urlContributions?.length ?? 0) > 0 || m.urlTables) && !caps.has("url_slots")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest claims URL slots (`urlContributions` / `urlTables`) but does not request the `url_slots` capability. Add it to `requestedCapabilities` (or drop the claims).",
+      });
+    }
     if (m.listSources && m.listSources.length > 0 && !caps.has("list_sources")) {
       failures.push({
         kind: "manifest-cap-missing",
@@ -346,8 +360,17 @@ export function validateManifest(
     const leak = (hint: string) => failures.push({ kind: "manifest-tier2-cap-leak", hint });
     if (m.contributes && m.contributes.length > 0)
       leak(externalCapabilityHint("head_contributions", "contributes"));
-    if (m.urlContributions && m.urlContributions.length > 0)
-      leak(externalCapabilityHint("url_slots", "urlContributions"));
+    if (m.urlContributions && m.urlContributions.length > 0) {
+      // A slot no runtime-installed plugin can claim says so, with what it may.
+      const refused = m.urlContributions
+        .map((c) => externalUrlSlotRefusal(c.slot, m.urlTables !== undefined))
+        .filter((r): r is string => r !== null);
+      leak(
+        refused.length > 0
+          ? refused.join(" ")
+          : externalCapabilityHint("url_slots", "urlContributions"),
+      );
+    } else if (m.urlTables) leak(externalCapabilityHint("url_slots", "urlTables"));
     if (m.adminSchema && Object.keys(m.adminSchema).length > 0)
       leak(externalCapabilityHint("cms_admin_schema", "adminSchema"));
     if (m.workers && m.workers.length > 0)

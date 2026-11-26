@@ -51,6 +51,8 @@ import {
   type PluginDefinition,
   type PluginManifest,
   pluginManifest,
+  urlTableSlots,
+  urlTablesProblems,
 } from "@caelo-cms/plugin-sdk";
 import { execute, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
@@ -98,6 +100,7 @@ import { runSandbox } from "./sandbox-runtime.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
 import { pluginToolsRegistry } from "./tools-registry.js";
 import { urlContributionsRegistry } from "./url-composition.js";
+import { declaredUrlContributions } from "./url-tables.js";
 
 export interface BootstrapOpts {
   readonly infra: PluginHostInfra;
@@ -593,6 +596,7 @@ async function loadTier2Row(
   await assertRequiredPluginsActive(opts.infra, opts.systemActorId, definition);
   // #1729 — the same gates as a shipped plugin, before any side effect.
   preflightRegistration(definition);
+  assertUrlSlotsClaimable(definition);
   // Both the registry and in-chat activation paths use this idempotent
   // provisioning, in both public databases (#1329).
   const emitted = await inPhase("provision", async () => {
@@ -1260,20 +1264,10 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   // #390 — claim URL slots. Exclusive: a conflict throws here and
   // surfaces to the Owner as "conflicts with <holder>". Claimed only
   // for a running plugin, so an inactive one never holds a slot its
-  // activation would have to fight for. urlContributions are
-  // release-signed only (runtime-authored plugins never reach
-  // registerLoadedPlugin with a definition carrying them — the manifest
-  // validator has no claim field for tier 2 to smuggle functions in).
-  if (def.urlContributions && def.urlContributions.length > 0) {
-    if (def.tier !== 1) {
-      throw new Error(
-        `plugin "${def.slug}" declares urlContributions but is not release-signed — refused`,
-      );
-    }
-    // Checked now (a conflict fails the activation before anything is
-    // provisioned), claimed only once the plugin is loaded — see below.
-    urlContributionsRegistry.assertClaimable(def.slug, def.urlContributions);
-  }
+  // activation would have to fight for. Checked now (a conflict fails the
+  // activation before anything is provisioned), claimed only once the
+  // plugin is loaded (registerPluginSurfaces).
+  assertUrlSlotsClaimable(def);
 
   // #387 — provision the plugin's declared cms_public schema at load.
   // Before this, only the sandboxed activation path ran `schemaFromSpec`,
@@ -1498,6 +1492,38 @@ function preflightRegistration(
       );
     }
   }
+  // #390 / #1729 — URL slots change the address of every page they shape:
+  // their own grant, for every plugin. A runtime-installed plugin's slots
+  // are tables the host reads (decision Q7 A): its code never runs while
+  // core composes an address, so it can neither carry code contributions
+  // nor claim a slot data cannot describe.
+  const urlCode = def.urlContributions ?? [];
+  if (urlCode.length > 0 || def.urlTables) {
+    if (!grantedCaps.has("url_slots")) {
+      throw new Error(
+        `plugin "${def.slug}" claims URL slots without the url_slots capability — registration refused`,
+      );
+    }
+    if (urlCode.length > 0 && def.urlTables) {
+      throw new Error(
+        `plugin "${def.slug}" declares both urlContributions code and urlTables — declare one of them`,
+      );
+    }
+    if (urlCode.length > 0 && def.tier !== 1) {
+      throw new Error(
+        `plugin "${def.slug}" carries URL contribution code but runs sandboxed — its URL slots must be declared as urlTables`,
+      );
+    }
+    if (def.urlTables) {
+      const problems = urlTablesProblems({
+        ...def,
+        urlContributions: urlTableSlots(def.urlTables).map((slot) => ({ slot })),
+      });
+      if (problems.length > 0) {
+        throw new Error(`plugin "${def.slug}": ${problems.join("; ")}`);
+      }
+    }
+  }
 
   // Epic #1107 — list sources, list types and list-resolve overlays each
   // change what pages render, so each needs its own grant; refused here,
@@ -1606,6 +1632,19 @@ function preflightRegistration(
 }
 
 /**
+ * Throw when the plugin's URL slots conflict with another running plugin's,
+ * without claiming them (url-composition.ts `assertClaimable`).
+ */
+function assertUrlSlotsClaimable(
+  def: PluginDefinition<PluginContext> | PluginDefinition<PluginContextTier1>,
+): void {
+  const contributions = def.urlTables
+    ? declaredUrlContributions(def.slug, def.urlTables)
+    : (def.urlContributions ?? []);
+  if (contributions.length > 0) urlContributionsRegistry.assertClaimable(def.slug, contributions);
+}
+
+/**
  * #1729 — the one registration of a loaded plugin's surfaces, for shipped
  * and runtime-installed plugins alike (docs/dev/external-plugin-brokers.md
  * §4.3): URL slots, the configuration's defaults, `onActivate`, list types,
@@ -1626,13 +1665,16 @@ async function registerPluginSurfaces(
   // answer: claimed earlier, a render running concurrently with this
   // activation called the annotation op of a plugin not yet loaded
   // (PluginNotFound in every preview during the activation window).
-  if (def.urlContributions && def.urlContributions.length > 0) {
+  // #1729 — declared tables (`urlTables`) are read by the host itself.
+  if (def.urlTables || (def.urlContributions && def.urlContributions.length > 0)) {
     try {
-      urlContributionsRegistry.register(
-        def.slug,
-        def.urlContributions,
-        def.urlAnnotationsOperation,
-      );
+      if (def.urlTables) urlContributionsRegistry.registerDeclared(def.slug, def.urlTables);
+      else
+        urlContributionsRegistry.register(
+          def.slug,
+          def.urlContributions ?? [],
+          def.urlAnnotationsOperation,
+        );
     } catch (e) {
       loadedPlugins.unload(def.slug);
       throw e;

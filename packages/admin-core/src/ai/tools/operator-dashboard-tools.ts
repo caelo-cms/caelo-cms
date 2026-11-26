@@ -307,6 +307,10 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
       const s = spend.value as OpValue<typeof aggregatePluginAiSpendOp>;
       lines.push(
         `AI spend last 24h: ${usdFromMicrocents(s.last24hMicrocents)} over ${s.last24hCalls} calls; cap ${usdFromMicrocents(s.capMicrocents)}` +
+          // #1729 — an installed plugin's approved cap; the Owner can only set a lower one.
+          (s.approvedCapMicrocents !== null
+            ? ` (approved with this version ${usdFromMicrocents(s.approvedCapMicrocents)}, the Owner's ${usdFromMicrocents(s.ownerCapMicrocents)})`
+            : "") +
           (s.capExceeded ? " — CAP REACHED (the plugin's AI calls are refused)" : ""),
       );
     } else {

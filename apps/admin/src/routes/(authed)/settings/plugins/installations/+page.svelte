@@ -101,6 +101,27 @@
               </ul>
             </section>
           {/if}
+          {#if item.aiDailyCapUsd !== null}
+            <section class="space-y-2" data-testid="installation-ai-cap-{item.slug}">
+              <h3 class="font-semibold">AI spending</h3>
+              <p class="text-sm">This plugin can spend at most <strong>${item.aiDailyCapUsd}</strong> of your AI budget in any 24 hours. Its AI calls stop once that is reached. After activation you can set a lower limit; a higher one needs a new version you approve.</p>
+            </section>
+          {/if}
+          {#if item.mails.length}
+            <section class="space-y-2" data-testid="installation-mails-{item.slug}">
+              <h3 class="font-semibold">Emails it can send</h3>
+              <p class="text-sm">These are the only emails this plugin can send, from your site's mail address. Your site's sending limits apply to each one.</p>
+              <ul class="space-y-2">
+                {#each item.mails as mail (mail.name)}
+                  <li class="rounded border p-2">
+                    <p class="font-semibold">{mail.subject}</p>
+                    {#each mail.body as paragraph, i (i)}<p class="whitespace-pre-wrap text-sm">{paragraph}</p>{/each}
+                    {#if mail.linkLabel}<p class="text-sm">Button: "{mail.linkLabel}"</p>{/if}
+                  </li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
           <fieldset class="space-y-2"><legend class="font-semibold">Requested access</legend>
             {#each item.manifest.requestedCapabilities ?? [] as capability}
               <label class="flex items-start gap-2"><input type="checkbox" name="capability" value={capability} required />

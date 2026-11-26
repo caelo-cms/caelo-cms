@@ -189,6 +189,11 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
       : {}),
     ...(manifest.tableKinds ? { tableKinds: manifest.tableKinds } : {}),
     ...(manifest.requires ? { requires: manifest.requires } : {}),
+    // #1729 — reviewed manifest data: the only mail an installed plugin can
+    // queue (the outbox drain renders it from here), and the unsubscribe
+    // link its tokens are signed for.
+    ...(manifest.mailTemplates ? { mailTemplates: manifest.mailTemplates } : {}),
+    ...(manifest.mailUnsubscribe ? { mailUnsubscribe: manifest.mailUnsubscribe } : {}),
     // Admin panels are reviewed manifest data: an installed plugin gets
     // the same admin pages a shipped one declares (one plugin model).
     ...(manifest.adminPanels ? { adminPanels: manifest.adminPanels } : {}),
@@ -227,5 +232,9 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     ...(manifest.listExt ? { listExt: manifest.listExt } : {}),
     ...(manifest.visitorProjection ? { visitorProjection: manifest.visitorProjection } : {}),
     ...(manifest.component ? { component: manifest.component } : {}),
+    // #1729 (decision Q7 A) — the `host` / `path-prefix` slots as tables the
+    // host reads while it composes addresses (url-tables.ts); no plugin
+    // code runs on the URL path, so no encode/decode crosses from the source.
+    ...(manifest.urlTables ? { urlTables: manifest.urlTables } : {}),
   };
 }

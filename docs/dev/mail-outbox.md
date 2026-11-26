@@ -23,9 +23,15 @@ The public side is assumed compromised ([public-admin-boundary.md](./public-admi
 
 ## No transport, no half-working plugin
 
-- `plugins.activate` and `plugins.approve_capabilities` refuse a plugin that `requires: ["email"]` while the transport is `none`, naming the setup step.
+- `plugins.activate` and `plugins.approve_capabilities` refuse a plugin that `requires: ["email"]` while the transport is `none`, naming the setup step. So do `plugins.approve_installation` and `plugins.finalize_installation` for a runtime-installed plugin (#1729).
 - `email_config.set` refuses to switch the transport to `none` while such a plugin is active, naming it.
 - If the transport breaks anyway (a revoked API key), queued mail waits and expires, and the `core:mail-outbox` task fails loudly on its scheduler row while mail is waiting.
+
+## Who may mail (#1729)
+
+A mail reaches a person and cannot be taken back, so `ctx.email.queue` and `ctx.email.send` work only from a call someone decided on: a worker or system call, the Owner panel, an approved tool call, or a visitor's own request on the gateway. They throw on a render (it runs on every preview), a page-output observer and a batch job (staged work, before Publish live) and a chat (its work waits on its branch); a plugin tool that mails declares `approvalMode: "user-approval"`. A render never mints an unsubscribe link either. The rules are in the handle (`plugin-host` `mail-queue.ts`) and bind shipped and installed plugins alike.
+
+A runtime-installed plugin granted `email` gets `queue` and `unsubscribeLink` only (decision Q5 A): its mail is its reviewed templates, which the Owner reads on the approval card. There is no `email.send` on the sandbox wire, and the host handle refuses one. A capped `send` for every plugin (a send ledger per recipient, site-wide and per plugin, worker and approved origins only, HTML held to mail rules) is #1735. On the gateway an installed plugin's declared mail blocks (double opt-in) get the same queue-only handle as a shipped plugin's.
 
 ## Unsubscribe links (mail the admin sends directly)
 
@@ -56,4 +62,5 @@ A provider delivers for a domain only once its DNS says so (SPF, DKIM, a return-
 
 - `packages/admin-core/src/__tests__/mail-outbox.integration.test.ts`: the visitor roles' privileges on both public databases, a forged row against template, host and caps, the site-wide cap, expiry, the staging team rule, the transport guard, the sending-domain records.
 - `packages/plugin-sdk/src/mail-templates.test.ts`, `apps/api-gateway/src/mail-link.test.ts`: the manifest checks and the confirmation page.
+- `packages/admin-core/src/__tests__/external-plugin-ai-email.integration.test.ts`, `apps/api-gateway/src/external-plugin-mail.integration.test.ts`: an installed plugin's templates from a worker and a visitor's double opt-in through the gateway, the per-recipient cap, the activation check, a foreign template, a chat call and a link token for another plugin refused.
 - `apps/api-gateway/src/mail-unsubscribe.integration.test.ts`: a link from the admin's mail through the gateway with its real identity: the headers, opening changes nothing, one-click in both encodings, forged and transplanted tokens, the budget per recipient, the proof-of-work still required of a browser call, the key's one-way publication to both public databases.
