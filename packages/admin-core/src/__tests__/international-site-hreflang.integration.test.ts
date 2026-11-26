@@ -321,6 +321,108 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     expect(status.locales.map((l) => l.code).sort()).toEqual(["de", "en", "fr"]);
   });
 
+  // searchVIU (v0.12.15): site-search requires its results page to be
+  // noindex, and /de/suche + /en/search are one language group. hreflang
+  // pointing at a noindex page is what search engines discard; the pages
+  // stay language versions (switcher, group) without hreflang.
+  it("a noindex version takes no part in hreflang or sitemap alternates; the switcher keeps it", async () => {
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+        { code: "fr", displayName: "Français", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    const searchEn = await seedPage("t398-search");
+    const searchDe = (
+      await op<{ pageId: string }>("create_variant", {
+        sourcePageId: searchEn,
+        localeCode: "de",
+        slug: "t398-suche",
+      })
+    ).pageId;
+    const docsEn = await seedPage("t398-docs");
+    const docsDe = (
+      await op<{ pageId: string }>("create_variant", {
+        sourcePageId: docsEn,
+        localeCode: "de",
+        slug: "t398-doku",
+      })
+    ).pageId;
+    const docsFr = (
+      await op<{ pageId: string }>("create_variant", {
+        sourcePageId: docsEn,
+        localeCode: "fr",
+        slug: "t398-doc",
+      })
+    ).pageId;
+    for (const pageId of [searchEn, searchDe, docsEn, docsDe, docsFr]) {
+      await sysOp("pages.set_status", { pageId, status: "published" });
+    }
+    const collect = (ids: string[]) =>
+      collectContributions(ids, { ...MAIN_RENDER, siteBaseUrl: BASE, pageUrlStyle: "directory" });
+    const hreflangOf = (entries: readonly { kind: string }[] | undefined) =>
+      (entries ?? []).map((e) => (e as { hreflang?: string; href?: string }).hreflang);
+    const switcher = async (pageId: string) => {
+      const lists = await resolveListSources([pageId], MAIN_RENDER, "directory");
+      return (lists.get(pageId)?.language_links ?? []).map((i) => i.id).sort();
+    };
+
+    // Before: an all-indexable group alternates fully.
+    const before = await collect([searchEn, searchDe]);
+    expect(hreflangOf(before.head.get(searchEn))).toEqual(["en", "de", "x-default"]);
+
+    // Both results pages noindex: no hreflang and no sitemap alternates
+    // on either, while the language switch still links them.
+    for (const pageId of [searchEn, searchDe]) {
+      await sysOp("pages_seo.set", { pageId, noindex: true });
+    }
+    const both = await collect([searchEn, searchDe]);
+    expect(both.head.get(searchEn)).toBeUndefined();
+    expect(both.head.get(searchDe)).toBeUndefined();
+    expect(both.sitemap.get(searchEn)).toBeUndefined();
+    expect(both.sitemap.get(searchDe)).toBeUndefined();
+    expect(both.lang.get(searchDe)).toBe("de");
+    expect(await switcher(searchDe)).toEqual(["de", "en"]);
+
+    // Mixed, two pages: the indexable one has nothing left to point at.
+    await sysOp("pages_seo.set", { pageId: searchEn, noindex: false });
+    const mixed = await collect([searchEn, searchDe]);
+    expect(mixed.head.get(searchEn)).toBeUndefined();
+    expect(mixed.head.get(searchDe)).toBeUndefined();
+
+    // Mixed, three languages: de is noindex. en and fr alternate with each
+    // other and x-default (en is the default); nothing names de.
+    await sysOp("pages_seo.set", { pageId: docsDe, noindex: true });
+    const three = await collect([docsEn, docsDe, docsFr]);
+    const expected = [
+      { hreflang: "en", href: `${BASE}/t398-docs/` },
+      { hreflang: "fr", href: `${BASE}/fr/t398-doc/` },
+      { hreflang: "x-default", href: `${BASE}/t398-docs/` },
+    ];
+    const links = (pageId: string) =>
+      (three.head.get(pageId) ?? []).map((e) =>
+        e.kind === "link" ? { hreflang: e.hreflang, href: e.href } : e,
+      );
+    expect(links(docsEn)).toEqual(expected);
+    expect(links(docsFr)).toEqual(expected);
+    expect(three.head.get(docsDe)).toBeUndefined();
+    expect(three.sitemap.get(docsEn)?.alternates).toEqual(expected);
+    expect(three.sitemap.get(docsFr)?.alternates).toEqual(expected);
+    expect(three.sitemap.get(docsDe)).toBeUndefined();
+    expect(await switcher(docsDe)).toEqual(["de", "en", "fr"]);
+
+    // The default language's version noindex: de and fr alternate, and
+    // there is no x-default (no other language stands in for it).
+    await sysOp("pages_seo.set", { pageId: docsDe, noindex: false });
+    await sysOp("pages_seo.set", { pageId: docsEn, noindex: true });
+    const noDefault = await collect([docsEn, docsDe, docsFr]);
+    expect(hreflangOf(noDefault.head.get(docsDe))).toEqual(["de", "fr"]);
+    expect(hreflangOf(noDefault.head.get(docsFr))).toEqual(["de", "fr"]);
+    expect(noDefault.head.get(docsEn)).toBeUndefined();
+    expect(noDefault.sitemap.get(docsDe)?.alternates?.map((a) => a.hreflang)).toEqual(["de", "fr"]);
+  }, 60_000);
+
   it("offers language_links as a data list a module renders with its OWN markup", async () => {
     const sourceId = await seedPage("t398-lang-pricing");
     // The first test's French variant still exists, so "fr" stays
