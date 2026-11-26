@@ -94,7 +94,7 @@ about 16 passages per page (5,152 for 320 pages), so 50,000 pages are about
 second, not 140 (and 6 to 8 while the thread count followed
 `os.availableParallelism()`, which rounds Cloud Run's quota of just under two
 CPUs down to one). One task would need 12 to 35 hours. The index job
-therefore spreads such a build over up to 32 tasks, about 20 to 40 minutes,
+therefore spreads such a build over up to 32 tasks (as many as the project's Cloud Run CPU quota leaves, #1764), about 20 to 40 minutes,
 and embeds only text it has not embedded before: after the first index, a
 Stage, a rebuild for a schema change and a Caelo update that re-renders every
 page embed only the passages whose text changed

@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 30;
+export const INFRA_CONTRACT_VERSION = 31;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -277,6 +277,15 @@ export const INFRA_CONTRACT_VERSION = 30;
 //       admin. The new admin starts those builds on that job and the
 //       app-roll moves its image, so an in-cloud upgrader must not roll an
 //       install onto it before it exists.
+//  31 — #1764: job widths follow the project's Cloud Run CPU quota. The
+//       admin's run SA gets roles/serviceusage.serviceUsageViewer on the
+//       project (read-only: enabled services and quotas), because the new
+//       admin reads the regional CPU quota at every job start and sizes the
+//       quality check's Lighthouse runs and a search index's tasks from it;
+//       without the grant every Stage audit fails to start. The quality-
+//       audit job loses its fixed parallelism of 15 (`--parallelism=0`) and
+//       the collection index job's task timeout grows to 6 hours. IAM and
+//       job writes the in-cloud upgrader may not make.
 //
 // #1029 is deliberately NOT a bump. The upgrader job's stage 1 moves the job
 // onto the target's ops image with rights it has held on itself since
@@ -321,6 +330,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   28: "the upgrader's right to run the staging gateway as its service account, so updates from Settings → Updates roll every service (#1596)",
   29: "plugin collections such as a site search: two private storage buckets for the staging and the live index, a job of its own that builds a Stage's index, each gateway's read access to its own index only and more memory for it, search answers cached at the edge, and visitors' search queries kept out of the logs (#1644)",
   30: "the visitor AI's own keys: one secret for the live site and one for staging, which the admin can store a key in but never read, each mounted only in its own gateway (#1654)",
+  31: "the admin's read of the project's Cloud Run CPU quota, which sizes the quality check and search index jobs, and those jobs without a fixed width (#1764)",
 };
 
 /**

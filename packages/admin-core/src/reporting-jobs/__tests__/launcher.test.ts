@@ -10,7 +10,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import type { GoogleDeps } from "../../security/operator-access/google-iam.js";
 import { reportingJobKind } from "../kinds.js";
-import { gcpReportingJobLauncher, launcherFor, setInProcessJobLauncher } from "../launcher.js";
+import {
+  gcpReportingJobLauncher,
+  kindUsesCapacity,
+  launcherFor,
+  setInProcessJobLauncher,
+} from "../launcher.js";
 import { JOB_ORDER_ENV_VAR, type JobOrder, jobOrderSchema, MAX_JOB_TASKS } from "../protocol.js";
 
 const def = reportingJobKind("quality_audit");
@@ -85,7 +90,7 @@ describe("gcpReportingJobLauncher", () => {
       metadata: async () => "",
       accessToken: async () => "token",
       fetch: (async (url: string, init?: RequestInit) => {
-        calls.push({ url, body: JSON.parse(String(init?.body)) });
+        calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
         return new Response(JSON.stringify(answer));
       }) as unknown as typeof fetch,
     };
@@ -110,8 +115,15 @@ describe("gcpReportingJobLauncher", () => {
   it("runs an attempt of several tasks as one execution of that many, all with the same order", async () => {
     const g = google({ metadata: { name: `${JOB}/executions/caelo-production-index-x1` } });
     const launcher = gcpReportingJobLauncher("collection_index", JOB, "https://admin.acme.com", g);
-    expect(launcher.maxTasks).toBe(MAX_JOB_TASKS);
-    await launcher.launch({ ...ORDER, kind: "collection_index", tasks: 8, maxTasks: 32 });
+    // #1764 — no fixed width: the most tasks come from the project's quota at each start.
+    expect(launcher.maxTasks).toBeUndefined();
+    expect(typeof launcher.capacity).toBe("function");
+    await launcher.launch({
+      ...ORDER,
+      kind: "collection_index",
+      tasks: 8,
+      maxTasks: MAX_JOB_TASKS,
+    });
     const overrides = (g.calls[0] as { body: { overrides: Record<string, unknown> } }).body
       .overrides;
     expect(overrides.taskCount).toBe(8);
@@ -120,6 +132,32 @@ describe("gcpReportingJobLauncher", () => {
       tasks: 8,
       maxTasks: 32,
     });
+  });
+
+  it("#1764 — reads the quota only for the kinds it sizes, so a Service Usage hiccup never fails a build", () => {
+    expect(kindUsesCapacity("quality_audit")).toBe(true);
+    expect(kindUsesCapacity("collection_index")).toBe(true);
+    for (const kind of ["build", "site_import", "plugin_batch"] as const) {
+      expect(kindUsesCapacity(kind)).toBe(false);
+    }
+  });
+
+  it("#1764 — reads the capacity from the job's project and region", async () => {
+    const g = google({
+      consumerQuotaLimits: [
+        {
+          unit: "1/min/{project}/{region}",
+          quotaBuckets: [{ effectiveLimit: "20000", dimensions: { region: "europe-west1" } }],
+        },
+      ],
+    });
+    const launcher = gcpReportingJobLauncher("collection_index", JOB, "https://admin.acme.com", g);
+    const capacity = await launcher.capacity?.();
+    expect(capacity).toMatchObject({ projectId: "acme", region: "europe-west1", quotaVcpu: 20 });
+    expect(capacity?.indexTasks).toBe(1);
+    expect((g.calls[0] as { url: string }).url).toContain(
+      "serviceusage.googleapis.com/v1beta1/projects/acme/services/run.googleapis.com/consumerQuotaMetrics/",
+    );
   });
 
   it("fails loudly when Cloud Run names no execution, or the job name is not one", async () => {

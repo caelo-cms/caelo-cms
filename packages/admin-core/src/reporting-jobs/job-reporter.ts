@@ -23,6 +23,7 @@ import {
   type ReportEnvelope,
   splitIntoParts,
 } from "./protocol.js";
+import type { RunCapacity } from "./run-capacity.js";
 
 /** Carries one report to the admin. A network failure throws. */
 export interface ReportTransport {
@@ -87,6 +88,11 @@ export interface JobReporter {
   readonly attempt: number;
   /** This task's place in its attempt; absent: the attempt's only task. */
   readonly slot?: TaskSlot;
+  /**
+   * What the project's CPU quota allowed when the attempt started
+   * (`JobOrder.capacity`); absent inside the admin (self-hosted).
+   */
+  readonly capacity?: RunCapacity;
   /**
    * Ask the admin to run `action` with `payload`; resolves with its answer.
    *
@@ -270,6 +276,7 @@ export function createJobReporter(
     subjectId: order.subjectId,
     attempt: order.attempt,
     slot,
+    ...(order.capacity ? { capacity: order.capacity } : {}),
     get stopped() {
       return stopped !== null;
     },

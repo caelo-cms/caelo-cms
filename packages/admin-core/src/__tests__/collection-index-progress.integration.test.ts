@@ -136,6 +136,36 @@ describe("a Stage's search index progress", () => {
     );
   });
 
+  it("#1764 — keeps the CPU quota's limit with the counts and drops it once a report has none", async () => {
+    const limit = {
+      wantedTasks: 2,
+      quotaVcpu: 20,
+      quotaNeededVcpu: 42,
+      projectId: "acme-site",
+      region: "europe-west1",
+    };
+    await op("collections.index_progress", {
+      runId,
+      pluginId,
+      collection: "pages",
+      task: 0,
+      tasks: 1,
+      embedded: 300,
+      toEmbed: 800,
+      planned: 800,
+      limit,
+    });
+    const run = await stageRun();
+    expect(run.searchIndexes?.[0]?.progress).toMatchObject({ tasks: 1, limit });
+    expect(describeStageRun(run)).toContain(
+      "on 1 task (the Cloud Run CPU quota of project acme-site, 20 vCPU in europe-west1, allows no more; raised to 42 vCPU",
+    );
+    // The counts it carried are still there with the limit (no key lost).
+    expect(run.searchIndexes?.[0]?.progress?.embedded).toBeGreaterThanOrEqual(300);
+    await progress(0, 350, 800, 800, 1);
+    expect((await stageRun()).searchIndexes?.[0]?.progress?.limit).toBeUndefined();
+  });
+
   it("a wider attempt starts the count over", async () => {
     await op("collections.index_reset_progress", { runId });
     expect((await stageRun()).searchIndexes?.[0]?.progress).toBeUndefined();

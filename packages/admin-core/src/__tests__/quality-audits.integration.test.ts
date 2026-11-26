@@ -50,6 +50,7 @@ import { runOrder } from "../reporting-jobs/job-entry.js";
 import { createJobReporter, type ReportTransport } from "../reporting-jobs/job-reporter.js";
 import { startReportingJob } from "../reporting-jobs/launcher.js";
 import { JOB_TOKEN_HEADER, type JobOrder } from "../reporting-jobs/protocol.js";
+import { planRunCapacity } from "../reporting-jobs/run-capacity.js";
 import { runJobAttempt } from "../reporting-jobs/run-job.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { claimNextQueuedAudit, drainAuditQueue } from "./fixtures/drain-audits.js";
@@ -1507,4 +1508,36 @@ describe("the audit's job: lease, restart and give-up (#1359)", () => {
       }
     });
   }
+
+  it("#1764 — the order carries the capacity read at the start; a quota Google refuses is a failed launch", async () => {
+    const { auditRunId } = await queuedAudit(990);
+    const plan = planRunCapacity("acme-site", "europe-west1", 20);
+    const read = launcher(() => {});
+    const started = await startReportingJob(ADMIN(), "quality_audit", auditRunId, {
+      launcher: { ...read.launcher, capacity: async () => plan },
+    });
+    expect(started.outcome).toBe("started");
+    // The audit runner sizes its Lighthouse executions from it: 5 at once.
+    expect(read.orders[0]?.capacity).toEqual(plan);
+    expect(read.orders[0]?.capacity?.lighthouseTasks).toBe(5);
+
+    const { auditRunId: second } = await queuedAudit(991);
+    const refused = launcher(() => {});
+    const failed = await startReportingJob(ADMIN(), "quality_audit", second, {
+      launcher: {
+        ...refused.launcher,
+        capacity: async () => {
+          throw new Error("could not read the Cloud Run CPU quota of project acme-site (HTTP 403)");
+        },
+      },
+    });
+    expect(failed).toMatchObject({ outcome: "launch-failed", attempt: 1 });
+    if (failed.outcome !== "launch-failed") return;
+    expect(failed.message).toContain("Cloud Run CPU quota");
+    // Nothing was started without the width.
+    expect(refused.orders).toEqual([]);
+    // The next tick tries again (and leaves no released work for the tests after).
+    await runReportingJobBackstop(ADMIN(), refused);
+    expect(refused.orders.filter((o) => o.subjectId === second).map((o) => o.attempt)).toEqual([2]);
+  });
 });

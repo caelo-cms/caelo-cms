@@ -10,8 +10,16 @@
  * Why a separate job at all (CLAUDE.md §11.B Tier 5 exception): Lighthouse
  * is CPU-bound and simulates the CPU slowdown from observed task durations,
  * so a run that shares a CPU with another run or with the editor's chat
- * measures that interference too. One task per run measures the page alone,
- * and all runs finish in about the time of one.
+ * measures that interference too. A task of its own measures the page
+ * alone; as many run at once as the project's Cloud Run CPU quota allows.
+ *
+ * The job has no fixed `parallelism` (#1764). Cloud Run refuses to create a
+ * job whose parallelism times its CPU exceeds the project's regional CPU
+ * quota, and a new project has 20 vCPU: a fixed 15 runs of 2 vCPU stopped
+ * every fresh install here. The audit runner asks for as many tasks per
+ * execution as the quota leaves (admin-core reporting-jobs/run-capacity.ts)
+ * and each task runs its share one after another, so a raised quota counts
+ * from the next Stage on, without touching the job.
  *
  * Why the CLI owns it and not the stacks: `upgrade` never runs Pulumi, so
  * existing installs get the job only from here, and a bucket or job both
@@ -58,18 +66,15 @@ import {
 } from "./gcp-names.js";
 import { readAdminConfig } from "./migration-runner.js";
 import type { GcpProvider } from "./stack-contract.js";
-import { describeJobImage } from "./upgrade/admin-image-jobs.js";
 
 /** Where the admin image ships the task's entry point. */
 export const AUDIT_TASK_SCRIPT = "/app/packages/admin-core/src/quality/audit-task.ts";
 
-/** How many audit tasks run at once by default: 5 pages x 3 runs. */
-export const AUDIT_PARALLELISM_DEFAULT = 15;
-
 /**
  * Per task: container start, browser start, CPU benchmark and one
- * Lighthouse run. Matches admin-core `parallelAuditTimeoutMs`, which the
- * admin also passes per execution.
+ * Lighthouse run. Matches admin-core `parallelAuditTimeoutMs(1)`; the
+ * audit runner passes each execution's own timeout, longer for a task
+ * that runs several runs one after another.
  */
 const TASK_TIMEOUT = "5m";
 
@@ -104,13 +109,6 @@ export interface AuditJobTarget {
   readonly env: string;
   /** The admin image the job runs, digest-pinned (`…/admin@sha256:…`). */
   readonly adminImageRef: string;
-  /**
-   * Tasks at once (`auditParallelism`, 1–15). Absent on converge: an
-   * existing job keeps the value it has, so an operator's choice survives
-   * `upgrade`; a job the converge creates gets
-   * {@link AUDIT_PARALLELISM_DEFAULT}, as a fresh install's does.
-   */
-  readonly parallelism?: number;
 }
 
 export type AuditJobResult =
@@ -145,16 +143,6 @@ export async function ensureAuditJob(
       ok: false,
       done,
       error: `the audit job's image must be pinned by digest, got ${target.adminImageRef}`,
-    };
-  }
-  if (
-    target.parallelism !== undefined &&
-    (!Number.isInteger(target.parallelism) || target.parallelism < 1 || target.parallelism > 15)
-  ) {
-    return {
-      ok: false,
-      done,
-      error: `auditParallelism must be a whole number from 1 to 15, got ${target.parallelism}`,
     };
   }
 
@@ -283,15 +271,9 @@ export async function ensureAuditJob(
   if (!logs.ok) return fail("grant the audit job roles/logging.logWriter", logs);
   done.push("audit job: roles/logging.logWriter on the project");
 
-  // 5. The job: the admin image, its own SA, no secrets, no VPC. A job
-  //    created without a parallelism would run every task at once with no
-  //    cap; an existing job keeps its own.
-  let parallelism = target.parallelism;
-  if (parallelism === undefined) {
-    const existing = await describeJobImage(run, { projectId, region, env }, job);
-    if (!existing.ok) return { ok: false, done, error: `read job ${job}: ${existing.error}` };
-    if (existing.image === null) parallelism = AUDIT_PARALLELISM_DEFAULT;
-  }
+  // 5. The job: the admin image, its own SA, no secrets, no VPC, and no
+  //    fixed parallelism: the audit runner sizes each execution's taskCount
+  //    from the quota. `0` unsets the 15 an older install's job carries.
   const envVars = [
     `CAELO_PROVIDER=${provider}`,
     `CAELO_AUDIT_RESULTS_BUCKET=${results}`,
@@ -314,7 +296,7 @@ export async function ensureAuditJob(
     // Lighthouse wants two cores: the browser and the trace processing.
     "--cpu=2",
     "--memory=2Gi",
-    ...(parallelism !== undefined ? [`--parallelism=${parallelism}`] : []),
+    "--parallelism=0",
     "--quiet",
   ]);
   if (!deploy.ok) return fail(`deploy job ${job}`, deploy);

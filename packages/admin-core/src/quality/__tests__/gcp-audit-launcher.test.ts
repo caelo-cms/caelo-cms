@@ -42,7 +42,12 @@ describe("gcpAuditLauncher", () => {
     const { deps, calls } = fakeGoogle(() => ({
       metadata: { name: `${JOB}/executions/caelo-production-audit-x1` },
     }));
-    const launcher = gcpAuditLauncher(JOB, { read: async () => null, write: async () => {} }, deps);
+    const launcher = gcpAuditLauncher(
+      JOB,
+      { read: async () => null, write: async () => {} },
+      15,
+      deps,
+    );
     const handle = await launcher.start({ ...batch, orders: [...batch.orders, ...batch.orders] });
     expect(handle).toBe(`${JOB}/executions/caelo-production-audit-x1`);
     expect(calls).toHaveLength(1);
@@ -62,10 +67,39 @@ describe("gcpAuditLauncher", () => {
     ]);
   });
 
-  it("refuses a value that is not a Cloud Run job name", () => {
+  it("runs only as many tasks as the quota allows at once, each with time for its rounds", async () => {
+    const { deps, calls } = fakeGoogle(() => ({
+      metadata: { name: `${JOB}/executions/caelo-production-audit-x2` },
+    }));
+    const launcher = gcpAuditLauncher(
+      JOB,
+      { read: async () => null, write: async () => {} },
+      6,
+      deps,
+    );
+    expect(launcher.tasksAtOnce).toBe(6);
+    const fifteen = Array.from(
+      { length: 15 },
+      () => batch.orders[0] as AuditTaskBatch["orders"][0],
+    );
+    await launcher.start({ ...batch, orders: fifteen });
+    const overrides = (calls[0] as { body: { overrides: Record<string, unknown> } }).body.overrides;
+    // 15 runs on 6 tasks: the busiest task runs 3 one after another.
+    expect(overrides.taskCount).toBe(6);
+    expect(overrides.timeout).toBe("600s");
+  });
+
+  it("refuses a value that is not a Cloud Run job name, or no width", () => {
     expect(() =>
-      gcpAuditLauncher("caelo-production-audit", { read: async () => null, write: async () => {} }),
+      gcpAuditLauncher(
+        "caelo-production-audit",
+        { read: async () => null, write: async () => {} },
+        15,
+      ),
     ).toThrow(/not a Cloud Run job name/);
+    expect(() =>
+      gcpAuditLauncher(JOB, { read: async () => null, write: async () => {} }, 0),
+    ).toThrow(/positive whole number/);
   });
 });
 
@@ -107,6 +141,18 @@ describe("lighthouseRunnerFromEnv", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.failure.message).toContain("cms-provision upgrade");
+  });
+
+  it("refuses a GCP audit whose order carries no capacity instead of guessing a width", async () => {
+    const run = lighthouseRunnerFromEnv({
+      CAELO_PROVIDER: "gcp",
+      CAELO_AUDIT_JOB: JOB,
+      CAELO_AUDIT_RESULTS_BUCKET: "acme-production-audit-results",
+    });
+    const result = await run({ pages: [], performanceRuns: 3 } as never);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failure.message).toContain("carries no CPU capacity");
   });
 
   it("names a provider that has no parallel audit job yet", async () => {
