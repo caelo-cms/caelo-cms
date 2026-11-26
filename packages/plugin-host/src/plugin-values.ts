@@ -18,8 +18,6 @@ export {
   checkPluginValue,
   escapePluginText,
   type PluginMediaFacts,
-  type PluginValueCheck,
-  PROSE_ELEMENTS,
   pluginMediaId,
   richtextProblem,
   urlProblem,
