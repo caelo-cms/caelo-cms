@@ -35,4 +35,54 @@ describe("asPlacementData", () => {
       note: "<p>A &amp; B</p>",
     });
   });
+
+  it("decodes the text fields of a local list's entries, by the list type", () => {
+    const listTypes = new Map([
+      [
+        "links",
+        {
+          slug: "links",
+          name: "Links",
+          purpose: "Links",
+          root: { allow: ["link"] },
+          nodes: {
+            link: {
+              label: "Link",
+              fields: [
+                { name: "label", label: "Label", type: "text" as const },
+                { name: "blurb", label: "Blurb", type: "richtext" as const },
+              ],
+            },
+          },
+        },
+      ],
+    ]);
+    const entries = [
+      {
+        id: "a",
+        node: "link",
+        values: { label: "AGB &amp; Datenschutz", blurb: "<p>A &amp; B</p>" },
+        children: [{ id: "b", node: "link", values: { label: "&quot;Hilfe&quot;" } }],
+      },
+    ];
+    expect(
+      asPlacementData(
+        [{ name: "nav", kind: "list" }],
+        { nav: entries },
+        {
+          fields: [{ name: "nav", kind: "list", listType: "links" }],
+          listTypes,
+        },
+      ),
+    ).toEqual({
+      nav: [
+        {
+          id: "a",
+          node: "link",
+          values: { label: "AGB & Datenschutz", blurb: "<p>A &amp; B</p>" },
+          children: [{ id: "b", node: "link", values: { label: '"Hilfe"' } }],
+        },
+      ],
+    });
+  });
 });

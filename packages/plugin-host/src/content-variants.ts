@@ -39,7 +39,11 @@ import {
   contentVariantResolution,
 } from "@caelo-cms/plugin-sdk";
 import {
+  LIST_REF_RE,
+  type PluginListOwner,
   type PluginMediaFacts,
+  parseLinkFieldValue,
+  pluginLocalList,
   pluginValueRefusedMarker,
   refusedPluginValue,
 } from "@caelo-cms/shared";
@@ -55,8 +59,6 @@ import {
   checkPluginValue,
   describePluginMedia,
   pluginMediaId,
-  richtextProblem,
-  urlProblem,
 } from "./plugin-values.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
 import { assertAnswerSize, chunkItems, type RenderPointCall } from "./render-points.js";
@@ -298,7 +300,11 @@ export function checkContentVariantValues(input: {
     const checked =
       kind === undefined
         ? ({ ok: false, rule: "undeclared-field" } as const)
-        : variantValueCheck(kind, value, media);
+        : variantValueCheck(kind, value, media, () => ({
+            plugin: input.pluginSlug,
+            address: `${input.key}/${name}`,
+            ...(input.media ? { media: input.media } : {}),
+          }));
     out[name] = checked.ok
       ? checked.value
       : refusedPluginValue(
@@ -321,15 +327,25 @@ function variantValueCheck(
   kind: string,
   value: unknown,
   media: ReadonlyMap<string, PluginMediaFacts>,
+  owner: () => PluginListOwner,
 ): Check {
   if (value === undefined || value === null) return { ok: true, value };
   switch (kind) {
+    // No write checked a variant's shape: a value of another type would
+    // reach the template unescaped (an array is stringified as it is).
     case "text":
     case "richtext":
-      return checkPluginValue({ name: "v", label: "v", type: kind }, value);
+      return typeof value === "string"
+        ? checkPluginValue({ name: "v", label: "v", type: kind }, value)
+        : { ok: false, rule: `type-${kind}` };
     case "url":
+      return typeof value === "string"
+        ? checkPluginValue({ name: "v", label: "v", type: "link" }, value)
+        : { ok: false, rule: "type-url" };
     case "link":
-      return checkPluginValue({ name: "v", label: "v", type: "link" }, value);
+      return parseLinkFieldValue(value) !== null
+        ? checkPluginValue({ name: "v", label: "v", type: "link" }, value)
+        : { ok: false, rule: "type-link" };
     case "image": {
       if (pluginMediaId(value) === null) return { ok: false, rule: "media-not-library-image" };
       const rule = checkPluginMedia(value, media);
@@ -341,32 +357,16 @@ function variantValueCheck(
         : { ok: false, rule: "type-number" };
     case "boolean":
       return typeof value === "boolean" ? { ok: true, value } : { ok: false, rule: "type-boolean" };
-    case "list": {
-      const rule = listEntriesProblem(value, media);
-      return rule === null ? { ok: true, value } : { ok: false, rule };
-    }
+    case "list":
+      // Local entries are checked where the list renders, against the
+      // fields of its list type; a shared list is chosen by reference.
+      if (Array.isArray(value)) return { ok: true, value: pluginLocalList(owner(), value) };
+      return typeof value === "string" && LIST_REF_RE.test(value)
+        ? { ok: true, value }
+        : { ok: false, rule: "type-list" };
     default:
       return { ok: false, rule: "structural-field" };
   }
-}
-
-/** The rule a variant's local list breaks (see {@link checkContentVariantValues}), or null. */
-function listEntriesProblem(
-  value: unknown,
-  media: ReadonlyMap<string, PluginMediaFacts>,
-): string | null {
-  let problem: string | null = null;
-  const visit = (v: unknown, key: string | null): void => {
-    if (problem !== null) return;
-    if (typeof v === "string") {
-      if (pluginMediaId(v) !== null) problem = checkPluginMedia(v, media);
-      else problem = key === "href" ? urlProblem(v) : richtextProblem(v);
-    } else if (Array.isArray(v)) for (const x of v) visit(x, null);
-    else if (v !== null && typeof v === "object")
-      for (const [k, x] of Object.entries(v)) visit(x, k);
-  };
-  visit(value, null);
-  return problem;
 }
 
 /**

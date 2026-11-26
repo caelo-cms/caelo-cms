@@ -14,7 +14,9 @@
  */
 
 import { Parser } from "htmlparser2";
-import type { FieldDef } from "./fields.js";
+import { type FieldDef, validateFieldValue } from "./fields.js";
+import type { ListItem } from "./items.js";
+import type { ListTypeDef, NodeDef } from "./list-type.js";
 
 // ─── The checks (docs/dev/external-plugin-brokers.md §4.5) ──────────────
 //
@@ -200,7 +202,12 @@ export function checkPluginValue(field: FieldDef, value: unknown): PluginValueCh
             : null;
       if (href === null) return { ok: true, value };
       const problem = urlProblem(href);
-      return problem === null ? { ok: true, value } : { ok: false, rule: problem };
+      if (problem !== null) return { ok: false, rule: problem };
+      // `target` reaches its attribute as written too (`{{field.target}}`).
+      const target = typeof value === "object" ? (value as { target?: unknown }).target : undefined;
+      return typeof target === "string"
+        ? { ok: true, value: { ...(value as object), target: escapePluginText(target) } }
+        : { ok: true, value };
     }
     default:
       return { ok: true, value };
@@ -286,4 +293,85 @@ export function parsePluginValueRefused(body: string): {
   const where = at < 0 ? body : body.slice(0, at);
   const [plugin = "", source = "", field = ""] = where.split(".");
   return { plugin, source, field, rule: at < 0 ? "" : body.slice(at + 1) };
+}
+
+/** The key of a plugin-owned local list (see {@link pluginLocalList}). */
+const PLUGIN_LIST_KEY = "$caeloPluginList";
+
+/** Who handed a placement a local list, and the media facts its answer named. */
+export interface PluginListOwner {
+  readonly plugin: string;
+  /** Where the list sits (`<placement>/<field>`), named in a refusal. */
+  readonly address: string;
+  readonly media?: Readonly<Record<string, PluginMediaFacts>>;
+}
+
+/**
+ * #1729 (§4.5) — a local list's entries a plugin handed a placement (a
+ * content variant), wrapped so the list resolver checks each value against
+ * its field where the list renders and its list type is known: text
+ * escaped, richtext prose, links to the link rule, media to library
+ * images. JSON, so it crosses a build's process boundary.
+ */
+export function pluginLocalList(owner: PluginListOwner, entries: unknown): unknown {
+  return { [PLUGIN_LIST_KEY]: owner, entries };
+}
+
+/** The owner and entries of a {@link pluginLocalList}, or null for any other value. */
+export function pluginLocalListOf(
+  value: unknown,
+): { readonly owner: PluginListOwner; readonly entries: unknown } | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const owner = (value as Record<string, unknown>)[PLUGIN_LIST_KEY];
+  if (typeof owner !== "object" || owner === null) return null;
+  return { owner: owner as PluginListOwner, entries: (value as { entries?: unknown }).entries };
+}
+
+/**
+ * A plugin's local list entries, each value held to its field of `type`:
+ * first its shape (`validateFieldValue`, which no write checked), then the
+ * §4.5 rule. A refused value becomes its stand-in (it renders raw and
+ * fails), a value of a field the node does not declare too.
+ */
+export function checkPluginListEntries(
+  type: ListTypeDef,
+  items: readonly ListItem[],
+  owner: PluginListOwner,
+): ListItem[] {
+  const media = new Map(Object.entries(owner.media ?? {}));
+  const visit = (item: ListItem): ListItem => {
+    const node = type.nodes[item.node] as NodeDef;
+    const values: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(item.values)) {
+      const field = node.fields.find((f) => f.name === name);
+      const refuse = (rule: string) =>
+        refusedPluginValue(
+          pluginValueRefusedMarker(
+            owner.plugin,
+            "content-variants",
+            `${owner.address}/item/${item.id}/${name}`,
+            rule,
+          ),
+        );
+      if (field === undefined) {
+        values[name] = refuse("undeclared-field");
+        continue;
+      }
+      if (validateFieldValue({ ...field, required: false }, value, name).length > 0) {
+        values[name] = refuse(`type-${field.type}`);
+        continue;
+      }
+      const mediaRule = field.type === "media" ? checkPluginMedia(value, media) : null;
+      const checked = mediaRule
+        ? ({ ok: false, rule: mediaRule } as const)
+        : checkPluginValue(field, value);
+      values[name] = checked.ok ? checked.value : refuse(checked.rule);
+    }
+    return {
+      ...item,
+      values,
+      ...(item.children ? { children: item.children.map(visit) } : {}),
+    };
+  };
+  return items.map(visit);
 }

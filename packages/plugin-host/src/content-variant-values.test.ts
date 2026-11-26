@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { refusedPluginValueMarker, renderTemplate } from "@caelo-cms/shared";
+import { pluginLocalListOf, refusedPluginValueMarker, renderTemplate } from "@caelo-cms/shared";
 import { checkContentVariantValues } from "./content-variants.js";
 
 const IMAGE = "00000000-0000-4000-8000-0000000000a1";
@@ -91,9 +91,24 @@ describe("content-variant values (#1729, §4.5)", () => {
       logo: "media-reference",
       count: "type-number",
       wide: "type-boolean",
-      links: "element-b",
+      links: null,
       teaser: "structural-field",
       ghost: "undeclared-field",
+    });
+    // A local list's entries are checked where the list renders, against
+    // its list type (shared lists/plugin-local-list.test.ts).
+    expect(pluginLocalListOf(out.links)).toEqual({
+      owner: {
+        plugin: "probe",
+        address: "layout:footer:0/links",
+        media: {
+          [IMAGE]: { visibility: "library", mime: "image/png" },
+          [REFERENCE]: { visibility: "reference", mime: "image/png" },
+        },
+      },
+      entries: [
+        { id: "a", node: "link", values: { label: "<b onclick=x>D</b>", link: { href: "/d" } } },
+      ],
     });
     expect(refusedPluginValueMarker(out.ghost)).toBe(
       "plugin-value-refused:probe.content-variants.layout:footer:0/ghost:undeclared-field",
@@ -107,6 +122,26 @@ describe("content-variant values (#1729, §4.5)", () => {
       "url-protocol-relative",
       "media-not-library-image",
     ]);
+  });
+
+  it("refuses a value of another type before it reaches the template unescaped", () => {
+    const out = check({
+      title: ["<img src=x onerror=alert(1)>"],
+      body: { html: "<p>x</p>" },
+      cta: 42,
+      links: { entries: [] },
+    });
+    expect(Object.fromEntries(Object.entries(out).map(([k, v]) => [k, rule(v)]))).toEqual({
+      title: "type-text",
+      body: "type-richtext",
+      cta: "type-link",
+      links: "type-list",
+    });
+  });
+
+  it("escapes a link's target", () => {
+    const out = check({ cta: { href: "/docs", target: '_blank" onclick="x' } });
+    expect(out.cta).toEqual({ href: "/docs", target: "_blank&quot; onclick=&quot;x" });
   });
 
   it("renders a refused value raw and records it, never the field's default", () => {

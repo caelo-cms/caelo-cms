@@ -19,4 +19,5 @@ export * from "./refs.js";
 export * from "./render-data.js";
 export * from "./render-deps.js";
 export * from "./resolve.js";
+export { parseLinkFieldValue } from "./resolve-values.js";
 export * from "./scope.js";

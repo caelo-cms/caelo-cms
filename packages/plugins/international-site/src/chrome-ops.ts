@@ -370,7 +370,12 @@ export async function resolveChromeVariants(
             : (v.values ?? {});
         perPage[pl.key] = {
           ...(moduleId ? { moduleId } : {}),
-          values: moduleId ? values : asPlacementData(pl.fields, values),
+          values: moduleId
+            ? values
+            : asPlacementData(pl.fields, values, {
+                fields: await fieldsOf(pl, key),
+                listTypes: deps.listTypes,
+              }),
         };
       } else if (
         translatableStrings(
@@ -398,19 +403,64 @@ export async function resolveChromeVariants(
  * be refused as undeclared), and a text field as plain text. The host
  * escapes a text value a plugin hands a page, so a translation that kept
  * the source's character references (`&amp;`) would show them literally;
- * decoded here, it renders exactly as the source does.
+ * decoded here, it renders exactly as the source does. The same holds for
+ * the text fields of a local list's entries, which the host checks against
+ * the list type where the list renders.
+ *
+ * @param lists the placement's list fields with their list types (a
+ *   layout placement's fields carry none: its chrome target's do).
  */
 export function asPlacementData(
   fields: ReadonlyArray<{ readonly name: string; readonly kind: string }>,
   values: Readonly<Record<string, unknown>>,
+  lists?: {
+    readonly fields: readonly ChromeField[];
+    readonly listTypes: ReadonlyMap<string, ListTypeDef>;
+  },
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const f of fields) {
     if (!Object.hasOwn(values, f.name)) continue;
     const v = values[f.name];
-    out[f.name] = f.kind === "text" && typeof v === "string" ? decodeCharacterReferences(v) : v;
+    if (f.kind === "text" && typeof v === "string") out[f.name] = decodeCharacterReferences(v);
+    else if (f.kind === "list" && Array.isArray(v)) {
+      const slug = lists?.fields.find((x) => x.name === f.name)?.listType;
+      const type = slug === undefined ? undefined : lists?.listTypes.get(slug);
+      out[f.name] = type ? decodedEntries(v, type) : v;
+    } else out[f.name] = v;
   }
   return out;
+}
+
+/** Field types the host escapes as text in a plugin's list entries. */
+const ESCAPED_ENTRY_TYPES = new Set(["text", "select", "icon"]);
+
+/** `items` with every escaped-as-text value of `type`'s fields decoded ({@link asPlacementData}). */
+function decodedEntries(items: readonly unknown[], type: ListTypeDef): unknown[] {
+  return items.map((raw) => {
+    if (typeof raw !== "object" || raw === null) return raw;
+    const item = raw as { node?: unknown; values?: unknown; children?: unknown };
+    const node = typeof item.node === "string" ? type.nodes[item.node] : undefined;
+    const values =
+      node && typeof item.values === "object" && item.values !== null
+        ? Object.fromEntries(
+            Object.entries(item.values as Record<string, unknown>).map(([name, v]) => {
+              const field = node.fields.find((x) => x.name === name);
+              return [
+                name,
+                field && ESCAPED_ENTRY_TYPES.has(field.type) && typeof v === "string"
+                  ? decodeCharacterReferences(v)
+                  : v,
+              ];
+            }),
+          )
+        : item.values;
+    return {
+      ...item,
+      values,
+      ...(Array.isArray(item.children) ? { children: decodedEntries(item.children, type) } : {}),
+    };
+  });
 }
 
 const NAMED_REFERENCES: Readonly<Record<string, string>> = {

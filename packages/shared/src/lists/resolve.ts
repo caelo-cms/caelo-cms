@@ -49,10 +49,12 @@ import {
   splitPaginationValue,
 } from "./pagination.js";
 import {
+  checkPluginListEntries,
   checkPluginMedia,
   checkPluginValue,
   PLUGIN_VALUE_REFUSED,
   type PluginMediaFacts,
+  pluginLocalListOf,
   pluginValueRefusedMarker,
   refusedPluginValue,
   refusedPluginValueMarker,
@@ -1359,10 +1361,24 @@ function createPageContext(
         entries: entriesOf(checked.items, sharedTree(list, type, field.name, false), 1),
       };
     }
-    const raw = value === undefined || value === null ? field.default : value;
+    const given = value === undefined || value === null ? field.default : value;
+    // #1729 (§4.5) — entries a plugin handed the placement (a content
+    // variant) are checked here, where their list type is known.
+    const fromPlugin = pluginLocalListOf(given);
+    const raw = fromPlugin ? fromPlugin.entries : given;
     if (raw === undefined || raw === null) return { ok: true, entries: [] };
-    const checked = checkTree(type, raw, field.name);
-    if (!checked.ok) return checked;
+    const tree = checkTree(type, raw, field.name);
+    if (!tree.ok && fromPlugin) {
+      const { plugin, address } = fromPlugin.owner;
+      return {
+        ok: false,
+        marker: pluginValueRefusedMarker(plugin, "content-variants", address, "list-shape"),
+      };
+    }
+    if (!tree.ok) return tree;
+    const checked = fromPlugin
+      ? { ok: true as const, items: checkPluginListEntries(type, tree.items, fromPlugin.owner) }
+      : tree;
     const ci = holder.contentInstanceId;
     const local: TreeCtx = {
       type,
