@@ -1790,6 +1790,19 @@ const GCP_COMMON: readonly IamInvariant[] = [
     onFailure: "warn",
     why: "staging's visitor-AI key is stored for the staging gateway; without it only storing the key fails",
   },
+  {
+    // #1764 — read-only: the services the project enables and their quotas.
+    // The admin reads the Cloud Run CPU quota at every job start and sizes
+    // the quality check's Lighthouse runs and a search index's tasks from it
+    // (admin-core reporting-jobs/run-capacity.ts); a fixed width stopped
+    // fresh installs on a new project's 20 vCPU.
+    stackResource: "run-quota-viewer",
+    role: "roles/serviceusage.serviceUsageViewer",
+    member: "run-sa",
+    target: { kind: "project" },
+    onFailure: "abort",
+    why: "the admin sizes the quality check and search index jobs from the project's Cloud Run CPU quota; without it every Stage audit and large index fails to start",
+  },
 ];
 
 /** v0.6.6 — a custom runtime SA gets no telemetry roles implicitly. */
@@ -2201,13 +2214,18 @@ export const ADMIN_MEMORY_DEFAULT = "2Gi";
 /**
  * Epic #1644 (#1649) — the live and the staging gateway's memory. Search,
  * suggest and read answer from collection index files the gateway keeps
- * parsed in memory (`CAELO_COLLECTIONS_CACHE_MB`, 256 MiB by default, plus
- * the release being opened), next to its visitor handlers: 512 MiB left no
- * room for that. AWS (1024 MB Fargate tasks) and Azure (1.0Gi apps) already
- * run every service at 1 GiB; `upgrade` raises a Google Cloud gateway below
- * it (never lowers a larger value, stack-converge.ts planServiceMemory).
+ * parsed in memory (`CAELO_COLLECTIONS_CACHE_MB`,
+ * COLLECTIONS_CACHE_MB_DEFAULT), and a search by meaning embeds the query
+ * with a model the gateway loads itself: GATEWAY_PEAK_WITH_MODEL_MIB
+ * (@caelo-cms/shared gateway-memory.ts) measured on Cloud Run. 1 GiB held
+ * the model only just and the cache not at all: on 2026-11-26 (#1745) a searchVIU
+ * gateway was lost in the middle of its first semantic search. 2 GiB holds
+ * both; `upgrade` raises a Google Cloud gateway below it (never lowers a
+ * larger value, stack-converge.ts planServiceMemory), the Azure stack sizes
+ * its gateway app from it, and the AWS stack defines no gateway task yet
+ * (#749). Request-billed, so it costs memory only while a request runs.
  */
-export const GATEWAY_MEMORY_DEFAULT = "1Gi";
+export const GATEWAY_MEMORY_DEFAULT = "2Gi";
 
 /** The memory upgrade raises each Cloud Run service to (null: the stacks' alone). */
 export const SERVICE_MEMORY_FLOOR: Readonly<Record<CloudRunSlug, string | null>> = {

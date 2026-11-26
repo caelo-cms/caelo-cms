@@ -84,6 +84,20 @@ export const stageStatusRunSchema = z.object({
             toEmbed: z.number().int().nonnegative(),
             tasks: z.number().int().positive(),
             remainingMs: z.number().int().nonnegative().nullable(),
+            /**
+             * The project's Cloud Run CPU quota keeps the build on fewer
+             * tasks than it would run: how many, the quota, the quota
+             * that gives it them, and where.
+             */
+            limit: z
+              .object({
+                wantedTasks: z.number().int().positive(),
+                quotaVcpu: z.number().int().nonnegative(),
+                quotaNeededVcpu: z.number().int().positive(),
+                projectId: z.string(),
+                region: z.string(),
+              })
+              .optional(),
           })
           .optional(),
       }),
@@ -92,12 +106,18 @@ export const stageStatusRunSchema = z.object({
 });
 export type StageStatusRun = z.infer<typeof stageStatusRunSchema>;
 
-/** A duration for people: "45 s", "1 min 40 s", "12 min". */
+/** The quota metric of Cloud Run's regional CPU limit (admin-core run-capacity.ts). */
+export const RUN_CPU_QUOTA_METRIC = "run.googleapis.com/cpu_allocation";
+
+/** A duration for people: "45 s", "1 min 40 s", "12 min", "2 h 5 min". */
 export function formatStageDuration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `${s} s`;
   const min = Math.floor(s / 60);
   const rest = s % 60;
+  // A large search index on a small CPU quota takes hours (#1764).
+  if (min >= 60)
+    return min % 60 === 0 ? `${min / 60} h` : `${Math.floor(min / 60)} h ${min % 60} min`;
   if (min >= 10 || rest === 0) return `${min} min`;
   return `${min} min ${rest} s`;
 }
@@ -126,19 +146,24 @@ type SearchIndexStatus = NonNullable<StageStatusRun["searchIndexes"]>[number];
 /**
  * A pending index's embedding for people and the AI: "semantic search
  * 2,400 of 5,152 passages on 4 tasks, about 3 min left"; "" while it
- * embeds nothing.
+ * embeds nothing. When the project's CPU quota keeps it narrow, it says
+ * so and what would make it faster, so the AI can tell the operator
+ * without another look.
  */
 export function describeSearchIndexProgress(p: SearchIndexStatus["progress"]): string {
   if (!p || p.toEmbed === 0) return "";
   const n = (v: number) => v.toLocaleString("en-US");
-  const tasks = p.tasks > 1 ? ` on ${p.tasks} tasks` : "";
+  const tasks = p.tasks > 1 ? ` on ${p.tasks} tasks` : p.limit ? " on 1 task" : "";
   const left =
     p.embedded >= p.toEmbed
       ? "writing the index"
       : p.remainingMs === null
         ? "time left not measured yet"
         : `about ${formatStageDuration(p.remainingMs)} left`;
-  return `semantic search ${n(p.embedded)} of ${n(p.toEmbed)} passages${tasks}, ${left}`;
+  const limit = p.limit
+    ? ` (the Cloud Run CPU quota of project ${p.limit.projectId}, ${p.limit.quotaVcpu} vCPU in ${p.limit.region}, allows no more; raised to ${p.limit.quotaNeededVcpu} vCPU in the Google Cloud console's Quotas page, "${RUN_CPU_QUOTA_METRIC}", it runs on ${p.limit.wantedTasks} from the next Stage on; Settings → Deployments → Cloud capacity has the steps)`
+    : "";
+  return `semantic search ${n(p.embedded)} of ${n(p.toEmbed)} passages${tasks}${limit}, ${left}`;
 }
 
 /** One pending index: "site-search/pages: semantic search 2,400 of 5,152 passages …". */

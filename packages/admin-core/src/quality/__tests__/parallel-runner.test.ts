@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { pickOrder, readdress } from "../audit-task.js";
+import { pickOrders, readdress } from "../audit-task.js";
 import type { AuditTaskBatch, AuditTaskOrder, AuditTaskResult } from "../audit-task-protocol.js";
 import { reduceRun } from "../lighthouse-extract.js";
 import type { AuditJob } from "../lighthouse-protocol.js";
 import {
   type AuditTaskLauncher,
   createParallelAuditRunner,
+  parallelAuditTimeoutMs,
   planAuditTasks,
   planConfirmationTasks,
 } from "../parallel-runner.js";
@@ -41,12 +42,14 @@ function wire(
 function fakeLauncher(
   answer: (order: AuditTaskOrder) => AuditTaskResult | "crash" | "hang",
   ticks = 1,
+  tasksAtOnce?: number,
 ): AuditTaskLauncher & { batches: AuditTaskBatch[] } {
   const batches: AuditTaskBatch[] = [];
   const store = new Map<string, string>();
   const polls = new Map<string, number>();
   return {
     label: "fake launcher",
+    ...(tasksAtOnce === undefined ? {} : { tasksAtOnce }),
     batches,
     async start(batch) {
       batches.push(batch);
@@ -301,6 +304,30 @@ describe("createParallelAuditRunner", () => {
     expect(result.failure.message).toContain("6 of 6");
   });
 
+  it("waits a narrower batch's rounds out instead of timing out after one run's time", async () => {
+    // 6 runs, 2 at once: 3 rounds. The batch finishes after 7 polls of a
+    // minute, beyond the 5 minutes one round has, within the 10 of three.
+    const launcher = fakeLauncher(
+      (o) => ({ kind: "run", taskId: o.taskId, run: wire(o.categories === "all", 100) }),
+      7,
+      2,
+    );
+    let clock = 0;
+    const result = await createParallelAuditRunner({
+      launcher,
+      pollMs: 60_000,
+      jobId: () => JOB_ID,
+      version: "1.2.3",
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    })(job);
+    expect(result.ok).toBe(true);
+    expect(parallelAuditTimeoutMs(3)).toBe(600_000);
+    expect(parallelAuditTimeoutMs()).toBe(300_000);
+  });
+
   it("fails when the tasks cannot be started", async () => {
     const launcher: AuditTaskLauncher = {
       label: "broken launcher",
@@ -333,28 +360,45 @@ describe("createParallelAuditRunner", () => {
   });
 });
 
-describe("pickOrder", () => {
+describe("pickOrders", () => {
   const batch: AuditTaskBatch = {
     version: "1.2.3",
     orders: planAuditTasks(job, JOB_ID).map((t) => t.order),
   };
+  const ids = (r: ReturnType<typeof pickOrders>) => r.orders.map((o) => o.taskId);
 
-  it("picks the order at the Cloud Run task index, or the only one without an index", () => {
-    expect(pickOrder(batch, "4", "1.2.3").order.taskId).toBe("p1-r1");
+  it("picks the order at the Cloud Run task index when every order has a task, or the only one without an index", () => {
+    expect(ids(pickOrders(batch, "4", "6", "1.2.3"))).toEqual(["p1-r1"]);
+    expect(ids(pickOrders(batch, "4", undefined, "1.2.3"))).toEqual(["p1-r1"]);
     expect(
-      pickOrder({ ...batch, orders: [batch.orders[2] as AuditTaskOrder] }, undefined, "1.2.3").order
-        .taskId,
-    ).toBe("p0-r2");
+      ids(
+        pickOrders(
+          { ...batch, orders: [batch.orders[2] as AuditTaskOrder] },
+          undefined,
+          undefined,
+          "1.2.3",
+        ),
+      ),
+    ).toEqual(["p0-r2"]);
+  });
+
+  it("gives a task of a narrower execution every order of its index modulo the task count", () => {
+    expect(ids(pickOrders(batch, "0", "4", "1.2.3"))).toEqual(["p0-r0", "p1-r1"]);
+    expect(ids(pickOrders(batch, "3", "4", "1.2.3"))).toEqual(["p1-r0"]);
+    // Every order runs exactly once across the tasks.
+    const all = ["0", "1", "2", "3"].flatMap((i) => ids(pickOrders(batch, i, "4", "1.2.3")));
+    expect(all.sort()).toEqual(batch.orders.map((o) => o.taskId).sort());
   });
 
   it("names a version mismatch so the task refuses instead of measuring with other code", () => {
-    expect(pickOrder(batch, "0", "1.2.3").versionMismatch).toBeNull();
-    expect(pickOrder(batch, "0", "1.2.2").versionMismatch).toContain("cms-provision upgrade");
+    expect(pickOrders(batch, "0", "6", "1.2.3").versionMismatch).toBeNull();
+    expect(pickOrders(batch, "0", "6", "1.2.2").versionMismatch).toContain("cms-provision upgrade");
   });
 
-  it("throws for an index outside the batch", () => {
-    expect(() => pickOrder(batch, "6", "1.2.3")).toThrow(/no order in a batch of 6/);
-    expect(() => pickOrder(batch, "x", "1.2.3")).toThrow();
+  it("throws for an index or a count that does not fit the batch", () => {
+    expect(() => pickOrders(batch, "6", "6", "1.2.3")).toThrow(/not one of 6 task/);
+    expect(() => pickOrders(batch, "x", "6", "1.2.3")).toThrow();
+    expect(() => pickOrders(batch, "0", "7", "1.2.3")).toThrow(/does not fit a batch of 6/);
   });
 });
 

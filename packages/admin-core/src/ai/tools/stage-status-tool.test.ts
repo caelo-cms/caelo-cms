@@ -93,4 +93,45 @@ describe("get_stage_status", () => {
     expect(text).toContain("Succeeded in 1 min 35 s (122 pages)");
     expect(text).toContain(`Newest: Next: call get_quality_audit with deployRunId "${runId}"`);
   });
+
+  it("#1764 — tells the AI to relay a CPU quota that keeps a search index narrow, and how to raise it", () => {
+    const indexing = (limited: boolean): StageStatusRun => ({
+      ...runningRun,
+      status: "succeeded",
+      phase: "succeeded",
+      eta: null,
+      searchIndexes: [
+        {
+          plugin: "site-search",
+          collection: "pages",
+          state: "pending",
+          error: null,
+          progress: {
+            embedded: 10_000,
+            toEmbed: 800_000,
+            tasks: 1,
+            remainingMs: 7_200_000,
+            ...(limited
+              ? {
+                  limit: {
+                    wantedTasks: 32,
+                    quotaVcpu: 20,
+                    quotaNeededVcpu: 102,
+                    projectId: "acme-site",
+                    region: "europe-west1",
+                  },
+                }
+              : {}),
+          },
+        },
+      ],
+    });
+    const text = formatStageStatus({ runs: [indexing(true)] }, { deployRunId: runId });
+    expect(text).toContain("20 vCPU in europe-west1, allows no more; raised to 102 vCPU");
+    expect(text).toContain("the project's Cloud Run CPU quota keeps it narrow");
+    expect(text).toContain("only the Owner of the Google Cloud project can ask Google for it");
+    expect(formatStageStatus({ runs: [indexing(false)] }, { deployRunId: runId })).not.toContain(
+      "CPU quota",
+    );
+  });
 });

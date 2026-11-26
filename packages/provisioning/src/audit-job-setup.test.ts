@@ -14,7 +14,6 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   AUDIT_FORBIDDEN_ROLES,
-  AUDIT_PARALLELISM_DEFAULT,
   AUDIT_TASK_SCRIPT,
   type AuditJobTarget,
   ensureAuditJob,
@@ -35,7 +34,6 @@ const TARGET: AuditJobTarget = {
   region: "europe-west1",
   env: "production",
   adminImageRef: ADMIN_IMAGE,
-  parallelism: 15,
 };
 
 function fakeGcloud(overrides: [RegExp, GcloudResult][] = []) {
@@ -145,7 +143,7 @@ describe("ensureAuditJob", () => {
     );
     expect(flag(deploy, "args")).toBe(`--bun,${AUDIT_TASK_SCRIPT}`);
     expect(flag(deploy, "max-retries")).toBe("0");
-    expect(flag(deploy, "parallelism")).toBe("15");
+    expect(flag(deploy, "parallelism")).toBe("0");
     expect(flag(deploy, "set-env-vars")).toBe(
       `CAELO_PROVIDER=gcp,CAELO_AUDIT_RESULTS_BUCKET=${RESULTS},CAELO_STAGING_BUCKET=acme-caelo-production-staging`,
     );
@@ -167,39 +165,22 @@ describe("ensureAuditJob", () => {
     expect(calls.some((c) => c.join(" ").includes("--lifecycle-file="))).toBe(true);
   });
 
-  it("keeps an existing bucket and an operator's parallelism on converge", async () => {
-    const { run, calls } = fakeGcloud([
-      [/^storage buckets list/, ok(`gs://${RESULTS}/\n`)],
-      [/^run jobs describe caelo-production-audit /, ok(`${ADMIN_IMAGE}\n`)],
-    ]);
-    const { parallelism: _, ...converge } = TARGET;
-    expect((await ensureAuditJob(converge, { run, sleep: async () => {} })).ok).toBe(true);
+  it("keeps an existing bucket on converge", async () => {
+    const { run, calls } = fakeGcloud([[/^storage buckets list/, ok(`gs://${RESULTS}/\n`)]]);
+    expect((await ensureAuditJob(TARGET, { run, sleep: async () => {} })).ok).toBe(true);
     expect(calls.some((c) => c.slice(0, 3).join(" ") === "storage buckets create")).toBe(false);
-    expect(flag(deployOf(calls), "parallelism")).toBeUndefined();
   });
 
-  it("gives a job the converge creates the default parallelism, as a fresh install's", async () => {
-    // gcloud's verbatim stderr for a missing job: no NOT_FOUND code (regression:
-    // the converge failed with "read job caelo-production-audit" on every
-    // install that had no audit job yet).
-    const { run, calls } = fakeGcloud([
-      [
-        /^run jobs describe/,
-        fail("ERROR: (gcloud.run.jobs.describe) Cannot find job [caelo-production-audit]."),
-      ],
-    ]);
-    const { parallelism: _, ...converge } = TARGET;
-    const r = await ensureAuditJob(converge, { run, sleep: async () => {} });
-    expect(r.ok).toBe(true);
-    expect(flag(deployOf(calls), "parallelism")).toBe(String(AUDIT_PARALLELISM_DEFAULT));
-  });
-
-  it("refuses to redeploy a job it cannot read on converge", async () => {
-    const { run, calls } = fakeGcloud([[/^run jobs describe/, fail("PERMISSION_DENIED")]]);
-    const { parallelism: _, ...converge } = TARGET;
-    const r = await ensureAuditJob(converge, { run, sleep: async () => {} });
-    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("PERMISSION_DENIED") });
-    expect(deployOf(calls)).toBeUndefined();
+  it("#1764 — sets no fixed parallelism, and unsets an older job's, so a 20-vCPU project can create it", async () => {
+    // Cloud Run refuses a job whose parallelism times its CPU exceeds the
+    // project's quota (15 x 2 vCPU on a new project's 20 stopped installs);
+    // the audit runner sizes every execution from the quota instead.
+    const { run, calls } = fakeGcloud();
+    expect((await ensureAuditJob(TARGET, { run, sleep: async () => {} })).ok).toBe(true);
+    expect(flag(deployOf(calls), "parallelism")).toBe("0");
+    expect(flag(deployOf(calls), "cpu")).toBe("2");
+    // No read of the job before: nothing is kept from it.
+    expect(calls.some((c) => c.slice(0, 3).join(" ") === "run jobs describe")).toBe(false);
   });
 
   it("#1330 — on gcp-firebase reads the staging bucket too: no preview channel any more", async () => {
@@ -224,12 +205,6 @@ describe("ensureAuditJob", () => {
     const r = await ensureAuditJob({ ...TARGET, adminImageRef: "x/admin:latest" }, { run });
     expect(r.ok).toBe(false);
     expect(calls).toEqual([]);
-  });
-
-  it("refuses a parallelism outside 1-15", async () => {
-    const { run } = fakeGcloud();
-    const r = await ensureAuditJob({ ...TARGET, parallelism: 16 }, { run });
-    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("1 to 15") });
   });
 
   it("stops at the first failed grant and names it", async () => {

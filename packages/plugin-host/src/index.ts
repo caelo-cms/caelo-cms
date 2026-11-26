@@ -91,6 +91,7 @@ export {
   type QueryEmbedder,
   type RunCollectionOptions,
   runCollectionOperation,
+  type WarmableQueryEmbedder,
   wasmQueryEmbedder,
 } from "./collection-query.js";
 export {

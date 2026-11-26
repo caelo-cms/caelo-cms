@@ -9,6 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { COLLECTIONS_CACHE_MB_DEFAULT, GATEWAY_PEAK_WITH_MODEL_MIB } from "@caelo-cms/shared";
 import { generateDockerCompose } from "./compose.js";
 import {
   ADMIN_MEMORY_DEFAULT,
@@ -80,23 +81,36 @@ describe("planAdminMemory (upgrade)", () => {
 });
 
 describe("the gateways' memory (epic #1644)", () => {
-  it("is 1Gi: collection index files are cached next to the visitor handlers", () => {
-    expect(GATEWAY_MEMORY_DEFAULT).toBe("1Gi");
+  // #1745 — searchVIU's 1 GiB gateway was lost in the middle of its
+  // first semantic search: the query model's load alone took it from 10 %
+  // to at least 87 %, with the index cache still to come.
+  it("holds the query model at the peak of its load and the full index cache", () => {
+    expect(GATEWAY_MEMORY_DEFAULT).toBe("2Gi");
+    expect(memoryQuantityMiB(GATEWAY_MEMORY_DEFAULT)).toBeGreaterThanOrEqual(
+      GATEWAY_PEAK_WITH_MODEL_MIB + COLLECTIONS_CACHE_MB_DEFAULT,
+    );
+    // What the gateway ran with before does not.
+    expect(memoryQuantityMiB("1Gi")).toBeLessThan(
+      GATEWAY_PEAK_WITH_MODEL_MIB + COLLECTIONS_CACHE_MB_DEFAULT,
+    );
   });
 
-  it("upgrade raises both gateways from Cloud Run's 512Mi, never lowers, leaves the proxy alone", () => {
+  it("upgrade raises both gateways from 512Mi and from 1Gi, never lowers, leaves the proxy alone", () => {
     for (const slug of ["gateway", "staging-gateway"] as const) {
-      expect(planServiceMemory(slug, "512Mi")).toEqual({
-        ok: true,
-        flags: ["--memory=1Gi"],
-        from: "512Mi",
-      });
+      for (const from of ["512Mi", "1Gi"]) {
+        expect(planServiceMemory(slug, from)).toEqual({
+          ok: true,
+          flags: ["--memory=2Gi"],
+          from,
+        });
+      }
       expect(planServiceMemory(slug, null)).toEqual({
         ok: true,
-        flags: ["--memory=1Gi"],
+        flags: ["--memory=2Gi"],
         from: null,
       });
       expect(planServiceMemory(slug, "2Gi")).toEqual({ ok: true, flags: [], from: "2Gi" });
+      expect(planServiceMemory(slug, "4Gi")).toEqual({ ok: true, flags: [], from: "4Gi" });
     }
     expect(planServiceMemory("admin", "1Gi")).toEqual(planAdminMemory("1Gi"));
     expect(planServiceMemory("mcp-auth-proxy", "512Mi")).toEqual({
@@ -106,11 +120,17 @@ describe("the gateways' memory (epic #1644)", () => {
     });
   });
 
-  it("is what both Google Cloud stacks and the staging gateway's setup deploy", () => {
+  it("is what both Google Cloud stacks, the staging gateway's setup and the Azure stack deploy", () => {
     for (const stack of ["gcp", "gcp-firebase"]) {
       const src = readFileSync(resolve(import.meta.dir, "..", "stacks", stack, "index.ts"), "utf8");
       expect(src).toContain("memory: GATEWAY_MEMORY_DEFAULT,");
     }
+    const azure = readFileSync(
+      resolve(import.meta.dir, "..", "stacks", "azure", "index.ts"),
+      "utf8",
+    );
+    expect(azure).toContain("resources: azureContainerAppResources(GATEWAY_MEMORY_DEFAULT),");
+    expect(azureContainerAppResources(GATEWAY_MEMORY_DEFAULT)).toEqual({ cpu: 1, memory: "2.0Gi" });
     const args = stagingGatewayDeployArgs({
       provider: "gcp-firebase",
       projectId: "acme",
@@ -122,7 +142,25 @@ describe("the gateways' memory (epic #1644)", () => {
       databaseHost: "db1.p-label.europe-west1.sql-psa.goog",
       vpc: { network: "default", subnetwork: "default" },
     });
-    expect(args).toContain("--memory=1Gi");
+    expect(args).toContain("--memory=2Gi");
+  });
+
+  it("prices an always-on gateway instance at its memory", () => {
+    const base = {
+      cloudSqlTier: "db-f1-micro",
+      cloudSqlHa: false,
+      adminMinInstances: 0,
+      wafAdaptiveProtection: false,
+      region: "europe-west1",
+    };
+    const line = (n: number) =>
+      estimateGcpCost({ ...base, gatewayMinInstances: n }).lines.find((l) =>
+        l.name.startsWith("Cloud Run gateway"),
+      );
+    expect(line(0)?.monthlyUsd).toBe(1);
+    // $15 for the first GiB, ~$6.50 for the second.
+    expect(line(1)?.monthlyUsd).toBe(23);
+    expect(line(1)?.notes).toContain("2Gi");
   });
 });
 

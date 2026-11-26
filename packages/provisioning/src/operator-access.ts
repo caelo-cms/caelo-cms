@@ -48,7 +48,7 @@
  */
 
 import { ensureCloudSqlIamUser } from "./cloudsql-iam-user.js";
-import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
+import { gcloud as defaultGcloud, type GcloudResult, isGcloudNotFound } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
   gcpNamePrefix,
@@ -128,6 +128,85 @@ export function customRoleName(projectId: string, roleId: string): string {
  */
 export function installIapAllowlist(ownerEmail: string): string[] {
   return [`user:${ownerEmail.trim().toLowerCase()}`];
+}
+
+/** The sync job's env var listing {@link installIapAllowlist}: the install's fixed IAP members. */
+export const STATIC_MEMBERS_ENV = "CAELO_OPERATOR_ACCESS_STATIC_MEMBERS";
+
+/**
+ * Why install.json's Owner email does not match the IAP members the
+ * deployed operator-access job admits ({@link ensureOperatorAccessSync}
+ * deploys them as `installIapAllowlist(ownerEmail)`), or null when it does.
+ * Read from `gcloud run jobs describe --format=json` (v1 or v2 shape).
+ * Anything it cannot read is a mismatch, never a match.
+ */
+export function deployedOwnerMismatch(describeJson: string, ownerEmail: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(describeJson);
+  } catch {
+    return "the operator-access job's description is not JSON";
+  }
+  const p = parsed as {
+    spec?: {
+      template?: {
+        spec?: {
+          template?: { spec?: { containers?: { env?: { name?: string; value?: string }[] }[] } };
+        };
+      };
+    };
+    template?: { template?: { containers?: { env?: { name?: string; value?: string }[] }[] } };
+  };
+  const env =
+    p.spec?.template?.spec?.template?.spec?.containers?.[0]?.env ??
+    p.template?.template?.containers?.[0]?.env ??
+    [];
+  const deployed = env.find((e) => e.name === STATIC_MEMBERS_ENV)?.value;
+  if (deployed === undefined) return `the operator-access job sets no ${STATIC_MEMBERS_ENV}`;
+  const want = installIapAllowlist(ownerEmail).join(",");
+  const have = deployed
+    .split(",")
+    .map((m) => m.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  if (have !== [...installIapAllowlist(ownerEmail)].sort().join(",")) {
+    return `the admin admits ${deployed || "nobody"}, the records would make it ${want}`;
+  }
+  return null;
+}
+
+/**
+ * {@link deployedOwnerMismatch} against the operator-access job deployed in
+ * the project now. A job that does not exist is a mismatch too: the install
+ * never got as far as admitting its Owner.
+ *
+ * @throws when the job cannot be read for another reason, with what to check
+ */
+export async function readDeployedOwnerMismatch(
+  run: GcloudRunner,
+  target: {
+    readonly projectId: string;
+    readonly region: string;
+    readonly env: string;
+    readonly ownerEmail: string;
+  },
+): Promise<string | null> {
+  const job = operatorAccessJobName(target.env);
+  const r = await run([
+    "run",
+    "jobs",
+    "describe",
+    job,
+    `--region=${target.region}`,
+    `--project=${target.projectId}`,
+    "--format=json",
+  ]);
+  if (r.ok) return deployedOwnerMismatch(r.stdout, target.ownerEmail);
+  if (isGcloudNotFound(r.stderr)) return `the operator-access job ${job} does not exist`;
+  throw new Error(
+    `Could not read the operator-access job ${job} in ${target.projectId}: ${r.stderr.trim()}. Check that gcloud is signed in as an Owner of the project (gcloud auth login), then run the installer again.`,
+  );
 }
 
 /** Database role migration 0239 creates for the job. */
@@ -461,7 +540,7 @@ export async function ensureOperatorAccessSync(
   const envVars = [
     `CAELO_OPERATOR_ACCESS_IAP_WEB=${iapWebPath(target.resource, backendServiceId)}`,
     `CAELO_MCP_IAP_SERVICE_ACCOUNT=${mcpSa}`,
-    `CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=${installIapAllowlist(target.ownerEmail).join(",")}`,
+    `${STATIC_MEMBERS_ENV}=${installIapAllowlist(target.ownerEmail).join(",")}`,
     `CAELO_OPERATOR_ACCESS_DB_HOST=${target.databaseHost}`,
     `${OPERATOR_OAUTH_CLIENT_SECRET_ENV}=${operatorOAuthClientSecretResource(projectId, env)}`,
     ...(target.mcpSigners && target.mcpSigners.length > 0

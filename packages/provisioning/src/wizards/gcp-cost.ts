@@ -175,6 +175,9 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
   // An always-on instance is priced at 1 GiB (the $15 line); extra memory
   // is billed per GiB-second (~$6.50 per GiB-month).
   const perMinInstanceUsd = 15 + Math.max(0, adminGiB - 1) * 6.5;
+  // The gateway's always-on instance, priced the same way.
+  const gatewayGiB = (memoryQuantityMiB(GATEWAY_MEMORY_DEFAULT) as number) / 1024;
+  const perGatewayMinInstanceUsd = 15 + Math.max(0, gatewayGiB - 1) * 6.5;
 
   const lines: CostLine[] = [
     {
@@ -202,7 +205,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       name: "Quality checks (Cloud Run audit job)",
       monthlyUsd: 2,
       notes:
-        "one container per Lighthouse run, all in parallel (up to 5 pages x 3 runs, ~90 s at 2 vCPU each; a page whose runs disagree gets 2 more): ~$0.05 per audited Stage, at most ~$0.08, partly in the free tier; results bucket ~$0",
+        "Lighthouse runs of 2 vCPU in containers of their own (up to 5 pages x 3 runs, ~90 s each; a page whose runs disagree gets 2 more), as many at once as the project's Cloud Run CPU quota allows (all 15 from 40 vCPU; a new project's 20 vCPU run 5 at a time, the same cost in more time): ~$0.05 per audited Stage, at most ~$0.08, partly in the free tier; results bucket ~$0",
     },
     {
       // #1359 — the whole audit of a Stage runs in its own job, not on the
@@ -250,7 +253,10 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       // #1328 — on gcp-firebase the visitor gateway is the new
       // `caelo-<env>-data-gateway` service; same billing either way.
       name: provider === "gcp" ? "Cloud Run gateway" : "Cloud Run data gateway",
-      monthlyUsd: inputs.gatewayMinInstances === 0 ? 1 : 1 + inputs.gatewayMinInstances * 15,
+      monthlyUsd:
+        inputs.gatewayMinInstances === 0
+          ? 1
+          : Math.round(1 + inputs.gatewayMinInstances * perGatewayMinInstanceUsd),
       notes:
         inputs.gatewayMinInstances === 0
           ? `scale-to-zero, ${GATEWAY_MEMORY_DEFAULT} (search indexes cached in memory, #1644); ~$1/mo light traffic`

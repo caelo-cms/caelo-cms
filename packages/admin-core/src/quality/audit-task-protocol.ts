@@ -16,14 +16,18 @@ import { stagedBuildSourceSchema } from "./staged-build-source.js";
 
 /**
  * The environment variable that carries a batch's orders (`AuditTaskBatch`).
- * A Cloud Run execution runs the whole batch, each task picking its order
- * by `CLOUD_RUN_TASK_INDEX`; providers without a task index start one task
- * per order with a batch of one.
+ * A Cloud Run execution runs the whole batch: task `i` of `n` runs the
+ * orders `i`, `i + n`, `i + 2n` … one after another
+ * (`CLOUD_RUN_TASK_INDEX` / `CLOUD_RUN_TASK_COUNT`); providers without a
+ * task index start one task per order with a batch of one.
  */
 export const AUDIT_TASK_ENV_VAR = "CAELO_AUDIT_TASK";
 
 /** The environment variable Cloud Run sets to a task's index in its execution. */
 export const TASK_INDEX_ENV_VAR = "CLOUD_RUN_TASK_INDEX";
+
+/** How many tasks the execution runs (Cloud Run sets it next to the index). */
+export const TASK_COUNT_ENV_VAR = "CLOUD_RUN_TASK_COUNT";
 
 const categorySchema = z.enum(QUALITY_CATEGORIES);
 
@@ -96,7 +100,7 @@ export const runMeasurementSchema = z
       .object({
         benchmarkIndex: z.number().int().min(0),
         cpuSlowdownMultiplier: z.number().positive(),
-        // The task runs the admin's own version (pickOrder), so it always
+        // The task runs the admin's own version (pickOrders), so it always
         // reports the device it emulated (#1370).
         targetBenchmarkIndex: z.number().int().positive(),
       })

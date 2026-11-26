@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,6 +25,7 @@ import type { Embedder } from "@caelo-cms/models";
 import { encodeChangeFile } from "@caelo-cms/plugin-host";
 import type { SearchProfile } from "@caelo-cms/plugin-sdk";
 import { DEFAULT_EMBEDDING_MODEL_ID, type EmbeddingModel } from "@caelo-cms/shared";
+import { planRunCapacity } from "../reporting-jobs/run-capacity.js";
 import {
   type EmbedderSource,
   type IndexOptions,
@@ -422,6 +423,9 @@ describe("the index job at scale", () => {
     const t = await bigBuild();
     const alone = fakeEmbedders("granite@aaaaaaaaaaaa");
     const single = await build(t, alone.source, { slot: { index: 0, count: 1, max: 1 } });
+    // The single build left its shards; the wide one must embed on its own.
+    const shards = join(root, "t1650/pages/vectors");
+    for (const f of await readdir(shards)) if (f.startsWith("v-")) await rm(join(shards, f));
 
     const wide = fakeEmbedders("granite@aaaaaaaaaaaa");
     for (const index of [1, 2]) {
@@ -437,6 +441,22 @@ describe("the index job at scale", () => {
     expect(first.stats).toMatchObject({ passagesEmbedded: 6_010, tasks: 3 });
     // Content-addressed files: the same release name is the same index.
     expect(first.applied.file).toBe(single.applied.file);
+  });
+
+  it("a retry's first report already counts the shards an earlier attempt wrote", async () => {
+    const t = await bigBuild();
+    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
+    await indexCollection(store, t, { embedders: e.source, slot: { index: 1, count: 2, max: 32 } });
+    const reports: number[] = [];
+    await indexCollection(store, t, {
+      embedders: e.source,
+      slot: { index: 1, count: 2, max: 32 },
+      onProgress: async (p) => {
+        reports.push(p.embedded);
+      },
+    });
+    // Not a 0 that reads as "starting over" for the next 20 seconds.
+    expect(reports[0]).toBeGreaterThan(0);
   });
 
   it("the next attempt embeds only the shares a dead attempt left missing", async () => {
@@ -459,13 +479,116 @@ describe("the index job at scale", () => {
       indexCollection(store, t, {
         embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
         slot: { index: 0, count: 3, max: 32 },
-        shardDeadline: 30_000,
+        // Time for its own shards (none starts in the last ten minutes), then a wait.
+        shardDeadline: 20 * 60_000,
         now: () => clock,
         sleep: async (ms) => {
           clock += ms;
         },
       }),
-    ).rejects.toThrow(/the vectors of task\(s\) 1, 2 of 3 did not arrive in time/);
+    ).rejects.toThrow(/2 of 4 pieces of the search index, of task\(s\) 1, 2 of 3, did not arrive/);
+  });
+
+  it("a later Stage with one text more keeps the shards an unfinished index wrote", async () => {
+    // A first index that did not finish (here: its attempt's time ran out
+    // after two of four shards) and the next Stage, one passage more: only
+    // the shard the new text falls in, and the ones never written, embed.
+    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
+    let clock = 0;
+    const slow: EmbedderSource = async (model) => {
+      const inner = await e.source(model);
+      return {
+        ...inner,
+        embed: async (texts, kind) => {
+          clock += 60_000;
+          return inner.embed(texts, kind);
+        },
+      };
+    };
+    await expect(
+      indexCollection(store, await bigBuild(), {
+        embedders: slow,
+        slot: { index: 0, count: 1, max: 1 },
+        shardDeadline: 70 * 60_000,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      }),
+    ).rejects.toThrow(/not embedded within this attempt's time/);
+    const written = e.embedded.length;
+    e.embedded.length = 0;
+    const docs = [
+      ...Array.from({ length: 601 }, (_, d) =>
+        page(
+          `p${d}`,
+          Array.from({ length: 10 }, (_, s) => `Seite ${d} Abschnitt ${s}`),
+        ),
+      ),
+      page("extra", ["Ein neuer Abschnitt"]),
+    ];
+    const next = await task({
+      maxDocuments: 1_000,
+      changeKeys: [
+        await change({ upserts: docs, deletes: [], replaceAll: false, profile: semantic }),
+      ],
+    });
+    const out = await build(next, e.source, { slot: { index: 0, count: 1, max: 1 } });
+    expect(out.stats).toMatchObject({ passagesEmbedded: 6_011 });
+    // At least one of the two written shards was kept: a shard is ~1,500.
+    expect(6_011 - e.embedded.length).toBeGreaterThan(1_000);
+    expect(6_011 - e.embedded.length).toBeLessThanOrEqual(written);
+  });
+
+  it("on one task a build too large for one attempt goes on where the last attempt stopped", async () => {
+    // The quota leaves one task (max 1): every attempt embeds shards until
+    // its time is up, and the next one only the rest, so a narrow width
+    // takes longer but finishes.
+    const t = await bigBuild();
+    const e = fakeEmbedders("granite@aaaaaaaaaaaa");
+    let clock = 0;
+    const timed = async (texts: readonly string[]) => {
+      // Each model call takes a minute of the attempt's clock.
+      clock += 60_000;
+      return texts;
+    };
+    const slow: EmbedderSource = async (model) => {
+      const inner = await e.source(model);
+      return { ...inner, embed: async (texts, kind) => inner.embed(await timed(texts), kind) };
+    };
+    const attempt = () => {
+      const start = clock;
+      return indexCollection(store, t, {
+        embedders: slow,
+        slot: { index: 0, count: 1, max: 1 },
+        // 6,010 texts are 4 shards of about 1,500 (47 calls of 32): a shard
+        // takes about 47 minutes here, and none starts after minute 60.
+        shardDeadline: start + 70 * 60_000,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      });
+    };
+    await expect(attempt()).rejects.toThrow(
+      /pieces of the search index were not embedded within this attempt's time/,
+    );
+    // Two whole shards, about half.
+    const first = e.embedded.length;
+    expect(first).toBeGreaterThan(2_500);
+    expect(first).toBeLessThan(3_500);
+    let out: Awaited<ReturnType<typeof attempt>> | null = null;
+    for (let i = 0; i < 5 && out === null; i++) {
+      try {
+        out = await attempt();
+      } catch (err) {
+        expect(String(err)).toContain("next attempt embeds only those");
+      }
+    }
+    // Every text embedded exactly once over all attempts, and the release built.
+    expect(e.embedded.length).toBe(6_010);
+    expect(new Set(e.embedded).size).toBe(6_010);
+    expect(out?.kind).toBe("built");
   });
 });
 
@@ -532,16 +655,43 @@ describe("what the index job reports", () => {
     const actions = calls.map((c) => c.action);
     expect(actions).not.toContain("done");
     expect(actions).not.toContain("failed");
-    // At least the final count of its share (3,005 of 6,010).
-    // It reports at once, so its share counts before its first batch, and with the plan's total.
+    // Its share is shards 1 and 3 of 4 (about half of 6,010). It reports at
+    // once, so its share counts before its first batch, and with the plan's total.
+    const firstReport = calls[0]?.payload as { toEmbed: number };
     expect(calls[0]).toMatchObject({
       action: "progress",
-      payload: { task: 1, tasks: 2, embedded: 0, toEmbed: 3_005, planned: 6_010 },
+      payload: { task: 1, tasks: 2, embedded: 0, planned: 6_010 },
     });
+    expect(firstReport.toEmbed).toBeGreaterThan(2_500);
+    expect(firstReport.toEmbed).toBeLessThan(3_500);
     expect(calls.at(-1)).toMatchObject({
       action: "progress",
-      payload: { task: 1, embedded: 3_005, toEmbed: 3_005 },
+      payload: { task: 1, embedded: firstReport.toEmbed, toEmbed: firstReport.toEmbed },
     });
+    // Without a quota limit (no capacity: inside the admin) no limit is reported.
+    expect(calls.some((c) => (c.payload as { limit?: unknown }).limit)).toBe(false);
+  });
+
+  it("names the CPU quota when it keeps the build narrower than it would run", async () => {
+    const { reporter, calls } = recordingReporter({ index: 0, count: 1, max: 1 });
+    await indexTasks(
+      { ...reporter, capacity: planRunCapacity("acme-site", "europe-west1", 20) },
+      store,
+      [await big()],
+      { embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source, slot: reporter.slot },
+    );
+    const progress = calls.find((c) => c.action === "progress");
+    expect(progress?.payload).toMatchObject({
+      tasks: 1,
+      limit: {
+        wantedTasks: 2,
+        quotaVcpu: 20,
+        quotaNeededVcpu: 8 + 30 + 4,
+        projectId: "acme-site",
+        region: "europe-west1",
+      },
+    });
+    expect(calls.map((c) => c.action)).toContain("done");
   });
 
   it("sizes the run's other collections before widening, so it widens once", async () => {
