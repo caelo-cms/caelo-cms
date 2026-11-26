@@ -42,6 +42,7 @@ import {
   type ExecutionContext,
   GENERATOR_POOL_MAX,
   phaseTimingSchema,
+  robotsRulesSchema,
   siteHeaderSetSchema,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
@@ -141,6 +142,8 @@ const subprocessDoneSchema = z.object({
   renderFailureCount: z.number().int().nonnegative(),
   /** #1454 — the headers of the build's pages. */
   securityHeaders: siteHeaderSetSchema,
+  /** #1706 — the Owner's robots.txt rules the build was made with. */
+  robotsRules: robotsRulesSchema,
   /** #1647 — page output delivered to observers; null when none observe or the build is no Stage. */
   pageOutput: z
     .object({

@@ -34,10 +34,25 @@
  * counted only when the operator turned popular suggestions on, after the
  * gateway's proof of work, in the background; nothing is sent while the
  * visitor types.
+ *
+ * #1707 — `data-caelo-search-mode="hash"` on the form keeps the query out
+ * of the page's address: a submit opens `/suche/#q=…` (runtime-logic.ts),
+ * and the fragment never reaches a server, a CDN log, analytics or a
+ * Referer (the input then carries no `name`, so a submit before this
+ * script runs sends no query either). Only the search call to the gateway
+ * carries it, as before. The results page reads `#q=` first, then `?q=`,
+ * and searches again on `hashchange`, without a reload. It announces each
+ * search: the results root gets `aria-busy` and `data-caelo-search-state`
+ * (`loading`, `done`, `error`) and fires `caelo-search-start` (detail
+ * `{ query, page }`) when a search starts, `caelo-search-results` (detail:
+ * the answer, from the summary or else the root) when it ends.
  */
 
-export const RUNTIME_JS = String.raw`(function () {
-  "use strict";
+import { RUNTIME_LOGIC } from "./runtime-logic.js";
+
+const LOGIC = RUNTIME_LOGIC.map((f) => f.toString()).join("\n");
+
+const MAIN = String.raw`
   var API = "/api/plugin/site-search/";
   // The release each operation answers from: a search over link texts is
   // named by two releases, a suggestion by one, so each keeps its own.
@@ -169,8 +184,22 @@ export const RUNTIME_JS = String.raw`(function () {
 
   function bindForm(form) {
     var input = form.querySelector("[data-caelo-search-input]") || form.querySelector('input[name="q"]');
+    if (!input) return;
     var list = form.querySelector("[data-caelo-search-suggestions]");
-    if (!input || !list) return;
+    // #1707 — hash mode: the query goes into the fragment only, never into
+    // a request (on the results page itself only the fragment changes).
+    form.addEventListener("submit", function (e) {
+      if (form.getAttribute("data-caelo-search-mode") !== "hash") return;
+      e.preventDefault();
+      var q = input.value.trim();
+      if (q === "") return;
+      if (list) {
+        list.hidden = true;
+        input.setAttribute("aria-expanded", "false");
+      }
+      location.assign(hashSearchUrl(form.getAttribute("action") || "", location.href, q));
+    });
+    if (!list) return;
     uid += 1;
     var listId = list.id || "caelo-search-suggestions-" + uid;
     list.id = listId;
@@ -196,7 +225,9 @@ export const RUNTIME_JS = String.raw`(function () {
       if (o.href) location.href = o.href;
       else {
         input.value = o.text;
-        form.submit();
+        // Through the submit event, so hash mode sends the fragment too.
+        if (form.requestSubmit) form.requestSubmit();
+        else form.submit();
       }
     }
 
@@ -297,14 +328,29 @@ export const RUNTIME_JS = String.raw`(function () {
     var more = root.querySelector("[data-caelo-search-more]");
     if (!listEl || !tpl) return;
     var hasSection = tpl.content.querySelector('[data-field="section"]') !== null;
-    var q = (new URLSearchParams(location.search).get("q") || "").trim();
-    if (q === "") return;
+    // The query shown, the page of results loaded, and the search the
+    // latest answer must belong to (a newer query discards an older answer).
+    var q = "";
     var page = 1;
-    var inputs = document.querySelectorAll("[data-caelo-search-input]");
-    Array.prototype.forEach.call(inputs, function (i) { if (!i.value) i.value = q; });
+    var seq = 0;
+
+    function state(value) {
+      if (value === "loading") root.setAttribute("aria-busy", "true");
+      else root.removeAttribute("aria-busy");
+      if (value) root.setAttribute("data-caelo-search-state", value);
+      else root.removeAttribute("data-caelo-search-state");
+      if (value === "error") root.setAttribute("data-caelo-search-error", "true");
+      else root.removeAttribute("data-caelo-search-error");
+    }
+
+    function started() {
+      state("loading");
+      root.dispatchEvent(new CustomEvent("caelo-search-start", { bubbles: true, detail: { query: q, page: page } }));
+    }
 
     function show(body, append) {
       if (!append) listEl.textContent = "";
+      var shown = q;
       (body.hits || []).forEach(function (h) {
         var node = tpl.content.cloneNode(true);
         var href = h.url + (h.snippet && h.snippet.anchor ? "#" + h.snippet.anchor : "");
@@ -313,7 +359,7 @@ export const RUNTIME_JS = String.raw`(function () {
           if (f === "link") {
             el.setAttribute("href", href);
             el.addEventListener("click", function () {
-              record({ kind: "click", text: q, lang: lang(), results: body.total || 0, target: h.url });
+              record({ kind: "click", text: shown, lang: lang(), results: body.total || 0, target: h.url });
             });
           } else if (f === "title") highlighted(el, h.title, h.titleHighlights);
           // The snippet: the section's heading (its own field, or in front
@@ -338,26 +384,71 @@ export const RUNTIME_JS = String.raw`(function () {
         summary.setAttribute("data-total", String(body.total || 0));
         if (corr) summary.setAttribute("data-correction", corr);
         else summary.removeAttribute("data-correction");
-        summary.dispatchEvent(new CustomEvent("caelo-search-results", { bubbles: true, detail: body }));
       }
       if (more) more.hidden = body.more !== true;
+      state("done");
+      (summary || root).dispatchEvent(new CustomEvent("caelo-search-results", { bubbles: true, detail: body }));
     }
 
-    warm().then(function () {
-      return get("search", { q: q, lang: lang(), page: "1" });
-    }).then(function (body) {
-      show(body, false);
-      var searched = { kind: "search", text: q, lang: lang(), results: body.total || 0 };
-      var previous = lastQueryOf(q);
-      if (previous) searched.previous = previous;
-      record(searched);
-    }).catch(function () {
-      root.setAttribute("data-caelo-search-error", "true");
-    });
+    function search(query) {
+      q = query;
+      page = 1;
+      var mine = ++seq;
+      if (more) more.hidden = true;
+      started();
+      warm().then(function () {
+        return get("search", { q: query, lang: lang(), page: "1" });
+      }).then(function (body) {
+        if (mine !== seq) return;
+        show(body, false);
+        var searched = { kind: "search", text: query, lang: lang(), results: body.total || 0 };
+        var previous = lastQueryOf(query);
+        if (previous) searched.previous = previous;
+        record(searched);
+      }).catch(function () {
+        if (mine === seq) state("error");
+      });
+    }
+
+    function clear() {
+      seq += 1;
+      q = "";
+      listEl.textContent = "";
+      if (summary) {
+        summary.removeAttribute("data-total");
+        summary.removeAttribute("data-correction");
+      }
+      if (more) more.hidden = true;
+      state(null);
+    }
+
+    // The query of the address: on load, and again whenever the fragment
+    // changes (a search from this page in hash mode, back and forward). A
+    // fragment that is no query (a skip link) leaves the results alone.
+    function follow(isChange) {
+      var found = searchQueryOf(location.search, location.hash);
+      if (isChange && found.anchor) return;
+      if (found.query === q) return;
+      if (found.query === "") { clear(); return; }
+      // Every field shows the query searched, the focused one too: after
+      // Back it would otherwise keep the later query the results no longer show.
+      Array.prototype.forEach.call(document.querySelectorAll("[data-caelo-search-input]"), function (i) {
+        i.value = found.query;
+      });
+      search(found.query);
+    }
+    follow(false);
+    window.addEventListener("hashchange", function () { follow(true); });
 
     if (more) more.addEventListener("click", function () {
+      var mine = seq;
       page += 1;
-      get("search", { q: q, lang: lang(), page: String(page) }).then(function (body) { show(body, true); });
+      started();
+      get("search", { q: q, lang: lang(), page: String(page) }).then(function (body) {
+        if (mine === seq) show(body, true);
+      }).catch(function () {
+        if (mine === seq) state("error");
+      });
     });
   }
 
@@ -389,8 +480,10 @@ export const RUNTIME_JS = String.raw`(function () {
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();
-})();
 `;
+
+/** The browser script: the address logic (runtime-logic.ts) and the bindings. */
+export const RUNTIME_JS = `(function () {\n"use strict";\n${LOGIC}\n${MAIN}\n})();\n`;
 
 /** Minimal styles: the suggestion list floats under the field; the site styles the rest. */
 export const RUNTIME_CSS = `[data-caelo-search]{position:relative}

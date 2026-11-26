@@ -32,6 +32,11 @@ import {
 import {
   err,
   ok,
+  type RobotsRules,
+  robotsRuleGroupSchema,
+  robotsRulesSchema,
+  robotsRulesWarnings,
+  robotsTxt,
   SEO_DESCRIPTION_HARD_MAX,
   SHARE_IMAGE_SOURCES,
   seoAutofillInputSchema,
@@ -670,20 +675,27 @@ export const pagesSeoListStaleOp = defineOperation({
 
 // ---------------------------------------------------------------------
 // site_defaults.set_seo — Owner-only base URL + sitemap / feed / IndexNow
-// toggles + Org JSON.
+// toggles + Org JSON + robots.txt rules.
 // ---------------------------------------------------------------------
 
 export const siteDefaultsSetSeoOp = defineOperation({
   name: "site_defaults.set_seo",
   readScope: "request",
   // Why human-only: Owner-only — site-level config (base URL, sitemap, feed
-  // and IndexNow toggles, organization JSON) published on every page. The AI reaches it through the
+  // and IndexNow toggles, organization JSON, robots.txt rules) published on
+  // every page. The AI reaches it through the
   // §11.A gate: site_defaults.propose_set_seo → execute_proposal (Owner).
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: siteDefaultsSetSeoInputSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // #1706 — omitted rules stay as they are (the panel's other forms and
+    // every older caller leave them alone).
+    const robots =
+      input.robotsRules === undefined
+        ? sql`robots_rules`
+        : sql`${JSON.stringify(input.robotsRules)}::text::jsonb`;
     await tx.execute(sql`
       UPDATE site_defaults SET
         site_base_url = ${input.siteBaseUrl},
@@ -691,6 +703,7 @@ export const siteDefaultsSetSeoOp = defineOperation({
         feed_enabled = ${input.feedEnabled},
         indexnow_enabled = ${input.indexNowEnabled},
         organization_json = ${JSON.stringify(input.organizationJson)}::text::jsonb,
+        robots_rules = ${robots},
         updated_at = now(),
         updated_by = ${ctx.actorId}::uuid
       WHERE id = 1
@@ -701,11 +714,28 @@ export const siteDefaultsSetSeoOp = defineOperation({
       operation: "site_defaults.set_seo",
       input,
       succeeded: true,
-      resultSummary: `base=${input.siteBaseUrl},sitemap=${input.sitemapEnabled},feed=${input.feedEnabled},indexnow=${input.indexNowEnabled}`,
+      resultSummary: `base=${input.siteBaseUrl},sitemap=${input.sitemapEnabled},feed=${input.feedEnabled},indexnow=${input.indexNowEnabled}${input.robotsRules === undefined ? "" : `,robots-groups=${input.robotsRules.length}`}`,
     });
     return ok({});
   },
 });
+
+/**
+ * #1706 — the stored robots.txt rules. Every write validates them, so rows
+ * that fail here were written past the ops: loud, never read as "none".
+ */
+export function parseStoredRobotsRules(stored: unknown): RobotsRules {
+  const parsed = robotsRulesSchema.safeParse(stored);
+  if (!parsed.success) {
+    throw new Error(
+      `site_defaults.robots_rules holds rules no op could have written (${parsed.error.issues.map((i) => i.message).join("; ")}) — set them again in Settings → SEO`,
+    );
+  }
+  return parsed.data;
+}
+
+/** #1706 — the rules as `get_seo` and the panel show them. */
+const robotsRulesOutput = z.array(robotsRuleGroupSchema);
 
 // ---------------------------------------------------------------------
 // site_defaults.get_seo — read for renderer + Owner panel + sitemap.
@@ -733,11 +763,21 @@ export const siteDefaultsGetSeoOp = defineOperation({
     organizationJson: z.record(z.string(), z.unknown()),
     /** The latest WebSub pings and IndexNow submissions, newest first. */
     searchNotifications: z.array(searchNotificationShape),
+    /** #1706 — the Owner's robots.txt rules as stored (live after Stage + Publish live). */
+    robotsRules: robotsRulesOutput,
+    /**
+     * #1706 — the live target's robots.txt as these settings render it
+     * (null while the base URL is unset): what Publish live ships after the
+     * next Stage.
+     */
+    robotsTxt: z.string().nullable(),
+    /** What a rule set takes from search engines (the whole site for `*`, …). */
+    robotsWarnings: z.array(z.string()),
   }),
   handler: async (_ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT site_base_url, sitemap_enabled, feed_enabled, indexnow_enabled, indexnow_key,
-             organization_json
+             organization_json, robots_rules
       FROM site_defaults WHERE id = 1
       LIMIT 1
     `)) as unknown as {
@@ -747,6 +787,7 @@ export const siteDefaultsGetSeoOp = defineOperation({
       indexnow_enabled: boolean;
       indexnow_key: string;
       organization_json: Record<string, unknown>;
+      robots_rules: unknown;
     }[];
     const r = rows[0];
     if (!r) {
@@ -756,6 +797,7 @@ export const siteDefaultsGetSeoOp = defineOperation({
         message: "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
       });
     }
+    const robotsRules = parseStoredRobotsRules(r.robots_rules);
     return ok({
       siteBaseUrl: r.site_base_url,
       sitemapEnabled: r.sitemap_enabled,
@@ -764,6 +806,18 @@ export const siteDefaultsGetSeoOp = defineOperation({
       indexNowKey: r.indexnow_key,
       organizationJson: r.organization_json,
       searchNotifications: await recentSearchNotifications(tx, 4),
+      robotsRules,
+      robotsTxt:
+        r.site_base_url === null
+          ? null
+          : robotsTxt({
+              robots: "index",
+              siteBaseUrl: r.site_base_url,
+              sitemap: r.sitemap_enabled,
+              feed: r.feed_enabled,
+              rules: robotsRules,
+            }),
+      robotsWarnings: robotsRulesWarnings(robotsRules),
     });
   },
 });

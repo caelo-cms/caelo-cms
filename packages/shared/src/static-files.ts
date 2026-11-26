@@ -138,7 +138,10 @@ export function staticFilePathIssue(path: string): string | null {
     return `"/${first}" is reserved for the site's own files and services; choose another folder`;
   }
   if (segments.length === 1 && RESERVED_ROOT_FILES.has(first.toLowerCase())) {
-    return `"${path}" is written by every build; a static file cannot replace it`;
+    // #1706 — robots.txt has rules of its own: name where they are set.
+    return first.toLowerCase() === "robots.txt"
+      ? `"${path}" is written by every build from the site's robots.txt rules; change those instead (propose_set_site_seo robotsRules, or Settings → SEO)`
+      : `"${path}" is written by every build; a static file cannot replace it`;
   }
   const named = first === ".well-known" ? segments.slice(1) : segments;
   if (named.length === 0) {

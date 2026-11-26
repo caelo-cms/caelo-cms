@@ -20,11 +20,12 @@ export const proposeSetSiteSeoTool = makeProposeTool({
   toolName: "propose_set_site_seo",
   opName: "site_defaults.propose_set_seo",
   pendingQueuePath: "/settings/seo",
+  approvalPreviewOp: "site_defaults.preview_set_seo",
   when:
     "Set site-wide SEO settings. Read current values with `get_site_seo` first.\n" +
-    "USE FOR: site status `Site URL: not configured`; publish failed with `Site base URL is not configured`; preview flags `site-base-url-unset`; operator names the site's domain or asks for sitemap / feed / IndexNow / organization changes.\n" +
-    "DO NOT USE FOR: site language (`set_site_identity`); per-page SEO (`set_page_seo_many`).\n" +
-    "CORE RULES: pass only changed fields (omitted keep their value), except while the base URL is unset every proposal must include `siteBaseUrl`.",
+    "USE FOR: site status `Site URL: not configured`; publish failed with `Site base URL is not configured`; preview flags `site-base-url-unset`; operator names the site's domain or asks for sitemap / feed / IndexNow / organization changes; operator wants pages or crawlers kept out of robots.txt (a search results page, an AI crawler).\n" +
+    "DO NOT USE FOR: site language (`set_site_identity`); per-page SEO and noindex (`set_page_seo_many`); a robots.txt file (`propose_set_static_files` refuses it: robots.txt is built from these rules).\n" +
+    "CORE RULES: pass only changed fields (omitted keep their value), except while the base URL is unset every proposal must include `siteBaseUrl`. After approval it is saved, not live: offer the Stage; Publish live stays the operator's.",
   schema: siteSeoProposalInputSchema,
   inputSchema: {
     type: "object",
@@ -62,6 +63,33 @@ export const proposeSetSiteSeoTool = makeProposeTool({
           sameAs: { type: "array", maxItems: 20, items: { type: "string", maxLength: 2048 } },
         },
       },
+      robotsRules: {
+        type: "array",
+        maxItems: 20,
+        description:
+          "robots.txt rules of the live site; REPLACES the whole list (send the groups to keep; [] removes all). Without a `*` group the file says `User-agent: * / Allow: /`; staging always blocks every crawler. One group per crawler: `*` (every crawler) stands alone, each user agent in one group only. A crawler follows ONLY the most specific group naming it, so a named crawler's group (`GPTBot`) repeats the `*` paths that should bind it too. Paths start with `/`; `*` matches anything, a closing `$` ends the match. Disallow stops crawling, not indexing: a page that must vanish from search keeps noindex and stays crawlable until it is gone, and a search results page is noindex AND disallowed (each language's path). `Disallow: /` for `*` takes the whole site out of search: only when the operator says so.",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["userAgents"],
+          properties: {
+            userAgents: {
+              type: "array",
+              minItems: 1,
+              maxItems: 10,
+              items: { type: "string", maxLength: 64 },
+              description: "`*`, or crawler product tokens (`Googlebot`, `GPTBot`, `CCBot`).",
+            },
+            allow: { type: "array", maxItems: 50, items: { type: "string", maxLength: 512 } },
+            disallow: {
+              type: "array",
+              maxItems: 50,
+              items: { type: "string", maxLength: 512 },
+              description: "e.g. `/de/suche/`, `/en/search/`, `/*?q=`.",
+            },
+          },
+        },
+      },
     },
   },
   // Field names only: the chat's proposal parser ends the summary at the
@@ -73,7 +101,7 @@ export const proposeSetSiteSeoTool = makeProposeTool({
 export const getSiteSeoTool = makeReadTool<Record<string, never>>({
   name: "get_site_seo",
   description:
-    "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `feedEnabled`, `indexNowEnabled`, `organizationJson`, and how the latest WebSub pings / IndexNow submissions went. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; default share image: `set_theme_asset` slot socialShare; site language: `get_site_defaults`.",
+    "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `feedEnabled`, `indexNowEnabled`, `organizationJson`, the robots.txt rules with the live file they make, and how the latest WebSub pings / IndexNow submissions went. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; default share image: `set_theme_asset` slot socialShare; site language: `get_site_defaults`.",
   opName: "site_defaults.get_seo",
   input: z.object({}).strict(),
   format: (value) => {
@@ -83,6 +111,9 @@ export const getSiteSeoTool = makeReadTool<Record<string, never>>({
       feedEnabled: boolean;
       indexNowEnabled: boolean;
       organizationJson: Record<string, unknown>;
+      robotsRules: unknown[];
+      robotsTxt: string | null;
+      robotsWarnings: string[];
       searchNotifications: {
         channel: string;
         status: string;
@@ -97,6 +128,11 @@ export const getSiteSeoTool = makeReadTool<Record<string, never>>({
       `feedEnabled: ${v.feedEnabled}`,
       `indexNowEnabled: ${v.indexNowEnabled}`,
       `organizationJson: ${JSON.stringify(v.organizationJson)}`,
+      `robotsRules: ${JSON.stringify(v.robotsRules)}`,
+      ...v.robotsWarnings.map((w) => `robots WARNING: ${w}`),
+      v.robotsTxt === null
+        ? "robots.txt: (none until the site URL is set)"
+        : `robots.txt of the live site after the next Stage + Publish live (staging blocks every crawler):\n${v.robotsTxt.trimEnd()}`,
       v.searchNotifications.length === 0
         ? "search engine notifications: none yet (sent after a Publish live)"
         : `search engine notifications (newest first):\n${v.searchNotifications

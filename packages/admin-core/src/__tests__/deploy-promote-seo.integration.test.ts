@@ -265,6 +265,90 @@ describe("deploy.promote ships production SEO semantics", () => {
     expect(manifest.runId).toBe(staged.buildId);
   });
 
+  // #1706 — the Owner's robots.txt rules are a rendered setting: the build
+  // carries them, staging never serves them, and Publish live writes the
+  // live robots.txt from the Stage it ships, not from the settings by then.
+  it("#1706 — robots rules go live with the Publish live of the Stage that carries them", async () => {
+    const setRules = async (robotsRules: unknown) => {
+      const seo = await ok<{
+        siteBaseUrl: string;
+        sitemapEnabled: boolean;
+        feedEnabled: boolean;
+        indexNowEnabled: boolean;
+        organizationJson: Record<string, unknown>;
+      }>("site_defaults.get_seo", {});
+      await ok("site_defaults.set_seo", {
+        siteBaseUrl: seo.siteBaseUrl,
+        sitemapEnabled: seo.sitemapEnabled,
+        feedEnabled: seo.feedEnabled,
+        indexNowEnabled: seo.indexNowEnabled,
+        organizationJson: seo.organizationJson,
+        robotsRules,
+      });
+    };
+    const staging = join(testRoot, "output", "staging", "current");
+    const production = join(testRoot, "output", "production", "current");
+    try {
+      await setRules([
+        { userAgents: ["*"], disallow: [`/${HIDDEN_SLUG}/`] },
+        { userAgents: ["GPTBot"], disallow: ["/"] },
+      ]);
+      const staged = await ok<{ buildId: string; runId: string }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      await markAudited(staged.runId);
+      // Staging keeps every crawler out, whatever the rules say.
+      expect(await readFile(join(staging, "robots.txt"), "utf8")).toBe(
+        "User-agent: *\nDisallow: /\n",
+      );
+      // A rule saved after the Stage waits for the next one.
+      await setRules([{ userAgents: ["*"], disallow: ["/saved-after-the-stage/"] }]);
+      const promoted = await ok<{ toRunId: string }>("deploy.promote", {
+        fromTarget: "staging",
+        toTarget: "production",
+        repoRoot: testRoot,
+      });
+      const live = await readFile(join(production, "robots.txt"), "utf8");
+      // The groups, then the Sitemap lines of what the build carries.
+      expect(live.split("\n\nSitemap:")[0]).toBe(
+        [
+          "User-agent: *",
+          `Disallow: /${HIDDEN_SLUG}/`,
+          "",
+          "User-agent: GPTBot",
+          "Disallow: /",
+        ].join("\n"),
+      );
+      expect(live).toContain(`Sitemap: ${SITE_BASE_URL}/sitemap.xml`);
+      expect(live).not.toContain("saved-after-the-stage");
+
+      // The next Stage and Publish live take the newer rules live …
+      const next = await ok<{ runId: string }>("deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      await markAudited(next.runId);
+      await ok("deploy.promote", {
+        fromTarget: "staging",
+        toTarget: "production",
+        repoRoot: testRoot,
+      });
+      expect(await readFile(join(production, "robots.txt"), "utf8")).toContain(
+        "Disallow: /saved-after-the-stage/",
+      );
+      // … and a rollback restores the robots.txt of the build it restores.
+      await ok("deploy.rollback", {
+        targetName: "production",
+        runId: promoted.toRunId,
+        repoRoot: testRoot,
+      });
+      expect(await readFile(join(production, "robots.txt"), "utf8")).toBe(live);
+    } finally {
+      await setRules([]);
+    }
+  });
+
   it("says why no headers shipped when a run predates them, on Publish live and rollback (#1454)", async () => {
     const staged = await ok<{ buildId: string; runId: string }>("deploy.trigger", {
       targetName: "staging",

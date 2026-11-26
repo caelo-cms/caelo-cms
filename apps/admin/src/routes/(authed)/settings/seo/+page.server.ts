@@ -2,6 +2,7 @@
 
 import { describeError } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
+import { parseRobotsRulesText, type RobotsRules, robotsRulesText } from "@caelo-cms/shared";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requireApproverPermission, requirePermission } from "#lib/server/guards.js";
@@ -15,6 +16,10 @@ interface SeoSettings {
   feedEnabled: boolean;
   indexNowEnabled: boolean;
   organizationJson: Record<string, unknown>;
+  /** #1706 — the Owner's robots.txt rules and the live file they make. */
+  robotsRules: RobotsRules;
+  robotsTxt: string | null;
+  robotsWarnings: string[];
   searchNotifications: {
     id: string;
     channel: "websub" | "indexnow";
@@ -27,7 +32,8 @@ interface SeoSettings {
 
 /**
  * P8 — Owner-only SEO dashboard. Site-level base URL + sitemap, feed and
- * IndexNow toggles + Organization JSON-LD editor + the latest search engine
+ * IndexNow toggles + Organization JSON-LD editor + robots.txt rules
+ * (#1706) + the latest search engine
  * notifications + the stale-SEO queue. Owner-proxy via
  * `roles.manage` until the permission catalogue grows an explicit
  * `seo.settings` entry.
@@ -85,8 +91,14 @@ export const load: PageServerLoad = async ({ locals }) => {
           feedEnabled: false,
           indexNowEnabled: false,
           organizationJson: {},
+          robotsRules: [],
+          robotsTxt: null,
+          robotsWarnings: [],
           searchNotifications: [],
         },
+    robotsRulesText: settings.ok
+      ? robotsRulesText((settings.value as SeoSettings).robotsRules)
+      : "",
     stale: stale.ok
       ? (
           stale.value as {
@@ -178,5 +190,41 @@ export const actions: Actions = {
     });
     if (!r.ok) return fail(400, { error: describeError(r.error) });
     return { ok: true, message: "Site language saved." };
+  },
+  // #1706 — the robots.txt rules, written as robots.txt lines and checked
+  // strictly; the other settings stay as they are stored.
+  saveRobots: async ({ request, locals }) => {
+    requirePermission(locals, "roles.manage");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const text = String(form.get("robotsRules") ?? "");
+    const parsed = parseRobotsRulesText(text);
+    if (!parsed.ok)
+      return fail(400, { error: `robots.txt rules: ${parsed.message}`, robotsRulesText: text });
+    const current = await execute(registry, adapter, locals.ctx, "site_defaults.get_seo", {});
+    if (!current.ok)
+      return fail(400, { error: describeError(current.error), robotsRulesText: text });
+    const s = current.value as SeoSettings;
+    if (s.siteBaseUrl === null) {
+      return fail(400, {
+        error: "Set the site base URL first: robots.txt is published at that address.",
+        robotsRulesText: text,
+      });
+    }
+    const r = await execute(registry, adapter, locals.ctx, "site_defaults.set_seo", {
+      siteBaseUrl: s.siteBaseUrl,
+      sitemapEnabled: s.sitemapEnabled,
+      feedEnabled: s.feedEnabled,
+      indexNowEnabled: s.indexNowEnabled,
+      organizationJson: s.organizationJson,
+      robotsRules: parsed.rules,
+    });
+    if (!r.ok) return fail(400, { error: describeError(r.error), robotsRulesText: text });
+    return {
+      ok: true,
+      message:
+        "robots.txt rules saved. They reach the live site with the next Stage and Publish live; staging keeps every crawler out.",
+    };
   },
 };

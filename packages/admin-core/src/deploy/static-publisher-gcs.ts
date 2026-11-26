@@ -192,7 +192,14 @@ export function createGcsStaticPublisher(
       });
     },
 
-    async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl, beforeRelease }) {
+    async promoteToProduction({
+      sourceRunId,
+      fromTarget,
+      toTarget,
+      siteBaseUrl,
+      robotsRules,
+      beforeRelease,
+    }) {
       // The copy into the live bucket is the release itself.
       await beforeRelease?.();
       const h = await bucketHandles();
@@ -273,10 +280,12 @@ export function createGcsStaticPublisher(
       // Staging's X-Robots-Tag lives only on the staging-preview proxy
       // response, never in object metadata, so there is no header to
       // strip here.
-      const robotsBody = buildRobotsTxtWithSitemap(toTarget.robotsDefault, siteBaseUrl, {
-        sitemap: buildFiles.has("sitemap.xml"),
-        feed: buildFiles.has(FEED_FILE),
-      });
+      const robotsBody = buildRobotsTxtWithSitemap(
+        toTarget.robotsDefault,
+        siteBaseUrl,
+        { sitemap: buildFiles.has("sitemap.xml"), feed: buildFiles.has(FEED_FILE) },
+        robotsRules,
+      );
       await uploadBytes(
         h.staticBucket,
         "robots.txt",
