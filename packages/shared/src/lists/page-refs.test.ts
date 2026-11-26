@@ -433,6 +433,36 @@ describe("incremental builds", () => {
     expect([...got]).toEqual([P.ben]);
   });
 
+  it("a property named like an Object member reads as naming no page", () => {
+    const deps = mergeRenderDeps(
+      null,
+      new Map([
+        [
+          P.anna,
+          {
+            ...NONE,
+            queries: [
+              {
+                pageType: null,
+                terms: [],
+                parent: null,
+                refersTo: { property: "constructor", pages: [P.anna] },
+              },
+            ],
+          },
+        ],
+      ]),
+      PAGES,
+    );
+    expect(() =>
+      selectDependentPages(
+        deps,
+        { pageIds: [P.post3], listIds: [], listTypeSlugs: [] },
+        now(PAGES),
+      ),
+    ).not.toThrow();
+  });
+
   it("an article that stops naming an author rebuilds that author's page too", () => {
     const pages = PAGES.map((p) =>
       p.id === P.post1 ? { ...p, properties: { authors: [ref(P.ben)] } } : p,

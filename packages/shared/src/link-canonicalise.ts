@@ -711,6 +711,55 @@ function canonicaliseFieldValue(
 }
 
 /**
+ * A query's page references — `parent` and `refers_to.page` (#1754) —
+ * stored as references; reads show them as the pages' paths, so a write
+ * of what a read returned turns the paths back. `"self"` stays.
+ */
+export function canonicaliseQueryRefs(
+  query: unknown,
+  run: LinkCanonicaliseRun,
+  at: string,
+): unknown {
+  if (query === null || typeof query !== "object" || Array.isArray(query)) return query;
+  const q = query as { parent?: unknown; refers_to?: unknown };
+  let out: Record<string, unknown> = query as Record<string, unknown>;
+  if (typeof q.parent === "string") {
+    out = { ...out, parent: canonicaliseUrl(q.parent, run, `${at}.parent`) };
+  }
+  const refersTo = q.refers_to as { page?: unknown } | undefined;
+  if (refersTo && typeof refersTo === "object" && typeof refersTo.page === "string") {
+    if (refersTo.page !== "self") {
+      out = {
+        ...out,
+        refers_to: {
+          ...refersTo,
+          page: canonicaliseUrl(refersTo.page, run, `${at}.refers_to.page`),
+        },
+      };
+    }
+  }
+  return out;
+}
+
+/**
+ * #1754 — the page references in the query sources of a module's `list`
+ * fields (`source.defaults`: `parent`, `refers_to.page`), as
+ * {@link canonicaliseQueryRefs} does for one query. A module read shows
+ * them as paths, so a read-modify-write of the fields stores them again.
+ */
+export function canonicaliseFieldSources<F extends CanonicaliseField>(
+  fields: readonly F[],
+  run: LinkCanonicaliseRun,
+): F[] {
+  return fields.map((f, i) => {
+    const source = (f as { source?: { kind?: unknown; defaults?: unknown } }).source;
+    if (f.kind !== "list" || source?.kind !== "query" || source.defaults === undefined) return f;
+    const defaults = canonicaliseQueryRefs(source.defaults, run, `fields[${i}].source.defaults`);
+    return defaults === source.defaults ? f : { ...f, source: { ...source, defaults } };
+  });
+}
+
+/**
  * Canonicalise a content instance's values against its module's fields.
  * Values without a declared field are still scanned (key-name rule +
  * HTML): the template engine renders every stored value a placeholder

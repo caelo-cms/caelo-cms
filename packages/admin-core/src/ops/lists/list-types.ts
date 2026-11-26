@@ -17,6 +17,7 @@
 import { activeListExt } from "@caelo-cms/plugin-host";
 import { defineOperation, type ErrorDetail, handlerErrorFromDetails } from "@caelo-cms/query-api";
 import {
+  canonicaliseQueryRefs,
   checkListTypeDef,
   LIST_TYPE_ROLES,
   type ListItem,
@@ -27,6 +28,7 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { canonicaliseLinksForWrite } from "../../links/canonicalise.js";
 import { countListsByType } from "../../lists/counts.js";
 import { checkDefinitionExt, inertExtPaths } from "../../lists/ext.js";
 import {
@@ -263,10 +265,32 @@ export const upsertListTypesManyOp = defineOperation({
     let wrote = false;
     const seen = new Set<string>();
 
+    // #1754 — a node's query may name a page by path, as written queries
+    // do; the definition stores the reference.
+    const canon = await canonicaliseLinksForWrite(tx, ctx, (run) =>
+      input.listTypes.map((t, i) => ({
+        ...t,
+        nodes: Object.fromEntries(
+          Object.entries(t.nodes).map(([kind, node]) => {
+            const source = node.source;
+            if (source?.kind !== "query") return [kind, node];
+            const defaults = canonicaliseQueryRefs(
+              source.defaults,
+              run,
+              `listTypes[${i}].nodes.${kind}.source.defaults`,
+            ) as typeof source.defaults;
+            return [kind, { ...node, source: { ...source, defaults } }];
+          }),
+        ),
+      })),
+    );
+    if (!canon.ok) return { ok: false, error: handlerError(op, canon.message) };
+    const listTypes = canon.value;
+
     // #1277 — every definition problem of every list type, before the first write.
-    const definitionProblems = input.listTypes.flatMap((item, i): ErrorDetail[] => {
+    const definitionProblems = listTypes.flatMap((item, i): ErrorDetail[] => {
       const { expectedVersion: _v, ...def } = item;
-      const twice = input.listTypes.findIndex((t) => t.slug === def.slug) !== i;
+      const twice = listTypes.findIndex((t) => t.slug === def.slug) !== i;
       return [
         ...(twice
           ? [
@@ -288,7 +312,7 @@ export const upsertListTypesManyOp = defineOperation({
       };
     }
 
-    for (const [i, item] of input.listTypes.entries()) {
+    for (const [i, item] of listTypes.entries()) {
       const { expectedVersion, ...def } = item;
       const at = `listTypes[${i}] ("${def.slug}")`;
       seen.add(def.slug);

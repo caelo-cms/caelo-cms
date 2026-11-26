@@ -22,6 +22,7 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext, ListItem, ListTypeDef } from "@caelo-cms/shared";
 import {
+  canonicaliseQueryRefs,
   describeLinkIssues,
   listPaginationSchema,
   pageQueryPartialSchema,
@@ -30,12 +31,7 @@ import {
   validateListItems,
 } from "@caelo-cms/shared";
 import { canonicaliseLinksForWrite } from "../links/canonicalise.js";
-import {
-  canonicaliseEntryLinks,
-  canonicaliseQueryRefs,
-  checkEntryRefs,
-  describeIssues,
-} from "../ops/lists/_shared.js";
+import { canonicaliseEntryLinks, checkEntryRefs, describeIssues } from "../ops/lists/_shared.js";
 import { bindingOf, type ListFieldDef, listFieldsOf, parseListRef } from "./local.js";
 import { loadListEntities, loadListEntity } from "./store.js";
 

@@ -329,7 +329,12 @@ names `page`: `"self"` is the rendering page (the articles of this author,
 the talks of this speaker), `caelo:page/<id>` a fixed page (any page can
 show "articles reviewed by Ben"). It combines with every other filter, the
 order and `paginate` like any query knob, and a placement may set it when
-the source makes it `editable`. Another language version of `page` (same
+the source makes it `editable`. Like `parent`, the page may be written as
+its path (reads show paths): a module field's source, a list type's
+source node, an entry's or a placement's knobs and `preview_list_source`
+store or resolve it as `caelo:page/<id>` (`canonicaliseQueryRefs`); the
+query that runs takes references only (`pageQuerySchema` vs. the written
+`pageQueryPartialSchema`). Another language version of `page` (same
 `link-resolve` group) counts as `page` too, so a translated article that
 still names the original author shows on the author's page in its own
 language. A `property` no page type declares as a `page` property renders

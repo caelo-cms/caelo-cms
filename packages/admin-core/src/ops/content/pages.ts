@@ -1416,6 +1416,12 @@ async function nextTypeBound(
   ctx: ExecutionContext,
   input: z.infer<typeof pageUpdateSchema>,
   base: PageState,
+  /**
+   * #1754 — `base` is the source of a new copy (pages.duplicate), not the
+   * page being changed: pages naming the source keep naming it, so the
+   * copy may take another type, and the copy is not the source.
+   */
+  opts: { readonly copy?: boolean } = {},
 ): Promise<
   | {
       ok: true;
@@ -1446,14 +1452,14 @@ async function nextTypeBound(
     },
     await loadVocabularyIndex(tx, ctx.chatBranchId ?? null, [resolved.def]),
     await loadPageRefIndex(pageRefLookupOf(tx, ctx), resolved.def, [properties]),
-    input.pageId,
+    opts.copy ? null : input.pageId,
   );
   if (fit.issues.length > 0) {
     return { ok: false, details: fitIssueDetails(resolved.def.slug, fit.issues) };
   }
   // #1754 — a page another page's `page` property names as a page of its
   // current type keeps that type while it is named so.
-  if (resolved.typeId !== base.pageTypeId) {
+  if (!opts.copy && resolved.typeId !== base.pageTypeId) {
     const from = (
       await loadListEntities(tx, "pageType", ctx.chatBranchId ?? null, {
         ids: [base.pageTypeId],
@@ -2451,6 +2457,7 @@ export const duplicatePageOp = defineOperation({
         ...(input.pageType !== undefined ? { pageType: input.pageType } : {}),
       },
       sourceState,
+      { copy: true },
     );
     if (!dupType.ok) {
       return err(

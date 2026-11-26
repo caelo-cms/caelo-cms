@@ -57,9 +57,18 @@ const queryOrderSchema = z.union([
   z.string().regex(/^prop_(?:desc|asc):[a-z][a-z0-9_]{0,63}$/),
 ]);
 
-/** A query over pages. Resolved at render time; nothing is stored. */
-export const pageQuerySchema = z
-  .object({
+/** A page as a query stores it: `caelo:page/<id>`. */
+const STORED_PAGE_REF = /^caelo:page\/[0-9a-f-]{36}$/;
+/**
+ * A page as a written query may name it: its reference, or its path as reads
+ * show it (#1754). Every write stores the reference (`canonicaliseQueryRefs`);
+ * a path that reached a render anyway fails `pageQuerySchema` loudly.
+ */
+const WRITTEN_PAGE_REF = /^(?:caelo:page\/[0-9a-f-]{36}|\/\S*)$/;
+
+/** The query's fields, with `pageRef` for the pages it names. */
+function pageQueryShape(pageRef: RegExp) {
+  return z.object({
     page_type: z
       .string()
       .regex(/^[a-z0-9-]+$/)
@@ -69,10 +78,7 @@ export const pageQuerySchema = z
       .max(20)
       .optional(),
     terms_mode: z.enum(["any", "all"]).optional(),
-    parent: z
-      .string()
-      .regex(/^caelo:page\/[0-9a-f-]{36}$/)
-      .optional(),
+    parent: z.string().regex(pageRef).optional(),
     /**
      * #1754 — only pages whose `page` property `property` names `page`:
      * the rendering page itself (`"self"`: the articles of this author) or
@@ -81,19 +87,28 @@ export const pageQuerySchema = z
     refers_to: z
       .object({
         property: listNameSchema,
-        page: z.union([z.literal("self"), z.string().regex(/^caelo:page\/[0-9a-f-]{36}$/)]),
+        page: z.union([z.literal("self"), z.string().regex(pageRef)]),
       })
       .strict()
       .optional(),
     exclude_current: z.boolean().optional(),
     order: queryOrderSchema,
     limit: z.number().int().min(1).max(LIST_QUERY_MAX_LIMIT),
-  })
-  .strict();
+  });
+}
+
+/**
+ * A query over pages, as it runs: every page named by reference. Resolved
+ * at render time; nothing is stored.
+ */
+export const pageQuerySchema = pageQueryShape(STORED_PAGE_REF).strict();
 export type PageQuery = z.infer<typeof pageQuerySchema>;
 
-/** Partial query: defaults on a node, or the knobs an entry overrides. */
-export const pageQueryPartialSchema = pageQuerySchema.partial();
+/**
+ * Partial query as written: defaults on a node or module field, or the
+ * knobs an entry or placement overrides. A page may be named by path.
+ */
+export const pageQueryPartialSchema = pageQueryShape(WRITTEN_PAGE_REF).partial().strict();
 
 /** A complete query source, as the AI-facing examples and refusals show it. */
 export const QUERY_SOURCE_EXAMPLE =

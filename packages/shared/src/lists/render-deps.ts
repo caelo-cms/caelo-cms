@@ -86,6 +86,14 @@ export function parseRenderDeps(raw: string | null): RenderDepsFile | null {
   return v as RenderDepsFile;
 }
 
+/**
+ * The pages `p`'s `page` property `property` names — an own key only, so a
+ * property called `constructor` reads as "names none", not as Object's.
+ */
+function refsOf(p: RenderDepsPageAttrs, property: string): readonly string[] {
+  return Object.hasOwn(p.refs, property) ? (p.refs[property] ?? []) : [];
+}
+
 /** What changed since the build the deps file describes. */
 export interface RenderChange {
   readonly pageIds: readonly string[];
@@ -141,7 +149,7 @@ export function selectDependentPages(
     (q.parent === null || q.parent === p.parent) &&
     (q.terms.length === 0 || q.terms.some((t) => p.terms.includes(t))) &&
     (q.refersTo === null ||
-      (p.refs[q.refersTo.property] ?? []).some((id) => q.refersTo?.pages.includes(id)));
+      refsOf(p, q.refersTo.property).some((id) => q.refersTo?.pages.includes(id)));
   for (const [pageId, d] of Object.entries(deps.pages)) {
     if (
       d.lists.some((l) => lists.has(l)) ||

@@ -28,6 +28,7 @@
 import { dormantListSourceNames, resolveListSources } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
+  canonicaliseQueryRefs,
   createListRenderContext,
   type ListFieldSpec,
   type ListTypeDef,
@@ -51,7 +52,7 @@ import {
 } from "../../lists/local.js";
 import { loadListEntities, loadListEntity, loadListEntityBySlug } from "../../lists/store.js";
 import { loadPublishPageUrlStyle } from "../content/public-urls.js";
-import { branchOf, canonicaliseQueryRefs, handlerError, sourceEntriesOf } from "./_shared.js";
+import { branchOf, handlerError, sourceEntriesOf } from "./_shared.js";
 
 const OP = "lists.preview_source";
 

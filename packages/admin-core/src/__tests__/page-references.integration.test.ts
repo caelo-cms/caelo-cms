@@ -401,7 +401,72 @@ describe("a term's overview page", () => {
   });
 });
 
+describe("a fixed page in a stored query, as reads show it", () => {
+  const query = (page: string) => ({
+    kind: "query",
+    editable: [],
+    defaults: { refers_to: { property: "authors", page }, order: "title_asc", limit: 5 },
+  });
+
+  it("a module's source field takes the path and stores the reference; its read round-trips", async () => {
+    const field = (page: string) => ({
+      name: "articles",
+      kind: "list",
+      label: "Articles",
+      listType: "links",
+      bind: "source",
+      source: query(page),
+    });
+    const { moduleId } = await op<{ moduleId: string }>(SYS, "modules.create", {
+      slug: `${PFX}by-ben`,
+      displayName: "Articles by Ben",
+      html: "<ul>{{#articles}}<li>{{title}}</li>{{/articles}}</ul>",
+      fields: [field(`/${PFX}ben`)],
+    });
+    const stored = async () =>
+      (
+        (await asSystem((tx) => tx`SELECT fields FROM modules WHERE id = ${moduleId}::uuid`)) as {
+          fields: { source: { defaults: { refers_to: { page: string } } } }[];
+        }[]
+      )[0]?.fields[0]?.source.defaults.refers_to.page;
+    expect(await stored()).toBe(ref(P.ben));
+    const read = await op<{ module: { fields: unknown[] } }>(SYS, "modules.get", { moduleId });
+    await op(SYS, "modules.update", { moduleId, fields: read.module.fields });
+    expect(await stored()).toBe(ref(P.ben));
+  });
+
+  it("a list type's source node does the same", async () => {
+    await op(SYS, "list_types.upsert_many", {
+      listTypes: [
+        {
+          slug: `${PFX}feeds`,
+          name: "Feeds",
+          purpose: "Article feeds",
+          role: "content",
+          root: { allow: ["feed"] },
+          nodes: { feed: { label: "Feed", fields: [], source: query(`/${PFX}ben`) } },
+        },
+      ],
+    });
+    const rows = (await asSystem(
+      (tx) => tx`SELECT definition FROM list_types WHERE slug = ${`${PFX}feeds`}`,
+    )) as {
+      definition: { nodes: { feed: { source: { defaults: { refers_to: { page: string } } } } } };
+    }[];
+    expect(rows[0]?.definition.nodes.feed.source.defaults.refers_to.page).toBe(ref(P.ben));
+  });
+});
+
 describe("page types guard their relations", () => {
+  it("a copy of a named page may take another type: the original keeps its type", async () => {
+    const copy = await op<{ pageId: string }>(SYS, "pages.duplicate", {
+      sourcePageId: P.ben,
+      newSlug: `${PFX}ben-copy`,
+      pageType: "home",
+    });
+    expect(copy.pageId).toBeString();
+  });
+
   it("refuses to change the type of a page a typed property names", async () => {
     // Post one names Ben as an author; `authors` takes only author pages.
     const msg = await fail(SYS, "pages.update", { pageId: P.ben, pageType: "home" });
