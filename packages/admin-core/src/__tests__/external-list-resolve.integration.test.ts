@@ -171,7 +171,7 @@ describe("#1729 — a runtime-installed plugin translates lists", () => {
     const preview = await flow.preview(pageId);
     const ms = performance.now() - started;
     expect(preview.pluginFailures).toEqual([]);
-    expect(preview.html).toContain("<b>&lt;img src=x onerror=alert(1)&gt;</b>");
+    expect(preview.html).toContain("<b>&lt;img src&#61;x onerror&#61;alert(1)&gt;</b>");
     expect(preview.html).not.toContain("<img src=x");
     expect(preview.html).not.toContain("<script>");
     expect(preview.html).not.toContain("javascript:");

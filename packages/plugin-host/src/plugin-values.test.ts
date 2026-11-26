@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { FieldDef } from "@caelo-cms/shared";
+import { Parser } from "htmlparser2";
 import {
   checkPluginMedia,
   checkPluginValue,
@@ -25,10 +26,27 @@ describe("text, select and icon are escaped, never markup", () => {
         checkPluginValue(field(type, { options: ["a"] }), '<img src=x onerror="alert(1)">'),
       ).toEqual({
         ok: true,
-        value: "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;",
+        value: "&lt;img src&#61;x onerror&#61;&quot;alert(1)&quot;&gt;",
       });
     }
     expect(escapePluginText(`Tom & 'Jerry'`)).toBe("Tom &amp; &#39;Jerry&#39;");
+  });
+
+  it("gives an unquoted attribute no attribute with a value, so no handler code", () => {
+    // `<div title={{label}}>`: whitespace ends an unquoted value, so the
+    // words after it become attributes, but none of them gets a value.
+    const html = `<div title=${escapePluginText("x onmouseover=alert(1) y=`z`")}>`;
+    const attributes: Record<string, string> = {};
+    new Parser({
+      onattribute: (name, value) => {
+        attributes[name] = value;
+      },
+    }).end(html);
+    expect(attributes).toEqual({
+      title: "x",
+      "onmouseover&#61;alert(1)": "",
+      "y&#61;&#96;z&#96;": "",
+    });
   });
 });
 

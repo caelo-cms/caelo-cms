@@ -37,7 +37,10 @@ const failed = (v: ScopeValue | undefined) => (v?.kind === "failed" ? v.marker :
 describe("a plugin's local list entries (#1729, §4.5)", () => {
   it("escapes a text field, so its value cannot leave a quoted attribute", () => {
     const e = entry({ label: '" onmouseover="alert(1)', link: { href: "/de/docs" } });
-    expect(e.get("label")).toEqual({ kind: "text", text: "&quot; onmouseover=&quot;alert(1)" });
+    expect(e.get("label")).toEqual({
+      kind: "text",
+      text: "&quot; onmouseover&#61;&quot;alert(1)",
+    });
     expect(failed(e.get("link"))).toBeNull();
   });
 

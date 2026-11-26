@@ -240,7 +240,7 @@ it("a runtime-installed plugin's list source renders checked values in the previ
   expect(preview.html).toContain("<b>Safe</b><div><p>Hello <strong>there</strong></p></div>");
   expect(preview.html).toContain('<a href="https://example.com/a">go</a><i>write refused</i>');
   // A label carrying markup is data: escaped, never an element.
-  expect(preview.html).toContain("<b>&lt;img src=x onerror=alert(1)&gt;</b>");
+  expect(preview.html).toContain("<b>&lt;img src&#61;x onerror&#61;alert(1)&gt;</b>");
   expect(preview.html).not.toContain("<img src=x");
   expect(preview.html).not.toContain("<script>");
   expect(preview.html).not.toContain("javascript:");

@@ -106,7 +106,7 @@ describe("list-resolve values (#1729, §4.5)", () => {
     );
     expect(owned.get("label")).toEqual({
       kind: "text",
-      text: "&lt;img src=x onerror=alert(1)&gt;",
+      text: "&lt;img src&#61;x onerror&#61;alert(1)&gt;",
     });
     const core = headerEntry(
       fixtureData({ pageVariants: variants, overlays: overlay([[LABEL, markup]], false) }),

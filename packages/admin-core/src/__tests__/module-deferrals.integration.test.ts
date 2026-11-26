@@ -304,7 +304,7 @@ describe("#450 — module deferrals through the preview op", () => {
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("<img");
     expect(html).toContain("&lt;script&gt;steal()&lt;/script&gt;");
-    expect(html).toContain('data-consent-grant="&quot;&gt;&lt;img src=x onerror=a()&gt;"');
+    expect(html).toContain('data-consent-grant="&quot;&gt;&lt;img src&#61;x onerror&#61;a()&gt;"');
   });
 
   it("refuses markup in a verdict (the shape before #1729)", async () => {

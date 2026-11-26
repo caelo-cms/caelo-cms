@@ -83,7 +83,7 @@ describe("content-variant values (#1729, §4.5)", () => {
       teaser: { moduleId: REFERENCE, contentInstanceId: REFERENCE },
       ghost: "not a field of the module",
     });
-    expect(out.title).toBe("&lt;img src=x onerror=alert(1)&gt;");
+    expect(out.title).toBe("&lt;img src&#61;x onerror&#61;alert(1)&gt;");
     expect(Object.fromEntries(Object.entries(out).map(([k, v]) => [k, rule(v)]))).toEqual({
       title: null,
       body: "element-script",
@@ -141,7 +141,7 @@ describe("content-variant values (#1729, §4.5)", () => {
 
   it("escapes a link's target", () => {
     const out = check({ cta: { href: "/docs", target: '_blank" onclick="x' } });
-    expect(out.cta).toEqual({ href: "/docs", target: "_blank&quot; onclick=&quot;x" });
+    expect(out.cta).toEqual({ href: "/docs", target: "_blank&quot; onclick&#61;&quot;x" });
   });
 
   it("renders a refused value raw and records it, never the field's default", () => {

@@ -82,14 +82,24 @@ const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
 
 const ALLOWED_SCHEMES: ReadonlySet<string> = new Set(["https:", "http:", "mailto:", "tel:"]);
 
-/** Escape text for HTML content and attribute values alike. */
+/**
+ * Escape text for HTML content and attribute values alike, quoted or not.
+ * Module HTML substitutes raw, so a template may place a field in an
+ * unquoted attribute (`title={{label}}`), where whitespace ends the value:
+ * with `=` escaped, the words after it can only be valueless attributes,
+ * which run no code (an `onmouseover` without a value is empty). The
+ * backtick is escaped for the same context. Each renders as itself in text
+ * and in a quoted attribute.
+ */
 export function escapePluginText(text: string): string {
   return text
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+    .replaceAll("'", "&#39;")
+    .replaceAll("=", "&#61;")
+    .replaceAll("`", "&#96;");
 }
 
 /**

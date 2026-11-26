@@ -166,7 +166,7 @@ describe("#1729 — a runtime-installed plugin gives pages their own chrome", ()
     const preview = await flow.preview(pages.translated);
     const firstMs = performance.now() - started;
     expect(preview.pluginFailures).toEqual([]);
-    expect(preview.html).toContain("<h1>&lt;img src=x onerror=alert(1)&gt;</h1>");
+    expect(preview.html).toContain("<h1>&lt;img src&#61;x onerror&#61;alert(1)&gt;</h1>");
     expect(preview.html).toContain(
       '<div class="intro"><p>Willkommen <strong>hier</strong></p></div>',
     );
