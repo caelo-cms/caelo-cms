@@ -24,7 +24,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { canonicalSitePath, placementKey } from "@caelo-cms/plugin-sdk";
+import { canonicalSitePath, headingLevel, placementKey } from "@caelo-cms/plugin-sdk";
 import { CONTENT_INSTANCE_ATTRIBUTE } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
 
@@ -91,7 +91,6 @@ const INVISIBLE = new Set(["script", "style", "noscript", "template", "head"]);
 const LITERAL = new Set(["code", "pre", "kbd", "samp", "var"]);
 const VISIBLE_ATTRS = ["alt", "placeholder", "aria-label", "title"] as const;
 const BUTTON_INPUTS = new Set(["button", "submit", "reset"]);
-const HEADING = /^h([1-6])$/;
 
 interface Scope {
   readonly tag: string;
@@ -237,7 +236,7 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
             ? (attrs[CONTENT_INSTANCE_ATTRIBUTE] ?? onlyInstanceOf(moduleId))
             : parent.contentInstanceId;
         const translate = attrs.translate?.toLowerCase();
-        const headingMatch = HEADING.exec(name);
+        const level = headingLevel(name);
         const key = moduleId !== undefined ? placementKey(moduleId, instance) : null;
         const zone =
           moduleId !== undefined
@@ -260,7 +259,7 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
           invisible: parent.invisible || INVISIBLE.has(name),
           literal: parent.literal || LITERAL.has(name),
           noTranslate: translate === "no" || (translate !== "yes" && parent.noTranslate),
-          heading: headingMatch ? Number(headingMatch[1]) : parent.heading,
+          heading: level ?? parent.heading,
           inForm: parent.inForm || name === "form",
         };
         stack.push(scope);
@@ -282,7 +281,7 @@ export function extractPageHtmlFacts(input: PageHtmlInput): PageHtmlFacts {
         if (
           attrs.id !== undefined &&
           attrs.id !== "" &&
-          (headingMatch || name === "section" || name === "article")
+          (level !== null || name === "section" || name === "article")
         )
           anchor = attrs.id;
         for (const attr of VISIBLE_ATTRS) {
