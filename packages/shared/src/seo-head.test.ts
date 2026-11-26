@@ -201,7 +201,7 @@ describe("completeSeoOrigins", () => {
       }),
     ).toEqual({ metaDescription: "reviewed", ogTitle: "human" });
   });
-  it("gives an unrecorded text 0880's rule: AI once SEO was autofilled or optimized", () => {
+  it("gives an unrecorded text 0894's rule: AI once SEO was autofilled or optimized", () => {
     expect(
       completeSeoOrigins({
         ...texts,

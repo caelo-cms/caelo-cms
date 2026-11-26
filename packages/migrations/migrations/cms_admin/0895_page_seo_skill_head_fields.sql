@@ -1,8 +1,8 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0881 — #1752: skill guidance for the SEO head fields.
+-- 0895 — #1752: skill guidance for the SEO head fields.
 --
--- The page-seo skill learns what 0880 added: every head value has an
+-- The page-seo skill learns what 0894 added: every head value has an
 -- origin the AI reads before it writes (the operator's own text is never
 -- rewritten unasked), the `<title>` of most pages comes from a title
 -- template per page type or site-wide (set_page_type_seo_many), og:type

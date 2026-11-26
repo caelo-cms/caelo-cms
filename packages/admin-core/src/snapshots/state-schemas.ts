@@ -81,7 +81,7 @@ const templateStateV1 = z
   .strict();
 
 /**
- * #1752 — the head fields a page SEO state written before migration 0880
+ * #1752 — the head fields a page SEO state written before migration 0894
  * does not carry, at the values a row without them holds (the column
  * defaults). Such a state is exactly the SEO its page had then: no own SEO
  * title or Open Graph texts, no robots directive but `noindex`. The parse
@@ -134,7 +134,7 @@ const pageSeoStateV1 = z
       })
       .strict(),
   )
-  // A text without a recorded origin gets 0880's backfill rule (seo-head.ts).
+  // A text without a recorded origin gets 0894's backfill rule (seo-head.ts).
   .transform((s) => ({ ...s, origins: completeSeoOrigins(s) }));
 
 const pageStateV1 = z.preprocess(

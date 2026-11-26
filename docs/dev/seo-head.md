@@ -8,7 +8,7 @@ who may change it. The resolver is
 
 ## 1. Fields
 
-`pages_seo` (migrations 0027, 0880), one row per page, all draft state
+`pages_seo` (migrations 0027, 0894), one row per page, all draft state
 (#1156: a chat's write is a pending page change, merged by the Stage):
 
 | column | meaning | empty / default |
@@ -54,7 +54,7 @@ else), an unchanged one keeps its origin, an emptied one has none. Only a
 person marks an AI text `reviewed` (`pages_seo.set` `reviewed`, the SEO
 panel's checkbox); the op refuses it from any other actor.
 
-Texts written before 0880, or by the previous release during an update,
+Texts written before 0894, or by the previous release during an update,
 carry no origin. The migration backfilled, and `completeSeoOrigins`
 applies to such a text when it is read, the same rule: `ai` when the
 page's SEO was ever autofilled or optimized, else `human`.
@@ -70,7 +70,7 @@ page's SEO was ever autofilled or optimized, else `human`.
 | `og:site_name` | — | `site_defaults.site_name`, no tag while unset |
 
 The templates are stored data, never values made up at read time
-(CLAUDE.md §2). `site_defaults.seo_title_template` is `NOT NULL`; 0880
+(CLAUDE.md §2). `site_defaults.seo_title_template` is `NOT NULL`; 0894
 stored `{page_title}`, the title every page had before, so no page's title
 changed with the migration. A page type's `PageTypeDef.seo` is optional:
 absent (or a key of it absent), the page type adds nothing and the site's
@@ -165,7 +165,7 @@ templates are not translated per variant: their variables are.
 
 ## 8. Compatibility
 
-0880 is expand-only: new columns with defaults; the previous image never
+0894 is expand-only: new columns with defaults; the previous image never
 names them. Page SEO snapshot states and page type definitions written
 before it lack the new keys; their parse adds the column defaults
 (`PAGE_SEO_HEAD_COLUMN_DEFAULTS`, input normalisation of an older

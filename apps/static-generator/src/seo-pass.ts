@@ -270,7 +270,7 @@ export async function prepareSeoPass(args: {
   for (let at = 0; at < args.pageIds.length; at += BUNDLE_BATCH) {
     const ids = args.pageIds.slice(at, at + BUNDLE_BATCH);
     // A page without a row reads as the column defaults (migrations 0027,
-    // 0880): the coalesces below spell those defaults where the LEFT JOIN
+    // 0894): the coalesces below spell those defaults where the LEFT JOIN
     // finds no row.
     const rows = (await tx.execute(sql`
       SELECT

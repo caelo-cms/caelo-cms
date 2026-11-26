@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0880 — #1752: the SEO head fields of CMS_REQUIREMENTS §11.
+-- 0894 — #1752: the SEO head fields of CMS_REQUIREMENTS §11.
 --
 -- 1. `pages_seo` gains the page's own SEO title (separate from the page
 --    title), Open Graph title and description overrides, the robots

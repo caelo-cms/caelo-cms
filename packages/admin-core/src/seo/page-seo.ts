@@ -37,7 +37,7 @@ import type { PageSeoState } from "../snapshots/state.js";
 import { PAGE_SEO_HEAD_COLUMN_DEFAULTS } from "../snapshots/state-schemas.js";
 
 /**
- * The `pages_seo` column defaults (migrations 0027, 0880), i.e. what a page
+ * The `pages_seo` column defaults (migrations 0027, 0894), i.e. what a page
  * without a row reads as. Stored data's own shape, not a substitute value:
  * `INSERT INTO pages_seo (page_id)` produces exactly this.
  */
@@ -238,7 +238,7 @@ export function pageSeoViewSql(
     sql.raw(
       `CASE WHEN o.seo IS NULL THEN s.${column} ELSE (o.seo->>'${field}')${cast} END AS ${column}`,
     );
-  // #1752 — a pending state written before 0880 lacks the head fields: it
+  // #1752 — a pending state written before 0894 lacks the head fields: it
   // reads as their column defaults, exactly as its snapshot parse does
   // (PAGE_SEO_HEAD_COLUMN_DEFAULTS).
   const pickHead = (field: string, column: string, cast: string, absent: string): SQL =>

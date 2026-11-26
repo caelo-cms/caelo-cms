@@ -14,7 +14,7 @@
  *
  * Both templates are stored data (`page_types.definition.seo.titleTemplate`,
  * `site_defaults.seo_title_template`), never values made up at read time
- * (CLAUDE.md §2): the site template always exists (migration 0880 stored
+ * (CLAUDE.md §2): the site template always exists (migration 0894 stored
  * `{page_title}`, today's title), a page type's is optional and absent
  * means the page type adds nothing to the site's.
  *
@@ -217,7 +217,7 @@ export interface PageSeoHeadFields extends RobotsDirectives {
 
 /**
  * The head fields of a page with no SEO of its own: the `pages_seo` column
- * defaults (migrations 0027, 0880), which a page without a row reads as.
+ * defaults (migrations 0027, 0894), which a page without a row reads as.
  */
 export const PAGE_SEO_HEAD_DEFAULTS: PageSeoHeadFields = Object.freeze({
   seoTitle: "",
@@ -237,9 +237,9 @@ export const PAGE_SEO_HEAD_DEFAULTS: PageSeoHeadFields = Object.freeze({
 
 /**
  * The authorship of every non-empty own text, and of no empty one. A text
- * without a recorded authorship was written before migration 0880 or by the
+ * without a recorded authorship was written before migration 0894 or by the
  * previous release during an update, neither of which recorded one; it gets
- * the rule 0880 backfilled with: the AI when the page's SEO was ever
+ * the rule 0894 backfilled with: the AI when the page's SEO was ever
  * autofilled or optimized, else a person.
  */
 export function completeSeoOrigins(s: {
