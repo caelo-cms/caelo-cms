@@ -164,6 +164,10 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     // `$listSources` entry (render-points.ts), checked like a shipped
     // plugin's (plugin-values.ts).
     ...(manifest.listSources ? { listSources: manifest.listSources } : {}),
+    // #1729 — what the `$linkResolve` answer is computed from: core keeps
+    // the answer per render scope and asks again only after a change to
+    // these tables, so a preview does not spawn a sandbox per page chunk.
+    ...(manifest.linkResolveReads ? { linkResolveReads: manifest.linkResolveReads } : {}),
     // #1332 — the reviewed contract, with the input schema compiled from
     // the manifest's JSON Schema: the host validates a visitor's body
     // before the sandbox ever sees it.

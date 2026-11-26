@@ -255,6 +255,7 @@ beforeAll(async () => {
             },
           },
           linkResolveOperation: "link_resolve",
+          linkResolveReads: { tables: [] },
           listResolveOperation: "list_resolve",
           operations: {
             badges: async (_ctx, args) => sourceAnswer((args as { pageIds: string[] }).pageIds),

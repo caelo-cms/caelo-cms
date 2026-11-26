@@ -52,6 +52,8 @@ export const RENDER_POINT_ENTRIES = Object.freeze({
   $contributions: { definitionKey: "contributionsOperation", announcedBy: "contributes" },
   /** §6.2 — `shareImagesOperation`, announced by `hasShareImages`. */
   $shareImages: { definitionKey: "shareImagesOperation", announcedBy: "hasShareImages" },
+  /** §6.4 — `linkResolveOperation`, announced by `hasLinkResolve`. */
+  $linkResolve: { definitionKey: "linkResolveOperation", announcedBy: "hasLinkResolve" },
 } satisfies Record<string, RenderPointEntry>);
 
 /** The name of a reserved entry. */
