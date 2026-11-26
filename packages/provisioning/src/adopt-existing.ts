@@ -18,7 +18,9 @@
  *      ever adopted; every other kind is left to Pulumi.
  *   2. {@link existingCandidates}: a gcloud describe per candidate. Exists →
  *      adopt; NOT_FOUND → a plain create; anything else stops the run (we
- *      can't tell, and guessing either way is wrong).
+ *      can't tell, and guessing either way is wrong). A Cloud SQL database or
+ *      user on an instance the project does not list yet is a plain create
+ *      without a describe: Cloud SQL answers that one with 403.
  *   3. `pulumi import` of the existing ones into the stack, under the
  *      stack's explicit GCP provider (wizards/gcp-pulumi.ts). State only: the
  *      cloud resources are not touched.
@@ -70,6 +72,12 @@ export interface AdoptionTarget {
   readonly describeArgs: readonly string[];
   /** The id `pulumi import` takes for the kind. */
   readonly importId: string;
+  /**
+   * The Cloud SQL instance a database or user lives on. It can only exist
+   * once the instance does, so it is described only when the project lists
+   * that instance ({@link existingCandidates}).
+   */
+  readonly sqlInstance?: { readonly projectId: string; readonly name: string };
 }
 
 /** A resource kind the installer adopts when it exists already. */
@@ -215,6 +223,7 @@ export const ADOPTABLE_KINDS: Readonly<Record<string, AdoptableKind>> = {
           "--format=value(name)",
         ],
         importId: `projects/${projectId}/instances/${instance}/databases/${name}`,
+        sqlInstance: { projectId, name: instance },
       };
     },
   },
@@ -238,6 +247,7 @@ export const ADOPTABLE_KINDS: Readonly<Record<string, AdoptableKind>> = {
         ],
         // The provider's import id for a Postgres built-in user.
         importId: `${projectId}/${instance}/${name}`,
+        sqlInstance: { projectId, name: instance },
       };
     },
   },
@@ -271,7 +281,42 @@ export function adoptionCandidates(
 }
 
 /**
+ * The names of the project's Cloud SQL instances.
+ *
+ * @throws AdoptionError when they cannot be listed
+ */
+async function listSqlInstances(run: GcloudRunner, projectId: string): Promise<Set<string>> {
+  const r = await run([
+    "sql",
+    "instances",
+    "list",
+    `--project=${projectId}`,
+    "--format=value(name)",
+  ]);
+  if (!r.ok) {
+    throw new AdoptionError(
+      `could not list the Cloud SQL instances of ${projectId} (gcloud: ${r.stderr.trim()}), so it is unclear whether the databases and users the stack declares exist already. Nothing was imported or applied. The account running the installer needs cloudsql.instances.list on the project (project Owner in your terminal; the install job's caelo-provisioner holds roles/cloudsql.admin). Fix that and re-run the installer.`,
+    );
+  }
+  return new Set(
+    r.stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean),
+  );
+}
+
+/**
  * The candidates that exist in the project.
+ *
+ * A Cloud SQL database or user is described only when the project lists its
+ * instance. On a first run — or one resumed after a run that stopped before
+ * `pulumi up` created the instance — the plan creates the instance together
+ * with everything on it, so nothing on it can exist yet; and the Cloud SQL
+ * Admin API answers a describe on a missing instance with 403 "not
+ * authorized", not 404, which would stop every re-run as if access were
+ * missing. The instance list is asked once and tells absent from forbidden;
+ * a describe on an instance that is listed keeps every error loud.
  *
  * @throws AdoptionError when a describe fails for another reason than NOT_FOUND
  */
@@ -280,7 +325,17 @@ export async function existingCandidates(
   run: GcloudRunner,
 ): Promise<AdoptionCandidate[]> {
   const existing: AdoptionCandidate[] = [];
+  const instancesOf = new Map<string, Set<string>>();
   for (const c of candidates) {
+    if (c.sqlInstance) {
+      const { projectId, name } = c.sqlInstance;
+      let instances = instancesOf.get(projectId);
+      if (!instances) {
+        instances = await listSqlInstances(run, projectId);
+        instancesOf.set(projectId, instances);
+      }
+      if (!instances.has(name)) continue;
+    }
     const r = await run([...c.describeArgs]);
     if (r.ok) existing.push(c);
     else if (!isGcloudNotFound(r.stderr)) {
