@@ -43,6 +43,9 @@
     "apps/api-gateway": {
       "entry": ["e2e/*.ts", "image.ts", "src/image-self-check.ts"]
     },
+    "apps/bug-intake": {
+      "entry": ["image.ts", "scripts/*.ts"]
+    },
     "packages/admin-core": {
       "entry": [
         "src/healthcheck.ts",

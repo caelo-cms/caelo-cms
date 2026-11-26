@@ -57,7 +57,10 @@ class FakeTracker implements IssueTracker {
     if (patch.state === "open")
       Object.assign(i, { state: "open", stateReason: "reopened", closedAt: null });
   }
+  /** Set: every issue read runs it first, as a slow or failing GitHub does. */
+  beforeGetIssue: ((n: number) => Promise<void>) | null = null;
   async getIssue(n: number) {
+    if (this.beforeGetIssue) await this.beforeGetIssue(n);
     return structuredClone(this.issues.get(n)!);
   }
   async addComment(n: number, body: string) {
@@ -1045,5 +1048,90 @@ describe("IntakeService while the matcher is down (2026-11-23: a revoked key)", 
     expect([...store.deferred.keys()]).toEqual([]);
     expect(tracker.issues.get(100)?.body).toContain("| Installs reporting it | 2 |");
     expect((await store.getCluster(known.clusterId))!.value.occurrences).toBe(2);
+  });
+});
+
+describe("IntakeService status of many clusters (2026-11-26: every refresh timed out)", () => {
+  // An install asks about up to 100 clusters at once and waits 10 s. One
+  // after another, the issue syncs took up to 53 s in production.
+  const CLUSTERS = 100;
+
+  /** `CLUSTERS` clusters with an issue each, the first created the stalest. */
+  async function manyClusters(s: IntakeService): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < CLUSTERS; i++) {
+      clock = new Date(clock.getTime() + 1_000);
+      const info = await s.ingest(
+        INSTALL_A,
+        report({
+          fingerprint: i.toString(16).padStart(2, "0").padEnd(64, "0"),
+          title: `Defect ${i}`,
+        }),
+      );
+      ids.push(info.clusterId);
+    }
+    // Every issue is due for a re-read, and every one was closed as fixed.
+    clock = new Date(clock.getTime() + 10 * 60_000);
+    for (const n of tracker.issues.keys()) tracker.close(n, "completed", clock.toISOString());
+    return ids;
+  }
+
+  /**
+   * Each issue read takes one simulated second, and reads in flight together
+   * end together, as parallel requests to GitHub do. Counts the reads.
+   */
+  function slowGitHub() {
+    const reads = { inFlight: 0, most: 0, total: 0 };
+    tracker.beforeGetIssue = async () => {
+      const start = clock.getTime();
+      reads.inFlight++;
+      reads.total++;
+      reads.most = Math.max(reads.most, reads.inFlight);
+      await Bun.sleep(1);
+      clock = new Date(Math.max(clock.getTime(), start + 1_000));
+      reads.inFlight--;
+    };
+    return reads;
+  }
+
+  it("syncs in parallel, the stalest first, and answers every cluster within the install's wait", async () => {
+    const s = service();
+    const ids = await manyClusters(s);
+    const reads = slowGitHub();
+    const started = clock.getTime();
+
+    const answer = await s.status(ids);
+
+    expect(clock.getTime() - started).toBeLessThan(10_000);
+    expect(reads.most).toBeGreaterThan(1);
+    expect(reads.most).toBeLessThanOrEqual(8);
+    expect(answer.map((c) => c.clusterId)).toEqual(ids);
+    const fixed = answer.filter((c) => c.status === "fixed").map((c) => c.clusterId);
+    expect(fixed.length).toBe(reads.total);
+    // The deadline left some for the next request, and those are the newest.
+    expect(fixed.length).toBeLessThan(CLUSTERS);
+    expect(fixed).toEqual(ids.slice(0, fixed.length));
+    expect(answer.slice(fixed.length).every((c) => c.status === "open")).toBe(true);
+
+    // The next request starts with the clusters this one had no time for.
+    const next = await s.status(ids);
+    const fixedNext = next.filter((c) => c.status === "fixed").map((c) => c.clusterId);
+    expect(fixedNext).toEqual(ids.slice(0, fixedNext.length));
+    expect(fixedNext.length).toBeGreaterThan(fixed.length);
+  });
+
+  it("answers with the state on record for an issue it cannot read", async () => {
+    const s = service();
+    const ids = await manyClusters(s);
+    const unreadable = (await store.getCluster(ids[3]!))!.value.issueNumber;
+    tracker.beforeGetIssue = async (n) => {
+      if (n === unreadable) throw new Error("GitHub: 404 Not Found");
+    };
+
+    const answer = await s.status(ids);
+
+    expect(answer.map((c) => c.clusterId)).toEqual(ids);
+    expect(answer[3]?.status).toBe("open");
+    expect(answer.filter((c) => c.status === "fixed").length).toBe(CLUSTERS - 1);
   });
 });

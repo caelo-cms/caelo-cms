@@ -21,6 +21,7 @@ Endpoints: `GET /health` and `GET /healthz` (liveness), `POST /v1/installs` (reg
 - **Threshold.** A cluster gets its issue once `BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS` distinct installs reported it.
 - **Two kinds.** A report is a defect or a suggestion, and the two never mix. See [Defects and suggestions](#defects-and-suggestions).
 - **Daily caps.** At most `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY` new defect issues and `BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY` new suggestion issues per UTC calendar day, each from its own pool. The counters live in Firestore, so restarts and scale-to-zero do not reset them. A cluster due an issue over its kind's cap is stored and counted as usual and queued; queued clusters are filed oldest first, at most three per kind per incoming request, once the next day's slots exist. A full suggestion pool never holds back a defect, and the other way round. Every install refreshes its cluster status at least every six hours, so a queued cluster waits at most that long past 00:00 UTC. Existing issues are not capped: body refreshes, milestone comments and regression reopens continue.
+- **Status refresh.** Every six hours an install asks about up to 100 of its clusters at once and waits 10 s for the answer. The intake re-reads a cluster's issue at most every five minutes, eight at a time, the stalest first, and starts no further read 6 s into the request. Every known cluster answers: one it had no time for answers with the state on record and comes first next time, and so does one whose issue cannot be read (deleted or transferred, logged as `[bug-intake] issue sync of … failed`). A GitHub call gives up after 5 s, a match after 6 s (then the report is deferred, see below), so no hanging call holds a lock that later requests wait on. Until 2026-11-26 the reads ran one after another, took up to 53 s, and every refresh ended in the install's timeout: the installs never saw an issue close.
 - **Kill switch.** `BUG_INTAKE_ISSUES_PAUSED=true` stops every GitHub write for both kinds (no issue created, edited, reopened or commented). Reports are still accepted, counted and stored, and clusters due an issue are queued.
 - **Repeat reports** update the counters only: the issue body is refreshed when a new install or Caelo version appears, and a comment is added at 10 / 100 / 1,000 / 10,000 installs.
 - **Privacy.** Reports are redacted on the install before they are queued (email addresses, links, IP addresses, phone numbers, tokens, keys) and redacted again on the intake, so a modified client cannot skip it. The issue shows the structured fields and the redacted description inside code fences (no @mentions, no cross-references). The `evidence` field is never published: it stays in the intake's Firestore database, readable only by its operator.
@@ -152,6 +153,8 @@ Every merge to `main` that changes the intake publishes a signed image (`.github
 
 Do not build the image yourself. Pick a commit, resolve its digest, and deploy that digest only.
 
+The image is minimal, like the gateway's ([`docs/dev/service-images.md`](../dev/service-images.md)): one Bun bundle on a distroless base, no shell, non-root, every file allowlisted in `apps/bug-intake/image.ts`. The bundle is also what keeps its start short. Cloud Run starts an instance for nearly every request the installs send, and at the full hour, when many instances start at once, loading the source tree took about 25 s, past the 10 s an install waits and close to the startup probe's limit. Before a publish, CI checks the image's files, scans it with Trivy, and has the install's own client register, report and refresh against it with a Firestore emulator (`apps/bug-intake/scripts/image-smoke.ts`).
+
 ### Verify
 
 ```sh
@@ -179,7 +182,7 @@ oras copy -r "$IMAGE@$DIGEST" "$MIRROR:<full commit sha>"
 
 gcloud run deploy bug-intake --project "$PROJECT" --region <region> \
   --image "$MIRROR@$DIGEST" --allow-unauthenticated \
-  --min-instances 0 --max-instances 1 --concurrency 20 --memory 256Mi \
+  --min-instances 0 --max-instances 1 --concurrency 20 --memory 256Mi --cpu-boost \
   --service-account "$SA" \
   --set-env-vars "GITHUB_APP_ID=<app id>,GITHUB_APP_INSTALLATION_ID=<installation id>,BUG_INTAKE_PUBLIC_REPO=<owner>/<repo>,BUG_INTAKE_FIRESTORE_PROJECT=$PROJECT,BUG_INTAKE_FIRESTORE_DATABASE=$DB,BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS=1,BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY=20,BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY=5,BUG_INTAKE_ISSUES_PAUSED=false,BUG_INTAKE_MAX_REGISTRATIONS_PER_HOUR=200,BUG_INTAKE_MATCH_MODEL=<model id>" \
   --set-secrets "GITHUB_APP_PRIVATE_KEY=bug-intake-github-app-key:latest,ANTHROPIC_API_KEY=bug-intake-model-key:latest"
@@ -286,6 +289,8 @@ bun apps/bug-intake/src/main.ts
 ```
 
 Point a dev install at it with `CAELO_BUG_INTAKE_URL=http://localhost:8787`, turn on forwarding on `/settings/bugs`, file a bug report, and watch the issue appear (the install's worker sends within a minute).
+
+`bun apps/bug-intake/scripts/image-smoke.ts http://localhost:8787` drives a running intake the way CI checks the image: it registers a throwaway install, sends two reports and refreshes their status.
 
 The store tests run against the same emulator: with `FIRESTORE_EMULATOR_HOST=127.0.0.1:8915` set, `bun test apps/bug-intake/src/firestore-store.test.ts`. Without the variable the suite skips and says so; CI starts the emulator and sets `CAELO_FIRESTORE_EMULATOR=required`, which turns a missing emulator into a failure.
 

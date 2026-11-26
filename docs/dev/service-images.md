@@ -1,6 +1,6 @@
 # Minimal service images
 
-A service that takes untrusted traffic gets a minimal image: the API gateway today (issue #1327), the MCP auth proxy next. After a remote code execution, every package the service does not use and every shell is attack surface (CLAUDE.md §11.B Tier 3). The admin image is not minimal: it runs the generator, Lighthouse and the full plugin host.
+A service that takes untrusted traffic gets a minimal image: the API gateway (issue #1327), the MCP auth proxy (#1328) and the bug intake, which takes signed reports from every install (`apps/bug-intake/image.ts`). After a remote code execution, every package the service does not use and every shell is attack surface (CLAUDE.md §11.B Tier 3). The admin image is not minimal: it runs the generator, Lighthouse and the full plugin host.
 
 ## What a minimal image is
 
@@ -18,6 +18,7 @@ A service that takes untrusted traffic gets a minimal image: the API gateway tod
 | `apps/<service>/image.ts` | The spec: entry points, externals, run-time packages, the exact staged `node_modules`, extra files, binaries, required paths. |
 | `apps/<service>/Dockerfile` | The builder installs and builds the workspace, then runs `stage`. The runtime stage is the distroless base plus `/stage/app` and the binaries. |
 | `.github/workflows/release-images.yml` | Matrix entries with a `spec` are built, verified, Trivy-scanned and booted before the push build. This happens on every PR and on every release. |
+| `.github/workflows/bug-intake-image.yml` | The bug intake is not part of a release; its own workflow runs the same gates in its `gate` job, and `publish` needs it. |
 
 ## Staging rules
 
@@ -42,6 +43,8 @@ A service that takes untrusted traffic gets a minimal image: the API gateway tod
    - `image-self-check.js` verifies the signature of every shipped plugin manifest against the trust root (`checkShippedManifests`, plugin-host). #1340 — the gateway runs no plugin code, so its image holds no Deno, no plugin dist and no plugin validator: only the bundle, the signed manifests and the trust root. It also embeds a probe query with every catalog model on the bundled WebAssembly runtime (`checkEmbedders`, `@caelo-cms/models`, #1650);
    - the image then boots against a migrated Postgres and answers `/api/_caelo/health?deep=1`;
    - no plugin may fail to load.
+
+   For the bug intake: it must refuse to start without its configuration, and then, against a Firestore emulator, admin-core's `BugIntakeClient` registers, sends two reports (the second takes the matcher-outage path, the image having no usable model key) and refreshes their status (`apps/bug-intake/scripts/image-smoke.ts`).
 
 The admin image is not minimal, so gates 1 and 2 do not apply to it; its boot smoke is the `admin-prod-image` job in `ci.yml` (boot, Chromium, Lighthouse). There, every catalog model also embeds a probe on ONNX Runtime WebAssembly and native, each loaded from the built server's chunks the way the admin loads them (`packages/models/scripts/bundle-self-check.ts`), and the two vectors must agree. 0.12.11 shipped an admin whose bundled runtime could not find its WebAssembly build, and no step ran a semantic query in the image.
 

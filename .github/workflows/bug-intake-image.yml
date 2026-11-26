@@ -11,11 +11,14 @@
 #
 # Jobs:
 #   - test     every event: the intake's unit tests + the contract test.
-#   - build    pull_request only: build the image, no push, no signing,
-#              read-only token (the release-images.yml PR build-only run).
-#   - publish  push to main / workflow_dispatch, after `test`: build, push,
-#              sign, attest, verify. The only job with packages:write and
-#              id-token:write.
+#   - gate     every event: build the minimal image (apps/bug-intake/image.ts,
+#              docs/dev/service-images.md) without pushing, then check it the
+#              way release-images.yml checks the gateway's: only allowlisted
+#              files, no shell, non-root, the Trivy gate, and a boot smoke
+#              against a Firestore emulator. Read-only token.
+#   - publish  push to main / workflow_dispatch, after `test` and `gate`:
+#              build, push, sign, attest, verify. The only job with
+#              packages:write and id-token:write.
 #
 # Tags: `ghcr.io/caelo-cms/bug-intake:<full commit sha>` (immutable, what
 # an operator pins) and `:main` (moves with every publish).
@@ -50,14 +53,15 @@ on:
       # stage `COPY . .`s the tree and runs `bun install --frozen-lockfile
       # --production --filter @caelo-cms/bug-intake`, so the installed
       # closure depends on bun.lock, the root package.json and bunfig.toml
-      # (`linker = "hoisted"`), and the build context on .dockerignore. The
-      # runtime stage then copies exactly: package.json, node_modules,
-      # packages/shared/{package.json,src} and apps/bug-intake/{package.json,src}
-      # (and the Dockerfile itself, under apps/bug-intake/).
+      # (`linker = "hoisted"`), and the build context on .dockerignore. It
+      # then bundles apps/bug-intake/src/main.ts with scripts/service-image.ts
+      # (`stage`), which inlines packages/shared/src and the npm closure;
+      # the runtime stage carries that bundle and Bun, nothing else.
       # @caelo-cms/shared is the intake's only workspace runtime dependency
       # and has no workspace dependencies of its own. @caelo-cms/admin-core
-      # is a devDependency (contract test only): it is not in the image,
-      # and ci.yml runs its tests on every PR.
+      # is a devDependency (contract test and boot smoke only): it is not in
+      # the image, and ci.yml runs its tests on every PR. The gate job also
+      # reads .trivyignore.yaml.
       # packages/shared/src/** includes bug-intake.ts: the install <->
       # intake contract and redactBugText.
       - "apps/bug-intake/**"
@@ -67,6 +71,8 @@ on:
       - "bun.lock"
       - "bunfig.toml"
       - ".dockerignore"
+      - "scripts/service-image.ts"
+      - ".trivyignore.yaml"
       - ".github/workflows/bug-intake-image.yml"
   pull_request:
     branches: [main]
@@ -79,6 +85,8 @@ on:
       - "bun.lock"
       - "bunfig.toml"
       - ".dockerignore"
+      - "scripts/service-image.ts"
+      - ".trivyignore.yaml"
       - ".github/workflows/bug-intake-image.yml"
   workflow_dispatch:
 
@@ -130,9 +138,8 @@ jobs:
       - name: Contract test (admin-core BugIntakeClient <-> intake handler)
         run: bun test apps/bug-intake/src/contract.test.ts
 
-  build:
-    name: build only (bug-intake)
-    if: github.event_name == 'pull_request'
+  gate:
+    name: image gate (bug-intake)
     runs-on: ubuntu-latest
 
     steps:
@@ -142,27 +149,129 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Build (no push)
+      - name: Build the image for the checks (amd64, no push)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: apps/bug-intake/Dockerfile
           platforms: linux/amd64
+          load: true
           push: false
-          # Reads the publish job's cache, writes its own scope, so PR
+          tags: caelo-bug-intake:smoke
+          # Reads the publish job's cache; a PR writes its own scope, so PR
           # builds never evict main's layers (ci.yml's admin-smoke pattern).
           cache-from: |
             type=gha,scope=bug-intake
             type=gha,scope=bug-intake-pr
-          cache-to: type=gha,scope=bug-intake-pr,mode=max
+          cache-to: ${{ github.event_name == 'pull_request' && 'type=gha,scope=bug-intake-pr,mode=max' || '' }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+
+      - name: Install dependencies (frozen lockfile)
+        # The boot smoke drives the image with admin-core's BugIntakeClient.
+        run: bun install --frozen-lockfile
+
+      - name: Image contents (allowlist, non-root, no shell)
+        env:
+          IMAGE: caelo-bug-intake:smoke
+        run: |
+          set -euo pipefail
+          # Every file the image adds to its distroless base must match the
+          # spec; no shell anywhere; a numeric non-root USER.
+          bun scripts/service-image.ts verify apps/bug-intake/image.ts "${IMAGE}"
+          # Belt and braces: the shell must not start, as root or otherwise.
+          if docker run --rm --entrypoint /bin/sh "${IMAGE}" -c true 2>/dev/null; then
+            echo "::error::${IMAGE} has a working /bin/sh"; exit 1
+          fi
+
+      - name: Trivy gate (high + critical)
+        env:
+          IMAGE: caelo-bug-intake:smoke
+          SBOM: /app/apps/bug-intake/dist/bundled-packages.cdx.json
+          # The same pinned scanner and flags as release-images.yml's gate.
+          TRIVY: aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/trivy-cache" "${RUNNER_TEMP}/sbom"
+          # The bundle inlines npm packages a filesystem scan cannot see;
+          # the image carries their SBOM next to the bundle.
+          id="$(docker create "${IMAGE}")"
+          docker cp "${id}:${SBOM}" "${RUNNER_TEMP}/sbom/bundle.cdx.json"
+          docker rm "${id}" >/dev/null
+          trivy() {
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "${RUNNER_TEMP}/trivy-cache:/root/.cache/trivy" \
+              -v "${RUNNER_TEMP}/sbom:/sbom:ro" \
+              -v "${GITHUB_WORKSPACE}/.trivyignore.yaml:/trivyignore.yaml:ro" \
+              "${TRIVY}" "$@"
+          }
+          trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --ignorefile /trivyignore.yaml --exit-code 1 "${IMAGE}"
+          trivy sbom --severity HIGH,CRITICAL --ignore-unfixed --ignorefile /trivyignore.yaml --exit-code 1 /sbom/bundle.cdx.json
+
+      - name: Start Firestore emulator
+        # The jar ci.yml runs for the store tests, verified by SHA-256.
+        env:
+          EMULATOR_VERSION: 1.22.0
+          EMULATOR_SHA256: 9b6498b7f62714d67f48f59b3818883cd682dbcd46b9f59511de81c97bb5166c
+        run: |
+          jar="$RUNNER_TEMP/cloud-firestore-emulator.jar"
+          curl -fsSL -o "$jar" "https://storage.googleapis.com/firebase-preview-drop/emulator/cloud-firestore-emulator-v${EMULATOR_VERSION}.jar"
+          echo "${EMULATOR_SHA256}  $jar" | sha256sum -c -
+          nohup "$JAVA_HOME_21_X64/bin/java" -jar "$jar" --host=127.0.0.1 --port=8915 > "$RUNNER_TEMP/firestore-emulator.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -fs "http://127.0.0.1:8915/" > /dev/null && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/firestore-emulator.log"
+          exit 1
+
+      - name: Bug intake boot smoke (refuses to start unconfigured, registers, stores, answers)
+        env:
+          IMAGE: caelo-bug-intake:smoke
+        run: |
+          set -euo pipefail
+          # No configuration: the intake must refuse to start (no defaults).
+          if docker run --rm "${IMAGE}" >/dev/null 2>&1; then
+            echo "::error::the bug intake started without its configuration"; exit 1
+          fi
+          # A throwaway App key: GitHub writes are paused, and the model key
+          # is unusable on purpose (image-smoke.ts takes the outage path).
+          key="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)"
+          docker run -d --name intake-smoke --network host \
+            -e PORT=8977 \
+            -e FIRESTORE_EMULATOR_HOST=127.0.0.1:8915 \
+            -e GITHUB_APP_ID=1 -e GITHUB_APP_INSTALLATION_ID=1 -e GITHUB_APP_PRIVATE_KEY="${key}" \
+            -e BUG_INTAKE_PUBLIC_REPO=caelo-cms/image-smoke \
+            -e BUG_INTAKE_FIRESTORE_PROJECT=demo-image-smoke -e BUG_INTAKE_FIRESTORE_DATABASE='(default)' \
+            -e BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS=1 \
+            -e BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY=5 -e BUG_INTAKE_MAX_NEW_SUGGESTIONS_PER_DAY=5 \
+            -e BUG_INTAKE_MAX_REGISTRATIONS_PER_HOUR=10 \
+            -e BUG_INTAKE_ISSUES_PAUSED=true \
+            -e ANTHROPIC_API_KEY=image-smoke-unusable -e BUG_INTAKE_MATCH_MODEL=claude-haiku-5-5 \
+            "${IMAGE}"
+          ok=""
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8977/healthz >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          test -n "${ok}" || { docker logs intake-smoke; echo "::error::the bug intake did not answer /healthz"; exit 1; }
+          status=0
+          bun apps/bug-intake/scripts/image-smoke.ts http://127.0.0.1:8977 || status=$?
+          docker logs intake-smoke
+          docker rm -f intake-smoke >/dev/null
+          exit "${status}"
 
   publish:
     name: build + push + sign (bug-intake)
     # Positive list of publishing events (as in release-images.yml): an
     # event type GitHub adds later defaults to not publishing.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    # Failing tests block the push.
-    needs: test
+    # Failing tests or a failing image gate block the push.
+    needs: [test, gate]
     runs-on: ubuntu-latest
     permissions:
       contents: read

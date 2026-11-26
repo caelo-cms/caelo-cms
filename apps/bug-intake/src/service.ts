@@ -163,6 +163,19 @@ class MatcherUnavailable extends Error {}
 
 /** Issue state is re-read at most this often per cluster. */
 const ISSUE_SYNC_INTERVAL_MS = 5 * 60_000;
+/**
+ * Issue syncs one status request runs at once. An install asks about up to
+ * 100 clusters at a time (admin-core bug-forwarding/worker.ts); synced one
+ * after another, an issue read and its write each, that took up to 53 s,
+ * and the install had given up after 10 s, every time.
+ */
+const STATUS_SYNC_CONCURRENCY = 8;
+/**
+ * No further issue sync is started this long into a status request: an
+ * install waits 10 s for its answer. A cluster left out answers with the
+ * state on record, and as the stalest it is synced first next time.
+ */
+const STATUS_SYNC_DEADLINE_MS = 6_000;
 /** Cap on stored install hashes per cluster; beyond it the count shows as "N+". */
 const MAX_INSTALL_HASHES = 10_000;
 /** #1416 — how many CI runs one issue lists; the newest stay. */
@@ -293,19 +306,48 @@ export class IntakeService {
     return info;
   }
 
-  /** Current state of clusters an install reported into; unknown ids are left out. */
+  /**
+   * Current state of clusters an install reported into; unknown ids are left
+   * out. Every known cluster answers. The issue syncs run in parallel, the
+   * stalest first, and stop starting at `STATUS_SYNC_DEADLINE_MS`; a cluster
+   * not synced, or whose issue cannot be read, answers with the state on
+   * record (logged), so one unreadable issue cannot fail every refresh.
+   */
   async status(clusterIds: string[]): Promise<BugIntakeClusterInfo[]> {
+    const started = this.#d.now().getTime();
     // A stand-in asked about may have its cluster after this.
     await this.#matchDeferred();
+    const asked = [...new Set(clusterIds)];
+    const resolved = await Promise.all(asked.map((id) => this.#resolve(id).catch(() => null)));
+    const due = new Map<string, ClusterRecord>();
+    for (const r of resolved) if (r && this.#issueSyncDue(r.value)) due.set(r.value.id, r.value);
+    const queue = [...due.values()].sort((a, b) =>
+      (a.lastIssueSyncAt ?? "").localeCompare(b.lastIssueSyncAt ?? ""),
+    );
+    const synced = new Map<string, ClusterRecord>();
+    const syncNext = async (): Promise<void> => {
+      for (;;) {
+        if (this.#d.now().getTime() - started >= STATUS_SYNC_DEADLINE_MS) return;
+        const c = queue.shift();
+        if (!c) return;
+        try {
+          synced.set(c.id, await this.#withLock(c.id, () => this.#syncIssue(c.id)));
+        } catch (e) {
+          console.error(
+            `[bug-intake] issue sync of ${c.id} failed; it answers with the state on record:`,
+            e instanceof Error ? e.message : e,
+          );
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(STATUS_SYNC_CONCURRENCY, queue.length) }, syncNext),
+    );
     const out: BugIntakeClusterInfo[] = [];
-    for (const id of new Set(clusterIds)) {
-      const resolved = await this.#resolve(id).catch(() => null);
-      if (!resolved) continue;
-      const synced = await this.#withLock(resolved.value.id, () =>
-        this.#syncIssue(resolved.value.id),
-      );
-      out.push({ ...this.#info(synced), clusterId: id });
-    }
+    asked.forEach((id, i) => {
+      const r = resolved[i];
+      if (r) out.push({ ...this.#info(synced.get(r.value.id) ?? r.value), clusterId: id });
+    });
     await this.#fileQueuedIssues();
     return out;
   }
@@ -705,14 +747,20 @@ export class IntakeService {
     throw new Error(`cluster ${clusterId}: five write conflicts in a row`);
   }
 
+  /** Whether the cluster has an issue last read longer ago than `ISSUE_SYNC_INTERVAL_MS`. */
+  #issueSyncDue(c: ClusterRecord): c is ClusterRecord & { issueNumber: number } {
+    if (c.issueNumber === null) return false;
+    return (
+      c.lastIssueSyncAt === null ||
+      this.#d.now().getTime() - Date.parse(c.lastIssueSyncAt) >= ISSUE_SYNC_INTERVAL_MS
+    );
+  }
+
   /** Bring the cluster's status in line with its issue (lazy, rate-limited). */
   async #syncIssue(clusterId: string): Promise<ClusterRecord> {
     const cur = await this.#resolve(clusterId);
     const c = cur.value;
-    const fresh =
-      c.lastIssueSyncAt !== null &&
-      this.#d.now().getTime() - Date.parse(c.lastIssueSyncAt) < ISSUE_SYNC_INTERVAL_MS;
-    if (c.issueNumber === null || fresh) return c;
+    if (!this.#issueSyncDue(c)) return c;
 
     const issue = await this.#d.tracker.getIssue(c.issueNumber);
     let next: Pick<

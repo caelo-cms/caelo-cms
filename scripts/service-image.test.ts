@@ -21,6 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import gatewaySpec from "../apps/api-gateway/image.ts";
+import intakeSpec from "../apps/bug-intake/image.ts";
 import proxySpec from "../apps/mcp-auth-proxy/image.ts";
 import {
   allowedPatterns,
@@ -469,6 +470,67 @@ describe("the MCP-Auth-Proxy image (#1328)", () => {
       };
       const names = sbom.components.map((c) => c.name);
       expect(names).toContain("zod");
+      for (const banned of ["drizzle-orm", "postgres", "pg", "sharp", "deno"]) {
+        expect(names).not.toContain(banned);
+      }
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the bug intake image", () => {
+  const dockerfile = readFileSync(resolve(REPO_ROOT, intakeSpec.dockerfile), "utf8");
+
+  it("pins every base image by digest, on the gateway's distroless base", () => {
+    const froms = [...dockerfile.matchAll(/^FROM\s+(\S+)/gm)].map((m) => m[1]);
+    for (const ref of froms) expect(ref).toMatch(/@sha256:[0-9a-f]{64}$/);
+    const gateway = readFileSync(resolve(REPO_ROOT, gatewaySpec.dockerfile), "utf8");
+    expect(runtimeBase(dockerfile)).toBe(runtimeBase(gateway));
+  });
+
+  it("runs as the distroless non-root user, with an exec-form entrypoint", () => {
+    const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
+    expect(runtime).toContain("\nUSER 65532:65532\n");
+    expect(runtime).toContain('\nENTRYPOINT ["/usr/local/bin/bun"]\n');
+    expect(runtime).not.toMatch(/^RUN /m);
+  });
+
+  it("carries one bundle and the Bun binary: no packages on disk", () => {
+    // One file to load is what keeps its cold start short (image.ts).
+    expect(intakeSpec.bundle.external).toEqual([]);
+    expect(intakeSpec.runtimePackages).toEqual([]);
+    expect(intakeSpec.nodeModules).toEqual([]);
+    expect(intakeSpec.copy).toEqual([]);
+    expect(intakeSpec.extraFiles).toEqual([]);
+    expect(intakeSpec.binaries.map((b) => b.path)).toEqual(["usr/local/bin/bun"]);
+  });
+
+  it("is gated in bug-intake-image.yml before anything is pushed", () => {
+    const workflow = readFileSync(
+      resolve(REPO_ROOT, ".github/workflows/bug-intake-image.yml"),
+      "utf8",
+    );
+    expect(workflow).toContain("bun scripts/service-image.ts verify apps/bug-intake/image.ts");
+    expect(workflow).toContain(
+      `SBOM: ${intakeSpec.appRoot}/${intakeSpec.bundle.outdir}/${BUNDLE_SBOM}`,
+    );
+    expect(workflow).toContain(
+      "--ignorefile /trivyignore.yaml --exit-code 1 /sbom/bundle.cdx.json",
+    );
+    expect(workflow).toContain("bun apps/bug-intake/scripts/image-smoke.ts");
+    expect(workflow).toContain("needs: [test, gate]");
+  });
+
+  it("bundles the Firestore client and no database or admin package", async () => {
+    const out = mkdtempSync(join(tmpdir(), "service-image-intake-"));
+    try {
+      await bundleService(REPO_ROOT, intakeSpec, out);
+      const sbom = JSON.parse(readFileSync(join(out, BUNDLE_SBOM), "utf8")) as {
+        components: Array<{ name: string }>;
+      };
+      const names = sbom.components.map((c) => c.name);
+      expect(names).toContain("@google-cloud/firestore");
       for (const banned of ["drizzle-orm", "postgres", "pg", "sharp", "deno"]) {
         expect(names).not.toContain(banned);
       }
