@@ -590,7 +590,8 @@ describe("what the index job reports", () => {
     });
     expect(calls.map((c) => c.action)).toEqual(["scale"]);
     expect(calls[0]?.payload).toMatchObject({ tasks: 4 });
-    expect((calls[0]?.payload as { reason: string }).reason).toContain("t1650/pages2");
+    const payload = calls[0]?.payload as { reason?: string } | undefined;
+    expect(payload?.reason).toContain("t1650/pages2");
   });
 
   it("in a wide attempt that has to widen, only the first task asks", async () => {
