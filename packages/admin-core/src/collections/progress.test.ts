@@ -23,6 +23,22 @@ describe("summarizeIndexProgress", () => {
     });
   });
 
+  it("takes the plan's total and task count, so tasks that have not reported still count", () => {
+    const p = {
+      startedAt: at(0),
+      at: at(30),
+      planned: 3_000,
+      taskCount: 3,
+      tasks: { "0": { embedded: 1_000, toEmbed: 1_000 } },
+    };
+    expect(summarizeIndexProgress(p, Date.parse(at(30)))).toMatchObject({
+      embedded: 1_000,
+      toEmbed: 3_000,
+      tasks: 3,
+      remainingMs: 60_000,
+    });
+  });
+
   it("gives no time before a pace can be measured, and nothing for no progress", () => {
     const first = { startedAt: at(0), at: at(0), tasks: { "0": { embedded: 0, toEmbed: 9 } } };
     expect(summarizeIndexProgress(first, Date.parse(at(1)))?.remainingMs).toBeNull();

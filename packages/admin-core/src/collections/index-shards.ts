@@ -121,6 +121,7 @@ export async function embedShard(
     return 0;
   }
   const entries: [string, EncodedVector][] = [];
+  await onEmbedded(0);
   for (let i = 0; i < share.length; i += SHARD_EMBED_BATCH) {
     const batch = share.slice(i, i + SHARD_EMBED_BATCH);
     const vectors = await embedder.embed(

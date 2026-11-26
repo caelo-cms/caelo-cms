@@ -55,14 +55,16 @@ async function stageRun(): Promise<StageStatusRun> {
   return runs[0] as StageStatusRun;
 }
 
-const progress = (task: number, embedded: number, toEmbed: number) =>
+const progress = (task: number, embedded: number, toEmbed: number, planned = 800, tasks = 2) =>
   op("collections.index_progress", {
     runId,
     pluginId,
     collection: "pages",
     task,
+    tasks,
     embedded,
     toEmbed,
+    planned,
   });
 
 beforeAll(async () => {
@@ -102,6 +104,16 @@ describe("a Stage's search index progress", () => {
     expect(describeStageRun(run)).toContain("search index still building (t-progress-");
   });
 
+  it("counts a task that has not reported yet in what is left", async () => {
+    // Task 1 is queued (the project's quota), or still starting.
+    await progress(0, 0, 400);
+    const p = (await stageRun()).searchIndexes?.[0]?.progress;
+    expect(p).toMatchObject({ embedded: 0, toEmbed: 800, tasks: 2 });
+    expect(describeStageRun(await stageRun())).toContain(
+      "semantic search 0 of 800 passages on 2 tasks",
+    );
+  });
+
   it("adds up the tasks' counts and estimates the time left from their pace", async () => {
     await progress(0, 100, 400);
     await progress(1, 150, 400);
@@ -130,7 +142,7 @@ describe("a Stage's search index progress", () => {
   });
 
   it("a ready index shows no progress and no wait", async () => {
-    await progress(0, 400, 400);
+    await progress(0, 400, 400, 400, 1);
     await op("collections.index_done", {
       runId,
       pluginId,
@@ -143,6 +155,6 @@ describe("a Stage's search index progress", () => {
     expect(run.searchIndexes?.[0]?.progress).toBeUndefined();
     expect(describeStageRun(run)).toContain("search index ready");
     // A late report of a finished index is not recorded.
-    expect(await progress(0, 1, 400)).toEqual({ recorded: false });
+    expect(await progress(0, 1, 400, 400, 1)).toEqual({ recorded: false });
   });
 });

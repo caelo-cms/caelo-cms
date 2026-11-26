@@ -273,8 +273,17 @@ export type CollectionOutcome =
 export interface IndexOptions {
   readonly embedders?: EmbedderSource;
   readonly slot?: TaskSlot;
-  /** This task's embedding progress, at most every {@link PROGRESS_EVERY_MS} and once at the end. */
-  readonly onProgress?: (embedded: number, toEmbed: number) => Promise<void>;
+  /**
+   * This task's embedding progress: once when it starts, at most every
+   * {@link PROGRESS_EVERY_MS} after, and once at the end. `planned` is what
+   * the whole attempt embeds for the collection, so tasks that have not
+   * reported yet still count.
+   */
+  readonly onProgress?: (p: {
+    readonly embedded: number;
+    readonly toEmbed: number;
+    readonly planned: number;
+  }) => Promise<void>;
   /** When the first task of a wide attempt stops waiting for the others (epoch ms). */
   readonly shardDeadline?: number;
   /** Between looks for the other tasks' vectors (tests shorten it). */
@@ -283,10 +292,11 @@ export interface IndexOptions {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-/** Calls `report` at most every {@link PROGRESS_EVERY_MS}, and always for the last count. */
+/** Calls `report` for the first count, then at most every {@link PROGRESS_EVERY_MS}, and always for the last. */
 function throttled(
-  report: ((embedded: number, toEmbed: number) => Promise<void>) | undefined,
+  report: IndexOptions["onProgress"],
   toEmbed: number,
+  planned: number,
   now: () => number,
 ): (embedded: number) => Promise<void> {
   let last = Number.NEGATIVE_INFINITY;
@@ -294,7 +304,7 @@ function throttled(
     if (!report) return;
     if (embedded < toEmbed && now() - last < PROGRESS_EVERY_MS) return;
     last = now();
-    await report(embedded, toEmbed);
+    await report({ embedded, toEmbed, planned });
   };
 }
 
@@ -374,8 +384,10 @@ export async function indexCollection(
   const toEmbed = missing.size;
 
   if (embedder && toEmbed > 0) {
-    if (slot.count === 1 && slot.max > 1 && toEmbed > PASSAGES_PER_TASK) {
-      const tasks = Math.min(slot.max, Math.ceil(toEmbed / PASSAGES_PER_TASK));
+    // Too much for this attempt's tasks, alone or already wide (a later
+    // collection of the run can need more than the one that widened it).
+    const tasks = Math.min(slot.max, Math.ceil(toEmbed / PASSAGES_PER_TASK));
+    if (tasks > slot.count) {
       return {
         kind: "scale",
         tasks,
@@ -390,7 +402,7 @@ export async function indexCollection(
         plan.names[slot.index] as string,
         share,
         embedder,
-        throttled(opts.onProgress, share.length, now),
+        throttled(opts.onProgress, share.length, toEmbed, now),
       );
       if (slot.index > 0) return { kind: "shared" };
       await collectShards(scoped, plan, embedder.model.dims, pool, {
@@ -409,7 +421,8 @@ export async function indexCollection(
   const sink = (name: string, data: Uint8Array): void => uploader.put(name, data);
   // Alone, the build embeds what is missing; in a wide attempt the shards held it all.
   const inline = slot.count === 1 ? toEmbed : 0;
-  const progress = throttled(opts.onProgress, inline, now);
+  const progress = throttled(opts.onProgress, inline, inline, now);
+  if (inline > 0) await progress(0);
   let embedded = 0;
   let embedMs = 0;
   const vectors = embedder
@@ -516,9 +529,16 @@ export async function indexTasks(
       outcome = await indexCollection(store, task, {
         ...opts,
         // A count the admin missed is no reason to stop indexing.
-        onProgress: async (embedded, toEmbed) => {
+        onProgress: async ({ embedded, toEmbed, planned }) => {
           try {
-            await reporter.call("progress", { ...target, task: slot.index, embedded, toEmbed });
+            await reporter.call("progress", {
+              ...target,
+              task: slot.index,
+              tasks: slot.count,
+              embedded,
+              toEmbed,
+              planned,
+            });
           } catch (e) {
             if (e instanceof JobStoppedError) throw e;
             console.error(
@@ -539,8 +559,11 @@ export async function indexTasks(
       continue;
     }
     if (outcome.kind === "scale") {
-      // The admin ends this attempt and starts one that runs this many tasks.
-      await reporter.call("scale", { tasks: outcome.tasks, reason: outcome.reason });
+      // The admin ends this attempt and starts one that runs this many
+      // tasks. Every task of a wide attempt planned the same; the first asks.
+      if (slot.index === 0) {
+        await reporter.call("scale", { tasks: outcome.tasks, reason: outcome.reason });
+      }
       return;
     }
     if (outcome.kind === "built") {

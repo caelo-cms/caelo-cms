@@ -93,8 +93,10 @@ export const collectionIndexJobKind: ReportingJobKindDef = {
             .int()
             .min(0)
             .max(MAX_JOB_TASKS - 1),
+          tasks: z.number().int().min(1).max(MAX_JOB_TASKS),
           embedded: z.number().int().min(0),
           toEmbed: z.number().int().min(0),
+          planned: z.number().int().min(0),
         })
         .strict(),
       async handle(deps, runId, input) {

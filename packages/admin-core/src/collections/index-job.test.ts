@@ -392,6 +392,26 @@ describe("the index job at scale", () => {
     expect(e.embedded).toEqual([]);
   });
 
+  it("an attempt already wide widens further for a collection that needs more", async () => {
+    const docs = Array.from({ length: 1_201 }, (_, d) =>
+      page(
+        `q${d}`,
+        Array.from({ length: 10 }, (_, s) => `Grosse Seite ${d} Abschnitt ${s}`),
+      ),
+    );
+    const t = task({
+      maxDocuments: 2_000,
+      changeKeys: [
+        await change({ upserts: docs, deletes: [], replaceAll: false, profile: semantic }),
+      ],
+    });
+    const out = await indexCollection(store, t, {
+      embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
+      slot: { index: 0, count: 2, max: 32 },
+    });
+    expect(out).toMatchObject({ kind: "scale", tasks: 3 });
+  });
+
   it("builds alone where the launcher runs one task (inside the admin)", async () => {
     const e = fakeEmbedders("granite@aaaaaaaaaaaa");
     const out = await build(await bigBuild(), e.source, { slot: { index: 0, count: 1, max: 1 } });
@@ -513,9 +533,52 @@ describe("what the index job reports", () => {
     expect(actions).not.toContain("done");
     expect(actions).not.toContain("failed");
     // At least the final count of its share (3,005 of 6,010).
+    // It reports at once, so its share counts before its first batch, and with the plan's total.
+    expect(calls[0]).toMatchObject({
+      action: "progress",
+      payload: { task: 1, tasks: 2, embedded: 0, toEmbed: 3_005, planned: 6_010 },
+    });
     expect(calls.at(-1)).toMatchObject({
       action: "progress",
       payload: { task: 1, embedded: 3_005, toEmbed: 3_005 },
     });
+  });
+
+  it("in a wide attempt that has to widen, only the first task asks", async () => {
+    const docs = Array.from({ length: 1_201 }, (_, d) => ({
+      id: `w${d}`,
+      lang: "de",
+      values: {
+        title: `w${d}`,
+        sections: Array.from({ length: 10 }, (_, s) => ({
+          anchor: `a${s}`,
+          heading: "",
+          text: `Weite Seite ${d} Abschnitt ${s}`,
+        })),
+      },
+    }));
+    const t = task({
+      maxDocuments: 2_000,
+      changeKeys: [
+        await change({
+          upserts: docs,
+          deletes: [],
+          replaceAll: false,
+          profile: profile({ weight: 1, minSimilarity: 0.2 }),
+        }),
+      ],
+    });
+    const other = recordingReporter({ index: 1, count: 2, max: 32 });
+    await indexTasks(other.reporter, store, [t], {
+      embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
+      slot: other.reporter.slot,
+    });
+    expect(other.calls).toEqual([]);
+    const first = recordingReporter({ index: 0, count: 2, max: 32 });
+    await indexTasks(first.reporter, store, [t], {
+      embedders: fakeEmbedders("granite@aaaaaaaaaaaa").source,
+      slot: first.reporter.slot,
+    });
+    expect(first.calls.map((c) => c.action)).toEqual(["scale"]);
   });
 });

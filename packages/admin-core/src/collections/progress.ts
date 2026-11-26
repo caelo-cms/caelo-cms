@@ -30,9 +30,11 @@ const count = z.number().int().min(0).max(50_000_000);
 export const indexProgressSchema = z.object({
   startedAt: z.string(),
   at: z.string(),
+  /** What the attempt embeds in all, and on how many tasks: tasks yet to report count too. */
+  planned: count.optional(),
+  taskCount: z.number().int().min(1).max(64).optional(),
   tasks: z.record(z.string(), z.object({ embedded: count, toEmbed: count })),
 });
-export type IndexProgress = z.infer<typeof indexProgressSchema>;
 
 /** A pending index's progress for people: passages so far, tasks, time left. */
 export interface IndexProgressSummary {
@@ -54,14 +56,19 @@ export function summarizeIndexProgress(raw: unknown, nowMs: number): IndexProgre
   const parts = Object.values(p.tasks);
   if (parts.length === 0) return null;
   const embedded = parts.reduce((n, t) => n + t.embedded, 0);
-  const toEmbed = parts.reduce((n, t) => n + t.toEmbed, 0);
+  // The plan's total: a task that has not reported yet (queued, or a
+  // retry's tasks still starting) leaves its share in what is left.
+  const toEmbed = Math.max(
+    p.planned ?? 0,
+    parts.reduce((n, t) => n + t.toEmbed, 0),
+  );
   const elapsed = Date.parse(p.at) - Date.parse(p.startedAt);
   // The pace of the reports; the time since the last one is part of what is left.
   const rate = elapsed > 0 && embedded > 0 ? embedded / elapsed : null;
   const sinceLast = Math.max(0, nowMs - Date.parse(p.at));
   const remainingMs =
     rate === null ? null : Math.max(0, Math.round((toEmbed - embedded) / rate - sinceLast));
-  return { embedded, toEmbed, tasks: parts.length, remainingMs };
+  return { embedded, toEmbed, tasks: p.taskCount ?? parts.length, remainingMs };
 }
 
 export const collectionIndexProgressOp = defineOperation({
@@ -78,8 +85,12 @@ export const collectionIndexProgressOp = defineOperation({
       pluginId: uuid,
       collection: z.string().regex(/^[a-z][a-z0-9_]{0,39}$/),
       task: z.number().int().min(0).max(63),
+      /** How many tasks the attempt runs. */
+      tasks: z.number().int().min(1).max(64),
       embedded: count,
       toEmbed: count,
+      /** What the whole attempt embeds for the collection. */
+      planned: count,
     })
     .strict(),
   output: z.object({ recorded: z.boolean() }),
@@ -90,6 +101,8 @@ export const collectionIndexProgressOp = defineOperation({
          SET progress = jsonb_build_object(
                'startedAt', COALESCE(progress->>'startedAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
                'at', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+               'planned', ${input.planned}::int,
+               'taskCount', ${input.tasks}::int,
                'tasks', COALESCE(progress->'tasks', '{}'::jsonb)
                           || jsonb_build_object(${String(input.task)}::text, ${part}))
        WHERE run_id = ${input.runId}::uuid AND plugin_id = ${input.pluginId}::uuid
