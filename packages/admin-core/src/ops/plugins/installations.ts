@@ -20,6 +20,7 @@ import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { syncExternalCompanionSkills } from "./companion-skills.js";
 import { afterPluginCommit } from "./host-sync.js";
+import { unmetHostRequirement } from "./registry.js";
 
 export function stagePluginInstallationOp(registry: OperationRegistry) {
   return defineOperation({
@@ -330,6 +331,16 @@ export function approvePluginInstallationOp(registry: OperationRegistry) {
           message: (error as Error).message,
         });
       }
+      // #1729 — the activation gate a shipped plugin meets (`requires`: a
+      // working mail transport, a visitor AI that can run): before any
+      // receipt is written, so the Owner learns the setup step first.
+      const unmet = await unmetHostRequirement(tx, manifest.slug, manifest);
+      if (unmet)
+        return err({
+          kind: "HandlerError",
+          operation: "plugins.approve_installation",
+          message: unmet,
+        });
       await tx.execute(
         sql`UPDATE plugin_capability_grants SET revoked_at = now(), revoked_by = ${ctx.actorId}::uuid WHERE plugin_id = ${version.plugin_id}::uuid AND artifact_digest = ${input.artifactDigest} AND revoked_at IS NULL`,
       );
@@ -500,6 +511,15 @@ export function finalizePluginInstallationOp(registry: OperationRegistry) {
           kind: "HandlerError",
           operation: "plugins.finalize_installation",
           message: allowlistRefusal,
+        });
+      // #1729 — checked again at the commit: the transport may have gone
+      // between the approval and the host's preparation.
+      const unmet = await unmetHostRequirement(tx, manifest.slug, manifest);
+      if (unmet)
+        return err({
+          kind: "HandlerError",
+          operation: "plugins.finalize_installation",
+          message: unmet,
         });
       await syncExternalCompanionSkills(tx, row.plugin_id, row.artifact_digest, manifest);
       // The previous active version and any competing approved one (e.g.

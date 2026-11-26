@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { activateApprovedExternalPlugin, pluginManifest } from "@caelo-cms/plugin-host";
-import { adminPanelOperations, externalCapabilityRefusal } from "@caelo-cms/plugin-sdk";
+import {
+  adminPanelOperations,
+  externalCapabilityRefusal,
+  externalUrlSlotRefusal,
+} from "@caelo-cms/plugin-sdk";
 import {
   describePluginOperations,
   execute,
@@ -48,6 +52,10 @@ export const load: PageServerLoad = async ({ locals }) => {
           ...(manifest.requestedCapabilities ?? []).map((capability) =>
             externalCapabilityRefusal(capability),
           ),
+          // A URL slot no runtime-installed plugin can claim (Q7 A).
+          ...(manifest.urlContributions ?? []).map((claim) =>
+            externalUrlSlotRefusal(claim.slot, manifest.urlTables !== undefined),
+          ),
           // An allowlist naming an operation no plugin can call is refused
           // at approval too; a package staged before that check says so here.
           (manifest.requestedCapabilities ?? []).includes("cms_admin")
@@ -75,6 +83,16 @@ export const load: PageServerLoad = async ({ locals }) => {
           permission: panel.permission,
           operations: [...new Set(adminPanelOperations(panel).map((o) => o.operation))],
         })),
+        // #1729 (Q8 A) — the daily AI spending the Owner approves with this
+        // exact package, in dollars; the ledger holds the plugin to it.
+        aiDailyCapUsd: dollars(manifest.capabilityConstraints?.ai_provider?.maxDailyCostMicrocents),
+        // #1729 — every mail the plugin can send, as its recipient reads it.
+        mails: Object.entries(manifest.mailTemplates ?? {}).map(([name, t]) => ({
+          name,
+          subject: t.subject,
+          body: t.body,
+          linkLabel: t.link?.label ?? null,
+        })),
         // The editor toolbar items, with the text their "ask the AI"
         // buttons put into the chat composer.
         toolbarItems: (manifest.editorToolbar ?? []).map((item) => ({
@@ -88,6 +106,11 @@ export const load: PageServerLoad = async ({ locals }) => {
     }),
   };
 };
+/** Microcents as dollars; below a cent with four decimals, so a small cap does not read "$0.00". */
+function dollars(microcents: number | undefined): string | null {
+  if (microcents === undefined) return null;
+  return (microcents / 1e8).toFixed(microcents < 1_000_000 ? 4 : 2);
+}
 function message(error: unknown): string {
   return typeof error === "object" && error && "message" in error
     ? String(error.message)

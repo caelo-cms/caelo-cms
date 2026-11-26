@@ -144,7 +144,8 @@ beforeAll(async () => {
   });
   await flow.install(manifest, source);
   owner = await flow.owner();
-});
+  // Generous: installing runs the sandbox, and a loaded machine slows it.
+}, 180_000);
 afterAll(async () => {
   resetPluginHost();
   await flow.dropRows();

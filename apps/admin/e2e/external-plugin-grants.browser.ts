@@ -122,8 +122,11 @@ test("an upload that asks for access no runtime-installed plugin can have is ref
     tier: 2,
     schema: {},
     operations: ["noop"],
-    requestedCapabilities: ["ai_provider"],
-    capabilityReasons: { ai_provider: "Summarise notes" },
+    // Never offered to a runtime-installed plugin (#1729 Q7 A), whatever
+    // capabilities are still planned.
+    requestedCapabilities: ["url_slots"],
+    capabilityReasons: { url_slots: "Shape every slug" },
+    urlContributions: [{ slot: "slug-format" }],
   };
   const source = `export default {slug:"${slug}",version:"1.0.0",tier:2,operations:{noop:async()=>null}};`;
   await page.goto("/login");
@@ -139,8 +142,49 @@ test("an upload that asks for access no runtime-installed plugin can have is ref
   });
   await page.getByRole("button", { name: "Submit package for review" }).click();
   await expect(page.getByRole("alert")).toContainText(
-    "`ai_provider` (AI calls) is not available to runtime-installed plugins yet (#1729)",
+    'URL slot "slug-format" is not available to runtime-installed plugins',
   );
   // Nothing was staged, so there is nothing to approve.
   await expect(page.getByTestId(`installation-${slug}`)).toHaveCount(0);
+});
+
+test("the review shows the AI spending cap and every mail a package can send (#1729)", async ({
+  page,
+}) => {
+  const slug = `e2e-ai-mail-${Date.now()}`;
+  const manifest = {
+    slug,
+    version: "1.0.0",
+    tier: 2,
+    schema: {},
+    operations: ["noop"],
+    requires: ["email"],
+    requestedCapabilities: ["ai_provider", "email"],
+    capabilityReasons: { ai_provider: "Summarise notes", email: "Send a weekly note" },
+    capabilityConstraints: { ai_provider: { maxDailyCostMicrocents: 500_000_000 } },
+    mailTemplates: {
+      weekly_note: { subject: `Your weekly note ${slug}`, body: ["Here is what changed."] },
+    },
+  };
+  const source = `export default {slug:"${slug}",version:"1.0.0",tier:2,operations:{noop:async()=>null}};`;
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("dev-owner@example.com");
+  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL(/\/edit/, { timeout: 15_000 });
+  await page.goto("/settings/plugins/installations");
+  await page.getByLabel("Plugin package (.json, .json.gz or .json.br)").setInputFiles({
+    name: "ai-mail.caelo-plugin.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify({ manifest, source })),
+  });
+  await page.getByRole("button", { name: "Submit package for review" }).click();
+  const review = page.getByTestId(`installation-${slug}`);
+  await expect(review).toContainText("Review: pending");
+  // The cap the Owner approves with this exact package, in dollars.
+  await expect(review.getByTestId(`installation-ai-cap-${slug}`)).toContainText("$5.00");
+  // Every mail it can send, as the recipient reads it.
+  const mails = review.getByTestId(`installation-mails-${slug}`);
+  await expect(mails).toContainText(`Your weekly note ${slug}`);
+  await expect(mails).toContainText("Here is what changed.");
 });

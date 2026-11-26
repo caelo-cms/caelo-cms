@@ -22,9 +22,12 @@ export {
   type AiSessionKey,
   type AiSettlement,
   type AiSpender,
+  bindingPluginCap,
   checkAiCaps,
   describeAiCapRefusal,
   extendAiSpend,
+  type PluginAiCap,
+  readPluginAiCap,
   releaseAiSpend,
   reserveAiSpend,
   settleAiSpend,
@@ -120,6 +123,8 @@ export {
   pluginDeclaresConsentPurpose,
 } from "./consent-purposes.js";
 export {
+  type ContentVariantField,
+  checkContentVariantValues,
   contentVariantProblemMarker,
   hasContentVariantContributors,
   type ResolvedContentVariant,

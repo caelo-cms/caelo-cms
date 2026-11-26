@@ -1425,6 +1425,9 @@ export default definePlugin<PluginContextTier1>({
     "link_resolve",
     "list_sources",
     "list_resolve",
+    // #1729 — its locale prefixes and hosts shape page addresses: the
+    // url_slots grant, as for a runtime-installed plugin (one plugin model).
+    "url_slots",
   ],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */

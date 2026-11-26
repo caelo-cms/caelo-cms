@@ -295,6 +295,39 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
         return handle.setProfile(record.parse(args[1]) as never);
     }
   }
+  if (method === "ai.complete" || method === "ai.generateObject") {
+    const ai = (ctx as PluginContextTier1).ai;
+    if (!ai) throw new Error("SandboxCapabilityDenied: ai_provider");
+    // The handle Zod-parses the options in full (strict, bounded) and
+    // reserves their worst case under the plugin's caps before dispatch.
+    const [opts] = z.tuple([record]).parse(args);
+    return method === "ai.complete"
+      ? ai.complete(opts as Parameters<typeof ai.complete>[0])
+      : ai.generateObject(opts as Parameters<typeof ai.generateObject>[0]);
+  }
+  if (method === "email.queue" || method === "email.unsubscribeLink") {
+    const email = (ctx as PluginContextTier1).email;
+    if (!email) throw new Error("SandboxCapabilityDenied: email");
+    if (method === "email.unsubscribeLink") {
+      const [input] = z.tuple([z.object({ recipientId: id }).strict()]).parse(args);
+      return email.unsubscribeLink(input);
+    }
+    // The handle checks the template is the plugin's own, the address and
+    // the token, and the origin a mail may come from.
+    const [input] = z
+      .tuple([
+        z
+          .object({
+            template: z.string().max(64),
+            to: z.string().max(320),
+            token: z.string().max(128).optional(),
+          })
+          .strict(),
+      ])
+      .parse(args);
+    await email.queue(input);
+    return null;
+  }
   if (method.startsWith("images.")) {
     const images = (ctx as PluginContextTier1).images;
     if (!images) throw new Error("SandboxCapabilityDenied: image_generation");
@@ -740,6 +773,8 @@ export async function runSandboxWithBundler(
       hasChatTools: Boolean(context.chatTools),
       hasChanges: Boolean(context.changes),
       hasCms: Boolean((context as PluginContextTier1).cms),
+      hasAi: Boolean((context as PluginContextTier1).ai),
+      hasEmail: Boolean((context as PluginContextTier1).email),
       // No sessionToken: it is the visitor's login bearer credential (the
       // `login` entry of the HttpOnly `__session` cookie). Handing it to
       // runtime-authored code would let a plugin collect tokens in its own
