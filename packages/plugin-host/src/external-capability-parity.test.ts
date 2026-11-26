@@ -33,6 +33,7 @@ import {
   pluginCapability,
 } from "@caelo-cms/plugin-sdk";
 import { externalDeclarations } from "./external-plugin.js";
+import { renderPointDefinition } from "./render-points.js";
 import { runSandbox } from "./sandbox-runtime.js";
 
 const PLUGINS_ROOT = resolve(import.meta.dir, "../../plugins");
@@ -116,6 +117,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
   const search = await shipped("site-search");
   const assistant = await shipped("site-assistant");
   const consent = await shipped("consent-manager");
+  const international = await shipped("international-site");
   return {
     ...search,
     ...assistant,
@@ -129,6 +131,8 @@ async function fixtureManifest(): Promise<PluginManifest> {
     workers: search.workers,
     listTypes: search.listTypes,
     listSources: consent.listSources,
+    hasLinkResolve: international.hasLinkResolve,
+    linkResolveReads: international.linkResolveReads,
     aiChatOperations: assistant.aiChatOperations,
     changeConsumer: consent.changeConsumer,
     tier: 2,
@@ -140,7 +144,25 @@ async function fixtureManifest(): Promise<PluginManifest> {
  * reserved sandbox entry (`$contentVariants`, …) answers the point (Q3).
  * A brokered capability's `has…` field without an entry here fails.
  */
-const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {};
+const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
+  hasLinkResolve: "linkResolveOperation",
+};
+
+/** A render-point call as core makes it in an editor preview. */
+function renderPoint(source: string, manifest: PluginManifest, entry: string, args: unknown) {
+  return runSandbox({
+    source,
+    manifest,
+    operation: entry,
+    args,
+    context: {
+      ...baseContext,
+      invocation: { origin: "render", actorId: ID, renderId: "pass" },
+    } as PluginContext,
+    authorize: async () => {},
+    kind: "preview",
+  });
+}
 
 const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
   // #1729 — the broker takes the operation name and input; every rule is
@@ -296,6 +318,22 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
       }),
     ).toEqual({ sources: { [ID]: { [name]: [{ id: "a", values: { label: "render" } }] } } });
   },
+  link_resolve: async () => {
+    const linkResolveReads = (await fixtureManifest()).linkResolveReads;
+    expect(linkResolveReads?.tables.length).toBeGreaterThan(0);
+    const manifest = { ...probe, hasLinkResolve: true, linkResolveReads } as PluginManifest;
+    expect(externalDeclarations(manifest).linkResolveReads).toEqual(linkResolveReads);
+    // The reserved entry answers through the operation the definition names.
+    expect(
+      await renderPoint(
+        `export default {slug:"parity-probe",version:"1.0.0",tier:2,linkResolveOperation:"variants",
+          operations:{variants:async(ctx,args)=>({pages:{[args.pageIds[0]]:{variant:"de",group:ctx.invocation.origin}}})}};`,
+        manifest,
+        "$linkResolve",
+        { pageIds: [ID] },
+      ),
+    ).toEqual({ pages: { [ID]: { variant: "de", group: "render" } } });
+  },
   batch_jobs: async () => {
     expect(
       await sandboxed(
@@ -345,7 +383,12 @@ describe("#1729 — every capability is brokered for external plugins or tracked
 
   it("the definition carries every manifest field of a brokered capability", async () => {
     const fixture = await fixtureManifest();
-    const declarations = externalDeclarations(fixture) as Record<string, unknown>;
+    // As externalPluginDefinition builds it: the data, and each announced
+    // point's definition key set to its reserved entry.
+    const declarations = {
+      ...externalDeclarations(fixture),
+      ...renderPointDefinition(fixture, () => null).keys,
+    } as Record<string, unknown>;
     for (const capability of pluginCapability.options.filter(isExternallyBrokered)) {
       for (const field of CAPABILITY_MANIFEST_FIELDS[capability]) {
         if (field.startsWith("has") && !DEFINITION_KEY[field])

@@ -776,6 +776,25 @@ export const linkResolvePageVariant = z
 
 export type LinkResolvePageVariant = z.infer<typeof linkResolvePageVariant>;
 
+const storageIdentifier = z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/);
+
+/**
+ * #1269, #1729 — what a link-resolve answer is computed from, as manifest
+ * data (see `PluginDefinition.linkResolveReads`). The validator checks that
+ * every table is one of the plugin's `adminSchema` tables and every column
+ * one of theirs; `tables` may be empty for an answer that depends on the
+ * page ids alone.
+ */
+export const linkResolveReadsSchema = z
+  .object({
+    tables: z.array(storageIdentifier).max(20),
+    columns: z.array(storageIdentifier).max(64).optional(),
+    pageColumns: z.record(storageIdentifier, storageIdentifier).optional(),
+  })
+  .strict();
+
+export type LinkResolveReads = z.infer<typeof linkResolveReadsSchema>;
+
 /**
  * Epic #724 (rollout E) — one place in a plugin's private storage that
  * holds internal links: a column of one row. Core converts literal links
@@ -1413,6 +1432,14 @@ export const pluginManifest = z
      *  `link_resolve` capability: it changes where every internal link
      *  on a page goes. */
     hasLinkResolve: z.boolean().default(false),
+    /**
+     * #1729 — see `PluginDefinition.linkResolveReads`: the private tables
+     * (and columns) the link-resolve answer is computed from. Required for
+     * every plugin with `hasLinkResolve`, so core keeps the answer per
+     * render scope and asks only about what changed (O(request), #1269).
+     * Optional in the schema: only a link resolver carries it.
+     */
+    linkResolveReads: linkResolveReadsSchema.optional(),
     /** See `PluginDefinition.shareImagesOperation` (#1452). Requires the
      *  `head_contributions` capability: it changes every affected page's
      *  head. */
@@ -3067,10 +3094,12 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * columns of them that matter. When declared, core keeps the answer per
    * render scope and asks again only for pages it has not asked about, or
    * after a journaled change to these tables (an update counts only when
-   * it changed one of `columns`; inserts and deletes always count). Every
-   * preview otherwise asks about every page of the site. Declare exactly
-   * what the operation reads: an answer that also depends on something
-   * else would be served stale.
+   * it changed one of `columns`; inserts and deletes always count).
+   * Required with `linkResolveOperation` (#1729): without it every preview
+   * would ask about every page of the site. Declare exactly what the
+   * operation reads: an answer that also depends on something else would
+   * be served stale. An answer computed from the page ids alone declares
+   * `tables: []`.
    *
    * `pageColumns` names, per table, the column of the page a row answers
    * for, when a row of that table changes the answer of that page and of
@@ -3364,6 +3393,11 @@ export function manifestFromDefinition(def: {
   readonly deferralPlaceholders?: DeferralPlaceholders;
   readonly contentVariantsOperation?: string;
   readonly linkResolveOperation?: string;
+  readonly linkResolveReads?: {
+    readonly tables: ReadonlyArray<string>;
+    readonly columns?: ReadonlyArray<string>;
+    readonly pageColumns?: Readonly<Record<string, string>>;
+  };
   readonly shareImagesOperation?: string;
   readonly auditFindingsOperation?: string;
   readonly writeHintsOperation?: string;
@@ -3441,6 +3475,17 @@ export function manifestFromDefinition(def: {
       : {}),
     hasContentVariants: Boolean(def.contentVariantsOperation),
     hasLinkResolve: Boolean(def.linkResolveOperation),
+    ...(def.linkResolveReads
+      ? {
+          linkResolveReads: {
+            tables: [...def.linkResolveReads.tables],
+            ...(def.linkResolveReads.columns ? { columns: [...def.linkResolveReads.columns] } : {}),
+            ...(def.linkResolveReads.pageColumns
+              ? { pageColumns: { ...def.linkResolveReads.pageColumns } }
+              : {}),
+          },
+        }
+      : {}),
     hasShareImages: Boolean(def.shareImagesOperation),
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),

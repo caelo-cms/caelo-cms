@@ -147,6 +147,7 @@ beforeAll(async () => {
           schema: {},
           requestedCapabilities: ["link_resolve", "head_contributions", "list_sources"],
           linkResolveOperation: "link_resolve",
+          linkResolveReads: { tables: [] },
           listSources: [
             {
               name: "language_links",

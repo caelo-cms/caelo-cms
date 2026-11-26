@@ -104,8 +104,8 @@ A third status, `withdrawn`, is not needed: the one capability it would have des
 
 | Status | Capabilities |
 |---|---|
-| brokered | `cms_admin`, `cms_admin_schema`, `change_journal`, `chat_runner_tools`, `background_workers`, `list_types`, `list_sources`, `companion_skills`, `font_assets`, `private_files`, `image_generation`, `site_media_read`, `consent_provider`, `page_output`, `collections`, `batch_jobs`, `visitor_ai` |
-| planned (#1729) | `ai_provider`, `email`, `head_contributions`, `url_slots`, `client_assets`, `list_resolve`, `content_variants`, `link_resolve` |
+| brokered | `cms_admin`, `cms_admin_schema`, `change_journal`, `chat_runner_tools`, `background_workers`, `list_types`, `list_sources`, `link_resolve`, `companion_skills`, `font_assets`, `private_files`, `image_generation`, `site_media_read`, `consent_provider`, `page_output`, `collections`, `batch_jobs`, `visitor_ai` |
+| planned (#1729) | `ai_provider`, `email`, `head_contributions`, `url_slots`, `client_assets`, `list_resolve`, `content_variants` |
 
 - The 12 brokered capabilities started as `brokered`, the others as `planned` with issue 1729 until each gets its own issue.
 - `external-plugin.ts:34-55` and `loader.ts:887-904` are replaced by a lookup in the record.
@@ -314,6 +314,8 @@ The same rules apply to every point in this group:
 **Risks.** Misdirected links stay inside the site, and a target with no member in the variant fails loudly (by design). The low injection risk comes from the token regex (`index.ts:747-757`).
 
 **Tests.** Integration: links on a page of variant `de` resolve to the `de` member; a second preview asks no question after an unrelated write; a write to a declared table asks again only about the pages it names. Adversarial: an answer for a page not asked about; two plugins claiming one page. **Size S-M.**
+
+**Implemented in Phase B3b.** `linkResolveReads` is a manifest field (`linkResolveReadsSchema`, projected by `manifestFromDefinition`) and the validator requires it of **every** link resolver, shipped or installed (Q2 A): every table one of the plugin's `adminSchema` tables, every column one of theirs, `pageColumns` naming a listed table's page column, `tables: []` for an answer from the page ids alone (`linkResolveReadsFailures`, `plugin-sandbox/src/validate.ts`). The shipped test fixtures that resolved links without it now declare `{ tables: [] }`; international-site already declared it, so its derived manifest gains the field (a changed manifest the Owner approves once after the upgrade, #1332). `externalDeclarations` carries it and `$linkResolve` names `linkResolveOperation`. Core asks once per 10 000 pages (`LINK_RESOLVE_PAGES_PER_CALL`), each answer capped at 4 MB while its parts arrive (`assertAnswerSize` for an in-process answer), and the answer is `{ pages }` and nothing else. The answer carries no URL: core builds every href from the page it names (`pageRefUrl`), so the link rule of §4.5 has nothing of the plugin's to check, and the variant token rule refuses a variant that carries a scheme. `external-link-resolve.integration.test.ts` runs it through staging, approval, activation and the preview (a German page's link goes to the German page at core's path, a group spelled `//evil.example/…` never reaches an href), the kept answers (an unrelated write asks nothing, a write to the declared table asks only about the page it names), and the adversarial cases (an answer for a page not asked about, a `javascript:` variant, a shipped and an installed plugin placing one page, a 7 MB answer, a resolver past its 5 s preview budget). Measured on Apple silicon, Deno 2.9.6, on a shared machine at load 50: a preview of a page with an external link resolver took 136-492 ms the first time and 33-232 ms with the kept answers (no sandbox call for links); a build-style resolve of 30 000 pages 0.4-3.1 s in 3 calls.
 
 ### 6.5 `list_resolve`
 

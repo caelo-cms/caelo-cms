@@ -124,6 +124,67 @@ function workerScheduleFailures(m: PluginManifest): ValidationFailure[] {
   return failures;
 }
 
+/**
+ * #1729 — a link resolver declares what its answer is computed from
+ * (`linkResolveReads`), for every plugin: core keeps the answer per render
+ * scope and asks only about what changed, so a preview stays O(request)
+ * (CLAUDE.md §2). Every table must be one of the plugin's `adminSchema`
+ * tables and every column one of theirs, or core would watch the journal
+ * for changes that can never happen and serve the answer stale.
+ */
+function linkResolveReadsFailures(m: PluginManifest): ValidationFailure[] {
+  const fail = (hint: string): ValidationFailure => ({ kind: "link-resolve-reads", hint });
+  const reads = m.linkResolveReads;
+  if (!m.hasLinkResolve) {
+    return reads
+      ? [
+          fail(
+            "manifest declares `linkResolveReads` but no link resolver (`linkResolveOperation`). Remove `linkResolveReads`, or add the operation.",
+          ),
+        ]
+      : [];
+  }
+  if (!reads) {
+    return [
+      fail(
+        'the plugin answers the `link-resolve` point but does not declare `linkResolveReads`: name the `adminSchema` tables (and the columns of them) its answer is computed from, e.g. `linkResolveReads: { tables: ["page_variants"], columns: ["page_id", "group_id"], pageColumns: { page_variants: "page_id" } }` (`tables: []` when the answer depends on the page ids alone). Core keeps the answer and asks again only after a change to them.',
+      ),
+    ];
+  }
+  const out: ValidationFailure[] = [];
+  const admin = m.adminSchema ?? {};
+  const declared = new Set<string>();
+  for (const table of reads.tables) {
+    const columns = admin[table];
+    if (!columns) {
+      out.push(
+        fail(
+          `linkResolveReads.tables: "${table}" is not one of the plugin's adminSchema tables (${Object.keys(admin).join(", ") || "none"}). The answer can be kept only for tables core sees change.`,
+        ),
+      );
+      continue;
+    }
+    for (const column of Object.keys(columns)) declared.add(column);
+  }
+  for (const column of reads.columns ?? []) {
+    if (!declared.has(column))
+      out.push(
+        fail(
+          `linkResolveReads.columns: "${column}" is not a column of ${reads.tables.join(", ") || "any listed table"}. List only columns of the tables in \`linkResolveReads.tables\`.`,
+        ),
+      );
+  }
+  for (const [table, column] of Object.entries(reads.pageColumns ?? {})) {
+    if (!reads.tables.includes(table) || !admin[table]?.[column])
+      out.push(
+        fail(
+          `linkResolveReads.pageColumns: "${table}.${column}" must be a column of a table listed in \`linkResolveReads.tables\` that holds the page id a row answers for.`,
+        ),
+      );
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Failure shapes — surfaced to AI for auto-fix.
 // ---------------------------------------------------------------------------
@@ -146,6 +207,7 @@ export type ValidationFailureKind =
   | "forbidden-globalthis-alias"
   | "parse-error"
   | "worker-schedule"
+  | "link-resolve-reads"
   | "client-assets";
 
 export interface ValidationFailure {
@@ -191,6 +253,7 @@ export function validateManifest(
   // manifests are parsed with it on every load, so a stricter schema would
   // stop a plugin an older release approved from loading at all.
   if ((opts.workerCron ?? "refuse") === "refuse") failures.push(...workerScheduleFailures(m));
+  failures.push(...linkResolveReadsFailures(m));
 
   // #389 — `ref:` FK columns are an adminSchema-only vocabulary:
   // cms_public tables cannot FK across databases into cms_admin.

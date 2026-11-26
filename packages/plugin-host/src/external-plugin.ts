@@ -172,6 +172,10 @@ export function externalDeclarations(manifest: PluginManifest): ExternalDeclarat
     ...(manifest.capabilityConstraints
       ? { capabilityConstraints: manifest.capabilityConstraints }
       : {}),
+    // #1729 — what the `$linkResolve` answer is computed from: core keeps
+    // the answer per render scope and asks again only after a change to
+    // these tables, so a preview does not spawn a sandbox per page chunk.
+    ...(manifest.linkResolveReads ? { linkResolveReads: manifest.linkResolveReads } : {}),
     // #1729 — reviewed markup a `$deferrals` verdict names (deferrals.ts):
     // the verdict carries a name and text, never markup of its own.
     ...(manifest.deferralPlaceholders

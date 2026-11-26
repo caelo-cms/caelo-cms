@@ -52,6 +52,8 @@ export const RENDER_POINT_ENTRIES = Object.freeze({
   $contributions: { definitionKey: "contributionsOperation", announcedBy: "contributes" },
   /** §6.2 — `shareImagesOperation`, announced by `hasShareImages`. */
   $shareImages: { definitionKey: "shareImagesOperation", announcedBy: "hasShareImages" },
+  /** §6.4 — `linkResolveOperation`, announced by `hasLinkResolve`. */
+  $linkResolve: { definitionKey: "linkResolveOperation", announcedBy: "hasLinkResolve" },
   /** §6.7 — `deferralsOperation`, announced by `hasDeferrals`. */
   $deferrals: { definitionKey: "deferralsOperation", announcedBy: "hasDeferrals" },
   /** §6.7 — `buildDataOperation`, announced by `hasBuildData`. */
