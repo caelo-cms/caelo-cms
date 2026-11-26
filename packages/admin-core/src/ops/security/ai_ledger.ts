@@ -23,8 +23,10 @@
 
 import {
   type AiSpender,
+  bindingPluginCap,
   describeAiCapRefusal,
   extendAiSpend,
+  readPluginAiCap,
   releaseAiSpend,
   reserveAiSpend,
   settleAiSpend,
@@ -105,10 +107,10 @@ async function capsApply(tx: TransactionRunner, spender: AiSpender): Promise<boo
   `)) as unknown as unknown[];
   if (budgets.length > 0) return true;
   if (spender.kind === "plugin") {
-    const cap = (await tx.execute(sql`
-      SELECT 1 FROM plugins WHERE id = ${spender.pluginId}::uuid AND ai_cost_cap_microcents IS NOT NULL
-    `)) as unknown as unknown[];
-    return cap.length > 0;
+    // #1729 — a runtime-installed plugin's text is always capped (its AI
+    // grant carries the cap, or it may not spend at all).
+    const cap = await readPluginAiCap(tx, spender.pluginId);
+    return cap.external || bindingPluginCap(cap) !== null;
   }
   return false;
 }
