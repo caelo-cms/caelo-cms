@@ -33,6 +33,7 @@
  */
 
 import type { PluginAuditFinding, PluginAuditPageFacts } from "@caelo-cms/plugin-sdk";
+import { hreflangSet, robotsNoindex } from "./hreflang.js";
 import type { LocaleRow, PageVariantRow } from "./index.js";
 import {
   hasLanguageText,
@@ -622,25 +623,58 @@ export function hreflangProblem(tag: string): string | null {
   return null;
 }
 
-/** Does the page's `<meta name="robots">` say noindex? */
-function isNoindex(f: PluginAuditPageFacts): boolean {
-  return f.robots?.includes("noindex") ?? false;
-}
-
+/**
+ * The hreflang rules of one page. Its expected set is {@link hreflangSet}'s,
+ * the one the plugin renders: the indexable published versions, nothing on
+ * a noindex page, on the 404 page (#1305) or on a page with no other
+ * indexable version.
+ */
 function hreflang(
   model: BuildModel<BuildState>,
   f: PluginAuditPageFacts,
   byId: ReadonlyMap<string, PluginAuditPageFacts>,
 ): PluginAuditFinding[] {
-  const out: PluginAuditFinding[] = [];
-  const published = model.versionsOf(f.pageId);
-  const locale = model.localeOf(f.pageId);
+  const out = [...hreflangCodes(f), ...hreflangToNoindex(model, f, byId)];
+  const versions = hreflangVersions(model, f, byId);
+  if (versions.size >= 2) out.push(...hreflangSetFindings(model, f, byId, versions));
+  out.push(...canonicalCrossLocale(model, f));
+  return out;
+}
 
+/**
+ * Is a language version noindex, by the robots meta its rendered page
+ * carries? A fact batch holds whole language groups (`factBatchesOf`), so
+ * every version of a batch page has its facts there; a missing one is a
+ * bug, never "indexable".
+ */
+function versionNoindex(byId: ReadonlyMap<string, PluginAuditPageFacts>, pageId: string): boolean {
+  const facts = byId.get(pageId);
+  if (!facts) {
+    throw new Error(
+      `international-site audit: the hreflang rules need the facts of every language version, and this fact batch carries none for page ${pageId} (a batch holds whole language groups). Report it with bug_report.`,
+    );
+  }
+  return robotsNoindex(facts.robots);
+}
+
+/** The versions of `f`'s hreflang set ({@link hreflangSet}), by locale. */
+function hreflangVersions(
+  model: BuildModel<BuildState>,
+  f: PluginAuditPageFacts,
+  byId: ReadonlyMap<string, PluginAuditPageFacts>,
+): Map<string, string> {
+  const published = [...model.versionsOf(f.pageId)].map(([locale, pageId]) => ({ locale, pageId }));
+  const set = hreflangSet(f.pageId, published, (id) => versionNoindex(byId, id));
+  return new Map(set.map((v) => [v.locale, v.pageId]));
+}
+
+function hreflangCodes(f: PluginAuditPageFacts): PluginAuditFinding[] {
   const problems = [...new Set(f.alternates.flatMap((a) => hreflangProblem(a.hreflang) ?? []))];
   const codes = f.alternates.map((a) => a.hreflang.toLowerCase());
   const doubled = [...new Set(codes.filter((c, i) => codes.indexOf(c) !== i))];
-  if (problems.length > 0 || doubled.length > 0) {
-    out.push({
+  if (problems.length === 0 && doubled.length === 0) return [];
+  return [
+    {
       rule: "hreflang-invalid-code",
       severity: "error",
       pageId: f.pageId,
@@ -652,47 +686,59 @@ function hreflang(
         tool: "set_locales",
         hint: "Register the languages with valid BCP 47 codes (en-GB, not en-UK); the plugin derives hreflang from the registry.",
       },
-    });
-  }
+    },
+  ];
+}
 
-  // #1736 — hreflang is only true between versions search engines may
-  // index, and the plugin emits it so: a noindex page (site-search's
-  // results page) carries none, and no version names it. A batch holds
-  // whole groups, so every version's facts are here; one that is not
-  // counts as indexable.
-  if (isNoindex(f)) return out;
-  const hidden: [string, string][] = [];
-  const versions = new Map<string, string>();
-  for (const [code, id] of published) {
-    const facts = id === f.pageId ? f : byId.get(id);
-    if (facts && isNoindex(facts)) hidden.push([code, id]);
-    else versions.set(code, id);
-  }
-  if (hidden.length > 0) {
-    out.push({
-      rule: "hreflang-version-noindex",
-      severity: "info",
+/**
+ * Alternates naming a noindex page, the page itself included. The plugin
+ * leaves noindex pages out of hreflang ({@link hreflangSet}), so a build
+ * that carries one is a Caelo bug. Making the page indexable is no fix: a
+ * page can be noindex on purpose (site-search's results page must be).
+ */
+function hreflangToNoindex(
+  model: BuildModel<BuildState>,
+  f: PluginAuditPageFacts,
+  byId: ReadonlyMap<string, PluginAuditPageFacts>,
+): PluginAuditFinding[] {
+  const named = f.alternates.filter((a) => {
+    const id = a.path ? model.pageAt.get(a.path) : undefined;
+    const target = id === f.pageId ? f : id ? byId.get(id) : undefined;
+    return target !== undefined && robotsNoindex(target.robots);
+  });
+  if (named.length === 0) return [];
+  return [
+    {
+      rule: "hreflang-target-not-indexable",
+      severity: "error",
       pageId: f.pageId,
-      message: `Language version kept out of search: ${hidden
-        .map(([code, id]) => `the ${model.displayName(code)} version ${model.pathOf.get(id)}`)
+      message: `hreflang to a noindex page: ${named
+        .slice(0, MAX_EXAMPLES)
+        .map((a) => `${a.path} (${a.hreflang})`)
         .join(
           ", ",
-        )} is noindex, so this page's hreflang leaves it out and search engines show this version to those searchers instead. Right for a page that must not be found (a search results page).`,
+        )}. Search engines discard alternates that point at a page they must not index. The plugin leaves noindex pages out of every hreflang set, so this output is a Caelo bug.`,
       fix: {
-        tool: "set_page_seo_many",
-        hint: "If the version should be found, turn its noindex off; if it is deliberate, nothing to do.",
+        tool: "bug_report",
+        hint: "Report it with bug_report. Do not make the page indexable to silence this: a page that is noindex on purpose (a search results page) stays in its language group and the language switch, without hreflang.",
       },
-    });
-  }
-  // The 404 page has no versions (#1305), so it expects no hreflang.
-  if (published.size < 2) return out;
-  // Nor does a page whose group keeps fewer than two indexable versions
-  // (#1736); what it does list is still checked below.
-  const expectsSet = versions.size >= 2;
+    },
+  ];
+}
+
+/** The rules of a page that carries a hreflang set (`versions`, at least two). */
+function hreflangSetFindings(
+  model: BuildModel<BuildState>,
+  f: PluginAuditPageFacts,
+  byId: ReadonlyMap<string, PluginAuditPageFacts>,
+  versions: ReadonlyMap<string, string>,
+): PluginAuditFinding[] {
+  const out: PluginAuditFinding[] = [];
+  const locale = model.localeOf(f.pageId);
   const listed = new Map<string, string | null>();
   for (const a of f.alternates) listed.set(a.hreflang.toLowerCase(), a.path);
 
-  if (expectsSet && ![...listed.values()].includes(f.path)) {
+  if (![...listed.values()].includes(f.path)) {
     out.push({
       rule: "hreflang-self-missing",
       severity: "error",
@@ -705,22 +751,20 @@ function hreflang(
     });
   }
   // The page itself is hreflang-self-missing's.
-  const missing = expectsSet
-    ? [...versions.entries()].filter(
-        ([code, id]) => id !== f.pageId && listed.get(code.toLowerCase()) !== model.pathOf.get(id),
-      )
-    : [];
+  const missing = [...versions.entries()].filter(
+    ([code, id]) => id !== f.pageId && listed.get(code.toLowerCase()) !== model.pathOf.get(id),
+  );
   if (missing.length > 0) {
     out.push({
       rule: "hreflang-missing-version",
       severity: "error",
       pageId: f.pageId,
-      message: `hreflang incomplete: published versions missing from this page's hreflang list: ${missing
+      message: `hreflang incomplete: published, indexable versions missing from this page's hreflang list: ${missing
         .map(([code, id]) => `${model.displayName(code)} ${model.pathOf.get(id)}`)
         .join(", ")}.`,
       fix: {
         tool: "intl_status",
-        hint: "hreflang lists every published version of the group; check that the versions are linked into one group (link_page_variants).",
+        hint: "hreflang lists every published, indexable version of the group; check that the versions are linked into one group (link_page_variants).",
       },
     });
   }
@@ -745,7 +789,9 @@ function hreflang(
       },
     });
   }
-  const defaultVersion = expectsSet ? versions.get(model.defaultLocale.code) : undefined;
+  // x-default follows the default language's version only while that one
+  // takes part: a noindex default version leaves the set without one.
+  const defaultVersion = versions.get(model.defaultLocale.code);
   const xDefault = listed.get("x-default");
   if (defaultVersion && xDefault !== model.pathOf.get(defaultVersion)) {
     out.push({
@@ -778,71 +824,80 @@ function hreflang(
         },
       });
     }
-    const noindex = isNoindex(target);
-    const canonicalElsewhere = target.canonical !== null && target.canonical.path !== target.path;
-    if (noindex || canonicalElsewhere) {
+    // A noindex target is hreflangToNoindex's.
+    if (target.canonical !== null && target.canonical.path !== target.path) {
       out.push({
         rule: "hreflang-target-not-indexable",
         severity: "error",
         pageId: f.pageId,
-        message: `hreflang to a page search engines may not index: ${target.path} (${a.hreflang}) ${noindex ? "is noindex" : `has its canonical at ${target.canonical?.href}`}. Search engines then discard the alternates of the whole group.`,
-        // #1736 — the plugin leaves noindex versions out of hreflang, so one
-        // listed here was not rendered by it.
-        fix: noindex
-          ? {
-              tool: "bug_report",
-              hint: "The plugin never names a noindex version in hreflang; a build that does is a Caelo bug — report it with the page paths.",
-            }
-          : {
-              tool: "set_page_seo_many",
-              hint: `Remove the canonical override of ${target.path} so it is canonical to itself, or unlink it from the group if it should not be found.`,
-            },
-      });
-    }
-  }
-  if (f.canonical?.path) {
-    const canonicalPage = model.pageAt.get(f.canonical.path);
-    if (
-      canonicalPage &&
-      canonicalPage !== f.pageId &&
-      [...versions.values()].includes(canonicalPage)
-    ) {
-      out.push({
-        rule: "canonical-cross-locale",
-        severity: "error",
-        pageId: f.pageId,
-        message: `Canonical to another language: the ${model.displayName(locale)} version names ${f.canonical.path} (${model.displayName(model.localeOf(canonicalPage))}) as its canonical, so search engines drop this version from the index.`,
+        message: `hreflang to a page search engines may not index: ${target.path} (${a.hreflang}) has its canonical at ${target.canonical.href}. Search engines then discard the alternates of the whole group.`,
         fix: {
           tool: "set_page_seo_many",
-          hint: "Remove the canonical override; every language version is canonical to itself.",
+          hint: `Remove the canonical override of ${target.path} (every language version is canonical to itself), or unlink it from the group if it is not a version of this page.`,
         },
       });
     }
   }
-  if (Array.isArray(f.sitemapAlternates)) {
-    const inSitemap = new Map(
-      (f.sitemapAlternates as PluginAuditPageFacts["alternates"]).map((a) => [
-        a.hreflang.toLowerCase(),
-        a.path,
-      ]),
-    );
-    const differs =
-      inSitemap.size !== listed.size ||
-      [...listed.entries()].some(([k, v]) => inSitemap.get(k) !== v);
-    if (differs) {
-      out.push({
-        rule: "sitemap-alternates-mismatch",
-        severity: "error",
-        pageId: f.pageId,
-        message: `Sitemap and page disagree: the sitemap lists ${inSitemap.size} language version(s) for this page, its hreflang tags ${listed.size}. Search engines get two different answers.`,
-        fix: {
-          tool: "bug_report",
-          hint: "Both come from the plugin's group data in one build; a difference is a Caelo bug — report it.",
-        },
-      });
-    }
-  }
+  out.push(...sitemapAlternatesFindings(f, listed));
   return out;
+}
+
+function canonicalCrossLocale(
+  model: BuildModel<BuildState>,
+  f: PluginAuditPageFacts,
+): PluginAuditFinding[] {
+  if (!f.canonical?.path) return [];
+  const canonicalPage = model.pageAt.get(f.canonical.path);
+  const versions = model.versionsOf(f.pageId);
+  if (
+    !canonicalPage ||
+    canonicalPage === f.pageId ||
+    ![...versions.values()].includes(canonicalPage)
+  ) {
+    return [];
+  }
+  const locale = model.localeOf(f.pageId);
+  return [
+    {
+      rule: "canonical-cross-locale",
+      severity: "error",
+      pageId: f.pageId,
+      message: `Canonical to another language: the ${model.displayName(locale)} version names ${f.canonical.path} (${model.displayName(model.localeOf(canonicalPage))}) as its canonical, so search engines drop this version from the index.`,
+      fix: {
+        tool: "set_page_seo_many",
+        hint: "Remove the canonical override; every language version is canonical to itself.",
+      },
+    },
+  ];
+}
+
+function sitemapAlternatesFindings(
+  f: PluginAuditPageFacts,
+  listed: ReadonlyMap<string, string | null>,
+): PluginAuditFinding[] {
+  if (!Array.isArray(f.sitemapAlternates)) return [];
+  const inSitemap = new Map(
+    (f.sitemapAlternates as PluginAuditPageFacts["alternates"]).map((a) => [
+      a.hreflang.toLowerCase(),
+      a.path,
+    ]),
+  );
+  const differs =
+    inSitemap.size !== listed.size ||
+    [...listed.entries()].some(([k, v]) => inSitemap.get(k) !== v);
+  if (!differs) return [];
+  return [
+    {
+      rule: "sitemap-alternates-mismatch",
+      severity: "error",
+      pageId: f.pageId,
+      message: `Sitemap and page disagree: the sitemap lists ${inSitemap.size} language version(s) for this page, its hreflang tags ${listed.size}. Search engines get two different answers.`,
+      fix: {
+        tool: "bug_report",
+        hint: "Both come from the plugin's group data in one build; a difference is a Caelo bug — report it.",
+      },
+    },
+  ];
 }
 
 function languageLinks(

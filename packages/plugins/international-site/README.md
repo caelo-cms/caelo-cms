@@ -146,14 +146,6 @@ may decide on such a text, so the rules are stricter than a menu label's:
 - Skill `international-qa` says how to fix each finding.
 - `language_links` is a list source (`listSources`): entries
   `{ href: link, label, locale, is_current: boolean }`, id = locale code.
-- hreflang and sitemap alternates name only the versions search engines
-  may index (#1736): a noindex page (its SEO's `noindex`, which core's
-  `pages.list_statuses` reports with the statuses) carries none, no other
-  version names it, and a group left with fewer than two indexable
-  versions has none. x-default follows the default language's version
-  only while it is indexable. The language switcher keeps every
-  published version: visitors may switch to a page search engines skip
-  (site-search's results page is noindex in every language).
 - Every URL the plugin emits (hreflang, sitemap alternates, switcher
   links) is absolute and comes from core's `pages.resolve_public_urls`.
   Inside a static build that op builds on the build's origin
@@ -263,11 +255,20 @@ own path, so it gets no hreflang, sitemap alternates or switcher entry,
 the other pages of its language group do not name it, and the hreflang
 rules expect nothing of it.
 
-A noindex version is treated the same way by the hreflang rules
-(#1736): it is checked for nothing hreflang-related, and the other
-versions' sets are expected without it. That it is left out is said once
-per indexable version, as information, since a noindex translation can
-be deliberate.
+A noindex page takes no part in hreflang either (`src/hreflang.ts`, one
+rule for the output and the checks). hreflang tells a search engine
+which indexed page to show readers of another language; pointing it at
+a page it must not index is what search engines discard and SEO tools
+report. Some versions are noindex on purpose: site-search requires its
+results page to be (`/de/suche`, `/en/search`). Such a page stays in
+its language group, in `language_links` and the selector, and keeps its
+variant links; it only gets no hreflang and no sitemap alternates, and
+no other page names it. A page with no other indexable version gets
+none, and x-default names the default language's version only while
+that one is indexable. The plugin reads noindex with the publication
+status (`pages.list_statuses`, the caller's SEO view: a chat's preview
+sees its pending change, a build the main line); the checks read it
+from each rendered page's robots meta.
 
 | Rule | Severity | Finds |
 |---|---|---|
@@ -276,13 +277,12 @@ be deliberate.
 | `switcher-missing` | warning | pages with several published versions offer no link to them |
 | `cross-locale-content-link` | warning | a content link into another language although the target exists in the page's own |
 | `hreflang-self-missing` | error | the page is missing from its own hreflang set |
-| `hreflang-missing-version` | error | a published version is missing from the set |
+| `hreflang-missing-version` | error | a published, indexable version is missing from the set |
 | `hreflang-not-reciprocal` | error | an alternate does not name the page back |
 | `hreflang-target-broken` | error | an alternate is not a page of the build |
-| `hreflang-target-not-indexable` | error | an alternate is canonical to another URL (or noindex, which the plugin never renders: a bug to report) |
-| `hreflang-version-noindex` | info | a version of this indexable page is noindex, so hreflang leaves it out |
+| `hreflang-target-not-indexable` | error | an alternate is canonical to another URL, or names a noindex page (a Caelo bug: the plugin leaves noindex pages out) |
 | `hreflang-invalid-code` | error | not a BCP 47 tag, a wrong region (`en-UK`), or a code listed twice |
-| `x-default-missing` | warning | no `x-default`, or not the default language's version |
+| `x-default-missing` | warning | no `x-default`, or not the default language's version (expected only while that version is indexable) |
 | `canonical-cross-locale` | error | a version's canonical names another language's version |
 | `sitemap-alternates-mismatch` | error | the sitemap's alternates differ from the head's |
 | `html-lang-mismatch` | error | `<html lang>` is not the page's language |
