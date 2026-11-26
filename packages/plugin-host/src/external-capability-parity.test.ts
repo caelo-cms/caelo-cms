@@ -138,6 +138,7 @@ async function fixtureManifest(): Promise<PluginManifest> {
     listSources: consent.listSources,
     hasLinkResolve: international.hasLinkResolve,
     hasListResolve: international.hasListResolve,
+    hasContentVariants: international.hasContentVariants,
     // #1729 — client assets: the shipped files, data and placeholders.
     clientFiles: consent.clientFiles,
     hasBuildData: consent.hasBuildData,
@@ -162,6 +163,7 @@ const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {
   hasDeferrals: "deferralsOperation",
   hasBuildData: "buildDataOperation",
   hasListResolve: "listResolveOperation",
+  hasContentVariants: "contentVariantsOperation",
   // #1729 (Q7 A) — the slot claims of an installed plugin are its tables:
   // the host builds the encoders from them (url-tables.ts).
   urlContributions: "urlTables",
@@ -474,6 +476,18 @@ const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
         { variants: ["de"] },
       ),
     ).toEqual({ overlays: { de: { values: { "list/l1/item/i1/label": "render" }, hidden: [] } } });
+  },
+  content_variants: async () => {
+    const manifest = { ...probe, hasContentVariants: true } as PluginManifest;
+    expect(
+      await renderPoint(
+        `export default {slug:"parity-probe",version:"1.0.0",tier:2,contentVariantsOperation:"chrome",
+          operations:{chrome:async(ctx,args)=>({resolutions:{[args.pages[0].pageId]:{"layout:footer:0":{values:{note:ctx.invocation.origin}}}}})}};`,
+        manifest,
+        "$contentVariants",
+        { pages: [{ pageId: ID, placements: [] }] },
+      ),
+    ).toEqual({ resolutions: { [ID]: { "layout:footer:0": { values: { note: "render" } } } } });
   },
   batch_jobs: async () => {
     expect(

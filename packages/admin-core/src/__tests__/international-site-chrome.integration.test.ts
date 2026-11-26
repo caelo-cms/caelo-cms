@@ -46,6 +46,9 @@ const SYS_CTX: ExecutionContext = {
   requestId: "t592",
 };
 const PFX = "t592";
+/** Prose as an author writes it in a richtext field. */
+const NOTE =
+  "<p>Free for <strong>small</strong> teams &amp; <em>schools</em><br>No card needed.</p>";
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -355,18 +358,20 @@ describe("#592 — menus and footer per language", () => {
     const cta = await sysOp<{ moduleId: string }>("modules.create", {
       slug: `${PFX}-cta`,
       displayName: "Call to action",
-      html: '<a class="cta" href="{{cta_href}}">{{cta_label}}</a>',
+      html: '<a class="cta" href="{{cta_href}}">{{cta_label}}</a><div class="note">{{cta_note}}</div><small>{{cta_fine}}</small>',
       css: "",
       js: "",
       fields: [
         { name: "cta_label", kind: "text", label: "Label" },
         { name: "cta_href", kind: "url", label: "Link" },
+        { name: "cta_note", kind: "richtext", label: "Note" },
+        { name: "cta_fine", kind: "text", label: "Fine print" },
       ],
     });
     await sqlSystem(async (tx) => {
       const ci = (await tx.unsafe(
         `INSERT INTO content_instances (module_id, slug, display_name, "values")
-         VALUES ('${cta.moduleId}', '${PFX}-cta-shared', 'CTA', '{"cta_label": "Talk to us", "cta_href": "caelo:page/${ids.enAbout}"}')
+         VALUES ('${cta.moduleId}', '${PFX}-cta-shared', 'CTA', '{"cta_label": "Talk to us", "cta_href": "caelo:page/${ids.enAbout}", "cta_note": "${NOTE}", "cta_fine": "Terms &amp; conditions apply"}')
          RETURNING id::text AS id`,
       )) as { id: string }[];
       for (const pageId of [ids.enPricing, ids.dePreise]) {
@@ -397,6 +402,12 @@ describe("#592 — menus and footer per language", () => {
     // Menu link resolved to the German "about" page, in core's canonical form.
     expect(de.html).toContain('<a href="/de/t592-ueber/">DE:About</a>');
     expect(de.html).toMatch(/<a class="cta" href="\/de\/t592-ueber\/"[^>]*>DE:Talk to us<\/a>/);
+    // #1729 (§4.5) — the host checks every value a variant hands the page;
+    // a real translation (prose, and text keeping the source's `&amp;`)
+    // renders byte for byte as the raw values did before that check.
+    expect(de.html).toContain(`<div class="note">DE:${NOTE}</div>`);
+    expect(de.html).toContain("<small>DE:Terms &amp; conditions apply</small>");
+    expect(de.missingSlots.filter((m) => m.startsWith("plugin-value-refused:"))).toEqual([]);
     // English keeps its own chrome.
     const en = await preview(ids.enPricing);
     expect(en.html).toContain('<p class="tag">Made with care</p>');
