@@ -193,11 +193,15 @@ function storageOf(ctx: PluginContext, pluginSlug: string): PluginAdminQuery {
  * The plugin's `values` table as the given storage handle sees it,
  * checked row by row. Refuses a table past {@link URL_TABLE_MAX_VALUES}
  * rather than composing with the first page of it.
+ *
+ * @param opts.overLimit `"read"` for the write gate, so a table past the
+ *   limit (two chats' rows merged) can still be cut back by deleting rows.
  */
 export async function readDeclaredUrlValues(
   q: Pick<PluginAdminQuery, "list">,
   pluginSlug: string,
   tables: PluginUrlTables,
+  opts: { readonly overLimit?: "refuse" | "read" } = {},
 ): Promise<DeclaredUrlValue[]> {
   const t = tables.values;
   const rows = await q.list(t.table, {
@@ -205,7 +209,7 @@ export async function readDeclaredUrlValues(
     orderDir: "asc",
     limit: URL_TABLE_MAX_VALUES + 1,
   });
-  if (rows.length > URL_TABLE_MAX_VALUES) {
+  if (rows.length > URL_TABLE_MAX_VALUES && opts.overLimit !== "read") {
     throw new Error(
       `url-composition: plugin "${pluginSlug}" keeps more than ${URL_TABLE_MAX_VALUES} values in ${t.table}; a URL table holds at most ${URL_TABLE_MAX_VALUES}`,
     );
@@ -386,7 +390,7 @@ export async function checkUrlTableWrite(opts: {
       `${where} shapes page addresses; change its rows one at a time with insert, update, upsert or delete, so each change is checked against the pages it moves`,
     );
   }
-  const values = await readDeclaredUrlValues({ list }, pluginSlug, tables);
+  const values = await readDeclaredUrlValues({ list }, pluginSlug, tables, { overLimit: "read" });
   const data = write.data ?? {};
   if (role === "pages") {
     const named = data[tables.pages.valueColumn];
@@ -394,6 +398,18 @@ export async function checkUrlTableWrite(opts: {
       throw new Error(
         `${where}: value ${JSON.stringify(named)} is not in ${tables.values.table}; add the value first`,
       );
+    }
+    const pageId = data.page_id;
+    if (write.method !== "delete" && pageId !== undefined) {
+      // One row per page: composition refuses a page with two. Read by
+      // page_id, the index the validator requires of a pages table.
+      const rows = await list(tables.pages.table, { page_id: pageId, limit: 10 });
+      const other = rows.find((r) => !replacesRow(write, r));
+      if (other !== undefined) {
+        throw new Error(
+          `${where}: page ${String(pageId)} already has a row (${String(other.id)}) naming value ${JSON.stringify(other[tables.pages.valueColumn])}; change that row instead of adding another, since a page takes one value`,
+        );
+      }
     }
     return;
   }
@@ -416,6 +432,11 @@ export async function checkUrlTableWrite(opts: {
     }
   }
   if (write.method === "delete") return;
+  if (current === undefined && values.length >= URL_TABLE_MAX_VALUES) {
+    throw new Error(
+      `${where}: ${t.table} holds at most ${URL_TABLE_MAX_VALUES} values, and a new row would be one more; remove a value first`,
+    );
+  }
   const next: DeclaredUrlValue = {
     id: current?.id ?? write.id ?? "",
     value: String(data[t.valueColumn] ?? current?.value ?? ""),
@@ -446,6 +467,20 @@ export async function checkUrlTableWrite(opts: {
 }
 
 /**
+ * Whether `write` replaces `row`: an update of its id, or an upsert whose
+ * key it matches (the upsert folds those rows into one).
+ */
+function replacesRow(write: UrlTableWrite, row: Readonly<Record<string, unknown>>): boolean {
+  if (write.id !== undefined) return row.id === write.id;
+  const key = write.key;
+  return (
+    write.method === "upsert" &&
+    key !== undefined &&
+    Object.entries(key).every(([column, v]) => row[column] === v)
+  );
+}
+
+/**
  * The values row `write` replaces: the one its id names, or the first by
  * id whose columns match its upsert key, which is the row the upsert
  * updates (private-upsert.ts); none for an insert, or an upsert that
@@ -459,11 +494,8 @@ async function replacedValue(
   rowsById: () => Promise<ReadonlyArray<Record<string, unknown>>>,
 ): Promise<DeclaredUrlValue | undefined> {
   if (write.id !== undefined) return values.find((v) => v.id === write.id);
-  const key = write.key;
-  if (write.method !== "upsert" || key === undefined) return undefined;
-  const row = (await rowsById()).find((r) =>
-    Object.entries(key).every(([column, v]) => r[column] === v),
-  );
+  if (write.method !== "upsert" || write.key === undefined) return undefined;
+  const row = (await rowsById()).find((r) => replacesRow(write, r));
   return row === undefined ? undefined : values.find((v) => v.id === String(row.id));
 }
 

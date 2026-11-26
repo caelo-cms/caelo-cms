@@ -10,7 +10,12 @@
 
 import { describe, expect, it } from "bun:test";
 import { validateInstallationPolicy, validatePlugin } from "@caelo-cms/plugin-sandbox";
-import type { PluginInvocation, PluginManifest, PluginUrlTables } from "@caelo-cms/plugin-sdk";
+import {
+  type PluginInvocation,
+  type PluginManifest,
+  type PluginUrlTables,
+  URL_TABLE_MAX_VALUES,
+} from "@caelo-cms/plugin-sdk";
 import {
   checkUrlTableWrite,
   type DeclaredUrlValue,
@@ -241,6 +246,109 @@ describe("#1729 — a URL table changes only in an Owner-approved call", () => {
       table: "markets",
       key: { code: "de" },
       data: { code: "de", host: null },
+    });
+  });
+
+  /** A storage `list` over `rows` that honours equality filters, as the handle does. */
+  const listOver =
+    (rows: Record<string, Record<string, unknown>[]>) =>
+    async (table: string, filter: Record<string, unknown> = {}) => {
+      const { limit, orderBy: _o, orderDir: _d, ...where } = filter;
+      const hits = (rows[table] ?? []).filter((r) =>
+        Object.entries(where).every(([k, v]) => r[k] === v),
+      );
+      return typeof limit === "number" ? hits.slice(0, limit) : hits;
+    };
+  const approvedGate = (
+    rows: Record<string, Record<string, unknown>[]>,
+    write: Parameters<typeof checkUrlTableWrite>[0]["write"],
+  ) =>
+    checkUrlTableWrite({
+      pluginSlug: "markets",
+      tables: TABLES,
+      invocation: { origin: "approved", actorId: ID } as PluginInvocation,
+      write,
+      list: listOver(rows) as never,
+    });
+
+  it("keeps one row per page: a second row for a page is refused, its own row changes", async () => {
+    const PAGE = "22222222-2222-4222-8222-222222222222";
+    const OTHER_PAGE = "44444444-4444-4444-8444-444444444444";
+    const rows: Record<string, Record<string, unknown>[]> = {
+      markets: [
+        { id: ID, code: "de", segment: null, host: null },
+        { id: "m2", code: "at", segment: null, host: null },
+      ],
+      page_markets: [
+        { id: "p1", page_id: PAGE, market: "de" },
+        { id: "p2", page_id: OTHER_PAGE, market: "de" },
+      ],
+    };
+    await expect(
+      approvedGate(rows, {
+        method: "insert",
+        table: "page_markets",
+        data: { page_id: PAGE, market: "at" },
+      }),
+    ).rejects.toThrow(/page 22222222-2222-4222-8222-222222222222 already has a row \(p1\)/);
+    await expect(
+      approvedGate(rows, {
+        method: "update",
+        table: "page_markets",
+        id: "p2",
+        data: { page_id: PAGE },
+      }),
+    ).rejects.toThrow(/already has a row \(p1\)/);
+    await approvedGate(rows, {
+      method: "update",
+      table: "page_markets",
+      id: "p1",
+      data: { market: "at" },
+    });
+    await approvedGate(rows, {
+      method: "upsert",
+      table: "page_markets",
+      key: { page_id: PAGE },
+      data: { page_id: PAGE, market: "at" },
+    });
+  });
+
+  it(`refuses a value past ${URL_TABLE_MAX_VALUES}, and lets a table past it be cut back`, async () => {
+    const full = (n: number) => ({
+      markets: Array.from({ length: n }, (_, i) => ({
+        id: `m${String(i).padStart(4, "0")}`,
+        code: `v${i}`,
+        segment: null,
+        host: null,
+      })),
+      page_markets: [],
+    });
+    await expect(
+      approvedGate(full(URL_TABLE_MAX_VALUES), {
+        method: "insert",
+        table: "markets",
+        data: { code: "one-more" },
+      }),
+    ).rejects.toThrow(new RegExp(`holds at most ${URL_TABLE_MAX_VALUES} values`));
+    await expect(
+      approvedGate(full(URL_TABLE_MAX_VALUES), {
+        method: "upsert",
+        table: "markets",
+        key: { code: "one-more" },
+        data: { code: "one-more" },
+      }),
+    ).rejects.toThrow(/holds at most/);
+    // An upsert of an existing value adds no row.
+    await approvedGate(full(URL_TABLE_MAX_VALUES), {
+      method: "upsert",
+      table: "markets",
+      key: { code: "v3" },
+      data: { code: "v3", host: null },
+    });
+    await approvedGate(full(URL_TABLE_MAX_VALUES + 1), {
+      method: "delete",
+      table: "markets",
+      id: "m0007",
     });
   });
 
