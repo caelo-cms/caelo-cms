@@ -215,7 +215,7 @@ describe("cms_admin through the broker (#1729 §7.1)", () => {
         requestedCapabilities: ["cms_admin"],
         capabilityReasons: { cms_admin: "Read and rename pages" },
         capabilityConstraints: {
-          cms_admin: { operations: ["pages.list", "pages.update", "plugin_storage.list"] },
+          cms_admin: { operations: ["pages.list", "pages.update"] },
         },
       },
       `export default {slug:"${SLUG}",version:"1.0.0",tier:2,operations:{
@@ -251,6 +251,9 @@ describe("cms_admin through the broker (#1729 §7.1)", () => {
 
   it("refuses an operation the receipt does not name, and one behind a plugin handle", async () => {
     const worker: PluginInvocation = { origin: "worker", actorId: ownerCtx.actorId };
+    // Staging refuses an allowlist naming a handle's operation
+    // (plugin-installations.integration.test.ts); the broker refuses the
+    // call anyway, as a handle's operation before it reads the receipt.
     expect(await refusal(SLUG, "call", { op: "redirects.create", input: {} }, worker)).toContain(
       "not among the operations the Owner approved",
     );

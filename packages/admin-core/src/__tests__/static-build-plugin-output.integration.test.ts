@@ -450,7 +450,16 @@ describe("#605 — the published site carries every plugin's output", () => {
     const runtime = /<script[^>]+src="(\/_caelo\/plugin\/consent-manager\/[^"]+\.js)"/.exec(home);
     expect(runtime?.[1]).toBeDefined();
     const runtimeFile = published((runtime?.[1] ?? "").replace(/^\//, ""));
-    expect(runtimeFile).toContain("/api/plugin/consent-manager/record_consent");
+    // #1729 C1 — the runtime is one reviewed file; what it needs of this
+    // build (the endpoint, the categories) is the page's build data block.
+    expect(runtimeFile).toContain('data-caelo-plugin-data="consent-manager"');
+    const data =
+      /<script type="application\/json" data-caelo-plugin-data="consent-manager">([^<]*)<\/script>/.exec(
+        home,
+      );
+    expect(data?.[1]).toBeDefined();
+    const buildData = JSON.parse(data?.[1] ?? "null") as { recordEndpoint?: string };
+    expect(buildData.recordEndpoint).toBe("/api/plugin/consent-manager/record_consent");
     // The runtime's few CSS rules ride inline, so they do not block first
     // paint (#1124).
     expect(home).toContain(
