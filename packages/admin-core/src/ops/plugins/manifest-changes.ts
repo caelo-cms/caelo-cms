@@ -54,6 +54,7 @@ const AREAS: Readonly<Record<Exclude<keyof PluginManifest, NotCompared>, string>
   workers: "Background jobs",
   tools: "AI tools",
   urlContributions: "Page addresses",
+  urlTables: "The tables that shape page addresses",
   contributes: "Page head and sitemap",
   skills: "AI instructions",
   listSources: "List data",

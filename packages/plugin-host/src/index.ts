@@ -425,6 +425,13 @@ export {
   urlAnnotationPluginSlugs,
   urlContributionsRegistry,
 } from "./url-composition.js";
+// #1729 (Q7 A) — URL slots declared as tables the host reads.
+export {
+  type DeclaredUrlValue,
+  declaredUrlContributions,
+  readDeclaredUrlValues,
+  servedPublicHosts,
+} from "./url-tables.js";
 export {
   parseVisitorConsentHeader,
   resolveVisitorConsentRule,
