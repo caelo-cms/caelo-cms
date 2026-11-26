@@ -40,6 +40,10 @@
  * `context-conditional-markup`; so does a nested module's partial outside
  * element content. An attribute or element whose name holds a value tag is
  * unknown until the render, so its values are refused too.
+ *
+ * Where htmlparser2 and a browser read a template differently, the browser
+ * wins: a self-closed text element (`<script/>`, `<textarea/>`) opens all
+ * the same, and its content up to the end tag is what the element holds.
  */
 
 import { QuoteType, Tokenizer } from "htmlparser2";
@@ -210,6 +214,7 @@ function computeContexts(html: string): PlaceholderContexts {
   let element = "";
   let elementNamed = false;
   let maskedElement = "";
+  const selfClosed: { readonly element: string; readonly from: number }[] = [];
   let tagStart = -1;
   let special: string | null = null;
   let attr: { name: string; named: boolean; start: number; end: number } | null = null;
@@ -252,8 +257,12 @@ function computeContexts(html: string): PlaceholderContexts {
         // htmlparser2 decides on the name it read: the masked one.
         special = TEXT_ELEMENTS.has(maskedElement) ? maskedElement : null;
       },
-      onselfclosingtag() {
+      onselfclosingtag(endIndex) {
         special = null;
+        // A browser ignores the `/` of a non-void HTML element: `<script/>`
+        // opens a script all the same. htmlparser2 does not; note the span.
+        if (TEXT_ELEMENTS.has(maskedElement))
+          selfClosed.push({ element: maskedElement, from: endIndex + 1 });
       },
       onclosetag(s, e) {
         special = null;
@@ -313,6 +322,17 @@ function computeContexts(html: string): PlaceholderContexts {
   );
   tokenizer.write(masked);
   tokenizer.end();
+  // What a browser reads as the content of a self-closed text element
+  // replaces what htmlparser2 read there.
+  for (const { element: el, from } of selfClosed) {
+    const to = el === "plaintext" ? masked.length : endTagAt(masked, el, from);
+    const context = el === "script" || el === "style" ? refused(`context-${el}`) : () => PLAIN_TEXT;
+    for (let k = regions.length - 1; k >= 0; k -= 1) {
+      const existing = regions[k] as Region;
+      if (existing.end > from && existing.start < to) regions.splice(k, 1);
+    }
+    region(from, to, "special", context);
+  }
 
   regions.sort((a, b) => a.start - b.start);
   let r = 0;
@@ -340,6 +360,17 @@ function computeContexts(html: string): PlaceholderContexts {
     if (html[tag.start + 2] === "{") byStart.set(tag.start + 1, context);
   }
   return { byStart };
+}
+
+/**
+ * Where the text content of `element` opened before `from` ends, as a
+ * browser finds it: the next `</element` (any case) followed by whitespace,
+ * `/` or `>`; the end of the template when none follows.
+ */
+function endTagAt(masked: string, element: string, from: number): number {
+  const re = new RegExp(`</${element}[\\t\\n\\f\\r />]`, "gi");
+  re.lastIndex = from;
+  return re.exec(masked)?.index ?? masked.length;
 }
 
 /**

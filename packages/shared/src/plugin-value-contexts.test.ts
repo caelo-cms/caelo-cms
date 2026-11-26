@@ -173,6 +173,33 @@ describe("a plugin's value where the module puts it (#1729, §4.5)", () => {
     );
   });
 
+  it("reads a self-closed text element as a browser does: it opens all the same", () => {
+    const fields: TemplateField[] = [
+      { name: "title", kind: "text" },
+      { name: "body", kind: "richtext" },
+    ];
+    const at = (html: string, title: unknown = owned("alert(1)")) =>
+      renderTemplate({
+        html,
+        fields,
+        contentValues: { title, body: owned("<strong>x</strong>", "richtext") },
+      });
+    expect(at(`<script/>{{title}}</script>`).missingSlots).toEqual([refusal("context-script")]);
+    expect(at(`<STYLE/>{{title}}</style >`).missingSlots).toEqual([refusal("context-style")]);
+    // In a self-closed <textarea> what reads as a tag is text: escaped, never a handler.
+    const textarea = at(`<textarea/><b onclick="{{title}}">{{body}}</b></textarea>`);
+    expect(textarea.missingSlots).toEqual([]);
+    expect(textarea.html).toBe(
+      `<textarea/><b onclick="alert(1)">&lt;strong&gt;x&lt;/strong&gt;</b></textarea>`,
+    );
+    // After its end tag the page reads as before.
+    expect(at(`<script/>x</script><p>{{title}}</p>`).html).toBe(
+      `<script/>x</script><p>alert(1)</p>`,
+    );
+    // A core value in the same place renders exactly as before.
+    expect(at(`<script/>{{title}}</script>`, "alert(1)").html).toBe(`<script/>alert(1)</script>`);
+  });
+
   it("refuses a richtext that does not end in element content", () => {
     for (const html of [
       "<p onclick=alert(1)//",

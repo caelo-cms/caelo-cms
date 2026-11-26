@@ -923,6 +923,16 @@ export async function activateApprovedExternalPlugin(
       if (existing && existing.pluginSlug !== manifest.slug)
         throw new Error(`Tool name already registered: ${tool.name}`);
     }
+    // What the load refuses for the state of other plugins is refused here,
+    // before finalization retires the running version: a URL slot another
+    // running plugin holds, a required plugin that is not active.
+    if (manifest.urlTables) {
+      urlContributionsRegistry.assertClaimable(
+        manifest.slug,
+        declaredUrlContributions(manifest.slug, manifest.urlTables),
+      );
+    }
+    await assertRequiredPluginsActive(opts.infra, opts.systemActorId, manifest);
     const context = await makePluginContext({
       plugin: {
         pluginId: artifact.pluginId,

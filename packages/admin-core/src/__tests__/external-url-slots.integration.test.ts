@@ -55,6 +55,8 @@ const SLUG = "url-probe";
 const SCHEMA = "plugin_url_probe";
 const PFX = "t1729u";
 const DOMAIN = "de.t1729u.example";
+const UPDATE_SLUG = "url-probe-update";
+const UPDATE_SCHEMA = "plugin_url_probe_update";
 
 const URL_TABLES = {
   pages: { table: "page_markets", valueColumn: "market" },
@@ -163,6 +165,7 @@ afterAll(async () => {
 const cleanup = () =>
   rawSystemSql(async (tx) => {
     await tx.unsafe(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    await tx.unsafe(`DROP SCHEMA IF EXISTS ${UPDATE_SCHEMA} CASCADE`);
     await tx.unsafe("DELETE FROM url_migration_pending_actions");
     await tx.unsafe(
       `DELETE FROM pending_redirects WHERE from_path LIKE '/${PFX}-%' OR to_path LIKE '/de/${PFX}-%'`,
@@ -200,7 +203,17 @@ async function owner() {
 }
 
 async function install(ownerCtx: Awaited<ReturnType<typeof owner>>): Promise<void> {
-  const staged = (await call("plugins.stage_installation", { manifest, source })) as {
+  const loaded = await activateApprovedExternalPlugin(await approve(ownerCtx, manifest, source));
+  if (!loaded.loaded) throw new Error(`activation failed: ${loaded.reason}`);
+}
+
+/** Stage `m` with `src` and approve it as `ownerCtx`; the installation's id. */
+async function approve(
+  ownerCtx: Awaited<ReturnType<typeof owner>>,
+  m: { requestedCapabilities: string[] },
+  src: string,
+): Promise<string> {
+  const staged = (await call("plugins.stage_installation", { manifest: m, source: src })) as {
     installationId: string;
     artifactDigest: string;
   };
@@ -215,12 +228,11 @@ async function install(ownerCtx: Awaited<ReturnType<typeof owner>>): Promise<voi
       installationId: staged.installationId,
       artifactDigest: staged.artifactDigest,
       expectedStateDigest: item.currentStateDigest,
-      capabilities: manifest.requestedCapabilities,
+      capabilities: m.requestedCapabilities,
     },
     ownerCtx,
   );
-  const loaded = await activateApprovedExternalPlugin(staged.installationId);
-  if (!loaded.loaded) throw new Error(`activation failed: ${loaded.reason}`);
+  return staged.installationId;
 }
 
 /** A published top-level page at `/<slug>`. */
@@ -416,3 +428,53 @@ it("an installed plugin's URL tables shape addresses, change only when approved,
     ),
   ).toThrow(`already claimed by plugin "${SLUG}"`);
 }, 240_000);
+
+it("refuses an update whose URL slot another running plugin holds, and keeps the running version (#1729)", async () => {
+  // Runs after the test above: url-probe holds the host and path-prefix slots.
+  const ownerCtx = await owner();
+  const first = {
+    slug: UPDATE_SLUG,
+    version: "1.0.0",
+    tier: 2,
+    schema: {},
+    adminSchema: manifest.adminSchema,
+    indexes: manifest.indexes,
+    operations: ["ping"],
+    requestedCapabilities: ["cms_admin_schema"],
+    capabilityReasons: { cms_admin_schema: "Keep the markets" },
+  };
+  const firstSource = (version: string) =>
+    `export default {slug:"${UPDATE_SLUG}",version:"${version}",tier:2,operations:{ping:async()=>({version:"${version}"})}};`;
+  expect(
+    await activateApprovedExternalPlugin(await approve(ownerCtx, first, firstSource("1.0.0"))),
+  ).toEqual({ loaded: true });
+  const update = {
+    ...first,
+    version: "1.1.0",
+    urlTables: URL_TABLES,
+    urlContributions: [{ slot: "host" }, { slot: "path-prefix" }],
+    requestedCapabilities: ["cms_admin_schema", "url_slots"],
+    capabilityReasons: { ...first.capabilityReasons, url_slots: "Prefix each market's pages" },
+  };
+  const refused = await activateApprovedExternalPlugin(
+    await approve(ownerCtx, update, firstSource("1.1.0")),
+  );
+  expect(refused.loaded).toBe(false);
+  expect(refused.reason).toContain(`already claimed by plugin "${SLUG}"`);
+  // The running version was not retired: it is still the active one, and it runs.
+  const version = await adapter.withAdminTransaction(system, async (tx) => {
+    const rows = (await tx.execute(
+      sql`SELECT version FROM plugins WHERE slug = ${UPDATE_SLUG}`,
+    )) as unknown as { version: string }[];
+    return rows[0]?.version;
+  });
+  expect(version).toBe("1.0.0");
+  expect(
+    await runPluginOperation({
+      invocation: { origin: "system", actorId: system.actorId },
+      pluginSlug: UPDATE_SLUG,
+      operationName: "ping",
+      args: {},
+    }),
+  ).toMatchObject({ ok: true, value: { version: "1.0.0" } });
+}, 120_000);
