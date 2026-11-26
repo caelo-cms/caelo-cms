@@ -29,6 +29,8 @@ import {
   LIST_MAX_ITEMS,
   type PageUrlStyle,
   type PluginSourceEntry,
+  pluginValueRefusedMarker,
+  refusedPluginValue,
   validateFieldValue,
 } from "@caelo-cms/shared";
 import { z } from "zod";
@@ -40,7 +42,14 @@ import {
 } from "./dispatch.js";
 import { overlayListSources } from "./list-source-overlays.js";
 import { pluginListSourcesRegistry } from "./list-sources.js";
+import {
+  checkPluginMedia,
+  checkPluginValue,
+  describePluginMedia,
+  pluginMediaId,
+} from "./plugin-values.js";
 import { reportPluginRenderFailure } from "./render-failures.js";
+import { assertAnswerSize, chunkPageIds } from "./render-points.js";
 
 /** pageId → source name → entries. A missing page or name means "not offered". */
 export type ResolvedListSources = ReadonlyMap<
@@ -121,15 +130,79 @@ export function checkListSourceEntries(
  * @param pageUrlStyle the serving target's page URL style, handed to the
  *   plugin so the page links it lists equal the canonical URLs (#590).
  * @returns the entries each page may iterate, in the page's variant
- *   (#1323, `list-source-overlays.ts`). Empty when no active plugin offers
- *   any — the common single-language case, which costs zero plugin calls.
+ *   (#1323, `list-source-overlays.ts`), their values checked for the page
+ *   (#1729, `plugin-values.ts`). Empty when no active plugin offers any —
+ *   the common single-language case, which costs zero plugin calls.
  */
 export async function resolveListSources(
   pageIds: ReadonlyArray<string>,
   scope: RenderScope,
   pageUrlStyle: PageUrlStyle,
 ): Promise<ResolvedListSources> {
-  return overlayListSources(await sourceEntriesOf(pageIds, scope, pageUrlStyle), scope);
+  return checkSourceValues(
+    await overlayListSources(await sourceEntriesOf(pageIds, scope, pageUrlStyle), scope),
+  );
+}
+
+/**
+ * #1729 (§4.5, Q2 A) — every value a page iterates from a plugin, the
+ * plugin's own and an overlay's alike, checked for the field its source's
+ * node declares: text escaped, richtext held to prose, links to the
+ * allowed schemes, media to library images. A refused value is replaced by
+ * its stand-in, so the page keeps the spot raw and records
+ * `plugin-value-refused` (a render failure that blocks Publish live);
+ * the rest of the source still renders.
+ */
+async function checkSourceValues(resolved: ResolvedListSources): Promise<ResolvedListSources> {
+  if (resolved.size === 0) return resolved;
+  const owners = new Map(pluginListSourcesRegistry.catalogue().map((c) => [c.name, c]));
+  const mediaIds: string[] = [];
+  for (const byName of resolved.values()) {
+    for (const [name, entries] of Object.entries(byName)) {
+      const media = owners.get(name)?.spec.node.fields.filter((f) => f.type === "media") ?? [];
+      for (const entry of entries) {
+        for (const f of media) {
+          const id = pluginMediaId(entry.values[f.name]);
+          if (id !== null) mediaIds.push(id);
+        }
+      }
+    }
+  }
+  const facts = await describePluginMedia(mediaIds);
+  const out = new Map<string, Record<string, PluginSourceEntry[]>>();
+  for (const [pageId, byName] of resolved) {
+    const bucket: Record<string, PluginSourceEntry[]> = {};
+    for (const [name, entries] of Object.entries(byName)) {
+      const owner = owners.get(name);
+      if (!owner) {
+        bucket[name] = [...entries];
+        continue;
+      }
+      const fields = new Map(owner.spec.node.fields.map((f) => [f.name, f]));
+      bucket[name] = entries.map((entry) => {
+        const values: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(entry.values)) {
+          const field = fields.get(key);
+          if (!field) {
+            values[key] = value;
+            continue;
+          }
+          const mediaRule = field.type === "media" ? checkPluginMedia(value, facts) : null;
+          const checked = mediaRule
+            ? ({ ok: false, rule: mediaRule } as const)
+            : checkPluginValue(field, value);
+          values[key] = checked.ok
+            ? checked.value
+            : refusedPluginValue(
+                pluginValueRefusedMarker(owner.pluginSlug, name, key, checked.rule),
+              );
+        }
+        return { id: entry.id, values };
+      });
+    }
+    out.set(pageId, bucket);
+  }
+  return out;
 }
 
 /**
@@ -148,18 +221,30 @@ export async function sourceEntriesOf(
   if (pageIds.length === 0) return out;
   const sources = pluginListSourcesRegistry.activeByOperation();
   if (sources.size === 0) return out;
-  const asked = new Set(pageIds);
-
   for (const source of sources.values()) {
     // An Owner's hot disable leaves the source registered until restart;
     // its names are dormant now (dormantListSourceNames), never called.
     if (isPluginDisabled(source.pluginSlug)) continue;
+    // #1729 — one call per chunk of pages (render-points.ts): a preview asks
+    // once, a 50 000-page build in a few calls below the wire line.
+    for (const chunk of chunkPageIds(pageIds)) {
+      if (!(await askChunk(source, chunk))) break;
+    }
+  }
+  return out;
+
+  /** Ask one plugin about one chunk; false when a preview skips the plugin (#1087). */
+  async function askChunk(
+    source: { pluginSlug: string; operationName: string; specs: Map<string, PluginListSourceSpec> },
+    chunk: string[],
+  ): Promise<boolean> {
     const label = `list-sources: ${source.pluginSlug}.${source.operationName}`;
     const r = await runPluginOperation({
       invocation: renderInvocation(scope),
       pluginSlug: source.pluginSlug,
       operationName: source.operationName,
-      args: { pageIds: [...pageIds], pageUrlStyle },
+      args: { pageIds: chunk, pageUrlStyle },
+      maxAnswerBytes: LIST_SOURCE_ANSWER_MAX_BYTES,
     });
     if (!r.ok) {
       const reason = `${label} failed: ${r.error.kind}: ${r.error.message}`;
@@ -168,16 +253,16 @@ export async function sourceEntriesOf(
       if (
         reportPluginRenderFailure(scope, { slug: source.pluginSlug, point: "list-sources", reason })
       ) {
-        continue;
+        return false;
       }
       throw new Error(reason);
     }
-    const size = JSON.stringify(r.value ?? null).length;
-    if (size > LIST_SOURCE_ANSWER_MAX_BYTES) {
-      throw new Error(
-        `${label}: the answer is ${size} bytes, more than the ${LIST_SOURCE_ANSWER_MAX_BYTES} a render accepts`,
-      );
-    }
+    assertAnswerSize(
+      { point: "list-sources", maxAnswerBytes: LIST_SOURCE_ANSWER_MAX_BYTES },
+      label,
+      r.value,
+    );
+    const asked = new Set(chunk);
     const parsed = answerSchema.safeParse(r.value);
     if (!parsed.success) {
       throw new Error(
@@ -204,8 +289,8 @@ export async function sourceEntriesOf(
       }
       out.set(pageId, bucket);
     }
+    return true;
   }
-  return out;
 }
 
 /**
