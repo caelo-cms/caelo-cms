@@ -114,6 +114,8 @@ const MODULES = [
   `${A}/ai/tools/content-maintenance-tools.ts`,
   `${A}/ai/tools/*content-instance*.ts`,
   `${SHARED}/template-*.ts`,
+  // #1729 — the tokens a plugin's richtext and markup are checked by.
+  `${SHARED}/html-tokens.ts`,
   `${SHARED}/nested-module-render.ts`,
   `${SHARED}/preview-compose.ts`,
 ] as const;
