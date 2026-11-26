@@ -180,7 +180,7 @@ export const startRollbackOp = defineOperation({
       SELECT r.build_id, r.publish_summary->>'location' AS location, r.caelo_version,
              r.projection_run_id::text AS projection_run_id,
              source.security_headers IS NOT NULL AS has_security_headers,
-             source.robots_rules
+             COALESCE(r.robots_rules, source.robots_rules) AS robots_rules
       FROM deploy_runs r
       LEFT JOIN deploy_runs source ON source.id = CASE
         WHEN r.build_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -312,12 +312,22 @@ export const finishRollbackOp = defineOperation({
     // The summary names where the rolled-back release now lives (Firebase:
     // the Hosting version the rollback created). Recording it makes this
     // run itself a valid rollback source later — without it the Firebase
-    // publisher refuses a run with no `publish_summary.location`.
+    // publisher refuses a run with no `publish_summary.location`. #1706 —
+    // so do the robots rules its robots.txt was written with: the restored
+    // run's own, else those of the run that built it.
     await tx.execute(sql`
       UPDATE deploy_runs
       SET status = 'succeeded', finished_at = clock_timestamp(), error_message = NULL,
           build_id = ${input.buildId}, publish_summary = ${jsonbParam(input.publishSummary)},
-          projection_run_id = ${projectionRunId}::uuid, lease_expires_at = NULL
+          projection_run_id = ${projectionRunId}::uuid, lease_expires_at = NULL,
+          robots_rules = (
+            SELECT COALESCE(restored.robots_rules, source.robots_rules)
+            FROM deploy_runs restored
+            LEFT JOIN deploy_runs source ON source.id = CASE
+              WHEN restored.build_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              THEN restored.build_id::uuid END
+            WHERE restored.id = ${input.restoreRunId}::uuid
+          )
       WHERE id = ${input.runId}::uuid
     `);
     // #1329 — the plugin data the restored build was released with comes

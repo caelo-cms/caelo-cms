@@ -430,8 +430,10 @@ const MAIN = String.raw`
       if (isChange && found.anchor) return;
       if (found.query === q) return;
       if (found.query === "") { clear(); return; }
+      // Every field shows the query searched, the focused one too: after
+      // Back it would otherwise keep the later query the results no longer show.
       Array.prototype.forEach.call(document.querySelectorAll("[data-caelo-search-input]"), function (i) {
-        if (i !== document.activeElement) i.value = found.query;
+        i.value = found.query;
       });
       search(found.query);
     }

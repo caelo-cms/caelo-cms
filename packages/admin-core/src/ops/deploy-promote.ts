@@ -567,6 +567,9 @@ export const finishPromoteOp = defineOperation({
     // #553 — the publish-anyway decision is recorded only now that the
     // build it allowed is live; a failed Publish live leaves the gate closed.
     if (input.override) await recordProductionOverride(tx, ctx, input.override, "deploy.promote");
+    // #1706 — robots_rules: the rules the live robots.txt was written with
+    // (the staged build's), carried on so a plugin-data build or a rollback
+    // based on this run finds them on the run itself.
     await tx.execute(sql`
       UPDATE deploy_runs
       SET status = 'succeeded', finished_at = clock_timestamp(), error_message = NULL,
@@ -576,7 +579,8 @@ export const finishPromoteOp = defineOperation({
           build_id = ${input.buildId},
           publish_summary = ${jsonbParam(input.publishSummary)},
           caelo_version = ${input.caeloVersion},
-          lease_expires_at = NULL
+          lease_expires_at = NULL,
+          robots_rules = (SELECT robots_rules FROM deploy_runs WHERE id = ${input.fromRunId}::uuid)
       WHERE id = ${input.runId}::uuid
     `);
     // #1157 — the build carries the live redirects as they were at its

@@ -121,9 +121,12 @@ test("a hash-mode search keeps the query out of every page request and follows #
   ).toEqual({ same: true, started: ["Kontkt"] });
 
   // Back to the first query: the fragment changes again, the results follow.
+  // The field still has the focus; Back must still show the query searched.
+  await expect(input).toBeFocused();
   await page.goBack();
   await expect(page).toHaveURL(`${origin}/suche-hash/#q=Rabatte`);
   await expect(results.locator("[data-caelo-search-list] li").first()).toContainText("Preise");
+  await expect(input).toHaveValue("Rabatte");
   // A skip link is no search: the results stay.
   await page.getByRole("link", { name: "Zum Inhalt" }).click();
   await expect(page).toHaveURL(`${origin}/suche-hash/#main`);

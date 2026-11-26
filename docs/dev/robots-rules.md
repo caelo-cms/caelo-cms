@@ -23,7 +23,7 @@ The `*` group is the Owner's when they have one, else `Allow: /`; never both, be
 - A staging build's robots.txt stays `Disallow: /` for every crawler, whatever the rules say.
 - The build's run records the rules it was made with (`deploy_runs.robots_rules`, from the generator's done event through `deploy.finish_trigger`), like its security headers.
 - Publish live writes the live robots.txt from the rules of the Stage it ships (`deploy.start_promote` reads the staged run's `robots_rules` and hands them to the publisher's `promoteToProduction`), never from the settings as they are by then: a rule saved after the Stage waits for the next Stage.
-- A rollback restores the robots.txt of the build it restores: self-hosted and gcp copy the build's own file, written with its rules; gcp-firebase re-derives it from the restored build's run (`deploy.start_rollback` reads `robots_rules` of the run that built it).
+- Every run that puts something live carries the rules its robots.txt was written with: a Publish live copies the staged run's, a rollback the restored run's, a plugin-data build (#1155, which keeps the live robots.txt) its base run's. So a rollback restores the robots.txt of the build it restores, whichever run that was: self-hosted and gcp copy the build's own file, gcp-firebase re-derives it from the restored run's `robots_rules` (`deploy.start_rollback`).
 - An Owner's direct production build writes them itself; `robots_rules` is part of the render fingerprint (`setting:robots_rules`), so a change since the last Stage refuses that build.
 - A run from before the rules existed has `robots_rules` null: its build had none, and Publish live of it ships none.
 
