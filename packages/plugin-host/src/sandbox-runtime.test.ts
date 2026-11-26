@@ -171,23 +171,28 @@ describe("actual Deno plugin execution", () => {
       "denied",
     );
   });
-  it("has no ctx.cms even with the grant and a host handle, so core calls stay in-process", async () => {
-    // #1495 relies on this: pages.resolve_public_urls cannot be reached from
-    // the sandbox, so a live-build refusal never crosses it as a string.
+  it("reaches core only through the host's ctx.cms handle, which keeps its own record of a refusal", async () => {
+    // #1729 — the broker relays the call to the host handle; #1495's
+    // live-build refusal is recorded by that handle (capabilities.ts)
+    // before the error crosses back, so a plugin that catches the error
+    // cannot hide it from the build.
     const granted = {
       ...context,
       cms: {
         call: async () => {
-          throw new Error("the sandbox reached the host's ctx.cms");
+          throw new Error("refused by the host handle");
         },
       },
     };
     expect(
-      await invoke("return typeof ctx.cms;", {
-        manifest: { ...manifest, requestedCapabilities: ["cms_admin"] },
-        context: granted as PluginContext,
-      }),
-    ).toBe("undefined");
+      await invoke(
+        'try { await ctx.cms.call("pages.resolve_public_urls", {}); return "ran"; } catch (e) { return e.message; }',
+        {
+          manifest: { ...manifest, requestedCapabilities: ["cms_admin"] },
+          context: granted as PluginContext,
+        },
+      ),
+    ).toContain("refused by the host handle");
   });
   it("rejects forbidden imports and their re-export spelling before loading", async () => {
     await expect(invoke("", { source: 'export { readFileSync } from "node:fs";' })).rejects.toThrow(
@@ -613,5 +618,57 @@ describe("why a child exited", () => {
     );
     expect(exitReason(enc.encode(`error: ${"y".repeat(1000)}`))).toHaveLength(300);
     expect(exitReason(new Uint8Array())).toBe("");
+  });
+});
+
+describe("ctx.cms and ctx.changes through the sandbox (#1729)", () => {
+  it("carries cms.call to the host handle and refuses what the wire cannot name or carry", async () => {
+    const calls: unknown[][] = [];
+    const cms = {
+      call: async (op: string, input: unknown) => {
+        calls.push([op, input]);
+        // An answer bigger than one message line.
+        return op === "pages.list" ? { pages: "x".repeat(2 * 1024 * 1024) } : { ok: true };
+      },
+    };
+    const result = await invoke(
+      `
+      const errors = [];
+      const ran = await ctx.cms.call("pages.get", { pageId: "p" });
+      for (const name of ["Pages.list", "../pages.list", "pages", "pages.list.extra"]) {
+        try { await ctx.cms.call(name, {}); } catch (e) { errors.push("refused " + name); }
+      }
+      try { await ctx.cms.call("pages.list", {}); } catch (e) { errors.push(e.message); }
+      return { ran, errors };
+    `,
+      { context: { ...context, cms } as PluginContext },
+    );
+    const { ran, errors } = result as { ran: unknown; errors: string[] };
+    expect(ran).toEqual({ ok: true });
+    expect(errors.slice(0, 4)).toEqual([
+      "refused Pages.list",
+      "refused ../pages.list",
+      "refused pages",
+      "refused pages.list.extra",
+    ]);
+    expect(errors[4]).toContain("page through it with limit and afterId");
+    // Only the well-formed names reached the host handle.
+    expect(calls.map((c) => c[0])).toEqual(["pages.get", "pages.list"]);
+  });
+
+  it("gives no ctx.cms or ctx.changes without the host handles", async () => {
+    expect(await invoke(`return [typeof ctx.cms, typeof ctx.changes]`)).toEqual([
+      "undefined",
+      "undefined",
+    ]);
+  });
+
+  it("answers ctx.changes.cursorState() from the host handle, with no arguments", async () => {
+    const changes = { cursorState: async () => ({ continuous: true }) };
+    expect(
+      await invoke(`return ctx.changes.cursorState()`, {
+        context: { ...context, changes } as PluginContext,
+      }),
+    ).toEqual({ continuous: true });
   });
 });

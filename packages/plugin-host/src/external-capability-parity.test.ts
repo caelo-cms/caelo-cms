@@ -140,6 +140,21 @@ async function fixtureManifest(): Promise<PluginManifest> {
 const DEFINITION_KEY: Partial<Record<keyof PluginManifest, string>> = {};
 
 const SMOKES: Partial<Record<PluginCapability, () => Promise<void>>> = {
+  // #1729 — the broker takes the operation name and input; every rule is
+  // the host handle's (capabilities.ts, tested in plugin-cms.test.ts).
+  cms_admin: async () => {
+    const calls: unknown[][] = [];
+    const cms = {
+      call: async (...args: unknown[]) => {
+        calls.push(args);
+        return { pages: [] };
+      },
+    };
+    expect(await sandboxed(`return ctx.cms.call("pages.list", { limit: 1 })`, { cms })).toEqual({
+      pages: [],
+    });
+    expect(calls).toEqual([["pages.list", { limit: 1 }]]);
+  },
   cms_admin_schema: async () => {
     const fake = fakeHandle(["list"], [{ id: ID }]);
     expect(

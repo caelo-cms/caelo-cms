@@ -181,6 +181,15 @@ export async function brokerSandboxCall(
   return broker(ctx, method, args);
 }
 
+/** #1729 — a core operation name as `ctx.cms.call` takes it (§7.1). */
+const cmsOperationName = z
+  .string()
+  .max(120)
+  .regex(/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/, "an operation name like pages.list");
+
+/** The largest `cms.call` answer that still fits one message with its envelope. */
+const CMS_ANSWER_BYTES = SANDBOX_MESSAGE_BYTES - 4096;
+
 async function broker(ctx: PluginContext, method: string, args: unknown[]): Promise<unknown> {
   if (method.startsWith("config.")) {
     const config = ctx.config;
@@ -345,6 +354,24 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
       default:
         throw new Error("SandboxMethodDenied");
     }
+  }
+  if (method === "cms.call") {
+    // #1729 — every rule is in the host handle (capabilities.ts
+    // `pluginCmsRefusal`); here only the wire shape is checked.
+    const cms = (ctx as PluginContextTier1).cms;
+    if (!cms) throw new Error("SandboxCapabilityDenied: cms_admin");
+    if (args.length < 1 || args.length > 2) throw new Error("SandboxArgumentsInvalid");
+    const op = cmsOperationName.parse(args[0]);
+    const answer = await cms.call<unknown, unknown>(op, args[1] ?? {});
+    // The answer goes back in one message line: refuse one that cannot,
+    // as an error the plugin can act on, instead of ending the call.
+    const bytes = Buffer.byteLength(JSON.stringify(answer ?? null));
+    if (bytes > CMS_ANSWER_BYTES) {
+      throw new Error(
+        `ctx.cms.call("${op}"): the answer is ${bytes} bytes, more than one sandbox message carries (${CMS_ANSWER_BYTES}) — ask for less per call (page through it with limit and afterId, or name fewer ids)`,
+      );
+    }
+    return answer;
   }
   if (method === "changes.cursorState") {
     // #1729 — about the plugin's own consumer; it takes nothing.
@@ -706,6 +733,7 @@ export async function runSandboxWithBundler(
       collections: Object.keys(context.collections ?? {}),
       hasChatTools: Boolean(context.chatTools),
       hasChanges: Boolean(context.changes),
+      hasCms: Boolean((context as PluginContextTier1).cms),
       // No sessionToken: it is the visitor's login bearer credential (the
       // `login` entry of the HttpOnly `__session` cookie). Handing it to
       // runtime-authored code would let a plugin collect tokens in its own
