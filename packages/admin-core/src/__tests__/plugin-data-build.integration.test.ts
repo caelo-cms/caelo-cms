@@ -605,6 +605,27 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     expect(audit.map((a) => a.result_summary)).toEqual(["built"]);
   });
 
+  // #1706 — the release keeps the live build's robots.txt, so its run carries
+  // that build's robots rules: a rollback to it (gcp-firebase re-derives
+  // robots.txt from the run) must not drop them.
+  it("the run carries the robots rules of the build it re-baked", async () => {
+    // The Publish live it built on carries the staged build's rules, and the
+    // plugin-data run carries them on (self-hosted names the live build
+    // `<run>-production`, so nothing joins through build_id).
+    const rows = await sqlSystem(
+      async (tx) =>
+        (await tx`
+          SELECT r.robots_rules AS own, live.robots_rules AS base
+          FROM deploy_runs r
+          JOIN deploy_runs live ON live.id = r.base_run_id
+          WHERE r.id = ${firstPluginRun}::uuid
+        `) as { own: unknown; base: unknown }[],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.base).not.toBeNull();
+    expect(rows[0]?.own).toEqual(rows[0]?.base);
+  });
+
   it("a tick with nothing pending publishes nothing", async () => {
     const r = await tick();
     expect(r.outcome).toBe("nothing_pending");

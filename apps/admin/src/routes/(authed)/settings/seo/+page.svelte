@@ -21,8 +21,8 @@
   <div>
     <h1 class="text-2xl font-semibold tracking-tight">SEO settings</h1>
     <p class="text-sm text-muted-foreground">
-      Site-level base URL, sitemap, feed and IndexNow, Organization JSON-LD, site language, and the
-      stale-SEO queue.
+      Site-level base URL, sitemap, feed and IndexNow, Organization JSON-LD, robots.txt rules, site
+      language, and the stale-SEO queue.
     </p>
   </div>
 
@@ -169,6 +169,44 @@
         </div>
         <Button type="submit">Save settings</Button>
       </form>
+    </CardContent>
+  </Card>
+
+  <Card data-testid="robots-rules">
+    <CardHeader>
+      <CardTitle class="text-base">robots.txt rules</CardTitle>
+      <CardDescription>
+        Pages or crawlers to keep out, one group per crawler: <code class="font-mono">User-agent</code>
+        lines, then <code class="font-mono">Allow</code> and <code class="font-mono">Disallow</code> paths
+        (<code class="font-mono">*</code> matches anything, a closing <code class="font-mono">$</code> ends
+        the match). Disallow stops crawling, not indexing: a page that must disappear from search keeps
+        noindex. Saved rules reach the live site with the next Stage and Publish live; staging keeps
+        every crawler out.
+      </CardDescription>
+    </CardHeader>
+    <CardContent class="space-y-4">
+      {#each data.settings.robotsWarnings as warning (warning)}
+        <Alert variant="destructive"><AlertDescription>{warning}</AlertDescription></Alert>
+      {/each}
+      <form method="post" action="?/saveRobots" class="space-y-2">
+        <input type="hidden" name="_csrf" value={data.csrfToken} />
+        <Label for="robotsRules">Rules</Label>
+        <Textarea
+          id="robotsRules"
+          name="robotsRules"
+          rows={6}
+          class="font-mono text-xs"
+          placeholder={"User-agent: *\nDisallow: /search/"}
+          value={form?.robotsRulesText ?? data.robotsRulesText}
+        />
+        <Button type="submit">Save robots.txt rules</Button>
+      </form>
+      {#if data.settings.robotsTxt !== null}
+        <div class="space-y-1">
+          <p class="text-xs text-muted-foreground">The live site's robots.txt after the next Publish live:</p>
+          <pre class="overflow-x-auto rounded border bg-muted p-3 font-mono text-xs" data-testid="robots-txt-preview">{data.settings.robotsTxt}</pre>
+        </div>
+      {/if}
     </CardContent>
   </Card>
 

@@ -431,6 +431,7 @@ describe("gcsStaticPublisher — a build's page headers (#1454)", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com",
+      robotsRules: [],
     });
     expect(bucketHeaders[0]).toBe("X-Content-Type-Options: nosniff");
     expect(bucketHeaders).toContain("X-Frame-Options: SAMEORIGIN");
@@ -461,6 +462,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://www.example.com/",
+      robotsRules: [],
     });
     expect(staticBucket.files.get("sitemap.xml")?.body?.toString("utf8")).toBe("<urlset></urlset>");
     expect(staticBucket.files.get("robots.txt")?.body?.toString("utf8")).toBe(
@@ -489,6 +491,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
         fromTarget: TARGET,
         toTarget: PROD_TARGET,
         siteBaseUrl: "https://www.example.com",
+        robotsRules: [],
       }),
     ).rejects.toThrow("run Stage again");
     expect(staticBucket.files.has("en/about/index.html")).toBe(false);
@@ -512,6 +515,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com",
+      robotsRules: [],
     });
     expect(summary.provider).toBe("gcp");
     expect(summary.location).toBe("gs://test-static/");
@@ -548,6 +552,7 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://www.example.com",
+      robotsRules: [],
     });
     expect(staticBucket.files.get("robots.txt")?.body?.toString("utf8")).toBe(
       "User-agent: *\nAllow: /\n",
@@ -633,6 +638,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com",
+      robotsRules: [],
     });
     for (const rel of [FONT, PINNED_FONT, PLUGIN_JS]) {
       expect(cacheControlOf(staticBucket, rel)).toBe(IMMUTABLE_CACHE_CONTROL);
@@ -666,6 +672,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com",
+      robotsRules: [],
     });
     expect(contentTypeOf(staticBucket, ICO)).toBe("image/x-icon");
     // Slug-addressed media: replaceable bytes, never immutable.
@@ -699,6 +706,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com",
+      robotsRules: [],
     });
     const meta = staticBucket.files.get("en/about")?.metadata as {
       contentType?: string;
@@ -735,6 +743,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com",
+      robotsRules: [],
     });
     const written = JSON.parse(
       staticBucket.files.get("_state/last-build-manifest.json")?.body?.toString("utf8") ?? "{}",
@@ -770,6 +779,7 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com",
+      robotsRules: [],
     });
     expect(metaOf(staticBucket, SVG)).toMatchObject({
       contentType: "image/svg+xml",
@@ -834,6 +844,7 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com",
+      robotsRules: [],
     });
     // The plan is not a site file.
     expect(staticBucket.files.has("_redirect-plans/run-r.json")).toBe(false);
@@ -916,6 +927,7 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
         fromTarget: TARGET,
         toTarget: PROD_TARGET,
         siteBaseUrl: "https://example.com",
+        robotsRules: [],
       }),
     ).rejects.toThrow(/Run Stage again/);
     expect(staticBucket.files.has("en/about/index.html")).toBe(false);
@@ -993,6 +1005,7 @@ describe("gcsStaticPublisher — live objects the build no longer contains", () 
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com",
+      robotsRules: [],
     });
     expect(staticBucket.files.has("en/deleted/index.html")).toBe(false);
     expect(staticBucket.files.has("en/not-found/index.html")).toBe(false);
@@ -1026,6 +1039,7 @@ describe("gcsStaticPublisher — live objects the build no longer contains", () 
         fromTarget: TARGET,
         toTarget: PROD_TARGET,
         siteBaseUrl: "https://example.com",
+        robotsRules: [],
       }),
     ).rejects.toThrow(/file list of run run-nofl .* Run Stage again/);
     expect(staticBucket.files.has("en/about/index.html")).toBe(false);
@@ -1054,6 +1068,7 @@ describe("gcsStaticPublisher — live objects the build no longer contains", () 
         fromTarget: TARGET,
         toTarget: PROD_TARGET,
         siteBaseUrl: "https://example.com",
+        robotsRules: [],
       }),
     ).rejects.toThrow(/not a build file list/);
     expect(staticBucket.files.has("en/kept/index.html")).toBe(true);
@@ -1150,6 +1165,7 @@ describe("gcsStaticPublisher — plugin-data release (#1155)", () => {
       fromTarget: TARGET,
       toTarget: PROD_TARGET,
       siteBaseUrl: "https://example.com/",
+      robotsRules: [],
     });
     return {
       gcs,

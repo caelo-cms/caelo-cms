@@ -30,7 +30,7 @@
  * object storage.
  */
 
-import type { PhaseTiming, RedirectTableRow } from "@caelo-cms/shared";
+import type { PhaseTiming, RedirectTableRow, RobotsRules } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import type { UnservedRedirectTarget } from "./redirect-sync-plan.js";
 
@@ -177,6 +177,11 @@ export interface StaticPublisher {
      *  destination robots.txt `Sitemap:` line. */
     siteBaseUrl: string;
     /**
+     * #1706 — the Owner's robots.txt rules the staged build was made with
+     * (its run's `robots_rules`): the destination robots.txt carries them.
+     */
+    robotsRules: RobotsRules;
+    /**
      * #1225 — called right before the new version goes live (after any
      * upload that does not change what is served). It throws when the run
      * no longer holds its place in the publish order; the publisher then
@@ -201,6 +206,12 @@ export interface StaticPublisher {
      *  target's robots.txt on rollback (Firebase) need it for the
      *  `Sitemap:` line. */
     siteBaseUrl: string;
+    /**
+     * #1706 — the robots.txt rules the restored build was made with, for a
+     * publisher that re-derives the target's robots.txt (Firebase); the
+     * others restore the build's own file, written with them.
+     */
+    robotsRules: RobotsRules;
     /** The rolled-back run's `publish_summary.location` — where that run's
      *  artefact lives on publishers that keep it remotely (Firebase: the
      *  Hosting version). Null when the run recorded none. */

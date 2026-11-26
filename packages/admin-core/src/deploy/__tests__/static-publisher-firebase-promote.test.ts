@@ -412,6 +412,7 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
       fromTarget: STAGING,
       toTarget: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
     });
     const live = fake.liveVersion();
     expect(summary.location).toBe(fake.live[0]!);
@@ -466,6 +467,7 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
         fromTarget: STAGING,
         toTarget: PRODUCTION,
         siteBaseUrl: SITE_BASE_URL,
+        robotsRules: [],
       }),
     ).rejects.toThrow("run Stage again");
     expect(fake.live).toEqual([]);
@@ -484,6 +486,7 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
       sourceBuildDir: buildDir,
       target: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
       sourceLocation: staged.location,
     });
     const live = fake.liveVersion();
@@ -511,6 +514,7 @@ describe("firebaseHostingPublisher — staging behind the staging gateway (#1330
         sourceBuildDir: buildDir,
         target: PRODUCTION,
         siteBaseUrl: SITE_BASE_URL,
+        robotsRules: [],
         sourceLocation: null,
       }),
     ).rejects.toThrow("no recorded Hosting version");
@@ -631,6 +635,7 @@ describe("firebaseHostingPublisher — staging behind the staging gateway (#1330
         fromTarget: STAGING,
         toTarget: PRODUCTION,
         siteBaseUrl: SITE_BASE_URL,
+        robotsRules: [],
       }),
     ).rejects.toThrow("recorded no Hosting version");
     expect(fake.live).toEqual([]);
@@ -691,6 +696,7 @@ describe("firebaseHostingPublisher — security headers (#891)", () => {
       fromTarget: STAGING,
       toTarget: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
     });
     expect(fake.liveVersion().config.headers).toEqual([
       { regex: "^/_assets/", headers: { "Cache-Control": "public, max-age=3600" } },
@@ -725,6 +731,7 @@ describe("firebaseHostingPublisher — security headers (#891)", () => {
       fromTarget: STAGING,
       toTarget: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
     });
     expect(fake.liveVersion().config.headers).toEqual([
       VERSION_CONFIG_HEADERS[2],
@@ -741,6 +748,7 @@ describe("firebaseHostingPublisher — security headers (#891)", () => {
       sourceBuildDir: buildDir,
       target: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
       ...(sourceLocation ? { sourceLocation } : {}),
     });
     expect(fake.liveVersion().config.headers).toEqual([
@@ -764,6 +772,7 @@ describe("firebaseHostingPublisher — security headers (#891)", () => {
       fromTarget: STAGING,
       toTarget: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
     });
     // The live version as v0.12.1 left it.
     const before = fake.liveVersion();
@@ -837,6 +846,7 @@ describe("firebaseHostingPublisher — clones name the current gateway (#1328)",
       fromTarget: STAGING,
       toTarget: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
     });
     expect(fake.liveVersion().config.rewrites).toEqual([CURRENT_REWRITE]);
   });
@@ -854,6 +864,7 @@ describe("firebaseHostingPublisher — clones name the current gateway (#1328)",
       sourceBuildDir: buildDir,
       target: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
       ...(sourceLocation ? { sourceLocation } : {}),
     });
     expect(fake.liveVersion().config.rewrites).toEqual([CURRENT_REWRITE]);
@@ -874,6 +885,7 @@ describe("firebaseHostingPublisher — clones name the current gateway (#1328)",
       fromTarget: STAGING,
       toTarget: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
     });
     // The live version as an earlier gateway left it.
     const before = fake.liveVersion();
@@ -905,6 +917,7 @@ describe("firebaseHostingPublisher — clones name the current gateway (#1328)",
         sourceBuildDir: buildDir,
         target: PRODUCTION,
         siteBaseUrl: SITE_BASE_URL,
+        robotsRules: [],
         ...(sourceLocation ? { sourceLocation } : {}),
       }),
     ).rejects.toThrow(/CAELO_GATEWAY_SERVICE/);
@@ -928,6 +941,7 @@ describe("firebaseHostingPublisher — plugin-data release (#1155)", () => {
       fromTarget: STAGING,
       toTarget: PRODUCTION,
       siteBaseUrl: SITE_BASE_URL,
+      robotsRules: [],
     });
     const live = { runId: "p1", buildId: "run-1", location: promoted.location, localBuildDir: "" };
     return { publisher: firebaseHostingPublisher, live };

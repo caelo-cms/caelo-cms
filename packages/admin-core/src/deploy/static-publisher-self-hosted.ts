@@ -96,7 +96,14 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     };
   },
 
-  async promoteToProduction({ sourceBuildDir, fromTarget, toTarget, siteBaseUrl, beforeRelease }) {
+  async promoteToProduction({
+    sourceBuildDir,
+    fromTarget,
+    toTarget,
+    siteBaseUrl,
+    robotsRules,
+    beforeRelease,
+  }) {
     // The sync into `current/` is the release itself.
     await beforeRelease?.();
     if (fromTarget.name === toTarget.name) {
@@ -157,10 +164,15 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     // destination is all promote has to do.
     await writeFile(
       join(overlayDir, "robots.txt"),
-      buildRobotsTxtWithSitemap(toTarget.robotsDefault, siteBaseUrl, {
-        sitemap: existsSync(join(sourceBuildDir, "sitemap.xml")),
-        feed: existsSync(join(sourceBuildDir, FEED_FILE)),
-      }),
+      buildRobotsTxtWithSitemap(
+        toTarget.robotsDefault,
+        siteBaseUrl,
+        {
+          sitemap: existsSync(join(sourceBuildDir, "sitemap.xml")),
+          feed: existsSync(join(sourceBuildDir, FEED_FILE)),
+        },
+        robotsRules,
+      ),
       "utf8",
     );
     try {

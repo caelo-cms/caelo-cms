@@ -71,7 +71,7 @@ export const proposeSetStaticFilesTool = makeProposeTool({
   when:
     "Create or replace static data files at chosen addresses on the site's domain, served with the right Content-Type like robots.txt: a bot IP list, /.well-known/security.txt, ads.txt, a CSV. One call for several files, they apply together.\n" +
     "DO NOT USE FOR: anything visitors read as a page (pages and modules), images (media), redirects, or HTML, JavaScript, CSS or SVG, which are refused. Google or Bing verification by HTML file: use their DNS or meta-tag route instead.\n" +
-    `CORE RULES: \`path\` is the full address (no /api or /_ folders, robots.txt and sitemap.xml are built). Allowed endings are .json, .txt, .csv, .xml or none, and the ending must fit \`contentType\`. At most ${STATIC_FILE_MAX_BYTES / 1024} KiB per file and ${STATIC_FILE_MAX_COUNT} files per site. Send the file exactly as it must be served in \`body\`, as text. After approval it is saved, not live: offer the Stage.`,
+    `CORE RULES: \`path\` is the full address (no /api or /_ folders, robots.txt and sitemap.xml are built; robots.txt rules: \`propose_set_site_seo\` robotsRules). Allowed endings are .json, .txt, .csv, .xml or none, and the ending must fit \`contentType\`. At most ${STATIC_FILE_MAX_BYTES / 1024} KiB per file and ${STATIC_FILE_MAX_COUNT} files per site. Send the file exactly as it must be served in \`body\`, as text. After approval it is saved, not live: offer the Stage.`,
   schema: staticFilesSetInput,
   summarize: (_input, preview) => `static files: ${String(preview.summary ?? "?")}`,
 });

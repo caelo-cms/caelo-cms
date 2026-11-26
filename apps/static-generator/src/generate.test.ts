@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { robotsRulesSchema } from "@caelo-cms/shared";
 import {
   assertNoPluginMarkers,
   buildRobotsTxt,
@@ -69,28 +70,120 @@ describe("buildRobotsTxt", () => {
 describe("buildRobotsTxtWithSitemap (promote rewrites robots.txt with it)", () => {
   it("staging never references the sitemap or the feed, even when the build ships them", () => {
     expect(
-      buildRobotsTxtWithSitemap("noindex", "https://example.com", { sitemap: true, feed: true }),
+      buildRobotsTxtWithSitemap(
+        "noindex",
+        "https://example.com",
+        { sitemap: true, feed: true },
+        [],
+      ),
     ).toBe("User-agent: *\nDisallow: /\n");
   });
 
   it("production points crawlers at the sitemap", () => {
     expect(
-      buildRobotsTxtWithSitemap("index", "https://example.com/", { sitemap: true, feed: false }),
+      buildRobotsTxtWithSitemap(
+        "index",
+        "https://example.com/",
+        { sitemap: true, feed: false },
+        [],
+      ),
     ).toBe("User-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\n");
     expect(
-      buildRobotsTxtWithSitemap("index", "https://example.com", { sitemap: false, feed: false }),
+      buildRobotsTxtWithSitemap(
+        "index",
+        "https://example.com",
+        { sitemap: false, feed: false },
+        [],
+      ),
     ).toBe("User-agent: *\nAllow: /\n");
   });
 
   it("production lists the feed as a second sitemap (search engines take Atom as one)", () => {
     expect(
-      buildRobotsTxtWithSitemap("index", "https://example.com/", { sitemap: true, feed: true }),
+      buildRobotsTxtWithSitemap("index", "https://example.com/", { sitemap: true, feed: true }, []),
     ).toBe(
       "User-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\nSitemap: https://example.com/feed.xml\n",
     );
     expect(
-      buildRobotsTxtWithSitemap("index", "https://example.com", { sitemap: false, feed: true }),
+      buildRobotsTxtWithSitemap("index", "https://example.com", { sitemap: false, feed: true }, []),
     ).toBe("User-agent: *\nAllow: /\n\nSitemap: https://example.com/feed.xml\n");
+  });
+});
+
+describe("#1706 — the Owner's robots.txt rules", () => {
+  const rules = robotsRulesSchema.parse([
+    { userAgents: ["*"], disallow: ["/de/suche/", "/en/search/"] },
+    { userAgents: ["GPTBot", "CCBot"], disallow: ["/"] },
+  ]);
+
+  it("production carries them: the * group as the Owner wrote it, then each named crawler", () => {
+    expect(
+      buildRobotsTxtWithSitemap(
+        "index",
+        "https://example.com",
+        { sitemap: true, feed: false },
+        rules,
+      ),
+    ).toBe(
+      [
+        "User-agent: *",
+        "Disallow: /de/suche/",
+        "Disallow: /en/search/",
+        "",
+        "User-agent: GPTBot",
+        "User-agent: CCBot",
+        "Disallow: /",
+        "",
+        "Sitemap: https://example.com/sitemap.xml",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("staging keeps every crawler out whatever the rules say", () => {
+    expect(
+      buildRobotsTxtWithSitemap(
+        "noindex",
+        "https://example.com",
+        { sitemap: true, feed: true },
+        rules,
+      ),
+    ).toBe("User-agent: *\nDisallow: /\n");
+  });
+
+  it("keeps `Allow: /` only where the Owner has no * group, so it never undoes their Disallow", () => {
+    const named = robotsRulesSchema.parse([{ userAgents: ["GPTBot"], disallow: ["/"] }]);
+    expect(
+      buildRobotsTxtWithSitemap(
+        "index",
+        "https://example.com",
+        { sitemap: false, feed: false },
+        named,
+      ),
+    ).toBe("User-agent: *\nAllow: /\n\nUser-agent: GPTBot\nDisallow: /\n");
+    const everyone = robotsRulesSchema.parse([{ userAgents: ["*"], disallow: ["/"] }]);
+    expect(
+      buildRobotsTxtWithSitemap(
+        "index",
+        "https://example.com",
+        { sitemap: false, feed: false },
+        everyone,
+      ),
+    ).toBe("User-agent: *\nDisallow: /\n");
+  });
+
+  it("percent-encodes paths outside ASCII and keeps the wildcards", () => {
+    const umlaut = robotsRulesSchema.parse([
+      { userAgents: ["*"], disallow: ["/de/über-uns/*?q=$"] },
+    ]);
+    expect(
+      buildRobotsTxtWithSitemap(
+        "index",
+        "https://example.com",
+        { sitemap: false, feed: false },
+        umlaut,
+      ),
+    ).toBe("User-agent: *\nDisallow: /de/%C3%BCber-uns/*?q=$\n");
   });
 });
 

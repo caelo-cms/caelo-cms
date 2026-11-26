@@ -24,6 +24,8 @@ const observeOp = (ctx: unknown, a: PageOutputObserverArgs) =>
 import { buildProfile, linkedPageId } from "./profile.js";
 import { moduleReportWrites, type StoredModuleRow } from "./report.js";
 import { moduleWeighting, pageExclusion } from "./rules.js";
+import { RUNTIME_JS } from "./runtime.js";
+import { hashSearchUrl, RUNTIME_LOGIC, searchQueryOf } from "./runtime-logic.js";
 
 const COUNTING = { fullMax: 10, reducedMax: 49, chromeLinks: true };
 
@@ -558,6 +560,48 @@ describe("the observer", () => {
     await observeOp(ctx, args([facts({ noindex: true })]));
     expect(coll("pages").size).toBe(0);
     expect(linkTexts(coll("anchors"))).toHaveLength(2);
+  });
+});
+
+describe("#1707 — the query in the fragment (the code the browser runs)", () => {
+  it("reads #q= first, then ?q=, and tells a skip link from a search", () => {
+    expect(searchQueryOf("", "#q=Kosten+Preise")).toEqual({
+      query: "Kosten Preise",
+      anchor: false,
+    });
+    expect(searchQueryOf("?q=alt", "#q=neu")).toEqual({ query: "neu", anchor: false });
+    expect(searchQueryOf("?q=%20Rabatte%20", "")).toEqual({ query: "Rabatte", anchor: false });
+    // An emptied fragment query is a query of its own: the results clear.
+    expect(searchQueryOf("?q=alt", "#q=")).toEqual({ query: "", anchor: false });
+    // A jump on the page is no search: the results stay.
+    expect(searchQueryOf("", "#main")).toEqual({ query: "", anchor: true });
+    expect(searchQueryOf("?q=Rabatte", "#rabatte")).toEqual({ query: "Rabatte", anchor: true });
+    expect(searchQueryOf("", "")).toEqual({ query: "", anchor: false });
+  });
+
+  it("sends a hash-mode search to the results page with the query in the fragment only", () => {
+    const here = "https://example.com/preise/?utm=x#top";
+    expect(hashSearchUrl("/suche/", here, "Kosten & Preise")).toBe("/suche/#q=Kosten+%26+Preise");
+    // A q the action carries never reaches the request.
+    expect(hashSearchUrl("/suche/?q=alt&lang=de", here, "neu")).toBe("/suche/?lang=de#q=neu");
+    // No action: this page (its query string kept, its fragment replaced).
+    expect(hashSearchUrl("", here, "neu")).toBe("/preise/?utm=x#q=neu");
+    // What it writes, it reads back.
+    const u = new URL(hashSearchUrl("/suche/", here, "Größe 10% #1"), here);
+    expect(searchQueryOf(u.search, u.hash).query).toBe("Größe 10% #1");
+  });
+
+  it("ships that logic, the hash mode and the start event in the browser script", () => {
+    expect(() => new Function(RUNTIME_JS)).not.toThrow();
+    for (const f of RUNTIME_LOGIC) expect(RUNTIME_JS).toContain(`function ${f.name}(`);
+    expect(RUNTIME_JS).toContain('"data-caelo-search-mode"');
+    expect(RUNTIME_JS).toContain('"hashchange"');
+    expect(RUNTIME_JS).toContain('"caelo-search-start"');
+    expect(RUNTIME_JS).toContain('"caelo-search-results"');
+    // The address is never rewritten to carry the query.
+    expect(RUNTIME_JS).not.toContain("replaceState");
+    expect(RUNTIME_JS).not.toContain("pushState");
+    expect(RUNTIME_JS).not.toContain("innerHTML");
   });
 });
 

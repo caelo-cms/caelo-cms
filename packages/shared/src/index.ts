@@ -89,6 +89,7 @@ export * from "./release-manifest.js";
 export * from "./render-failure-markers.js";
 export * from "./responsive-images.js";
 export * from "./result.js";
+export * from "./robots-rules.js";
 export * from "./run-batched.js";
 export * from "./safe-keys.js";
 export * from "./screenshot-capture.js";
