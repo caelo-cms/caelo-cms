@@ -330,7 +330,10 @@ describe("#1420 — what waits for the Owner is visible and approved in one plac
       if (!r.ok) throw new Error(JSON.stringify(r.error));
       return (r.value as { pluginApprovals: number }).pluginApprovals;
     };
+    // Each viewer's own count: rows other files left behind are counted for
+    // whoever may decide them, which need not be both viewers.
     const before = await count(PLATFORM);
+    const ownerBefore = await count(OWNER);
     await asSystem(async (tx) => {
       // The stage policy checks that the submitter is the acting actor.
       await tx.unsafe(`SET LOCAL caelo.actor_id = '${SYSTEM_ACTOR_ID}'`);
@@ -341,7 +344,7 @@ describe("#1420 — what waits for the Owner is visible and approved in one plac
                  FROM plugins WHERE slug = ${SLUG}`;
     });
     expect(await count(PLATFORM)).toBe(before + 1);
-    expect(await count(OWNER)).toBe(before);
+    expect(await count(OWNER)).toBe(ownerBefore);
   });
 
   it("says the change is unknown rather than guessing when no manifest was recorded", async () => {
