@@ -31,8 +31,9 @@ export type ExternalCapabilityStatus =
   | { readonly status: "planned"; readonly issue: number };
 
 const BROKERED: ExternalCapabilityStatus = Object.freeze({ status: "brokered" });
-/** Until each capability has an issue of its own, the epic tracks it. */
-const PLANNED: ExternalCapabilityStatus = Object.freeze({ status: "planned", issue: 1729 });
+// #1729 — every capability is brokered. A new one without a broker yet is
+// written `{ status: "planned", issue: <its issue> }`: staging and approval
+// refuse it with that issue until its broker lands.
 
 /** The status of every capability for a runtime-installed plugin. */
 export const EXTERNAL_CAPABILITY_STATUS: Readonly<
