@@ -25,7 +25,7 @@
  * failure (shared `lists/plugin-values.ts`) with the field it was in.
  */
 
-import { execute } from "@caelo-cms/query-api";
+import { execute, joinHeldTransaction } from "@caelo-cms/query-api";
 import type { FieldDef } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
 import { hostInfra, hostSystemActorId } from "./dispatch.js";
@@ -207,12 +207,16 @@ export async function describePluginMedia(
   if (unique.length === 0) return out;
   const infra = hostInfra();
   for (let i = 0; i < unique.length; i += 1000) {
-    const r = await execute(
-      infra.registry,
-      infra.adapter,
-      { actorId: hostSystemActorId(), actorKind: "system", requestId: "plugin-values-media" },
-      "media.describe_many",
-      { ids: unique.slice(i, i + 1000) },
+    // #1254 — render-time read work: it joins a transaction the caller holds
+    // (an in-process build holds one) instead of taking a second connection.
+    const r = await joinHeldTransaction(() =>
+      execute(
+        infra.registry,
+        infra.adapter,
+        { actorId: hostSystemActorId(), actorKind: "system", requestId: "plugin-values-media" },
+        "media.describe_many",
+        { ids: unique.slice(i, i + 1000) },
+      ),
     );
     if (!r.ok) {
       throw new Error(

@@ -2,8 +2,10 @@
 
 /**
  * #1729 — a plugin value the host refused before it reached a page
- * (docs/dev/external-plugin-brokers.md §4.5; the checks live in the
- * plugin host, `plugin-values.ts`). The refused value is replaced by
+ * (docs/dev/external-plugin-brokers.md §4.5 and §6.2; the checks live in
+ * the plugin host, `plugin-values.ts` and `head-vocabulary.ts`). `<source>`
+ * is a list source's name, {@link PLUGIN_HEAD_POINT} or
+ * {@link PLUGIN_SHARE_IMAGES_POINT}. The refused value is replaced by
  * {@link refusedPluginValue}, so the render keeps the spot raw and records
  * `plugin-value-refused:<plugin>.<source>.<field>:<rule>`, a render failure
  * in the #1604 sense: the preview lists it, a Stage ships the spot raw and
@@ -13,6 +15,16 @@
 
 /** Marker kind of a plugin value the host refused. */
 export const PLUGIN_VALUE_REFUSED = "plugin-value-refused";
+
+/**
+ * #1729 — the `<source>` of a refusal from the head-contribution point
+ * (head entries, sitemap adjustments, the document language): not a list
+ * source, which is snake_case and never holds a hyphen.
+ */
+export const PLUGIN_HEAD_POINT = "head-composition";
+
+/** #1729 — the `<source>` of a refused default share image (field `image`). */
+export const PLUGIN_SHARE_IMAGES_POINT = "share-images";
 
 /** The key of a refused value's stand-in; a plugin entry value can never be an object with it. */
 const REFUSED_KEY = "$caeloRefused";

@@ -111,6 +111,7 @@ export {
 } from "@caelo-cms/shared/lists-model";
 export * from "./admin-panels.js";
 export * from "./editor-toolbar.js";
+export * from "./head-contributions.js";
 export * from "./index-coverage.js";
 export * from "./indexes.js";
 export * from "./mail-templates.js";
@@ -384,63 +385,12 @@ export const urlContributionClaim = z.object({ slot: urlSlot }).strict();
 // #391 — head + sitemap contribution points.
 // ---------------------------------------------------------------------------
 
-/**
- * A typed per-page `<head>` entry. STRUCTURED on purpose — the §2
- * invariant "no raw HTML into <head>" holds for plugins too: plugins
- * return these shapes, CORE serializes + escapes them, and the same
- * serializer feeds the static generator and the admin preview (one
- * code path, byte parity).
- */
-export const headEntry = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("link"),
-      rel: z.string().min(1).max(60),
-      href: z.string().min(1).max(2000),
-      hreflang: z.string().min(2).max(35).optional(),
-      media: z.string().max(200).optional(),
-      type: z.string().max(100).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("meta"),
-      name: z.string().min(1).max(120).optional(),
-      property: z.string().min(1).max(120).optional(),
-      content: z.string().max(2000),
-    })
-    .strict()
-    .refine((v) => (v.name !== undefined) !== (v.property !== undefined), {
-      message: "meta entries carry exactly one of `name` or `property`",
-    }),
-]);
+// The entries a contribution answers carry (`headEntry`,
+// `sitemapContribution`, the vocabulary every plugin is held to) live in
+// head-contributions.ts, re-exported above.
 
-export type HeadEntry = z.infer<typeof headEntry>;
-
-/** Per-page sitemap adjustments contributed by a plugin. */
-export const sitemapContribution = z
-  .object({
-    /** Drop this page from the sitemap entirely (e.g. an unpublished
-     *  variant URL must not appear — clean-404 semantics). */
-    exclude: z.boolean().optional(),
-    /** xhtml alternate links attached to the page's <url> entry. */
-    alternates: z
-      .array(
-        z
-          .object({
-            hreflang: z.string().min(2).max(35),
-            href: z.string().min(1).max(2000),
-          })
-          .strict(),
-      )
-      .optional(),
-  })
-  .strict();
-
-export type SitemapContribution = z.infer<typeof sitemapContribution>;
-
-/** Manifest-side claim of contribution kinds (release-signed only,
- *  capability `head_contributions`). */
+/** Manifest-side claim of contribution kinds (capability
+ *  `head_contributions`). */
 export const contributionKind = z.enum(["head", "sitemap"]);
 
 export type ContributionKind = z.infer<typeof contributionKind>;
@@ -1412,8 +1362,9 @@ export const pluginManifest = z
     /** #390 — URL-slot claims (release-signed only). The definition
      *  supplies the matching pure encode/decode pairs. */
     urlContributions: z.array(urlContributionClaim).optional(),
-    /** #391 — head/sitemap contribution claims (release-signed only,
-     *  requires the `head_contributions` capability). */
+    /** #391 — head/sitemap contribution claims; requires the
+     *  `head_contributions` capability. The entries come from
+     *  `contributionsOperation` (`$contributions` for an installed plugin). */
     contributes: z.array(contributionKind).optional(),
     /** Plugin-shipped instructions; external packages require a companion_skills receipt. */
     skills: z.array(pluginSkillSpec).optional(),
@@ -2808,18 +2759,33 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   readonly skills?: ReadonlyArray<PluginSkillSpec>;
   /**
    * #391 — the I/O half of head/sitemap contributions: an operation in
-   * `operations` taking `{pageIds: string[], siteBaseUrl: string,
-   * pageUrlStyle: PageUrlStyle}` and returning `{head?: Record<pageId,
+   * `operations` taking `{pageIds: string[]}` (the pages of the render, at
+   * most a few hundred per call) and returning `{head?: Record<pageId,
    * HeadEntry[]>, sitemap?: Record<pageId, SitemapContribution>, lang?:
-   * Record<pageId, string>}`. A href that points at a page must be the
-   * page's public URL as core resolves it — ask
-   * `ctx.cms.call("pages.resolve_public_urls", {pageIds, pageUrlStyle})`
-   * rather than composing one, so it equals the page's canonical (#590).
+   * Record<pageId, string>}`, at most `HEAD_ANSWER_MAX_BYTES`.
+   *
+   * The vocabulary is closed (`head-contributions.ts`, #1729): `link` only
+   * as `rel: "alternate"` with an `hreflang` and the `pageId` of the other
+   * version, `meta` only `property` `og:locale` / `og:locale:alternate`,
+   * sitemap `exclude` and `alternates` by `pageId`, at most
+   * `HEAD_ENTRIES_PER_PAGE` of each per page. A plugin never writes a URL:
+   * core builds every alternate's with the builder that makes the target's
+   * canonical, on the render's branch, so they agree byte for byte (#590).
    * `lang` is the page's document language (BCP 47, set as `<html
    * lang>`; e.g. the page's locale) and overrides the site's stored
-   * language for that page — it rides the `head` contribution kind. The
-   * host Zod-validates every entry and serializes them itself — a plugin
-   * can never inject raw head HTML.
+   * language for that page. Anything outside the vocabulary is refused and
+   * reported as a render failure: the preview lists it, a Stage records it
+   * and Publish live refuses the build.
+   *
+   * @example
+   *   head: async (_ctx, { pageIds }) => ({
+   *     head: { [pageIds[0]]: [
+   *       { kind: "link", rel: "alternate", hreflang: "de", pageId: GERMAN_PAGE_ID },
+   *       { kind: "meta", property: "og:locale", content: "en_GB" },
+   *     ] },
+   *     sitemap: { [pageIds[0]]: { alternates: [{ hreflang: "de", pageId: GERMAN_PAGE_ID }] } },
+   *     lang: { [pageIds[0]]: "en-GB" },
+   *   }),
    */
   readonly contributionsOperation?: string;
   /** See `pluginManifest.listSources`; resolved by `listSourcesOperation`. */
@@ -2967,6 +2933,11 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * `contributionsOperation` because the editor and `get_page_seo` ask for
    * it without a base URL and without the rest of a head. Requires the
    * `head_contributions` capability.
+   *
+   * #1729 — each image must exist and be a library image (not a reference
+   * image, not a file of another kind). Core refuses any other: the page
+   * then ships without `og:image` (never with the site default instead) and
+   * the refusal is a render failure that Publish live refuses.
    *
    * @example
    *   share_images: async (_ctx, { pageIds }) => ({

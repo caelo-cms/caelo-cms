@@ -39,7 +39,7 @@ import {
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
-import { pageMarkerHint } from "../../deploy/render-failures.js";
+import { pageMarkerHint, pluginValueRefusedHint } from "../../deploy/render-failures.js";
 import { describeError, toolError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -457,6 +457,18 @@ function pageMarkerNextStep(marker: string): string | undefined {
   return hint === undefined ? undefined : `${hint} Publishing is blocked until it is fixed.`;
 }
 
+/**
+ * #1729 — next step for a value a plugin handed the page that core refused
+ * (`plugin-value-refused:<plugin>.<source>.<field>:<rule>`): a list-source
+ * value, a head or sitemap entry, a default share image. Same text as the
+ * Stage's report.
+ */
+function pluginValueRefusedNextStep(marker: string): string | undefined {
+  const prefix = "plugin-value-refused:";
+  if (!marker.startsWith(prefix)) return undefined;
+  return `${pluginValueRefusedHint(marker.slice(prefix.length))} Publishing is blocked until it is fixed.`;
+}
+
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
 function siteSettingNextSteps(
   missing: readonly string[],
@@ -470,6 +482,7 @@ function siteSettingNextSteps(
         missingVariantLinkNextStep(m) ??
         pluginNotRunningNextStep(m) ??
         pluginRenderFailedNextStep(m, pluginFailures) ??
+        pluginValueRefusedNextStep(m) ??
         pageMarkerNextStep(m);
       return step ? [[m, step]] : [];
     }),

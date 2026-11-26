@@ -238,11 +238,16 @@ export async function prepareSeoPass(args: {
   const pickedOf = new Map(
     seoBundles.map((b) => [
       b.pageId,
-      pickShareImage({
-        page: b.ogImageAssetId,
-        language: languageImages.get(b.pageId) ?? null,
-        site: args.siteShareImageAssetId,
-      }),
+      // #1729 — a language default core refused (no library image) is not
+      // replaced by the site's: the page ships without og:image, and the
+      // refusal is a render failure (below).
+      languageImages.refused.has(b.pageId)
+        ? ({ source: "none", assetId: null } as const)
+        : pickShareImage({
+            page: b.ogImageAssetId,
+            language: languageImages.images.get(b.pageId) ?? null,
+            site: args.siteShareImageAssetId,
+          }),
     ]),
   );
   const shareImageOf = new Map([...pickedOf].map(([pageId, p]) => [pageId, p.assetId]));
@@ -271,13 +276,25 @@ export async function prepareSeoPass(args: {
   });
 
   // #391 — collect every plugin's head/sitemap contributions in ONE
-  // batch call. Zod-validated + contradiction-checked by the host;
+  // batch call. Checked against the vocabulary + contradiction-checked by
+  // the host, which builds every alternate's URL itself (#1729);
   // serialization shares the exact code path the preview uses
   // (composeHeadBlock), so both surfaces stay byte-identical.
   const contributions = await plugins.collectContributions(
     seoBundles.map((b) => b.pageId),
     urlArgs,
   );
+  // #1729 — what the host refused from a plugin (a head entry outside the
+  // vocabulary, a share image that is no library image): the page ships
+  // without it, and the failure is recorded (a Stage) or stops the build.
+  for (const b of seoBundles) {
+    const refusedImage = languageImages.refused.get(b.pageId);
+    const markers = [
+      ...(refusedImage ? [refusedImage.marker] : []),
+      ...(contributions.refused.get(b.pageId) ?? []),
+    ];
+    for (const marker of markers) renderFailures.push(pluginRefusalRenderFailure(b, marker));
+  }
   // A page search engines may list: in the sitemap, the feed and the live
   // record. #391 — a plugin can exclude one (an unpublished language
   // variant must not appear; clean-404 semantics).
@@ -543,6 +560,28 @@ function shareImageRenderFailure(
     reason: ogImageFailureMarker(f),
     target: null,
     line: `page "${b.slug}": ${SHARE_IMAGE_LEVEL[f.source]} (og:image, media ${f.assetId}) ${what}`,
+  };
+}
+
+/**
+ * #1729 — the render failure a build records for a page whose plugin head
+ * entry, sitemap adjustment or default share image the host refused
+ * (`plugin-value-refused:<plugin>.<point>.<field>:<rule>`).
+ */
+function pluginRefusalRenderFailure(
+  b: Pick<PageSeoBundle, "pageId" | "slug" | "title" | "currentPath">,
+  marker: string,
+): RenderFailure {
+  return {
+    pageId: b.pageId,
+    pageTitle: b.title,
+    pagePath: b.currentPath,
+    blockName: null,
+    moduleSlug: null,
+    field: null,
+    reason: marker,
+    target: null,
+    line: `page "${b.slug}": a plugin's head contribution was refused (${marker})`,
   };
 }
 

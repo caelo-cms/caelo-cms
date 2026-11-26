@@ -18,6 +18,7 @@ import { join } from "node:path";
 import {
   bootstrap,
   localBuildPluginServices,
+  type ResolvedHeadEntry,
   renderHeadEntries,
   resetPluginHost,
 } from "@caelo-cms/plugin-host";
@@ -53,9 +54,24 @@ const SITE_LANGUAGE = "fr";
 /** What the test plugin contributes for `pageId` only. */
 const CONTRIBUTED_LANGUAGE = "de-AT";
 
-const ENTRIES: HeadEntry[] = [
-  { kind: "link", rel: "alternate", hreflang: "de", href: "https://example.com/de/t391p-page" },
-  { kind: "link", rel: "alternate", hreflang: "x-default", href: "https://example.com/t391p-page" },
+/**
+ * What the test plugin answers for `pageId` (#1729: alternates name pages
+ * by id), and what core renders of it: the URLs it builds.
+ */
+const entries = (): HeadEntry[] => [
+  { kind: "link", rel: "alternate", hreflang: "de", pageId: plainPageId },
+  { kind: "link", rel: "alternate", hreflang: "x-default", pageId },
+  { kind: "meta", property: "og:locale", content: "de_AT" },
+];
+const RESOLVED: ResolvedHeadEntry[] = [
+  { kind: "link", rel: "alternate", hreflang: "de", href: "https://example.com/t391p-plain/" },
+  {
+    kind: "link",
+    rel: "alternate",
+    hreflang: "x-default",
+    href: "https://example.com/t391p-page/",
+  },
+  { kind: "meta", property: "og:locale", content: "de_AT" },
 ];
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
@@ -154,12 +170,12 @@ beforeAll(async () => {
         const lang: Record<string, string> = {};
         for (const id of pageIds) {
           if (id !== pageId) continue;
-          head[id] = ENTRIES;
+          head[id] = entries();
           lang[id] = CONTRIBUTED_LANGUAGE;
           sitemap[id] = {
             alternates: [
-              { hreflang: "de", href: "https://example.com/de/t391p-page" },
-              { hreflang: "x-default", href: "https://example.com/t391p-page" },
+              { hreflang: "de", pageId: plainPageId },
+              { hreflang: "x-default", pageId },
             ],
           };
         }
@@ -191,7 +207,7 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
     });
     if (!composed.ok) throw new Error(JSON.stringify(composed.error));
     const html = (composed.value as { html: string }).html;
-    const expectedBlock = renderHeadEntries(ENTRIES);
+    const expectedBlock = renderHeadEntries(RESOLVED);
     expect(html).toContain(expectedBlock);
   });
 
@@ -241,14 +257,14 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
         notFoundPageId: null,
       });
     });
-    const expectedBlock = renderHeadEntries(ENTRIES);
+    const expectedBlock = renderHeadEntries(RESOLVED);
     expect(page.html).toContain(expectedBlock);
     expect(page.html).toStartWith(`<html lang="${CONTRIBUTED_LANGUAGE}">`);
     expect(plainPage.html).toStartWith(`<!doctype html><html lang="${SITE_LANGUAGE}">`);
 
     const sitemap = readFileSync(join(buildDir, "sitemap.xml"), "utf8");
     expect(sitemap).toContain(
-      '<xhtml:link rel="alternate" hreflang="de" href="https://example.com/de/t391p-page" />',
+      '<xhtml:link rel="alternate" hreflang="de" href="https://example.com/t391p-plain/" />',
     );
     expect(sitemap).toContain('xmlns:xhtml="http://www.w3.org/1999/xhtml"');
   });

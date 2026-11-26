@@ -788,6 +788,10 @@ async function renderPreview(
       ...fontMarkers,
       ...cssVarMarkers,
       ...seoMarkers,
+      // #1729 — what core refused from a plugin's head entries, sitemap
+      // adjustments or default share image: the page renders without it.
+      ...(contributions?.refused.get(pageId) ?? []),
+      ...(shareImages.get(pageId)?.refused ? [shareImages.get(pageId)?.refused as string] : []),
       // #1008 — an active plugin this server could not load renders
       // without its contribution; loud here (and Publish live refuses).
       ...pluginsNotRunningHere().map((p) => pluginNotRunningMarker(p.slug)),

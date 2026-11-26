@@ -38,6 +38,8 @@ import {
   PAGE_PATH_UNKNOWN,
   PAGE_PROP_UNKNOWN,
   PAGE_VALUE_PATHS,
+  PLUGIN_HEAD_POINT,
+  PLUGIN_SHARE_IMAGES_POINT,
   PLUGIN_VALUE_REFUSED,
   parseMediaFailureMarker,
   parseMediaReferenceMarker,
@@ -125,10 +127,23 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   // #1719 — reference images on a page; share images by what is wrong.
   const referencePages = new Set<string>();
   const shareImagePages = { missing: new Set<string>(), reference: new Set<string>() };
+  // #1729 — what a plugin added to a page's head, or its share image.
+  const pluginHeadPages = new Set<string>();
+  const pluginShareImagePages = new Set<string>();
   for (const f of failures) {
     const page = `${f.pageTitle} (${f.pagePath})`;
     const og = parseOgImageFailureMarker(f.reason);
-    if (parseMediaFailureMarker(f.reason) !== null) {
+    const refusedSource =
+      renderFailureKind(f.reason) === PLUGIN_VALUE_REFUSED
+        ? parsePluginValueRefused(
+            renderFailureMarker(f.reason).slice(PLUGIN_VALUE_REFUSED.length + 1),
+          ).source
+        : null;
+    if (refusedSource === PLUGIN_HEAD_POINT) {
+      pluginHeadPages.add(page);
+    } else if (refusedSource === PLUGIN_SHARE_IMAGES_POINT) {
+      pluginShareImagePages.add(page);
+    } else if (parseMediaFailureMarker(f.reason) !== null) {
       imagePages.add(page);
     } else if (parseMediaReferenceMarker(f.reason) !== null) {
       referencePages.add(page);
@@ -167,6 +182,14 @@ function operatorPlaces(failures: readonly RenderFailure[]): string[] {
   onPages(
     "The image shown when the page is shared is a reference image, which is never published",
     shareImagePages.reference,
+  );
+  onPages(
+    "A plugin added something to the page's head or sitemap that Caelo does not allow, so it was left out",
+    pluginHeadPages,
+  );
+  onPages(
+    "A plugin's default image for when the page is shared is not a published library image, so the page has none",
+    pluginShareImagePages,
   );
   const listed = [...others];
   for (const place of listed.slice(0, PLACES_LISTED)) lines.push(`${place} could not be rendered`);
@@ -244,6 +267,19 @@ export function pageMarkerHint(marker: string, mod: string): string | undefined 
  */
 export function pluginValueRefusedHint(body: string): string {
   const { plugin, source, field, rule } = parsePluginValueRefused(body);
+  // #1729 (§6.2) — the head and sitemap vocabulary, and share images.
+  if (source === PLUGIN_HEAD_POINT) {
+    return (
+      `The plugin "${plugin}" added a ${field} to the page's head or sitemap that Caelo refuses (${rule}): a plugin may add only <link rel="alternate" hreflang> naming the other version by its pageId (core builds the URL; the page must exist in this view), <meta property="og:locale"> and og:locale:alternate, a document language, and sitemap exclude/alternates by pageId, at most 20 per page and 1 MB per answer. ` +
+      "The page renders without it. It is the plugin's code, not the page's: submit a corrected plugin version (submit_plugin), or for a plugin shipped with Caelo file it with bug_report. Tell the operator."
+    );
+  }
+  if (source === PLUGIN_SHARE_IMAGES_POINT) {
+    return (
+      `The plugin "${plugin}" names a default share image for the page that Caelo refuses (${rule}): it must be an existing library image, not a reference image or another kind of file. ` +
+      "The page shows no share image until it is fixed. Set another one with the plugin's own tool (get_plugin lists its tools), or give the page its own image with set_page_seo_many (ogImageAssetId from find_media). Tell the operator."
+    );
+  }
   return (
     `The plugin "${plugin}" handed the page a ${field} value in its list source ${source} that Caelo refuses (${rule}): ` +
     "richtext may hold only prose (p, a, strong, em, lists, h2-h6, blockquote, code, br, span; no on* or style), links only https, http, mailto, tel or a page, media only library images. " +

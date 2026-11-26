@@ -39,6 +39,7 @@ import { escapeHtml } from "@caelo-cms/plugin-component-kit";
 import {
   type AiWorkItem,
   definePlugin,
+  type HeadEntry,
   isAiDelegated,
   type ListTypeDef,
   type PageUrlStyle,
@@ -46,6 +47,7 @@ import {
   type PluginAi,
   type PluginContextTier1,
   type PluginWrite,
+  type SitemapContribution,
   z,
 } from "@caelo-cms/plugin-sdk";
 import {
@@ -957,70 +959,116 @@ async function linkPageIntoGroup(
   return { groupId, path: refreshed.path, pathMoved: refreshed.moved };
 }
 
-interface PublishedVariant {
+/** One published version of a page's group, without its URL. */
+interface PublishedVersion {
   pageId: string;
   localeCode: string;
   isDefault: boolean;
-  href: string;
   /** The locale's operator-facing name ("Deutsch"), for switcher labels. */
   displayName: string;
 }
 
+interface PublishedVariant extends PublishedVersion {
+  href: string;
+}
+
 /**
- * #398 — per requested page: every PUBLISHED variant of its group with
- * its absolute URL. Pages outside any group, groups with fewer than
- * two published variants, and unpublished sole survivors contribute
- * nothing — hreflang only makes sense between real alternates. The
- * site's 404 page is no variant (#1305, {@link notFoundPageId}).
+ * #398 — per requested page: every PUBLISHED version of its group. Pages
+ * outside any group, groups with fewer than two published versions, and
+ * unpublished sole survivors have none — hreflang only makes sense between
+ * real alternates. The site's 404 page is no version (#1305,
+ * {@link notFoundPageId}).
+ *
+ * #1729 — hreflang names these by page id and core builds their URLs, so
+ * this set needs none; the switcher's links take them from
+ * {@link publishedVariantMatrix}.
+ */
+async function publishedVersions(
+  ctx: unknown,
+  pageIds: readonly string[],
+): Promise<Map<string, PublishedVersion[]>> {
+  const q = adminQueryOf(ctx);
+  const cms = cmsOf(ctx);
+  const reg = await refreshLocaleCache(q, ctx);
+  const out = new Map<string, PublishedVersion[]>();
+  if (reg.byCode.size === 0) return out;
+  // #1213 — one render pass asks for the same page's versions from
+  // language_links, head_contributions and the static selector: compute
+  // them once per pass, so the switcher and hreflang also read the same rows.
+  const byPage = await batchIn<PublishedVersion[] | null>(renderMemoOf(ctx), "versions").getMany(
+    pageIds,
+    (missing) => computeVersions(ctx, q, cms, reg, missing),
+    null,
+  );
+  for (const [pageId, versions] of byPage) if (versions) out.set(pageId, versions);
+  return out;
+}
+
+/**
+ * #398 — {@link publishedVersions} with each version's absolute URL, for
+ * the language switcher (`language_links`, `staticRender`).
  *
  * #590 — the URLs come from core (`pages.resolve_public_urls`), never
  * from this plugin: core's builder is the one that produces each page's
- * canonical, so every hreflang, sitemap alternate and switcher link is
- * byte-identical to the canonical of the page it points at — trailing
- * slash per the serving target's `pageUrlStyle`, host per the locale's
- * host strategy, canonical override honoured. (It also fails loudly
- * when the site base URL is unset, #551.)
+ * canonical, so every switcher link is byte-identical to the canonical of
+ * the page it points at — trailing slash per the serving target's
+ * `pageUrlStyle`, host per the locale's host strategy, canonical override
+ * honoured. (It also fails loudly when the site base URL is unset, #551.)
  */
 async function publishedVariantMatrix(
   ctx: unknown,
   pageIds: readonly string[],
   pageUrlStyle: PageUrlStyle,
 ): Promise<Map<string, PublishedVariant[]>> {
-  const q = adminQueryOf(ctx);
-  const cms = cmsOf(ctx);
-  const reg = await refreshLocaleCache(q, ctx);
+  const versions = await publishedVersions(ctx, pageIds);
   const out = new Map<string, PublishedVariant[]>();
-  if (reg.byCode.size === 0) return out;
-  // #1213 — one render pass asks for the same page's matrix from
-  // language_links, head_contributions and the static selector: compute
-  // it once per pass, so the switcher and hreflang also read the same rows.
-  const byPage = await batchIn<PublishedVariant[] | null>(
-    renderMemoOf(ctx),
-    `matrix:${pageUrlStyle}`,
-  ).getMany(
-    pageIds,
-    (missing) => computeVariantMatrix(ctx, q, cms, reg, missing, pageUrlStyle),
+  const linked = [...new Set([...versions.values()].flatMap((g) => g.map((v) => v.pageId)))];
+  if (linked.length === 0) return out;
+  const cms = cmsOf(ctx);
+  const urls = await batchIn<string | null>(renderMemoOf(ctx), `urls:${pageUrlStyle}`).getMany(
+    linked,
+    async (missing) => {
+      const resolved = new Map<string, string>();
+      for (const slice of chunked(missing)) {
+        const r = await cms.call<{ urls: Record<string, string> }>("pages.resolve_public_urls", {
+          pageIds: slice,
+          pageUrlStyle,
+        });
+        for (const [id, url] of Object.entries(r.urls)) resolved.set(id, url);
+      }
+      return resolved;
+    },
     null,
   );
-  for (const [pageId, variants] of byPage) if (variants) out.set(pageId, variants);
+  for (const [pageId, group] of versions) {
+    out.set(
+      pageId,
+      group.map((v) => {
+        const href = urls.get(v.pageId);
+        if (href === undefined || href === null) {
+          throw new Error(`international-site: core resolved no public URL for page ${v.pageId}`);
+        }
+        return { ...v, href };
+      }),
+    );
+  }
   return out;
 }
 
 /**
- * The matrix for `pageIds`, from the variant rows of those pages and of
+ * The versions of `pageIds`, from the variant rows of those pages and of
  * their groups only (#1213): its cost follows the pages asked about, not
  * the site. It used to read every variant row (silently only the first
  * 1000) and every page of the site, on every call.
  */
-async function computeVariantMatrix(
+async function computeVersions(
   ctx: unknown,
   q: PluginAdminQuery,
   cms: CmsHandle,
   reg: LocaleRegistry,
   pageIds: readonly string[],
-  pageUrlStyle: PageUrlStyle,
-): Promise<Map<string, PublishedVariant[]>> {
-  const out = new Map<string, PublishedVariant[]>();
+): Promise<Map<string, PublishedVersion[]>> {
+  const out = new Map<string, PublishedVersion[]>();
   const variants = await loadVariantsByPage(q, pageIds, ctx);
   const groupIds = [...new Set([...variants.values()].map((v) => v.group_id))];
   if (groupIds.length === 0) return out;
@@ -1034,9 +1082,9 @@ async function computeVariantMatrix(
     notFoundPageId(ctx),
   ]);
 
-  const groups: { groupId: string; published: Omit<PublishedVariant, "href">[] }[] = [];
+  const byGroup = new Map<string, PublishedVersion[]>();
   for (const groupId of groupIds) {
-    const published: Omit<PublishedVariant, "href">[] = [];
+    const published: PublishedVersion[] = [];
     for (const v of members.get(groupId) ?? []) {
       if (statuses.get(v.page_id) !== "published") continue;
       // #1305 — served as /404.html, never at its own URL: not a version.
@@ -1054,31 +1102,7 @@ async function computeVariantMatrix(
         displayName: locale.display_name,
       });
     }
-    if (published.length >= 2) groups.push({ groupId, published });
-  }
-  if (groups.length === 0) return out;
-
-  const urls: Record<string, string> = {};
-  const linked = [...new Set(groups.flatMap((g) => g.published.map((v) => v.pageId)))];
-  for (const slice of chunked(linked)) {
-    const resolved = await cms.call<{ urls: Record<string, string> }>("pages.resolve_public_urls", {
-      pageIds: slice,
-      pageUrlStyle,
-    });
-    Object.assign(urls, resolved.urls);
-  }
-  const byGroup = new Map<string, PublishedVariant[]>();
-  for (const group of groups) {
-    byGroup.set(
-      group.groupId,
-      group.published.map((v) => {
-        const href = urls[v.pageId];
-        if (href === undefined) {
-          throw new Error(`international-site: core resolved no public URL for page ${v.pageId}`);
-        }
-        return { ...v, href };
-      }),
-    );
+    if (published.length >= 2) byGroup.set(groupId, published);
   }
   for (const [pageId, v] of variants) {
     const published = byGroup.get(v.group_id);
@@ -2247,44 +2271,34 @@ export default definePlugin<PluginContextTier1>({
 
     /**
      * #398 — head + sitemap contributions (#391 points). Per published
-     * page in a multi-variant group: `<link rel="alternate" hreflang>`
-     * for EVERY published variant including itself, plus x-default on
-     * the default locale's variant; sitemap alternates mirror the same
+     * page in a multi-version group: `<link rel="alternate" hreflang>`
+     * for EVERY published version including itself, plus x-default on
+     * the default locale's version; sitemap alternates mirror the same
      * set (byte-parity between generator and preview comes free — both
-     * consume collectContributions). Every requested page — grouped or
-     * not — also gets its locale as the document language (`<html
-     * lang>`), so a German variant is announced as German even though
-     * the site's stored language is the default locale's.
+     * consume collectContributions). #1729 — each names its page by id
+     * and core builds the URL, with the builder that makes that page's
+     * canonical. Every requested page — grouped or not — also gets its
+     * locale as the document language (`<html lang>`), so a German
+     * version is announced as German even though the site's stored
+     * language is the default locale's.
      */
     head_contributions: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
       const q = adminQueryOf(ctx);
       const reg = await refreshLocaleCache(q, ctx);
-      const matrix = await publishedVariantMatrix(ctx, pageIds, pageUrlStyleOf(args));
+      const groups = await publishedVersions(ctx, pageIds);
       const lang: Record<string, string> = {};
       for (const [pageId, locale] of await localesByPage(q, pageIds, reg.byCode, ctx)) {
         lang[pageId] = locale.code;
       }
-      const head: Record<string, unknown[]> = {};
-      const sitemap: Record<string, unknown> = {};
-      for (const [pageId, variants] of matrix) {
-        const entries: unknown[] = variants.map((v) => ({
-          kind: "link",
-          rel: "alternate",
-          hreflang: v.localeCode,
-          href: v.href,
-        }));
-        const def = variants.find((v) => v.isDefault);
-        if (def) {
-          entries.push({ kind: "link", rel: "alternate", hreflang: "x-default", href: def.href });
-        }
-        head[pageId] = entries;
-        sitemap[pageId] = {
-          alternates: [
-            ...variants.map((v) => ({ hreflang: v.localeCode, href: v.href })),
-            ...(def ? [{ hreflang: "x-default", href: def.href }] : []),
-          ],
-        };
+      const head: Record<string, HeadEntry[]> = {};
+      const sitemap: Record<string, SitemapContribution> = {};
+      for (const [pageId, versions] of groups) {
+        const alternates = versions.map((v) => ({ hreflang: v.localeCode, pageId: v.pageId }));
+        const def = versions.find((v) => v.isDefault);
+        if (def) alternates.push({ hreflang: "x-default", pageId: def.pageId });
+        head[pageId] = alternates.map((a) => ({ kind: "link", rel: "alternate", ...a }));
+        sitemap[pageId] = { alternates };
       }
       return { head, sitemap, lang };
     },

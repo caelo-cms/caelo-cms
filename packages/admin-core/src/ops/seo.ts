@@ -42,6 +42,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { pluginValueRefusedHint } from "../deploy/render-failures.js";
 import { observeDraftReads } from "../locks.js";
 import {
   assetKey,
@@ -109,6 +110,8 @@ const shareImageOutput = z.object({
   source: z.enum(SHARE_IMAGE_SOURCES),
   assetId: z.string().nullable(),
   url: z.string().nullable(),
+  /** #1729 — why a plugin's default was refused (`plugin-value-refused:…`). */
+  refused: z.string().optional(),
 });
 
 /**
@@ -128,7 +131,18 @@ async function loadShareImages(
     pages.map((p) => ({ pageId: p.pageId, ownAssetId: p.seo?.ogImageAssetId ?? null })),
     { chatBranchId: chatBranchId ?? null, onPluginFailure: sink.onPluginFailure },
   );
-  return { images, warnings: sink.failures().map((f) => f.reason) };
+  // #1729 — a language default the plugin named that is no library image.
+  const refused = [...images.values()].flatMap((i) => (i.refused ? [i.refused] : []));
+  return {
+    images,
+    warnings: [
+      ...sink.failures().map((f) => f.reason),
+      ...[...new Set(refused)].map(
+        (marker) =>
+          `${marker}: the plugin's default share image for this page is refused, so the page shows none — ${pluginValueRefusedHint(marker.slice(marker.indexOf(":") + 1))}`,
+      ),
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------

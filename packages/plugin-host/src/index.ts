@@ -183,8 +183,12 @@ export {
   type CollectedContributions,
   collectContributions,
   composeHeadBlock,
+  HEAD_CONTRIBUTION_PAGES_PER_CALL,
+  type ResolvedHeadEntry,
+  type ResolvedSitemapContribution,
   renderHeadEntries,
 } from "./head-composition.js";
+export { checkHeadAnswer, headEntryRule } from "./head-vocabulary.js";
 export {
   finishImageRequest,
   type ImageRequestRecord,
@@ -396,7 +400,12 @@ export {
   type ScheduledWorker,
   type UnscheduledWorker,
 } from "./scheduler.js";
-export { type ResolvedShareImages, resolveShareImages } from "./share-images.js";
+export {
+  type RefusedShareImage,
+  type ResolvedShareImages,
+  resolveShareImages,
+  SHARE_IMAGES_PAGES_PER_CALL,
+} from "./share-images.js";
 export {
   parseListFilter,
   publicListSql,

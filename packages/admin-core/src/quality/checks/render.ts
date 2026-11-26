@@ -31,9 +31,13 @@
  */
 
 import {
+  PLUGIN_HEAD_POINT,
+  PLUGIN_SHARE_IMAGES_POINT,
+  PLUGIN_VALUE_REFUSED,
   parseMediaFailureMarker,
   parseMediaReferenceMarker,
   parseOgImageFailureMarker,
+  parsePluginValueRefused,
   renderFailureKind,
   renderFailureMarker,
   truncateKeepingIds,
@@ -83,6 +87,16 @@ function placeText(f: RenderFailure): string {
   // #1719 — a reference image on the page; the page's share image (its head).
   if (parseMediaReferenceMarker(f.reason) !== null) return "an image on the page";
   if (parseOgImageFailureMarker(f.reason) !== null) return "the page's share image (og:image)";
+  // #1729 — a plugin's head or sitemap entry, or its default share image.
+  if (renderFailureKind(f.reason) === PLUGIN_VALUE_REFUSED) {
+    const { plugin, source } = parsePluginValueRefused(
+      renderFailureMarker(f.reason).slice(PLUGIN_VALUE_REFUSED.length + 1),
+    );
+    if (source === PLUGIN_HEAD_POINT) return `the page's head (plugin "${plugin}")`;
+    if (source === PLUGIN_SHARE_IMAGES_POINT) {
+      return `the page's share image (og:image, plugin "${plugin}")`;
+    }
+  }
   const block = f.blockName === null ? "the site layout" : `the ${f.blockName}`;
   const mod = f.moduleSlug ? `, module "${f.moduleSlug}"` : "";
   const field = f.field ? `, field "${f.field}"` : "";

@@ -213,7 +213,7 @@ import {
   forkPlacementPathsOp,
 } from "./ops/content/placement-fork-paths.js";
 import { renderPagePreviewOp } from "./ops/content/preview.js";
-import { resolvePublicUrlsOp } from "./ops/content/public-urls.js";
+import { publicUrlPagesOp, resolvePublicUrlsOp } from "./ops/content/public-urls.js";
 import { pageConflictsRedirectOp } from "./ops/content/redirect-page-conflicts.js";
 import { listSharedContentOp } from "./ops/content/shared-content.js";
 import { setTemplateBlocksOp } from "./ops/content/template_blocks.js";
@@ -931,6 +931,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(planPageMovesOp);
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
+  registry.register(publicUrlPagesOp);
   registry.register(listPageStatusesOp);
   registry.register(listRecentlyEditedPagesOp);
   registry.register(canonicaliseLinkValuesOp);

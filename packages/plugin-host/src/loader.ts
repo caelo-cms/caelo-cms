@@ -1530,6 +1530,28 @@ function preflightRegistration(
       `plugin "${def.slug}" declares batch operations without the batch_jobs capability — registration refused`,
     );
   }
+  // #1729 — head and sitemap entries and default share images change every
+  // affected page's head: they need the grant, and each names an operation
+  // (for a runtime-installed plugin, its reserved entry).
+  const headPoints: [string, string | undefined][] = [];
+  if ((def.contributes?.length ?? 0) > 0) {
+    headPoints.push(["contributionsOperation", def.contributionsOperation]);
+  }
+  if (def.shareImagesOperation !== undefined) {
+    headPoints.push(["shareImagesOperation", def.shareImagesOperation]);
+  }
+  if (headPoints.length > 0 && !grantedCaps.has("head_contributions")) {
+    throw new Error(
+      `plugin "${def.slug}" contributes to the page head without the head_contributions capability — registration refused`,
+    );
+  }
+  for (const [key, operation] of headPoints) {
+    if (!operation || !def.operations[operation]) {
+      throw new Error(
+        `plugin "${def.slug}" names ${key} "${operation ?? ""}", which is not one of its operations`,
+      );
+    }
+  }
   if ((def.listTypes?.length ?? 0) > 0 && !grantedCaps.has("list_types")) {
     throw new Error(
       `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,
