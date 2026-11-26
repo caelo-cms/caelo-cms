@@ -22,8 +22,12 @@
  *   </div>
  *
  * The field is a combobox (ARIA 1.2): arrow keys move through the
- * suggestions, Enter opens one, Escape closes. An empty field offers the
- * start questions and, when the operator turned them on, the approved
+ * suggestions, Enter opens one, Escape closes. The list opens only on the
+ * visitor's own input (focus, typing, ArrowDown); whatever closes it (a
+ * search, a choice, Escape, leaving the field, the results page putting its
+ * query into the field on Back) also drops the suggestion still to come,
+ * so none opens over a page the visitor did not type into. An empty field
+ * offers the start questions and, when the operator turned them on, the approved
  * popular queries the results page carries. Focus warms the gateway up
  * (one uncached call for the current release key, answered once the
  * release, its index and its query model are loaded, so a cold instance
@@ -199,25 +203,35 @@ const MAIN = String.raw`
 
   // ---- the combobox ----
   var uid = 0;
+  // Every field's close of its suggestions. The results page closes them
+  // all when it puts the query it searched into the fields (follow): that
+  // is the page writing, not the visitor typing.
+  var closers = [];
 
   function bindForm(form) {
     var input = form.querySelector("[data-caelo-search-input]") || form.querySelector('input[name="q"]');
     if (!input) return;
     var list = form.querySelector("[data-caelo-search-suggestions]");
-    // #1707 — hash mode: the query goes into the fragment only, never into
-    // a request (on the results page itself only the fragment changes).
+    var close = list ? bindSuggestions(form, input, list) : function () {};
+    closers.push(close);
     form.addEventListener("submit", function (e) {
-      if (form.getAttribute("data-caelo-search-mode") !== "hash") return;
-      e.preventDefault();
+      // #1707 — hash mode: the query goes into the fragment only, never into
+      // a request (on the results page itself only the fragment changes).
+      var hash = form.getAttribute("data-caelo-search-mode") === "hash";
+      if (hash) e.preventDefault();
       var q = input.value.trim();
-      if (q === "") return;
-      if (list) {
-        list.hidden = true;
-        input.setAttribute("aria-expanded", "false");
-      }
-      location.assign(hashSearchUrl(form.getAttribute("action") || "", location.href, q));
+      if (hash && q === "") return;
+      // A search goes out: no suggestion may open after it, neither the
+      // last keystroke's nor an answer on its way.
+      close();
+      if (hash) location.assign(hashSearchUrl(form.getAttribute("action") || "", location.href, q));
     });
-    if (!list) return;
+  }
+
+  // The field as a combobox over its suggestion list. The list opens only
+  // on the visitor's own input (focus, typing, ArrowDown). Returns close,
+  // which also drops the suggestions still to come.
+  function bindSuggestions(form, input, list) {
     uid += 1;
     var listId = list.id || "caelo-search-suggestions-" + uid;
     list.id = listId;
@@ -230,9 +244,17 @@ const MAIN = String.raw`
     var options = [];
     var active = -1;
     var timer = null;
+    var leaving = null;
     var seq = 0;
 
+    // Closing drops the suggestion the last keystroke still has pending
+    // (the debounce) and an answer on its way: either would open the list
+    // again after the visitor searched, chose, pressed Escape or left the
+    // field, or after the page put its query into the field (Back), over a
+    // page the visitor did not type into.
     function close() {
+      clearTimeout(timer);
+      seq += 1;
       list.hidden = true;
       input.setAttribute("aria-expanded", "false");
       input.removeAttribute("aria-activedescendant");
@@ -240,6 +262,7 @@ const MAIN = String.raw`
     }
 
     function choose(o) {
+      close();
       if (o.href) location.href = o.href;
       else {
         input.value = o.text;
@@ -297,7 +320,7 @@ const MAIN = String.raw`
     // The key request warms the gateway (the release opens, the index and
     // the query model load) and answers when that is done; suggestions need
     // no key and go out at once.
-    input.addEventListener("focus", function () { warm(); suggest(); });
+    input.addEventListener("focus", function () { clearTimeout(leaving); warm(); suggest(); });
     input.addEventListener("input", function () {
       clearTimeout(timer);
       timer = setTimeout(suggest, 120);
@@ -308,7 +331,10 @@ const MAIN = String.raw`
       else if (e.key === "Escape") { close(); }
       else if (e.key === "Enter" && active >= 0) { e.preventDefault(); choose(options[active]); }
     });
-    input.addEventListener("blur", function () { setTimeout(close, 150); });
+    // Leaving the field closes the list a moment later, unless the visitor
+    // came back to it (close would drop the suggestions that focus asked for).
+    input.addEventListener("blur", function () { leaving = setTimeout(close, 150); });
+    return close;
   }
 
   // The approved popular queries: baked into the results page (live minutes
@@ -453,9 +479,13 @@ const MAIN = String.raw`
       if (found.query === "") { clear(); return; }
       // Every field shows the query searched, the focused one too: after
       // Back it would otherwise keep the later query the results no longer show.
+      // The page wrote it, the visitor did not type it: the suggestions
+      // close, and the one the last keystroke left pending, which would ask
+      // for this query and open over the results, is dropped.
       Array.prototype.forEach.call(document.querySelectorAll("[data-caelo-search-input]"), function (i) {
         i.value = found.query;
       });
+      closers.forEach(function (close) { close(); });
       search(found.query);
     }
     follow(false);
