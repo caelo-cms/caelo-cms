@@ -111,3 +111,36 @@ test("Owner uploads a package, explicitly grants each capability, and revokes pr
   await page.goto("/settings/skills");
   await expect(page.getByText(`Guide ${slug}`, { exact: true })).toHaveCount(0);
 });
+
+test("an upload that asks for access no runtime-installed plugin can have is refused with the reason (#1729)", async ({
+  page,
+}) => {
+  const slug = `e2e-unbrokered-${Date.now()}`;
+  const manifest = {
+    slug,
+    version: "1.0.0",
+    tier: 2,
+    schema: {},
+    operations: ["noop"],
+    requestedCapabilities: ["ai_provider"],
+    capabilityReasons: { ai_provider: "Summarise notes" },
+  };
+  const source = `export default {slug:"${slug}",version:"1.0.0",tier:2,operations:{noop:async()=>null}};`;
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("dev-owner@example.com");
+  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL(/\/edit/, { timeout: 15_000 });
+  await page.goto("/settings/plugins/installations");
+  await page.getByLabel("Plugin package (.json, .json.gz or .json.br)").setInputFiles({
+    name: "unbrokered.caelo-plugin.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify({ manifest, source })),
+  });
+  await page.getByRole("button", { name: "Submit package for review" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "`ai_provider` (AI calls) is not available to runtime-installed plugins yet (#1729)",
+  );
+  // Nothing was staged, so there is nothing to approve.
+  await expect(page.getByTestId(`installation-${slug}`)).toHaveCount(0);
+});

@@ -27,7 +27,12 @@
         <h3 class="mt-3 font-semibold">Source</h3><pre class="max-h-72 overflow-auto whitespace-pre-wrap text-xs">{item.source}</pre>
         <h3 class="mt-3 font-semibold">Current manifest</h3><pre class="max-h-72 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(item.currentManifest, null, 2)}</pre>
       </details>
-      {#if item.status === 'pending' || item.status === 'retired' || (item.status === 'active' && item.currentStatus === 'disabled')}
+      {#if item.unavailable.length && item.status !== 'active'}
+        <div role="alert" class="space-y-1 rounded border border-red-500 p-3 text-sm" data-testid="installation-unavailable-{item.slug}">
+          <p class="font-semibold">This package cannot be approved: it asks for access runtime-installed plugins cannot have yet.</p>
+          {#each item.unavailable as reason (reason)}<p>{reason}</p>{/each}
+        </div>
+      {:else if item.status === 'pending' || item.status === 'retired' || (item.status === 'active' && item.currentStatus === 'disabled')}
         <form method="post" action="?/approve" use:enhance class="space-y-3">
           <input type="hidden" name="_csrf" value={data.csrfToken} />
           <input type="hidden" name="installationId" value={item.id} />

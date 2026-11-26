@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { activateApprovedExternalPlugin, pluginManifest } from "@caelo-cms/plugin-host";
-import { adminPanelOperations } from "@caelo-cms/plugin-sdk";
+import { adminPanelOperations, externalCapabilityRefusal } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -37,6 +37,12 @@ export const load: PageServerLoad = async ({ locals }) => {
       return {
         ...row,
         manifest,
+        // #1729 — requested access no runtime-installed plugin can be granted
+        // yet: approval would be refused, so the page says why instead of
+        // offering it.
+        unavailable: (manifest.requestedCapabilities ?? [])
+          .map((capability) => externalCapabilityRefusal(capability))
+          .filter((refusal): refusal is string => refusal !== null),
         // The admin pages the Owner approves with this package: who may
         // open each one and which of the plugin's operations it can run.
         panels: (manifest.adminPanels ?? []).map((panel) => ({
